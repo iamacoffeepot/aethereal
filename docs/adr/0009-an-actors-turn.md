@@ -18,17 +18,22 @@ In the earlier engine an actor acted as it ran. A send left during the handler, 
 **A turn takes one piece of mail and returns effects.**
 
 ```rust
-pub trait Actor: Sized {
+pub trait Actor: Kind + Encode<Within> + Decode<Within> {
+    type Config: Kind + Encode<Actors> + Decode<Actors>;
+
+    fn begin(config: Self::Config, turn: &mut Turn<'_>) -> Result<Self, Fault>;
     fn handle(&mut self, mail: Mail<'_>, turn: &mut Turn<'_>) -> Result<(), Fault>;
 }
 ```
+
+`begin` is the turn in which an actor is born, from the config its `Spawn` carried. Every later turn is a `handle`.
 
 An **effect** is one thing the actor asks of the engine. The first effects are:
 
 ```rust
 pub enum Effect {
     Send { to: To, kind: KindId, bytes: Vec<u8> },
-    Spawn { of: TypeName, key: ChildKey, config: Vec<u8> },
+    Spawn { of: KindName, key: ChildKey, config: Vec<u8> },
     Close,
 }
 ```
@@ -48,7 +53,7 @@ pub enum Effect {
 ```rust
 pub enum To {
     Parent,
-    Child(TypeName, ChildKey),
+    Child(KindName, ChildKey),
     Sender,
     Held(ActorRef),
 }
@@ -58,22 +63,15 @@ pub enum To {
 
 **What a send or a spawn carries crosses between actors.** `turn.send(to, &kind)` requires `K: Kind + Encode<Actors>` (ADR-0004, ADR-0006), encodes the kind, and adds the `Send`. `turn.spawn::<C>(key, &config)` requires the same of the child's config. A kind that holds a value bound to its own actor is refused when the program is built. The bytes in an effect are always those of a kind that passed this check.
 
-**A turn that fails changes nothing outside its actor.** When `handle` returns a `Fault`, or a guest traps, the engine drops the turn's effects, closes the actor, and tells its parent. The actor's state is not rolled back, and it is not used again.
+**A turn that fails changes nothing outside its actor.** When `begin` or `handle` returns a `Fault`, or a guest traps, the engine drops the turn's effects, closes the actor, and tells its parent. The actor's state is not rolled back, and it is not used again.
 
-**An actor keeps its own state between turns.** The engine does not hold it and does not copy it per turn.
+**An actor is a kind.** The type that implements `Actor` is the actor's state, and it is a kind: it has a name, a schema, and a codec for `Within`.
 
-**A guest's state is a kind.**
-
-```rust
-pub trait Stateful: Actor {
-    type State: Kind + Encode<Within> + Decode<Within>;
-
-    fn state(&self) -> Self::State;
-    fn from_state(state: Self::State) -> Self;
-}
-```
-
-The engine takes a guest's state out to replace its code, and puts it back into the new code. The door that runs guests requires `Stateful`. A native actor may offer it and is not required to. What it holds that is not data, it can hold as handles (ADR-0010), so its state can be a kind when it chooses.
+- Every field of an actor crosses `Within`. What an actor holds that is not data, it holds as a handle (ADR-0010). This is the same for a native actor and a guest.
+- The engine can take any actor's state out, by encoding the actor, and put it back by decoding it. It does so to replace the actor's code, and may do so to show the state or record a turn.
+- An actor's name is its kind's name. It is the name in a path (ADR-0008) and in `Spawn`.
+- New code takes over an actor's state as it is when its kind has the same name and the same layout (ADR-0006). A different layout is a different kind, and the new code says how it reads the old one.
+- An actor lives decoded, where its runtime keeps it: a native actor as a value the engine owns, a guest in its own memory. The engine does not hold its bytes and does not copy it per turn.
 
 ## Consequences
 
@@ -82,13 +80,15 @@ The engine takes a guest's state out to replace its code, and puts it back into 
 - A turn can be recorded and compared: the same state and mail give the same effects, as far as the actor's own code is deterministic.
 - A handler cannot learn within a turn whether a send was delivered or a spawn succeeded. It is told by mail in a later turn.
 - A read sees the engine as it was when the turn began, so it can be one turn out of date.
-- Data that can be rebuilt from the state (an index, a cache) is rebuilt in `from_state`. An author keeps it apart from the state kind.
+- An actor's working fields are limited to what a kind can hold: no `Box`, no recursive type, no `usize`, nothing from a foreign crate. A tree is an arena with indices. A native actor may put a foreign value behind a handle as a resource (ADR-0010); a guest cannot, so a guest's working data fits the vocabulary entirely.
+- Where the engine keeps actors is its own choice and not part of this decision. It may keep the native actors of one type side by side. An actor whose fields are all of fixed width has the same bytes in memory as encoded on a little-endian machine (ADR-0002), so such actors could be kept as one stretch of bytes per type, which makes taking their state out, or keeping a copy from before a turn, a copy of that stretch. An actor with a string, a sequence, or a map cannot be changed in place in ADR-0002's bytes, since a field's position depends on the lengths before it.
 - **Not decided here, and due before the piece that needs each:** what a piece of mail carries beside its kind and bytes, and how a request and its answer are tied (the next ADR; it adds effects and no second way to act); what the `Actors` and `Within` boundaries offer; when applied mail is delivered and in what order actors run; logging, large payloads, and a value an actor publishes for others to read, each a further effect; and the mail by which a parent learns a child was born, failed, or closed.
 
 ## Alternatives considered
 
 - **An actor acts as it runs, through calls the host offers.** Simple to write against, and the three costs under Context.
-- **The engine holds each actor's state, and a turn returns the new state.** A failed turn then costs nothing to undo and a guest instance holds nothing. Every turn decodes and encodes the whole state, which falls hardest on an actor with large state that runs every frame. `Stateful` leaves room for an actor type that wants this.
+- **The engine holds each actor's state, and a turn returns the new state.** A failed turn then costs nothing to undo and a guest instance holds nothing. Every turn decodes and encodes the whole state, which falls hardest on an actor with large state that runs every frame.
+- **An actor beside a separate state kind it converts to and from.** The actor may then work on any structure it likes. It is a second type and two conversions per actor, nothing checks that the conversion keeps everything, and a native actor could decline to offer it.
 - **A failed turn leaves the actor running.** The actor then continues from a state no handler was written to produce.
 - **An effect by which a parent closes its child.** The parent owns the path, so it could. The child would then end without running its own close, at a moment it did not choose.
 - **A send to any path, checked when the effect is applied.** One case in `To`, and every send is a claim the engine has not checked (ADR-0008).

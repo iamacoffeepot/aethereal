@@ -7,13 +7,13 @@
 
 Some of what an actor works with is not data: a socket, an open file, a GPU object. Such a value has no bytes that mean anything elsewhere, so it cannot be a field of a kind (ADR-0004), and an effect is data (ADR-0009), so it cannot ride in a `Spawn` or a `Send` as itself.
 
-Left there, three things go wrong. A native actor that holds a socket has state that is not a kind. A parent cannot hand a child the file it opened for it. And the place such values do live is up to each actor, so nothing closes them when the actor ends unless its author remembered to.
+Left there, three things go wrong. An actor that holds a socket could not be a kind, and an actor is one (ADR-0009). A parent cannot hand a child the file it opened for it. And the place such values do live is up to each actor, so nothing closes them when the actor ends unless its author remembered to.
 
 Letting two actors hold the same socket does not help. One mail at a time protects only what one actor owns. A value two actors can both open needs a lock as soon as turns run side by side, every use by the second holder is a round trip to wherever the value lives, and no moment is the one at which it should be dropped.
 
 ## Decision
 
-**A resource is a value that is not data, and it has exactly one owner.** The owner is an actor. The engine keeps each actor's resources beside that actor, and the actor's state holds a handle to each.
+**A resource is a value that is not data, and it has exactly one owner.** The owner is an actor. The engine keeps each actor's resources beside that actor, and the actor holds a handle to each.
 
 ```rust
 pub struct Handle<R> { .. }      // mine
@@ -22,7 +22,7 @@ pub struct Given<R> { .. }       // on its way to a new owner
 
 **A `Handle<R>` is the owner's own.**
 
-- Its shape is one unsigned 64-bit integer, the resource's ticket. A kind may hold one, so an actor's state may.
+- Its shape is one unsigned 64-bit integer, the resource's ticket. A kind may hold one, so an actor may.
 - It crosses `Within` and no other boundary (ADR-0004). It cannot be in mail or a config: a kind that holds one has no codec for `Actors`, and the send does not compile.
 - It is neither `Clone` nor `Copy`. There is one handle to a resource.
 - Native code opens it, in the owner's turn: `turn.open(&mut handle)` gives the `R`. Access is direct, because nobody else can hold the handle. A guest may hold a handle and cannot open one.
@@ -38,7 +38,7 @@ impl Turn<'_> {
 ```
 
 - `give` takes the handle by value, so the giver no longer holds it once it has given. That is checked when the program is built.
-- A `Given<R>` has the same shape as a handle. It crosses `Actors` and no other boundary: it may be in mail and in a config, and it cannot be kept in state.
+- A `Given<R>` has the same shape as a handle. It crosses `Actors` and no other boundary: it may be in mail and in a config, and it cannot be a field of an actor.
 - The engine moves the resource to its new owner when it applies the effect that carries the `Given`. The receiver calls `take` in the turn that handles the mail, or in its first turn for a config.
 - A `Given` that no effect carries by the end of its turn, or that its receiver does not take in the turn it arrives, is dropped, and its resource with it.
 
@@ -50,14 +50,13 @@ impl Turn<'_> {
 
 ## Consequences
 
-- A native actor's state can be a kind: what it holds that is not data, it holds as handles.
+- Every actor can be a kind, native ones included: what an actor holds that is not data, it holds as handles.
 - A parent opens what a child needs and gives it in the child's config. Nothing travels as a live Rust value between actors.
 - An actor that wants the use of another's resource asks its owner by mail. There is no shared handle.
 - Nothing an actor owns is left open when it ends, whether or not its author wrote a close for it.
-- State that holds a handle cannot be written to a file or sent to another engine: a handle does not cross `Bare` or `Engines`. Replacing an actor's code keeps its resources, because its state crosses `Within`.
+- An actor that holds a handle cannot be written to a file or sent to another engine: a handle does not cross `Bare` or `Engines`. Replacing an actor's code keeps its resources, because its state crosses `Within`.
 - `Within` offers the owner's resources and `Actors` offers the ones in transit. These are the first offers either boundary makes (ADR-0004).
 - Two kinds that differ only in what their handles hold have the same layout (ADR-0006), since each handle is one integer. The engine's check of the ticket is what tells them apart.
-- Whether every actor, native ones included, must now offer its state (ADR-0009's `Stateful`) is not decided here.
 
 ## Alternatives considered
 

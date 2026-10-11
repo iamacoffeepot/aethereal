@@ -13,20 +13,18 @@ Two rules from the design of the turn (ADR-0009) bear on names. An actor is crea
 
 ## Decision
 
-**An actor type has a name, and every actor has a key.**
+**An actor is named by its kind, and every actor has a key.**
 
 ```rust
-pub struct TypeName(..);       // "aether.window.surface"
-
 pub enum ChildKey {
     Only,                      // the one actor of its type in its place
     Named(KeyName),            // "main"
 }
 ```
 
-- A `TypeName` follows the rule of a `KindName` (ADR-0006): segments of lowercase ASCII letters, digits, and `_`, separated by `.`, each starting with a letter. It is a separate type, so the name of an actor type cannot be passed where the name of a kind is wanted.
+- An actor is a kind (ADR-0009), so the name of its type is a `KindName` (ADR-0006), such as `aether.window.surface`. There is no second sort of name.
 - A `ChildKey` says which actor of a type this is among those in one place. A type of which a place holds at most one uses `Only`. Otherwise the key is `Named`, and a `KeyName` is 1 to 64 bytes: a lowercase ASCII letter or a digit, then lowercase ASCII letters, digits, `_`, `-`, and `.`. A key cannot be `.`, `..`, or start with `-`, so none reads as a relative path or a flag where a person types it.
-- `TypeName` and `KeyName` are checked when built: a constant that does not conform stops the build, and the decoder refuses text that does not conform. Neither hands out its text.
+- `KindName` and `KeyName` are checked when built: a constant that does not conform stops the build, and the decoder refuses text that does not conform. Neither hands out its text.
 
 **An actor's path is where it stands.**
 
@@ -39,7 +37,7 @@ aether.window
 aether.window/aether.window.surface:left
 ```
 
-- A path is a root segment and up to 31 child segments, so it is never empty and never deeper than 32. Each segment is a type and a key. It is written `type:key` for a named key and `type` alone for `Only`, so every actor has a key and the one that needs no name shows none.
+- A path is a root segment and up to 31 child segments, so it is never empty and never deeper than 32. Each segment is the name of an actor's kind and a key. It is written `name:key` for a named key and `name` alone for `Only`, so every actor has a key and the one that needs no name shows none.
 - The first segment is a **root**. Each later segment is a child of the actor the path before it names.
 - A path is plain data (ADR-0004) with the shape of a string: its bytes are its text. Every path has exactly one spelling and every spelling that conforms is exactly one path, so the text is the stored form. `ActorPath::new` checks a constant and stops the build on one that does not conform, and the decoder refuses text that does not conform or is deeper than 32, as `KindName` does (ADR-0006).
 - A path is a `Key` (ADR-0004): it may be the key of a map, in the order of its text. Everything beneath a path sorts together in that order.
