@@ -1,0 +1,59 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/aethereal-data",
+    "crates/aethereal-data-derive",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[workspace.lints.rust]
+# A path the compiler can shorten is written short.
+unused_qualifications = "warn"
+
+[workspace.lints.rustdoc]
+redundant_explicit_links = "warn"
+broken_intra_doc_links = "warn"
+private_intra_doc_links = "warn"
+
+[workspace.lints.clippy]
+# Every level here is a merge gate: CI runs clippy with `-D warnings`, so a
+# `warn` fails a pull request as a `deny` does.
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+unwrap_used = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+# `crate::a::b::Thing` written inline where a `use` would shorten it.
+absolute_paths = "warn"
+undocumented_unsafe_blocks = "deny"
+cloned_instead_of_copied = "deny"
+large_stack_arrays = "deny"
+match_wildcard_for_single_variants = "deny"
+uninlined_format_args = "deny"
+unreadable_literal = "deny"
+# A module with child modules is `foo/mod.rs`; `foo.rs` is a leaf.
+self_named_module_files = "deny"
+
+# Off: each fights an idiom this workspace uses on purpose.
+float_cmp = "allow"
+missing_const_for_fn = "allow"
+missing_errors_doc = "allow"
+needless_pass_by_ref_mut = "allow"
+too_long_first_doc_paragraph = "allow"
