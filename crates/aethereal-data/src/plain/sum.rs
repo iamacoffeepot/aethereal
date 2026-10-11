@@ -1,39 +1,44 @@
 //! `Option<T>` and `Result<T, E>` as plain data (ADR-0004).
 
 use crate::plain::{read_array, read_selector, write_selector};
-use crate::{Budget, DecodeError, EncodeError, Fields, Plain, Schema, Shape, Variant};
-use alloc::vec::Vec;
+use crate::{
+    Boundary, Decode, DecodeError, Encode, EncodeError, Fields, Plain, Reader, Schema, Shape, Variant, Writer,
+};
 
 impl<T: Schema> Schema for Option<T> {
     const SHAPE: Shape = Shape::Option(&T::SHAPE);
 }
 
-impl<T: Plain> Plain for Option<T> {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+impl<B: Boundary, T: Encode<B>> Encode<B> for Option<T> {
+    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
         match self {
             None => {
-                out.push(0);
+                out.bytes().push(0);
                 Ok(())
             }
             Some(value) => {
-                out.push(1);
+                out.bytes().push(1);
                 value.encode(out)
             }
         }
     }
+}
 
-    fn decode(input: &mut &[u8], budget: &mut Budget) -> Result<Self, DecodeError> {
-        let [marker] = read_array(input)?;
+impl<B: Boundary, T: Decode<B>> Decode<B> for Option<T> {
+    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+        let [marker] = read_array(input.input())?;
         match marker {
             0 => Ok(None),
             1 => {
-                let value = T::decode(input, budget)?;
+                let value = T::decode(input)?;
                 Ok(Some(value))
             }
             other => Err(DecodeError::InvalidOption(other)),
         }
     }
 }
+
+impl<T: Plain> Plain for Option<T> {}
 
 impl<T: Schema, E: Schema> Schema for Result<T, E> {
     const SHAPE: Shape = Shape::Enum {
@@ -45,31 +50,33 @@ impl<T: Schema, E: Schema> Schema for Result<T, E> {
     };
 }
 
-impl<T: Plain, E: Plain> Plain for Result<T, E> {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+impl<B: Boundary, T: Encode<B>, E: Encode<B>> Encode<B> for Result<T, E> {
+    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
         match self {
             Ok(value) => {
-                write_selector(out, 0);
+                write_selector(out.bytes(), 0);
                 value.encode(out)?;
                 Ok(())
             }
             Err(error) => {
-                write_selector(out, 1);
+                write_selector(out.bytes(), 1);
                 error.encode(out)?;
                 Ok(())
             }
         }
     }
+}
 
-    fn decode(input: &mut &[u8], budget: &mut Budget) -> Result<Self, DecodeError> {
-        let selector = read_selector(input)?;
+impl<B: Boundary, T: Decode<B>, E: Decode<B>> Decode<B> for Result<T, E> {
+    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+        let selector = read_selector(input.input())?;
         match selector {
             0 => {
-                let value = T::decode(input, budget)?;
+                let value = T::decode(input)?;
                 Ok(Ok(value))
             }
             1 => {
-                let error = E::decode(input, budget)?;
+                let error = E::decode(input)?;
                 Ok(Err(error))
             }
             other => Err(DecodeError::InvalidSelector { name: "Result", selector: other }),
@@ -77,10 +84,12 @@ impl<T: Plain, E: Plain> Plain for Result<T, E> {
     }
 }
 
+impl<T: Plain, E: Plain> Plain for Result<T, E> {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{from_bytes, to_bytes};
+    use crate::{Budget, from_bytes, to_bytes};
 
     #[test]
     fn option_marker_bytes() {

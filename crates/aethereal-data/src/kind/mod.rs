@@ -10,10 +10,10 @@ pub mod samples;
 pub use id::KindId;
 pub use name::KindName;
 
-use crate::Plain;
+use crate::Schema;
 
-/// Plain data with a name (ADR-0006).
-pub trait Kind: Plain {
+/// A described type with a name (ADR-0006).
+pub trait Kind: Schema {
     /// The kind's name.
     const NAME: KindName;
 }

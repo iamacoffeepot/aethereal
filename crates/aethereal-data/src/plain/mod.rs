@@ -8,18 +8,16 @@ mod text;
 mod time;
 mod tuple;
 
-use crate::{Budget, DecodeError, EncodeError};
+use crate::{Bare, BareReader, Budget, Decode, DecodeError, Encode, EncodeError, Reader, Schema};
 use alloc::vec::Vec;
 
 /// Data that is only its bytes (ADR-0004).
 ///
-/// The bytes are those of ADR-0002 for the type's shape (ADR-0003).
-pub trait Plain: crate::Schema + Sized {
-    /// Appends this value's bytes to `out` (ADR-0002).
-    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError>;
-    /// Reads one value from the front of `input`, advancing it past the bytes read (ADR-0002).
-    fn decode(input: &mut &[u8], budget: &mut Budget) -> Result<Self, DecodeError>;
-}
+/// It needs nothing from wherever it is encoded or decoded, so it crosses
+/// `Bare`, the boundary that offers nothing. The bytes are those of ADR-0002
+/// for the type's shape (ADR-0003). The trait adds no method: it is the name
+/// by which other code requires data that is only its bytes.
+pub trait Plain: Schema + Encode<Bare> + Decode<Bare> {}
 
 /// Encodes one value into a fresh buffer (ADR-0004).
 pub fn to_bytes<T: Plain>(value: &T) -> Result<Vec<u8>, EncodeError> {
@@ -30,9 +28,9 @@ pub fn to_bytes<T: Plain>(value: &T) -> Result<Vec<u8>, EncodeError> {
 
 /// Decodes one value and refuses input with bytes left over (ADR-0002).
 pub fn from_bytes<T: Plain>(bytes: &[u8], budget: &mut Budget) -> Result<T, DecodeError> {
-    let mut input = bytes;
-    let value = T::decode(&mut input, budget)?;
-    let trailing = input.len();
+    let mut reader = BareReader::new(bytes, budget);
+    let value = T::decode(&mut reader)?;
+    let trailing = reader.input().len();
     let clean = trailing == 0;
     if clean {
         Ok(value)

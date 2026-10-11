@@ -1,7 +1,7 @@
 //! `Vec<T>`, `VecDeque<T>`, and `[T; N]` as plain data (ADR-0004).
 
 use crate::plain::{charge_count, read_count, write_count};
-use crate::{Budget, DecodeError, EncodeError, Plain, Schema, Shape};
+use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
@@ -9,41 +9,49 @@ impl<T: Schema> Schema for Vec<T> {
     const SHAPE: Shape = T::SEQUENCE;
 }
 
-impl<T: Plain> Plain for Vec<T> {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
-        write_count(out, self.len())?;
+impl<B: Boundary, T: Encode<B>> Encode<B> for Vec<T> {
+    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+        write_count(out.bytes(), self.len())?;
         for item in self {
             item.encode(out)?;
         }
         Ok(())
     }
+}
 
-    fn decode(input: &mut &[u8], budget: &mut Budget) -> Result<Self, DecodeError> {
-        let count = read_count(input)?;
-        let length = charge_count::<T>(budget, count)?;
-        (0..length).map(|_| T::decode(input, budget)).collect()
+impl<B: Boundary, T: Decode<B>> Decode<B> for Vec<T> {
+    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+        let count = read_count(input.input())?;
+        let length = charge_count::<T>(input.budget(), count)?;
+        (0..length).map(|_| T::decode(input)).collect()
     }
 }
+
+impl<T: Plain> Plain for Vec<T> {}
 
 impl<T: Schema> Schema for VecDeque<T> {
     const SHAPE: Shape = T::SEQUENCE;
 }
 
-impl<T: Plain> Plain for VecDeque<T> {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
-        write_count(out, self.len())?;
+impl<B: Boundary, T: Encode<B>> Encode<B> for VecDeque<T> {
+    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+        write_count(out.bytes(), self.len())?;
         for item in self {
             item.encode(out)?;
         }
         Ok(())
     }
+}
 
-    fn decode(input: &mut &[u8], budget: &mut Budget) -> Result<Self, DecodeError> {
-        let count = read_count(input)?;
-        let length = charge_count::<T>(budget, count)?;
-        (0..length).map(|_| T::decode(input, budget)).collect()
+impl<B: Boundary, T: Decode<B>> Decode<B> for VecDeque<T> {
+    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+        let count = read_count(input.input())?;
+        let length = charge_count::<T>(input.budget(), count)?;
+        (0..length).map(|_| T::decode(input)).collect()
     }
 }
+
+impl<T: Plain> Plain for VecDeque<T> {}
 
 impl<T: Schema, const LENGTH: usize> Schema for [T; LENGTH] {
     const SHAPE: Shape = {
@@ -53,31 +61,35 @@ impl<T: Schema, const LENGTH: usize> Schema for [T; LENGTH] {
     };
 }
 
-impl<T: Plain, const LENGTH: usize> Plain for [T; LENGTH] {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+impl<B: Boundary, T: Encode<B>, const LENGTH: usize> Encode<B> for [T; LENGTH] {
+    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
         for item in self {
             item.encode(out)?;
         }
         Ok(())
     }
+}
 
-    fn decode(input: &mut &[u8], budget: &mut Budget) -> Result<Self, DecodeError> {
+impl<B: Boundary, T: Decode<B>, const LENGTH: usize> Decode<B> for [T; LENGTH] {
+    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
         let each = size_of::<T>().max(1);
         let cost = LENGTH.checked_mul(each);
         if let Some(bytes) = cost {
-            budget.charge(bytes)?;
+            input.budget().charge(bytes)?;
         } else {
-            let remaining = budget.remaining();
+            let remaining = input.budget().remaining();
             return Err(DecodeError::BudgetExceeded { requested: usize::MAX, remaining });
         }
         let mut items = Vec::new();
         for _ in 0..LENGTH {
-            let item = T::decode(input, budget)?;
+            let item = T::decode(input)?;
             items.push(item);
         }
         from_vec(items)
     }
 }
+
+impl<T: Plain, const LENGTH: usize> Plain for [T; LENGTH] {}
 
 /// Converts the temporary decode buffer into its array (ADR-0004).
 ///
@@ -89,7 +101,7 @@ fn from_vec<T, const LENGTH: usize>(items: Vec<T>) -> Result<[T; LENGTH], Decode
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{from_bytes, to_bytes};
+    use crate::{Budget, from_bytes, to_bytes};
 
     #[test]
     fn vec_is_count_then_elements() {
