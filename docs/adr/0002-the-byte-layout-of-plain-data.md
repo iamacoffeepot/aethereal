@@ -33,8 +33,22 @@ A **count** and a **selector** are each an unsigned 32-bit integer, little-endia
 **One value, one encoding.** The same value always produces the same bytes, so bytes can be compared and hashed in place of values. Three rules make that hold:
 
 1. Integers are fixed width. There is no variable-length form.
-2. A map's pairs are written in ascending order of their encoded key bytes, compared byte by byte, and no key appears twice. This is an order over bytes, not over the keys' meaning: the 32-bit keys 1 and 256 encode as `01 00 00 00` and `00 01 00 00`, so 256 is written first.
+2. A map's pairs are written in ascending key order, and no key appears twice. Only the shapes below may be a key, and each has one stated order.
 3. A float is written bit for bit. Two NaNs with different bits are different bytes.
+
+**Map keys.** A key is one of these shapes, ordered as stated:
+
+| Key shape | Ascending order |
+|---|---|
+| Integer, any width, signed or unsigned | by numeric value |
+| String | by its UTF-8 bytes, compared byte by byte; a string that is a prefix of another comes first |
+| Bytes | byte by byte; a prefix comes first |
+| Array of 8-bit unsigned integers | byte by byte |
+| Struct with exactly one field, itself a key shape | as that field |
+
+No other shape is a key. Adding one is an amendment to this table that states its order.
+
+The order is the one each language already has for the value, with one trap: ordering a string by UTF-8 bytes is ordering by code point, and a language whose strings are UTF-16 (JavaScript, Java, C#) compares by code unit by default, which differs for characters outside the Basic Multilingual Plane. An encoder in such a language compares by code point.
 
 These rules bind every encoder in every language. A decoder refuses a map whose keys are out of order or repeated.
 
@@ -49,11 +63,12 @@ These rules bind every encoder in every language. A decoder refuses a map whose 
 - On a little-endian machine, a struct of fixed-width fields with no padding has the same bytes in memory as on the wire. An implementation may copy such a value in one step. That is an optimisation of this layout, never a second layout.
 - Bytes do not say what they are. Whatever carries them also carries, or already knows, the shape.
 - A changed shape is a different layout. Reading old bytes with a new shape is not defined here; it belongs to whatever stores bytes across versions.
-- An encoder must sort map keys by their encoded bytes, which costs a sort per map on every encode.
+- A map held in key order in memory is written without sorting. A map held in another order is sorted on encode.
+- A float, a boolean, an option, a sequence, a tuple, an enum, and a struct of several fields cannot be a map key until this ADR is amended to give each an order.
 
 ## Alternatives considered
 
 - **Variable-length integers.** Smaller for small numbers, but a value then has to be decoded to be skipped or compared, and every codec carries the extra rule.
 - **Self-describing bytes (field names or tags inline).** Readable without the shape, and tolerant of change, at several times the size and with names repeated in every message. The schema of ADR-0003 gives tools the names without putting them in every value.
-- **Map order by the keys' own meaning.** Natural in one language, and a rule each other language would have to reproduce per key type. Byte order needs no knowledge of the key.
+- **Any shape as a key, ordered by its encoded bytes.** One rule for every key with no list to maintain. The order is unnatural (the 32-bit key 256 sorts before 1, a longer string after a shorter one whatever their text), so no language's ordered map holds it and every encoder sorts every map. A short list of keys with their natural order is checkable by reading it.
 - **An existing format (postcard, bincode, CBOR, MessagePack).** Each brings choices this layout does not want (variable-length integers, tags, or several encodings of one value), and a dependency in the lowest piece.
