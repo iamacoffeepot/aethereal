@@ -12,12 +12,16 @@ extern crate std;
 
 mod budget;
 mod error;
+#[cfg(feature = "json")]
+mod json;
 mod key;
 mod plain;
 mod schema;
 
 pub use budget::Budget;
 pub use error::{DecodeError, EncodeError};
+#[cfg(feature = "json")]
+pub use json::{JsonError, JsonFault, JsonForm, JsonPath, JsonStep, TextFault, from_json, to_json};
 pub use key::Key;
 pub use plain::{Plain, from_bytes, to_bytes};
 pub use schema::{

@@ -98,6 +98,12 @@ pub enum SchemaFault {
     Repeated,
     /// A node other than the last is named by no later node.
     Unreferenced,
+    /// A struct or a variant has two fields of one name.
+    RepeatedField,
+    /// An enum has two variants of one name.
+    RepeatedVariant,
+    /// An enum has two variants of one selector.
+    RepeatedSelector,
 }
 
 impl fmt::Display for SchemaFault {
@@ -108,6 +114,9 @@ impl fmt::Display for SchemaFault {
             Self::KeyShape => f.write_str("a map key is not a key shape"),
             Self::Repeated => f.write_str("a node equals an earlier node"),
             Self::Unreferenced => f.write_str("a node is named by no later node"),
+            Self::RepeatedField => f.write_str("a struct or a variant has two fields of one name"),
+            Self::RepeatedVariant => f.write_str("an enum has two variants of one name"),
+            Self::RepeatedSelector => f.write_str("an enum has two variants of one selector"),
         }
     }
 }
@@ -169,6 +178,9 @@ impl Plain for SchemaNodes {
         reject_bad_key(&nodes)?;
         reject_repeated(&nodes)?;
         reject_unreferenced(&nodes)?;
+        reject_repeated_field(&nodes)?;
+        reject_repeated_variant(&nodes)?;
+        reject_repeated_selector(&nodes)?;
 
         let Some(root) = nodes.pop() else {
             return Err(DecodeError::InvalidSchema { node: 0, fault: SchemaFault::Empty });
@@ -418,6 +430,130 @@ fn reject_unreferenced(nodes: &[SchemaNode]) -> Result<(), DecodeError> {
     Ok(())
 }
 
+/// Whether two fields share one name, comparing sorted names side by side.
+fn has_repeated_field_name(fields: &[FieldNode]) -> bool {
+    let mut names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    names.sort_unstable();
+    let mut repeated = false;
+    for window in names.windows(2) {
+        let first = window.first();
+        let second = window.get(1);
+        let same = first == second;
+        if same {
+            repeated = true;
+            break;
+        }
+    }
+
+    repeated
+}
+
+/// Whether two variants share one name, comparing sorted names side by side.
+fn has_repeated_variant_name(variants: &[VariantNode]) -> bool {
+    let mut names: Vec<&str> = variants.iter().map(|variant| variant.name.as_str()).collect();
+    names.sort_unstable();
+    let mut repeated = false;
+    for window in names.windows(2) {
+        let first = window.first();
+        let second = window.get(1);
+        let same = first == second;
+        if same {
+            repeated = true;
+            break;
+        }
+    }
+
+    repeated
+}
+
+/// Whether two variants share one selector, comparing sorted selectors side by side.
+fn has_repeated_variant_selector(variants: &[VariantNode]) -> bool {
+    let mut selectors: Vec<u32> = variants.iter().map(|variant| variant.selector).collect();
+    selectors.sort_unstable();
+    let mut repeated = false;
+    for window in selectors.windows(2) {
+        let first = window.first();
+        let second = window.get(1);
+        let same = first == second;
+        if same {
+            repeated = true;
+            break;
+        }
+    }
+
+    repeated
+}
+
+/// Refuses the first struct or variant with two fields of one name.
+fn reject_repeated_field(nodes: &[SchemaNode]) -> Result<(), DecodeError> {
+    for (position, node) in nodes.iter().enumerate() {
+        let mut repeated = false;
+        if let SchemaNode::Struct { fields, .. } = node {
+            repeated = has_repeated_field_name(fields);
+        } else if let SchemaNode::Enum { variants, .. } = node {
+            for variant in variants {
+                let variant_repeated = match &variant.fields {
+                    FieldsNode::Named(named) => has_repeated_field_name(named),
+                    FieldsNode::Unnamed(_) => false,
+                };
+                if variant_repeated {
+                    repeated = true;
+                    break;
+                }
+            }
+        }
+
+        if repeated {
+            let index = node_index(position);
+            let fault = SchemaFault::RepeatedField;
+
+            return Err(DecodeError::InvalidSchema { node: index, fault });
+        }
+    }
+
+    Ok(())
+}
+
+/// Refuses the first enum with two variants of one name.
+fn reject_repeated_variant(nodes: &[SchemaNode]) -> Result<(), DecodeError> {
+    for (position, node) in nodes.iter().enumerate() {
+        let repeated = if let SchemaNode::Enum { variants, .. } = node {
+            has_repeated_variant_name(variants)
+        } else {
+            false
+        };
+
+        if repeated {
+            let index = node_index(position);
+            let fault = SchemaFault::RepeatedVariant;
+
+            return Err(DecodeError::InvalidSchema { node: index, fault });
+        }
+    }
+
+    Ok(())
+}
+
+/// Refuses the first enum with two variants of one selector.
+fn reject_repeated_selector(nodes: &[SchemaNode]) -> Result<(), DecodeError> {
+    for (position, node) in nodes.iter().enumerate() {
+        let repeated = if let SchemaNode::Enum { variants, .. } = node {
+            has_repeated_variant_selector(variants)
+        } else {
+            false
+        };
+
+        if repeated {
+            let index = node_index(position);
+            let fault = SchemaFault::RepeatedSelector;
+
+            return Err(DecodeError::InvalidSchema { node: index, fault });
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,6 +673,136 @@ mod tests {
             let refused = from_bytes::<SchemaNodes>(&bytes, &mut budget);
             let expected = Err(DecodeError::InvalidSchema { node: 0, fault: SchemaFault::Unreferenced });
             assert_eq!(refused, expected);
+        }
+    }
+
+    #[test]
+    fn repeated_struct_field_is_refused() {
+        // Catches a decoder that lets two struct fields share one name.
+        let nodes = vec![
+            SchemaNode::Integer(Integer::U8),
+            SchemaNode::Struct {
+                name: String::from("Dup"),
+                fields: vec![
+                    FieldNode { name: String::from("a"), shape: 0 },
+                    FieldNode { name: String::from("a"), shape: 0 },
+                ],
+            },
+        ];
+        let bytes = to_bytes(&nodes);
+        let is_ok = bytes.is_ok();
+        assert!(is_ok);
+        if let Ok(bytes) = bytes {
+            let mut budget = Budget::new(256);
+            let refused = from_bytes::<SchemaNodes>(&bytes, &mut budget);
+            let expected = Err(DecodeError::InvalidSchema { node: 1, fault: SchemaFault::RepeatedField });
+            assert_eq!(refused, expected);
+        }
+    }
+
+    #[test]
+    fn repeated_variant_field_is_refused() {
+        // Catches a decoder that lets two fields of one variant share one name.
+        let nodes = vec![
+            SchemaNode::Integer(Integer::U8),
+            SchemaNode::Enum {
+                name: String::from("E"),
+                variants: vec![VariantNode {
+                    name: String::from("V"),
+                    selector: 0,
+                    fields: FieldsNode::Named(vec![
+                        FieldNode { name: String::from("a"), shape: 0 },
+                        FieldNode { name: String::from("a"), shape: 0 },
+                    ]),
+                }],
+            },
+        ];
+        let bytes = to_bytes(&nodes);
+        let is_ok = bytes.is_ok();
+        assert!(is_ok);
+        if let Ok(bytes) = bytes {
+            let mut budget = Budget::new(512);
+            let refused = from_bytes::<SchemaNodes>(&bytes, &mut budget);
+            let expected = Err(DecodeError::InvalidSchema { node: 1, fault: SchemaFault::RepeatedField });
+            assert_eq!(refused, expected);
+        }
+    }
+
+    #[test]
+    fn repeated_variant_name_is_refused() {
+        // Catches a decoder that lets two variants share one name.
+        let nodes = vec![
+            SchemaNode::Boolean,
+            SchemaNode::Enum {
+                name: String::from("E"),
+                variants: vec![
+                    VariantNode { name: String::from("A"), selector: 0, fields: FieldsNode::Unnamed(vec![0]) },
+                    VariantNode { name: String::from("A"), selector: 1, fields: FieldsNode::Unnamed(vec![0]) },
+                ],
+            },
+        ];
+        let bytes = to_bytes(&nodes);
+        let is_ok = bytes.is_ok();
+        assert!(is_ok);
+        if let Ok(bytes) = bytes {
+            let mut budget = Budget::new(512);
+            let refused = from_bytes::<SchemaNodes>(&bytes, &mut budget);
+            let expected = Err(DecodeError::InvalidSchema { node: 1, fault: SchemaFault::RepeatedVariant });
+            assert_eq!(refused, expected);
+        }
+    }
+
+    #[test]
+    fn repeated_variant_selector_is_refused() {
+        // Catches a decoder that lets two variants share one selector.
+        let nodes = vec![
+            SchemaNode::Boolean,
+            SchemaNode::Enum {
+                name: String::from("E"),
+                variants: vec![
+                    VariantNode { name: String::from("A"), selector: 3, fields: FieldsNode::Unnamed(vec![0]) },
+                    VariantNode { name: String::from("B"), selector: 3, fields: FieldsNode::Unnamed(vec![0]) },
+                ],
+            },
+        ];
+        let bytes = to_bytes(&nodes);
+        let is_ok = bytes.is_ok();
+        assert!(is_ok);
+        if let Ok(bytes) = bytes {
+            let mut budget = Budget::new(512);
+            let refused = from_bytes::<SchemaNodes>(&bytes, &mut budget);
+            let expected = Err(DecodeError::InvalidSchema { node: 1, fault: SchemaFault::RepeatedSelector });
+            assert_eq!(refused, expected);
+        }
+    }
+
+    #[test]
+    fn same_field_name_in_two_variants_is_kept() {
+        // Catches a check that compares field names across variants.
+        let root = SchemaNode::Enum {
+            name: String::from("E"),
+            variants: vec![
+                VariantNode {
+                    name: String::from("A"),
+                    selector: 0,
+                    fields: FieldsNode::Named(vec![FieldNode { name: String::from("a"), shape: 0 }]),
+                },
+                VariantNode {
+                    name: String::from("B"),
+                    selector: 1,
+                    fields: FieldsNode::Named(vec![FieldNode { name: String::from("a"), shape: 0 }]),
+                },
+            ],
+        };
+        let nodes = vec![SchemaNode::Boolean, root.clone()];
+        let bytes = to_bytes(&nodes);
+        let is_ok = bytes.is_ok();
+        assert!(is_ok);
+        if let Ok(bytes) = bytes {
+            let mut budget = Budget::new(512);
+            let back = from_bytes::<SchemaNodes>(&bytes, &mut budget);
+            let expected = SchemaNodes { earlier: vec![SchemaNode::Boolean], root };
+            assert_eq!(back, Ok(expected));
         }
     }
 }
