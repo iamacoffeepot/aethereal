@@ -1,0 +1,13 @@
+/target
+
+# Per-user and per-session agent state. `.claude/settings.json` is shared
+# (it wires the hooks in `.hooks/`); everything else under these is local.
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+.agents/
+
+# Environment files may hold secrets; never commit one.
+.env
+.env.*
+*.env
