@@ -52,6 +52,8 @@ pub enum Fields {
 
 A struct with unnamed fields (`struct Pair(u32, u32)`) is `Struct` with fields named by position, `"0"` and `"1"`. A variant with no fields is `Unnamed(&[])`.
 
+A `Map`'s key is one of the key shapes ADR-0002 lists: an integer, a string, bytes, an array of bytes, or a struct of exactly one such field. A schema with any other key is not a schema.
+
 Names are part of a schema and not part of the bytes. They exist for the readers that need them: JSON, tools, and error messages.
 
 **A type states its schema as a constant:**
@@ -94,7 +96,7 @@ pub enum SchemaNode {
 }
 ```
 
-It is built by walking a `Shape`, and equal shapes share one node. A decoder refuses a node that names an index at or above its own, so a received schema is a finite tree by the same check that reads it.
+It is built by walking a `Shape`, and equal shapes share one node. A decoder refuses a node that names an index at or above its own, so a received schema is a finite tree by the same check that reads it. It refuses a map whose key is not a key shape.
 
 There are two forms because there are two places a schema lives: `Shape` in a compiled program, where nothing can be allocated, and `SchemaNodes` in bytes, where nothing can be a reference.
 
