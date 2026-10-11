@@ -41,7 +41,9 @@ aether.window/aether.window.surface:left
 
 - A path is a root segment and up to 31 child segments, so it is never empty and never deeper than 32. Each segment is a type and a key. It is written `type:key` for a named key and `type` alone for `Only`, so every actor has a key and the one that needs no name shows none.
 - The first segment is a **root**. Each later segment is a child of the actor the path before it names.
-- A path is plain data (ADR-0004): a struct of its root segment and the sequence of its child segments, each segment a struct of the type's name and its key. The decoder refuses a path deeper than 32.
+- A path is plain data (ADR-0004) with the shape of a string: its bytes are its text. Every path has exactly one spelling and every spelling that conforms is exactly one path, so the text is the stored form. `ActorPath::new` checks a constant and stops the build on one that does not conform, and the decoder refuses text that does not conform or is deeper than 32, as `KindName` does (ADR-0006).
+- A path is a `Key` (ADR-0004): it may be the key of a map, in the order of its text. Everything beneath a path sorts together in that order.
+- A path does not hand out its text. It answers with its parts: its root, its parent, its last segment, and whether it stands beneath another.
 - A path names an actor within one engine. It crosses every boundary as data, and an engine that receives one from another engine reads it as naming an actor in the engine it came from.
 - **A path names one actor for the whole life of its engine.** Two actors never have the same path, and when an actor closes its path is closed for good: nothing is spawned there again. A log line, a trace, and a path held outside the engine therefore always mean the same actor, and an actor's life has one beginning and one end.
 
@@ -75,6 +77,7 @@ pub struct ActorRef { .. }
 
 - **A written key on every segment.** One spelling. A type of which there is one would then carry a key its author had to invent and every user had to repeat.
 - **Two kinds of segment, one with a key and one without.** The same spellings, and every piece of code that handles a segment handles two shapes. One key with a reserved value keeps one shape.
+- **A path stored as its parts**, a struct of segments. The schema then shows the parts, and a JSON view of mail spells a one-line path as nested objects wherever one appears. A struct cannot be a map key (ADR-0002).
 - **An opaque number as the actor's identity, with the path as a label.** Smaller to send. A number says nothing about where the actor stands, so who owns it would have to be looked up.
 - **A reference built from any path, checked when mail is sent.** No resolve step. Every send then carries a claim the engine has not checked, and an actor can address what it was never told about.
 - **Reusing a path after its actor closes, with each reference meaning one particular birth.** The engine would remember nothing about closed actors, and a stale reference would still fail. A path would then name different actors at different times: a log could not be read by path, and a path held outside the engine would silently come to mean a newcomer.
