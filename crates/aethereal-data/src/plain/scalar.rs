@@ -25,14 +25,14 @@ macro_rules! integer {
 macro_rules! integer_codec {
     ($t:ty) => {
         impl<B: Boundary> Encode<B> for $t {
-            fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+            fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
                 out.bytes().extend_from_slice(&self.to_le_bytes());
                 Ok(())
             }
         }
 
         impl<B: Boundary> Decode<B> for $t {
-            fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+            fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
                 Ok(Self::from_le_bytes(read_array(input.input())?))
             }
         }
@@ -57,14 +57,14 @@ macro_rules! float {
         }
 
         impl<B: Boundary> Encode<B> for $t {
-            fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+            fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
                 out.bytes().extend_from_slice(&self.to_le_bytes());
                 Ok(())
             }
         }
 
         impl<B: Boundary> Decode<B> for $t {
-            fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+            fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
                 Ok(Self::from_le_bytes(read_array(input.input())?))
             }
         }
@@ -81,14 +81,14 @@ impl Schema for bool {
 }
 
 impl<B: Boundary> Encode<B> for bool {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         out.bytes().push(u8::from(*self));
         Ok(())
     }
 }
 
 impl<B: Boundary> Decode<B> for bool {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let [marker] = read_array(input.input())?;
         match marker {
             0 => Ok(false),
@@ -105,7 +105,7 @@ impl Schema for char {
 }
 
 impl<B: Boundary> Encode<B> for char {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         let value = u32::from(*self);
         out.bytes().extend_from_slice(&value.to_le_bytes());
         Ok(())
@@ -113,7 +113,7 @@ impl<B: Boundary> Encode<B> for char {
 }
 
 impl<B: Boundary> Decode<B> for char {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let value = u32::from_le_bytes(read_array(input.input())?);
         Self::from_u32(value).ok_or(DecodeError::InvalidChar(value))
     }
@@ -128,15 +128,15 @@ macro_rules! nonzero {
         }
 
         impl<B: Boundary> Encode<B> for $t {
-            fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+            fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
                 out.bytes().extend_from_slice(&self.get().to_le_bytes());
                 Ok(())
             }
         }
 
         impl<B: Boundary> Decode<B> for $t {
-            fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
-                let raw = <$inner as Decode<B>>::decode(input)?;
+            fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+                let raw = <$inner>::decode(input)?;
                 Self::new(raw).ok_or(DecodeError::Zero)
             }
         }

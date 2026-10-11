@@ -10,7 +10,7 @@ impl<T: Schema> Schema for Vec<T> {
 }
 
 impl<B: Boundary, T: Encode<B>> Encode<B> for Vec<T> {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         write_count(out.bytes(), self.len())?;
         for item in self {
             item.encode(out)?;
@@ -20,7 +20,7 @@ impl<B: Boundary, T: Encode<B>> Encode<B> for Vec<T> {
 }
 
 impl<B: Boundary, T: Decode<B>> Decode<B> for Vec<T> {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let count = read_count(input.input())?;
         let length = charge_count::<T>(input.budget(), count)?;
         (0..length).map(|_| T::decode(input)).collect()
@@ -34,7 +34,7 @@ impl<T: Schema> Schema for VecDeque<T> {
 }
 
 impl<B: Boundary, T: Encode<B>> Encode<B> for VecDeque<T> {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         write_count(out.bytes(), self.len())?;
         for item in self {
             item.encode(out)?;
@@ -44,7 +44,7 @@ impl<B: Boundary, T: Encode<B>> Encode<B> for VecDeque<T> {
 }
 
 impl<B: Boundary, T: Decode<B>> Decode<B> for VecDeque<T> {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let count = read_count(input.input())?;
         let length = charge_count::<T>(input.budget(), count)?;
         (0..length).map(|_| T::decode(input)).collect()
@@ -62,7 +62,7 @@ impl<T: Schema, const LENGTH: usize> Schema for [T; LENGTH] {
 }
 
 impl<B: Boundary, T: Encode<B>, const LENGTH: usize> Encode<B> for [T; LENGTH] {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         for item in self {
             item.encode(out)?;
         }
@@ -71,7 +71,7 @@ impl<B: Boundary, T: Encode<B>, const LENGTH: usize> Encode<B> for [T; LENGTH] {
 }
 
 impl<B: Boundary, T: Decode<B>, const LENGTH: usize> Decode<B> for [T; LENGTH] {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let each = size_of::<T>().max(1);
         let cost = LENGTH.checked_mul(each);
         if let Some(bytes) = cost {

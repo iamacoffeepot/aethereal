@@ -1,7 +1,7 @@
 //! A kind's name (ADR-0006).
 
 use crate::plain::write_text;
-use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Schema, Shape, Writer};
+use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
 use alloc::borrow::Cow;
 use alloc::string::String;
 use core::fmt;
@@ -90,14 +90,14 @@ impl Schema for KindName {
 }
 
 impl<B: Boundary> Encode<B> for KindName {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         write_text(out.bytes(), self.text())
     }
 }
 
 impl<B: Boundary> Decode<B> for KindName {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
-        let text = <String as Decode<B>>::decode(input)?;
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        let text = String::decode(input)?;
         let is_name = conforms(&text);
         if is_name {
             Ok(Self(Cow::Owned(text)))

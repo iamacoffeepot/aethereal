@@ -8,7 +8,7 @@ mod text;
 mod time;
 mod tuple;
 
-use crate::{Bare, BareReader, Budget, Decode, DecodeError, Encode, EncodeError, Reader, Schema};
+use crate::{Bare, Budget, Decode, DecodeError, Encode, EncodeError, Reader, Schema, Writer};
 use alloc::vec::Vec;
 
 /// Data that is only its bytes (ADR-0004).
@@ -21,14 +21,14 @@ pub trait Plain: Schema + Encode<Bare> + Decode<Bare> {}
 
 /// Encodes one value into a fresh buffer (ADR-0004).
 pub fn to_bytes<T: Plain>(value: &T) -> Result<Vec<u8>, EncodeError> {
-    let mut out = Vec::new();
+    let mut out = Writer::<Bare>::new(());
     value.encode(&mut out)?;
-    Ok(out)
+    Ok(out.into_bytes())
 }
 
 /// Decodes one value and refuses input with bytes left over (ADR-0002).
 pub fn from_bytes<T: Plain>(bytes: &[u8], budget: &mut Budget) -> Result<T, DecodeError> {
-    let mut reader = BareReader::new(bytes, budget);
+    let mut reader = Reader::<Bare>::new(bytes, budget, ());
     let value = T::decode(&mut reader)?;
     let trailing = reader.input().len();
     let clean = trailing == 0;

@@ -14,7 +14,7 @@ impl<K: Key, V: Schema> Schema for BTreeMap<K, V> {
 }
 
 impl<B: Boundary, K: Encode<B>, V: Encode<B>> Encode<B> for BTreeMap<K, V> {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         write_count(out.bytes(), self.len())?;
         for (key, value) in self {
             key.encode(out)?;
@@ -25,7 +25,7 @@ impl<B: Boundary, K: Encode<B>, V: Encode<B>> Encode<B> for BTreeMap<K, V> {
 }
 
 impl<B: Boundary, K: Decode<B> + Ord, V: Decode<B>> Decode<B> for BTreeMap<K, V> {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let count = read_count(input.input())?;
         charge_count::<K>(input.budget(), count)?;
         charge_count::<V>(input.budget(), count)?;
@@ -53,7 +53,7 @@ impl<T: Key> Schema for BTreeSet<T> {
 }
 
 impl<B: Boundary, T: Encode<B>> Encode<B> for BTreeSet<T> {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         write_count(out.bytes(), self.len())?;
         for item in self {
             item.encode(out)?;
@@ -63,7 +63,7 @@ impl<B: Boundary, T: Encode<B>> Encode<B> for BTreeSet<T> {
 }
 
 impl<B: Boundary, T: Decode<B> + Ord> Decode<B> for BTreeSet<T> {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let count = read_count(input.input())?;
         let length = charge_count::<T>(input.budget(), count)?;
         let mut set = Self::new();
@@ -96,7 +96,7 @@ impl<K: Key + Hash, V: Schema, S: BuildHasher> Schema for HashMap<K, V, S> {
 
 #[cfg(feature = "std")]
 impl<B: Boundary, K: Encode<B> + Ord, V: Encode<B>, S> Encode<B> for HashMap<K, V, S> {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         write_count(out.bytes(), self.len())?;
         let mut entries: Vec<(&K, &V)> = self.iter().collect();
         entries.sort_by(|left, right| left.0.cmp(right.0));
@@ -110,7 +110,7 @@ impl<B: Boundary, K: Encode<B> + Ord, V: Encode<B>, S> Encode<B> for HashMap<K, 
 
 #[cfg(feature = "std")]
 impl<B: Boundary, K: Decode<B> + Ord + Hash, V: Decode<B>, S: BuildHasher + Default> Decode<B> for HashMap<K, V, S> {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let count = read_count(input.input())?;
         charge_count::<K>(input.budget(), count)?;
         charge_count::<V>(input.budget(), count)?;
@@ -141,7 +141,7 @@ impl<T: Key + Hash, S: BuildHasher> Schema for HashSet<T, S> {
 
 #[cfg(feature = "std")]
 impl<B: Boundary, T: Encode<B> + Ord, S> Encode<B> for HashSet<T, S> {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         write_count(out.bytes(), self.len())?;
         let mut items: Vec<&T> = self.iter().collect();
         items.sort();
@@ -154,7 +154,7 @@ impl<B: Boundary, T: Encode<B> + Ord, S> Encode<B> for HashSet<T, S> {
 
 #[cfg(feature = "std")]
 impl<B: Boundary, T: Decode<B> + Ord + Hash, S: BuildHasher + Default> Decode<B> for HashSet<T, S> {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let count = read_count(input.input())?;
         let length = charge_count::<T>(input.budget(), count)?;
         let mut items: Vec<T> = Vec::new();

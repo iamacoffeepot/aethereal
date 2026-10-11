@@ -1,7 +1,9 @@
 //! A schema as plain data: nodes naming children by index (ADR-0003).
 
 use crate::plain::write_count;
-use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Field, Float, Integer, Plain, Schema, Shape, Writer};
+use crate::{
+    Boundary, Decode, DecodeError, Encode, EncodeError, Field, Float, Integer, Plain, Reader, Schema, Shape, Writer,
+};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
@@ -168,19 +170,19 @@ impl Schema for SchemaNodes {
 }
 
 impl<B: Boundary> Encode<B> for SchemaNodes {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         let total = self.earlier.len() + 1;
         write_count(out.bytes(), total)?;
         for node in &self.earlier {
-            Encode::<B>::encode(node, out)?;
+            node.encode(out)?;
         }
-        Encode::<B>::encode(&self.root, out)
+        self.root.encode(out)
     }
 }
 
 impl<B: Boundary> Decode<B> for SchemaNodes {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
-        let mut nodes = <Vec<SchemaNode> as Decode<B>>::decode(input)?;
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        let mut nodes = Vec::<SchemaNode>::decode(input)?;
         reject_forward(&nodes)?;
         reject_bad_key(&nodes)?;
         reject_repeated(&nodes)?;

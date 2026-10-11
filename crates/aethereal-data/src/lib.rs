@@ -21,7 +21,7 @@ mod kind;
 mod plain;
 mod schema;
 
-pub use boundary::{Bare, BareReader, Boundary, Decode, Encode, Reader, Writer};
+pub use boundary::{Bare, Boundary, Decode, Encode, Reader, Writer};
 pub use budget::Budget;
 pub use error::{DecodeError, EncodeError};
 #[cfg(feature = "json")]

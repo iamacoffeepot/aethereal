@@ -10,13 +10,13 @@ impl Schema for String {
 }
 
 impl<B: Boundary> Encode<B> for String {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         write_text(out.bytes(), self)
     }
 }
 
 impl<B: Boundary> Decode<B> for String {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let count = read_count(input.input())?;
         let length = count as usize;
         input.budget().charge(length)?;

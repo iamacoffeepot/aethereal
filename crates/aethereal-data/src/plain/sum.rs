@@ -10,7 +10,7 @@ impl<T: Schema> Schema for Option<T> {
 }
 
 impl<B: Boundary, T: Encode<B>> Encode<B> for Option<T> {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         match self {
             None => {
                 out.bytes().push(0);
@@ -25,7 +25,7 @@ impl<B: Boundary, T: Encode<B>> Encode<B> for Option<T> {
 }
 
 impl<B: Boundary, T: Decode<B>> Decode<B> for Option<T> {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let [marker] = read_array(input.input())?;
         match marker {
             0 => Ok(None),
@@ -51,7 +51,7 @@ impl<T: Schema, E: Schema> Schema for Result<T, E> {
 }
 
 impl<B: Boundary, T: Encode<B>, E: Encode<B>> Encode<B> for Result<T, E> {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         match self {
             Ok(value) => {
                 write_selector(out.bytes(), 0);
@@ -68,7 +68,7 @@ impl<B: Boundary, T: Encode<B>, E: Encode<B>> Encode<B> for Result<T, E> {
 }
 
 impl<B: Boundary, T: Decode<B>, E: Decode<B>> Decode<B> for Result<T, E> {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let selector = read_selector(input.input())?;
         match selector {
             0 => {

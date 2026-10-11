@@ -1,19 +1,19 @@
 //! `()` and tuples of one to twelve elements as plain data (ADR-0004).
 
-use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Schema, Shape};
+use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
 
 impl Schema for () {
     const SHAPE: Shape = Shape::Tuple { elements: &[] };
 }
 
 impl<B: Boundary> Encode<B> for () {
-    fn encode(&self, _out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+    fn encode(&self, _out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         Ok(())
     }
 }
 
 impl<B: Boundary> Decode<B> for () {
-    fn decode(_input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(_input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         Ok(())
     }
 }
@@ -27,7 +27,7 @@ macro_rules! tuple {
         }
 
         impl<B: Boundary, $($t: Encode<B>),+> Encode<B> for ($($t,)+) {
-            fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
+            fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
                 let ($( $v, )+) = self;
                 $($v.encode(out)?;)+
                 Ok(())
@@ -35,7 +35,7 @@ macro_rules! tuple {
         }
 
         impl<B: Boundary, $($t: Decode<B>),+> Decode<B> for ($($t,)+) {
-            fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
+            fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
                 $(let $v = $t::decode(input)?;)+
                 Ok(($($v,)+))
             }

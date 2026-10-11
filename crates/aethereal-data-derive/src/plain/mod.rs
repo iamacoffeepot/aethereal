@@ -63,7 +63,7 @@ pub fn impls(input: &DeriveInput, field_types: &[&Type], codec: &Codec) -> Token
         impl #encode_impl ::aethereal_data::Encode<__B> for #name #ty_generics #encode_where {
             fn encode(
                 &self,
-                out: &mut <__B as ::aethereal_data::Boundary>::Writer<'_>,
+                out: &mut ::aethereal_data::Writer<'_, __B>,
             ) -> ::core::result::Result<(), ::aethereal_data::EncodeError> {
                 #encode
             }
@@ -72,7 +72,7 @@ pub fn impls(input: &DeriveInput, field_types: &[&Type], codec: &Codec) -> Token
         #[automatically_derived]
         impl #decode_impl ::aethereal_data::Decode<__B> for #name #ty_generics #decode_where {
             fn decode(
-                input: &mut <__B as ::aethereal_data::Boundary>::Reader<'_>,
+                input: &mut ::aethereal_data::Reader<'_, __B>,
             ) -> ::core::result::Result<Self, ::aethereal_data::DecodeError> {
                 #decode
             }

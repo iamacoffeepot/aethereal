@@ -20,23 +20,16 @@ trait Detach {
 struct Carrying;
 
 impl Boundary for Carrying {
-    type Writer<'a> = CarryingWriter;
-    type Reader<'a> = CarryingReader<'a>;
+    type WriterOffers<'a> = Attaching<'a>;
+    type ReaderOffers<'a> = Detaching<'a>;
 }
 
-/// The bytes written so far, and the payloads attached so far.
-struct CarryingWriter {
-    bytes: Vec<u8>,
-    attached: Vec<Vec<u8>>,
+/// The payloads attached so far.
+struct Attaching<'a> {
+    attached: &'a mut Vec<Vec<u8>>,
 }
 
-impl Writer for CarryingWriter {
-    fn bytes(&mut self) -> &mut Vec<u8> {
-        &mut self.bytes
-    }
-}
-
-impl Attach for CarryingWriter {
+impl Attach for Attaching<'_> {
     fn attach(&mut self, payload: &[u8]) -> u32 {
         let handle = u32::try_from(self.attached.len()).unwrap_or(u32::MAX);
         self.attached.push(payload.to_vec());
@@ -45,50 +38,37 @@ impl Attach for CarryingWriter {
     }
 }
 
-/// The bytes still to read, the budget, and the payloads that came with them.
-struct CarryingReader<'input> {
-    input: &'input [u8],
-    budget: Budget,
-    attached: &'input [Vec<u8>],
+/// The payloads that came with the bytes.
+struct Detaching<'a> {
+    attached: &'a [Vec<u8>],
 }
 
-impl<'input> Reader<'input> for CarryingReader<'input> {
-    fn input(&mut self) -> &mut &'input [u8] {
-        &mut self.input
-    }
-
-    fn budget(&mut self) -> &mut Budget {
-        &mut self.budget
-    }
-}
-
-impl Detach for CarryingReader<'_> {
+impl Detach for Detaching<'_> {
     fn detach(&self, handle: u32) -> Option<Vec<u8>> {
         self.attached.get(handle as usize).cloned()
     }
 }
 
-/// A bound value: written as a handle, with its payload attached to the writer.
+/// A bound value: written as a handle, with its payload attached to the writer's offers.
 #[derive(Debug, PartialEq, Eq)]
 struct Attached(Vec<u8>);
 
 impl<B: Boundary> Encode<B> for Attached
 where
-    for<'a> B::Writer<'a>: Attach,
+    for<'a> B::WriterOffers<'a>: Attach,
 {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError> {
-        let handle = out.attach(&self.0);
-        Encode::<B>::encode(&handle, out)
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+        out.offers().attach(&self.0).encode(out)
     }
 }
 
 impl<B: Boundary> Decode<B> for Attached
 where
-    for<'a> B::Reader<'a>: Detach,
+    for<'a> B::ReaderOffers<'a>: Detach,
 {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError> {
-        let handle = <u32 as Decode<B>>::decode(input)?;
-        input.detach(handle).map(Self).ok_or(DecodeError::UnexpectedEnd)
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        let handle = u32::decode(input)?;
+        input.offers().detach(handle).map(Self).ok_or(DecodeError::UnexpectedEnd)
     }
 }
 
@@ -99,13 +79,14 @@ fn carried() -> Vec<(u8, Attached)> {
 
 #[test]
 fn bound_value_in_a_vec_writes_the_bytes_of_its_shape() {
-    // Catches a container or leaf codec that names one boundary, drops the boundary's writer on the way to an
+    // Catches a container or leaf codec that names one boundary, drops the boundary's offers on the way to an
     // element, or writes other bytes away from `Bare`.
-    let mut out = CarryingWriter { bytes: Vec::new(), attached: Vec::new() };
-    let written = Encode::<Carrying>::encode(&carried(), &mut out);
+    let mut attached = Vec::new();
+    let mut out = Writer::<Carrying>::new(Attaching { attached: &mut attached });
+    let written = carried().encode(&mut out);
     assert_eq!(written, Ok(()));
-    assert_eq!(Ok(out.bytes), to_bytes(&vec![(7u8, 0u32), (9u8, 1u32)]));
-    assert_eq!(out.attached, vec![vec![0xAA, 0xBB], vec![0xCC]]);
+    assert_eq!(Ok(out.into_bytes()), to_bytes(&vec![(7u8, 0u32), (9u8, 1u32)]));
+    assert_eq!(attached, vec![vec![0xAA, 0xBB], vec![0xCC]]);
 }
 
 #[test]
@@ -113,8 +94,9 @@ fn bound_value_in_a_vec_reads_back_through_the_reader() {
     // Catches a container decode that hands its elements a reader without what the boundary offers.
     let bytes = to_bytes(&vec![(7u8, 0u32), (9u8, 1u32)]).unwrap_or_default();
     let attached = [vec![0xAA, 0xBB], vec![0xCC]];
-    let mut reader = CarryingReader { input: &bytes, budget: Budget::new(256), attached: &attached };
-    let read = <Vec<(u8, Attached)> as Decode<Carrying>>::decode(&mut reader);
+    let mut budget = Budget::new(256);
+    let mut reader = Reader::<Carrying>::new(&bytes, &mut budget, Detaching { attached: &attached });
+    let read = Vec::<(u8, Attached)>::decode(&mut reader);
     assert_eq!(read, Ok(carried()));
-    assert!(reader.input.is_empty());
+    assert!(reader.input().is_empty());
 }
