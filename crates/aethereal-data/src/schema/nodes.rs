@@ -1,7 +1,9 @@
 //! A schema as plain data: nodes naming children by index (ADR-0003).
 
 use crate::plain::write_count;
-use crate::{Budget, DecodeError, EncodeError, Field, Float, Integer, Plain, Schema, Shape};
+use crate::{
+    Boundary, Decode, DecodeError, Encode, EncodeError, Field, Float, Integer, Plain, Reader, Schema, Shape, Writer,
+};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
@@ -167,18 +169,20 @@ impl Schema for SchemaNodes {
         Shape::Struct { name: "SchemaNodes", fields: &[Field { name: "nodes", shape: Vec::<SchemaNode>::SHAPE }] };
 }
 
-impl Plain for SchemaNodes {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+impl<B: Boundary> Encode<B> for SchemaNodes {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         let total = self.earlier.len() + 1;
-        write_count(out, total)?;
+        write_count(out.bytes(), total)?;
         for node in &self.earlier {
             node.encode(out)?;
         }
         self.root.encode(out)
     }
+}
 
-    fn decode(input: &mut &[u8], budget: &mut Budget) -> Result<Self, DecodeError> {
-        let mut nodes = Vec::<SchemaNode>::decode(input, budget)?;
+impl<B: Boundary> Decode<B> for SchemaNodes {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        let mut nodes = Vec::<SchemaNode>::decode(input)?;
         reject_forward(&nodes)?;
         reject_bad_key(&nodes)?;
         reject_repeated(&nodes)?;
@@ -194,6 +198,8 @@ impl Plain for SchemaNodes {
         Ok(Self { earlier: nodes, root })
     }
 }
+
+impl Plain for SchemaNodes {}
 
 /// Converts a position in the node list to its wire index.
 ///
@@ -562,7 +568,7 @@ fn reject_repeated_selector(nodes: &[SchemaNode]) -> Result<(), DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{from_bytes, to_bytes};
+    use crate::{Budget, from_bytes, to_bytes};
     use alloc::collections::BTreeMap;
     use alloc::vec;
 

@@ -1,7 +1,6 @@
 //! `Duration` as plain data (ADR-0004).
 
-use crate::{Budget, DecodeError, EncodeError, Field, Integer, Plain, Schema, Shape};
-use alloc::vec::Vec;
+use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Field, Integer, Plain, Reader, Schema, Shape, Writer};
 use core::time::Duration;
 
 /// The nanoseconds in one second; `nanos` at or above this is refused (ADR-0004).
@@ -17,16 +16,17 @@ impl Schema for Duration {
     };
 }
 
-impl Plain for Duration {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+impl<B: Boundary> Encode<B> for Duration {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         self.as_secs().encode(out)?;
-        self.subsec_nanos().encode(out)?;
-        Ok(())
+        self.subsec_nanos().encode(out)
     }
+}
 
-    fn decode(input: &mut &[u8], budget: &mut Budget) -> Result<Self, DecodeError> {
-        let secs = u64::decode(input, budget)?;
-        let nanos = u32::decode(input, budget)?;
+impl<B: Boundary> Decode<B> for Duration {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        let secs = u64::decode(input)?;
+        let nanos = u32::decode(input)?;
         let within_second = nanos < NANOS_PER_SECOND;
         if within_second {
             Ok(Self::new(secs, nanos))
@@ -36,10 +36,12 @@ impl Plain for Duration {
     }
 }
 
+impl Plain for Duration {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{from_bytes, to_bytes};
+    use crate::{Budget, from_bytes, to_bytes};
 
     #[test]
     fn duration_is_secs_then_nanos() {

@@ -1,7 +1,8 @@
 //! Plain data: values that are only their bytes.
 //!
 //! The byte layout is ADR-0002, the schema vocabulary ADR-0003, and the
-//! `Plain` trait with the Rust types that implement it ADR-0004.
+//! codec over a boundary, with `Plain` and the Rust types that implement it,
+//! ADR-0004.
 
 #![no_std]
 
@@ -10,6 +11,7 @@ extern crate self as aethereal_data;
 #[cfg(feature = "std")]
 extern crate std;
 
+mod boundary;
 mod budget;
 mod error;
 #[cfg(feature = "json")]
@@ -19,6 +21,7 @@ mod kind;
 mod plain;
 mod schema;
 
+pub use boundary::{Bare, Boundary, Decode, Encode, Reader, Writer};
 pub use budget::Budget;
 pub use error::{DecodeError, EncodeError};
 #[cfg(feature = "json")]
@@ -31,7 +34,7 @@ pub use schema::{
     VariantNode,
 };
 
-/// Derives `Schema` and `Plain` from one field list (ADR-0004).
+/// Derives `Schema`, the codec over every boundary, and `Plain` from one field list (ADR-0004).
 ///
 /// Every field must be `Plain`; a field that is not is a compile error
 /// naming it.
@@ -93,6 +96,4 @@ pub mod __derive {
     pub use crate::plain::read_selector;
     /// Writes a selector the emitted encode code calls.
     pub use crate::plain::write_selector;
-    /// The vector the emitted encode code appends to.
-    pub use alloc::vec::Vec;
 }

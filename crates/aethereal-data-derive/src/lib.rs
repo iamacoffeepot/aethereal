@@ -7,11 +7,12 @@ mod key;
 mod lifetimes;
 mod plain;
 
-/// Derives `Schema` and `Plain` from one field list (ADR-0004).
+/// Derives `Schema`, the codec, and `Plain` from one field list (ADR-0004).
 ///
 /// A struct becomes a `Struct` shape with its fields in declared order;
 /// an enum becomes an `Enum` shape with a selector before each variant's
-/// fields. Every field must be `Plain`.
+/// fields. The codec is written over every boundary and bounded by each
+/// field's type. Every field must be `Plain`.
 #[proc_macro_derive(Plain, attributes(plain))]
 pub fn derive_plain(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

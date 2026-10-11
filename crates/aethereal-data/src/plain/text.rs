@@ -1,34 +1,37 @@
 //! `String` as plain data (ADR-0004).
 
 use crate::plain::{read_count, take_bytes, write_text};
-use crate::{Budget, DecodeError, EncodeError, Plain, Schema, Shape};
+use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::str::from_utf8;
 
 impl Schema for String {
     const SHAPE: Shape = Shape::String;
 }
 
-impl Plain for String {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
-        write_text(out, self)
+impl<B: Boundary> Encode<B> for String {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+        write_text(out.bytes(), self)
     }
+}
 
-    fn decode(input: &mut &[u8], budget: &mut Budget) -> Result<Self, DecodeError> {
-        let count = read_count(input)?;
+impl<B: Boundary> Decode<B> for String {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        let count = read_count(input.input())?;
         let length = count as usize;
-        budget.charge(length)?;
-        let bytes = take_bytes(input, length)?;
+        input.budget().charge(length)?;
+        let bytes = take_bytes(input.input(), length)?;
         let text = from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)?;
         Ok(text.into())
     }
 }
 
+impl Plain for String {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{from_bytes, to_bytes};
+    use crate::{Budget, from_bytes, to_bytes};
 
     #[test]
     fn string_is_count_then_utf8() {

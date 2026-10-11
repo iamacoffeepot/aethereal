@@ -1,12 +1,12 @@
-//! A struct's `Schema` and `Plain` impls (ADR-0004).
+//! A struct's shape and codec bodies (ADR-0004).
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use super::{decode_binding, encode_call, shape_field, with_plain_bounds};
-use syn::{DeriveInput, FieldsNamed, FieldsUnnamed};
+use super::{Codec, decode_binding, encode_call, impls, shape_field};
+use syn::{DeriveInput, FieldsNamed, FieldsUnnamed, Type};
 
-/// The pieces one struct impl pair is built from.
+/// The pieces one struct's impls are built from.
 struct Parts {
     shape_fields: Vec<TokenStream2>,
     encode_statements: Vec<TokenStream2>,
@@ -14,51 +14,41 @@ struct Parts {
     construction: TokenStream2,
 }
 
-/// Expands a struct into `Schema` and `Plain` impls.
+/// Expands a struct into `Schema`, `Encode`, `Decode`, and `Plain` impls.
 pub fn expand(input: &DeriveInput, data: &syn::DataStruct) -> syn::Result<TokenStream2> {
     let parts = match &data.fields {
         syn::Fields::Named(fields) => named_parts(fields)?,
         syn::Fields::Unnamed(fields) => unnamed_parts(fields),
         syn::Fields::Unit => unit_parts(),
     };
+    let field_types: Vec<&Type> = data.fields.iter().map(|field| &field.ty).collect();
 
-    Ok(finish(input, &parts))
+    Ok(impls(input, &field_types, &codec(input, &parts)))
 }
 
-/// Assembles the two impls from their pieces.
-fn finish(input: &DeriveInput, parts: &Parts) -> TokenStream2 {
-    let name = &input.ident;
-    let type_name = name.to_string();
-    let generics = with_plain_bounds(&input.generics);
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+/// The struct's shape and the bodies of its codec.
+fn codec(input: &DeriveInput, parts: &Parts) -> Codec {
+    let type_name = input.ident.to_string();
     let shape_fields = &parts.shape_fields;
     let encode_statements = &parts.encode_statements;
     let decode_bindings = &parts.decode_bindings;
     let construction = &parts.construction;
-
-    quote! {
-        impl #impl_generics ::aethereal_data::Schema for #name #ty_generics #where_clause {
-            const SHAPE: ::aethereal_data::Shape = ::aethereal_data::Shape::Struct {
-                name: #type_name,
-                fields: &[ #( #shape_fields ),* ],
-            };
+    let shape = quote! {
+        ::aethereal_data::Shape::Struct {
+            name: #type_name,
+            fields: &[ #( #shape_fields ),* ],
         }
+    };
+    let encode = quote! {
+        #( #encode_statements )*
+        ::core::result::Result::Ok(())
+    };
+    let decode = quote! {
+        #( #decode_bindings )*
+        ::core::result::Result::Ok(#construction)
+    };
 
-        impl #impl_generics ::aethereal_data::Plain for #name #ty_generics #where_clause {
-            fn encode(&self, out: &mut ::aethereal_data::__derive::Vec<u8>) -> ::core::result::Result<(), ::aethereal_data::EncodeError> {
-                #( #encode_statements )*
-                ::core::result::Result::Ok(())
-            }
-
-            fn decode(
-                input: &mut &[u8],
-                budget: &mut ::aethereal_data::Budget,
-            ) -> ::core::result::Result<Self, ::aethereal_data::DecodeError> {
-                #( #decode_bindings )*
-                ::core::result::Result::Ok(#construction)
-            }
-        }
-    }
+    Codec { shape, encode, decode }
 }
 
 /// Pieces for a struct with named fields.

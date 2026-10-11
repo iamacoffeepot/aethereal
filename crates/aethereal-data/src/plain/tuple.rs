@@ -1,21 +1,24 @@
 //! `()` and tuples of one to twelve elements as plain data (ADR-0004).
 
-use crate::{Budget, DecodeError, EncodeError, Plain, Schema, Shape};
-use alloc::vec::Vec;
+use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
 
 impl Schema for () {
     const SHAPE: Shape = Shape::Tuple { elements: &[] };
 }
 
-impl Plain for () {
-    fn encode(&self, _out: &mut Vec<u8>) -> Result<(), EncodeError> {
-        Ok(())
-    }
-
-    fn decode(_input: &mut &[u8], _budget: &mut Budget) -> Result<Self, DecodeError> {
+impl<B: Boundary> Encode<B> for () {
+    fn encode(&self, _out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         Ok(())
     }
 }
+
+impl<B: Boundary> Decode<B> for () {
+    fn decode(_input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        Ok(())
+    }
+}
+
+impl Plain for () {}
 
 macro_rules! tuple {
     ($(($t:ident $v:ident)),+) => {
@@ -23,18 +26,22 @@ macro_rules! tuple {
             const SHAPE: Shape = Shape::Tuple { elements: &[$($t::SHAPE),+] };
         }
 
-        impl<$($t: Plain),+> Plain for ($($t,)+) {
-            fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        impl<B: Boundary, $($t: Encode<B>),+> Encode<B> for ($($t,)+) {
+            fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
                 let ($( $v, )+) = self;
                 $($v.encode(out)?;)+
                 Ok(())
             }
+        }
 
-            fn decode(input: &mut &[u8], budget: &mut Budget) -> Result<Self, DecodeError> {
-                $(let $v = $t::decode(input, budget)?;)+
+        impl<B: Boundary, $($t: Decode<B>),+> Decode<B> for ($($t,)+) {
+            fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+                $(let $v = $t::decode(input)?;)+
                 Ok(($($v,)+))
             }
         }
+
+        impl<$($t: Plain),+> Plain for ($($t,)+) {}
     };
 }
 
@@ -90,7 +97,7 @@ tuple!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{from_bytes, to_bytes};
+    use crate::{Budget, from_bytes, to_bytes};
 
     #[test]
     fn unit_has_no_bytes() {

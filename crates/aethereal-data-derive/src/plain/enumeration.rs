@@ -1,10 +1,10 @@
-//! An enum's `Schema` and `Plain` impls with selectors (ADR-0004).
+//! An enum's shape and codec bodies, with selectors (ADR-0004).
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use super::{decode_binding, encode_call, shape_field, with_plain_bounds};
-use syn::{Attribute, DataEnum, DeriveInput, FieldsNamed, FieldsUnnamed, LitInt, Token, Variant};
+use super::{Codec, decode_binding, encode_call, impls, shape_field};
+use syn::{Attribute, DataEnum, DeriveInput, FieldsNamed, FieldsUnnamed, LitInt, Token, Type, Variant};
 
 /// One variant's three emitted pieces.
 struct Built {
@@ -13,7 +13,7 @@ struct Built {
     decode_arm: TokenStream2,
 }
 
-/// Expands an enum into `Schema` and `Plain` impls.
+/// Expands an enum into `Schema`, `Encode`, `Decode`, and `Plain` impls.
 pub fn expand(input: &DeriveInput, data: &DataEnum) -> syn::Result<TokenStream2> {
     let is_empty = data.variants.is_empty();
     if is_empty {
@@ -44,51 +44,38 @@ pub fn expand(input: &DeriveInput, data: &DataEnum) -> syn::Result<TokenStream2>
         decodes.push(built.decode_arm);
     }
 
-    Ok(finish(input, &shapes, &encodes, &decodes))
+    let all_fields = data.variants.iter().flat_map(|variant| variant.fields.iter());
+    let field_types: Vec<&Type> = all_fields.map(|field| &field.ty).collect();
+
+    Ok(impls(input, &field_types, &codec(input, &shapes, &encodes, &decodes)))
 }
 
-/// Assembles the two impls from their pieces.
-fn finish(
-    input: &DeriveInput,
-    shapes: &[TokenStream2],
-    encodes: &[TokenStream2],
-    decodes: &[TokenStream2],
-) -> TokenStream2 {
-    let name = &input.ident;
-    let type_name = name.to_string();
-    let generics = with_plain_bounds(&input.generics);
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-
-    quote! {
-        impl #impl_generics ::aethereal_data::Schema for #name #ty_generics #where_clause {
-            const SHAPE: ::aethereal_data::Shape = ::aethereal_data::Shape::Enum {
-                name: #type_name,
-                variants: &[ #( #shapes ),* ],
-            };
+/// The enum's shape and the bodies of its codec.
+fn codec(input: &DeriveInput, shapes: &[TokenStream2], encodes: &[TokenStream2], decodes: &[TokenStream2]) -> Codec {
+    let type_name = input.ident.to_string();
+    let shape = quote! {
+        ::aethereal_data::Shape::Enum {
+            name: #type_name,
+            variants: &[ #( #shapes ),* ],
         }
-
-        impl #impl_generics ::aethereal_data::Plain for #name #ty_generics #where_clause {
-            fn encode(&self, out: &mut ::aethereal_data::__derive::Vec<u8>) -> ::core::result::Result<(), ::aethereal_data::EncodeError> {
-                match self {
-                    #( #encodes, )*
-                }
-                ::core::result::Result::Ok(())
-            }
-
-            fn decode(
-                input: &mut &[u8],
-                budget: &mut ::aethereal_data::Budget,
-            ) -> ::core::result::Result<Self, ::aethereal_data::DecodeError> {
-                let selector = ::aethereal_data::__derive::read_selector(input)?;
-                match selector {
-                    #( #decodes, )*
-                    other => ::core::result::Result::Err(
-                        ::aethereal_data::DecodeError::InvalidSelector { name: #type_name, selector: other },
-                    ),
-                }
-            }
+    };
+    let encode = quote! {
+        match self {
+            #( #encodes, )*
         }
-    }
+        ::core::result::Result::Ok(())
+    };
+    let decode = quote! {
+        let selector = ::aethereal_data::__derive::read_selector(::aethereal_data::Reader::input(input))?;
+        match selector {
+            #( #decodes, )*
+            other => ::core::result::Result::Err(
+                ::aethereal_data::DecodeError::InvalidSelector { name: #type_name, selector: other },
+            ),
+        }
+    };
+
+    Codec { shape, encode, decode }
 }
 
 /// The variant's selector: its position unless `#[plain(selector = N)]` says otherwise.
@@ -185,7 +172,7 @@ fn build_named(variant: &Variant, selector: u32, fields: &FieldsNamed) -> syn::R
     };
     let encode_arm = quote! {
         Self::#name { #( #pattern_fields ),* } => {
-            ::aethereal_data::__derive::write_selector(out, #selector);
+            ::aethereal_data::__derive::write_selector(::aethereal_data::Writer::bytes(out), #selector);
             #( #encode_statements )*
         }
     };
@@ -215,7 +202,7 @@ fn build_unnamed(variant: &Variant, selector: u32, fields: &FieldsUnnamed) -> Bu
         };
         let encode_arm = quote! {
             Self::#name () => {
-                ::aethereal_data::__derive::write_selector(out, #selector);
+                ::aethereal_data::__derive::write_selector(::aethereal_data::Writer::bytes(out), #selector);
             }
         };
         let decode_arm = quote! {
@@ -260,7 +247,7 @@ fn build_unnamed(variant: &Variant, selector: u32, fields: &FieldsUnnamed) -> Bu
     };
     let encode_arm = quote! {
         Self::#name (#( #pattern_idents ),*) => {
-            ::aethereal_data::__derive::write_selector(out, #selector);
+            ::aethereal_data::__derive::write_selector(::aethereal_data::Writer::bytes(out), #selector);
             #( #encodes )*
         }
     };
@@ -286,7 +273,7 @@ fn build_unit(variant: &Variant, selector: u32) -> Built {
     };
     let encode_arm = quote! {
         Self::#name => {
-            ::aethereal_data::__derive::write_selector(out, #selector);
+            ::aethereal_data::__derive::write_selector(::aethereal_data::Writer::bytes(out), #selector);
         }
     };
     let decode_arm = quote! {

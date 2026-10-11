@@ -1,8 +1,7 @@
 //! `bool`, the integers, the floats, `char`, and the `NonZero` integers (ADR-0004).
 
 use crate::plain::read_array;
-use crate::{Budget, DecodeError, EncodeError, Float, Integer, Plain, Schema, Shape};
-use alloc::vec::Vec;
+use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Float, Integer, Plain, Reader, Schema, Shape, Writer};
 use core::num::{NonZeroI8, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroU8, NonZeroU16, NonZeroU32, NonZeroU64};
 
 macro_rules! integer {
@@ -25,16 +24,20 @@ macro_rules! integer {
 
 macro_rules! integer_codec {
     ($t:ty) => {
-        impl Plain for $t {
-            fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
-                out.extend_from_slice(&self.to_le_bytes());
+        impl<B: Boundary> Encode<B> for $t {
+            fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+                out.bytes().extend_from_slice(&self.to_le_bytes());
                 Ok(())
             }
+        }
 
-            fn decode(input: &mut &[u8], _budget: &mut Budget) -> Result<Self, DecodeError> {
-                Ok(Self::from_le_bytes(read_array(input)?))
+        impl<B: Boundary> Decode<B> for $t {
+            fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+                Ok(Self::from_le_bytes(read_array(input.input())?))
             }
         }
+
+        impl Plain for $t {}
     };
 }
 
@@ -53,16 +56,20 @@ macro_rules! float {
             const SHAPE: Shape = Shape::Float($kind);
         }
 
-        impl Plain for $t {
-            fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
-                out.extend_from_slice(&self.to_le_bytes());
+        impl<B: Boundary> Encode<B> for $t {
+            fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+                out.bytes().extend_from_slice(&self.to_le_bytes());
                 Ok(())
             }
+        }
 
-            fn decode(input: &mut &[u8], _budget: &mut Budget) -> Result<Self, DecodeError> {
-                Ok(Self::from_le_bytes(read_array(input)?))
+        impl<B: Boundary> Decode<B> for $t {
+            fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+                Ok(Self::from_le_bytes(read_array(input.input())?))
             }
         }
+
+        impl Plain for $t {}
     };
 }
 
@@ -73,14 +80,16 @@ impl Schema for bool {
     const SHAPE: Shape = Shape::Boolean;
 }
 
-impl Plain for bool {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
-        out.push(u8::from(*self));
+impl<B: Boundary> Encode<B> for bool {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+        out.bytes().push(u8::from(*self));
         Ok(())
     }
+}
 
-    fn decode(input: &mut &[u8], _budget: &mut Budget) -> Result<Self, DecodeError> {
-        let [marker] = read_array(input)?;
+impl<B: Boundary> Decode<B> for bool {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        let [marker] = read_array(input.input())?;
         match marker {
             0 => Ok(false),
             1 => Ok(true),
@@ -89,22 +98,28 @@ impl Plain for bool {
     }
 }
 
+impl Plain for bool {}
+
 impl Schema for char {
     const SHAPE: Shape = Shape::Integer(Integer::U32);
 }
 
-impl Plain for char {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+impl<B: Boundary> Encode<B> for char {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         let value = u32::from(*self);
-        out.extend_from_slice(&value.to_le_bytes());
+        out.bytes().extend_from_slice(&value.to_le_bytes());
         Ok(())
     }
+}
 
-    fn decode(input: &mut &[u8], _budget: &mut Budget) -> Result<Self, DecodeError> {
-        let value = u32::from_le_bytes(read_array(input)?);
+impl<B: Boundary> Decode<B> for char {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        let value = u32::from_le_bytes(read_array(input.input())?);
         Self::from_u32(value).ok_or(DecodeError::InvalidChar(value))
     }
 }
+
+impl Plain for char {}
 
 macro_rules! nonzero {
     ($t:ty, $inner:ty, $kind:expr) => {
@@ -112,17 +127,21 @@ macro_rules! nonzero {
             const SHAPE: Shape = Shape::Integer($kind);
         }
 
-        impl Plain for $t {
-            fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
-                out.extend_from_slice(&self.get().to_le_bytes());
+        impl<B: Boundary> Encode<B> for $t {
+            fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+                out.bytes().extend_from_slice(&self.get().to_le_bytes());
                 Ok(())
             }
+        }
 
-            fn decode(input: &mut &[u8], budget: &mut Budget) -> Result<Self, DecodeError> {
-                let raw = <$inner>::decode(input, budget)?;
+        impl<B: Boundary> Decode<B> for $t {
+            fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+                let raw = <$inner>::decode(input)?;
                 Self::new(raw).ok_or(DecodeError::Zero)
             }
         }
+
+        impl Plain for $t {}
     };
 }
 
@@ -138,7 +157,7 @@ nonzero!(NonZeroI64, i64, Integer::I64);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{from_bytes, to_bytes};
+    use crate::{Budget, from_bytes, to_bytes};
 
     #[test]
     fn bool_bytes() {

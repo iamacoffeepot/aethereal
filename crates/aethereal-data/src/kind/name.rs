@@ -1,10 +1,9 @@
 //! A kind's name (ADR-0006).
 
 use crate::plain::write_text;
-use crate::{Budget, DecodeError, EncodeError, Plain, Schema, Shape};
+use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
 use alloc::borrow::Cow;
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::fmt;
 
 /// A kind's name: segments separated by `.` (ADR-0006).
@@ -90,13 +89,15 @@ impl Schema for KindName {
     const SHAPE: Shape = Shape::String;
 }
 
-impl Plain for KindName {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
-        write_text(out, self.text())
+impl<B: Boundary> Encode<B> for KindName {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+        write_text(out.bytes(), self.text())
     }
+}
 
-    fn decode(input: &mut &[u8], budget: &mut Budget) -> Result<Self, DecodeError> {
-        let text = String::decode(input, budget)?;
+impl<B: Boundary> Decode<B> for KindName {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        let text = String::decode(input)?;
         let is_name = conforms(&text);
         if is_name {
             Ok(Self(Cow::Owned(text)))
@@ -106,10 +107,12 @@ impl Plain for KindName {
     }
 }
 
+impl Plain for KindName {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{from_bytes, to_bytes};
+    use crate::{Budget, from_bytes, to_bytes};
     use alloc::string::ToString;
 
     #[test]
