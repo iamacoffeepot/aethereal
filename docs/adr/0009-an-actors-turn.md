@@ -54,6 +54,7 @@ pub enum Level {
 - **The engine alone applies effects**, in the order the turn asked for them, after the turn returns `Ok`.
 - **Nothing a turn asks for happens during the turn.** Mail it sends is delivered afterwards, so no actor runs inside another actor's turn.
 - `Spawn` creates a child beneath the asking actor and nowhere else.
+- **A child exists for others once it has been stood up, and not before.** Applying a `Spawn` takes the child's path, so a second `Spawn` of the same key is refused, and runs the child's `begin` as a turn of its own. Until `begin` returns `Ok` the path resolves for no one and no reference to it is made. Mail its parent sent it in the same list waits. On `Ok` the child is live, its waiting mail is delivered, and the effects of its `begin` are applied, in that order. If `begin` fails, the path closes having never been live, the waiting mail is undelivered, and the parent is told.
 - **An actor's end is its own decision or its parent's end, and nothing else.** `Close` closes the actor that asks for it, and no effect closes another actor. A parent that wants one child gone while it carries on sends that child mail saying so, and the child closes itself.
 - **A closing actor signals its children.** A child does not outlive the actor it stands beneath. When an actor closes, by its own `Close` or because its turn failed, the engine carries that to every actor beneath it, deepest first. Each is handed its closing turn, `end`, in which it answers what it owes and sends its last mail. It does not choose whether or when.
 - **The closing turn runs once, and the actor ends whatever it returns.** `end` takes the actor by value, so there is no actor left to hand a second one. Its `Ending` offers what a last turn may ask for: sending, giving, and logging. It offers no `Spawn`, `Close`, or `Watch`. Asking for an effect can fail, so `end` returns a `Result`: on `Ok` the engine applies its effects, and on a `Fault` it applies the `Log` effects and drops the rest. Either way the engine then drops the actor and what it owned (ADR-0010) and tells its parent how it ended. An actor whose earlier turn failed is still handed `end`; a guest that trapped is not, since its memory can no longer be trusted.
@@ -62,7 +63,11 @@ pub enum Level {
 - **`Log` writes a line to the actor's log**, which the engine keeps. It is an effect so that the engine decides what happens to a line when the turn fails, and so that a guest's lines leave it with the rest of the turn.
 - An effect is plain data, and so is the list.
 
-**A turn reads the engine; it does not write it.** `turn` answers questions from the engine's state as it stood when the turn began: the sender of the mail, and whether a path names an actor (ADR-0008's resolve). A read is not an effect.
+**A turn reads the engine; it does not write it.** `turn` answers whether a path names a live actor (ADR-0008's resolve) from the engine's state as it stood when the turn began. A read is not an effect.
+
+- A resolve never finds an actor that is still being stood up, so a reference is never to an actor whose `begin` then fails.
+- Mail caused by a spawn finds the child: a parent that is told its child is live and then tells another actor has made the child resolvable before that mail is queued.
+- A resolve made while handling unrelated mail can miss an actor that is about to be live. An actor that must know waits to be told.
 
 **Who a turn may send to is a closed set.**
 
@@ -98,7 +103,7 @@ pub enum To {
 - A guest is one call per turn: the mail's bytes in, the effects' bytes out, both through the codec of ADR-0004.
 - A turn can be recorded and compared: the same state and mail give the same effects, as far as the actor's own code is deterministic.
 - A handler cannot learn within a turn whether a send was delivered or a spawn succeeded. It is told by mail in a later turn.
-- A read sees the engine as it was when the turn began, so it can be one turn out of date.
+- A resolve sees the engine as it was when the turn began, so it can be one turn out of date.
 - An actor's working fields are limited to what a kind can hold: no `Box`, no recursive type, no `usize`, nothing from a foreign crate. A tree is an arena with indices. A native actor may put a foreign value behind a handle as a resource (ADR-0010); a guest cannot, so a guest's working data fits the vocabulary entirely.
 - Where the engine keeps actors is its own choice and not part of this decision. It may keep the native actors of one type side by side. An actor whose fields are all of fixed width has the same bytes in memory as encoded on a little-endian machine (ADR-0002), so such actors could be kept as one stretch of bytes per type, which makes taking their state out, or keeping a copy from before a turn, a copy of that stretch. An actor with a string, a sequence, or a map cannot be changed in place in ADR-0002's bytes, since a field's position depends on the lengths before it.
 - **Not decided here, and due before the piece that needs each:** what a piece of mail carries beside its kind and bytes, and how a request and its answer are tied (the next ADR; it adds effects and no second way to act); what the `Actors` and `Within` boundaries offer; when applied mail is delivered and in what order actors run; large payloads, a further effect; and the mail by which a parent learns a child was born, failed, or closed.
