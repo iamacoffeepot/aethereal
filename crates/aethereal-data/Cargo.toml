@@ -9,6 +9,8 @@ description = "Plain data: the byte layout, the schema vocabulary, and the codec
 [features]
 # `HashMap` and `HashSet` as plain data (ADR-0004). The crate is `no_std` + `alloc` without it.
 std = []
+# Plain data as JSON text, from a schema and bytes (ADR-0007).
+json = []
 
 [dependencies]
 aethereal-data-derive = { path = "../aethereal-data-derive" }
