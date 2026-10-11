@@ -17,37 +17,32 @@ Most values are of the first sort: they are only their bytes. This ADR gives eve
 
 ```rust
 pub trait Boundary {
-    type Writer<'a>: Writer;
-    type Reader<'a>: Reader<'a>;
+    type WriterOffers<'a>;
+    type ReaderOffers<'a>;
 }
 
-pub trait Writer {
-    fn bytes(&mut self) -> &mut Vec<u8>;
-}
-
-pub trait Reader<'input> {
-    fn input(&mut self) -> &mut &'input [u8];
-    fn budget(&mut self) -> &mut Budget;
-}
+pub struct Writer<'a, B: Boundary> { .. }      // the bytes written so far, and B's offers
+pub struct Reader<'a, B: Boundary> { .. }      // the bytes still to read, the budget, and B's offers
 
 pub trait Encode<B: Boundary> {
-    fn encode(&self, out: &mut B::Writer<'_>) -> Result<(), EncodeError>;
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError>;
 }
 
 pub trait Decode<B: Boundary>: Sized {
-    fn decode(input: &mut B::Reader<'_>) -> Result<Self, DecodeError>;
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError>;
 }
 ```
 
 - The boundary is fixed where the code is written. No codec asks, when it runs, which boundary it is at, and no value carries one: `B` is a type, chosen by the door that encodes or decodes.
 - Encoding or decoding a value at a boundary it cannot cross does not compile, and the error names the type.
-- A boundary's writer and reader are its own types. Every writer holds the bytes written so far, and every reader holds the bytes still to read and the allocation limit of ADR-0002. A boundary adds to them whatever its bound values need: a table of attached values, a registry to prove a name against. What a boundary offers is a field of its reader or writer and is always there.
+- There is one writer type and one reader type, each over the boundary. Every writer holds the bytes written so far, and every reader holds the bytes still to read and the allocation limit of ADR-0002. A boundary states only what it offers beside them, whatever its bound values need: a table of attached values, a registry to prove a name against. An offer is a value the writer or reader holds and is always there.
+- The boundary is in the type of what a codec is handed, so a codec that calls another names nothing: `self.secs.encode(out)`.
 - `encode` fails when a collection holds more elements than a count can state, or when the boundary refuses a bound value.
 - `decode` returns a value that owns its data.
 
 **A type encodes the same at every boundary.** A type has one `Encode` impl and one `Decode` impl, each written over every boundary `B`, so a value's bytes are the same wherever it is encoded. They are the bytes of ADR-0002 for the type's `Schema::SHAPE` (ADR-0003). The identity of a kind (ADR-0006) and the JSON walk (ADR-0007) read bytes through the schema alone, so both hold for every value at every boundary. A value that is written inline in one place and as a handle in another is two types.
 
-**A value crosses a boundary exactly when the boundary offers what the value needs.** An offer is a trait on a boundary's writer or reader, and a type's one impl is bounded by the offers it uses:
+**A value crosses a boundary exactly when the boundary offers what the value needs.** An offer is a trait on what a boundary's writer or reader holds, and a type's one impl is bounded by the offers it uses:
 
 ```rust
 impl<B: Boundary> Encode<B> for u64 { .. }                                    // needs nothing: every boundary
@@ -56,20 +51,20 @@ impl<B: Boundary, T: Encode<B>> Encode<B> for Vec<T> { .. }                   //
 
 impl<B: Boundary> Encode<B> for Payload                                       // a later piece's bound value:
 where                                                                         // only a boundary whose writer
-    for<'a> B::Writer<'a>: Attach,                                            // can attach a payload
+    for<'a> B::WriterOffers<'a>: Attach,                                      // can attach a payload
 { .. }
 ```
 
 A type that needs nothing is plain data. No impl names one boundary, so no type can encode one way here and another way there.
 
-**`Bare` is the boundary that offers nothing**: a buffer to write, and bytes and a budget to read.
+**`Bare` is the boundary that offers nothing.**
 
 ```rust
 pub struct Bare;
 
 impl Boundary for Bare {
-    type Writer<'a> = Vec<u8>;
-    type Reader<'a> = BareReader<'a>;
+    type WriterOffers<'a> = ();
+    type ReaderOffers<'a> = ();
 }
 ```
 
@@ -164,7 +159,7 @@ With the `std` feature, `HashMap<K, V>` is a Map and `HashSet<T>` a Sequence und
   | `Actors` | between actors in one engine | a reference to a live actor, a handle to a large payload |
   | `Engines` | between engines | a path its receiver must prove |
 
-  A bound value is one hand-written codec, bounded by the offers it uses. It crosses each boundary that makes those offers and stops at the rest. A type holding one derives the same codec as any other type and does not state `Plain`.
+  A bound value is one hand-written codec, bounded by the offers it uses of its boundary's writer and reader. It crosses each boundary that makes those offers and stops at the rest. A type holding one derives the same codec as any other type and does not state `Plain`.
 - **A door states the boundary; the value does not.** Mail is the door between actors: a send requires `Encode<Actors>` of what it carries, and a handler `Decode<Actors>`. A door out of the engine requires `Engines`. A type that never crosses between actors is still encoded, by the actor that keeps it.
 - Whatever crosses between engines also crosses between actors, because `Actors` makes every offer `Engines` makes.
 - An author chooses between two derives: `Plain`, and the one for a type holding a bound value, which enters with the first such value. They write the same codec. `Plain` also states that the type is only its bytes.
@@ -177,7 +172,8 @@ With the `std` feature, `HashMap<K, V>` is a Map and `HashSet<T>` a Sequence und
 - **One codec for all values, with markers for where they may go.** The earlier engine's shape. The markers and the codec can disagree, and the disagreement is found at run time.
 - **A separate codec for plain data, carried to every boundary by one impl** (`impl<B: Boundary, T: Plain> Encode<B> for T`). Plain data then needs no boundary in its signatures. A container is plain when its elements are, so that impl already covers `Vec<T>`, and Rust refuses a second impl for a `Vec` of bound values as overlapping. A bound value could then never sit in a `Vec`, an `Option`, or a map.
 - **Plain data as `impl<B: Boundary> Encode<B>` with no named trait.** One trait fewer, and nothing can then require plain data, because Rust cannot ask whether a type implements a trait for every `B`.
-- **The codec over the writer and reader types, with no boundary type** (`Encode<W: Writer>`, `Decode<R: Reader>`). A hand-written codec then calls a concrete type's codec without naming anything, where over a boundary it must write `<u64 as Decode<B>>::decode(input)`, because a writer's type does not say whose writer it is. A boundary would be two names, one for each direction, with nothing tying them together, and every door would state its reader for every lifetime.
+- **The writer and reader as types each boundary names** (`type Writer<'a>`, `type Reader<'a>` on `Boundary`, with a trait for what every writer and reader must hold). A boundary then shapes its own writer. A writer's type does not say whose writer it is, so Rust cannot find the boundary from what a codec is handed, and a hand-written codec calling a concrete type's codec must name it: `<u64 as Decode<B>>::decode(input)`.
+- **The codec over the writer and reader types, with no boundary type** (`Encode<W>`, `Decode<R>`). A boundary would be two names, one for each direction, with nothing tying them together, and every door would state its reader for every lifetime.
 - **A boundary's offers as optional hooks on one shared reader.** One reader type for every boundary. A decode at a boundary that lacks a hook is then refused when it runs.
 - **serde as the codec.** A widely known interface, and a second description of every type beside its schema that must be kept in agreement with it.
 - **A lifetime on `decode` so values may borrow.** Every bound over `Plain` would carry the lifetime for the sake of the few types that borrow.
