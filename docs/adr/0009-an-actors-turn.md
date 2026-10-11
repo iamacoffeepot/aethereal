@@ -37,8 +37,8 @@ pub enum Effect {
 - **The engine alone applies effects**, in the order the turn asked for them, after the turn returns `Ok`.
 - **Nothing a turn asks for happens during the turn.** Mail it sends is delivered afterwards, so no actor runs inside another actor's turn.
 - `Spawn` creates a child beneath the asking actor and nowhere else.
-- **An actor decides its own end.** `Close` closes the actor that asks for it, and no effect closes another actor. A parent that wants a child gone sends it mail saying so, and the child closes itself.
-- A child does not outlive the actor it stands beneath: when an actor closes, the engine closes everything beneath it first.
+- **An actor's end is its own decision or its parent's end, and nothing else.** `Close` closes the actor that asks for it, and no effect closes another actor. A parent that wants one child gone while it carries on sends that child mail saying so, and the child closes itself.
+- **A closing actor signals its children.** A child does not outlive the actor it stands beneath. When an actor closes, by its own `Close` or because its turn failed, the engine carries that to every actor beneath it, deepest first. Each is handed a closing turn, in which it releases what it holds, answers what it owes, and sends its last mail. It does not choose whether or when.
 - An effect is plain data, and so is the list.
 
 **A turn reads the engine; it does not write it.** `turn` answers questions from the engine's state as it stood when the turn began: the sender of the mail, and whether a path names an actor (ADR-0008's resolve). A read is not an effect.
