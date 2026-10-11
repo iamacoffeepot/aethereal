@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/aethereal-data",
     "crates/aethereal-data-derive",
+    "crates/aethereal-math",
 ]
 
 [workspace.package]
@@ -12,6 +13,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+libm = { version = "0.2", default-features = false }
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
