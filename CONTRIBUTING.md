@@ -19,7 +19,7 @@ cargo clippy --workspace --all-features --target wasm32-unknown-unknown -- -D wa
 
 GitHub Actions is the merge gate. `CI pass` aggregates `Format`, `Clippy`,
 `Test` and `Browser host`; `Lint title` checks that the pull request title is a
-Conventional Commit (`type(scope): subject`) with a lowercase subject. `main`
+Conventional Commit (`type(scope): subject`). `main`
 squash-merges with the title as the commit subject.
 
 A change enters under the rules in
