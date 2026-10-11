@@ -29,7 +29,6 @@ An **effect** is one thing the actor asks of the engine. The first effects are:
 pub enum Effect {
     Send { to: To, kind: KindId, bytes: Vec<u8> },
     Spawn { of: TypeName, key: ChildKey, config: Vec<u8> },
-    CloseChild { of: TypeName, key: ChildKey },
     Close,
 }
 ```
@@ -37,7 +36,9 @@ pub enum Effect {
 - A handler changes its own state and nothing else. Everything it wants of the engine it asks for through `turn`, which adds an effect to the turn's list.
 - **The engine alone applies effects**, in the order the turn asked for them, after the turn returns `Ok`.
 - **Nothing a turn asks for happens during the turn.** Mail it sends is delivered afterwards, so no actor runs inside another actor's turn.
-- `Spawn` creates a child beneath the asking actor and nowhere else. `CloseChild` closes one of its own children. `Close` closes the actor itself. Closing an actor closes everything beneath it first.
+- `Spawn` creates a child beneath the asking actor and nowhere else.
+- **An actor decides its own end.** `Close` closes the actor that asks for it, and no effect closes another actor. A parent that wants a child gone sends it mail saying so, and the child closes itself.
+- A child does not outlive the actor it stands beneath: when an actor closes, the engine closes everything beneath it first.
 - An effect is plain data, and so is the list.
 
 **A turn reads the engine; it does not write it.** `turn` answers questions from the engine's state as it stood when the turn began: the sender of the mail, and whether a path names an actor (ADR-0008's resolve). A read is not an effect.
@@ -89,4 +90,5 @@ The engine takes a guest's state out to replace its code, and puts it back into 
 - **An actor acts as it runs, through calls the host offers.** Simple to write against, and the three costs under Context.
 - **The engine holds each actor's state, and a turn returns the new state.** A failed turn then costs nothing to undo and a guest instance holds nothing. Every turn decodes and encodes the whole state, which falls hardest on an actor with large state that runs every frame. `Stateful` leaves room for an actor type that wants this.
 - **A failed turn leaves the actor running.** The actor then continues from a state no handler was written to produce.
+- **An effect by which a parent closes its child.** The parent owns the path, so it could. The child would then end without running its own close, at a moment it did not choose.
 - **A send to any path, checked when the effect is applied.** One case in `To`, and every send is a claim the engine has not checked (ADR-0008).

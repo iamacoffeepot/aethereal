@@ -44,7 +44,7 @@ aether.window/aether.window.surface:left
 - A path is plain data (ADR-0004): a sequence of segments, each a struct of the type's name and its key. It crosses every boundary and means the same thing in every engine, though it names an actor in only one.
 - Two actors in one engine never have the same path, and a path is not used again while its engine lives. A closed actor's path stays closed.
 
-**An actor owns the paths directly beneath it.** Only an actor asks for a child beneath itself, and only it or the engine closes that child. No actor creates or closes anything in another actor's branch. Roots are asked for from outside the engine.
+**An actor owns the paths directly beneath it.** Only an actor asks for a child beneath itself, and no actor creates anything in another actor's branch. An actor closes only itself (ADR-0009). Roots are asked for from outside the engine.
 
 **A reference is a path the engine has established exists.**
 
