@@ -9,7 +9,7 @@ Mail goes to an actor, so an actor needs a name, and a sender needs something to
 
 The earlier engine named an actor by where it stood: its parent's name, then its own type and key. That held up, and this ADR keeps it. What did not hold up was the number of things that could answer "does this actor exist": a registry, a watch index, a parent's child table, a route table, and others, each changing at a different moment when an actor closed. A reader that asked the one lagging behind decided wrongly.
 
-Two rules from the design of the turn (ADR-0009) bear on names. An actor is created only beneath the actor that asked for it, and the engine alone creates and closes actors. So every part of the tree of names has one owner, and one place knows what exists.
+Two rules about who makes an actor bear on names. An actor is created only beneath the actor that asked for it, and the engine alone creates and closes actors. So every part of the tree of names has one owner, and one place knows what exists.
 
 ## Decision
 
@@ -22,7 +22,7 @@ pub enum ChildKey {
 }
 ```
 
-- An actor is a kind (ADR-0009), so the name of its type is a `KindName` (ADR-0006), such as `aether.window.surface`. There is no second sort of name.
+- An actor's type is named by a `KindName` (ADR-0006), such as `aether.window.surface`. There is no second sort of name.
 - A `ChildKey` says which actor of a type this is among those in one place. A type of which a place holds at most one uses `Only`. Otherwise the key is `Named`, and a `KeyName` is 1 to 64 bytes: a lowercase ASCII letter or a digit, then lowercase ASCII letters, digits, `_`, `-`, and `.`. A key cannot be `.`, `..`, or start with `-`, so none reads as a relative path or a flag where a person types it.
 - `KindName` and `KeyName` are checked when built: a constant that does not conform stops the build, and the decoder refuses text that does not conform. Neither hands out its text.
 
@@ -45,7 +45,7 @@ aether.window/aether.window.surface:left
 - A path names an actor within one engine. It crosses every boundary as data, and an engine that receives one from another engine reads it as naming an actor in the engine it came from.
 - **A path names one actor for the whole life of its engine.** Two actors never have the same path, and when an actor closes its path is closed for good: nothing is spawned there again. A log line, a trace, and a path held outside the engine therefore always mean the same actor, and an actor's life has one beginning and one end.
 
-**An actor owns the paths directly beneath it.** Only an actor asks for a child beneath itself, and no actor creates anything in another actor's branch. An actor closes only itself (ADR-0009).
+**An actor owns the paths directly beneath it.** Only an actor asks for a child beneath itself, and no actor creates anything in another actor's branch.
 
 **Only the chassis makes a root.** The chassis is the host program that builds the engine. No actor asks for a root, and no mail creates one: everything an actor brings into being stands beneath it.
 
