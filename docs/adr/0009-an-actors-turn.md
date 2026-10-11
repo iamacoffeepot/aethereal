@@ -56,7 +56,7 @@ pub enum To {
 
 `Child` names an actor by key because the sender owns that part of the tree (ADR-0008); a turn may spawn a child and send to it in the same list. Every other case is an actor the engine has already established exists. There is no send to a bare path.
 
-**What a send carries crosses between actors.** `turn.send(to, &kind)` requires `K: Kind + Encode<Actors>` (ADR-0004, ADR-0006), encodes the kind, and adds the `Send`. A kind that holds a value bound to its own actor is refused when the program is built.
+**What a send or a spawn carries crosses between actors.** `turn.send(to, &kind)` requires `K: Kind + Encode<Actors>` (ADR-0004, ADR-0006), encodes the kind, and adds the `Send`. `turn.spawn::<C>(key, &config)` requires the same of the child's config. A kind that holds a value bound to its own actor is refused when the program is built. The bytes in an effect are always those of a kind that passed this check.
 
 **A turn that fails changes nothing outside its actor.** When `handle` returns a `Fault`, or a guest traps, the engine drops the turn's effects, closes the actor, and tells its parent. The actor's state is not rolled back, and it is not used again.
 
@@ -73,7 +73,7 @@ pub trait Stateful: Actor {
 }
 ```
 
-The engine takes a guest's state out to replace its code, and puts it back into the new code. The door that runs guests requires `Stateful`. A native actor may offer it and is not required to: a socket, a GPU object, and an open file are not data.
+The engine takes a guest's state out to replace its code, and puts it back into the new code. The door that runs guests requires `Stateful`. A native actor may offer it and is not required to. What it holds that is not data, it can hold as handles (ADR-0010), so its state can be a kind when it chooses.
 
 ## Consequences
 
