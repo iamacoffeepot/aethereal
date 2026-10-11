@@ -17,18 +17,32 @@ The engine also loads guests it did not build and does not trust. A guest states
 
 ```rust
 pub trait Kind: Plain {
-    const NAME: &'static str;
+    const NAME: KindName;
 }
 
 #[derive(Plain)]
 struct NoteOn { pitch: u8, velocity: u8 }
 
 impl Kind for NoteOn {
-    const NAME: &'static str = "aether.audio.note_on";
+    const NAME: KindName = KindName::new("aether.audio.note_on");
 }
 ```
 
 The name is all an author writes. There is no derive: the implementation is one line, and it is the whole declaration.
+
+**A name is a `KindName`, and every `KindName` conforms.** A name is one or more segments separated by `.`. A segment is a lowercase ASCII letter followed by any number of lowercase ASCII letters, digits, and `_`.
+
+```rust
+pub struct KindName(..);                                // its text is private
+
+impl KindName {
+    pub const fn new(name: &'static str) -> Self { .. }
+}
+```
+
+`new` is for constants: in one, a name that does not conform stops the build. A name that arrives at run time arrives as bytes. `KindName` is plain data with the shape of a string, and its decoder refuses text that does not conform, as ADR-0004's decoders do for the rules a type adds beyond its shape.
+
+A `KindName` can be compared, printed, and sent. It does not hand out its text as a string, so code that holds one has nothing to split, match a prefix of, or build another name from. A name says which kind this is and carries no other meaning.
 
 **A kind's id is computed from its name and its layout, and from nothing else.** The **layout** of a schema is the schema with every name inside it removed: field names, variant names, and the names of the structs and enums it is built from. Two schemas with the same layout are written as the same bytes.
 
@@ -52,7 +66,7 @@ pub struct KindId(u64);
 
 impl KindId {
     pub const fn of<K: Kind>() -> Self { .. }
-    pub fn from_description(name: &str, schema: &SchemaNodes) -> Self { .. }
+    pub fn from_description(name: &KindName, schema: &SchemaNodes) -> Self { .. }
 }
 ```
 
@@ -100,7 +114,8 @@ It compares the two schemas shape by shape, ignoring names, and does not compare
 - An id says nothing about what sort of id it is. A reader learns that from the schema of the value that holds it, where a `KindId` is a struct of that name.
 - **Changing how an id is computed changes every id.** While nothing stores ids, that costs a rebuild. Once a piece stores them, it forks whatever was stored. Reserving bits of the id for another purpose is such a change, and the last cheap moment for one is before the first piece that stores ids.
 - A name does not determine an id by itself. A generic type that implements `Kind` has one name and an id for each layout it is used at, and two builds of one kind with different layouts share a name. Whether an engine holds two layouts of one name at once belongs to the registry of kinds.
-- What a name may be written as is not decided here. The id is computed from whatever bytes the name has.
+- Changing what a name may be written as changes which programs build, and never an id: an id is computed from the name's bytes, whatever the rule that admitted them.
+- `KindName::new` called outside a constant with text that does not conform panics. Nothing needs to call it there: a kind's name is a constant, and a received name is decoded.
 - A schema's layout may differ where the bytes agree: a struct and a tuple of the same fields are different layouts, and so are an enum's variants declared in another order with the same selectors. The id is never the same where the bytes could differ.
 - A 64-bit id written as JSON is subject to whatever the JSON mapping decides for 64-bit integers.
 
@@ -108,6 +123,7 @@ It compares the two schemas shape by shape, ignoring names, and does not compare
 
 - **The name alone.** An id that survives every change to the kind, so two versions of a kind share an id and disagree about its bytes. The disagreement is found by a decoder, when it is found at all.
 - **The name and the full schema, names included.** Renaming a field would cut two peers apart though their bytes agree.
+- **A bare string for the name.** One type fewer. Nothing would then check a name, and a string invites uses a name does not have: parsing it for a namespace, matching on a prefix, building one at run time.
 - **An id written into the trait as a constant.** `K::ID` reads well, and an implementation written by hand could then state an id that is not its kind's.
 - **A derive for `Kind`.** A second way to write one line.
 - **A cryptographic hash, or a wider id.** Collisions could not be made on purpose. The id rides on every piece of mail, such a hash is not computable in a constant, and the registry's check gives the same safety for 64 bits.
