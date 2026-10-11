@@ -1,7 +1,7 @@
 /target
 
-# Per-user and per-session agent state. `.claude/settings.json` is shared
-# (it wires the hooks in `.hooks/`); everything else under these is local.
+# Per-user and per-session agent state. `.claude/settings.json` and
+# `.claude/hooks/` are shared; everything else under these is local.
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 .claude/worktrees/

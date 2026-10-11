@@ -42,7 +42,7 @@ Every commit is public. No personal names, no absolute home paths, no host, moun
 - **No nullable state.** `Option` is the return of a lookup that can miss, or a value fixed when its owner is built and never changed. State that changes is an enum with named cases: never a `None` meaning "not yet", "already used", or "the other behaviour", and no `.take()` state machines.
 - **Fallible returns an error; infallible does not.** A failure the caller can meet is a returned error, never a panic.
 - **Recursion**: prefer an explicit work stack in any algorithm whose depth follows its input. Recursive code over user-controlled or geometric data enforces a depth cap that returns an error.
-- **No section-divider banner comments** (`// ----------`). Use a plain comment or split the module. Enforced at edit time by `.hooks/check-no-divider-comments.sh`.
+- **No section-divider banner comments** (`// ----------`). Use a plain comment or split the module. Enforced at edit time by `.claude/hooks/check-no-divider-comments.sh`.
 - **Naming**: spell units out (`millis`, `nanos`, `bytes`), never `ms` / `ns` / `kb`. Do not encode a value's Rust type in its name.
 - **Chains and paragraphs**: when a value flows through successive calls, write the chain; a single-use intermediate earns a `let` only when its name documents a non-obvious value. One blank line between logical units, none inside one. Line width belongs to rustfmt (`max_width = 120`).
 - **Conditions read as names**: bind each part of a compound condition with `let` and combine the names. No call unwrapped or converted inside a condition, no closure inside one, no negated field-by-field chain. A simple condition (one comparison, or one predicate call) may stay inline.
