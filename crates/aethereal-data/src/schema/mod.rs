@@ -1,7 +1,13 @@
 //! The schema vocabulary: the shapes a value's bytes can take (ADR-0003).
 
+mod nodes;
+
+pub use nodes::{FieldNode, FieldsNode, SchemaFault, SchemaNode, SchemaNodes, VariantNode};
+
+use crate::Plain;
+
 /// An integer width and signedness in the schema vocabulary (ADR-0003).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Integer {
     /// An unsigned 8-bit integer.
     U8,
@@ -22,7 +28,7 @@ pub enum Integer {
 }
 
 /// A float width in the schema vocabulary (ADR-0003).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Float {
     /// A 32-bit float.
     F32,

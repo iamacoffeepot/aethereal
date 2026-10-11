@@ -1,5 +1,6 @@
 //! Encode and decode failures for plain data (ADR-0004).
 
+use crate::SchemaFault;
 use core::error::Error;
 use core::fmt;
 
@@ -56,6 +57,13 @@ pub enum DecodeError {
     InvalidNanos(u32),
     /// A map key or set element that is not greater than the one before it.
     KeyOrder,
+    /// A flat schema node breaks the flat form.
+    InvalidSchema {
+        /// The index of the offending node, or `0` when there is none.
+        node: u32,
+        /// Why the node is refused.
+        fault: SchemaFault,
+    },
     /// A decode would allocate past its budget.
     BudgetExceeded {
         /// The bytes the decode asked to allocate.
@@ -80,6 +88,9 @@ impl fmt::Display for DecodeError {
             Self::Zero => f.write_str("plain data: zero for a non-zero integer"),
             Self::InvalidNanos(value) => write!(f, "plain data: invalid nanos {value}"),
             Self::KeyOrder => f.write_str("plain data: map keys out of order"),
+            Self::InvalidSchema { node, fault } => {
+                write!(f, "plain data: invalid schema at node {node}: {fault}")
+            }
             Self::BudgetExceeded { requested, remaining } => {
                 write!(f, "plain data: budget exceeded: requested {requested}, remaining {remaining}")
             }

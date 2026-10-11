@@ -36,7 +36,7 @@ struct Tick {
 }
 ```
 
-Every field must be `Plain`; a field that is not is a compile error naming it. Enum variants are numbered by position unless a variant states its selector.
+Every field must be `Plain`; a field that is not is a compile error naming it. Enum variants are numbered by position unless a variant states its selector with `#[plain(selector = N)]`.
 
 **`Key` is plain data that may be a map key or a set element.** ADR-0002 lists the key shapes and the order of each.
 
@@ -44,14 +44,12 @@ Every field must be `Plain`; a field that is not is a compile error naming it. E
 pub trait Key: Plain + Ord {}
 ```
 
-`Ord` on a `Key` is the order ADR-0002 states for its shape. It is implemented for the integers, `char`, the `NonZero` integers, `String`, `Vec<u8>`, and `[u8; N]`. `#[derive(Key)]` is accepted on a struct with exactly one field, itself a `Key`, and requires the struct's `Ord` to be derived, so it is the field's.
+`Ord` on a `Key` is the order ADR-0002 states for its shape. It is implemented for the integers, `char`, the `NonZero` integers, `String`, `Vec<u8>`, and `[u8; N]`. `#[derive(Key)]` is accepted on a struct with exactly one field, itself a `Key`, and writes the struct's `PartialEq`, `Eq`, `PartialOrd`, and `Ord` as the field's, so the struct orders as its field does and cannot be given another order.
 
 ```rust
-#[derive(Plain, Key, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Plain, Key)]
 struct PlayerId(u64);
 ```
-
-**There is one byte path.** No serde implementation exists beside it, and none is derived. JSON is produced by walking a schema (a later piece), not by a second trait on the type.
 
 **The Rust types that are `Plain`**, each mapped onto a shape of the vocabulary:
 
@@ -75,7 +73,7 @@ struct PlayerId(u64);
 | a derived struct, with named, unnamed, or no fields | Struct | |
 | a derived enum | Enum | |
 
-With the `std` feature, `HashMap<K, V>` is a Map and `HashSet<T>` a Sequence under the same rules, for `K: Key` and `T: Key`. A `BTreeMap` or `BTreeSet` is already in key order and is written as it iterates. A hash map or hash set is sorted by `Ord` on encode.
+With the `std` feature, `HashMap<K, V>` is a Map and `HashSet<T>` a Sequence under the same rules, for `K: Key + Hash` and `T: Key + Hash`. A `BTreeMap` or `BTreeSet` is already in key order and is written as it iterates. A hash map or hash set is sorted by `Ord` on encode.
 
 **Not `Plain`, and why:**
 
