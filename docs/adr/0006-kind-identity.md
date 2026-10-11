@@ -40,7 +40,7 @@ impl KindName {
 }
 ```
 
-`new` is for constants: in one, a name that does not conform stops the build. A name that arrives at run time arrives as bytes. `KindName` is plain data with the shape of a string, and its decoder refuses text that does not conform, as ADR-0004's decoders do for the rules a type adds beyond its shape.
+`new` is for constants: a name that does not conform stops the build of whatever uses the kind. A name that arrives at run time arrives as bytes. `KindName` is plain data with the shape of a string, and its decoder refuses text that does not conform with `DecodeError::InvalidKindName`, as ADR-0004's decoders do for the rules a type adds beyond its shape.
 
 A `KindName` can be compared, printed, and sent. It does not hand out its text as a string, so code that holds one has nothing to split, match a prefix of, or build another name from. A name says which kind this is and carries no other meaning.
 
@@ -70,7 +70,7 @@ impl KindId {
 }
 ```
 
-`KindId::of::<K>()` is evaluated at compile time. `from_description` computes the same id from a name and a schema that arrived as bytes. Both go through one function that turns a name and a layout hash into an id, and nothing else constructs a `KindId`, so an id cannot be written by hand and cannot disagree with its kind.
+`KindId::of::<K>()` is evaluated at compile time. `from_description` computes the same id from a name and a schema that arrived as bytes. Both go through one function that turns a name and a layout hash into an id, and nothing else computes one, so an id cannot be written by hand. A `KindId` is plain data, and one that was decoded is a claim like any other.
 
 **The hash is FNV-1a, 64 bits,** over bytes this ADR states, so that a codec in any language computes the same id. Its offset basis is `0xcbf29ce484222325` and its prime is `0x100000001b3`.
 
@@ -105,7 +105,7 @@ impl SchemaNodes {
 }
 ```
 
-It compares the two schemas shape by shape, ignoring names, and does not compare hashes. FNV-1a is not hard to collide on purpose. With this check a collision is a refused load, and is never mail delivered as the wrong kind.
+It compares the two schemas shape by shape, ignoring names, and does not compare hashes. It gives each node of both schemas a number for its layout, the same number for the same layout, and asks whether the two roots got the same one, so its work is in proportion to the two schemas' sizes however their nodes are shared. FNV-1a is not hard to collide on purpose. With this check a collision is a refused load, and is never mail delivered as the wrong kind.
 
 ## Consequences
 
