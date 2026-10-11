@@ -38,6 +38,19 @@ struct Tick {
 
 Every field must be `Plain`; a field that is not is a compile error naming it. Enum variants are numbered by position unless a variant states its selector.
 
+**`Key` is plain data that may be a map key or a set element.** ADR-0002 lists the key shapes and the order of each.
+
+```rust
+pub trait Key: Plain + Ord {}
+```
+
+`Ord` on a `Key` is the order ADR-0002 states for its shape. It is implemented for the integers, `char`, the `NonZero` integers, `String`, `Vec<u8>`, and `[u8; N]`. `#[derive(Key)]` is accepted on a struct with exactly one field, itself a `Key`, and requires the struct's `Ord` to be derived, so it is the field's.
+
+```rust
+#[derive(Plain, Key, PartialEq, Eq, PartialOrd, Ord)]
+struct PlayerId(u64);
+```
+
 **There is one byte path.** No serde implementation exists beside it, and none is derived. JSON is produced by walking a schema (a later piece), not by a second trait on the type.
 
 **The Rust types that are `Plain`**, each mapped onto a shape of the vocabulary:
@@ -54,15 +67,15 @@ Every field must be `Plain`; a field that is not is a compile error naming it. E
 | `Result<T, E>` | Enum, `Ok` = 0 and `Err` = 1 | |
 | `Vec<T>`, `VecDeque<T>` | Sequence | |
 | `Vec<u8>` | Bytes | |
-| `BTreeSet<T>` | Sequence | ascending encoded bytes, none repeated |
+| `BTreeSet<T>`, `T: Key` | Sequence | ascending key order, none repeated |
 | `[T; N]` | Array | |
-| `BTreeMap<K, V>` | Map | |
+| `BTreeMap<K, V>`, `K: Key` | Map | ascending key order, none repeated |
 | `()` and tuples to twelve elements | Tuple | |
 | `Duration` | Struct of `secs: u64` and `nanos: u32` | `nanos` below one billion |
 | a derived struct, with named, unnamed, or no fields | Struct | |
 | a derived enum | Enum | |
 
-With the `std` feature, `HashMap<K, V>` is a Map and `HashSet<T>` a Sequence under the `BTreeSet` rule. Every map is sorted by encoded key bytes on encode whatever its type, so a hash map costs nothing a `BTreeMap` does not.
+With the `std` feature, `HashMap<K, V>` is a Map and `HashSet<T>` a Sequence under the same rules, for `K: Key` and `T: Key`. A `BTreeMap` or `BTreeSet` is already in key order and is written as it iterates. A hash map or hash set is sorted by `Ord` on encode.
 
 **Not `Plain`, and why:**
 
@@ -71,6 +84,7 @@ With the `std` feature, `HashMap<K, V>` is a Map and `HashSet<T>` a Sequence und
 - `Box`, `Rc`, `Arc`: `Box` would admit recursive types; `Rc` and `Arc` promise sharing that bytes cannot keep.
 - `Cow`, `&str`, `&[T]`: decode owns its data.
 - `PhantomData`: no user yet.
+- As a map key or set element: anything that is not a `Key`, including `bool`, floats, tuples, enums, and structs of several fields. Each needs an order stated in ADR-0002 first.
 
 ## Consequences
 
