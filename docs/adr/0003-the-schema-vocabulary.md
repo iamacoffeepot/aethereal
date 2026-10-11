@@ -96,7 +96,7 @@ pub enum SchemaNode {
 }
 ```
 
-A `FieldNode` is a field's name and the index of its shape. It is built by walking a `Shape`, and equal shapes share one node. A decoder refuses a node that names an index at or above its own, so a received schema is a finite tree by the same check that reads it. It refuses a map whose key is not a key shape, a node equal to an earlier one, and a node other than the root that no later node names, so a schema has one flat form.
+A `FieldNode` is a field's name and the index of its shape. It is built by walking a `Shape`, and equal shapes share one node. A decoder refuses a node that names an index at or above its own, so a received schema is a finite tree by the same check that reads it. It refuses a struct or a variant with two fields of one name, and an enum with two variants of one name or of one selector, since a reader finds a field by its name and a variant by either. It refuses a map whose key is not a key shape, a node equal to an earlier one, and a node other than the root that no later node names, so a schema has one flat form.
 
 There are two forms because there are two places a schema lives: `Shape` in a compiled program, where nothing can be allocated, and `SchemaNodes` in bytes, where nothing can be a reference.
 

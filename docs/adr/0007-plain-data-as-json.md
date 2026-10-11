@@ -16,9 +16,11 @@ JSON is a view of plain data for people and tools. Mail between actors and engin
 **JSON is produced from bytes and a schema, and bytes from JSON and a schema.** Neither direction needs the Rust type.
 
 ```rust
-pub fn to_json(schema: &SchemaNodes, bytes: &[u8]) -> Result<String, JsonError> { .. }
+pub fn to_json(schema: &SchemaNodes, bytes: &[u8], budget: &mut Budget) -> Result<String, JsonError> { .. }
 pub fn from_json(schema: &SchemaNodes, json: &str, budget: &mut Budget) -> Result<Vec<u8>, JsonError> { .. }
 ```
+
+Each takes a budget, because each is handed input it does not trust. ADR-0002's rule that a count is not trusted holds for text as it does for values: a sequence of elements that occupy no bytes can state any count, so `to_json` charges the text it writes, and four bytes of input cannot make it write gigabytes. `from_json` charges what it holds while reading.
 
 Both live in `aethereal-data`, in a `json` module behind the `json` feature, so a program that never speaks JSON does not carry it. The module reads and writes JSON text itself and depends on no JSON library.
 
@@ -51,7 +53,7 @@ struct Tick { frame: u64, delta_millis: u32 }
 {"frame":"18446744073709551615","delta_millis":16}
 ```
 
-**A float is written as the shortest decimal that reads back as the same bits.** JSON has no spelling for a float that is not finite, so those three are strings. A NaN is written `"NaN"` whatever its bits and read back as the one quiet NaN, which is the single place this mapping does not return the bytes it was given.
+**A float is written as the shortest decimal that reads back as the same bits, with no exponent.** A number is read as the nearest float, and one whose nearest float is not finite is refused. JSON has no spelling for a float that is not finite, so those three are strings. A NaN is written `"NaN"` whatever its bits and read back as the one quiet NaN, which is the single place this mapping does not return the bytes it was given.
 
 **Fields that are named by position are written without their names.** ADR-0003 names an unnamed field by its position, `"0"`, `"1"`. A struct or variant with exactly one such field is written as that field's value alone, and with several, as an array of them.
 
@@ -70,11 +72,15 @@ A struct with no fields is `{}`.
 
 **A missing field is read as none when its shape is an option,** and is refused otherwise. This is the one leniency: a person writing JSON by hand leaves out what they do not set.
 
+**`to_json` refuses bytes that are not a value of the schema,** by every rule a decoder of ADR-0002 has: a boolean byte that is neither `0` nor `1`, a selector that names no variant, map keys out of order, bytes left over. What it writes is therefore always text its own reader accepts.
+
 **The writer has one output for one value.** It writes no whitespace, a struct's fields in declared order, and a map's members in the key order of ADR-0002. A string escapes only `"`, `\`, and the control characters below `U+0020`.
 
-**The reader accepts any JSON text of RFC 8259 and refuses** a repeated member name in any object, text after the value, and anything the table lists. It reads object members in whatever order they come and writes bytes in declared order. A map's members are sorted into key order. It does not recurse on its input, and what it holds while reading is charged to the budget it is given.
+**The reader accepts any JSON text of RFC 8259 and refuses** a repeated member name in any object, text after the value, and anything the table lists. It reads object members in whatever order they come and writes bytes in declared order. A map's members are sorted into key order. It does not recurse on its input. The number `-0` is zero where an integer is expected.
 
-**A refusal says where.** `JsonError` carries the path to the place in the value it concerns, such as `players[3].id`, beside what was wrong there.
+**Both directions follow the schema, to a depth of at most 128.** A schema can arrive as bytes, so its nesting is not trusted either, and one nested more deeply is refused.
+
+**A refusal says where.** `JsonError` carries the path to the place in the value it concerns, such as `players[3].id`, beside what was wrong there. A refusal of the text itself, before it is any value, carries its offset in the text.
 
 ## Consequences
 
