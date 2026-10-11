@@ -44,7 +44,9 @@ aether.window/aether.window.surface:left
 - A path is plain data (ADR-0004): a sequence of segments, each a struct of the type's name and its key. It crosses every boundary and means the same thing in every engine, though it names an actor in only one.
 - Two actors in one engine never have the same path, and a path is not used again while its engine lives. A closed actor's path stays closed.
 
-**An actor owns the paths directly beneath it.** Only an actor asks for a child beneath itself, and no actor creates anything in another actor's branch. An actor closes only itself (ADR-0009). Roots are asked for from outside the engine.
+**An actor owns the paths directly beneath it.** Only an actor asks for a child beneath itself, and no actor creates anything in another actor's branch. An actor closes only itself (ADR-0009).
+
+**Only the chassis makes a root.** The chassis is the host program that builds the engine. No actor asks for a root, and no mail creates one: everything an actor brings into being stands beneath it.
 
 **A reference is a path the engine has established exists.**
 
@@ -61,7 +63,7 @@ pub struct ActorRef { .. }
 ## Consequences
 
 - Who may hold a reference to an actor follows from who was told about it. A reference spreads only by mail, by the sender of mail being known, and by a resolve the engine answers.
-- A root has a key like any other actor, so the path allows several roots of one type. Whether a type's actors use `Only` or named keys is declared by the type, in a later ADR. Whether an actor, and not only the outside, may ask for a root is not decided here.
+- A root has a key like any other actor, so the path allows several roots of one type. Whether a type's actors use `Only` or named keys is declared by the type, in a later ADR.
 - A shorter spelling for a person typing a path, one that leaves out a type the parent makes obvious, is not part of this ADR. It needs the table of which child types a parent declares and enters with the first boundary where a person types a path.
 - Typed references and typed paths, which say at build time what mail the actor on the other end handles, stand on these types and are a later ADR.
 
