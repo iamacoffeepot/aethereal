@@ -42,6 +42,8 @@ pub enum DecodeError {
     InvalidOption(u8),
     /// String bytes were not valid UTF-8.
     InvalidUtf8,
+    /// Text decoded as a kind name does not conform (ADR-0006).
+    InvalidKindName,
     /// An enum selector names no variant.
     InvalidSelector {
         /// The enum's name, for error messages.
@@ -81,6 +83,7 @@ impl fmt::Display for DecodeError {
             Self::InvalidBoolean(byte) => write!(f, "plain data: invalid boolean byte {byte}"),
             Self::InvalidOption(byte) => write!(f, "plain data: invalid option byte {byte}"),
             Self::InvalidUtf8 => f.write_str("plain data: string is not valid UTF-8"),
+            Self::InvalidKindName => f.write_str("plain data: kind name does not conform"),
             Self::InvalidSelector { name, selector } => {
                 write!(f, "plain data: invalid selector {selector} for enum {name}")
             }

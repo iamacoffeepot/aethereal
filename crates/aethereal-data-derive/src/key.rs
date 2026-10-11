@@ -38,14 +38,17 @@ fn finish(input: &DeriveInput, generics: &Generics, single: &Single) -> TokenStr
     quote! {
         impl #impl_generics ::aethereal_data::Key for #name #ty_generics #where_clause {}
 
+        #[automatically_derived]
         impl #impl_generics ::core::cmp::PartialEq for #name #ty_generics #where_clause {
             fn eq(&self, other: &Self) -> bool {
                 self.#member == other.#member
             }
         }
 
+        #[automatically_derived]
         impl #impl_generics ::core::cmp::Eq for #name #ty_generics #where_clause {}
 
+        #[automatically_derived]
         impl #impl_generics ::core::cmp::PartialOrd for #name #ty_generics #where_clause {
             fn partial_cmp(
                 &self,
@@ -55,6 +58,7 @@ fn finish(input: &DeriveInput, generics: &Generics, single: &Single) -> TokenStr
             }
         }
 
+        #[automatically_derived]
         impl #impl_generics ::core::cmp::Ord for #name #ty_generics #where_clause {
             fn cmp(&self, other: &Self) -> ::core::cmp::Ordering {
                 self.#member.cmp(&other.#member)

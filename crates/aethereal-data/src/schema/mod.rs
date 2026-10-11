@@ -1,6 +1,7 @@
 //! The schema vocabulary: the shapes a value's bytes can take (ADR-0003).
 
 mod nodes;
+mod same_layout;
 
 pub use nodes::{FieldNode, FieldsNode, SchemaFault, SchemaNode, SchemaNodes, VariantNode};
 

@@ -1,6 +1,6 @@
 //! `String` as plain data (ADR-0004).
 
-use crate::plain::{read_count, take_bytes, write_count};
+use crate::plain::{read_count, take_bytes, write_text};
 use crate::{Budget, DecodeError, EncodeError, Plain, Schema, Shape};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -12,9 +12,7 @@ impl Schema for String {
 
 impl Plain for String {
     fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
-        write_count(out, self.len())?;
-        out.extend_from_slice(self.as_bytes());
-        Ok(())
+        write_text(out, self)
     }
 
     fn decode(input: &mut &[u8], budget: &mut Budget) -> Result<Self, DecodeError> {
