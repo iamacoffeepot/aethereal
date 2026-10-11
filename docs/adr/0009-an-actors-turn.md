@@ -23,10 +23,11 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> {
 
     fn begin(config: Self::Config, turn: &mut Turn<'_>) -> Result<Self, Fault>;
     fn handle(&mut self, mail: Mail<'_>, turn: &mut Turn<'_>) -> Result<(), Fault>;
+    fn end(self, turn: &mut Ending<'_>);
 }
 ```
 
-`begin` is the turn in which an actor is born, from the config its `Spawn` carried. Every later turn is a `handle`.
+An actor's life is three sorts of turn. `begin` is the turn in which it is born, from the config its `Spawn` carried. Each piece of mail after that is a `handle`. `end` is its closing turn, and it runs once, whichever way the actor came to close.
 
 An **effect** is one thing the actor asks of the engine. The first effects are:
 
@@ -43,7 +44,8 @@ pub enum Effect {
 - **Nothing a turn asks for happens during the turn.** Mail it sends is delivered afterwards, so no actor runs inside another actor's turn.
 - `Spawn` creates a child beneath the asking actor and nowhere else.
 - **An actor's end is its own decision or its parent's end, and nothing else.** `Close` closes the actor that asks for it, and no effect closes another actor. A parent that wants one child gone while it carries on sends that child mail saying so, and the child closes itself.
-- **A closing actor signals its children.** A child does not outlive the actor it stands beneath. When an actor closes, by its own `Close` or because its turn failed, the engine carries that to every actor beneath it, deepest first. Each is handed a closing turn, in which it releases what it holds, answers what it owes, and sends its last mail. It does not choose whether or when.
+- **A closing actor signals its children.** A child does not outlive the actor it stands beneath. When an actor closes, by its own `Close` or because its turn failed, the engine carries that to every actor beneath it, deepest first. Each is handed its closing turn, `end`, in which it answers what it owes and sends its last mail. It does not choose whether or when.
+- **The closing turn cannot fail and cannot be repeated.** `end` takes the actor by value and returns nothing, so there is no actor left to hand a second one. Its `Ending` offers what a last turn may ask for, sending and giving, and neither `Spawn` nor `Close`. The engine applies its effects, then drops the actor and what it owned (ADR-0010). An actor whose turn failed is still handed `end`; a guest that trapped is not, since its memory can no longer be trusted, and the engine closes it without one.
 - An effect is plain data, and so is the list.
 
 **A turn reads the engine; it does not write it.** `turn` answers questions from the engine's state as it stood when the turn began: the sender of the mail, and whether a path names an actor (ADR-0008's resolve). A read is not an effect.
