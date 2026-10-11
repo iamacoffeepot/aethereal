@@ -29,7 +29,7 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> {
 
 These three are what the engine calls. How an author writes the handling of each kind of mail, and how the kinds an actor handles are declared, is a later ADR; whatever it decides arrives at the engine through `handle`.
 
-An actor's life is three sorts of turn. `begin` is the turn in which it is born, from the config its `Spawn` carried. Each piece of mail after that is a `handle`. `end` is its closing turn, and it runs once, whichever way the actor came to close.
+An actor's life has three parts. `begin` makes it from a config, and runs inside the turn of the parent that spawns it; a root's runs when the chassis makes it. Each piece of mail after that is a turn of its own, a `handle`. `end` is its closing turn, and it runs once, whichever way the actor came to close.
 
 An **effect** is one thing the actor asks of the engine. An effect exists only for what the engine itself must do: an actor that could do a thing with its own state and mail gets no effect for it. The first effects are:
 
