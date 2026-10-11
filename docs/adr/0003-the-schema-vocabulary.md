@@ -107,7 +107,7 @@ There are two forms because there are two places a schema lives: `Shape` in a co
 - Field docs, units, and display hints are not in the vocabulary. They can be added as a parallel description without changing a schema, and they enter with the first tool that reads them.
 - 128-bit integers are not in the vocabulary, since several languages have none. A value that needs 128 bits is an array of 16 bytes.
 - The size of an integer in the vocabulary is always stated. A machine-sized integer (`usize`) has no shape.
-- Whether a name takes part in what makes two kinds the same kind is not decided here. It belongs to the ADR on kind identity.
+- Names inside a schema take no part in what makes two kinds the same kind. That is ADR-0006's decision, and it rests on names being absent from the bytes.
 
 ## Alternatives considered
 
