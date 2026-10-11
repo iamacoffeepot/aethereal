@@ -36,9 +36,22 @@ impl KindName {
     /// ```
     #[must_use]
     pub const fn new(name: &'static str) -> Self {
-        assert!(conforms(name), "a kind name is segments of lowercase letters, digits, and `_`, separated by `.`");
+        assert!(
+            conforms(name.as_bytes()),
+            "a kind name is segments of lowercase letters, digits, and `_`, separated by `.`"
+        );
 
         Self(Cow::Borrowed(name))
+    }
+
+    /// Whether `bytes` spell a kind's name, for text that holds a name among other parts (ADR-0008).
+    pub(crate) const fn spells(bytes: &[u8]) -> bool {
+        conforms(bytes)
+    }
+
+    /// The name `text` spells, for a caller that has already put `text` through [`Self::spells`].
+    pub(crate) fn from_conforming(text: &str) -> Self {
+        Self(Cow::Owned(String::from(text)))
     }
 
     /// The name's UTF-8 bytes, as an id hashes them.
@@ -55,10 +68,9 @@ impl KindName {
     }
 }
 
-/// Whether `name` is one or more segments separated by `.`, each a lowercase
+/// Whether `bytes` are one or more segments separated by `.`, each a lowercase
 /// letter followed by lowercase letters, digits, and `_`.
-const fn conforms(name: &str) -> bool {
-    let bytes = name.as_bytes();
+const fn conforms(bytes: &[u8]) -> bool {
     let mut in_segment = false;
     let mut index = 0;
     while index < bytes.len() {
@@ -98,7 +110,7 @@ impl<B: Boundary> Encode<B> for KindName {
 impl<B: Boundary> Decode<B> for KindName {
     fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let text = String::decode(input)?;
-        let is_name = conforms(&text);
+        let is_name = conforms(text.as_bytes());
         if is_name {
             Ok(Self(Cow::Owned(text)))
         } else {

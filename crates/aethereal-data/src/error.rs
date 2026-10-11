@@ -44,6 +44,10 @@ pub enum DecodeError {
     InvalidUtf8,
     /// Text decoded as a kind name does not conform (ADR-0006).
     InvalidKindName,
+    /// Text decoded as a key name does not conform (ADR-0008).
+    InvalidKeyName,
+    /// Text decoded as an actor path does not conform or is too deep (ADR-0008).
+    InvalidActorPath,
     /// An enum selector names no variant.
     InvalidSelector {
         /// The enum's name, for error messages.
@@ -84,6 +88,8 @@ impl fmt::Display for DecodeError {
             Self::InvalidOption(byte) => write!(f, "plain data: invalid option byte {byte}"),
             Self::InvalidUtf8 => f.write_str("plain data: string is not valid UTF-8"),
             Self::InvalidKindName => f.write_str("plain data: kind name does not conform"),
+            Self::InvalidKeyName => f.write_str("plain data: key name does not conform"),
+            Self::InvalidActorPath => f.write_str("plain data: actor path does not conform"),
             Self::InvalidSelector { name, selector } => {
                 write!(f, "plain data: invalid selector {selector} for enum {name}")
             }
