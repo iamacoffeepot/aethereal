@@ -51,6 +51,8 @@ pub trait Key: Plain + Ord {}
 struct PlayerId(u64);
 ```
 
+**There is one byte path.** No serde implementation exists beside it, and none is derived. JSON is produced by walking a schema (a later piece), not by a second trait on the type.
+
 **The Rust types that are `Plain`**, each mapped onto a shape of the vocabulary:
 
 | Rust type | Shape | Rule the decoder enforces beyond the shape |
