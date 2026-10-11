@@ -95,12 +95,13 @@ pub enum To {
 **Code is a prototype an actor is made from, and a turn reads it.** The engine keeps a repository of code. Each entry is a blob, named by the hash of its bytes, and can make certain kinds of actor. Making an actor from an entry leaves the entry as it was, so one entry makes any number of actors. The repository also binds a kind's name to one entry at a time.
 
 - A spawn names a kind. The child is made from the entry that name is bound to, as the turn sees it, and runs that entry from then on.
-- Binding a name to another entry changes which entry later spawns use. It moves no live actor. Moving the actors made from one entry onto another is asked for separately.
+- Binding a name to another entry changes which entry later spawns use. It moves no live actor. Moving the actors made from one entry onto another is a separate request of the chassis.
 
-- A turn sees the repository as it stood when the turn began. The repository changes only when the engine applies an effect, so what a turn sees does not change under it.
+- **An actor reads the repository and does not change it.** No effect adds an entry, binds a name, or moves a live actor. Code is published to the engine by the chassis, which is also the only thing that makes a root (ADR-0008). An actor does not choose the code it runs.
+- A turn sees the repository as it stood when the turn began. The chassis changes it only between turns, so what a turn sees does not change under it.
 - Whichever runtime runs the parent stands the child up. A native parent calls the child's `begin`. A guest's host makes the child's instance from the repository's entry and calls its `begin`, inside the parent's turn; a guest spawning a kind from its own module does so itself.
 - The engine runs no actor's code during another actor's turn. It applies the `Spawn` afterwards.
-- How code enters the repository, the effects that add an entry, bind a name, and move live actors, and what is checked at each are a later ADR.
+- How the chassis adds an entry, binds a name, and moves live actors, and what is checked at each, are a later ADR.
 
 **An actor is a kind.** The type that implements `Actor` is the actor's state, and it is a kind: it has a name, a schema, and a codec for `Within`.
 
