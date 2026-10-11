@@ -13,10 +13,10 @@ The engine also loads guests it did not build and does not trust. A guest states
 
 ## Decision
 
-**A kind is plain data with a name.**
+**A kind is a described type with a name.**
 
 ```rust
-pub trait Kind: Plain {
+pub trait Kind: Schema {
     const NAME: KindName;
 }
 
@@ -29,6 +29,8 @@ impl Kind for NoteOn {
 ```
 
 The name is all an author writes. There is no derive: the implementation is one line, and it is the whole declaration.
+
+A kind does not state where it may go. The types of its fields decide that (ADR-0004): a kind of plain fields crosses every boundary, and a kind holding a value bound to its own actor is a kind that no send accepts. Mail is the door between actors, and requires of the kind it carries the codec for that boundary.
 
 **A name is a `KindName`, and every `KindName` conforms.** A name is one or more segments separated by `.`. A segment is a lowercase ASCII letter followed by any number of lowercase ASCII letters, digits, and `_`.
 
