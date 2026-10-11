@@ -27,6 +27,8 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> {
 }
 ```
 
+These three are what the engine calls. How an author writes the handling of each kind of mail, and how the kinds an actor handles are declared, is a later ADR; whatever it decides arrives at the engine through `handle`.
+
 An actor's life is three sorts of turn. `begin` is the turn in which it is born, from the config its `Spawn` carried. Each piece of mail after that is a `handle`. `end` is its closing turn, and it runs once, whichever way the actor came to close.
 
 An **effect** is one thing the actor asks of the engine. The first effects are:
@@ -73,7 +75,7 @@ pub enum To {
 - Every field of an actor crosses `Within`. What an actor holds that is not data, it holds as a handle (ADR-0010). This is the same for a native actor and a guest.
 - The engine can take any actor's state out, by encoding the actor, and put it back by decoding it. It does so to replace the actor's code, and may do so to show the state or record a turn.
 - An actor's name is its kind's name. It is the name in a path (ADR-0008) and in `Spawn`.
-- New code takes over an actor's state as it is when its kind has the same name and the same layout (ADR-0006). A different layout is a different kind, and the new code says how it reads the old one.
+- Whether new code can take over an actor's state as it is has a test: its kind has the same name and the same layout (ADR-0006). Replacing an actor's code is a later ADR.
 - An actor lives decoded, where its runtime keeps it: a native actor as a value the engine owns, a guest in its own memory. The engine does not hold its bytes and does not copy it per turn.
 
 ## Consequences

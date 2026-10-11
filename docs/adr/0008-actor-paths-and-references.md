@@ -58,7 +58,7 @@ pub struct ActorRef { .. }
 - Only the engine makes a reference. An actor comes to hold one in three ways: it is handed one in mail, it receives mail and is told the sender, or it asks the engine to resolve a path and the engine finds the actor.
 - There is no presumptive reference: none is built from a path without the engine. An actor that knows only a path asks.
 - A reference is a bound value (ADR-0004). It crosses between actors in one engine and may be kept in an actor's state. It does not cross between engines: there a path crosses, and the receiver asks its own engine to resolve it.
-- A reference says the actor existed when the reference was made. It does not say the actor is still there. Mail sent through a reference to a closed actor ends as ADR-0009 says undelivered mail ends.
+- A reference says the actor existed when the reference was made. It does not say the actor is still there. Mail sent through a reference to a closed actor is not delivered. How undelivered mail ends is decided with the envelope, in a later ADR.
 - The engine has one table of actors, keyed by path, and it alone writes it. A reference, a resolve, and a delivery all read that table.
 
 ## Consequences
