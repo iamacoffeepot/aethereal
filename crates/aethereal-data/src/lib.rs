@@ -15,6 +15,7 @@ mod error;
 #[cfg(feature = "json")]
 mod json;
 mod key;
+mod kind;
 mod plain;
 mod schema;
 
@@ -23,6 +24,7 @@ pub use error::{DecodeError, EncodeError};
 #[cfg(feature = "json")]
 pub use json::{JsonError, JsonFault, JsonForm, JsonPath, JsonStep, TextFault, from_json, to_json};
 pub use key::Key;
+pub use kind::{Kind, KindId, KindName};
 pub use plain::{Plain, from_bytes, to_bytes};
 pub use schema::{
     Field, FieldNode, Fields, FieldsNode, Float, Integer, Schema, SchemaFault, SchemaNode, SchemaNodes, Shape, Variant,

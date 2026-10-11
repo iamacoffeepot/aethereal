@@ -137,6 +137,11 @@ impl SchemaNodes {
         &self.root
     }
 
+    /// Every node but the root, in stored order.
+    pub(crate) fn earlier(&self) -> &[SchemaNode] {
+        &self.earlier
+    }
+
     /// The node at `index`, or `None` past the end. The root is at `len() - 1`.
     #[must_use]
     pub fn node(&self, index: u32) -> Option<&SchemaNode> {
@@ -195,7 +200,7 @@ impl Plain for SchemaNodes {
 /// Positions come from a vector built either by walking a finite `Shape` or by
 /// decoding a `u32` count, so they always fit in a `u32`; the fallback below
 /// cannot be reached but keeps the conversion total without panicking.
-fn node_index(position: usize) -> u32 {
+pub(super) fn node_index(position: usize) -> u32 {
     u32::try_from(position).unwrap_or(u32::MAX)
 }
 

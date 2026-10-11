@@ -48,6 +48,13 @@ pub fn write_count(out: &mut Vec<u8>, count: usize) -> Result<(), EncodeError> {
     Ok(())
 }
 
+/// Writes text as a count, then that many bytes of UTF-8 (ADR-0002).
+pub fn write_text(out: &mut Vec<u8>, text: &str) -> Result<(), EncodeError> {
+    write_count(out, text.len())?;
+    out.extend_from_slice(text.as_bytes());
+    Ok(())
+}
+
 /// Reads an unsigned 32-bit count, little-endian (ADR-0002).
 pub fn read_count(input: &mut &[u8]) -> Result<u32, DecodeError> {
     read_u32(input)
