@@ -21,19 +21,9 @@ jobs:
     name: Plan
     runs-on: ubuntu-latest
     outputs:
-      rust: ${{ steps.workspace.outputs.present }}
       runner: ${{ steps.runner.outputs.label }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Cargo refuses a workspace with no members, and the repository holds no
-      # crate until its first piece enters. The Rust jobs run once a root
-      # manifest exists; delete this step, the `rust` output, and the jobs'
-      # `if:` lines with the change that adds it.
-      - id: workspace
-        run: |
-          present=false
-          [[ -f Cargo.toml ]] && present=true
-          echo "present=$present" >> "$GITHUB_OUTPUT"
       # The compiling jobs of a pull request run on a RunsOn spot runner, with
       # `extras=s3-cache` sending the cache API to the stack's bucket. That
       # runner is paid for, so it serves only a pull request the repository
@@ -59,7 +49,6 @@ jobs:
   fmt:
     name: Format
     needs: plan
-    if: needs.plan.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -69,7 +58,6 @@ jobs:
   clippy:
     name: Clippy
     needs: plan
-    if: needs.plan.outputs.rust == 'true'
     runs-on: ${{ needs.plan.outputs.runner }}
     steps:
       - uses: runs-on/action@4e5f72399b6b17f2e79c511c1b38a315a64d22dc # v2
@@ -82,7 +70,6 @@ jobs:
   test:
     name: Test
     needs: plan
-    if: needs.plan.outputs.rust == 'true'
     runs-on: ${{ needs.plan.outputs.runner }}
     steps:
       - uses: runs-on/action@4e5f72399b6b17f2e79c511c1b38a315a64d22dc # v2
@@ -98,7 +85,6 @@ jobs:
   browser-host:
     name: Browser host
     needs: plan
-    if: needs.plan.outputs.rust == 'true'
     runs-on: ${{ needs.plan.outputs.runner }}
     steps:
       - uses: runs-on/action@4e5f72399b6b17f2e79c511c1b38a315a64d22dc # v2
@@ -110,8 +96,7 @@ jobs:
           key: wasm32
       - run: cargo clippy --workspace --all-features --target wasm32-unknown-unknown -- -D warnings
 
-  # The one verdict to wait on. A job skipped because no workspace exists yet
-  # counts as passing; a failed or cancelled one does not.
+  # The one verdict to wait on.
   ci-pass:
     name: CI pass
     if: always()
@@ -123,4 +108,4 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "$RESULTS" | jq -e '.plan.result == "success" and all(.[]; .result == "success" or .result == "skipped")' > /dev/null
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")' > /dev/null

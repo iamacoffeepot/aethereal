@@ -1,0 +1,17 @@
+[package]
+name = "aethereal-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Plain data: the byte layout, the schema vocabulary, and the codec every other piece is expressed in"
+
+[features]
+# `HashMap` and `HashSet` as plain data (ADR-0004). The crate is `no_std` + `alloc` without it.
+std = []
+
+[dependencies]
+aethereal-data-derive = { path = "../aethereal-data-derive" }
+
+[lints]
+workspace = true
