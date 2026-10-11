@@ -40,21 +40,27 @@ pub trait Decode<B: Boundary>: Sized {
 ```
 
 - The boundary is fixed where the code is written. No codec asks, when it runs, which boundary it is at, and no value carries one: `B` is a type, chosen by the door that encodes or decodes.
-- A type implements the codec for each boundary it can cross and for no other. Encoding or decoding a value at a boundary it cannot cross does not compile, and the error names the type.
+- Encoding or decoding a value at a boundary it cannot cross does not compile, and the error names the type.
 - A boundary's writer and reader are its own types. Every writer holds the bytes written so far, and every reader holds the bytes still to read and the allocation limit of ADR-0002. A boundary adds to them whatever its bound values need: a table of attached values, a registry to prove a name against. What a boundary offers is a field of its reader or writer and is always there.
 - `encode` fails when a collection holds more elements than a count can state, or when the boundary refuses a bound value.
 - `decode` returns a value that owns its data.
 
-**A type has one shape, and its bytes conform to it at every boundary.** The bytes are those of ADR-0002 for the type's `Schema::SHAPE` (ADR-0003), whichever boundary they cross. A boundary adds meaning beside the bytes and never changes their layout. The identity of a kind (ADR-0006) and the JSON walk (ADR-0007) read bytes through the schema alone, so both hold for every value at every boundary. A value that is written inline across one boundary and as a handle across another is two types.
+**A type encodes the same at every boundary.** A type has one `Encode` impl and one `Decode` impl, each written over every boundary `B`, so a value's bytes are the same wherever it is encoded. They are the bytes of ADR-0002 for the type's `Schema::SHAPE` (ADR-0003). The identity of a kind (ADR-0006) and the JSON walk (ADR-0007) read bytes through the schema alone, so both hold for every value at every boundary. A value that is written inline in one place and as a handle in another is two types.
 
-**The leaves and the containers are written once, for every boundary.**
+**A value crosses a boundary exactly when the boundary offers what the value needs.** An offer is a trait on a boundary's writer or reader, and a type's one impl is bounded by the offers it uses:
 
 ```rust
-impl<B: Boundary> Encode<B> for u64 { .. }
-impl<B: Boundary, T: Encode<B>> Encode<B> for Vec<T> { .. }
+impl<B: Boundary> Encode<B> for u64 { .. }                                    // needs nothing: every boundary
+
+impl<B: Boundary, T: Encode<B>> Encode<B> for Vec<T> { .. }                   // whatever its elements cross
+
+impl<B: Boundary> Encode<B> for Payload                                       // a later piece's bound value:
+where                                                                         // only a boundary whose writer
+    for<'a> B::Writer<'a>: Attach,                                            // can attach a payload
+{ .. }
 ```
 
-A container crosses whatever its elements cross.
+A type that needs nothing is plain data. No impl names one boundary, so no type can encode one way here and another way there.
 
 **`Bare` is the boundary that offers nothing**: a buffer to write, and bytes and a budget to read.
 
@@ -158,9 +164,9 @@ With the `std` feature, `HashMap<K, V>` is a Map and `HashSet<T>` a Sequence und
   | `Actors` | between actors in one engine | a reference to a live actor, a handle to a large payload |
   | `Engines` | between engines | a path its receiver must prove |
 
-  A value bound to a boundary is one hand-written codec per boundary it crosses, and uses what that boundary's reader and writer offer. A type holding one derives the same codec as any other type and does not state `Plain`.
+  A bound value is one hand-written codec, bounded by the offers it uses. It crosses each boundary that makes those offers and stops at the rest. A type holding one derives the same codec as any other type and does not state `Plain`.
 - **A door states the boundary; the value does not.** Mail is the door between actors: a send requires `Encode<Actors>` of what it carries, and a handler `Decode<Actors>`. A door out of the engine requires `Engines`. A type that never crosses between actors is still encoded, by the actor that keeps it.
-- Whatever crosses between engines also crosses between actors. No impl can state that for every type, so each bound value that crosses between engines writes both codecs; a derived type then follows from its fields.
+- Whatever crosses between engines also crosses between actors, because `Actors` makes every offer `Engines` makes.
 - An author chooses between two derives: `Plain`, and the one for a type holding a bound value, which enters with the first such value. They write the same codec. `Plain` also states that the type is only its bytes.
 - A value decoded from a large input is copied out of it. Views that borrow from the input are a separate trait beside `Plain` if they are ever needed, and do not change it. Large payloads have another answer: a handle that crosses actors without a copy.
 - On a little-endian machine an implementation may encode a padding-free struct of fixed-width fields by copying it (ADR-0002). Nothing in the trait shows whether it does.
