@@ -43,7 +43,7 @@ aether.window/aether.window.surface:left
 - The first segment is a **root**. Each later segment is a child of the actor the path before it names.
 - A path is plain data (ADR-0004): a struct of its root segment and the sequence of its child segments, each segment a struct of the type's name and its key. The decoder refuses a path deeper than 32.
 - A path names an actor within one engine. It crosses every boundary as data, and an engine that receives one from another engine reads it as naming an actor in the engine it came from.
-- Two actors in one engine never have the same path, and a path is not used again while its engine lives. A closed actor's path stays closed.
+- **A path names one actor for the whole life of its engine.** Two actors never have the same path, and when an actor closes its path is closed for good: nothing is spawned there again. A log line, a trace, and a path held outside the engine therefore always mean the same actor, and an actor's life has one beginning and one end.
 
 **An actor owns the paths directly beneath it.** Only an actor asks for a child beneath itself, and no actor creates anything in another actor's branch. An actor closes only itself (ADR-0009).
 
@@ -66,6 +66,7 @@ pub struct ActorRef { .. }
 - Who may hold a reference to an actor follows from who was told about it. A reference spreads only by mail, by the sender of mail being known, and by a resolve the engine answers.
 - Depth is capped so that what walks a path or a branch has a bound it can state: a path can arrive as bytes, and closing an actor reaches everything beneath it. Nothing that walks either recurses.
 - How a path is paired with the engine it belongs to when it crosses between engines is decided with that boundary.
+- The engine remembers every closed path, so that a spawn there is refused. A parent that makes a child per request leaves one behind for each. The cost is kept small by what is stored: a type and a key are each a number in a table, and so is a path.
 - A root has a key like any other actor, so the path allows several roots of one type. Whether a type's actors use `Only` or named keys is declared by the type, in a later ADR.
 - A shorter spelling for a person typing a path, one that leaves out a type the parent makes obvious, is not part of this ADR. It needs the table of which child types a parent declares and enters with the first boundary where a person types a path.
 - Typed references and typed paths, which say at build time what mail the actor on the other end handles, stand on these types and are a later ADR.
@@ -76,4 +77,4 @@ pub struct ActorRef { .. }
 - **Two kinds of segment, one with a key and one without.** The same spellings, and every piece of code that handles a segment handles two shapes. One key with a reserved value keeps one shape.
 - **An opaque number as the actor's identity, with the path as a label.** Smaller to send. A number says nothing about where the actor stands, so who owns it would have to be looked up.
 - **A reference built from any path, checked when mail is sent.** No resolve step. Every send then carries a claim the engine has not checked, and an actor can address what it was never told about.
-- **Reusing a path after its actor closes.** Simpler keys for an actor that is closed and made again. A reference to the old actor would then reach the new one.
+- **Reusing a path after its actor closes, with each reference meaning one particular birth.** The engine would remember nothing about closed actors, and a stale reference would still fail. A path would then name different actors at different times: a log could not be read by path, and a path held outside the engine would silently come to mean a newcomer.
