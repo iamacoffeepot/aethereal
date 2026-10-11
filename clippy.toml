@@ -1,0 +1,12 @@
+# ADR-0001: the engine runs single-threaded and pumped inside a browser, and
+# its clock is handed in. These compile for wasm32 and then panic at run time
+# there, so the browser-host build cannot catch them; this list does. A host
+# crate that owns the real clock or the real threads carries
+# `#[allow(clippy::disallowed_methods)]` with a one-line reason.
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "time is handed in by the host (ADR-0001); Instant::now panics on a wasm32 host" },
+    { path = "std::time::SystemTime::now", reason = "time is handed in by the host (ADR-0001); SystemTime::now panics on a wasm32 host" },
+    { path = "std::thread::spawn", reason = "threads are an optimisation the native host adds (ADR-0001); a wasm32 host has none" },
+    { path = "std::thread::Builder::spawn", reason = "threads are an optimisation the native host adds (ADR-0001); a wasm32 host has none" },
+    { path = "std::thread::sleep", reason = "nothing blocks (ADR-0001); a wasm32 host cannot sleep its only thread" },
+]

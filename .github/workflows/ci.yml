@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same pull request supersedes the run judging the old head.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.workspace.outputs.present }}
+      runner: ${{ steps.runner.outputs.label }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Cargo refuses a workspace with no members, and the repository holds no
+      # crate until its first piece enters. The Rust jobs run once a root
+      # manifest exists; delete this step, the `rust` output, and the jobs'
+      # `if:` lines with the change that adds it.
+      - id: workspace
+        run: |
+          present=false
+          [[ -f Cargo.toml ]] && present=true
+          echo "present=$present" >> "$GITHUB_OUTPUT"
+      # The compiling jobs of a pull request run on a RunsOn spot runner, with
+      # `extras=s3-cache` sending the cache API to the stack's bucket. That
+      # runner is paid for, so it serves only a pull request the repository
+      # owner pushed from a branch of this repository. A fork's pull request,
+      # anyone else's push, and post-merge runs on `main` (which nobody waits
+      # on) use a GitHub-hosted runner.
+      - id: runner
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          label=ubuntu-latest
+          if [[ "$EVENT" == pull_request && "$ACTOR" == "$OWNER" && "$HEAD_REPOSITORY" == "$GITHUB_REPOSITORY" ]]; then
+            label="runs-on=${GITHUB_RUN_ID}/runner=8cpu-linux-x64/extras=s3-cache"
+          fi
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+
+  # The toolchain comes from `rust-toolchain.toml`, never from a channel named
+  # here: `rustup toolchain install` with no argument reads the file, with its
+  # components and targets, so CI and a local run use the same compiler.
+  fmt:
+    name: Format
+    needs: plan
+    if: needs.plan.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    needs: plan
+    if: needs.plan.outputs.rust == 'true'
+    runs-on: ${{ needs.plan.outputs.runner }}
+    steps:
+      - uses: runs-on/action@4e5f72399b6b17f2e79c511c1b38a315a64d22dc # v2
+        if: needs.plan.outputs.runner != 'ubuntu-latest'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test
+    needs: plan
+    if: needs.plan.outputs.rust == 'true'
+    runs-on: ${{ needs.plan.outputs.runner }}
+    steps:
+      - uses: runs-on/action@4e5f72399b6b17f2e79c511c1b38a315a64d22dc # v2
+        if: needs.plan.outputs.runner != 'ubuntu-latest'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - run: cargo test --workspace --all-features
+
+  # ADR-0001: every piece builds for a browser host. In a browser the host
+  # itself is wasm32, so the whole workspace is checked and linted for that
+  # target, not only the guest crates.
+  browser-host:
+    name: Browser host
+    needs: plan
+    if: needs.plan.outputs.rust == 'true'
+    runs-on: ${{ needs.plan.outputs.runner }}
+    steps:
+      - uses: runs-on/action@4e5f72399b6b17f2e79c511c1b38a315a64d22dc # v2
+        if: needs.plan.outputs.runner != 'ubuntu-latest'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: wasm32
+      - run: cargo clippy --workspace --all-features --target wasm32-unknown-unknown -- -D warnings
+
+  # The one verdict to wait on. A job skipped because no workspace exists yet
+  # counts as passing; a failed or cancelled one does not.
+  ci-pass:
+    name: CI pass
+    if: always()
+    needs: [plan, fmt, clippy, test, browser-host]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required jobs
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e '.plan.result == "success" and all(.[]; .result == "success" or .result == "skipped")' > /dev/null
