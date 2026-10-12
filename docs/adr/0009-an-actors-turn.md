@@ -41,8 +41,8 @@ pub struct Effect {
 
 pub enum What {
     Send { to: To, kind: KindId, bytes: Vec<u8> },
-    Spawn { of: KindName, key: ChildKey },
-    Embed { of: KindName, key: ChildKey },
+    Spawn { of: KindName, key: ChildKey, from: Code },
+    Embed { of: KindName, key: ChildKey, from: Code },
     Faulted,
     Close,
     Watch { of: ActorRef },
@@ -62,7 +62,7 @@ pub enum Level {
 - **The engine alone applies effects**, in the order the turn asked for them, after the turn returns `Ok`.
 - **Nothing a turn asks for happens during the turn.** Mail it sends is delivered afterwards, so no actor runs inside another actor's turn.
 - `Spawn` creates a child beneath the asking actor and nowhere else.
-- **An actor stands up its own children, in its own turn.** `turn.spawn` names the child's kind, its key, and its config, and runs the child's `begin` then and there. It returns a reference to the child, or the reason there is none: the key is taken or closed, the path would be too deep (ADR-0008), no code is known by that name, or `begin` returned a `Fault`. The parent handles a child that failed to begin in the handler that asked for it.
+- **An actor stands up its own children, in its own turn.** `turn.spawn` names the child's kind, its code, its key, and its config, and runs the child's `begin` then and there. It returns a reference to the child, or the reason there is none: the key is taken or closed, the path would be too deep (ADR-0008), the engine holds no such blob or the blob makes no actor of that kind, or `begin` returned a `Fault`. The parent handles a child that failed to begin in the handler that asked for it.
 - **A child is spawned or embedded.** `turn.spawn` makes a child that takes its own mail. `turn.embed` makes a child whose mail is handed to its parent. Each has its own effect, `Spawn` and `Embed`, and no field says where a child's mail goes, so that cannot be written wrong. In everything else the two are the same: the child stands beneath the actor that asked, has a path and an id, has its `begin` run in the parent's turn, and is refused for the same reasons. What this ADR says of a spawn it says of an embed.
 - **Embedding changes where mail is routed and nothing else.** An embedded child is a virtual actor its parent contains. It has its own path, id, and references, and what it asks for is an effect by the child, not by its parent. Mail addressed to it is handed to its parent, and the mail says which actor it is for. The parent decides what to do with it.
 - **The engine hands an embedded child's mail to the first actor above it that takes its own mail.** A child embedded in an embedded parent is contained in that parent, which is contained in its own, so the mail reaches each through the one that holds it.
@@ -119,17 +119,25 @@ pub enum To {
 - On a `Fault` the engine applies the turn's `Log` effects, in order, and drops every other effect. A failed turn is the one whose lines are most wanted.
 - A guest that traps returns no list, so the lines of that turn are lost with its other effects. The engine logs the trap itself.
 
-**Code is a prototype an actor is made from, and a turn reads it.** The engine keeps a repository of code. Each entry is a blob, named by the hash of its bytes, and can make certain kinds of actor. Making an actor from an entry leaves the entry as it was, so one entry makes any number of actors. The repository also binds a kind's name to one entry at a time.
+**Code is a blob the engine holds, and a library says which blob a kind is.** A guest's code is a **blob**: bytes the engine holds, named by their hash, and never changed. A blob can make certain kinds of actor. Making an actor leaves the blob as it was, so one blob makes any number of actors. A native actor's code is the program's own.
 
-- A spawn names a kind. The child is made from the entry that name is bound to, as the turn sees it, and runs that entry from then on.
-- Binding a name to another entry changes which entry later spawns use. It moves no live actor. Moving the actors made from one entry onto another is a separate request of the chassis.
+```rust
+pub enum Code {
+    Program,          // a native actor: its code is in the program
+    Blob(BlobId),     // a guest: its code is this blob
+}
+```
 
-- **An actor reads the repository and does not change it.** No effect adds an entry, binds a name, or moves a live actor. Code is published to the engine by the chassis, which is also the only thing that makes a root (ADR-0008). An actor does not choose the code it runs.
-- A turn sees the repository as it stood when the turn began. The chassis changes it only between turns, so what a turn sees does not change under it.
+- **A spawn of a guest says which blob, and which actor in it.** `Spawn` and `Embed` each carry the child's `Code` beside its kind and key. The child runs that blob from then on. The engine knows blobs. It does not know which of them is current.
+- **A library is a root, and it alone says which blob a kind is.** A library registers a namespace, and a namespace is registered once. The kinds named under it are the library's: `aether.chat.room` is `aether.chat`'s. Only the library puts a blob for one of its kinds into the engine, and only it says which blob is that kind's now. That is the kind's **head**.
+- **Everyone else sees a library's heads and does not hold them.** A library stores its code and makes known where each head points. What the others get is a view of those heads that is brought up to date, or an alert that a head moved. It is not mail that one actor sends another. An actor spawns with the head it last saw.
+- **The child stands beneath the actor that spawned it**, as every child does (ADR-0008). A library holds code. The actors made from it stand elsewhere.
+- **Nothing moves a running actor.** An actor stays on the blob it was made from. It sees that a head moved later, in a turn of its own, and whether and when it moves onto the new blob is its own choice.
+- **No actor changes code that is not its own.** Changing which blob a kind is belongs to the library that registered the kind's namespace, and to nothing else in the engine.
+
 - Whichever runtime runs the parent stands the child up, inside the parent's turn. A native child's `begin` is called directly. A guest child's is called by its host, and a guest parent's spawn is a call out to that host.
 - The engine runs no actor's code during another actor's turn. It applies the `Spawn` afterwards.
 - **A guest computes no id.** Only the engine does (ADR-0008). A guest names an actor by an id it was handed: its own, the reference a spawn or an embed returned, or the one its mail says the mail is for. Its host confirms that each `by` is the guest's own actor, a child it stood up in the turn, or an actor embedded beneath it.
-- How the chassis adds an entry, binds a name, and moves live actors, and what is checked at each, are a later ADR.
 
 **An actor is a kind.** The type that implements `Actor` is the actor's state, and it is a kind: it has a name, a schema, and a codec for `Within`.
 
@@ -147,12 +155,14 @@ pub enum To {
 - A list of effects can be read one entry at a time: each says who asked, and no entry depends on the ones around it to say so. The lists of many turns join into one without being rewritten, for as long as the engine that made the ids lives.
 - An effect is something to be done, and it can be dropped or go undelivered. What the engine did with each effect is a separate record and a later ADR; the word *event* is kept for that record's entries.
 - An actor cannot count on `end` to save its state or release what it holds. Release belongs to the resource itself, which the engine drops (ADR-0010). Saving is the engine's, which can take any actor's state out.
+- An actor can spawn a library's kind only once it has seen that kind's head. One that must do so in its `begin` is handed the blob in its config.
+- Two actors of one kind can be running different blobs at the same time, each until it chooses to move.
 - A handler learns within the turn whether a spawn succeeded. It cannot learn whether a send was delivered; it is told by mail in a later turn.
 - A child's `begin` runs in its parent's turn and is counted against it. A `begin` that spawns runs its children's the same way, to the depth a path allows.
 - A resolve sees the engine as it was when the turn began, so it can be one turn out of date.
 - An actor's working fields are limited to what a kind can hold: no `Box`, no recursive type, no `usize`, nothing from a foreign crate. A tree is an arena with indices. A native actor may put a foreign value behind a handle as a resource (ADR-0010); a guest cannot, so a guest's working data fits the vocabulary entirely.
 - Where the engine keeps actors is its own choice and not part of this decision. It may keep the native actors of one type side by side. An actor whose fields are all of fixed width has the same bytes in memory as encoded on a little-endian machine (ADR-0002), so such actors could be kept as one stretch of bytes per type, which makes taking their state out, or keeping a copy from before a turn, a copy of that stretch. An actor with a string, a sequence, or a map cannot be changed in place in ADR-0002's bytes, since a field's position depends on the lengths before it.
-- **Not decided here, and due before the piece that needs each:** what a piece of mail carries beside its kind and bytes, and how a request and its answer are tied (the next ADR; it adds effects and no second way to act); what the `Actors` and `Within` boundaries offer; when applied mail is delivered and in what order actors run; large payloads, a further effect; the repository of code; the mail by which a parent learns a child closed, faulted, or trapped, and what an actor's `end` is told of how its children ended; how mail says which actor it is for, which comes with the rest of what mail carries; and the engine answering each request an ended actor left unanswered, which comes with the tie between a request and its answer.
+- **Not decided here, and due before the piece that needs each:** what a piece of mail carries beside its kind and bytes, and how a request and its answer are tied (the next ADR; it adds effects and no second way to act); what the `Actors` and `Within` boundaries offer; when applied mail is delivered and in what order actors run; large payloads, a further effect; how a library registers a namespace and puts a blob into the engine, what is checked when it does, and whether one namespace may sit inside another; how an actor sees a library's heads and learns that one moved; how a library is told of new code, and what it does when two changes reach it; how an actor asks to move onto another blob; when the engine lets go of a blob; the mail by which a parent learns a child closed, faulted, or trapped, and what an actor's `end` is told of how its children ended; how mail says which actor it is for, which comes with the rest of what mail carries; and the engine answering each request an ended actor left unanswered, which comes with the tie between a request and its answer.
 
 ## Alternatives considered
 
@@ -162,6 +172,8 @@ pub enum To {
 - **A failed turn leaves the actor running.** The actor then continues from a state no handler was written to produce.
 - **No `end` after a failed turn.** `end` then only ever sees a sound state. An actor that returned a `Fault` could say nothing as it went, though its code can still run, and the fault is the ending its parent most wants explained.
 - **The state put back as it was before the failed turn, and then `end`.** `end` sees a sound state every time. The engine keeps a copy of every actor from before each turn, which is the cost that ruled out the engine holding the state.
+- **The engine binds each kind's name to a blob, and a spawn names only the kind.** A spawn needs nothing in hand, and works in any turn. Something outside the actors must then hold the right to change a binding, each kind of a library is bound apart from the others, and moving running actors is done to them.
+- **Running actors move when their kind's blob changes.** No actor is left on old code. An actor's code would change under it at a moment it did not choose, as with a parent closing its child.
 - **The engine stands a child up when it applies the `Spawn`.** The parent then needs none of the child's code and a guest's turn stays one call. Between the `Spawn` and the child's `begin` the path is taken and not live, mail for it waits, and the parent learns of a failed `begin` a turn later, by mail it must match to the spawn.
 - **Marks in the list around a child's effects**: `Spawn` opens the child's part and a closing entry ends it, so who asked is read from where an effect sits. No id on each effect. The list then holds entries that are not asks, an effect cannot be read without the ones before it, and two lists cannot be joined without wrapping each.
 - **A number on each effect that is good for one turn**: 0 for the turn's own actor, and n for the nth child it stood up. Smaller than an id. It means nothing outside its turn, so a record of many turns needs a heading on each to say who 0 was.
