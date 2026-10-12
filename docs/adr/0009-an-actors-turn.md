@@ -108,13 +108,14 @@ pub enum Level {
 ```rust
 pub enum To {
     Parent,
-    Child(KindName, ChildKey),
+    Child(KindName),
+    ChildInstanced(KindName, KeyName),
     Sender,
     Held(ActorRef),
 }
 ```
 
-`Child` names an actor by key because the sender owns that part of the tree (ADR-0008); a turn may spawn a child and send to it in the same list. Every other case is an actor the engine has already established exists. There is no send to a bare path.
+`Child` and `ChildInstanced` name an actor beneath the sender, which owns that part of the tree (ADR-0008). They are split as the spawn effects are: `Child` names a singleton and carries no key, and `ChildInstanced` carries a `KeyName`. A turn may spawn a child and send to it in the same list. Every other case is an actor the engine has already established exists. There is no send to a bare path.
 
 **What a send or a spawn carries crosses between actors.** `turn.send(to, &kind)` requires `K: Kind + Encode<Actors>` (ADR-0004, ADR-0006), encodes the kind, and adds the `Send`. `turn.spawn` requires the same of the child's config. A kind that holds a value bound to its own actor is refused when the program is built. The bytes in an effect are always those of a kind that passed this check.
 

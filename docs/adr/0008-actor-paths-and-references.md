@@ -23,7 +23,7 @@ pub enum ChildKey {
 ```
 
 - An actor's type is named by a `KindName` (ADR-0006), such as `aether.window.surface`. There is no second sort of name.
-- A `ChildKey` says which actor of a type this is among those in one place. An actor's type is a **singleton**, of which a place holds at most one, unless it declares itself **instanced**, of which a place holds many. A singleton's key is `Only` and an instanced actor's key is `Named`. A `KeyName` is 1 to 64 bytes: a lowercase ASCII letter or a digit, then lowercase ASCII letters, digits, `_`, `-`, and `.`. A key cannot be `.`, `..`, or start with `-`, so none reads as a relative path or a flag where a person types it.
+- A `ChildKey` says which actor of a type this is among those in one place. An actor's type is a **singleton**, of which a place holds at most one, unless it declares itself **instanced**, of which a place holds many. A singleton's key is `Only` and an instanced actor's key is `Named`. A `KeyName` is 1 to 64 bytes: a lowercase ASCII letter or a digit, then lowercase ASCII letters, digits, `_`, `-`, and `.`. Its first byte is never `.` or `-`, so none reads as a relative path or a flag where a person types it.
 - The key follows from the type's declaration and is not chosen beside it. A singleton and an instanced actor are spawned by separate effects (ADR-0009): the one for a singleton carries no key, and the one for an instanced type carries a `KeyName`. So a singleton with a named key, and an instanced actor with none, cannot be written, and one place never holds both `surface` and `surface:left`.
 - `KindName` and `KeyName` are checked when built: a constant that does not conform stops the build, and the decoder refuses text that does not conform. Neither hands out its text.
 
