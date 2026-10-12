@@ -13,28 +13,20 @@ Two rules about who makes an actor bear on names. An actor is created only benea
 
 ## Decision
 
-**An actor is named by its kind, and every actor has a key.**
+**An actor is named by its kind, and by a key where a place holds many of its type.**
 
 ```rust
-pub enum ChildKey {
-    Only,                      // the one actor of its type in its place
-    Named(KeyName),            // "main"
+pub trait TypedKey: Sized {
+    fn to_name(&self) -> KeyName;
+    fn from_name(name: &KeyName) -> Option<Self>;    // none: not a key of this type
 }
 ```
 
 - An actor's type is named by a `KindName` (ADR-0006), such as `aether.window.surface`. There is no second sort of name.
-- A `ChildKey` says which actor of a type this is among those in one place. An actor's type names the type of its key (ADR-0009). A type whose key is `()` is a **singleton**: a place holds at most one, and its key is `Only`. Any other key type makes the actor **instanced**: a place holds many, and each key is `Named`. A `KeyName` is 1 to 64 bytes: a lowercase ASCII letter or a digit, then lowercase ASCII letters, digits, `_`, `-`, and `.`. Its first byte is never `.` or `-`, so none reads as a relative path or a flag where a person types it.
-- **A key is a typed value, and its type says what keys there are.**
-
-  ```rust
-  pub trait TypedKey: Sized {
-      fn to_key(&self) -> ChildKey;
-      fn from_key(key: &ChildKey) -> Option<Self>;    // none: not a key of this type
-  }
-  ```
-
-  A key type turns each of its values into a `ChildKey`, a different one for each, and reads a `ChildKey` back into the value that made it. Going there and back gives the same value, and a `ChildKey` that reads as a value is the one that value writes, so a path still has one spelling. A path holds the `ChildKey`, and an actor's code holds the typed value. A type with two values allows two children and no third. A number that counts upward gives a parent that makes a child per request a key that never names a closed path. `()` is the one key type that gives no name.
-- The key follows from the actor's type and is not chosen beside it. A singleton and an instanced actor are spawned by separate effects (ADR-0009): the one for a singleton carries no key, and the one for an instanced type carries a `KeyName`. So a singleton with a named key, and an instanced actor with none, cannot be written, and one place never holds both `surface` and `surface:left`.
+- **An actor's type names the type of its key** (ADR-0009). A type whose key is the unit type `()` is a **singleton**: a place holds at most one, and it has no key. Any other key type is a `TypedKey` and makes the actor **instanced**: a place holds many, each told apart by its key.
+- **A key is a typed value, and its type says what keys there are.** A key type turns each of its values into a `KeyName`, a different one for each, and reads a `KeyName` back into the value that made it. Going there and back gives the same value, and a name that reads as a value is the one that value writes, so a path still has one spelling. A path holds the `KeyName`, and an actor's code holds the typed value. A type with two values allows two children and no third. A number that counts upward gives a parent that makes a child per request a key that never names a closed path.
+- A `KeyName` is 1 to 64 bytes: a lowercase ASCII letter or a digit, then lowercase ASCII letters, digits, `_`, `-`, and `.`. Its first byte is never `.` or `-`, so none reads as a relative path or a flag where a person types it.
+- The key follows from the actor's type and is not chosen beside it. A singleton and an instanced actor are spawned by separate effects (ADR-0009): the one for a singleton carries no key, and the one for an instanced type carries a `KeyName`. So a singleton with a key, and an instanced actor with none, cannot be written, and one place never holds both `surface` and `surface:left`.
 - `KindName` and `KeyName` are checked when built: a constant that does not conform stops the build, and the decoder refuses text that does not conform. Neither hands out its text.
 
 **An actor's path is where it stands.**
@@ -48,7 +40,7 @@ aether.window
 aether.window/aether.window.surface:left
 ```
 
-- A path is a root segment and up to 31 child segments, so it is never empty and never deeper than 32. Each segment is the name of an actor's kind and a key. It is written `name:key` for a named key and `name` alone for `Only`, so every actor has a key and the one that needs no name shows none.
+- A path is a root segment and up to 31 child segments, so it is never empty and never deeper than 32. Each segment is the name of an actor's kind, and a `KeyName` where the actor is instanced. It is written `name:key` for an instanced actor and `name` alone for a singleton. A segment asked for its key answers with the name or with none.
 - The first segment is a **root**. Each later segment is a child of the actor the path before it names.
 - A path is plain data (ADR-0004) with the shape of a string: its bytes are its text. Every path has exactly one spelling and every spelling that conforms is exactly one path, so the text is the stored form. `ActorPath::new` checks a constant and stops the build on one that does not conform, and the decoder refuses text that does not conform or is deeper than 32, as `KindName` does (ADR-0006).
 - A path is a `Key` (ADR-0004): it may be the key of a map, in the order of its text. Everything beneath a path sorts together in that order.
@@ -96,7 +88,7 @@ pub struct ActorId(u64);
 - Depth is capped so that what walks a path or a branch has a bound it can state: a path can arrive as bytes, and closing an actor reaches everything beneath it. Nothing that walks either recurses.
 - How a path is paired with the engine it belongs to when it crosses between engines is decided with that boundary.
 - The engine remembers every closed path, so that a spawn there is refused. A parent that makes a child per request leaves one behind for each. The cost is kept small by what is stored: a type and a key are each a number in a table, and so is a path.
-- A root has a key like any other actor, so the path allows several roots of one type. Which types of key the engine supplies is not decided here.
+- A root is a singleton or instanced like any other actor, so the path allows several roots of one type. Which types of key the engine supplies is not decided here.
 - A shorter spelling for a person typing a path, one that leaves out a type the parent makes obvious, is not part of this ADR. It needs the table of which child types a parent declares and enters with the first boundary where a person types a path.
 - An id does not say where its actor stands. A reader gets the path from the engine's table, or from the spawns in a record that began with the engine. Whether a reader outside the engine may ask for an id's path is not decided.
 - A reference made up from the id of a known path passes the check. It reaches nothing a resolve of that path would not, since any actor may ask the engine to resolve a path it knows.
@@ -106,8 +98,8 @@ pub struct ActorId(u64);
 ## Alternatives considered
 
 - **A written key on every segment.** One spelling. A type of which there is one would then carry a key its author had to invent and every user had to repeat.
-- **A reserved key text, such as the empty string, for a singleton.** One type for a key and no case to match. It is the same key as `Only` under another spelling, and `KeyName` would then have a value no author may choose.
-- **Two kinds of segment, one with a key and one without.** The same spellings, and every piece of code that handles a segment handles two shapes. One key with a reserved value keeps one shape.
+- **One key type with a case for the only actor of its type**, `Only` beside `Named`. Every segment then has a key and one shape. The case says a place holds one such actor, which a key cannot enforce: nothing stopped `surface` beside `surface:left`. The actor's type can say it, and then the case has nothing left to say.
+- **A reserved key text, such as the empty string, for a singleton.** One type for a key. `KeyName` would then have a value no author may choose, and an instanced type could be handed it.
 - **A path stored as its parts**, a struct of segments. The schema then shows the parts, and a JSON view of mail spells a one-line path as nested objects wherever one appears. A struct cannot be a map key (ADR-0002).
 - **An opaque number as the actor's identity, with the path as a label.** Smaller to send. A number says nothing about where the actor stands, so who owns it would have to be looked up.
 - **An id anyone may compute**, with its bytes stated as ADR-0006 states a kind's. A guest could then name actors by id in what it returns. The function could never change, a keyed id would be ruled out, and the engine would check every id a guest wrote.
