@@ -51,7 +51,7 @@ aether.window/aether.window.surface:left
 
 **An actor owns the paths directly beneath it.** Only an actor asks for a child beneath itself, and no actor creates anything in another actor's branch.
 
-**Only the chassis makes a root.** The chassis is the host program that builds the engine. No actor asks for a root, and no mail creates one: everything an actor brings into being stands beneath it.
+**Only the chassis makes a root.** The chassis is the host program that builds the engine. No actor asks for a root, and no mail creates one: everything an actor brings into being stands beneath it. The chassis makes its roots as it builds the engine.
 
 **A reference names an actor the engine has established exists.**
 
@@ -90,6 +90,7 @@ pub struct ActorId(u64);
 - How a path is paired with the engine it belongs to when it crosses between engines is decided with that boundary.
 - A path sorts by its text, so children keyed by number do not sort in the order they were made: `12` comes before `7`. Nothing here reads meaning from that order.
 - The engine remembers every closed path, so that a spawn there is refused. A parent that makes a child per request leaves one behind for each. The cost is kept small by what is stored: a type and a key are each a number in a table, and so is a path.
+- A running engine gains no root. A system that needs a new one, a server taking an upgrade among them, waits for the engine to be built again. Whether the chassis may add a root while the engine runs is left until something needs it.
 - A root is a singleton or instanced like any other actor, so the path allows several roots of one type. Which key types the engine supplies beside `u64` is not decided here.
 - A shorter spelling for a person typing a path, one that leaves out a type the parent makes obvious, is not part of this ADR. It needs the table of which child types a parent declares and enters with the first boundary where a person types a path.
 - An id does not say where its actor stands. A reader gets the path from the engine's table, or from the spawns in a record that began with the engine. Whether a reader outside the engine may ask for an id's path is not decided.
