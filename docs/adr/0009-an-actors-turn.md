@@ -141,7 +141,7 @@ pub enum Code {
   ```
 
   The effect names one of the library's kinds and where its head now points. The kind is under the namespace the library registered, which the library knows, so that is checked where the effect is asked for and applying it has nothing to refuse. A blob that makes several kinds takes one `Publish` for each. The engine applies a `Publish` and keeps the heads.
-- **A kind that a newer blob no longer makes is withdrawn, not dropped.** The library publishes `Withdrawn` for it, and an actor that sees that has no blob to spawn the kind with. Actors of that kind already running stay on their blob and end as any actor does.
+- **A kind that a newer blob no longer makes is withdrawn, not dropped.** The library publishes `Withdrawn` for it. That is what the head says and no more: the engine does nothing else with it. An actor that looks sees the kind has no current blob. Actors of that kind already running stay on their blob and end as any actor does, and a blob the engine still holds can still be spawned from.
 - **Everyone else sees a library's heads and does not hold them.** A library stores its code and makes known where each head points. What the others get is a view of those heads that is brought up to date, or an alert that a head moved. It is not mail that one actor sends another. An actor spawns with the head it last saw.
 - **The child stands beneath the actor that spawned it**, as every child does (ADR-0008). A library holds code. The actors made from it stand elsewhere.
 - **Nothing moves a running actor.** An actor stays on the blob it was made from. It sees that a head moved later, in a turn of its own, and whether and when it moves onto the new blob is its own choice.
