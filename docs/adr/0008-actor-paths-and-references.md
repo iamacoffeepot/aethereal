@@ -89,7 +89,7 @@ pub struct ActorId(u64);
 - A shorter spelling for a person typing a path, one that leaves out a type the parent makes obvious, is not part of this ADR. It needs the table of which child types a parent declares and enters with the first boundary where a person types a path.
 - An id does not say where its actor stands. A reader gets the path from the engine's table, or from the spawns in a record that began with the engine. Whether a reader outside the engine may ask for an id's path is not decided.
 - A reference made up from the id of a known path passes the check. It reaches nothing a resolve of that path would not, since any actor may ask the engine to resolve a path it knows.
-- Two paths are taken to have two ids. By accident they do: a million paths share an id with odds near one in a hundred million. On purpose they need not, since FNV-1a can be run backwards and a parent picks its children's keys. What the engine does when two paths share an id is not decided here. The remedy is an id keyed with a secret the engine holds, which is possible because only the engine computes an id.
+- Two paths are taken to have two ids. By accident they do: a million paths share an id with odds of about one in forty million. On purpose they need not, since FNV-1a can be run backwards and a parent picks its children's keys. What the engine does when two paths share an id is not decided here. The remedy is an id keyed with a secret the engine holds, which is possible because only the engine computes an id.
 - Typed references and typed paths, which say at build time what mail the actor on the other end handles, stand on these types and are a later ADR.
 
 ## Alternatives considered
