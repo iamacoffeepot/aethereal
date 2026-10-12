@@ -71,9 +71,17 @@ pub struct ActorRef { .. }
 pub struct ActorId(u64);
 ```
 
-- An `ActorId` is 64 bits computed from the path's text. The path stays the actor's identity. The id stands for it where a path's text would be carried many times over, as in each effect of a turn (ADR-0009).
+- An `ActorId` is 64 bits computed from the path's segments. The path stays the actor's identity. The id stands for it where a path's text would be carried many times over, as in each effect of a turn (ADR-0009).
 - **Only the engine computes an id.** No guest, tool, or other engine computes one, and none is written as a constant. The function is therefore the engine's to change.
-- The function is FNV-1a with ADR-0006's basis and prime, over the bytes of the path's text. A child's id is its parent's id continued over the mark `/` and the child's segment as the path spells it. That gives the same number as hashing the child's whole text, so the engine reaches a child's id from its parent's without the text.
+- **An id is a hash folded along the path, one segment at a time.**
+
+  ```text
+  id(root)  = fold(basis, hash(segment))
+  id(child) = fold(id(parent), hash(segment))
+  ```
+
+  `hash(segment)` is FNV-1a with ADR-0006's basis and prime over the segment as the path spells it: the kind's name, then `:` and the key's name where there is one. `fold` continues FNV-1a from the first number over the eight bytes of the second, least significant first. A kind's name is hashed when the program is built, so a child's id is reached from its parent's id and its segment's hash with no path text at hand.
+- A segment's hash is of the kind's name and not its `KindId`. A `KindId` changes with the kind's layout (ADR-0006), and an actor's id does not change when its code does.
 - An id is good for the life of the engine that made it. Another engine, or a later run, may give the same path a different id. What is kept longer than the engine carries paths.
 - An id is plain data (ADR-0004), and one that was decoded is a claim like any other.
 - **An id is not an address.** Nothing sends to one and no reference is made from one. Who an actor may send to is unchanged.
@@ -106,6 +114,8 @@ pub struct ActorId(u64);
 - **A path stored as its parts**, a struct of segments. The schema then shows the parts, and a JSON view of mail spells a one-line path as nested objects wherever one appears. A struct cannot be a map key (ADR-0002).
 - **An opaque number as the actor's identity, with the path as a label.** Smaller to send. A number says nothing about where the actor stands, so who owns it would have to be looked up.
 - **An id anyone may compute**, with its bytes stated as ADR-0006 states a kind's. A guest could then name actors by id in what it returns. The function could never change, a keyed id would be ruled out, and the engine would check every id a guest wrote.
+- **One hash over the path's whole text.** One pass, with no segment hashed apart. A child's id then needs its segment's text each time it is made, and a later change to how ids are combined would change how names are hashed with it.
+- **Each id made from the ids beneath it**, as a hash tree is. An actor's id would then change with every child it gained or lost.
 - **An id handed out by the engine as each actor is made.** Dense, and free of collisions. A turn does not write the engine (ADR-0009), so a child stood up in a turn would have no id until the turn was over.
 - **A reference built from any path, checked when mail is sent.** No resolve step. Every send then carries a claim the engine has not checked, and an actor can address what it was never told about.
 - **Reusing a path after its actor closes, with each reference meaning one particular birth.** The engine would remember nothing about closed actors, and a stale reference would still fail. A path would then name different actors at different times: a log could not be read by path, and a path held outside the engine would silently come to mean a newcomer.
