@@ -16,9 +16,12 @@ Letting two actors hold the same socket does not help. One mail at a time protec
 **A resource is a value that is not data, and it has exactly one owner.** The owner is an actor. The engine keeps each actor's resources beside that actor, and the actor holds a handle to each.
 
 ```rust
-pub struct Handle<R> { .. }      // mine
-pub struct Given<R> { .. }       // on its way to a new owner
+pub trait Resource {}                      // a value that is not data
+pub struct Handle<R: Resource> { .. }      // mine
+pub struct Given<R: Resource> { .. }       // on its way to a new owner
 ```
+
+**A type is a resource because its author says so.** `Resource` has no methods. Implementing it for a type states that the type's values are not data: nothing a kind's fields can spell holds what the value is. A socket, an open file, and a GPU object are resources. An actor's own working state is not, and where it is a tree it is an arena with indices (ADR-0009).
 
 **A `Handle<R>` is the owner's own.**
 
@@ -26,7 +29,7 @@ pub struct Given<R> { .. }       // on its way to a new owner
 - It crosses `Within` and no other boundary (ADR-0004). It cannot be in mail or a config: a kind that holds one has no codec for `Actors`, and the send does not compile.
 - It is neither `Clone` nor `Copy`. There is one handle to a resource.
 - Native code opens it, in the owner's turn: `turn.open(&mut handle)` gives the `R`. Access is direct, because nobody else can hold the handle. A guest may hold a handle and cannot open one.
-- A native actor takes a value it made into its keeping with `turn.keep(value)`, which returns the handle. Keeping and opening change only what the actor owns, so neither is an effect.
+- A native actor takes a value it made into its keeping with `turn.keep(value)`, which returns the handle. `keep` takes a `Resource` and nothing else. Keeping and opening change only what the actor owns, so neither is an effect.
 
 **Giving is its own act, with its own type.**
 
@@ -53,6 +56,7 @@ impl Turn<'_> {
 - Every actor can be a kind, native ones included: what an actor holds that is not data, it holds as handles.
 - A parent opens what a child needs and gives it in the child's config. Nothing travels as a live Rust value between actors.
 - An actor that wants the use of another's resource asks its owner by mail. There is no shared handle.
+- Nothing checks that a type implementing `Resource` could not have been data: Rust has no bound that says what a type is not. A native actor's author can put ordinary state behind a handle by implementing `Resource` for it, and the engine can then neither show that state nor carry it onto new code. Each such type is one line that names it, and that line is judged by reading it. A guest cannot do this at all, since it opens no handle and keeps nothing.
 - Nothing an actor owns is left open when it ends, whether or not its author wrote a close for it.
 - An actor that holds a handle cannot be written to a file or sent to another engine: a handle does not cross `Bare` or `Engines`. Replacing an actor's code keeps its resources, because its state crosses `Within`.
 - `Within` offers the owner's resources and `Actors` offers the ones in transit. These are the first offers either boundary makes (ADR-0004).
@@ -63,4 +67,5 @@ impl Turn<'_> {
 - **A handle that can be copied into mail, shared by whoever holds it.** One type. The second holder's every use becomes a round trip, parallel turns need a lock, and nothing says when the value is dropped.
 - **One handle type that moves when sent, enforced when the engine applies the send.** One type fewer. The giver's handle would still look usable, and using it would fail in a later turn where a build error is possible.
 - **A native parent passing a live value to a native child at spawn.** No table and no ticket. The effect is then not data, a guest cannot do the same, and a turn that spawns can no longer be recorded.
+- **`keep` taking any value.** Nothing to implement. An author whose state does not fit a kind then moves it behind a handle in one call, and nothing in the program says it was done.
 - **Resources only at roots, built by the chassis.** Nothing to add. An actor beneath a root could never own a file or a socket of its own.
