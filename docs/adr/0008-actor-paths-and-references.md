@@ -53,7 +53,7 @@ aether.window/aether.window.surface:left
 
 **Only the chassis makes a root.** The chassis is the host program that builds the engine. No actor asks for a root, and no mail creates one: everything an actor brings into being stands beneath it.
 
-**A reference is a path the engine has established exists.**
+**A reference names an actor the engine has established exists.**
 
 ```rust
 pub struct ActorRef { .. }
