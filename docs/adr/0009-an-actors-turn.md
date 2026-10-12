@@ -41,7 +41,7 @@ pub struct Effect {
 
 pub enum What {
     Send { to: To, kind: KindId, bytes: Vec<u8> },
-    Spawn { of: KindName, key: ChildKey },
+    Spawn { of: KindName, key: ChildKey, route: ActorId },
     Faulted,
     Close,
     Watch { of: ActorRef },
@@ -61,7 +61,9 @@ pub enum Level {
 - **The engine alone applies effects**, in the order the turn asked for them, after the turn returns `Ok`.
 - **Nothing a turn asks for happens during the turn.** Mail it sends is delivered afterwards, so no actor runs inside another actor's turn.
 - `Spawn` creates a child beneath the asking actor and nowhere else.
-- **An actor stands up its own children, in its own turn.** `turn.spawn` names the child's kind, its key, and its config, and runs the child's `begin` then and there. It returns a reference to the child, or the reason there is none: the key is taken or closed, the path would be too deep (ADR-0008), no code is known by that name, or `begin` returned a `Fault`. The parent handles a child that failed to begin in the handler that asked for it.
+- **An actor stands up its own children, in its own turn.** `turn.spawn` names the child's kind, its key, and its config, and runs the child's `begin` then and there. It returns a reference to the child, or the reason there is none: the key is taken or closed, the path would be too deep (ADR-0008), no code is known by that name, the route is not allowed, or `begin` returned a `Fault`. The parent handles a child that failed to begin in the handler that asked for it.
+- **A spawn says what was spawned and where its mail is routed.** `of` and `key` say what. `route` is the id of the actor that is handed mail addressed to the child, and it is the parent itself or a child of the parent. The spawned child is a child of the parent, so a child that takes its own mail is no separate case.
+- **The route is checked where the spawn is asked for.** Everything the rule names is in the parent's own branch, which the parent knows, so `turn.spawn` checks the route with the rest and returns a route that is not allowed as it returns a taken key. No `Spawn` effect carries a route that was not checked, and applying one has nothing to refuse.
 - **The `Spawn` effect records a child that is already stood up.** The turn holds the child aside. It adds the `Spawn`, by the parent, and then the effects the child's `begin` asked for, each by the child. The child's id is its parent's continued over the child's segment (ADR-0008), which the turn works out without the engine. When the engine applies the `Spawn` the child is live. Until then it exists for no one but its parent: its path resolves for nobody else, and the reference the parent holds can leave the turn only inside a later effect of the same list.
 - **A `begin` that returns a `Fault` leaves `Faulted`.** The turn adds it, by the child, after whatever that `begin` asked for. It is the one entry in a list that reports and asks for nothing. The engine does not make that child live. It applies the child's `Log` effects, kept under the path that never went live, and drops the child's other effects and every effect by an actor that child stood up. A spawn refused before `begin` ran leaves nothing in the list.
 - **Only the parent changes its branch**, so the turn knows whether a key is free from the engine as it stood when the turn began and from the turn's own spawns.
@@ -120,9 +122,9 @@ pub enum To {
 
 - **An actor reads the repository and does not change it.** No effect adds an entry, binds a name, or moves a live actor. Code is published to the engine by the chassis, which is also the only thing that makes a root (ADR-0008). An actor does not choose the code it runs.
 - A turn sees the repository as it stood when the turn began. The chassis changes it only between turns, so what a turn sees does not change under it.
-- **A guest actor has a WebAssembly instance of its own**, and so a memory of its own. No two actors share one. A native child's `begin` is called directly. A guest child's instance is made from the repository's entry and its `begin` is called there, inside the parent's turn, whether the parent is native or a guest. A guest parent's spawn is a call out to its host, which does this.
+- Whichever runtime runs the parent stands the child up, inside the parent's turn. A native child's `begin` is called directly. A guest child's is called by its host, and a guest parent's spawn is a call out to that host.
 - The engine runs no actor's code during another actor's turn. It applies the `Spawn` afterwards.
-- **A guest writes no id.** Only the engine computes one (ADR-0008). A guest returns its own effects and no one else's, and its host writes their `by`. A child's effects come from the child's own `begin`, which the host called.
+- **A guest writes no id.** Only the engine computes one (ADR-0008), so a guest's host writes every `by`.
 - How the chassis adds an entry, binds a name, and moves live actors, and what is checked at each, are a later ADR.
 
 **An actor is a kind.** The type that implements `Actor` is the actor's state, and it is a kind: it has a name, a schema, and a codec for `Within`.
@@ -136,8 +138,7 @@ pub enum To {
 ## Consequences
 
 - The rules about mail in flight have one place to live. The engine is the only thing that moves mail and creates or closes an actor, and it sees every request to do so as data.
-- A guest is one call per turn: the mail's bytes in, the effects' bytes out, both through the codec of ADR-0004. Each spawn is one more call, out to its host. The host must be able to make an instance without waiting.
-- A trap ends one actor. Each guest actor costs one WebAssembly memory, at least 64 KiB and more by a toolchain's defaults, so a guest meant to run as many actors is built with a small stack and heap.
+- A guest is one call per turn: the mail's bytes in, the effects' bytes out, both through the codec of ADR-0004. A spawn is one more call, out to its host. The host must be able to make an instance without waiting.
 - A turn can be recorded and compared: the same state and mail give the same effects, as far as the actor's own code is deterministic.
 - A list of effects can be read one entry at a time: each says who asked, and no entry depends on the ones around it to say so. The lists of many turns join into one without being rewritten, for as long as the engine that made the ids lives.
 - An effect is something to be done, and it can be dropped or go undelivered. What the engine did with each effect is a separate record and a later ADR; the word *event* is kept for that record's entries.
@@ -147,7 +148,7 @@ pub enum To {
 - A resolve sees the engine as it was when the turn began, so it can be one turn out of date.
 - An actor's working fields are limited to what a kind can hold: no `Box`, no recursive type, no `usize`, nothing from a foreign crate. A tree is an arena with indices. A native actor may put a foreign value behind a handle as a resource (ADR-0010); a guest cannot, so a guest's working data fits the vocabulary entirely.
 - Where the engine keeps actors is its own choice and not part of this decision. It may keep the native actors of one type side by side. An actor whose fields are all of fixed width has the same bytes in memory as encoded on a little-endian machine (ADR-0002), so such actors could be kept as one stretch of bytes per type, which makes taking their state out, or keeping a copy from before a turn, a copy of that stretch. An actor with a string, a sequence, or a map cannot be changed in place in ADR-0002's bytes, since a field's position depends on the lengths before it.
-- **Not decided here, and due before the piece that needs each:** what a piece of mail carries beside its kind and bytes, and how a request and its answer are tied (the next ADR; it adds effects and no second way to act); what the `Actors` and `Within` boundaries offer; when applied mail is delivered and in what order actors run; large payloads, a further effect; the repository of code; the mail by which a parent learns a child closed, faulted, or trapped; and the engine answering each request an ended actor left unanswered, which comes with the tie between a request and its answer.
+- **Not decided here, and due before the piece that needs each:** what a piece of mail carries beside its kind and bytes, and how a request and its answer are tied (the next ADR; it adds effects and no second way to act); what the `Actors` and `Within` boundaries offer; when applied mail is delivered and in what order actors run; large payloads, a further effect; the repository of code; the mail by which a parent learns a child closed, faulted, or trapped; what an actor does with mail routed to it for another actor, where the state of an actor whose mail is routed to its parent is kept, and whether a route may name an actor whose own mail is routed elsewhere; and the engine answering each request an ended actor left unanswered, which comes with the tie between a request and its answer.
 
 ## Alternatives considered
 
@@ -155,13 +156,14 @@ pub enum To {
 - **The engine holds each actor's state, and a turn returns the new state.** A failed turn then costs nothing to undo and a guest instance holds nothing. Every turn decodes and encodes the whole state, which falls hardest on an actor with large state that runs every frame.
 - **An actor beside a separate state kind it converts to and from.** The actor may then work on any structure it likes. It is a second type and two conversions per actor, nothing checks that the conversion keeps everything, and a native actor could decline to offer it.
 - **A failed turn leaves the actor running.** The actor then continues from a state no handler was written to produce.
-- **Several guest actors in one WebAssembly memory**, a parent calling the `begin` of a child from its own module as a function. No call out and no memory per child. Every call into the guest must then say which actor it is for, a trap ends every actor in that memory, and one of them cannot be moved onto new code apart from the rest.
 - **No `end` after a failed turn.** `end` then only ever sees a sound state. An actor that returned a `Fault` could say nothing as it went, though its code can still run, and the fault is the ending its parent most wants explained.
 - **The state put back as it was before the failed turn, and then `end`.** `end` sees a sound state every time. The engine keeps a copy of every actor from before each turn, which is the cost that ruled out the engine holding the state.
 - **The engine stands a child up when it applies the `Spawn`.** The parent then needs none of the child's code and a guest's turn stays one call. Between the `Spawn` and the child's `begin` the path is taken and not live, mail for it waits, and the parent learns of a failed `begin` a turn later, by mail it must match to the spawn.
 - **Marks in the list around a child's effects**: `Spawn` opens the child's part and a closing entry ends it, so who asked is read from where an effect sits. No id on each effect. The list then holds entries that are not asks, an effect cannot be read without the ones before it, and two lists cannot be joined without wrapping each.
 - **A number on each effect that is good for one turn**: 0 for the turn's own actor, and n for the nth child it stood up. Smaller than an id. It means nothing outside its turn, so a record of many turns needs a heading on each to say who 0 was.
 - **The actor's path on each effect.** No id to define. A path's text is carried on every effect, and that falls hardest on a guest's turn.
+- **The route as a closed set**, the parent or a child named by kind and key. A route outside the parent's branch could not be written. The effect then holds a second way to name an actor beside the id every effect already carries, and a child named by key can still be one that does not exist, so the check remains.
+- **The route checked when the engine applies the `Spawn`.** The parent has by then been told the spawn succeeded, so a refused route would be a second failure, reported later and handled apart from the first.
 - **An effect by which a parent closes its child.** The parent owns the path, so it could. The child would then end without running its own close, at a moment it did not choose.
 - **An effect that publishes a value other actors read without being sent it.** A reader could then sample a value that changes often, such as a pointer's position, on its own turn and not be woken by each change. The read is a second input to a turn beside its mail, and the mailbox does not record its order: two actors handling the same mail could see the value before or after a third actor's turn, by scheduling. Fixing the read to the mail being handled settles that and makes the engine keep old values while older mail is queued. Mail to subscribers covers the case until a reader needs the saving.
 - **Logging as a call the host offers.** A line then leaves at once, so a trapped guest's lines survive. It is a second way to act, and a call across the guest boundary per line.
