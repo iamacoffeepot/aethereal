@@ -44,6 +44,7 @@ pub enum What {
     Spawn { of: KindName, key: ChildKey, from: Code },
     Embed { of: KindName, key: ChildKey, from: Code },
     Faulted,
+    Publish { kind: KindName, head: Head },
     Close,
     Watch { of: ActorRef },
     Log { level: Level, text: String },
@@ -128,8 +129,19 @@ pub enum Code {
 }
 ```
 
-- **A spawn of a guest says which blob, and which actor in it.** `Spawn` and `Embed` each carry the child's `Code` beside its kind and key. The child runs that blob from then on. The engine knows blobs. It does not know which of them is current.
+- **A spawn of a guest says which blob, and which actor in it.** `Spawn` and `Embed` each carry the child's `Code` beside its kind and key. The child runs that blob from then on.
 - **A library is a root, and it alone says which blob a kind is.** A library registers a namespace, and a namespace is registered once. The kinds named under it are the library's: `aether.chat.room` is `aether.chat`'s. Only the library puts a blob for one of its kinds into the engine, and only it says which blob is that kind's now. That is the kind's **head**.
+- **A library moves a head with `Publish`.**
+
+  ```rust
+  pub enum Head {
+      At(BlobId),       // the kind is this blob
+      Withdrawn,        // the kind has no blob now
+  }
+  ```
+
+  The effect names one of the library's kinds and where its head now points. The kind is under the namespace the library registered, which the library knows, so that is checked where the effect is asked for and applying it has nothing to refuse. A blob that makes several kinds takes one `Publish` for each. The engine applies a `Publish` and keeps the heads.
+- **A kind that a newer blob no longer makes is withdrawn, not dropped.** The library publishes `Withdrawn` for it, and an actor that sees that has no blob to spawn the kind with. Actors of that kind already running stay on their blob and end as any actor does.
 - **Everyone else sees a library's heads and does not hold them.** A library stores its code and makes known where each head points. What the others get is a view of those heads that is brought up to date, or an alert that a head moved. It is not mail that one actor sends another. An actor spawns with the head it last saw.
 - **The child stands beneath the actor that spawned it**, as every child does (ADR-0008). A library holds code. The actors made from it stand elsewhere.
 - **Nothing moves a running actor.** An actor stays on the blob it was made from. It sees that a head moved later, in a turn of its own, and whether and when it moves onto the new blob is its own choice.
@@ -156,7 +168,7 @@ pub enum Code {
 - An effect is something to be done, and it can be dropped or go undelivered. What the engine did with each effect is a separate record and a later ADR; the word *event* is kept for that record's entries.
 - An actor cannot count on `end` to save its state or release what it holds. Release belongs to the resource itself, which the engine drops (ADR-0010). Saving is the engine's, which can take any actor's state out.
 - An actor can spawn a library's kind only once it has seen that kind's head. One that must do so in its `begin` is handed the blob in its config.
-- Two actors of one kind can be running different blobs at the same time, each until it chooses to move.
+- Two actors of one kind can be running different blobs at the same time, each until it chooses to move. So can two kinds of one library. Nothing is left without its code, since the engine keeps a blob while an actor runs on it. What can stop working between them is mail: a kind of mail whose layout changed has another id (ADR-0006), so it goes unhandled and is never read as something else.
 - A handler learns within the turn whether a spawn succeeded. It cannot learn whether a send was delivered; it is told by mail in a later turn.
 - A child's `begin` runs in its parent's turn and is counted against it. A `begin` that spawns runs its children's the same way, to the depth a path allows.
 - A resolve sees the engine as it was when the turn began, so it can be one turn out of date.
@@ -173,6 +185,7 @@ pub enum Code {
 - **No `end` after a failed turn.** `end` then only ever sees a sound state. An actor that returned a `Fault` could say nothing as it went, though its code can still run, and the fault is the ending its parent most wants explained.
 - **The state put back as it was before the failed turn, and then `end`.** `end` sees a sound state every time. The engine keeps a copy of every actor from before each turn, which is the cost that ruled out the engine holding the state.
 - **The engine binds each kind's name to a blob, and a spawn names only the kind.** A spawn needs nothing in hand, and works in any turn. Something outside the actors must then hold the right to change a binding, each kind of a library is bound apart from the others, and moving running actors is done to them.
+- **A second effect that withdraws a head.** Two effects that each do one thing. A head is then moved by one and removed by another, where one effect with a named case says both.
 - **Running actors move when their kind's blob changes.** No actor is left on old code. An actor's code would change under it at a moment it did not choose, as with a parent closing its child.
 - **The engine stands a child up when it applies the `Spawn`.** The parent then needs none of the child's code and a guest's turn stays one call. Between the `Spawn` and the child's `begin` the path is taken and not live, mail for it waits, and the parent learns of a failed `begin` a turn later, by mail it must match to the spawn.
 - **Marks in the list around a child's effects**: `Spawn` opens the child's part and a closing entry ends it, so who asked is read from where an effect sits. No id on each effect. The list then holds entries that are not asks, an effect cannot be read without the ones before it, and two lists cannot be joined without wrapping each.
