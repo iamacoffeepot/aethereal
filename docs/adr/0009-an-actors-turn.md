@@ -21,7 +21,7 @@ In the earlier engine an actor acted as it ran. A send left during the handler, 
 pub trait Actor: Kind + Encode<Within> + Decode<Within> {
     type Config: Kind + Encode<Actors> + Decode<Actors>;
 
-    fn begin(config: Self::Config, turn: &mut Turn<'_>) -> Result<Self, Fault>;
+    fn begin(config: Self::Config, turn: &mut Beginning<'_>) -> Result<Self, Fault>;
     fn handle(&mut self, mail: Mail<'_>, turn: &mut Turn<'_>) -> Result<(), Fault>;
     fn end(self, turn: &mut Ending<'_>) -> Result<(), Fault>;
 }
@@ -72,6 +72,8 @@ pub enum Level {
 - **If the parent's turn fails, the children it stood up are dropped** with what they owned (ADR-0010), having never been live. They are handed no `end`.
 - **An actor's end is its own decision or its parent's end, and nothing else.** `Close` closes the actor that asks for it, and no effect closes another actor. A parent that wants one child gone while it carries on sends that child mail saying so, and the child closes itself.
 - **A closing actor signals its children.** A child does not outlive the actor it stands beneath. When an actor closes, by its own `Close` or because its turn failed, the engine carries that to every actor beneath it, deepest first. Each is handed its closing turn, `end`, in which it answers what it owes and sends its last mail. It does not choose whether or when.
+- **Children end first.** The closing actor's own `end` runs after the `end` of every actor beneath it. Mail a child sends its parent from `end` finds a parent that handles no more mail.
+- **`begin` is a first turn, and its `Beginning` offers less than a turn.** It offers no `To::Sender`, since a `begin` has no mail of its own and a root's has none behind it at all; a parent that wants its child to answer someone puts that reference in the child's config. It offers no `Close`: an actor does not end in the turn that makes it.
 - **The closing turn runs once, and the actor ends whatever it returns.** `end` takes the actor by value, so there is no actor left to hand a second one. Its `Ending` offers what a last turn may ask for: sending, giving, and logging. It offers no `Spawn`, `Embed`, `Close`, or `Watch`. Asking for an effect can fail, so `end` returns a `Result`: on `Ok` the engine applies its effects, and on a `Fault` it applies the `Log` effects and drops the rest. Either way the engine then drops the actor and what it owned (ADR-0010) and tells its parent how it ended.
 - **`end` runs whenever the actor's code can still be run and trusted.** That is after its own `Close`, when its parent ends, and after a turn of its own returned a `Fault`. It does not run for a guest that trapped, since its memory can no longer be trusted, nor for a child that was never live. When the host itself goes away, nothing runs.
 - **`end` is told why it runs.**
@@ -150,7 +152,7 @@ pub enum To {
 - A resolve sees the engine as it was when the turn began, so it can be one turn out of date.
 - An actor's working fields are limited to what a kind can hold: no `Box`, no recursive type, no `usize`, nothing from a foreign crate. A tree is an arena with indices. A native actor may put a foreign value behind a handle as a resource (ADR-0010); a guest cannot, so a guest's working data fits the vocabulary entirely.
 - Where the engine keeps actors is its own choice and not part of this decision. It may keep the native actors of one type side by side. An actor whose fields are all of fixed width has the same bytes in memory as encoded on a little-endian machine (ADR-0002), so such actors could be kept as one stretch of bytes per type, which makes taking their state out, or keeping a copy from before a turn, a copy of that stretch. An actor with a string, a sequence, or a map cannot be changed in place in ADR-0002's bytes, since a field's position depends on the lengths before it.
-- **Not decided here, and due before the piece that needs each:** what a piece of mail carries beside its kind and bytes, and how a request and its answer are tied (the next ADR; it adds effects and no second way to act); what the `Actors` and `Within` boundaries offer; when applied mail is delivered and in what order actors run; large payloads, a further effect; the repository of code; the mail by which a parent learns a child closed, faulted, or trapped; how mail says which actor it is for, which comes with the rest of what mail carries; and the engine answering each request an ended actor left unanswered, which comes with the tie between a request and its answer.
+- **Not decided here, and due before the piece that needs each:** what a piece of mail carries beside its kind and bytes, and how a request and its answer are tied (the next ADR; it adds effects and no second way to act); what the `Actors` and `Within` boundaries offer; when applied mail is delivered and in what order actors run; large payloads, a further effect; the repository of code; the mail by which a parent learns a child closed, faulted, or trapped, and what an actor's `end` is told of how its children ended; how mail says which actor it is for, which comes with the rest of what mail carries; and the engine answering each request an ended actor left unanswered, which comes with the tie between a request and its answer.
 
 ## Alternatives considered
 
