@@ -61,6 +61,20 @@ pub struct ActorRef { .. }
 - A reference says the actor existed when the reference was made. It does not say the actor is still there. Mail sent through a reference to a closed actor is not delivered. How undelivered mail ends is decided with the envelope, in a later ADR.
 - The engine has one table of actors, keyed by path, and it alone writes it. A reference, a resolve, and a delivery all read that table.
 
+**An actor's id is a short reference to its path.**
+
+```rust
+pub struct ActorId(u64);
+```
+
+- An `ActorId` is 64 bits computed from the path's text. The path stays the actor's identity. The id stands for it where a path's text would be carried many times over, as in each effect of a turn (ADR-0009).
+- **Only the engine computes an id.** No guest, tool, or other engine computes one, and none is written as a constant. The function is therefore the engine's to change.
+- The function is FNV-1a with ADR-0006's basis and prime, over the bytes of the path's text. A child's id is its parent's id continued over the mark `/` and the child's segment as the path spells it. That gives the same number as hashing the child's whole text, so the engine reaches a child's id from its parent's without the text.
+- An id is good for the life of the engine that made it. Another engine, or a later run, may give the same path a different id. What is kept longer than the engine carries paths.
+- An id is plain data (ADR-0004), and one that was decoded is a claim like any other.
+- **An id is not an address.** Nothing sends to one and no reference is made from one. Who an actor may send to is unchanged.
+- The table keeps each path's id beside it. A spawn whose id is already held by a different path, live or closed, is refused.
+
 ## Consequences
 
 - Who may hold a reference to an actor follows from who was told about it. A reference spreads only by mail, by the sender of mail being known, and by a resolve the engine answers.
@@ -69,6 +83,8 @@ pub struct ActorRef { .. }
 - The engine remembers every closed path, so that a spawn there is refused. A parent that makes a child per request leaves one behind for each. The cost is kept small by what is stored: a type and a key are each a number in a table, and so is a path.
 - A root has a key like any other actor, so the path allows several roots of one type. Whether a type's actors use `Only` or named keys is declared by the type, in a later ADR.
 - A shorter spelling for a person typing a path, one that leaves out a type the parent makes obvious, is not part of this ADR. It needs the table of which child types a parent declares and enters with the first boundary where a person types a path.
+- An id does not say where its actor stands. A reader gets the path from the engine's table, or from the spawns in a record that began with the engine. Whether a reader outside the engine may ask for an id's path is not decided, and neither is whether an `ActorRef` carries the id.
+- A collision can be made on purpose. FNV-1a can be run backwards, and a parent picks its children's keys, so an actor can make a child whose id is that of a path another actor will spawn later. That spawn is then refused, and the refusal names both paths. Mail is never delivered to the wrong actor. Closing this takes an id keyed with a secret the engine holds, which is possible because only the engine computes an id. It is left for later.
 - Typed references and typed paths, which say at build time what mail the actor on the other end handles, stand on these types and are a later ADR.
 
 ## Alternatives considered
@@ -77,5 +93,7 @@ pub struct ActorRef { .. }
 - **Two kinds of segment, one with a key and one without.** The same spellings, and every piece of code that handles a segment handles two shapes. One key with a reserved value keeps one shape.
 - **A path stored as its parts**, a struct of segments. The schema then shows the parts, and a JSON view of mail spells a one-line path as nested objects wherever one appears. A struct cannot be a map key (ADR-0002).
 - **An opaque number as the actor's identity, with the path as a label.** Smaller to send. A number says nothing about where the actor stands, so who owns it would have to be looked up.
+- **An id anyone may compute**, with its bytes stated as ADR-0006 states a kind's. A guest could then name actors by id in what it returns. The function could never change, a keyed id would be ruled out, and the engine would check every id a guest wrote.
+- **An id handed out by the engine as each actor is made.** Dense, and free of collisions. A turn does not write the engine (ADR-0009), so a child stood up in a turn would have no id until the turn was over.
 - **A reference built from any path, checked when mail is sent.** No resolve step. Every send then carries a claim the engine has not checked, and an actor can address what it was never told about.
 - **Reusing a path after its actor closes, with each reference meaning one particular birth.** The engine would remember nothing about closed actors, and a stale reference would still fail. A path would then name different actors at different times: a log could not be read by path, and a path held outside the engine would silently come to mean a newcomer.
