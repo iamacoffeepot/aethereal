@@ -24,7 +24,16 @@ pub enum ChildKey {
 
 - An actor's type is named by a `KindName` (ADR-0006), such as `aether.window.surface`. There is no second sort of name.
 - A `ChildKey` says which actor of a type this is among those in one place. An actor's type names the type of its key (ADR-0009). A type whose key is `()` is a **singleton**: a place holds at most one, and its key is `Only`. Any other key type makes the actor **instanced**: a place holds many, and each key is `Named`. A `KeyName` is 1 to 64 bytes: a lowercase ASCII letter or a digit, then lowercase ASCII letters, digits, `_`, `-`, and `.`. Its first byte is never `.` or `-`, so none reads as a relative path or a flag where a person types it.
-- **A key is a typed value, and its type says what keys there are.** A key type gives a `KeyName` for each of its values, a different one for each, so a path still has one spelling. A type with two values allows two children and no third. A number that counts upward gives a parent that makes a child per request a key that never names a closed path. `()` is the one key type that gives no name.
+- **A key is a typed value, and its type says what keys there are.**
+
+  ```rust
+  pub trait TypedKey: Sized {
+      fn to_key(&self) -> ChildKey;
+      fn from_key(key: &ChildKey) -> Option<Self>;    // none: not a key of this type
+  }
+  ```
+
+  A key type turns each of its values into a `ChildKey`, a different one for each, and reads a `ChildKey` back into the value that made it. Going there and back gives the same value, and a `ChildKey` that reads as a value is the one that value writes, so a path still has one spelling. A path holds the `ChildKey`, and an actor's code holds the typed value. A type with two values allows two children and no third. A number that counts upward gives a parent that makes a child per request a key that never names a closed path. `()` is the one key type that gives no name.
 - The key follows from the actor's type and is not chosen beside it. A singleton and an instanced actor are spawned by separate effects (ADR-0009): the one for a singleton carries no key, and the one for an instanced type carries a `KeyName`. So a singleton with a named key, and an instanced actor with none, cannot be written, and one place never holds both `surface` and `surface:left`.
 - `KindName` and `KeyName` are checked when built: a constant that does not conform stops the build, and the decoder refuses text that does not conform. Neither hands out its text.
 
