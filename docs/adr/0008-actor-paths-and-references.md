@@ -23,7 +23,8 @@ pub enum ChildKey {
 ```
 
 - An actor's type is named by a `KindName` (ADR-0006), such as `aether.window.surface`. There is no second sort of name.
-- A `ChildKey` says which actor of a type this is among those in one place. A type of which a place holds at most one uses `Only`. Otherwise the key is `Named`, and a `KeyName` is 1 to 64 bytes: a lowercase ASCII letter or a digit, then lowercase ASCII letters, digits, `_`, `-`, and `.`. A key cannot be `.`, `..`, or start with `-`, so none reads as a relative path or a flag where a person types it.
+- A `ChildKey` says which actor of a type this is among those in one place. An actor's type declares which it is: a **singleton**, of which a place holds at most one, or **instanced**, of which a place holds many. A singleton's key is `Only` and an instanced actor's key is `Named`. A `KeyName` is 1 to 64 bytes: a lowercase ASCII letter or a digit, then lowercase ASCII letters, digits, `_`, `-`, and `.`. A key cannot be `.`, `..`, or start with `-`, so none reads as a relative path or a flag where a person types it.
+- The key follows from the type's declaration and is not chosen beside it. The spawn of a singleton takes no key, and the spawn of an instanced type takes a `KeyName`. So a singleton with a named key, and an instanced actor with none, cannot be written, and one place never holds both `surface` and `surface:left`.
 - `KindName` and `KeyName` are checked when built: a constant that does not conform stops the build, and the decoder refuses text that does not conform. Neither hands out its text.
 
 **An actor's path is where it stands.**
@@ -85,7 +86,7 @@ pub struct ActorId(u64);
 - Depth is capped so that what walks a path or a branch has a bound it can state: a path can arrive as bytes, and closing an actor reaches everything beneath it. Nothing that walks either recurses.
 - How a path is paired with the engine it belongs to when it crosses between engines is decided with that boundary.
 - The engine remembers every closed path, so that a spawn there is refused. A parent that makes a child per request leaves one behind for each. The cost is kept small by what is stored: a type and a key are each a number in a table, and so is a path.
-- A root has a key like any other actor, so the path allows several roots of one type. Whether a type's actors use `Only` or named keys is declared by the type, in a later ADR.
+- A root has a key like any other actor, so the path allows several roots of one type. How a type writes its declaration, singleton or instanced, is decided with the actor's own shape (ADR-0009).
 - A shorter spelling for a person typing a path, one that leaves out a type the parent makes obvious, is not part of this ADR. It needs the table of which child types a parent declares and enters with the first boundary where a person types a path.
 - An id does not say where its actor stands. A reader gets the path from the engine's table, or from the spawns in a record that began with the engine. Whether a reader outside the engine may ask for an id's path is not decided.
 - A reference made up from the id of a known path passes the check. It reaches nothing a resolve of that path would not, since any actor may ask the engine to resolve a path it knows.
@@ -95,6 +96,7 @@ pub struct ActorId(u64);
 ## Alternatives considered
 
 - **A written key on every segment.** One spelling. A type of which there is one would then carry a key its author had to invent and every user had to repeat.
+- **A reserved key text, such as the empty string, for a singleton.** One type for a key and no case to match. It is the same key as `Only` under another spelling, and `KeyName` would then have a value no author may choose.
 - **Two kinds of segment, one with a key and one without.** The same spellings, and every piece of code that handles a segment handles two shapes. One key with a reserved value keeps one shape.
 - **A path stored as its parts**, a struct of segments. The schema then shows the parts, and a JSON view of mail spells a one-line path as nested objects wherever one appears. A struct cannot be a map key (ADR-0002).
 - **An opaque number as the actor's identity, with the path as a label.** Smaller to send. A number says nothing about where the actor stands, so who owns it would have to be looked up.
