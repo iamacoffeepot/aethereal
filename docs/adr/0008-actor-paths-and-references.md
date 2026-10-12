@@ -73,7 +73,9 @@ pub struct ActorId(u64);
 - An id is good for the life of the engine that made it. Another engine, or a later run, may give the same path a different id. What is kept longer than the engine carries paths.
 - An id is plain data (ADR-0004), and one that was decoded is a claim like any other.
 - **An id is not an address.** Nothing sends to one and no reference is made from one. Who an actor may send to is unchanged.
-- The table keeps each path's id beside it. A spawn is refused when its id is already in the table, live or closed: held by the same path, the key is taken, and held by a different path, the two collide.
+- **An id is built down from the root**, each from its parent's, so it stands for every segment above it. Only a parent makes the ids directly beneath its own, since only it spawns there.
+- **Whether a child's key is free is its parent's own knowledge.** A spawn is refused when its kind and key have been used beneath that parent, live or closed. No other actor's spawn bears on the answer, so a parent decides it within its turn.
+- The table keeps each path's id beside it, live or closed.
 - **A reference is an id the engine has checked.** An `ActorRef` holds an `ActorId` and nothing else. Making one is the check that the id is in the table, and wherever a reference is read at a boundary the reader makes that check again. So a reference is eight bytes in mail and in an actor's state, and bytes that name no actor are refused.
 - A reference gives up its path by a read of the table, since the id alone does not say where the actor stands.
 
@@ -87,7 +89,7 @@ pub struct ActorId(u64);
 - A shorter spelling for a person typing a path, one that leaves out a type the parent makes obvious, is not part of this ADR. It needs the table of which child types a parent declares and enters with the first boundary where a person types a path.
 - An id does not say where its actor stands. A reader gets the path from the engine's table, or from the spawns in a record that began with the engine. Whether a reader outside the engine may ask for an id's path is not decided.
 - A reference made up from the id of a known path passes the check. It reaches nothing a resolve of that path would not, since any actor may ask the engine to resolve a path it knows.
-- A collision can be made on purpose. FNV-1a can be run backwards, and a parent picks its children's keys, so an actor can make a child whose id is that of a path another actor will spawn later. That spawn is then refused, and the refusal names both paths. Mail is never delivered to the wrong actor. Closing this takes an id keyed with a secret the engine holds, which is possible because only the engine computes an id. It is left for later.
+- Two paths are taken to have two ids. By accident they do: a million paths share an id with odds near one in a hundred million. On purpose they need not, since FNV-1a can be run backwards and a parent picks its children's keys. What the engine does when two paths share an id is not decided here. The remedy is an id keyed with a secret the engine holds, which is possible because only the engine computes an id.
 - Typed references and typed paths, which say at build time what mail the actor on the other end handles, stand on these types and are a later ADR.
 
 ## Alternatives considered
