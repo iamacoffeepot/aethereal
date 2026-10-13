@@ -68,7 +68,7 @@ pub trait View {
 
 **An actor that ends handles no more mail.** Mail it had when it ended and had not yet handled is not delivered, as mail that reaches it later is not. An actor that wants to finish what it was sent closes on a piece of mail that asks it to: everything queued ahead of that mail has been handled by then.
 
-**An ending actor's closing turn is a turn of the next step.** At the end of the step in which an actor closes or fails, the fold marks it and every actor beneath it as ended. In the step after, each of them runs its closing turn (ADR-0009's `end`) among that step's other turns, in no order among them, and what they send goes out with that step's mail.
+**An ending actor's closing turn is a turn of the next step.** At the end of the step in which an actor closes or fails, the fold marks it as ended. Only an actor's own ending marks it: the actors beneath it are not ended by the engine (ADR-0009). In the step after, the actor runs its closing turn (ADR-0009's `end`) among that step's other turns, in no order among them, and what it sends goes out with that step's mail.
 
 **How many workers a step wakes follows from the work it holds**, not from how many turns it has: the cost of its turns as measured so far, against the measured cost of waking a worker.
 

@@ -103,7 +103,7 @@ pub struct ActorId(u64);
 ## Consequences
 
 - Who may hold a reference to an actor follows from who was told about it. A reference spreads only by mail, by the sender of mail being known, and by a resolve the engine answers.
-- Depth is capped so that what walks a path or a branch has a bound it can state: a path can arrive as bytes, and closing an actor reaches everything beneath it. Nothing that walks either recurses.
+- Depth is capped so that what walks a path or a branch has a bound it can state: a path can arrive as bytes, and a branch can be read from the table. Nothing that walks either recurses.
 - How a path is paired with the engine it belongs to when it crosses between engines is decided with that boundary.
 - A path sorts by its text, so children keyed by number do not sort in the order they were made: `12` comes before `7`. Nothing here reads meaning from that order.
 - The engine remembers every closed path, so that a spawn there is refused. A parent that makes a child per request leaves one behind for each. The cost is kept small by what is stored: a type and a key are each a number in a table, and so is a path.
