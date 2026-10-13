@@ -66,6 +66,8 @@ pub trait View {
 
 **An actor that ends handles no more mail.** Mail it had when it ended and had not yet handled is not delivered, as mail that reaches it later is not. An actor that wants to finish what it was sent closes on a piece of mail that asks it to: everything queued ahead of that mail has been handled by then.
 
+**An ending actor's closing turn is a turn of the next step.** At the end of the step in which an actor closes or fails, the fold marks it and every actor beneath it as ended. In the step after, each of them runs its closing turn (ADR-0009's `end`) among that step's other turns, in no order among them, and what they send goes out with that step's mail.
+
 **How many workers a step wakes follows from the work it holds**, not from how many turns it has: the cost of its turns as measured so far, against the measured cost of waking a worker.
 
 ## Consequences
@@ -80,7 +82,7 @@ pub trait View {
 - A chain of mail takes one step for each actor it passes through.
 - The count of changes in ADR-0008's table goes, and so does a reader holding a number: the step's number is the position.
 - ADR-0009 said no worker waits for the others and there is no moment when all of them stop. Between two steps there is such a moment.
-- **Not decided here:** in which step the closing turns of an ending actor and of the actors beneath it run; domains of actors that never meet, each with steps of its own, so that a slow turn in one does not hold back another; and how the cost of a wake is kept true when few workers are being woken.
+- **Not decided here:** domains of actors that never meet, each with steps of its own, so that a slow turn in one does not hold back another; and how the cost of a wake is kept true when few workers are being woken.
 
 ## Alternatives considered
 
