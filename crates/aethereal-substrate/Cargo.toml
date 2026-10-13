@@ -1,10 +1,10 @@
 [package]
-name = "aethereal-engine"
+name = "aethereal-substrate"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "The engine: the function that computes an actor's id, and the one table of actors"
+description = "The substrate, the engine's core: the function that computes an actor's id, and the one table of actors"
 
 [dependencies]
 aethereal-data = { path = "../aethereal-data" }

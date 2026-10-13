@@ -1,4 +1,6 @@
-//! The engine's names: an actor's id, and the one table of actors (ADR-0008).
+//! The substrate: the core of the engine, which holds what its actors share.
+//!
+//! It holds the engine's names: an actor's id, and the one table of actors (ADR-0008).
 //!
 //! An id is computed here and nowhere else. The table says which actors there
 //! are and which have closed; every change to it is numbered, and a reader

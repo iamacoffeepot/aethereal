@@ -3,8 +3,8 @@ resolver = "3"
 members = [
     "crates/aethereal-data",
     "crates/aethereal-data-derive",
-    "crates/aethereal-engine",
     "crates/aethereal-math",
+    "crates/aethereal-substrate",
 ]
 
 [workspace.package]
