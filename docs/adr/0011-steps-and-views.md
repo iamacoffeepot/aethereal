@@ -39,6 +39,8 @@ pub trait View {
 }
 ```
 
+**Only the engine defines a view, for now.** The views are the ones the engine itself needs, and actors share everything else by mail. The engine's own views go through the interface above, so that a view defined outside the engine is later an addition.
+
 **The engine keeps each view, and it does the same for every one.**
 
 - It keeps two copies. Turns read one, and the fold writes the other.
