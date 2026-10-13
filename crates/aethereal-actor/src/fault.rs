@@ -1,6 +1,6 @@
 //! A fault: why a turn could not go on (ADR-0009).
 
-use aethereal_data::{Budget, DecodeError, EncodeError, Kind, KindId, Plain, from_bytes, to_bytes};
+use aethereal_data::{Budget, DecodeError, EncodeError, Kind, KindId, KindName, Plain, from_bytes, to_bytes};
 use alloc::vec::Vec;
 
 /// Why a turn could not go on: a reason the actor chose, as its kind's id and bytes (ADR-0009).
@@ -20,6 +20,11 @@ impl Fault {
     /// Refused when `reason` holds a collection of more elements than a count can state.
     pub fn new<K: Kind + Plain>(reason: &K) -> Result<Self, EncodeError> {
         Ok(Self { kind: KindId::of::<K>(), bytes: to_bytes(reason)? })
+    }
+
+    /// The fault whose reason is the kind `K`, which holds nothing and so has no bytes.
+    fn bare<K: Kind + Plain>() -> Self {
+        Self { kind: KindId::of::<K>(), bytes: Vec::new() }
     }
 
     /// The id of the reason's kind.
@@ -42,10 +47,42 @@ impl Fault {
     }
 }
 
+/// The reason of a turn that read bytes which did not decode as the kind they claimed (ADR-0009).
+///
+/// It is what `?` makes of a [`DecodeError`] in a handler. A handler that is
+/// to carry on past unreadable mail matches on the error.
+#[derive(Debug, PartialEq, Eq, Plain)]
+pub struct Unreadable;
+
+impl Kind for Unreadable {
+    const NAME: KindName = KindName::new("aether.actor.unreadable");
+}
+
+impl From<DecodeError> for Fault {
+    fn from(_: DecodeError) -> Self {
+        Self::bare::<Unreadable>()
+    }
+}
+
+/// The reason of a turn that wrote a value which holds a collection too long to encode (ADR-0009).
+///
+/// It is what `?` makes of an [`EncodeError`] in a handler.
+#[derive(Debug, PartialEq, Eq, Plain)]
+pub struct Unwritable;
+
+impl Kind for Unwritable {
+    const NAME: KindName = KindName::new("aether.actor.unwritable");
+}
+
+impl From<EncodeError> for Fault {
+    fn from(_: EncodeError) -> Self {
+        Self::bare::<Unwritable>()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aethereal_data::KindName;
     use alloc::string::String;
 
     #[derive(Debug, PartialEq, Plain)]

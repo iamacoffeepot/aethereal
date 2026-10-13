@@ -68,6 +68,7 @@ impl View for Actors {
             What::Spawn { from } | What::Embed { from } => beneath(by, from.singleton()),
             What::SpawnInstanced { from, key } | What::EmbedInstanced { from, key } => beneath(by, from.instanced(key)),
             What::Failed | What::Close => (by, Record::Ended),
+            What::Send { .. } | What::Faulted => return None,
         };
 
         Some((id.bits(), record))

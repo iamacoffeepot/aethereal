@@ -1,6 +1,6 @@
 //! The boundaries an actor's values cross: `Within` and `Actors` (ADR-0004).
 
-use aethereal_data::{ActorId, Boundary};
+use aethereal_data::{ActorId, ActorPath, Boundary, PathSegment};
 use core::marker::PhantomData;
 
 /// Whether the engine has made an actor under an id: what proves a reference (ADR-0008).
@@ -10,6 +10,21 @@ use core::marker::PhantomData;
 pub trait Made {
     /// Whether an actor has been made under `id`.
     fn made(&self, id: ActorId) -> bool;
+}
+
+/// The table of actors as a turn reads it: as it stood when the turn's step began (ADR-0008, ADR-0011).
+///
+/// The engine answers it. A turn writes nothing here: what it asks for is an
+/// effect, applied after it returns.
+pub trait Table: Made {
+    /// The id of the actor `path` names, when that actor is live.
+    fn resolve(&self, path: &ActorPath) -> Option<ActorId>;
+
+    /// The path `id` stands for, when an actor has been made under it, live or ended.
+    fn path(&self, id: ActorId) -> Option<ActorPath>;
+
+    /// The id of the child `segment` names beneath the actor `parent` stands for. Only the engine computes an id.
+    fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId;
 }
 
 /// What a boundary's writer offers a reference: leave to cross, and nothing else (ADR-0008).
