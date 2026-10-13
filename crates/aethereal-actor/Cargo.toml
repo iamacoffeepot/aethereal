@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "What an actor's code is written against: the effects a turn asks of the engine"
+description = "What an actor's code is written against: the effects a turn asks of the engine, and the fault a turn returns"
 
 [dependencies]
 aethereal-data = { path = "../aethereal-data" }
