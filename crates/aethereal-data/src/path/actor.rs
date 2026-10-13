@@ -190,8 +190,7 @@ impl Error for PathTooDeep {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::path::samples::{decode_text, deep};
-    use crate::path::{ChildKey, KeyName};
+    use crate::path::samples::{Side, decode_text, deep};
     use crate::{KindName, to_bytes};
     use alloc::collections::BTreeMap;
     use alloc::vec::Vec;
@@ -202,7 +201,7 @@ mod tests {
 
     /// The segment of the kind `a` with no name, as `deep` writes it.
     fn plain_segment() -> PathSegment {
-        PathSegment::new(KindName::new("a"), ChildKey::Only)
+        PathSegment::new(KindName::new("a"), &())
     }
 
     /// The path `text` spells, decoded as it arrives from outside.
@@ -284,8 +283,8 @@ mod tests {
     #[test]
     fn built_path_equals_written_path() {
         // Catches a builder that writes a spelling `new` and the decoder would spell otherwise.
-        let surface = PathSegment::new(KindName::new("aether.window.surface"), ChildKey::Named(KeyName::new("left")));
-        let window = ActorPath::from_root(&PathSegment::new(KindName::new("aether.window"), ChildKey::Only));
+        let surface = PathSegment::new(KindName::new("aether.window.surface"), &Side::Left);
+        let window = ActorPath::from_root(&PathSegment::new(KindName::new("aether.window"), &()));
         assert_eq!(window, WINDOW);
         assert_eq!(window.child(&surface), Ok(LEFT));
         assert_eq!(decode_text::<ActorPath>(&LEFT.to_string()), Ok(LEFT));
