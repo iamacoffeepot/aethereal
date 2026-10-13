@@ -60,6 +60,7 @@ impl Turn<'_> {
 - Nothing an actor owns is left open when it ends, whether or not its author wrote a close for it.
 - An actor that holds a handle cannot be written to a file or sent to another engine: a handle does not cross `Bare` or `Engines`. Replacing an actor's code keeps its resources, because its state crosses `Within`.
 - `Within` offers the owner's resources and `Actors` offers the ones in transit. These are the first offers either boundary makes (ADR-0004).
+- **Not decided here:** how a native actor makes the value it then keeps, given that opening a file or a socket in a turn acts outside the turn's effects (ADR-0009); whether a `begin` may `keep`; and how the chassis, which has no turn, makes the `Given` values it puts in a root's config.
 - Two kinds that differ only in what their handles hold have the same layout (ADR-0006), since each handle is one integer. The engine's check of the ticket is what tells them apart.
 
 ## Alternatives considered
