@@ -1,4 +1,4 @@
-//! The `Plain` derive: one field list into a schema and a codec (ADR-0004).
+//! The `Plain` and `Codec` derives: one field list into a schema and a codec (ADR-0004).
 
 mod enumeration;
 mod structure;
@@ -9,7 +9,26 @@ use quote::{quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Generics, Ident, Type};
 
-/// What a struct and an enum each supply to the four impls.
+/// Which derive is being expanded.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Derive {
+    /// `Plain`: the schema, the codec, and the statement that the type is only its bytes.
+    Plain,
+    /// `Codec`: the schema and the codec, for a type that holds a bound value.
+    Codec,
+}
+
+impl Derive {
+    /// The derive's name, for error messages.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Plain => "Plain",
+            Self::Codec => "Codec",
+        }
+    }
+}
+
+/// What a struct and an enum each supply to the impls.
 pub struct Codec {
     /// The expression of `Schema::SHAPE`.
     pub shape: TokenStream2,
@@ -19,27 +38,28 @@ pub struct Codec {
     pub decode: TokenStream2,
 }
 
-/// Expands `#[derive(Plain)]` into `Schema`, `Encode`, `Decode`, and `Plain` impls.
-pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
-    reject_lifetimes(&input.generics, "Plain")?;
+/// Expands a derive into `Schema`, `Encode`, and `Decode` impls, and for `Plain` the `Plain` impl.
+pub fn expand(input: &DeriveInput, derive: Derive) -> syn::Result<TokenStream2> {
+    reject_lifetimes(&input.generics, derive.name())?;
 
     match &input.data {
-        Data::Struct(data) => structure::expand(input, data),
-        Data::Enum(data) => enumeration::expand(input, data),
+        Data::Struct(data) => structure::expand(input, data, derive),
+        Data::Enum(data) => enumeration::expand(input, data, derive),
         Data::Union(data) => {
             let token = data.union_token;
-            let message = "Plain derive does not support unions";
+            let message = format!("{} derive does not support unions", derive.name());
             Err(syn::Error::new_spanned(token, message))
         }
     }
 }
 
-/// The four impls of one derived type, each bounded by the type of every field.
+/// The impls of one derived type, each bounded by the type of every field.
 ///
 /// The codec is written once over every boundary `__B`, so the type crosses
-/// exactly the boundaries all its fields cross. `impl Plain` requires every
-/// field to be `Plain`, so a field that is not is an error at its type.
-pub fn impls(input: &DeriveInput, field_types: &[&Type], codec: &Codec) -> TokenStream2 {
+/// exactly the boundaries all its fields cross. `impl Plain`, which only the
+/// `Plain` derive writes, requires every field to be `Plain`, so a field that
+/// is not is an error at its type.
+pub fn impls(input: &DeriveInput, field_types: &[&Type], codec: &Codec, derive: Derive) -> TokenStream2 {
     let name = &input.ident;
     let (_, ty_generics, _) = input.generics.split_for_impl();
     let over_boundary = over_boundary(&input.generics);
@@ -52,6 +72,13 @@ pub fn impls(input: &DeriveInput, field_types: &[&Type], codec: &Codec) -> Token
     let (decode_impl, _, decode_where) = decode_generics.split_for_impl();
     let (plain_impl, _, plain_where) = plain_generics.split_for_impl();
     let Codec { shape, encode, decode } = codec;
+    let plain = match derive {
+        Derive::Plain => quote! {
+            #[automatically_derived]
+            impl #plain_impl ::aethereal_data::Plain for #name #ty_generics #plain_where {}
+        },
+        Derive::Codec => TokenStream2::new(),
+    };
 
     quote! {
         #[automatically_derived]
@@ -78,8 +105,7 @@ pub fn impls(input: &DeriveInput, field_types: &[&Type], codec: &Codec) -> Token
             }
         }
 
-        #[automatically_derived]
-        impl #plain_impl ::aethereal_data::Plain for #name #ty_generics #plain_where {}
+        #plain
     }
 }
 

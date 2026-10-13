@@ -101,6 +101,12 @@ pub use schema::{
 /// ```
 pub use aethereal_data_derive::Plain;
 
+/// Derives `Schema` and the codec over every boundary, for a type that holds a bound value (ADR-0004).
+///
+/// It writes the codec `Plain` writes and does not state `Plain`: the type
+/// crosses exactly the boundaries all its fields cross.
+pub use aethereal_data_derive::Codec;
+
 /// Derives `Key` for a struct with exactly one field (ADR-0004).
 ///
 /// Anything else is a compile error saying so.
