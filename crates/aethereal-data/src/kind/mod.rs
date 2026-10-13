@@ -1,6 +1,5 @@
 //! Kinds: plain data with a name (ADR-0006).
 
-mod fnv;
 mod id;
 pub mod layout;
 mod name;

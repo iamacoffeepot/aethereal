@@ -4,6 +4,7 @@ members = [
     "crates/aethereal-data",
     "crates/aethereal-data-derive",
     "crates/aethereal-math",
+    "crates/aethereal-substrate",
 ]
 
 [workspace.package]
