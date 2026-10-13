@@ -53,7 +53,7 @@ pub enum Tie {
 
 **Mail sent from a `begin` belongs to the turn that stood the actor up.** A child's `begin` runs inside its parent's turn (ADR-0009), so its mail has the cause and the root of the mail the parent was handling.
 
-**An ending belongs to the chain of the mail that brought it about.** When an actor closes or fails while handling a piece of mail, the mail that tells its parent and its watchers has that piece of mail as its cause, and its root. The actors beneath it end because it did, and the mail their endings leave has the same cause and root. So does mail sent from a closing turn (ADR-0009's `end`). A chain has therefore not finished until the endings it led to have been handled.
+**An ending belongs to the chain of the mail that brought it about.** When an actor closes or fails while handling a piece of mail, the mail that tells its parent and its watchers has that piece of mail as its cause, and its root. So does mail sent from its closing turn (ADR-0009's `end`). A child that closes because its parent told it to closes while handling that mail, so its ending is in the same chain. A chain has therefore not finished until the endings it led to have been handled.
 
 **A root's `begin` starts a chain of its own.** Nothing caused it and it is handling no mail. The mail it sends has no cause, and its root is the id made of that root actor and a count of zero, which no piece of sent mail has.
 
