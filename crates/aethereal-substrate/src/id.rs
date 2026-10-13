@@ -23,7 +23,7 @@ pub fn path_id(path: &ActorPath) -> ActorId {
 }
 
 /// A segment's hash: FNV-1a over the segment as the path spells it.
-pub fn segment_hash(segment: &PathSegment) -> u64 {
+fn segment_hash(segment: &PathSegment) -> u64 {
     Fnv::new().bytes(segment.to_string().as_bytes()).finish()
 }
 
