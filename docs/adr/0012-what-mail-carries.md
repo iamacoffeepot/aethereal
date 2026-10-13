@@ -40,6 +40,7 @@ pub struct Mail {
 pub enum Tie {
     Tell,                          // nothing is owed for it
     Ask,                           // an answer is owed
+    Part { request: MailId },      // one part of a stream that request opened
     Answer { request: MailId },    // the answer to that request
 }
 ```
@@ -85,7 +86,25 @@ pub struct Held<A: Kind> { .. }      // I owe this answer
 - A hold is typed by the answer it owes. It is kept in the actor's state, crosses `Within` and no other boundary (ADR-0004), and is neither `Clone` nor `Copy`.
 - `turn.answer(held, &answer)` takes the hold by value, so a request cannot be answered twice. That is checked when the program is built.
 
-**The engine answers in an actor's place** when a request could not be delivered, and when an actor ends still owing an answer (ADR-0009). The answer given in its place says which of the two happened. So an asker always gets one answer, and its context is always given back to it.
+**A stream is a request that is sent parts before its answer.**
+
+```rust
+pub trait Stream: Request {
+    type Part: Kind;
+}
+
+// beside `Ask` and `Answer`:
+Part { request: MailId, kind: KindId, bytes: Vec<u8> }
+```
+
+- The asker opens a stream with an `Ask`, and the actor that takes it keeps the hold.
+- While it holds, it may send any number of parts. `turn.part(&held, &part)` borrows the hold, and a part names its request as an answer does.
+- **The answer says the stream is over.** It may carry a last value, such as a count or a reason. A request is answered once, so a stream ends once.
+- Parts and the answer are mail from one actor to one actor, so the parts arrive in the order they were sent and the answer after them (ADR-0009).
+- The asker's context lasts as long as the stream. The handler of a part is lent it, and the handler of the answer is given it.
+- A kind that opens a stream says what its parts are: `Stream::Part`. An actor that asks for one has a handler for its parts and for its answer.
+
+**The engine answers in an actor's place** when a request could not be delivered, and when an actor ends still owing an answer (ADR-0009). The answer given in its place says which of the two happened. So an asker always gets one answer, and its context is always given back to it. A stream whose producer ends is told it is over the same way.
 
 **The program is checked for both ends when it is built.** A handler of a request returns `Request::Answer` or a hold of it. An actor that asks has a handler for that answer.
 
@@ -99,7 +118,7 @@ pub struct Held<A: Kind> { .. }      // I owe this answer
 - Every chain but a root's first begins at a resource, so the engine can say for any piece of mail what from outside set it off.
 - An actor's requests out, and the holds it owes, are part of its state: they are shown with it and carried onto new code with it.
 - A hold that is lost, by overwriting the state that held it, is answered only when its actor ends.
-- **Not decided here:** a request that is answered many times over, and how such a stream says it is over; the cause and root of the mail an ending leaves for a parent and for watchers; large payloads; and whether the cause is kept on every piece of mail or only in the record of a run.
+- **Not decided here:** how a live asker stops a stream early; how a producer that is too fast is slowed; the cause and root of the mail an ending leaves for a parent and for watchers; large payloads; and whether the cause is kept on every piece of mail or only in the record of a run.
 
 ## Alternatives considered
 
