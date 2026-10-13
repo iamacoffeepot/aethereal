@@ -24,10 +24,10 @@ pub struct MailId {
 - Two runs of the same turns give every piece of mail the same id, whichever worker ran which turn.
 - The id is the fixed order ADR-0011 asks for: mail that reaches an actor in one step is ordered by its id.
 
-**A piece of mail carries its cause and its root.**
+**A piece of mail carries its cause and its root.** The engine carries mail as an `Envelope`. A handler sees ADR-0009's `Mail`, which is the envelope's kind, sender, and bytes to read.
 
 ```rust
-pub struct Mail {
+pub struct Envelope {
     pub id: MailId,
     pub to: ActorId,             // the actor it is for
     pub cause: Option<MailId>,   // none: nothing inside the engine caused it, and nothing ever will have
