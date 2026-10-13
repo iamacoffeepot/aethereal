@@ -84,14 +84,13 @@ fn failed_turn_ends_its_actor() {
 }
 
 #[test]
-fn ended_path_is_not_made_again() {
-    // Catches a second spawn at a used key bringing an ended path back to life.
+#[should_panic(expected = "already held")]
+fn actor_made_under_a_held_id_stops_the_engine() {
+    // Catches a second actor made under an id quietly replacing the first, or bringing an ended path back to life.
     let (window, root) = window();
     let (surface, spawn) = surface(window);
     let mut table = table(4);
     table.fold(&[root, spawn.clone(), Effect::new(surface, What::Close), spawn]);
-
-    assert_eq!(table.standing(surface), Standing::Ended);
 }
 
 #[test]

@@ -72,12 +72,18 @@ impl View for Actors {
         Some((id.bits(), record))
     }
 
-    /// An id already in the table keeps the entry it has: a path names one actor for the engine's whole life
-    /// (ADR-0008), so a spawn at a used key is refused where it is asked for and never reaches here as a change.
+    /// # Panics
+    ///
+    /// Panics when an actor is made under an id the table already holds (ADR-0008). A parent refuses a key it has
+    /// used before it asks, so that is two paths with one id or a fault in the engine, and neither has a way on.
     fn fold(shard: &mut BTreeMap<u64, Entry>, key: u64, record: Record) {
         match record {
             Record::Made { above, segment } => {
-                shard.entry(key).or_insert(Entry { above, segment, life: Life::Live });
+                let held = shard.insert(key, Entry { above, segment, life: Life::Live });
+                assert!(
+                    held.is_none(),
+                    "actor table: an actor was made under the id {key:#018x}, which is already held"
+                );
             }
             Record::Ended => {
                 if let Some(entry) = shard.get_mut(&key) {

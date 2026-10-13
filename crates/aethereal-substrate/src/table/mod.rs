@@ -42,6 +42,10 @@ impl ActorTable {
     }
 
     /// Folds in the effects of one step's turns, in the order given.
+    ///
+    /// # Panics
+    ///
+    /// Panics when an effect makes an actor under an id the table already holds (ADR-0008).
     pub fn fold(&mut self, effects: &[Effect]) {
         self.actors.fold(effects);
     }
