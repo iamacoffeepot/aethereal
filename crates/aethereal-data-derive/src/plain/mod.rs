@@ -1,4 +1,4 @@
-//! The `Plain` and `Codec` derives: one field list into a schema and a codec (ADR-0004).
+//! The `Plain` and `Bound` derives: one field list into a schema and a codec (ADR-0004).
 
 mod enumeration;
 mod structure;
@@ -14,8 +14,8 @@ use syn::{Data, DeriveInput, Generics, Ident, Type};
 pub enum Derive {
     /// `Plain`: the schema, the codec, and the statement that the type is only its bytes.
     Plain,
-    /// `Codec`: the schema and the codec, for a type that holds a bound value.
-    Codec,
+    /// `Bound`: the schema and the codec, for a type that holds a bound value.
+    Bound,
 }
 
 impl Derive {
@@ -23,7 +23,7 @@ impl Derive {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Plain => "Plain",
-            Self::Codec => "Codec",
+            Self::Bound => "Bound",
         }
     }
 }
@@ -77,7 +77,7 @@ pub fn impls(input: &DeriveInput, field_types: &[&Type], codec: &Codec, derive: 
             #[automatically_derived]
             impl #plain_impl ::aethereal_data::Plain for #name #ty_generics #plain_where {}
         },
-        Derive::Codec => TokenStream2::new(),
+        Derive::Bound => TokenStream2::new(),
     };
 
     quote! {

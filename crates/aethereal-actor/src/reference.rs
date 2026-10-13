@@ -85,7 +85,7 @@ where
 mod tests {
     use super::*;
     use crate::{Actors, ActorsReader, ActorsWriter, Within, WithinReader, WithinWriter};
-    use aethereal_data::{Budget, Codec};
+    use aethereal_data::{Bound, Budget};
 
     /// A table that has made one actor.
     struct Only(ActorId);
@@ -97,7 +97,7 @@ mod tests {
     }
 
     /// A kind that holds a reference beside plain data.
-    #[derive(Debug, PartialEq, Codec)]
+    #[derive(Bound, Debug, PartialEq)]
     struct Subscribe {
         topic: u32,
         to: ActorRef,

@@ -105,7 +105,7 @@ pub use aethereal_data_derive::Plain;
 ///
 /// It writes the codec `Plain` writes and does not state `Plain`: the type
 /// crosses exactly the boundaries all its fields cross.
-pub use aethereal_data_derive::Codec;
+pub use aethereal_data_derive::Bound;
 
 /// Derives `Key` for a struct with exactly one field (ADR-0004).
 ///
