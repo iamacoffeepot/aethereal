@@ -68,9 +68,10 @@ pub struct ActorRef { .. }
 - A reference is a bound value (ADR-0004). It crosses between actors in one engine and may be kept in an actor's state. It does not cross between engines: there a path crosses, and the receiver asks its own engine to resolve it.
 - A reference says the actor existed when the reference was made. It does not say the actor is still there. Mail sent through a reference to a closed actor is not delivered. How undelivered mail ends is decided with the envelope, in a later ADR.
 - The engine has one table of actors, and it alone writes it: the table is a view the engine folds from spawns and endings (ADR-0011). A reference, a resolve, and a delivery all read that table.
-- **The table is the tree of actors itself.** Each actor holds the actors directly beneath it, so an actor's line up to its root and everything beneath it are read from the table. Only an actor's own turn adds a child beneath it, so each place in the tree has one writer.
-- **Beside the tree is an index from an id to its actor.** A reference, the sender of mail, and the `by` of an effect each name an actor by its id alone, and an id cannot be turned back into a path to walk. The index points into the tree and owns nothing of it.
-- **The table only grows.** An actor is written once, when it goes live, and marked once, when it closes.
+- **The table is keyed by an actor's id.** A reference, the sender of mail, and the `by` of an effect each name an actor by its id alone, and an id cannot be turned back into a path. An actor's entry holds the id of the actor above it and its own segment, so its path and its line up to its root are read from the table.
+- **An entry has one source for each of its two changes.** It is made by the spawn its parent asked for, or for a root by the chassis, and it is marked ended by the actor's own ending and by nothing else (ADR-0009).
+- **Who stands beneath an actor is a second view**, keyed by the parent's id and folded from the same spawns. It is built when something reads it.
+- **The table only grows.** An actor is written once, when it goes live, and marked once, when it ends.
 - **A turn reads the table as it stood when its step began** (ADR-0011), so nothing a turn reads goes from live to closed while it runs.
 
 **An actor's id is a short reference to its path.**
