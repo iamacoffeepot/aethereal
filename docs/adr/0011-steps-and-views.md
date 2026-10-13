@@ -24,6 +24,8 @@ A turn already says everything it wants of the engine as a list of effects (ADR-
 - Mail sent in a step is handled in a later one.
 - A step has a number, and steps are numbered upward from one count that only the engine advances, once a step.
 
+**A step carries the time.** The engine reads no clock (ADR-0001). The host passes the time in when it starts a step, and every turn of that step reads that one time. A record of a run holds each step's time beside its number. Knowing the time does not run an actor: an actor runs when it has mail.
+
 **A view is a fold over the effects of finished turns.** Its author writes two things: what the view keeps of an effect, and how one such record changes the view's state. The author writes no lock and no atomic, and nothing about workers.
 
 ```rust
