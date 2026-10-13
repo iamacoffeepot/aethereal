@@ -50,6 +50,8 @@ impl Turn<'_> {
 
 **A resource ends with its owner or with its mail.** When an actor closes, the engine drops its resources after its closing turn. When mail that carries a `Given` is not delivered, the engine drops the resource with the mail and records it.
 
+**What a resource brings in from outside the engine reaches its owner as mail, and its owner is the sender.** A key press, bytes on a socket, a read that finished: the host hands each to the engine between two steps, naming the resource. The engine delivers it to the actor that owns that resource, as mail from that same actor which says which handle it is for, and the owner handles it in the next step (ADR-0011). Mail from outside the engine therefore has an actor as its sender, as all mail does (ADR-0009), and what one resource brings in keeps its order. Whoever else should hear of it is mailed by the owner.
+
 **The chassis hands a root its resources the same way.** It puts them in the root's config as `Given` values, so a root is born as any actor is. The chassis has no turn, so it hands each value to the engine as it builds it, and the engine keeps the value and returns the `Given` that names it.
 
 **A resource is always somewhere.** It is in its owner's keeping, or in the engine's while a `Given` carries it to its new owner. The engine makes a `Given` and moves it, and it never holds one that is going nowhere.
@@ -64,7 +66,7 @@ impl Turn<'_> {
 - An actor that holds a handle cannot be written to a file or sent to another engine: a handle does not cross `Bare` or `Engines`. Replacing an actor's code keeps its resources, because its state crosses `Within`.
 - `Within` offers the owner's resources and `Actors` offers the ones in transit. These are the first offers either boundary makes (ADR-0004).
 - A turn that makes or uses a resource acts on the world outside its effects. A failed turn does not undo that, and such a turn cannot be run again from its record: a turn repeats only as far as its actor's own code does (ADR-0009).
-- **Not decided here:** work on a resource that has to wait. A turn does not block, and a browser host cannot. How an open or a read that takes time finishes, and how its result reaches the actor, is a later ADR.
+- **Not decided here:** what kind of mail each type of resource brings its owner, and how an actor asks a resource for work that takes time. A turn does not block, and a browser host cannot.
 - Two kinds that differ only in what their handles hold have the same layout (ADR-0006), since each handle is one integer. The engine's check of the ticket is what tells them apart.
 
 ## Alternatives considered
