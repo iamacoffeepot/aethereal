@@ -44,6 +44,7 @@ pub struct Fault {
 - An actor defines its reasons as kinds and returns one: `Fault::new(&reason)` requires `K: Kind + Plain` (ADR-0004). A reason is plain data: it says what went wrong with names, paths, numbers, and text, and it holds no reference to an actor and no resource. So a fault is made anywhere, with no turn in hand, and can be written to a log or sent out of the engine as it is.
 - Whoever is handed a fault reads it as a kind it knows: `fault.read::<K>()` answers with the reason when it is of kind `K`. A parent reacts to the reasons it knows and learns from the rest only that the child failed.
 - The kind's id names the reason to a reader that cannot decode it, so the engine can log a fault by name.
+- **A codec error in a handler becomes a fault with `?`.** The actor crate defines two reasons of its own: `Unreadable`, for bytes that did not decode as the kind they claimed, and `Unwritable`, for a value holding a collection too long to encode. A handler that uses `?` on a read or a send fails its turn with one of them. A handler that is to carry on past mail it cannot read matches on the error.
 
 An **effect** is one thing an actor asks of the engine, and it says which actor asked. An effect exists only for what the engine itself must do: an actor that could do a thing with its own state and mail gets no effect for it. The first effects are:
 
