@@ -41,7 +41,7 @@ pub struct Fault {
 }
 ```
 
-- An actor defines its reasons as kinds and returns one: `Fault::new(&reason)` requires `K: Kind + Encode<Actors>`, as a send does, so a reason that holds a value bound to its own actor does not build.
+- An actor defines its reasons as kinds and returns one: `Fault::new(&reason)` requires `K: Kind + Plain` (ADR-0004). A reason is plain data: it says what went wrong with names, paths, numbers, and text, and it holds no reference to an actor and no resource. So a fault is made anywhere, with no turn in hand, and can be written to a log or sent out of the engine as it is.
 - Whoever is handed a fault reads it as a kind it knows: `fault.read::<K>()` answers with the reason when it is of kind `K`. A parent reacts to the reasons it knows and learns from the rest only that the child failed.
 - The kind's id names the reason to a reader that cannot decode it, so the engine can log a fault by name.
 
@@ -203,6 +203,7 @@ pub enum Code {
 - **An actor acts as it runs, through calls the host offers.** Simple to write against, and the three costs under Context.
 - **The engine holds each actor's state, and a turn returns the new state.** A failed turn then costs nothing to undo and a guest instance holds nothing. Every turn decodes and encodes the whole state, which falls hardest on an actor with large state that runs every frame.
 - **An actor beside a separate state kind it converts to and from.** The actor may then work on any structure it likes. It is a second type and two conversions per actor, nothing checks that the conversion keeps everything, and a native actor could decline to offer it.
+- **A reason that crosses `Actors`, made by the turn.** A reason could then hold a reference or a resource being given. Only the turn can write at that boundary, so a helper with no turn in hand could not make a fault, and a resource in a fault nobody reads is one more thing for the engine to drop.
 - **A `Fault` that carries nothing, or a line of text.** Nothing to encode. An actor says why in its log, and a parent can read a reason only as words, so it cannot react to one.
 - **A failed turn leaves the actor running.** The actor then continues from a state no handler was written to produce.
 - **No `end` after a failed turn.** `end` then only ever sees a sound state. An actor that returned a `Fault` could say nothing as it went, though its code can still run, and the fault is the ending its parent most wants explained.
