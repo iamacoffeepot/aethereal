@@ -32,6 +32,12 @@ impl Effect {
     pub const fn what(&self) -> &What {
         &self.what
     }
+
+    /// What it asked for, taken from the effect.
+    #[must_use]
+    pub fn into_what(self) -> What {
+        self.what
+    }
 }
 
 /// What an effect asks for (ADR-0009).

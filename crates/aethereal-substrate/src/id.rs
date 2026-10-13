@@ -1,5 +1,6 @@
 //! The function that computes an actor's id (ADR-0008).
 
+use aethereal_actor::{Effect, What};
 use aethereal_data::{ActorId, ActorPath, Fnv, PathSegment};
 
 /// The id of the root `segment` names.
@@ -20,6 +21,17 @@ pub fn path_id(path: &ActorPath) -> ActorId {
     let basis = Fnv::new().finish();
 
     ActorId::new(path.segments().fold(basis, |above, segment| fold(above, segment_hash(&segment))))
+}
+
+/// The id and segment of the child `effect` stands up beneath the actor that asked, when it is a spawn or an embed.
+pub fn spawned(effect: &Effect) -> Option<(ActorId, PathSegment)> {
+    let segment = match effect.what() {
+        What::Spawn { from } | What::Embed { from } => from.singleton(),
+        What::SpawnInstanced { from, key } | What::EmbedInstanced { from, key } => from.instanced(key),
+        _ => return None,
+    };
+
+    Some((child_id(effect.by(), &segment), segment))
 }
 
 /// A segment's hash: FNV-1a over the segment as the path spells it.
