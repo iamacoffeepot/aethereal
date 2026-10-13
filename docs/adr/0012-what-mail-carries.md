@@ -32,8 +32,15 @@ pub struct Mail {
     pub to: ActorId,             // the actor it is for
     pub cause: Option<MailId>,   // none: nothing inside the engine caused it, and nothing ever will have
     pub root: MailId,
+    pub tie: Tie,
     pub kind: KindId,
     pub bytes: Vec<u8>,
+}
+
+pub enum Tie {
+    Tell,                          // nothing is owed for it
+    Ask,                           // an answer is owed
+    Answer { request: MailId },    // the answer to that request
 }
 ```
 
@@ -47,13 +54,52 @@ pub struct Mail {
 
 **A root's `begin` starts a chain of its own.** Nothing caused it and it is handling no mail. The mail it sends has no cause, and its root is the id made of that root actor and a count of zero, which no piece of sent mail has.
 
+**Asking and answering are effects of their own, beside `Send`.**
+
+```rust
+pub enum What {
+    // ... ADR-0009's effects, and:
+    Ask { to: To, kind: KindId, bytes: Vec<u8> },
+    Answer { request: MailId, kind: KindId, bytes: Vec<u8> },
+}
+
+pub trait Request: Kind {
+    type Answer: Kind;
+}
+```
+
+- An `Ask` is mail that is owed an answer. A `Send` is mail that is owed nothing.
+- **An answer names its request by the request's id.** The id is already unique to the asker, so the tie needs no number of its own. An `Answer` is delivered to the request's sender.
+- A kind that is asked says what answers it: `Request::Answer`.
+
+**The asker keeps a context for each request it has out.** `turn.ask(to, &request, context)` stores the context in the asker's own state under the request's count, and the handler of the answer is given it. A context is a kind, so it is kept with the rest of the actor's state. It is never dropped while its request is unanswered.
+
+**A request is answered once.** The handler of a request returns its answer, and the engine adds the `Answer`. Or it keeps a hold and answers in a later turn.
+
+**A hold is a promise to answer.**
+
+```rust
+pub struct Held<A: Kind> { .. }      // I owe this answer
+```
+
+- A hold is typed by the answer it owes. It is kept in the actor's state, crosses `Within` and no other boundary (ADR-0004), and is neither `Clone` nor `Copy`.
+- `turn.answer(held, &answer)` takes the hold by value, so a request cannot be answered twice. That is checked when the program is built.
+
+**The engine answers in an actor's place** when a request could not be delivered, and when an actor ends still owing an answer (ADR-0009). The answer given in its place says which of the two happened. So an asker always gets one answer, and its context is always given back to it.
+
+**The program is checked for both ends when it is built.** A handler of a request returns `Request::Answer` or a hold of it. An actor that asks has a handler for that answer.
+
+**Mail that is owed nothing and is not delivered ends there.** Its sender learns nothing of it. An actor that must know another has ended watches it (ADR-0009).
+
 ## Consequences
 
 - Whether a chain has finished is counted by root: mail sent, less mail handled (ADR-0011).
 - What happened can be followed back from any piece of mail by its causes, to the resource that began it.
 - Every piece of mail carries three ids, of sixteen bytes each.
 - Every chain but a root's first begins at a resource, so the engine can say for any piece of mail what from outside set it off.
-- **Not decided here:** how a request and its answer are tied; how mail that is not delivered ends, and what its sender learns; the cause and root of the mail an ending leaves for a parent and for watchers; large payloads; and whether the cause is kept on every piece of mail or only in the record of a run.
+- An actor's requests out, and the holds it owes, are part of its state: they are shown with it and carried onto new code with it.
+- A hold that is lost, by overwriting the state that held it, is answered only when its actor ends.
+- **Not decided here:** a request that is answered many times over, and how such a stream says it is over; the cause and root of the mail an ending leaves for a parent and for watchers; large payloads; and whether the cause is kept on every piece of mail or only in the record of a run.
 
 ## Alternatives considered
 
