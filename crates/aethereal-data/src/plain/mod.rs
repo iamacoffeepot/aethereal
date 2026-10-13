@@ -1,5 +1,6 @@
 //! Plain data: values that are only their bytes (ADR-0004).
 
+mod boxed;
 mod map;
 mod scalar;
 mod sequence;
