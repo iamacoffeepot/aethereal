@@ -1,6 +1,6 @@
 //! A view: state many actors read, folded from the effects of finished turns (ADR-0011).
 
-use crate::Effect;
+use aethereal_actor::Effect;
 use std::num::NonZeroUsize;
 
 /// A view: what it keeps of an effect, and how one such record changes its state (ADR-0011).

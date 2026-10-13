@@ -4,9 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "The substrate, the engine's core: effects, the views folded from them, and the table of actors as the first view"
+description = "The substrate, the engine's core: the views folded from the effects of finished turns, and the table of actors as the first"
 
 [dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 
 [lints]

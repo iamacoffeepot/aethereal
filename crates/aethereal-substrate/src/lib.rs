@@ -8,12 +8,10 @@
 
 #![forbid(unsafe_code)]
 
-mod effect;
 mod id;
 mod table;
 mod view;
 
-pub use effect::{Code, Effect, What};
 pub use id::{child_id, path_id, root_id};
 pub use table::{ActorTable, Standing};
 pub use view::{Folded, View};

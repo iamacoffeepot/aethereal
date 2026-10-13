@@ -4,9 +4,10 @@ mod actors;
 #[cfg(test)]
 mod tests;
 
+use crate::Folded;
 use crate::id::path_id;
-use crate::{Effect, Folded};
 use actors::{Actors, Entry};
+use aethereal_actor::Effect;
 use aethereal_data::{ActorId, ActorPath};
 use std::num::NonZeroUsize;
 

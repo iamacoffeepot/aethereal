@@ -1,7 +1,8 @@
 //! The view of which actors there are (ADR-0008, ADR-0011).
 
+use crate::View;
 use crate::id::child_id;
-use crate::{Effect, View, What};
+use aethereal_actor::{Effect, What};
 use aethereal_data::{ActorId, PathSegment};
 use std::collections::BTreeMap;
 

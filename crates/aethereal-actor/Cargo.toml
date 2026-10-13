@@ -1,0 +1,13 @@
+[package]
+name = "aethereal-actor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "What an actor's code is written against: the effects a turn asks of the engine"
+
+[dependencies]
+aethereal-data = { path = "../aethereal-data" }
+
+[lints]
+workspace = true

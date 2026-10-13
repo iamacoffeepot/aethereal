@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::id::{child_id, root_id};
-use crate::{Code, What};
+use aethereal_actor::{Code, What};
 use aethereal_data::{KeyName, KindName, PathSegment};
 
 const WINDOW: KindName = KindName::new("aether.window");
