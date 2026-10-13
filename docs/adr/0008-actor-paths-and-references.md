@@ -67,11 +67,11 @@ pub struct ActorRef { .. }
 - There is no presumptive reference: none is built from a path without the engine. An actor that knows only a path asks.
 - A reference is a bound value (ADR-0004). It crosses between actors in one engine and may be kept in an actor's state. It does not cross between engines: there a path crosses, and the receiver asks its own engine to resolve it.
 - A reference says the actor existed when the reference was made. It does not say the actor is still there. Mail sent through a reference to a closed actor is not delivered. How undelivered mail ends is decided with the envelope, in a later ADR.
-- The engine has one table of actors, and it alone writes it. A reference, a resolve, and a delivery all read that table.
+- The engine has one table of actors, and it alone writes it: the table is a view the engine folds from spawns and endings (ADR-0011). A reference, a resolve, and a delivery all read that table.
 - **The table is the tree of actors itself.** Each actor holds the actors directly beneath it, so an actor's line up to its root and everything beneath it are read from the table. Only an actor's own turn adds a child beneath it, so each place in the tree has one writer.
 - **Beside the tree is an index from an id to its actor.** A reference, the sender of mail, and the `by` of an effect each name an actor by its id alone, and an id cannot be turned back into a path to walk. The index points into the tree and owns nothing of it.
-- **The table only grows.** An actor is written once, when it goes live, and marked once, when it closes. A branch has one writer and nothing written is moved, so no reader waits on a writer.
-- **Each actor keeps a view of its own.** An actor gets a stream of effects and updates its view from them, and it orders those effects to keep the rule of order (ADR-0009). The view is the actor's own state: it changes between the actor's turns and never during one, so nothing an actor reads goes from live to closed while its turn runs.
+- **The table only grows.** An actor is written once, when it goes live, and marked once, when it closes.
+- **A turn reads the table as it stood when its step began** (ADR-0011), so nothing a turn reads goes from live to closed while it runs.
 
 **An actor's id is a short reference to its path.**
 
@@ -127,6 +127,5 @@ pub struct ActorId(u64);
 - **Each id made from the ids beneath it**, as a hash tree is. An actor's id would then change with every child it gained or lost.
 - **An id handed out by the engine as each actor is made.** Dense, and free of collisions. A turn does not write the engine (ADR-0009), so a child stood up in a turn would have no id until the turn was over.
 - **A reference built from any path, checked when mail is sent.** No resolve step. Every send then carries a claim the engine has not checked, and an actor can address what it was never told about.
-- **Numbering every change to the table from one count, with a reader holding one number.** Every reader that holds a number then has the same steady picture. A number may be taken by a reader only once every change before it is written, so writers either wait for one another in order or each keep note of what is still being written. Measured on 32 threads, the first fell below one thread's rate and the second cost more code than the table itself. A view per actor needs no count.
-- **Two copies of the table swapped at a pause.** It needs a moment when no turn runs.
+- **Numbering every change to the table from one count, with a reader holding one number.** Every reader that holds a number then has the same steady picture. A number may be taken by a reader only once every change before it is written, so writers either wait for one another in order or each keep note of what is still being written. Measured on 32 threads, the first fell below one thread's rate and the second cost more code than the table itself. A step's number is the table's position with no count of changes (ADR-0011).
 - **Reusing a path after its actor closes, with each reference meaning one particular birth.** The engine would remember nothing about closed actors, and a stale reference would still fail. A path would then name different actors at different times: a log could not be read by path, and a path held outside the engine would silently come to mean a newcomer.
