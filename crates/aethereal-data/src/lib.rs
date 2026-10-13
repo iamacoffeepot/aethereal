@@ -29,7 +29,7 @@ pub use error::{DecodeError, EncodeError};
 pub use json::{JsonError, JsonFault, JsonForm, JsonPath, JsonStep, TextFault, from_json, to_json};
 pub use key::Key;
 pub use kind::{Kind, KindId, KindName};
-pub use path::{ActorPath, ChildKey, KeyName, PathSegment, PathTooDeep};
+pub use path::{ActorId, ActorKey, ActorPath, KeyName, PathSegment, PathTooDeep, TypedKey};
 pub use plain::{Plain, from_bytes, to_bytes};
 pub use schema::{
     Field, FieldNode, Fields, FieldsNode, Float, Integer, Schema, SchemaFault, SchemaNode, SchemaNodes, Shape, Variant,
