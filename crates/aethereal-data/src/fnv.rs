@@ -1,4 +1,4 @@
-//! The one FNV-1a fold every hash in `kind` goes through (ADR-0006).
+//! The one FNV-1a fold every hash goes through (ADR-0006).
 
 /// The FNV-1a 64-bit offset basis: the hash before any byte is folded.
 const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -6,18 +6,28 @@ const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 /// The FNV-1a 64-bit prime: the multiplier after each byte is xored in.
 const PRIME: u64 = 0x0100_0000_01b3;
 
-/// A running FNV-1a hash.
+/// A running FNV-1a hash, with ADR-0006's basis and prime.
+///
+/// A kind's id is folded through it here, and the engine folds an actor's id through it (ADR-0008).
 #[derive(Clone, Copy)]
-pub(super) struct Fnv(u64);
+pub struct Fnv(u64);
 
 impl Fnv {
     /// The offset basis, before any byte is folded.
-    pub(super) const fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self(OFFSET_BASIS)
     }
 
+    /// A hash that continues from `state`, the number an earlier hash finished with.
+    #[must_use]
+    pub const fn resume(state: u64) -> Self {
+        Self(state)
+    }
+
     /// Each byte xored in, then multiplied by the prime, wrapping.
-    pub(super) const fn bytes(self, bytes: &[u8]) -> Self {
+    #[must_use]
+    pub const fn bytes(self, bytes: &[u8]) -> Self {
         let mut hash = self.0;
         let mut index = 0;
         while index < bytes.len() {
@@ -30,12 +40,12 @@ impl Fnv {
     }
 
     /// One byte folded.
-    pub(super) const fn byte(self, byte: u8) -> Self {
+    pub(crate) const fn byte(self, byte: u8) -> Self {
         self.bytes(&[byte])
     }
 
     /// A count, a length, a selector: four bytes little-endian.
-    pub(super) const fn number(self, number: u32) -> Self {
+    pub(crate) const fn number(self, number: u32) -> Self {
         let bytes = number.to_le_bytes();
 
         self.bytes(&bytes)
@@ -43,7 +53,7 @@ impl Fnv {
 
     /// A slice's length as a `number`; the other branch cannot be reached:
     /// a count is decoded from a `u32`, and a constant shape that large cannot be compiled.
-    pub(super) const fn count(self, length: usize) -> Self {
+    pub(crate) const fn count(self, length: usize) -> Self {
         let fits = length <= u32::MAX as usize;
         #[allow(clippy::cast_possible_truncation, reason = "the test above proves the length fits in u32")]
         let number = if fits {
@@ -56,15 +66,22 @@ impl Fnv {
     }
 
     /// A child's layout hash: eight bytes little-endian.
-    pub(super) const fn hash(self, hash: u64) -> Self {
+    pub(crate) const fn hash(self, hash: u64) -> Self {
         let bytes = hash.to_le_bytes();
 
         self.bytes(&bytes)
     }
 
     /// The finished 64-bit hash.
-    pub(super) const fn finish(self) -> u64 {
+    #[must_use]
+    pub const fn finish(self) -> u64 {
         self.0
+    }
+}
+
+impl Default for Fnv {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -79,6 +96,15 @@ mod tests {
         assert_eq!(Fnv::new().finish(), 0xcbf2_9ce4_8422_2325);
         assert_eq!(Fnv::new().bytes(b"a").finish(), 0xaf63_dc4c_8601_ec8c);
         assert_eq!(Fnv::new().bytes(b"foobar").finish(), 0x8594_4171_f739_67e8);
+    }
+
+    #[test]
+    fn resumed_hash_continues_the_finished_one() {
+        // Catches a resume that starts over from the basis, or folds the state in as bytes.
+        assert_eq!(
+            Fnv::resume(Fnv::new().bytes(b"foo").finish()).bytes(b"bar").finish(),
+            Fnv::new().bytes(b"foobar").finish()
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ extern crate std;
 mod boundary;
 mod budget;
 mod error;
+mod fnv;
 #[cfg(feature = "json")]
 mod json;
 mod key;
@@ -25,6 +26,7 @@ mod schema;
 pub use boundary::{Bare, Boundary, Decode, Encode, Reader, Writer};
 pub use budget::Budget;
 pub use error::{DecodeError, EncodeError};
+pub use fnv::Fnv;
 #[cfg(feature = "json")]
 pub use json::{JsonError, JsonFault, JsonForm, JsonPath, JsonStep, TextFault, from_json, to_json};
 pub use key::Key;

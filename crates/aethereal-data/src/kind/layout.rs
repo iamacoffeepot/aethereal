@@ -1,7 +1,6 @@
 //! The layout hash over both forms of a schema (ADR-0006).
 
-use super::fnv::Fnv;
-use crate::{Field, FieldNode, Fields, FieldsNode, Float, Integer, SchemaNode, SchemaNodes, Shape, Variant};
+use crate::{Field, FieldNode, Fields, FieldsNode, Float, Fnv, Integer, SchemaNode, SchemaNodes, Shape, Variant};
 use alloc::vec::Vec;
 
 // The tag bytes of ADR-0006's table: the first byte each shape hashes.
