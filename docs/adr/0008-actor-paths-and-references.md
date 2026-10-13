@@ -20,12 +20,16 @@ pub trait TypedKey: Sized {
     fn to_name(&self) -> KeyName;
     fn from_name(name: &KeyName) -> Option<Self>;    // none: not a key of this type
 }
+
+pub trait ActorKey {
+    fn name(&self) -> Option<KeyName>;               // none: a singleton
+}
 ```
 
 - An actor's type is named by a `KindName` (ADR-0006), such as `aether.window.surface`. There is no second sort of name.
-- **An actor's type names the type of its key** (ADR-0009). A type whose key is the unit type `()` is a **singleton**: a place holds at most one, and it has no key. Any other key type is a `TypedKey` and makes the actor **instanced**: a place holds many, each told apart by its key. The bound an actor's key meets is `ActorKey`, which holds for `()` and for every `TypedKey`. It is the engine's, and no author implements it.
+- **An actor's type names the type of its key** (ADR-0009). A type whose key is the unit type `()` is a **singleton**: a place holds at most one, and it has no key. Any other key type is a `TypedKey` and makes the actor **instanced**: a place holds many, each told apart by its key. The bound an actor's key meets is `ActorKey`, which holds for `()` and for every `TypedKey`. It answers with the key's name, or with none for a singleton. It is the engine's, and no author implements it.
 - **A key is a typed value, and its type says what keys there are.** A key type turns each of its values into a `KeyName`, a different one for each, and reads a `KeyName` back into the value that made it. Going there and back gives the same value, and a name that reads as a value is the one that value writes, so a path still has one spelling. A path holds the `KeyName`, and an actor's code holds the typed value. A type with two values allows two children and no third.
-- **A `u64` is a key, written in decimal.** `7` is the key `7`, with no sign and no leading zero, so each number has one name and `007` reads back as no value. A parent that makes a child per request keeps the next number in its own state and counts upward, so it never names a closed path. There is one width, since a second would say nothing more.
+- **A `u64` is a key, written in decimal.** `7` is the key `7` and zero is `0`, with no sign and no leading zero, so each number has one name and `007` reads back as no value. A parent that makes a child per request keeps the next number in its own state and counts upward, so it never names a closed path. There is one width, since a second would say nothing more.
 - A `KeyName` is 1 to 64 bytes: a lowercase ASCII letter or a digit, then lowercase ASCII letters, digits, `_`, `-`, and `.`. Its first byte is never `.` or `-`, so none reads as a relative path or a flag where a person types it.
 - The key follows from the actor's type and is not chosen beside it. A singleton and an instanced actor are spawned by separate effects (ADR-0009): the one for a singleton carries no key, and the one for an instanced type carries a `KeyName`. So a singleton with a key, and an instanced actor with none, cannot be written, and one place never holds both `surface` and `surface:left`.
 - `KindName` and `KeyName` are checked when built: a constant that does not conform stops the build, and the decoder refuses text that does not conform. Neither hands out its text.
@@ -82,6 +86,7 @@ pub struct ActorId(u64);
 
   `hash(segment)` is FNV-1a with ADR-0006's basis and prime over the segment as the path spells it: the kind's name, then `:` and the key's name where there is one. `fold` continues FNV-1a from the first number over the eight bytes of the second, least significant first. A kind's name is hashed when the program is built, so a child's id is reached from its parent's id and its segment's hash with no path text at hand.
 - A segment's hash is of the kind's name and not its `KindId`. A `KindId` changes with the kind's layout (ADR-0006), and an actor's id does not change when its code does.
+- `ActorId` is a type of the data layer, beside the path. The function that computes one enters with the engine, and nothing before the engine makes an id.
 - An id is good for the life of the engine that made it. Another engine, or a later run, may give the same path a different id. What is kept longer than the engine carries paths.
 - An id is plain data (ADR-0004), and one that was decoded is a claim like any other.
 - **An id is not an address.** Nothing sends to one and no reference is made from one. Who an actor may send to is unchanged.
