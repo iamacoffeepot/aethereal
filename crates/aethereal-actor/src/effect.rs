@@ -82,6 +82,34 @@ pub enum To {
     Held(ActorRef),
 }
 
+/// Who a `begin` or a closing turn may send to (ADR-0009).
+///
+/// Neither is handling a piece of mail, so neither has a sender: this is
+/// [`To`] without that case, and a send to the sender from either does not
+/// build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToWithoutMail {
+    /// The actor directly above the sender.
+    Parent,
+    /// The singleton of this kind directly beneath the sender.
+    Child(KindName),
+    /// The actor of this kind and key directly beneath the sender.
+    ChildInstanced(KindName, KeyName),
+    /// The actor a reference the sender holds refers to.
+    Held(ActorRef),
+}
+
+impl From<ToWithoutMail> for To {
+    fn from(to: ToWithoutMail) -> Self {
+        match to {
+            ToWithoutMail::Parent => Self::Parent,
+            ToWithoutMail::Child(kind) => Self::Child(kind),
+            ToWithoutMail::ChildInstanced(kind, key) => Self::ChildInstanced(kind, key),
+            ToWithoutMail::Held(reference) => Self::Held(reference),
+        }
+    }
+}
+
 /// The code an actor is made from (ADR-0009).
 ///
 /// A guest's code, a blob the engine holds, is a further case that enters with blobs.

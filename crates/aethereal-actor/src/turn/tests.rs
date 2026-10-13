@@ -163,6 +163,37 @@ impl Actor for Branch {
     }
 }
 
+/// A singleton that tells its parent it began, and on ending tells it why.
+#[derive(Plain)]
+struct Herald;
+
+impl Kind for Herald {
+    const NAME: KindName = KindName::new("aether.test.herald");
+}
+
+impl Actor for Herald {
+    type Config = Poke;
+    type Key = ();
+
+    fn begin(_config: Poke, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
+        turn.send(ToWithoutMail::Parent, &Poked)?;
+
+        Ok(Self)
+    }
+
+    fn handle(&mut self, _mail: Mail<'_>, _turn: &mut Turn<'_>) -> Result<(), Fault> {
+        Ok(())
+    }
+
+    fn end(self, turn: &mut Ending<'_>) -> Result<(), Fault> {
+        if turn.why() == Why::Closed {
+            turn.send(ToWithoutMail::Parent, &Shut)?;
+        }
+
+        Ok(())
+    }
+}
+
 const ROOT: ActorPath = ActorPath::new("aether.test.root");
 const ME: ActorId = ActorId::new(1);
 
@@ -247,6 +278,31 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     let (effects, stood) = asked.into_parts();
     assert_eq!(effects.last(), Some(&spawn_branch));
     assert_eq!(stood.len(), 1);
+}
+
+#[test]
+fn begin_and_end_send_as_their_own_actor() {
+    // Catches a `begin`'s mail signed by the parent whose turn it runs in or placed before its spawn, and a
+    // closing turn that does not learn why it runs.
+    let table = Listed::default();
+    let mut asked = Asked::new();
+    let mut turn = Turn::new(ME, ROOT, &table, &mut asked);
+    let Ok(herald) = turn.spawn::<Herald>(&(), Poke) else {
+        panic!("the herald begins");
+    };
+    let to_parent = |kind| What::Send { to: To::Parent, kind, bytes: Vec::new() };
+    let spawn = Effect::new(ME, What::Spawn { from: Code::Linked(Herald::NAME) });
+    assert_eq!(asked.effects(), [spawn, Effect::new(herald.id(), to_parent(KindId::of::<Poked>()))]);
+
+    let end = |why| {
+        let mut asked = Asked::new();
+        let mut ending = Ending::new(herald.id(), ROOT, &table, &mut asked, why);
+        let ended = Box::new(Herald).end(&mut ending);
+
+        (ended, asked.into_parts().0)
+    };
+    assert_eq!(end(Why::Closed), (Ok(()), vec![Effect::new(herald.id(), to_parent(KindId::of::<Shut>()))]));
+    assert_eq!(end(Why::Faulted), (Ok(()), Vec::new()));
 }
 
 #[test]

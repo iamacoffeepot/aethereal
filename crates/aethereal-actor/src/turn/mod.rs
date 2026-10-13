@@ -6,7 +6,7 @@ mod tests;
 
 pub use refused::Refused;
 
-use crate::{Actor, ActorRef, Actors, ActorsWriter, Code, Effect, Runs, Table, To, What};
+use crate::{Actor, ActorRef, Actors, ActorsWriter, Code, Effect, Runs, Table, To, ToWithoutMail, What};
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -198,7 +198,8 @@ impl<'a> Turn<'a> {
 
 /// What an actor asks of the engine in its `begin`: a first turn, which offers less than a turn (ADR-0009).
 ///
-/// It offers no close: an actor does not end in the turn that makes it.
+/// It offers no close: an actor does not end in the turn that makes it. It is handling no mail, so it has no
+/// sender to send to.
 pub struct Beginning<'a> {
     seat: Seat<'a>,
 }
@@ -210,6 +211,11 @@ impl<'a> Beginning<'a> {
     #[must_use]
     pub const fn new(id: ActorId, path: ActorPath, table: &'a dyn Table, asked: &'a mut Asked) -> Self {
         Self { seat: Seat { id, path, table, asked } }
+    }
+
+    /// Sends `mail` to `to`. It goes out with the mail of the turn this `begin` runs in.
+    pub fn send<K: Kind + Encode<Actors>>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError> {
+        self.seat.send(to.into(), mail)
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
@@ -241,7 +247,7 @@ pub enum Why {
 
 /// What an actor asks of the engine in its closing turn (ADR-0009).
 ///
-/// It offers no spawn and no close.
+/// It offers no spawn and no close. It is handling no mail, so it has no sender to send to.
 pub struct Ending<'a> {
     seat: Seat<'a>,
     why: Why,
@@ -260,6 +266,11 @@ impl<'a> Ending<'a> {
     #[must_use]
     pub const fn why(&self) -> Why {
         self.why
+    }
+
+    /// Sends `mail` to `to`: the actor's last mail.
+    pub fn send<K: Kind + Encode<Actors>>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError> {
+        self.seat.send(to.into(), mail)
     }
 
     /// A reference to this actor.
