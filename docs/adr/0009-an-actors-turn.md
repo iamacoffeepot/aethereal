@@ -98,11 +98,13 @@ pub enum Level {
 - **`Log` writes a line to the actor's log**, which the engine keeps. It is an effect so that the engine decides what happens to a line when the turn fails, and so that a guest's lines leave it with the rest of the turn.
 - An effect is plain data, and so is the list.
 
-**A turn reads the engine; it does not write it.** `turn` answers whether a path names a live actor (ADR-0008's resolve) from the engine's state as it stood when the turn began. A read is not an effect.
+**A turn reads the engine; it does not write it.** `turn` answers whether a path names a live actor (ADR-0008's resolve) from the engine's state as it stood when the turn began. A read is not an effect. A turn takes the number of the table's latest change as it begins and sees nothing numbered later (ADR-0008), so every read in a turn agrees with every other, and that one number is all a record of the turn needs to give the same answers again.
 
 - A resolve never finds an actor whose spawn effect has not been applied, so a reference is never to an actor whose `begin` failed.
 - Mail caused by a spawn finds the child: a parent that spawns and then sends has made the child live before that mail is queued.
 - A resolve made while handling unrelated mail can miss an actor that is about to be live. An actor that must know waits to be told.
+
+**Mail sent to an actor is handled in the order its source sent it.** That is the one rule of order. Mail from two sources to one actor has no order between them, and none is made up. A turn's effects are applied in the order it asked for them, so a spawn is in the table before any later send of that turn is queued: whoever comes to hold a reference finds its actor there, however far the reference travelled.
 
 **Who a turn may send to is a closed set.**
 
