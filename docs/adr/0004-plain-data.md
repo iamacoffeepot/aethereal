@@ -125,6 +125,7 @@ struct PlayerId(u64);
 | `char` | Integer, unsigned 32-bit | is a Unicode scalar value |
 | the `NonZero` integers | Integer | is not zero |
 | `Option<T>` | Option | |
+| `Box<T>` | `T`'s shape | |
 | `Result<T, E>` | Enum, `Ok` = 0 and `Err` = 1 | |
 | `Vec<T>`, `VecDeque<T>` | Sequence | |
 | `Vec<u8>` | Bytes | |
@@ -138,11 +139,13 @@ struct PlayerId(u64);
 
 With the `std` feature, `HashMap<K, V>` is a Map and `HashSet<T>` a Sequence under the same rules, for `K: Key + Hash` and `T: Key + Hash`. A `BTreeMap` or `BTreeSet` is already in key order and is written as it iterates. A hash map or hash set is sorted by `Ord` on encode.
 
+A `Box<T>` is its contents. It has `T`'s shape, `T`'s bytes, and `T`'s layout, so boxing a field changes no schema and no kind id (ADR-0006). The box says only where Rust keeps the value. It does not admit a type that contains itself: that type's schema would be a constant that refers to itself (ADR-0003).
+
 **Not `Plain`, and why:**
 
 - `usize`, `isize`: their width differs between a 64-bit host and a 32-bit guest.
 - `u128`, `i128`: not in the vocabulary (ADR-0003).
-- `Box`, `Rc`, `Arc`: `Box` would admit recursive types; `Rc` and `Arc` promise sharing that bytes cannot keep.
+- `Rc`, `Arc`: they promise sharing that bytes cannot keep.
 - `Cow`, `&str`, `&[T]`: decode owns its data.
 - `PhantomData`: no user yet.
 - As a map key or set element: anything that is not a `Key`, including `bool`, floats, tuples, enums, and structs of several fields. Each needs an order stated in ADR-0002 first.

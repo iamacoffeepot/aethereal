@@ -11,7 +11,7 @@ The set of shapes a schema can describe is the **vocabulary**. Every codec in ev
 
 > A shape is in the vocabulary only if any language's codec must understand it to read the bytes. A Rust type that is laid out like a shape already in the vocabulary is that shape, not a new one.
 
-`Box<T>` shows the rule at work. Its bytes are `T`'s bytes, so a reader in another language never sees it, and it adds nothing to the vocabulary. What it would add is a type that contains itself, and with that a schema that refers back to itself, which every codec would then have to follow. The vocabulary has no such shape.
+`Box<T>` shows the rule at work. Its bytes are `T`'s bytes, so a reader in another language never sees it: a `Box<T>` is `T`'s shape and adds nothing to the vocabulary. In Rust it says only that the value is kept on the heap and not inline in the structure that holds it. What a `Box` makes possible in Rust is a type that contains itself, and with that a schema that refers back to itself, which every codec would then have to follow. The vocabulary has no such shape.
 
 ## Decision
 
@@ -103,7 +103,7 @@ There are two forms because there are two places a schema lives: `Shape` in a co
 ## Consequences
 
 - A codec in another language implements twelve shapes and is complete.
-- Recursive types cannot be described, so they cannot be plain data. An author flattens them.
+- Recursive types cannot be described, so they cannot be plain data. An author flattens them. A `Box` does not change this: its shape is its contents' shape, so a type that contains itself through one is a constant that refers to itself, and the compiler refuses it.
 - Field docs, units, and display hints are not in the vocabulary. They can be added as a parallel description without changing a schema, and they enter with the first tool that reads them.
 - 128-bit integers are not in the vocabulary, since several languages have none. A value that needs 128 bits is an array of 16 bytes.
 - The size of an integer in the vocabulary is always stated. A machine-sized integer (`usize`) has no shape.
@@ -111,6 +111,6 @@ There are two forms because there are two places a schema lives: `Shape` in a co
 
 ## Alternatives considered
 
-- **One recursive form with boxed children.** One type for both places, at the cost of a recursive wire type, a nesting limit in every decoder, and the only use of `Box` in plain data.
+- **One recursive form with boxed children.** One type for both places, at the cost of a recursive wire type, a nesting limit in every decoder, and the one type in plain data that contains itself.
 - **A schema built by a function at run time.** Simpler to write than constants, and it gives up computing anything from a schema at compile time.
 - **A larger vocabulary (sets, durations, characters, wide integers).** Each is expressible as a shape already present, so each would be a cost in every language for no new capability.
