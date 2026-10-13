@@ -53,6 +53,8 @@ pub enum Tie {
 
 **Mail sent from a `begin` belongs to the turn that stood the actor up.** A child's `begin` runs inside its parent's turn (ADR-0009), so its mail has the cause and the root of the mail the parent was handling.
 
+**An ending belongs to the chain of the mail that brought it about.** When an actor closes or fails while handling a piece of mail, the mail that tells its parent and its watchers has that piece of mail as its cause, and its root. The actors beneath it end because it did, and the mail their endings leave has the same cause and root. So does mail sent from a closing turn (ADR-0009's `end`). A chain has therefore not finished until the endings it led to have been handled.
+
 **A root's `begin` starts a chain of its own.** Nothing caused it and it is handling no mail. The mail it sends has no cause, and its root is the id made of that root actor and a count of zero, which no piece of sent mail has.
 
 **Asking and answering are effects of their own, beside `Send`.**
@@ -118,7 +120,7 @@ Part { request: MailId, kind: KindId, bytes: Vec<u8> }
 - Every chain but a root's first begins at a resource, so the engine can say for any piece of mail what from outside set it off.
 - An actor's requests out, and the holds it owes, are part of its state: they are shown with it and carried onto new code with it.
 - A hold that is lost, by overwriting the state that held it, is answered only when its actor ends.
-- **Not decided here:** how a live asker stops a stream early; how a producer that is too fast is slowed; the cause and root of the mail an ending leaves for a parent and for watchers; large payloads; and whether the cause is kept on every piece of mail or only in the record of a run.
+- **Not decided here:** how a live asker stops a stream early; how a producer that is too fast is slowed; the chain of an ending that nothing inside the engine brought about, such as the host shutting down; large payloads; and whether the cause is kept on every piece of mail or only in the record of a run.
 
 ## Alternatives considered
 
