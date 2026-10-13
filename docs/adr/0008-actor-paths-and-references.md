@@ -86,7 +86,7 @@ pub struct ActorId(u64);
 - An id is plain data (ADR-0004), and one that was decoded is a claim like any other.
 - **An id is not an address.** Nothing sends to one and no reference is made from one. Who an actor may send to is unchanged.
 - **An id is built down from the root**, each from its parent's, so it stands for every segment above it. The engine makes an id directly beneath an actor's only when that actor spawns, since only it spawns there.
-- **Whether a child's key is free is its parent's own knowledge.** A spawn is refused when its kind and key have been used beneath that parent, live or closed. No other actor's spawn bears on the answer, so a parent decides it within its turn.
+- **Whether a child's key is free is its parent's own knowledge.** A spawn is refused when its kind and key have been used beneath that parent, live or closed. A child whose `begin` failed was never live and does not use its key (ADR-0009). No other actor's spawn bears on the answer, so a parent decides it within its turn.
 - The table keeps each path's id beside it, live or closed.
 - **A reference is an id the engine has checked.** An `ActorRef` holds an `ActorId` and nothing else. Making one is the check that the id is in the table, and wherever a reference is read at a boundary the reader makes that check again. So a reference is eight bytes in mail and in an actor's state, and bytes that name no actor are refused.
 - A reference gives up its path by a read of the table, since the id alone does not say where the actor stands.
