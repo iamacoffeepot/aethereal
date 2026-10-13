@@ -64,6 +64,29 @@ pub use schema::{
 /// }
 /// ```
 ///
+/// A `Box` is its contents, so a boxed field builds as the field would.
+///
+/// ```
+/// use aethereal_data::Plain;
+///
+/// #[derive(Plain)]
+/// struct Node {
+///     next: Option<Box<u32>>,
+/// }
+/// ```
+///
+/// A type that contains itself is a compile error, through a `Box` as
+/// without one.
+///
+/// ```compile_fail
+/// use aethereal_data::Plain;
+///
+/// #[derive(Plain)]
+/// struct Node {
+///     next: Option<Box<Node>>,
+/// }
+/// ```
+///
 /// A lifetime parameter is a compile error; decode owns its data.
 ///
 /// ```compile_fail
