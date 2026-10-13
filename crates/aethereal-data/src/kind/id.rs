@@ -1,9 +1,8 @@
 //! What a piece of mail is (ADR-0006).
 
-use super::fnv::Fnv;
 use super::layout::{nodes_layout, shape_layout};
 use super::{Kind, KindName};
-use crate::{Key, Plain, SchemaNodes};
+use crate::{Fnv, Key, Plain, SchemaNodes};
 use core::marker::PhantomData;
 
 /// What a piece of mail is: 64 bits computed from a kind's name and layout (ADR-0006).
