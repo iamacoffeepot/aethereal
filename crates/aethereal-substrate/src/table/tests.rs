@@ -2,6 +2,7 @@
 
 use super::*;
 use aethereal_data::KindName;
+use std::sync::Weak;
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 
@@ -102,8 +103,8 @@ fn second_path_with_one_id_is_refused() {
     let first = ActorPath::new("aether.window");
     let second = ActorPath::new("aether.window.surface");
     let id = path_id(&first);
-    assert_eq!(table.insert(id, first.clone()), Ok(id));
-    assert_eq!(table.insert(id, second.clone()), Err(Refused::IdShared));
+    assert_eq!(table.insert(&table.roots, Weak::new(), id, 1, first.clone()), Ok(id));
+    assert_eq!(table.insert(&table.roots, Weak::new(), id, 2, second.clone()), Err(Refused::IdShared));
     assert_eq!(table.path(id), Some(first));
     assert_eq!(table.resolve(&second, table.latest()), None);
 }
@@ -126,6 +127,26 @@ fn every_entry_is_found_again() {
         assert_eq!(table.path(id), Some(path), "the child `{key}`");
     }
     assert_eq!(table.standing(child_id(parent, &surface(CHILDREN)), latest), Standing::Absent);
+}
+
+#[test]
+fn tree_keeps_each_actors_line() {
+    // Catches a child written to the index and not beneath its parent, or beneath another's, and a closed child
+    // still listed.
+    let table = ActorTable::new();
+    let parent = window(&table, 0);
+    let other = window(&table, 1);
+    let before = table.latest();
+    let (Ok(first), Ok(second)) = (table.add_child(parent, &surface(0)), table.add_child(parent, &surface(1))) else {
+        panic!("both children are free");
+    };
+    assert_eq!(table.parent(first), Some(parent));
+    assert_eq!(table.parent(parent), None);
+    assert_eq!(table.close(first).map(|_| ()), Ok(()));
+
+    assert_eq!(table.children(parent, before), Vec::new());
+    assert_eq!(table.children(parent, table.latest()), [second]);
+    assert_eq!(table.children(other, table.latest()), Vec::new());
 }
 
 // Native only: the browser host runs the engine on one thread (ADR-0001).
