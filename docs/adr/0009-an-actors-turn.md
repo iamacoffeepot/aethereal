@@ -32,6 +32,19 @@ These three are what the engine calls. How an author writes the handling of each
 
 An actor's life has three parts. `begin` makes it from a config, and runs inside the turn of the parent that spawns it; a root's runs when the chassis makes it. Each piece of mail after that is a turn of its own, a `handle`. `end` is its closing turn, and it runs once, whichever way the actor came to close.
 
+**A `Fault` is why a turn could not go on, and it carries a kind.**
+
+```rust
+pub struct Fault {
+    kind: KindId,
+    bytes: Vec<u8>,
+}
+```
+
+- An actor defines its reasons as kinds and returns one: `Fault::new(&reason)` requires `K: Kind + Encode<Actors>`, as a send does, so a reason that holds a value bound to its own actor does not build.
+- Whoever is handed a fault reads it as a kind it knows: `fault.read::<K>()` answers with the reason when it is of kind `K`. A parent reacts to the reasons it knows and learns from the rest only that the child failed.
+- The kind's id names the reason to a reader that cannot decode it, so the engine can log a fault by name.
+
 An **effect** is one thing an actor asks of the engine, and it says which actor asked. An effect exists only for what the engine itself must do: an actor that could do a thing with its own state and mail gets no effect for it. The first effects are:
 
 ```rust
@@ -168,6 +181,7 @@ pub enum Code {
 
 ## Consequences
 
+- What an actor's code names is a crate of its own, `aethereal-actor`: the turn, mail, effects, and a fault. It holds nothing of the engine. A guest is compiled apart from the engine and depends on that crate alone, and the engine depends on it to run turns and apply effects.
 - The rules about mail in flight have one place to live. The engine is the only thing that moves mail and creates or closes an actor, and it sees every request to do so as data.
 - A guest is one call per turn: the mail's bytes in, the effects' bytes out, both through the codec of ADR-0004. A spawn is one more call, out to its host. The host must be able to make an instance without waiting.
 - A turn can be recorded and compared: the same state and mail give the same effects, as far as the actor's own code is deterministic.
@@ -189,6 +203,7 @@ pub enum Code {
 - **An actor acts as it runs, through calls the host offers.** Simple to write against, and the three costs under Context.
 - **The engine holds each actor's state, and a turn returns the new state.** A failed turn then costs nothing to undo and a guest instance holds nothing. Every turn decodes and encodes the whole state, which falls hardest on an actor with large state that runs every frame.
 - **An actor beside a separate state kind it converts to and from.** The actor may then work on any structure it likes. It is a second type and two conversions per actor, nothing checks that the conversion keeps everything, and a native actor could decline to offer it.
+- **A `Fault` that carries nothing, or a line of text.** Nothing to encode. An actor says why in its log, and a parent can read a reason only as words, so it cannot react to one.
 - **A failed turn leaves the actor running.** The actor then continues from a state no handler was written to produce.
 - **No `end` after a failed turn.** `end` then only ever sees a sound state. An actor that returned a `Fault` could say nothing as it went, though its code can still run, and the fault is the ending its parent most wants explained.
 - **The state put back as it was before the failed turn, and then `end`.** `end` sees a sound state every time. The engine keeps a copy of every actor from before each turn, which is the cost that ruled out the engine holding the state.
