@@ -64,7 +64,7 @@ pub trait View {
 
 **A view folds each effect with the context it was emitted in.** A turn's effects share one context, the item the turn handled (ADR-0012), and a view is handed it beside each effect. The context is what is folded, not a view that is read, so it plays no part in the order views fold in.
 
-**A view may read other views.** It names them, and the engine folds them before it, so it reads them with the step's effects already in. That lets a view work out a key from what another holds, such as an actor's parent from the table, and lets one effect change several of its keys, one record for each. Views that read nothing of each other fold side by side, and each view's keys still fold in parts. A chain of views reading views folds one link at a time, so it is kept short, and no view reads itself through another.
+**A view may read other views.** It names them, as a tuple of views and nothing else, which the type checks, and the engine folds them before it, so it reads them with the step's effects already in. That lets a view work out a key from what another holds, such as an actor's parent from the table, and lets one effect change several of its keys, one record for each. Views that read nothing of each other fold side by side, and each view's keys still fold in parts. A chain of views reading views folds one link at a time, so it is kept short, and no view reads itself through another.
 
 **The table of actors is the first view.** It is folded from spawns and endings. Where a library's heads point is a view (ADR-0009). Whether a chain of mail has finished, and who watches an actor, are views when they are built.
 

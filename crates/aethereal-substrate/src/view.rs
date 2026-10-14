@@ -28,7 +28,28 @@ pub trait View {
     /// What the view keeps of an effect.
     type Record;
     /// The views this one reads, as a tuple of references to them: `()` for a view that reads none.
-    type Reads<'a>: Copy;
+    ///
+    /// Only a tuple of views fits, so nothing but a view is read:
+    ///
+    /// ```compile_fail
+    /// use aethereal_actor::Effect;
+    /// use aethereal_substrate::{Context, View};
+    ///
+    /// struct Counts;
+    ///
+    /// impl View for Counts {
+    ///     type Shard = u64;
+    ///     type Record = ();
+    ///     type Reads<'a> = (&'a Context,);
+    ///
+    ///     fn takes<'a>(_: &'a Effect, _: &'a Context, _: (&'a Context,)) -> impl Iterator<Item = (u64, ())> + 'a {
+    ///         std::iter::empty()
+    ///     }
+    ///
+    ///     fn fold(_: &mut u64, _: u64, (): ()) {}
+    /// }
+    /// ```
+    type Reads<'a>: ViewTuple<'a>;
 
     /// The keys and records of an effect, one for each key it changes: none for an effect this view does not fold.
     ///
@@ -42,6 +63,41 @@ pub trait View {
 
     /// Folds one record into the part its key falls in.
     fn fold(shard: &mut Self::Shard, key: u64, record: Self::Record);
+}
+
+/// What a view's [`View::Reads`] may be: `()`, or a tuple of up to four references to views.
+///
+/// It is sealed, so nothing outside this crate adds a case.
+pub trait ViewTuple<'a>: Copy + sealed::Sealed {}
+
+/// Something a view may read: a view the engine keeps.
+///
+/// It is sealed, so nothing outside this crate adds a case.
+pub trait Viewed: sealed::Sealed {}
+
+impl<V: View> sealed::Sealed for Folded<V> {}
+impl<V: View> Viewed for Folded<V> {}
+
+impl sealed::Sealed for () {}
+impl ViewTuple<'_> for () {}
+
+/// The tuples of references to views, of each length up to four.
+macro_rules! view_tuples {
+    ($($view:ident),+) => {
+        impl<'a, $($view: Viewed),+> sealed::Sealed for ($(&'a $view,)+) {}
+        impl<'a, $($view: Viewed),+> ViewTuple<'a> for ($(&'a $view,)+) {}
+    };
+}
+
+view_tuples!(A);
+view_tuples!(A, B);
+view_tuples!(A, B, C);
+view_tuples!(A, B, C, D);
+
+/// Keeps the cases of [`ViewTuple`] and [`Viewed`] to this crate.
+pub mod sealed {
+    /// Implemented only in this crate.
+    pub trait Sealed {}
 }
 
 /// A view as the engine keeps it: its state in parts, each holding the keys that fall in it (ADR-0011).

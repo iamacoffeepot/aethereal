@@ -5,7 +5,8 @@ mod actors;
 mod tests;
 
 use crate::id::{child_id, path_id};
-use crate::{Context, Folded};
+use crate::view::sealed::Sealed;
+use crate::{Context, Folded, Viewed};
 use actors::{Actors, Entry};
 use aethereal_actor::{Effect, Made, Table};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
@@ -32,6 +33,10 @@ impl Table for ActorTable {
         child_id(parent, segment)
     }
 }
+
+/// The table is the first view, with readers over it, so another view may read it.
+impl Sealed for ActorTable {}
+impl Viewed for ActorTable {}
 
 /// How an actor stands in the table (ADR-0008).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
