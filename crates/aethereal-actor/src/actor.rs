@@ -10,7 +10,9 @@ use alloc::boxed::Box;
 /// These three are what the engine calls. A handler changes its own state and
 /// nothing else: everything it wants of the engine it asks for through its
 /// turn, and nothing it asks for happens during the turn.
-pub trait Actor: Kind + Encode<Within> + Decode<Within> + Sized {
+///
+/// An actor is `Send`: a native host may run it on any of its workers, one turn at a time (ADR-0011).
+pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized {
     /// What the actor is made from. It crosses from the actor that spawns this one.
     type Config: Kind + Encode<Actors> + Decode<Actors>;
     /// What tells the actors of this type apart: `()` for a singleton, a typed key otherwise.
@@ -33,7 +35,7 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Sized {
 ///
 /// Every [`Actor`] is one. The engine holds a native actor as this, since the
 /// actors of a program are of many types.
-pub trait Runs {
+pub trait Runs: Send {
     /// Handles one item: a turn of the actor's own.
     fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault>;
 

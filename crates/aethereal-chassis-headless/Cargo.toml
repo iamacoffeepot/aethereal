@@ -1,0 +1,17 @@
+[package]
+name = "aethereal-chassis-headless"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The headless chassis: the native host with nothing but the engine, its workers, and its clock"
+
+[dependencies]
+aethereal-substrate = { path = "../aethereal-substrate" }
+
+[dev-dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-data = { path = "../aethereal-data" }
+
+[lints]
+workspace = true
