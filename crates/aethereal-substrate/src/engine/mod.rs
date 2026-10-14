@@ -8,7 +8,7 @@ mod tests;
 use crate::id::root_id;
 use crate::stream::{Pending, Streams, take};
 use crate::watch::Watchers;
-use crate::{ActorTable, Context, Folded};
+use crate::{ActorTable, Context, Entry, Folded, Log};
 use aethereal_actor::{
     Actor, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Refused, Runs, Stood, Turn, What,
     Why,
@@ -38,6 +38,8 @@ pub struct Engine {
     watchers: Folded<Watchers>,
     /// What each actor has to react to.
     streams: Folded<Streams>,
+    /// What each actor logged most recently.
+    log: Folded<Log>,
     /// Every actor the engine still runs, under its id: the live ones, and the ended ones whose closing turn is
     /// still to run.
     seats: BTreeMap<u64, Seat>,
@@ -86,6 +88,7 @@ impl Engine {
             table: ActorTable::new(parts),
             watchers: Folded::new(parts),
             streams: Folded::new(parts),
+            log: Folded::new(parts),
             seats: BTreeMap::new(),
             actors: BTreeMap::new(),
             step: 0,
@@ -97,6 +100,14 @@ impl Engine {
     #[must_use]
     pub const fn table(&self) -> &ActorTable {
         &self.table
+    }
+
+    /// What the actor `id` stands for logged most recently, oldest first, as of the last step.
+    ///
+    /// It holds the fault of a turn that failed, and of a closing turn that did. Nothing for an actor that has
+    /// logged nothing.
+    pub fn log(&self, id: ActorId) -> impl Iterator<Item = &Entry> {
+        self.log.shard(id.bits()).get(&id.bits()).into_iter().flatten()
     }
 
     /// The number of the last step run, from one. Zero before the first.
@@ -188,12 +199,14 @@ impl Engine {
                 let mut asked = Asked::new();
                 let why = why(how);
                 let ended = actor.end(&mut Ending::new(id, seat.path.clone(), &self.table, &mut asked, seat.sent, why));
-                // A closing turn that fails asks for nothing: only its log lines would be kept (ADR-0009). Either
-                // way the engine adds that the actor's life is over, after what the turn sent.
-                let mut effects = match ended {
-                    Ok(()) => asked.into_parts().0,
-                    Err(_) => Vec::new(),
-                };
+                // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds its
+                // fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after what the
+                // turn sent.
+                let (mut effects, _) = asked.into_parts();
+                if let Err(fault) = ended {
+                    effects.retain(is_line);
+                    effects.push(Effect::new(id, What::EndFailed(fault)));
+                }
                 effects.push(Effect::new(id, What::Ended(how.clone())));
 
                 ran.push(Ran { effects, stood: Vec::new(), context: *context });
@@ -246,6 +259,7 @@ impl Engine {
         for Ran { effects, stood, context } in ran {
             self.table.fold(&effects, &context);
             self.watchers.fold(&effects, &context, ());
+            self.log.fold(&effects, &context, ());
 
             for child in stood {
                 self.seat(child.id(), child.path().clone(), child.into_actor());
@@ -311,13 +325,15 @@ impl Engine {
 impl Ran {
     /// The turn of the actor `id` stands for that returned `outcome`, having asked for `asked`, in `context`.
     ///
-    /// A turn that fails changes nothing outside its actor: what it asked for is dropped, and the engine writes
-    /// the one effect that says the actor ended (ADR-0009).
+    /// A turn that fails changes nothing outside its actor: what it asked for is dropped but for its log lines,
+    /// and the engine writes the one effect that says the actor ended (ADR-0009).
     fn of(id: ActorId, outcome: Result<(), Fault>, asked: Asked, context: Context) -> Self {
-        let (effects, stood) = match outcome {
-            Ok(()) => asked.into_parts(),
-            Err(fault) => (vec![Effect::new(id, What::Failed(fault))], Vec::new()),
-        };
+        let (mut effects, mut stood) = asked.into_parts();
+        if let Err(fault) = outcome {
+            effects.retain(is_line);
+            effects.push(Effect::new(id, What::Failed(fault)));
+            stood.clear();
+        }
 
         Self { effects, stood, context }
     }
@@ -337,6 +353,11 @@ impl Ran {
             })
             .max()
     }
+}
+
+/// Whether `effect` is a logged line: what is kept of a turn that failed (ADR-0009).
+fn is_line(effect: &Effect) -> bool {
+    matches!(effect.what(), What::Log { .. })
 }
 
 /// How the actor `id` stands for ends, when `effect` is that actor's own ending.

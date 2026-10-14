@@ -2,6 +2,7 @@
 
 use crate::{ErasedActorRef, Fault, How, MailId};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// One thing an actor asks of the engine, and which actor asked (ADR-0009).
@@ -66,6 +67,9 @@ pub enum What {
     /// The asking actor's turn failed with this fault, and the actor has ended. Written by the engine, since the
     /// actor asked for nothing.
     Failed(Fault),
+    /// The asking actor's closing turn failed with this fault. Written by the engine. The actor had already
+    /// ended, so this marks nothing: it is there for the log.
+    EndFailed(Fault),
     /// The asking actor's closing turn has run, and its life is over: this is how it ended. Written by the engine,
     /// with the closing turn's effects, so it comes after the actor's last mail.
     Ended(How),
@@ -73,6 +77,17 @@ pub enum What {
     Watch { of: ErasedActorRef },
     /// The asking actor closes.
     Close,
+    /// The asking actor logs `text`. It is kept when the turn that asked for it fails.
+    Log { level: Level, text: String },
+}
+
+/// How much a logged line matters (ADR-0009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Debug,
+    Info,
+    Warn,
+    Error,
 }
 
 /// Who a turn may send to: a closed set (ADR-0009).

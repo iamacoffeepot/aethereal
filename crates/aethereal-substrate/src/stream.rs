@@ -2,7 +2,7 @@
 
 use crate::id::child_id;
 use crate::watch::{Watched, Watchers};
-use crate::{ActorTable, Consumes, Context, Envelope, Folded, Standing, Tie, View};
+use crate::{ActorTable, Consumes, Context, Envelope, Folded, Standing, View};
 use aethereal_actor::{Effect, Ended, How, To, What};
 use aethereal_data::{ActorId, PathSegment};
 use std::collections::BTreeMap;
@@ -82,8 +82,7 @@ impl Consumes for Streams {
             What::Send { to, id, kind, bytes } => {
                 let receiver = receiver(table, by, &to).filter(|to| table.standing(*to) == Standing::Live);
                 one = receiver.map(|to| {
-                    let envelope =
-                        Envelope { id, to, cause: context.cause, root: context.root, tie: Tie::Tell, kind, bytes };
+                    let envelope = Envelope { id, to, cause: context.cause, root: context.root, kind, bytes };
 
                     (to.bits(), ((by.bits(), id.count), Pending::Mail(envelope)))
                 });
