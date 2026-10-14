@@ -64,6 +64,7 @@ pub enum What {
     EmbedInstanced { from: Code, key: KeyName },
     Faulted,
     Failed(Fault),
+    EndFailed(Fault),
     Publish { kind: KindName, blob: BlobId },
     Close,
     Watch { of: ActorRef },
@@ -129,7 +130,7 @@ pub enum Level {
   `Closed` is an actor that asked to close, and `Failed` carries the fault its turn returned. `Earlier` is an actor that had already ended in a step before the one the watch was asked for in: how it ended is not kept.
 
 - **An ending is shown once.** Every turn the watcher runs in one step reads the same list, as every read of a view is of the step's start (ADR-0011), and no later turn reads any of it again. The engine does not run an actor to show it an ending. A watcher with no mail runs no turn, and its list waits for the step in which mail next arrives. What an actor does with the list is its own code; a section of a handler written for endings is a matter for the ADR on how handlers are written.
-- **`Log` writes a line to the actor's log**, which the engine keeps as a view (ADR-0011): each actor's most recent entries, under the actor's own id. A key has one writer, so an actor's entries are in the order it made them, and an older entry leaves as a newer one arrives. The fault of a failed turn is an entry in it, taken from `Failed`, so an actor nobody watches does not fail unseen. An actor's entries stay once it has ended. The fault of a closing turn that fails is not yet kept anywhere. It is an effect so that the engine decides what happens to a line when the turn fails, and so that a guest's lines leave it with the rest of the turn.
+- **`Log` writes a line to the actor's log**, which the engine keeps as a view (ADR-0011): each actor's most recent entries, under the actor's own id. A key has one writer, so an actor's entries are in the order it made them, and an older entry leaves as a newer one arrives. The fault of a failed turn is an entry in it, taken from `Failed`, so an actor nobody watches does not fail unseen. An actor's entries stay once it has ended. The fault of a closing turn that fails is an entry too: the engine writes `EndFailed`, by that actor, which marks nothing, since the actor had already ended, and is there for the log. So every fault a turn returns can be read, whether or not anything acted on it. It is an effect so that the engine decides what happens to a line when the turn fails, and so that a guest's lines leave it with the rest of the turn.
 - An effect is plain data, and so is the list.
 
 **A turn reads the engine; it does not write it.** `turn` answers whether a path names a live actor from the table of actors as it stood when the turn's step began (ADR-0008, ADR-0011). A read is not an effect. No view changes while a step's turns run, so every read in a turn agrees with every other, and the step's number is all a record of the turn needs to give the same answers again.
