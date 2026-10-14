@@ -238,7 +238,7 @@ mod tests {
             panic!("two is not zero");
         };
         let effects = [Effect::new(ActorId::new(4), What::Close)];
-        let context = Context { cause: None, root: MailId { sender: ActorId::new(4), count: 0 } };
+        let context = Context { cause: None, root: MailId { sender: ActorId::new(4), count: 0 }, depth: 1 };
         let mut closes = Folded::<Closes>::new(parts);
         let mut echoes = Folded::<Echoes>::new(parts);
         closes.fold(&effects, &context, ());

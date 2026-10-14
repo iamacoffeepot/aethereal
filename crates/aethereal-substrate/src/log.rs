@@ -75,7 +75,7 @@ mod tests {
         let mut effects = vec![line(quiet, 0)];
         effects.extend((0..=RECENT).map(|number| line(loud, number)));
         let mut log = Folded::<Log>::new(parts);
-        let context = Context { cause: None, root: MailId { sender: loud, count: 0 } };
+        let context = Context { cause: None, root: MailId { sender: loud, count: 0 }, depth: 1 };
         log.fold(&effects, &context, ());
 
         let texts = |by: ActorId| -> Vec<String> {

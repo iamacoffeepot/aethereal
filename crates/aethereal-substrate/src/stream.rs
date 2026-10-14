@@ -82,7 +82,15 @@ impl Consumes for Streams {
             What::Send { to, id, kind, bytes } => {
                 let receiver = receiver(table, by, &to).filter(|to| table.standing(*to) == Standing::Live);
                 one = receiver.map(|to| {
-                    let envelope = Envelope { id, to, cause: context.cause, root: context.root, kind, bytes };
+                    let envelope = Envelope {
+                        id,
+                        to,
+                        cause: context.cause,
+                        root: context.root,
+                        depth: context.depth,
+                        kind,
+                        bytes,
+                    };
 
                     (to.bits(), ((by.bits(), id.count), Pending::Mail(envelope)))
                 });
