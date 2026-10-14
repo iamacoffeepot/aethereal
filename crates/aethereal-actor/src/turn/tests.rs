@@ -1,7 +1,7 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's list.
 
 use super::*;
-use crate::{Beginning, Ending, Fault, Item, Made, Mail, Unreadable, Within};
+use crate::{Beginning, Ending, Fault, Item, Made, Mail, MailId, Unreadable, Within};
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
 use alloc::vec;
@@ -211,7 +211,7 @@ fn child_begins_inside_its_parents_turn() {
     // held aside under the id and path its spawn gives it.
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, ROOT, &table, &mut asked);
+    let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
     let Ok(branch) = turn.spawn::<Branch>(&(), BranchConfig { leaves: 2, last_fails: false }) else {
         panic!("the branch and its leaves begin");
     };
@@ -243,7 +243,7 @@ fn used_key_is_refused_and_asks_for_nothing() {
     let held_id = table.child(ME, &held.last());
     let table = Listed(vec![(held_id, held)]);
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, ROOT, &table, &mut asked);
+    let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
 
     assert!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }).is_ok());
     assert_eq!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }), Err(Refused::KeyTaken));
@@ -257,7 +257,7 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     // failed begin used up.
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, ROOT, &table, &mut asked);
+    let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
     let refused = turn.spawn::<Branch>(&(), BranchConfig { leaves: 2, last_fails: true });
     let Err(Refused::Began(fault)) = refused else {
         panic!("the branch's last leaf fails, and the branch with it");
@@ -276,7 +276,7 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     ];
     assert_eq!(asked.effects(), expected);
 
-    let mut turn = Turn::new(ME, ROOT, &table, &mut asked);
+    let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
     assert!(turn.spawn::<Branch>(&(), BranchConfig { leaves: 0, last_fails: false }).is_ok());
     let (effects, stood) = asked.into_parts();
     assert_eq!(effects.last(), Some(&spawn_branch));
@@ -289,17 +289,18 @@ fn begin_and_end_send_as_their_own_actor() {
     // closing turn that does not learn why it runs.
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, ROOT, &table, &mut asked);
+    let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
     let Ok(herald) = turn.spawn::<Herald>(&(), Poke) else {
         panic!("the herald begins");
     };
-    let to_parent = |kind| What::Send { to: To::Parent, kind, bytes: Vec::new() };
+    let first = MailId { sender: herald.id(), count: 1 };
+    let to_parent = |kind| What::Send { to: To::Parent, id: first, kind, bytes: Vec::new() };
     let spawn = Effect::new(ME, What::Spawn { from: Code::Linked(Herald::NAME) });
     assert_eq!(asked.effects(), [spawn, Effect::new(herald.id(), to_parent(KindId::of::<Poked>()))]);
 
     let end = |why| {
         let mut asked = Asked::new();
-        let mut ending = Ending::new(herald.id(), ROOT, &table, &mut asked, why);
+        let mut ending = Ending::new(herald.id(), ROOT, &table, &mut asked, 0, why);
         let ended = Box::new(Herald).end(&mut ending);
 
         (ended, asked.into_parts().0)
@@ -318,7 +319,7 @@ fn child_past_the_deepest_path_is_refused() {
     };
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, deepest, &table, &mut asked);
+    let mut turn = Turn::new(ME, deepest, &table, &mut asked, 0, ME);
 
     assert_eq!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }), Err(Refused::TooDeep));
     assert!(asked.effects().is_empty());
@@ -326,20 +327,22 @@ fn child_past_the_deepest_path_is_refused() {
 
 #[test]
 fn handler_asks_by_the_kind_of_its_mail() {
-    // Catches mail read as a kind it is not, a send that loses its kind or its target, and a reference in mail
-    // taken without the table's proof.
+    // Catches mail read as a kind it is not, a send that loses its kind or its target, a reply left naming the
+    // sender instead of the actor the mail came from, and a reference in mail taken without the table's proof.
     let other = ActorId::new(9);
     let table = Listed(vec![(other, ActorPath::new("aether.test.other"))]);
     let mut leaf: Box<dyn Runs> = Box::new(Leaf);
     let handle = |leaf: &mut Box<dyn Runs>, table: &Listed, kind, bytes: &[u8]| {
         let mut asked = Asked::new();
-        let mut turn = Turn::new(ME, ROOT, table, &mut asked);
+        let mut turn = Turn::new(ME, ROOT, table, &mut asked, 0, other);
         let handled = leaf.handle(Item::Mail(Mail::new(kind, bytes, other, table, 64)), &mut turn);
 
         (handled, asked.into_parts().0)
     };
 
-    let poked = What::Send { to: To::Sender, kind: KindId::of::<Poked>(), bytes: Vec::new() };
+    let first = MailId { sender: ME, count: 1 };
+    let to_other = To::Held(ErasedActorRef::new(other));
+    let poked = What::Send { to: to_other.clone(), id: first, kind: KindId::of::<Poked>(), bytes: Vec::new() };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Poke>(), &[]), (Ok(()), vec![Effect::new(ME, poked)]));
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Shut>(), &[]), (Ok(()), vec![Effect::new(ME, What::Close)]));
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Poked>(), &[]), (Ok(()), Vec::new()));
@@ -347,7 +350,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
     let mut out = Writer::<Within>::new(crate::WithinWriter::new());
     assert_eq!(ErasedActorRef::new(other).encode(&mut out), Ok(()));
     let meet = out.into_bytes();
-    let poke = What::Send { to: To::Held(ErasedActorRef::new(other)), kind: KindId::of::<Poke>(), bytes: Vec::new() };
+    let poke = What::Send { to: to_other, id: first, kind: KindId::of::<Poke>(), bytes: Vec::new() };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Meet>(), &meet), (Ok(()), vec![Effect::new(ME, poke)]));
 
     let (handled, effects) = handle(&mut leaf, &Listed::default(), KindId::of::<Meet>(), &meet);

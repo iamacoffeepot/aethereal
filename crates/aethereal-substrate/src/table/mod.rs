@@ -4,8 +4,8 @@ mod actors;
 #[cfg(test)]
 mod tests;
 
-use crate::Folded;
 use crate::id::{child_id, path_id};
+use crate::{Context, Folded};
 use actors::{Actors, Entry};
 use aethereal_actor::{Effect, Made, Table};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
@@ -64,13 +64,13 @@ impl ActorTable {
         Self { actors: Folded::new(parts) }
     }
 
-    /// Folds in the effects of one step's turns, in the order given.
+    /// Folds in the effects of one turn, emitted in `context`, in the order given.
     ///
     /// # Panics
     ///
     /// Panics when an effect makes an actor under an id the table already holds (ADR-0008).
-    pub fn fold(&mut self, effects: &[Effect]) {
-        self.actors.fold(effects, ());
+    pub fn fold(&mut self, effects: &[Effect], context: &Context) {
+        self.actors.fold(effects, context, ());
     }
 
     /// How the actor `id` stands for stands.

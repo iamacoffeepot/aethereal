@@ -11,13 +11,16 @@
 
 #![forbid(unsafe_code)]
 
+mod context;
 mod engine;
 mod id;
 mod mail;
+mod stream;
 mod table;
 mod view;
 mod watch;
 
+pub use context::Context;
 pub use engine::Engine;
 pub use id::{child_id, path_id, root_id};
 pub use mail::{Envelope, Tie};

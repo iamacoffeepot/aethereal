@@ -1,5 +1,6 @@
 //! A view: state many actors read, folded from the effects of finished turns (ADR-0011).
 
+use crate::Context;
 use aethereal_actor::Effect;
 use std::num::NonZeroUsize;
 
@@ -12,6 +13,10 @@ use std::num::NonZeroUsize;
 /// A key has one owner, whose records reach [`Self::fold`] in the order it
 /// asked for them. Or many actors write a key, and then the fold gives the
 /// same state in whatever order their records arrive.
+///
+/// Each effect is folded with the [`Context`] it was emitted in: the item its
+/// turn was reacting to, which every effect of that turn shares. The context is
+/// what is folded, not something read.
 ///
 /// A view may read other views, named in [`Self::Reads`]. The engine folds
 /// those first, so [`Self::takes`] sees them with the step's effects already
@@ -27,8 +32,13 @@ pub trait View {
 
     /// The keys and records of an effect, one for each key it changes: none for an effect this view does not fold.
     ///
-    /// `reads` are the views this one reads, each already folded for the step.
-    fn takes<'a>(effect: &'a Effect, reads: Self::Reads<'a>) -> impl Iterator<Item = (u64, Self::Record)> + 'a;
+    /// `context` is the context the effect was emitted in, and `reads` are the views this one reads, each already
+    /// folded for the step.
+    fn takes<'a>(
+        effect: &'a Effect,
+        context: &'a Context,
+        reads: Self::Reads<'a>,
+    ) -> impl Iterator<Item = (u64, Self::Record)> + 'a;
 
     /// Folds one record into the part its key falls in.
     fn fold(shard: &mut Self::Shard, key: u64, record: Self::Record);
@@ -54,11 +64,11 @@ impl<V: View> Folded<V> {
         Self { shards: (0..parts.get()).map(|_| V::Shard::default()).collect() }
     }
 
-    /// Folds in the effects of one step's turns, in the order given, reading `reads`.
+    /// Folds in the effects of one turn, emitted in `context`, in the order given, reading `reads`.
     ///
     /// The caller folds every view in `reads` first.
-    pub fn fold<'a>(&mut self, effects: &'a [Effect], reads: V::Reads<'a>) {
-        for (key, record) in effects.iter().flat_map(|effect| V::takes(effect, reads)) {
+    pub fn fold<'a>(&mut self, effects: &'a [Effect], context: &'a Context, reads: V::Reads<'a>) {
+        for (key, record) in effects.iter().flat_map(|effect| V::takes(effect, context, reads)) {
             let part = self.part(key);
             V::fold(&mut self.shards[part], key, record);
         }
@@ -68,6 +78,14 @@ impl<V: View> Folded<V> {
     #[must_use]
     pub fn shard(&self, key: u64) -> &V::Shard {
         &self.shards[self.part(key)]
+    }
+
+    /// The part `key` falls in, to change outside a fold: for the engine, which takes from a view what it hands
+    /// out, such as the items an actor is to react to, between steps.
+    pub fn shard_mut(&mut self, key: u64) -> &mut V::Shard {
+        let part = self.part(key);
+
+        &mut self.shards[part]
     }
 
     /// Which part `key` falls in.
@@ -82,7 +100,7 @@ impl<V: View> Folded<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aethereal_actor::What;
+    use aethereal_actor::{MailId, What};
     use aethereal_data::ActorId;
     use std::collections::BTreeMap;
 
@@ -94,7 +112,7 @@ mod tests {
         type Record = ();
         type Reads<'a> = ();
 
-        fn takes(effect: &Effect, (): ()) -> impl Iterator<Item = (u64, ())> + '_ {
+        fn takes<'a>(effect: &'a Effect, _: &'a Context, (): ()) -> impl Iterator<Item = (u64, ())> + 'a {
             let is_close = *effect.what() == What::Close;
 
             is_close.then_some((effect.by().bits(), ())).into_iter()
@@ -113,7 +131,11 @@ mod tests {
         type Record = u32;
         type Reads<'a> = (&'a Folded<Closes>,);
 
-        fn takes<'a>(effect: &'a Effect, (closes,): Self::Reads<'a>) -> impl Iterator<Item = (u64, u32)> + 'a {
+        fn takes<'a>(
+            effect: &'a Effect,
+            _: &'a Context,
+            (closes,): Self::Reads<'a>,
+        ) -> impl Iterator<Item = (u64, u32)> + 'a {
             let by = effect.by().bits();
             let count = closes.shard(by).get(&by).copied();
 
@@ -133,10 +155,11 @@ mod tests {
             panic!("two is not zero");
         };
         let effects = [Effect::new(ActorId::new(4), What::Close)];
+        let context = Context { cause: None, root: MailId { sender: ActorId::new(4), count: 0 } };
         let mut closes = Folded::<Closes>::new(parts);
         let mut echoes = Folded::<Echoes>::new(parts);
-        closes.fold(&effects, ());
-        echoes.fold(&effects, (&closes,));
+        closes.fold(&effects, &context, ());
+        echoes.fold(&effects, &context, (&closes,));
 
         assert_eq!(echoes.shard(4).get(&4), Some(&1));
         assert_eq!(echoes.shard(5).get(&5), Some(&1));
