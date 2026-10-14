@@ -1,9 +1,9 @@
 //! The view of what each actor has to react to (ADR-0009, ADR-0011).
 
-use crate::{Consumes, Context, Envelope, View};
+use crate::{ByActor, Consumes, Context, Envelope, View};
 use aethereal_actor::{Effect, Ended, How, What};
 use aethereal_data::ActorId;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::mem;
 use std::ops::Range;
 
@@ -35,7 +35,7 @@ pub struct Shard {
     /// The items handed out at the start of the step, in order: by actor, then as each actor is handed them.
     handed: Vec<Entry>,
     /// Who watches each actor, and whether it has ended, by the actor watched.
-    watched: BTreeMap<u64, Watched>,
+    watched: ByActor<Watched>,
     /// The watches asked for in this step, by the actor watched: who asked, and in what context.
     watches: Vec<(u64, u64, Context)>,
     /// The endings of this step: who ended, how, and in what context.

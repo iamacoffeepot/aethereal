@@ -13,7 +13,7 @@ pub use plan::{Plan, Share, Workers};
 use crate::id::root_id;
 use crate::stream::{self, Pending, Streams};
 use crate::table::Actors;
-use crate::{ActorTable, Clock, Context, Entry, Envelope, Folded, Lives, Log, Routed, State, lives};
+use crate::{ActorTable, ByActor, Clock, Context, Entry, Envelope, Folded, Lives, Log, Routed, State, lives};
 use aethereal_actor::{
     Actor, Arena, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Payload, Refused, Runs,
     Stood, Turn, What, Why,
@@ -24,7 +24,6 @@ use costs::{CostKey, Costs, ItemKind, KindIndex, Kinds, toward};
 use plan::{Job, Work};
 use since::Since;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::iter;
 use std::mem;
 use std::num::NonZeroUsize;
@@ -60,7 +59,7 @@ pub struct Engine {
     /// The actors themselves, by the number of their seat.
     actors: Vec<Held>,
     /// The number of each actor's seat, under the actor's id.
-    seated: BTreeMap<u64, usize>,
+    seated: ByActor<usize>,
     /// The numbers of the empty seats, to be taken before a new one is added.
     empty: Vec<usize>,
     /// Where mail is written: for each parity of step, an arena for each writer, the first for mail sent between
@@ -183,7 +182,7 @@ impl Engine {
             lives: Folded::new(parts),
             seats: Vec::new(),
             actors: Vec::new(),
-            seated: BTreeMap::new(),
+            seated: ByActor::default(),
             empty: Vec::new(),
             arenas: [Vec::new(), Vec::new()],
             lists: Vec::new(),
@@ -535,7 +534,7 @@ impl Reading<'_> {
             }
             (Work::Items(range), State::Live) => {
                 let mut actor = actor;
-                let mut stood_since = Vec::new();
+                let mut stood_since = ByActor::default();
                 let mut count = life.sent();
                 for pending in self.streams.shard(id.bits()).handed(range) {
                     let table = Since { table: self.table, stood: &stood_since };
@@ -560,7 +559,7 @@ impl Reading<'_> {
 
                     let effects = &lists.effects[ran.effects.clone()];
                     count = sent(effects, id).unwrap_or(count);
-                    stood_since.extend(ran.stood.iter().map(|child| (child.id(), child.path().clone())));
+                    stood_since.extend(ran.stood.iter().map(|child| (child.id().bits(), child.path().clone())));
                     let over = ends(effects, id);
                     lists.route(ran);
                     if over {

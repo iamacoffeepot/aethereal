@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+mod by_actor;
 mod clock;
 mod context;
 mod engine;
@@ -22,6 +23,7 @@ mod stream;
 mod table;
 mod view;
 
+pub use by_actor::{ByActor, IdBits};
 pub use clock::Clock;
 pub use context::Context;
 pub use engine::{Done, Engine, Plan, Reading, Share, Tally, Workers};

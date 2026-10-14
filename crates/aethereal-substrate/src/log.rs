@@ -1,8 +1,8 @@
 //! The view of what each actor logged most recently (ADR-0009, ADR-0011).
 
-use crate::{Context, View};
+use crate::{ByActor, Context, View};
 use aethereal_actor::{Effect, Fault, Level, What};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 
 /// How many entries the view keeps for one actor. An older one leaves as a newer one arrives.
 pub const RECENT: usize = 32;
@@ -26,14 +26,14 @@ pub enum Entry {
 }
 
 impl View for Log {
-    type Shard = BTreeMap<u64, VecDeque<Entry>>;
+    type Shard = ByActor<VecDeque<Entry>>;
     type Record = Entry;
 
     fn takes<'a>(effect: &'a Effect, _: &'a Context) -> impl Iterator<Item = (u64, Entry)> + 'a {
         entry(effect).into_iter()
     }
 
-    fn fold(shard: &mut BTreeMap<u64, VecDeque<Entry>>, key: u64, entry: Entry) {
+    fn fold(shard: &mut ByActor<VecDeque<Entry>>, key: u64, entry: Entry) {
         let recent = shard.entry(key).or_default();
         let is_full = recent.len() == RECENT;
         if is_full {

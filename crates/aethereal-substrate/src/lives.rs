@@ -2,9 +2,8 @@
 //! ADR-0011).
 
 use crate::id::spawned;
-use crate::{Context, View};
+use crate::{ByActor, Context, View};
 use aethereal_actor::{Effect, How, What};
-use std::collections::BTreeMap;
 use std::mem;
 
 /// The view of how far each actor's life has gone, keyed by the actor's own id (ADR-0011).
@@ -20,7 +19,7 @@ pub struct Lives;
 #[derive(Default)]
 pub struct Shard {
     /// Each actor's life, from when it is made to when its closing turn has run.
-    lives: BTreeMap<u64, Life>,
+    lives: ByActor<Life>,
     /// The actors that ended since the step began, in the order they ended.
     ended: Vec<u64>,
 }

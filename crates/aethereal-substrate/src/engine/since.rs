@@ -1,6 +1,6 @@
 //! The table as one actor's turn reads it: the step's start, and that actor's own spawns since (ADR-0009).
 
-use crate::ActorTable;
+use crate::{ActorTable, ByActor};
 use aethereal_actor::{Made, Table};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 
@@ -13,7 +13,8 @@ use aethereal_data::{ActorId, ActorPath, PathSegment};
 /// yet proven.
 pub(super) struct Since<'a> {
     pub(super) table: &'a ActorTable,
-    pub(super) stood: &'a [(ActorId, ActorPath)],
+    /// The paths of the children the actor stood up in its earlier turns of the step, under their ids.
+    pub(super) stood: &'a ByActor<ActorPath>,
 }
 
 impl Made for Since<'_> {
@@ -28,7 +29,7 @@ impl Table for Since<'_> {
     }
 
     fn path(&self, id: ActorId) -> Option<ActorPath> {
-        let stood = self.stood.iter().find(|(child, _)| *child == id).map(|(_, path)| path.clone());
+        let stood = self.stood.get(&id.bits()).cloned();
 
         stood.or_else(|| self.table.path(id))
     }
