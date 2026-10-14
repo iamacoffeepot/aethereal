@@ -6,7 +6,7 @@ mod tests;
 
 pub use refused::Refused;
 
-use crate::{Actor, ActorRef, Actors, ActorsWriter, Code, Effect, Ended, Runs, Table, To, ToWithoutMail, What};
+use crate::{Actor, Actors, ActorsWriter, Code, Effect, Ended, ErasedActorRef, Runs, Table, To, ToWithoutMail, What};
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -90,17 +90,17 @@ impl Seat<'_> {
     }
 
     /// A reference to this actor.
-    const fn me(&self) -> ActorRef {
-        ActorRef::new(self.id)
+    const fn me(&self) -> ErasedActorRef {
+        ErasedActorRef::new(self.id)
     }
 
     /// A reference to the live actor `path` names.
-    fn resolve(&self, path: &ActorPath) -> Option<ActorRef> {
-        self.table.resolve(path).map(ActorRef::new)
+    fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
+        self.table.resolve(path).map(ErasedActorRef::new)
     }
 
     /// Adds the effect that watches the actor `of` refers to.
-    fn watch(&mut self, of: ActorRef) {
+    fn watch(&mut self, of: ErasedActorRef) {
         self.ask(What::Watch { of });
     }
 
@@ -118,7 +118,7 @@ impl Seat<'_> {
     /// A key is free when no actor has been made at the child's path and this turn has stood none up there. An
     /// id the table holds under another path is not refused: that is two paths with one id, and the engine
     /// stops when it folds the spawn (ADR-0008).
-    fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef, Refused> {
+    fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ErasedActorRef, Refused> {
         let segment = PathSegment::new(C::NAME, key);
         let path = self.path.child(&segment).map_err(|PathTooDeep| Refused::TooDeep)?;
         let id = self.table.child(self.id, &segment);
@@ -141,7 +141,7 @@ impl Seat<'_> {
             Ok(actor) => {
                 self.asked.stood.push(Stood { id, path, actor: Box::new(actor) });
 
-                Ok(ActorRef::new(id))
+                Ok(ErasedActorRef::new(id))
             }
             Err(fault) => {
                 self.asked.effects.push(Effect::new(id, What::Faulted));
@@ -192,7 +192,7 @@ impl<'a> Turn<'a> {
     /// Watches the actor `of` refers to: its ending is shown to this actor once, in [`Self::ended`].
     ///
     /// Watching an actor already watched changes nothing.
-    pub fn watch(&mut self, of: ActorRef) {
+    pub fn watch(&mut self, of: ErasedActorRef) {
         self.seat.watch(of);
     }
 
@@ -204,7 +204,7 @@ impl<'a> Turn<'a> {
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
     ///
     /// The child takes its own mail. It is live once the engine applies this turn's effects.
-    pub fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef, Refused> {
+    pub fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ErasedActorRef, Refused> {
         self.seat.spawn::<C>(key, config)
     }
 
@@ -215,13 +215,13 @@ impl<'a> Turn<'a> {
 
     /// A reference to this actor.
     #[must_use]
-    pub const fn me(&self) -> ActorRef {
+    pub const fn me(&self) -> ErasedActorRef {
         self.seat.me()
     }
 
     /// A reference to the live actor `path` names, as of the step's start.
     #[must_use]
-    pub fn resolve(&self, path: &ActorPath) -> Option<ActorRef> {
+    pub fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.seat.resolve(path)
     }
 }
@@ -249,24 +249,24 @@ impl<'a> Beginning<'a> {
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
-    pub fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef, Refused> {
+    pub fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ErasedActorRef, Refused> {
         self.seat.spawn::<C>(key, config)
     }
 
     /// Watches the actor `of` refers to: its ending is shown to this actor once, in a later turn.
-    pub fn watch(&mut self, of: ActorRef) {
+    pub fn watch(&mut self, of: ErasedActorRef) {
         self.seat.watch(of);
     }
 
     /// A reference to this actor.
     #[must_use]
-    pub const fn me(&self) -> ActorRef {
+    pub const fn me(&self) -> ErasedActorRef {
         self.seat.me()
     }
 
     /// A reference to the live actor `path` names, as of the step's start.
     #[must_use]
-    pub fn resolve(&self, path: &ActorPath) -> Option<ActorRef> {
+    pub fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.seat.resolve(path)
     }
 }
@@ -310,13 +310,13 @@ impl<'a> Ending<'a> {
 
     /// A reference to this actor.
     #[must_use]
-    pub const fn me(&self) -> ActorRef {
+    pub const fn me(&self) -> ErasedActorRef {
         self.seat.me()
     }
 
     /// A reference to the live actor `path` names, as of the step's start.
     #[must_use]
-    pub fn resolve(&self, path: &ActorPath) -> Option<ActorRef> {
+    pub fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.seat.resolve(path)
     }
 }

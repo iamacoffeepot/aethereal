@@ -1,6 +1,6 @@
 //! An effect: one thing an actor asks of the engine (ADR-0009).
 
-use crate::{ActorRef, Fault};
+use crate::{ErasedActorRef, Fault};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
 use alloc::vec::Vec;
 
@@ -66,7 +66,7 @@ pub enum What {
     /// actor asked for nothing.
     Failed(Fault),
     /// The asking actor is shown the ending of `of`, once, when that actor ends.
-    Watch { of: ActorRef },
+    Watch { of: ErasedActorRef },
     /// The asking actor closes.
     Close,
 }
@@ -87,7 +87,7 @@ pub enum To {
     /// The sender of the mail being handled.
     Sender,
     /// The actor a reference the sender holds refers to.
-    Held(ActorRef),
+    Held(ErasedActorRef),
 }
 
 /// Who a `begin` or a closing turn may send to (ADR-0009).
@@ -104,7 +104,7 @@ pub enum ToWithoutMail {
     /// The actor of this kind and key directly beneath the sender.
     ChildInstanced(KindName, KeyName),
     /// The actor a reference the sender holds refers to.
-    Held(ActorRef),
+    Held(ErasedActorRef),
 }
 
 impl From<ToWithoutMail> for To {

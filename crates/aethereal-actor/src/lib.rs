@@ -26,5 +26,5 @@ pub use effect::{Code, Effect, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
 pub use mail::{Mail, MailId};
-pub use reference::ActorRef;
+pub use reference::ErasedActorRef;
 pub use turn::{Asked, Beginning, Ending, Refused, Stood, Turn, Why};
