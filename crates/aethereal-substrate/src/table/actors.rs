@@ -1,7 +1,7 @@
 //! The view of which actors there are (ADR-0008, ADR-0011).
 
-use crate::View;
 use crate::id::spawned;
+use crate::{Context, View};
 use aethereal_actor::{Effect, What};
 use aethereal_data::{ActorId, PathSegment};
 use std::collections::BTreeMap;
@@ -59,21 +59,10 @@ impl Entry {
 impl View for Actors {
     type Shard = BTreeMap<u64, Entry>;
     type Record = Record;
+    type Reads<'a> = ();
 
-    fn takes(effect: &Effect) -> Option<(u64, Record)> {
-        let by = effect.by();
-        let (id, record) = match effect.what() {
-            What::Root { from } => (by, Record::Made { above: None, segment: from.singleton() }),
-            What::RootInstanced { from, key } => (by, Record::Made { above: None, segment: from.instanced(key) }),
-            What::Failed(_) | What::Close => (by, Record::Ended),
-            _ => {
-                let (child, segment) = spawned(effect)?;
-
-                (child, Record::Made { above: Some(by), segment })
-            }
-        };
-
-        Some((id.bits(), record))
+    fn takes<'a>(effect: &'a Effect, _: &'a Context, (): ()) -> impl Iterator<Item = (u64, Record)> + 'a {
+        record(effect).into_iter()
     }
 
     /// # Panics
@@ -96,4 +85,21 @@ impl View for Actors {
             }
         }
     }
+}
+
+/// The key and record the view keeps of `effect`, or none for an effect it does not fold.
+fn record(effect: &Effect) -> Option<(u64, Record)> {
+    let by = effect.by();
+    let (id, record) = match effect.what() {
+        What::Root { from } => (by, Record::Made { above: None, segment: from.singleton() }),
+        What::RootInstanced { from, key } => (by, Record::Made { above: None, segment: from.instanced(key) }),
+        What::Failed(_) | What::Close => (by, Record::Ended),
+        _ => {
+            let (child, segment) = spawned(effect)?;
+
+            (child, Record::Made { above: Some(by), segment })
+        }
+    };
+
+    Some((id.bits(), record))
 }

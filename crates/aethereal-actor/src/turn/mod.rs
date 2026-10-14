@@ -1,4 +1,4 @@
-//! A turn: what an actor asks of the engine while it handles one piece of mail (ADR-0009).
+//! A turn: what an actor asks of the engine while it handles one item (ADR-0009).
 
 mod refused;
 #[cfg(test)]
@@ -6,10 +6,9 @@ mod tests;
 
 pub use refused::Refused;
 
-use crate::{Actor, ActorRef, Actors, ActorsWriter, Code, Effect, Ended, Level, Runs, Table, To, ToWithoutMail, What};
+use crate::{Actor, Actors, ActorsWriter, Code, Effect, ErasedActorRef, MailId, Runs, Table, To, ToWithoutMail, What};
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 /// What one turn has asked for: its effects in order, and the children it stood up (ADR-0009).
@@ -82,6 +81,8 @@ struct Seat<'a> {
     path: ActorPath,
     table: &'a dyn Table,
     asked: &'a mut Asked,
+    /// How many pieces of mail this actor has sent, this turn's included.
+    sent: u64,
 }
 
 impl Seat<'_> {
@@ -91,22 +92,17 @@ impl Seat<'_> {
     }
 
     /// A reference to this actor.
-    const fn me(&self) -> ActorRef {
-        ActorRef::new(self.id)
+    const fn me(&self) -> ErasedActorRef {
+        ErasedActorRef::new(self.id)
     }
 
     /// A reference to the live actor `path` names.
-    fn resolve(&self, path: &ActorPath) -> Option<ActorRef> {
-        self.table.resolve(path).map(ActorRef::new)
-    }
-
-    /// Adds the effect that logs `text` at `level`.
-    fn log(&mut self, level: Level, text: impl Into<String>) {
-        self.ask(What::Log { level, text: text.into() });
+    fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
+        self.table.resolve(path).map(ErasedActorRef::new)
     }
 
     /// Adds the effect that watches the actor `of` refers to.
-    fn watch(&mut self, of: ActorRef) {
+    fn watch(&mut self, of: ErasedActorRef) {
         self.ask(What::Watch { of });
     }
 
@@ -114,7 +110,9 @@ impl Seat<'_> {
     fn send<K: Kind + Encode<Actors>>(&mut self, to: To, mail: &K) -> Result<(), EncodeError> {
         let mut out = Writer::<Actors>::new(ActorsWriter::new());
         mail.encode(&mut out)?;
-        self.ask(What::Send { to, kind: KindId::of::<K>(), bytes: out.into_bytes() });
+        self.sent += 1;
+        let id = MailId { sender: self.id, count: self.sent };
+        self.ask(What::Send { to, id, kind: KindId::of::<K>(), bytes: out.into_bytes() });
 
         Ok(())
     }
@@ -124,7 +122,7 @@ impl Seat<'_> {
     /// A key is free when no actor has been made at the child's path and this turn has stood none up there. An
     /// id the table holds under another path is not refused: that is two paths with one id, and the engine
     /// stops when it folds the spawn (ADR-0008).
-    fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef, Refused> {
+    fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ErasedActorRef, Refused> {
         let segment = PathSegment::new(C::NAME, key);
         let path = self.path.child(&segment).map_err(|PathTooDeep| Refused::TooDeep)?;
         let id = self.table.child(self.id, &segment);
@@ -142,12 +140,12 @@ impl Seat<'_> {
         self.ask(spawn);
 
         let stood_before = self.asked.stood.len();
-        let seat = Seat { id, path: path.clone(), table: self.table, asked: &mut *self.asked };
+        let seat = Seat { id, path: path.clone(), table: self.table, asked: &mut *self.asked, sent: 0 };
         match C::begin(config, &mut Beginning { seat }) {
             Ok(actor) => {
                 self.asked.stood.push(Stood { id, path, actor: Box::new(actor) });
 
-                Ok(ActorRef::new(id))
+                Ok(ErasedActorRef::new(id))
             }
             Err(fault) => {
                 self.asked.effects.push(Effect::new(id, What::Faulted));
@@ -159,19 +157,20 @@ impl Seat<'_> {
     }
 }
 
-/// What an actor asks of the engine while it handles one piece of mail (ADR-0009).
+/// What an actor asks of the engine while it handles one item (ADR-0009).
 ///
 /// Each ask adds an effect to the turn's list, and nothing asked for happens
 /// until the turn has returned `Ok`. Each read answers from the table of
 /// actors as it stood when the turn's step began.
 pub struct Turn<'a> {
     seat: Seat<'a>,
-    ended: &'a [Ended],
+    /// The actor the item being handled comes from: who [`To::Sender`] names.
+    source: ActorId,
 }
 
 impl<'a> Turn<'a> {
-    /// The turn of the actor `id` stands for, at `path`, reading `table` and adding to `asked`, which is shown
-    /// the endings in `ended`.
+    /// The turn of the actor `id` stands for, at `path`, reading `table` and adding to `asked`, which handles an
+    /// item from `source` and has sent `sent` pieces of mail before it.
     ///
     /// For the engine. `table` answers for the step's start and for what this actor has spawned since.
     #[must_use]
@@ -180,37 +179,33 @@ impl<'a> Turn<'a> {
         path: ActorPath,
         table: &'a dyn Table,
         asked: &'a mut Asked,
-        ended: &'a [Ended],
+        sent: u64,
+        source: ActorId,
     ) -> Self {
-        Self { seat: Seat { id, path, table, asked }, ended }
+        Self { seat: Seat { id, path, table, asked, sent }, source }
     }
 
-    /// The actors this one was watching that have ended since its last turns ran, as of the step's start.
-    ///
-    /// Every turn the actor runs in this step is shown the same list, and no later turn is shown any of it
-    /// again. The engine does not run an actor to show it this: an actor with no mail sees the list when mail
-    /// next arrives.
-    #[must_use]
-    pub const fn ended(&self) -> &[Ended] {
-        self.ended
-    }
-
-    /// Watches the actor `of` refers to: its ending is shown to this actor once, in [`Self::ended`].
+    /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.
     ///
     /// Watching an actor already watched changes nothing.
-    pub fn watch(&mut self, of: ActorRef) {
+    pub fn watch(&mut self, of: ErasedActorRef) {
         self.seat.watch(of);
     }
 
     /// Sends `mail` to `to`. It is delivered after the turn, in a later step.
     pub fn send<K: Kind + Encode<Actors>>(&mut self, to: To, mail: &K) -> Result<(), EncodeError> {
+        let to = match to {
+            To::Sender => To::Held(ErasedActorRef::new(self.source)),
+            named => named,
+        };
+
         self.seat.send(to, mail)
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
     ///
     /// The child takes its own mail. It is live once the engine applies this turn's effects.
-    pub fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef, Refused> {
+    pub fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ErasedActorRef, Refused> {
         self.seat.spawn::<C>(key, config)
     }
 
@@ -219,20 +214,15 @@ impl<'a> Turn<'a> {
         self.seat.ask(What::Close);
     }
 
-    /// Logs `text` at `level`. The line is kept when this turn fails.
-    pub fn log(&mut self, level: Level, text: impl Into<String>) {
-        self.seat.log(level, text);
-    }
-
     /// A reference to this actor.
     #[must_use]
-    pub const fn me(&self) -> ActorRef {
+    pub const fn me(&self) -> ErasedActorRef {
         self.seat.me()
     }
 
     /// A reference to the live actor `path` names, as of the step's start.
     #[must_use]
-    pub fn resolve(&self, path: &ActorPath) -> Option<ActorRef> {
+    pub fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.seat.resolve(path)
     }
 }
@@ -251,7 +241,7 @@ impl<'a> Beginning<'a> {
     /// For the engine, which makes a root for the chassis. A child's is made by the turn that spawns it.
     #[must_use]
     pub const fn new(id: ActorId, path: ActorPath, table: &'a dyn Table, asked: &'a mut Asked) -> Self {
-        Self { seat: Seat { id, path, table, asked } }
+        Self { seat: Seat { id, path, table, asked, sent: 0 } }
     }
 
     /// Sends `mail` to `to`. It goes out with the mail of the turn this `begin` runs in.
@@ -260,29 +250,24 @@ impl<'a> Beginning<'a> {
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
-    pub fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef, Refused> {
+    pub fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ErasedActorRef, Refused> {
         self.seat.spawn::<C>(key, config)
     }
 
-    /// Watches the actor `of` refers to: its ending is shown to this actor once, in a later turn.
-    pub fn watch(&mut self, of: ActorRef) {
+    /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.
+    pub fn watch(&mut self, of: ErasedActorRef) {
         self.seat.watch(of);
-    }
-
-    /// Logs `text` at `level`. The line is kept when this turn fails.
-    pub fn log(&mut self, level: Level, text: impl Into<String>) {
-        self.seat.log(level, text);
     }
 
     /// A reference to this actor.
     #[must_use]
-    pub const fn me(&self) -> ActorRef {
+    pub const fn me(&self) -> ErasedActorRef {
         self.seat.me()
     }
 
     /// A reference to the live actor `path` names, as of the step's start.
     #[must_use]
-    pub fn resolve(&self, path: &ActorPath) -> Option<ActorRef> {
+    pub fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.seat.resolve(path)
     }
 }
@@ -305,12 +290,20 @@ pub struct Ending<'a> {
 }
 
 impl<'a> Ending<'a> {
-    /// The closing turn of the actor `id` stands for, at `path`, which runs because of `why`.
+    /// The closing turn of the actor `id` stands for, at `path`, which runs because of `why`, after the actor
+    /// has sent `sent` pieces of mail.
     ///
     /// For the engine.
     #[must_use]
-    pub const fn new(id: ActorId, path: ActorPath, table: &'a dyn Table, asked: &'a mut Asked, why: Why) -> Self {
-        Self { seat: Seat { id, path, table, asked }, why }
+    pub const fn new(
+        id: ActorId,
+        path: ActorPath,
+        table: &'a dyn Table,
+        asked: &'a mut Asked,
+        sent: u64,
+        why: Why,
+    ) -> Self {
+        Self { seat: Seat { id, path, table, asked, sent }, why }
     }
 
     /// Why this closing turn runs.
@@ -324,20 +317,15 @@ impl<'a> Ending<'a> {
         self.seat.send(to.into(), mail)
     }
 
-    /// Logs `text` at `level`. The line is kept when this turn fails.
-    pub fn log(&mut self, level: Level, text: impl Into<String>) {
-        self.seat.log(level, text);
-    }
-
     /// A reference to this actor.
     #[must_use]
-    pub const fn me(&self) -> ActorRef {
+    pub const fn me(&self) -> ErasedActorRef {
         self.seat.me()
     }
 
     /// A reference to the live actor `path` names, as of the step's start.
     #[must_use]
-    pub fn resolve(&self, path: &ActorPath) -> Option<ActorRef> {
+    pub fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.seat.resolve(path)
     }
 }

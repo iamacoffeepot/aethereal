@@ -1,9 +1,15 @@
 //! The table's tests: what a fold makes of spawns and endings, and what a reader then sees.
 
 use super::*;
+use crate::Context;
 use crate::id::{child_id, root_id};
-use aethereal_actor::{Code, Fault, Unreadable, What};
+use aethereal_actor::{Code, Fault, MailId, Unreadable, What};
 use aethereal_data::{KeyName, KindName, PathSegment};
+
+/// The context the effects of these tests were emitted in, which the table does not read.
+fn context() -> Context {
+    Context { cause: None, root: MailId { sender: ActorId::new(1), count: 0 } }
+}
 
 const WINDOW: KindName = KindName::new("aether.window");
 const SURFACE: KindName = KindName::new("aether.window.surface");
@@ -48,7 +54,7 @@ fn spawned_actor_resolves_by_its_path() {
     let (surface, spawn) = surface(window);
     let (layer, embed) = layer(surface);
     let mut table = table(4);
-    table.fold(&[root, spawn, embed]);
+    table.fold(&[root, spawn, embed], &context());
 
     let path = ActorPath::new("aether.window/aether.window.surface:left/aether.window.layer");
     assert_eq!(table.resolve(&path), Some(layer));
@@ -64,8 +70,8 @@ fn ending_marks_only_its_own_actor() {
     let (surface, spawn) = surface(window);
     let (layer, embed) = layer(surface);
     let mut table = table(4);
-    table.fold(&[root, spawn, embed]);
-    table.fold(&[Effect::new(surface, What::Close)]);
+    table.fold(&[root, spawn, embed], &context());
+    table.fold(&[Effect::new(surface, What::Close)], &context());
 
     assert_eq!(table.standing(window), Standing::Live);
     assert_eq!(table.standing(surface), Standing::Ended);
@@ -81,7 +87,7 @@ fn failed_turn_ends_its_actor() {
     let Ok(fault) = Fault::new(&Unreadable) else {
         panic!("a reason that holds nothing encodes");
     };
-    table.fold(&[root, Effect::new(window, What::Failed(fault))]);
+    table.fold(&[root, Effect::new(window, What::Failed(fault))], &context());
 
     assert_eq!(table.standing(window), Standing::Ended);
 }
@@ -93,7 +99,7 @@ fn actor_made_under_a_held_id_stops_the_engine() {
     let (window, root) = window();
     let (surface, spawn) = surface(window);
     let mut table = table(4);
-    table.fold(&[root, spawn.clone(), Effect::new(surface, What::Close), spawn]);
+    table.fold(&[root, spawn.clone(), Effect::new(surface, What::Close), spawn], &context());
 }
 
 #[test]
@@ -101,7 +107,7 @@ fn reader_sees_nothing_before_the_fold() {
     // Catches an ending of an actor the table never held making an entry for it.
     let (window, _) = window();
     let mut table = table(4);
-    table.fold(&[Effect::new(window, What::Close)]);
+    table.fold(&[Effect::new(window, What::Close)], &context());
 
     assert_eq!(table.standing(window), Standing::Absent);
     assert_eq!(table.path(window), None);
@@ -116,7 +122,7 @@ fn part_count_does_not_change_the_table() {
     let effects = [root, spawn, embed, Effect::new(layer, What::Close)];
     let seen = [1, 2, 7, 64].map(|parts| {
         let mut table = table(parts);
-        table.fold(&effects);
+        table.fold(&effects, &context());
 
         [window, surface, layer].map(|id| (table.standing(id), table.path(id), table.parent(id)))
     });

@@ -24,103 +24,54 @@ pub struct MailId {
 - Two runs of the same turns give every piece of mail the same id, whichever worker ran which turn.
 - The id is the fixed order ADR-0011 asks for: mail that reaches an actor in one step is ordered by its id.
 
-**A piece of mail carries its cause and its root.**
+**A piece of mail carries its cause and its root.** The engine carries mail as an `Envelope`. A handler sees ADR-0009's `Mail`, which is the envelope's kind, sender, and bytes to read.
 
 ```rust
-pub struct Mail {
+pub struct Envelope {
     pub id: MailId,
     pub to: ActorId,             // the actor it is for
-    pub cause: Option<MailId>,   // none: nothing inside the engine caused it, and nothing ever will have
+    pub cause: Option<MailId>,   // none for mail from outside the engine, or from a root's `begin`
     pub root: MailId,
-    pub tie: Tie,
+    pub depth: u32,              // how far down its chain: one more than its cause's
     pub kind: KindId,
     pub bytes: Vec<u8>,
-}
-
-pub enum Tie {
-    Tell,                          // nothing is owed for it
-    Ask,                           // an answer is owed
-    Part { request: MailId },      // one part of a stream that request opened
-    Answer { request: MailId },    // the answer to that request
 }
 ```
 
 - **The cause** is the mail whose turn sent this one.
 - **The root** is the first mail of the chain. Mail sent while a piece of mail is handled takes that mail's root. Mail with no cause is its own root.
 - A chain is every piece of mail with one root.
+- **The depth** is how far down its chain a piece of mail is. Mail sent while a piece of mail is handled is one deeper than it. Mail with no cause is at depth zero, and the mail a root's `begin` sends is at depth one.
+
+**A turn's effects are emitted in a context.** The context is the item the turn handled: its cause, and its root. Every effect of one turn shares it, and the engine folds each effect into the views with it (ADR-0011). A piece of mail's id is on its `Send`, the sender and that sender's count, since the turn counts what its actor sends. The rest of the envelope, its cause and its root, comes from the context, and who it is for comes from the `Send`'s target, with `To::Sender` already put in place by the turn.
 
 **A chain begins where something from outside the engine comes in.** What a resource brings in reaches its owner as mail from its owner (ADR-0010). That mail has no cause, and it is the root of whatever follows from it.
 
 **Mail sent from a `begin` belongs to the turn that stood the actor up.** A child's `begin` runs inside its parent's turn (ADR-0009), so its mail has the cause and the root of the mail the parent was handling.
 
-**An ending belongs to the chain of the mail that brought it about.** When an actor closes or fails while handling a piece of mail, the mail that tells its parent and its watchers has that piece of mail as its cause, and its root. So does mail sent from its closing turn (ADR-0009's `end`). A child that closes because its parent told it to closes while handling that mail, so its ending is in the same chain. A chain has therefore not finished until the endings it led to have been handled.
+**An ending belongs to the chain of the mail that brought it about.** When an actor closes or fails while handling a piece of mail, the mail sent from its closing turn (ADR-0009's `end`) has that piece of mail as its cause, and its root. A child that closes because its parent told it to closes while handling that mail, so its ending is in the same chain. A chain has therefore not finished until the closing turns it led to have run. An ending makes no mail for the actors that watch it (ADR-0009): a watcher reacts to the ending in a turn of its own, and what it sends there belongs to the chain of the mail that brought the ending about.
 
 **A root's `begin` starts a chain of its own.** Nothing caused it and it is handling no mail. The mail it sends has no cause, and its root is the id made of that root actor and a count of zero, which no piece of sent mail has.
 
-**Asking and answering are effects of their own, beside `Send`.**
+**What an actor keeps about the mail it sent is its own, kept under a chain's root and a depth.** An actor that sends mail and wants to know later what it sent it for keeps that in a field of its own, under the root of the chain and the depth of the mail it sent. A handler reads both from its mail: `mail.root()` and `mail.depth()`.
 
-```rust
-pub enum What {
-    // ... ADR-0009's effects, and:
-    Ask { to: To, kind: KindId, bytes: Vec<u8> },
-    Answer { request: MailId, kind: KindId, bytes: Vec<u8> },
-}
+- Mail that comes back further down that chain has the same root and a greater depth. The actor finds what it kept under that root at a lesser depth, and the difference is how far back it was kept: one for mail sent in direct reply, more for mail that came by way of other actors.
+- An actor that keeps a second thing further down the same chain finds both, the nearer first.
+- Two pieces of mail sent from one turn are in the same chain at the same depth. What was kept for each is found by mail that follows from either, and the actor tells them apart by what the mail is and who sent it.
+- This is not an effect, and the engine keeps nothing for it. What an actor keeps is its own, it is not sent, and no other actor sees it. The engine adds the one number to the mail.
+- What an actor kept stays until the actor takes it out. Nothing tells an actor that a chain has finished.
 
-pub trait Request: Kind {
-    type Answer: Kind;
-}
-```
+**Asking and answering are not the engine's.** Mail is sent, untyped, and nothing is owed for it. A request and its answer, a promise to answer, and a stream are a layer written over mail and over what an actor keeps, and that layer is a later ADR's. The engine holds none of it.
 
-- An `Ask` is mail that is owed an answer. A `Send` is mail that is owed nothing.
-- **An answer names its request by the request's id.** The id is already unique to the asker, so the tie needs no number of its own. An `Answer` is delivered to the request's sender.
-- A kind that is asked says what answers it: `Request::Answer`.
-
-**The asker keeps a context for each request it has out.** `turn.ask(to, &request, context)` stores the context in the asker's own state under the request's count, and the handler of the answer is given it. A context is a kind, so it is kept with the rest of the actor's state. It is never dropped while its request is unanswered.
-
-**A request is answered once.** The handler of a request returns its answer, and the engine adds the `Answer`. Or it keeps a hold and answers in a later turn.
-
-**A hold is a promise to answer.**
-
-```rust
-pub struct Held<A: Kind> { .. }      // I owe this answer
-```
-
-- A hold is typed by the answer it owes. It is kept in the actor's state, crosses `Within` and no other boundary (ADR-0004), and is neither `Clone` nor `Copy`.
-- `turn.answer(held, &answer)` takes the hold by value, so a request cannot be answered twice. That is checked when the program is built.
-
-**A stream is a request that is sent parts before its answer.**
-
-```rust
-pub trait Stream: Request {
-    type Part: Kind;
-}
-
-// beside `Ask` and `Answer`:
-Part { request: MailId, kind: KindId, bytes: Vec<u8> }
-```
-
-- The asker opens a stream with an `Ask`, and the actor that takes it keeps the hold.
-- While it holds, it may send any number of parts. `turn.part(&held, &part)` borrows the hold, and a part names its request as an answer does.
-- **The answer says the stream is over.** It may carry a last value, such as a count or a reason. A request is answered once, so a stream ends once.
-- Parts and the answer are mail from one actor to one actor, so the parts arrive in the order they were sent and the answer after them (ADR-0009).
-- The asker's context lasts as long as the stream. The handler of a part is lent it, and the handler of the answer is given it.
-- A kind that opens a stream says what its parts are: `Stream::Part`. An actor that asks for one has a handler for its parts and for its answer.
-
-**The engine answers in an actor's place** when a request could not be delivered, and when an actor ends still owing an answer (ADR-0009). The answer given in its place says which of the two happened. So an asker always gets one answer, and its context is always given back to it. A stream whose producer ends is told it is over the same way.
-
-**The program is checked for both ends when it is built.** A handler of a request returns `Request::Answer` or a hold of it. An actor that asks has a handler for that answer.
-
-**Mail that is owed nothing and is not delivered ends there.** Its sender learns nothing of it. An actor that must know another has ended watches it (ADR-0009).
+**Mail that is not delivered ends there.** Its sender learns nothing of it. An actor that must know another has ended watches it (ADR-0009).
 
 ## Consequences
 
 - Whether a chain has finished is counted by root: mail sent, less mail handled (ADR-0011).
 - What happened can be followed back from any piece of mail by its causes, to the resource that began it.
-- Every piece of mail carries three ids, of sixteen bytes each.
+- Every piece of mail carries three ids, of sixteen bytes each, and its depth.
 - Every chain but a root's first begins at a resource, so the engine can say for any piece of mail what from outside set it off.
-- An actor's requests out, and the holds it owes, are part of its state: they are shown with it and carried onto new code with it.
-- A hold that is lost, by overwriting the state that held it, is answered only when its actor ends.
-- **Not decided here:** how a live asker stops a stream early; how a producer that is too fast is slowed; the chain of an ending that nothing inside the engine brought about, such as the host shutting down; large payloads; and whether the cause is kept on every piece of mail or only in the record of a run.
+- **Not decided here:** how a request and its answer are written over mail; how a `begin` and a closing turn, which handle no mail, read the chain and depth they send at; the chain of an ending that nothing inside the engine brought about, such as the host shutting down; large payloads; and whether the cause is kept on every piece of mail or only in the record of a run.
 
 ## Alternatives considered
 

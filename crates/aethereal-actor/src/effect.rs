@@ -1,8 +1,7 @@
 //! An effect: one thing an actor asks of the engine (ADR-0009).
 
-use crate::{ActorRef, Fault};
+use crate::{ErasedActorRef, Fault, How, MailId};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
-use alloc::string::String;
 use alloc::vec::Vec;
 
 /// One thing an actor asks of the engine, and which actor asked (ADR-0009).
@@ -47,8 +46,9 @@ impl Effect {
 /// lists enter with the piece of the engine that applies each.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum What {
-    /// Mail of kind `kind`, whose bytes are `bytes`, is sent to `to`.
-    Send { to: To, kind: KindId, bytes: Vec<u8> },
+    /// Mail of kind `kind`, whose bytes are `bytes`, is sent to `to`. `id` is the mail's own: the asking actor, and
+    /// its count of mail sent. A turn has already put the actor it names in place of [`To::Sender`].
+    Send { to: To, id: MailId, kind: KindId, bytes: Vec<u8> },
     /// A root, a singleton, has been made. Written by the engine for the chassis, by the root itself.
     Root { from: Code },
     /// A root of an instanced type has been made. Written by the engine for the chassis, by the root itself.
@@ -66,24 +66,13 @@ pub enum What {
     /// The asking actor's turn failed with this fault, and the actor has ended. Written by the engine, since the
     /// actor asked for nothing.
     Failed(Fault),
-    /// The asking actor's closing turn failed with this fault. Written by the engine. The actor had already
-    /// ended, so this marks nothing: it is there for the log.
-    EndFailed(Fault),
+    /// The asking actor's closing turn has run, and its life is over: this is how it ended. Written by the engine,
+    /// with the closing turn's effects, so it comes after the actor's last mail.
+    Ended(How),
     /// The asking actor is shown the ending of `of`, once, when that actor ends.
-    Watch { of: ActorRef },
+    Watch { of: ErasedActorRef },
     /// The asking actor closes.
     Close,
-    /// The asking actor logs `text`. It is kept when the turn that asked for it fails.
-    Log { level: Level, text: String },
-}
-
-/// How much a logged line matters (ADR-0009).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Level {
-    Debug,
-    Info,
-    Warn,
-    Error,
 }
 
 /// Who a turn may send to: a closed set (ADR-0009).
@@ -99,10 +88,10 @@ pub enum To {
     Child(KindName),
     /// The actor of this kind and key directly beneath the sender.
     ChildInstanced(KindName, KeyName),
-    /// The sender of the mail being handled.
+    /// The source of the item being handled: the sender of mail, or the actor that ended.
     Sender,
     /// The actor a reference the sender holds refers to.
-    Held(ActorRef),
+    Held(ErasedActorRef),
 }
 
 /// Who a `begin` or a closing turn may send to (ADR-0009).
@@ -119,7 +108,7 @@ pub enum ToWithoutMail {
     /// The actor of this kind and key directly beneath the sender.
     ChildInstanced(KindName, KeyName),
     /// The actor a reference the sender holds refers to.
-    Held(ActorRef),
+    Held(ErasedActorRef),
 }
 
 impl From<ToWithoutMail> for To {
