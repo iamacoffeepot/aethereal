@@ -559,14 +559,14 @@ impl Reading<'_> {
         let key = |item| CostKey { actor: kind, item };
 
         match (work, life.state()) {
-            (Work::Closing, State::Ending { how, context }) => {
+            (Work::Closing, State::Ending(ending)) => {
+                let (how, context) = &**ending;
                 let begins = lists.effects.len();
                 let mut asked =
                     Asked::continuing(mem::take(&mut lists.effects), mem::take(arena), mem::take(&mut lists.seats));
                 let why = why(how);
                 let start = clock.nanos();
-                let ended =
-                    actor.end(&mut Ending::new(me, &seat.path, self.table, &mut asked, life.sent(), why));
+                let ended = actor.end(&mut Ending::new(me, &seat.path, self.table, &mut asked, life.sent(), why));
                 tally.add(key(ItemKind::Closing), clock.nanos().saturating_sub(start));
                 let (effects, _, written, seats) = asked.into_parts();
                 lists.effects = effects;
