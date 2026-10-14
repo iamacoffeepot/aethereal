@@ -66,8 +66,14 @@ pub struct ActorRef { .. }
 - Only the engine makes a reference. An actor comes to hold one in three ways: it is handed one in mail, it receives mail and is told the sender, or it asks the engine to resolve a path and the engine finds the actor.
 - There is no presumptive reference: none is built from a path without the engine. An actor that knows only a path asks.
 - A reference is a bound value (ADR-0004). It crosses between actors in one engine and may be kept in an actor's state. It does not cross between engines: there a path crosses, and the receiver asks its own engine to resolve it.
+- **A reference is proven wherever it is decoded.** In bytes it is its actor's id, and a decoded id is a claim. The reader at `Actors` and at `Within` asks the table whether an actor has been made under that id, live or ended, and the decode fails when none has. A type that holds a reference derives `Bound`, which writes the codec `Plain` writes and does not state `Plain` (ADR-0004).
 - A reference says the actor existed when the reference was made. It does not say the actor is still there. Mail sent through a reference to a closed actor is not delivered. How undelivered mail ends is decided with the envelope, in a later ADR.
-- The engine has one table of actors, keyed by path, and it alone writes it. A reference, a resolve, and a delivery all read that table.
+- The engine has one table of actors, and it alone writes it: the table is a view the engine folds from spawns and endings (ADR-0011). A reference, a resolve, and a delivery all read that table.
+- **The table is keyed by an actor's id.** A reference, the sender of mail, and the `by` of an effect each name an actor by its id alone, and an id cannot be turned back into a path. An actor's entry holds the id of the actor above it and its own segment, so its path and its line up to its root are read from the table.
+- **An entry has one source for each of its two changes.** It is made by the spawn its parent asked for, or for a root by the chassis, and it is marked ended by the actor's own ending and by nothing else (ADR-0009).
+- **Who stands beneath an actor is a second view**, keyed by the parent's id and folded from the same spawns. It is built when something reads it.
+- **The table only grows.** An actor is written once, when it goes live, and marked once, when it ends.
+- **A turn reads the table as it stood when its step began** (ADR-0011), so nothing a turn reads goes from live to closed while it runs.
 
 **An actor's id is a short reference to its path.**
 
@@ -99,7 +105,7 @@ pub struct ActorId(u64);
 ## Consequences
 
 - Who may hold a reference to an actor follows from who was told about it. A reference spreads only by mail, by the sender of mail being known, and by a resolve the engine answers.
-- Depth is capped so that what walks a path or a branch has a bound it can state: a path can arrive as bytes, and closing an actor reaches everything beneath it. Nothing that walks either recurses.
+- Depth is capped so that what walks a path or a branch has a bound it can state: a path can arrive as bytes, and a branch can be read from the table. Nothing that walks either recurses.
 - How a path is paired with the engine it belongs to when it crosses between engines is decided with that boundary.
 - A path sorts by its text, so children keyed by number do not sort in the order they were made: `12` comes before `7`. Nothing here reads meaning from that order.
 - The engine remembers every closed path, so that a spawn there is refused. A parent that makes a child per request leaves one behind for each. The cost is kept small by what is stored: a type and a key are each a number in a table, and so is a path.
@@ -108,7 +114,7 @@ pub struct ActorId(u64);
 - A shorter spelling for a person typing a path, one that leaves out a type the parent makes obvious, is not part of this ADR. It needs the table of which child types a parent declares and enters with the first boundary where a person types a path.
 - An id does not say where its actor stands. A reader gets the path from the engine's table, or from the spawns in a record that began with the engine. Whether a reader outside the engine may ask for an id's path is not decided.
 - A reference made up from the id of a known path passes the check. It reaches nothing a resolve of that path would not, since any actor may ask the engine to resolve a path it knows.
-- Two paths are taken to have two ids. By accident they do: a million paths share an id with odds of about one in forty million. On purpose they need not, since FNV-1a can be run backwards and a parent picks its children's keys. What the engine does when two paths share an id is not decided here. The remedy is an id keyed with a secret the engine holds, which is possible because only the engine computes an id.
+- Two paths are taken to have two ids. By accident they do: a million paths share an id with odds of about one in forty million. On purpose they need not, since FNV-1a can be run backwards and a parent picks its children's keys. **When an actor is made under an id the table already holds, the engine stops.** It panics as the step's effects are folded. Nothing reasonable follows a collision: the path can never be spawned at, and a refusal would give every spawn a way to fail that is handled nowhere else and never taken. A parent refuses a key it has itself used before the spawn is asked for, so what reaches the fold is two paths with one id, or a fault in the engine. Until ids are keyed, a guest that picks a colliding key stops its engine. The remedy is an id keyed with a secret the engine holds, which is possible because only the engine computes an id.
 - Typed references and typed paths, which say at build time what mail the actor on the other end handles, stand on these types and are a later ADR.
 
 ## Alternatives considered
@@ -123,4 +129,5 @@ pub struct ActorId(u64);
 - **Each id made from the ids beneath it**, as a hash tree is. An actor's id would then change with every child it gained or lost.
 - **An id handed out by the engine as each actor is made.** Dense, and free of collisions. A turn does not write the engine (ADR-0009), so a child stood up in a turn would have no id until the turn was over.
 - **A reference built from any path, checked when mail is sent.** No resolve step. Every send then carries a claim the engine has not checked, and an actor can address what it was never told about.
+- **Numbering every change to the table from one count, with a reader holding one number.** Every reader that holds a number then has the same steady picture. A number may be taken by a reader only once every change before it is written, so writers either wait for one another in order or each keep note of what is still being written. Measured on 32 threads, the first fell below one thread's rate and the second cost more code than the table itself. A step's number is the table's position with no count of changes (ADR-0011).
 - **Reusing a path after its actor closes, with each reference meaning one particular birth.** The engine would remember nothing about closed actors, and a stale reference would still fail. A path would then name different actors at different times: a log could not be read by path, and a path held outside the engine would silently come to mean a newcomer.

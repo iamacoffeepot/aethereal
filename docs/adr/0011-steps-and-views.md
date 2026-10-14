@@ -24,6 +24,8 @@ A turn already says everything it wants of the engine as a list of effects (ADR-
 - Mail sent in a step is handled in a later one.
 - A step has a number, and steps are numbered upward from one count that only the engine advances, once a step.
 
+**A step carries the time.** The engine reads no clock (ADR-0001). The host passes the time in when it starts a step, and every turn of that step reads that one time. A record of a run holds each step's time beside its number. Knowing the time does not run an actor: an actor runs when it has mail.
+
 **A view is a fold over the effects of finished turns.** Its author writes two things: what the view keeps of an effect, and how one such record changes the view's state. The author writes no lock and no atomic, and nothing about workers.
 
 ```rust
@@ -39,14 +41,16 @@ pub trait View {
 }
 ```
 
+**Only the engine defines a view, for now.** The views are the ones the engine itself needs, and actors share everything else by mail. The engine's own views go through the interface above, so that a view defined outside the engine is later an addition.
+
 **The engine keeps each view, and it does the same for every one.**
 
-- It keeps two copies. Turns read one, and the fold writes the other.
-- As a step's turns finish, their effects are folded into the copy being written. When the step ends, the copies change places.
-- The copy that becomes the written one missed the step just folded, so each step's records are folded a second time, into it, before the next step's.
+- While a step's turns run, they read the view and nothing writes it.
+- When the step's turns have finished, their effects are folded into the view, and then the next step begins.
+- Reading and folding never happen together, so the view needs no lock, and the program is checked for that when it is built.
 - A view's keys are spread over parts, and the parts are folded side by side.
 
-**A turn reads a view as it stood when its step began.** The copy it reads is not being written, so every read in a turn agrees with every other. A view is one step behind: a turn never sees an effect of its own step.
+**A turn reads a view as it stood when its step began.** The view is not written while turns run, so every read in a turn agrees with every other. A view is one step behind: a turn never sees an effect of its own step.
 
 **The step's number is the position of every view.** A record of a turn holds its step's number, and that number is all it needs to read the same views again.
 
@@ -60,7 +64,11 @@ pub trait View {
 
 **The table of actors is the first view.** It is folded from spawns and endings. Where a library's heads point is a view (ADR-0009). Whether a chain of mail has finished, and who watches an actor, are views when they are built.
 
-**An actor's ending is the last entry it leaves.** Nothing by an actor follows its ending, so a reader that has seen an actor end has seen everything it did.
+**When a step's turns have finished, the engine folds, then delivers.** It folds the step's effects into the views. It then delivers the step's mail against the views as just folded, and mail to an actor that has ended is not delivered. So a child spawned in a step is there for mail sent to it in that step. The endings of a step are folded for the actors that watch them (ADR-0009), and a watch asked for in the step its actor ends is shown that ending once.
+
+**An actor that ends handles no more mail.** Mail it had when it ended and had not yet handled is not delivered, as mail that reaches it later is not. An actor that wants to finish what it was sent closes on a piece of mail that asks it to: everything queued ahead of that mail has been handled by then.
+
+**An ending actor's closing turn is a turn of the next step.** At the end of the step in which an actor closes or fails, the fold marks it as ended. Only an actor's own ending marks it: the actors beneath it are not ended by the engine (ADR-0009). In the step after, the actor runs its closing turn (ADR-0009's `end`) among that step's other turns, in no order among them, and what it sends goes out with that step's mail.
 
 **How many workers a step wakes follows from the work it holds**, not from how many turns it has: the cost of its turns as measured so far, against the measured cost of waking a worker.
 
@@ -71,12 +79,12 @@ pub trait View {
 - The same turns leave the same views and the same actors, however many workers ran them. A prototype with three views gave one result on one thread and on 32, in every run.
 - A turn cannot see what happened in its own step. An actor that must know of something waits for a later step or is told by mail.
 - A turn cannot test and take in one move. Two actors that both read a name as free in one step both ask for it, the fold picks one by a fixed rule, and the other is told later.
-- Each view costs two folds of each record, two copies of its memory, and a share of the time between steps. In the prototype three views cost nothing measurable where a turn takes tens of microseconds, 10 to 17 parts in a hundred where it takes a few, and 23 to 45 where it takes a fraction of one.
+- Each view costs a fold of each record and a share of the time between steps. In a prototype that folded each record twice, three views cost nothing measurable where a turn takes tens of microseconds, 10 to 17 parts in a hundred where it takes a few, and 23 to 45 where it takes a fraction of one.
 - A step ends when its slowest turn ends. One long turn holds back every actor's next step.
 - A chain of mail takes one step for each actor it passes through.
 - The count of changes in ADR-0008's table goes, and so does a reader holding a number: the step's number is the position.
 - ADR-0009 said no worker waits for the others and there is no moment when all of them stop. Between two steps there is such a moment.
-- **Not decided here:** whether a fold runs while the step's turns are still running, or after them; how the engine checks that mail can be delivered to an actor that ends in the same step; how the unlocked reading of a view is made safe by construction; what an actor's ending is when an actor above it ends, and in what order the actors beneath end; domains of actors that never meet, each with steps of its own, so that a slow turn in one does not hold back another; and how the cost of a wake is kept true when few workers are being woken.
+- **Not decided here:** domains of actors that never meet, each with steps of its own, so that a slow turn in one does not hold back another; and how the cost of a wake is kept true when few workers are being woken.
 
 ## Alternatives considered
 
@@ -84,4 +92,5 @@ pub trait View {
 - **The same count with writers noting what they are still writing.** No writer waits. About three times the code of the count it replaced, for one table, and nothing a second view could use.
 - **A count for each worker, carried in every piece of mail.** No shared count at all. Every piece of mail grows by a number for each worker, every turn merges them, and a turn sees an actor only once some mail connects it to that actor.
 - **Each actor keeping its own view, sent every other actor's effects.** Nothing shared. Explored over a dozen small arrangements of actors: an actor can hold a reference before it knows the actor exists, learn of a close before the spawn, and, if spawned late, never learn that an actor closed.
+- **Two copies of each view, one read while the other is folded, changing places at the step.** A fold could then run while the step's turns are still running. Each record is folded twice and each view is kept twice, and the copy being written is shared between threads with no lock to guard it. It gains time only where workers stand idle while a few long turns finish. A view's author would not see the change, so it can be taken up later.
 - **No steps, each shared structure built for its use.** The fastest for any one structure. It is the earlier engine's way, and each new structure is a new invention.
