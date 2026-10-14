@@ -84,7 +84,7 @@ pub enum To {
     Child(KindName),
     /// The actor of this kind and key directly beneath the sender.
     ChildInstanced(KindName, KeyName),
-    /// The sender of the mail being handled.
+    /// The source of the item being handled: the sender of mail, or the actor that ended.
     Sender,
     /// The actor a reference the sender holds refers to.
     Held(ErasedActorRef),

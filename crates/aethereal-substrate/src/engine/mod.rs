@@ -9,8 +9,8 @@ use crate::id::{child_id, root_id};
 use crate::watch::{Watchers, shown};
 use crate::{ActorTable, Envelope, Folded, Standing, Tie};
 use aethereal_actor::{
-    Actor, Asked, Beginning, Code, Effect, Ended, Ending, Fault, Mail, MailId, Noticing, Refused, Runs, Stood, To,
-    Turn, What, Why,
+    Actor, Asked, Beginning, Code, Effect, Ended, Ending, Fault, Item, Mail, MailId, Refused, Runs, Stood, To, Turn,
+    What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use begun::begun;
@@ -55,12 +55,10 @@ pub struct Engine {
 struct Seat {
     /// Where the actor stands.
     path: ActorPath,
-    /// The mail delivered to it and not yet handled, in the order it will be.
-    queue: Vec<Envelope>,
+    /// What it is to react to and has not yet: its stream, in the order it will be handed it.
+    stream: Vec<Pending>,
     /// How many pieces of mail it has sent.
     sent: u64,
-    /// The endings of actors it watches that it is still to react to, each with the chain its reaction belongs to.
-    ended: Vec<(Ended, Chain)>,
     /// Whether it still takes mail.
     life: Life,
 }
@@ -81,6 +79,36 @@ struct Chain {
     cause: Option<MailId>,
     /// The first mail of the chain.
     root: MailId,
+}
+
+/// One item in an actor's stream, as the engine keeps it.
+enum Pending {
+    /// A piece of mail.
+    Mail(Envelope),
+    /// An actor it watches ended, in the chain that ended it.
+    Ended { ended: Ended, chain: Chain },
+}
+
+impl Pending {
+    /// The actor the item comes from.
+    fn source(&self) -> ActorId {
+        match self {
+            Self::Mail(envelope) => envelope.id.sender,
+            Self::Ended { ended, .. } => ended.actor().id(),
+        }
+    }
+
+    /// Where the item stands in its stream: by its source, then in the order that source caused it.
+    ///
+    /// An actor's ending is the last thing it causes, so it comes after every piece of mail from that actor.
+    fn order(&self) -> (u64, u64) {
+        let caused = match self {
+            Self::Mail(envelope) => envelope.id.count,
+            Self::Ended { .. } => u64::MAX,
+        };
+
+        (self.source().bits(), caused)
+    }
 }
 
 /// One finished turn, as the engine applies it.
@@ -186,9 +214,9 @@ impl Engine {
     }
 
     /// Runs the turns of the actor `id` stands for: its closing turn when it has ended, and otherwise one turn
-    /// for each piece of mail in its queue.
+    /// for each item in its stream.
     ///
-    /// An actor that closes or fails handles no more mail, so what was queued behind that turn is dropped.
+    /// An actor that closes or fails handles nothing more, so what was in its stream behind that turn is dropped.
     fn run(&mut self, id: ActorId, ran: &mut Vec<Ran>, gone: &mut Vec<ActorId>) {
         let Some(seat) = self.seats.get_mut(&id.bits()) else {
             return;
@@ -214,39 +242,29 @@ impl Engine {
                 let Some(actor) = self.actors.get_mut(&id.bits()) else {
                     return;
                 };
-                // Mail first, then endings: an actor handles what another sent it before it is shown that the
-                // other has ended. A turn that ends the actor ends the run, and what is left is dropped.
-                let queue = mem::take(&mut seat.queue);
-                let noticed = mem::take(&mut seat.ended);
+                // One turn for each item. A turn that ends the actor ends the run, and what is left is dropped.
                 let mut stood_since = Vec::new();
-                let mut over = false;
-                for envelope in queue {
+                for pending in mem::take(&mut seat.stream) {
                     let table = Since { table: &self.table, stood: &stood_since };
                     let mut asked = Asked::new();
-                    let mail = Mail::new(envelope.kind, &envelope.bytes, envelope.id.sender, &table, self.read_limit);
-                    let handled = actor.handle(mail, &mut Turn::new(id, seat.path.clone(), &table, &mut asked));
-                    let chain = Chain { cause: Some(envelope.id), root: envelope.root };
-                    let turned = Ran::of(id, handled, asked, chain, Some(envelope.id.sender));
+                    let source = pending.source();
+                    let (item, chain) = match &pending {
+                        Pending::Mail(envelope) => {
+                            let mail = Mail::new(envelope.kind, &envelope.bytes, source, &table, self.read_limit);
+
+                            (Item::Mail(mail), Chain { cause: Some(envelope.id), root: envelope.root })
+                        }
+                        Pending::Ended { ended, chain } => (Item::Ended(ended.clone()), *chain),
+                    };
+                    let handled = actor.handle(item, &mut Turn::new(id, seat.path.clone(), &table, &mut asked));
+                    let turned = Ran::of(id, handled, asked, chain, Some(source));
 
                     stood_since.extend(turned.stood.iter().map(|child| (child.id(), child.path().clone())));
-                    over = turned.ends(id);
+                    let over = turned.ends(id);
                     ran.push(turned);
                     if over {
                         break;
                     }
-                }
-                for (ended, chain) in noticed {
-                    if over {
-                        break;
-                    }
-                    let table = Since { table: &self.table, stood: &stood_since };
-                    let mut asked = Asked::new();
-                    let reacted = actor.ended(&ended, &mut Noticing::new(id, seat.path.clone(), &table, &mut asked));
-                    let turned = Ran::of(id, reacted, asked, chain, None);
-
-                    stood_since.extend(turned.stood.iter().map(|child| (child.id(), child.path().clone())));
-                    over = turned.ends(id);
-                    ran.push(turned);
                 }
             }
         }
@@ -293,11 +311,11 @@ impl Engine {
         // out; what this step showed waits for the next.
         for (watcher, ended) in mem::replace(&mut self.showing, shown) {
             if let Some(seat) = self.seats.get_mut(&watcher).filter(|seat| seat.is_live()) {
-                seat.ended.extend(ended);
+                seat.stream.extend(ended.into_iter().map(|(ended, chain)| Pending::Ended { ended, chain }));
             }
         }
         for seat in self.seats.values_mut() {
-            seat.queue.sort_by_key(|envelope| (envelope.id.sender.bits(), envelope.id.count));
+            seat.stream.sort_by_key(Pending::order);
         }
         for id in gone {
             self.seats.remove(&id.bits());
@@ -306,7 +324,7 @@ impl Engine {
 
     /// Gives the actor `id` stands for, at `path`, a seat: it is run from the next step.
     fn seat(&mut self, id: ActorId, path: ActorPath, actor: Box<dyn Runs>) {
-        self.seats.insert(id.bits(), Seat { path, queue: Vec::new(), sent: 0, ended: Vec::new(), life: Life::Live });
+        self.seats.insert(id.bits(), Seat { path, stream: Vec::new(), sent: 0, life: Life::Live });
         self.actors.insert(id.bits(), actor);
     }
 
@@ -318,7 +336,7 @@ impl Engine {
         }
     }
 
-    /// Makes the mail `by` sent to `to` and puts it in its receiver's queue.
+    /// Makes the mail `by` sent to `to` and puts it in its receiver's stream.
     ///
     /// The mail takes the next of its sender's counts whether or not it is delivered. It is not delivered when
     /// `to` names no actor, or one that is not live: mail that is owed nothing ends there (ADR-0012).
@@ -343,7 +361,7 @@ impl Engine {
             return;
         };
 
-        seat.queue.push(Envelope {
+        seat.stream.push(Pending::Mail(Envelope {
             id,
             to: receiver,
             cause: chain.cause,
@@ -351,7 +369,7 @@ impl Engine {
             tie: Tie::Tell,
             kind,
             bytes,
-        });
+        }));
     }
 }
 
@@ -383,11 +401,10 @@ impl Seat {
 
     /// Whether a step would run no turn of this actor.
     fn is_idle(&self) -> bool {
-        let has_mail = !self.queue.is_empty();
-        let has_endings = !self.ended.is_empty();
+        let has_items = !self.stream.is_empty();
         let is_ending = matches!(self.life, Life::Ending { .. });
 
-        !(has_mail || has_endings || is_ending)
+        !(has_items || is_ending)
     }
 }
 

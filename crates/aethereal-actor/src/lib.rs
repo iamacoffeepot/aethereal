@@ -16,6 +16,7 @@ mod boundary;
 mod effect;
 mod ended;
 mod fault;
+mod item;
 mod mail;
 mod reference;
 mod turn;
@@ -25,6 +26,7 @@ pub use boundary::{Actors, ActorsReader, ActorsWriter, Made, Refers, Table, With
 pub use effect::{Code, Effect, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
+pub use item::Item;
 pub use mail::{Mail, MailId};
 pub use reference::ErasedActorRef;
-pub use turn::{Asked, Beginning, Ending, Noticing, Refused, Stood, Turn, Why};
+pub use turn::{Asked, Beginning, Ending, Refused, Stood, Turn, Why};

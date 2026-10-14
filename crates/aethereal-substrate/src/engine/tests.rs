@@ -1,7 +1,7 @@
 //! The engine's tests: what a step runs, and what is there for the next one.
 
 use super::*;
-use aethereal_actor::{Ended, Fault, How, Noticing, ToWithoutMail};
+use aethereal_actor::{Fault, How, Item, ToWithoutMail};
 use aethereal_data::{Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
 
@@ -79,7 +79,15 @@ impl Actor for Node {
         Ok(Self { number: config.number })
     }
 
-    fn handle(&mut self, mail: Mail<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+        let mail = match item {
+            Item::Mail(mail) => mail,
+            Item::Ended(ended) => {
+                say(format!("{} saw {}", self.number, how(ended.how())));
+
+                return Ok(());
+            }
+        };
         let Some(Note { text }) = mail.read()? else {
             return Ok(());
         };
@@ -114,12 +122,6 @@ impl Actor for Node {
             }
             _ => {}
         }
-
-        Ok(())
-    }
-
-    fn ended(&mut self, ended: &Ended, _turn: &mut Noticing<'_>) -> Result<(), Fault> {
-        say(format!("{} saw {}", self.number, how(ended.how())));
 
         Ok(())
     }
@@ -276,7 +278,7 @@ fn watcher_reacts_to_an_ending_once_with_its_fault_after_its_last_mail() {
 
     assert_eq!(step(&mut engine), ["2 ended Faulted"]);
     assert_eq!(step(&mut engine), ["1 got bye 2", "1 saw failed over fail"]);
-    assert!(engine.seats[&root.bits()].ended.is_empty());
+    assert!(engine.seats[&root.bits()].stream.is_empty());
     assert_eq!(step(&mut engine), [""; 0]);
     assert!(engine.is_idle());
 }

@@ -1,4 +1,4 @@
-//! A turn: what an actor asks of the engine while it handles one piece of mail (ADR-0009).
+//! A turn: what an actor asks of the engine while it handles one item (ADR-0009).
 
 mod refused;
 #[cfg(test)]
@@ -153,7 +153,7 @@ impl Seat<'_> {
     }
 }
 
-/// What an actor asks of the engine while it handles one piece of mail (ADR-0009).
+/// What an actor asks of the engine while it handles one item (ADR-0009).
 ///
 /// Each ask adds an effect to the turn's list, and nothing asked for happens
 /// until the turn has returned `Ok`. Each read answers from the table of
@@ -171,7 +171,7 @@ impl<'a> Turn<'a> {
         Self { seat: Seat { id, path, table, asked } }
     }
 
-    /// Watches the actor `of` refers to: when it ends, this actor's [`Actor::ended`] runs for it, once.
+    /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.
     ///
     /// Watching an actor already watched changes nothing.
     pub fn watch(&mut self, of: ErasedActorRef) {
@@ -235,57 +235,7 @@ impl<'a> Beginning<'a> {
         self.seat.spawn::<C>(key, config)
     }
 
-    /// Watches the actor `of` refers to: when it ends, this actor's [`Actor::ended`] runs for it, once.
-    pub fn watch(&mut self, of: ErasedActorRef) {
-        self.seat.watch(of);
-    }
-
-    /// A reference to this actor.
-    #[must_use]
-    pub const fn me(&self) -> ErasedActorRef {
-        self.seat.me()
-    }
-
-    /// A reference to the live actor `path` names, as of the step's start.
-    #[must_use]
-    pub fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
-        self.seat.resolve(path)
-    }
-}
-
-/// What an actor asks of the engine while it reacts to the ending of an actor it watches (ADR-0009).
-///
-/// It offers what a turn does. It is handling no mail, so it has no sender to send to.
-pub struct Noticing<'a> {
-    seat: Seat<'a>,
-}
-
-impl<'a> Noticing<'a> {
-    /// The turn of the actor `id` stands for, at `path`, reacting to an ending, reading `table` and adding to
-    /// `asked`.
-    ///
-    /// For the engine.
-    #[must_use]
-    pub const fn new(id: ActorId, path: ActorPath, table: &'a dyn Table, asked: &'a mut Asked) -> Self {
-        Self { seat: Seat { id, path, table, asked } }
-    }
-
-    /// Sends `mail` to `to`. It is delivered after the turn, in a later step.
-    pub fn send<K: Kind + Encode<Actors>>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError> {
-        self.seat.send(to.into(), mail)
-    }
-
-    /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
-    pub fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ErasedActorRef, Refused> {
-        self.seat.spawn::<C>(key, config)
-    }
-
-    /// Closes this actor. Its closing turn runs in the next step.
-    pub fn close(&mut self) {
-        self.seat.ask(What::Close);
-    }
-
-    /// Watches the actor `of` refers to: when it ends, this actor's [`Actor::ended`] runs for it, once.
+    /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.
     pub fn watch(&mut self, of: ErasedActorRef) {
         self.seat.watch(of);
     }

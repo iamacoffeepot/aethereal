@@ -1,7 +1,7 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's list.
 
 use super::*;
-use crate::{Beginning, Ended, Ending, Fault, Made, Mail, Noticing, Unreadable, Within};
+use crate::{Beginning, Ending, Fault, Item, Made, Mail, Unreadable, Within};
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
 use alloc::vec;
@@ -102,7 +102,10 @@ impl Actor for Leaf {
         Ok(Self)
     }
 
-    fn handle(&mut self, mail: Mail<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+        let Item::Mail(mail) = item else {
+            return Ok(());
+        };
         if mail.read::<Poke>()?.is_some() {
             turn.send(To::Sender, &Poked)?;
         } else if mail.read::<Shut>()?.is_some() {
@@ -111,10 +114,6 @@ impl Actor for Leaf {
             turn.send(To::Held(other), &Poke)?;
         }
 
-        Ok(())
-    }
-
-    fn ended(&mut self, _ended: &Ended, _turn: &mut Noticing<'_>) -> Result<(), Fault> {
         Ok(())
     }
 
@@ -158,11 +157,7 @@ impl Actor for Branch {
         Ok(Self)
     }
 
-    fn handle(&mut self, _mail: Mail<'_>, _turn: &mut Turn<'_>) -> Result<(), Fault> {
-        Ok(())
-    }
-
-    fn ended(&mut self, _ended: &Ended, _turn: &mut Noticing<'_>) -> Result<(), Fault> {
+    fn handle(&mut self, _item: Item<'_>, _turn: &mut Turn<'_>) -> Result<(), Fault> {
         Ok(())
     }
 
@@ -189,11 +184,7 @@ impl Actor for Herald {
         Ok(Self)
     }
 
-    fn handle(&mut self, _mail: Mail<'_>, _turn: &mut Turn<'_>) -> Result<(), Fault> {
-        Ok(())
-    }
-
-    fn ended(&mut self, _ended: &Ended, _turn: &mut Noticing<'_>) -> Result<(), Fault> {
+    fn handle(&mut self, _item: Item<'_>, _turn: &mut Turn<'_>) -> Result<(), Fault> {
         Ok(())
     }
 
@@ -343,7 +334,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
     let handle = |leaf: &mut Box<dyn Runs>, table: &Listed, kind, bytes: &[u8]| {
         let mut asked = Asked::new();
         let mut turn = Turn::new(ME, ROOT, table, &mut asked);
-        let handled = leaf.handle(Mail::new(kind, bytes, other, table, 64), &mut turn);
+        let handled = leaf.handle(Item::Mail(Mail::new(kind, bytes, other, table, 64)), &mut turn);
 
         (handled, asked.into_parts().0)
     };

@@ -23,13 +23,12 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> {
     type Key: ActorKey;                     // () for a singleton, a TypedKey otherwise
 
     fn begin(config: Self::Config, turn: &mut Beginning<'_>) -> Result<Self, Fault>;
-    fn handle(&mut self, mail: Mail<'_>, turn: &mut Turn<'_>) -> Result<(), Fault>;
-    fn ended(&mut self, ended: &Ended, turn: &mut Noticing<'_>) -> Result<(), Fault>;
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault>;
     fn end(self, turn: &mut Ending<'_>) -> Result<(), Fault>;
 }
 ```
 
-These four are what the engine calls. How an author writes the handling of each kind of mail, and how the kinds an actor handles are declared, is a later ADR; whatever it decides arrives at the engine through `handle`.
+These three are what the engine calls. How an author writes the handling of each kind of mail, and how the kinds an actor handles are declared, is a later ADR; whatever it decides arrives at the engine through `handle`.
 
 An actor's life has three parts. `begin` makes it from a config, and runs inside the turn of the parent that spawns it; a root's runs when the chassis makes it. Each piece of mail after that is a turn of its own, a `handle`. `end` is its closing turn, and it runs once, whichever way the actor came to close.
 
@@ -116,9 +115,14 @@ pub enum Level {
 - **A panic in a native actor is a bug in the program, not a failed turn.** The engine does not catch it: a browser host cannot unwind (ADR-0001). Every failure an actor can meet is a `Fault` it returns.
 - **`Watch` asks to be shown that another actor has ended.** Only the engine knows that an actor has ended, so an actor cannot learn it any other way. The watcher names the actor by a reference it holds. Watching an actor already watched changes nothing. A watch ends with its watcher. A parent watches its child as it would any other actor: it is shown nothing of a child it has not watched.
 
-- **A watcher reacts to an ending in a turn of its own.** No mail is made for an ending. The engine folds each step's endings into a list for each watcher, and calls the watcher's `ended` once for each, with how the actor ended:
+- **An actor reacts to items, and mail is one kind of item.** The engine keeps a stream for each actor of what it has to react to, and an actor runs in a step when its stream has items, whether or not any is mail. `handle` is given one item at a time, each a turn of its own. The kinds are a closed list the engine knows:
 
   ```rust
+  pub enum Item<'a> {
+      Mail(Mail<'a>),
+      Ended(Ended),
+  }
+
   pub struct Ended { /* the actor, and how it ended */ }
 
   pub enum How {
@@ -130,10 +134,11 @@ pub enum Level {
 
   `Closed` is an actor that asked to close, and `Failed` carries the fault its turn returned. `Earlier` is an actor that had already ended in a step before the one the watch was asked for in: how it ended is not kept.
 
-- **The engine fixes the order: mail first, then endings.** In a step, an actor handles each piece of its mail, then reacts to each ending, each in its own turn. An ending is shown once the ended actor's closing turn has run and its mail is out, so a watcher always handles what an actor sent it, its last words included, before it is shown that the actor ended. An order the actor chose would leave that to every author to get right, and the bug would show only when a sender's last mail and its ending arrive together.
-- **An ending is a reason to run.** An actor with an ending to react to runs in the step, whether or not it has mail.
-- **The turn of an ending offers what a turn does**, through `Noticing`, less `To::Sender`, since it handles no mail. What it sends belongs to the chain of the mail that brought the ending about (ADR-0012).
-- **Each thing the engine alone knows is its own call.** Mail and endings are two streams, each with its call on `Actor`, and a third would be a third call. Kinds of mail get no call of their own: sections for them are the sugar, in the ADR on how handlers are written.
+- **No mail is made for an ending.** An ending is an item in each watcher's stream, so the engine still sends no mail of its own, and a watcher with nothing else to do is run for it.
+- **The engine fixes the order.** A stream is ordered by each item's source, then by the order that source caused it. An actor's ending is the last thing it causes, and is put in the stream only once its closing turn has run and its mail is out, so a watcher always handles what an actor sent it, its last words included, before it is shown that the actor ended. Items from different sources have no order between them, as mail from two senders has none. An order the actor chose would leave that to every author to get right, and the bug would show only when a sender's last mail and its ending arrive together.
+- **Every item has a source**, and `To::Sender` reaches it: the sender of mail, or the actor that ended, to which a send is not delivered. So one `Turn` serves every kind of item. What a turn sends belongs to the item's chain: a piece of mail's own, and for an ending the chain of the mail that brought it about (ADR-0012).
+- **An item holds typed values, and only mail holds bytes.** An ending is an id and how it ended, kept as it is in the stream, and encoded only when it is handed to a guest. So the way mail's bytes are kept can change without touching the other kinds.
+- **A new kind of item changes the list.** Only what the engine alone knows becomes an item, so there are few. Kinds of mail are not items of their own: sections for them are the sugar, in the ADR on how handlers are written.
 - **`Log` writes a line to the actor's log**, which the engine keeps as a view (ADR-0011): each actor's most recent entries, under the actor's own id. A key has one writer, so an actor's entries are in the order it made them, and an older entry leaves as a newer one arrives. The fault of a failed turn is an entry in it, taken from `Failed`, so an actor nobody watches does not fail unseen. An actor's entries stay once it has ended. The fault of a closing turn that fails is an entry too: the engine writes `EndFailed`, by that actor, which marks nothing, since the actor had already ended, and is there for the log. So every fault a turn returns can be read, whether or not anything acted on it. It is an effect so that the engine decides what happens to a line when the turn fails, and so that a guest's lines leave it with the rest of the turn.
 - An effect is plain data, and so is the list.
 
@@ -145,7 +150,7 @@ pub enum Level {
 
 **Mail sent to an actor is handled in the order its source sent it.** That is the one rule of order. Mail from two sources to one actor has no order between them, and none is made up. A turn's effects are applied in the order it asked for them, and a step's effects are folded before any mail sent in it is handled (ADR-0011): whoever comes to hold a reference finds its actor there, however far the reference travelled.
 
-**Turns run in steps (ADR-0011).** Every actor that has mail when a step begins runs in it, on the engine's workers. By the end of the step the effects of its turns are applied: folded into the views, and their mail put in the queues of the actors it was sent to. A browser host runs a step on one worker (ADR-0001). How many workers a step wakes follows from the work it holds.
+**Turns run in steps (ADR-0011).** Every actor that has items when a step begins runs in it, on the engine's workers. By the end of the step the effects of its turns are applied: folded into the views, and their mail put in the queues of the actors it was sent to. A browser host runs a step on one worker (ADR-0001). How many workers a step wakes follows from the work it holds.
 
 **Who a turn may send to is a closed set.**
 
