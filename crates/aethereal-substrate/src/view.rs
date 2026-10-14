@@ -83,6 +83,8 @@ impl<V: View> Folded<V> {
     where
         V::Shard: Part,
     {
+        let parts = rounded(parts);
+
         Self { shards: (0..parts.get()).map(|_| V::Shard::empty(parts)).collect() }
     }
 
@@ -216,12 +218,29 @@ impl<V: View> Routed<V> {
     }
 }
 
-/// Which of `parts` parts `key` falls in.
+/// Which of `parts` parts `key` falls in, for a count of parts [`rounded`] to a power of two.
 fn part(key: u64, parts: usize) -> usize {
-    #[allow(clippy::cast_possible_truncation, reason = "the remainder is less than the count of parts, a usize")]
-    let part = (key % parts as u64) as usize;
+    #[allow(clippy::cast_possible_truncation, reason = "the part is less than the count of parts, a usize")]
+    let part = (key & (parts as u64).wrapping_sub(1)) as usize;
 
     part
+}
+
+/// `parts` rounded up to a power of two: how many parts a view is kept in.
+///
+/// The part a key falls in is then a mask of the key, and its place in that part a shift, where a division would
+/// cost tens of cycles on every lookup of every actor.
+///
+/// # Panics
+///
+/// Panics for more parts than half of what a `usize` counts, which no engine has.
+#[must_use]
+pub fn rounded(parts: NonZeroUsize) -> NonZeroUsize {
+    let Some(rounded) = parts.checked_next_power_of_two() else {
+        panic!("no engine keeps its views in more than half of usize::MAX parts");
+    };
+
+    rounded
 }
 
 #[cfg(test)]

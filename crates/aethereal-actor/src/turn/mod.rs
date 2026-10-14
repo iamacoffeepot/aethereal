@@ -20,7 +20,6 @@ use alloc::vec::Vec;
 ///
 /// The engine makes one for a turn and takes it back when the turn returns.
 /// Nothing in it has happened yet: the engine alone applies effects.
-#[derive(Default)]
 pub struct Asked {
     effects: Vec<Effect>,
     stood: Vec<Stood>,
@@ -36,10 +35,11 @@ pub struct Asked {
 }
 
 impl Asked {
-    /// Nothing asked for yet, with mail written to an arena of its own.
+    /// Nothing asked for yet, with mail written to an arena of its own, and children seated as in an engine kept in
+    /// one part.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::writing(Arena::default(), Seats::one_part())
     }
 
     /// Nothing asked for yet, with mail written to `arena`, after what it already holds, and children seated from
@@ -80,6 +80,13 @@ impl Asked {
     /// The seat of the child stood up in this turn under the id `id`, when there is one.
     fn stood_seat(&self, id: ActorId) -> Option<SeatNumber> {
         self.stood_seats.get(&id.bits()).copied()
+    }
+}
+
+impl Default for Asked {
+    /// As [`Asked::new`].
+    fn default() -> Self {
+        Self::new()
     }
 }
 

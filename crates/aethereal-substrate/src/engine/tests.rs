@@ -437,9 +437,9 @@ impl Clock for Ticking {
 
 #[test]
 fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
-    // Catches two workers giving one seat to two children, a seat a worker passed over or took back left neither
-    // taken nor free, and a child spawned in an earlier turn of the step that a send by name cannot find.
-    let (mut engine, _) = engine(&["spawn 2 spawn 4 up a", "spawn 3 spawn 5 up b", "tell 3 spawn 6 up c"]);
+    // Catches two workers giving one seat to two children, a seat a part numbered or took back left neither taken nor
+    // free, and a child spawned in an earlier turn of the step that a send by name cannot find.
+    let (mut engine, root) = engine(&["spawn 2 spawn 4 up a", "spawn 3 spawn 5 up b", "tell 3 spawn 6 up c"]);
     let clock = Ticking::default();
     engine.step(&clock);
     said();
@@ -455,8 +455,13 @@ fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
     let mut third = step(&mut engine);
     third.sort();
     assert_eq!(third, ["4 got up a", "5 got up b", "6 got up c"]);
-    let taken = |index: usize| matches!(engine.seats[index], Seat::Taken(_));
-    let free = |index: usize| engine.empty.iter().filter(|seat| seat.index() == index).count();
-    let each_once = (0..engine.seats.len()).all(|index| usize::from(taken(index)) + free(index) == 1);
+    let (two, three) = (node(root, 2), node(root, 3));
+    let actors = [root, two, three, node(two, 4), node(three, 5), node(three, 6)];
+    let taken: Vec<u64> = actors.iter().filter_map(|id| engine.table().seat(*id)).map(SeatNumber::number).collect();
+    assert_eq!(taken.len(), actors.len());
+    let free: Vec<u64> = engine.seating.iter().flat_map(|part| &part.free).map(|seat| seat.number()).collect();
+    let numbered = engine.seating.iter().zip(0..).flat_map(|(part, first)| (first..part.next).step_by(4));
+    let each_once = numbered.clone().all(|seat| taken.iter().chain(&free).filter(|held| **held == seat).count() == 1);
     assert!(each_once);
+    assert_eq!(taken.len() + free.len(), numbered.count());
 }

@@ -1,6 +1,6 @@
 //! A part of a view kept under actors' seats (ADR-0011).
 
-use crate::Part;
+use crate::{Part, rounded};
 use aethereal_actor::Seated;
 use aethereal_data::ActorId;
 use std::num::NonZeroUsize;
@@ -15,7 +15,7 @@ use std::num::NonZeroUsize;
 pub struct BySeat<V> {
     /// The seats this part holds, in order.
     seats: Vec<Slot<V>>,
-    /// How many parts the view has: the step between the seats this part holds.
+    /// How many parts the view has, a power of two: the step between the seats this part holds.
     parts: NonZeroUsize,
 }
 
@@ -66,6 +66,16 @@ impl<V> BySeat<V> {
         value
     }
 
+    /// Keeps `value` for `actor`, dropping whatever was kept in its seat before.
+    pub fn insert(&mut self, actor: Seated, value: V) {
+        let place = self.place(actor);
+        if place >= self.seats.len() {
+            self.seats.resize_with(place + 1, || Slot::Empty);
+        }
+
+        self.seats[place] = Slot::Taken { id: actor.id, value };
+    }
+
     /// Drops what is kept for `actor`, when it is the actor kept in its seat.
     pub fn remove(&mut self, actor: Seated) {
         let place = self.place(actor);
@@ -77,13 +87,13 @@ impl<V> BySeat<V> {
 
     /// Where `actor`'s seat lies in this part's list.
     fn place(&self, actor: Seated) -> usize {
-        actor.seat.index() / self.parts.get()
+        actor.seat.index() >> self.parts.get().trailing_zeros()
     }
 }
 
 impl<V> Part for BySeat<V> {
     fn empty(parts: NonZeroUsize) -> Self {
-        Self { seats: Vec::new(), parts }
+        Self { seats: Vec::new(), parts: rounded(parts) }
     }
 }
 
