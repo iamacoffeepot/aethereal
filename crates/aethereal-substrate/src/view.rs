@@ -91,6 +91,31 @@ impl<V: View> Folded<V> {
         }
     }
 
+    /// An empty row of buckets for one writer, a bucket for each part of this view.
+    #[must_use]
+    pub fn routed(&self) -> Routed<V> {
+        Routed { buckets: self.shards.iter().map(|_| Vec::new()).collect() }
+    }
+
+    /// Folds in every writer's records of a step, part by part: each part takes its column, the bucket each row of
+    /// `rows` holds for it, one row after another. The buckets are emptied and keep their room.
+    ///
+    /// The records of a key that has one owner come from that owner's turns, which one writer ran, in order, so they
+    /// reach [`View::fold`] in the order the owner asked for them.
+    pub fn fold_routed<'r>(&mut self, rows: impl IntoIterator<Item = &'r mut Routed<V>>)
+    where
+        V: 'r,
+    {
+        let mut rows: Vec<&mut Routed<V>> = rows.into_iter().collect();
+        for (part, shard) in self.shards.iter_mut().enumerate() {
+            for row in &mut rows {
+                for (key, record) in row.buckets[part].drain(..) {
+                    V::fold(shard, key, record);
+                }
+            }
+        }
+    }
+
     /// Settles every part once a step's effects are all folded, and folds what each hands on into the part its key
     /// falls in. What is handed on is folded and not settled again.
     pub fn settle(&mut self) {
@@ -131,11 +156,56 @@ impl<V: View> Folded<V> {
 
     /// Which part `key` falls in.
     fn part(&self, key: u64) -> usize {
-        #[allow(clippy::cast_possible_truncation, reason = "the remainder is less than the count of parts, a usize")]
-        let part = (key % self.shards.len() as u64) as usize;
-
-        part
+        part(key, self.shards.len())
     }
+}
+
+/// One writer's records of a view in a step, each in the bucket of the part its key falls in: the writer's row of
+/// buckets (ADR-0011).
+///
+/// A worker routes its turns' effects into its row as each turn finishes,
+/// and [`Folded::fold_routed`] folds each part's column of the rows.
+pub struct Routed<V: View> {
+    /// A bucket for each part of the view.
+    buckets: Vec<Vec<(u64, V::Record)>>,
+}
+
+impl<V: View> Default for Routed<V> {
+    /// A row with no bucket: what a worker's lists hold while they are lent out, never routed into.
+    fn default() -> Self {
+        Self { buckets: Vec::new() }
+    }
+}
+
+impl<V: View> Routed<V> {
+    /// Routes the effects of one turn, emitted in `context`, in the order given.
+    pub fn route(&mut self, effects: &[Effect], context: &Context) {
+        for (key, record) in effects.iter().flat_map(|effect| V::takes(effect, context)) {
+            let part = part(key, self.buckets.len());
+            self.buckets[part].push((key, record));
+        }
+    }
+
+    /// Routes the effects of one turn, emitted in `context`, taking each by value.
+    ///
+    /// The caller routes every other view that reads these effects first.
+    pub fn route_owned(&mut self, effects: impl IntoIterator<Item = Effect>, context: &Context)
+    where
+        V: Consumes,
+    {
+        for (key, record) in effects.into_iter().flat_map(|effect| V::takes_owned(effect, context)) {
+            let part = part(key, self.buckets.len());
+            self.buckets[part].push((key, record));
+        }
+    }
+}
+
+/// Which of `parts` parts `key` falls in.
+fn part(key: u64, parts: usize) -> usize {
+    #[allow(clippy::cast_possible_truncation, reason = "the remainder is less than the count of parts, a usize")]
+    let part = (key % parts as u64) as usize;
+
+    part
 }
 
 #[cfg(test)]

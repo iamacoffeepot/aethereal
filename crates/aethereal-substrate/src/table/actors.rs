@@ -12,10 +12,10 @@ use std::collections::BTreeMap;
 /// by the spawn its parent asked for, or for a root by the chassis. It is
 /// marked ended by the actor's own ending and by nothing else: no ending of
 /// another actor, its parent's included, reaches it (ADR-0009).
-pub(super) struct Actors;
+pub struct Actors;
 
 /// One actor's entry: where it stands, and whether it has ended.
-pub(super) struct Entry {
+pub struct Entry {
     /// The actor directly above. None for a root, which stands beneath nothing: fixed when the entry is made.
     above: Option<ActorId>,
     /// The actor's own segment of its path.
@@ -32,7 +32,7 @@ pub(super) enum Life {
 }
 
 /// What the view keeps of an effect.
-pub(super) enum Record {
+pub enum Record {
     /// An actor was made at `segment`, beneath `above` where it is not a root.
     Made { above: Option<ActorId>, segment: PathSegment },
     /// The actor ended.
