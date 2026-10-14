@@ -1,6 +1,6 @@
 //! A piece of mail as its handler sees it (ADR-0009).
 
-use crate::{ActorRef, Actors, ActorsReader, Table};
+use crate::{Actors, ActorsReader, ErasedActorRef, Table};
 use aethereal_data::{ActorId, Budget, Decode, DecodeError, Kind, KindId, Plain, Reader};
 
 /// The id of a piece of mail: its sender, and that sender's count of what it has sent (ADR-0012).
@@ -21,29 +21,18 @@ pub struct Mail<'a> {
     kind: KindId,
     bytes: &'a [u8],
     sender: ActorId,
-    root: MailId,
-    depth: u32,
     table: &'a dyn Table,
     limit: usize,
 }
 
 impl<'a> Mail<'a> {
-    /// The mail of kind `kind` whose bytes are `bytes`, sent by the actor `sender` stands for, at `depth` in the
-    /// chain that began at `root`.
+    /// The mail of kind `kind` whose bytes are `bytes`, sent by the actor `sender` stands for.
     ///
     /// For the engine, which has established that the sender exists. A read proves each reference in the mail
     /// against `table`, and allocates no more than `limit` bytes.
     #[must_use]
-    pub const fn new(
-        kind: KindId,
-        bytes: &'a [u8],
-        sender: ActorId,
-        root: MailId,
-        depth: u32,
-        table: &'a dyn Table,
-        limit: usize,
-    ) -> Self {
-        Self { kind, bytes, sender, root, depth, table, limit }
+    pub const fn new(kind: KindId, bytes: &'a [u8], sender: ActorId, table: &'a dyn Table, limit: usize) -> Self {
+        Self { kind, bytes, sender, table, limit }
     }
 
     /// The id of the mail's kind.
@@ -54,23 +43,8 @@ impl<'a> Mail<'a> {
 
     /// The actor that sent the mail. Every piece of mail has one.
     #[must_use]
-    pub const fn sender(&self) -> ActorRef {
-        ActorRef::new(self.sender)
-    }
-
-    /// The first mail of the chain this mail belongs to (ADR-0012).
-    #[must_use]
-    pub const fn root(&self) -> MailId {
-        self.root
-    }
-
-    /// How far down its chain this mail is: one more than the mail whose turn sent it (ADR-0012).
-    ///
-    /// Mail an actor sends while handling this is one deeper. An actor that keeps something under a chain's root
-    /// and the depth it sent at finds it again from mail further down that chain, and reads how far back it was.
-    #[must_use]
-    pub const fn depth(&self) -> u32 {
-        self.depth
+    pub const fn sender(&self) -> ErasedActorRef {
+        ErasedActorRef::new(self.sender)
     }
 
     /// The mail's contents, when it is of kind `K`; nothing when it is of another kind.

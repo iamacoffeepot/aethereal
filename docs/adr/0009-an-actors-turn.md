@@ -23,7 +23,7 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> {
     type Key: ActorKey;                     // () for a singleton, a TypedKey otherwise
 
     fn begin(config: Self::Config, turn: &mut Beginning<'_>) -> Result<Self, Fault>;
-    fn handle(&mut self, mail: Mail<'_>, turn: &mut Turn<'_>) -> Result<(), Fault>;
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault>;
     fn end(self, turn: &mut Ending<'_>) -> Result<(), Fault>;
 }
 ```
@@ -57,16 +57,18 @@ pub struct Effect {
 pub enum What {
     Root { from: Code },
     RootInstanced { from: Code, key: KeyName },
-    Send { to: To, kind: KindId, bytes: Vec<u8> },
+    Send { to: To, id: MailId, kind: KindId, bytes: Vec<u8> },
     Spawn { from: Code },
     SpawnInstanced { from: Code, key: KeyName },
     Embed { from: Code },
     EmbedInstanced { from: Code, key: KeyName },
     Faulted,
-    Failed,
+    Failed(Fault),
+    EndFailed(Fault),
+    Ended(How),
     Publish { kind: KindName, blob: BlobId },
     Close,
-    Watch { of: ActorRef },
+    Watch { of: ErasedActorRef },
     Log { level: Level, text: String },
 }
 
@@ -83,7 +85,7 @@ pub enum Level {
 - **The engine alone applies effects**, in the order the turn asked for them, after the turn returns `Ok`.
 - **Nothing a turn asks for happens during the turn.** Mail it sends is delivered afterwards, so no actor runs inside another actor's turn.
 - A spawn creates a child beneath the asking actor and nowhere else.
-- **A root enters as an effect the engine writes.** Only the chassis makes a root, and no actor asks for one (ADR-0008). A view sees only effects (ADR-0011), so for each root the chassis makes the engine writes `Root`, or `RootInstanced` for one with a key, by the root itself. The table makes the root's entry from it as it makes a child's from a spawn.
+- **A root enters as an effect the engine writes.** Only the chassis makes a root, and no actor asks for one (ADR-0008). A view sees only effects (ADR-0011), so for each root the chassis makes the engine writes `Root`, or `RootInstanced` for one with a key, by the root itself. The table makes the root's entry from it as it makes a child's from a spawn. A root is made between steps: its `begin` runs when the chassis asks for it, and what it asked for is applied then, as a step's effects are.
 - **An actor stands up its own children, in its own turn.** `turn.spawn` names the child's kind, its code, its key, and its config, and runs the child's `begin` then and there. It returns a reference to the child, or the reason there is none: the key is taken or closed, the path would be too deep (ADR-0008), the engine holds no such blob or the blob makes no actor of that kind, the key does not fit the child's type, or `begin` returned a `Fault`. The parent handles a child that failed to begin in the handler that asked for it.
 - **A child is spawned or embedded.** `turn.spawn` makes a child that takes its own mail. `turn.embed` makes a child whose mail is handed to its parent. Each has its own effects, and no field says where a child's mail goes, so that cannot be written wrong. In everything else the two are the same: the child stands beneath the actor that asked, has a path and an id, has its `begin` run in the parent's turn, and is refused for the same reasons. What this ADR says of a spawn it says of an embed.
 - **A singleton and an instanced child have separate effects.** An actor's `Key` type says which it is (ADR-0008), and the plain effects are the singleton's. `Spawn` and `Embed` carry no key, and `SpawnInstanced` and `EmbedInstanced` carry a `KeyName`, so no effect holds a key that may be absent. `turn.spawn` and `turn.embed` take a value of the child's `Key` and write the effect that fits it. An author's code names a child by its typed key, and a `KeyName` appears only in an effect as data. A guest's spawn arrives as bytes, so its host checks it against the child's type before standing the child up: the effect is the one for a singleton or for an instanced type as the child is, and the key's name reads back as a value of the child's key type. A spawn that fails is refused, and the parent handles it as it does any child that did not begin. It can fail in a correct system, since a guest built against one blob may name another whose kind is keyed differently, and a kind's id does not cover its key type (ADR-0006). For native code a keyed spawn of a singleton, an unkeyed spawn of an instanced type, and a key of another type's do not build. Because the effect says which the child is, the engine may keep singletons and instanced actors apart where that serves it.
@@ -96,8 +98,9 @@ pub enum Level {
 - **An actor's end is its own, and nothing else ends it.** `Close` closes the actor that asks for it, and an actor whose turn fails is closed by that failure. No effect closes another actor, and no actor has that authority over another, a parent over its child included. A parent that wants a child gone sends that child mail saying so, and the child closes itself.
 - **The engine does not end an actor's children when the actor ends.** Whether its children close with it is part of how the actor is written: it tells them by mail, and each closes itself. A child whose parent has ended is still live, and it still owns the paths beneath it.
 - **An actor's closing turn runs in the next step.** At the end of the step in which an actor closes, it is marked ended, and no more mail is delivered to it (ADR-0011). In the step after, it runs its `end` as a turn among that step's other turns, in no order among them.
+- **A `begin` and a closing turn send to `ToWithoutMail`**, which is `To` without `Sender`. Neither is brought about by a piece of mail it is handling, so neither names any mail, and a send to the sender from either does not build.
 - **`begin` is a first turn, and its `Beginning` offers less than a turn.** It offers no `To::Sender`, since a `begin` has no mail of its own and a root's has none behind it at all; a parent that wants its child to answer someone puts that reference in the child's config. It offers no `Close`: an actor does not end in the turn that makes it.
-- **The closing turn runs once, and the actor ends whatever it returns.** `end` takes the actor by value, so there is no actor left to hand a second one. Its `Ending` offers what a last turn may ask for: sending, giving, and logging. It offers no spawn, embed, `Close`, or `Watch`. Asking for an effect can fail, so `end` returns a `Result`: on `Ok` the engine applies its effects, and on a `Fault` it applies the `Log` effects and drops the rest. Either way the engine then drops the actor and what it owned (ADR-0010) and tells its parent how it ended.
+- **The closing turn runs once, and the actor ends whatever it returns.** `end` takes the actor by value, so there is no actor left to hand a second one. Its `Ending` offers what a last turn may ask for: sending, giving, and logging. It offers no spawn, embed, `Close`, or `Watch`. Asking for an effect can fail, so `end` returns a `Result`: on `Ok` the engine applies its effects, and on a `Fault` it applies the `Log` effects and drops the rest. Either way the engine then drops the actor and what it owned (ADR-0010).
 - **`end` runs whenever the actor's code can still be run and trusted.** That is after its own `Close`, and after a turn of its own returned a `Fault`. It does not run for a guest that trapped, since its memory can no longer be trusted, nor for a child that was never live. When the host itself goes away, nothing runs.
 - **`end` is told why it runs.**
 
@@ -109,10 +112,36 @@ pub enum Level {
   ```
 
   `Ending` answers with one of these. After a `Fault` the actor's state is whatever the failed handler left, so an `end` asked `Faulted` leaves out what depends on that state being sound.
-- **No guarantee rests on `end`.** What must be true once an actor has ended is the engine's to make true, however the actor ended: its resources are dropped (ADR-0010), and its parent and its watchers are told. `end` is the actor's last words: a better answer than the one given in its place, or something its parent should know. Nothing is broken when it does not run.
+- **No guarantee rests on `end`.** What must be true once an actor has ended is the engine's to make true, however the actor ended: its resources are dropped (ADR-0010), and the actors that watch it are shown its ending. `end` is the actor's last words: a better answer than the one given in its place, or something its parent should know. Nothing is broken when it does not run.
 - **A panic in a native actor is a bug in the program, not a failed turn.** The engine does not catch it: a browser host cannot unwind (ADR-0001). Every failure an actor can meet is a `Fault` it returns.
-- **`Watch` asks to be told when another actor ends.** Only the engine knows that an actor has ended, so an actor cannot learn it any other way. The watcher names the actor by a reference it holds, and is sent one piece of mail when that actor ends, however it ends. If the actor has already ended when the effect is applied, the mail is sent then. Watching an actor already watched changes nothing, so the watcher is told once. A watch ends with its watcher. A parent is told of its child's end without asking.
-- **`Log` writes a line to the actor's log**, which the engine keeps. It is an effect so that the engine decides what happens to a line when the turn fails, and so that a guest's lines leave it with the rest of the turn.
+- **`Watch` asks to be shown that another actor has ended.** Only the engine knows that an actor has ended, so an actor cannot learn it any other way. The watcher names the actor by a reference it holds. Watching an actor already watched changes nothing. A watch ends with its watcher. A parent watches its child as it would any other actor: it is shown nothing of a child it has not watched.
+
+- **An actor reacts to items, and mail is one kind of item.** Each actor has a stream of what it has to react to, a view keyed by that actor (ADR-0011), and an actor runs in a step when its stream has items, whether or not any is mail. `handle` is given one item at a time, each a turn of its own. The kinds are a closed list the engine knows:
+
+  ```rust
+  pub enum Item<'a> {
+      Mail(Mail<'a>),
+      Ended(Ended),
+  }
+
+  pub struct Ended { /* the actor, and how it ended */ }
+
+  pub enum How {
+      Closed,
+      Failed(Fault),
+      Earlier,
+  }
+  ```
+
+  `Closed` is an actor that asked to close, and `Failed` carries the fault its turn returned. `Earlier` is an actor that had already ended in a step before the one the watch was asked for in: how it ended is not kept.
+
+- **The stream is a view that reads the table and the watchers.** Mail lands in the stream of the actor its `Send` names, while that actor is live; `To::Parent` is read from the table. An ending lands in the stream of each actor in the watchers' entry for the actor that ended. A watch asked for on an actor whose closing turn has already run lands as an ending with `How::Earlier`. An ending that lands twice for one watcher, from the ending and from a watch in the same step, keeps how the actor ended.
+- **No mail is made for an ending.** An ending is an item in each watcher's stream, so the engine still sends no mail of its own, and a watcher with nothing else to do is run for it.
+- **The engine fixes the order.** A stream is ordered by each item's source, then by the order that source caused it. An actor's ending is the last thing it causes. When its closing turn has run, the engine adds `Ended`, by that actor, with how it ended, after what that turn sent, and the stream folds it into the stream of each actor watching it. So the ending reaches a watcher with the closing turn's mail, after it, and a watcher always handles what an actor sent it, its last words included, before it is shown that the actor ended. Items from different sources have no order between them, as mail from two senders has none. An order the actor chose would leave that to every author to get right, and the bug would show only when a sender's last mail and its ending arrive together.
+- **Every item has a source**, and `To::Sender` reaches it: the sender of mail, or the actor that ended, to which a send is not delivered. The turn puts that actor in place of `To::Sender` when it makes the `Send`, since only the turn knows its item. So one `Turn` serves every kind of item. What a turn sends belongs to the item's chain: a piece of mail's own, and for an ending the chain of the mail that brought it about (ADR-0012).
+- **An item holds typed values, and only mail holds bytes.** An ending is an id and how it ended, kept as it is in the stream, and encoded only when it is handed to a guest. So the way mail's bytes are kept can change without touching the other kinds.
+- **A new kind of item changes the list.** Only what the engine alone knows becomes an item, so there are few. Kinds of mail are not items of their own: sections for them are the sugar, in the ADR on how handlers are written.
+- **`Log` writes a line to the actor's log**, which the engine keeps as a view (ADR-0011): each actor's most recent entries, under the actor's own id. A key has one writer, so an actor's entries are in the order it made them, and an older entry leaves as a newer one arrives. The fault of a failed turn is an entry in it, taken from `Failed`, so an actor nobody watches does not fail unseen. An actor's entries stay once it has ended. The fault of a closing turn that fails is an entry too: the engine writes `EndFailed`, by that actor, which marks nothing, since the actor had already ended, and is there for the log. So every fault a turn returns can be read, whether or not anything acted on it. It is an effect so that the engine decides what happens to a line when the turn fails, and so that a guest's lines leave it with the rest of the turn.
 - An effect is plain data, and so is the list.
 
 **A turn reads the engine; it does not write it.** `turn` answers whether a path names a live actor from the table of actors as it stood when the turn's step began (ADR-0008, ADR-0011). A read is not an effect. No view changes while a step's turns run, so every read in a turn agrees with every other, and the step's number is all a record of the turn needs to give the same answers again.
@@ -123,7 +152,7 @@ pub enum Level {
 
 **Mail sent to an actor is handled in the order its source sent it.** That is the one rule of order. Mail from two sources to one actor has no order between them, and none is made up. A turn's effects are applied in the order it asked for them, and a step's effects are folded before any mail sent in it is handled (ADR-0011): whoever comes to hold a reference finds its actor there, however far the reference travelled.
 
-**Turns run in steps (ADR-0011).** Every actor that has mail when a step begins runs in it, on the engine's workers. By the end of the step the effects of its turns are applied: folded into the views, and their mail put in the queues of the actors it was sent to. A browser host runs a step on one worker (ADR-0001). How many workers a step wakes follows from the work it holds.
+**Turns run in steps (ADR-0011).** Every actor that has items when a step begins runs in it, on the engine's workers. By the end of the step the effects of its turns are applied: folded into the views, and their mail put in the queues of the actors it was sent to. A browser host runs a step on one worker (ADR-0001). How many workers a step wakes follows from the work it holds.
 
 **Who a turn may send to is a closed set.**
 
@@ -133,7 +162,7 @@ pub enum To {
     Child(KindName),
     ChildInstanced(KindName, KeyName),
     Sender,
-    Held(ActorRef),
+    Held(ErasedActorRef),
 }
 ```
 
@@ -141,12 +170,12 @@ pub enum To {
 
 **What a send or a spawn carries crosses between actors.** `turn.send(to, &kind)` requires `K: Kind + Encode<Actors>` (ADR-0004, ADR-0006), encodes the kind, and adds the `Send`. `turn.spawn` requires the same of the child's config. A kind that holds a value bound to its own actor is refused when the program is built. The bytes in an effect are always those of a kind that passed this check.
 
-**Every piece of mail has an actor as its sender, and the engine sends none of its own.** Mail from a `Send` names the actor the effect is by. The mail a parent and a watcher get when an actor ends names that actor, whether its own code asked to close or the engine recorded that it failed: it is the actor's ending that is applied, and the mail follows from it. A send back to such a sender is not delivered, as to any actor that has ended.
+**Every piece of mail has an actor as its sender, and the engine sends none of its own.** Mail from a `Send` names the actor the effect is by. An actor's ending makes no mail: its watchers read it from their turn.
 
-**A turn that fails changes nothing outside its actor.** When `begin` or `handle` returns a `Fault`, or a guest traps, the engine closes the actor and tells its parent. The actor handles no more mail. Its state is not rolled back, so its `end` sees that state as the failed turn left it.
+**A turn that fails changes nothing outside its actor.** When `begin` or `handle` returns a `Fault`, or a guest traps, the engine closes the actor, and the actors that watch it are shown its ending. The actor handles no more mail. Its state is not rolled back, so its `end` sees that state as the failed turn left it.
 
 - On a `Fault` the engine applies the turn's `Log` effects, in order, and drops every other effect. A failed turn is the one whose lines are most wanted.
-- **The engine then adds `Failed`, by the actor whose turn failed.** The actor returned a `Fault` and so asked for no `Close`, and a view sees only effects (ADR-0011). `Failed` is the entry that says the actor ended, written by the engine because the actor's code could not, and the table marks the actor from it as it does from `Close`. `Faulted` is the other such entry: it says a child's `begin` failed and the child was never live.
+- **The engine then adds `Failed`, by the actor whose turn failed, holding the fault.** The actor returned a `Fault` and so asked for no `Close`, and a view sees only effects (ADR-0011). `Failed` is the entry that says the actor ended, written by the engine because the actor's code could not, and the table marks the actor from it as it does from `Close`. `Faulted` is the other such entry: it says a child's `begin` failed and the child was never live.
 - A guest that traps returns no list, so the lines of that turn are lost with its other effects. The engine logs the trap itself.
 
 **Code is a blob the engine holds, and a library says which blob a kind is.** A guest's code is a **blob**: bytes the engine holds, named by their hash, and never changed. A blob can make certain kinds of actor. Making an actor leaves the blob as it was, so one blob makes any number of actors. A native actor's code is the program's own.
@@ -197,7 +226,7 @@ pub enum Code {
 - An actor's working fields are limited to what a kind can hold: no recursive type, no `usize`, nothing from a foreign crate. A tree is an arena with indices. A native actor may put a foreign value behind a handle as a resource (ADR-0010); a guest cannot, so a guest's working data fits the vocabulary entirely.
 - An actor is one stretch of memory its parent sets up when it spawns it: its queue of mail and its state. Only the worker running the actor touches it while a step's turns run, and its queue is added to when the step's mail is delivered (ADR-0011). Actors of a kind whose state has a fixed size are kept together in a slab and reached by a pointer, and everything else is allocated as it is needed.
 - How the engine lays that memory out beyond this is its own choice. It may keep the native actors of one type side by side. An actor whose fields are all of fixed width has the same bytes in memory as encoded on a little-endian machine (ADR-0002), so such actors could be kept as one stretch of bytes per type, which makes taking their state out, or keeping a copy from before a turn, a copy of that stretch. An actor with a string, a sequence, or a map cannot be changed in place in ADR-0002's bytes, since a field's position depends on the lengths before it.
-- **Not decided here, and due before the piece that needs each:** what a piece of mail carries beside its kind and bytes, and how a request and its answer are tied (the next ADR; it adds effects and no second way to act); what the `Actors` and `Within` boundaries offer; which actor with mail runs next, and what the engine does when none has any; large payloads, a further effect; how a library registers a namespace and puts a blob into the engine, what is checked when it does, and whether one namespace may sit inside another; how an actor sees a library's heads and learns that one moved; how a library is told of new code, and what it does when two changes reach it; how an actor asks to move onto another blob; when the engine lets go of a blob; the mail by which a parent learns a child closed, faulted, or trapped, and what an actor's `end` is told of how its children ended; how a child learns that its parent ended when the parent could not tell it, as after a trap; what becomes of an embedded child, whose mail is handed to its parent, when that parent ends; and the answer each request gets that an ended actor left unanswered, which comes with the tie between a request and its answer.
+- **Not decided here, and due before the piece that needs each:** what a piece of mail carries beside its kind and bytes (ADR-0012); how a request and its answer are written over mail, which is a layer above the engine and adds no effect; what the `Actors` and `Within` boundaries offer; which actor with mail runs next, and what the engine does when none has any; large payloads, a further effect; how a library registers a namespace and puts a blob into the engine, what is checked when it does, and whether one namespace may sit inside another; how an actor sees a library's heads and learns that one moved; how a library is told of new code, and what it does when two changes reach it; how an actor asks to move onto another blob; when the engine lets go of a blob; the mail by which a parent learns a child closed, faulted, or trapped, and what an actor's `end` is told of how its children ended; how a child learns that its parent ended when the parent could not tell it, as after a trap; what becomes of an embedded child, whose mail is handed to its parent, when that parent ends; and the answer each request gets that an ended actor left unanswered, which comes with the tie between a request and its answer.
 
 ## Alternatives considered
 

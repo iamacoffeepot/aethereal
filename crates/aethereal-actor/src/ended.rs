@@ -1,6 +1,6 @@
 //! An ending an actor is shown: a watched actor that has ended, and how (ADR-0009).
 
-use crate::{ActorRef, Fault};
+use crate::{ErasedActorRef, Fault};
 use aethereal_data::ActorId;
 
 /// An actor this one was watching, which has ended (ADR-0009).
@@ -21,8 +21,8 @@ impl Ended {
 
     /// The actor that ended.
     #[must_use]
-    pub const fn actor(&self) -> ActorRef {
-        ActorRef::new(self.actor)
+    pub const fn actor(&self) -> ErasedActorRef {
+        ErasedActorRef::new(self.actor)
     }
 
     /// How it ended.

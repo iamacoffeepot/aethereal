@@ -1,9 +1,11 @@
 //! The engine's tests: what a step runs, and what is there for the next one.
 
 use super::*;
-use aethereal_actor::{Fault, How, Level, ToWithoutMail};
+use crate::{Entry, Standing, child_id};
+use aethereal_actor::{Fault, How, Item, Level, To, ToWithoutMail};
 use aethereal_data::{Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
+use std::mem;
 
 thread_local! {
     /// What the actors of this thread's test have said they did, in order.
@@ -50,8 +52,8 @@ impl Kind for NodeConfig {
 /// - `tell N text` sends the node `N` beneath it `text`;
 /// - `both` sends its parent `watchme` and itself `close`, and `watchme` has it watch the sender;
 /// - `up text` sends its parent `text from <number>`, and `reply` answers the sender with `re`;
-/// - the node `13` fails its closing turn;
-/// - `where` has it say how deep in its chain that note is;
+/// - the node `13` fails its closing turn, so what it sends there is dropped;
+/// - `bye 5` has it watch the sender as well;
 /// - `bye N`, which a child sends as it ends, has it send that child `late`.
 #[derive(Plain)]
 struct Node {
@@ -81,14 +83,18 @@ impl Actor for Node {
         Ok(Self { number: config.number })
     }
 
-    fn handle(&mut self, mail: Mail<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+        let mail = match item {
+            Item::Mail(mail) => mail,
+            Item::Ended(ended) => {
+                say(format!("{} saw {}", self.number, how(ended.how())));
+
+                return Ok(());
+            }
+        };
         let Some(Note { text }) = mail.read()? else {
             return Ok(());
         };
-        if !turn.ended().is_empty() {
-            let saw: Vec<String> = turn.ended().iter().map(|ended| how(ended.how())).collect();
-            say(format!("{} saw {}", self.number, saw.join(", ")));
-        }
         say(format!("{} got {text}", self.number));
 
         let words: Vec<&str> = text.splitn(3, ' ').collect();
@@ -121,8 +127,11 @@ impl Actor for Node {
                 turn.send(To::Held(turn.me()), &Note { text: String::from("close") })?;
             }
             ["watchme", ..] => turn.watch(mail.sender()),
-            ["where", ..] => say(format!("{} at depth {}", self.number, mail.depth())),
             ["bye", number] => {
+                let watches = number == "5";
+                if watches {
+                    turn.watch(mail.sender());
+                }
                 turn.send(Self::child(number.parse().unwrap_or_default()), &Note { text: String::from("late") })?;
             }
             _ => {}
@@ -274,16 +283,30 @@ fn key_spawned_earlier_in_the_step_is_taken() {
 }
 
 #[test]
-fn watcher_is_shown_an_ending_once_with_its_fault() {
-    // Catches a watcher never shown an ending, shown it without the fault, shown it before it has mail to run a
-    // turn for, and shown it again in a later step.
+fn watcher_reacts_to_an_ending_once_with_its_fault_after_its_last_mail() {
+    // Catches a watcher never run for an ending, run without the fault, run before the ended actor's last mail
+    // has reached it, and run for it again in a later step.
     let (mut engine, root) = engine(&["watch 2 fail"]);
     step(&mut engine);
     step(&mut engine);
 
     assert_eq!(step(&mut engine), ["2 ended Faulted"]);
-    assert_eq!(step(&mut engine), ["1 saw failed over fail", "1 got bye 2"]);
-    assert!(engine.seats[&root.bits()].ended.is_empty());
+    assert_eq!(step(&mut engine), ["1 got bye 2", "1 saw failed over fail"]);
+    assert!(!engine.has_items(root.bits()));
+    assert_eq!(step(&mut engine), [""; 0]);
+    assert!(engine.is_idle());
+}
+
+#[test]
+fn watcher_with_no_mail_is_run_for_an_ending() {
+    // Catches an ending that waits for mail to arrive before its watcher runs.
+    // The node 13 fails its closing turn, so its parent is sent nothing.
+    let (mut engine, _) = engine(&["watch 13 close"]);
+    step(&mut engine);
+    step(&mut engine);
+    assert_eq!(step(&mut engine), ["13 ended Closed"]);
+
+    assert_eq!(step(&mut engine), ["1 saw closed"]);
 }
 
 #[test]
@@ -298,12 +321,13 @@ fn watch_asked_for_in_the_step_its_actor_ends_is_shown() {
     third.sort();
     assert_eq!(third, ["1 got watchme", "2 got close"]);
     assert_eq!(step(&mut engine), ["2 ended Closed"]);
-    assert_eq!(step(&mut engine), ["1 saw closed", "1 got bye 2"]);
+    assert_eq!(step(&mut engine), ["1 got bye 2", "1 saw closed"]);
 }
 
 #[test]
-fn watch_of_an_actor_that_ended_earlier_is_shown() {
-    // Catches a watch on an ended actor that waits for an ending which has already been.
+fn watch_asked_for_before_the_closing_turn_has_run_is_shown_how() {
+    // Catches a watch that lands between an actor's close and its closing turn being shown only that the actor
+    // ended earlier, when how it ended is still to come.
     let (mut engine, _) = engine(&["spawn 2 up watchme", "tell 2 close"]);
     step(&mut engine);
     assert_eq!(step(&mut engine), ["2 got up watchme", "2 got close"]);
@@ -311,7 +335,19 @@ fn watch_of_an_actor_that_ended_earlier_is_shown() {
     let mut third = step(&mut engine);
     third.sort();
     assert_eq!(third, ["1 got watchme from 2", "2 ended Closed"]);
-    assert_eq!(step(&mut engine), ["1 saw earlier", "1 got bye 2"]);
+    assert_eq!(step(&mut engine), ["1 got bye 2", "1 saw closed"]);
+}
+
+#[test]
+fn watch_of_an_actor_whose_life_is_over_is_shown() {
+    // Catches a watch on an actor whose closing turn has run that waits for an ending which has already been.
+    let (mut engine, _) = engine(&["spawn 5 close"]);
+    step(&mut engine);
+    step(&mut engine);
+    assert_eq!(step(&mut engine), ["5 ended Closed"]);
+
+    assert_eq!(step(&mut engine), ["1 got bye 5"]);
+    assert_eq!(step(&mut engine), ["1 saw earlier"]);
 }
 
 #[test]
@@ -344,15 +380,4 @@ fn failed_closing_turn_leaves_its_fault_and_sends_nothing() {
     assert_eq!(step(&mut engine), ["13 ended Closed"]);
     assert_eq!(engine.log(node(root, 13)).collect::<Vec<_>>(), [&Entry::EndFailed(fault)]);
     assert_eq!(step(&mut engine), [""; 0]);
-}
-
-#[test]
-fn depth_counts_each_send_down_a_chain() {
-    // Catches a depth that is not carried through a spawn and a reply, and one that starts from the wrong end:
-    // a root's first mail is at depth one.
-    let (mut engine, _) = engine(&["where", "spawn 2 up where"]);
-
-    assert_eq!(step(&mut engine), ["1 got where", "1 at depth 1", "1 got spawn 2 up where"]);
-    step(&mut engine);
-    assert_eq!(step(&mut engine), ["1 got where from 2", "1 at depth 3"]);
 }

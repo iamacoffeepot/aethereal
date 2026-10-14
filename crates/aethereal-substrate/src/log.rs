@@ -1,6 +1,6 @@
 //! The view of what each actor logged most recently (ADR-0009, ADR-0011).
 
-use crate::View;
+use crate::{Context, View};
 use aethereal_actor::{Effect, Fault, Level, What};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -28,16 +28,10 @@ pub enum Entry {
 impl View for Log {
     type Shard = BTreeMap<u64, VecDeque<Entry>>;
     type Record = Entry;
+    type Reads<'a> = ();
 
-    fn takes(effect: &Effect) -> Option<(u64, Entry)> {
-        let entry = match effect.what() {
-            What::Log { level, text } => Entry::Line { level: *level, text: text.clone() },
-            What::Failed(fault) => Entry::Failed(fault.clone()),
-            What::EndFailed(fault) => Entry::EndFailed(fault.clone()),
-            _ => return None,
-        };
-
-        Some((effect.by().bits(), entry))
+    fn takes<'a>(effect: &'a Effect, _: &'a Context, (): ()) -> impl Iterator<Item = (u64, Entry)> + 'a {
+        entry(effect).into_iter()
     }
 
     fn fold(shard: &mut BTreeMap<u64, VecDeque<Entry>>, key: u64, entry: Entry) {
@@ -50,10 +44,23 @@ impl View for Log {
     }
 }
 
+/// The key and entry the view keeps of `effect`, or none for an effect it does not keep.
+fn entry(effect: &Effect) -> Option<(u64, Entry)> {
+    let entry = match effect.what() {
+        What::Log { level, text } => Entry::Line { level: *level, text: text.clone() },
+        What::Failed(fault) => Entry::Failed(fault.clone()),
+        What::EndFailed(fault) => Entry::EndFailed(fault.clone()),
+        _ => return None,
+    };
+
+    Some((effect.by().bits(), entry))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Folded;
+    use aethereal_actor::MailId;
     use aethereal_data::ActorId;
     use std::num::NonZeroUsize;
 
@@ -68,7 +75,8 @@ mod tests {
         let mut effects = vec![line(quiet, 0)];
         effects.extend((0..=RECENT).map(|number| line(loud, number)));
         let mut log = Folded::<Log>::new(parts);
-        log.fold(&effects);
+        let context = Context { cause: None, root: MailId { sender: loud, count: 0 } };
+        log.fold(&effects, &context, ());
 
         let texts = |by: ActorId| -> Vec<String> {
             let kept = log.shard(by.bits()).get(&by.bits()).into_iter().flatten();
