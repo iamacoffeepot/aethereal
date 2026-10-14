@@ -81,7 +81,7 @@ impl<V: View> Folded<V> {
     /// Folds in the effects of one turn, emitted in `context`, taking each by value.
     ///
     /// The caller folds every other view that reads these effects first.
-    pub fn fold_owned(&mut self, effects: Vec<Effect>, context: &Context)
+    pub fn fold_owned(&mut self, effects: impl IntoIterator<Item = Effect>, context: &Context)
     where
         V: Consumes,
     {

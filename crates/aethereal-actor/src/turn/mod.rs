@@ -25,6 +25,8 @@ pub struct Asked {
     stood: Vec<Stood>,
     /// Where the bytes of the mail the turn sends are written.
     arena: Arena,
+    /// Where this turn's effects begin in `effects`: what is before them is earlier turns'.
+    start: usize,
 }
 
 impl Asked {
@@ -37,7 +39,16 @@ impl Asked {
     /// Nothing asked for yet, with mail written to `arena`, after what it already holds.
     #[must_use]
     pub fn writing(arena: Arena) -> Self {
-        Self { effects: Vec::new(), stood: Vec::new(), arena }
+        Self::continuing(Vec::new(), arena)
+    }
+
+    /// Nothing asked for yet, with effects added after `effects`, the effects of earlier turns kept in one list,
+    /// and mail written to `arena`, after what it already holds.
+    #[must_use]
+    pub fn continuing(effects: Vec<Effect>, arena: Arena) -> Self {
+        let start = effects.len();
+
+        Self { effects, stood: Vec::new(), arena, start }
     }
 
     /// The arena the turn's mail was written to.
@@ -49,11 +60,11 @@ impl Asked {
     /// The effects asked for so far, in the order they were asked for.
     #[must_use]
     pub fn effects(&self) -> &[Effect] {
-        &self.effects
+        &self.effects[self.start..]
     }
 
-    /// The effects, the children stood up, each child in the order its `begin` finished, and the arena the mail
-    /// was written to.
+    /// The effects, earlier turns' first when the list was continued, the children stood up, each child in the order
+    /// its `begin` finished, and the arena the mail was written to.
     #[must_use]
     pub fn into_parts(self) -> (Vec<Effect>, Vec<Stood>, Arena) {
         (self.effects, self.stood, self.arena)

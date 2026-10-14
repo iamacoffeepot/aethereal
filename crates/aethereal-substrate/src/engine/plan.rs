@@ -1,5 +1,6 @@
 //! How many workers a step runs on, and which actors each runs (ADR-0011).
 
+use super::Lists;
 use super::costs::KindIndex;
 use crate::stream::Pending;
 use aethereal_actor::{Arena, Runs};
@@ -36,6 +37,8 @@ pub struct Share {
     jobs: Vec<Job>,
     /// Where the worker writes the bytes of the mail its turns send.
     arena: Arena,
+    /// What the worker fills as it runs.
+    lists: Lists,
 }
 
 /// One actor's turns of a step: the actor, taken out of the engine for the step, and what it runs.
@@ -74,14 +77,15 @@ impl Plan {
 }
 
 impl Share {
-    /// The actors of the share, each with what it runs, and the arena its mail is written to.
-    pub(super) fn into_parts(self) -> (Vec<Job>, Arena) {
-        (self.jobs, self.arena)
+    /// The actors of the share, each with what it runs, the arena its mail is written to, and the lists it fills.
+    pub(super) fn into_parts(self) -> (Vec<Job>, Arena, Lists) {
+        (self.jobs, self.arena, self.lists)
     }
 
-    /// Gives the share `arena` to write its mail to.
-    pub(super) fn write_to(&mut self, arena: Arena) {
+    /// Gives the share `arena` to write its mail to, and `lists` to fill.
+    pub(super) fn write_to(&mut self, arena: Arena, lists: Lists) {
         self.arena = arena;
+        self.lists = lists;
     }
 }
 
@@ -142,8 +146,9 @@ pub(super) fn pack(jobs: Vec<Job>, costs: &[u64], running: usize) -> Vec<Share> 
     let mut order: Vec<(u64, Job)> = costs.iter().copied().zip(jobs).collect();
     order.sort_by(|(left, a), (right, b)| right.cmp(left).then(a.id.bits().cmp(&b.id.bits())));
 
-    let mut shares: Vec<(u64, Share)> =
-        (0..running.max(1)).map(|_| (0, Share { jobs: Vec::new(), arena: Arena::default() })).collect();
+    let mut shares: Vec<(u64, Share)> = (0..running.max(1))
+        .map(|_| (0, Share { jobs: Vec::new(), arena: Arena::default(), lists: Lists::default() }))
+        .collect();
     for (cost, job) in order {
         if let Some((load, share)) = shares.iter_mut().min_by_key(|(load, _)| *load) {
             *load += cost;

@@ -26,18 +26,21 @@ A turn already says everything it wants of the engine as a list of effects (ADR-
 
 **A step carries the time.** The engine reads no clock (ADR-0001). The host passes the time in when it starts a step, and every turn of that step reads that one time. A record of a run holds each step's time beside its number. Knowing the time does not run an actor: an actor runs when it has mail.
 
-**A view is a fold over the effects of finished turns.** Its author writes two things: what the view keeps of an effect, and how one such record changes the view's state. The author writes no lock and no atomic, and nothing about workers.
+**A view is a fold over the effects of finished turns.** Its author writes what the view keeps of an effect, how one such record changes the view's state, and, when it needs it, what a part hands on once a step's records are all in. The author writes no lock and no atomic, and nothing about workers.
 
 ```rust
 pub trait View {
     type Shard;                 // one part of the view's state
     type Record;                // what the view keeps of an effect
 
-    /// The key and record of an effect this view folds, or nothing for one it does not.
-    fn takes(effect: &Effect) -> Option<(u64, Self::Record)>;
+    /// The keys and records of an effect, one for each key it changes, emitted in `context`.
+    fn takes(effect: &Effect, context: &Context) -> impl Iterator<Item = (u64, Self::Record)>;
 
     /// Folds one record into the part its key falls in.
     fn fold(shard: &mut Self::Shard, key: u64, record: Self::Record);
+
+    /// Once a step's records are all folded into a part: the records it hands on to other keys. Most hand on none.
+    fn settle(shard: &mut Self::Shard, forward: &mut Vec<(u64, Self::Record)>) {}
 }
 ```
 
@@ -66,11 +69,15 @@ pub trait View {
 
 **A view folds each effect with the context it was emitted in.** A turn's effects share one context, the item the turn handled (ADR-0012), and a view is handed it beside each effect. The context is what is folded, not a view that is read, so it plays no part in the order views fold in.
 
-**A view may read other views.** It names them, as a tuple of views and nothing else, which the type checks, and the engine folds them before it, so it reads them with the step's effects already in. That lets a view work out a key from what another holds, such as an actor's parent from the table, and lets one effect change several of its keys, one record for each. Views that read nothing of each other fold side by side, and each view's keys still fold in parts. A chain of views reading views folds one link at a time, so it is kept short, and no view reads itself through another.
+**A view reads no other view.** Each folds by itself, from the effects and their context, so every view and every part of one can fold at once, in any order, wherever the engine folds it. What a view would have read of another is worked out where the effect is made, or kept by the view itself. A turn resolves whom its mail is for when it sends it, from the table as the step began (ADR-0009). Two records that must meet are kept under one key, so they land in one part: a watch and the ending it waits for are both kept under the actor watched.
+
+**A part settles once a step's records are all in.** Records reach a part in any order, so a view that pairs records of one step pairs them when the step's records are all folded, not one at a time. Settling may hand records on to other keys, and the engine folds each into the part its key falls in; what is handed on is not settled again. The stream hands each ending on to the actors watching the one that ended.
 
 **The table of actors is the first view.** It is folded from spawns and endings. Where a library's heads point is a view (ADR-0009). Whether a chain of mail has finished, and who watches an actor, are views when they are built.
 
-**When a step's turns have finished, the engine folds, then delivers.** It folds the step's effects into the views. It then delivers the step's mail against the views as just folded, and mail to an actor that has ended is not delivered. So a child spawned in a step is there for mail sent to it in that step. The endings of a step are folded for the actors that watch them (ADR-0009), and a watch asked for in the step its actor ends is shown that ending once.
+**When a step's turns have finished, the engine folds; an actor's items are handed to it when it runs.** Mail is kept under the actor it is for, whether or not that actor is still live, and the engine hands an actor its items only when the actor is live. Items for an actor that is not are dropped there, unhanded: one never made, one gone, or one that has ended, which runs its closing turn instead. So a child spawned in a step is there for mail sent to it in that step. The endings of a step are folded for the actors that watch them (ADR-0009), and a watch asked for in the step its actor ends is shown that ending once.
+
+**Memory is freed on the thread that made it.** A worker's lists of effects, turns, and actors are handed back to it emptied, and an actor's list of items is handed back to the thread that steps the engine, which filled it; each is filled again the next step. Measured on 4 workers, a list made on one thread and freed on another made each worker's share of a step take about three times as long.
 
 **An actor that ends handles no more mail.** Mail it had when it ended and had not yet handled is not delivered, as mail that reaches it later is not. An actor that wants to finish what it was sent closes on a piece of mail that asks it to: everything queued ahead of that mail has been handled by then.
 
