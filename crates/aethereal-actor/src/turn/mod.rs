@@ -12,6 +12,7 @@ use crate::{
 };
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -23,6 +24,8 @@ use alloc::vec::Vec;
 pub struct Asked {
     effects: Vec<Effect>,
     stood: Vec<Stood>,
+    /// The bits of the ids of the children in `stood`, to find whether one stands at a key in a lookup.
+    stood_ids: BTreeSet<u64>,
     /// Where the bytes of the mail the turn sends are written.
     arena: Arena,
     /// Where this turn's effects begin in `effects`: what is before them is earlier turns'.
@@ -48,7 +51,7 @@ impl Asked {
     pub fn continuing(effects: Vec<Effect>, arena: Arena) -> Self {
         let start = effects.len();
 
-        Self { effects, stood: Vec::new(), arena, start }
+        Self { effects, stood: Vec::new(), stood_ids: BTreeSet::new(), arena, start }
     }
 
     /// The arena the turn's mail was written to.
@@ -72,7 +75,7 @@ impl Asked {
 
     /// Whether a child stood up in this turn has the id `id`.
     fn has_stood(&self, id: ActorId) -> bool {
-        self.stood.iter().any(|child| child.id == id)
+        self.stood_ids.contains(&id.bits())
     }
 }
 
@@ -203,13 +206,16 @@ impl Seat<'_> {
         let seat = Seat { id, path: path.clone(), table: self.table, asked: &mut *self.asked, sent: 0 };
         match C::begin(config, &mut Beginning { seat }) {
             Ok(actor) => {
+                self.asked.stood_ids.insert(id.bits());
                 self.asked.stood.push(Stood { id, path, actor: Box::new(actor) });
 
                 Ok(ErasedActorRef::new(id))
             }
             Err(fault) => {
                 self.asked.effects.push(Effect::new(id, What::Faulted));
-                self.asked.stood.truncate(stood_before);
+                for child in self.asked.stood.drain(stood_before..) {
+                    self.asked.stood_ids.remove(&child.id.bits());
+                }
 
                 Err(Refused::Began(fault))
             }

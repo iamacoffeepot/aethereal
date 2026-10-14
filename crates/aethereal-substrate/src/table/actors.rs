@@ -1,10 +1,9 @@
 //! The view of which actors there are (ADR-0008, ADR-0011).
 
 use crate::id::spawned;
-use crate::{Context, View};
+use crate::{ByActor, Context, View};
 use aethereal_actor::{Effect, What};
 use aethereal_data::{ActorId, PathSegment};
-use std::collections::BTreeMap;
 
 /// The view of which actors there are, keyed by an actor's own id (ADR-0011).
 ///
@@ -57,7 +56,7 @@ impl Entry {
 }
 
 impl View for Actors {
-    type Shard = BTreeMap<u64, Entry>;
+    type Shard = ByActor<Entry>;
     type Record = Record;
 
     fn takes<'a>(effect: &'a Effect, _: &'a Context) -> impl Iterator<Item = (u64, Record)> + 'a {
@@ -68,7 +67,7 @@ impl View for Actors {
     ///
     /// Panics when an actor is made under an id the table already holds (ADR-0008). A parent refuses a key it has
     /// used before it asks, so that is two paths with one id or a fault in the engine, and neither has a way on.
-    fn fold(shard: &mut BTreeMap<u64, Entry>, key: u64, record: Record) {
+    fn fold(shard: &mut ByActor<Entry>, key: u64, record: Record) {
         match record {
             Record::Made { above, segment } => {
                 let held = shard.insert(key, Entry { above, segment, life: Life::Live });
