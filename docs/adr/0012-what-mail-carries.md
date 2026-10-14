@@ -30,7 +30,7 @@ pub struct MailId {
 pub struct Envelope {
     pub id: MailId,
     pub to: ActorId,             // the actor it is for
-    pub cause: Option<MailId>,   // none: nothing inside the engine caused it, and nothing ever will have
+    pub cause: Option<MailId>,   // none for mail from outside the engine, or from a root's `begin`
     pub root: MailId,
     pub depth: u32,              // how far down its chain: one more than its cause's
     pub kind: KindId,
