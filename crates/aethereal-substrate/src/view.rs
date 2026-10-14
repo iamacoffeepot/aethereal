@@ -4,65 +4,40 @@ use crate::Context;
 use aethereal_actor::Effect;
 use std::num::NonZeroUsize;
 
-/// A view: what it keeps of an effect, and how one such record changes its state (ADR-0011).
+/// A view: what it keeps of an effect, how one such record changes its state, and what a part hands on once a
+/// step is folded (ADR-0011).
 ///
-/// Its author writes these two things and nothing about threads. The engine
-/// keeps the view in a [`Folded`], which does the rest the same way for every
-/// view.
+/// Its author writes these and nothing about threads. The engine keeps the
+/// view in a [`Folded`], which does the rest the same way for every view.
 ///
 /// A key has one owner, whose records reach [`Self::fold`] in the order it
 /// asked for them. Or many actors write a key, and then the fold gives the
 /// same state in whatever order their records arrive.
 ///
 /// Each effect is folded with the [`Context`] it was emitted in: the item its
-/// turn was reacting to, which every effect of that turn shares. The context is
-/// what is folded, not something read.
-///
-/// A view may read other views, named in [`Self::Reads`]. The engine folds
-/// those first, so [`Self::takes`] sees them with the step's effects already
-/// in. Views that read nothing of each other fold side by side, and a chain of
-/// views reading views folds one link at a time, so the chain is kept short.
+/// turn was reacting to, which every effect of that turn shares. A view reads
+/// nothing else, and no other view: each view folds by itself, in whatever
+/// order and wherever the engine folds it.
 pub trait View {
     /// One part of the view's state.
     type Shard;
     /// What the view keeps of an effect.
     type Record;
-    /// The views this one reads, as a tuple of references to them: `()` for a view that reads none.
-    ///
-    /// Only a tuple of views fits, so nothing but a view is read:
-    ///
-    /// ```compile_fail
-    /// use aethereal_actor::Effect;
-    /// use aethereal_substrate::{Context, View};
-    ///
-    /// struct Counts;
-    ///
-    /// impl View for Counts {
-    ///     type Shard = u64;
-    ///     type Record = ();
-    ///     type Reads<'a> = (&'a Context,);
-    ///
-    ///     fn takes<'a>(_: &'a Effect, _: &'a Context, _: (&'a Context,)) -> impl Iterator<Item = (u64, ())> + 'a {
-    ///         std::iter::empty()
-    ///     }
-    ///
-    ///     fn fold(_: &mut u64, _: u64, (): ()) {}
-    /// }
-    /// ```
-    type Reads<'a>: ViewTuple<'a>;
 
     /// The keys and records of an effect, one for each key it changes: none for an effect this view does not fold.
     ///
-    /// `context` is the context the effect was emitted in, and `reads` are the views this one reads, each already
-    /// folded for the step.
-    fn takes<'a>(
-        effect: &'a Effect,
-        context: &'a Context,
-        reads: Self::Reads<'a>,
-    ) -> impl Iterator<Item = (u64, Self::Record)> + 'a;
+    /// `context` is the context the effect was emitted in.
+    fn takes<'a>(effect: &'a Effect, context: &'a Context) -> impl Iterator<Item = (u64, Self::Record)> + 'a;
 
     /// Folds one record into the part its key falls in.
     fn fold(shard: &mut Self::Shard, key: u64, record: Self::Record);
+
+    /// Settles a part once every record of a step has been folded into it, in whatever order they came, and adds
+    /// to `forward` the records it hands on to other keys, which may fall in other parts. Most views settle nothing
+    /// and hand on nothing.
+    fn settle(shard: &mut Self::Shard, forward: &mut Vec<(u64, Self::Record)>) {
+        let _ = (shard, forward);
+    }
 }
 
 /// A view that can take an effect by value, so what it keeps of the effect is moved in and not copied.
@@ -72,46 +47,7 @@ pub trait View {
 /// from a borrowed effect.
 pub trait Consumes: View {
     /// The keys and records of `effect`, taken by value, as [`View::takes`] gives them.
-    fn takes_owned<'a>(
-        effect: Effect,
-        context: &'a Context,
-        reads: Self::Reads<'a>,
-    ) -> impl Iterator<Item = (u64, Self::Record)> + 'a;
-}
-
-/// What a view's [`View::Reads`] may be: `()`, or a tuple of up to four references to views.
-///
-/// It is sealed, so nothing outside this crate adds a case.
-pub trait ViewTuple<'a>: Copy + sealed::Sealed {}
-
-/// Something a view may read: a view the engine keeps.
-///
-/// It is sealed, so nothing outside this crate adds a case.
-pub trait Viewed: sealed::Sealed {}
-
-impl<V: View> sealed::Sealed for Folded<V> {}
-impl<V: View> Viewed for Folded<V> {}
-
-impl sealed::Sealed for () {}
-impl ViewTuple<'_> for () {}
-
-/// The tuples of references to views, of each length up to four.
-macro_rules! view_tuples {
-    ($($view:ident),+) => {
-        impl<'a, $($view: Viewed),+> sealed::Sealed for ($(&'a $view,)+) {}
-        impl<'a, $($view: Viewed),+> ViewTuple<'a> for ($(&'a $view,)+) {}
-    };
-}
-
-view_tuples!(A);
-view_tuples!(A, B);
-view_tuples!(A, B, C);
-view_tuples!(A, B, C, D);
-
-/// Keeps the cases of [`ViewTuple`] and [`Viewed`] to this crate.
-pub mod sealed {
-    /// Implemented only in this crate.
-    pub trait Sealed {}
+    fn takes_owned(effect: Effect, context: &Context) -> impl Iterator<Item = (u64, Self::Record)> + '_;
 }
 
 /// A view as the engine keeps it: its state in parts, each holding the keys that fall in it (ADR-0011).
@@ -134,24 +70,36 @@ impl<V: View> Folded<V> {
         Self { shards: (0..parts.get()).map(|_| V::Shard::default()).collect() }
     }
 
-    /// Folds in the effects of one turn, emitted in `context`, in the order given, reading `reads`.
-    ///
-    /// The caller folds every view in `reads` first.
-    pub fn fold<'a>(&mut self, effects: &'a [Effect], context: &'a Context, reads: V::Reads<'a>) {
-        for (key, record) in effects.iter().flat_map(|effect| V::takes(effect, context, reads)) {
+    /// Folds in the effects of one turn, emitted in `context`, in the order given.
+    pub fn fold(&mut self, effects: &[Effect], context: &Context) {
+        for (key, record) in effects.iter().flat_map(|effect| V::takes(effect, context)) {
             let part = self.part(key);
             V::fold(&mut self.shards[part], key, record);
         }
     }
 
-    /// Folds in the effects of one turn, emitted in `context`, taking each by value, reading `reads`.
+    /// Folds in the effects of one turn, emitted in `context`, taking each by value.
     ///
-    /// The caller folds every view in `reads` first, and every other view that reads these effects.
-    pub fn fold_owned<'a>(&mut self, effects: Vec<Effect>, context: &'a Context, reads: V::Reads<'a>)
+    /// The caller folds every other view that reads these effects first.
+    pub fn fold_owned(&mut self, effects: Vec<Effect>, context: &Context)
     where
         V: Consumes,
     {
-        for (key, record) in effects.into_iter().flat_map(|effect| V::takes_owned(effect, context, reads)) {
+        for (key, record) in effects.into_iter().flat_map(|effect| V::takes_owned(effect, context)) {
+            let part = self.part(key);
+            V::fold(&mut self.shards[part], key, record);
+        }
+    }
+
+    /// Settles every part once a step's effects are all folded, and folds what each hands on into the part its key
+    /// falls in. What is handed on is folded and not settled again.
+    pub fn settle(&mut self) {
+        let mut forward = Vec::new();
+        for shard in &mut self.shards {
+            V::settle(shard, &mut forward);
+        }
+
+        for (key, record) in forward {
             let part = self.part(key);
             V::fold(&mut self.shards[part], key, record);
         }
@@ -171,6 +119,11 @@ impl<V: View> Folded<V> {
         &mut self.shards[part]
     }
 
+    /// Every part, as of the last fold.
+    pub fn shards(&self) -> impl Iterator<Item = &V::Shard> {
+        self.shards.iter()
+    }
+
     /// Which part `key` falls in.
     fn part(&self, key: u64) -> usize {
         #[allow(clippy::cast_possible_truncation, reason = "the remainder is less than the count of parts, a usize")]
@@ -187,64 +140,51 @@ mod tests {
     use aethereal_data::ActorId;
     use std::collections::BTreeMap;
 
-    /// How many times each actor has closed.
-    struct Closes;
+    /// Each close, kept under the closing actor until the step settles, then counted under the actor after it.
+    struct Relays;
 
-    impl View for Closes {
-        type Shard = BTreeMap<u64, u32>;
-        type Record = ();
-        type Reads<'a> = ();
-
-        fn takes<'a>(effect: &'a Effect, _: &'a Context, (): ()) -> impl Iterator<Item = (u64, ())> + 'a {
-            let is_close = *effect.what() == What::Close;
-
-            is_close.then_some((effect.by().bits(), ())).into_iter()
-        }
-
-        fn fold(shard: &mut BTreeMap<u64, u32>, key: u64, (): ()) {
-            *shard.entry(key).or_default() += 1;
-        }
+    /// What [`Relays`] keeps: a close not yet handed on, or one counted.
+    enum Relay {
+        Held,
+        Counted,
     }
 
-    /// For each close, the count of closes as `Closes` holds it, under the closing actor and the one after it.
-    struct Echoes;
+    impl View for Relays {
+        type Shard = (Vec<u64>, BTreeMap<u64, u32>);
+        type Record = Relay;
 
-    impl View for Echoes {
-        type Shard = BTreeMap<u64, u32>;
-        type Record = u32;
-        type Reads<'a> = (&'a Folded<Closes>,);
+        fn takes<'a>(effect: &'a Effect, _: &'a Context) -> impl Iterator<Item = (u64, Relay)> + 'a {
+            let is_close = *effect.what() == What::Close;
 
-        fn takes<'a>(
-            effect: &'a Effect,
-            _: &'a Context,
-            (closes,): Self::Reads<'a>,
-        ) -> impl Iterator<Item = (u64, u32)> + 'a {
-            let by = effect.by().bits();
-            let count = closes.shard(by).get(&by).copied();
-
-            count.into_iter().flat_map(move |count| [(by, count), (by + 1, count)])
+            is_close.then_some((effect.by().bits(), Relay::Held)).into_iter()
         }
 
-        fn fold(shard: &mut BTreeMap<u64, u32>, key: u64, count: u32) {
-            shard.insert(key, count);
+        fn fold((held, counted): &mut Self::Shard, key: u64, record: Relay) {
+            match record {
+                Relay::Held => held.push(key),
+                Relay::Counted => *counted.entry(key).or_default() += 1,
+            }
+        }
+
+        fn settle((held, _): &mut Self::Shard, forward: &mut Vec<(u64, Relay)>) {
+            forward.extend(held.drain(..).map(|key| (key + 1, Relay::Counted)));
         }
     }
 
     #[test]
-    fn view_reads_another_already_folded_and_writes_several_keys() {
-        // Catches a view that reads another before the step is folded into it, and a record under a second key
-        // put in the part of the first.
+    fn what_a_part_hands_on_lands_in_the_part_of_its_key() {
+        // Catches a record handed on and kept in the part that settled it, and one handed on and never folded.
         let Some(parts) = NonZeroUsize::new(2) else {
             panic!("two is not zero");
         };
         let effects = [Effect::new(ActorId::new(4), What::Close)];
         let context = Context { cause: None, root: MailId { sender: ActorId::new(4), count: 0 }, depth: 1 };
-        let mut closes = Folded::<Closes>::new(parts);
-        let mut echoes = Folded::<Echoes>::new(parts);
-        closes.fold(&effects, &context, ());
-        echoes.fold(&effects, &context, (&closes,));
+        let mut relays = Folded::<Relays>::new(parts);
+        relays.fold(&effects, &context);
+        assert_eq!(relays.shard(5).1.get(&5), None);
 
-        assert_eq!(echoes.shard(4).get(&4), Some(&1));
-        assert_eq!(echoes.shard(5).get(&5), Some(&1));
+        relays.settle();
+        assert_eq!(relays.shard(5).1.get(&5), Some(&1));
+        assert!(relays.shard(4).0.is_empty());
     }
 }

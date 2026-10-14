@@ -303,7 +303,7 @@ fn watcher_reacts_to_an_ending_once_with_its_fault_after_its_last_mail() {
 
     assert_eq!(step(&mut engine), ["2 ended Faulted"]);
     assert_eq!(step(&mut engine), ["1 got bye 2", "1 saw failed over fail"]);
-    assert!(!engine.has_items(root.bits()));
+    assert!(engine.streams.shard(root.bits()).holders().all(|bits| bits != root.bits()));
     assert_eq!(step(&mut engine), [""; 0]);
     assert!(engine.is_idle());
 }

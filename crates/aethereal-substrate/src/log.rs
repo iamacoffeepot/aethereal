@@ -28,9 +28,8 @@ pub enum Entry {
 impl View for Log {
     type Shard = BTreeMap<u64, VecDeque<Entry>>;
     type Record = Entry;
-    type Reads<'a> = ();
 
-    fn takes<'a>(effect: &'a Effect, _: &'a Context, (): ()) -> impl Iterator<Item = (u64, Entry)> + 'a {
+    fn takes<'a>(effect: &'a Effect, _: &'a Context) -> impl Iterator<Item = (u64, Entry)> + 'a {
         entry(effect).into_iter()
     }
 
@@ -76,7 +75,7 @@ mod tests {
         effects.extend((0..=RECENT).map(|number| line(loud, number)));
         let mut log = Folded::<Log>::new(parts);
         let context = Context { cause: None, root: MailId { sender: loud, count: 0 }, depth: 1 };
-        log.fold(&effects, &context, ());
+        log.fold(&effects, &context);
 
         let texts = |by: ActorId| -> Vec<String> {
             let kept = log.shard(by.bits()).get(&by.bits()).into_iter().flatten();

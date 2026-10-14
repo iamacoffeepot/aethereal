@@ -11,8 +11,7 @@ pub use costs::Tally;
 pub use plan::{Plan, Share, Workers};
 
 use crate::id::root_id;
-use crate::stream::{Pending, Streams, take};
-use crate::watch::Watchers;
+use crate::stream::{Pending, Shard, Streams, take};
 use crate::{ActorTable, Clock, Context, Entry, Envelope, Folded, Log};
 use aethereal_actor::{
     Actor, Arena, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Payload, Refused, Runs,
@@ -45,8 +44,6 @@ use std::num::NonZeroUsize;
 pub struct Engine {
     /// Which actors there are: the first view.
     table: ActorTable,
-    /// Who watches each actor.
-    watchers: Folded<Watchers>,
     /// What each actor has to react to.
     streams: Folded<Streams>,
     /// What each actor logged most recently.
@@ -59,6 +56,8 @@ pub struct Engine {
     /// Where mail is written: for each parity of step, an arena for each writer, the first for mail sent between
     /// steps.
     arenas: [Vec<Arena>; 2],
+    /// The actors that have ended and whose closing turn runs in the next step.
+    ending: Vec<ActorId>,
     /// The number given to each kind of actor seated so far.
     kinds: Kinds,
     /// How long turns take, as measured so far.
@@ -140,12 +139,12 @@ impl Engine {
     pub fn new(parts: NonZeroUsize, read_limit: usize) -> Self {
         Self {
             table: ActorTable::new(parts),
-            watchers: Folded::new(parts),
             streams: Folded::new(parts),
             log: Folded::new(parts),
             seats: BTreeMap::new(),
             actors: BTreeMap::new(),
             arenas: [Vec::new(), Vec::new()],
+            ending: Vec::new(),
             kinds: Kinds::new(),
             costs: Costs::new(),
             recent: 0,
@@ -177,12 +176,9 @@ impl Engine {
     /// Whether a step would run no turn: no actor has anything to react to, and none has a closing turn to run.
     #[must_use]
     pub fn is_idle(&self) -> bool {
-        self.seats.iter().all(|(bits, seat)| {
-            let has_items = self.has_items(*bits);
-            let is_ending = matches!(seat.life, Life::Ending { .. });
+        let has_items = self.streams.shards().any(Shard::has_items);
 
-            !(has_items || is_ending)
-        })
+        !has_items && self.ending.is_empty()
     }
 
     /// Makes a root of type `A` under `key`, for the chassis, and answers with its id (ADR-0008).
@@ -247,24 +243,20 @@ impl Engine {
 
         let mut jobs = Vec::new();
         let mut costs = Vec::new();
-        let ids: Vec<ActorId> = self.seats.keys().map(|bits| ActorId::new(*bits)).collect();
-        for id in ids {
-            let items: Vec<Pending> = self.take_items(id).collect();
-            let Some(seat) = self.seats.get(&id.bits()) else {
-                continue;
-            };
-            let work = match seat.life {
-                Life::Ending { .. } => Work::Closing,
-                Life::Live if items.is_empty() => continue,
-                Life::Live => Work::Items(items),
-            };
-            let Some(actor) = self.actors.remove(&id.bits()) else {
-                continue;
-            };
-            let kind = seat.kind;
-
-            costs.push(self.expect(kind, &work));
-            jobs.push(Job { id, kind, actor, work });
+        // Every actor with items, and every actor whose closing turn is to run. Items for an actor that is not live
+        // are dropped here, unhanded: one never made, one gone, or one that has ended, which runs its closing turn.
+        let mut holders: Vec<u64> = self.streams.shards().flat_map(Shard::holders).collect();
+        holders.sort_unstable();
+        let ending = mem::take(&mut self.ending);
+        for bits in holders {
+            let items = self.streams.shard_mut(bits).take(bits).into_iter().flat_map(take);
+            let is_live = self.seats.get(&bits).is_some_and(|seat| matches!(seat.life, Life::Live));
+            if is_live {
+                self.job(ActorId::new(bits), Work::Items(items.collect()), &mut jobs, &mut costs);
+            }
+        }
+        for id in ending {
+            self.job(id, Work::Closing, &mut jobs, &mut costs);
         }
 
         let work = costs.iter().sum();
@@ -324,6 +316,19 @@ impl Engine {
         self.fold(ran, &gone);
     }
 
+    /// Takes the actor `id` stands for out of the engine to run `work`, adding its job and its expected cost.
+    fn job(&mut self, id: ActorId, work: Work, jobs: &mut Vec<Job>, costs: &mut Vec<u64>) {
+        let Some(kind) = self.seats.get(&id.bits()).map(|seat| seat.kind) else {
+            return;
+        };
+        let Some(actor) = self.actors.remove(&id.bits()) else {
+            return;
+        };
+
+        costs.push(self.expect(kind, &work));
+        jobs.push(Job { id, kind, actor, work });
+    }
+
     /// What the turns of the job of an actor of kind `kind` that runs `work` are expected to cost, in nanoseconds.
     fn expect(&self, kind: KindIndex, work: &Work) -> u64 {
         let key = |item| CostKey { actor: kind, item };
@@ -335,18 +340,14 @@ impl Engine {
 
     /// Folds finished turns, in the order given (ADR-0011).
     ///
-    /// Every turn's effects are folded into the table and the watchers, and its children made live, before any is
-    /// folded into the streams, which read both: so a child spawned in a step is there for mail sent to it in that
-    /// step, and mail to an actor that ended in the step is not kept. The actors in `gone` have run their closing
-    /// turn, and leave last.
+    /// Each view folds a turn by itself, reading no other. Once every turn is folded the streams settle, pairing
+    /// the step's watches and endings. The actors in `gone` have run their closing turn, and leave last.
     fn fold(&mut self, ran: Vec<Ran>, gone: &[ActorId]) {
         let ran: Vec<Ran> = ran.into_iter().map(|ran| Ran { effects: begun(ran.effects), ..ran }).collect();
 
-        let mut folded = Vec::with_capacity(ran.len());
         for Ran { effects, stood, context } in ran {
             self.table.fold(&effects, &context);
-            self.watchers.fold(&effects, &context, ());
-            self.log.fold(&effects, &context, ());
+            self.log.fold(&effects, &context);
 
             for child in stood {
                 self.seat(child.id(), child.path().clone(), child.into_actor());
@@ -358,16 +359,13 @@ impl Engine {
                 }
             }
 
-            folded.push((effects, context));
+            self.streams.fold_owned(effects, &context);
         }
-        for (effects, context) in folded {
-            self.streams.fold_owned(effects, &context, (&self.table, &self.watchers));
-        }
+        self.streams.settle();
 
+        // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
         for id in gone {
             self.seats.remove(&id.bits());
-            // Whatever reached it after its closing turn is dropped with it.
-            self.streams.shard_mut(id.bits()).remove(&id.bits());
         }
     }
 
@@ -393,7 +391,11 @@ impl Engine {
     /// chain of the mail that brought its ending about (ADR-0012).
     fn end(&mut self, id: ActorId, how: How, context: Context) {
         if let Some(seat) = self.seats.get_mut(&id.bits()) {
+            let was_live = matches!(seat.life, Life::Live);
             seat.life = Life::Ending { how, context };
+            if was_live {
+                self.ending.push(id);
+            }
         }
     }
 
@@ -405,19 +407,6 @@ impl Engine {
         if let Some(seat) = self.seats.get_mut(&id.sender.bits()) {
             seat.sent = seat.sent.max(id.count);
         }
-    }
-
-    /// Whether the actor whose bits these are has anything in its stream.
-    fn has_items(&self, bits: u64) -> bool {
-        self.streams.shard(bits).get(&bits).is_some_and(|items| !items.is_empty())
-    }
-
-    /// Takes everything in the stream of the actor `id` stands for, in the order it is to be handed it.
-    fn take_items(&mut self, id: ActorId) -> impl Iterator<Item = Pending> + use<> {
-        let bits = id.bits();
-        let taken = self.streams.shard_mut(bits).remove(&bits);
-
-        taken.into_iter().flat_map(take)
     }
 }
 

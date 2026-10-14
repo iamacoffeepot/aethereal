@@ -130,8 +130,15 @@ impl Seat<'_> {
         self.ask(What::Watch { of });
     }
 
-    /// Encodes `mail` and adds the effect that sends it to `to`.
-    fn send<K: Kind + Encode<Actors>>(&mut self, to: To, mail: &K) -> Result<(), EncodeError> {
+    /// Encodes `mail` and adds the effect that sends it to the actor `to` names.
+    ///
+    /// Nothing is sent when `to` names no actor this turn can see: a parent no longer live, or a root's parent.
+    /// Whether the actor it names is live when the mail would be handed to it is the engine's to see, and mail to
+    /// one that is not is dropped there.
+    fn send<K: Kind + Encode<Actors>>(&mut self, to: &To, mail: &K) -> Result<(), EncodeError> {
+        let Some(to) = self.receiver(to) else {
+            return Ok(());
+        };
         let bytes = self.asked.arena.write(|bytes| {
             let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::new());
             let written = mail.encode(&mut out);
@@ -143,6 +150,20 @@ impl Seat<'_> {
         self.ask(What::Send { to, id, kind: KindId::of::<K>(), bytes });
 
         Ok(())
+    }
+
+    /// The id of the actor `to` names, beside this one: none for a parent this turn cannot see.
+    fn receiver(&self, to: &To) -> Option<ActorId> {
+        match to {
+            To::Parent => self.path.parent().and_then(|parent| self.table.resolve(&parent)),
+            To::Child(kind) => Some(self.table.child(self.id, &PathSegment::new(kind.clone(), &()))),
+            To::ChildInstanced(kind, key) => {
+                Some(self.table.child(self.id, &PathSegment::instanced(kind.clone(), key.clone())))
+            }
+            To::Held(reference) => Some(reference.id()),
+            // A turn puts the source of its item in its place before it asks.
+            To::Sender => None,
+        }
     }
 
     /// Stands up a child of type `C` under `key`: adds its spawn effect, then runs its `begin` here.
@@ -227,7 +248,7 @@ impl<'a> Turn<'a> {
             named => named,
         };
 
-        self.seat.send(to, mail)
+        self.seat.send(&to, mail)
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
@@ -279,7 +300,7 @@ impl<'a> Beginning<'a> {
 
     /// Sends `mail` to `to`. It goes out with the mail of the turn this `begin` runs in.
     pub fn send<K: Kind + Encode<Actors>>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError> {
-        self.seat.send(to.into(), mail)
+        self.seat.send(&to.into(), mail)
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
@@ -352,7 +373,7 @@ impl<'a> Ending<'a> {
 
     /// Sends `mail` to `to`: the actor's last mail.
     pub fn send<K: Kind + Encode<Actors>>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError> {
-        self.seat.send(to.into(), mail)
+        self.seat.send(&to.into(), mail)
     }
 
     /// Logs `text` at `level`. The line is kept when this turn fails.

@@ -20,7 +20,6 @@ mod mail;
 mod stream;
 mod table;
 mod view;
-mod watch;
 
 pub use clock::Clock;
 pub use context::Context;
@@ -29,4 +28,4 @@ pub use id::{child_id, path_id, root_id};
 pub use log::{Entry, Log, RECENT};
 pub use mail::Envelope;
 pub use table::{ActorTable, Standing};
-pub use view::{Consumes, Folded, View, ViewTuple, Viewed};
+pub use view::{Consumes, Folded, View};
