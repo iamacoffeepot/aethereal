@@ -18,9 +18,9 @@ use aethereal_actor::{
     Actor, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Refused, Runs, Stood, Turn, What,
     Why,
 };
-use aethereal_data::{ActorId, ActorPath, KindName, PathSegment};
+use aethereal_data::{ActorId, ActorPath, PathSegment};
 use begun::begun;
-use costs::{CostKey, Costs, ItemKind, toward};
+use costs::{CostKey, Costs, ItemKind, KindIndex, Kinds, toward};
 use plan::{Job, Work};
 use since::Since;
 use std::collections::BTreeMap;
@@ -55,6 +55,8 @@ pub struct Engine {
     seats: BTreeMap<u64, Seat>,
     /// The actors themselves, each under its id. An actor leaves when its closing turn takes it.
     actors: BTreeMap<u64, Box<dyn Runs>>,
+    /// The number given to each kind of actor seated so far.
+    kinds: Kinds,
     /// How long turns take, as measured so far.
     costs: Costs,
     /// The expected work of recent steps, in nanoseconds: a moving average weighted to the most recent.
@@ -69,6 +71,8 @@ pub struct Engine {
 struct Seat {
     /// Where the actor stands.
     path: ActorPath,
+    /// Its kind, as the engine numbers it.
+    kind: KindIndex,
     /// How many pieces of mail it has sent, as of the last step applied.
     sent: u64,
     /// Whether it still reacts.
@@ -133,6 +137,7 @@ impl Engine {
             log: Folded::new(parts),
             seats: BTreeMap::new(),
             actors: BTreeMap::new(),
+            kinds: Kinds::new(),
             costs: Costs::new(),
             recent: 0,
             step: 0,
@@ -244,9 +249,9 @@ impl Engine {
             let Some(actor) = self.actors.remove(&id.bits()) else {
                 continue;
             };
-            let kind = seat.path.last().kind().clone();
+            let kind = seat.kind;
 
-            costs.push(self.expect(&kind, &work));
+            costs.push(self.expect(kind, &work));
             jobs.push(Job { id, kind, actor, work });
         }
 
@@ -293,8 +298,8 @@ impl Engine {
     }
 
     /// What the turns of the job of an actor of kind `kind` that runs `work` are expected to cost, in nanoseconds.
-    fn expect(&self, kind: &KindName, work: &Work) -> u64 {
-        let key = |item| CostKey { actor: kind.clone(), item };
+    fn expect(&self, kind: KindIndex, work: &Work) -> u64 {
+        let key = |item| CostKey { actor: kind, item };
         match work {
             Work::Closing => self.costs.expect(&key(ItemKind::Closing)),
             Work::Items(items) => items.iter().map(|pending| self.costs.expect(&key(item_kind(pending)))).sum(),
@@ -341,7 +346,8 @@ impl Engine {
 
     /// Gives the actor `id` stands for, at `path`, a seat: it is run from the next step.
     fn seat(&mut self, id: ActorId, path: ActorPath, actor: Box<dyn Runs>) {
-        self.seats.insert(id.bits(), Seat { path, sent: 0, life: Life::Live });
+        let kind = self.kinds.number(path.last().kind());
+        self.seats.insert(id.bits(), Seat { path, kind, sent: 0, life: Life::Live });
         self.actors.insert(id.bits(), actor);
     }
 
@@ -395,7 +401,7 @@ impl Reading<'_> {
         let Some(seat) = self.seats.get(&id.bits()) else {
             return Turned { id, ran: Vec::new(), kept: Kept::Live(actor) };
         };
-        let key = |item| CostKey { actor: kind.clone(), item };
+        let key = |item| CostKey { actor: kind, item };
 
         match (work, &seat.life) {
             (Work::Closing, Life::Ending { how, context }) => {

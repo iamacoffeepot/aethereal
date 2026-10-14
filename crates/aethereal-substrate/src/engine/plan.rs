@@ -1,8 +1,9 @@
 //! How many workers a step runs on, and which actors each runs (ADR-0011).
 
+use super::costs::KindIndex;
 use crate::stream::Pending;
 use aethereal_actor::Runs;
-use aethereal_data::{ActorId, KindName};
+use aethereal_data::ActorId;
 
 /// The workers a host has, as the engine plans a step for them (ADR-0011).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +40,7 @@ pub struct Share {
 pub(super) struct Job {
     pub(super) id: ActorId,
     /// The kind of actor, which its turns are measured under.
-    pub(super) kind: KindName,
+    pub(super) kind: KindIndex,
     pub(super) actor: Box<dyn Runs>,
     pub(super) work: Work,
 }

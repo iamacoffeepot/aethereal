@@ -23,13 +23,17 @@ pub struct Pool {
     measured: Measured,
 }
 
-/// What the steps run so far cost, summed: for comparing one way of sharing a step with another (ADR-0011).
+/// What the steps run so far cost, summed: for comparing one way of running a step with another (ADR-0011).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Measured {
     /// Steps run.
     pub steps: u64,
+    /// Nanoseconds spent planning each step, on the stepping thread.
+    pub plan_nanos: u64,
     /// Nanoseconds from handing out each step's shares to the last answer.
     pub step_nanos: u64,
+    /// Nanoseconds spent applying each step, on the stepping thread.
+    pub apply_nanos: u64,
     /// Nanoseconds the workers that ran each step stood idle in it while others still ran.
     pub idle_nanos: u64,
     /// Parked workers woken.
@@ -139,6 +143,12 @@ impl Pool {
         self.measure(clock.nanos().saturating_sub(start), &reports);
 
         done
+    }
+
+    /// Adds a step's planning and applying, which took `plan_nanos` and `apply_nanos`, to what is measured.
+    pub const fn measure_around(&mut self, plan_nanos: u64, apply_nanos: u64) {
+        self.measured.plan_nanos += plan_nanos;
+        self.measured.apply_nanos += apply_nanos;
     }
 
     /// Adds a step that took `nanos`, whose workers reported `reports`, to what is measured.
