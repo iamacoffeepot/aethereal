@@ -80,6 +80,8 @@ pub trait View {
 
 **Actors are given to workers by their expected cost**, the most costly first, each to the worker with the least so far. Whether a worker that finishes early takes actors from one still running is decided by measurement: the engine is run with it and without it over the same work, with costs that are uneven and change from step to step, and compared on each step's time, the time each worker stood idle, the actors taken, and the workers woken and parked.
 
+**The measured times are kept beside the steps, and not as a view**, under the kind of actor and what its turn reacted to: the kind of a piece of mail, an ending, or the actor's closing turn. Actors of one kind share what is learned, and a new one is planned for from its first step. Each worker sums its own measurements while the step runs, and the sums are merged between steps, so no measurement is shared while turns run. The substrate plans a step and runs a share of it wherever it is asked to; the threads the shares run on, and the clock the turns are timed by, are a native host's (ADR-0001).
+
 ## Consequences
 
 - Shared state has one shape. The next view is a fold, and it takes no new argument about threads.
@@ -93,7 +95,7 @@ pub trait View {
 - A chain of mail takes one step for each actor it passes through.
 - The count of changes in ADR-0008's table goes, and so does a reader holding a number: the step's number is the position.
 - ADR-0009 said no worker waits for the others and there is no moment when all of them stop. Between two steps there is such a moment.
-- **Not decided here:** domains of actors that never meet, each with steps of its own, so that a slow turn in one does not hold back another; how the cost of a wake is kept true when few workers are being woken; and where the measured costs are kept, since the same turns take different times from run to run.
+- **Not decided here:** domains of actors that never meet, each with steps of its own, so that a slow turn in one does not hold back another; how the cost of a wake is kept true when few workers are being woken; and how much power an idle worker kept spinning costs, which the plan does not yet weigh.
 
 ## Alternatives considered
 

@@ -10,6 +10,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aethereal-chassis-headless"
+version = "0.1.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
+ "aethereal-substrate",
+]
+
+[[package]]
 name = "aethereal-data"
 version = "0.1.0"
 dependencies = [

@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+mod clock;
 mod context;
 mod engine;
 mod id;
@@ -21,8 +22,9 @@ mod table;
 mod view;
 mod watch;
 
+pub use clock::Clock;
 pub use context::Context;
-pub use engine::Engine;
+pub use engine::{Done, Engine, Plan, Reading, Share, Tally, Workers};
 pub use id::{child_id, path_id, root_id};
 pub use log::{Entry, Log, RECENT};
 pub use mail::Envelope;

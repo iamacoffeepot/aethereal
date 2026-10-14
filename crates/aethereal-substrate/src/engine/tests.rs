@@ -166,6 +166,15 @@ fn how(how: &How) -> String {
     }
 }
 
+/// A clock that never moves: these tests are about what turns leave, not how long they take.
+struct Stopped;
+
+impl Clock for Stopped {
+    fn nanos(&self) -> u64 {
+        0
+    }
+}
+
 /// An engine with the root node `1`, which sends itself `to_self` as it begins.
 fn engine(to_self: &[&str]) -> (Engine, ActorId) {
     let Some(parts) = NonZeroUsize::new(4) else {
@@ -182,7 +191,7 @@ fn engine(to_self: &[&str]) -> (Engine, ActorId) {
 
 /// Runs one step and answers with what its turns said.
 fn step(engine: &mut Engine) -> Vec<String> {
-    engine.step();
+    engine.step(&Stopped);
 
     said()
 }
