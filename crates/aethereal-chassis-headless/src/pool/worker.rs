@@ -1,7 +1,7 @@
 //! One worker thread: what it is told, what it answers, and how it waits between steps.
 
 use crate::Monotonic;
-use aethereal_substrate::{Done, Reading, Share};
+use aethereal_substrate::{Clock, Done, Reading, Share};
 use std::any::Any;
 use std::hint;
 use std::panic::{self, AssertUnwindSafe};
@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, RecvError, Sender, TryRecvError};
 
 /// What the stepping thread tells a worker.
 pub(super) enum Order {
-    /// Run a share of the step, then wait for the next order as `then` says.
+    /// Run a part of the step, then wait for the next order as `then` says.
     Run { lend: Lend, then: Waiting },
     /// Wait parked for the next order.
     Park,
@@ -28,15 +28,22 @@ pub(super) enum Waiting {
 
 /// What a worker answers.
 pub(super) enum Reply {
-    /// Its share ran and left this.
-    Done(Done),
-    /// Its share panicked with this.
+    /// Its part of the step ran, left this, and cost it this.
+    Done(Done, Report),
+    /// Its part of the step panicked with this.
     Panicked(Box<dyn Any + Send>),
     /// It was pinged.
     Pong,
 }
 
-/// The engine as the step's workers read it, lent to one worker for one share, with the clock to time it by.
+/// How long a worker's share of a step kept it busy, in nanoseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Report {
+    pub(super) busy_nanos: u64,
+}
+
+/// The engine as the step's workers read it, lent to one worker for its part of the step, with the clock to time
+/// it by.
 pub(super) struct Lend {
     reading: *const Reading<'static>,
     clock: Monotonic,
@@ -83,9 +90,9 @@ pub(super) fn work(orders: &Receiver<Order>, replies: &Sender<Reply>) {
                 // does not let the `Reading` go, until this worker's reply arrives; the reply is sent after the
                 // last use of it.
                 let reading = unsafe { &*reading };
-                let ran = panic::catch_unwind(AssertUnwindSafe(|| reading.run(share, &clock)));
+                let ran = panic::catch_unwind(AssertUnwindSafe(|| perform(reading, clock, share)));
 
-                ran.map_or_else(Reply::Panicked, Reply::Done)
+                ran.map_or_else(Reply::Panicked, |(done, report)| Reply::Done(done, report))
             }
             Order::Park => {
                 waiting = Waiting::Park;
@@ -109,4 +116,12 @@ fn spin(orders: &Receiver<Order>) -> Result<Order, RecvError> {
             Err(TryRecvError::Disconnected) => return Err(RecvError),
         }
     }
+}
+
+/// Runs `share` against `reading`, timing its turns, and how long it kept the worker busy, by `clock`.
+pub(super) fn perform(reading: &Reading<'_>, clock: Monotonic, share: Share) -> (Done, Report) {
+    let start = clock.nanos();
+    let done = reading.run(share, &clock);
+
+    (done, Report { busy_nanos: clock.nanos().saturating_sub(start) })
 }
