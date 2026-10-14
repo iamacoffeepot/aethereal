@@ -76,7 +76,9 @@ pub trait View {
 
 **An ending actor's closing turn is a turn of the next step.** At the end of the step in which an actor closes or fails, the fold marks it as ended. Only an actor's own ending marks it: the actors beneath it are not ended by the engine (ADR-0009). In the step after, the actor runs its closing turn (ADR-0009's `end`) among that step's other turns, in no order among them, and what it sends goes out with that step's mail.
 
-**How many workers a step wakes follows from the work it holds**, not from how many turns it has: the cost of its turns as measured so far, against the measured cost of waking a worker.
+**Between steps, the engine decides how many workers to wake or park for the next step.** The folded views say which actors have items to react to, and which owe a closing turn. What the engine has measured says about how long each of those actors' turns take: a moving average, weighted to the most recent. The decision is one signed number of workers: woken when positive, parked when negative, never more than are parked, and never fewer than minus those running. It weighs how long the next step would take with each count of workers against the measured cost of waking one, and against what keeping an idle worker running costs in power when it would be woken again a step later. One actor's turns run on one worker, so a step takes no less than its most costly actor's turns, and no more workers are woken than the step's expected work divided by that cost, or than there are actors to run.
+
+**Actors are given to workers by their expected cost**, the most costly first, each to the worker with the least so far. Whether a worker that finishes early takes actors from one still running is decided by measurement: the engine is run with it and without it over the same work, with costs that are uneven and change from step to step, and compared on each step's time, the time each worker stood idle, the actors taken, and the workers woken and parked.
 
 ## Consequences
 
@@ -87,10 +89,11 @@ pub trait View {
 - A turn cannot test and take in one move. Two actors that both read a name as free in one step both ask for it, the fold picks one by a fixed rule, and the other is told later.
 - Each view costs a fold of each record and a share of the time between steps. In a prototype that folded each record twice, three views cost nothing measurable where a turn takes tens of microseconds, 10 to 17 parts in a hundred where it takes a few, and 23 to 45 where it takes a fraction of one.
 - A step ends when its slowest turn ends. One long turn holds back every actor's next step.
+- A cost guessed wrong holds the step to the worker the actor was given, unless that worker's actors can be taken by another.
 - A chain of mail takes one step for each actor it passes through.
 - The count of changes in ADR-0008's table goes, and so does a reader holding a number: the step's number is the position.
 - ADR-0009 said no worker waits for the others and there is no moment when all of them stop. Between two steps there is such a moment.
-- **Not decided here:** domains of actors that never meet, each with steps of its own, so that a slow turn in one does not hold back another; and how the cost of a wake is kept true when few workers are being woken.
+- **Not decided here:** domains of actors that never meet, each with steps of its own, so that a slow turn in one does not hold back another; how the cost of a wake is kept true when few workers are being woken; and where the measured costs are kept, since the same turns take different times from run to run.
 
 ## Alternatives considered
 
