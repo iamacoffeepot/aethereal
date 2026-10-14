@@ -2,6 +2,7 @@
 
 use crate::id::spawned;
 use aethereal_actor::{Effect, What};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The effects of one turn that the engine applies: `effects` without what a failed `begin` left.
@@ -10,38 +11,38 @@ use std::collections::{BTreeMap, BTreeSet};
 /// applied, and neither is anything it asked for, nor anything asked for by an
 /// actor it stood up, but for the lines they logged. A parent may spawn at that key again in the same turn,
 /// and that later child is kept.
-pub(super) fn begun(effects: Vec<Effect>) -> Vec<Effect> {
+pub(super) fn begun(effects: &[Effect]) -> Cow<'_, [Effect]> {
     // Most turns spawn nothing, and then nothing is taken out.
     let spawns = effects.iter().any(|effect| spawned(effect).is_some());
     if !spawns {
-        return effects;
+        return Cow::Borrowed(effects);
     }
 
-    let failed = failed_spawns(&effects);
+    let failed = failed_spawns(effects);
     let mut never_live = BTreeSet::new();
     let mut kept = Vec::with_capacity(effects.len());
-    for (position, effect) in effects.into_iter().enumerate() {
+    for (position, effect) in effects.iter().enumerate() {
         let is_by_never_live = never_live.contains(&effect.by().bits());
         let is_report = *effect.what() == What::Faulted;
-        if let Some((child, _)) = spawned(&effect) {
+        if let Some((child, _)) = spawned(effect) {
             let fails = is_by_never_live || failed.contains(&position);
             if fails {
                 never_live.insert(child.bits());
             } else {
                 never_live.remove(&child.bits());
-                kept.push(effect);
+                kept.push(effect.clone());
             }
         } else {
             let is_line = matches!(effect.what(), What::Log { .. });
             let is_lost = is_by_never_live && !is_line;
             let is_dropped = is_lost || is_report;
             if !is_dropped {
-                kept.push(effect);
+                kept.push(effect.clone());
             }
         }
     }
 
-    kept
+    Cow::Owned(kept)
 }
 
 /// The positions of the spawns whose child's `begin` failed: each is followed by a `Faulted` by that child.
@@ -90,6 +91,6 @@ mod tests {
             spawn_leaf.clone(),
         ];
 
-        assert_eq!(begun(effects), [line, Effect::new(me, What::Close), spawn_branch, spawn_leaf]);
+        assert_eq!(*begun(&effects), [line, Effect::new(me, What::Close), spawn_branch, spawn_leaf]);
     }
 }

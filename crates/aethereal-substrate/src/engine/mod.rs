@@ -11,8 +11,7 @@ pub use costs::Tally;
 pub use plan::{Plan, Share, Workers};
 
 use crate::id::root_id;
-use crate::stream::{Pending, Streams, take};
-use crate::watch::Watchers;
+use crate::stream::{Pending, Shard, Streams, take};
 use crate::{ActorTable, Clock, Context, Entry, Envelope, Folded, Log};
 use aethereal_actor::{
     Actor, Arena, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Payload, Refused, Runs,
@@ -23,10 +22,12 @@ use begun::begun;
 use costs::{CostKey, Costs, ItemKind, KindIndex, Kinds, toward};
 use plan::{Job, Work};
 use since::Since;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::iter;
 use std::mem;
 use std::num::NonZeroUsize;
+use std::ops::Range;
 
 /// The engine: its actors, the views of them, and the steps their turns run in (ADR-0011).
 ///
@@ -39,14 +40,13 @@ use std::num::NonZeroUsize;
 /// with something to run out of the engine and shares the actors among the
 /// workers; each worker runs its share through [`Engine::reading`]; and
 /// [`Engine::apply`] puts the actors back and folds what their turns asked
-/// for, in the order of their ids, whichever worker ran them. [`Engine::step`]
+/// for. Every view folds the same in whatever order turns come, so it takes
+/// each worker's turns as they are. [`Engine::step`]
 /// does all three on the thread that calls it: the whole of a browser host's
 /// engine (ADR-0001).
 pub struct Engine {
     /// Which actors there are: the first view.
     table: ActorTable,
-    /// Who watches each actor.
-    watchers: Folded<Watchers>,
     /// What each actor has to react to.
     streams: Folded<Streams>,
     /// What each actor logged most recently.
@@ -59,6 +59,13 @@ pub struct Engine {
     /// Where mail is written: for each parity of step, an arena for each writer, the first for mail sent between
     /// steps.
     arenas: [Vec<Arena>; 2],
+    /// What each worker fills in a step, by writer, kept from one step to the next.
+    lists: Vec<Lists>,
+    /// The actors that have ended and whose closing turn runs in the next step.
+    ending: Vec<ActorId>,
+    /// Lists of an actor's items, emptied by the workers and handed back, to be filled at the next plan: made and
+    /// freed on the thread that steps the engine, never on a worker.
+    spare: Vec<Vec<Pending>>,
     /// The number given to each kind of actor seated so far.
     kinds: Kinds,
     /// How long turns take, as measured so far.
@@ -100,18 +107,28 @@ pub struct Reading<'a> {
     read_limit: usize,
 }
 
-/// What one worker's share of a step left: each actor's turns, and how long they took.
+/// What one worker's share of a step left: its turns, the actors it ran, and how long they took.
 pub struct Done {
-    actors: Vec<Turned>,
+    lists: Lists,
     tally: Tally,
     /// The arena the worker wrote its mail to, to keep for the step after next.
     arena: Arena,
 }
 
-/// One actor's turns of a step, and the actor when it is still the engine's to run.
+/// What a worker fills in a step: every effect of its turns one after another, each turn as a range of them, and
+/// each actor it ran. The engine empties it and hands it back the next step, so nothing in it is allocated again.
+#[derive(Default)]
+pub struct Lists {
+    effects: Vec<Effect>,
+    turns: Vec<Ran>,
+    actors: Vec<Turned>,
+    /// The lists of items the worker emptied, to hand back to the thread that made them.
+    spent: Vec<Vec<Pending>>,
+}
+
+/// An actor a worker ran, and the actor when it is still the engine's to run.
 struct Turned {
     id: ActorId,
-    ran: Vec<Ran>,
     kept: Kept,
 }
 
@@ -125,8 +142,8 @@ enum Kept {
 
 /// One finished turn, as the engine applies it.
 struct Ran {
-    /// What the turn asked for, in order.
-    effects: Vec<Effect>,
+    /// What the turn asked for, in order: a range of its worker's effects.
+    effects: Range<usize>,
     /// The children it stood up.
     stood: Vec<Stood>,
     /// The context its effects were emitted in.
@@ -140,12 +157,14 @@ impl Engine {
     pub fn new(parts: NonZeroUsize, read_limit: usize) -> Self {
         Self {
             table: ActorTable::new(parts),
-            watchers: Folded::new(parts),
             streams: Folded::new(parts),
             log: Folded::new(parts),
             seats: BTreeMap::new(),
             actors: BTreeMap::new(),
             arenas: [Vec::new(), Vec::new()],
+            lists: Vec::new(),
+            ending: Vec::new(),
+            spare: Vec::new(),
             kinds: Kinds::new(),
             costs: Costs::new(),
             recent: 0,
@@ -177,12 +196,9 @@ impl Engine {
     /// Whether a step would run no turn: no actor has anything to react to, and none has a closing turn to run.
     #[must_use]
     pub fn is_idle(&self) -> bool {
-        self.seats.iter().all(|(bits, seat)| {
-            let has_items = self.has_items(*bits);
-            let is_ending = matches!(seat.life, Life::Ending { .. });
+        let has_items = self.streams.shards().any(Shard::has_items);
 
-            !(has_items || is_ending)
-        })
+        !has_items && self.ending.is_empty()
     }
 
     /// Makes a root of type `A` under `key`, for the chassis, and answers with its id (ADR-0008).
@@ -205,20 +221,23 @@ impl Engine {
         // Mail sent between steps is read in the next step, with the mail the last step's turns sent.
         let parity = parity(self.step);
         let mut asked = Asked::writing(self.arena(parity, ROOTS));
-        let begun = A::begin(config, &mut Beginning::new(id, path.clone(), &self.table, &mut asked));
+        let began = A::begin(config, &mut Beginning::new(id, path.clone(), &self.table, &mut asked));
         let (asked, stood, arena) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
-        let root = begun.map_err(Refused::Began)?;
+        let root = began.map_err(Refused::Began)?;
         let from = Code::Linked(A::NAME);
         let made = match segment.key() {
             None => What::Root { from },
             Some(key) => What::RootInstanced { from, key: key.clone() },
         };
-        let effects = iter::once(Effect::new(id, made)).chain(asked).collect();
+        let effects: Vec<Effect> = iter::once(Effect::new(id, made)).chain(asked).collect();
         let context = Context { cause: None, root: MailId { sender: id, count: 0 }, depth: 1 };
 
         self.seat(id, path, Box::new(root));
-        self.fold(vec![Ran { effects, stood, context }], &[]);
+        let applied = begun(&effects).into_owned();
+        self.fold_turn(&applied, stood, context);
+        self.streams.fold_owned(applied, &context);
+        self.streams.settle();
 
         Ok(id)
     }
@@ -247,24 +266,22 @@ impl Engine {
 
         let mut jobs = Vec::new();
         let mut costs = Vec::new();
-        let ids: Vec<ActorId> = self.seats.keys().map(|bits| ActorId::new(*bits)).collect();
-        for id in ids {
-            let items: Vec<Pending> = self.take_items(id).collect();
-            let Some(seat) = self.seats.get(&id.bits()) else {
-                continue;
-            };
-            let work = match seat.life {
-                Life::Ending { .. } => Work::Closing,
-                Life::Live if items.is_empty() => continue,
-                Life::Live => Work::Items(items),
-            };
-            let Some(actor) = self.actors.remove(&id.bits()) else {
-                continue;
-            };
-            let kind = seat.kind;
-
-            costs.push(self.expect(kind, &work));
-            jobs.push(Job { id, kind, actor, work });
+        // Every actor with items, and every actor whose closing turn is to run. Items for an actor that is not live
+        // are dropped here, unhanded: one never made, one gone, or one that has ended, which runs its closing turn.
+        let mut holders: Vec<u64> = self.streams.shards().flat_map(Shard::holders).collect();
+        holders.sort_unstable();
+        let ending = mem::take(&mut self.ending);
+        for bits in holders {
+            let items = self.streams.shard_mut(bits).take(bits).into_iter().flat_map(take);
+            let is_live = self.seats.get(&bits).is_some_and(|seat| matches!(seat.life, Life::Live));
+            if is_live {
+                let mut list = self.spare.pop().unwrap_or_default();
+                list.extend(items);
+                self.job(ActorId::new(bits), Work::Items(list), &mut jobs, &mut costs);
+            }
+        }
+        for id in ending {
+            self.job(id, Work::Closing, &mut jobs, &mut costs);
         }
 
         let work = costs.iter().sum();
@@ -278,7 +295,11 @@ impl Engine {
         }
         for (share, slot) in planned.shares_mut().zip(ROOTS + 1..) {
             let arena = self.arena(parity, slot);
-            share.write_to(arena);
+            while self.lists.len() <= slot {
+                self.lists.push(Lists::default());
+            }
+            let lists = mem::take(&mut self.lists[slot]);
+            share.write_to(arena, lists);
         }
 
         planned
@@ -293,35 +314,82 @@ impl Engine {
     }
 
     /// Ends a step: puts back the actors the workers ran, takes in how long their turns took, and applies what
-    /// the turns asked for, in the order of the actors' ids (ADR-0011).
+    /// the turns asked for (ADR-0011).
+    ///
+    /// Each view folds a turn by itself, reading no other, and comes out the same in whatever order the turns come,
+    /// so each worker's turns are folded as they are. Once every turn is folded the streams settle, pairing the
+    /// step's watches and endings. An actor whose closing turn ran leaves last.
     ///
     /// # Panics
     ///
     /// Panics when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn apply(&mut self, done: Vec<Done>) {
-        let mut turned = Vec::new();
         let parity = parity(self.step);
-        for Done { actors, tally, arena } in done {
+        let mut gone = Vec::new();
+        for Done { mut lists, tally, arena } in done {
             self.costs.merge(tally);
-            turned.extend(actors);
             let slot = arena.slot();
             self.arenas[parity][slot] = arena;
-        }
-        turned.sort_by_key(|turned| turned.id.bits());
-
-        let mut ran = Vec::new();
-        let mut gone = Vec::new();
-        for Turned { id, ran: turns, kept } in turned {
-            match kept {
-                Kept::Live(actor) => {
-                    self.actors.insert(id.bits(), actor);
+            for Turned { id, kept } in lists.actors.drain(..) {
+                match kept {
+                    Kept::Live(actor) => {
+                        self.actors.insert(id.bits(), actor);
+                    }
+                    Kept::Gone => gone.push(id),
                 }
-                Kept::Gone => gone.push(id),
             }
-            ran.extend(turns);
-        }
 
-        self.fold(ran, &gone);
+            // Every view but the streams borrows the turns' effects; the streams then take them by value. A turn
+            // that stood up a child whose `begin` failed is applied without what that child left.
+            let mut spawned = Vec::new();
+            for (index, ran) in lists.turns.iter_mut().enumerate() {
+                let stood = mem::take(&mut ran.stood);
+                match begun(&lists.effects[ran.effects.clone()]) {
+                    Cow::Borrowed(effects) => self.fold_turn(effects, stood, ran.context),
+                    Cow::Owned(effects) => {
+                        self.fold_turn(&effects, stood, ran.context);
+                        spawned.push((index, effects));
+                    }
+                }
+            }
+            let mut effects = lists.effects.drain(..);
+            let mut spawned = spawned.into_iter().peekable();
+            for (index, ran) in lists.turns.drain(..).enumerate() {
+                let these = effects.by_ref().take(ran.effects.len());
+                let is_spawned = spawned.next_if(|(at, _)| *at == index);
+                match is_spawned {
+                    Some((_, applied)) => {
+                        these.for_each(drop);
+                        self.streams.fold_owned(applied, &ran.context);
+                    }
+                    None => self.streams.fold_owned(these, &ran.context),
+                }
+            }
+            drop(effects);
+
+            // An actor's list of items was made on this thread: it comes back empty, to be filled again here.
+            self.spare.append(&mut lists.spent);
+            self.lists[slot] = lists;
+        }
+        self.streams.settle();
+
+        // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
+        for id in gone {
+            self.seats.remove(&id.bits());
+        }
+    }
+
+    /// Takes the actor `id` stands for out of the engine to run `work`, adding its job and its expected cost.
+    fn job(&mut self, id: ActorId, work: Work, jobs: &mut Vec<Job>, costs: &mut Vec<u64>) {
+        let Some(kind) = self.seats.get(&id.bits()).map(|seat| seat.kind) else {
+            return;
+        };
+        let Some(actor) = self.actors.remove(&id.bits()) else {
+            return;
+        };
+
+        costs.push(self.expect(kind, &work));
+        jobs.push(Job { id, kind, actor, work });
     }
 
     /// What the turns of the job of an actor of kind `kind` that runs `work` are expected to cost, in nanoseconds.
@@ -333,41 +401,20 @@ impl Engine {
         }
     }
 
-    /// Folds finished turns, in the order given (ADR-0011).
-    ///
-    /// Every turn's effects are folded into the table and the watchers, and its children made live, before any is
-    /// folded into the streams, which read both: so a child spawned in a step is there for mail sent to it in that
-    /// step, and mail to an actor that ended in the step is not kept. The actors in `gone` have run their closing
-    /// turn, and leave last.
-    fn fold(&mut self, ran: Vec<Ran>, gone: &[ActorId]) {
-        let ran: Vec<Ran> = ran.into_iter().map(|ran| Ran { effects: begun(ran.effects), ..ran }).collect();
+    /// Folds one turn's effects, emitted in `context`, into every view but the streams, and seats the children
+    /// it stood up.
+    fn fold_turn(&mut self, effects: &[Effect], stood: Vec<Stood>, context: Context) {
+        self.table.fold(effects, &context);
+        self.log.fold(effects, &context);
 
-        let mut folded = Vec::with_capacity(ran.len());
-        for Ran { effects, stood, context } in ran {
-            self.table.fold(&effects, &context);
-            self.watchers.fold(&effects, &context, ());
-            self.log.fold(&effects, &context, ());
-
-            for child in stood {
-                self.seat(child.id(), child.path().clone(), child.into_actor());
-            }
-            for effect in &effects {
-                self.count(effect);
-                if let Some(how) = ending(effect, effect.by()) {
-                    self.end(effect.by(), how, context);
-                }
-            }
-
-            folded.push((effects, context));
+        for child in stood {
+            self.seat(child.id(), child.path().clone(), child.into_actor());
         }
-        for (effects, context) in folded {
-            self.streams.fold_owned(effects, &context, (&self.table, &self.watchers));
-        }
-
-        for id in gone {
-            self.seats.remove(&id.bits());
-            // Whatever reached it after its closing turn is dropped with it.
-            self.streams.shard_mut(id.bits()).remove(&id.bits());
+        for effect in effects {
+            self.count(effect);
+            if let Some(how) = ending(effect, effect.by()) {
+                self.end(effect.by(), how, context);
+            }
         }
     }
 
@@ -393,7 +440,11 @@ impl Engine {
     /// chain of the mail that brought its ending about (ADR-0012).
     fn end(&mut self, id: ActorId, how: How, context: Context) {
         if let Some(seat) = self.seats.get_mut(&id.bits()) {
+            let was_live = matches!(seat.life, Life::Live);
             seat.life = Life::Ending { how, context };
+            if was_live {
+                self.ending.push(id);
+            }
         }
     }
 
@@ -406,19 +457,6 @@ impl Engine {
             seat.sent = seat.sent.max(id.count);
         }
     }
-
-    /// Whether the actor whose bits these are has anything in its stream.
-    fn has_items(&self, bits: u64) -> bool {
-        self.streams.shard(bits).get(&bits).is_some_and(|items| !items.is_empty())
-    }
-
-    /// Takes everything in the stream of the actor `id` stands for, in the order it is to be handed it.
-    fn take_items(&mut self, id: ActorId) -> impl Iterator<Item = Pending> + use<> {
-        let bits = id.bits();
-        let taken = self.streams.shard_mut(bits).remove(&bits);
-
-        taken.into_iter().flat_map(take)
-    }
 }
 
 impl Reading<'_> {
@@ -428,10 +466,12 @@ impl Reading<'_> {
     /// An actor that closes or fails handles nothing more, so what it was given behind that turn is dropped.
     pub fn run(&self, share: Share, clock: &impl Clock) -> Done {
         let mut tally = Tally::default();
-        let (jobs, mut arena) = share.into_parts();
-        let actors = jobs.into_iter().map(|job| self.turns(job, clock, &mut tally, &mut arena)).collect();
+        let (jobs, mut arena, mut lists) = share.into_parts();
+        for job in jobs {
+            self.turns(job, clock, &mut tally, &mut arena, &mut lists);
+        }
 
-        Done { actors, tally, arena }
+        Done { lists, tally, arena }
     }
 
     /// The bytes of a piece of mail sent in the last step.
@@ -442,42 +482,48 @@ impl Reading<'_> {
         }
     }
 
-    /// The turns of one actor's job, each measured into `tally`, their mail written to `arena`.
-    fn turns(&self, job: Job, clock: &impl Clock, tally: &mut Tally, arena: &mut Arena) -> Turned {
+    /// The turns of one actor's job, each measured into `tally`, their mail written to `arena`, and their effects,
+    /// the turns, and the actor added to `lists`.
+    fn turns(&self, job: Job, clock: &impl Clock, tally: &mut Tally, arena: &mut Arena, lists: &mut Lists) {
         let Job { id, kind, actor, work } = job;
         let Some(seat) = self.seats.get(&id.bits()) else {
-            return Turned { id, ran: Vec::new(), kept: Kept::Live(actor) };
+            lists.actors.push(Turned { id, kept: Kept::Live(actor) });
+            return;
         };
         let key = |item| CostKey { actor: kind, item };
 
         match (work, &seat.life) {
             (Work::Closing, Life::Ending { how, context }) => {
-                let mut asked = Asked::writing(mem::take(arena));
+                let begins = lists.effects.len();
+                let mut asked = Asked::continuing(mem::take(&mut lists.effects), mem::take(arena));
                 let why = why(how);
                 let start = clock.nanos();
                 let ended = actor.end(&mut Ending::new(id, seat.path.clone(), self.table, &mut asked, seat.sent, why));
                 tally.add(key(ItemKind::Closing), clock.nanos().saturating_sub(start));
+                let (effects, _, written) = asked.into_parts();
+                lists.effects = effects;
+                *arena = written;
                 // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds its
                 // fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after what the
                 // turn sent.
-                let (mut effects, _, written) = asked.into_parts();
-                *arena = written;
                 if let Err(fault) = ended {
-                    effects.retain(is_line);
-                    effects.push(Effect::new(id, What::EndFailed(fault)));
+                    keep_lines(&mut lists.effects, begins);
+                    lists.effects.push(Effect::new(id, What::EndFailed(fault)));
                 }
-                effects.push(Effect::new(id, What::Ended(how.clone())));
+                lists.effects.push(Effect::new(id, What::Ended(how.clone())));
 
-                Turned { id, ran: vec![Ran { effects, stood: Vec::new(), context: *context }], kept: Kept::Gone }
+                lists.turns.push(Ran { effects: begins..lists.effects.len(), stood: Vec::new(), context: *context });
+                lists.actors.push(Turned { id, kept: Kept::Gone });
             }
-            (Work::Items(items), Life::Live) => {
+            (Work::Items(mut items), Life::Live) => {
                 let mut actor = actor;
-                let mut ran = Vec::new();
                 let mut stood_since = Vec::new();
                 let mut count = seat.sent;
-                for pending in items {
+                #[allow(clippy::iter_with_drain, reason = "the emptied list is handed back, to be filled again")]
+                for pending in items.drain(..) {
                     let table = Since { table: self.table, stood: &stood_since };
-                    let mut asked = Asked::writing(mem::take(arena));
+                    let begins = lists.effects.len();
+                    let mut asked = Asked::continuing(mem::take(&mut lists.effects), mem::take(arena));
                     let source = pending.source();
                     let (item, context) = match &pending {
                         Pending::Mail(envelope) => {
@@ -493,58 +539,75 @@ impl Reading<'_> {
                     let start = clock.nanos();
                     let handled = actor.handle(item, &mut turn);
                     tally.add(key(item_kind(&pending)), clock.nanos().saturating_sub(start));
-                    let (turned, written) = Ran::of(id, handled, asked, context);
-                    *arena = written;
+                    let ran = Ran::of(id, handled, asked, context, begins, lists, arena);
 
-                    count = turned.sent(id).unwrap_or(count);
-                    stood_since.extend(turned.stood.iter().map(|child| (child.id(), child.path().clone())));
-                    let over = turned.ends(id);
-                    ran.push(turned);
+                    let effects = &lists.effects[ran.effects.clone()];
+                    count = sent(effects, id).unwrap_or(count);
+                    stood_since.extend(ran.stood.iter().map(|child| (child.id(), child.path().clone())));
+                    let over = ends(effects, id);
+                    lists.turns.push(ran);
                     if over {
                         break;
                     }
                 }
 
-                Turned { id, ran, kept: Kept::Live(actor) }
+                lists.spent.push(items);
+                lists.actors.push(Turned { id, kept: Kept::Live(actor) });
             }
             // A plan gives a closing turn only to an actor that has ended, and items only to a live one.
-            _ => Turned { id, ran: Vec::new(), kept: Kept::Live(actor) },
+            _ => lists.actors.push(Turned { id, kept: Kept::Live(actor) }),
         }
     }
 }
 
 impl Ran {
-    /// The turn of the actor `id` stands for that returned `outcome`, having asked for `asked`, in `context`.
+    /// The turn of the actor `id` stands for that returned `outcome`, having asked for `asked`, in `context`, its
+    /// effects added to `lists` from `begins` on and its mail written to `arena`, both given back.
     ///
     /// A turn that fails changes nothing outside its actor: what it asked for is dropped but for its log lines,
     /// and the engine writes the one effect that says the actor ended (ADR-0009).
-    /// The arena the turn's mail was written to comes back beside it.
-    fn of(id: ActorId, outcome: Result<(), Fault>, asked: Asked, context: Context) -> (Self, Arena) {
-        let (mut effects, mut stood, arena) = asked.into_parts();
+    fn of(
+        id: ActorId,
+        outcome: Result<(), Fault>,
+        asked: Asked,
+        context: Context,
+        begins: usize,
+        lists: &mut Lists,
+        arena: &mut Arena,
+    ) -> Self {
+        let (effects, mut stood, written) = asked.into_parts();
+        lists.effects = effects;
+        *arena = written;
         if let Err(fault) = outcome {
-            effects.retain(is_line);
-            effects.push(Effect::new(id, What::Failed(fault)));
+            keep_lines(&mut lists.effects, begins);
+            lists.effects.push(Effect::new(id, What::Failed(fault)));
             stood.clear();
         }
 
-        (Self { effects, stood, context }, arena)
+        Self { effects: begins..lists.effects.len(), stood, context }
     }
+}
 
-    /// Whether the turn ends the actor `id` stands for.
-    fn ends(&self, id: ActorId) -> bool {
-        self.effects.iter().any(|effect| ending(effect, id).is_some())
-    }
+/// Whether `effects` end the actor `id` stands for.
+fn ends(effects: &[Effect], id: ActorId) -> bool {
+    effects.iter().any(|effect| ending(effect, id).is_some())
+}
 
-    /// The count of the last mail the actor `id` stands for sent in this turn, or none when it sent none.
-    fn sent(&self, id: ActorId) -> Option<u64> {
-        self.effects
-            .iter()
-            .filter_map(|effect| match effect.what() {
-                What::Send { id: mail, .. } if mail.sender == id => Some(mail.count),
-                _ => None,
-            })
-            .max()
-    }
+/// The count of the last mail the actor `id` stands for sent among `effects`, or none when it sent none.
+fn sent(effects: &[Effect], id: ActorId) -> Option<u64> {
+    effects
+        .iter()
+        .filter_map(|effect| match effect.what() {
+            What::Send { id: mail, .. } if mail.sender == id => Some(mail.count),
+            _ => None,
+        })
+        .max()
+}
+
+/// Drops every effect from `begins` on but the logged lines: what is kept of a turn that failed (ADR-0009).
+fn keep_lines(effects: &mut Vec<Effect>, begins: usize) {
+    let lines: Vec<Effect> = effects.drain(begins..).filter(is_line).collect();
+    effects.extend(lines);
 }
 
 /// What a pending item is, as far as the cost of reacting to it goes.

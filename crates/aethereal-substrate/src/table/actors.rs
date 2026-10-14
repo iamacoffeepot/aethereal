@@ -59,9 +59,8 @@ impl Entry {
 impl View for Actors {
     type Shard = BTreeMap<u64, Entry>;
     type Record = Record;
-    type Reads<'a> = ();
 
-    fn takes<'a>(effect: &'a Effect, _: &'a Context, (): ()) -> impl Iterator<Item = (u64, Record)> + 'a {
+    fn takes<'a>(effect: &'a Effect, _: &'a Context) -> impl Iterator<Item = (u64, Record)> + 'a {
         record(effect).into_iter()
     }
 
