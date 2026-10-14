@@ -1,10 +1,11 @@
 //! How many pieces of mail a second the engine handles, and where a step's time goes.
 //!
-//! Run with `cargo run --release -p aethereal-chassis-headless --example perf [actors...]`. A root spawns the
-//! given number of actors (by default 64, 2,000, and 10,000 in turn); each sends itself a count and counts it
-//! down, so every actor handles one piece of mail and sends one in every step. Each line is the best of three
-//! runs: mails a second, nanoseconds a piece of mail, and a step's time split into planning, running, and
-//! applying.
+//! Run with `cargo run --release -p aethereal-chassis-headless --example perf [actors...] [idle=N] [shape=NAME]`.
+//! A root spawns the given number of busy actors (by default 64, 2,000, and 10,000 in turn); each sends itself a
+//! count and counts it down, so every busy actor handles one piece of mail and sends one in every step. `idle=N`
+//! also seats N actors that are never sent anything, and `shape=NAME` runs one shape of work only. Each line is the
+//! best of three runs: mails a second, nanoseconds a piece of mail, and a step's time split into planning, running,
+//! and applying.
 
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
@@ -27,11 +28,13 @@ impl Kind for Count {
     const NAME: KindName = KindName::new("aether.bench.count");
 }
 
-/// What a counter is made from: its number, and for the root how many counters to spawn and of what cost.
+/// What a counter is made from: its number, and for the root how many counters to spawn and of what cost, and how
+/// many idle ones beside them.
 #[derive(Plain)]
 struct CounterConfig {
     number: u64,
     children: u64,
+    idle: u64,
     shape: u8,
 }
 
@@ -87,9 +90,11 @@ impl Actor for Counter {
     type Key = u64;
 
     fn begin(config: CounterConfig, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
-        for number in 1..=config.children {
-            let child = CounterConfig { number, children: 0, shape: config.shape };
-            if turn.spawn::<Self>(&number, child).is_ok() {
+        for number in 1..=config.children + config.idle {
+            let child = CounterConfig { number, children: 0, idle: 0, shape: config.shape };
+            let is_busy = number <= config.children;
+            let spawned = turn.spawn::<Self>(&number, child).is_ok();
+            if spawned && is_busy {
                 turn.send(ToWithoutMail::ChildInstanced(Self::NAME, number.to_name()), &Count { left: TURNS })?;
             }
         }
@@ -121,12 +126,12 @@ impl Actor for Counter {
     }
 }
 
-/// One run of `children` counters of `shape` to idle on `workers` workers: the nanoseconds it took, and what its
-/// steps cost.
-fn run(children: u64, shape: u8, workers: NonZeroUsize) -> (u64, Measured) {
+/// One run of `children` counters of `shape`, beside `idle` idle ones, to idle on `workers` workers: the nanoseconds
+/// it took, and what its steps cost.
+fn run(children: u64, idle: u64, shape: u8, workers: NonZeroUsize) -> (u64, Measured) {
     let parts = NonZeroUsize::MIN.saturating_add(15);
     let mut engine = Engine::new(parts, 1024);
-    let Ok(_) = engine.add_root::<Counter>(&0, CounterConfig { number: 0, children, shape }) else {
+    let Ok(_) = engine.add_root::<Counter>(&0, CounterConfig { number: 0, children, idle, shape }) else {
         panic!("the root begins");
     };
     let mut headless = Headless::new(engine, workers);
@@ -137,24 +142,31 @@ fn run(children: u64, shape: u8, workers: NonZeroUsize) -> (u64, Measured) {
 }
 
 fn main() {
-    let given: Vec<u64> = env::args().skip(1).filter_map(|actors| actors.parse().ok()).collect();
+    let args: Vec<String> = env::args().skip(1).collect();
+    let given: Vec<u64> = args.iter().filter_map(|actors| actors.parse().ok()).collect();
     let counts = if given.is_empty() {
         vec![64, 2_000, 10_000]
     } else {
         given
     };
+    let idle = args.iter().find_map(|arg| arg.strip_prefix("idle=")?.parse().ok()).unwrap_or(0);
+    let only = args.iter().find_map(|arg| arg.strip_prefix("shape="));
 
-    println!("shape    actors workers   M mails/s  ns/mail   plan µs/step   run µs/step   apply µs/step");
+    println!("shape    actors    idle workers   M mails/s  ns/mail   plan µs/step   run µs/step   apply µs/step");
     for (shape, name) in SHAPES {
+        let is_skipped = only.is_some_and(|only| only != name);
+        if is_skipped {
+            continue;
+        }
         for &children in &counts {
             for workers in [1, 4, 16] {
                 let workers = NonZeroUsize::MIN.saturating_add(workers - 1);
-                let (took, measured) =
-                    (0..3).map(|_| run(children, shape, workers)).min_by_key(|(took, _)| *took).unwrap_or_default();
+                let runs = (0..3).map(|_| run(children, idle, shape, workers));
+                let (took, measured) = runs.min_by_key(|(took, _)| *took).unwrap_or_default();
                 let mails = children * (TURNS + 1);
                 let steps = measured.steps.max(1);
                 println!(
-                    "{name:8} {children:6} {workers:7}   {:9.2} {:8}   {:12}   {:11}   {:13}",
+                    "{name:8} {children:6} {idle:7} {workers:7}   {:9.2} {:8}   {:12}   {:11}   {:13}",
                     mails as f64 * 1e3 / took.max(1) as f64,
                     took / mails.max(1),
                     measured.plan_nanos / steps / 1_000,
