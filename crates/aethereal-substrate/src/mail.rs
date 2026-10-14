@@ -15,6 +15,8 @@ pub struct Envelope {
     pub cause: Option<MailId>,
     /// The first mail of the chain this one belongs to.
     pub root: MailId,
+    /// How far down its chain it is: one more than its cause's.
+    pub depth: u32,
     /// The id of its kind.
     pub kind: KindId,
     /// Its contents, as the bytes of that kind.

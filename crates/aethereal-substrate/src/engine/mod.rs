@@ -8,7 +8,7 @@ mod tests;
 use crate::id::root_id;
 use crate::stream::{Pending, Streams, take};
 use crate::watch::Watchers;
-use crate::{ActorTable, Context, Entry, Folded, Log};
+use crate::{ActorTable, Context, Entry, Envelope, Folded, Log};
 use aethereal_actor::{
     Actor, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Refused, Runs, Stood, Turn, What,
     Why,
@@ -154,7 +154,7 @@ impl Engine {
             Some(key) => What::RootInstanced { from, key: key.clone() },
         };
         let effects = iter::once(Effect::new(id, made)).chain(asked).collect();
-        let context = Context { cause: None, root: MailId { sender: id, count: 0 } };
+        let context = Context { cause: None, root: MailId { sender: id, count: 0 }, depth: 1 };
 
         self.seat(id, path, Box::new(root));
         self.apply(vec![Ran { effects, stood, context }], &[]);
@@ -224,9 +224,10 @@ impl Engine {
                     let source = pending.source();
                     let (item, context) = match &pending {
                         Pending::Mail(envelope) => {
-                            let mail = Mail::new(envelope.kind, &envelope.bytes, source, &table, self.read_limit);
+                            let Envelope { id: cause, kind, bytes, root, depth, .. } = envelope;
+                            let mail = Mail::new(*kind, bytes, source, *root, *depth, &table, self.read_limit);
 
-                            (Item::Mail(mail), Context { cause: Some(envelope.id), root: envelope.root })
+                            (Item::Mail(mail), Context { cause: Some(*cause), root: *root, depth: depth + 1 })
                         }
                         Pending::Ended { ended, context } => (Item::Ended(ended.clone()), *context),
                     };

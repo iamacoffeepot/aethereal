@@ -335,7 +335,10 @@ fn handler_asks_by_the_kind_of_its_mail() {
     let handle = |leaf: &mut Box<dyn Runs>, table: &Listed, kind, bytes: &[u8]| {
         let mut asked = Asked::new();
         let mut turn = Turn::new(ME, ROOT, table, &mut asked, 0, other);
-        let handled = leaf.handle(Item::Mail(Mail::new(kind, bytes, other, table, 64)), &mut turn);
+        let handled = leaf.handle(
+            Item::Mail(Mail::new(kind, bytes, other, MailId { sender: other, count: 1 }, 1, table, 64)),
+            &mut turn,
+        );
 
         (handled, asked.into_parts().0)
     };

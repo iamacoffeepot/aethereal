@@ -13,4 +13,7 @@ pub struct Context {
     pub cause: Option<MailId>,
     /// The first mail of the chain the turn belongs to.
     pub root: MailId,
+    /// How far down the chain the mail the turn sends is: one more than its cause's, and one for a root's
+    /// `begin`.
+    pub depth: u32,
 }
