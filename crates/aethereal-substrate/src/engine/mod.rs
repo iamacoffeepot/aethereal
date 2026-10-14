@@ -78,6 +78,8 @@ struct Chain {
     cause: Option<MailId>,
     /// The first mail of the chain.
     root: MailId,
+    /// How far down the chain the mail the turn sends is.
+    depth: u32,
 }
 
 /// One finished turn, as the engine applies it.
@@ -161,7 +163,7 @@ impl Engine {
             Some(key) => What::RootInstanced { from, key: key.clone() },
         };
         let effects = iter::once(Effect::new(id, made)).chain(asked).collect();
-        let chain = Chain { cause: None, root: MailId { sender: id, count: 0 } };
+        let chain = Chain { cause: None, root: MailId { sender: id, count: 0 }, depth: 1 };
 
         self.seat(id, path, Box::new(root));
         self.apply(vec![Ran { effects, stood, chain, sender: None }], &[]);
@@ -231,7 +233,15 @@ impl Engine {
                 for envelope in queue {
                     let table = Since { table: &self.table, stood: &stood_since };
                     let mut asked = Asked::new();
-                    let mail = Mail::new(envelope.kind, &envelope.bytes, envelope.id.sender, &table, self.read_limit);
+                    let mail = Mail::new(
+                        envelope.kind,
+                        &envelope.bytes,
+                        envelope.id.sender,
+                        envelope.root,
+                        envelope.depth,
+                        &table,
+                        self.read_limit,
+                    );
                     let handled = actor.handle(mail, &mut Turn::new(id, seat.path.clone(), &table, &mut asked, &ended));
                     // A turn that fails changes nothing outside its actor: what it asked for is dropped, and the
                     // engine writes the one effect that says the actor ended (ADR-0009).
@@ -241,7 +251,7 @@ impl Engine {
                         effects.push(Effect::new(id, What::Failed(fault)));
                         stood.clear();
                     }
-                    let chain = Chain { cause: Some(envelope.id), root: envelope.root };
+                    let chain = Chain { cause: Some(envelope.id), root: envelope.root, depth: envelope.depth + 1 };
                     let ends = effects.iter().any(|effect| ending(effect, id).is_some());
 
                     stood_since.extend(stood.iter().map(|child| (child.id(), child.path().clone())));
@@ -343,7 +353,15 @@ impl Engine {
             return;
         };
 
-        seat.queue.push(Envelope { id, to: receiver, cause: chain.cause, root: chain.root, kind, bytes });
+        seat.queue.push(Envelope {
+            id,
+            to: receiver,
+            cause: chain.cause,
+            root: chain.root,
+            depth: chain.depth,
+            kind,
+            bytes,
+        });
     }
 }
 

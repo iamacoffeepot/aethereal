@@ -51,6 +51,7 @@ impl Kind for NodeConfig {
 /// - `both` sends its parent `watchme` and itself `close`, and `watchme` has it watch the sender;
 /// - `up text` sends its parent `text from <number>`, and `reply` answers the sender with `re`;
 /// - the node `13` fails its closing turn;
+/// - `where` has it say how deep in its chain that note is;
 /// - `bye N`, which a child sends as it ends, has it send that child `late`.
 #[derive(Plain)]
 struct Node {
@@ -120,6 +121,7 @@ impl Actor for Node {
                 turn.send(To::Held(turn.me()), &Note { text: String::from("close") })?;
             }
             ["watchme", ..] => turn.watch(mail.sender()),
+            ["where", ..] => say(format!("{} at depth {}", self.number, mail.depth())),
             ["bye", number] => {
                 turn.send(Self::child(number.parse().unwrap_or_default()), &Note { text: String::from("late") })?;
             }
@@ -342,4 +344,15 @@ fn failed_closing_turn_leaves_its_fault_and_sends_nothing() {
     assert_eq!(step(&mut engine), ["13 ended Closed"]);
     assert_eq!(engine.log(node(root, 13)).collect::<Vec<_>>(), [&Entry::EndFailed(fault)]);
     assert_eq!(step(&mut engine), [""; 0]);
+}
+
+#[test]
+fn depth_counts_each_send_down_a_chain() {
+    // Catches a depth that is not carried through a spawn and a reply, and one that starts from the wrong end:
+    // a root's first mail is at depth one.
+    let (mut engine, _) = engine(&["where", "spawn 2 up where"]);
+
+    assert_eq!(step(&mut engine), ["1 got where", "1 at depth 1", "1 got spawn 2 up where"]);
+    step(&mut engine);
+    assert_eq!(step(&mut engine), ["1 got where from 2", "1 at depth 3"]);
 }

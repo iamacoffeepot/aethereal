@@ -1,7 +1,7 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's list.
 
 use super::*;
-use crate::{Beginning, Ending, Fault, Made, Mail, Unreadable, Within};
+use crate::{Beginning, Ending, Fault, Made, Mail, MailId, Unreadable, Within};
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
 use alloc::vec;
@@ -331,7 +331,8 @@ fn handler_asks_by_the_kind_of_its_mail() {
     let handle = |leaf: &mut Box<dyn Runs>, table: &Listed, kind, bytes: &[u8]| {
         let mut asked = Asked::new();
         let mut turn = Turn::new(ME, ROOT, table, &mut asked, &[]);
-        let handled = leaf.handle(Mail::new(kind, bytes, other, table, 64), &mut turn);
+        let handled =
+            leaf.handle(Mail::new(kind, bytes, other, MailId { sender: other, count: 1 }, 1, table, 64), &mut turn);
 
         (handled, asked.into_parts().0)
     };
