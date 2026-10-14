@@ -63,7 +63,7 @@ pub enum What {
     Embed { from: Code },
     EmbedInstanced { from: Code, key: KeyName },
     Faulted,
-    Failed,
+    Failed(Fault),
     Publish { kind: KindName, blob: BlobId },
     Close,
     Watch { of: ActorRef },
@@ -98,7 +98,7 @@ pub enum Level {
 - **An actor's closing turn runs in the next step.** At the end of the step in which an actor closes, it is marked ended, and no more mail is delivered to it (ADR-0011). In the step after, it runs its `end` as a turn among that step's other turns, in no order among them.
 - **A `begin` and a closing turn send to `ToWithoutMail`**, which is `To` without `Sender`. Neither is brought about by a piece of mail it is handling, so neither names any mail, and a send to the sender from either does not build.
 - **`begin` is a first turn, and its `Beginning` offers less than a turn.** It offers no `To::Sender`, since a `begin` has no mail of its own and a root's has none behind it at all; a parent that wants its child to answer someone puts that reference in the child's config. It offers no `Close`: an actor does not end in the turn that makes it.
-- **The closing turn runs once, and the actor ends whatever it returns.** `end` takes the actor by value, so there is no actor left to hand a second one. Its `Ending` offers what a last turn may ask for: sending, giving, and logging. It offers no spawn, embed, `Close`, or `Watch`. Asking for an effect can fail, so `end` returns a `Result`: on `Ok` the engine applies its effects, and on a `Fault` it applies the `Log` effects and drops the rest. Either way the engine then drops the actor and what it owned (ADR-0010) and tells its parent how it ended.
+- **The closing turn runs once, and the actor ends whatever it returns.** `end` takes the actor by value, so there is no actor left to hand a second one. Its `Ending` offers what a last turn may ask for: sending, giving, and logging. It offers no spawn, embed, `Close`, or `Watch`. Asking for an effect can fail, so `end` returns a `Result`: on `Ok` the engine applies its effects, and on a `Fault` it applies the `Log` effects and drops the rest. Either way the engine then drops the actor and what it owned (ADR-0010).
 - **`end` runs whenever the actor's code can still be run and trusted.** That is after its own `Close`, and after a turn of its own returned a `Fault`. It does not run for a guest that trapped, since its memory can no longer be trusted, nor for a child that was never live. When the host itself goes away, nothing runs.
 - **`end` is told why it runs.**
 
@@ -110,9 +110,25 @@ pub enum Level {
   ```
 
   `Ending` answers with one of these. After a `Fault` the actor's state is whatever the failed handler left, so an `end` asked `Faulted` leaves out what depends on that state being sound.
-- **No guarantee rests on `end`.** What must be true once an actor has ended is the engine's to make true, however the actor ended: its resources are dropped (ADR-0010), and its parent and its watchers are told. `end` is the actor's last words: a better answer than the one given in its place, or something its parent should know. Nothing is broken when it does not run.
+- **No guarantee rests on `end`.** What must be true once an actor has ended is the engine's to make true, however the actor ended: its resources are dropped (ADR-0010), and the actors that watch it are shown its ending. `end` is the actor's last words: a better answer than the one given in its place, or something its parent should know. Nothing is broken when it does not run.
 - **A panic in a native actor is a bug in the program, not a failed turn.** The engine does not catch it: a browser host cannot unwind (ADR-0001). Every failure an actor can meet is a `Fault` it returns.
-- **`Watch` asks to be told when another actor ends.** Only the engine knows that an actor has ended, so an actor cannot learn it any other way. The watcher names the actor by a reference it holds, and is sent one piece of mail when that actor ends, however it ends. If the actor has already ended when the effect is applied, the mail is sent then. Watching an actor already watched changes nothing, so the watcher is told once. A watch ends with its watcher. A parent is told of its child's end without asking.
+- **`Watch` asks to be shown that another actor has ended.** Only the engine knows that an actor has ended, so an actor cannot learn it any other way. The watcher names the actor by a reference it holds. Watching an actor already watched changes nothing. A watch ends with its watcher. A parent watches its child as it would any other actor: it is shown nothing of a child it has not watched.
+
+- **A turn carries the list of the actors its actor was watching that have ended.** No mail is made for an ending. The engine folds each step's endings into a list for each watcher, and the watcher's turn reads it, with how each actor ended:
+
+  ```rust
+  pub struct Ended { /* the actor, and how it ended */ }
+
+  pub enum How {
+      Closed,
+      Failed(Fault),
+      Earlier,
+  }
+  ```
+
+  `Closed` is an actor that asked to close, and `Failed` carries the fault its turn returned. `Earlier` is an actor that had already ended in a step before the one the watch was asked for in: how it ended is not kept.
+
+- **An ending is shown once.** Every turn the watcher runs in one step reads the same list, as every read of a view is of the step's start (ADR-0011), and no later turn reads any of it again. The engine does not run an actor to show it an ending. A watcher with no mail runs no turn, and its list waits for the step in which mail next arrives. What an actor does with the list is its own code; a section of a handler written for endings is a matter for the ADR on how handlers are written.
 - **`Log` writes a line to the actor's log**, which the engine keeps. It is an effect so that the engine decides what happens to a line when the turn fails, and so that a guest's lines leave it with the rest of the turn.
 - An effect is plain data, and so is the list.
 
@@ -142,12 +158,12 @@ pub enum To {
 
 **What a send or a spawn carries crosses between actors.** `turn.send(to, &kind)` requires `K: Kind + Encode<Actors>` (ADR-0004, ADR-0006), encodes the kind, and adds the `Send`. `turn.spawn` requires the same of the child's config. A kind that holds a value bound to its own actor is refused when the program is built. The bytes in an effect are always those of a kind that passed this check.
 
-**Every piece of mail has an actor as its sender, and the engine sends none of its own.** Mail from a `Send` names the actor the effect is by. The mail a parent and a watcher get when an actor ends names that actor, whether its own code asked to close or the engine recorded that it failed: it is the actor's ending that is applied, and the mail follows from it. A send back to such a sender is not delivered, as to any actor that has ended.
+**Every piece of mail has an actor as its sender, and the engine sends none of its own.** Mail from a `Send` names the actor the effect is by. An actor's ending makes no mail: its watchers read it from their turn.
 
 **A turn that fails changes nothing outside its actor.** When `begin` or `handle` returns a `Fault`, or a guest traps, the engine closes the actor and tells its parent. The actor handles no more mail. Its state is not rolled back, so its `end` sees that state as the failed turn left it.
 
 - On a `Fault` the engine applies the turn's `Log` effects, in order, and drops every other effect. A failed turn is the one whose lines are most wanted.
-- **The engine then adds `Failed`, by the actor whose turn failed.** The actor returned a `Fault` and so asked for no `Close`, and a view sees only effects (ADR-0011). `Failed` is the entry that says the actor ended, written by the engine because the actor's code could not, and the table marks the actor from it as it does from `Close`. `Faulted` is the other such entry: it says a child's `begin` failed and the child was never live.
+- **The engine then adds `Failed`, by the actor whose turn failed, holding the fault.** The actor returned a `Fault` and so asked for no `Close`, and a view sees only effects (ADR-0011). `Failed` is the entry that says the actor ended, written by the engine because the actor's code could not, and the table marks the actor from it as it does from `Close`. `Faulted` is the other such entry: it says a child's `begin` failed and the child was never live.
 - A guest that traps returns no list, so the lines of that turn are lost with its other effects. The engine logs the trap itself.
 
 **Code is a blob the engine holds, and a library says which blob a kind is.** A guest's code is a **blob**: bytes the engine holds, named by their hash, and never changed. A blob can make certain kinds of actor. Making an actor leaves the blob as it was, so one blob makes any number of actors. A native actor's code is the program's own.
