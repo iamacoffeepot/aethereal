@@ -13,6 +13,8 @@ mod tests;
 pub use clock::Monotonic;
 
 use aethereal_substrate::Engine;
+pub use pool::Measured;
+
 use pool::Pool;
 use std::num::NonZeroUsize;
 
@@ -44,6 +46,12 @@ impl Headless {
     /// The engine, to add roots to between steps.
     pub const fn engine_mut(&mut self) -> &mut Engine {
         &mut self.engine
+    }
+
+    /// What the steps run so far cost.
+    #[must_use]
+    pub const fn measured(&self) -> Measured {
+        self.pool.measured()
     }
 
     /// Runs one step: plans it for the workers there are, runs its shares on them, and applies what they left.
