@@ -12,7 +12,7 @@ mod tests;
 
 pub use clock::Monotonic;
 
-use aethereal_substrate::Engine;
+use aethereal_substrate::{Clock, Engine};
 pub use pool::Measured;
 
 use pool::Pool;
@@ -60,10 +60,15 @@ impl Headless {
     ///
     /// Panics with a turn's panic, and when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn step(&mut self) {
+        let start = self.clock.nanos();
         let shares = self.engine.plan(self.pool.workers()).into_shares();
+        let planned = self.clock.nanos();
         let done = self.pool.lend(&self.engine.reading(), self.clock, shares);
 
+        let ran = self.clock.nanos();
         self.engine.apply(done);
+        let applied = self.clock.nanos();
+        self.pool.measure_around(planned.saturating_sub(start), applied.saturating_sub(ran));
     }
 
     /// Runs steps until no actor has anything to run, then parks every worker.

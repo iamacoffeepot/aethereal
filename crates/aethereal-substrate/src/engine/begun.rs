@@ -11,6 +11,12 @@ use std::collections::{BTreeMap, BTreeSet};
 /// actor it stood up, but for the lines they logged. A parent may spawn at that key again in the same turn,
 /// and that later child is kept.
 pub(super) fn begun(effects: Vec<Effect>) -> Vec<Effect> {
+    // Most turns spawn nothing, and then nothing is taken out.
+    let spawns = effects.iter().any(|effect| spawned(effect).is_some());
+    if !spawns {
+        return effects;
+    }
+
     let failed = failed_spawns(&effects);
     let mut never_live = BTreeSet::new();
     let mut kept = Vec::with_capacity(effects.len());
