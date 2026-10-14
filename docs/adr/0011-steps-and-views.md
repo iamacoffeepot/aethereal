@@ -64,7 +64,7 @@ pub trait View {
 
 **The table of actors is the first view.** It is folded from spawns and endings. Where a library's heads point is a view (ADR-0009). Whether a chain of mail has finished, and who watches an actor, are views when they are built.
 
-**When a step's turns have finished, the engine folds, then delivers, then tells.** It folds the step's effects into the views. It then delivers the step's mail against the views as just folded, and mail to an actor that has ended is not delivered. It then tells the watchers of each actor that ended. So a child spawned in a step is there for mail sent to it in that step, and a watch placed in the step its actor ends is told once.
+**When a step's turns have finished, the engine folds, then delivers.** It folds the step's effects into the views. It then delivers the step's mail against the views as just folded, and mail to an actor that has ended is not delivered. So a child spawned in a step is there for mail sent to it in that step. The endings of a step are folded for the actors that watch them (ADR-0009), and a watch asked for in the step its actor ends is shown that ending once.
 
 **An actor that ends handles no more mail.** Mail it had when it ended and had not yet handled is not delivered, as mail that reaches it later is not. An actor that wants to finish what it was sent closes on a piece of mail that asks it to: everything queued ahead of that mail has been handled by then.
 

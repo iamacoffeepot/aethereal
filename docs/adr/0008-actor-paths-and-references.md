@@ -60,7 +60,7 @@ aether.window/aether.window.surface:left
 **A reference names an actor the engine has established exists.**
 
 ```rust
-pub struct ActorRef { .. }
+pub struct ErasedActorRef { .. }
 ```
 
 - Only the engine makes a reference. An actor comes to hold one in three ways: it is handed one in mail, it receives mail and is told the sender, or it asks the engine to resolve a path and the engine finds the actor.
@@ -99,7 +99,7 @@ pub struct ActorId(u64);
 - **An id is built down from the root**, each from its parent's, so it stands for every segment above it. An id directly beneath an actor's enters the table only when that actor spawns, since only it spawns there.
 - **Whether a child's key is free is its parent's own knowledge.** A spawn is refused when its kind and key have been used beneath that parent, live or closed. A child whose `begin` failed was never live and does not use its key (ADR-0009). No other actor's spawn bears on the answer, so a parent decides it within its turn.
 - The table keeps each path's id beside it, live or closed.
-- **A reference is an id the engine has checked.** An `ActorRef` holds an `ActorId` and nothing else. Making one is the check that the id is in the table, and wherever a reference is read at a boundary the reader makes that check again. So a reference is eight bytes in mail and in an actor's state, and bytes that name no actor are refused.
+- **A reference is an id the engine has checked.** An `ErasedActorRef` holds an `ActorId` and nothing else. A reference built by hand for an id that was never made is caught the same way: refused where it is decoded, and not delivered to when it is sent to. It says nothing of what the actor handles: any actor can be sent any mail, and a reference typed by what its actor takes is a layer above, which keeps the name `ActorRef` for itself. Making one is the check that the id is in the table, and wherever a reference is read at a boundary the reader makes that check again. So a reference is eight bytes in mail and in an actor's state, and bytes that name no actor are refused.
 - A reference gives up its path by a read of the table, since the id alone does not say where the actor stands.
 
 ## Consequences

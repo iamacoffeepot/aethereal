@@ -57,7 +57,7 @@ impl Kind for Shut {
 /// Mail that hands a leaf a reference.
 #[derive(Bound)]
 struct Meet {
-    other: ActorRef,
+    other: ErasedActorRef,
 }
 
 impl Kind for Meet {
@@ -342,9 +342,9 @@ fn handler_asks_by_the_kind_of_its_mail() {
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Poked>(), &[]), (Ok(()), Vec::new()));
 
     let mut out = Writer::<Within>::new(crate::WithinWriter::new());
-    assert_eq!(ActorRef::new(other).encode(&mut out), Ok(()));
+    assert_eq!(ErasedActorRef::new(other).encode(&mut out), Ok(()));
     let meet = out.into_bytes();
-    let poke = What::Send { to: To::Held(ActorRef::new(other)), kind: KindId::of::<Poke>(), bytes: Vec::new() };
+    let poke = What::Send { to: To::Held(ErasedActorRef::new(other)), kind: KindId::of::<Poke>(), bytes: Vec::new() };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Meet>(), &meet), (Ok(()), vec![Effect::new(ME, poke)]));
 
     let (handled, effects) = handle(&mut leaf, &Listed::default(), KindId::of::<Meet>(), &meet);

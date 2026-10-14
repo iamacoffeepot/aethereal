@@ -1,6 +1,6 @@
 //! A piece of mail as its handler sees it (ADR-0009).
 
-use crate::{ActorRef, Actors, ActorsReader, Table};
+use crate::{Actors, ActorsReader, ErasedActorRef, Table};
 use aethereal_data::{ActorId, Budget, Decode, DecodeError, Kind, KindId, Plain, Reader};
 
 /// The id of a piece of mail: its sender, and that sender's count of what it has sent (ADR-0012).
@@ -43,8 +43,8 @@ impl<'a> Mail<'a> {
 
     /// The actor that sent the mail. Every piece of mail has one.
     #[must_use]
-    pub const fn sender(&self) -> ActorRef {
-        ActorRef::new(self.sender)
+    pub const fn sender(&self) -> ErasedActorRef {
+        ErasedActorRef::new(self.sender)
     }
 
     /// The mail's contents, when it is of kind `K`; nothing when it is of another kind.
