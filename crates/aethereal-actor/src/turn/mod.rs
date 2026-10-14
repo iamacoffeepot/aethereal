@@ -7,12 +7,12 @@ mod tests;
 pub use refused::Refused;
 
 use crate::{
-    Actor, Actors, ActorsWriter, Arena, Code, Effect, ErasedActorRef, Level, MailId, Runs, Table, To, ToWithoutMail,
-    What,
+    Actor, Actors, ActorsWriter, Arena, Code, Effect, ErasedActorRef, Level, MailId, Runs, SeatNumber, Seated, Seats,
+    Table, To, ToWithoutMail, What,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
-use alloc::collections::BTreeSet;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -24,10 +24,13 @@ use alloc::vec::Vec;
 pub struct Asked {
     effects: Vec<Effect>,
     stood: Vec<Stood>,
-    /// The bits of the ids of the children in `stood`, to find whether one stands at a key in a lookup.
-    stood_ids: BTreeSet<u64>,
+    /// The seats of the children in `stood`, under the bits of their ids, to find whether one stands at a key and
+    /// where it sits in a lookup.
+    stood_seats: BTreeMap<u64, SeatNumber>,
     /// Where the bytes of the mail the turn sends are written.
     arena: Arena,
+    /// The seats the children the turn spawns are given.
+    seats: Seats,
     /// Where this turn's effects begin in `effects`: what is before them is earlier turns'.
     start: usize,
 }
@@ -39,19 +42,20 @@ impl Asked {
         Self::default()
     }
 
-    /// Nothing asked for yet, with mail written to `arena`, after what it already holds.
+    /// Nothing asked for yet, with mail written to `arena`, after what it already holds, and children seated from
+    /// `seats`.
     #[must_use]
-    pub fn writing(arena: Arena) -> Self {
-        Self::continuing(Vec::new(), arena)
+    pub fn writing(arena: Arena, seats: Seats) -> Self {
+        Self::continuing(Vec::new(), arena, seats)
     }
 
     /// Nothing asked for yet, with effects added after `effects`, the effects of earlier turns kept in one list,
-    /// and mail written to `arena`, after what it already holds.
+    /// mail written to `arena`, after what it already holds, and children seated from `seats`.
     #[must_use]
-    pub fn continuing(effects: Vec<Effect>, arena: Arena) -> Self {
+    pub fn continuing(effects: Vec<Effect>, arena: Arena, seats: Seats) -> Self {
         let start = effects.len();
 
-        Self { effects, stood: Vec::new(), stood_ids: BTreeSet::new(), arena, start }
+        Self { effects, stood: Vec::new(), stood_seats: BTreeMap::new(), arena, seats, start }
     }
 
     /// The arena the turn's mail was written to.
@@ -67,15 +71,15 @@ impl Asked {
     }
 
     /// The effects, earlier turns' first when the list was continued, the children stood up, each child in the order
-    /// its `begin` finished, and the arena the mail was written to.
+    /// its `begin` finished, the arena the mail was written to, and the seats not given out.
     #[must_use]
-    pub fn into_parts(self) -> (Vec<Effect>, Vec<Stood>, Arena) {
-        (self.effects, self.stood, self.arena)
+    pub fn into_parts(self) -> (Vec<Effect>, Vec<Stood>, Arena, Seats) {
+        (self.effects, self.stood, self.arena, self.seats)
     }
 
-    /// Whether a child stood up in this turn has the id `id`.
-    fn has_stood(&self, id: ActorId) -> bool {
-        self.stood_ids.contains(&id.bits())
+    /// The seat of the child stood up in this turn under the id `id`, when there is one.
+    fn stood_seat(&self, id: ActorId) -> Option<SeatNumber> {
+        self.stood_seats.get(&id.bits()).copied()
     }
 }
 
@@ -83,7 +87,7 @@ impl Asked {
 ///
 /// Until then it exists for no one but its parent.
 pub struct Stood {
-    id: ActorId,
+    me: Seated,
     path: ActorPath,
     actor: Box<dyn Runs>,
 }
@@ -92,7 +96,13 @@ impl Stood {
     /// The child's id.
     #[must_use]
     pub const fn id(&self) -> ActorId {
-        self.id
+        self.me.id
+    }
+
+    /// The child, and the seat it was given.
+    #[must_use]
+    pub const fn seated(&self) -> Seated {
+        self.me
     }
 
     /// Where the child stands.
@@ -110,7 +120,8 @@ impl Stood {
 
 /// Whose turn it is, and what every kind of turn works with.
 struct Seat<'a> {
-    id: ActorId,
+    /// The actor, and its seat.
+    me: Seated,
     path: ActorPath,
     table: &'a dyn Table,
     asked: &'a mut Asked,
@@ -121,12 +132,12 @@ struct Seat<'a> {
 impl Seat<'_> {
     /// Adds the effect by which this actor asks for `what`.
     fn ask(&mut self, what: What) {
-        self.asked.effects.push(Effect::new(self.id, what));
+        self.asked.effects.push(Effect::new(self.me, what));
     }
 
     /// A reference to this actor.
     const fn me(&self) -> ErasedActorRef {
-        ErasedActorRef::new(self.id)
+        ErasedActorRef::new(self.me)
     }
 
     /// A reference to the live actor `path` names.
@@ -160,24 +171,32 @@ impl Seat<'_> {
             (out.into_bytes(), written)
         })?;
         self.sent += 1;
-        let id = MailId { sender: self.id, count: self.sent };
+        let id = MailId { sender: self.me.id, count: self.sent };
         self.ask(What::Send { to, id, kind: KindId::of::<K>(), bytes });
 
         Ok(())
     }
 
-    /// The id of the actor `to` names, beside this one: none for a parent this turn cannot see.
-    fn receiver(&self, to: &To) -> Option<ActorId> {
+    /// The actor `to` names, beside this one, and its seat: none for a parent this turn cannot see, or a child that
+    /// was never made.
+    fn receiver(&self, to: &To) -> Option<Seated> {
         match to {
             To::Parent => self.path.parent().and_then(|parent| self.table.resolve(&parent)),
-            To::Child(kind) => Some(self.table.child(self.id, &PathSegment::new(kind.clone(), &()))),
-            To::ChildInstanced(kind, key) => {
-                Some(self.table.child(self.id, &PathSegment::instanced(kind.clone(), key.clone())))
-            }
-            To::Held(reference) => Some(reference.id()),
+            To::Child(kind) => self.child(&PathSegment::new(kind.clone(), &())),
+            To::ChildInstanced(kind, key) => self.child(&PathSegment::instanced(kind.clone(), key.clone())),
+            To::Held(reference) => Some(reference.seated()),
             // A turn puts the source of its item in its place before it asks.
             To::Sender => None,
         }
+    }
+
+    /// The child `segment` names beneath this actor, and its seat, when it was made: stood up in this turn, or
+    /// before.
+    fn child(&self, segment: &PathSegment) -> Option<Seated> {
+        let id = self.table.child(self.me.id, segment);
+        let seat = self.asked.stood_seat(id).or_else(|| self.table.child_seat(id))?;
+
+        Some(Seated { id, seat })
     }
 
     /// Stands up a child of type `C` under `key`: adds its spawn effect, then runs its `begin` here.
@@ -188,34 +207,39 @@ impl Seat<'_> {
     fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ErasedActorRef, Refused> {
         let segment = PathSegment::new(C::NAME, key);
         let path = self.path.child(&segment).map_err(|PathTooDeep| Refused::TooDeep)?;
-        let id = self.table.child(self.id, &segment);
+        let id = self.table.child(self.me.id, &segment);
         let is_made = self.table.path(id).as_ref() == Some(&path);
-        let is_taken = is_made || self.asked.has_stood(id);
+        let is_taken = is_made || self.asked.stood_seat(id).is_some();
         if is_taken {
             return Err(Refused::KeyTaken);
         }
 
         let from = Code::Linked(C::NAME);
+        let seat = self.asked.seats.take();
         let spawn = match segment.key() {
-            None => What::Spawn { from },
-            Some(key) => What::SpawnInstanced { from, key: key.clone() },
+            None => What::Spawn { from, seat },
+            Some(key) => What::SpawnInstanced { from, key: key.clone(), seat },
         };
         self.ask(spawn);
 
+        let me = Seated { id, seat };
         let stood_before = self.asked.stood.len();
-        let seat = Seat { id, path: path.clone(), table: self.table, asked: &mut *self.asked, sent: 0 };
-        match C::begin(config, &mut Beginning { seat }) {
+        let child = Seat { me, path: path.clone(), table: self.table, asked: &mut *self.asked, sent: 0 };
+        match C::begin(config, &mut Beginning { seat: child }) {
             Ok(actor) => {
-                self.asked.stood_ids.insert(id.bits());
-                self.asked.stood.push(Stood { id, path, actor: Box::new(actor) });
+                self.asked.stood_seats.insert(id.bits(), seat);
+                self.asked.stood.push(Stood { me, path, actor: Box::new(actor) });
 
-                Ok(ErasedActorRef::new(id))
+                Ok(ErasedActorRef::new(me))
             }
             Err(fault) => {
-                self.asked.effects.push(Effect::new(id, What::Faulted));
-                for child in self.asked.stood.drain(stood_before..) {
-                    self.asked.stood_ids.remove(&child.id.bits());
+                // The child and every child it stood up never began, so their seats are given back.
+                self.asked.effects.push(Effect::new(me, What::Faulted));
+                for below in self.asked.stood.drain(stood_before..) {
+                    self.asked.stood_seats.remove(&below.me.id.bits());
+                    self.asked.seats.give_back(below.me.seat);
                 }
+                self.asked.seats.give_back(seat);
 
                 Err(Refused::Began(fault))
             }
@@ -231,24 +255,24 @@ impl Seat<'_> {
 pub struct Turn<'a> {
     seat: Seat<'a>,
     /// The actor the item being handled comes from: who [`To::Sender`] names.
-    source: ActorId,
+    source: Seated,
 }
 
 impl<'a> Turn<'a> {
-    /// The turn of the actor `id` stands for, at `path`, reading `table` and adding to `asked`, which handles an
-    /// item from `source` and has sent `sent` pieces of mail before it.
+    /// The turn of the actor `me` names, at `path`, reading `table` and adding to `asked`, which handles an item
+    /// from the actor `source` names and has sent `sent` pieces of mail before it.
     ///
     /// For the engine. `table` answers for the step's start and for what this actor has spawned since.
     #[must_use]
     pub const fn new(
-        id: ActorId,
+        me: Seated,
         path: ActorPath,
         table: &'a dyn Table,
         asked: &'a mut Asked,
         sent: u64,
-        source: ActorId,
+        source: Seated,
     ) -> Self {
-        Self { seat: Seat { id, path, table, asked, sent }, source }
+        Self { seat: Seat { me, path, table, asked, sent }, source }
     }
 
     /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.
@@ -307,12 +331,12 @@ pub struct Beginning<'a> {
 }
 
 impl<'a> Beginning<'a> {
-    /// The `begin` of the root `id` stands for, at `path`, reading `table` and adding to `asked`.
+    /// The `begin` of the root `me` names, at `path`, reading `table` and adding to `asked`.
     ///
     /// For the engine, which makes a root for the chassis. A child's is made by the turn that spawns it.
     #[must_use]
-    pub const fn new(id: ActorId, path: ActorPath, table: &'a dyn Table, asked: &'a mut Asked) -> Self {
-        Self { seat: Seat { id, path, table, asked, sent: 0 } }
+    pub const fn new(me: Seated, path: ActorPath, table: &'a dyn Table, asked: &'a mut Asked) -> Self {
+        Self { seat: Seat { me, path, table, asked, sent: 0 } }
     }
 
     /// Sends `mail` to `to`. It goes out with the mail of the turn this `begin` runs in.
@@ -366,20 +390,20 @@ pub struct Ending<'a> {
 }
 
 impl<'a> Ending<'a> {
-    /// The closing turn of the actor `id` stands for, at `path`, which runs because of `why`, after the actor
-    /// has sent `sent` pieces of mail.
+    /// The closing turn of the actor `me` names, at `path`, which runs because of `why`, after the actor has sent
+    /// `sent` pieces of mail.
     ///
     /// For the engine.
     #[must_use]
     pub const fn new(
-        id: ActorId,
+        me: Seated,
         path: ActorPath,
         table: &'a dyn Table,
         asked: &'a mut Asked,
         sent: u64,
         why: Why,
     ) -> Self {
-        Self { seat: Seat { id, path, table, asked, sent }, why }
+        Self { seat: Seat { me, path, table, asked, sent }, why }
     }
 
     /// Why this closing turn runs.

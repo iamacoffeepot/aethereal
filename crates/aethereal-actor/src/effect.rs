@@ -1,6 +1,6 @@
 //! An effect: one thing an actor asks of the engine (ADR-0009).
 
-use crate::{ErasedActorRef, Fault, How, MailId, Payload};
+use crate::{ErasedActorRef, Fault, How, MailId, Payload, SeatNumber, Seated};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
 use alloc::string::String;
 
@@ -10,20 +10,27 @@ use alloc::string::String;
 /// the turn. A view is folded from them (ADR-0011).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Effect {
-    by: ActorId,
+    /// The actor that asked, and its seat.
+    by: Seated,
     what: What,
 }
 
 impl Effect {
-    /// The effect by which the actor `by` asks for `what`.
+    /// The effect by which the actor `by` names asks for `what`.
     #[must_use]
-    pub const fn new(by: ActorId, what: What) -> Self {
+    pub const fn new(by: Seated, what: What) -> Self {
         Self { by, what }
     }
 
     /// The id of the actor that asked.
     #[must_use]
     pub const fn by(&self) -> ActorId {
+        self.by.id
+    }
+
+    /// The actor that asked, and its seat.
+    #[must_use]
+    pub const fn seated(&self) -> Seated {
         self.by
     }
 
@@ -47,21 +54,21 @@ impl Effect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum What {
     /// Mail of kind `kind`, whose bytes are at `bytes`, in the arena of the worker that ran the turn or in bytes of
-    /// their own, is sent to the actor `to`, as the turn resolved the target it was given. `id` is the mail's own:
-    /// the asking actor, and its count of mail sent.
-    Send { to: ActorId, id: MailId, kind: KindId, bytes: Payload },
+    /// their own, is sent to the actor `to` names, in its seat, as the turn resolved the target it was given. `id` is
+    /// the mail's own: the asking actor, and its count of mail sent.
+    Send { to: Seated, id: MailId, kind: KindId, bytes: Payload },
     /// A root, a singleton, has been made. Written by the engine for the chassis, by the root itself.
     Root { from: Code },
     /// A root of an instanced type has been made. Written by the engine for the chassis, by the root itself.
     RootInstanced { from: Code, key: KeyName },
-    /// A child, a singleton, stands beneath the asking actor and takes its own mail.
-    Spawn { from: Code },
-    /// A child of an instanced type stands beneath the asking actor and takes its own mail.
-    SpawnInstanced { from: Code, key: KeyName },
-    /// A child, a singleton, stands beneath the asking actor, and its mail is handed to that actor.
-    Embed { from: Code },
-    /// A child of an instanced type stands beneath the asking actor, and its mail is handed to that actor.
-    EmbedInstanced { from: Code, key: KeyName },
+    /// A child, a singleton, stands beneath the asking actor in `seat` and takes its own mail.
+    Spawn { from: Code, seat: SeatNumber },
+    /// A child of an instanced type stands beneath the asking actor in `seat` and takes its own mail.
+    SpawnInstanced { from: Code, key: KeyName, seat: SeatNumber },
+    /// A child, a singleton, stands beneath the asking actor in `seat`, and its mail is handed to that actor.
+    Embed { from: Code, seat: SeatNumber },
+    /// A child of an instanced type stands beneath the asking actor in `seat`, and its mail is handed to that actor.
+    EmbedInstanced { from: Code, key: KeyName, seat: SeatNumber },
     /// The asking actor's `begin` failed, and the actor was never live. It reports, and asks for nothing.
     Faulted,
     /// The asking actor's turn failed with this fault, and the actor has ended. Written by the engine, since the

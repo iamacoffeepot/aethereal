@@ -59,7 +59,7 @@ fn entry(effect: &Effect) -> Option<(u64, Entry)> {
 mod tests {
     use super::*;
     use crate::Folded;
-    use aethereal_actor::MailId;
+    use aethereal_actor::{MailId, SeatNumber, Seated};
     use aethereal_data::ActorId;
     use std::num::NonZeroUsize;
 
@@ -70,7 +70,11 @@ mod tests {
             panic!("one is not zero");
         };
         let (loud, quiet) = (ActorId::new(1), ActorId::new(2));
-        let line = |by, number: usize| Effect::new(by, What::Log { level: Level::Info, text: number.to_string() });
+        let line = |by, number: usize| {
+            let by = Seated { id: by, seat: SeatNumber::new(0) };
+
+            Effect::new(by, What::Log { level: Level::Info, text: number.to_string() })
+        };
         let mut effects = vec![line(quiet, 0)];
         effects.extend((0..=RECENT).map(|number| line(loud, number)));
         let mut log = Folded::<Log>::new(parts);

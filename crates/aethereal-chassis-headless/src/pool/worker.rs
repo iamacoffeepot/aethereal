@@ -8,6 +8,11 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc::{Receiver, RecvError, Sender, TryRecvError};
 
 /// What the stepping thread tells a worker.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "an order is sent once for each worker in a step, and a boxed one would be made on one thread and freed \
+              on another"
+)]
 pub(super) enum Order {
     /// Run a part of the step, then wait for the next order as `then` says.
     Run { lend: Lend, then: Waiting },

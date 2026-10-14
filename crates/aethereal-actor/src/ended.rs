@@ -1,21 +1,20 @@
 //! An ending an actor is shown: a watched actor that has ended, and how (ADR-0009).
 
-use crate::{ErasedActorRef, Fault};
-use aethereal_data::ActorId;
+use crate::{ErasedActorRef, Fault, Seated};
 
 /// An actor this one was watching, which has ended (ADR-0009).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ended {
-    actor: ActorId,
+    actor: Seated,
     how: How,
 }
 
 impl Ended {
-    /// The ending of the actor `actor` stands for.
+    /// The ending of the actor `actor` names.
     ///
     /// For the engine, which has established that the actor was made.
     #[must_use]
-    pub const fn new(actor: ActorId, how: How) -> Self {
+    pub const fn new(actor: Seated, how: How) -> Self {
         Self { actor, how }
     }
 

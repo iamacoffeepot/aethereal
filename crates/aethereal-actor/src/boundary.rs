@@ -1,15 +1,16 @@
 //! The boundaries an actor's values cross: `Within` and `Actors` (ADR-0004).
 
+use crate::{SeatNumber, Seated};
 use aethereal_data::{ActorId, ActorPath, Boundary, PathSegment};
 use core::marker::PhantomData;
 
-/// Whether the engine has made an actor under an id: what proves a reference (ADR-0008).
+/// Whether the engine has made an actor under an id, and its seat: what proves a reference (ADR-0008).
 ///
 /// The engine's table of actors answers it. An id that was decoded is a claim,
 /// and it names an actor only once the table holds it, live or ended.
 pub trait Made {
-    /// Whether an actor has been made under `id`.
-    fn made(&self, id: ActorId) -> bool;
+    /// The seat of the actor made under `id`, which it sits in or sat in: none when no actor has been made under it.
+    fn seat(&self, id: ActorId) -> Option<SeatNumber>;
 }
 
 /// The table of actors as a turn reads it: as it stood when the turn's step began (ADR-0008, ADR-0011).
@@ -17,14 +18,18 @@ pub trait Made {
 /// The engine answers it. A turn writes nothing here: what it asks for is an
 /// effect, applied after it returns.
 pub trait Table: Made {
-    /// The id of the actor `path` names, when that actor is live.
-    fn resolve(&self, path: &ActorPath) -> Option<ActorId>;
+    /// The actor `path` names, and its seat, when that actor is live.
+    fn resolve(&self, path: &ActorPath) -> Option<Seated>;
 
     /// The path `id` stands for, when an actor has been made under it, live or ended.
     fn path(&self, id: ActorId) -> Option<ActorPath>;
 
     /// The id of the child `segment` names beneath the actor `parent` stands for. Only the engine computes an id.
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId;
+
+    /// The seat of the child `id` stands for, beneath the actor whose turn reads the table, when it was made or that
+    /// actor stood it up in an earlier turn of the step.
+    fn child_seat(&self, id: ActorId) -> Option<SeatNumber>;
 }
 
 /// What a boundary's writer offers a reference: leave to cross, and nothing else (ADR-0008).
@@ -80,8 +85,8 @@ impl<'a> ActorsReader<'a> {
 }
 
 impl Made for ActorsReader<'_> {
-    fn made(&self, id: ActorId) -> bool {
-        self.made.made(id)
+    fn seat(&self, id: ActorId) -> Option<SeatNumber> {
+        self.made.seat(id)
     }
 }
 
@@ -116,7 +121,7 @@ impl<'a> WithinReader<'a> {
 }
 
 impl Made for WithinReader<'_> {
-    fn made(&self, id: ActorId) -> bool {
-        self.made.made(id)
+    fn seat(&self, id: ActorId) -> Option<SeatNumber> {
+        self.made.seat(id)
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::id::spawned;
 use crate::{ByActor, Context, View};
-use aethereal_actor::{Effect, What};
+use aethereal_actor::{Effect, SeatNumber, What};
 use aethereal_data::{ActorId, PathSegment};
 
 /// The view of which actors there are, keyed by an actor's own id (ADR-0011).
@@ -19,6 +19,8 @@ pub struct Entry {
     above: Option<ActorId>,
     /// The actor's own segment of its path.
     segment: PathSegment,
+    /// The seat the actor sits in, or sat in once it has gone.
+    seat: SeatNumber,
     /// Whether the actor has ended.
     life: Life,
 }
@@ -32,8 +34,8 @@ pub(super) enum Life {
 
 /// What the view keeps of an effect.
 pub enum Record {
-    /// An actor was made at `segment`, beneath `above` where it is not a root.
-    Made { above: Option<ActorId>, segment: PathSegment },
+    /// An actor was made at `segment`, beneath `above` where it is not a root, in `seat`.
+    Made { above: Option<ActorId>, segment: PathSegment, seat: SeatNumber },
     /// The actor ended.
     Ended,
 }
@@ -47,6 +49,11 @@ impl Entry {
     /// The actor's own segment of its path.
     pub(super) const fn segment(&self) -> &PathSegment {
         &self.segment
+    }
+
+    /// The seat the actor sits in, or sat in.
+    pub(super) const fn seat(&self) -> SeatNumber {
+        self.seat
     }
 
     /// Whether the actor has not ended.
@@ -69,8 +76,8 @@ impl View for Actors {
     /// used before it asks, so that is two paths with one id or a fault in the engine, and neither has a way on.
     fn fold(shard: &mut ByActor<Entry>, key: u64, record: Record) {
         match record {
-            Record::Made { above, segment } => {
-                let held = shard.insert(key, Entry { above, segment, life: Life::Live });
+            Record::Made { above, segment, seat } => {
+                let held = shard.insert(key, Entry { above, segment, seat, life: Life::Live });
                 assert!(
                     held.is_none(),
                     "actor table: an actor was made under the id {key:#018x}, which is already held"
@@ -88,14 +95,15 @@ impl View for Actors {
 /// The key and record the view keeps of `effect`, or none for an effect it does not fold.
 fn record(effect: &Effect) -> Option<(u64, Record)> {
     let by = effect.by();
+    let seat = effect.seated().seat;
     let (id, record) = match effect.what() {
-        What::Root { from } => (by, Record::Made { above: None, segment: from.singleton() }),
-        What::RootInstanced { from, key } => (by, Record::Made { above: None, segment: from.instanced(key) }),
+        What::Root { from } => (by, Record::Made { above: None, segment: from.singleton(), seat }),
+        What::RootInstanced { from, key } => (by, Record::Made { above: None, segment: from.instanced(key), seat }),
         What::Failed(_) | What::Close => (by, Record::Ended),
         _ => {
             let (child, segment) = spawned(effect)?;
 
-            (child, Record::Made { above: Some(by), segment })
+            (child.id, Record::Made { above: Some(by), segment, seat: child.seat })
         }
     };
 
