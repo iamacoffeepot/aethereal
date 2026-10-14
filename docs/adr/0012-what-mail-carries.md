@@ -32,6 +32,7 @@ pub struct Envelope {
     pub to: ActorId,             // the actor it is for
     pub cause: Option<MailId>,   // none: nothing inside the engine caused it, and nothing ever will have
     pub root: MailId,
+    pub depth: u32,              // how far down its chain: one more than its cause's
     pub kind: KindId,
     pub bytes: Vec<u8>,
 }
@@ -40,6 +41,7 @@ pub struct Envelope {
 - **The cause** is the mail whose turn sent this one.
 - **The root** is the first mail of the chain. Mail sent while a piece of mail is handled takes that mail's root. Mail with no cause is its own root.
 - A chain is every piece of mail with one root.
+- **The depth** is how far down its chain a piece of mail is. Mail sent while a piece of mail is handled is one deeper than it. Mail with no cause is at depth zero, and the mail a root's `begin` sends is at depth one.
 
 **A chain begins where something from outside the engine comes in.** What a resource brings in reaches its owner as mail from its owner (ADR-0010). That mail has no cause, and it is the root of whatever follows from it.
 
@@ -49,7 +51,15 @@ pub struct Envelope {
 
 **A root's `begin` starts a chain of its own.** Nothing caused it and it is handling no mail. The mail it sends has no cause, and its root is the id made of that root actor and a count of zero, which no piece of sent mail has.
 
-**Asking and answering are not the engine's.** Mail is sent, untyped, and nothing is owed for it. A request and its answer, the context an asker keeps, a promise to answer, and a stream are a layer written over mail, and that layer is a later ADR's. The engine holds none of it.
+**A context is the actor's own, kept under a chain's root and a depth.** An actor that sends mail and wants to know later what it sent it for keeps that in a field of its own, under the root of the chain and the depth of the mail it sent. A handler reads both from its mail: `mail.root()` and `mail.depth()`.
+
+- Mail that comes back further down that chain has the same root and a greater depth. The actor finds what it kept under that root at a lesser depth, and the difference is how far back it was kept: one for mail sent in direct reply, more for mail that came by way of other actors.
+- An actor that keeps a second thing further down the same chain finds both, the nearer first.
+- Two pieces of mail sent from one turn are in the same chain at the same depth. What was kept for each is found by mail that follows from either, and the actor tells them apart by what the mail is and who sent it.
+- This is not an effect, and the engine keeps nothing for it. A context is one actor's, it is not sent, and no other actor sees it. The engine adds the one number to the mail.
+- What an actor kept stays until the actor takes it out. Nothing tells an actor that a chain has finished.
+
+**Asking and answering are not the engine's.** Mail is sent, untyped, and nothing is owed for it. A request and its answer, a promise to answer, and a stream are a layer written over mail and over the context above, and that layer is a later ADR's. The engine holds none of it.
 
 **Mail that is not delivered ends there.** Its sender learns nothing of it. An actor that must know another has ended watches it (ADR-0009).
 
@@ -57,9 +67,9 @@ pub struct Envelope {
 
 - Whether a chain has finished is counted by root: mail sent, less mail handled (ADR-0011).
 - What happened can be followed back from any piece of mail by its causes, to the resource that began it.
-- Every piece of mail carries three ids, of sixteen bytes each.
+- Every piece of mail carries three ids, of sixteen bytes each, and its depth.
 - Every chain but a root's first begins at a resource, so the engine can say for any piece of mail what from outside set it off.
-- **Not decided here:** how a request and its answer are written over mail; the chain of an ending that nothing inside the engine brought about, such as the host shutting down; large payloads; and whether the cause is kept on every piece of mail or only in the record of a run.
+- **Not decided here:** how a request and its answer are written over mail; how a `begin` and a closing turn, which handle no mail, read the chain and depth they send at; the chain of an ending that nothing inside the engine brought about, such as the host shutting down; large payloads; and whether the cause is kept on every piece of mail or only in the record of a run.
 
 ## Alternatives considered
 
