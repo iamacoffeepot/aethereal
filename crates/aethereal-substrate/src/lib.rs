@@ -25,4 +25,4 @@ pub use engine::Engine;
 pub use id::{child_id, path_id, root_id};
 pub use mail::{Envelope, Tie};
 pub use table::{ActorTable, Standing};
-pub use view::{Folded, View, ViewTuple, Viewed};
+pub use view::{Consumes, Folded, View, ViewTuple, Viewed};

@@ -65,6 +65,20 @@ pub trait View {
     fn fold(shard: &mut Self::Shard, key: u64, record: Self::Record);
 }
 
+/// A view that can take an effect by value, so what it keeps of the effect is moved in and not copied.
+///
+/// Only the last view to fold a turn's effects can take them, since nothing
+/// reads an effect after it is taken. [`View::takes`] gives the same records
+/// from a borrowed effect.
+pub trait Consumes: View {
+    /// The keys and records of `effect`, taken by value, as [`View::takes`] gives them.
+    fn takes_owned<'a>(
+        effect: Effect,
+        context: &'a Context,
+        reads: Self::Reads<'a>,
+    ) -> impl Iterator<Item = (u64, Self::Record)> + 'a;
+}
+
 /// What a view's [`View::Reads`] may be: `()`, or a tuple of up to four references to views.
 ///
 /// It is sealed, so nothing outside this crate adds a case.
@@ -125,6 +139,19 @@ impl<V: View> Folded<V> {
     /// The caller folds every view in `reads` first.
     pub fn fold<'a>(&mut self, effects: &'a [Effect], context: &'a Context, reads: V::Reads<'a>) {
         for (key, record) in effects.iter().flat_map(|effect| V::takes(effect, context, reads)) {
+            let part = self.part(key);
+            V::fold(&mut self.shards[part], key, record);
+        }
+    }
+
+    /// Folds in the effects of one turn, emitted in `context`, taking each by value, reading `reads`.
+    ///
+    /// The caller folds every view in `reads` first, and every other view that reads these effects.
+    pub fn fold_owned<'a>(&mut self, effects: Vec<Effect>, context: &'a Context, reads: V::Reads<'a>)
+    where
+        V: Consumes,
+    {
+        for (key, record) in effects.into_iter().flat_map(|effect| V::takes_owned(effect, context, reads)) {
             let part = self.part(key);
             V::fold(&mut self.shards[part], key, record);
         }

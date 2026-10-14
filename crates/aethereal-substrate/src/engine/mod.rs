@@ -6,7 +6,7 @@ mod since;
 mod tests;
 
 use crate::id::root_id;
-use crate::stream::{Pending, Streams};
+use crate::stream::{Pending, Streams, take};
 use crate::watch::Watchers;
 use crate::{ActorTable, Context, Folded};
 use aethereal_actor::{
@@ -259,13 +259,14 @@ impl Engine {
 
             folded.push((effects, context));
         }
-        for (effects, context) in &folded {
-            self.streams.fold(effects, context, (&self.table, &self.watchers));
+        for (effects, context) in folded {
+            self.streams.fold_owned(effects, &context, (&self.table, &self.watchers));
         }
 
         for id in gone {
             self.seats.remove(&id.bits());
-            self.take_items(*id);
+            // Whatever reached it after its closing turn is dropped with it.
+            self.streams.shard_mut(id.bits()).remove(&id.bits());
         }
     }
 
@@ -299,11 +300,11 @@ impl Engine {
     }
 
     /// Takes everything in the stream of the actor `id` stands for, in the order it is to be handed it.
-    fn take_items(&mut self, id: ActorId) -> Vec<Pending> {
+    fn take_items(&mut self, id: ActorId) -> impl Iterator<Item = Pending> + use<> {
         let bits = id.bits();
         let taken = self.streams.shard_mut(bits).remove(&bits);
 
-        taken.into_iter().flat_map(BTreeMap::into_values).collect()
+        taken.into_iter().flat_map(take)
     }
 }
 
