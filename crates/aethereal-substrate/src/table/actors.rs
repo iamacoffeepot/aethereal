@@ -59,21 +59,10 @@ impl Entry {
 impl View for Actors {
     type Shard = BTreeMap<u64, Entry>;
     type Record = Record;
+    type Reads<'a> = ();
 
-    fn takes(effect: &Effect) -> Option<(u64, Record)> {
-        let by = effect.by();
-        let (id, record) = match effect.what() {
-            What::Root { from } => (by, Record::Made { above: None, segment: from.singleton() }),
-            What::RootInstanced { from, key } => (by, Record::Made { above: None, segment: from.instanced(key) }),
-            What::Failed(_) | What::Close => (by, Record::Ended),
-            _ => {
-                let (child, segment) = spawned(effect)?;
-
-                (child, Record::Made { above: Some(by), segment })
-            }
-        };
-
-        Some((id.bits(), record))
+    fn takes(effect: &Effect, (): ()) -> impl Iterator<Item = (u64, Record)> + '_ {
+        record(effect).into_iter()
     }
 
     /// # Panics
@@ -96,4 +85,21 @@ impl View for Actors {
             }
         }
     }
+}
+
+/// The key and record the view keeps of `effect`, or none for an effect it does not fold.
+fn record(effect: &Effect) -> Option<(u64, Record)> {
+    let by = effect.by();
+    let (id, record) = match effect.what() {
+        What::Root { from } => (by, Record::Made { above: None, segment: from.singleton() }),
+        What::RootInstanced { from, key } => (by, Record::Made { above: None, segment: from.instanced(key) }),
+        What::Failed(_) | What::Close => (by, Record::Ended),
+        _ => {
+            let (child, segment) = spawned(effect)?;
+
+            (child, Record::Made { above: Some(by), segment })
+        }
+    };
+
+    Some((id.bits(), record))
 }

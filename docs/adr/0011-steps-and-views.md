@@ -62,6 +62,8 @@ pub trait View {
 
 **Mail that reaches an actor in one step is put in a fixed order**: by its sender, then in the order that sender sent it. Mail from one source keeps its order, as ADR-0009 requires. Between two sources the rule promises an actor nothing, and the fixed order is there so that the same turns always leave the same result.
 
+**A view may read other views.** It names them, and the engine folds them before it, so it reads them with the step's effects already in. That lets a view work out a key from what another holds, such as an actor's parent from the table, and lets one effect change several of its keys, one record for each. Views that read nothing of each other fold side by side, and each view's keys still fold in parts. A chain of views reading views folds one link at a time, so it is kept short, and no view reads itself through another.
+
 **The table of actors is the first view.** It is folded from spawns and endings. Where a library's heads point is a view (ADR-0009). Whether a chain of mail has finished, and who watches an actor, are views when they are built.
 
 **When a step's turns have finished, the engine folds, then delivers.** It folds the step's effects into the views. It then delivers the step's mail against the views as just folded, and mail to an actor that has ended is not delivered. So a child spawned in a step is there for mail sent to it in that step. The endings of a step are folded for the actors that watch them (ADR-0009), and a watch asked for in the step its actor ends is shown that ending once.
