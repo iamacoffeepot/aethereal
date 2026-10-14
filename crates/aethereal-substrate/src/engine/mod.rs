@@ -54,11 +54,15 @@ pub struct Engine {
     log: Folded<Log>,
     /// How far each actor's life has gone: the mail it has sent, and whether it has ended.
     lives: Folded<Lives>,
-    /// Every actor the engine still runs, under its id: the live ones, and the ended ones whose closing turn is
-    /// still to run.
-    seats: BTreeMap<u64, Seat>,
-    /// The actors themselves, each under its id. An actor leaves when its closing turn takes it.
-    actors: BTreeMap<u64, Box<dyn Runs>>,
+    /// A seat for every actor the engine still runs, the live ones and the ended ones whose closing turn is still to
+    /// run, and the seats left empty, numbered from zero. An actor leaves its seat when its closing turn takes it.
+    seats: Vec<Seat>,
+    /// The actors themselves, by the number of their seat.
+    actors: Vec<Held>,
+    /// The number of each actor's seat, under the actor's id.
+    seated: BTreeMap<u64, usize>,
+    /// The numbers of the empty seats, to be taken before a new one is added.
+    empty: Vec<usize>,
     /// Where mail is written: for each parity of step, an arena for each writer, the first for mail sent between
     /// steps.
     arenas: [Vec<Arena>; 2],
@@ -76,12 +80,29 @@ pub struct Engine {
     read_limit: usize,
 }
 
-/// What the engine keeps for one actor beside the actor itself, fixed when it is seated.
-struct Seat {
+/// One seat.
+enum Seat {
+    /// No actor sits in it.
+    Empty,
+    /// This actor does.
+    Taken(Sitting),
+}
+
+/// An actor in its seat: what is fixed when it is seated.
+struct Sitting {
+    id: ActorId,
     /// Where the actor stands.
     path: ActorPath,
     /// Its kind, as the engine numbers it.
     kind: KindIndex,
+}
+
+/// Whether the engine holds the actor of a seat.
+enum Held {
+    /// It does.
+    Here(Box<dyn Runs>),
+    /// It does not: the actor is out with a worker for the step, or the seat is empty.
+    Away,
 }
 
 /// The engine as a step's workers read it while they run: the table, each actor's seat and life, and the items
@@ -90,7 +111,7 @@ pub struct Reading<'a> {
     table: &'a ActorTable,
     streams: &'a Folded<Streams>,
     lives: &'a Folded<Lives>,
-    seats: &'a BTreeMap<u64, Seat>,
+    seats: &'a [Seat],
     /// The arenas the last step's mail was written to, by writer.
     mail: &'a [Arena],
     read_limit: usize,
@@ -127,7 +148,8 @@ struct Routes {
 
 /// An actor a worker ran, and the actor when it is still the engine's to run.
 struct Turned {
-    id: ActorId,
+    /// The number of its seat.
+    seat: usize,
     kept: Kept,
 }
 
@@ -159,8 +181,10 @@ impl Engine {
             streams: Folded::new(parts),
             log: Folded::new(parts),
             lives: Folded::new(parts),
-            seats: BTreeMap::new(),
-            actors: BTreeMap::new(),
+            seats: Vec::new(),
+            actors: Vec::new(),
+            seated: BTreeMap::new(),
+            empty: Vec::new(),
             arenas: [Vec::new(), Vec::new()],
             lists: Vec::new(),
             kinds: Kinds::new(),
@@ -335,12 +359,10 @@ impl Engine {
             self.costs.merge(tally);
             let slot = arena.slot();
             self.arenas[parity][slot] = arena;
-            for Turned { id, kept } in lists.actors.drain(..) {
+            for Turned { seat, kept } in lists.actors.drain(..) {
                 match kept {
-                    Kept::Live(actor) => {
-                        self.actors.insert(id.bits(), actor);
-                    }
-                    Kept::Gone => gone.push(id),
+                    Kept::Live(actor) => self.actors[seat] = Held::Here(actor),
+                    Kept::Gone => gone.push(seat),
                 }
             }
             for child in lists.stood.drain(..) {
@@ -360,22 +382,30 @@ impl Engine {
         }
 
         // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
-        for id in gone {
-            self.seats.remove(&id.bits());
+        for seat in gone {
+            self.actors[seat] = Held::Away;
+            if let Seat::Taken(sitting) = mem::replace(&mut self.seats[seat], Seat::Empty) {
+                self.seated.remove(&sitting.id.bits());
+            }
+            self.empty.push(seat);
         }
     }
 
-    /// Takes the actor `id` stands for out of the engine to run `work`, adding its job and its expected cost.
+    /// Takes the actor `id` stands for out of its seat to run `work`, adding its job and its expected cost.
     fn job(&mut self, id: ActorId, work: Work, jobs: &mut Vec<Job>, costs: &mut Vec<u64>) {
-        let Some(kind) = self.seats.get(&id.bits()).map(|seat| seat.kind) else {
+        let Some(&seat) = self.seated.get(&id.bits()) else {
             return;
         };
-        let Some(actor) = self.actors.remove(&id.bits()) else {
+        let Seat::Taken(sitting) = &self.seats[seat] else {
+            return;
+        };
+        let kind = sitting.kind;
+        let Held::Here(actor) = mem::replace(&mut self.actors[seat], Held::Away) else {
             return;
         };
 
         costs.push(self.expect(id, kind, &work));
-        jobs.push(Job { id, kind, actor, work });
+        jobs.push(Job { id, seat, kind, actor, work });
     }
 
     /// What the turns of the job of the actor `id` stands for, of kind `kind`, that runs `work` are expected to
@@ -427,11 +457,21 @@ impl Engine {
         mem::replace(&mut arenas[slot], Arena::new(slot))
     }
 
-    /// Gives the actor `id` stands for, at `path`, a seat: it is run from the next step.
+    /// Gives the actor `id` stands for, at `path`, a seat: an empty one when there is one, a new one otherwise. It
+    /// is run from the next step.
     fn seat(&mut self, id: ActorId, path: ActorPath, actor: Box<dyn Runs>) {
         let kind = self.kinds.number(path.last().kind());
-        self.seats.insert(id.bits(), Seat { path, kind });
-        self.actors.insert(id.bits(), actor);
+        let sitting = Seat::Taken(Sitting { id, path, kind });
+        let seat = if let Some(seat) = self.empty.pop() {
+            self.seats[seat] = sitting;
+            self.actors[seat] = Held::Here(actor);
+            seat
+        } else {
+            self.seats.push(sitting);
+            self.actors.push(Held::Here(actor));
+            self.seats.len() - 1
+        };
+        self.seated.insert(id.bits(), seat);
     }
 }
 
@@ -461,11 +501,10 @@ impl Reading<'_> {
     /// The turns of one actor's job, each measured into `tally`, their mail written to `arena`, and their effects,
     /// the turns, and the actor added to `lists`.
     fn turns(&self, job: Job, clock: &impl Clock, tally: &mut Tally, arena: &mut Arena, lists: &mut Lists) {
-        let Job { id, kind, actor, work } = job;
-        let seat = self.seats.get(&id.bits());
+        let Job { id, seat: number, kind, actor, work } = job;
         let life = self.lives.shard(id.bits()).life(id.bits());
-        let (Some(seat), Some(life)) = (seat, life) else {
-            lists.actors.push(Turned { id, kept: Kept::Live(actor) });
+        let (Seat::Taken(seat), Some(life)) = (&self.seats[number], life) else {
+            lists.actors.push(Turned { seat: number, kept: Kept::Live(actor) });
             return;
         };
         let key = |item| CostKey { actor: kind, item };
@@ -492,7 +531,7 @@ impl Reading<'_> {
                 lists.effects.push(Effect::new(id, What::Ended(how.clone())));
 
                 lists.route(Ran { effects: begins..lists.effects.len(), stood: Vec::new(), context: *context });
-                lists.actors.push(Turned { id, kept: Kept::Gone });
+                lists.actors.push(Turned { seat: number, kept: Kept::Gone });
             }
             (Work::Items(range), State::Live) => {
                 let mut actor = actor;
@@ -529,10 +568,10 @@ impl Reading<'_> {
                     }
                 }
 
-                lists.actors.push(Turned { id, kept: Kept::Live(actor) });
+                lists.actors.push(Turned { seat: number, kept: Kept::Live(actor) });
             }
             // A plan gives a closing turn only to an actor that has ended, and items only to a live one.
-            _ => lists.actors.push(Turned { id, kept: Kept::Live(actor) }),
+            _ => lists.actors.push(Turned { seat: number, kept: Kept::Live(actor) }),
         }
     }
 }
