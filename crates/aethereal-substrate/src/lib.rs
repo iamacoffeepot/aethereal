@@ -14,6 +14,7 @@
 mod context;
 mod engine;
 mod id;
+mod log;
 mod mail;
 mod stream;
 mod table;
@@ -23,6 +24,7 @@ mod watch;
 pub use context::Context;
 pub use engine::Engine;
 pub use id::{child_id, path_id, root_id};
-pub use mail::{Envelope, Tie};
+pub use log::{Entry, Log, RECENT};
+pub use mail::Envelope;
 pub use table::{ActorTable, Standing};
 pub use view::{Consumes, Folded, View, ViewTuple, Viewed};
