@@ -124,6 +124,11 @@ impl<V: View> Folded<V> {
         self.shards.iter()
     }
 
+    /// Every part, to change outside a fold, as [`Self::shard_mut`] gives one.
+    pub fn shards_mut(&mut self) -> impl Iterator<Item = &mut V::Shard> {
+        self.shards.iter_mut()
+    }
+
     /// Which part `key` falls in.
     fn part(&self, key: u64) -> usize {
         #[allow(clippy::cast_possible_truncation, reason = "the remainder is less than the count of parts, a usize")]
