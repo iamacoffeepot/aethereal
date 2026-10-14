@@ -23,7 +23,7 @@ mod reference;
 mod turn;
 
 pub use actor::{Actor, Runs};
-pub use arena::{Arena, Span};
+pub use arena::{ARENA_BYTES, Arena, Payload, Span};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Made, Refers, Table, Within, WithinReader, WithinWriter};
 pub use effect::{Code, Effect, Level, To, ToWithoutMail, What};
 pub use ended::{Ended, How};

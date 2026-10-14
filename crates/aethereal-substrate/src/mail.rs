@@ -1,6 +1,6 @@
 //! A piece of mail as the engine carries it (ADR-0012).
 
-use aethereal_actor::{MailId, Span};
+use aethereal_actor::{MailId, Payload};
 use aethereal_data::{ActorId, KindId};
 
 /// A piece of mail as the engine carries it: who it is for, what it is, and what it follows from (ADR-0012).
@@ -19,6 +19,6 @@ pub struct Envelope {
     pub depth: u32,
     /// The id of its kind.
     pub kind: KindId,
-    /// Where its contents, the bytes of that kind, are written: in the arena of the worker that sent it.
-    pub bytes: Span,
+    /// Where its contents, the bytes of that kind, are: in the arena of the worker that sent it, or their own.
+    pub bytes: Payload,
 }

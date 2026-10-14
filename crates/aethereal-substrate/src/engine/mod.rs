@@ -15,8 +15,8 @@ use crate::stream::{Pending, Streams, take};
 use crate::watch::Watchers;
 use crate::{ActorTable, Clock, Context, Entry, Envelope, Folded, Log};
 use aethereal_actor::{
-    Actor, Arena, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Refused, Runs, Stood, Turn,
-    What, Why,
+    Actor, Arena, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Payload, Refused, Runs,
+    Stood, Turn, What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 use begun::begun;
@@ -434,6 +434,14 @@ impl Reading<'_> {
         Done { actors, tally, arena }
     }
 
+    /// The bytes of a piece of mail sent in the last step.
+    fn bytes<'b>(&'b self, payload: &'b Payload) -> &'b [u8] {
+        match payload {
+            Payload::InArena(span) => self.mail.get(span.slot).and_then(|arena| arena.read(*span)).unwrap_or_default(),
+            Payload::Owned(bytes) => bytes,
+        }
+    }
+
     /// The turns of one actor's job, each measured into `tally`, their mail written to `arena`.
     fn turns(&self, job: Job, clock: &impl Clock, tally: &mut Tally, arena: &mut Arena) -> Turned {
         let Job { id, kind, actor, work } = job;
@@ -474,8 +482,7 @@ impl Reading<'_> {
                     let (item, context) = match &pending {
                         Pending::Mail(envelope) => {
                             let Envelope { id: cause, kind, bytes, root, depth, .. } = envelope;
-                            let bytes =
-                                self.mail.get(bytes.slot).and_then(|arena| arena.read(*bytes)).unwrap_or_default();
+                            let bytes = self.bytes(bytes);
                             let mail = Mail::new(*kind, bytes, source, *root, *depth, &table, self.read_limit);
 
                             (Item::Mail(mail), Context { cause: Some(*cause), root: *root, depth: depth + 1 })

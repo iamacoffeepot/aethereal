@@ -7,14 +7,13 @@ mod tests;
 pub use refused::Refused;
 
 use crate::{
-    Actor, Actors, ActorsWriter, Arena, Code, Effect, ErasedActorRef, Level, MailId, Runs, Span, Table, To,
-    ToWithoutMail, What,
+    Actor, Actors, ActorsWriter, Arena, Code, Effect, ErasedActorRef, Level, MailId, Runs, Table, To, ToWithoutMail,
+    What,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::mem;
 
 /// What one turn has asked for: its effects in order, and the children it stood up (ADR-0009).
 ///
@@ -133,17 +132,12 @@ impl Seat<'_> {
 
     /// Encodes `mail` and adds the effect that sends it to `to`.
     fn send<K: Kind + Encode<Actors>>(&mut self, to: To, mail: &K) -> Result<(), EncodeError> {
-        let arena = &mut self.asked.arena;
-        let start = arena.bytes().len();
-        let mut out = Writer::<Actors>::appending(mem::take(arena.bytes()), ActorsWriter::new());
-        let written = mail.encode(&mut out);
-        *arena.bytes() = out.into_bytes();
-        if let Err(error) = written {
-            arena.bytes().truncate(start);
-            return Err(error);
-        }
+        let bytes = self.asked.arena.write(|bytes| {
+            let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::new());
+            let written = mail.encode(&mut out);
 
-        let bytes = Span { slot: arena.slot(), start, len: arena.bytes().len() - start };
+            (out.into_bytes(), written)
+        })?;
         self.sent += 1;
         let id = MailId { sender: self.id, count: self.sent };
         self.ask(What::Send { to, id, kind: KindId::of::<K>(), bytes });
