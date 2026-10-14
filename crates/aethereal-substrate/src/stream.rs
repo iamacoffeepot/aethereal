@@ -11,7 +11,9 @@ use std::ops::Range;
 ///
 /// It reads no other view. Mail is kept under the actor its turn named,
 /// whether or not that actor is still live: an actor that is not live is never
-/// handed its items, and they are dropped there. A watch and an ending are
+/// handed its items, and they are dropped there. An item is kept under its
+/// actor's id until the engine places it under the actor's seat, so that the
+/// items of a step are handed out in the order of the seats. A watch and an ending are
 /// kept under the actor watched, so the two meet in one part, and are paired
 /// once the step's records are all in: an ending goes to every actor that
 /// watches the one that ended, a watch asked for in the same step among them,
@@ -22,17 +24,19 @@ use std::ops::Range;
 /// order that source caused them. An actor's ending is the last thing it
 /// causes, so it comes after that actor's mail.
 ///
-/// A part keeps the items of all its actors in one list, as they arrive. At
-/// the start of a step [`Shard::hand`] puts the list in order, once, and the
-/// step's turns read each actor's run of it where it lies.
+/// A part keeps the placed items of all its actors in one list, as they
+/// arrive. At the start of a step [`Shard::hand`] puts the list in order, once,
+/// and the step's turns read each actor's run of it where it lies.
 pub struct Streams;
 
 /// One part of the view.
 #[derive(Default)]
 pub struct Shard {
-    /// The items that arrived since the step began, for whichever actor, as they arrived.
+    /// The items placed under a seat since the step began, for whichever actor, as they arrived.
     arrived: Vec<Entry>,
-    /// The items handed out at the start of the step, in order: by actor, then as each actor is handed them.
+    /// The items kept under their actor's id since the step began, as they arrived, to be placed under its seat.
+    unplaced: Vec<Unplaced>,
+    /// The items handed out at the start of the step, in order: by seat and actor, then as each actor is handed them.
     handed: Vec<Entry>,
     /// Who watches each actor, and whether it has ended, by the actor watched.
     watched: ByActor<Watched>,
@@ -65,6 +69,9 @@ enum Watching {
 pub enum Record {
     /// An item for the key's actor, and where it stands in that actor's stream.
     Item(Order, Pending),
+    /// An item for the actor whose bits are `to`, which sits in the seat numbered by the key, and where it stands in
+    /// that actor's stream.
+    Placed { to: u64, order: Order, pending: Pending },
     /// The actor whose bits these are watches the key's actor, as asked in this context.
     Watch { by: u64, context: Context },
     /// The key's actor's closing turn has run: it ended this way, in this context.
@@ -82,34 +89,46 @@ pub enum Pending {
 /// Where an item stands in its stream: its source's bits, then the order that source caused it in.
 pub type Order = (u64, u64);
 
-/// One item in a part, and the actor it is for.
+/// One item in a part, and the seat and actor it is for.
 pub struct Entry {
+    /// The number of the seat of the actor it is for, as the item was placed.
+    seat: u64,
     /// The bits of the actor it is for.
     to: u64,
     order: Order,
     pending: Pending,
 }
 
+/// One item kept under its actor's id: the actor's bits, where it stands in that actor's stream, and the item.
+pub type Unplaced = (u64, Order, Pending);
+
 impl Shard {
-    /// Hands out the items that arrived since the last step, put in order, and answers with each actor's run of
-    /// them: the actor's bits and where its items lie in [`Self::handed`].
+    /// Hands out the items placed since the last step, put in order, and answers with each actor's run of them: the
+    /// number of the seat the actor sat in when they were placed, the actor's bits, and where its items lie in
+    /// [`Self::handed`].
     ///
-    /// The order is by actor, then by source, then the order that source caused each item, so it does not depend
-    /// on the order the items arrived in. An ending shown twice, from two watches of an actor already over, is
-    /// handed once. What was handed out at the last step is dropped here.
-    pub fn hand(&mut self) -> impl Iterator<Item = (u64, Range<usize>)> + '_ {
+    /// The order is by seat and actor, then by source, then the order that source caused each item, so it does not
+    /// depend on the order the items arrived in. A seat may have been taken by another actor since an item was
+    /// placed under it, so a run names its actor. An ending shown twice, from two watches of an actor already over,
+    /// is handed once. What was handed out at the last step is dropped here.
+    pub fn hand(&mut self) -> impl Iterator<Item = (u64, u64, Range<usize>)> + '_ {
         self.handed.clear();
         mem::swap(&mut self.arrived, &mut self.handed);
-        self.handed.sort_unstable_by_key(|entry| (entry.to, entry.order));
-        self.handed.dedup_by_key(|entry| (entry.to, entry.order));
+        self.handed.sort_unstable_by_key(|entry| (entry.seat, entry.to, entry.order));
+        self.handed.dedup_by_key(|entry| (entry.seat, entry.to, entry.order));
 
         let mut begins = 0;
-        self.handed.chunk_by(|one, next| one.to == next.to).map(move |run| {
+        self.handed.chunk_by(|one, next| (one.seat, one.to) == (next.seat, next.to)).map(move |run| {
             let range = begins..begins + run.len();
             begins = range.end;
 
-            (run[0].to, range)
+            (run[0].seat, run[0].to, range)
         })
+    }
+
+    /// Takes the items kept under their actor's id, for the engine to place under each actor's seat.
+    pub fn take_unplaced(&mut self) -> Vec<Unplaced> {
+        mem::take(&mut self.unplaced)
     }
 
     /// The items handed out at the start of the step that lie in `range`.
@@ -121,7 +140,24 @@ impl Shard {
     /// Whether any item has arrived since the step began.
     #[must_use]
     pub fn has_items(&self) -> bool {
-        !self.arrived.is_empty()
+        let has_placed = !self.arrived.is_empty();
+        let has_unplaced = !self.unplaced.is_empty();
+
+        has_placed || has_unplaced
+    }
+}
+
+impl Record {
+    /// The record placed under the seat `seat` gives for its actor, keyed by the seat's number: for an item kept
+    /// under the actor's id, `key`, when the actor has a seat. Any other record is kept as it is.
+    pub fn place(key: u64, record: Self, seat: impl FnOnce(u64) -> Option<u64>) -> (u64, Self) {
+        match record {
+            Self::Item(order, pending) => match seat(key) {
+                Some(seat) => (seat, Self::Placed { to: key, order, pending }),
+                None => (key, Self::Item(order, pending)),
+            },
+            record => (key, record),
+        }
     }
 }
 
@@ -143,11 +179,12 @@ impl View for Streams {
         Self::takes_owned(effect.clone(), context)
     }
 
-    /// Items are kept as they arrive and put in order when they are handed out, by [`Shard::hand`]. Watches and
-    /// endings wait for the step to settle.
+    /// Items are kept as they arrive and put in order when they are handed out, by [`Shard::hand`]; one not yet
+    /// placed under a seat waits for the engine to place it. Watches and endings wait for the step to settle.
     fn fold(shard: &mut Shard, key: u64, record: Record) {
         match record {
-            Record::Item(order, pending) => shard.arrived.push(Entry { to: key, order, pending }),
+            Record::Item(order, pending) => shard.unplaced.push((key, order, pending)),
+            Record::Placed { to, order, pending } => shard.arrived.push(Entry { seat: key, to, order, pending }),
             Record::Watch { by, context } => shard.watches.push((key, by, context)),
             Record::Ended { how, context } => shard.endings.push((key, how, context)),
         }

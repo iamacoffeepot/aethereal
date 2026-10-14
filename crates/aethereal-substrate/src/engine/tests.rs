@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{Entry, Standing, child_id};
-use aethereal_actor::{Fault, How, Item, Level, To, ToWithoutMail};
+use aethereal_actor::{Ended, Fault, How, Item, Level, To, ToWithoutMail};
 use aethereal_data::{Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
 use std::mem;
@@ -401,4 +401,23 @@ fn depth_counts_each_send_down_a_chain() {
     assert_eq!(step(&mut engine), ["1 got where", "1 at depth 1", "1 got spawn 2 up where"]);
     step(&mut engine);
     assert_eq!(step(&mut engine), ["1 got where from 2", "1 at depth 3"]);
+}
+
+#[test]
+fn item_placed_under_a_seat_reaches_only_the_actor_it_was_placed_for() {
+    // Catches an item placed under a seat handed to whichever actor sits there, when the actor it was placed for
+    // has left the seat or never sat in it.
+    let (mut engine, root) = engine(&[]);
+    let seat = engine.seated[&root.bits()];
+    let context = Context { cause: None, root: MailId { sender: root, count: 0 }, depth: 1 };
+    let place = |engine: &mut Engine, to: ActorId| {
+        let ended = Ended::new(node(root, 2), How::Closed);
+        let record = Record::Placed { to: to.bits(), order: (2, u64::MAX), pending: Pending::Ended { ended, context } };
+        Streams::fold(engine.streams.shard_mut(seat_key(seat)), seat_key(seat), record);
+    };
+
+    place(&mut engine, node(root, 3));
+    assert_eq!(step(&mut engine), [""; 0]);
+    place(&mut engine, root);
+    assert_eq!(step(&mut engine), ["1 saw closed"]);
 }

@@ -144,9 +144,12 @@ fn takes(work: u64, largest: u64, workers: usize) -> u64 {
 }
 
 /// Gives each job to one of `running` shares: the most costly first, each to the share with the least so far.
+///
+/// Jobs that cost the same keep the order of their seats, so each worker runs its actors in the order the engine
+/// keeps them, and their items reach the streams already close to the order they are handed out in.
 pub(super) fn pack(jobs: Vec<Job>, costs: &[u64], running: usize) -> Vec<Share> {
     let mut order: Vec<(u64, Job)> = costs.iter().copied().zip(jobs).collect();
-    order.sort_by(|(left, a), (right, b)| right.cmp(left).then(a.id.bits().cmp(&b.id.bits())));
+    order.sort_by(|(left, a), (right, b)| right.cmp(left).then(a.seat.cmp(&b.seat)));
 
     let mut shares: Vec<(u64, Share)> = (0..running.max(1))
         .map(|_| (0, Share { jobs: Vec::new(), arena: Arena::default(), lists: Lists::default() }))

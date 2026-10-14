@@ -11,9 +11,9 @@ pub use costs::Tally;
 pub use plan::{Plan, Share, Workers};
 
 use crate::id::root_id;
-use crate::stream::{self, Pending, Streams};
+use crate::stream::{self, Pending, Record, Streams};
 use crate::table::Actors;
-use crate::{ActorTable, ByActor, Clock, Context, Entry, Envelope, Folded, Lives, Log, Routed, State, lives};
+use crate::{ActorTable, ByActor, Clock, Context, Entry, Envelope, Folded, Lives, Log, Routed, State, View, lives};
 use aethereal_actor::{
     Actor, Arena, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Payload, Refused, Runs,
     Stood, Turn, What, Why,
@@ -111,6 +111,7 @@ pub struct Reading<'a> {
     streams: &'a Folded<Streams>,
     lives: &'a Folded<Lives>,
     seats: &'a [Seat],
+    seated: &'a ByActor<usize>,
     /// The arenas the last step's mail was written to, by writer.
     mail: &'a [Arena],
     read_limit: usize,
@@ -288,19 +289,32 @@ impl Engine {
 
         let mut jobs = Vec::new();
         let mut costs = Vec::new();
-        // Every actor with items, and every actor whose closing turn is to run. Items for an actor that is not live
-        // are never handed to it, and go with the rest at the next step: one never made, one gone, or one that has
-        // ended, which runs its closing turn.
-        let runs: Vec<(u64, Range<usize>)> = self.streams.shards_mut().flat_map(stream::Shard::hand).collect();
+        // Items its sender's worker could not place: for an actor seated in the step they were sent, for one with no
+        // seat, or handed on by the streams as the step settled. One with no seat is dropped here.
+        let unplaced: Vec<stream::Unplaced> =
+            self.streams.shards_mut().flat_map(stream::Shard::take_unplaced).collect();
+        for (to, order, pending) in unplaced {
+            if let Some(&seat) = self.seated.get(&to) {
+                let key = seat_key(seat);
+                Streams::fold(self.streams.shard_mut(key), key, Record::Placed { to, order, pending });
+            }
+        }
+
+        // Every actor with items, in the order of the seats, and every actor whose closing turn is to run. Items for
+        // an actor that is not live are never handed to it, and go with the rest at the next step: one gone, or one
+        // that has ended, which runs its closing turn.
+        let runs: Vec<(u64, u64, Range<usize>)> = self.streams.shards_mut().flat_map(stream::Shard::hand).collect();
         let ending: Vec<u64> = self.lives.shards_mut().flat_map(lives::Shard::take_ended).collect();
-        for (bits, range) in runs {
+        for (key, bits, range) in runs {
             let is_live = self.lives.shard(bits).life(bits).is_some_and(lives::Life::is_live);
             if is_live {
-                self.job(ActorId::new(bits), Work::Items(range), &mut jobs, &mut costs);
+                self.job(seat_number(key), ActorId::new(bits), Work::Items(range), &mut jobs, &mut costs);
             }
         }
         for bits in ending {
-            self.job(ActorId::new(bits), Work::Closing, &mut jobs, &mut costs);
+            if let Some(&seat) = self.seated.get(&bits) {
+                self.job(seat, ActorId::new(bits), Work::Closing, &mut jobs, &mut costs);
+            }
         }
 
         let work = costs.iter().sum();
@@ -335,6 +349,7 @@ impl Engine {
             streams: &self.streams,
             lives: &self.lives,
             seats: &self.seats,
+            seated: &self.seated,
             mail,
             read_limit: self.read_limit,
         }
@@ -390,31 +405,32 @@ impl Engine {
         }
     }
 
-    /// Takes the actor `id` stands for out of its seat to run `work`, adding its job and its expected cost.
-    fn job(&mut self, id: ActorId, work: Work, jobs: &mut Vec<Job>, costs: &mut Vec<u64>) {
-        let Some(&seat) = self.seated.get(&id.bits()) else {
-            return;
-        };
+    /// Takes the actor `id` stands for out of the seat numbered `seat` to run `work`, adding its job and its expected
+    /// cost. Nothing when another actor sits there now.
+    fn job(&mut self, seat: usize, id: ActorId, work: Work, jobs: &mut Vec<Job>, costs: &mut Vec<u64>) {
         let Seat::Taken(sitting) = &self.seats[seat] else {
             return;
         };
+        if sitting.id != id {
+            return;
+        }
         let kind = sitting.kind;
         let Held::Here(actor) = mem::replace(&mut self.actors[seat], Held::Away) else {
             return;
         };
 
-        costs.push(self.expect(id, kind, &work));
+        costs.push(self.expect(seat, kind, &work));
         jobs.push(Job { id, seat, kind, actor, work });
     }
 
-    /// What the turns of the job of the actor `id` stands for, of kind `kind`, that runs `work` are expected to
-    /// cost, in nanoseconds.
-    fn expect(&self, id: ActorId, kind: KindIndex, work: &Work) -> u64 {
+    /// What the turns of the job of the actor in the seat numbered `seat`, of kind `kind`, that runs `work` are
+    /// expected to cost, in nanoseconds.
+    fn expect(&self, seat: usize, kind: KindIndex, work: &Work) -> u64 {
         let key = |item| CostKey { actor: kind, item };
         match work {
             Work::Closing => self.costs.expect(&key(ItemKind::Closing)),
             Work::Items(range) => {
-                let items = self.streams.shard(id.bits()).handed(range.clone());
+                let items = self.streams.shard(seat_key(seat)).handed(range.clone());
 
                 items.map(|pending| self.costs.expect(&key(item_kind(pending)))).sum()
             }
@@ -529,14 +545,15 @@ impl Reading<'_> {
                 }
                 lists.effects.push(Effect::new(id, What::Ended(how.clone())));
 
-                lists.route(Ran { effects: begins..lists.effects.len(), stood: Vec::new(), context: *context });
+                let ran = Ran { effects: begins..lists.effects.len(), stood: Vec::new(), context: *context };
+                lists.route(ran, self.seated);
                 lists.actors.push(Turned { seat: number, kept: Kept::Gone });
             }
             (Work::Items(range), State::Live) => {
                 let mut actor = actor;
                 let mut stood_since = ByActor::default();
                 let mut count = life.sent();
-                for pending in self.streams.shard(id.bits()).handed(range) {
+                for pending in self.streams.shard(seat_key(number)).handed(range) {
                     let table = Since { table: self.table, stood: &stood_since };
                     let begins = lists.effects.len();
                     let mut asked = Asked::continuing(mem::take(&mut lists.effects), mem::take(arena));
@@ -561,7 +578,7 @@ impl Reading<'_> {
                     count = sent(effects, id).unwrap_or(count);
                     stood_since.extend(ran.stood.iter().map(|child| (child.id().bits(), child.path().clone())));
                     let over = ends(effects, id);
-                    lists.route(ran);
+                    lists.route(ran, self.seated);
                     if over {
                         break;
                     }
@@ -579,11 +596,13 @@ impl Lists {
     /// Routes a finished turn's effects into this worker's row of buckets for each view, taking them out of the
     /// list, and keeps the children the turn stood up, to be seated.
     ///
-    /// Every view but the streams borrows the effects; the streams then take them by value. A turn that stood up a
-    /// child whose `begin` failed is routed without what that child left.
-    fn route(&mut self, ran: Ran) {
+    /// Every view but the streams borrows the effects; the streams then take them by value, each item placed under
+    /// the seat its actor has in `seated`. A turn that stood up a child whose `begin` failed is routed without what
+    /// that child left.
+    fn route(&mut self, ran: Ran, seated: &ByActor<usize>) {
         let Ran { effects, stood, context } = ran;
         let routes = &mut self.routes;
+        let place = |key, record| Record::place(key, record, |bits| seated.get(&bits).copied().map(seat_key));
         let is_replaced = match begun(&self.effects[effects.clone()]) {
             Cow::Borrowed(applied) => {
                 routes.route(applied, &context);
@@ -591,13 +610,13 @@ impl Lists {
             }
             Cow::Owned(applied) => {
                 routes.route(&applied, &context);
-                routes.streams.route_owned(applied, &context);
+                routes.streams.route_owned_by(applied, &context, place);
                 true
             }
         };
         let these = self.effects.drain(effects.start..);
         if !is_replaced {
-            routes.streams.route_owned(these, &context);
+            routes.streams.route_owned_by(these, &context, place);
         }
 
         self.stood.extend(stood);
@@ -669,6 +688,19 @@ const fn item_kind(pending: &Pending) -> ItemKind {
         Pending::Mail(envelope) => ItemKind::Mail(envelope.kind),
         Pending::Ended { .. } => ItemKind::Ended,
     }
+}
+
+/// The key the streams keep the items of the seat numbered `seat` under.
+const fn seat_key(seat: usize) -> u64 {
+    seat as u64
+}
+
+/// The number of the seat whose items the streams keep under `key`.
+const fn seat_number(key: u64) -> usize {
+    #[allow(clippy::cast_possible_truncation, reason = "a key the streams place items under is a seat's number")]
+    let seat = key as usize;
+
+    seat
 }
 
 /// The writer of the mail sent between steps, by the chassis: the first.
