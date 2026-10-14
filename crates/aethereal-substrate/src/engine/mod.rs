@@ -12,7 +12,8 @@ pub use plan::{Plan, Share, Workers};
 
 use crate::id::root_id;
 use crate::stream::{self, Pending, Streams};
-use crate::{ActorTable, Clock, Context, Entry, Envelope, Folded, Lives, Log, State, lives};
+use crate::table::Actors;
+use crate::{ActorTable, Clock, Context, Entry, Envelope, Folded, Lives, Log, Routed, State, lives};
 use aethereal_actor::{
     Actor, Arena, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Payload, Refused, Runs,
     Stood, Turn, What, Why,
@@ -103,13 +104,25 @@ pub struct Done {
     arena: Arena,
 }
 
-/// What a worker fills in a step: every effect of its turns one after another, each turn as a range of them, and
-/// each actor it ran. The engine empties it and hands it back the next step, so nothing in it is allocated again.
+/// What a worker fills in a step: its row of buckets for each view, the children its turns stood up, and each actor
+/// it ran. The engine empties it and hands it back the next step, so nothing in it is allocated again.
 #[derive(Default)]
 pub struct Lists {
+    /// The effects of the turn running, routed into the buckets when it finishes.
     effects: Vec<Effect>,
-    turns: Vec<Ran>,
+    /// Boxed, as the lists pass between threads each step.
+    routes: Box<Routes>,
+    stood: Vec<Stood>,
     actors: Vec<Turned>,
+}
+
+/// One writer's row of buckets for each view.
+#[derive(Default)]
+struct Routes {
+    table: Routed<Actors>,
+    log: Routed<Log>,
+    lives: Routed<Lives>,
+    streams: Routed<Streams>,
 }
 
 /// An actor a worker ran, and the actor when it is still the engine's to run.
@@ -126,7 +139,7 @@ enum Kept {
     Gone,
 }
 
-/// One finished turn, as the engine applies it.
+/// One finished turn, as its worker routes it.
 struct Ran {
     /// What the turn asked for, in order: a range of its worker's effects.
     effects: Range<usize>,
@@ -279,7 +292,8 @@ impl Engine {
         for (share, slot) in planned.shares_mut().zip(ROOTS + 1..) {
             let arena = self.arena(parity, slot);
             while self.lists.len() <= slot {
-                self.lists.push(Lists::default());
+                let lists = self.lists();
+                self.lists.push(lists);
             }
             let lists = mem::take(&mut self.lists[slot]);
             share.write_to(arena, lists);
@@ -316,6 +330,7 @@ impl Engine {
     pub fn apply(&mut self, done: Vec<Done>) {
         let parity = parity(self.step);
         let mut gone = Vec::new();
+        let mut rows = Vec::with_capacity(done.len());
         for Done { mut lists, tally, arena } in done {
             self.costs.merge(tally);
             let slot = arena.slot();
@@ -328,38 +343,21 @@ impl Engine {
                     Kept::Gone => gone.push(id),
                 }
             }
-
-            // Every view but the streams borrows the turns' effects; the streams then take them by value. A turn
-            // that stood up a child whose `begin` failed is applied without what that child left.
-            let mut spawned = Vec::new();
-            for (index, ran) in lists.turns.iter_mut().enumerate() {
-                let stood = mem::take(&mut ran.stood);
-                match begun(&lists.effects[ran.effects.clone()]) {
-                    Cow::Borrowed(effects) => self.fold_turn(effects, stood, ran.context),
-                    Cow::Owned(effects) => {
-                        self.fold_turn(&effects, stood, ran.context);
-                        spawned.push((index, effects));
-                    }
-                }
+            for child in lists.stood.drain(..) {
+                self.seat(child.id(), child.path().clone(), child.into_actor());
             }
-            let mut effects = lists.effects.drain(..);
-            let mut spawned = spawned.into_iter().peekable();
-            for (index, ran) in lists.turns.drain(..).enumerate() {
-                let these = effects.by_ref().take(ran.effects.len());
-                let is_spawned = spawned.next_if(|(at, _)| *at == index);
-                match is_spawned {
-                    Some((_, applied)) => {
-                        these.for_each(drop);
-                        self.streams.fold_owned(applied, &ran.context);
-                    }
-                    None => self.streams.fold_owned(these, &ran.context),
-                }
-            }
-            drop(effects);
+            rows.push((slot, lists));
+        }
 
+        // Each part of each view takes its column: the bucket every worker filled for it.
+        self.table.fold_routed(rows.iter_mut().map(|(_, lists)| &mut lists.routes.table));
+        self.log.fold_routed(rows.iter_mut().map(|(_, lists)| &mut lists.routes.log));
+        self.lives.fold_routed(rows.iter_mut().map(|(_, lists)| &mut lists.routes.lives));
+        self.streams.fold_routed(rows.iter_mut().map(|(_, lists)| &mut lists.routes.streams));
+        self.streams.settle();
+        for (slot, lists) in rows {
             self.lists[slot] = lists;
         }
-        self.streams.settle();
 
         // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
         for id in gone {
@@ -404,6 +402,18 @@ impl Engine {
         for child in stood {
             self.seat(child.id(), child.path().clone(), child.into_actor());
         }
+    }
+
+    /// Empty lists for a worker, with a row of buckets for each view.
+    fn lists(&self) -> Lists {
+        let routes = Box::new(Routes {
+            table: self.table.routed(),
+            log: self.log.routed(),
+            lives: self.lives.routed(),
+            streams: self.streams.routed(),
+        });
+
+        Lists { routes, ..Lists::default() }
     }
 
     /// The arena of the writer numbered `slot` for steps of `parity`, taken out to write to; made when it is the
@@ -481,7 +491,7 @@ impl Reading<'_> {
                 }
                 lists.effects.push(Effect::new(id, What::Ended(how.clone())));
 
-                lists.turns.push(Ran { effects: begins..lists.effects.len(), stood: Vec::new(), context: *context });
+                lists.route(Ran { effects: begins..lists.effects.len(), stood: Vec::new(), context: *context });
                 lists.actors.push(Turned { id, kept: Kept::Gone });
             }
             (Work::Items(range), State::Live) => {
@@ -513,7 +523,7 @@ impl Reading<'_> {
                     count = sent(effects, id).unwrap_or(count);
                     stood_since.extend(ran.stood.iter().map(|child| (child.id(), child.path().clone())));
                     let over = ends(effects, id);
-                    lists.turns.push(ran);
+                    lists.route(ran);
                     if over {
                         break;
                     }
@@ -524,6 +534,44 @@ impl Reading<'_> {
             // A plan gives a closing turn only to an actor that has ended, and items only to a live one.
             _ => lists.actors.push(Turned { id, kept: Kept::Live(actor) }),
         }
+    }
+}
+
+impl Lists {
+    /// Routes a finished turn's effects into this worker's row of buckets for each view, taking them out of the
+    /// list, and keeps the children the turn stood up, to be seated.
+    ///
+    /// Every view but the streams borrows the effects; the streams then take them by value. A turn that stood up a
+    /// child whose `begin` failed is routed without what that child left.
+    fn route(&mut self, ran: Ran) {
+        let Ran { effects, stood, context } = ran;
+        let routes = &mut self.routes;
+        let is_replaced = match begun(&self.effects[effects.clone()]) {
+            Cow::Borrowed(applied) => {
+                routes.route(applied, &context);
+                false
+            }
+            Cow::Owned(applied) => {
+                routes.route(&applied, &context);
+                routes.streams.route_owned(applied, &context);
+                true
+            }
+        };
+        let these = self.effects.drain(effects.start..);
+        if !is_replaced {
+            routes.streams.route_owned(these, &context);
+        }
+
+        self.stood.extend(stood);
+    }
+}
+
+impl Routes {
+    /// Routes one turn's effects, emitted in `context`, into every view's bucket but the streams'.
+    fn route(&mut self, effects: &[Effect], context: &Context) {
+        self.table.route(effects, context);
+        self.log.route(effects, context);
+        self.lives.route(effects, context);
     }
 }
 

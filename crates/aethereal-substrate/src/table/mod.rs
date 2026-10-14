@@ -5,8 +5,9 @@ mod actors;
 mod tests;
 
 use crate::id::{child_id, path_id};
-use crate::{Context, Folded};
-use actors::{Actors, Entry};
+use crate::{Context, Folded, Routed};
+pub use actors::Actors;
+use actors::Entry;
 use aethereal_actor::{Effect, Made, Table};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 use std::num::NonZeroUsize;
@@ -71,6 +72,20 @@ impl ActorTable {
     /// Panics when an effect makes an actor under an id the table already holds (ADR-0008).
     pub fn fold(&mut self, effects: &[Effect], context: &Context) {
         self.actors.fold(effects, context);
+    }
+
+    /// An empty row of buckets for one writer's records of the table.
+    pub(crate) fn routed(&self) -> Routed<Actors> {
+        self.actors.routed()
+    }
+
+    /// Folds in every writer's records of a step, part by part, as [`Folded::fold_routed`] does.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a record makes an actor under an id the table already holds (ADR-0008).
+    pub(crate) fn fold_routed<'r>(&mut self, rows: impl IntoIterator<Item = &'r mut Routed<Actors>>) {
+        self.actors.fold_routed(rows);
     }
 
     /// How the actor `id` stands for stands.
