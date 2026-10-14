@@ -4,6 +4,8 @@ use crate::{Consumes, Context, Envelope, View};
 use aethereal_actor::{Effect, Ended, How, What};
 use aethereal_data::ActorId;
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem;
+use std::ops::Range;
 
 /// The view of what each actor has to react to: its stream of items, and who watches each actor (ADR-0009).
 ///
@@ -19,13 +21,19 @@ use std::collections::{BTreeMap, BTreeSet};
 /// does not depend on the order they arrive in: by their source, then in the
 /// order that source caused them. An actor's ending is the last thing it
 /// causes, so it comes after that actor's mail.
+///
+/// A part keeps the items of all its actors in one list, as they arrive. At
+/// the start of a step [`Shard::hand`] puts the list in order, once, and the
+/// step's turns read each actor's run of it where it lies.
 pub struct Streams;
 
 /// One part of the view.
 #[derive(Default)]
 pub struct Shard {
-    /// Each actor's items, as they arrived.
-    items: BTreeMap<u64, Vec<(Order, Pending)>>,
+    /// The items that arrived since the step began, for whichever actor, as they arrived.
+    arrived: Vec<Entry>,
+    /// The items handed out at the start of the step, in order: by actor, then as each actor is handed them.
+    handed: Vec<Entry>,
     /// Who watches each actor, and whether it has ended, by the actor watched.
     watched: BTreeMap<u64, Watched>,
     /// The watches asked for in this step, by the actor watched: who asked, and in what context.
@@ -74,20 +82,46 @@ pub enum Pending {
 /// Where an item stands in its stream: its source's bits, then the order that source caused it in.
 pub type Order = (u64, u64);
 
+/// One item in a part, and the actor it is for.
+pub struct Entry {
+    /// The bits of the actor it is for.
+    to: u64,
+    order: Order,
+    pending: Pending,
+}
+
 impl Shard {
-    /// Takes the items of the actor whose bits these are, as they arrived.
-    pub fn take(&mut self, bits: u64) -> Option<Vec<(Order, Pending)>> {
-        self.items.remove(&bits)
+    /// Hands out the items that arrived since the last step, put in order, and answers with each actor's run of
+    /// them: the actor's bits and where its items lie in [`Self::handed`].
+    ///
+    /// The order is by actor, then by source, then the order that source caused each item, so it does not depend
+    /// on the order the items arrived in. An ending shown twice, from two watches of an actor already over, is
+    /// handed once. What was handed out at the last step is dropped here.
+    pub fn hand(&mut self) -> impl Iterator<Item = (u64, Range<usize>)> + '_ {
+        self.handed.clear();
+        mem::swap(&mut self.arrived, &mut self.handed);
+        self.handed.sort_unstable_by_key(|entry| (entry.to, entry.order));
+        self.handed.dedup_by_key(|entry| (entry.to, entry.order));
+
+        let mut begins = 0;
+        self.handed.chunk_by(|one, next| one.to == next.to).map(move |run| {
+            let range = begins..begins + run.len();
+            begins = range.end;
+
+            (run[0].to, range)
+        })
     }
 
-    /// Whether the part holds an item for any actor.
+    /// The items handed out at the start of the step that lie in `range`.
+    #[must_use]
+    pub fn handed(&self, range: Range<usize>) -> impl ExactSizeIterator<Item = &Pending> {
+        self.handed[range].iter().map(|entry| &entry.pending)
+    }
+
+    /// Whether any item has arrived since the step began.
+    #[must_use]
     pub fn has_items(&self) -> bool {
-        !self.items.is_empty()
-    }
-
-    /// The actors with items in the part.
-    pub fn holders(&self) -> impl Iterator<Item = u64> + '_ {
-        self.items.keys().copied()
+        !self.arrived.is_empty()
     }
 }
 
@@ -109,11 +143,11 @@ impl View for Streams {
         Self::takes_owned(effect.clone(), context)
     }
 
-    /// Items are kept as they arrive and put in order when they are taken, by [`take`]. Watches and endings wait
-    /// for the step to settle.
+    /// Items are kept as they arrive and put in order when they are handed out, by [`Shard::hand`]. Watches and
+    /// endings wait for the step to settle.
     fn fold(shard: &mut Shard, key: u64, record: Record) {
         match record {
-            Record::Item(order, pending) => shard.items.entry(key).or_default().push((order, pending)),
+            Record::Item(order, pending) => shard.arrived.push(Entry { to: key, order, pending }),
             Record::Watch { by, context } => shard.watches.push((key, by, context)),
             Record::Ended { how, context } => shard.endings.push((key, how, context)),
         }
@@ -166,17 +200,6 @@ fn handed(to: u64, ended: u64, how: How, context: Context) -> (u64, Record) {
     let ended = Ended::new(ActorId::new(ended), how);
 
     (to, Record::Item((ended.actor().id().bits(), u64::MAX), Pending::Ended { ended, context }))
-}
-
-/// An actor's items as the view keeps them, put in the order the actor is handed them.
-///
-/// The order is by source, then the order that source caused each item, so it does not depend on the order the
-/// items arrived in. An ending shown twice, from two watches of an actor already over, is handed once.
-pub fn take(mut items: Vec<(Order, Pending)>) -> impl Iterator<Item = Pending> {
-    items.sort_by_key(|(order, _)| *order);
-    items.dedup_by(|later, kept| later.0 == kept.0);
-
-    items.into_iter().map(|(_, pending)| pending)
 }
 
 #[cfg(test)]

@@ -2,9 +2,9 @@
 
 use super::Lists;
 use super::costs::KindIndex;
-use crate::stream::Pending;
 use aethereal_actor::{Arena, Runs};
 use aethereal_data::ActorId;
+use std::ops::Range;
 
 /// The workers a host has, as the engine plans a step for them (ADR-0011).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,8 +52,8 @@ pub(super) struct Job {
 
 /// What an actor runs in a step.
 pub(super) enum Work {
-    /// One turn for each item, in this order.
-    Items(Vec<Pending>),
+    /// One turn for each item the actor's part of the streams handed out in this range, in order.
+    Items(Range<usize>),
     /// Its closing turn.
     Closing,
 }

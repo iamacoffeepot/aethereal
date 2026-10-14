@@ -297,13 +297,12 @@ fn key_spawned_earlier_in_the_step_is_taken() {
 fn watcher_reacts_to_an_ending_once_with_its_fault_after_its_last_mail() {
     // Catches a watcher never run for an ending, run without the fault, run before the ended actor's last mail
     // has reached it, and run for it again in a later step.
-    let (mut engine, root) = engine(&["watch 2 fail"]);
+    let (mut engine, _) = engine(&["watch 2 fail"]);
     step(&mut engine);
     step(&mut engine);
 
     assert_eq!(step(&mut engine), ["2 ended Faulted"]);
     assert_eq!(step(&mut engine), ["1 got bye 2", "1 saw failed over fail"]);
-    assert!(engine.streams.shard(root.bits()).holders().all(|bits| bits != root.bits()));
     assert_eq!(step(&mut engine), [""; 0]);
     assert!(engine.is_idle());
 }
