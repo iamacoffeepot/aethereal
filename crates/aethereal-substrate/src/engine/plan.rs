@@ -44,6 +44,8 @@ pub struct Share {
 /// One actor's turns of a step: the actor, taken out of the engine for the step, and what it runs.
 pub(super) struct Job {
     pub(super) id: ActorId,
+    /// The number of the actor's seat.
+    pub(super) seat: usize,
     /// The kind of actor, which its turns are measured under.
     pub(super) kind: KindIndex,
     pub(super) actor: Box<dyn Runs>,
