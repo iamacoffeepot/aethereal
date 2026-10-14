@@ -2,12 +2,13 @@
 //! ADR-0011).
 
 use crate::id::spawned;
-use crate::{ByActor, Context, View};
+use crate::{BySeat, Context, Part, View};
 use aethereal_actor::{Effect, How, SeatNumber, Seated, What};
 use aethereal_data::ActorId;
 use std::mem;
+use std::num::NonZeroUsize;
 
-/// The view of how far each actor's life has gone, keyed by the actor's own id (ADR-0011).
+/// The view of how far each actor's life has gone, keyed by the actor's seat (ADR-0011).
 ///
 /// A key has one owner. An actor's entry is made by the spawn its parent
 /// asked for, or for a root by the chassis, and everything after is the
@@ -17,10 +18,9 @@ use std::mem;
 pub struct Lives;
 
 /// One part of the view.
-#[derive(Default)]
 pub struct Shard {
     /// Each actor's life, from when it is made to when its closing turn has run.
-    lives: ByActor<Life>,
+    lives: BySeat<Life>,
     /// The actors that ended since the step began, and their seats, in the order they ended.
     ended: Vec<Seated>,
 }
@@ -41,23 +41,29 @@ pub enum State {
     Ending { how: How, context: Context },
 }
 
-/// What the view keeps of an effect.
-pub enum Record {
+/// What the view keeps of an effect, for the actor `id` that sits in the key's seat.
+pub struct Record {
+    id: ActorId,
+    change: Change,
+}
+
+/// How an effect changes an actor's life.
+enum Change {
     /// The actor was made.
     Made,
     /// The actor sent the piece of mail it counts as this.
     Sent(u64),
-    /// The actor, which sits in `seat`, ended this way, in this context.
-    Ended { how: How, context: Context, seat: SeatNumber },
+    /// The actor ended this way, in this context.
+    Ended { how: How, context: Context },
     /// The actor's closing turn has run, and its life is over.
     Over,
 }
 
 impl Shard {
-    /// The life of the actor whose bits these are, when it is made and its closing turn has not run.
+    /// The life of `actor`, when it is made and its closing turn has not run.
     #[must_use]
-    pub fn life(&self, bits: u64) -> Option<&Life> {
-        self.lives.get(&bits)
+    pub fn life(&self, actor: Seated) -> Option<&Life> {
+        self.lives.get(actor)
     }
 
     /// Takes the actors that ended since the step began, and their seats, in the order they ended.
@@ -69,6 +75,12 @@ impl Shard {
     #[must_use]
     pub fn has_ended(&self) -> bool {
         !self.ended.is_empty()
+    }
+}
+
+impl Part for Shard {
+    fn empty(parts: NonZeroUsize) -> Self {
+        Self { lives: BySeat::empty(parts), ended: Vec::new() }
     }
 }
 
@@ -100,42 +112,41 @@ impl View for Lives {
         record(effect, context).into_iter()
     }
 
-    fn fold(shard: &mut Shard, key: u64, record: Record) {
-        match record {
-            Record::Made => {
-                shard.lives.entry(key).or_insert(Life { sent: 0, state: State::Live });
+    fn fold(shard: &mut Shard, key: u64, Record { id, change }: Record) {
+        let actor = Seated { id, seat: SeatNumber::new(key) };
+        match change {
+            Change::Made => {
+                shard.lives.entry(actor, || Life { sent: 0, state: State::Live });
             }
-            Record::Sent(count) => {
-                if let Some(life) = shard.lives.get_mut(&key) {
+            Change::Sent(count) => {
+                if let Some(life) = shard.lives.get_mut(actor) {
                     life.sent = life.sent.max(count);
                 }
             }
-            Record::Ended { how, context, seat } => {
-                if let Some(life) = shard.lives.get_mut(&key) {
+            Change::Ended { how, context } => {
+                if let Some(life) = shard.lives.get_mut(actor) {
                     if life.is_live() {
-                        shard.ended.push(Seated { id: ActorId::new(key), seat });
+                        shard.ended.push(actor);
                     }
                     life.state = State::Ending { how, context };
                 }
             }
-            Record::Over => {
-                shard.lives.remove(&key);
-            }
+            Change::Over => shard.lives.remove(actor),
         }
     }
 }
 
 /// The key and record the view keeps of `effect`, emitted in `context`, or none for an effect it does not fold.
 fn record(effect: &Effect, context: &Context) -> Option<(u64, Record)> {
-    let Seated { id: by, seat } = effect.seated();
-    let (id, record) = match effect.what() {
-        What::Root { .. } | What::RootInstanced { .. } => (by, Record::Made),
-        What::Send { id, .. } => (id.sender, Record::Sent(id.count)),
-        What::Close => (by, Record::Ended { how: How::Closed, context: *context, seat }),
-        What::Failed(fault) => (by, Record::Ended { how: How::Failed(fault.clone()), context: *context, seat }),
-        What::Ended(_) => (by, Record::Over),
-        _ => (spawned(effect)?.0.id, Record::Made),
+    let by = effect.seated();
+    let (actor, change) = match effect.what() {
+        What::Root { .. } | What::RootInstanced { .. } => (by, Change::Made),
+        What::Send { id, .. } => (by, Change::Sent(id.count)),
+        What::Close => (by, Change::Ended { how: How::Closed, context: *context }),
+        What::Failed(fault) => (by, Change::Ended { how: How::Failed(fault.clone()), context: *context }),
+        What::Ended(_) => (by, Change::Over),
+        _ => (spawned(effect)?.0, Change::Made),
     };
 
-    Some((id.bits(), record))
+    Some((actor.seat.number(), Record { id: actor.id, change }))
 }

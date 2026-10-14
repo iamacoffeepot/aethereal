@@ -201,9 +201,11 @@ impl Engine {
     /// What the actor `id` stands for logged most recently, oldest first, as of the last step.
     ///
     /// It holds the fault of a turn that failed, and of a closing turn that did. Nothing for an actor that has
-    /// logged nothing.
+    /// logged nothing, or whose seat another actor has taken and logged in since.
     pub fn log(&self, id: ActorId) -> impl Iterator<Item = &Entry> {
-        self.log.shard(id.bits()).get(&id.bits()).into_iter().flatten()
+        let actor = self.table.seat(id).map(|seat| Seated { id, seat });
+
+        actor.and_then(|actor| self.log.shard(actor.seat.number()).get(actor)).into_iter().flatten()
     }
 
     /// The number of the last step run, from one. Zero before the first.
@@ -309,9 +311,9 @@ impl Engine {
         let runs: Vec<(u64, u64, Range<usize>)> = self.streams.shards_mut().flat_map(stream::Shard::hand).collect();
         let ending: Vec<Seated> = self.lives.shards_mut().flat_map(lives::Shard::take_ended).collect();
         for (seat, bits, range) in runs {
-            let is_live = self.lives.shard(bits).life(bits).is_some_and(lives::Life::is_live);
+            let me = Seated { id: ActorId::new(bits), seat: SeatNumber::new(seat) };
+            let is_live = self.lives.shard(seat).life(me).is_some_and(lives::Life::is_live);
             if is_live {
-                let me = Seated { id: ActorId::new(bits), seat: SeatNumber::new(seat) };
                 self.job(me, Work::Items(range), &mut jobs, &mut costs);
             }
         }
@@ -549,7 +551,7 @@ impl Reading<'_> {
     fn turns(&self, job: Job, clock: &impl Clock, tally: &mut Tally, arena: &mut Arena, lists: &mut Lists) {
         let Job { id, seat: number, kind, actor, work } = job;
         let me = Seated { id, seat: number };
-        let life = self.lives.shard(id.bits()).life(id.bits());
+        let life = self.lives.shard(number.number()).life(me);
         let (Seat::Taken(seat), Some(life)) = (&self.seats[number.index()], life) else {
             lists.actors.push(Turned { seat: number, kept: Kept::Live(actor) });
             return;
