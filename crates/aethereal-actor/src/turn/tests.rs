@@ -1,7 +1,7 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's list.
 
 use super::*;
-use crate::{Beginning, Ending, Fault, Item, Made, Mail, MailId, Unreadable, Within};
+use crate::{Beginning, Ending, Fault, Item, Made, Mail, MailId, Payload, Span, Unreadable, Within};
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
 use alloc::vec;
@@ -197,6 +197,9 @@ impl Actor for Herald {
     }
 }
 
+/// Where a turn's first piece of mail with no bytes is written: at the start of an arena of its own.
+const NOTHING: Payload = Payload::InArena(Span { slot: 0, start: 0, len: 0 });
+
 const ROOT: ActorPath = ActorPath::new("aether.test.root");
 const ME: ActorId = ActorId::new(1);
 
@@ -222,7 +225,7 @@ fn child_begins_inside_its_parents_turn() {
     let spawn_branch = Effect::new(ME, What::Spawn { from: Code::Linked(Branch::NAME) });
     assert_eq!(asked.effects(), [spawn_branch, by_branch(leaf_spawn(0)), by_branch(leaf_spawn(1))]);
 
-    let (_, stood) = asked.into_parts();
+    let (_, stood, _) = asked.into_parts();
     let paths: Vec<_> = stood.iter().map(|child| child.path().clone()).collect();
     let leaves = [
         "aether.test.root/aether.test.branch/aether.test.leaf:0",
@@ -278,7 +281,7 @@ fn failed_begin_leaves_its_fault_and_no_child() {
 
     let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
     assert!(turn.spawn::<Branch>(&(), BranchConfig { leaves: 0, last_fails: false }).is_ok());
-    let (effects, stood) = asked.into_parts();
+    let (effects, stood, _) = asked.into_parts();
     assert_eq!(effects.last(), Some(&spawn_branch));
     assert_eq!(stood.len(), 1);
 }
@@ -294,7 +297,7 @@ fn begin_and_end_send_as_their_own_actor() {
         panic!("the herald begins");
     };
     let first = MailId { sender: herald.id(), count: 1 };
-    let to_parent = |kind| What::Send { to: To::Parent, id: first, kind, bytes: Vec::new() };
+    let to_parent = |kind| What::Send { to: To::Parent, id: first, kind, bytes: NOTHING };
     let spawn = Effect::new(ME, What::Spawn { from: Code::Linked(Herald::NAME) });
     assert_eq!(asked.effects(), [spawn, Effect::new(herald.id(), to_parent(KindId::of::<Poked>()))]);
 
@@ -345,7 +348,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
 
     let first = MailId { sender: ME, count: 1 };
     let to_other = To::Held(ErasedActorRef::new(other));
-    let poked = What::Send { to: to_other.clone(), id: first, kind: KindId::of::<Poked>(), bytes: Vec::new() };
+    let poked = What::Send { to: to_other.clone(), id: first, kind: KindId::of::<Poked>(), bytes: NOTHING };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Poke>(), &[]), (Ok(()), vec![Effect::new(ME, poked)]));
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Shut>(), &[]), (Ok(()), vec![Effect::new(ME, What::Close)]));
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Poked>(), &[]), (Ok(()), Vec::new()));
@@ -353,7 +356,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
     let mut out = Writer::<Within>::new(crate::WithinWriter::new());
     assert_eq!(ErasedActorRef::new(other).encode(&mut out), Ok(()));
     let meet = out.into_bytes();
-    let poke = What::Send { to: to_other, id: first, kind: KindId::of::<Poke>(), bytes: Vec::new() };
+    let poke = What::Send { to: to_other, id: first, kind: KindId::of::<Poke>(), bytes: NOTHING };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Meet>(), &meet), (Ok(()), vec![Effect::new(ME, poke)]));
 
     let (handled, effects) = handle(&mut leaf, &Listed::default(), KindId::of::<Meet>(), &meet);
