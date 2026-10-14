@@ -72,6 +72,12 @@ impl Shard {
         mem::take(&mut self.ended)
     }
 
+    /// The actors that ended since the step began, and their seats.
+    #[must_use]
+    pub fn ended(&self) -> &[Seated] {
+        &self.ended
+    }
+
     /// Whether an actor has ended since the step began.
     #[must_use]
     pub fn has_ended(&self) -> bool {

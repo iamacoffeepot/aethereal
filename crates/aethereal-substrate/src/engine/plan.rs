@@ -1,10 +1,7 @@
-//! How many workers a step runs on, and which actors each runs (ADR-0011).
+//! How many workers a step runs on, and which parts of the engine each runs (ADR-0011).
 
-use super::Lists;
-use super::costs::KindIndex;
-use aethereal_actor::{Arena, Runs, SeatNumber};
-use aethereal_data::ActorId;
-use std::ops::Range;
+use super::{Lists, Parcel};
+use aethereal_actor::Arena;
 
 /// The workers a host has, as the engine plans a step for them (ADR-0011).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,37 +23,20 @@ impl Workers {
 pub struct Plan {
     /// Workers to wake when above zero, to park when below: never more than are parked, and never so many that
     /// none runs.
-    delta: isize,
+    pub(super) delta: isize,
     /// What each running worker runs this step, the first for the thread that steps the engine. One for each
     /// worker running once `delta` is taken.
-    shares: Vec<Share>,
+    pub(super) shares: Vec<Share>,
 }
 
-/// The actors one worker runs in a step, each with what it reacts to.
+/// The parts of the engine one worker runs in a step, each taken out of the engine for the step with the actors in
+/// it and what they react to.
 pub struct Share {
-    jobs: Vec<Job>,
+    pub(super) parcels: Vec<Parcel>,
     /// Where the worker writes the bytes of the mail its turns send.
-    arena: Arena,
+    pub(super) arena: Arena,
     /// What the worker fills as it runs.
-    lists: Lists,
-}
-
-/// One actor's turns of a step: the actor, taken out of the engine for the step, and what it runs.
-pub(super) struct Job {
-    pub(super) id: ActorId,
-    pub(super) seat: SeatNumber,
-    /// The kind of actor, which its turns are measured under.
-    pub(super) kind: KindIndex,
-    pub(super) actor: Box<dyn Runs>,
-    pub(super) work: Work,
-}
-
-/// What an actor runs in a step.
-pub(super) enum Work {
-    /// One turn for each item the actor's part of the streams handed out in this range, in order.
-    Items(Range<usize>),
-    /// Its closing turn.
-    Closing,
+    pub(super) lists: Lists,
 }
 
 impl Plan {
@@ -71,34 +51,18 @@ impl Plan {
     pub fn into_shares(self) -> Vec<Share> {
         self.shares
     }
-    /// What each running worker runs, to give each its arena.
-    pub(super) fn shares_mut(&mut self) -> impl Iterator<Item = &mut Share> {
-        self.shares.iter_mut()
-    }
 }
 
-impl Share {
-    /// The actors of the share, each with what it runs, the arena its mail is written to, and the lists it fills.
-    pub(super) fn into_parts(self) -> (Vec<Job>, Arena, Lists) {
-        (self.jobs, self.arena, self.lists)
-    }
-
-    /// Gives the share `arena` to write its mail to, and `lists` to fill.
-    pub(super) fn write_to(&mut self, arena: Arena, lists: Lists) {
-        self.arena = arena;
-        self.lists = lists;
-    }
-}
-
-/// The plan for jobs whose expected costs are `costs`, given in the same order, on `workers`, where the work of
-/// recent steps averages `recent` nanoseconds.
-pub(super) fn plan(jobs: Vec<Job>, costs: &[u64], recent: u64, workers: Workers) -> Plan {
-    let work: u64 = costs.iter().sum();
-    let largest = costs.iter().copied().max().unwrap_or(0);
-    let running = decide(work, largest, jobs.len(), recent, workers);
+/// Plans a step whose parts with something to run are `parts`, each with what its turns are expected to cost, on
+/// `workers`, given the expected work of `recent` steps: how the count of running workers changes, and which parts
+/// each running worker runs.
+pub(super) fn plan(parts: &[(usize, u64)], recent: u64, workers: Workers) -> (isize, Vec<Vec<usize>>) {
+    let work: u64 = parts.iter().map(|(_, cost)| cost).sum();
+    let largest = parts.iter().map(|(_, cost)| *cost).max().unwrap_or(0);
+    let running = decide(work, largest, parts.len(), recent, workers);
     let delta = signed(running) - signed(workers.active.clamp(1, workers.max.max(1)));
 
-    Plan { delta, shares: pack(jobs, costs, running) }
+    (delta, pack(parts, running))
 }
 
 /// How many workers run a step whose expected work is `work` nanoseconds, the largest actor's `largest`, over
@@ -142,25 +106,27 @@ fn takes(work: u64, largest: u64, workers: usize) -> u64 {
     work.div_ceil(workers).max(largest)
 }
 
-/// Gives each job to one of `running` shares: the most costly first, each to the share with the least so far.
-///
-/// Jobs that cost the same keep the order of their seats, so each worker runs its actors in the order the engine
-/// keeps them, and their items reach the streams already close to the order they are handed out in.
-pub(super) fn pack(jobs: Vec<Job>, costs: &[u64], running: usize) -> Vec<Share> {
-    let mut order: Vec<(u64, Job)> = costs.iter().copied().zip(jobs).collect();
-    order.sort_by(|(left, a), (right, b)| right.cmp(left).then(a.seat.cmp(&b.seat)));
+/// Gives each part to one of `running` shares: the most costly first, each to the share with the least so far, and
+/// of parts that cost the same, the lower first. Each share then runs its parts in the order of their numbers.
+pub(super) fn pack(parts: &[(usize, u64)], running: usize) -> Vec<Vec<usize>> {
+    let mut order: Vec<(u64, usize)> = parts.iter().map(|(part, cost)| (*cost, *part)).collect();
+    order.sort_unstable_by(|(left, a), (right, b)| right.cmp(left).then(a.cmp(b)));
 
-    let mut shares: Vec<(u64, Share)> = (0..running.max(1))
-        .map(|_| (0, Share { jobs: Vec::new(), arena: Arena::default(), lists: Lists::default() }))
-        .collect();
-    for (cost, job) in order {
+    let mut shares: Vec<(u64, Vec<usize>)> = (0..running.max(1)).map(|_| (0, Vec::new())).collect();
+    for (cost, part) in order {
         if let Some((load, share)) = shares.iter_mut().min_by_key(|(load, _)| *load) {
             *load += cost;
-            share.jobs.push(job);
+            share.push(part);
         }
     }
 
-    shares.into_iter().map(|(_, share)| share).collect()
+    shares
+        .into_iter()
+        .map(|(_, mut share)| {
+            share.sort_unstable();
+            share
+        })
+        .collect()
 }
 
 /// `count` as a signed count.
