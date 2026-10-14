@@ -1,6 +1,6 @@
 //! The function that computes an actor's id (ADR-0008).
 
-use aethereal_actor::{Effect, What};
+use aethereal_actor::{Effect, Seated, What};
 use aethereal_data::{ActorId, ActorPath, Fnv, PathSegment};
 
 /// The id of the root `segment` names.
@@ -23,15 +23,18 @@ pub fn path_id(path: &ActorPath) -> ActorId {
     ActorId::new(path.segments().fold(basis, |above, segment| fold(above, segment_hash(&segment))))
 }
 
-/// The id and segment of the child `effect` stands up beneath the actor that asked, when it is a spawn or an embed.
-pub fn spawned(effect: &Effect) -> Option<(ActorId, PathSegment)> {
-    let segment = match effect.what() {
-        What::Spawn { from } | What::Embed { from } => from.singleton(),
-        What::SpawnInstanced { from, key } | What::EmbedInstanced { from, key } => from.instanced(key),
+/// The child `effect` stands up beneath the actor that asked, with its seat, and its segment, when it is a spawn or an
+/// embed.
+pub fn spawned(effect: &Effect) -> Option<(Seated, PathSegment)> {
+    let (segment, seat) = match effect.what() {
+        What::Spawn { from, seat } | What::Embed { from, seat } => (from.singleton(), *seat),
+        What::SpawnInstanced { from, key, seat } | What::EmbedInstanced { from, key, seat } => {
+            (from.instanced(key), *seat)
+        }
         _ => return None,
     };
 
-    Some((child_id(effect.by(), &segment), segment))
+    Some((Seated { id: child_id(effect.by(), &segment), seat }, segment))
 }
 
 /// A segment's hash: FNV-1a over the segment as the path spells it.

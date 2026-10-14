@@ -27,9 +27,9 @@ pub(super) fn begun(effects: &[Effect]) -> Cow<'_, [Effect]> {
         if let Some((child, _)) = spawned(effect) {
             let fails = is_by_never_live || failed.contains(&position);
             if fails {
-                never_live.insert(child.bits());
+                never_live.insert(child.id.bits());
             } else {
-                never_live.remove(&child.bits());
+                never_live.remove(&child.id.bits());
                 kept.push(effect.clone());
             }
         } else {
@@ -51,7 +51,7 @@ fn failed_spawns(effects: &[Effect]) -> BTreeSet<usize> {
     let mut failed = BTreeSet::new();
     for (position, effect) in effects.iter().enumerate() {
         if let Some((child, _)) = spawned(effect) {
-            latest_spawn.insert(child.bits(), position);
+            latest_spawn.insert(child.id.bits(), position);
         } else if *effect.what() == What::Faulted {
             failed.extend(latest_spawn.remove(&effect.by().bits()));
         }
@@ -64,7 +64,7 @@ fn failed_spawns(effects: &[Effect]) -> BTreeSet<usize> {
 mod tests {
     use super::*;
     use crate::id::child_id;
-    use aethereal_actor::{Code, Level};
+    use aethereal_actor::{Code, Level, SeatNumber, Seated};
     use aethereal_data::{ActorId, KindName, PathSegment};
 
     const BRANCH: KindName = KindName::new("aether.test.branch");
@@ -74,11 +74,12 @@ mod tests {
     fn failed_begin_takes_out_its_child_and_all_beneath() {
         // Catches a failed child's spawn or asks reaching the table, its logged lines lost with them, a second
         // child at the same key dropped with the first, and an unrelated actor's effects lost.
-        let me = ActorId::new(1);
-        let branch = child_id(me, &PathSegment::new(BRANCH, &()));
-        let leaf = child_id(branch, &PathSegment::new(LEAF, &()));
-        let spawn_branch = Effect::new(me, What::Spawn { from: Code::Linked(BRANCH) });
-        let spawn_leaf = Effect::new(branch, What::Spawn { from: Code::Linked(LEAF) });
+        let seated = |id, seat| Seated { id, seat: SeatNumber::new(seat) };
+        let me = seated(ActorId::new(1), 0);
+        let branch = seated(child_id(me.id, &PathSegment::new(BRANCH, &())), 1);
+        let leaf = seated(child_id(branch.id, &PathSegment::new(LEAF, &())), 2);
+        let spawn_branch = Effect::new(me, What::Spawn { from: Code::Linked(BRANCH), seat: branch.seat });
+        let spawn_leaf = Effect::new(branch, What::Spawn { from: Code::Linked(LEAF), seat: leaf.seat });
         let line = Effect::new(leaf, What::Log { level: Level::Error, text: String::from("no file") });
         let effects = vec![
             spawn_branch.clone(),

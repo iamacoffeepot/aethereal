@@ -20,6 +20,7 @@ mod fault;
 mod item;
 mod mail;
 mod reference;
+mod seat;
 mod turn;
 
 pub use actor::{Actor, Runs};
@@ -31,4 +32,5 @@ pub use fault::{Fault, Unreadable, Unwritable};
 pub use item::Item;
 pub use mail::{Mail, MailId};
 pub use reference::ErasedActorRef;
+pub use seat::{SeatNumber, Seated, Seats};
 pub use turn::{Asked, Beginning, Ending, Refused, Stood, Turn, Why};

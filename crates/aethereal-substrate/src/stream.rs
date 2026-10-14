@@ -1,56 +1,54 @@
 //! The view of what each actor has to react to (ADR-0009, ADR-0011).
 
 use crate::{ByActor, Consumes, Context, Envelope, View};
-use aethereal_actor::{Effect, Ended, How, What};
+use aethereal_actor::{Effect, Ended, How, SeatNumber, Seated, What};
 use aethereal_data::ActorId;
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::mem;
 use std::ops::Range;
 
 /// The view of what each actor has to react to: its stream of items, and who watches each actor (ADR-0009).
 ///
-/// It reads no other view. Mail is kept under the actor its turn named,
-/// whether or not that actor is still live: an actor that is not live is never
-/// handed its items, and they are dropped there. An item is kept under its
-/// actor's id until the engine places it under the actor's seat, so that the
-/// items of a step are handed out in the order of the seats. A watch and an ending are
-/// kept under the actor watched, so the two meet in one part, and are paired
-/// once the step's records are all in: an ending goes to every actor that
-/// watches the one that ended, a watch asked for in the same step among them,
-/// and a watch of an actor that ended before the step is shown that it did.
+/// It reads no other view. Mail is kept under the seat of the actor its turn
+/// named, whether or not that actor is still live: an actor that is not live
+/// is never handed its items, and they are dropped there. The seat comes with
+/// the actor's id wherever an actor is named, so the items of a step are handed
+/// out in the order of the seats. A watch and an ending are kept under the
+/// actor watched, so the two meet in one part, and are paired once the step's
+/// records are all in: an ending goes to every actor that watches the one that
+/// ended, a watch asked for in the same step among them, and a watch of an
+/// actor that ended before the step is shown that it did.
 ///
 /// Many actors write one key, so an actor's items are kept in an order that
 /// does not depend on the order they arrive in: by their source, then in the
 /// order that source caused them. An actor's ending is the last thing it
 /// causes, so it comes after that actor's mail.
 ///
-/// A part keeps the placed items of all its actors in one list, as they
-/// arrive. At the start of a step [`Shard::hand`] puts the list in order, once,
-/// and the step's turns read each actor's run of it where it lies.
+/// A part keeps the items of all its actors in one list, as they arrive. At
+/// the start of a step [`Shard::hand`] puts the list in order, once, and the
+/// step's turns read each actor's run of it where it lies.
 pub struct Streams;
 
 /// One part of the view.
 #[derive(Default)]
 pub struct Shard {
-    /// The items placed under a seat since the step began, for whichever actor, as they arrived.
+    /// The items that arrived since the step began, for whichever actor, as they arrived.
     arrived: Vec<Entry>,
-    /// The items kept under their actor's id since the step began, as they arrived, to be placed under its seat.
-    unplaced: Vec<Unplaced>,
     /// The items handed out at the start of the step, in order: by seat and actor, then as each actor is handed them.
     handed: Vec<Entry>,
     /// Who watches each actor, and whether it has ended, by the actor watched.
     watched: ByActor<Watched>,
-    /// The watches asked for in this step, by the actor watched: who asked, and in what context.
-    watches: Vec<(u64, u64, Context)>,
+    /// The watches asked for in this step, by the actor watched: that actor's seat, who asked, and in what context.
+    watches: Vec<(u64, SeatNumber, Seated, Context)>,
     /// The endings of this step: who ended, how, and in what context.
-    endings: Vec<(u64, How, Context)>,
+    endings: Vec<(Seated, How, Context)>,
 }
 
 /// One watched actor's entry.
 #[derive(Default)]
 struct Watched {
-    /// The actors that watch it.
-    by: BTreeSet<u64>,
+    /// The actors that watch it: their seats, by their ids' bits.
+    by: BTreeMap<u64, SeatNumber>,
     /// Whether its life is over.
     life: Watching,
 }
@@ -67,15 +65,13 @@ enum Watching {
 
 /// What the view keeps of an effect.
 pub enum Record {
-    /// An item for the key's actor, and where it stands in that actor's stream.
-    Item(Order, Pending),
     /// An item for the actor whose bits are `to`, which sits in the seat numbered by the key, and where it stands in
     /// that actor's stream.
-    Placed { to: u64, order: Order, pending: Pending },
-    /// The actor whose bits these are watches the key's actor, as asked in this context.
-    Watch { by: u64, context: Context },
-    /// The key's actor's closing turn has run: it ended this way, in this context.
-    Ended { how: How, context: Context },
+    Item { to: u64, order: Order, pending: Pending },
+    /// The actor `by` names watches the key's actor, which sits in `seat`, as asked in this context.
+    Watch { seat: SeatNumber, by: Seated, context: Context },
+    /// The key's actor, which sits in `seat`, has had its closing turn run: it ended this way, in this context.
+    Ended { seat: SeatNumber, how: How, context: Context },
 }
 
 /// One item in an actor's stream.
@@ -91,7 +87,7 @@ pub type Order = (u64, u64);
 
 /// One item in a part, and the seat and actor it is for.
 pub struct Entry {
-    /// The number of the seat of the actor it is for, as the item was placed.
+    /// The number of the seat of the actor it is for.
     seat: u64,
     /// The bits of the actor it is for.
     to: u64,
@@ -99,18 +95,15 @@ pub struct Entry {
     pending: Pending,
 }
 
-/// One item kept under its actor's id: the actor's bits, where it stands in that actor's stream, and the item.
-pub type Unplaced = (u64, Order, Pending);
-
 impl Shard {
-    /// Hands out the items placed since the last step, put in order, and answers with each actor's run of them: the
-    /// number of the seat the actor sat in when they were placed, the actor's bits, and where its items lie in
-    /// [`Self::handed`].
+    /// Hands out the items that arrived since the last step, put in order, and answers with each actor's run of
+    /// them: the number of the seat the actor sat in when they were sent, the actor's bits, and where its items lie
+    /// in [`Self::handed`].
     ///
     /// The order is by seat and actor, then by source, then the order that source caused each item, so it does not
-    /// depend on the order the items arrived in. A seat may have been taken by another actor since an item was
-    /// placed under it, so a run names its actor. An ending shown twice, from two watches of an actor already over,
-    /// is handed once. What was handed out at the last step is dropped here.
+    /// depend on the order the items arrived in. A seat is taken again once its actor has gone, so a run names its
+    /// actor. An ending shown twice, from two watches of an actor already over, is handed once. What was handed out
+    /// at the last step is dropped here.
     pub fn hand(&mut self) -> impl Iterator<Item = (u64, u64, Range<usize>)> + '_ {
         self.handed.clear();
         mem::swap(&mut self.arrived, &mut self.handed);
@@ -126,11 +119,6 @@ impl Shard {
         })
     }
 
-    /// Takes the items kept under their actor's id, for the engine to place under each actor's seat.
-    pub fn take_unplaced(&mut self) -> Vec<Unplaced> {
-        mem::take(&mut self.unplaced)
-    }
-
     /// The items handed out at the start of the step that lie in `range`.
     #[must_use]
     pub fn handed(&self, range: Range<usize>) -> impl ExactSizeIterator<Item = &Pending> {
@@ -140,33 +128,16 @@ impl Shard {
     /// Whether any item has arrived since the step began.
     #[must_use]
     pub fn has_items(&self) -> bool {
-        let has_placed = !self.arrived.is_empty();
-        let has_unplaced = !self.unplaced.is_empty();
-
-        has_placed || has_unplaced
-    }
-}
-
-impl Record {
-    /// The record placed under the seat `seat` gives for its actor, keyed by the seat's number: for an item kept
-    /// under the actor's id, `key`, when the actor has a seat. Any other record is kept as it is.
-    pub fn place(key: u64, record: Self, seat: impl FnOnce(u64) -> Option<u64>) -> (u64, Self) {
-        match record {
-            Self::Item(order, pending) => match seat(key) {
-                Some(seat) => (seat, Self::Placed { to: key, order, pending }),
-                None => (key, Self::Item(order, pending)),
-            },
-            record => (key, record),
-        }
+        !self.arrived.is_empty()
     }
 }
 
 impl Pending {
-    /// The actor the item comes from.
-    pub fn source(&self) -> ActorId {
+    /// The actor the item comes from, and its seat.
+    pub const fn source(&self) -> Seated {
         match self {
-            Self::Mail(envelope) => envelope.id.sender,
-            Self::Ended { ended, .. } => ended.actor().id(),
+            Self::Mail(envelope) => Seated { id: envelope.id.sender, seat: envelope.sender_seat },
+            Self::Ended { ended, .. } => ended.actor().seated(),
         }
     }
 }
@@ -179,34 +150,39 @@ impl View for Streams {
         Self::takes_owned(effect.clone(), context)
     }
 
-    /// Items are kept as they arrive and put in order when they are handed out, by [`Shard::hand`]; one not yet
-    /// placed under a seat waits for the engine to place it. Watches and endings wait for the step to settle.
+    /// Items are kept as they arrive and put in order when they are handed out, by [`Shard::hand`]. Watches and
+    /// endings wait for the step to settle.
     fn fold(shard: &mut Shard, key: u64, record: Record) {
         match record {
-            Record::Item(order, pending) => shard.unplaced.push((key, order, pending)),
-            Record::Placed { to, order, pending } => shard.arrived.push(Entry { seat: key, to, order, pending }),
-            Record::Watch { by, context } => shard.watches.push((key, by, context)),
-            Record::Ended { how, context } => shard.endings.push((key, how, context)),
+            Record::Item { to, order, pending } => shard.arrived.push(Entry { seat: key, to, order, pending }),
+            Record::Watch { seat, by, context } => shard.watches.push((key, seat, by, context)),
+            Record::Ended { seat, how, context } => {
+                shard.endings.push((Seated { id: ActorId::new(key), seat }, how, context));
+            }
         }
     }
 
     /// Pairs the step's watches and endings, each under the actor watched, and hands on an ending to each watcher.
     fn settle(shard: &mut Shard, forward: &mut Vec<(u64, Record)>) {
         // A watch of an actor that ended before this step is shown so, with how it ended no longer kept.
-        for (watched, by, context) in shard.watches.drain(..) {
+        for (watched, seat, by, context) in shard.watches.drain(..) {
             let entry = shard.watched.entry(watched).or_default();
             let is_over = entry.life == Watching::Over;
             if is_over {
-                forward.push(handed(by, watched, How::Earlier, context));
+                forward.push(handed(by, Seated { id: ActorId::new(watched), seat }, How::Earlier, context));
             }
-            entry.by.insert(by);
+            entry.by.insert(by.id.bits(), by.seat);
         }
 
         // An ending of this step goes to every watcher, those whose watch came in this step among them.
         for (ended, how, context) in shard.endings.drain(..) {
-            let entry = shard.watched.entry(ended).or_default();
+            let entry = shard.watched.entry(ended.id.bits()).or_default();
             entry.life = Watching::Over;
-            forward.extend(entry.by.iter().map(|watcher| handed(*watcher, ended, how.clone(), context)));
+            forward.extend(entry.by.iter().map(|(watcher, seat)| {
+                let watcher = Seated { id: ActorId::new(*watcher), seat: *seat };
+
+                handed(watcher, ended, how.clone(), context)
+            }));
         }
     }
 }
@@ -214,16 +190,17 @@ impl View for Streams {
 impl Consumes for Streams {
     fn takes_owned(effect: Effect, context: &Context) -> impl Iterator<Item = (u64, Record)> + '_ {
         // At most one record, and a mail's bytes are moved into its envelope.
-        let by = effect.by();
+        let by = effect.seated();
         let record = match effect.into_what() {
             What::Send { to, id, kind, bytes } => {
-                let envelope =
-                    Envelope { id, to, cause: context.cause, root: context.root, depth: context.depth, kind, bytes };
+                let (cause, root, depth) = (context.cause, context.root, context.depth);
+                let envelope = Envelope { id, sender_seat: by.seat, to: to.id, cause, root, depth, kind, bytes };
+                let order = (by.id.bits(), id.count);
 
-                Some((to.bits(), Record::Item((by.bits(), id.count), Pending::Mail(envelope))))
+                Some((to.seat.number(), Record::Item { to: to.id.bits(), order, pending: Pending::Mail(envelope) }))
             }
-            What::Watch { of } => Some((of.id().bits(), Record::Watch { by: by.bits(), context: *context })),
-            What::Ended(how) => Some((by.bits(), Record::Ended { how, context: *context })),
+            What::Watch { of } => Some((of.id().bits(), Record::Watch { seat: of.seat(), by, context: *context })),
+            What::Ended(how) => Some((by.id.bits(), Record::Ended { seat: by.seat, how, context: *context })),
             _ => None,
         };
 
@@ -231,12 +208,13 @@ impl Consumes for Streams {
     }
 }
 
-/// The ending of the actor whose bits are `ended`, `how` it ended, as an item for the watcher whose bits are `to`:
-/// last of what that actor caused.
-fn handed(to: u64, ended: u64, how: How, context: Context) -> (u64, Record) {
-    let ended = Ended::new(ActorId::new(ended), how);
+/// The ending of the actor `ended` names, `how` it ended, as an item for the watcher `to` names, kept under the
+/// watcher's seat: last of what that actor caused.
+fn handed(to: Seated, ended: Seated, how: How, context: Context) -> (u64, Record) {
+    let order = (ended.id.bits(), u64::MAX);
+    let pending = Pending::Ended { ended: Ended::new(ended, how), context };
 
-    (to, Record::Item((ended.actor().id().bits(), u64::MAX), Pending::Ended { ended, context }))
+    (to.seat.number(), Record::Item { to: to.id.bits(), order, pending })
 }
 
 #[cfg(test)]
@@ -244,12 +222,17 @@ mod tests {
     use super::*;
     use aethereal_actor::MailId;
 
-    /// How each ending handed on goes, by the watcher it goes to.
-    fn handed_on(forward: Vec<(u64, Record)>) -> Vec<(u64, How)> {
+    /// The actor `bits` names, in the seat numbered `seat`.
+    const fn seated(bits: u64, seat: u64) -> Seated {
+        Seated { id: ActorId::new(bits), seat: SeatNumber::new(seat) }
+    }
+
+    /// How each ending handed on goes: the seat it is kept under, the watcher's bits, and how.
+    fn handed_on(forward: Vec<(u64, Record)>) -> Vec<(u64, u64, How)> {
         forward
             .into_iter()
-            .filter_map(|(to, record)| match record {
-                Record::Item(_, Pending::Ended { ended, .. }) => Some((to, ended.how().clone())),
+            .filter_map(|(seat, record)| match record {
+                Record::Item { to, pending: Pending::Ended { ended, .. }, .. } => Some((seat, to, ended.how().clone())),
                 _ => None,
             })
             .collect()
@@ -258,18 +241,20 @@ mod tests {
     #[test]
     fn watch_and_ending_of_one_step_pair_in_either_order() {
         // Catches a pairing made record by record, where an ending folded before a watch of the same step leaves
-        // that watcher shown `Earlier`, and an ending kept from one step that shows a later watch how it went.
+        // that watcher shown `Earlier`, an ending kept from one step that shows a later watch how it went, and an
+        // ending kept under any seat but its watcher's.
         let context = Context { cause: None, root: MailId { sender: ActorId::new(7), count: 0 }, depth: 1 };
         let mut shard = Shard::default();
-        Streams::fold(&mut shard, 7, Record::Ended { how: How::Closed, context });
-        Streams::fold(&mut shard, 7, Record::Watch { by: 9, context });
+        let seven = SeatNumber::new(70);
+        Streams::fold(&mut shard, 7, Record::Ended { seat: seven, how: How::Closed, context });
+        Streams::fold(&mut shard, 7, Record::Watch { seat: seven, by: seated(9, 90), context });
         let mut forward = Vec::new();
         Streams::settle(&mut shard, &mut forward);
-        assert_eq!(handed_on(forward), [(9, How::Closed)]);
+        assert_eq!(handed_on(forward), [(90, 9, How::Closed)]);
 
-        Streams::fold(&mut shard, 7, Record::Watch { by: 11, context });
+        Streams::fold(&mut shard, 7, Record::Watch { seat: seven, by: seated(11, 110), context });
         let mut forward = Vec::new();
         Streams::settle(&mut shard, &mut forward);
-        assert_eq!(handed_on(forward), [(11, How::Earlier)]);
+        assert_eq!(handed_on(forward), [(110, 11, How::Earlier)]);
     }
 }

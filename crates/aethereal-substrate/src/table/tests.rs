@@ -3,7 +3,7 @@
 use super::*;
 use crate::Context;
 use crate::id::{child_id, root_id};
-use aethereal_actor::{Code, Fault, MailId, Unreadable, What};
+use aethereal_actor::{Code, Fault, MailId, SeatNumber, Seated, Unreadable, What};
 use aethereal_data::{KeyName, KindName, PathSegment};
 
 /// The context the effects of these tests were emitted in, which the table does not read.
@@ -25,31 +25,37 @@ fn table(parts: usize) -> ActorTable {
     ActorTable::new(parts)
 }
 
+/// The actor `id` stands for, in a seat of its own: numbered by the id's low byte.
+fn at(id: ActorId) -> Seated {
+    Seated { id, seat: SeatNumber::new(id.bits() & 0xff) }
+}
+
 /// The window root's id, and the effect that makes it.
 fn window() -> (ActorId, Effect) {
     let id = root_id(&PathSegment::new(WINDOW, &()));
 
-    (id, Effect::new(id, What::Root { from: Code::Linked(WINDOW) }))
+    (id, Effect::new(at(id), What::Root { from: Code::Linked(WINDOW) }))
 }
 
 /// The id of the surface `left` beneath `parent`, and the effect by which `parent` spawns it.
 fn surface(parent: ActorId) -> (ActorId, Effect) {
     let id = child_id(parent, &PathSegment::instanced(SURFACE, LEFT));
+    let spawn = What::SpawnInstanced { from: Code::Linked(SURFACE), key: LEFT, seat: at(id).seat };
 
-    (id, Effect::new(parent, What::SpawnInstanced { from: Code::Linked(SURFACE), key: LEFT }))
+    (id, Effect::new(at(parent), spawn))
 }
 
 /// The id of the layer beneath `parent`, and the effect by which `parent` embeds it.
 fn layer(parent: ActorId) -> (ActorId, Effect) {
     let id = child_id(parent, &PathSegment::new(LAYER, &()));
 
-    (id, Effect::new(parent, What::Embed { from: Code::Linked(LAYER) }))
+    (id, Effect::new(at(parent), What::Embed { from: Code::Linked(LAYER), seat: at(id).seat }))
 }
 
 #[test]
 fn spawned_actor_resolves_by_its_path() {
-    // Catches an entry kept under the parent's id, a segment built without its key, and a path walked up in the
-    // wrong order.
+    // Catches an entry kept under the parent's id, a segment built without its key, a path walked up in the wrong
+    // order, and a child kept in its parent's seat.
     let (window, root) = window();
     let (surface, spawn) = surface(window);
     let (layer, embed) = layer(surface);
@@ -61,6 +67,7 @@ fn spawned_actor_resolves_by_its_path() {
     assert_eq!(table.path(layer), Some(path));
     assert_eq!(table.parent(layer), Some(surface));
     assert_eq!(table.parent(window), None);
+    assert_eq!([window, surface, layer].map(|id| table.seat(id)), [window, surface, layer].map(|id| Some(at(id).seat)));
 }
 
 #[test]
@@ -71,7 +78,7 @@ fn ending_marks_only_its_own_actor() {
     let (layer, embed) = layer(surface);
     let mut table = table(4);
     table.fold(&[root, spawn, embed], &context());
-    table.fold(&[Effect::new(surface, What::Close)], &context());
+    table.fold(&[Effect::new(at(surface), What::Close)], &context());
 
     assert_eq!(table.standing(window), Standing::Live);
     assert_eq!(table.standing(surface), Standing::Ended);
@@ -87,7 +94,7 @@ fn failed_turn_ends_its_actor() {
     let Ok(fault) = Fault::new(&Unreadable) else {
         panic!("a reason that holds nothing encodes");
     };
-    table.fold(&[root, Effect::new(window, What::Failed(fault))], &context());
+    table.fold(&[root, Effect::new(at(window), What::Failed(fault))], &context());
 
     assert_eq!(table.standing(window), Standing::Ended);
 }
@@ -99,7 +106,7 @@ fn actor_made_under_a_held_id_stops_the_engine() {
     let (window, root) = window();
     let (surface, spawn) = surface(window);
     let mut table = table(4);
-    table.fold(&[root, spawn.clone(), Effect::new(surface, What::Close), spawn], &context());
+    table.fold(&[root, spawn.clone(), Effect::new(at(surface), What::Close), spawn], &context());
 }
 
 #[test]
@@ -107,7 +114,7 @@ fn reader_sees_nothing_before_the_fold() {
     // Catches an ending of an actor the table never held making an entry for it.
     let (window, _) = window();
     let mut table = table(4);
-    table.fold(&[Effect::new(window, What::Close)], &context());
+    table.fold(&[Effect::new(at(window), What::Close)], &context());
 
     assert_eq!(table.standing(window), Standing::Absent);
     assert_eq!(table.path(window), None);
@@ -119,7 +126,7 @@ fn part_count_does_not_change_the_table() {
     let (window, root) = window();
     let (surface, spawn) = surface(window);
     let (layer, embed) = layer(surface);
-    let effects = [root, spawn, embed, Effect::new(layer, What::Close)];
+    let effects = [root, spawn, embed, Effect::new(at(layer), What::Close)];
     let seen = [1, 2, 7, 64].map(|parts| {
         let mut table = table(parts);
         table.fold(&effects, &context());

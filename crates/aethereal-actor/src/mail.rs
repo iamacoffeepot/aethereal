@@ -1,6 +1,6 @@
 //! A piece of mail as its handler sees it (ADR-0009).
 
-use crate::{Actors, ActorsReader, ErasedActorRef, Table};
+use crate::{Actors, ActorsReader, ErasedActorRef, Seated, Table};
 use aethereal_data::{ActorId, Budget, Decode, DecodeError, Kind, KindId, Plain, Reader};
 
 /// The id of a piece of mail: its sender, and that sender's count of what it has sent (ADR-0012).
@@ -20,7 +20,7 @@ pub struct MailId {
 pub struct Mail<'a> {
     kind: KindId,
     bytes: &'a [u8],
-    sender: ActorId,
+    sender: Seated,
     root: MailId,
     depth: u32,
     table: &'a dyn Table,
@@ -28,7 +28,7 @@ pub struct Mail<'a> {
 }
 
 impl<'a> Mail<'a> {
-    /// The mail of kind `kind` whose bytes are `bytes`, sent by the actor `sender` stands for, at `depth` in the
+    /// The mail of kind `kind` whose bytes are `bytes`, sent by the actor `sender` names, at `depth` in the
     /// chain that began at `root`.
     ///
     /// For the engine, which has established that the sender exists. A read proves each reference in the mail
@@ -37,7 +37,7 @@ impl<'a> Mail<'a> {
     pub const fn new(
         kind: KindId,
         bytes: &'a [u8],
-        sender: ActorId,
+        sender: Seated,
         root: MailId,
         depth: u32,
         table: &'a dyn Table,

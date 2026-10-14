@@ -8,21 +8,23 @@ use crate::id::{child_id, path_id};
 use crate::{Context, Folded, Routed};
 pub use actors::Actors;
 use actors::Entry;
-use aethereal_actor::{Effect, Made, Table};
+use aethereal_actor::{Effect, Made, SeatNumber, Seated, Table};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 use std::num::NonZeroUsize;
 
 /// The table proves a reference: an id names an actor once the table holds it, live or ended (ADR-0008).
 impl Made for ActorTable {
-    fn made(&self, id: ActorId) -> bool {
-        self.standing(id) != Standing::Absent
+    fn seat(&self, id: ActorId) -> Option<SeatNumber> {
+        Self::seat(self, id)
     }
 }
 
 /// The table as a turn reads it. The id of a child is computed here, by the engine, and nowhere else.
 impl Table for ActorTable {
-    fn resolve(&self, path: &ActorPath) -> Option<ActorId> {
-        Self::resolve(self, path)
+    fn resolve(&self, path: &ActorPath) -> Option<Seated> {
+        let id = Self::resolve(self, path)?;
+
+        Some(Seated { id, seat: Self::seat(self, id)? })
     }
 
     fn path(&self, id: ActorId) -> Option<ActorPath> {
@@ -31,6 +33,10 @@ impl Table for ActorTable {
 
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
         child_id(parent, segment)
+    }
+
+    fn child_seat(&self, id: ActorId) -> Option<SeatNumber> {
+        Self::seat(self, id)
     }
 }
 
@@ -126,6 +132,12 @@ impl ActorTable {
         let root = ActorPath::from_root(segments.pop()?);
 
         segments.iter().rev().try_fold(root, |path, segment| path.child(segment)).ok()
+    }
+
+    /// The seat of the actor `id` stands for, which it sits in or sat in, when it is in the table.
+    #[must_use]
+    pub fn seat(&self, id: ActorId) -> Option<SeatNumber> {
+        self.entry(id).map(Entry::seat)
     }
 
     /// The actor directly above the one `id` stands for, when that one is in the table and is not a root.

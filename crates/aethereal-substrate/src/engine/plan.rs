@@ -2,7 +2,7 @@
 
 use super::Lists;
 use super::costs::KindIndex;
-use aethereal_actor::{Arena, Runs};
+use aethereal_actor::{Arena, Runs, SeatNumber};
 use aethereal_data::ActorId;
 use std::ops::Range;
 
@@ -44,8 +44,7 @@ pub struct Share {
 /// One actor's turns of a step: the actor, taken out of the engine for the step, and what it runs.
 pub(super) struct Job {
     pub(super) id: ActorId,
-    /// The number of the actor's seat.
-    pub(super) seat: usize,
+    pub(super) seat: SeatNumber,
     /// The kind of actor, which its turns are measured under.
     pub(super) kind: KindIndex,
     pub(super) actor: Box<dyn Runs>,

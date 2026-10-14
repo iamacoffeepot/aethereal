@@ -1,11 +1,12 @@
 //! The engine's tests: what a step runs, and what is there for the next one.
 
 use super::*;
-use crate::{Entry, Standing, child_id};
+use crate::{Entry, Standing, View, child_id};
 use aethereal_actor::{Ended, Fault, How, Item, Level, To, ToWithoutMail};
 use aethereal_data::{Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
 use std::mem;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 thread_local! {
     /// What the actors of this thread's test have said they did, in order.
@@ -408,16 +409,53 @@ fn item_placed_under_a_seat_reaches_only_the_actor_it_was_placed_for() {
     // Catches an item placed under a seat handed to whichever actor sits there, when the actor it was placed for
     // has left the seat or never sat in it.
     let (mut engine, root) = engine(&[]);
-    let seat = engine.seated[&root.bits()];
+    let seat = engine.table.seat(root).map_or(u64::MAX, SeatNumber::number);
     let context = Context { cause: None, root: MailId { sender: root, count: 0 }, depth: 1 };
     let place = |engine: &mut Engine, to: ActorId| {
-        let ended = Ended::new(node(root, 2), How::Closed);
-        let record = Record::Placed { to: to.bits(), order: (2, u64::MAX), pending: Pending::Ended { ended, context } };
-        Streams::fold(engine.streams.shard_mut(seat_key(seat)), seat_key(seat), record);
+        let ended = Ended::new(Seated { id: node(root, 2), seat: SeatNumber::new(7) }, How::Closed);
+        let pending = Pending::Ended { ended, context };
+        let record = stream::Record::Item { to: to.bits(), order: (2, u64::MAX), pending };
+        Streams::fold(engine.streams.shard_mut(seat), seat, record);
     };
 
     place(&mut engine, node(root, 3));
     assert_eq!(step(&mut engine), [""; 0]);
     place(&mut engine, root);
     assert_eq!(step(&mut engine), ["1 saw closed"]);
+}
+
+/// A clock that moves a microsecond each time it is read, so every turn is measured to cost something.
+#[derive(Default)]
+struct Ticking(AtomicU64);
+
+impl Clock for Ticking {
+    fn nanos(&self) -> u64 {
+        self.0.fetch_add(1_000, Ordering::Relaxed)
+    }
+}
+
+#[test]
+fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
+    // Catches two workers giving one seat to two children, a seat a worker passed over or took back left neither
+    // taken nor free, and a child spawned in an earlier turn of the step that a send by name cannot find.
+    let (mut engine, _) = engine(&["spawn 2 spawn 4 up a", "spawn 3 spawn 5 up b", "tell 3 spawn 6 up c"]);
+    let clock = Ticking::default();
+    engine.step(&clock);
+    said();
+
+    let workers = Workers { active: 2, max: 2, wake_nanos: 0 };
+    let shares = engine.plan(workers).into_shares();
+    assert_eq!(shares.len(), 2);
+    let reading = engine.reading();
+    let done = shares.into_iter().map(|share| reading.run(share, &clock)).collect();
+    engine.apply(done);
+    said();
+
+    let mut third = step(&mut engine);
+    third.sort();
+    assert_eq!(third, ["4 got up a", "5 got up b", "6 got up c"]);
+    let taken = |index: usize| matches!(engine.seats[index], Seat::Taken(_));
+    let free = |index: usize| engine.empty.iter().filter(|seat| seat.index() == index).count();
+    let each_once = (0..engine.seats.len()).all(|index| usize::from(taken(index)) + free(index) == 1);
+    assert!(each_once);
 }

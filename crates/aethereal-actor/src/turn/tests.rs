@@ -8,25 +8,29 @@ use alloc::vec;
 
 /// A table that holds the actors listed, and computes a child's id as some fold of its parent's and its segment.
 #[derive(Default)]
-struct Listed(Vec<(ActorId, ActorPath)>);
+struct Listed(Vec<(Seated, ActorPath)>);
 
 impl Made for Listed {
-    fn made(&self, id: ActorId) -> bool {
-        self.0.iter().any(|(made, _)| *made == id)
+    fn seat(&self, id: ActorId) -> Option<SeatNumber> {
+        self.0.iter().find(|(made, _)| made.id == id).map(|(made, _)| made.seat)
     }
 }
 
 impl Table for Listed {
-    fn resolve(&self, path: &ActorPath) -> Option<ActorId> {
-        self.0.iter().find(|(_, held)| held == path).map(|(id, _)| *id)
+    fn resolve(&self, path: &ActorPath) -> Option<Seated> {
+        self.0.iter().find(|(_, held)| held == path).map(|(made, _)| *made)
     }
 
     fn path(&self, id: ActorId) -> Option<ActorPath> {
-        self.0.iter().find(|(made, _)| *made == id).map(|(_, path)| path.clone())
+        self.0.iter().find(|(made, _)| made.id == id).map(|(_, path)| path.clone())
     }
 
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
         ActorId::new(Fnv::resume(parent.bits()).bytes(segment.to_string().as_bytes()).finish())
+    }
+
+    fn child_seat(&self, id: ActorId) -> Option<SeatNumber> {
+        self.seat(id)
     }
 }
 
@@ -201,17 +205,29 @@ impl Actor for Herald {
 const NOTHING: Payload = Payload::InArena(Span { slot: 0, start: 0, len: 0 });
 
 const ROOT: ActorPath = ActorPath::new("aether.test.root");
-const ME: ActorId = ActorId::new(1);
+const ME: Seated = seated(1, 100);
 
-/// The spawn effect of the leaf under `key`.
-fn leaf_spawn(key: u64) -> What {
-    What::SpawnInstanced { from: Code::Linked(Leaf::NAME), key: KeyName::new(["0", "1"][usize::from(key == 1)]) }
+/// The actor `bits` names, in the seat numbered `seat`.
+const fn seated(bits: u64, seat: u64) -> Seated {
+    Seated { id: ActorId::new(bits), seat: SeatNumber::new(seat) }
+}
+
+/// The spawn effect of the leaf under `key`, in the seat numbered `seat`.
+fn leaf_spawn(key: u64, seat: u64) -> What {
+    let key = KeyName::new(["0", "1"][usize::from(key == 1)]);
+
+    What::SpawnInstanced { from: Code::Linked(Leaf::NAME), key, seat: SeatNumber::new(seat) }
+}
+
+/// The spawn effect of the branch, in the seat numbered `seat`.
+const fn branch_spawn(seat: u64) -> What {
+    What::Spawn { from: Code::Linked(Branch::NAME), seat: SeatNumber::new(seat) }
 }
 
 #[test]
 fn child_begins_inside_its_parents_turn() {
-    // Catches a child's effects placed before its own spawn or signed by its parent, and a child that is not
-    // held aside under the id and path its spawn gives it.
+    // Catches a child's effects placed before its own spawn or signed by its parent, a child that is not held aside
+    // under the id, path, and seat its spawn gives it, and two children given one seat.
     let table = Listed::default();
     let mut asked = Asked::new();
     let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
@@ -220,12 +236,12 @@ fn child_begins_inside_its_parents_turn() {
     };
 
     let branch_segment = PathSegment::new(Branch::NAME, &());
-    assert_eq!(branch.id(), table.child(ME, &branch_segment));
-    let by_branch = |what| Effect::new(branch.id(), what);
-    let spawn_branch = Effect::new(ME, What::Spawn { from: Code::Linked(Branch::NAME) });
-    assert_eq!(asked.effects(), [spawn_branch, by_branch(leaf_spawn(0)), by_branch(leaf_spawn(1))]);
+    assert_eq!(branch.id(), table.child(ME.id, &branch_segment));
+    let by_branch = |what| Effect::new(branch.seated(), what);
+    let spawn_branch = Effect::new(ME, branch_spawn(0));
+    assert_eq!(asked.effects(), [spawn_branch, by_branch(leaf_spawn(0, 1)), by_branch(leaf_spawn(1, 2))]);
 
-    let (_, stood, _) = asked.into_parts();
+    let (_, stood, _, _) = asked.into_parts();
     let paths: Vec<_> = stood.iter().map(|child| child.path().clone()).collect();
     let leaves = [
         "aether.test.root/aether.test.branch/aether.test.leaf:0",
@@ -235,7 +251,9 @@ fn child_begins_inside_its_parents_turn() {
         paths,
         [ActorPath::new(leaves[0]), ActorPath::new(leaves[1]), ActorPath::new("aether.test.root/aether.test.branch")]
     );
-    assert_eq!(stood[2].id(), branch.id());
+    assert_eq!(stood[2].seated(), branch.seated());
+    let seats: Vec<u64> = stood.iter().map(|child| child.seated().seat.number()).collect();
+    assert_eq!(seats, [1, 2, 0]);
 }
 
 #[test]
@@ -243,21 +261,21 @@ fn used_key_is_refused_and_asks_for_nothing() {
     // Catches a second child at a key the turn has used, and one at a key the table holds from an earlier step.
     let held = ActorPath::new("aether.test.root/aether.test.leaf:1");
     let table = Listed::default();
-    let held_id = table.child(ME, &held.last());
-    let table = Listed(vec![(held_id, held)]);
+    let held_id = table.child(ME.id, &held.last());
+    let table = Listed(vec![(Seated { id: held_id, seat: SeatNumber::new(7) }, held)]);
     let mut asked = Asked::new();
     let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
 
     assert!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }).is_ok());
     assert_eq!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }), Err(Refused::KeyTaken));
     assert_eq!(turn.spawn::<Leaf>(&1, LeafConfig { fails: false }), Err(Refused::KeyTaken));
-    assert_eq!(asked.effects(), [Effect::new(ME, leaf_spawn(0))]);
+    assert_eq!(asked.effects(), [Effect::new(ME, leaf_spawn(0, 0))]);
 }
 
 #[test]
 fn failed_begin_leaves_its_fault_and_no_child() {
-    // Catches a failed child held aside as if it began, the children it stood up outliving it, and a key that a
-    // failed begin used up.
+    // Catches a failed child held aside as if it began, the children it stood up outliving it, and a key or a seat
+    // that a failed begin used up.
     let table = Listed::default();
     let mut asked = Asked::new();
     let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
@@ -267,13 +285,14 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     };
     assert_eq!(fault.read(&mut Budget::new(0)), Ok(Some(ToldToFail)));
 
-    let branch = table.child(ME, &PathSegment::new(Branch::NAME, &()));
-    let last_leaf = table.child(branch, &PathSegment::new(Leaf::NAME, &1u64));
-    let spawn_branch = Effect::new(ME, What::Spawn { from: Code::Linked(Branch::NAME) });
+    let branch = Seated { id: table.child(ME.id, &PathSegment::new(Branch::NAME, &())), seat: SeatNumber::new(0) };
+    let last_leaf =
+        Seated { id: table.child(branch.id, &PathSegment::new(Leaf::NAME, &1u64)), seat: SeatNumber::new(2) };
+    let spawn_branch = Effect::new(ME, branch_spawn(0));
     let expected = [
         spawn_branch.clone(),
-        Effect::new(branch, leaf_spawn(0)),
-        Effect::new(branch, leaf_spawn(1)),
+        Effect::new(branch, leaf_spawn(0, 1)),
+        Effect::new(branch, leaf_spawn(1, 2)),
         Effect::new(last_leaf, What::Faulted),
         Effect::new(branch, What::Faulted),
     ];
@@ -281,9 +300,10 @@ fn failed_begin_leaves_its_fault_and_no_child() {
 
     let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
     assert!(turn.spawn::<Branch>(&(), BranchConfig { leaves: 0, last_fails: false }).is_ok());
-    let (effects, stood, _) = asked.into_parts();
+    let (effects, stood, _, seats) = asked.into_parts();
     assert_eq!(effects.last(), Some(&spawn_branch));
     assert_eq!(stood.len(), 1);
+    assert_eq!(seats.into_free(), [SeatNumber::new(2), SeatNumber::new(1)]);
 }
 
 #[test]
@@ -298,20 +318,20 @@ fn begin_and_end_send_as_their_own_actor() {
     };
     let first = MailId { sender: herald.id(), count: 1 };
     let to_parent = |kind| What::Send { to: ME, id: first, kind, bytes: NOTHING };
-    let spawn = Effect::new(ME, What::Spawn { from: Code::Linked(Herald::NAME) });
-    assert_eq!(asked.effects(), [spawn, Effect::new(herald.id(), to_parent(KindId::of::<Poked>()))]);
+    let spawn = Effect::new(ME, What::Spawn { from: Code::Linked(Herald::NAME), seat: SeatNumber::new(0) });
+    assert_eq!(asked.effects(), [spawn, Effect::new(herald.seated(), to_parent(KindId::of::<Poked>()))]);
 
     let Ok(path) = ROOT.child(&PathSegment::new(Herald::NAME, &())) else {
         panic!("a child of the root fits");
     };
     let end = |why| {
         let mut asked = Asked::new();
-        let mut ending = Ending::new(herald.id(), path.clone(), &table, &mut asked, 0, why);
+        let mut ending = Ending::new(herald.seated(), path.clone(), &table, &mut asked, 0, why);
         let ended = Box::new(Herald).end(&mut ending);
 
         (ended, asked.into_parts().0)
     };
-    assert_eq!(end(Why::Closed), (Ok(()), vec![Effect::new(herald.id(), to_parent(KindId::of::<Shut>()))]));
+    assert_eq!(end(Why::Closed), (Ok(()), vec![Effect::new(herald.seated(), to_parent(KindId::of::<Shut>()))]));
     assert_eq!(end(Why::Faulted), (Ok(()), Vec::new()));
 }
 
@@ -335,21 +355,21 @@ fn child_past_the_deepest_path_is_refused() {
 fn handler_asks_by_the_kind_of_its_mail() {
     // Catches mail read as a kind it is not, a send that loses its kind or its target, a reply left naming the
     // sender instead of the actor the mail came from, and a reference in mail taken without the table's proof.
-    let other = ActorId::new(9);
+    let other = seated(9, 5);
     let table = Listed(vec![(other, ActorPath::new("aether.test.other"))]);
     let mut leaf: Box<dyn Runs> = Box::new(Leaf);
     let handle = |leaf: &mut Box<dyn Runs>, table: &Listed, kind, bytes: &[u8]| {
         let mut asked = Asked::new();
         let mut turn = Turn::new(ME, ROOT, table, &mut asked, 0, other);
         let handled = leaf.handle(
-            Item::Mail(Mail::new(kind, bytes, other, MailId { sender: other, count: 1 }, 1, table, 64)),
+            Item::Mail(Mail::new(kind, bytes, other, MailId { sender: other.id, count: 1 }, 1, table, 64)),
             &mut turn,
         );
 
         (handled, asked.into_parts().0)
     };
 
-    let first = MailId { sender: ME, count: 1 };
+    let first = MailId { sender: ME.id, count: 1 };
     let poked = What::Send { to: other, id: first, kind: KindId::of::<Poked>(), bytes: NOTHING };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Poke>(), &[]), (Ok(()), vec![Effect::new(ME, poked)]));
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Shut>(), &[]), (Ok(()), vec![Effect::new(ME, What::Close)]));
