@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 mod by_actor;
+mod by_seat;
 mod clock;
 mod context;
 mod engine;
@@ -24,6 +25,7 @@ mod table;
 mod view;
 
 pub use by_actor::{ByActor, IdBits};
+pub use by_seat::BySeat;
 pub use clock::Clock;
 pub use context::Context;
 pub use engine::{Done, Engine, Plan, Reading, Share, Tally, Workers};
@@ -32,4 +34,4 @@ pub use lives::{Life, Lives, State};
 pub use log::{Entry, Log, RECENT};
 pub use mail::Envelope;
 pub use table::{ActorTable, Standing};
-pub use view::{Consumes, Folded, Routed, View};
+pub use view::{Consumes, Folded, Part, Routed, View};

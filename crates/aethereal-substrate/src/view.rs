@@ -40,6 +40,22 @@ pub trait View {
     }
 }
 
+/// One part of a view's state, made empty for its place among `parts` parts.
+///
+/// A part that keeps nothing by where it lies among the parts is its
+/// `Default`. One kept by seat, a [`crate::BySeat`], knows how many parts
+/// there are, since it holds every `parts`th seat.
+pub trait Part {
+    /// The part before any effect, one of `parts`.
+    fn empty(parts: NonZeroUsize) -> Self;
+}
+
+impl<T: Default> Part for T {
+    fn empty(_: NonZeroUsize) -> Self {
+        T::default()
+    }
+}
+
 /// A view that can take an effect by value, so what it keeps of the effect is moved in and not copied.
 ///
 /// Only the last view to fold a turn's effects can take them, since nothing
@@ -65,9 +81,9 @@ impl<V: View> Folded<V> {
     #[must_use]
     pub fn new(parts: NonZeroUsize) -> Self
     where
-        V::Shard: Default,
+        V::Shard: Part,
     {
-        Self { shards: (0..parts.get()).map(|_| V::Shard::default()).collect() }
+        Self { shards: (0..parts.get()).map(|_| V::Shard::empty(parts)).collect() }
     }
 
     /// Folds in the effects of one turn, emitted in `context`, in the order given.
