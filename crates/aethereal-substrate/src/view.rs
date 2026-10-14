@@ -201,6 +201,74 @@ impl<V: View> Folded<V> {
     }
 }
 
+/// One part of a view taken out with every writer's bucket for it, for a worker to fold by itself (ADR-0011).
+///
+/// A part depends only on the records of its own keys, so the parts of a
+/// step's fold are folded apart, each by one worker, and put back.
+pub struct Column<V: View> {
+    shard: V::Shard,
+    /// Each writer's bucket for this part, in the writers' order: emptied as it is folded, and handed back to its
+    /// row for its room.
+    buckets: Vec<Vec<(u64, V::Record)>>,
+}
+
+impl<V: View> Column<V> {
+    /// Folds every writer's bucket into the part, one writer after another, then settles the part, adding what it
+    /// hands on to `forward`.
+    pub fn fold(&mut self, forward: &mut Vec<(u64, V::Record)>) {
+        for bucket in &mut self.buckets {
+            for (key, record) in bucket.drain(..) {
+                V::fold(&mut self.shard, key, record);
+            }
+        }
+        V::settle(&mut self.shard, forward);
+    }
+
+    /// The part, as folded so far.
+    #[must_use]
+    pub const fn shard(&self) -> &V::Shard {
+        &self.shard
+    }
+
+    /// How many records wait to be folded.
+    #[must_use]
+    pub fn records(&self) -> usize {
+        self.buckets.iter().map(Vec::len).sum()
+    }
+}
+
+impl<V: View> Folded<V> {
+    /// Takes the part numbered `part` out with each row's bucket for it, to fold apart from the rest.
+    pub fn column<'r>(&mut self, part: usize, rows: impl IntoIterator<Item = &'r mut Routed<V>>) -> Column<V>
+    where
+        V::Shard: Part,
+        V: 'r,
+    {
+        let buckets = rows.into_iter().map(|row| mem::take(&mut row.buckets[part])).collect();
+
+        Column { shard: self.take(part), buckets }
+    }
+
+    /// Puts back the part numbered `part` from its column, and hands each row of `rows` its emptied bucket.
+    pub fn put_column<'r>(&mut self, part: usize, column: Column<V>, rows: impl IntoIterator<Item = &'r mut Routed<V>>)
+    where
+        V: 'r,
+    {
+        self.put(part, column.shard);
+        for (row, bucket) in rows.into_iter().zip(column.buckets) {
+            row.buckets[part] = bucket;
+        }
+    }
+
+    /// Folds records handed on by a settled part, each into the part its key falls in. They are not settled again.
+    pub fn fold_records(&mut self, records: impl IntoIterator<Item = (u64, V::Record)>) {
+        for (key, record) in records {
+            let part = self.part(key);
+            V::fold(&mut self.shards[part], key, record);
+        }
+    }
+}
+
 /// One writer's records of a view in a step, each in the bucket of the part its key falls in: the writer's row of
 /// buckets (ADR-0011).
 ///
@@ -219,6 +287,12 @@ impl<V: View> Default for Routed<V> {
 }
 
 impl<V: View> Routed<V> {
+    /// How many records this row holds for the part numbered `part`.
+    #[must_use]
+    pub fn records(&self, part: usize) -> usize {
+        self.buckets[part].len()
+    }
+
     /// Routes the effects of one turn, emitted in `context`, in the order given.
     pub fn route(&mut self, effects: &[Effect], context: &Context) {
         for (key, record) in effects.iter().flat_map(|effect| V::takes(effect, context)) {
