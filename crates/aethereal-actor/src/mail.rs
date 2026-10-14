@@ -1,7 +1,19 @@
 //! A piece of mail as its handler sees it (ADR-0009).
 
 use crate::{Actors, ActorsReader, ErasedActorRef, Table};
-use aethereal_data::{ActorId, Budget, Decode, DecodeError, Kind, KindId, Reader};
+use aethereal_data::{ActorId, Budget, Decode, DecodeError, Kind, KindId, Plain, Reader};
+
+/// The id of a piece of mail: its sender, and that sender's count of what it has sent (ADR-0012).
+///
+/// Each actor counts only its own mail, from one, so no count is shared
+/// between actors, and the same turns give every piece of mail the same id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+pub struct MailId {
+    /// The actor that sent the mail.
+    pub sender: ActorId,
+    /// The sender's own count of what it has sent, from one.
+    pub count: u64,
+}
 
 /// A piece of mail as its handler sees it: its kind, its sender, and its bytes to read (ADR-0009).
 #[derive(Clone, Copy)]

@@ -1,7 +1,7 @@
 //! The view of which actors there are (ADR-0008, ADR-0011).
 
 use crate::View;
-use crate::id::child_id;
+use crate::id::spawned;
 use aethereal_actor::{Effect, What};
 use aethereal_data::{ActorId, PathSegment};
 use std::collections::BTreeMap;
@@ -65,10 +65,12 @@ impl View for Actors {
         let (id, record) = match effect.what() {
             What::Root { from } => (by, Record::Made { above: None, segment: from.singleton() }),
             What::RootInstanced { from, key } => (by, Record::Made { above: None, segment: from.instanced(key) }),
-            What::Spawn { from } | What::Embed { from } => beneath(by, from.singleton()),
-            What::SpawnInstanced { from, key } | What::EmbedInstanced { from, key } => beneath(by, from.instanced(key)),
             What::Failed | What::Close => (by, Record::Ended),
-            What::Send { .. } | What::Faulted => return None,
+            _ => {
+                let (child, segment) = spawned(effect)?;
+
+                (child, Record::Made { above: Some(by), segment })
+            }
         };
 
         Some((id.bits(), record))
@@ -94,9 +96,4 @@ impl View for Actors {
             }
         }
     }
-}
-
-/// The id and record of the child `segment` names beneath the actor `parent` stands for.
-fn beneath(parent: ActorId, segment: PathSegment) -> (ActorId, Record) {
-    (child_id(parent, &segment), Record::Made { above: Some(parent), segment })
 }
