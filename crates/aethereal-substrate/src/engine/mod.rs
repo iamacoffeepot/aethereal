@@ -7,7 +7,7 @@ mod tests;
 
 use crate::id::{child_id, root_id};
 use crate::watch::{Watchers, shown};
-use crate::{ActorTable, Envelope, Folded, Standing, Tie};
+use crate::{ActorTable, Entry, Envelope, Folded, Log, Standing, Tie};
 use aethereal_actor::{
     Actor, Asked, Beginning, Code, Effect, Ended, Ending, Mail, MailId, Refused, Runs, Stood, To, Turn, What, Why,
 };
@@ -35,6 +35,8 @@ pub struct Engine {
     table: ActorTable,
     /// Who watches each actor.
     watchers: Folded<Watchers>,
+    /// What each actor logged most recently.
+    log: Folded<Log>,
     /// Every actor the engine still runs, under its id: the live ones, and the ended ones whose closing turn is
     /// still to run.
     seats: BTreeMap<u64, Seat>,
@@ -99,6 +101,7 @@ impl Engine {
         Self {
             table: ActorTable::new(parts),
             watchers: Folded::new(parts),
+            log: Folded::new(parts),
             seats: BTreeMap::new(),
             actors: BTreeMap::new(),
             step: 0,
@@ -110,6 +113,13 @@ impl Engine {
     #[must_use]
     pub const fn table(&self) -> &ActorTable {
         &self.table
+    }
+
+    /// What the actor `id` stands for logged most recently, oldest first, as of the last step.
+    ///
+    /// It holds the fault of a turn that failed. Nothing for an actor that has logged nothing.
+    pub fn log(&self, id: ActorId) -> impl Iterator<Item = &Entry> {
+        self.log.shard(id.bits()).get(&id.bits()).into_iter().flatten()
     }
 
     /// The number of the last step run, from one. Zero before the first.
@@ -194,11 +204,11 @@ impl Engine {
                 };
                 let mut asked = Asked::new();
                 let ended = actor.end(&mut Ending::new(id, seat.path.clone(), &self.table, &mut asked, why));
-                // A closing turn that fails asks for nothing: only its log lines would be kept (ADR-0009).
-                let effects = match ended {
-                    Ok(()) => asked.into_parts().0,
-                    Err(_) => Vec::new(),
-                };
+                // A closing turn that fails asks for nothing: only its log lines are kept (ADR-0009).
+                let (mut effects, _) = asked.into_parts();
+                if ended.is_err() {
+                    effects.retain(is_line);
+                }
 
                 ran.push(Ran { effects, stood: Vec::new(), chain, sender: None });
                 gone.push(id);
@@ -223,10 +233,12 @@ impl Engine {
                     let handled = actor.handle(mail, &mut Turn::new(id, seat.path.clone(), &table, &mut asked, &ended));
                     // A turn that fails changes nothing outside its actor: what it asked for is dropped, and the
                     // engine writes the one effect that says the actor ended (ADR-0009).
-                    let (effects, stood) = match handled {
-                        Ok(()) => asked.into_parts(),
-                        Err(fault) => (vec![Effect::new(id, What::Failed(fault))], Vec::new()),
-                    };
+                    let (mut effects, mut stood) = asked.into_parts();
+                    if let Err(fault) = handled {
+                        effects.retain(is_line);
+                        effects.push(Effect::new(id, What::Failed(fault)));
+                        stood.clear();
+                    }
                     let chain = Chain { cause: Some(envelope.id), root: envelope.root };
                     let ends = effects.iter().any(|effect| ending(effect, id).is_some());
 
@@ -254,6 +266,7 @@ impl Engine {
         for Ran { effects, stood, chain, sender } in ran {
             self.table.fold(&effects);
             self.watchers.fold(&effects);
+            self.log.fold(&effects);
 
             for child in stood {
                 self.seat(child.id(), child.path().clone(), child.into_actor());
@@ -353,6 +366,11 @@ impl Seat {
 
         !(has_mail || is_ending)
     }
+}
+
+/// Whether `effect` is a logged line: what is kept of a turn that failed (ADR-0009).
+fn is_line(effect: &Effect) -> bool {
+    matches!(effect.what(), What::Log { .. })
 }
 
 /// Why the actor `id` stands for ends, when `effect` is that actor's own ending.

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 ///
 /// A child whose `begin` returned a fault was never live. Its spawn is not
 /// applied, and neither is anything it asked for, nor anything asked for by an
-/// actor it stood up. A parent may spawn at that key again in the same turn,
+/// actor it stood up, but for the lines they logged. A parent may spawn at that key again in the same turn,
 /// and that later child is kept.
 pub(super) fn begun(effects: Vec<Effect>) -> Vec<Effect> {
     let failed = failed_spawns(&effects);
@@ -26,7 +26,9 @@ pub(super) fn begun(effects: Vec<Effect>) -> Vec<Effect> {
                 kept.push(effect);
             }
         } else {
-            let is_dropped = is_by_never_live || is_report;
+            let is_line = matches!(effect.what(), What::Log { .. });
+            let is_lost = is_by_never_live && !is_line;
+            let is_dropped = is_lost || is_report;
             if !is_dropped {
                 kept.push(effect);
             }
@@ -55,7 +57,7 @@ fn failed_spawns(effects: &[Effect]) -> BTreeSet<usize> {
 mod tests {
     use super::*;
     use crate::id::child_id;
-    use aethereal_actor::Code;
+    use aethereal_actor::{Code, Level};
     use aethereal_data::{ActorId, KindName, PathSegment};
 
     const BRANCH: KindName = KindName::new("aether.test.branch");
@@ -63,16 +65,18 @@ mod tests {
 
     #[test]
     fn failed_begin_takes_out_its_child_and_all_beneath() {
-        // Catches a failed child's spawn or asks reaching the table, a second child at the same key dropped with
-        // the first, and an unrelated actor's effects lost.
+        // Catches a failed child's spawn or asks reaching the table, its logged lines lost with them, a second
+        // child at the same key dropped with the first, and an unrelated actor's effects lost.
         let me = ActorId::new(1);
         let branch = child_id(me, &PathSegment::new(BRANCH, &()));
         let leaf = child_id(branch, &PathSegment::new(LEAF, &()));
         let spawn_branch = Effect::new(me, What::Spawn { from: Code::Linked(BRANCH) });
         let spawn_leaf = Effect::new(branch, What::Spawn { from: Code::Linked(LEAF) });
+        let line = Effect::new(leaf, What::Log { level: Level::Error, text: String::from("no file") });
         let effects = vec![
             spawn_branch.clone(),
             spawn_leaf.clone(),
+            line.clone(),
             Effect::new(leaf, What::Close),
             Effect::new(branch, What::Faulted),
             Effect::new(me, What::Close),
@@ -80,6 +84,6 @@ mod tests {
             spawn_leaf.clone(),
         ];
 
-        assert_eq!(begun(effects), [Effect::new(me, What::Close), spawn_branch, spawn_leaf]);
+        assert_eq!(begun(effects), [line, Effect::new(me, What::Close), spawn_branch, spawn_leaf]);
     }
 }

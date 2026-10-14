@@ -6,9 +6,10 @@ mod tests;
 
 pub use refused::Refused;
 
-use crate::{Actor, ActorRef, Actors, ActorsWriter, Code, Effect, Ended, Runs, Table, To, ToWithoutMail, What};
+use crate::{Actor, ActorRef, Actors, ActorsWriter, Code, Effect, Ended, Level, Runs, Table, To, ToWithoutMail, What};
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// What one turn has asked for: its effects in order, and the children it stood up (ADR-0009).
@@ -97,6 +98,11 @@ impl Seat<'_> {
     /// A reference to the live actor `path` names.
     fn resolve(&self, path: &ActorPath) -> Option<ActorRef> {
         self.table.resolve(path).map(ActorRef::new)
+    }
+
+    /// Adds the effect that logs `text` at `level`.
+    fn log(&mut self, level: Level, text: impl Into<String>) {
+        self.ask(What::Log { level, text: text.into() });
     }
 
     /// Adds the effect that watches the actor `of` refers to.
@@ -213,6 +219,11 @@ impl<'a> Turn<'a> {
         self.seat.ask(What::Close);
     }
 
+    /// Logs `text` at `level`. The line is kept when this turn fails.
+    pub fn log(&mut self, level: Level, text: impl Into<String>) {
+        self.seat.log(level, text);
+    }
+
     /// A reference to this actor.
     #[must_use]
     pub const fn me(&self) -> ActorRef {
@@ -256,6 +267,11 @@ impl<'a> Beginning<'a> {
     /// Watches the actor `of` refers to: its ending is shown to this actor once, in a later turn.
     pub fn watch(&mut self, of: ActorRef) {
         self.seat.watch(of);
+    }
+
+    /// Logs `text` at `level`. The line is kept when this turn fails.
+    pub fn log(&mut self, level: Level, text: impl Into<String>) {
+        self.seat.log(level, text);
     }
 
     /// A reference to this actor.
@@ -306,6 +322,11 @@ impl<'a> Ending<'a> {
     /// Sends `mail` to `to`: the actor's last mail.
     pub fn send<K: Kind + Encode<Actors>>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError> {
         self.seat.send(to.into(), mail)
+    }
+
+    /// Logs `text` at `level`. The line is kept when this turn fails.
+    pub fn log(&mut self, level: Level, text: impl Into<String>) {
+        self.seat.log(level, text);
     }
 
     /// A reference to this actor.

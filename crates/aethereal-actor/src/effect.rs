@@ -2,6 +2,7 @@
 
 use crate::{ActorRef, Fault};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// One thing an actor asks of the engine, and which actor asked (ADR-0009).
@@ -69,6 +70,17 @@ pub enum What {
     Watch { of: ActorRef },
     /// The asking actor closes.
     Close,
+    /// The asking actor logs `text`. It is kept when the turn that asked for it fails.
+    Log { level: Level, text: String },
+}
+
+/// How much a logged line matters (ADR-0009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Debug,
+    Info,
+    Warn,
+    Error,
 }
 
 /// Who a turn may send to: a closed set (ADR-0009).

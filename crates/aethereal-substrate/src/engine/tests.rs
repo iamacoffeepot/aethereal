@@ -1,7 +1,7 @@
 //! The engine's tests: what a step runs, and what is there for the next one.
 
 use super::*;
-use aethereal_actor::{Fault, How, ToWithoutMail};
+use aethereal_actor::{Fault, How, Level, ToWithoutMail};
 use aethereal_data::{Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
 
@@ -43,7 +43,8 @@ impl Kind for NodeConfig {
 
 /// An actor that says what it is sent, and acts on it:
 ///
-/// - `close` closes it, and `fail` fails its turn;
+/// - `close` closes it, and `fail` fails its turn, and `fail text` logs `text` and sends its parent `never`
+///   first;
 /// - `spawn N text` spawns the node `N` beneath it and sends that child `text`, and `watch N text` watches the
 ///   child as well;
 /// - `tell N text` sends the node `N` beneath it `text`;
@@ -92,6 +93,12 @@ impl Actor for Node {
         match words[..] {
             ["close"] => turn.close(),
             ["fail"] => return Err(Fault::new(&Note { text })?),
+            ["fail", line] => {
+                turn.log(Level::Warn, line);
+                turn.send(To::Parent, &Note { text: String::from("never") })?;
+
+                return Err(Fault::new(&Note { text: String::from(line) })?);
+            }
             ["reply"] => turn.send(To::Sender, &Note { text: String::from("re") })?,
             ["up", said] => turn.send(To::Parent, &Note { text: format!("{said} from {}", self.number) })?,
             ["spawn" | "watch", number, text] => {
@@ -298,4 +305,21 @@ fn watch_of_an_actor_that_ended_earlier_is_shown() {
     third.sort();
     assert_eq!(third, ["1 got watchme from 2", "2 ended Closed"]);
     assert_eq!(step(&mut engine), ["1 saw earlier", "1 got bye 2"]);
+}
+
+#[test]
+fn failed_turn_keeps_its_log_lines_and_leaves_its_fault() {
+    // Catches a failed turn's lines dropped with the rest of what it asked for, the rest kept with the lines,
+    // and a failure that leaves nothing to read.
+    let (mut engine, root) = engine(&["spawn 2 fail low"]);
+    step(&mut engine);
+    step(&mut engine);
+    let Ok(fault) = Fault::new(&Note { text: String::from("low") }) else {
+        panic!("a short note encodes");
+    };
+
+    let kept: Vec<&Entry> = engine.log(node(root, 2)).collect();
+    assert_eq!(kept, [&Entry::Line { level: Level::Warn, text: String::from("low") }, &Entry::Failed(fault)]);
+    assert_eq!(step(&mut engine), ["2 ended Faulted"]);
+    assert_eq!(step(&mut engine), ["1 got bye 2"]);
 }

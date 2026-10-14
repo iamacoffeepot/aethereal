@@ -22,7 +22,7 @@ mod turn;
 
 pub use actor::{Actor, Runs};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Made, Refers, Table, Within, WithinReader, WithinWriter};
-pub use effect::{Code, Effect, To, ToWithoutMail, What};
+pub use effect::{Code, Effect, Level, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
 pub use mail::{Mail, MailId};
