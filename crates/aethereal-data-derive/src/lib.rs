@@ -1,4 +1,4 @@
-//! The derives of `aethereal-data`: `Plain` and `Key` (ADR-0004).
+//! The derives of `aethereal-data`: `Plain`, `Bound`, and `Key` (ADR-0004).
 
 use proc_macro::TokenStream;
 use syn::{DeriveInput, parse_macro_input};
@@ -16,7 +16,21 @@ mod plain;
 #[proc_macro_derive(Plain, attributes(plain))]
 pub fn derive_plain(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    match plain::expand(&input) {
+    match plain::expand(&input, plain::Derive::Plain) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+/// Derives `Schema` and the codec from one field list, for a type that holds a bound value (ADR-0004).
+///
+/// It writes the codec `Plain` writes, over every boundary and bounded by each
+/// field's type, so the type crosses exactly the boundaries all its fields
+/// cross. It does not state `Plain`.
+#[proc_macro_derive(Bound, attributes(plain))]
+pub fn derive_bound(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match plain::expand(&input, plain::Derive::Bound) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }

@@ -11,8 +11,12 @@
 
 extern crate alloc;
 
+mod boundary;
 mod effect;
 mod fault;
+mod reference;
 
+pub use boundary::{Actors, ActorsReader, ActorsWriter, Made, Refers, Within, WithinReader, WithinWriter};
 pub use effect::{Code, Effect, What};
 pub use fault::Fault;
+pub use reference::ErasedActorRef;

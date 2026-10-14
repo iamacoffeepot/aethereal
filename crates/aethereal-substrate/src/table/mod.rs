@@ -7,9 +7,16 @@ mod tests;
 use crate::Folded;
 use crate::id::path_id;
 use actors::{Actors, Entry};
-use aethereal_actor::Effect;
+use aethereal_actor::{Effect, Made};
 use aethereal_data::{ActorId, ActorPath};
 use std::num::NonZeroUsize;
+
+/// The table proves a reference: an id names an actor once the table holds it, live or ended (ADR-0008).
+impl Made for ActorTable {
+    fn made(&self, id: ActorId) -> bool {
+        self.standing(id) != Standing::Absent
+    }
+}
 
 /// How an actor stands in the table (ADR-0008).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

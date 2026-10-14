@@ -3,7 +3,7 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use super::{Codec, decode_binding, encode_call, impls, shape_field};
+use super::{Codec, Derive, decode_binding, encode_call, impls, shape_field};
 use syn::{DeriveInput, FieldsNamed, FieldsUnnamed, Type};
 
 /// The pieces one struct's impls are built from.
@@ -14,8 +14,8 @@ struct Parts {
     construction: TokenStream2,
 }
 
-/// Expands a struct into `Schema`, `Encode`, `Decode`, and `Plain` impls.
-pub fn expand(input: &DeriveInput, data: &syn::DataStruct) -> syn::Result<TokenStream2> {
+/// Expands a struct into the impls of `derive`.
+pub fn expand(input: &DeriveInput, data: &syn::DataStruct, derive: Derive) -> syn::Result<TokenStream2> {
     let parts = match &data.fields {
         syn::Fields::Named(fields) => named_parts(fields)?,
         syn::Fields::Unnamed(fields) => unnamed_parts(fields),
@@ -23,7 +23,7 @@ pub fn expand(input: &DeriveInput, data: &syn::DataStruct) -> syn::Result<TokenS
     };
     let field_types: Vec<&Type> = data.fields.iter().map(|field| &field.ty).collect();
 
-    Ok(impls(input, &field_types, &codec(input, &parts)))
+    Ok(impls(input, &field_types, &codec(input, &parts), derive))
 }
 
 /// The struct's shape and the bodies of its codec.
@@ -60,7 +60,7 @@ fn named_parts(fields: &FieldsNamed) -> syn::Result<Parts> {
 
     for (position, field) in fields.named.iter().enumerate() {
         let Some(field_ident) = &field.ident else {
-            let message = "Plain derive expects named fields to have names";
+            let message = "the derive expects named fields to have names";
             return Err(syn::Error::new_spanned(field, message));
         };
         let field_type = &field.ty;

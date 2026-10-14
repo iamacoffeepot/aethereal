@@ -3,7 +3,7 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use super::{Codec, decode_binding, encode_call, impls, shape_field};
+use super::{Codec, Derive, decode_binding, encode_call, impls, shape_field};
 use syn::{Attribute, DataEnum, DeriveInput, FieldsNamed, FieldsUnnamed, LitInt, Token, Type, Variant};
 
 /// One variant's three emitted pieces.
@@ -13,11 +13,11 @@ struct Built {
     decode_arm: TokenStream2,
 }
 
-/// Expands an enum into `Schema`, `Encode`, `Decode`, and `Plain` impls.
-pub fn expand(input: &DeriveInput, data: &DataEnum) -> syn::Result<TokenStream2> {
+/// Expands an enum into the impls of `derive`.
+pub fn expand(input: &DeriveInput, data: &DataEnum, derive: Derive) -> syn::Result<TokenStream2> {
     let is_empty = data.variants.is_empty();
     if is_empty {
-        let message = "Plain derive does not support enums with no variants";
+        let message = format!("{} derive does not support enums with no variants", derive.name());
         return Err(syn::Error::new_spanned(&input.ident, message));
     }
 
@@ -47,7 +47,7 @@ pub fn expand(input: &DeriveInput, data: &DataEnum) -> syn::Result<TokenStream2>
     let all_fields = data.variants.iter().flat_map(|variant| variant.fields.iter());
     let field_types: Vec<&Type> = all_fields.map(|field| &field.ty).collect();
 
-    Ok(impls(input, &field_types, &codec(input, &shapes, &encodes, &decodes)))
+    Ok(impls(input, &field_types, &codec(input, &shapes, &encodes, &decodes), derive))
 }
 
 /// The enum's shape and the bodies of its codec.
@@ -144,7 +144,7 @@ fn build_named(variant: &Variant, selector: u32, fields: &FieldsNamed) -> syn::R
 
     for (position, field) in fields.named.iter().enumerate() {
         let Some(field_ident) = &field.ident else {
-            let message = "Plain derive expects named fields to have names";
+            let message = "the derive expects named fields to have names";
             return Err(syn::Error::new_spanned(field, message));
         };
         let field_type = &field.ty;
