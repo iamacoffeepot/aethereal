@@ -193,21 +193,7 @@ impl<V: View> Routed<V> {
     where
         V: Consumes,
     {
-        self.route_owned_by(effects, context, |key, record| (key, record));
-    }
-
-    /// Routes the effects of one turn as [`Self::route_owned`] does, each record first given by `place` the key it
-    /// is kept under: for the engine, which keeps some records under a key the effect does not hold.
-    pub fn route_owned_by(
-        &mut self,
-        effects: impl IntoIterator<Item = Effect>,
-        context: &Context,
-        mut place: impl FnMut(u64, V::Record) -> (u64, V::Record),
-    ) where
-        V: Consumes,
-    {
         for (key, record) in effects.into_iter().flat_map(|effect| V::takes_owned(effect, context)) {
-            let (key, record) = place(key, record);
             let part = part(key, self.buckets.len());
             self.buckets[part].push((key, record));
         }
