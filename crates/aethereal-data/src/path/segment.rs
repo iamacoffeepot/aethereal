@@ -25,6 +25,15 @@ impl PathSegment {
         Self { kind, key: key.name() }
     }
 
+    /// The segment of the instanced actor of kind `kind` whose key is named `key`.
+    ///
+    /// For the engine, which holds a key as the name an effect carries. An author's code builds a segment from
+    /// the typed key, with [`Self::new`].
+    #[must_use]
+    pub const fn instanced(kind: KindName, key: KeyName) -> Self {
+        Self { kind, key: Some(key) }
+    }
+
     /// The name of the actor's kind.
     #[must_use]
     pub const fn kind(&self) -> &KindName {

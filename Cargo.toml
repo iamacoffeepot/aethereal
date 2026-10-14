@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/aethereal-actor",
     "crates/aethereal-data",
     "crates/aethereal-data-derive",
     "crates/aethereal-math",

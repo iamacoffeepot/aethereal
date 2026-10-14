@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "aethereal-actor"
+version = "0.1.0"
+dependencies = [
+ "aethereal-data",
+]
+
+[[package]]
 name = "aethereal-data"
 version = "0.1.0"
 dependencies = [
@@ -30,6 +37,7 @@ dependencies = [
 name = "aethereal-substrate"
 version = "0.1.0"
 dependencies = [
+ "aethereal-actor",
  "aethereal-data",
 ]
 

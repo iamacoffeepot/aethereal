@@ -1,179 +1,123 @@
-//! The table's tests: what a reader sees, what is refused, and that everything written is found.
+//! The table's tests: what a fold makes of spawns and endings, and what a reader then sees.
 
 use super::*;
-use aethereal_data::KindName;
-use std::sync::Weak;
-#[cfg(not(target_arch = "wasm32"))]
-use std::thread;
+use crate::id::{child_id, root_id};
+use aethereal_actor::{Code, What};
+use aethereal_data::{KeyName, KindName, PathSegment};
 
 const WINDOW: KindName = KindName::new("aether.window");
 const SURFACE: KindName = KindName::new("aether.window.surface");
+const LAYER: KindName = KindName::new("aether.window.layer");
+const LEFT: KeyName = KeyName::new("left");
 
-/// The root `aether.window:<key>` made live in `table`.
-fn window(table: &ActorTable, key: u64) -> ActorId {
-    let Ok(id) = table.add_root(&PathSegment::new(WINDOW, &key)) else {
-        panic!("the root `aether.window:{key}` is free");
+/// A table of `parts` parts.
+fn table(parts: usize) -> ActorTable {
+    let Some(parts) = NonZeroUsize::new(parts) else {
+        panic!("a table has at least one part");
     };
 
-    id
+    ActorTable::new(parts)
 }
 
-/// The segment `aether.window.surface:<key>`.
-fn surface(key: u64) -> PathSegment {
-    PathSegment::new(SURFACE, &key)
+/// The window root's id, and the effect that makes it.
+fn window() -> (ActorId, Effect) {
+    let id = root_id(&PathSegment::new(WINDOW, &()));
+
+    (id, Effect::new(id, What::Root { from: Code::Linked(WINDOW) }))
 }
 
-/// The path of the child `segment` names beneath `parent`, as the table holds it.
-fn beneath(table: &ActorTable, parent: ActorId, segment: &PathSegment) -> ActorPath {
-    let Some(Ok(path)) = table.path(parent).map(|above| above.child(segment)) else {
-        panic!("the parent is in the table, and a child fits beneath it");
-    };
+/// The id of the surface `left` beneath `parent`, and the effect by which `parent` spawns it.
+fn surface(parent: ActorId) -> (ActorId, Effect) {
+    let id = child_id(parent, &PathSegment::instanced(SURFACE, LEFT));
 
-    path
+    (id, Effect::new(parent, What::SpawnInstanced { from: Code::Linked(SURFACE), key: LEFT }))
 }
 
-#[test]
-fn reader_sees_the_table_at_its_change() {
-    // Catches a reader shown a later spawn or a later close, and a close that reaches back before it was made.
-    let table = ActorTable::new();
-    let parent = window(&table, 0);
-    let before_spawn = table.latest();
-    let Ok(child) = table.add_child(parent, &surface(0)) else {
-        panic!("the child is free");
-    };
-    let path = beneath(&table, parent, &surface(0));
-    let before_close = table.latest();
-    assert_eq!(table.standing(child, before_spawn), Standing::Absent);
-    assert_eq!(table.standing(child, before_close), Standing::Live);
-    assert_eq!(table.resolve(&path, before_spawn), None);
-    assert_eq!(table.resolve(&path, before_close), Some(child));
+/// The id of the layer beneath `parent`, and the effect by which `parent` embeds it.
+fn layer(parent: ActorId) -> (ActorId, Effect) {
+    let id = child_id(parent, &PathSegment::new(LAYER, &()));
 
-    let closed = table.close(child);
-    assert_eq!(closed, Ok(table.latest()));
-    assert_eq!(table.close(child), Err(NotLive));
-    assert_eq!(table.standing(child, before_close), Standing::Live);
-    assert_eq!(table.standing(child, table.latest()), Standing::Closed);
-    assert_eq!(table.resolve(&path, before_close), Some(child));
-    assert_eq!(table.resolve(&path, table.latest()), None);
-    assert_eq!(table.path(child), Some(path));
+    (id, Effect::new(parent, What::Embed { from: Code::Linked(LAYER) }))
 }
 
 #[test]
-fn used_path_is_never_spawned_again() {
-    // Catches a closed path handed out again, and a key refused beneath a parent that never used it.
-    let table = ActorTable::new();
-    let parent = window(&table, 0);
-    let other = window(&table, 1);
-    let Ok(child) = table.add_child(parent, &surface(0)) else {
-        panic!("the child is free");
-    };
-    assert_eq!(table.add_child(parent, &surface(0)), Err(Refused::KeyTaken));
-    assert_eq!(table.close(child).map(|_| ()), Ok(()));
-    let after_close = table.latest();
+fn spawned_actor_resolves_by_its_path() {
+    // Catches an entry kept under the parent's id, a segment built without its key, and a path walked up in the
+    // wrong order.
+    let (window, root) = window();
+    let (surface, spawn) = surface(window);
+    let (layer, embed) = layer(surface);
+    let mut table = table(4);
+    table.fold(&[root, spawn, embed]);
 
-    assert_eq!(table.add_child(parent, &surface(0)), Err(Refused::KeyTaken));
-    assert_eq!(table.add_root(&PathSegment::new(WINDOW, &0u64)), Err(Refused::KeyTaken));
-    assert_eq!(table.latest(), after_close);
-    assert!(table.add_child(other, &surface(0)).is_ok());
+    let path = ActorPath::new("aether.window/aether.window.surface:left/aether.window.layer");
+    assert_eq!(table.resolve(&path), Some(layer));
+    assert_eq!(table.path(layer), Some(path));
+    assert_eq!(table.parent(layer), Some(surface));
+    assert_eq!(table.parent(window), None);
 }
 
 #[test]
-fn child_needs_a_live_parent_and_room_beneath_it() {
-    // Catches a child made beneath nothing or beneath a closed actor, and a depth limit one off.
-    let table = ActorTable::new();
-    let parent = window(&table, 0);
-    assert_eq!(table.add_child(child_id(parent, &surface(0)), &surface(0)), Err(Refused::ParentNotLive));
-    assert_eq!(table.close(parent).map(|_| ()), Ok(()));
-    assert_eq!(table.add_child(parent, &surface(0)), Err(Refused::ParentNotLive));
+fn ending_marks_only_its_own_actor() {
+    // Catches an ending that reaches the actors beneath, and one that marks the parent of the actor that asked.
+    let (window, root) = window();
+    let (surface, spawn) = surface(window);
+    let (layer, embed) = layer(surface);
+    let mut table = table(4);
+    table.fold(&[root, spawn, embed]);
+    table.fold(&[Effect::new(surface, What::Close)]);
 
-    let mut deepest = window(&table, 1);
-    for _ in 1..ActorPath::MAX_DEPTH {
-        let Ok(deeper) = table.add_child(deepest, &surface(0)) else {
-            panic!("a path may be {} segments deep", ActorPath::MAX_DEPTH);
-        };
-        deepest = deeper;
-    }
-    assert_eq!(table.add_child(deepest, &surface(0)), Err(Refused::TooDeep));
+    assert_eq!(table.standing(window), Standing::Live);
+    assert_eq!(table.standing(surface), Standing::Ended);
+    assert_eq!(table.standing(layer), Standing::Live);
+    assert_eq!(table.resolve(&ActorPath::new("aether.window/aether.window.surface:left")), None);
 }
 
 #[test]
-fn second_path_with_one_id_is_refused() {
-    // Catches a second path taking the place of the first under one id, and the two read as one actor.
-    let table = ActorTable::new();
-    let first = ActorPath::new("aether.window");
-    let second = ActorPath::new("aether.window.surface");
-    let id = path_id(&first);
-    assert_eq!(table.insert(&table.roots, Weak::new(), id, 1, first.clone()), Ok(id));
-    assert_eq!(table.insert(&table.roots, Weak::new(), id, 2, second.clone()), Err(Refused::IdShared));
-    assert_eq!(table.path(id), Some(first));
-    assert_eq!(table.resolve(&second, table.latest()), None);
+fn failed_turn_ends_its_actor() {
+    // Catches a view that follows `Close` and passes over the ending the engine writes for a failed turn.
+    let (window, root) = window();
+    let mut table = table(1);
+    table.fold(&[root, Effect::new(window, What::Failed)]);
+
+    assert_eq!(table.standing(window), Standing::Ended);
 }
 
 #[test]
-fn every_entry_is_found_again() {
-    // Catches a descent that takes the wrong four bits, or loses a line once nodes are several deep.
-    const CHILDREN: u64 = 4096;
-    let table = ActorTable::new();
-    let parent = window(&table, 0);
-    for key in 0..CHILDREN {
-        assert!(table.add_child(parent, &surface(key)).is_ok(), "the child `{key}`");
-    }
-
-    let latest = table.latest();
-    for key in 0..CHILDREN {
-        let path = beneath(&table, parent, &surface(key));
-        let id = child_id(parent, &surface(key));
-        assert_eq!(table.resolve(&path, latest), Some(id), "the child `{key}`");
-        assert_eq!(table.path(id), Some(path), "the child `{key}`");
-    }
-    assert_eq!(table.standing(child_id(parent, &surface(CHILDREN)), latest), Standing::Absent);
+#[should_panic(expected = "already held")]
+fn actor_made_under_a_held_id_stops_the_engine() {
+    // Catches a second actor made under an id quietly replacing the first, or bringing an ended path back to life.
+    let (window, root) = window();
+    let (surface, spawn) = surface(window);
+    let mut table = table(4);
+    table.fold(&[root, spawn.clone(), Effect::new(surface, What::Close), spawn]);
 }
 
 #[test]
-fn tree_keeps_each_actors_line() {
-    // Catches a child written to the index and not beneath its parent, or beneath another's, and a closed child
-    // still listed.
-    let table = ActorTable::new();
-    let parent = window(&table, 0);
-    let other = window(&table, 1);
-    let before = table.latest();
-    let (Ok(first), Ok(second)) = (table.add_child(parent, &surface(0)), table.add_child(parent, &surface(1))) else {
-        panic!("both children are free");
-    };
-    assert_eq!(table.parent(first), Some(parent));
-    assert_eq!(table.parent(parent), None);
-    assert_eq!(table.close(first).map(|_| ()), Ok(()));
+fn reader_sees_nothing_before_the_fold() {
+    // Catches an ending of an actor the table never held making an entry for it.
+    let (window, _) = window();
+    let mut table = table(4);
+    table.fold(&[Effect::new(window, What::Close)]);
 
-    assert_eq!(table.children(parent, before), Vec::new());
-    assert_eq!(table.children(parent, table.latest()), [second]);
-    assert_eq!(table.children(other, table.latest()), Vec::new());
+    assert_eq!(table.standing(window), Standing::Absent);
+    assert_eq!(table.path(window), None);
 }
 
-// Native only: the browser host runs the engine on one thread (ADR-0001).
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn writers_in_separate_branches_lose_nothing() {
-    // Catches a line lost when two writers reach one node together, and a latest number that skips or stalls.
-    const WRITERS: u64 = 4;
-    const CHILDREN: u64 = 500;
-    let table = ActorTable::new();
-    let parents: Vec<ActorId> = (0..WRITERS).map(|key| window(&table, key)).collect();
-    thread::scope(|scope| {
-        for parent in &parents {
-            let table = &table;
-            scope.spawn(move || {
-                for key in 0..CHILDREN {
-                    assert!(table.add_child(*parent, &surface(key)).is_ok(), "the child `{key}`");
-                }
-            });
-        }
+fn part_count_does_not_change_the_table() {
+    // Catches a record folded into one part and read from another: every read agrees for one part and for many.
+    let (window, root) = window();
+    let (surface, spawn) = surface(window);
+    let (layer, embed) = layer(surface);
+    let effects = [root, spawn, embed, Effect::new(layer, What::Close)];
+    let seen = [1, 2, 7, 64].map(|parts| {
+        let mut table = table(parts);
+        table.fold(&effects);
+
+        [window, surface, layer].map(|id| (table.standing(id), table.path(id), table.parent(id)))
     });
 
-    let latest = table.latest();
-    assert_eq!(latest, Change(WRITERS + WRITERS * CHILDREN));
-    for parent in parents {
-        for key in 0..CHILDREN {
-            assert_eq!(table.standing(child_id(parent, &surface(key)), latest), Standing::Live, "the child `{key}`");
-        }
-    }
+    assert!(seen.iter().all(|read| *read == seen[0]));
+    assert_eq!(seen[0][2].0, Standing::Ended);
 }
