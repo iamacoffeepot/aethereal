@@ -161,7 +161,7 @@ pub enum To {
 
 **Every piece of mail has an actor as its sender, and the engine sends none of its own.** Mail from a `Send` names the actor the effect is by. An actor's ending makes no mail: its watchers read it from their turn.
 
-**A turn that fails changes nothing outside its actor.** When `begin` or `handle` returns a `Fault`, or a guest traps, the engine closes the actor and tells its parent. The actor handles no more mail. Its state is not rolled back, so its `end` sees that state as the failed turn left it.
+**A turn that fails changes nothing outside its actor.** When `begin` or `handle` returns a `Fault`, or a guest traps, the engine closes the actor, and the actors that watch it are shown its ending. The actor handles no more mail. Its state is not rolled back, so its `end` sees that state as the failed turn left it.
 
 - On a `Fault` the engine applies the turn's `Log` effects, in order, and drops every other effect. A failed turn is the one whose lines are most wanted.
 - **The engine then adds `Failed`, by the actor whose turn failed, holding the fault.** The actor returned a `Fault` and so asked for no `Close`, and a view sees only effects (ADR-0011). `Failed` is the entry that says the actor ended, written by the engine because the actor's code could not, and the table marks the actor from it as it does from `Close`. `Faulted` is the other such entry: it says a child's `begin` failed and the child was never live.

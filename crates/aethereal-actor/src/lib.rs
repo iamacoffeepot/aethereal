@@ -11,12 +11,18 @@
 
 extern crate alloc;
 
+mod actor;
 mod boundary;
 mod effect;
 mod fault;
+mod mail;
 mod reference;
+mod turn;
 
-pub use boundary::{Actors, ActorsReader, ActorsWriter, Made, Refers, Within, WithinReader, WithinWriter};
-pub use effect::{Code, Effect, What};
-pub use fault::Fault;
+pub use actor::{Actor, Runs};
+pub use boundary::{Actors, ActorsReader, ActorsWriter, Made, Refers, Table, Within, WithinReader, WithinWriter};
+pub use effect::{Code, Effect, To, ToWithoutMail, What};
+pub use fault::{Fault, Unreadable, Unwritable};
+pub use mail::Mail;
 pub use reference::ErasedActorRef;
+pub use turn::{Asked, Beginning, Ending, Refused, Stood, Turn, Why};

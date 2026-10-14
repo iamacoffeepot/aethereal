@@ -5,16 +5,31 @@ mod actors;
 mod tests;
 
 use crate::Folded;
-use crate::id::path_id;
+use crate::id::{child_id, path_id};
 use actors::{Actors, Entry};
-use aethereal_actor::{Effect, Made};
-use aethereal_data::{ActorId, ActorPath};
+use aethereal_actor::{Effect, Made, Table};
+use aethereal_data::{ActorId, ActorPath, PathSegment};
 use std::num::NonZeroUsize;
 
 /// The table proves a reference: an id names an actor once the table holds it, live or ended (ADR-0008).
 impl Made for ActorTable {
     fn made(&self, id: ActorId) -> bool {
         self.standing(id) != Standing::Absent
+    }
+}
+
+/// The table as a turn reads it. The id of a child is computed here, by the engine, and nowhere else.
+impl Table for ActorTable {
+    fn resolve(&self, path: &ActorPath) -> Option<ActorId> {
+        Self::resolve(self, path)
+    }
+
+    fn path(&self, id: ActorId) -> Option<ActorPath> {
+        Self::path(self, id)
+    }
+
+    fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
+        child_id(parent, segment)
     }
 }
 

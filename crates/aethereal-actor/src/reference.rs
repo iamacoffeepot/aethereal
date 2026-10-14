@@ -5,10 +5,15 @@ use aethereal_data::{ActorId, Boundary, Decode, DecodeError, Encode, EncodeError
 
 /// A reference to an actor the engine has established exists (ADR-0008).
 ///
-/// Nothing outside this crate builds one. An actor comes to hold a reference
-/// by being handed one in mail, by being told the sender of mail, or by asking
-/// the engine to resolve a path. It says the actor existed when the reference
-/// was made, and not that the actor is still there.
+/// An actor comes to hold a reference by being handed one in mail, by being
+/// told the sender of mail, or by asking the engine to resolve a path. It says
+/// the actor existed when the reference was made, and not that the actor is
+/// still there.
+///
+/// The engine's own constructors of a turn and of mail are public, so code
+/// can build one by hand for an id that was never made. Such a reference is
+/// caught where it matters: mail carrying it is refused where it is decoded,
+/// and a send to it is not delivered.
 ///
 /// A reference is a bound value: it crosses [`Actors`](crate::Actors) and
 /// [`Within`](crate::Within), and it is proven against the table of actors

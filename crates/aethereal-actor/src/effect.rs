@@ -1,6 +1,8 @@
 //! An effect: one thing an actor asks of the engine (ADR-0009).
 
-use aethereal_data::{ActorId, KeyName, KindName, PathSegment};
+use crate::ErasedActorRef;
+use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
+use alloc::vec::Vec;
 
 /// One thing an actor asks of the engine, and which actor asked (ADR-0009).
 ///
@@ -34,10 +36,12 @@ impl Effect {
 
 /// What an effect asks for (ADR-0009).
 ///
-/// The cases here are the ones the table of actors is folded from. The others
-/// ADR-0009 lists enter with the piece of the engine that applies each.
+/// The cases here are the ones a turn can ask for so far. The others ADR-0009
+/// lists enter with the piece of the engine that applies each.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum What {
+    /// Mail of kind `kind`, whose bytes are `bytes`, is sent to `to`.
+    Send { to: To, kind: KindId, bytes: Vec<u8> },
     /// A root, a singleton, has been made. Written by the engine for the chassis, by the root itself.
     Root { from: Code },
     /// A root of an instanced type has been made. Written by the engine for the chassis, by the root itself.
@@ -50,11 +54,60 @@ pub enum What {
     Embed { from: Code },
     /// A child of an instanced type stands beneath the asking actor, and its mail is handed to that actor.
     EmbedInstanced { from: Code, key: KeyName },
+    /// The asking actor's `begin` failed, and the actor was never live. It reports, and asks for nothing.
+    Faulted,
     /// The asking actor's turn failed, and the actor has ended. Written by the engine, since the actor asked for
     /// nothing.
     Failed,
     /// The asking actor closes.
     Close,
+}
+
+/// Who a turn may send to: a closed set (ADR-0009).
+///
+/// Every case is an actor beneath the sender, which owns that part of the
+/// tree, or one the engine has already established exists. There is no send
+/// to a bare path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum To {
+    /// The actor directly above the sender.
+    Parent,
+    /// The singleton of this kind directly beneath the sender.
+    Child(KindName),
+    /// The actor of this kind and key directly beneath the sender.
+    ChildInstanced(KindName, KeyName),
+    /// The sender of the mail being handled.
+    Sender,
+    /// The actor a reference the sender holds refers to.
+    Held(ErasedActorRef),
+}
+
+/// Who a `begin` or a closing turn may send to (ADR-0009).
+///
+/// Neither is handling a piece of mail, so neither has a sender: this is
+/// [`To`] without that case, and a send to the sender from either does not
+/// build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToWithoutMail {
+    /// The actor directly above the sender.
+    Parent,
+    /// The singleton of this kind directly beneath the sender.
+    Child(KindName),
+    /// The actor of this kind and key directly beneath the sender.
+    ChildInstanced(KindName, KeyName),
+    /// The actor a reference the sender holds refers to.
+    Held(ErasedActorRef),
+}
+
+impl From<ToWithoutMail> for To {
+    fn from(to: ToWithoutMail) -> Self {
+        match to {
+            ToWithoutMail::Parent => Self::Parent,
+            ToWithoutMail::Child(kind) => Self::Child(kind),
+            ToWithoutMail::ChildInstanced(kind, key) => Self::ChildInstanced(kind, key),
+            ToWithoutMail::Held(reference) => Self::Held(reference),
+        }
+    }
 }
 
 /// The code an actor is made from (ADR-0009).
