@@ -204,7 +204,7 @@ impl Actor for Herald {
 /// Where a turn's first piece of mail with no bytes is written: at the start of an arena of its own.
 const NOTHING: Payload = Payload::InArena(Span { slot: 0, start: 0, len: 0 });
 
-const ROOT: ActorPath = ActorPath::new("aether.test.root");
+static ROOT: ActorPath = ActorPath::new("aether.test.root");
 const ME: Seated = seated(1, 100);
 
 /// The actor `bits` names, in the seat numbered `seat`.
@@ -230,7 +230,7 @@ fn child_begins_inside_its_parents_turn() {
     // under the id, path, and seat its spawn gives it, and two children given one seat.
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
+    let mut turn = Turn::new(ME, &ROOT, &table, &mut asked, 0, ME);
     let Ok(branch) = turn.spawn::<Branch>(&(), BranchConfig { leaves: 2, last_fails: false }) else {
         panic!("the branch and its leaves begin");
     };
@@ -264,7 +264,7 @@ fn used_key_is_refused_and_asks_for_nothing() {
     let held_id = table.child(ME.id, &held.last());
     let table = Listed(vec![(Seated { id: held_id, seat: SeatNumber::new(7) }, held)]);
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
+    let mut turn = Turn::new(ME, &ROOT, &table, &mut asked, 0, ME);
 
     assert!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }).is_ok());
     assert_eq!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }), Err(Refused::KeyTaken));
@@ -278,7 +278,7 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     // that a failed begin used up.
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
+    let mut turn = Turn::new(ME, &ROOT, &table, &mut asked, 0, ME);
     let refused = turn.spawn::<Branch>(&(), BranchConfig { leaves: 2, last_fails: true });
     let Err(Refused::Began(fault)) = refused else {
         panic!("the branch's last leaf fails, and the branch with it");
@@ -298,7 +298,7 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     ];
     assert_eq!(asked.effects(), expected);
 
-    let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
+    let mut turn = Turn::new(ME, &ROOT, &table, &mut asked, 0, ME);
     assert!(turn.spawn::<Branch>(&(), BranchConfig { leaves: 0, last_fails: false }).is_ok());
     let (effects, stood, _, seats) = asked.into_parts();
     assert_eq!(effects.last(), Some(&spawn_branch));
@@ -310,9 +310,9 @@ fn failed_begin_leaves_its_fault_and_no_child() {
 fn begin_and_end_send_as_their_own_actor() {
     // Catches a `begin`'s mail signed by the parent whose turn it runs in or placed before its spawn, and a
     // closing turn that does not learn why it runs.
-    let table = Listed(vec![(ME, ROOT)]);
+    let table = Listed(vec![(ME, ROOT.clone())]);
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, ROOT, &table, &mut asked, 0, ME);
+    let mut turn = Turn::new(ME, &ROOT, &table, &mut asked, 0, ME);
     let Ok(herald) = turn.spawn::<Herald>(&(), Poke) else {
         panic!("the herald begins");
     };
@@ -326,7 +326,7 @@ fn begin_and_end_send_as_their_own_actor() {
     };
     let end = |why| {
         let mut asked = Asked::new();
-        let mut ending = Ending::new(herald.seated(), path.clone(), &table, &mut asked, 0, why);
+        let mut ending = Ending::new(herald.seated(), &path, &table, &mut asked, 0, why);
         let ended = Box::new(Herald).end(&mut ending);
 
         (ended, asked.into_parts().0)
@@ -339,13 +339,13 @@ fn begin_and_end_send_as_their_own_actor() {
 fn child_past_the_deepest_path_is_refused() {
     // Catches a spawn that asks for a child the table could never name.
     let Ok(deepest) =
-        (1..ActorPath::MAX_DEPTH).try_fold(ROOT, |path, _| path.child(&PathSegment::new(Leaf::NAME, &0u64)))
+        (1..ActorPath::MAX_DEPTH).try_fold(ROOT.clone(), |path, _| path.child(&PathSegment::new(Leaf::NAME, &0u64)))
     else {
         panic!("a path of the greatest depth fits");
     };
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, deepest, &table, &mut asked, 0, ME);
+    let mut turn = Turn::new(ME, &deepest, &table, &mut asked, 0, ME);
 
     assert_eq!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }), Err(Refused::TooDeep));
     assert!(asked.effects().is_empty());
@@ -360,7 +360,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
     let mut leaf: Box<dyn Runs> = Box::new(Leaf);
     let handle = |leaf: &mut Box<dyn Runs>, table: &Listed, kind, bytes: &[u8]| {
         let mut asked = Asked::new();
-        let mut turn = Turn::new(ME, ROOT, table, &mut asked, 0, other);
+        let mut turn = Turn::new(ME, &ROOT, table, &mut asked, 0, other);
         let handled = leaf.handle(
             Item::Mail(Mail::new(kind, bytes, other, MailId { sender: other.id, count: 1 }, 1, table, 64)),
             &mut turn,
