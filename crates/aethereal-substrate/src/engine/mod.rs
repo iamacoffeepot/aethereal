@@ -11,8 +11,8 @@ pub use costs::Tally;
 pub use plan::{Plan, Share, Workers};
 
 use crate::id::root_id;
-use crate::stream::{Pending, Shard, Streams};
-use crate::{ActorTable, Clock, Context, Entry, Envelope, Folded, Log};
+use crate::stream::{self, Pending, Streams};
+use crate::{ActorTable, Clock, Context, Entry, Envelope, Folded, Lives, Log, State, lives};
 use aethereal_actor::{
     Actor, Arena, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Payload, Refused, Runs,
     Stood, Turn, What, Why,
@@ -51,6 +51,8 @@ pub struct Engine {
     streams: Folded<Streams>,
     /// What each actor logged most recently.
     log: Folded<Log>,
+    /// How far each actor's life has gone: the mail it has sent, and whether it has ended.
+    lives: Folded<Lives>,
     /// Every actor the engine still runs, under its id: the live ones, and the ended ones whose closing turn is
     /// still to run.
     seats: BTreeMap<u64, Seat>,
@@ -61,8 +63,6 @@ pub struct Engine {
     arenas: [Vec<Arena>; 2],
     /// What each worker fills in a step, by writer, kept from one step to the next.
     lists: Vec<Lists>,
-    /// The actors that have ended and whose closing turn runs in the next step.
-    ending: Vec<ActorId>,
     /// The number given to each kind of actor seated so far.
     kinds: Kinds,
     /// How long turns take, as measured so far.
@@ -75,31 +75,20 @@ pub struct Engine {
     read_limit: usize,
 }
 
-/// What the engine keeps for one actor beside the actor itself.
+/// What the engine keeps for one actor beside the actor itself, fixed when it is seated.
 struct Seat {
     /// Where the actor stands.
     path: ActorPath,
     /// Its kind, as the engine numbers it.
     kind: KindIndex,
-    /// How many pieces of mail it has sent, as of the last step applied.
-    sent: u64,
-    /// Whether it still reacts.
-    life: Life,
 }
 
-/// Whether an actor the engine runs still reacts.
-enum Life {
-    /// It reacts to its stream.
-    Live,
-    /// It has ended, `how` it ended, and its closing turn runs in the next step, in `context`.
-    Ending { how: How, context: Context },
-}
-
-/// The engine as a step's workers read it while they run: the table, each actor's seat, and the items handed out
-/// (ADR-0011).
+/// The engine as a step's workers read it while they run: the table, each actor's seat and life, and the items
+/// handed out (ADR-0011).
 pub struct Reading<'a> {
     table: &'a ActorTable,
     streams: &'a Folded<Streams>,
+    lives: &'a Folded<Lives>,
     seats: &'a BTreeMap<u64, Seat>,
     /// The arenas the last step's mail was written to, by writer.
     mail: &'a [Arena],
@@ -156,11 +145,11 @@ impl Engine {
             table: ActorTable::new(parts),
             streams: Folded::new(parts),
             log: Folded::new(parts),
+            lives: Folded::new(parts),
             seats: BTreeMap::new(),
             actors: BTreeMap::new(),
             arenas: [Vec::new(), Vec::new()],
             lists: Vec::new(),
-            ending: Vec::new(),
             kinds: Kinds::new(),
             costs: Costs::new(),
             recent: 0,
@@ -192,9 +181,10 @@ impl Engine {
     /// Whether a step would run no turn: no actor has anything to react to, and none has a closing turn to run.
     #[must_use]
     pub fn is_idle(&self) -> bool {
-        let has_items = self.streams.shards().any(Shard::has_items);
+        let has_items = self.streams.shards().any(stream::Shard::has_items);
+        let has_ended = self.lives.shards().any(lives::Shard::has_ended);
 
-        !has_items && self.ending.is_empty()
+        !has_items && !has_ended
     }
 
     /// Makes a root of type `A` under `key`, for the chassis, and answers with its id (ADR-0008).
@@ -265,16 +255,16 @@ impl Engine {
         // Every actor with items, and every actor whose closing turn is to run. Items for an actor that is not live
         // are never handed to it, and go with the rest at the next step: one never made, one gone, or one that has
         // ended, which runs its closing turn.
-        let runs: Vec<(u64, Range<usize>)> = self.streams.shards_mut().flat_map(Shard::hand).collect();
-        let ending = mem::take(&mut self.ending);
+        let runs: Vec<(u64, Range<usize>)> = self.streams.shards_mut().flat_map(stream::Shard::hand).collect();
+        let ending: Vec<u64> = self.lives.shards_mut().flat_map(lives::Shard::take_ended).collect();
         for (bits, range) in runs {
-            let is_live = self.seats.get(&bits).is_some_and(|seat| matches!(seat.life, Life::Live));
+            let is_live = self.lives.shard(bits).life(bits).is_some_and(lives::Life::is_live);
             if is_live {
                 self.job(ActorId::new(bits), Work::Items(range), &mut jobs, &mut costs);
             }
         }
-        for id in ending {
-            self.job(id, Work::Closing, &mut jobs, &mut costs);
+        for bits in ending {
+            self.job(ActorId::new(bits), Work::Closing, &mut jobs, &mut costs);
         }
 
         let work = costs.iter().sum();
@@ -303,7 +293,14 @@ impl Engine {
     pub fn reading(&self) -> Reading<'_> {
         let mail = &self.arenas[parity(self.step + 1)];
 
-        Reading { table: &self.table, streams: &self.streams, seats: &self.seats, mail, read_limit: self.read_limit }
+        Reading {
+            table: &self.table,
+            streams: &self.streams,
+            lives: &self.lives,
+            seats: &self.seats,
+            mail,
+            read_limit: self.read_limit,
+        }
     }
 
     /// Ends a step: puts back the actors the workers ran, takes in how long their turns took, and applies what
@@ -402,15 +399,10 @@ impl Engine {
     fn fold_turn(&mut self, effects: &[Effect], stood: Vec<Stood>, context: Context) {
         self.table.fold(effects, &context);
         self.log.fold(effects, &context);
+        self.lives.fold(effects, &context);
 
         for child in stood {
             self.seat(child.id(), child.path().clone(), child.into_actor());
-        }
-        for effect in effects {
-            self.count(effect);
-            if let Some(how) = ending(effect, effect.by()) {
-                self.end(effect.by(), how, context);
-            }
         }
     }
 
@@ -428,30 +420,8 @@ impl Engine {
     /// Gives the actor `id` stands for, at `path`, a seat: it is run from the next step.
     fn seat(&mut self, id: ActorId, path: ActorPath, actor: Box<dyn Runs>) {
         let kind = self.kinds.number(path.last().kind());
-        self.seats.insert(id.bits(), Seat { path, kind, sent: 0, life: Life::Live });
+        self.seats.insert(id.bits(), Seat { path, kind });
         self.actors.insert(id.bits(), actor);
-    }
-
-    /// Marks the actor `id` stands for as ended, `how` it ended: its closing turn runs in the next step, in the
-    /// chain of the mail that brought its ending about (ADR-0012).
-    fn end(&mut self, id: ActorId, how: How, context: Context) {
-        if let Some(seat) = self.seats.get_mut(&id.bits()) {
-            let was_live = matches!(seat.life, Life::Live);
-            seat.life = Life::Ending { how, context };
-            if was_live {
-                self.ending.push(id);
-            }
-        }
-    }
-
-    /// Keeps the count of a send applied: the next turn of its sender counts on from it.
-    fn count(&mut self, effect: &Effect) {
-        let What::Send { id, .. } = effect.what() else {
-            return;
-        };
-        if let Some(seat) = self.seats.get_mut(&id.sender.bits()) {
-            seat.sent = seat.sent.max(id.count);
-        }
     }
 }
 
@@ -482,19 +452,22 @@ impl Reading<'_> {
     /// the turns, and the actor added to `lists`.
     fn turns(&self, job: Job, clock: &impl Clock, tally: &mut Tally, arena: &mut Arena, lists: &mut Lists) {
         let Job { id, kind, actor, work } = job;
-        let Some(seat) = self.seats.get(&id.bits()) else {
+        let seat = self.seats.get(&id.bits());
+        let life = self.lives.shard(id.bits()).life(id.bits());
+        let (Some(seat), Some(life)) = (seat, life) else {
             lists.actors.push(Turned { id, kept: Kept::Live(actor) });
             return;
         };
         let key = |item| CostKey { actor: kind, item };
 
-        match (work, &seat.life) {
-            (Work::Closing, Life::Ending { how, context }) => {
+        match (work, life.state()) {
+            (Work::Closing, State::Ending { how, context }) => {
                 let begins = lists.effects.len();
                 let mut asked = Asked::continuing(mem::take(&mut lists.effects), mem::take(arena));
                 let why = why(how);
                 let start = clock.nanos();
-                let ended = actor.end(&mut Ending::new(id, seat.path.clone(), self.table, &mut asked, seat.sent, why));
+                let ended =
+                    actor.end(&mut Ending::new(id, seat.path.clone(), self.table, &mut asked, life.sent(), why));
                 tally.add(key(ItemKind::Closing), clock.nanos().saturating_sub(start));
                 let (effects, _, written) = asked.into_parts();
                 lists.effects = effects;
@@ -511,10 +484,10 @@ impl Reading<'_> {
                 lists.turns.push(Ran { effects: begins..lists.effects.len(), stood: Vec::new(), context: *context });
                 lists.actors.push(Turned { id, kept: Kept::Gone });
             }
-            (Work::Items(range), Life::Live) => {
+            (Work::Items(range), State::Live) => {
                 let mut actor = actor;
                 let mut stood_since = Vec::new();
-                let mut count = seat.sent;
+                let mut count = life.sent();
                 for pending in self.streams.shard(id.bits()).handed(range) {
                     let table = Since { table: self.table, stood: &stood_since };
                     let begins = lists.effects.len();

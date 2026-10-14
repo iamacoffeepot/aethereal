@@ -73,7 +73,7 @@ pub trait View {
 
 **A part settles once a step's records are all in.** Records reach a part in any order, so a view that pairs records of one step pairs them when the step's records are all folded, not one at a time. Settling may hand records on to other keys, and the engine folds each into the part its key falls in; what is handed on is not settled again. The stream hands each ending on to the actors watching the one that ended.
 
-**The table of actors is the first view.** It is folded from spawns and endings. Where a library's heads point is a view (ADR-0009). Whether a chain of mail has finished, and who watches an actor, are views when they are built.
+**The table of actors is the first view.** It is folded from spawns and endings. Where a library's heads point is a view (ADR-0009). Whether a chain of mail has finished, and who watches an actor, are views when they are built. How far each actor's life has gone, the mail it has sent and whether it has ended, is a view, so the engine keeps beside its actors only what is fixed when one is seated: where it stands and its kind.
 
 **When a step's turns have finished, the engine folds; an actor's items are handed to it when it runs.** Mail is kept under the actor it is for, whether or not that actor is still live, and the engine hands an actor its items only when the actor is live. Items for an actor that is not are dropped there, unhanded: one never made, one gone, or one that has ended, which runs its closing turn instead. So a child spawned in a step is there for mail sent to it in that step. The endings of a step are folded for the actors that watch them (ADR-0009), and a watch asked for in the step its actor ends is shown that ending once.
 
