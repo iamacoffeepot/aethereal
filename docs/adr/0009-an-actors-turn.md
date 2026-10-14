@@ -67,7 +67,7 @@ pub enum What {
     EndFailed(Fault),
     Publish { kind: KindName, blob: BlobId },
     Close,
-    Watch { of: ActorRef },
+    Watch { of: ErasedActorRef },
     Log { level: Level, text: String },
 }
 
@@ -151,7 +151,7 @@ pub enum To {
     Child(KindName),
     ChildInstanced(KindName, KeyName),
     Sender,
-    Held(ActorRef),
+    Held(ErasedActorRef),
 }
 ```
 
