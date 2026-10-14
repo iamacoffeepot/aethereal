@@ -1,7 +1,7 @@
 //! The view of which actors there are (ADR-0008, ADR-0011).
 
-use crate::View;
 use crate::id::spawned;
+use crate::{Context, View};
 use aethereal_actor::{Effect, What};
 use aethereal_data::{ActorId, PathSegment};
 use std::collections::BTreeMap;
@@ -61,7 +61,7 @@ impl View for Actors {
     type Record = Record;
     type Reads<'a> = ();
 
-    fn takes(effect: &Effect, (): ()) -> impl Iterator<Item = (u64, Record)> + '_ {
+    fn takes<'a>(effect: &'a Effect, _: &'a Context, (): ()) -> impl Iterator<Item = (u64, Record)> + 'a {
         record(effect).into_iter()
     }
 
@@ -93,7 +93,7 @@ fn record(effect: &Effect) -> Option<(u64, Record)> {
     let (id, record) = match effect.what() {
         What::Root { from } => (by, Record::Made { above: None, segment: from.singleton() }),
         What::RootInstanced { from, key } => (by, Record::Made { above: None, segment: from.instanced(key) }),
-        What::Failed | What::Close => (by, Record::Ended),
+        What::Failed(_) | What::Close => (by, Record::Ended),
         _ => {
             let (child, segment) = spawned(effect)?;
 

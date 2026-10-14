@@ -1,4 +1,4 @@
-//! A turn: what an actor asks of the engine while it handles one piece of mail (ADR-0009).
+//! A turn: what an actor asks of the engine while it handles one item (ADR-0009).
 
 mod refused;
 #[cfg(test)]
@@ -6,7 +6,7 @@ mod tests;
 
 pub use refused::Refused;
 
-use crate::{Actor, Actors, ActorsWriter, Code, Effect, ErasedActorRef, Runs, Table, To, ToWithoutMail, What};
+use crate::{Actor, Actors, ActorsWriter, Code, Effect, ErasedActorRef, MailId, Runs, Table, To, ToWithoutMail, What};
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -81,6 +81,8 @@ struct Seat<'a> {
     path: ActorPath,
     table: &'a dyn Table,
     asked: &'a mut Asked,
+    /// How many pieces of mail this actor has sent, this turn's included.
+    sent: u64,
 }
 
 impl Seat<'_> {
@@ -99,11 +101,18 @@ impl Seat<'_> {
         self.table.resolve(path).map(ErasedActorRef::new)
     }
 
+    /// Adds the effect that watches the actor `of` refers to.
+    fn watch(&mut self, of: ErasedActorRef) {
+        self.ask(What::Watch { of });
+    }
+
     /// Encodes `mail` and adds the effect that sends it to `to`.
     fn send<K: Kind + Encode<Actors>>(&mut self, to: To, mail: &K) -> Result<(), EncodeError> {
         let mut out = Writer::<Actors>::new(ActorsWriter::new());
         mail.encode(&mut out)?;
-        self.ask(What::Send { to, kind: KindId::of::<K>(), bytes: out.into_bytes() });
+        self.sent += 1;
+        let id = MailId { sender: self.id, count: self.sent };
+        self.ask(What::Send { to, id, kind: KindId::of::<K>(), bytes: out.into_bytes() });
 
         Ok(())
     }
@@ -131,7 +140,7 @@ impl Seat<'_> {
         self.ask(spawn);
 
         let stood_before = self.asked.stood.len();
-        let seat = Seat { id, path: path.clone(), table: self.table, asked: &mut *self.asked };
+        let seat = Seat { id, path: path.clone(), table: self.table, asked: &mut *self.asked, sent: 0 };
         match C::begin(config, &mut Beginning { seat }) {
             Ok(actor) => {
                 self.asked.stood.push(Stood { id, path, actor: Box::new(actor) });
@@ -148,26 +157,48 @@ impl Seat<'_> {
     }
 }
 
-/// What an actor asks of the engine while it handles one piece of mail (ADR-0009).
+/// What an actor asks of the engine while it handles one item (ADR-0009).
 ///
 /// Each ask adds an effect to the turn's list, and nothing asked for happens
 /// until the turn has returned `Ok`. Each read answers from the table of
 /// actors as it stood when the turn's step began.
 pub struct Turn<'a> {
     seat: Seat<'a>,
+    /// The actor the item being handled comes from: who [`To::Sender`] names.
+    source: ActorId,
 }
 
 impl<'a> Turn<'a> {
-    /// The turn of the actor `id` stands for, at `path`, reading `table` and adding to `asked`.
+    /// The turn of the actor `id` stands for, at `path`, reading `table` and adding to `asked`, which handles an
+    /// item from `source` and has sent `sent` pieces of mail before it.
     ///
     /// For the engine. `table` answers for the step's start and for what this actor has spawned since.
     #[must_use]
-    pub const fn new(id: ActorId, path: ActorPath, table: &'a dyn Table, asked: &'a mut Asked) -> Self {
-        Self { seat: Seat { id, path, table, asked } }
+    pub const fn new(
+        id: ActorId,
+        path: ActorPath,
+        table: &'a dyn Table,
+        asked: &'a mut Asked,
+        sent: u64,
+        source: ActorId,
+    ) -> Self {
+        Self { seat: Seat { id, path, table, asked, sent }, source }
+    }
+
+    /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.
+    ///
+    /// Watching an actor already watched changes nothing.
+    pub fn watch(&mut self, of: ErasedActorRef) {
+        self.seat.watch(of);
     }
 
     /// Sends `mail` to `to`. It is delivered after the turn, in a later step.
     pub fn send<K: Kind + Encode<Actors>>(&mut self, to: To, mail: &K) -> Result<(), EncodeError> {
+        let to = match to {
+            To::Sender => To::Held(ErasedActorRef::new(self.source)),
+            named => named,
+        };
+
         self.seat.send(to, mail)
     }
 
@@ -210,7 +241,7 @@ impl<'a> Beginning<'a> {
     /// For the engine, which makes a root for the chassis. A child's is made by the turn that spawns it.
     #[must_use]
     pub const fn new(id: ActorId, path: ActorPath, table: &'a dyn Table, asked: &'a mut Asked) -> Self {
-        Self { seat: Seat { id, path, table, asked } }
+        Self { seat: Seat { id, path, table, asked, sent: 0 } }
     }
 
     /// Sends `mail` to `to`. It goes out with the mail of the turn this `begin` runs in.
@@ -221,6 +252,11 @@ impl<'a> Beginning<'a> {
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
     pub fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ErasedActorRef, Refused> {
         self.seat.spawn::<C>(key, config)
+    }
+
+    /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.
+    pub fn watch(&mut self, of: ErasedActorRef) {
+        self.seat.watch(of);
     }
 
     /// A reference to this actor.
@@ -254,12 +290,20 @@ pub struct Ending<'a> {
 }
 
 impl<'a> Ending<'a> {
-    /// The closing turn of the actor `id` stands for, at `path`, which runs because of `why`.
+    /// The closing turn of the actor `id` stands for, at `path`, which runs because of `why`, after the actor
+    /// has sent `sent` pieces of mail.
     ///
     /// For the engine.
     #[must_use]
-    pub const fn new(id: ActorId, path: ActorPath, table: &'a dyn Table, asked: &'a mut Asked, why: Why) -> Self {
-        Self { seat: Seat { id, path, table, asked }, why }
+    pub const fn new(
+        id: ActorId,
+        path: ActorPath,
+        table: &'a dyn Table,
+        asked: &'a mut Asked,
+        sent: u64,
+        why: Why,
+    ) -> Self {
+        Self { seat: Seat { id, path, table, asked, sent }, why }
     }
 
     /// Why this closing turn runs.

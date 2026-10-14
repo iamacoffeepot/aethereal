@@ -43,23 +43,25 @@ pub struct Envelope {
 - A chain is every piece of mail with one root.
 - **The depth** is how far down its chain a piece of mail is. Mail sent while a piece of mail is handled is one deeper than it. Mail with no cause is at depth zero, and the mail a root's `begin` sends is at depth one.
 
+**A turn's effects are emitted in a context.** The context is the item the turn handled: its cause, and its root. Every effect of one turn shares it, and the engine folds each effect into the views with it (ADR-0011). A piece of mail's id is on its `Send`, the sender and that sender's count, since the turn counts what its actor sends. The rest of the envelope, its cause and its root, comes from the context, and who it is for comes from the `Send`'s target, with `To::Sender` already put in place by the turn.
+
 **A chain begins where something from outside the engine comes in.** What a resource brings in reaches its owner as mail from its owner (ADR-0010). That mail has no cause, and it is the root of whatever follows from it.
 
 **Mail sent from a `begin` belongs to the turn that stood the actor up.** A child's `begin` runs inside its parent's turn (ADR-0009), so its mail has the cause and the root of the mail the parent was handling.
 
-**An ending belongs to the chain of the mail that brought it about.** When an actor closes or fails while handling a piece of mail, the mail sent from its closing turn (ADR-0009's `end`) has that piece of mail as its cause, and its root. A child that closes because its parent told it to closes while handling that mail, so its ending is in the same chain. A chain has therefore not finished until the closing turns it led to have run. An ending makes no mail for the actors that watch it (ADR-0009): a watcher reads the ending in a turn of its own, and what it sends there belongs to the chain of the mail that turn handles.
+**An ending belongs to the chain of the mail that brought it about.** When an actor closes or fails while handling a piece of mail, the mail sent from its closing turn (ADR-0009's `end`) has that piece of mail as its cause, and its root. A child that closes because its parent told it to closes while handling that mail, so its ending is in the same chain. A chain has therefore not finished until the closing turns it led to have run. An ending makes no mail for the actors that watch it (ADR-0009): a watcher reacts to the ending in a turn of its own, and what it sends there belongs to the chain of the mail that brought the ending about.
 
 **A root's `begin` starts a chain of its own.** Nothing caused it and it is handling no mail. The mail it sends has no cause, and its root is the id made of that root actor and a count of zero, which no piece of sent mail has.
 
-**A context is the actor's own, kept under a chain's root and a depth.** An actor that sends mail and wants to know later what it sent it for keeps that in a field of its own, under the root of the chain and the depth of the mail it sent. A handler reads both from its mail: `mail.root()` and `mail.depth()`.
+**What an actor keeps about the mail it sent is its own, kept under a chain's root and a depth.** An actor that sends mail and wants to know later what it sent it for keeps that in a field of its own, under the root of the chain and the depth of the mail it sent. A handler reads both from its mail: `mail.root()` and `mail.depth()`.
 
 - Mail that comes back further down that chain has the same root and a greater depth. The actor finds what it kept under that root at a lesser depth, and the difference is how far back it was kept: one for mail sent in direct reply, more for mail that came by way of other actors.
 - An actor that keeps a second thing further down the same chain finds both, the nearer first.
 - Two pieces of mail sent from one turn are in the same chain at the same depth. What was kept for each is found by mail that follows from either, and the actor tells them apart by what the mail is and who sent it.
-- This is not an effect, and the engine keeps nothing for it. A context is one actor's, it is not sent, and no other actor sees it. The engine adds the one number to the mail.
+- This is not an effect, and the engine keeps nothing for it. What an actor keeps is its own, it is not sent, and no other actor sees it. The engine adds the one number to the mail.
 - What an actor kept stays until the actor takes it out. Nothing tells an actor that a chain has finished.
 
-**Asking and answering are not the engine's.** Mail is sent, untyped, and nothing is owed for it. A request and its answer, a promise to answer, and a stream are a layer written over mail and over the context above, and that layer is a later ADR's. The engine holds none of it.
+**Asking and answering are not the engine's.** Mail is sent, untyped, and nothing is owed for it. A request and its answer, a promise to answer, and a stream are a layer written over mail and over what an actor keeps, and that layer is a later ADR's. The engine holds none of it.
 
 **Mail that is not delivered ends there.** Its sender learns nothing of it. An actor that must know another has ended watches it (ADR-0009).
 
