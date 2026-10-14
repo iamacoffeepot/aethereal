@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::id::{child_id, root_id};
-use aethereal_actor::{Code, What};
+use aethereal_actor::{Code, Fault, Unreadable, What};
 use aethereal_data::{KeyName, KindName, PathSegment};
 
 const WINDOW: KindName = KindName::new("aether.window");
@@ -78,7 +78,10 @@ fn failed_turn_ends_its_actor() {
     // Catches a view that follows `Close` and passes over the ending the engine writes for a failed turn.
     let (window, root) = window();
     let mut table = table(1);
-    table.fold(&[root, Effect::new(window, What::Failed)]);
+    let Ok(fault) = Fault::new(&Unreadable) else {
+        panic!("a reason that holds nothing encodes");
+    };
+    table.fold(&[root, Effect::new(window, What::Failed(fault))]);
 
     assert_eq!(table.standing(window), Standing::Ended);
 }

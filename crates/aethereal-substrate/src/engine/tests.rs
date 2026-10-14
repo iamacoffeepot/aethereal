@@ -1,8 +1,8 @@
 //! The engine's tests: what a step runs, and what is there for the next one.
 
 use super::*;
-use aethereal_actor::{Fault, ToWithoutMail};
-use aethereal_data::{Kind, KindName, Plain, TypedKey};
+use aethereal_actor::{Fault, How, ToWithoutMail};
+use aethereal_data::{Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
 
 thread_local! {
@@ -44,7 +44,10 @@ impl Kind for NodeConfig {
 /// An actor that says what it is sent, and acts on it:
 ///
 /// - `close` closes it, and `fail` fails its turn;
-/// - `spawn N text` spawns the node `N` beneath it and sends that child `text`;
+/// - `spawn N text` spawns the node `N` beneath it and sends that child `text`, and `watch N text` watches the
+///   child as well;
+/// - `tell N text` sends the node `N` beneath it `text`;
+/// - `both` sends its parent `watchme` and itself `close`, and `watchme` has it watch the sender;
 /// - `up text` sends its parent `text from <number>`, and `reply` answers the sender with `re`;
 /// - `bye N`, which a child sends as it ends, has it send that child `late`.
 #[derive(Plain)]
@@ -79,6 +82,10 @@ impl Actor for Node {
         let Some(Note { text }) = mail.read()? else {
             return Ok(());
         };
+        if !turn.ended().is_empty() {
+            let saw: Vec<String> = turn.ended().iter().map(|ended| how(ended.how())).collect();
+            say(format!("{} saw {}", self.number, saw.join(", ")));
+        }
         say(format!("{} got {text}", self.number));
 
         let words: Vec<&str> = text.splitn(3, ' ').collect();
@@ -87,12 +94,24 @@ impl Actor for Node {
             ["fail"] => return Err(Fault::new(&Note { text })?),
             ["reply"] => turn.send(To::Sender, &Note { text: String::from("re") })?,
             ["up", said] => turn.send(To::Parent, &Note { text: format!("{said} from {}", self.number) })?,
-            ["spawn", number, text] => {
+            ["spawn" | "watch", number, text] => {
                 let number = number.parse().unwrap_or_default();
-                if turn.spawn::<Self>(&number, NodeConfig { number, to_self: Vec::new() }).is_ok() {
+                if let Ok(child) = turn.spawn::<Self>(&number, NodeConfig { number, to_self: Vec::new() }) {
+                    let watches = words[0] == "watch";
+                    if watches {
+                        turn.watch(child);
+                    }
                     turn.send(Self::child(number), &Note { text: String::from(text) })?;
                 }
             }
+            ["tell", number, text] => {
+                turn.send(Self::child(number.parse().unwrap_or_default()), &Note { text: String::from(text) })?;
+            }
+            ["both"] => {
+                turn.send(To::Parent, &Note { text: String::from("watchme") })?;
+                turn.send(To::Held(turn.me()), &Note { text: String::from("close") })?;
+            }
+            ["watchme", ..] => turn.watch(mail.sender()),
             ["bye", number] => {
                 turn.send(Self::child(number.parse().unwrap_or_default()), &Note { text: String::from("late") })?;
             }
@@ -107,6 +126,18 @@ impl Actor for Node {
         turn.send(ToWithoutMail::Parent, &Note { text: format!("bye {}", self.number) })?;
 
         Ok(())
+    }
+}
+
+/// How a watched node ended, in a word, with the note it failed over.
+fn how(how: &How) -> String {
+    match how {
+        How::Closed => String::from("closed"),
+        How::Earlier => String::from("earlier"),
+        How::Failed(fault) => match fault.read::<Note>(&mut Budget::new(64)) {
+            Ok(Some(Note { text })) => format!("failed over {text}"),
+            _ => String::from("failed"),
+        },
     }
 }
 
@@ -226,4 +257,45 @@ fn key_spawned_earlier_in_the_step_is_taken() {
     step(&mut engine);
 
     assert_eq!(step(&mut engine), ["2 got up first"]);
+}
+
+#[test]
+fn watcher_is_shown_an_ending_once_with_its_fault() {
+    // Catches a watcher never shown an ending, shown it without the fault, shown it before it has mail to run a
+    // turn for, and shown it again in a later step.
+    let (mut engine, root) = engine(&["watch 2 fail"]);
+    step(&mut engine);
+    step(&mut engine);
+
+    assert_eq!(step(&mut engine), ["2 ended Faulted"]);
+    assert_eq!(step(&mut engine), ["1 saw failed over fail", "1 got bye 2"]);
+    assert!(engine.seats[&root.bits()].ended.is_empty());
+}
+
+#[test]
+fn watch_asked_for_in_the_step_its_actor_ends_is_shown() {
+    // Catches a watch that only counts once folded: its actor's ending is in the same step's effects, and would
+    // be missed.
+    let (mut engine, _) = engine(&["spawn 2 both"]);
+    step(&mut engine);
+    step(&mut engine);
+
+    let mut third = step(&mut engine);
+    third.sort();
+    assert_eq!(third, ["1 got watchme", "2 got close"]);
+    assert_eq!(step(&mut engine), ["2 ended Closed"]);
+    assert_eq!(step(&mut engine), ["1 saw closed", "1 got bye 2"]);
+}
+
+#[test]
+fn watch_of_an_actor_that_ended_earlier_is_shown() {
+    // Catches a watch on an ended actor that waits for an ending which has already been.
+    let (mut engine, _) = engine(&["spawn 2 up watchme", "tell 2 close"]);
+    step(&mut engine);
+    assert_eq!(step(&mut engine), ["2 got up watchme", "2 got close"]);
+
+    let mut third = step(&mut engine);
+    third.sort();
+    assert_eq!(third, ["1 got watchme from 2", "2 ended Closed"]);
+    assert_eq!(step(&mut engine), ["1 saw earlier", "1 got bye 2"]);
 }

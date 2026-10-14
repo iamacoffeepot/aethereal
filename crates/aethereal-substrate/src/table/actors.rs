@@ -65,7 +65,7 @@ impl View for Actors {
         let (id, record) = match effect.what() {
             What::Root { from } => (by, Record::Made { above: None, segment: from.singleton() }),
             What::RootInstanced { from, key } => (by, Record::Made { above: None, segment: from.instanced(key) }),
-            What::Failed | What::Close => (by, Record::Ended),
+            What::Failed(_) | What::Close => (by, Record::Ended),
             _ => {
                 let (child, segment) = spawned(effect)?;
 

@@ -16,6 +16,7 @@ mod id;
 mod mail;
 mod table;
 mod view;
+mod watch;
 
 pub use engine::Engine;
 pub use id::{child_id, path_id, root_id};

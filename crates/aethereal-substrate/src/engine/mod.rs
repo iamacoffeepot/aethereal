@@ -6,9 +6,10 @@ mod since;
 mod tests;
 
 use crate::id::{child_id, root_id};
-use crate::{ActorTable, Envelope, Standing, Tie};
+use crate::watch::{Watchers, shown};
+use crate::{ActorTable, Envelope, Folded, Standing, Tie};
 use aethereal_actor::{
-    Actor, Asked, Beginning, Code, Effect, Ending, Mail, MailId, Refused, Runs, Stood, To, Turn, What, Why,
+    Actor, Asked, Beginning, Code, Effect, Ended, Ending, Mail, MailId, Refused, Runs, Stood, To, Turn, What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use begun::begun;
@@ -32,6 +33,8 @@ use std::num::NonZeroUsize;
 pub struct Engine {
     /// Which actors there are: the first view.
     table: ActorTable,
+    /// Who watches each actor.
+    watchers: Folded<Watchers>,
     /// Every actor the engine still runs, under its id: the live ones, and the ended ones whose closing turn is
     /// still to run.
     seats: BTreeMap<u64, Seat>,
@@ -51,6 +54,8 @@ struct Seat {
     queue: Vec<Envelope>,
     /// How many pieces of mail it has sent.
     sent: u64,
+    /// The actors it was watching that have ended and that no turn of its own has been shown yet.
+    ended: Vec<Ended>,
     /// Whether it still takes mail.
     life: Life,
 }
@@ -91,7 +96,14 @@ impl Engine {
     /// any one piece of mail.
     #[must_use]
     pub fn new(parts: NonZeroUsize, read_limit: usize) -> Self {
-        Self { table: ActorTable::new(parts), seats: BTreeMap::new(), actors: BTreeMap::new(), step: 0, read_limit }
+        Self {
+            table: ActorTable::new(parts),
+            watchers: Folded::new(parts),
+            seats: BTreeMap::new(),
+            actors: BTreeMap::new(),
+            step: 0,
+            read_limit,
+        }
     }
 
     /// The table of actors, as of the last step.
@@ -195,17 +207,25 @@ impl Engine {
                 let Some(actor) = self.actors.get_mut(&id.bits()) else {
                     return;
                 };
+                let queue = mem::take(&mut seat.queue);
+                // The turns of one step are shown the same endings, and no later turn is: an actor with no mail
+                // runs no turn, and its list waits.
+                let ended = if queue.is_empty() {
+                    Vec::new()
+                } else {
+                    mem::take(&mut seat.ended)
+                };
                 let mut stood_since = Vec::new();
-                for envelope in mem::take(&mut seat.queue) {
+                for envelope in queue {
                     let table = Since { table: &self.table, stood: &stood_since };
                     let mut asked = Asked::new();
                     let mail = Mail::new(envelope.kind, &envelope.bytes, envelope.id.sender, &table, self.read_limit);
-                    let handled = actor.handle(mail, &mut Turn::new(id, seat.path.clone(), &table, &mut asked));
+                    let handled = actor.handle(mail, &mut Turn::new(id, seat.path.clone(), &table, &mut asked, &ended));
                     // A turn that fails changes nothing outside its actor: what it asked for is dropped, and the
                     // engine writes the one effect that says the actor ended (ADR-0009).
                     let (effects, stood) = match handled {
                         Ok(()) => asked.into_parts(),
-                        Err(_) => (vec![Effect::new(id, What::Failed)], Vec::new()),
+                        Err(fault) => (vec![Effect::new(id, What::Failed(fault))], Vec::new()),
                     };
                     let chain = Chain { cause: Some(envelope.id), root: envelope.root };
                     let ends = effects.iter().any(|effect| ending(effect, id).is_some());
@@ -227,10 +247,13 @@ impl Engine {
     /// in the step is not delivered. The actors in `gone` have run their closing turn, and leave last, once
     /// their last mail is out.
     fn apply(&mut self, ran: Vec<Ran>, gone: &[ActorId]) {
+        let ran: Vec<Ran> = ran.into_iter().map(|ran| Ran { effects: begun(ran.effects), ..ran }).collect();
+        let shown = shown(&self.watchers, ran.iter().flat_map(|ran| &ran.effects));
+
         let mut sent = Vec::new();
         for Ran { effects, stood, chain, sender } in ran {
-            let effects = begun(effects);
             self.table.fold(&effects);
+            self.watchers.fold(&effects);
 
             for child in stood {
                 self.seat(child.id(), child.path().clone(), child.into_actor());
@@ -253,6 +276,11 @@ impl Engine {
             }
         }
 
+        for (watcher, ended) in shown {
+            if let Some(seat) = self.seats.get_mut(&watcher).filter(|seat| seat.is_live()) {
+                seat.ended.extend(ended);
+            }
+        }
         for seat in self.seats.values_mut() {
             seat.queue.sort_by_key(|envelope| (envelope.id.sender.bits(), envelope.id.count));
         }
@@ -263,7 +291,7 @@ impl Engine {
 
     /// Gives the actor `id` stands for, at `path`, a seat: it is run from the next step.
     fn seat(&mut self, id: ActorId, path: ActorPath, actor: Box<dyn Runs>) {
-        self.seats.insert(id.bits(), Seat { path, queue: Vec::new(), sent: 0, life: Life::Live });
+        self.seats.insert(id.bits(), Seat { path, queue: Vec::new(), sent: 0, ended: Vec::new(), life: Life::Live });
         self.actors.insert(id.bits(), actor);
     }
 
@@ -313,6 +341,11 @@ impl Engine {
 }
 
 impl Seat {
+    /// Whether this actor has not ended.
+    const fn is_live(&self) -> bool {
+        matches!(self.life, Life::Live)
+    }
+
     /// Whether a step would run no turn of this actor.
     fn is_idle(&self) -> bool {
         let has_mail = !self.queue.is_empty();
@@ -327,7 +360,7 @@ fn ending(effect: &Effect, id: ActorId) -> Option<Why> {
     let is_own = effect.by() == id;
     match effect.what() {
         What::Close if is_own => Some(Why::Closed),
-        What::Failed if is_own => Some(Why::Faulted),
+        What::Failed(_) if is_own => Some(Why::Faulted),
         _ => None,
     }
 }

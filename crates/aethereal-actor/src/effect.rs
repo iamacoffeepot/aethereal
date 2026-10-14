@@ -1,6 +1,6 @@
 //! An effect: one thing an actor asks of the engine (ADR-0009).
 
-use crate::ActorRef;
+use crate::{ActorRef, Fault};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
 use alloc::vec::Vec;
 
@@ -62,9 +62,11 @@ pub enum What {
     EmbedInstanced { from: Code, key: KeyName },
     /// The asking actor's `begin` failed, and the actor was never live. It reports, and asks for nothing.
     Faulted,
-    /// The asking actor's turn failed, and the actor has ended. Written by the engine, since the actor asked for
-    /// nothing.
-    Failed,
+    /// The asking actor's turn failed with this fault, and the actor has ended. Written by the engine, since the
+    /// actor asked for nothing.
+    Failed(Fault),
+    /// The asking actor is shown the ending of `of`, once, when that actor ends.
+    Watch { of: ActorRef },
     /// The asking actor closes.
     Close,
 }
