@@ -47,7 +47,7 @@ pub struct Envelope {
 
 **Mail sent from a `begin` belongs to the turn that stood the actor up.** A child's `begin` runs inside its parent's turn (ADR-0009), so its mail has the cause and the root of the mail the parent was handling.
 
-**An ending belongs to the chain of the mail that brought it about.** When an actor closes or fails while handling a piece of mail, the mail sent from its closing turn (ADR-0009's `end`) has that piece of mail as its cause, and its root. A child that closes because its parent told it to closes while handling that mail, so its ending is in the same chain. A chain has therefore not finished until the closing turns it led to have run. An ending makes no mail for the actors that watch it (ADR-0009): a watcher reads the ending in a turn of its own, and what it sends there belongs to the chain of the mail that turn handles.
+**An ending belongs to the chain of the mail that brought it about.** When an actor closes or fails while handling a piece of mail, the mail sent from its closing turn (ADR-0009's `end`) has that piece of mail as its cause, and its root. A child that closes because its parent told it to closes while handling that mail, so its ending is in the same chain. A chain has therefore not finished until the closing turns it led to have run. An ending makes no mail for the actors that watch it (ADR-0009): a watcher reacts to the ending in a turn of its own, and what it sends there belongs to the chain of the mail that brought the ending about.
 
 **A root's `begin` starts a chain of its own.** Nothing caused it and it is handling no mail. The mail it sends has no cause, and its root is the id made of that root actor and a count of zero, which no piece of sent mail has.
 

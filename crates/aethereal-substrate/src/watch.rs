@@ -56,44 +56,48 @@ impl View for Watchers {
     }
 }
 
-/// The endings one step shows, each watcher's under its id and in the order of the ended actors' ids.
+/// The endings one step shows, each watcher's under its id and in the order of the ended actors' ids, each with
+/// the tag of the effect it came from.
 ///
-/// `watchers` is the view before the step's effects are folded into it, and `effects` are those effects. A
-/// watcher is shown an ending when it watched the actor before the step, or asked to in the step. A watch asked
-/// for on an actor that ended in an earlier step is shown that ending as [`How::Earlier`].
-pub fn shown<'a>(
+/// `watchers` is the view before the step's effects are folded into it, and `effects` are those effects, each
+/// with a tag: the engine's is the chain of the turn that asked for it. A watcher is shown an ending when it
+/// watched the actor before the step, or asked to in the step, and the ending carries the tag of the effect that
+/// ended the actor. A watch asked for on an actor that ended in an earlier step is shown that ending as
+/// [`How::Earlier`], with the tag of the watch.
+pub fn shown<'a, T: Copy>(
     watchers: &Folded<Watchers>,
-    effects: impl Iterator<Item = &'a Effect> + Clone,
-) -> BTreeMap<u64, Vec<Ended>> {
-    let ends: BTreeMap<u64, How> =
-        effects.clone().filter_map(|effect| Some((effect.by().bits(), how(effect)?))).collect();
+    effects: impl Iterator<Item = (&'a Effect, T)> + Clone,
+) -> BTreeMap<u64, Vec<(Ended, T)>> {
+    let ends: BTreeMap<u64, (How, T)> =
+        effects.clone().filter_map(|(effect, tag)| Some((effect.by().bits(), (how(effect)?, tag)))).collect();
 
-    let mut shown: BTreeMap<u64, BTreeMap<u64, How>> = BTreeMap::new();
-    for (ended, how) in &ends {
+    let mut shown: BTreeMap<u64, BTreeMap<u64, (How, T)>> = BTreeMap::new();
+    for (ended, (how, tag)) in &ends {
         if let Some(Watched::By(before)) = watchers.shard(*ended).get(ended) {
             for watcher in before {
-                shown.entry(*watcher).or_default().insert(*ended, how.clone());
+                shown.entry(*watcher).or_default().insert(*ended, (how.clone(), *tag));
             }
         }
     }
-    for effect in effects {
+    for (effect, tag) in effects {
         let What::Watch { of } = effect.what() else {
             continue;
         };
         let watched = of.id().bits();
         let ended_earlier = matches!(watchers.shard(watched).get(&watched), Some(Watched::Ended));
-        let how = match ends.get(&watched) {
-            Some(how) => how.clone(),
-            None if ended_earlier => How::Earlier,
+        let shown_as = match ends.get(&watched) {
+            Some((how, ended_by)) => (how.clone(), *ended_by),
+            None if ended_earlier => (How::Earlier, tag),
             None => continue,
         };
-        shown.entry(effect.by().bits()).or_default().insert(watched, how);
+        shown.entry(effect.by().bits()).or_default().insert(watched, shown_as);
     }
 
     shown
         .into_iter()
         .map(|(watcher, ended)| {
-            let ended = ended.into_iter().map(|(actor, how)| Ended::new(ActorId::new(actor), how)).collect();
+            let ended =
+                ended.into_iter().map(|(actor, (how, tag))| (Ended::new(ActorId::new(actor), how), tag)).collect();
 
             (watcher, ended)
         })

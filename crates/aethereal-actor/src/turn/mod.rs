@@ -6,7 +6,7 @@ mod tests;
 
 pub use refused::Refused;
 
-use crate::{Actor, Actors, ActorsWriter, Code, Effect, Ended, ErasedActorRef, Runs, Table, To, ToWithoutMail, What};
+use crate::{Actor, Actors, ActorsWriter, Code, Effect, ErasedActorRef, Runs, Table, To, ToWithoutMail, What};
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -160,36 +160,18 @@ impl Seat<'_> {
 /// actors as it stood when the turn's step began.
 pub struct Turn<'a> {
     seat: Seat<'a>,
-    ended: &'a [Ended],
 }
 
 impl<'a> Turn<'a> {
-    /// The turn of the actor `id` stands for, at `path`, reading `table` and adding to `asked`, which is shown
-    /// the endings in `ended`.
+    /// The turn of the actor `id` stands for, at `path`, reading `table` and adding to `asked`.
     ///
     /// For the engine. `table` answers for the step's start and for what this actor has spawned since.
     #[must_use]
-    pub const fn new(
-        id: ActorId,
-        path: ActorPath,
-        table: &'a dyn Table,
-        asked: &'a mut Asked,
-        ended: &'a [Ended],
-    ) -> Self {
-        Self { seat: Seat { id, path, table, asked }, ended }
+    pub const fn new(id: ActorId, path: ActorPath, table: &'a dyn Table, asked: &'a mut Asked) -> Self {
+        Self { seat: Seat { id, path, table, asked } }
     }
 
-    /// The actors this one was watching that have ended since its last turns ran, as of the step's start.
-    ///
-    /// Every turn the actor runs in this step is shown the same list, and no later turn is shown any of it
-    /// again. The engine does not run an actor to show it this: an actor with no mail sees the list when mail
-    /// next arrives.
-    #[must_use]
-    pub const fn ended(&self) -> &[Ended] {
-        self.ended
-    }
-
-    /// Watches the actor `of` refers to: its ending is shown to this actor once, in [`Self::ended`].
+    /// Watches the actor `of` refers to: when it ends, this actor's [`Actor::ended`] runs for it, once.
     ///
     /// Watching an actor already watched changes nothing.
     pub fn watch(&mut self, of: ErasedActorRef) {
@@ -253,7 +235,57 @@ impl<'a> Beginning<'a> {
         self.seat.spawn::<C>(key, config)
     }
 
-    /// Watches the actor `of` refers to: its ending is shown to this actor once, in a later turn.
+    /// Watches the actor `of` refers to: when it ends, this actor's [`Actor::ended`] runs for it, once.
+    pub fn watch(&mut self, of: ErasedActorRef) {
+        self.seat.watch(of);
+    }
+
+    /// A reference to this actor.
+    #[must_use]
+    pub const fn me(&self) -> ErasedActorRef {
+        self.seat.me()
+    }
+
+    /// A reference to the live actor `path` names, as of the step's start.
+    #[must_use]
+    pub fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
+        self.seat.resolve(path)
+    }
+}
+
+/// What an actor asks of the engine while it reacts to the ending of an actor it watches (ADR-0009).
+///
+/// It offers what a turn does. It is handling no mail, so it has no sender to send to.
+pub struct Noticing<'a> {
+    seat: Seat<'a>,
+}
+
+impl<'a> Noticing<'a> {
+    /// The turn of the actor `id` stands for, at `path`, reacting to an ending, reading `table` and adding to
+    /// `asked`.
+    ///
+    /// For the engine.
+    #[must_use]
+    pub const fn new(id: ActorId, path: ActorPath, table: &'a dyn Table, asked: &'a mut Asked) -> Self {
+        Self { seat: Seat { id, path, table, asked } }
+    }
+
+    /// Sends `mail` to `to`. It is delivered after the turn, in a later step.
+    pub fn send<K: Kind + Encode<Actors>>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError> {
+        self.seat.send(to.into(), mail)
+    }
+
+    /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
+    pub fn spawn<C: Actor + 'static>(&mut self, key: &C::Key, config: C::Config) -> Result<ErasedActorRef, Refused> {
+        self.seat.spawn::<C>(key, config)
+    }
+
+    /// Closes this actor. Its closing turn runs in the next step.
+    pub fn close(&mut self) {
+        self.seat.ask(What::Close);
+    }
+
+    /// Watches the actor `of` refers to: when it ends, this actor's [`Actor::ended`] runs for it, once.
     pub fn watch(&mut self, of: ErasedActorRef) {
         self.seat.watch(of);
     }

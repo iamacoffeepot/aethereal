@@ -27,4 +27,4 @@ pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
 pub use mail::{Mail, MailId};
 pub use reference::ErasedActorRef;
-pub use turn::{Asked, Beginning, Ending, Refused, Stood, Turn, Why};
+pub use turn::{Asked, Beginning, Ending, Noticing, Refused, Stood, Turn, Why};
