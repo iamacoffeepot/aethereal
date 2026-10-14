@@ -15,10 +15,10 @@ use aethereal_data::{ActorId, Boundary, Decode, DecodeError, Encode, EncodeError
 /// wherever it is decoded. It does not cross `Bare`:
 ///
 /// ```compile_fail
-/// use aethereal_actor::ActorRef;
+/// use aethereal_actor::ErasedActorRef;
 /// use aethereal_data::{Bare, Encode, Writer};
 ///
-/// fn write(reference: &ActorRef) {
+/// fn write(reference: &ErasedActorRef) {
 ///     let mut out = Writer::<Bare>::new(());
 ///     let written = reference.encode(&mut out);
 /// }
@@ -27,20 +27,20 @@ use aethereal_data::{ActorId, Boundary, Decode, DecodeError, Encode, EncodeError
 /// A type that holds one is not plain data:
 ///
 /// ```compile_fail
-/// use aethereal_actor::ActorRef;
+/// use aethereal_actor::ErasedActorRef;
 /// use aethereal_data::Plain;
 ///
 /// #[derive(Plain)]
 /// struct Subscribe {
-///     to: ActorRef,
+///     to: ErasedActorRef,
 /// }
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ActorRef {
+pub struct ErasedActorRef {
     id: ActorId,
 }
 
-impl ActorRef {
+impl ErasedActorRef {
     /// The reference to the actor `id` stands for, which the caller has established exists.
     pub(crate) const fn new(id: ActorId) -> Self {
         Self { id }
@@ -54,11 +54,11 @@ impl ActorRef {
 }
 
 /// A reference is its actor's id in bytes.
-impl Schema for ActorRef {
+impl Schema for ErasedActorRef {
     const SHAPE: Shape = ActorId::SHAPE;
 }
 
-impl<B: Boundary> Encode<B> for ActorRef
+impl<B: Boundary> Encode<B> for ErasedActorRef
 where
     for<'a> B::WriterOffers<'a>: Refers,
 {
@@ -67,7 +67,7 @@ where
     }
 }
 
-impl<B: Boundary> Decode<B> for ActorRef
+impl<B: Boundary> Decode<B> for ErasedActorRef
 where
     for<'a> B::ReaderOffers<'a>: Made,
 {
@@ -100,14 +100,14 @@ mod tests {
     #[derive(Bound, Debug, PartialEq)]
     struct Subscribe {
         topic: u32,
-        to: ActorRef,
+        to: ErasedActorRef,
     }
 
     #[test]
     fn reference_in_mail_is_proven_where_it_is_read() {
         // Catches a decode that takes an id as a reference without asking the table, and a derived codec that
         // loses the reference's place among plain fields.
-        let sent = Subscribe { topic: 7, to: ActorRef::new(ActorId::new(41)) };
+        let sent = Subscribe { topic: 7, to: ErasedActorRef::new(ActorId::new(41)) };
         let mut out = Writer::<Actors>::new(ActorsWriter::new());
         assert_eq!(sent.encode(&mut out), Ok(()));
         let bytes = out.into_bytes();
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn reference_in_state_is_proven_when_read_back() {
         // Catches `Within` taking a stored id on trust, where `Actors` proves it.
-        let held = ActorRef::new(ActorId::new(41));
+        let held = ErasedActorRef::new(ActorId::new(41));
         let mut out = Writer::<Within>::new(WithinWriter::new());
         assert_eq!(held.encode(&mut out), Ok(()));
         let bytes = out.into_bytes();
@@ -133,6 +133,6 @@ mod tests {
         let other = Only(ActorId::new(42));
         let mut budget = Budget::new(64);
         let mut reader = Reader::<Within>::new(&bytes, &mut budget, WithinReader::new(&other));
-        assert_eq!(ActorRef::decode(&mut reader), Err(DecodeError::UnknownActor(ActorId::new(41))));
+        assert_eq!(ErasedActorRef::decode(&mut reader), Err(DecodeError::UnknownActor(ActorId::new(41))));
     }
 }
