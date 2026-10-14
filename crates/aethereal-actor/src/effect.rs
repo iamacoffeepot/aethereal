@@ -66,6 +66,9 @@ pub enum What {
     /// The asking actor's turn failed with this fault, and the actor has ended. Written by the engine, since the
     /// actor asked for nothing.
     Failed(Fault),
+    /// The asking actor's closing turn failed with this fault. Written by the engine. The actor had already
+    /// ended, so this marks nothing: it is there for the log.
+    EndFailed(Fault),
     /// The asking actor is shown the ending of `of`, once, when that actor ends.
     Watch { of: ActorRef },
     /// The asking actor closes.

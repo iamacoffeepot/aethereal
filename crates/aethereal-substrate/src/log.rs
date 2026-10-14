@@ -21,6 +21,8 @@ pub enum Entry {
     Line { level: Level, text: String },
     /// A turn of the actor's returned this fault, and the actor ended.
     Failed(Fault),
+    /// The actor's closing turn returned this fault.
+    EndFailed(Fault),
 }
 
 impl View for Log {
@@ -31,6 +33,7 @@ impl View for Log {
         let entry = match effect.what() {
             What::Log { level, text } => Entry::Line { level: *level, text: text.clone() },
             What::Failed(fault) => Entry::Failed(fault.clone()),
+            What::EndFailed(fault) => Entry::EndFailed(fault.clone()),
             _ => return None,
         };
 

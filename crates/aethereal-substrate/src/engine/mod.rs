@@ -117,7 +117,7 @@ impl Engine {
 
     /// What the actor `id` stands for logged most recently, oldest first, as of the last step.
     ///
-    /// It holds the fault of a turn that failed. Nothing for an actor that has logged nothing.
+    /// It holds the fault of a turn that failed, and of a closing turn that did. Nothing for an actor that has logged nothing.
     pub fn log(&self, id: ActorId) -> impl Iterator<Item = &Entry> {
         self.log.shard(id.bits()).get(&id.bits()).into_iter().flatten()
     }
@@ -204,10 +204,12 @@ impl Engine {
                 };
                 let mut asked = Asked::new();
                 let ended = actor.end(&mut Ending::new(id, seat.path.clone(), &self.table, &mut asked, why));
-                // A closing turn that fails asks for nothing: only its log lines are kept (ADR-0009).
+                // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds
+                // its fault to them (ADR-0009).
                 let (mut effects, _) = asked.into_parts();
-                if ended.is_err() {
+                if let Err(fault) = ended {
                     effects.retain(is_line);
+                    effects.push(Effect::new(id, What::EndFailed(fault)));
                 }
 
                 ran.push(Ran { effects, stood: Vec::new(), chain, sender: None });

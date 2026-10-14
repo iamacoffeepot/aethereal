@@ -50,6 +50,7 @@ impl Kind for NodeConfig {
 /// - `tell N text` sends the node `N` beneath it `text`;
 /// - `both` sends its parent `watchme` and itself `close`, and `watchme` has it watch the sender;
 /// - `up text` sends its parent `text from <number>`, and `reply` answers the sender with `re`;
+/// - the node `13` fails its closing turn;
 /// - `bye N`, which a child sends as it ends, has it send that child `late`.
 #[derive(Plain)]
 struct Node {
@@ -131,6 +132,10 @@ impl Actor for Node {
     fn end(self, turn: &mut Ending<'_>) -> Result<(), Fault> {
         say(format!("{} ended {:?}", self.number, turn.why()));
         turn.send(ToWithoutMail::Parent, &Note { text: format!("bye {}", self.number) })?;
+        let fails = self.number == 13;
+        if fails {
+            return Err(Fault::new(&Note { text: String::from("unlucky") })?);
+        }
 
         Ok(())
     }
@@ -322,4 +327,19 @@ fn failed_turn_keeps_its_log_lines_and_leaves_its_fault() {
     assert_eq!(kept, [&Entry::Line { level: Level::Warn, text: String::from("low") }, &Entry::Failed(fault)]);
     assert_eq!(step(&mut engine), ["2 ended Faulted"]);
     assert_eq!(step(&mut engine), ["1 got bye 2"]);
+}
+
+#[test]
+fn failed_closing_turn_leaves_its_fault_and_sends_nothing() {
+    // Catches a closing turn whose failure leaves nothing to read, and one whose mail goes out all the same.
+    let (mut engine, root) = engine(&["spawn 13 close"]);
+    step(&mut engine);
+    step(&mut engine);
+    let Ok(fault) = Fault::new(&Note { text: String::from("unlucky") }) else {
+        panic!("a short note encodes");
+    };
+
+    assert_eq!(step(&mut engine), ["13 ended Closed"]);
+    assert_eq!(engine.log(node(root, 13)).collect::<Vec<_>>(), [&Entry::EndFailed(fault)]);
+    assert_eq!(step(&mut engine), [""; 0]);
 }
