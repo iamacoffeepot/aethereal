@@ -22,6 +22,6 @@ mod watch;
 pub use engine::Engine;
 pub use id::{child_id, path_id, root_id};
 pub use log::{Entry, Log, RECENT};
-pub use mail::{Envelope, Tie};
+pub use mail::Envelope;
 pub use table::{ActorTable, Standing};
 pub use view::{Folded, View};

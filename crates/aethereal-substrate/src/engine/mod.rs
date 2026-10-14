@@ -7,7 +7,7 @@ mod tests;
 
 use crate::id::{child_id, root_id};
 use crate::watch::{Watchers, shown};
-use crate::{ActorTable, Entry, Envelope, Folded, Log, Standing, Tie};
+use crate::{ActorTable, Entry, Envelope, Folded, Log, Standing};
 use aethereal_actor::{
     Actor, Asked, Beginning, Code, Effect, Ended, Ending, Mail, MailId, Refused, Runs, Stood, To, Turn, What, Why,
 };
@@ -343,15 +343,7 @@ impl Engine {
             return;
         };
 
-        seat.queue.push(Envelope {
-            id,
-            to: receiver,
-            cause: chain.cause,
-            root: chain.root,
-            tie: Tie::Tell,
-            kind,
-            bytes,
-        });
+        seat.queue.push(Envelope { id, to: receiver, cause: chain.cause, root: chain.root, kind, bytes });
     }
 }
 
