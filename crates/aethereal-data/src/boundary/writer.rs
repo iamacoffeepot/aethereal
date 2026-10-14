@@ -20,6 +20,13 @@ impl<'a, B: Boundary> Writer<'a, B> {
         Self { bytes: Vec::new(), offers }
     }
 
+    /// A writer that appends to `bytes`, holding what `B` offers: for writing into a buffer that is kept and
+    /// reused.
+    #[must_use]
+    pub const fn appending(bytes: Vec<u8>, offers: B::WriterOffers<'a>) -> Self {
+        Self { bytes, offers }
+    }
+
     /// The bytes written so far, to append to.
     pub const fn bytes(&mut self) -> &mut Vec<u8> {
         &mut self.bytes

@@ -15,8 +15,8 @@ use crate::stream::{Pending, Streams, take};
 use crate::watch::Watchers;
 use crate::{ActorTable, Clock, Context, Entry, Envelope, Folded, Log};
 use aethereal_actor::{
-    Actor, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Refused, Runs, Stood, Turn, What,
-    Why,
+    Actor, Arena, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Refused, Runs, Stood, Turn,
+    What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 use begun::begun;
@@ -25,6 +25,7 @@ use plan::{Job, Work};
 use since::Since;
 use std::collections::BTreeMap;
 use std::iter;
+use std::mem;
 use std::num::NonZeroUsize;
 
 /// The engine: its actors, the views of them, and the steps their turns run in (ADR-0011).
@@ -55,6 +56,9 @@ pub struct Engine {
     seats: BTreeMap<u64, Seat>,
     /// The actors themselves, each under its id. An actor leaves when its closing turn takes it.
     actors: BTreeMap<u64, Box<dyn Runs>>,
+    /// Where mail is written: for each parity of step, an arena for each writer, the first for mail sent between
+    /// steps.
+    arenas: [Vec<Arena>; 2],
     /// The number given to each kind of actor seated so far.
     kinds: Kinds,
     /// How long turns take, as measured so far.
@@ -91,6 +95,8 @@ enum Life {
 pub struct Reading<'a> {
     table: &'a ActorTable,
     seats: &'a BTreeMap<u64, Seat>,
+    /// The arenas the last step's mail was written to, by writer.
+    mail: &'a [Arena],
     read_limit: usize,
 }
 
@@ -98,6 +104,8 @@ pub struct Reading<'a> {
 pub struct Done {
     actors: Vec<Turned>,
     tally: Tally,
+    /// The arena the worker wrote its mail to, to keep for the step after next.
+    arena: Arena,
 }
 
 /// One actor's turns of a step, and the actor when it is still the engine's to run.
@@ -137,6 +145,7 @@ impl Engine {
             log: Folded::new(parts),
             seats: BTreeMap::new(),
             actors: BTreeMap::new(),
+            arenas: [Vec::new(), Vec::new()],
             kinds: Kinds::new(),
             costs: Costs::new(),
             recent: 0,
@@ -193,10 +202,13 @@ impl Engine {
             return Err(Refused::KeyTaken);
         }
 
-        let mut asked = Asked::new();
-        let root =
-            A::begin(config, &mut Beginning::new(id, path.clone(), &self.table, &mut asked)).map_err(Refused::Began)?;
-        let (asked, stood) = asked.into_parts();
+        // Mail sent between steps is read in the next step, with the mail the last step's turns sent.
+        let parity = parity(self.step);
+        let mut asked = Asked::writing(self.arena(parity, ROOTS));
+        let begun = A::begin(config, &mut Beginning::new(id, path.clone(), &self.table, &mut asked));
+        let (asked, stood, arena) = asked.into_parts();
+        self.arenas[parity][ROOTS] = arena;
+        let root = begun.map_err(Refused::Began)?;
         let from = Code::Linked(A::NAME);
         let made = match segment.key() {
             None => What::Root { from },
@@ -256,16 +268,28 @@ impl Engine {
         }
 
         let work = costs.iter().sum();
-        let planned = plan::plan(jobs, &costs, self.recent, workers);
+        let mut planned = plan::plan(jobs, &costs, self.recent, workers);
         self.recent = toward(self.recent, work);
+
+        // This step writes the arenas of its parity, which hold mail read two steps ago and no longer.
+        let parity = parity(self.step);
+        for arena in &mut self.arenas[parity] {
+            arena.clear();
+        }
+        for (share, slot) in planned.shares_mut().zip(ROOTS + 1..) {
+            let arena = self.arena(parity, slot);
+            share.write_to(arena);
+        }
 
         planned
     }
 
     /// The engine as the step's workers read it while they run their shares.
     #[must_use]
-    pub const fn reading(&self) -> Reading<'_> {
-        Reading { table: &self.table, seats: &self.seats, read_limit: self.read_limit }
+    pub fn reading(&self) -> Reading<'_> {
+        let mail = &self.arenas[parity(self.step + 1)];
+
+        Reading { table: &self.table, seats: &self.seats, mail, read_limit: self.read_limit }
     }
 
     /// Ends a step: puts back the actors the workers ran, takes in how long their turns took, and applies what
@@ -276,9 +300,12 @@ impl Engine {
     /// Panics when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn apply(&mut self, done: Vec<Done>) {
         let mut turned = Vec::new();
-        for Done { actors, tally } in done {
+        let parity = parity(self.step);
+        for Done { actors, tally, arena } in done {
             self.costs.merge(tally);
             turned.extend(actors);
+            let slot = arena.slot();
+            self.arenas[parity][slot] = arena;
         }
         turned.sort_by_key(|turned| turned.id.bits());
 
@@ -344,6 +371,17 @@ impl Engine {
         }
     }
 
+    /// The arena of the writer numbered `slot` for steps of `parity`, taken out to write to; made when it is the
+    /// first.
+    fn arena(&mut self, parity: usize, slot: usize) -> Arena {
+        let arenas = &mut self.arenas[parity];
+        while arenas.len() <= slot {
+            arenas.push(Arena::new(arenas.len()));
+        }
+
+        mem::replace(&mut arenas[slot], Arena::new(slot))
+    }
+
     /// Gives the actor `id` stands for, at `path`, a seat: it is run from the next step.
     fn seat(&mut self, id: ActorId, path: ActorPath, actor: Box<dyn Runs>) {
         let kind = self.kinds.number(path.last().kind());
@@ -390,13 +428,14 @@ impl Reading<'_> {
     /// An actor that closes or fails handles nothing more, so what it was given behind that turn is dropped.
     pub fn run(&self, share: Share, clock: &impl Clock) -> Done {
         let mut tally = Tally::default();
-        let actors = share.into_jobs().into_iter().map(|job| self.turns(job, clock, &mut tally)).collect();
+        let (jobs, mut arena) = share.into_parts();
+        let actors = jobs.into_iter().map(|job| self.turns(job, clock, &mut tally, &mut arena)).collect();
 
-        Done { actors, tally }
+        Done { actors, tally, arena }
     }
 
-    /// The turns of one actor's job, each measured into `tally`.
-    fn turns(&self, job: Job, clock: &impl Clock, tally: &mut Tally) -> Turned {
+    /// The turns of one actor's job, each measured into `tally`, their mail written to `arena`.
+    fn turns(&self, job: Job, clock: &impl Clock, tally: &mut Tally, arena: &mut Arena) -> Turned {
         let Job { id, kind, actor, work } = job;
         let Some(seat) = self.seats.get(&id.bits()) else {
             return Turned { id, ran: Vec::new(), kept: Kept::Live(actor) };
@@ -405,7 +444,7 @@ impl Reading<'_> {
 
         match (work, &seat.life) {
             (Work::Closing, Life::Ending { how, context }) => {
-                let mut asked = Asked::new();
+                let mut asked = Asked::writing(mem::take(arena));
                 let why = why(how);
                 let start = clock.nanos();
                 let ended = actor.end(&mut Ending::new(id, seat.path.clone(), self.table, &mut asked, seat.sent, why));
@@ -413,7 +452,8 @@ impl Reading<'_> {
                 // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds its
                 // fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after what the
                 // turn sent.
-                let (mut effects, _) = asked.into_parts();
+                let (mut effects, _, written) = asked.into_parts();
+                *arena = written;
                 if let Err(fault) = ended {
                     effects.retain(is_line);
                     effects.push(Effect::new(id, What::EndFailed(fault)));
@@ -429,11 +469,13 @@ impl Reading<'_> {
                 let mut count = seat.sent;
                 for pending in items {
                     let table = Since { table: self.table, stood: &stood_since };
-                    let mut asked = Asked::new();
+                    let mut asked = Asked::writing(mem::take(arena));
                     let source = pending.source();
                     let (item, context) = match &pending {
                         Pending::Mail(envelope) => {
                             let Envelope { id: cause, kind, bytes, root, depth, .. } = envelope;
+                            let bytes =
+                                self.mail.get(bytes.slot).and_then(|arena| arena.read(*bytes)).unwrap_or_default();
                             let mail = Mail::new(*kind, bytes, source, *root, *depth, &table, self.read_limit);
 
                             (Item::Mail(mail), Context { cause: Some(*cause), root: *root, depth: depth + 1 })
@@ -444,7 +486,8 @@ impl Reading<'_> {
                     let start = clock.nanos();
                     let handled = actor.handle(item, &mut turn);
                     tally.add(key(item_kind(&pending)), clock.nanos().saturating_sub(start));
-                    let turned = Ran::of(id, handled, asked, context);
+                    let (turned, written) = Ran::of(id, handled, asked, context);
+                    *arena = written;
 
                     count = turned.sent(id).unwrap_or(count);
                     stood_since.extend(turned.stood.iter().map(|child| (child.id(), child.path().clone())));
@@ -468,15 +511,16 @@ impl Ran {
     ///
     /// A turn that fails changes nothing outside its actor: what it asked for is dropped but for its log lines,
     /// and the engine writes the one effect that says the actor ended (ADR-0009).
-    fn of(id: ActorId, outcome: Result<(), Fault>, asked: Asked, context: Context) -> Self {
-        let (mut effects, mut stood) = asked.into_parts();
+    /// The arena the turn's mail was written to comes back beside it.
+    fn of(id: ActorId, outcome: Result<(), Fault>, asked: Asked, context: Context) -> (Self, Arena) {
+        let (mut effects, mut stood, arena) = asked.into_parts();
         if let Err(fault) = outcome {
             effects.retain(is_line);
             effects.push(Effect::new(id, What::Failed(fault)));
             stood.clear();
         }
 
-        Self { effects, stood, context }
+        (Self { effects, stood, context }, arena)
     }
 
     /// Whether the turn ends the actor `id` stands for.
@@ -502,6 +546,14 @@ const fn item_kind(pending: &Pending) -> ItemKind {
         Pending::Mail(envelope) => ItemKind::Mail(envelope.kind),
         Pending::Ended { .. } => ItemKind::Ended,
     }
+}
+
+/// The writer of the mail sent between steps, by the chassis: the first.
+const ROOTS: usize = 0;
+
+/// Which of the two arenas of each writer step `step` writes.
+const fn parity(step: u64) -> usize {
+    (step % 2) as usize
 }
 
 /// Whether `effect` is a logged line: what is kept of a turn that failed (ADR-0009).

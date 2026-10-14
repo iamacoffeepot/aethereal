@@ -7,12 +7,14 @@ mod tests;
 pub use refused::Refused;
 
 use crate::{
-    Actor, Actors, ActorsWriter, Code, Effect, ErasedActorRef, Level, MailId, Runs, Table, To, ToWithoutMail, What,
+    Actor, Actors, ActorsWriter, Arena, Code, Effect, ErasedActorRef, Level, MailId, Runs, Span, Table, To,
+    ToWithoutMail, What,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::mem;
 
 /// What one turn has asked for: its effects in order, and the children it stood up (ADR-0009).
 ///
@@ -22,13 +24,27 @@ use alloc::vec::Vec;
 pub struct Asked {
     effects: Vec<Effect>,
     stood: Vec<Stood>,
+    /// Where the bytes of the mail the turn sends are written.
+    arena: Arena,
 }
 
 impl Asked {
-    /// Nothing asked for yet.
+    /// Nothing asked for yet, with mail written to an arena of its own.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Nothing asked for yet, with mail written to `arena`, after what it already holds.
+    #[must_use]
+    pub fn writing(arena: Arena) -> Self {
+        Self { effects: Vec::new(), stood: Vec::new(), arena }
+    }
+
+    /// The arena the turn's mail was written to.
+    #[must_use]
+    pub const fn arena(&self) -> &Arena {
+        &self.arena
     }
 
     /// The effects asked for so far, in the order they were asked for.
@@ -37,10 +53,11 @@ impl Asked {
         &self.effects
     }
 
-    /// The effects, and the children stood up, each child in the order its `begin` finished.
+    /// The effects, the children stood up, each child in the order its `begin` finished, and the arena the mail
+    /// was written to.
     #[must_use]
-    pub fn into_parts(self) -> (Vec<Effect>, Vec<Stood>) {
-        (self.effects, self.stood)
+    pub fn into_parts(self) -> (Vec<Effect>, Vec<Stood>, Arena) {
+        (self.effects, self.stood, self.arena)
     }
 
     /// Whether a child stood up in this turn has the id `id`.
@@ -116,11 +133,20 @@ impl Seat<'_> {
 
     /// Encodes `mail` and adds the effect that sends it to `to`.
     fn send<K: Kind + Encode<Actors>>(&mut self, to: To, mail: &K) -> Result<(), EncodeError> {
-        let mut out = Writer::<Actors>::new(ActorsWriter::new());
-        mail.encode(&mut out)?;
+        let arena = &mut self.asked.arena;
+        let start = arena.bytes().len();
+        let mut out = Writer::<Actors>::appending(mem::take(arena.bytes()), ActorsWriter::new());
+        let written = mail.encode(&mut out);
+        *arena.bytes() = out.into_bytes();
+        if let Err(error) = written {
+            arena.bytes().truncate(start);
+            return Err(error);
+        }
+
+        let bytes = Span { slot: arena.slot(), start, len: arena.bytes().len() - start };
         self.sent += 1;
         let id = MailId { sender: self.id, count: self.sent };
-        self.ask(What::Send { to, id, kind: KindId::of::<K>(), bytes: out.into_bytes() });
+        self.ask(What::Send { to, id, kind: KindId::of::<K>(), bytes });
 
         Ok(())
     }
