@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::mem;
 
-/// How many bytes of mail one arena holds. A piece of mail that does not fit is held in bytes of its own.
+/// How many bytes of mail one arena's slab holds. A piece of mail that does not fit is spilled into bytes of its own.
 pub const ARENA_BYTES: usize = 64 * 1024;
 
 /// The bytes of the mail one writer sends in a step, written one after another into a slab of
@@ -15,22 +15,25 @@ pub const ARENA_BYTES: usize = 64 * 1024;
 /// engine keeps two arenas for each writer, one for each parity of the step,
 /// and clears an arena when the writer's turn to write it comes round again:
 /// nothing in it is freed, and no reader counts what it holds. A piece of mail
-/// that does not fit in what is left of the slab is held in bytes of its own,
-/// which go when the mail does.
+/// that does not fit in what is left of the slab is spilled into bytes of its
+/// own, which the arena keeps and frees when it is cleared, so where a piece of
+/// mail is never owns anything and is dropped without a look.
 #[derive(Debug, Default)]
 pub struct Arena {
     /// Which writer's arena this is, as the engine numbers them.
     slot: usize,
     slab: Vec<u8>,
+    /// The mail that did not fit in the slab, each piece in bytes of its own, in the order written.
+    spilled: Vec<Box<[u8]>>,
 }
 
-/// Where the bytes of one piece of mail are.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Where the bytes of one piece of mail are, in the arena of the writer that wrote them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Payload {
-    /// In a writer's arena.
+    /// In the writer's slab.
     InArena(Span),
-    /// In bytes of its own, as it did not fit.
-    Owned(Box<[u8]>),
+    /// Spilled, as it did not fit: the writer's `index`th spilled piece.
+    Spilled { slot: usize, index: usize },
 }
 
 /// A range of one writer's arena.
@@ -48,7 +51,7 @@ impl Arena {
     /// The empty arena of the writer numbered `slot`. Its slab is allocated when it is first written to.
     #[must_use]
     pub const fn new(slot: usize) -> Self {
-        Self { slot, slab: Vec::new() }
+        Self { slot, slab: Vec::new(), spilled: Vec::new() }
     }
 
     /// Which writer's arena this is.
@@ -57,22 +60,34 @@ impl Arena {
         self.slot
     }
 
-    /// Empties the arena, keeping its slab: for when its writer writes it again.
+    /// Empties the arena, keeping its slab and freeing what was spilled: for when its writer writes it again.
     pub fn clear(&mut self) {
         self.slab.clear();
+        self.spilled.clear();
     }
 
-    /// The bytes at `span`, when it is a span of this arena; nothing otherwise.
+    /// The bytes `payload` says where to find, when they are in this arena; nothing otherwise.
     #[must_use]
-    pub fn read(&self, span: Span) -> Option<&[u8]> {
-        let is_own = span.slot == self.slot;
-        let end = span.start.checked_add(span.len)?;
+    pub fn read(&self, payload: Payload) -> Option<&[u8]> {
+        let is_own = payload.slot() == self.slot;
+        let bytes = match payload {
+            Payload::InArena(span) => self.slab.get(span.start..span.start.checked_add(span.len)?),
+            Payload::Spilled { index, .. } => self.spilled.get(index).map(|bytes| &bytes[..]),
+        };
 
-        is_own.then(|| self.slab.get(span.start..end)).flatten()
+        is_own.then_some(bytes).flatten()
+    }
+
+    /// Keeps `bytes`, which did not fit in the slab, as a spilled piece of mail.
+    fn spill(&mut self, bytes: Vec<u8>) -> Payload {
+        let index = self.spilled.len();
+        self.spilled.push(bytes.into_boxed_slice());
+
+        Payload::Spilled { slot: self.slot, index }
     }
 
     /// Writes one piece of mail with `write`, which appends its bytes to the vector it is given, and answers
-    /// with where they are: in the slab when they fit, in bytes of their own otherwise. Nothing is written
+    /// with where they are: in the slab when they fit, spilled otherwise. Nothing is written
     /// when `write` fails.
     pub(crate) fn write<E>(&mut self, write: impl FnOnce(Vec<u8>) -> (Vec<u8>, Result<(), E>)) -> Result<Payload, E> {
         let is_full = self.slab.len() >= ARENA_BYTES;
@@ -80,7 +95,7 @@ impl Arena {
             let (bytes, written) = write(Vec::new());
             written?;
 
-            return Ok(Payload::Owned(bytes.into_boxed_slice()));
+            return Ok(self.spill(bytes));
         }
 
         if self.slab.capacity() < ARENA_BYTES {
@@ -98,11 +113,22 @@ impl Arena {
         if fits {
             return Ok(Payload::InArena(Span { slot: self.slot, start, len: self.slab.len() - start }));
         }
-        // It ran past the slab: its bytes go to their own, and the slab returns to its size.
+        // It ran past the slab: its bytes are spilled, and the slab returns to its size.
         let own = self.slab.split_off(start);
         self.slab.shrink_to(ARENA_BYTES);
 
-        Ok(Payload::Owned(own.into_boxed_slice()))
+        Ok(self.spill(own))
+    }
+}
+
+impl Payload {
+    /// The writer whose arena holds the bytes.
+    #[must_use]
+    pub const fn slot(self) -> usize {
+        match self {
+            Self::InArena(span) => span.slot,
+            Self::Spilled { slot, .. } => slot,
+        }
     }
 }
 
@@ -125,24 +151,27 @@ mod tests {
     }
 
     #[test]
-    fn mail_past_the_slab_is_held_in_its_own_bytes_and_the_slab_stays_its_size() {
-        // Catches mail that runs past the slab cut short or lost, a slab left grown by it, and mail after a full
-        // slab written into it anyway.
+    fn mail_past_the_slab_is_spilled_and_the_slab_stays_its_size() {
+        // Catches mail that runs past the slab cut short or lost, a slab left grown by it, mail after a full slab
+        // written into it anyway, spilled mail read as another piece, and spilled mail kept past a clear.
         let mut arena = Arena::new(3);
         let first = put(&mut arena, &vec![1; ARENA_BYTES - 8]);
-        let Payload::InArena(span) = first else {
-            panic!("the first piece of mail fits");
-        };
-        assert_eq!(arena.read(span), Some(&vec![1; ARENA_BYTES - 8][..]));
+        assert!(matches!(first, Payload::InArena(_)), "the first piece of mail fits");
+        assert_eq!(arena.read(first), Some(&vec![1; ARENA_BYTES - 8][..]));
 
-        assert_eq!(put(&mut arena, &[2; 16]), Payload::Owned(vec![2; 16].into_boxed_slice()));
+        let past = put(&mut arena, &[2; 16]);
+        assert!(matches!(past, Payload::Spilled { .. }), "mail past the slab is spilled");
         assert_eq!(arena.slab.capacity(), ARENA_BYTES);
-        assert_eq!(arena.read(span), Some(&vec![1; ARENA_BYTES - 8][..]));
+        assert_eq!(arena.read(first), Some(&vec![1; ARENA_BYTES - 8][..]));
 
-        let Payload::InArena(last) = put(&mut arena, &[3; 8]) else {
-            panic!("what is left of the slab holds a piece of mail that fits it");
-        };
+        let last = put(&mut arena, &[3; 8]);
+        assert!(matches!(last, Payload::InArena(_)), "what is left of the slab holds mail that fits it");
         assert_eq!(arena.read(last), Some(&[3; 8][..]));
-        assert_eq!(put(&mut arena, &[4]), Payload::Owned(vec![4].into_boxed_slice()));
+        let full = put(&mut arena, &[4]);
+        assert_eq!(arena.read(past), Some(&[2; 16][..]));
+        assert_eq!(arena.read(full), Some(&[4][..]));
+
+        arena.clear();
+        assert_eq!(arena.read(full), None);
     }
 }

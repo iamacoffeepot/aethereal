@@ -11,7 +11,7 @@ pub use costs::Tally;
 pub use plan::{Plan, Share, Workers};
 
 use crate::id::root_id;
-use crate::stream::{self, Pending, Streams};
+use crate::stream::{self, Handed, Streams};
 use crate::table::Actors;
 use crate::{ActorTable, ByActor, Clock, Context, Entry, Envelope, Folded, Lives, Log, Routed, State, lives};
 use aethereal_actor::{
@@ -445,7 +445,7 @@ impl Engine {
             Work::Items(range) => {
                 let items = self.streams.shard(seat.number()).handed(range.clone());
 
-                items.map(|pending| self.costs.expect(&key(item_kind(pending)))).sum()
+                items.map(|handed| self.costs.expect(&key(item_kind(handed)))).sum()
             }
         }
     }
@@ -539,11 +539,8 @@ impl Reading<'_> {
     }
 
     /// The bytes of a piece of mail sent in the last step.
-    fn bytes<'b>(&'b self, payload: &'b Payload) -> &'b [u8] {
-        match payload {
-            Payload::InArena(span) => self.mail.get(span.slot).and_then(|arena| arena.read(*span)).unwrap_or_default(),
-            Payload::Owned(bytes) => bytes,
-        }
+    fn bytes(&self, payload: Payload) -> &[u8] {
+        self.mail.get(payload.slot()).and_then(|arena| arena.read(payload)).unwrap_or_default()
     }
 
     /// The turns of one actor's job, each measured into `tally`, their mail written to `arena`, and their effects,
@@ -588,26 +585,25 @@ impl Reading<'_> {
                 let mut actor = actor;
                 let mut stood_since = ByActor::default();
                 let mut count = life.sent();
-                for pending in self.streams.shard(number.number()).handed(range) {
+                for handed in self.streams.shard(number.number()).handed(range) {
                     let table = Since { table: self.table, stood: &stood_since };
                     let begins = lists.effects.len();
                     let mut asked =
                         Asked::continuing(mem::take(&mut lists.effects), mem::take(arena), mem::take(&mut lists.seats));
-                    let source = pending.source();
-                    let (item, context) = match pending {
-                        Pending::Mail(envelope) => {
-                            let Envelope { id: cause, kind, bytes, root, depth, .. } = envelope;
+                    let source = handed.source();
+                    let (item, context) = match handed {
+                        Handed::Mail(&Envelope { id: cause, kind, bytes, root, depth, .. }) => {
                             let bytes = self.bytes(bytes);
-                            let mail = Mail::new(*kind, bytes, source, *root, *depth, &table, self.read_limit);
+                            let mail = Mail::new(kind, bytes, source, root, depth, &table, self.read_limit);
 
-                            (Item::Mail(mail), Context { cause: Some(*cause), root: *root, depth: depth + 1 })
+                            (Item::Mail(mail), Context { cause: Some(cause), root, depth: depth + 1 })
                         }
-                        Pending::Ended { ended, context } => (Item::Ended(ended.clone()), *context),
+                        Handed::Ended { ended, context } => (Item::Ended(ended.clone()), *context),
                     };
                     let mut turn = Turn::new(me, &seat.path, &table, &mut asked, count, source);
                     let start = clock.nanos();
                     let handled = actor.handle(item, &mut turn);
-                    tally.add(key(item_kind(pending)), clock.nanos().saturating_sub(start));
+                    tally.add(key(item_kind(handed)), clock.nanos().saturating_sub(start));
                     let ran = Ran::of(me, handled, asked, context, begins, lists, arena);
 
                     let effects = &lists.effects[ran.effects.clone()];
@@ -723,10 +719,10 @@ fn keep_lines(effects: &mut Vec<Effect>, begins: usize) {
 }
 
 /// What a pending item is, as far as the cost of reacting to it goes.
-const fn item_kind(pending: &Pending) -> ItemKind {
-    match pending {
-        Pending::Mail(envelope) => ItemKind::Mail(envelope.kind),
-        Pending::Ended { .. } => ItemKind::Ended,
+const fn item_kind(handed: Handed<'_>) -> ItemKind {
+    match handed {
+        Handed::Mail(envelope) => ItemKind::Mail(envelope.kind),
+        Handed::Ended { .. } => ItemKind::Ended,
     }
 }
 

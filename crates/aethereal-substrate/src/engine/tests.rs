@@ -1,6 +1,7 @@
 //! The engine's tests: what a step runs, and what is there for the next one.
 
 use super::*;
+use crate::stream::Pending;
 use crate::{Entry, Standing, View, child_id};
 use aethereal_actor::{Ended, Fault, How, Item, Level, To, ToWithoutMail};
 use aethereal_data::{Budget, Kind, KindName, Plain, TypedKey};
