@@ -8,6 +8,7 @@ description = "The headless chassis: the native host with nothing but the engine
 
 [dependencies]
 aethereal-substrate = { path = "../aethereal-substrate" }
+core_affinity = "0.8.3"
 
 [dev-dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
