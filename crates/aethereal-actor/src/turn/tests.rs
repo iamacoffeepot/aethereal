@@ -29,6 +29,10 @@ impl Table for Listed {
         ActorId::new(Fnv::resume(parent.bits()).bytes(segment.to_string().as_bytes()).finish())
     }
 
+    fn is_live(&self, id: ActorId) -> bool {
+        self.0.iter().any(|(made, _)| made.id == id)
+    }
+
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber> {
         self.seat(id)
     }
@@ -230,7 +234,7 @@ fn child_begins_inside_its_parents_turn() {
     // under the id, path, and seat its spawn gives it, and two children given one seat.
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, &ROOT, &table, &mut asked, 0, ME);
+    let mut turn = Turn::new(ME, &ROOT, Above::Chassis, &table, &mut asked, 0, ME);
     let Ok(branch) = turn.spawn::<Branch>(&(), BranchConfig { leaves: 2, last_fails: false }) else {
         panic!("the branch and its leaves begin");
     };
@@ -264,7 +268,7 @@ fn used_key_is_refused_and_asks_for_nothing() {
     let held_id = table.child(ME.id, &held.last());
     let table = Listed(vec![(Seated { id: held_id, seat: SeatNumber::new(7) }, held)]);
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, &ROOT, &table, &mut asked, 0, ME);
+    let mut turn = Turn::new(ME, &ROOT, Above::Chassis, &table, &mut asked, 0, ME);
 
     assert!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }).is_ok());
     assert_eq!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }), Err(Refused::KeyTaken));
@@ -278,7 +282,7 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     // that a failed begin used up.
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, &ROOT, &table, &mut asked, 0, ME);
+    let mut turn = Turn::new(ME, &ROOT, Above::Chassis, &table, &mut asked, 0, ME);
     let refused = turn.spawn::<Branch>(&(), BranchConfig { leaves: 2, last_fails: true });
     let Err(Refused::Began(fault)) = refused else {
         panic!("the branch's last leaf fails, and the branch with it");
@@ -298,7 +302,7 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     ];
     assert_eq!(asked.effects(), expected);
 
-    let mut turn = Turn::new(ME, &ROOT, &table, &mut asked, 0, ME);
+    let mut turn = Turn::new(ME, &ROOT, Above::Chassis, &table, &mut asked, 0, ME);
     assert!(turn.spawn::<Branch>(&(), BranchConfig { leaves: 0, last_fails: false }).is_ok());
     let (effects, stood, _, seats) = asked.into_parts();
     assert_eq!(effects.last(), Some(&spawn_branch));
@@ -312,7 +316,7 @@ fn begin_and_end_send_as_their_own_actor() {
     // closing turn that does not learn why it runs.
     let table = Listed(vec![(ME, ROOT.clone())]);
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, &ROOT, &table, &mut asked, 0, ME);
+    let mut turn = Turn::new(ME, &ROOT, Above::Chassis, &table, &mut asked, 0, ME);
     let Ok(herald) = turn.spawn::<Herald>(&(), Poke) else {
         panic!("the herald begins");
     };
@@ -325,7 +329,7 @@ fn begin_and_end_send_as_their_own_actor() {
     };
     let end = |why| {
         let mut asked = Asked::new();
-        let mut ending = Ending::new(herald.seated(), &path, &table, &mut asked, 0, why);
+        let mut ending = Ending::new(herald.seated(), &path, Above::Actor(ME), &table, &mut asked, 0, why);
         let ended = Box::new(Herald).end(&mut ending);
 
         (ended, asked.into_parts().0)
@@ -344,7 +348,7 @@ fn child_past_the_deepest_path_is_refused() {
     };
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = Turn::new(ME, &deepest, &table, &mut asked, 0, ME);
+    let mut turn = Turn::new(ME, &deepest, Above::Chassis, &table, &mut asked, 0, ME);
 
     assert_eq!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }), Err(Refused::TooDeep));
     assert!(asked.effects().is_empty());
@@ -359,7 +363,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
     let mut leaf: Box<dyn Runs> = Box::new(Leaf);
     let handle = |leaf: &mut Box<dyn Runs>, table: &Listed, kind, bytes: &[u8]| {
         let mut asked = Asked::new();
-        let mut turn = Turn::new(ME, &ROOT, table, &mut asked, 0, other);
+        let mut turn = Turn::new(ME, &ROOT, Above::Chassis, table, &mut asked, 0, other);
         let handled = leaf.handle(
             Item::Mail(Mail::new(kind, bytes, other, MailId { sender: other.id, count: 1 }, 1, table, 64)),
             &mut turn,
@@ -385,4 +389,25 @@ fn handler_asks_by_the_kind_of_its_mail() {
     };
     assert_eq!(fault.read(&mut Budget::new(0)), Ok(Some(Unreadable)));
     assert!(effects.is_empty());
+}
+
+#[test]
+fn mail_to_a_parent_goes_only_while_it_is_live() {
+    // Catches a send to the parent that skips its liveness, or names another actor than the one that spawned it.
+    let parent = seated(7, 3);
+    let Ok(path) = ROOT.child(&PathSegment::new(Leaf::NAME, &0u64)) else {
+        panic!("a child of the root fits");
+    };
+    let send = |table: &Listed| {
+        let mut asked = Asked::new();
+        let mut turn = Turn::new(ME, &path, Above::Actor(parent), table, &mut asked, 0, ME);
+        let sent = turn.send(To::Parent, &Poke);
+
+        (sent.is_ok(), asked.into_parts().0)
+    };
+
+    let live = Listed(vec![(parent, ROOT.clone())]);
+    let to_parent = What::Send { to: parent, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING };
+    assert_eq!(send(&live), (true, vec![Effect::new(ME, to_parent)]));
+    assert_eq!(send(&Listed::default()), (true, Vec::new()));
 }

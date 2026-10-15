@@ -39,6 +39,10 @@ impl Table for Since<'_> {
         self.table.child(parent, segment)
     }
 
+    fn is_live(&self, id: ActorId) -> bool {
+        Table::is_live(self.table, id)
+    }
+
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber> {
         let stood = self.stood.get(&id.bits()).map(|(_, seat)| *seat);
 

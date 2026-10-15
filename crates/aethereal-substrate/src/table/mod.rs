@@ -35,6 +35,10 @@ impl Table for ActorTable {
         child_id(parent, segment)
     }
 
+    fn is_live(&self, id: ActorId) -> bool {
+        self.standing(id) == Standing::Live
+    }
+
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber> {
         Self::seat(self, id)
     }

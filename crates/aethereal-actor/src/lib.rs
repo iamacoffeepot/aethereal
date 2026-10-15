@@ -33,4 +33,4 @@ pub use item::Item;
 pub use mail::{Mail, MailId};
 pub use reference::ErasedActorRef;
 pub use seat::{SeatNumber, Seated, Seats};
-pub use turn::{Asked, Beginning, Ending, Refused, Stood, Turn, Why};
+pub use turn::{Above, Asked, Beginning, Ending, Refused, Stood, Turn, Why};

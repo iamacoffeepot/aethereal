@@ -27,6 +27,9 @@ pub trait Table: Made {
     /// The id of the child `segment` names beneath the actor `parent` stands for. Only the engine computes an id.
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId;
 
+    /// Whether the actor `id` stands for is live.
+    fn is_live(&self, id: ActorId) -> bool;
+
     /// The seat of the child `id` stands for, beneath the actor whose turn reads the table, when it was made or that
     /// actor stood it up in an earlier turn of the step.
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber>;

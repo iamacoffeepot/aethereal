@@ -122,7 +122,17 @@ impl Default for Asked {
 pub struct Stood {
     me: Seated,
     path: ActorPath,
+    above: Above,
     actor: Box<dyn Runs>,
+}
+
+/// What stands directly above an actor: the actor [`To::Parent`] names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Above {
+    /// Nothing: the actor is a root, made for the chassis.
+    Chassis,
+    /// The actor that spawned it, and its seat.
+    Actor(Seated),
 }
 
 impl Stood {
@@ -144,6 +154,12 @@ impl Stood {
         &self.path
     }
 
+    /// The actor that stood the child up.
+    #[must_use]
+    pub const fn above(&self) -> Above {
+        self.above
+    }
+
     /// The child itself, for the engine to run.
     #[must_use]
     pub fn into_actor(self) -> Box<dyn Runs> {
@@ -156,6 +172,8 @@ struct Seat<'a> {
     /// The actor, and its seat.
     me: Seated,
     path: &'a ActorPath,
+    /// What stands above the actor, kept when it was stood up, so a send to its parent reads no path.
+    above: Above,
     table: &'a dyn Table,
     asked: &'a mut Asked,
     /// How many pieces of mail this actor has sent, this turn's included.
@@ -213,13 +231,23 @@ impl Seat<'_> {
     /// was never made.
     fn receiver(&self, to: &To) -> Option<Seated> {
         match to {
-            To::Parent => self.path.parent().and_then(|parent| self.table.resolve(&parent)),
+            To::Parent => self.parent(),
             To::Child(kind) => self.child(&PathSegment::new(kind.clone(), &())),
             To::ChildInstanced(kind, key) => self.child(&PathSegment::instanced(kind.clone(), key.clone())),
             To::Held(reference) => Some(reference.seated()),
             // A turn puts the source of its item in its place before it asks.
             To::Sender => None,
         }
+    }
+
+    /// The actor directly above this one, and its seat, when it is live.
+    fn parent(&self) -> Option<Seated> {
+        let Above::Actor(parent) = self.above else {
+            return None;
+        };
+        let is_live = self.table.is_live(parent.id);
+
+        is_live.then_some(parent)
     }
 
     /// The child `segment` names beneath this actor, and its seat, when it was made: stood up in this turn, or
@@ -256,11 +284,12 @@ impl Seat<'_> {
 
         let me = Seated { id, seat };
         let stood_before = self.asked.stood.len();
-        let child = Seat { me, path: &path, table: self.table, asked: &mut *self.asked, sent: 0 };
+        let above = Above::Actor(self.me);
+        let child = Seat { me, path: &path, above, table: self.table, asked: &mut *self.asked, sent: 0 };
         match C::begin(config, &mut Beginning { seat: child }) {
             Ok(actor) => {
                 self.asked.stood_seats.insert(id.bits(), seat);
-                self.asked.stood.push(Stood { me, path, actor: Box::new(actor) });
+                self.asked.stood.push(Stood { me, path, above, actor: Box::new(actor) });
 
                 Ok(ErasedActorRef::new(me))
             }
@@ -299,12 +328,13 @@ impl<'a> Turn<'a> {
     pub const fn new(
         me: Seated,
         path: &'a ActorPath,
+        above: Above,
         table: &'a dyn Table,
         asked: &'a mut Asked,
         sent: u64,
         source: Seated,
     ) -> Self {
-        Self { seat: Seat { me, path, table, asked, sent }, source }
+        Self { seat: Seat { me, path, above, table, asked, sent }, source }
     }
 
     /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.
@@ -368,7 +398,7 @@ impl<'a> Beginning<'a> {
     /// For the engine, which makes a root for the chassis. A child's is made by the turn that spawns it.
     #[must_use]
     pub const fn new(me: Seated, path: &'a ActorPath, table: &'a dyn Table, asked: &'a mut Asked) -> Self {
-        Self { seat: Seat { me, path, table, asked, sent: 0 } }
+        Self { seat: Seat { me, path, above: Above::Chassis, table, asked, sent: 0 } }
     }
 
     /// Sends `mail` to `to`. It goes out with the mail of the turn this `begin` runs in.
@@ -430,12 +460,13 @@ impl<'a> Ending<'a> {
     pub const fn new(
         me: Seated,
         path: &'a ActorPath,
+        above: Above,
         table: &'a dyn Table,
         asked: &'a mut Asked,
         sent: u64,
         why: Why,
     ) -> Self {
-        Self { seat: Seat { me, path, table, asked, sent }, why }
+        Self { seat: Seat { me, path, above, table, asked, sent }, why }
     }
 
     /// Why this closing turn runs.
