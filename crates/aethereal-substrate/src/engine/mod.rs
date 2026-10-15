@@ -727,7 +727,7 @@ impl Reading<'_> {
                 effects.push(Effect::new(me, What::Ended(how.clone())));
 
                 let ran = Ran { effects: begins..effects.len(), stood: Vec::new(), context: *context };
-                lists.route(ran, effects);
+                lists.route(ran, effects, me.id);
                 // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
                 seating.seated.remove(me);
                 seating.free.push(me.seat);
@@ -755,9 +755,8 @@ impl Reading<'_> {
                     let handled = tally.time(key(item_kind(handed)), clock, || actor.handle(item, &mut turn));
                     let ran = Ran::of(me, handled, asked, context, begins);
 
-                    let effects = &asked.effects_mut()[ran.effects.clone()];
-                    count = sent(effects, me.id).unwrap_or(count);
                     if !ran.stood.is_empty() {
+                        let effects = &asked.effects_mut()[ran.effects.clone()];
                         for (child, sent) in senders(effects).into_iter().filter(|(actor, _)| actor.id != me.id) {
                             let (key, record) = lives::sent(child, sent);
                             lists.routes.lives.put(key, record);
@@ -766,13 +765,15 @@ impl Reading<'_> {
                     let stood =
                         ran.stood.iter().map(|child| (child.id().bits(), (child.path().clone(), child.seated().seat)));
                     stood_since.extend(stood);
-                    let over = ends(effects, me.id);
                     // Most turns of a busy actor ask for nothing, and then there is nothing to route.
                     let asked_nothing = ran.effects.is_empty() && ran.stood.is_empty();
-                    if !asked_nothing {
-                        lists.route(ran, asked.effects_mut());
-                    }
-                    if over {
+                    let seen = if asked_nothing {
+                        Seen::default()
+                    } else {
+                        lists.route(ran, asked.effects_mut(), me.id)
+                    };
+                    count = seen.sent.unwrap_or(count);
+                    if seen.ends {
                         break;
                     }
                 }
@@ -791,30 +792,34 @@ impl Reading<'_> {
 
 impl Lists {
     /// Routes a finished turn's effects into this worker's row of buckets for each view, taking them out of the
-    /// list, and keeps the children the turn stood up, to be seated.
+    /// list, keeps the children the turn stood up, to be seated, and answers with what it saw of the actor `me`.
     ///
-    /// Every view but the streams borrows the effects; the streams then take them by value. A turn that stood up a
-    /// child whose `begin` failed is routed without what that child left.
-    fn route(&mut self, ran: Ran, list: &mut Vec<Effect>) {
+    /// Each effect is routed into every view in one pass: the other views borrow it, then the streams take it by
+    /// value. A turn that stood up a child whose `begin` failed is routed without what that child left.
+    fn route(&mut self, ran: Ran, list: &mut Vec<Effect>, me: ActorId) -> Seen {
         let Ran { effects, stood, context } = ran;
         let routes = &mut self.routes;
-        let is_replaced = match begun(&list[effects.clone()]) {
-            Cow::Borrowed(applied) => {
-                routes.route(applied, &context);
-                false
+        let mut seen = Seen::default();
+        match begun(&list[effects.clone()]) {
+            Cow::Borrowed(_) => {
+                for effect in list.drain(effects.start..) {
+                    seen.see(&effect, me);
+                    routes.route(&effect, &context);
+                    routes.streams.route_one(effect, &context);
+                }
             }
             Cow::Owned(applied) => {
-                routes.route(&applied, &context);
-                routes.streams.route_owned(applied, &context);
-                true
+                list.truncate(effects.start);
+                for effect in applied {
+                    seen.see(&effect, me);
+                    routes.route(&effect, &context);
+                    routes.streams.route_one(effect, &context);
+                }
             }
-        };
-        let these = list.drain(effects.start..);
-        if !is_replaced {
-            routes.streams.route_owned(these, &context);
         }
 
         self.stood.extend(stood);
+        seen
     }
 }
 
@@ -824,11 +829,11 @@ impl Routes {
         self.table.records(part) + self.log.records(part) + self.lives.records(part) + self.streams.records(part)
     }
 
-    /// Routes one turn's effects, emitted in `context`, into every view's bucket but the streams'.
-    fn route(&mut self, effects: &[Effect], context: &Context) {
-        self.table.route(effects, context);
-        self.log.route(effects, context);
-        self.lives.route(effects, context);
+    /// Routes one effect, emitted in `context`, into every view's bucket but the streams'.
+    fn route(&mut self, effect: &Effect, context: &Context) {
+        self.table.route(effect, context);
+        self.log.route(effect, context);
+        self.lives.route(effect, context);
     }
 }
 
@@ -860,23 +865,6 @@ fn put_back(actors: &mut BySeat<Held>, me: Seated, actor: Box<dyn Runs>) {
     }
 }
 
-/// Whether `effects` end the actor `id` stands for.
-fn ends(effects: &[Effect], id: ActorId) -> bool {
-    effects.iter().any(|effect| ending(effect, id).is_some())
-}
-
-/// The count of the last mail the actor `id` stands for sent among `effects`, or none when it sent none.
-fn sent(effects: &[Effect], id: ActorId) -> Option<u64> {
-    effects
-        .iter()
-        .filter(|effect| effect.by() == id)
-        .filter_map(|effect| match effect.what() {
-            What::Send { count, .. } => Some(*count),
-            _ => None,
-        })
-        .max()
-}
-
 /// Each actor that sent mail among `effects`, with the count of the last piece it sent.
 fn senders(effects: &[Effect]) -> Vec<(Seated, u64)> {
     let mut senders: Vec<(Seated, u64)> = Vec::new();
@@ -892,6 +880,29 @@ fn senders(effects: &[Effect]) -> Vec<(Seated, u64)> {
     }
 
     senders
+}
+
+/// What routing a turn's effects saw of the actor whose turn it was.
+#[derive(Default)]
+struct Seen {
+    /// The count of the last mail it sent, when it sent any.
+    sent: Option<u64>,
+    /// Whether it ended.
+    ends: bool,
+}
+
+impl Seen {
+    /// Notes `effect`, when it is by the actor `me`.
+    fn see(&mut self, effect: &Effect, me: ActorId) {
+        let is_own = effect.by() == me;
+        if !is_own {
+            return;
+        }
+        if let What::Send { count, .. } = effect.what() {
+            self.sent = Some(self.sent.map_or(*count, |sent| sent.max(*count)));
+        }
+        self.ends |= ending(effect, me).is_some();
+    }
 }
 
 /// Drops every effect from `begins` on but the logged lines: what is kept of a turn that failed (ADR-0009).

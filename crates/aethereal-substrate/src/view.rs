@@ -313,22 +313,22 @@ impl<V: View> Routed<V> {
         self.buckets[part].push((key, record));
     }
 
-    /// Routes the effects of one turn, emitted in `context`, in the order given.
-    pub fn route(&mut self, effects: &[Effect], context: &Context) {
-        for (key, record) in effects.iter().flat_map(|effect| V::takes(effect, context)) {
+    /// Routes one effect, emitted in `context`.
+    pub fn route(&mut self, effect: &Effect, context: &Context) {
+        for (key, record) in V::takes(effect, context) {
             let part = part(key, self.buckets.len());
             self.buckets[part].push((key, record));
         }
     }
 
-    /// Routes the effects of one turn, emitted in `context`, taking each by value.
+    /// Routes one effect, emitted in `context`, taking it by value.
     ///
-    /// The caller routes every other view that reads these effects first.
-    pub fn route_owned(&mut self, effects: impl IntoIterator<Item = Effect>, context: &Context)
+    /// The caller routes every other view that reads this effect first.
+    pub fn route_one(&mut self, effect: Effect, context: &Context)
     where
         V: Consumes,
     {
-        for (key, record) in effects.into_iter().flat_map(|effect| V::takes_owned(effect, context)) {
+        for (key, record) in V::takes_owned(effect, context) {
             let part = part(key, self.buckets.len());
             self.buckets[part].push((key, record));
         }
