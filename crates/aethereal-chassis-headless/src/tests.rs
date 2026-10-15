@@ -96,12 +96,12 @@ impl Handles<Count> for Fan {
 /// How many children the root spawns.
 const CHILDREN: u64 = 40;
 
-/// An engine with the root fan.
-fn engine() -> (Engine, ActorId) {
+/// An engine with the root fan, whose parts each run at most `hops` fused hops a step.
+fn engine(hops: usize) -> (Engine, ActorId) {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 0);
+    let mut engine = Engine::new(parts, 1024, 0, hops);
     let Ok(root) = engine.add_root::<Fan>(&0, FanConfig { number: 0, children: CHILDREN }) else {
         panic!("the root begins");
     };
@@ -121,21 +121,23 @@ fn shown(engine: &Engine, root: ActorId) -> Vec<String> {
 
 #[test]
 fn workers_leave_what_one_thread_leaves() {
-    // Catches a share whose actors are not put back, turns applied in the order workers finished them, and a lend
-    // that returns before every worker has answered.
-    let (mut alone, root) = engine();
-    let clock = Monotonic::new();
-    while !alone.is_idle() {
-        alone.step(&clock);
+    // Catches a share whose actors are not put back, turns applied in the order workers finished them, a lend that
+    // returns before every worker has answered, and chains fused differently by how many workers ran them.
+    for hops in [0, 8] {
+        let (mut alone, root) = engine(hops);
+        let clock = Monotonic::new();
+        while !alone.is_idle() {
+            alone.step(&clock);
+        }
+
+        let Some(four) = NonZeroUsize::new(4) else {
+            panic!("four is not zero");
+        };
+        let (engine, _) = engine(hops);
+        let mut headless = Headless::new(engine, four);
+        headless.run_until_idle();
+
+        assert_eq!(headless.engine().step_number(), alone.step_number());
+        assert_eq!(shown(headless.engine(), root), shown(&alone, root));
     }
-
-    let Some(four) = NonZeroUsize::new(4) else {
-        panic!("four is not zero");
-    };
-    let (engine, _) = engine();
-    let mut headless = Headless::new(engine, four);
-    headless.run_until_idle();
-
-    assert_eq!(headless.engine().step_number(), alone.step_number());
-    assert_eq!(shown(headless.engine(), root), shown(&alone, root));
 }

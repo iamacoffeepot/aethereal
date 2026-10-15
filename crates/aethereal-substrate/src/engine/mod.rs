@@ -3,6 +3,7 @@
 mod begun;
 mod costs;
 mod fold;
+mod fuse;
 mod plan;
 mod since;
 #[cfg(test)]
@@ -17,8 +18,7 @@ use crate::stream::{self, Handed, Streams};
 use crate::table::Actors;
 use crate::watch::{Notice, Watches};
 use crate::{
-    ActorTable, ByActor, BySeat, Clock, Context, Entry, Envelope, Folded, Lives, Log, Part, Routed, State, lives,
-    rounded,
+    ActorTable, BySeat, Clock, Context, Entry, Envelope, Folded, Lives, Log, Part, Routed, State, lives, rounded,
 };
 use aethereal_actor::{
     Above, Actor, Arena, Asked, Beginning, Chain, Closing, Code, Declared, Effect, Fault, How, Item, Mail, MailId,
@@ -27,8 +27,9 @@ use aethereal_actor::{
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 use begun::begun;
 use costs::{CostKey, Costs, ItemKind, KindIndex, Kinds, toward};
+use fuse::{Fusing, Hop, Stepped};
 use plan::Packing;
-use since::Since;
+use since::{Sees, Since};
 use std::borrow::Cow;
 use std::iter;
 use std::mem;
@@ -70,10 +71,13 @@ pub struct Engine {
     /// The parts that may have something to run in the next step: each part the last fold reached, and every part once
     /// a root is made. A part with something to run is always among them, so a step looks at no other.
     waiting: Vec<usize>,
-    /// The empty seats, in any part, given out before new numbers are.
-    free: Vec<SeatNumber>,
-    /// The number of each part's next new seat.
-    next: Vec<u64>,
+    /// The seats each part gives the children its turns spawn: its own free seats and new numbers, and those set
+    /// aside for it in other parts (ADR-0013).
+    seats: Vec<Seats>,
+    /// How many actors sit in each part.
+    seated: Vec<usize>,
+    /// How many actors sit in all the parts.
+    actors_seated: usize,
     /// What the turns waiting in each part are expected to cost, in nanoseconds, as of the last fold.
     expected: Vec<u64>,
     /// What planning and gathering a step pack parts in.
@@ -96,6 +100,8 @@ pub struct Engine {
     step: u64,
     /// The most bytes one read of a piece of mail may allocate.
     read_limit: usize,
+    /// The most fused hops one part runs in one step (ADR-0013).
+    hops: usize,
     /// The host's quota for the bytes of mail in flight, shared equally among the arenas of every writer.
     mail_bytes: usize,
 }
@@ -133,6 +139,8 @@ pub struct Reading<'a> {
     /// The arenas the last step's mail was written to, by writer.
     mail: &'a [Arena],
     read_limit: usize,
+    /// The most fused hops one part runs in the step.
+    hops: usize,
 }
 
 /// What a step hands out and takes back, kept empty between steps for its room.
@@ -165,6 +173,7 @@ pub struct Parcel {
     lives: lives::Shard,
     seating: Seating,
     actors: BySeat<Held>,
+    seats: Seats,
 }
 
 /// One part of the engine as its turns change it, where it lies: in a parcel a worker owns, or in the engine.
@@ -173,6 +182,7 @@ struct Room<'a> {
     lives: &'a mut lives::Shard,
     seating: &'a mut Seating,
     actors: &'a mut BySeat<Held>,
+    seats: &'a mut Seats,
 }
 
 /// What one worker's share of a step left: its turns and how long they took, and the parts it ran.
@@ -192,7 +202,6 @@ pub struct Lists {
     effects: Vec<Effect>,
     routes: Routes,
     stood: Vec<Stood>,
-    seats: Seats,
     /// The seats of the actors whose closing turns ran, empty once the step is applied: no seat is given again in the
     /// step that freed it, while its actor's last records are still to fold.
     freed: Vec<SeatNumber>,
@@ -200,6 +209,8 @@ pub struct Lists {
     tally: Tally,
     /// Each actor with items in the part running, as it was handed them: kept for its room.
     runs: Vec<(u64, u64, Range<usize>)>,
+    /// What the part running keeps of its step while it fuses chains of mail.
+    fusing: Fusing,
 }
 
 /// One writer's row of buckets for each view.
@@ -232,10 +243,11 @@ struct Ran {
 
 impl Engine {
     /// An engine with no actors, its views in `parts` parts [`rounded`] up to a power of two, whose turns read at
-    /// most `read_limit` bytes into any one piece of mail, and whose mail in flight is written to `mail_bytes` of
-    /// arenas, shared equally among the writers, two arenas each.
+    /// most `read_limit` bytes into any one piece of mail, whose mail in flight is written to `mail_bytes` of
+    /// arenas, shared equally among the writers, two arenas each, and whose parts each run at most `hops` fused hops
+    /// in a step (ADR-0013). With no hops, every piece of mail is handled in a later step.
     #[must_use]
-    pub fn new(parts: NonZeroUsize, read_limit: usize, mail_bytes: usize) -> Self {
+    pub fn new(parts: NonZeroUsize, read_limit: usize, mail_bytes: usize, hops: usize) -> Self {
         let parts = rounded(parts);
 
         Self {
@@ -247,8 +259,9 @@ impl Engine {
             seating: (0..parts.get()).map(|_| Seating { seated: BySeat::empty(parts) }).collect(),
             actors: (0..parts.get()).map(|_| BySeat::empty(parts)).collect(),
             waiting: Vec::new(),
-            free: Vec::new(),
-            next: (0..parts.get()).map(new_seat).collect(),
+            seats: (0..parts.get()).map(|part| Seats::of_part(new_seat(part), new_seat(parts.get()))).collect(),
+            seated: vec![0; parts.get()],
+            actors_seated: 0,
             expected: vec![0; parts.get()],
             packing: Packing::default(),
             spare: Spare::default(),
@@ -259,6 +272,7 @@ impl Engine {
             recent: 0,
             step: 0,
             read_limit,
+            hops,
             mail_bytes,
         }
     }
@@ -308,11 +322,13 @@ impl Engine {
             return Err(Refused::KeyTaken);
         }
 
-        // Mail sent between steps is read in the next step, with the mail the last step's turns sent. The root and the
-        // children its `begin` stands up take the empty seats first, then new ones, in any part.
+        // Mail sent between steps is read in the next step, with the mail the last step's turns sent. The root sits in
+        // the part with fewest actors, and the children its `begin` stands up beside it while the part has room, then
+        // in whichever part has numbered fewest new seats.
         let parity = parity(self.step);
-        let mut seats = self.lend_seats();
-        let me = Seated { id, seat: seats.take() };
+        let home = self.emptiest();
+        let mut seats = self.lend_seats(home);
+        let me = Seated { id, seat: seats.own() };
         let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats);
         let began = A::begin(config, &mut Beginning::new::<A>(me, &path, &self.table, &mut asked));
         let (asked, stood, arena, mut seats) = asked.into_parts();
@@ -324,12 +340,12 @@ impl Engine {
                 for child in stood {
                     seats.give_back(child.seated().seat);
                 }
-                self.take_back_lent(seats);
+                self.take_back_lent(home, seats);
 
                 return Err(Refused::Began(fault));
             }
         };
-        self.take_back_lent(seats);
+        self.take_back_lent(home, seats);
         let from = Code::Linked(Declared::of::<A>());
         let made = match segment.key() {
             None => What::Root { from },
@@ -382,21 +398,21 @@ impl Engine {
     pub fn run_whole(&mut self, whole: Whole, clock: &impl Clock) -> Whole {
         let Whole { arena, mut lists } = whole;
         let mut tally = mem::take(&mut lists.tally);
-        let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, mem::take(&mut lists.seats));
+        let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
         let mail = &self.arenas[parity(self.step + 1)];
-        let reading = Reading { table: &self.table, mail, read_limit: self.read_limit };
+        let reading = Reading { table: &self.table, mail, read_limit: self.read_limit, hops: self.hops };
         for (part, _) in &self.packing.parts {
             let room = Room {
                 streams: self.streams.at_mut(*part),
                 lives: self.lives.at_mut(*part),
                 seating: &mut self.seating[*part],
                 actors: &mut self.actors[*part],
+                seats: &mut self.seats[*part],
             };
             reading.run_part(room, clock, &mut tally, &mut asked, &mut lists);
         }
-        let (effects, _, arena, seats) = asked.into_parts();
+        let (effects, _, arena, _) = asked.into_parts();
         lists.effects = effects;
-        lists.seats = seats;
         lists.tally = tally;
 
         Whole { arena, lists }
@@ -410,8 +426,7 @@ impl Engine {
     ///
     /// Panics when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn apply_whole(&mut self, whole: Whole) {
-        let Whole { arena, mut lists } = whole;
-        self.take_back_lent(mem::take(&mut lists.seats));
+        let Whole { arena, lists } = whole;
         self.take_in(lists, arena);
 
         let mut forward = mem::take(&mut self.spare.forward);
@@ -450,22 +465,23 @@ impl Engine {
             }
         }
         self.waiting.clear();
+        for index in 0..self.packing.parts.len() {
+            self.give_room(self.packing.parts[index].0);
+        }
         let work = self.packing.parts.iter().map(|(_, cost)| cost).sum();
         let (delta, running) = plan::plan(&self.packing.parts, self.recent, workers);
         self.recent = toward(self.recent, work);
         let running = running.max(1);
 
         // This step writes the arenas of its parity, which hold mail read two steps ago and no longer, each given an
-        // equal share of the host's quota for mail. Each worker seats the children its turns spawn in every
-        // `running`th part from its place, of all the parts and not only the ones it runs, so children spread across
-        // the parts and no two workers give the same seat.
+        // equal share of the host's quota for mail. The seats children take are each part's own, given it above.
         let parity = parity(self.step);
         let share = self.mail_bytes / (2 * (ROOTS + 1 + workers.max.max(1)));
         for arena in &mut self.arenas[parity] {
             arena.clear(share);
         }
         if running == 1 {
-            let (arena, lists) = self.writer(parity, 0, running, share);
+            let (arena, lists) = self.writer(parity, 0, share);
 
             return Plan { delta, split: Split::Whole(Whole { arena, lists }) };
         }
@@ -473,7 +489,7 @@ impl Engine {
         self.packing.pack(running);
         let mut shares = Vec::with_capacity(running);
         for place in 0..running {
-            let (arena, lists) = self.writer(parity, place, running, share);
+            let (arena, lists) = self.writer(parity, place, share);
             let mut parcels = self.spare.parcels.pop().unwrap_or_default();
             for index in 0..self.packing.shares[place].1.len() {
                 let part = self.packing.shares[place].1[index];
@@ -485,10 +501,9 @@ impl Engine {
         Plan { delta, split: Split::Shares(shares) }
     }
 
-    /// The arena and lists of the writer in place `place` of `running`, for steps of `parity`, its arena given
-    /// `share` bytes: taken out to fill, with the seats it gives the children its turns spawn, in every `running`th
-    /// part from its place.
-    fn writer(&mut self, parity: usize, place: usize, running: usize, share: usize) -> (Arena, Lists) {
+    /// The arena and lists of the writer in place `place`, for steps of `parity`, its arena given `share` bytes:
+    /// taken out to fill.
+    fn writer(&mut self, parity: usize, place: usize, share: usize) -> (Arena, Lists) {
         let slot = ROOTS + 1 + place;
         let arena = self.arena(parity, slot, share);
         while self.lists.len() <= slot {
@@ -497,12 +512,7 @@ impl Engine {
         }
         // What is left in its place allocates nothing, and the lists come back to the same place, so each stays with
         // the worker that fills it.
-        let mut lists = mem::take(&mut self.lists[slot]);
-        if running == 1 {
-            lists.seats = self.lend_seats();
-        } else {
-            self.seats(place, running, &mut lists.seats);
-        }
+        let lists = mem::take(&mut self.lists[slot]);
 
         (arena, lists)
     }
@@ -513,8 +523,12 @@ impl Engine {
         self.costs.merge(&mut lists.tally);
         let slot = arena.slot();
         self.arenas[parity(self.step)][slot] = arena;
-        self.take_back(&mut lists.seats);
-        self.free.append(&mut lists.freed);
+        for seat in lists.freed.drain(..) {
+            let part = self.part(seat);
+            self.seated[part] -= 1;
+            self.actors_seated -= 1;
+            self.seats[part].free(seat);
+        }
         let mut stood = mem::take(&mut lists.stood);
         while let Some(child) = stood.pop() {
             self.seat(child.seated(), child.path().clone(), child.above(), child.into_actor());
@@ -540,7 +554,7 @@ impl Engine {
     pub fn reading(&self) -> Reading<'_> {
         let mail = &self.arenas[parity(self.step + 1)];
 
-        Reading { table: &self.table, mail, read_limit: self.read_limit }
+        Reading { table: &self.table, mail, read_limit: self.read_limit, hops: self.hops }
     }
 
     /// Ends a step on the thread that calls it: gathers what the workers left, folds every part, and settles
@@ -699,16 +713,18 @@ impl Engine {
             lives: self.lives.take(part),
             seating: mem::replace(&mut self.seating[part], empty),
             actors: mem::replace(&mut self.actors[part], BySeat::empty(parts)),
+            seats: mem::take(&mut self.seats[part]),
         }
     }
 
     /// Puts back a part a worker ran.
     fn put(&mut self, parcel: Parcel) {
-        let Parcel { part, streams, lives, seating, actors } = parcel;
+        let Parcel { part, streams, lives, seating, actors, seats } = parcel;
         self.streams.put(part, streams);
         self.lives.put(part, lives);
         self.seating[part] = seating;
         self.actors[part] = actors;
+        self.seats[part] = seats;
     }
 
     /// Folds one turn's effects, emitted in `context`, into every view but the streams, and seats the children
@@ -753,6 +769,8 @@ impl Engine {
     fn seat(&mut self, me: Seated, path: ActorPath, above: Above, actor: Box<dyn Runs>) {
         let kind = self.kinds.number(path.last().kind());
         let part = self.part(me.seat);
+        self.seated[part] += 1;
+        self.actors_seated += 1;
         self.seating[part].seated.insert(me, Sitting { path, above, kind });
         self.actors[part].insert(me, Held::Here(actor));
     }
@@ -762,43 +780,66 @@ impl Engine {
         part(seat, self.seating.len())
     }
 
-    /// Gives `seats` the seats the writer in place `place` of `running` gives out: the new numbers of every
-    /// `running`th part from its place, and for the first writer, every empty seat. An empty seat is given out once,
-    /// by whichever writer holds it.
-    fn seats(&mut self, place: usize, running: usize, seats: &mut Seats) {
-        seats.clear(new_seat(self.next.len()));
-        for part in (place..self.next.len()).step_by(running) {
-            let free = if part == 0 {
-                self.free.len()
+    /// The part with the fewest actors, the first of them when several tie.
+    fn emptiest(&self) -> usize {
+        (0..self.seated.len()).min_by_key(|part| self.seated[*part]).unwrap_or_default()
+    }
+
+    /// How many actors a part may hold before its children go elsewhere: twice what an even spread would give each
+    /// part, counting at least one (ADR-0013).
+    fn full(&self) -> usize {
+        let actors: usize = self.actors_seated;
+
+        2 * (actors / self.seated.len()).max(1)
+    }
+
+    /// Gives part `part` its room for the step: how many children it may seat in its own seats. Its seats set aside in
+    /// other parts are made up to [`ASIDE`], one in each part with room after it in turn, for its children past its
+    /// room. What each part is given depends only on the parts, so a step seats the same children in the same seats
+    /// on any number of workers (ADR-0013).
+    fn give_room(&mut self, part: usize) {
+        let full = self.full();
+        let parts = self.seats.len();
+        self.seats[part].make_room(full.saturating_sub(self.seated[part]));
+        // Each other part in turn, from the one after: a whole turn round them that finds none with room stops.
+        let others = parts - 1;
+        let mut offset = 0;
+        let mut misses = 0;
+        while self.seats[part].aside() < ASIDE && misses < others {
+            offset = offset % others + 1;
+            let other = (part + offset) % parts;
+            if self.seated[other] < full {
+                let seat = self.seats[other].own();
+                self.seats[part].set_aside(seat);
+                misses = 0;
             } else {
-                0
-            };
-            seats.give(self.free.drain(..free), self.next[part]);
+                misses += 1;
+            }
         }
     }
 
-    /// Takes back the seats a writer did not give out, and where each part's new numbers have got to, leaving
-    /// `seats` empty.
-    fn take_back(&mut self, seats: &mut Seats) {
-        let parts = self.next.len();
-        let (free, next) = seats.drain();
-        self.free.extend(free);
-        for number in next {
-            self.next[part(SeatNumber::new(number), parts)] = number;
+    /// The seats of part `home`, lent to a root's `begin` with every other part's new numbers.
+    /// [`Self::take_back_lent`] takes them back.
+    fn lend_seats(&mut self, home: usize) -> Seats {
+        let room = self.full().saturating_sub(self.seated[home]);
+        let mut seats = mem::take(&mut self.seats[home]);
+        seats.make_room(room);
+        let others: Vec<u64> =
+            (0..self.seats.len()).filter(|part| *part != home).map(|part| self.seats[part].own_next()).collect();
+        seats.lend(others);
+
+        seats
+    }
+
+    /// Takes back the seats lent to a root's `begin` by [`Self::lend_seats`].
+    fn take_back_lent(&mut self, home: usize, mut seats: Seats) {
+        let lent: Vec<u64> = seats.take_lent().collect();
+        let others = (0..self.seats.len()).filter(|part| *part != home);
+        for (part, next) in others.zip(lent) {
+            self.seats[part].set_next(next);
         }
-    }
-
-    /// Every seat, the empty ones and each part's new numbers, lent to one writer whole: to the one worker of a step
-    /// run whole, or to a root's `begin`. [`Self::take_back_lent`] takes them back.
-    fn lend_seats(&mut self) -> Seats {
-        let stride = new_seat(self.next.len());
-
-        Seats::new(mem::take(&mut self.free), mem::take(&mut self.next), stride)
-    }
-
-    /// Takes back the seats lent whole by [`Self::lend_seats`].
-    fn take_back_lent(&mut self, seats: Seats) {
-        (self.free, self.next) = seats.into_parts();
+        seats.make_room(0);
+        self.seats[home] = seats;
     }
 }
 
@@ -812,13 +853,12 @@ impl Reading<'_> {
         let mut tally = mem::take(&mut lists.tally);
         // One list of what turns ask for, over the share: each turn adds to it, and its effects are routed out of it
         // as it finishes.
-        let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, mem::take(&mut lists.seats));
+        let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
         for parcel in &mut parcels {
             self.run_part(parcel.room(), clock, &mut tally, &mut asked, &mut lists);
         }
-        let (effects, _, arena, seats) = asked.into_parts();
+        let (effects, _, arena, _) = asked.into_parts();
         lists.effects = effects;
-        lists.seats = seats;
         lists.tally = tally;
 
         Done { lists, arena, parcels }
@@ -835,6 +875,8 @@ impl Reading<'_> {
         asked: &mut Asked,
         lists: &mut Lists,
     ) {
+        lists.fusing.begin(self.hops);
+        mem::swap(asked.seats_mut(), room.seats);
         let mut runs = mem::take(&mut lists.runs);
         runs.extend(room.streams.hand());
         for (seat, bits, range) in &runs {
@@ -850,6 +892,12 @@ impl Reading<'_> {
         for me in room.lives.take_ended() {
             self.turns(&mut room, me, Work::Closing, clock, tally, asked, lists);
         }
+
+        // Every item that was waiting has run, so a hop overtakes nothing its sender sent in an earlier step.
+        while let Some(hop) = lists.fusing.next() {
+            self.hop(&mut room, hop, clock, tally, asked, lists);
+        }
+        mem::swap(asked.seats_mut(), room.seats);
     }
 
     /// The bytes of a piece of mail sent in the last step.
@@ -871,7 +919,7 @@ impl Reading<'_> {
         asked: &mut Asked,
         lists: &mut Lists,
     ) {
-        let Room { streams, lives, seating, actors } = room;
+        let Room { streams, lives, seating, actors, .. } = room;
         let (Some(seat), Some(life), Some(held)) = (seating.seated.get(me), lives.life(me), actors.get_mut(me)) else {
             return;
         };
@@ -906,11 +954,15 @@ impl Reading<'_> {
                 actors.remove(me);
             }
             (Work::Items(range), State::Live) => {
-                let mut stood_since = ByActor::default();
                 let sent_before = life.sent();
-                let mut count = sent_before;
+                let fresh = Stepped { sent: sent_before, spilled: false, ended: false };
+                let mut stepped = if lists.fusing.is_open() {
+                    lists.fusing.stepped(me, sent_before)
+                } else {
+                    fresh
+                };
                 for handed in streams.handed(range) {
-                    let table = Since { table: self.table, stood: &stood_since };
+                    let table = Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Step };
                     asked.next_turn();
                     let begins = asked.effects_mut().len();
                     let source = handed.source();
@@ -925,37 +977,22 @@ impl Reading<'_> {
                     };
                     // The item sits one above what the turn sends in its chain.
                     let chain = Chain { root: context.root, depth: context.depth - 1 };
-                    let turning = Turning::new(me, &seat.path, seat.above, &table, asked, count, source, chain);
+                    let turning = Turning::new(me, &seat.path, seat.above, &table, asked, stepped.sent, source, chain);
                     let handled = tally.time(key(item_kind(handed)), clock, || actor.handle(item, turning));
                     let ran = Ran::of(me, handled, asked, context, begins);
 
-                    if !ran.stood.is_empty() {
-                        let effects = &asked.effects_mut()[ran.effects.clone()];
-                        for (child, sent) in senders(effects).into_iter().filter(|(actor, _)| actor.id != me.id) {
-                            let (key, record) = lives::sent(child, sent);
-                            lists.routes.lives.put(key, record);
-                        }
-                    }
-                    let stood = ran.stood.iter().map(|child| {
-                        (child.id().bits(), (child.path().clone(), child.seated().seat, child.declared()))
-                    });
-                    stood_since.extend(stood);
-                    // Most turns of a busy actor ask for nothing, and then there is nothing to route.
-                    let asked_nothing = ran.effects.is_empty() && ran.stood.is_empty();
-                    let seen = if asked_nothing {
-                        Seen::default()
-                    } else {
-                        lists.route(ran, asked.effects_mut(), me.id)
-                    };
-                    count = seen.sent.unwrap_or(count);
-                    if seen.ends {
+                    Self::finish(me, ran, Origin::Waiting, seating, lives, asked, lists, &mut stepped);
+                    if stepped.ended {
                         break;
                     }
                 }
 
-                if count > sent_before {
-                    let (key, record) = lives::sent(me, count);
+                if stepped.sent > sent_before {
+                    let (key, record) = lives::sent(me, stepped.sent);
                     lists.routes.lives.put(key, record);
+                }
+                if lists.fusing.is_open() {
+                    lists.fusing.keep(me, stepped);
                 }
                 put_back(actors, me, actor);
             }
@@ -963,6 +1000,173 @@ impl Reading<'_> {
             _ => put_back(actors, me, actor),
         }
     }
+}
+
+impl Reading<'_> {
+    /// Runs the turn of `hop`, a piece of mail handed straight to its receiver in `room`, measured into `tally`, what
+    /// it asks for added to `asked` and routed into `lists` (ADR-0013). Nothing when the receiver is gone or has
+    /// ended: the hop is dropped, as mail to it would be.
+    #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
+    fn hop(
+        &self,
+        room: &mut Room<'_>,
+        hop: Hop,
+        clock: &impl Clock,
+        tally: &mut Tally,
+        asked: &mut Asked,
+        lists: &mut Lists,
+    ) {
+        let Room { lives, seating, actors, .. } = room;
+        let me = hop.to;
+        let (Some(seat), Some(life), Some(held)) = (seating.seated.get(me), lives.life(me), actors.get_mut(me)) else {
+            return;
+        };
+        let mut stepped = lists.fusing.stepped(me, life.sent());
+        let is_live = life.is_live() && !stepped.ended;
+        if !is_live {
+            return;
+        }
+        let Held::Here(mut actor) = mem::replace(held, Held::Away) else {
+            return;
+        };
+
+        asked.next_turn();
+        let begins = asked.effects_mut().len();
+        let sent_before = stepped.sent;
+        let bytes = mem::take(&mut lists.fusing.bytes);
+        let handled = {
+            let table = Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Run(&lists.fusing.run) };
+            let mail = Mail::new(hop.kind, &bytes, hop.from, hop.root, hop.depth, &table, self.read_limit);
+            let chain = Chain { root: hop.root, depth: hop.depth };
+            let turning = Turning::new(me, &seat.path, seat.above, &table, asked, sent_before, hop.from, chain);
+            let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
+
+            tally.time(key, clock, || actor.handle(Item::Mail(mail), turning))
+        };
+        lists.fusing.bytes = bytes;
+        let context = Context { cause: Some(hop.id), root: hop.root, depth: hop.depth + 1 };
+        let ran = Ran::of(me, handled, asked, context, begins);
+        Self::finish(me, ran, Origin::Hop, seating, lives, asked, lists, &mut stepped);
+
+        if stepped.sent > sent_before {
+            let (key, record) = lives::sent(me, stepped.sent);
+            lists.routes.lives.put(key, record);
+        }
+        lists.fusing.keep(me, stepped);
+        put_back(actors, me, actor);
+    }
+
+    /// Routes the finished turn `ran` of the actor `me` names into `lists`, and notes in `stepped` what it did: the
+    /// mail it sent and whether it ended (ADR-0013).
+    ///
+    /// Its first send becomes the part's next hop when the part takes one, the actor has spilled no mail to its part,
+    /// and the receiver sits in `seating` and is live in `lives`. A turn of a hop, and the turn that made the part's
+    /// first hop, are its run, so what they stood up and ended is noted in the run.
+    #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
+    fn finish(
+        me: Seated,
+        mut ran: Ran,
+        origin: Origin,
+        seating: &Seating,
+        lives: &lives::Shard,
+        asked: &mut Asked,
+        lists: &mut Lists,
+        stepped: &mut Stepped,
+    ) {
+        if !ran.stood.is_empty() {
+            let effects = &asked.effects_mut()[ran.effects.clone()];
+            for (child, sent) in senders(effects).into_iter().filter(|(actor, _)| actor.id != me.id) {
+                let (key, record) = lives::sent(child, sent);
+                lists.routes.lives.put(key, record);
+            }
+        }
+        let stood = ran
+            .stood
+            .iter()
+            .map(|child| (child.id().bits(), (child.path().clone(), child.seated().seat, child.declared())));
+        lists.fusing.stood.extend(stood);
+
+        let mut fused = false;
+        // Once the budget is spent no hop is made, so nothing that decides one need be looked at.
+        if lists.fusing.may_hop() {
+            let takes = lists.fusing.takes_a_hop() && !stepped.spilled;
+            let in_part = |to: Seated| {
+                let seated = seating.seated.get(to).is_some();
+                let is_live = lives.life(to).is_some_and(lives::Life::is_live);
+                let has_ended = lists.fusing.stepped(to, 0).ended;
+
+                seated && is_live && !has_ended
+            };
+            let effects = asked.effects_mut();
+            let first = if takes {
+                ran.effects.clone().find(|index| is_send_by(&effects[*index], me))
+            } else {
+                None
+            };
+            if let Some(index) = first
+                && let What::Send { to, count, kind, bytes } = *effects[index].what()
+                && in_part(to)
+            {
+                lists.fusing.bytes.clear();
+                lists.fusing.bytes.extend_from_slice(asked.arena().read(bytes).unwrap_or_default());
+                asked.effects_mut().remove(index);
+                ran.effects.end -= 1;
+                let id = MailId { sender: me.id, count };
+                let context = ran.context;
+                lists.fusing.wait(Hop { to, from: me, id, root: context.root, depth: context.depth, kind });
+                stepped.sent = stepped.sent.max(count);
+                fused = true;
+            }
+            if !stepped.spilled {
+                let effects = &asked.effects_mut()[ran.effects.clone()];
+                stepped.spilled = effects.iter().any(|effect| send_into(effect, me, seating));
+            }
+        }
+
+        let in_run = fused || matches!(origin, Origin::Hop);
+        if in_run {
+            let stood = ran.stood.iter().map(|child| (child.seated(), child.path().clone()));
+            lists.fusing.run.stand(stood);
+        }
+        // Most turns of a busy actor ask for nothing, and then there is nothing to route.
+        let asked_nothing = ran.effects.is_empty() && ran.stood.is_empty();
+        let seen = if asked_nothing {
+            Seen::default()
+        } else {
+            lists.route(ran, asked.effects_mut(), me.id)
+        };
+        stepped.sent = seen.sent.map_or(stepped.sent, |sent| sent.max(stepped.sent));
+        if seen.ends {
+            stepped.ended = true;
+            if in_run {
+                lists.fusing.run.end(me.id);
+            }
+        }
+    }
+}
+
+/// What a turn ran for: an item that was waiting as the step began, or a hop made in the step (ADR-0013).
+#[derive(Clone, Copy)]
+enum Origin {
+    Waiting,
+    Hop,
+}
+
+/// Whether `effect` is mail the actor `me` sent.
+fn is_send_by(effect: &Effect, me: Seated) -> bool {
+    let is_own = effect.by() == me.id;
+
+    is_own && matches!(effect.what(), What::Send { .. })
+}
+
+/// Whether `effect` is mail the actor `me` sent to an actor seated in `seating`, its own part.
+fn send_into(effect: &Effect, me: Seated, seating: &Seating) -> bool {
+    let is_own = effect.by() == me.id;
+    let What::Send { to, .. } = effect.what() else {
+        return false;
+    };
+
+    is_own && seating.seated.get(*to).is_some()
 }
 
 impl Parcel {
@@ -973,6 +1177,7 @@ impl Parcel {
             lives: &mut self.lives,
             seating: &mut self.seating,
             actors: &mut self.actors,
+            seats: &mut self.seats,
         }
     }
 }
@@ -1121,6 +1326,9 @@ const fn new_seat(index: usize) -> u64 {
 
 /// The writer of the mail sent between steps, by the chassis: the first.
 const ROOTS: usize = 0;
+
+/// How many seats in other parts a part is given in each step it runs, for its children past its room.
+const ASIDE: usize = 8;
 
 /// Which of the two arenas of each writer step `step` writes.
 const fn parity(step: u64) -> usize {

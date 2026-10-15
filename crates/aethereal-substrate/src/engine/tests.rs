@@ -2,8 +2,10 @@
 
 use super::*;
 use crate::watch::Notice;
-use crate::{Entry, Standing, child_id};
-use aethereal_actor::{Ended, Ending, Fault, Handles, How, Level, To, ToSender, ToType, ToWithoutMail, Turn};
+use crate::{ByActor, Entry, Standing, child_id};
+use aethereal_actor::{
+    Ended, Ending, Fault, Handles, How, Level, Made, Table, To, ToSender, ToType, ToWithoutMail, Turn,
+};
 use aethereal_data::{Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
 use std::mem;
@@ -57,7 +59,8 @@ impl Kind for NodeConfig {
 /// - the node `13` fails its closing turn, so what it sends there is dropped;
 /// - `bye 5` has it watch the sender as well;
 /// - `where` has it say how deep in its chain that note is;
-/// - `bye N`, which a child sends as it ends, has it send that child `late`.
+/// - `bye N`, which a child sends as it ends, has it send that child `late`;
+/// - `bounce N` answers the sender `bounce N-1` until `N` is zero, and `pair` answers it `bounce 2`, then `last`.
 #[derive(Plain)]
 struct Node {
     number: u64,
@@ -120,6 +123,16 @@ impl Handles<Note> for Node {
                 return Err(Fault::new(&Note { text: String::from(line) })?);
             }
             ["reply"] => turn.reply(&Note { text: String::from("re") })?,
+            ["pair", ..] => {
+                turn.reply(&Note { text: String::from("bounce 2") })?;
+                turn.reply(&Note { text: String::from("last") })?;
+            }
+            ["bounce", left] => {
+                let left: u64 = left.parse().unwrap_or_default();
+                if left > 0 {
+                    turn.reply(&Note { text: format!("bounce {}", left - 1) })?;
+                }
+            }
             ["up", said] => turn.to::<Self>(To::Parent).send(&Note { text: format!("{said} from {}", self.number) })?,
             ["spawn" | "watch", number, text] => {
                 let number = number.parse().unwrap_or_default();
@@ -192,12 +205,18 @@ impl Clock for Stopped {
     }
 }
 
-/// An engine with the root node `1`, which sends itself `to_self` as it begins.
+/// An engine with the root node `1`, which sends itself `to_self` as it begins, and fuses no mail.
 fn engine(to_self: &[&str]) -> (Engine, ActorId) {
+    fusing(0, to_self)
+}
+
+/// An engine with the root node `1`, which sends itself `to_self` as it begins, whose parts each run at most `hops`
+/// fused hops a step.
+fn fusing(hops: usize, to_self: &[&str]) -> (Engine, ActorId) {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 0);
+    let mut engine = Engine::new(parts, 1024, 0, hops);
     let to_self = to_self.iter().map(|text| String::from(*text)).collect();
     let Ok(root) = engine.add_root::<Node>(&1, NodeConfig { number: 1, to_self }) else {
         panic!("the root begins");
@@ -495,8 +514,8 @@ fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
     let actors = [root, two, three, node(two, 4), node(three, 5), node(three, 6)];
     let taken: Vec<u64> = actors.iter().filter_map(|id| engine.table().seat(*id)).map(SeatNumber::number).collect();
     assert_eq!(taken.len(), actors.len());
-    let free: Vec<u64> = engine.free.iter().map(|seat| seat.number()).collect();
-    let numbered = engine.next.iter().zip(0..).flat_map(|(next, first)| (first..*next).step_by(4));
+    let free: Vec<u64> = engine.seats.iter().flat_map(|seats| seats.held().0.map(SeatNumber::number)).collect();
+    let numbered = engine.seats.iter().zip(0..).flat_map(|(seats, first)| (first..seats.held().1).step_by(4));
     let each_once = numbered.clone().all(|seat| taken.iter().chain(&free).filter(|held| **held == seat).count() == 1);
     assert!(each_once);
     assert_eq!(taken.len() + free.len(), numbered.count());
@@ -505,9 +524,11 @@ fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
 #[test]
 fn children_seated_in_a_part_another_worker_ran_are_kept() {
     // Catches a worker's children being seated in a part another worker still holds, and lost when that worker's
-    // part is put back over them. Node 2 has two notes, so it runs on the worker whose seats lie in parts 0 and 2,
-    // and its second child takes a seat in part 2, where node 3 runs on the other worker.
-    let (mut engine, root) = engine(&["spawn 2 spawn 20 up hi", "tell 2 spawn 21 up hi", "spawn 3 spawn 30 up hi"]);
+    // part is put back over them. Node 2 sits beside the root in part 0, which is full, so its children take the
+    // seats set aside for part 0 in the other parts, and its fourth takes one in part 2, where node 3 runs on the
+    // other worker.
+    let notes = ["spawn 2 spawn 20 up hi", "tell 2 spawn 21 up hi", "tell 2 spawn 22 up hi", "tell 2 spawn 23 up hi"];
+    let (mut engine, root) = engine(&[notes[0], notes[1], notes[2], notes[3], "spawn 3 spawn 30 up hi"]);
     let clock = Ticking::default();
     engine.step(&clock);
     said();
@@ -523,9 +544,83 @@ fn children_seated_in_a_part_another_worker_ran_are_kept() {
 
     let mut third = step(&mut engine);
     third.sort();
-    assert_eq!(third, ["20 got up hi", "21 got up hi", "30 got up hi"]);
+    assert_eq!(third, ["20 got up hi", "21 got up hi", "22 got up hi", "23 got up hi", "30 got up hi"]);
     let (two, three) = (node(root, 2), node(root, 3));
-    let grandchildren = [node(two, 20), node(two, 21), node(three, 30)];
+    let grandchildren = [node(two, 20), node(two, 21), node(two, 22), node(two, 23), node(three, 30)];
     let kept = grandchildren.iter().all(|id| engine.table().seat(*id).is_some());
     assert!(kept);
+}
+
+#[test]
+fn chain_between_actors_in_one_part_runs_within_the_step() {
+    // Catches a chain not fused between actors in one part, a fused send also delivered as mail, and a child not
+    // seated in its parent's part while that part has room.
+    let (mut fused, _) = fusing(8, &["spawn 2 up hi"]);
+    assert_eq!(step(&mut fused), ["1 got spawn 2 up hi"]);
+    assert_eq!(step(&mut fused), ["2 got up hi", "1 got hi from 2"]);
+    assert!(fused.is_idle());
+
+    let (mut unfused, _) = engine(&["spawn 2 up hi"]);
+    assert_eq!(step(&mut unfused), ["1 got spawn 2 up hi"]);
+    assert_eq!(step(&mut unfused), ["2 got up hi"]);
+    assert_eq!(step(&mut unfused), ["1 got hi from 2"]);
+}
+
+#[test]
+fn chain_runs_at_most_the_budget_of_hops_in_a_step() {
+    // Catches a part running more hops in a step than its budget, or stopping a chain short of it.
+    let (mut engine, _) = fusing(3, &["spawn 2 bounce 0", "tell 2 bounce 7"]);
+    step(&mut engine);
+
+    let mut steps = Vec::new();
+    while !engine.is_idle() {
+        steps.push(step(&mut engine));
+    }
+    // Each step runs the items waiting, then three hops.
+    let second = ["2 got bounce 0", "2 got bounce 7", "1 got bounce 6", "2 got bounce 5", "1 got bounce 4"];
+    let third = ["2 got bounce 3", "1 got bounce 2", "2 got bounce 1", "1 got bounce 0"];
+    assert_eq!(steps, [second.to_vec(), third.to_vec()]);
+}
+
+#[test]
+fn hop_never_overtakes_mail_its_sender_sent_as_mail() {
+    // Catches a hop handed over in the step its sender mailed the same receiver as mail, ahead of that mail. The root
+    // answers `pair` with a fused `bounce 2` and `last` as mail, so its `bounce 0` must wait behind `last`.
+    let (mut engine, _) = fusing(8, &["spawn 2 up pair"]);
+    step(&mut engine);
+
+    assert_eq!(step(&mut engine), ["2 got up pair", "1 got pair from 2", "2 got bounce 2", "1 got bounce 1"]);
+    assert_eq!(step(&mut engine), ["2 got last", "2 got bounce 0"]);
+}
+
+#[test]
+fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
+    // Catches a child a run stood up left unresolved or unproven to the run's later turns, an actor that ended in the
+    // run still found by them, and either seen by a turn outside the run before the step is folded.
+    let (engine, root) = fusing(8, &[]);
+    let Some(root_path) = engine.table().path(root) else {
+        panic!("the root is in the table");
+    };
+    let segment = PathSegment::new(Node::NAME, &2u64);
+    let Ok(child_path) = root_path.child(&segment) else {
+        panic!("a child of the root fits");
+    };
+    let child = Seated { id: child_id(root, &segment), seat: SeatNumber::new(9) };
+    let mut run = fuse::Run::default();
+    run.stand([(child, child_path.clone())]);
+    run.end(root);
+    let stood = ByActor::default();
+
+    let in_run = Since { table: engine.table(), stood: &stood, sees: Sees::Run(&run) };
+    assert_eq!(Table::resolve(&in_run, &child_path), Some(child));
+    assert!(Table::is_live(&in_run, child.id));
+    assert_eq!(Made::seat(&in_run, child.id), Some(child.seat));
+    assert_eq!(Table::resolve(&in_run, &root_path), None);
+    assert!(!Table::is_live(&in_run, root));
+
+    let outside = Since { table: engine.table(), stood: &stood, sees: Sees::Step };
+    assert_eq!(Table::resolve(&outside, &child_path), None);
+    assert!(!Table::is_live(&outside, child.id));
+    assert_eq!(Made::seat(&outside, child.id), None);
+    assert!(Table::is_live(&outside, root));
 }
