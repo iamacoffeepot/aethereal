@@ -15,6 +15,7 @@ pub use plan::{Plan, Share, Split, Whole, Workers};
 use crate::id::root_id;
 use crate::stream::{self, Handed, Streams};
 use crate::table::Actors;
+use crate::watch::{Notice, Watches};
 use crate::{
     ActorTable, ByActor, BySeat, Clock, Context, Entry, Envelope, Folded, Lives, Log, Part, Routed, State, lives,
     rounded,
@@ -54,6 +55,8 @@ pub struct Engine {
     table: ActorTable,
     /// What each actor has to react to.
     streams: Folded<Streams>,
+    /// Who watches each actor, and which have ended.
+    watches: Folded<Watches>,
     /// What each actor logged most recently.
     log: Folded<Log>,
     /// How far each actor's life has gone: the mail it has sent, and whether it has ended.
@@ -136,8 +139,8 @@ struct Spare {
     folds: Vec<Vec<fold::Pile>>,
     /// Parts to fold, each with a column of every view, emptied.
     piles: Vec<fold::Pile>,
-    /// What the folded parts' streams hand on to other parts.
-    forward: Vec<(u64, stream::Record)>,
+    /// The endings the folded parts' watches hand on to the streams of the actors that watch.
+    forward: Vec<Notice>,
 }
 
 /// One part of the engine as a worker owns it for a step: what has arrived for the actors seated in it, their lives,
@@ -194,6 +197,7 @@ struct Routes {
     log: Routed<Log>,
     lives: Routed<Lives>,
     streams: Routed<Streams>,
+    watches: Routed<Watches>,
 }
 
 /// What an actor runs in a step.
@@ -225,6 +229,7 @@ impl Engine {
         Self {
             table: ActorTable::new(parts),
             streams: Folded::new(parts),
+            watches: Folded::new(parts),
             log: Folded::new(parts),
             lives: Folded::new(parts),
             seating: (0..parts.get())
@@ -328,8 +333,13 @@ impl Engine {
         let applied = begun(&effects).into_owned();
         self.fold_turn(&applied, stood, context);
         self.lives.fold_records(senders(&applied).into_iter().map(|(actor, count)| lives::sent(actor, count)));
+        self.watches.fold(&applied, &context);
         self.streams.fold_owned(applied, &context);
-        self.streams.settle();
+        let mut forward = mem::take(&mut self.spare.forward);
+        for shard in self.watches.shards_mut() {
+            shard.settle(&mut forward);
+        }
+        self.hand_on(forward);
         for part in 0..self.seating.len() {
             self.expected[part] = self.expect(part);
         }
@@ -383,7 +393,8 @@ impl Engine {
     }
 
     /// Ends a step run by [`Engine::run_whole`] on the thread that calls it: takes in what its turns left, and folds
-    /// each part some record reached where it lies, then what the streams hand on to other parts.
+    /// each part some record reached where it lies, then puts the endings its watches hand on in the streams of the
+    /// actors that watch.
     ///
     /// # Panics
     ///
@@ -400,9 +411,11 @@ impl Engine {
             }
             let rows = &mut self.lists;
             self.table.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.table));
-            self.log.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.log), &mut Vec::new());
-            self.lives.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.lives), &mut Vec::new());
-            self.streams.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.streams), &mut forward);
+            self.log.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.log));
+            self.lives.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.lives));
+            self.streams.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.streams));
+            self.watches.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.watches));
+            self.watches.at_mut(part).settle(&mut forward);
             self.expected[part] = self.expect(part);
         }
         self.hand_on(forward);
@@ -489,12 +502,12 @@ impl Engine {
         self.lists[slot] = lists;
     }
 
-    /// Folds what the streams handed on to other parts, `forward`, each into the part its key falls in, and keeps
+    /// Puts each ending the watches handed on, `forward`, in the stream of the actor that watches, and keeps
     /// the list for its room.
-    fn hand_on(&mut self, mut forward: Vec<(u64, stream::Record)>) {
-        while let Some((key, record)) = forward.pop() {
-            let part = self.part(SeatNumber::new(key));
-            self.streams.fold_records(iter::once((key, record)));
+    fn hand_on(&mut self, mut forward: Vec<Notice>) {
+        while let Some(notice) = forward.pop() {
+            let part = self.part(notice.to.seat);
+            self.streams.shard_mut(notice.to.seat.number()).end(notice);
             self.expected[part] = self.expect(part);
         }
         self.spare.forward = forward;
@@ -569,8 +582,8 @@ impl Engine {
         Folding { costs: &self.costs }
     }
 
-    /// Ends a step: puts back every part the workers folded, and folds what their streams handed on to other parts:
-    /// the endings for the actors that watch.
+    /// Ends a step: puts back every part the workers folded, and puts the endings their watches handed on in the
+    /// streams of the actors that watch.
     pub fn settle(&mut self, folds: impl IntoIterator<Item = Fold>) {
         let mut forward = mem::take(&mut self.spare.forward);
         for Fold { parts: mut piles } in folds {
@@ -605,6 +618,7 @@ impl Engine {
         self.log.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.log), &mut pile.log);
         self.lives.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.lives), &mut pile.lives);
         self.streams.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.streams), &mut pile.streams);
+        self.watches.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.watches), &mut pile.watches);
         pile.seating = mem::replace(&mut self.seating[part], empty);
         pile.part = part;
         pile.expected = 0;
@@ -612,7 +626,7 @@ impl Engine {
         pile
     }
 
-    /// Puts back a folded part from `pile`, leaving it empty but for what its streams handed on.
+    /// Puts back a folded part from `pile`, leaving it empty but for what its watches handed on.
     fn unpile(&mut self, pile: &mut fold::Pile) {
         let parts = NonZeroUsize::new(self.seating.len()).unwrap_or(NonZeroUsize::MIN);
         let part = pile.part;
@@ -621,6 +635,7 @@ impl Engine {
         self.log.empty(part, &mut pile.log, rows.iter_mut().map(|lists| &mut lists.routes.log));
         self.lives.empty(part, &mut pile.lives, rows.iter_mut().map(|lists| &mut lists.routes.lives));
         self.streams.empty(part, &mut pile.streams, rows.iter_mut().map(|lists| &mut lists.routes.streams));
+        self.watches.empty(part, &mut pile.watches, rows.iter_mut().map(|lists| &mut lists.routes.watches));
         let empty = Seating { seated: BySeat::empty(parts), free: Vec::new(), next: new_seat(part) };
         self.seating[part] = mem::replace(&mut pile.seating, empty);
         self.expected[part] = pile.expected;
@@ -668,6 +683,7 @@ impl Engine {
             log: self.log.routed(),
             lives: self.lives.routed(),
             streams: self.streams.routed(),
+            watches: self.watches.routed(),
         };
 
         Lists { routes, ..Lists::default() }
@@ -930,7 +946,9 @@ impl Lists {
 impl Routes {
     /// How many records this row holds for part `part`, across the views.
     fn records(&self, part: usize) -> usize {
-        self.table.records(part) + self.log.records(part) + self.lives.records(part) + self.streams.records(part)
+        let views = self.table.records(part) + self.log.records(part) + self.lives.records(part);
+
+        views + self.streams.records(part) + self.watches.records(part)
     }
 
     /// Routes one effect, emitted in `context`, into every view's bucket but the streams'.
@@ -938,6 +956,7 @@ impl Routes {
         self.table.route(effect, context);
         self.log.route(effect, context);
         self.lives.route(effect, context);
+        self.watches.route(effect, context);
     }
 }
 

@@ -5,8 +5,7 @@ use aethereal_actor::Effect;
 use std::mem;
 use std::num::NonZeroUsize;
 
-/// A view: what it keeps of an effect, how one such record changes its state, and what a part hands on once a
-/// step is folded (ADR-0011).
+/// A view: what it keeps of an effect, and how one such record changes its state (ADR-0011).
 ///
 /// Its author writes these and nothing about threads. The engine keeps the
 /// view in a [`Folded`], which does the rest the same way for every view.
@@ -33,11 +32,12 @@ pub trait View {
     /// Folds one record into the part its key falls in.
     fn fold(shard: &mut Self::Shard, key: u64, record: Self::Record);
 
-    /// Settles a part once every record of a step has been folded into it, in whatever order they came, and adds
-    /// to `forward` the records it hands on to other keys, which may fall in other parts. Most views settle nothing
-    /// and hand on nothing.
-    fn settle(shard: &mut Self::Shard, forward: &mut Vec<(u64, Self::Record)>) {
-        let _ = (shard, forward);
+    /// Folds one writer's records for a part, in the order the writer routed them, and leaves the list empty, with
+    /// its room. One by one, unless the part keeps its records as they come and takes the list whole.
+    fn fold_all(shard: &mut Self::Shard, records: &mut Vec<(u64, Self::Record)>) {
+        for (key, record) in records.drain(..) {
+            Self::fold(shard, key, record);
+        }
     }
 }
 
@@ -128,50 +128,25 @@ impl<V: View> Folded<V> {
         let mut rows: Vec<&mut Routed<V>> = rows.into_iter().collect();
         for (part, shard) in self.shards.iter_mut().enumerate() {
             for row in &mut rows {
-                for (key, record) in row.buckets[part].drain(..) {
-                    V::fold(shard, key, record);
-                }
+                V::fold_all(shard, &mut row.buckets[part]);
             }
         }
     }
 
-    /// Folds every writer's records for the part numbered `part` where it lies, one row after another, then settles
-    /// the part, adding what it hands on to `forward`: what [`Column::fold`] does with the part taken out. The
-    /// buckets are emptied and keep their room.
-    pub fn fold_part<'r>(
-        &mut self,
-        part: usize,
-        rows: impl IntoIterator<Item = &'r mut Routed<V>>,
-        forward: &mut Vec<(u64, V::Record)>,
-    ) where
+    /// Folds every writer's records for the part numbered `part` where it lies, one row after another: what
+    /// [`Column::fold`] does with the part taken out. The buckets are emptied and keep their room.
+    pub fn fold_part<'r>(&mut self, part: usize, rows: impl IntoIterator<Item = &'r mut Routed<V>>)
+    where
         V: 'r,
     {
-        let shard = &mut self.shards[part];
         for row in rows {
-            for (key, record) in row.buckets[part].drain(..) {
-                V::fold(shard, key, record);
-            }
+            V::fold_all(&mut self.shards[part], &mut row.buckets[part]);
         }
-        V::settle(shard, forward);
     }
 
     /// The part numbered `part`, to change outside a fold, as [`Self::shard_mut`] gives one.
     pub fn at_mut(&mut self, part: usize) -> &mut V::Shard {
         &mut self.shards[part]
-    }
-
-    /// Settles every part once a step's effects are all folded, and folds what each hands on into the part its key
-    /// falls in. What is handed on is folded and not settled again.
-    pub fn settle(&mut self) {
-        let mut forward = Vec::new();
-        for shard in &mut self.shards {
-            V::settle(shard, &mut forward);
-        }
-
-        for (key, record) in forward {
-            let part = self.part(key);
-            V::fold(&mut self.shards[part], key, record);
-        }
     }
 
     /// The part `key` falls in, as of the last fold.
@@ -238,21 +213,22 @@ pub struct Column<V: View> {
 }
 
 impl<V: View> Column<V> {
-    /// Folds every writer's bucket into the part, one writer after another, then settles the part, adding what it
-    /// hands on to `forward`.
-    pub fn fold(&mut self, forward: &mut Vec<(u64, V::Record)>) {
+    /// Folds every writer's bucket into the part, one writer after another.
+    pub fn fold(&mut self) {
         for bucket in &mut self.buckets {
-            for (key, record) in bucket.drain(..) {
-                V::fold(&mut self.shard, key, record);
-            }
+            V::fold_all(&mut self.shard, bucket);
         }
-        V::settle(&mut self.shard, forward);
     }
 
     /// The part, as folded so far.
     #[must_use]
     pub const fn shard(&self) -> &V::Shard {
         &self.shard
+    }
+
+    /// The part, to change once it is folded: to settle it.
+    pub const fn shard_mut(&mut self) -> &mut V::Shard {
+        &mut self.shard
     }
 
     /// How many records wait to be folded.
@@ -299,7 +275,7 @@ impl<V: View> Folded<V> {
         }
     }
 
-    /// Folds records handed on by a settled part, each into the part its key falls in. They are not settled again.
+    /// Folds records made outside a step's turns, each into the part its key falls in.
     pub fn fold_records(&mut self, records: impl IntoIterator<Item = (u64, V::Record)>) {
         for (key, record) in records {
             let part = self.part(key);
@@ -383,60 +359,4 @@ pub fn rounded(parts: NonZeroUsize) -> NonZeroUsize {
     };
 
     rounded
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use aethereal_actor::{MailId, SeatNumber, Seated, What};
-    use aethereal_data::ActorId;
-    use std::collections::BTreeMap;
-
-    /// Each close, kept under the closing actor until the step settles, then counted under the actor after it.
-    struct Relays;
-
-    /// What [`Relays`] keeps: a close not yet handed on, or one counted.
-    enum Relay {
-        Held,
-        Counted,
-    }
-
-    impl View for Relays {
-        type Shard = (Vec<u64>, BTreeMap<u64, u32>);
-        type Record = Relay;
-
-        fn takes<'a>(effect: &'a Effect, _: &'a Context) -> impl Iterator<Item = (u64, Relay)> + 'a {
-            let is_close = *effect.what() == What::Close;
-
-            is_close.then_some((effect.by().bits(), Relay::Held)).into_iter()
-        }
-
-        fn fold((held, counted): &mut Self::Shard, key: u64, record: Relay) {
-            match record {
-                Relay::Held => held.push(key),
-                Relay::Counted => *counted.entry(key).or_default() += 1,
-            }
-        }
-
-        fn settle((held, _): &mut Self::Shard, forward: &mut Vec<(u64, Relay)>) {
-            forward.extend(held.drain(..).map(|key| (key + 1, Relay::Counted)));
-        }
-    }
-
-    #[test]
-    fn what_a_part_hands_on_lands_in_the_part_of_its_key() {
-        // Catches a record handed on and kept in the part that settled it, and one handed on and never folded.
-        let Some(parts) = NonZeroUsize::new(2) else {
-            panic!("two is not zero");
-        };
-        let effects = [Effect::new(Seated { id: ActorId::new(4), seat: SeatNumber::new(0) }, What::Close)];
-        let context = Context { cause: None, root: MailId { sender: ActorId::new(4), count: 0 }, depth: 1 };
-        let mut relays = Folded::<Relays>::new(parts);
-        relays.fold(&effects, &context);
-        assert_eq!(relays.shard(5).1.get(&5), None);
-
-        relays.settle();
-        assert_eq!(relays.shard(5).1.get(&5), Some(&1));
-        assert!(relays.shard(4).0.is_empty());
-    }
 }

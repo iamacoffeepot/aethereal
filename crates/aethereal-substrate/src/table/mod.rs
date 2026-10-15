@@ -99,7 +99,7 @@ impl ActorTable {
     /// Folds each row's records for the part numbered `part` where it lies, as [`Folded::fold_part`] does. It panics
     /// when a record makes an actor under an id the table already holds (ADR-0008).
     pub(crate) fn fold_part<'r>(&mut self, part: usize, rows: impl IntoIterator<Item = &'r mut Routed<Actors>>) {
-        self.actors.fold_part(part, rows, &mut Vec::new());
+        self.actors.fold_part(part, rows);
     }
 
     /// Empties `column` back into the part numbered `part`, as [`Folded::empty`] does.
