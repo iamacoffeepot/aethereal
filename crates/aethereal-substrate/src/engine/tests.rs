@@ -395,6 +395,25 @@ fn failed_closing_turn_leaves_its_fault_and_sends_nothing() {
 }
 
 #[test]
+fn an_actor_counts_what_it_sends_across_its_begin_and_its_steps() {
+    // Catches a count of mail sent that is lost between steps, or not kept from a root's `begin`, so the actor
+    // starts counting again and gives a later piece of mail the id of an earlier one.
+    let (mut engine, root) = engine(&["spawn 2 reply"]);
+    assert_eq!(step(&mut engine), ["1 got spawn 2 reply"]);
+    assert_eq!(step(&mut engine), ["2 got reply"]);
+    assert_eq!(step(&mut engine), ["1 got re"]);
+
+    let sent = |actor: ActorId| {
+        let seat = engine.table.seat(actor).unwrap_or(SeatNumber::new(u64::MAX));
+        let me = Seated { id: actor, seat };
+
+        engine.lives.shard(seat.number()).life(me).map(lives::Life::sent)
+    };
+    assert_eq!(sent(root), Some(2), "one piece from its begin, one from its first turn");
+    assert_eq!(sent(node(root, 2)), Some(1));
+}
+
+#[test]
 fn depth_counts_each_send_down_a_chain() {
     // Catches a depth that is not carried through a spawn and a reply, and one that starts from the wrong end:
     // a root's first mail is at depth one.
