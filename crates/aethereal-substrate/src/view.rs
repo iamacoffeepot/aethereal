@@ -307,6 +307,12 @@ impl<V: View> Routed<V> {
         self.buckets[part].len()
     }
 
+    /// Puts one record under `key` in the bucket of the part it falls in.
+    pub fn put(&mut self, key: u64, record: V::Record) {
+        let part = part(key, self.buckets.len());
+        self.buckets[part].push((key, record));
+    }
+
     /// Routes the effects of one turn, emitted in `context`, in the order given.
     pub fn route(&mut self, effects: &[Effect], context: &Context) {
         for (key, record) in effects.iter().flat_map(|effect| V::takes(effect, context)) {

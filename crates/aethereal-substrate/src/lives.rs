@@ -52,7 +52,7 @@ pub struct Record {
 enum Change {
     /// The actor was made.
     Made,
-    /// The actor sent the piece of mail it counts as this.
+    /// The actor has sent this many pieces of mail, or more.
     Sent(u64),
     /// The actor ended this way, in this context.
     Ended(Box<(How, Context)>),
@@ -143,12 +143,21 @@ impl View for Lives {
     }
 }
 
+/// The record that the actor `actor` names has sent `count` pieces of mail, under its seat.
+///
+/// A send makes no record of its own. The worker that ran an actor's turns
+/// records the last count once, when they are done for the step, and the
+/// count of a child that sends from its `begin` once, in the turn that stood
+/// it up. The view keeps the largest count it is given, so these need no order.
+pub fn sent(actor: Seated, count: u64) -> (u64, Record) {
+    (actor.seat.number(), Record { id: actor.id, change: Change::Sent(count) })
+}
+
 /// The key and record the view keeps of `effect`, emitted in `context`, or none for an effect it does not fold.
 fn record(effect: &Effect, context: &Context) -> Option<(u64, Record)> {
     let by = effect.seated();
     let (actor, change) = match effect.what() {
         What::Root { .. } | What::RootInstanced { .. } => (by, Change::Made),
-        What::Send { count, .. } => (by, Change::Sent(*count)),
         What::Close => (by, Change::Ended(Box::new((How::Closed, *context)))),
         What::Failed(fault) => (by, Change::Ended(Box::new((How::Failed(fault.clone()), *context)))),
         What::Ended(_) => (by, Change::Over),

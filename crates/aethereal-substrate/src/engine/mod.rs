@@ -319,6 +319,7 @@ impl Engine {
         self.seat(me, path, Box::new(root));
         let applied = begun(&effects).into_owned();
         self.fold_turn(&applied, stood, context);
+        self.lives.fold_records(senders(&applied).into_iter().map(|(actor, count)| lives::sent(actor, count)));
         self.streams.fold_owned(applied, &context);
         self.streams.settle();
         for part in 0..self.seating.len() {
@@ -731,7 +732,8 @@ impl Reading<'_> {
             }
             (Work::Items(range), State::Live) => {
                 let mut stood_since = ByActor::default();
-                let mut count = life.sent();
+                let sent_before = life.sent();
+                let mut count = sent_before;
                 for handed in streams.handed(range) {
                     let table = Since { table: self.table, stood: &stood_since };
                     let begins = lists.effects.len();
@@ -753,6 +755,12 @@ impl Reading<'_> {
 
                     let effects = &lists.effects[ran.effects.clone()];
                     count = sent(effects, me.id).unwrap_or(count);
+                    if !ran.stood.is_empty() {
+                        for (child, sent) in senders(effects).into_iter().filter(|(actor, _)| actor.id != me.id) {
+                            let (key, record) = lives::sent(child, sent);
+                            lists.routes.lives.put(key, record);
+                        }
+                    }
                     let stood =
                         ran.stood.iter().map(|child| (child.id().bits(), (child.path().clone(), child.seated().seat)));
                     stood_since.extend(stood);
@@ -763,6 +771,10 @@ impl Reading<'_> {
                     }
                 }
 
+                if count > sent_before {
+                    let (key, record) = lives::sent(me, count);
+                    lists.routes.lives.put(key, record);
+                }
                 put_back(actors, me, actor);
             }
             // A plan gives a closing turn only to an actor that has ended, and items only to a live one.
@@ -868,6 +880,23 @@ fn sent(effects: &[Effect], id: ActorId) -> Option<u64> {
             _ => None,
         })
         .max()
+}
+
+/// Each actor that sent mail among `effects`, with the count of the last piece it sent.
+fn senders(effects: &[Effect]) -> Vec<(Seated, u64)> {
+    let mut senders: Vec<(Seated, u64)> = Vec::new();
+    for effect in effects {
+        let What::Send { count, .. } = effect.what() else {
+            continue;
+        };
+        let by = effect.seated();
+        match senders.iter_mut().find(|(actor, _)| *actor == by) {
+            Some((_, last)) => *last = (*last).max(*count),
+            None => senders.push((by, *count)),
+        }
+    }
+
+    senders
 }
 
 /// Drops every effect from `begins` on but the logged lines: what is kept of a turn that failed (ADR-0009).
