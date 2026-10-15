@@ -182,7 +182,7 @@ fn engine(to_self: &[&str]) -> (Engine, ActorId) {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024);
+    let mut engine = Engine::new(parts, 1024, 0);
     let to_self = to_self.iter().map(|text| String::from(*text)).collect();
     let Ok(root) = engine.add_root::<Node>(&1, NodeConfig { number: 1, to_self }) else {
         panic!("the root begins");

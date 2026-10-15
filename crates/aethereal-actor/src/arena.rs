@@ -4,11 +4,12 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::mem;
 
-/// How many bytes of mail one arena's slab holds. A piece of mail that does not fit is spilled into bytes of its own.
+/// The fewest bytes of mail one arena's slab holds: what it holds until the engine gives it its share of the host's
+/// quota. A piece of mail that does not fit is spilled into bytes of its own.
 pub const ARENA_BYTES: usize = 64 * 1024;
 
-/// The bytes of the mail one writer sends in a step, written one after another into a slab of
-/// [`ARENA_BYTES`] that never grows (ADR-0011).
+/// The bytes of the mail one writer sends in a step, written one after another into a slab that does not grow while
+/// it is written (ADR-0011).
 ///
 /// A piece of mail is handled in the step after the one it is sent in, or
 /// dropped, so its bytes are read in that next step and never after. The
@@ -18,13 +19,15 @@ pub const ARENA_BYTES: usize = 64 * 1024;
 /// that does not fit in what is left of the slab is spilled into bytes of its
 /// own, which the arena keeps and frees when it is cleared, so where a piece of
 /// mail is never owns anything and is dropped without a look.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Arena {
     /// Which writer's arena this is, as the engine numbers them.
     slot: usize,
     slab: Vec<u8>,
     /// The mail that did not fit in the slab, each piece in bytes of its own, in the order written.
     spilled: Vec<Box<[u8]>>,
+    /// How many bytes the slab holds: the writer's share of the host's quota for mail, at least [`ARENA_BYTES`].
+    bytes: usize,
 }
 
 /// Where the bytes of one piece of mail are, in the arena of the writer that wrote them.
@@ -47,11 +50,18 @@ pub struct Span {
     pub len: usize,
 }
 
+impl Default for Arena {
+    /// The empty arena of the first writer, its slab the fewest bytes.
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
 impl Arena {
     /// The empty arena of the writer numbered `slot`. Its slab is allocated when it is first written to.
     #[must_use]
     pub const fn new(slot: usize) -> Self {
-        Self { slot, slab: Vec::new(), spilled: Vec::new() }
+        Self { slot, slab: Vec::new(), spilled: Vec::new(), bytes: ARENA_BYTES }
     }
 
     /// Which writer's arena this is.
@@ -60,10 +70,12 @@ impl Arena {
         self.slot
     }
 
-    /// Empties the arena, keeping its slab and freeing what was spilled: for when its writer writes it again.
-    pub fn clear(&mut self) {
+    /// Empties the arena, keeping its slab and freeing what was spilled, for when its writer writes it again, and
+    /// gives its slab `bytes`, at least [`ARENA_BYTES`]: the writer's share of the host's quota for mail.
+    pub fn clear(&mut self, bytes: usize) {
         self.slab.clear();
         self.spilled.clear();
+        self.bytes = bytes.max(ARENA_BYTES);
     }
 
     /// The bytes `payload` says where to find, when they are in this arena; nothing otherwise.
@@ -90,7 +102,7 @@ impl Arena {
     /// with where they are: in the slab when they fit, spilled otherwise. Nothing is written
     /// when `write` fails.
     pub(crate) fn write<E>(&mut self, write: impl FnOnce(Vec<u8>) -> (Vec<u8>, Result<(), E>)) -> Result<Payload, E> {
-        let is_full = self.slab.len() >= ARENA_BYTES;
+        let is_full = self.slab.len() >= self.bytes;
         if is_full {
             let (bytes, written) = write(Vec::new());
             written?;
@@ -98,8 +110,8 @@ impl Arena {
             return Ok(self.spill(bytes));
         }
 
-        if self.slab.capacity() < ARENA_BYTES {
-            self.slab.reserve_exact(ARENA_BYTES - self.slab.len());
+        if self.slab.capacity() < self.bytes {
+            self.slab.reserve_exact(self.bytes - self.slab.len());
         }
         let start = self.slab.len();
         let (slab, written) = write(mem::take(&mut self.slab));
@@ -109,13 +121,13 @@ impl Arena {
             return Err(error);
         }
 
-        let fits = self.slab.len() <= ARENA_BYTES;
+        let fits = self.slab.len() <= self.bytes;
         if fits {
             return Ok(Payload::InArena(Span { slot: self.slot, start, len: self.slab.len() - start }));
         }
         // It ran past the slab: its bytes are spilled, and the slab returns to its size.
         let own = self.slab.split_off(start);
-        self.slab.shrink_to(ARENA_BYTES);
+        self.slab.shrink_to(self.bytes);
 
         Ok(self.spill(own))
     }
@@ -171,7 +183,7 @@ mod tests {
         assert_eq!(arena.read(past), Some(&[2; 16][..]));
         assert_eq!(arena.read(full), Some(&[4][..]));
 
-        arena.clear();
+        arena.clear(0);
         assert_eq!(arena.read(full), None);
     }
 }

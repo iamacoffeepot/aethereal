@@ -80,6 +80,8 @@ pub struct Engine {
     step: u64,
     /// The most bytes one read of a piece of mail may allocate.
     read_limit: usize,
+    /// The host's quota for the bytes of mail in flight, shared equally among the arenas of every writer.
+    mail_bytes: usize,
 }
 
 /// One part of the engine's seats: the actors in them, and the seats it gives out next.
@@ -187,9 +189,10 @@ struct Ran {
 
 impl Engine {
     /// An engine with no actors, its views in `parts` parts [`rounded`] up to a power of two, whose turns read at
-    /// most `read_limit` bytes into any one piece of mail.
+    /// most `read_limit` bytes into any one piece of mail, and whose mail in flight is written to `mail_bytes` of
+    /// arenas, shared equally among the writers, two arenas each.
     #[must_use]
-    pub fn new(parts: NonZeroUsize, read_limit: usize) -> Self {
+    pub fn new(parts: NonZeroUsize, read_limit: usize, mail_bytes: usize) -> Self {
         let parts = rounded(parts);
 
         Self {
@@ -209,6 +212,7 @@ impl Engine {
             recent: 0,
             step: 0,
             read_limit,
+            mail_bytes,
         }
     }
 
@@ -265,7 +269,7 @@ impl Engine {
         let parity = parity(self.step);
         let mut seats = self.seats(0..self.seating.len());
         let me = Seated { id, seat: seats.take() };
-        let mut asked = Asked::writing(self.arena(parity, ROOTS), seats);
+        let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats);
         let began = A::begin(config, &mut Beginning::new(me, &path, &self.table, &mut asked));
         let (asked, stood, arena, mut seats) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
@@ -330,17 +334,19 @@ impl Engine {
         let (delta, packed) = plan::plan(&parts, self.recent, workers);
         self.recent = toward(self.recent, work);
 
-        // This step writes the arenas of its parity, which hold mail read two steps ago and no longer. Each worker
-        // seats the children its turns spawn in every `running`th part from its place, of all the parts and not only
-        // the ones it runs, so children spread across the parts and no two workers give the same seat.
+        // This step writes the arenas of its parity, which hold mail read two steps ago and no longer, each given an
+        // equal share of the host's quota for mail. Each worker seats the children its turns spawn in every
+        // `running`th part from its place, of all the parts and not only the ones it runs, so children spread across
+        // the parts and no two workers give the same seat.
         let parity = parity(self.step);
+        let share = self.mail_bytes / (2 * (ROOTS + 1 + workers.max.max(1)));
         for arena in &mut self.arenas[parity] {
-            arena.clear();
+            arena.clear(share);
         }
         let running = packed.len();
         let mut shares = Vec::with_capacity(running);
         for ((parts, slot), place) in packed.into_iter().zip(ROOTS + 1..).zip(0..) {
-            let arena = self.arena(parity, slot);
+            let arena = self.arena(parity, slot, share);
             while self.lists.len() <= slot {
                 let lists = self.lists();
                 self.lists.push(lists);
@@ -528,11 +534,13 @@ impl Engine {
     }
 
     /// The arena of the writer numbered `slot` for steps of `parity`, taken out to write to; made when it is the
-    /// first.
-    fn arena(&mut self, parity: usize, slot: usize) -> Arena {
+    /// first, its slab given `bytes`.
+    fn arena(&mut self, parity: usize, slot: usize, bytes: usize) -> Arena {
         let arenas = &mut self.arenas[parity];
         while arenas.len() <= slot {
-            arenas.push(Arena::new(arenas.len()));
+            let mut arena = Arena::new(arenas.len());
+            arena.clear(bytes);
+            arenas.push(arena);
         }
 
         mem::replace(&mut arenas[slot], Arena::new(slot))
