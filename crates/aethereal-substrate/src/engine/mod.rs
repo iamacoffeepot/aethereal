@@ -708,9 +708,8 @@ impl Reading<'_> {
                 let mut asked =
                     Asked::continuing(mem::take(&mut lists.effects), mem::take(arena), mem::take(&mut lists.seats));
                 let why = why(how);
-                let start = clock.nanos();
-                let ended = actor.end(&mut Ending::new(me, &seat.path, self.table, &mut asked, life.sent(), why));
-                tally.add(key(ItemKind::Closing), clock.nanos().saturating_sub(start));
+                let mut ending = Ending::new(me, &seat.path, self.table, &mut asked, life.sent(), why);
+                let ended = tally.time(key(ItemKind::Closing), clock, || actor.end(&mut ending));
                 let (effects, _, written, seats) = asked.into_parts();
                 lists.effects = effects;
                 lists.seats = seats;
@@ -749,9 +748,7 @@ impl Reading<'_> {
                         Handed::Ended { ended, context } => (Item::Ended(ended.clone()), *context),
                     };
                     let mut turn = Turn::new(me, &seat.path, &table, &mut asked, count, source);
-                    let start = clock.nanos();
-                    let handled = actor.handle(item, &mut turn);
-                    tally.add(key(item_kind(handed)), clock.nanos().saturating_sub(start));
+                    let handled = tally.time(key(item_kind(handed)), clock, || actor.handle(item, &mut turn));
                     let ran = Ran::of(me, handled, asked, context, begins, lists, arena);
 
                     let effects = &lists.effects[ran.effects.clone()];
