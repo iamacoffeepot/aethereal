@@ -135,6 +135,31 @@ impl<V: View> Folded<V> {
         }
     }
 
+    /// Folds every writer's records for the part numbered `part` where it lies, one row after another, then settles
+    /// the part, adding what it hands on to `forward`: what [`Column::fold`] does with the part taken out. The
+    /// buckets are emptied and keep their room.
+    pub fn fold_part<'r>(
+        &mut self,
+        part: usize,
+        rows: impl IntoIterator<Item = &'r mut Routed<V>>,
+        forward: &mut Vec<(u64, V::Record)>,
+    ) where
+        V: 'r,
+    {
+        let shard = &mut self.shards[part];
+        for row in rows {
+            for (key, record) in row.buckets[part].drain(..) {
+                V::fold(shard, key, record);
+            }
+        }
+        V::settle(shard, forward);
+    }
+
+    /// The part numbered `part`, to change outside a fold, as [`Self::shard_mut`] gives one.
+    pub fn at_mut(&mut self, part: usize) -> &mut V::Shard {
+        &mut self.shards[part]
+    }
+
     /// Settles every part once a step's effects are all folded, and folds what each hands on into the part its key
     /// falls in. What is handed on is folded and not settled again.
     pub fn settle(&mut self) {

@@ -137,6 +137,18 @@ impl Pool {
         self.done.drain(..)
     }
 
+    /// Runs a step planned for one worker on this thread, by `run`, and answers with what it left. Every worker
+    /// spinning is parked: none runs a share of it.
+    pub fn alone<T>(&mut self, clock: Monotonic, run: impl FnOnce() -> T) -> T {
+        let start = clock.nanos();
+        self.park();
+        let left = run();
+        let nanos = clock.nanos().saturating_sub(start);
+        self.measure(nanos, Busy { shares: 1, nanos });
+
+        left
+    }
+
     /// Folds a step's folds: the first on this thread, each other on a worker that ran a share of the step and
     /// spins after it, and answers with them folded.
     ///

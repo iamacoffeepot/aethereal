@@ -464,7 +464,9 @@ fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
     said();
 
     let workers = Workers { active: 2, max: 2, wake_nanos: 0 };
-    let shares = engine.plan(workers).into_shares();
+    let Split::Shares(shares) = engine.plan(workers).into_split() else {
+        panic!("two workers share the step");
+    };
     assert_eq!(shares.len(), 2);
     let reading = engine.reading();
     let done = shares.into_iter().map(|share| reading.run(share, &clock)).collect();
