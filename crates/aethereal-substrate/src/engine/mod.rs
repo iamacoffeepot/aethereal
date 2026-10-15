@@ -146,6 +146,8 @@ struct Spare {
     forward: Vec<Notice>,
     /// The parts some writer routed a record to in a step.
     touched: Vec<usize>,
+    /// What each worker of a shared step left, while its parts are put back: empty between.
+    left: Vec<(Lists, Arena)>,
 }
 
 /// One part of the engine as a worker owns it for a step: what has arrived for the actors seated in it, their lives,
@@ -560,13 +562,22 @@ impl Engine {
     /// record reached is not touched.
     pub fn gather(&mut self, done: impl ExactSizeIterator<Item = Done>) -> Vec<Fold> {
         let running = done.len();
+        // Every part goes back before any child is seated: a worker seats its children in parts another worker may
+        // have run, and putting that part back would put its seats back over them.
+        let mut left = mem::take(&mut self.spare.left);
         for Done { lists, arena, mut parcels } in done {
             while let Some(parcel) = parcels.pop() {
                 self.put(parcel);
             }
             self.spare.parcels.push(parcels);
+            left.push((lists, arena));
+        }
+        // Taken in the order the workers were given, so a step seats the same children in the same order every time.
+        left.reverse();
+        while let Some((lists, arena)) = left.pop() {
             self.take_in(lists, arena);
         }
+        self.spare.left = left;
 
         self.packing.parts.clear();
         let mut touched = self.touched();
