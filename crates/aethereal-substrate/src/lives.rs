@@ -37,8 +37,9 @@ pub struct Life {
 pub enum State {
     /// It reacts to its stream.
     Live,
-    /// It has ended, `how` it ended, and its closing turn runs in the step after, in `context`.
-    Ending { how: How, context: Context },
+    /// It has ended: how it ended, and the context its closing turn runs in, in the step after. Kept apart from the
+    /// view's list, which holds a life for every actor, since few have ended.
+    Ending(Box<(How, Context)>),
 }
 
 /// What the view keeps of an effect, for the actor `id` that sits in the key's seat.
@@ -54,7 +55,7 @@ enum Change {
     /// The actor sent the piece of mail it counts as this.
     Sent(u64),
     /// The actor ended this way, in this context.
-    Ended { how: How, context: Context },
+    Ended(Box<(How, Context)>),
     /// The actor's closing turn has run, and its life is over.
     Over,
 }
@@ -123,12 +124,12 @@ impl View for Lives {
                     life.sent = life.sent.max(count);
                 }
             }
-            Change::Ended { how, context } => {
+            Change::Ended(ending) => {
                 if let Some(life) = shard.lives.get_mut(actor) {
                     if life.is_live() {
                         shard.ended.push(actor);
                     }
-                    life.state = State::Ending { how, context };
+                    life.state = State::Ending(ending);
                 }
             }
             Change::Over => shard.lives.remove(actor),
@@ -142,8 +143,8 @@ fn record(effect: &Effect, context: &Context) -> Option<(u64, Record)> {
     let (actor, change) = match effect.what() {
         What::Root { .. } | What::RootInstanced { .. } => (by, Change::Made),
         What::Send { id, .. } => (by, Change::Sent(id.count)),
-        What::Close => (by, Change::Ended { how: How::Closed, context: *context }),
-        What::Failed(fault) => (by, Change::Ended { how: How::Failed(fault.clone()), context: *context }),
+        What::Close => (by, Change::Ended(Box::new((How::Closed, *context)))),
+        What::Failed(fault) => (by, Change::Ended(Box::new((How::Failed(fault.clone()), *context)))),
         What::Ended(_) => (by, Change::Over),
         _ => (spawned(effect)?.0, Change::Made),
     };

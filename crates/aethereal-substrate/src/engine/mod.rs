@@ -247,7 +247,7 @@ impl Engine {
         let mut seats = Seats::new(mem::take(&mut self.empty), new_seat(seated), 1);
         let me = Seated { id, seat: seats.take() };
         let mut asked = Asked::writing(self.arena(parity, ROOTS), seats);
-        let began = A::begin(config, &mut Beginning::new(me, path.clone(), &self.table, &mut asked));
+        let began = A::begin(config, &mut Beginning::new(me, &path, &self.table, &mut asked));
         let (asked, stood, arena, mut seats) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
         let root = match began {
@@ -559,14 +559,14 @@ impl Reading<'_> {
         let key = |item| CostKey { actor: kind, item };
 
         match (work, life.state()) {
-            (Work::Closing, State::Ending { how, context }) => {
+            (Work::Closing, State::Ending(ending)) => {
+                let (how, context) = &**ending;
                 let begins = lists.effects.len();
                 let mut asked =
                     Asked::continuing(mem::take(&mut lists.effects), mem::take(arena), mem::take(&mut lists.seats));
                 let why = why(how);
                 let start = clock.nanos();
-                let ended =
-                    actor.end(&mut Ending::new(me, seat.path.clone(), self.table, &mut asked, life.sent(), why));
+                let ended = actor.end(&mut Ending::new(me, &seat.path, self.table, &mut asked, life.sent(), why));
                 tally.add(key(ItemKind::Closing), clock.nanos().saturating_sub(start));
                 let (effects, _, written, seats) = asked.into_parts();
                 lists.effects = effects;
@@ -604,7 +604,7 @@ impl Reading<'_> {
                         }
                         Pending::Ended { ended, context } => (Item::Ended(ended.clone()), *context),
                     };
-                    let mut turn = Turn::new(me, seat.path.clone(), &table, &mut asked, count, source);
+                    let mut turn = Turn::new(me, &seat.path, &table, &mut asked, count, source);
                     let start = clock.nanos();
                     let handled = actor.handle(item, &mut turn);
                     tally.add(key(item_kind(pending)), clock.nanos().saturating_sub(start));

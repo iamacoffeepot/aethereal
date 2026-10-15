@@ -122,7 +122,7 @@ impl Stood {
 struct Seat<'a> {
     /// The actor, and its seat.
     me: Seated,
-    path: ActorPath,
+    path: &'a ActorPath,
     table: &'a dyn Table,
     asked: &'a mut Asked,
     /// How many pieces of mail this actor has sent, this turn's included.
@@ -224,7 +224,7 @@ impl Seat<'_> {
 
         let me = Seated { id, seat };
         let stood_before = self.asked.stood.len();
-        let child = Seat { me, path: path.clone(), table: self.table, asked: &mut *self.asked, sent: 0 };
+        let child = Seat { me, path: &path, table: self.table, asked: &mut *self.asked, sent: 0 };
         match C::begin(config, &mut Beginning { seat: child }) {
             Ok(actor) => {
                 self.asked.stood_seats.insert(id.bits(), seat);
@@ -266,7 +266,7 @@ impl<'a> Turn<'a> {
     #[must_use]
     pub const fn new(
         me: Seated,
-        path: ActorPath,
+        path: &'a ActorPath,
         table: &'a dyn Table,
         asked: &'a mut Asked,
         sent: u64,
@@ -335,7 +335,7 @@ impl<'a> Beginning<'a> {
     ///
     /// For the engine, which makes a root for the chassis. A child's is made by the turn that spawns it.
     #[must_use]
-    pub const fn new(me: Seated, path: ActorPath, table: &'a dyn Table, asked: &'a mut Asked) -> Self {
+    pub const fn new(me: Seated, path: &'a ActorPath, table: &'a dyn Table, asked: &'a mut Asked) -> Self {
         Self { seat: Seat { me, path, table, asked, sent: 0 } }
     }
 
@@ -397,7 +397,7 @@ impl<'a> Ending<'a> {
     #[must_use]
     pub const fn new(
         me: Seated,
-        path: ActorPath,
+        path: &'a ActorPath,
         table: &'a dyn Table,
         asked: &'a mut Asked,
         sent: u64,
