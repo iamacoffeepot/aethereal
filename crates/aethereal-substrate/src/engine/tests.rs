@@ -3,7 +3,7 @@
 use super::*;
 use crate::watch::Notice;
 use crate::{Entry, Standing, child_id};
-use aethereal_actor::{Ended, Fault, How, Item, Level, To, ToWithoutMail};
+use aethereal_actor::{Ended, Ending, Fault, Handles, How, Level, To, ToSender, ToType, ToWithoutMail, Turn};
 use aethereal_data::{Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
 use std::mem;
@@ -77,27 +77,36 @@ impl Node {
 impl Actor for Node {
     type Config = NodeConfig;
     type Key = u64;
+    type Handles = (Note, Ended);
+    type BeginSends = (ToType<Self, Note>,);
+    type EndSends = (ToType<Self, Note>,);
 
-    fn begin(config: NodeConfig, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(config: NodeConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         for text in config.to_self {
-            turn.send(ToWithoutMail::Held(turn.me()), &Note { text })?;
+            let me = turn.me();
+            turn.to::<Self>(ToWithoutMail::Held(me)).send(&Note { text })?;
         }
 
         Ok(Self { number: config.number })
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let mail = match item {
-            Item::Mail(mail) => mail,
-            Item::Ended(ended) => {
-                say(format!("{} saw {}", self.number, how(ended.how())));
+    fn end(self, turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        say(format!("{} ended {:?}", self.number, turn.why()));
+        turn.to::<Self>(ToWithoutMail::Parent).send(&Note { text: format!("bye {}", self.number) })?;
+        let fails = self.number == 13;
+        if fails {
+            return Err(Fault::new(&Note { text: String::from("unlucky") })?);
+        }
 
-                return Ok(());
-            }
-        };
-        let Some(Note { text }) = mail.read()? else {
-            return Ok(());
-        };
+        Ok(())
+    }
+}
+
+impl Handles<Note> for Node {
+    type Sends = (ToType<Self, Note>, ToSender<Note>);
+
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let Note { text } = note;
         say(format!("{} got {text}", self.number));
 
         let words: Vec<&str> = text.splitn(3, ' ').collect();
@@ -106,12 +115,12 @@ impl Actor for Node {
             ["fail"] => return Err(Fault::new(&Note { text })?),
             ["fail", line] => {
                 turn.log(Level::Warn, line);
-                turn.send(To::Parent, &Note { text: String::from("never") })?;
+                turn.to::<Self>(To::Parent).send(&Note { text: String::from("never") })?;
 
                 return Err(Fault::new(&Note { text: String::from(line) })?);
             }
-            ["reply"] => turn.send(To::Sender, &Note { text: String::from("re") })?,
-            ["up", said] => turn.send(To::Parent, &Note { text: format!("{said} from {}", self.number) })?,
+            ["reply"] => turn.reply(&Note { text: String::from("re") })?,
+            ["up", said] => turn.to::<Self>(To::Parent).send(&Note { text: format!("{said} from {}", self.number) })?,
             ["spawn" | "watch", number, text] => {
                 let number = number.parse().unwrap_or_default();
                 if let Ok(child) = turn.spawn::<Self>(&number, NodeConfig { number, to_self: Vec::new() }) {
@@ -119,38 +128,44 @@ impl Actor for Node {
                     if watches {
                         turn.watch(child);
                     }
-                    turn.send(Self::child(number), &Note { text: String::from(text) })?;
+                    turn.to::<Self>(Self::child(number)).send(&Note { text: String::from(text) })?;
                 }
             }
             ["tell", number, text] => {
-                turn.send(Self::child(number.parse().unwrap_or_default()), &Note { text: String::from(text) })?;
+                let child = Self::child(number.parse().unwrap_or_default());
+                turn.to::<Self>(child).send(&Note { text: String::from(text) })?;
             }
             ["both"] => {
-                turn.send(To::Parent, &Note { text: String::from("watchme") })?;
-                turn.send(To::Held(turn.me()), &Note { text: String::from("close") })?;
+                turn.to::<Self>(To::Parent).send(&Note { text: String::from("watchme") })?;
+                let me = turn.me();
+                turn.to::<Self>(To::Held(me)).send(&Note { text: String::from("close") })?;
             }
-            ["watchme", ..] => turn.watch(mail.sender()),
-            ["where", ..] => say(format!("{} at depth {}", self.number, mail.depth())),
+            ["watchme", ..] => {
+                let sender = turn.sender();
+                turn.watch(sender);
+            }
+            ["where", ..] => say(format!("{} at depth {}", self.number, turn.chain().depth)),
             ["bye", number] => {
                 let watches = number == "5";
                 if watches {
-                    turn.watch(mail.sender());
+                    let sender = turn.sender();
+                    turn.watch(sender);
                 }
-                turn.send(Self::child(number.parse().unwrap_or_default()), &Note { text: String::from("late") })?;
+                let child = Self::child(number.parse().unwrap_or_default());
+                turn.to::<Self>(child).send(&Note { text: String::from("late") })?;
             }
             _ => {}
         }
 
         Ok(())
     }
+}
 
-    fn end(self, turn: &mut Ending<'_>) -> Result<(), Fault> {
-        say(format!("{} ended {:?}", self.number, turn.why()));
-        turn.send(ToWithoutMail::Parent, &Note { text: format!("bye {}", self.number) })?;
-        let fails = self.number == 13;
-        if fails {
-            return Err(Fault::new(&Note { text: String::from("unlucky") })?);
-        }
+impl Handles<Ended> for Node {
+    type Sends = ();
+
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        say(format!("{} saw {}", self.number, how(ended.how())));
 
         Ok(())
     }

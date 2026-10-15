@@ -10,7 +10,7 @@
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
-use aethereal_actor::{Actor, Beginning, Ending, Fault, Item, To, ToWithoutMail, Turn};
+use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, To, ToType, ToWithoutMail, Turn};
 use aethereal_chassis_headless::{Headless, Measured};
 use aethereal_data::{Kind, KindName, Plain, TypedKey};
 use aethereal_substrate::Engine;
@@ -91,40 +91,42 @@ const fn mix(mut value: u64) -> u64 {
 impl Actor for Counter {
     type Config = CounterConfig;
     type Key = u64;
+    type Handles = (Count,);
+    type BeginSends = (ToType<Self, Count>,);
+    type EndSends = ();
 
-    fn begin(config: CounterConfig, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(config: CounterConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         for number in 1..=config.children + config.idle {
             let child = CounterConfig { number, children: 0, idle: 0, shape: config.shape };
             let is_busy = number <= config.children;
             let spawned = turn.spawn::<Self>(&number, child).is_ok();
             if spawned && is_busy {
-                turn.send(ToWithoutMail::ChildInstanced(Self::NAME, number.to_name()), &Count { left: TURNS })?;
+                turn.to::<Self>(ToWithoutMail::ChildInstanced(Self::NAME, number.to_name()))
+                    .send(&Count { left: TURNS })?;
             }
         }
 
         Ok(Self { number: config.number, shape: config.shape })
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        let Some(Count { left }) = mail.read()? else {
-            return Ok(());
-        };
+    fn end(self, _turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
 
+impl Handles<Count> for Counter {
+    type Sends = (ToType<Self, Count>,);
+
+    fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let worked = (0..self.units(left) * 10).fold(self.number, |sum, step| sum.wrapping_mul(31).wrapping_add(step));
         hint::black_box(worked);
         if left == 0 {
             turn.close();
         } else {
-            turn.send(To::Held(turn.me()), &Count { left: left - 1 })?;
+            let me = turn.me();
+            turn.to::<Self>(To::Held(me)).send(&Count { left: left - 1 })?;
         }
 
-        Ok(())
-    }
-
-    fn end(self, _turn: &mut Ending<'_>) -> Result<(), Fault> {
         Ok(())
     }
 }

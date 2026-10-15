@@ -2,7 +2,7 @@
 
 use crate::id::spawned;
 use crate::{ByActor, Context, View};
-use aethereal_actor::{Effect, SeatNumber, What};
+use aethereal_actor::{Declared, Effect, SeatNumber, What};
 use aethereal_data::{ActorId, PathSegment};
 
 /// The view of which actors there are, keyed by an actor's own id (ADR-0011).
@@ -21,6 +21,8 @@ pub struct Entry {
     segment: PathSegment,
     /// The seat the actor sits in, or sat in once it has gone.
     seat: SeatNumber,
+    /// What the actor's type declares (ADR-0013).
+    declared: &'static Declared,
     /// Whether the actor has ended.
     life: Life,
 }
@@ -34,8 +36,9 @@ pub(super) enum Life {
 
 /// What the view keeps of an effect.
 pub enum Record {
-    /// An actor was made at `segment`, beneath `above` where it is not a root, in `seat`.
-    Made { above: Option<ActorId>, segment: PathSegment, seat: SeatNumber },
+    /// An actor of the type `declared` describes was made at `segment`, beneath `above` where it is not a root, in
+    /// `seat`.
+    Made { above: Option<ActorId>, segment: PathSegment, seat: SeatNumber, declared: &'static Declared },
     /// The actor ended.
     Ended,
 }
@@ -54,6 +57,11 @@ impl Entry {
     /// The seat the actor sits in, or sat in.
     pub(super) const fn seat(&self) -> SeatNumber {
         self.seat
+    }
+
+    /// What the actor's type declares.
+    pub(super) const fn declared(&self) -> &'static Declared {
+        self.declared
     }
 
     /// Whether the actor has not ended.
@@ -76,8 +84,8 @@ impl View for Actors {
     /// used before it asks, so that is two paths with one id or a fault in the engine, and neither has a way on.
     fn fold(shard: &mut ByActor<Entry>, key: u64, record: Record) {
         match record {
-            Record::Made { above, segment, seat } => {
-                let held = shard.insert(key, Entry { above, segment, seat, life: Life::Live });
+            Record::Made { above, segment, seat, declared } => {
+                let held = shard.insert(key, Entry { above, segment, seat, declared, life: Life::Live });
                 assert!(
                     held.is_none(),
                     "actor table: an actor was made under the id {key:#018x}, which is already held"
@@ -97,15 +105,31 @@ fn record(effect: &Effect) -> Option<(u64, Record)> {
     let by = effect.by();
     let seat = effect.seated().seat;
     let (id, record) = match effect.what() {
-        What::Root { from } => (by, Record::Made { above: None, segment: from.singleton(), seat }),
-        What::RootInstanced { from, key } => (by, Record::Made { above: None, segment: from.instanced(key), seat }),
+        What::Root { from } => {
+            (by, Record::Made { above: None, segment: from.singleton(), seat, declared: from.declared() })
+        }
+        What::RootInstanced { from, key } => {
+            (by, Record::Made { above: None, segment: from.instanced(key), seat, declared: from.declared() })
+        }
         What::Failed(_) | What::Close => (by, Record::Ended),
         _ => {
             let (child, segment) = spawned(effect)?;
+            let declared = made_from(effect)?;
 
-            (child.id, Record::Made { above: Some(by), segment, seat: child.seat })
+            (child.id, Record::Made { above: Some(by), segment, seat: child.seat, declared })
         }
     };
 
     Some((id.bits(), record))
+}
+
+/// What the type of the child `effect` stands up declares, or none for an effect that stands up no child.
+const fn made_from(effect: &Effect) -> Option<&'static Declared> {
+    match effect.what() {
+        What::Spawn { from, .. }
+        | What::SpawnInstanced { from, .. }
+        | What::Embed { from, .. }
+        | What::EmbedInstanced { from, .. } => Some(from.declared()),
+        _ => None,
+    }
 }

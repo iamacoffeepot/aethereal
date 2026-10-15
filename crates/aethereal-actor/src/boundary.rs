@@ -1,6 +1,6 @@
 //! The boundaries an actor's values cross: `Within` and `Actors` (ADR-0004).
 
-use crate::{SeatNumber, Seated};
+use crate::{Declared, SeatNumber, Seated};
 use aethereal_data::{ActorId, ActorPath, Boundary, PathSegment};
 use core::marker::PhantomData;
 
@@ -29,6 +29,10 @@ pub trait Table: Made {
 
     /// Whether the actor `id` stands for is live.
     fn is_live(&self, id: ActorId) -> bool;
+
+    /// What the type of the actor `id` stands for declares (ADR-0013), when it has been made, live or ended, or this
+    /// actor stood it up in an earlier turn of the step.
+    fn declared(&self, id: ActorId) -> Option<&'static Declared>;
 
     /// The seat of the child `id` stands for, beneath the actor whose turn reads the table, when it was made or that
     /// actor stood it up in an earlier turn of the step.
