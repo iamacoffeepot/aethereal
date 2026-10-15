@@ -1,11 +1,14 @@
 //! The workers a step's shares run on: spinning, parked, or woken, as each step's plan says (ADR-0011).
 
+mod cores;
 mod worker;
 
 use crate::Monotonic;
 use aethereal_substrate::{Clock, Done, Fold, Folding, Reading, Share, Workers};
+use cores::Cores;
 use std::num::NonZeroUsize;
 use std::panic;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::vec::Drain;
@@ -60,12 +63,17 @@ impl Pool {
     /// A pool of `workers` workers, the stepping thread among them, all parked, with the cost of a wake measured.
     pub fn new(workers: NonZeroUsize, clock: &Monotonic) -> Self {
         let (reply, replies) = mpsc::channel();
+        let cores = Arc::new(Cores::of_host());
         let threads = (1..workers.get())
-            .map(|_| {
+            .map(|number| {
                 let (orders, inbox) = mpsc::channel();
                 let reply = reply.clone();
+                let cores = Arc::clone(&cores);
                 #[allow(clippy::disallowed_methods)] // The native host owns the real threads (ADR-0001).
-                let handle = thread::spawn(move || worker::work(&inbox, &reply));
+                let handle = thread::spawn(move || {
+                    cores.pin(number);
+                    worker::work(&inbox, &reply);
+                });
 
                 Thread { orders, handle }
             })
