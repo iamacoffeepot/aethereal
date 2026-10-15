@@ -486,3 +486,31 @@ fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
     assert!(each_once);
     assert_eq!(taken.len() + free.len(), numbered.count());
 }
+
+#[test]
+fn children_seated_in_a_part_another_worker_ran_are_kept() {
+    // Catches a worker's children being seated in a part another worker still holds, and lost when that worker's
+    // part is put back over them. Node 2 has two notes, so it runs on the worker whose seats lie in parts 0 and 2,
+    // and its second child takes a seat in part 2, where node 3 runs on the other worker.
+    let (mut engine, root) = engine(&["spawn 2 spawn 20 up hi", "tell 2 spawn 21 up hi", "spawn 3 spawn 30 up hi"]);
+    let clock = Ticking::default();
+    engine.step(&clock);
+    said();
+
+    let workers = Workers { active: 2, max: 2, wake_nanos: 0 };
+    let Split::Shares(shares) = engine.plan(workers).into_split() else {
+        panic!("two workers share the step");
+    };
+    let reading = engine.reading();
+    let done = shares.into_iter().map(|share| reading.run(share, &clock)).collect();
+    engine.apply(done);
+    said();
+
+    let mut third = step(&mut engine);
+    third.sort();
+    assert_eq!(third, ["20 got up hi", "21 got up hi", "30 got up hi"]);
+    let (two, three) = (node(root, 2), node(root, 3));
+    let grandchildren = [node(two, 20), node(two, 21), node(three, 30)];
+    let kept = grandchildren.iter().all(|id| engine.table().seat(*id).is_some());
+    assert!(kept);
+}
