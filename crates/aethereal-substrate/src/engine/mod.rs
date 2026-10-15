@@ -21,8 +21,8 @@ use crate::{
     rounded,
 };
 use aethereal_actor::{
-    Actor, Arena, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Payload, Refused, Runs,
-    SeatNumber, Seated, Seats, Stood, Turn, What, Why,
+    Above, Actor, Arena, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Payload, Refused,
+    Runs, SeatNumber, Seated, Seats, Stood, Turn, What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 use begun::begun;
@@ -110,6 +110,8 @@ struct Seating {
 struct Sitting {
     /// Where the actor stands.
     path: ActorPath,
+    /// What stands above it.
+    above: Above,
     /// Its kind, as the engine numbers it.
     kind: KindIndex,
 }
@@ -334,7 +336,7 @@ impl Engine {
         let effects: Vec<Effect> = iter::once(Effect::new(me, made)).chain(asked).collect();
         let context = Context { cause: None, root: MailId { sender: id, count: 0 }, depth: 1 };
 
-        self.seat(me, path, Box::new(root));
+        self.seat(me, path, Above::Chassis, Box::new(root));
         let applied = begun(&effects).into_owned();
         self.fold_turn(&applied, stood, context);
         self.lives.fold_records(senders(&applied).into_iter().map(|(actor, count)| lives::sent(actor, count)));
@@ -513,7 +515,7 @@ impl Engine {
         self.free.append(&mut lists.freed);
         let mut stood = mem::take(&mut lists.stood);
         while let Some(child) = stood.pop() {
-            self.seat(child.seated(), child.path().clone(), child.into_actor());
+            self.seat(child.seated(), child.path().clone(), child.above(), child.into_actor());
         }
         lists.stood = stood;
         self.lists[slot] = lists;
@@ -706,7 +708,7 @@ impl Engine {
         self.lives.fold(effects, &context);
 
         for child in stood {
-            self.seat(child.seated(), child.path().clone(), child.into_actor());
+            self.seat(child.seated(), child.path().clone(), child.above(), child.into_actor());
         }
     }
 
@@ -737,10 +739,10 @@ impl Engine {
     }
 
     /// Seats the actor `me` names, at `path`, in the seat it was given. It is run from the next step.
-    fn seat(&mut self, me: Seated, path: ActorPath, actor: Box<dyn Runs>) {
+    fn seat(&mut self, me: Seated, path: ActorPath, above: Above, actor: Box<dyn Runs>) {
         let kind = self.kinds.number(path.last().kind());
         let part = self.part(me.seat);
-        self.seating[part].seated.insert(me, Sitting { path, kind });
+        self.seating[part].seated.insert(me, Sitting { path, above, kind });
         self.actors[part].insert(me, Held::Here(actor));
     }
 
@@ -873,7 +875,7 @@ impl Reading<'_> {
                 asked.next_turn();
                 let begins = asked.effects_mut().len();
                 let why = why(how);
-                let mut ending = Ending::new(me, &seat.path, self.table, asked, life.sent(), why);
+                let mut ending = Ending::new(me, &seat.path, seat.above, self.table, asked, life.sent(), why);
                 let ended = tally.time(key(ItemKind::Closing), clock, || actor.end(&mut ending));
                 let effects = asked.effects_mut();
                 // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds its
@@ -910,7 +912,7 @@ impl Reading<'_> {
                         }
                         Handed::Ended { ended, context } => (Item::Ended(ended.clone()), *context),
                     };
-                    let mut turn = Turn::new(me, &seat.path, &table, asked, count, source);
+                    let mut turn = Turn::new(me, &seat.path, seat.above, &table, asked, count, source);
                     let handled = tally.time(key(item_kind(handed)), clock, || actor.handle(item, &mut turn));
                     let ran = Ran::of(me, handled, asked, context, begins);
 
