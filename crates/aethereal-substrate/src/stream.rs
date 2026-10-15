@@ -160,6 +160,22 @@ impl Shard {
         })
     }
 
+    /// The items that arrived since the step began, in no order: the actor each is for, and the item.
+    pub fn arrived(&self) -> impl Iterator<Item = (Seated, Handed<'_>)> {
+        self.arrived.iter().map(|entry| {
+            let handed = match &entry.item {
+                Stored::Mail(envelope) => Handed::Mail(envelope),
+                Stored::Ended(place) => {
+                    let (ended, context) = &self.arrived_endings[*place];
+
+                    Handed::Ended { ended, context }
+                }
+            };
+
+            (Seated { id: ActorId::new(entry.to), seat: SeatNumber::new(entry.seat) }, handed)
+        })
+    }
+
     /// Whether any item has arrived since the step began.
     #[must_use]
     pub fn has_items(&self) -> bool {

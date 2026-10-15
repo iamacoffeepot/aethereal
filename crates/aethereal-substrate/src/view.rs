@@ -2,6 +2,7 @@
 
 use crate::Context;
 use aethereal_actor::Effect;
+use std::mem;
 use std::num::NonZeroUsize;
 
 /// A view: what it keeps of an effect, how one such record changes its state, and what a part hands on once a
@@ -160,6 +161,28 @@ impl<V: View> Folded<V> {
         let part = self.part(key);
 
         &mut self.shards[part]
+    }
+
+    /// The part numbered `part`, as of the last fold.
+    #[must_use]
+    pub fn at(&self, part: usize) -> &V::Shard {
+        &self.shards[part]
+    }
+
+    /// Takes the part numbered `part` out, leaving an empty one in its place: for a worker to own while a step runs.
+    /// [`Self::put`] puts it back.
+    pub fn take(&mut self, part: usize) -> V::Shard
+    where
+        V::Shard: Part,
+    {
+        let parts = NonZeroUsize::new(self.shards.len()).unwrap_or(NonZeroUsize::MIN);
+
+        mem::replace(&mut self.shards[part], V::Shard::empty(parts))
+    }
+
+    /// Puts back the part numbered `part`, taken out by [`Self::take`].
+    pub fn put(&mut self, part: usize, shard: V::Shard) {
+        self.shards[part] = shard;
     }
 
     /// Every part, as of the last fold.
