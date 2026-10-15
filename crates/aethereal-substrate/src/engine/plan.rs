@@ -54,15 +54,14 @@ impl Plan {
 }
 
 /// Plans a step whose parts with something to run are `parts`, each with what its turns are expected to cost, on
-/// `workers`, given the expected work of `recent` steps: how the count of running workers changes, and which parts
-/// each running worker runs.
-pub(super) fn plan(parts: &[(usize, u64)], recent: u64, workers: Workers) -> (isize, Vec<Vec<usize>>) {
+/// `workers`, given the expected work of `recent` steps: how the count of running workers changes, and how many run.
+pub(super) fn plan(parts: &[(usize, u64)], recent: u64, workers: Workers) -> (isize, usize) {
     let work: u64 = parts.iter().map(|(_, cost)| cost).sum();
     let largest = parts.iter().map(|(_, cost)| *cost).max().unwrap_or(0);
     let running = decide(work, largest, parts.len(), recent, workers);
     let delta = signed(running) - signed(workers.active.clamp(1, workers.max.max(1)));
 
-    (delta, pack(parts, running))
+    (delta, running)
 }
 
 /// How many workers run a step whose expected work is `work` nanoseconds, the largest actor's `largest`, over
@@ -106,27 +105,44 @@ fn takes(work: u64, largest: u64, workers: usize) -> u64 {
     work.div_ceil(workers).max(largest)
 }
 
-/// Gives each part to one of `running` shares: the most costly first, each to the share with the least so far, and
-/// of parts that cost the same, the lower first. Each share then runs its parts in the order of their numbers.
-pub(super) fn pack(parts: &[(usize, u64)], running: usize) -> Vec<Vec<usize>> {
-    let mut order: Vec<(u64, usize)> = parts.iter().map(|(part, cost)| (*cost, *part)).collect();
-    order.sort_unstable_by(|(left, a), (right, b)| right.cmp(left).then(a.cmp(b)));
+/// What packing parts into shares works in, kept from one step to the next for its room.
+#[derive(Default)]
+pub(super) struct Packing {
+    /// The parts to pack, each with what it is expected to cost.
+    pub(super) parts: Vec<(usize, u64)>,
+    /// The parts in the order they are given out.
+    order: Vec<(u64, usize)>,
+    /// Each share's load and the parts given it: the first `running` of them, as the last [`Packing::pack`] made.
+    pub(super) shares: Vec<(u64, Vec<usize>)>,
+}
 
-    let mut shares: Vec<(u64, Vec<usize>)> = (0..running.max(1)).map(|_| (0, Vec::new())).collect();
-    for (cost, part) in order {
-        if let Some((load, share)) = shares.iter_mut().min_by_key(|(load, _)| *load) {
-            *load += cost;
-            share.push(part);
+impl Packing {
+    /// Gives each of [`Packing::parts`] to one of `running` shares: the most costly first, each to the share with the
+    /// least so far, and of parts that cost the same, the lower first. Each share then runs its parts in the order of
+    /// their numbers.
+    pub(super) fn pack(&mut self, running: usize) {
+        let running = running.max(1);
+        self.order.clear();
+        self.order.extend(self.parts.iter().map(|(part, cost)| (*cost, *part)));
+        self.order.sort_unstable_by(|(left, a), (right, b)| right.cmp(left).then(a.cmp(b)));
+
+        if self.shares.len() < running {
+            self.shares.resize_with(running, Default::default);
+        }
+        for (load, parts) in &mut self.shares {
+            *load = 0;
+            parts.clear();
+        }
+        for (cost, part) in &self.order {
+            if let Some((load, share)) = self.shares[..running].iter_mut().min_by_key(|(load, _)| *load) {
+                *load += cost;
+                share.push(*part);
+            }
+        }
+        for (_, share) in &mut self.shares[..running] {
+            share.sort_unstable();
         }
     }
-
-    shares
-        .into_iter()
-        .map(|(_, mut share)| {
-            share.sort_unstable();
-            share
-        })
-        .collect()
 }
 
 /// `count` as a signed count.

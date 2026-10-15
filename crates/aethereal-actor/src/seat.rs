@@ -73,6 +73,25 @@ impl Seats {
         Self { free: Vec::new(), next: vec![0], stride: 1 }
     }
 
+    /// Empties the worker's seats, keeping the room of its lists, for parts numbered every `stride`th.
+    pub fn clear(&mut self, stride: u64) {
+        self.free.clear();
+        self.next.clear();
+        self.stride = stride;
+    }
+
+    /// Gives the worker one part's seats: its free ones `free`, and its new numbers from `next`.
+    pub fn give(&mut self, free: impl IntoIterator<Item = SeatNumber>, next: u64) {
+        self.free.extend(free);
+        self.next.push(next);
+    }
+
+    /// Takes back the free seats not given out, and the next new number of each part, keeping the room of the
+    /// worker's lists.
+    pub fn drain(&mut self) -> (impl Iterator<Item = SeatNumber> + '_, impl Iterator<Item = u64> + '_) {
+        (self.free.drain(..), self.next.drain(..))
+    }
+
     /// The free seats not given out, and the next new number of each part, for the engine to take back.
     #[must_use]
     pub fn into_parts(self) -> (Vec<SeatNumber>, Vec<u64>) {

@@ -237,25 +237,39 @@ impl<V: View> Column<V> {
     }
 }
 
+impl<V: View> Column<V> {
+    /// An empty column, for a view kept in `parts` parts: to be filled and emptied again step after step.
+    #[must_use]
+    pub fn empty(parts: NonZeroUsize) -> Self
+    where
+        V::Shard: Part,
+    {
+        Self { shard: V::Shard::empty(parts), buckets: Vec::new() }
+    }
+}
+
 impl<V: View> Folded<V> {
-    /// Takes the part numbered `part` out with each row's bucket for it, to fold apart from the rest.
-    pub fn column<'r>(&mut self, part: usize, rows: impl IntoIterator<Item = &'r mut Routed<V>>) -> Column<V>
+    /// Fills `column` with the part numbered `part`, taken out, and each row's bucket for it, to fold apart from
+    /// the rest.
+    pub fn fill<'r>(&mut self, part: usize, rows: impl IntoIterator<Item = &'r mut Routed<V>>, column: &mut Column<V>)
     where
         V::Shard: Part,
         V: 'r,
     {
-        let buckets = rows.into_iter().map(|row| mem::take(&mut row.buckets[part])).collect();
-
-        Column { shard: self.take(part), buckets }
+        column.shard = self.take(part);
+        column.buckets.extend(rows.into_iter().map(|row| mem::take(&mut row.buckets[part])));
     }
 
-    /// Puts back the part numbered `part` from its column, and hands each row of `rows` its emptied bucket.
-    pub fn put_column<'r>(&mut self, part: usize, column: Column<V>, rows: impl IntoIterator<Item = &'r mut Routed<V>>)
+    /// Empties `column`, filled from the part numbered `part`: puts the part back, and hands each row of `rows` its
+    /// emptied bucket.
+    pub fn empty<'r>(&mut self, part: usize, column: &mut Column<V>, rows: impl IntoIterator<Item = &'r mut Routed<V>>)
     where
+        V::Shard: Part,
         V: 'r,
     {
-        self.put(part, column.shard);
-        for (row, bucket) in rows.into_iter().zip(column.buckets) {
+        let parts = NonZeroUsize::new(self.shards.len()).unwrap_or(NonZeroUsize::MIN);
+        self.put(part, mem::replace(&mut column.shard, V::Shard::empty(parts)));
+        for (row, bucket) in rows.into_iter().zip(column.buckets.drain(..)) {
             row.buckets[part] = bucket;
         }
     }

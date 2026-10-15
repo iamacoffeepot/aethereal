@@ -4,8 +4,9 @@ use super::costs::{CostKey, Costs, ItemKind};
 use super::{Seating, Sitting, item_kind};
 use crate::stream::{self, Streams};
 use crate::table::Actors;
-use crate::{BySeat, Column, Lives, Log, lives};
+use crate::{BySeat, Column, Lives, Log, Part, lives};
 use aethereal_actor::Seated;
+use std::num::NonZeroUsize;
 
 /// The parts of the views one worker folds at the end of a step (ADR-0011).
 pub struct Fold {
@@ -25,6 +26,22 @@ pub(super) struct Pile {
     pub(super) forward: Vec<(u64, stream::Record)>,
     /// What the turns waiting in the part are expected to cost, in nanoseconds, once it is folded.
     pub(super) expected: u64,
+}
+
+impl Pile {
+    /// An empty pile, for views kept in `parts` parts: to be filled and emptied again step after step.
+    pub(super) fn empty(parts: NonZeroUsize) -> Self {
+        Self {
+            part: 0,
+            table: Column::empty(parts),
+            log: Column::empty(parts),
+            lives: Column::empty(parts),
+            streams: Column::empty(parts),
+            seating: Seating { seated: BySeat::empty(parts), free: Vec::new(), next: 0 },
+            forward: Vec::new(),
+            expected: 0,
+        }
+    }
 }
 
 /// The engine as a step's workers read it while they fold: what turns are expected to cost (ADR-0011).

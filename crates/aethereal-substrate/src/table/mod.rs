@@ -85,24 +85,25 @@ impl ActorTable {
         self.actors.routed()
     }
 
-    /// Takes the part numbered `part` out with each row's bucket for it, as [`Folded::column`] does. Folding the
-    /// column panics when a record makes an actor under an id the table already holds (ADR-0008).
-    pub(crate) fn column<'r>(
+    /// Fills `column` with the part numbered `part` and each row's bucket for it, as [`Folded::fill`] does. Folding
+    /// the column panics when a record makes an actor under an id the table already holds (ADR-0008).
+    pub(crate) fn fill<'r>(
         &mut self,
         part: usize,
         rows: impl IntoIterator<Item = &'r mut Routed<Actors>>,
-    ) -> Column<Actors> {
-        self.actors.column(part, rows)
+        column: &mut Column<Actors>,
+    ) {
+        self.actors.fill(part, rows, column);
     }
 
-    /// Puts back a folded part, as [`Folded::put_column`] does.
-    pub(crate) fn put_column<'r>(
+    /// Empties `column` back into the part numbered `part`, as [`Folded::empty`] does.
+    pub(crate) fn empty<'r>(
         &mut self,
         part: usize,
-        column: Column<Actors>,
+        column: &mut Column<Actors>,
         rows: impl IntoIterator<Item = &'r mut Routed<Actors>>,
     ) {
-        self.actors.put_column(part, column, rows);
+        self.actors.empty(part, column, rows);
     }
 
     /// How the actor `id` stands for stands.

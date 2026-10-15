@@ -64,11 +64,12 @@ pub(super) struct Costs {
 /// One worker's measurements of a step, summed under each key, merged into the engine's costs between steps.
 ///
 /// A worker adds to its own tally only, so no measurement is shared while the
-/// step runs.
+/// step runs. A step's turns are of few keys, so they are kept in a list,
+/// emptied by each merge and kept for its room.
 #[derive(Default)]
 pub struct Tally {
     /// Under each key: the nanoseconds measured, and how many turns they were measured over.
-    sums: BTreeMap<CostKey, (u64, u64)>,
+    sums: Vec<(CostKey, (u64, u64))>,
 }
 
 /// What one new measurement moves an average by: an eighth of the way to it.
@@ -88,9 +89,10 @@ impl Costs {
         self.expected.get(key).copied().unwrap_or(UNKNOWN)
     }
 
-    /// Takes a worker's tally into the averages: one move for each key it measured, by the mean of its turns.
-    pub(super) fn merge(&mut self, tally: Tally) {
-        for (key, (nanos, turns)) in tally.sums {
+    /// Takes a worker's tally into the averages, one move for each key it measured by the mean of its turns, and
+    /// empties it.
+    pub(super) fn merge(&mut self, tally: &mut Tally) {
+        for (key, (nanos, turns)) in tally.sums.drain(..) {
             let mean = nanos / turns.max(1);
             self.expected.entry(key).and_modify(|average| *average = toward(*average, mean)).or_insert(mean);
         }
@@ -100,7 +102,12 @@ impl Costs {
 impl Tally {
     /// Adds a turn under `key` that took `nanos`.
     pub(super) fn add(&mut self, key: CostKey, nanos: u64) {
-        let sum = self.sums.entry(key).or_default();
+        let place = self.sums.iter().position(|(kept, _)| *kept == key);
+        let place = place.unwrap_or_else(|| {
+            self.sums.push((key, (0, 0)));
+            self.sums.len() - 1
+        });
+        let sum = &mut self.sums[place].1;
         sum.0 += nanos;
         sum.1 += 1;
     }
