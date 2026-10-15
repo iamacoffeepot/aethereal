@@ -414,7 +414,7 @@ fn item_placed_under_a_seat_reaches_only_the_actor_it_was_placed_for() {
     let context = Context { cause: None, root: MailId { sender: root, count: 0 }, depth: 1 };
     let place = |engine: &mut Engine, to: ActorId| {
         let ended = Ended::new(Seated { id: node(root, 2), seat: SeatNumber::new(7) }, How::Closed);
-        let pending = Pending::Ended { ended, context };
+        let pending = Pending::Ended(Box::new((ended, context)));
         let record = stream::Record::Item { to: to.bits(), order: (2, u64::MAX), pending };
         Streams::fold(engine.streams.shard_mut(seat), seat, record);
     };

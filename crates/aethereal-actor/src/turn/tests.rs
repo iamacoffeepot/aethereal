@@ -316,8 +316,7 @@ fn begin_and_end_send_as_their_own_actor() {
     let Ok(herald) = turn.spawn::<Herald>(&(), Poke) else {
         panic!("the herald begins");
     };
-    let first = MailId { sender: herald.id(), count: 1 };
-    let to_parent = |kind| What::Send { to: ME, id: first, kind, bytes: NOTHING };
+    let to_parent = |kind| What::Send { to: ME, count: 1, kind, bytes: NOTHING };
     let spawn = Effect::new(ME, What::Spawn { from: Code::Linked(Herald::NAME), seat: SeatNumber::new(0) });
     assert_eq!(asked.effects(), [spawn, Effect::new(herald.seated(), to_parent(KindId::of::<Poked>()))]);
 
@@ -369,8 +368,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
         (handled, asked.into_parts().0)
     };
 
-    let first = MailId { sender: ME.id, count: 1 };
-    let poked = What::Send { to: other, id: first, kind: KindId::of::<Poked>(), bytes: NOTHING };
+    let poked = What::Send { to: other, count: 1, kind: KindId::of::<Poked>(), bytes: NOTHING };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Poke>(), &[]), (Ok(()), vec![Effect::new(ME, poked)]));
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Shut>(), &[]), (Ok(()), vec![Effect::new(ME, What::Close)]));
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Poked>(), &[]), (Ok(()), Vec::new()));
@@ -378,7 +376,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
     let mut out = Writer::<Within>::new(crate::WithinWriter::new());
     assert_eq!(ErasedActorRef::new(other).encode(&mut out), Ok(()));
     let meet = out.into_bytes();
-    let poke = What::Send { to: other, id: first, kind: KindId::of::<Poke>(), bytes: NOTHING };
+    let poke = What::Send { to: other, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Meet>(), &meet), (Ok(()), vec![Effect::new(ME, poke)]));
 
     let (handled, effects) = handle(&mut leaf, &Listed::default(), KindId::of::<Meet>(), &meet);

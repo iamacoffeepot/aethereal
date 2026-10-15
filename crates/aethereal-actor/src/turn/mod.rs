@@ -7,8 +7,8 @@ mod tests;
 pub use refused::Refused;
 
 use crate::{
-    Actor, Actors, ActorsWriter, Arena, Code, Effect, ErasedActorRef, Level, MailId, Runs, SeatNumber, Seated, Seats,
-    Table, To, ToWithoutMail, What,
+    Actor, Actors, ActorsWriter, Arena, Code, Effect, ErasedActorRef, Level, Runs, SeatNumber, Seated, Seats, Table,
+    To, ToWithoutMail, What,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
@@ -178,8 +178,7 @@ impl Seat<'_> {
             (out.into_bytes(), written)
         })?;
         self.sent += 1;
-        let id = MailId { sender: self.me.id, count: self.sent };
-        self.ask(What::Send { to, id, kind: KindId::of::<K>(), bytes });
+        self.ask(What::Send { to, count: self.sent, kind: KindId::of::<K>(), bytes });
 
         Ok(())
     }

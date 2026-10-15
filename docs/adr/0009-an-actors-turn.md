@@ -57,7 +57,7 @@ pub struct Effect {
 pub enum What {
     Root { from: Code },
     RootInstanced { from: Code, key: KeyName },
-    Send { to: To, id: MailId, kind: KindId, bytes: Vec<u8> },
+    Send { to: To, count: u64, kind: KindId, bytes: Vec<u8> },
     Spawn { from: Code },
     SpawnInstanced { from: Code, key: KeyName },
     Embed { from: Code },
@@ -80,7 +80,7 @@ pub enum Level {
 }
 ```
 
-- **`by` is the id of the actor that asked** (ADR-0008's `ActorId`). A turn's list holds the effects of the actor whose turn it is, of every child stood up in that turn, and of the embedded actors it holds, so each effect names its own actor. `Parent` in a `Send`, a `Close`, and a `Watch` are each read against the effect's `by`.
+- **`by` is the id of the actor that asked** (ADR-0008's `ActorId`). A turn's list holds the effects of the actor whose turn it is, of every child stood up in that turn, and of the embedded actors it holds, so each effect names its own actor. `Parent` in a `Send`, a `Close`, and a `Watch` are each read against the effect's `by`. A `Send` carries its actor's count of mail sent, which with `by` is the mail's id (ADR-0012).
 - A handler changes its own state and nothing else. Everything it wants of the engine it asks for through `turn`, which adds an effect to the turn's list.
 - **The engine alone applies effects**, in the order the turn asked for them, after the turn returns `Ok`.
 - **Nothing a turn asks for happens during the turn.** Mail it sends is delivered afterwards, so no actor runs inside another actor's turn.

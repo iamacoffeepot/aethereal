@@ -28,8 +28,6 @@ pub struct MailId {
 
 ```rust
 pub struct Envelope {
-    pub id: MailId,
-    pub to: ActorId,             // the actor it is for
     pub cause: Option<MailId>,   // none for mail from outside the engine, or from a root's `begin`
     pub root: MailId,
     pub depth: u32,              // how far down its chain: one more than its cause's
@@ -38,12 +36,14 @@ pub struct Envelope {
 }
 ```
 
+The engine keeps a piece of mail under the actor it is for, with its id beside it, so the envelope does not copy either.
+
 - **The cause** is the mail whose turn sent this one.
 - **The root** is the first mail of the chain. Mail sent while a piece of mail is handled takes that mail's root. Mail with no cause is its own root.
 - A chain is every piece of mail with one root.
 - **The depth** is how far down its chain a piece of mail is. Mail sent while a piece of mail is handled is one deeper than it. Mail with no cause is at depth zero, and the mail a root's `begin` sends is at depth one.
 
-**A turn's effects are emitted in a context.** The context is the item the turn handled: its cause, and its root. Every effect of one turn shares it, and the engine folds each effect into the views with it (ADR-0011). A piece of mail's id is on its `Send`, the sender and that sender's count, since the turn counts what its actor sends. The rest of the envelope, its cause and its root, comes from the context, and who it is for comes from the `Send`'s target, with `To::Sender` already put in place by the turn.
+**A turn's effects are emitted in a context.** The context is the item the turn handled: its cause, and its root. Every effect of one turn shares it, and the engine folds each effect into the views with it (ADR-0011). A piece of mail's id is the actor of its `Send` and the count the `Send` carries, since the turn counts what its actor sends. The rest of the envelope, its cause and its root, comes from the context, and who it is for comes from the `Send`'s target, with `To::Sender` already put in place by the turn.
 
 **A chain begins where something from outside the engine comes in.** What a resource brings in reaches its owner as mail from its owner (ADR-0010). That mail has no cause, and it is the root of whatever follows from it.
 
