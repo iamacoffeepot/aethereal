@@ -54,7 +54,8 @@ impl Headless {
         self.pool.measured()
     }
 
-    /// Runs one step: plans it for the workers there are, runs its shares on them, and applies what they left.
+    /// Runs one step: plans it for the workers there are, runs its shares on them, and applies what they left, each
+    /// part of the views folded on the workers that ran the step.
     ///
     /// # Panics
     ///
@@ -66,7 +67,9 @@ impl Headless {
         let done = self.pool.lend(&self.engine.reading(), self.clock, shares);
 
         let ran = self.clock.nanos();
-        self.engine.apply(done);
+        let folds = self.engine.gather(done);
+        let folded = self.pool.fold(&self.engine.folding(), self.clock, folds);
+        self.engine.settle(folded);
         let applied = self.clock.nanos();
         self.pool.measure_around(planned.saturating_sub(start), applied.saturating_sub(ran));
     }

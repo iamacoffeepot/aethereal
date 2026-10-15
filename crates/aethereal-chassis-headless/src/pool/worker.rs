@@ -1,7 +1,7 @@
 //! One worker thread: what it is told, what it answers, and how it waits between steps.
 
 use crate::Monotonic;
-use aethereal_substrate::{Clock, Done, Reading, Share};
+use aethereal_substrate::{Clock, Done, Fold, Folding, Reading, Share};
 use std::any::Any;
 use std::hint;
 use std::panic::{self, AssertUnwindSafe};
@@ -15,7 +15,9 @@ use std::sync::mpsc::{Receiver, RecvError, Sender, TryRecvError};
 )]
 pub(super) enum Order {
     /// Run a part of the step, then wait for the next order as `then` says.
-    Run { lend: Lend, then: Waiting },
+    Run { lend: Lent<Reading<'static>, Share>, then: Waiting },
+    /// Fold some parts of the views at the end of the step, then spin for the next order.
+    Fold { lend: Lent<Folding<'static>, Fold> },
     /// Wait parked for the next order.
     Park,
     /// Answer at once, to measure how long a parked worker takes to wake.
@@ -40,6 +42,8 @@ pub(super) enum Waiting {
 pub(super) enum Reply {
     /// Its part of the step ran, left this, and cost it this.
     Done(Done, Report),
+    /// Its parts of the views were folded, and cost it this.
+    Folded(Fold, Report),
     /// Its part of the step panicked with this.
     Panicked(Box<dyn Any + Send>),
     /// It was pinged.
@@ -52,30 +56,43 @@ pub(super) struct Report {
     pub(super) busy_nanos: u64,
 }
 
-/// The engine as the step's workers read it, lent to one worker for its part of the step, with the clock to time
-/// it by.
-pub(super) struct Lend {
-    reading: *const Reading<'static>,
+/// The engine as the step's workers read it, lent to one worker for its share of one phase of the step, `R` the
+/// engine as read in that phase and `S` the share, with the clock to time it by.
+pub(super) struct Lent<R, S> {
+    reading: *const R,
     clock: Monotonic,
-    share: Share,
+    share: S,
 }
 
-// SAFETY: a `Lend` carries a pointer to a `Reading`, which is `Sync` (checked in `Lend::new`), so reading it from
-// another thread is sound while it lives; `Pool::lend` keeps it alive until every worker it was lent to answers.
-unsafe impl Send for Lend {}
+// SAFETY: a `Lent` carries a pointer to an `R`, which is `Sync`, so reading it from another thread is sound while it
+// lives; `Pool::spread` keeps it alive until every worker it was lent to answers. The share is `Send`, and moved.
+unsafe impl<R: Sync, S: Send> Send for Lent<R, S> {}
 
-impl Lend {
+impl<S> Lent<Reading<'static>, S> {
     /// `reading` lent for `share`, timed by `clock`.
     ///
     /// The `Reading` must outlive the worker's use of it: the caller waits for the worker's reply before it lets
     /// `reading` go.
-    pub(super) fn new<'a>(reading: &'a Reading<'a>, clock: Monotonic, share: Share) -> Self
+    pub(super) fn run<'a>(reading: &'a Reading<'a>, clock: Monotonic, share: S) -> Self
     where
         Reading<'a>: Sync,
     {
         let reading = (&raw const *reading).cast::<Reading<'static>>();
 
         Self { reading, clock, share }
+    }
+}
+
+impl<S> Lent<Folding<'static>, S> {
+    /// `folding` lent for `share`, timed by `clock`. The `Folding` must outlive the worker's use of it, as in
+    /// [`Lent::run`].
+    pub(super) fn fold<'a>(folding: &'a Folding<'a>, clock: Monotonic, share: S) -> Self
+    where
+        Folding<'a>: Sync,
+    {
+        let folding = (&raw const *folding).cast::<Folding<'static>>();
+
+        Self { reading: folding, clock, share }
     }
 }
 
@@ -95,14 +112,23 @@ pub(super) fn work(orders: &Receiver<Order>, replies: &Sender<Reply>) {
         let reply = match order {
             Order::Run { lend, then } => {
                 waiting = then;
-                let Lend { reading, clock, share } = lend;
-                // SAFETY: the stepping thread lent this `Reading` in `Pool::lend`, which does not return, and so
+                let Lent { reading, clock, share } = lend;
+                // SAFETY: the stepping thread lent this `Reading` in `Pool::spread`, which does not return, and so
                 // does not let the `Reading` go, until this worker's reply arrives; the reply is sent after the
                 // last use of it.
                 let reading = unsafe { &*reading };
                 let ran = panic::catch_unwind(AssertUnwindSafe(|| perform(reading, clock, share)));
 
                 ran.map_or_else(Reply::Panicked, |(done, report)| Reply::Done(done, report))
+            }
+            Order::Fold { lend } => {
+                waiting = Waiting::Spin;
+                let Lent { reading: folding, clock, share } = lend;
+                // SAFETY: as for `Order::Run`: `Pool::spread` keeps this `Folding` alive until this reply arrives.
+                let folding = unsafe { &*folding };
+                let folded = panic::catch_unwind(AssertUnwindSafe(|| fold(folding, clock, share)));
+
+                folded.map_or_else(Reply::Panicked, |(fold, report)| Reply::Folded(fold, report))
             }
             Order::Park => {
                 waiting = Waiting::Park;
@@ -126,6 +152,14 @@ fn spin(orders: &Receiver<Order>) -> Result<Order, RecvError> {
             Err(TryRecvError::Disconnected) => return Err(RecvError),
         }
     }
+}
+
+/// Folds `share` against `folding`, and how long it kept the worker busy, by `clock`.
+pub(super) fn fold(folding: &Folding<'_>, clock: Monotonic, share: Fold) -> (Fold, Report) {
+    let start = clock.nanos();
+    let folded = folding.fold(share);
+
+    (folded, Report { busy_nanos: clock.nanos().saturating_sub(start) })
 }
 
 /// Runs `share` against `reading`, timing its turns, and how long it kept the worker busy, by `clock`.

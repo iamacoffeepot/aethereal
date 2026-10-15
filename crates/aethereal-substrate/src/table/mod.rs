@@ -5,7 +5,7 @@ mod actors;
 mod tests;
 
 use crate::id::{child_id, path_id};
-use crate::{Context, Folded, Routed};
+use crate::{Column, Context, Folded, Routed};
 pub use actors::Actors;
 use actors::Entry;
 use aethereal_actor::{Effect, Made, SeatNumber, Seated, Table};
@@ -85,13 +85,24 @@ impl ActorTable {
         self.actors.routed()
     }
 
-    /// Folds in every writer's records of a step, part by part, as [`Folded::fold_routed`] does.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a record makes an actor under an id the table already holds (ADR-0008).
-    pub(crate) fn fold_routed<'r>(&mut self, rows: impl IntoIterator<Item = &'r mut Routed<Actors>>) {
-        self.actors.fold_routed(rows);
+    /// Takes the part numbered `part` out with each row's bucket for it, as [`Folded::column`] does. Folding the
+    /// column panics when a record makes an actor under an id the table already holds (ADR-0008).
+    pub(crate) fn column<'r>(
+        &mut self,
+        part: usize,
+        rows: impl IntoIterator<Item = &'r mut Routed<Actors>>,
+    ) -> Column<Actors> {
+        self.actors.column(part, rows)
+    }
+
+    /// Puts back a folded part, as [`Folded::put_column`] does.
+    pub(crate) fn put_column<'r>(
+        &mut self,
+        part: usize,
+        column: Column<Actors>,
+        rows: impl IntoIterator<Item = &'r mut Routed<Actors>>,
+    ) {
+        self.actors.put_column(part, column, rows);
     }
 
     /// How the actor `id` stands for stands.

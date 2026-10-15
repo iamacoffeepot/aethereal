@@ -2,12 +2,14 @@
 
 mod begun;
 mod costs;
+mod fold;
 mod plan;
 mod since;
 #[cfg(test)]
 mod tests;
 
 pub use costs::Tally;
+pub use fold::{Fold, Folding};
 pub use plan::{Plan, Share, Workers};
 
 use crate::id::root_id;
@@ -61,6 +63,8 @@ pub struct Engine {
     seating: Vec<Seating>,
     /// The actors themselves, in the same parts, kept apart from their seats, which the workers read while they run.
     actors: Vec<BySeat<Held>>,
+    /// What the turns waiting in each part are expected to cost, in nanoseconds, as of the last fold.
+    expected: Vec<u64>,
     /// Where mail is written: for each parity of step, an arena for each writer, the first for mail sent between
     /// steps.
     arenas: [Vec<Arena>; 2],
@@ -197,6 +201,7 @@ impl Engine {
                 .map(|part| Seating { seated: BySeat::empty(parts), free: Vec::new(), next: new_seat(part) })
                 .collect(),
             actors: (0..parts.get()).map(|_| BySeat::empty(parts)).collect(),
+            expected: vec![0; parts.get()],
             arenas: [Vec::new(), Vec::new()],
             lists: Vec::new(),
             kinds: Kinds::new(),
@@ -290,6 +295,9 @@ impl Engine {
         self.fold_turn(&applied, stood, context);
         self.streams.fold_owned(applied, &context);
         self.streams.settle();
+        for part in 0..self.seating.len() {
+            self.expected[part] = self.expect(part);
+        }
 
         Ok(id)
     }
@@ -314,8 +322,10 @@ impl Engine {
     pub fn plan(&mut self, workers: Workers) -> Plan {
         self.step += 1;
 
-        let parts: Vec<(usize, u64)> =
-            (0..self.seating.len()).filter_map(|part| Some((part, self.expect(part)?))).collect();
+        let parts: Vec<(usize, u64)> = (0..self.seating.len())
+            .filter(|part| self.has_work(*part))
+            .map(|part| (part, self.expected[part]))
+            .collect();
         let work = parts.iter().map(|(_, cost)| cost).sum();
         let (delta, packed) = plan::plan(&parts, self.recent, workers);
         self.recent = toward(self.recent, work);
@@ -352,19 +362,28 @@ impl Engine {
         Reading { table: &self.table, mail, read_limit: self.read_limit }
     }
 
-    /// Ends a step: puts back the parts the workers ran, takes in how long their turns took, and applies what the
-    /// turns asked for (ADR-0011).
-    ///
-    /// Each view folds a turn by itself, reading no other, and comes out the same in whatever order the turns come,
-    /// so each worker's turns are folded as they are. Once every turn is folded the streams settle, pairing the
-    /// step's watches and endings.
+    /// Ends a step on the thread that calls it: gathers what the workers left, folds every part, and settles
+    /// (ADR-0011). [`Engine::gather`], [`Folding::fold`] on each fold, and [`Engine::settle`] do the same with the
+    /// folds shared among workers.
     ///
     /// # Panics
     ///
     /// Panics when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn apply(&mut self, done: Vec<Done>) {
+        let folds = self.gather(done);
+        let folding = self.folding();
+        let folded = folds.into_iter().map(|fold| folding.fold(fold)).collect();
+
+        self.settle(folded);
+    }
+
+    /// Begins the end of a step: puts back the parts the workers ran, takes in how long their turns took, seats the
+    /// children the turns stood up, and takes out each part some worker routed a record to, with every worker's
+    /// records for it, shared among as many folds as there were workers by how many records each holds. A part no
+    /// record reached is not touched.
+    pub fn gather(&mut self, done: Vec<Done>) -> Vec<Fold> {
         let parity = parity(self.step);
-        let mut rows = Vec::with_capacity(done.len());
+        let running = done.len();
         for Done { mut lists, tally, arena, parcels } in done {
             self.costs.merge(tally);
             let slot = arena.slot();
@@ -374,43 +393,91 @@ impl Engine {
             }
             let seats = mem::take(&mut lists.seats);
             self.take_back(seats);
-            for child in lists.stood.drain(..) {
+            for child in mem::take(&mut lists.stood) {
                 self.seat(child.seated(), child.path().clone(), child.into_actor());
             }
-            rows.push((slot, lists));
+            self.lists[slot] = lists;
         }
 
-        // Each part of each view takes its column: the bucket every worker filled for it.
-        self.table.fold_routed(rows.iter_mut().map(|(_, lists)| &mut lists.routes.table));
-        self.log.fold_routed(rows.iter_mut().map(|(_, lists)| &mut lists.routes.log));
-        self.lives.fold_routed(rows.iter_mut().map(|(_, lists)| &mut lists.routes.lives));
-        self.streams.fold_routed(rows.iter_mut().map(|(_, lists)| &mut lists.routes.streams));
-        self.streams.settle();
-        for (slot, lists) in rows {
-            self.lists[slot] = lists;
+        let parts: Vec<(usize, u64)> = (0..self.seating.len())
+            .filter_map(|part| {
+                let records: usize = self.lists.iter().map(|lists| lists.routes.records(part)).sum();
+                let records = u64::try_from(records).unwrap_or(u64::MAX);
+
+                (records > 0).then_some((part, records))
+            })
+            .collect();
+        let packed = plan::pack(&parts, running.min(parts.len()));
+
+        packed
+            .into_iter()
+            .map(|parts| Fold { parts: parts.into_iter().map(|part| self.pile(part)).collect() })
+            .collect()
+    }
+
+    /// The engine as the step's workers read it while they fold.
+    #[must_use]
+    pub fn folding(&self) -> Folding<'_> {
+        Folding { costs: &self.costs }
+    }
+
+    /// Ends a step: puts back every part the workers folded, and folds what their streams handed on to other parts:
+    /// the endings for the actors that watch.
+    pub fn settle(&mut self, folds: Vec<Fold>) {
+        let mut forward = Vec::new();
+        for fold in folds {
+            for pile in fold.parts {
+                forward.append(&mut self.unpile(pile));
+            }
+        }
+
+        let reached: Vec<usize> = forward.iter().map(|(key, _)| self.part(SeatNumber::new(*key))).collect();
+        self.streams.fold_records(forward);
+        for part in reached {
+            self.expected[part] = self.expect(part);
         }
     }
 
-    /// What the turns waiting in part `part` are expected to cost, in nanoseconds: one for each item that has
-    /// arrived for an actor seated there, and each closing turn to run. None when the part has nothing to run.
-    fn expect(&self, part: usize) -> Option<u64> {
-        let streams = self.streams.at(part);
-        let lives = self.lives.at(part);
-        let has_work = streams.has_items() || lives.has_ended();
-        if !has_work {
-            return None;
+    /// Whether part `part` has anything to run: an item that has arrived, or a closing turn.
+    fn has_work(&self, part: usize) -> bool {
+        self.streams.at(part).has_items() || self.lives.at(part).has_ended()
+    }
+
+    /// What the turns waiting in part `part` are expected to cost, in nanoseconds.
+    fn expect(&self, part: usize) -> u64 {
+        fold::expected(self.streams.at(part), self.lives.at(part), &self.seating[part].seated, &self.costs)
+    }
+
+    /// Takes part `part` of every view out, with every worker's records for it, to fold.
+    fn pile(&mut self, part: usize) -> fold::Pile {
+        let parts = NonZeroUsize::new(self.seating.len()).unwrap_or(NonZeroUsize::MIN);
+        let empty = Seating { seated: BySeat::empty(parts), free: Vec::new(), next: new_seat(part) };
+        let rows = &mut self.lists;
+
+        fold::Pile {
+            part,
+            table: self.table.column(part, rows.iter_mut().map(|lists| &mut lists.routes.table)),
+            log: self.log.column(part, rows.iter_mut().map(|lists| &mut lists.routes.log)),
+            lives: self.lives.column(part, rows.iter_mut().map(|lists| &mut lists.routes.lives)),
+            streams: self.streams.column(part, rows.iter_mut().map(|lists| &mut lists.routes.streams)),
+            seating: mem::replace(&mut self.seating[part], empty),
+            forward: Vec::new(),
+            expected: 0,
         }
+    }
 
-        let seated = &self.seating[part].seated;
-        let cost = |me: Seated, item: ItemKind| {
-            let kind = seated.get(me).map(|sitting| sitting.kind);
+    /// Puts back a folded part, and answers with what its streams handed on.
+    fn unpile(&mut self, pile: fold::Pile) -> Vec<(u64, stream::Record)> {
+        let fold::Pile { part, table, log, lives, streams, seating, forward, expected } = pile;
+        let rows = &mut self.lists;
+        self.table.put_column(part, table, rows.iter_mut().map(|lists| &mut lists.routes.table));
+        self.log.put_column(part, log, rows.iter_mut().map(|lists| &mut lists.routes.log));
+        self.lives.put_column(part, lives, rows.iter_mut().map(|lists| &mut lists.routes.lives));
+        self.streams.put_column(part, streams, rows.iter_mut().map(|lists| &mut lists.routes.streams));
+        self.seating[part] = seating;
+        self.expected[part] = expected;
 
-            kind.map_or(0, |actor| self.costs.expect(&CostKey { actor, item }))
-        };
-        let items: u64 = streams.arrived().map(|(me, handed)| cost(me, item_kind(handed))).sum();
-        let closings: u64 = lives.ended().iter().map(|me| cost(*me, ItemKind::Closing)).sum();
-
-        Some(items + closings)
+        forward
     }
 
     /// Takes part `part` out of the engine for a worker to run.
@@ -686,6 +753,11 @@ impl Lists {
 }
 
 impl Routes {
+    /// How many records this row holds for part `part`, across the views.
+    fn records(&self, part: usize) -> usize {
+        self.table.records(part) + self.log.records(part) + self.lives.records(part) + self.streams.records(part)
+    }
+
     /// Routes one turn's effects, emitted in `context`, into every view's bucket but the streams'.
     fn route(&mut self, effects: &[Effect], context: &Context) {
         self.table.route(effects, context);
