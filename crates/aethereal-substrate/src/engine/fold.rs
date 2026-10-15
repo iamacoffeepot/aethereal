@@ -40,7 +40,7 @@ impl Pile {
             lives: Column::empty(parts),
             streams: Column::empty(parts),
             watches: Column::empty(parts),
-            seating: Seating { seated: BySeat::empty(parts), free: Vec::new(), next: 0 },
+            seating: Seating { seated: BySeat::empty(parts) },
             forward: Vec::new(),
             expected: 0,
         }
