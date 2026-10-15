@@ -74,8 +74,7 @@ pub struct Engine {
     /// Where mail is written: for each parity of step, an arena for each writer, the first for mail sent between
     /// steps.
     arenas: [Vec<Arena>; 2],
-    /// The lists the workers fill in a step, emptied and kept from one step to the next for their room: a worker
-    /// takes any of them.
+    /// What each worker fills in a step, by writer, emptied and kept from one step to the next for its room.
     lists: Vec<Lists>,
     /// The number given to each kind of actor seated so far.
     kinds: Kinds,
@@ -171,8 +170,7 @@ pub struct Done {
 pub struct Lists {
     /// The effects of the turn running, routed into the buckets when it finishes.
     effects: Vec<Effect>,
-    /// Boxed, as the lists pass between threads each step.
-    routes: Box<Routes>,
+    routes: Routes,
     stood: Vec<Stood>,
     seats: Seats,
     /// How long the turns took, by what they were.
@@ -373,8 +371,15 @@ impl Engine {
         }
         let mut shares = Vec::with_capacity(running);
         for place in 0..running {
-            let arena = self.arena(parity, ROOTS + 1 + place, share);
-            let mut lists = self.lists.pop().unwrap_or_else(|| self.lists());
+            let slot = ROOTS + 1 + place;
+            let arena = self.arena(parity, slot, share);
+            while self.lists.len() <= slot {
+                let lists = self.lists();
+                self.lists.push(lists);
+            }
+            // What is left in its place allocates nothing, and the lists come back to the same place, so each stays
+            // with the worker that fills it.
+            let mut lists = mem::take(&mut self.lists[slot]);
             self.seats((place..self.seating.len()).step_by(running), &mut lists.seats);
             let mut parcels = self.spare.parcels.pop().unwrap_or_default();
             for index in 0..self.packing.shares[place].1.len() {
@@ -431,7 +436,7 @@ impl Engine {
                 self.seat(child.seated(), child.path().clone(), child.into_actor());
             }
             lists.stood = stood;
-            self.lists.push(lists);
+            self.lists[slot] = lists;
         }
 
         self.packing.parts.clear();
@@ -565,12 +570,12 @@ impl Engine {
 
     /// Empty lists for a worker, with a row of buckets for each view.
     fn lists(&self) -> Lists {
-        let routes = Box::new(Routes {
+        let routes = Routes {
             table: self.table.routed(),
             log: self.log.routed(),
             lives: self.lives.routed(),
             streams: self.streams.routed(),
-        });
+        };
 
         Lists { routes, ..Lists::default() }
     }
