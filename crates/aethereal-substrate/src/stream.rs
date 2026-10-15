@@ -26,7 +26,10 @@ use std::ops::Range;
 ///
 /// A part keeps the items of all its actors in one list, as they arrive. At
 /// the start of a step [`Shard::hand`] puts the list in order, once, and the
-/// step's turns read each actor's run of it where it lies.
+/// step's turns read each actor's run of it where it lies. An entry in the list
+/// owns nothing: an ending, which holds how its actor ended, is kept in a
+/// list of its own beside it, so the list is emptied without a look at what it
+/// held.
 pub struct Streams;
 
 /// One part of the view.
@@ -34,8 +37,12 @@ pub struct Streams;
 pub struct Shard {
     /// The items that arrived since the step began, for whichever actor, as they arrived.
     arrived: Vec<Entry>,
+    /// The endings among the items that arrived since the step began, which their entries number.
+    arrived_endings: Vec<(Ended, Context)>,
     /// The items handed out at the start of the step, in order: by seat and actor, then as each actor is handed them.
     handed: Vec<Entry>,
+    /// The endings among the items handed out at the start of the step, which their entries number.
+    handed_endings: Vec<(Ended, Context)>,
     /// Who watches each actor, and whether it has ended, by the actor watched.
     watched: ByActor<Watched>,
     /// The watches asked for in this step, by the actor watched: that actor's seat, who asked, and in what context.
@@ -86,13 +93,32 @@ pub enum Pending {
 pub type Order = (u64, u64);
 
 /// One item in a part, and the seat and actor it is for.
+#[derive(Clone, Copy)]
 pub struct Entry {
     /// The number of the seat of the actor it is for.
     seat: u64,
     /// The bits of the actor it is for.
     to: u64,
     order: Order,
-    pending: Pending,
+    item: Stored,
+}
+
+/// An item as a part keeps it.
+#[derive(Clone, Copy)]
+enum Stored {
+    /// A piece of mail.
+    Mail(Envelope),
+    /// An ending: the place of it, and of its context, in the part's list of endings.
+    Ended(usize),
+}
+
+/// An item handed out, as a turn reads it.
+#[derive(Clone, Copy)]
+pub enum Handed<'a> {
+    /// A piece of mail.
+    Mail(&'a Envelope),
+    /// An actor it watches ended. What it does about it belongs to `context`, the chain that ended that actor.
+    Ended { ended: &'a Ended, context: &'a Context },
 }
 
 impl Shard {
@@ -106,7 +132,9 @@ impl Shard {
     /// at the last step is dropped here.
     pub fn hand(&mut self) -> impl Iterator<Item = (u64, u64, Range<usize>)> + '_ {
         self.handed.clear();
+        self.handed_endings.clear();
         mem::swap(&mut self.arrived, &mut self.handed);
+        mem::swap(&mut self.arrived_endings, &mut self.handed_endings);
         self.handed.sort_unstable_by_key(|entry| (entry.seat, entry.to, entry.order));
         self.handed.dedup_by_key(|entry| (entry.seat, entry.to, entry.order));
 
@@ -121,8 +149,15 @@ impl Shard {
 
     /// The items handed out at the start of the step that lie in `range`.
     #[must_use]
-    pub fn handed(&self, range: Range<usize>) -> impl ExactSizeIterator<Item = &Pending> {
-        self.handed[range].iter().map(|entry| &entry.pending)
+    pub fn handed(&self, range: Range<usize>) -> impl ExactSizeIterator<Item = Handed<'_>> {
+        self.handed[range].iter().map(|entry| match &entry.item {
+            Stored::Mail(envelope) => Handed::Mail(envelope),
+            Stored::Ended(place) => {
+                let (ended, context) = &self.handed_endings[*place];
+
+                Handed::Ended { ended, context }
+            }
+        })
     }
 
     /// Whether any item has arrived since the step began.
@@ -132,9 +167,10 @@ impl Shard {
     }
 }
 
-impl Pending {
+impl Handed<'_> {
     /// The actor the item comes from, and its seat.
-    pub const fn source(&self) -> Seated {
+    #[must_use]
+    pub const fn source(self) -> Seated {
         match self {
             Self::Mail(envelope) => Seated { id: envelope.id.sender, seat: envelope.sender_seat },
             Self::Ended { ended, .. } => ended.actor().seated(),
@@ -154,7 +190,17 @@ impl View for Streams {
     /// endings wait for the step to settle.
     fn fold(shard: &mut Shard, key: u64, record: Record) {
         match record {
-            Record::Item { to, order, pending } => shard.arrived.push(Entry { seat: key, to, order, pending }),
+            Record::Item { to, order, pending } => {
+                let item = match pending {
+                    Pending::Mail(envelope) => Stored::Mail(envelope),
+                    Pending::Ended { ended, context } => {
+                        shard.arrived_endings.push((ended, context));
+
+                        Stored::Ended(shard.arrived_endings.len() - 1)
+                    }
+                };
+                shard.arrived.push(Entry { seat: key, to, order, item });
+            }
             Record::Watch { seat, by, context } => shard.watches.push((key, seat, by, context)),
             Record::Ended { seat, how, context } => {
                 shard.endings.push((Seated { id: ActorId::new(key), seat }, how, context));

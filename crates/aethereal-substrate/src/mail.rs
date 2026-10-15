@@ -4,7 +4,7 @@ use aethereal_actor::{MailId, Payload, SeatNumber};
 use aethereal_data::{ActorId, KindId};
 
 /// A piece of mail as the engine carries it: who it is for, what it is, and what it follows from (ADR-0012).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Envelope {
     /// The mail's own id.
     pub id: MailId,
