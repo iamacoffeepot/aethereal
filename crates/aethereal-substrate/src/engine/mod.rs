@@ -636,11 +636,17 @@ impl Reading<'_> {
     ///
     /// An actor that closes or fails handles nothing more, so what it was handed behind that turn is dropped.
     pub fn run(&self, share: Share, clock: &impl Clock) -> Done {
-        let Share { mut parcels, mut arena, mut lists } = share;
+        let Share { mut parcels, arena, mut lists } = share;
         let mut tally = mem::take(&mut lists.tally);
+        // One list of what turns ask for, over the share: each turn adds to it, and its effects are routed out of it
+        // as it finishes.
+        let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, mem::take(&mut lists.seats));
         for parcel in &mut parcels {
-            self.run_part(parcel, clock, &mut tally, &mut arena, &mut lists);
+            self.run_part(parcel, clock, &mut tally, &mut asked, &mut lists);
         }
+        let (effects, _, arena, seats) = asked.into_parts();
+        lists.effects = effects;
+        lists.seats = seats;
         lists.tally = tally;
 
         Done { lists, arena, parcels }
@@ -654,7 +660,7 @@ impl Reading<'_> {
         parcel: &mut Parcel,
         clock: &impl Clock,
         tally: &mut Tally,
-        arena: &mut Arena,
+        asked: &mut Asked,
         lists: &mut Lists,
     ) {
         let mut runs = mem::take(&mut lists.runs);
@@ -663,14 +669,14 @@ impl Reading<'_> {
             let me = Seated { id: ActorId::new(*bits), seat: SeatNumber::new(*seat) };
             let is_live = parcel.lives.life(me).is_some_and(lives::Life::is_live);
             if is_live {
-                self.turns(parcel, me, Work::Items(range.clone()), clock, tally, arena, lists);
+                self.turns(parcel, me, Work::Items(range.clone()), clock, tally, asked, lists);
             }
         }
         runs.clear();
         lists.runs = runs;
 
         for me in parcel.lives.take_ended() {
-            self.turns(parcel, me, Work::Closing, clock, tally, arena, lists);
+            self.turns(parcel, me, Work::Closing, clock, tally, asked, lists);
         }
     }
 
@@ -679,8 +685,8 @@ impl Reading<'_> {
         self.mail.get(payload.slot()).and_then(|arena| arena.read(payload)).unwrap_or_default()
     }
 
-    /// The turns of the actor `me` names in `parcel` that `work` asks for, each measured into `tally`, their mail
-    /// written to `arena`, and their effects added to `lists`. The actor is taken out of its seat while its turns
+    /// The turns of the actor `me` names in `parcel` that `work` asks for, each measured into `tally`, what they
+    /// ask for added to `asked` and routed into `lists`. The actor is taken out of its seat while its turns
     /// run, and put back, or its seat freed once its closing turn has run. Nothing when another actor sits there.
     #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
     fn turns(
@@ -690,7 +696,7 @@ impl Reading<'_> {
         work: Work,
         clock: &impl Clock,
         tally: &mut Tally,
-        arena: &mut Arena,
+        asked: &mut Asked,
         lists: &mut Lists,
     ) {
         let Parcel { streams, lives, seating, actors, .. } = parcel;
@@ -705,26 +711,23 @@ impl Reading<'_> {
         match (work, life.state()) {
             (Work::Closing, State::Ending(ending)) => {
                 let (how, context) = &**ending;
-                let begins = lists.effects.len();
-                let mut asked =
-                    Asked::continuing(mem::take(&mut lists.effects), mem::take(arena), mem::take(&mut lists.seats));
+                asked.next_turn();
+                let begins = asked.effects_mut().len();
                 let why = why(how);
-                let mut ending = Ending::new(me, &seat.path, self.table, &mut asked, life.sent(), why);
+                let mut ending = Ending::new(me, &seat.path, self.table, asked, life.sent(), why);
                 let ended = tally.time(key(ItemKind::Closing), clock, || actor.end(&mut ending));
-                let (effects, _, written, seats) = asked.into_parts();
-                lists.effects = effects;
-                lists.seats = seats;
-                *arena = written;
+                let effects = asked.effects_mut();
                 // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds its
                 // fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after what the
                 // turn sent.
                 if let Err(fault) = ended {
-                    keep_lines(&mut lists.effects, begins);
-                    lists.effects.push(Effect::new(me, What::EndFailed(fault)));
+                    keep_lines(effects, begins);
+                    effects.push(Effect::new(me, What::EndFailed(fault)));
                 }
-                lists.effects.push(Effect::new(me, What::Ended(how.clone())));
+                effects.push(Effect::new(me, What::Ended(how.clone())));
 
-                lists.route(Ran { effects: begins..lists.effects.len(), stood: Vec::new(), context: *context });
+                let ran = Ran { effects: begins..effects.len(), stood: Vec::new(), context: *context };
+                lists.route(ran, effects);
                 // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
                 seating.seated.remove(me);
                 seating.free.push(me.seat);
@@ -736,9 +739,8 @@ impl Reading<'_> {
                 let mut count = sent_before;
                 for handed in streams.handed(range) {
                     let table = Since { table: self.table, stood: &stood_since };
-                    let begins = lists.effects.len();
-                    let mut asked =
-                        Asked::continuing(mem::take(&mut lists.effects), mem::take(arena), mem::take(&mut lists.seats));
+                    asked.next_turn();
+                    let begins = asked.effects_mut().len();
                     let source = handed.source();
                     let (item, context) = match handed {
                         Handed::Mail { id: cause, envelope: &Envelope { kind, bytes, root, depth, .. } } => {
@@ -749,11 +751,11 @@ impl Reading<'_> {
                         }
                         Handed::Ended { ended, context } => (Item::Ended(ended.clone()), *context),
                     };
-                    let mut turn = Turn::new(me, &seat.path, &table, &mut asked, count, source);
+                    let mut turn = Turn::new(me, &seat.path, &table, asked, count, source);
                     let handled = tally.time(key(item_kind(handed)), clock, || actor.handle(item, &mut turn));
-                    let ran = Ran::of(me, handled, asked, context, begins, lists, arena);
+                    let ran = Ran::of(me, handled, asked, context, begins);
 
-                    let effects = &lists.effects[ran.effects.clone()];
+                    let effects = &asked.effects_mut()[ran.effects.clone()];
                     count = sent(effects, me.id).unwrap_or(count);
                     if !ran.stood.is_empty() {
                         for (child, sent) in senders(effects).into_iter().filter(|(actor, _)| actor.id != me.id) {
@@ -765,7 +767,11 @@ impl Reading<'_> {
                         ran.stood.iter().map(|child| (child.id().bits(), (child.path().clone(), child.seated().seat)));
                     stood_since.extend(stood);
                     let over = ends(effects, me.id);
-                    lists.route(ran);
+                    // Most turns of a busy actor ask for nothing, and then there is nothing to route.
+                    let asked_nothing = ran.effects.is_empty() && ran.stood.is_empty();
+                    if !asked_nothing {
+                        lists.route(ran, asked.effects_mut());
+                    }
                     if over {
                         break;
                     }
@@ -789,10 +795,10 @@ impl Lists {
     ///
     /// Every view but the streams borrows the effects; the streams then take them by value. A turn that stood up a
     /// child whose `begin` failed is routed without what that child left.
-    fn route(&mut self, ran: Ran) {
+    fn route(&mut self, ran: Ran, list: &mut Vec<Effect>) {
         let Ran { effects, stood, context } = ran;
         let routes = &mut self.routes;
-        let is_replaced = match begun(&self.effects[effects.clone()]) {
+        let is_replaced = match begun(&list[effects.clone()]) {
             Cow::Borrowed(applied) => {
                 routes.route(applied, &context);
                 false
@@ -803,7 +809,7 @@ impl Lists {
                 true
             }
         };
-        let these = self.effects.drain(effects.start..);
+        let these = list.drain(effects.start..);
         if !is_replaced {
             routes.streams.route_owned(these, &context);
         }
@@ -827,34 +833,23 @@ impl Routes {
 }
 
 impl Ran {
-    /// The turn of the actor `me` names that returned `outcome`, having asked for `asked`, in `context`, its effects
-    /// added to `lists` from `begins` on and its mail written to `arena`, both given back.
+    /// The turn of the actor `me` names that returned `outcome`, having asked for what is in `asked` from `begins` on,
+    /// in `context`.
     ///
     /// A turn that fails changes nothing outside its actor: what it asked for is dropped but for its log lines,
     /// and the engine writes the one effect that says the actor ended (ADR-0009). The seats of the children it
     /// stood up are given back.
-    fn of(
-        me: Seated,
-        outcome: Result<(), Fault>,
-        asked: Asked,
-        context: Context,
-        begins: usize,
-        lists: &mut Lists,
-        arena: &mut Arena,
-    ) -> Self {
-        let (effects, mut stood, written, seats) = asked.into_parts();
-        lists.effects = effects;
-        lists.seats = seats;
-        *arena = written;
+    fn of(me: Seated, outcome: Result<(), Fault>, asked: &mut Asked, context: Context, begins: usize) -> Self {
+        let mut stood = asked.take_stood();
         if let Err(fault) = outcome {
-            keep_lines(&mut lists.effects, begins);
-            lists.effects.push(Effect::new(me, What::Failed(fault)));
+            keep_lines(asked.effects_mut(), begins);
+            asked.effects_mut().push(Effect::new(me, What::Failed(fault)));
             for child in mem::take(&mut stood) {
-                lists.seats.give_back(child.seated().seat);
+                asked.seats_mut().give_back(child.seated().seat);
             }
         }
 
-        Self { effects: begins..lists.effects.len(), stood, context }
+        Self { effects: begins..asked.effects_mut().len(), stood, context }
     }
 }
 
