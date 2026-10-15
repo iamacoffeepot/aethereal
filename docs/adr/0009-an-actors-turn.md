@@ -21,14 +21,21 @@ In the earlier engine an actor acted as it ran. A send left during the handler, 
 pub trait Actor: Kind + Encode<Within> + Decode<Within> {
     type Config: Kind + Encode<Actors> + Decode<Actors>;
     type Key: ActorKey;                     // () for a singleton, a TypedKey otherwise
+    type Handles;                           // what it handles, each with a handler of its own (ADR-0013)
+    type BeginSends;                        // what `begin` may send (ADR-0013)
+    type EndSends;                          // what `end` may send (ADR-0013)
 
-    fn begin(config: Self::Config, turn: &mut Beginning<'_>) -> Result<Self, Fault>;
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault>;
-    fn end(self, turn: &mut Ending<'_>) -> Result<(), Fault>;
+    fn begin(config: Self::Config, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault>;
+    fn end(self, turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault>;
+}
+
+pub trait Handles<H>: Actor {
+    type Sends;
+    fn handle(&mut self, item: H::Item<'_>, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault>;
 }
 ```
 
-These three are what the engine calls. How an author writes the handling of each kind of mail, and how the kinds an actor handles are declared, is a later ADR; whatever it decides arrives at the engine through `handle`.
+These are what the engine calls: `begin`, a `handle` of the handler for each item, and `end`. How each handler declares what it may send, and how the engine picks the handler for an item, are ADR-0013's.
 
 An actor's life has three parts. `begin` makes it from a config, and runs inside the turn of the parent that spawns it; a root's runs when the chassis makes it. Each piece of mail after that is a turn of its own, a `handle`. `end` is its closing turn, and it runs once, whichever way the actor came to close.
 
@@ -116,7 +123,7 @@ pub enum Level {
 - **A panic in a native actor is a bug in the program, not a failed turn.** The engine does not catch it: a browser host cannot unwind (ADR-0001). Every failure an actor can meet is a `Fault` it returns.
 - **`Watch` asks to be shown that another actor has ended.** Only the engine knows that an actor has ended, so an actor cannot learn it any other way. The watcher names the actor by a reference it holds. Watching an actor already watched changes nothing. A watch ends with its watcher. A parent watches its child as it would any other actor: it is shown nothing of a child it has not watched.
 
-- **An actor reacts to items, and mail is one kind of item.** Each actor has a stream of what it has to react to, a view keyed by that actor (ADR-0011), and an actor runs in a step when its stream has items, whether or not any is mail. `handle` is given one item at a time, each a turn of its own. The kinds are a closed list the engine knows:
+- **An actor reacts to items, and mail is one kind of item.** Each actor has a stream of what it has to react to, a view keyed by that actor (ADR-0011), and an actor runs in a step when its stream has items, whether or not any is mail. Each item is handed to the handler for it, one at a time, each a turn of its own (ADR-0013). The kinds are a closed list the engine knows:
 
   ```rust
   pub enum Item<'a> {

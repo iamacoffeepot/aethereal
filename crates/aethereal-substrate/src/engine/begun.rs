@@ -64,11 +64,14 @@ fn failed_spawns(effects: &[Effect]) -> BTreeSet<usize> {
 mod tests {
     use super::*;
     use crate::id::child_id;
-    use aethereal_actor::{Code, Level, SeatNumber, Seated};
+    use aethereal_actor::{Code, Declared, Level, SeatNumber, Seated};
     use aethereal_data::{ActorId, KindName, PathSegment};
 
     const BRANCH: KindName = KindName::new("aether.test.branch");
     const LEAF: KindName = KindName::new("aether.test.leaf");
+    /// What their types declare: nothing they send or handle, which this does not read.
+    const BRANCH_TYPE: &Declared = &Declared::new(BRANCH, &[], &[], &[]);
+    const LEAF_TYPE: &Declared = &Declared::new(LEAF, &[], &[], &[]);
 
     #[test]
     fn failed_begin_takes_out_its_child_and_all_beneath() {
@@ -78,8 +81,8 @@ mod tests {
         let me = seated(ActorId::new(1), 0);
         let branch = seated(child_id(me.id, &PathSegment::new(BRANCH, &())), 1);
         let leaf = seated(child_id(branch.id, &PathSegment::new(LEAF, &())), 2);
-        let spawn_branch = Effect::new(me, What::Spawn { from: Code::Linked(BRANCH), seat: branch.seat });
-        let spawn_leaf = Effect::new(branch, What::Spawn { from: Code::Linked(LEAF), seat: leaf.seat });
+        let spawn_branch = Effect::new(me, What::Spawn { from: Code::Linked(BRANCH_TYPE), seat: branch.seat });
+        let spawn_leaf = Effect::new(branch, What::Spawn { from: Code::Linked(LEAF_TYPE), seat: leaf.seat });
         let line = Effect::new(leaf, What::Log { level: Level::Error, text: String::from("no file") });
         let effects = vec![
             spawn_branch.clone(),

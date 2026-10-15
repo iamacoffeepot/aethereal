@@ -82,13 +82,18 @@ impl<'a> Mail<'a> {
             return Ok(None);
         }
 
+        self.contents().map(Some)
+    }
+
+    /// The mail's contents, read as `K`, whose handler it was handed to: the kind is already known to match.
+    pub(crate) fn contents<K: Decode<Actors>>(&self) -> Result<K, DecodeError> {
         let mut budget = Budget::new(self.limit);
         let mut reader = Reader::<Actors>::new(self.bytes, &mut budget, ActorsReader::new(self.table));
         let contents = K::decode(&mut reader)?;
         let trailing = reader.input().len();
         let is_whole = trailing == 0;
         if is_whole {
-            Ok(Some(contents))
+            Ok(contents)
         } else {
             Err(DecodeError::TrailingBytes { count: trailing })
         }

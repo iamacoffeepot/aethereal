@@ -1,7 +1,7 @@
 //! The chassis's tests: workers leave what one thread leaves.
 
 use super::*;
-use aethereal_actor::{Actor, Beginning, Ending, Fault, Item, Level, To, ToWithoutMail, Turn};
+use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Level, To, ToType, ToWithoutMail, Turn};
 use aethereal_data::{ActorId, Kind, KindName, PathSegment, Plain, TypedKey};
 use aethereal_substrate::child_id;
 use std::iter;
@@ -44,14 +44,18 @@ const TURNS: u64 = 6;
 impl Actor for Fan {
     type Config = FanConfig;
     type Key = u64;
+    type Handles = (Count,);
+    type BeginSends = (ToType<Self, Count>,);
+    type EndSends = ();
 
-    fn begin(config: FanConfig, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(config: FanConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         let is_root = config.number == 0;
         if is_root {
             for number in 1..=config.children {
                 let config = FanConfig { number, children: 0 };
                 if turn.spawn::<Self>(&number, config).is_ok() {
-                    turn.send(ToWithoutMail::ChildInstanced(Self::NAME, number.to_name()), &Count { left: TURNS })?;
+                    turn.to::<Self>(ToWithoutMail::ChildInstanced(Self::NAME, number.to_name()))
+                        .send(&Count { left: TURNS })?;
                 }
             }
         }
@@ -59,13 +63,15 @@ impl Actor for Fan {
         Ok(Self { number: config.number })
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        let Some(Count { left }) = mail.read()? else {
-            return Ok(());
-        };
+    fn end(self, _turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Count> for Fan {
+    type Sends = (ToType<Self, Count>,);
+
+    fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let is_root = self.number == 0;
         if is_root {
             turn.log(Level::Info, format!("heard {left}"));
@@ -75,17 +81,14 @@ impl Actor for Fan {
 
         let worked = (0..self.number * 1_000).fold(self.number, |sum, step| sum.wrapping_mul(31).wrapping_add(step));
         turn.log(Level::Info, format!("{} at {left} worked {worked}", self.number));
-        turn.send(To::Parent, &Count { left })?;
+        turn.to::<Self>(To::Parent).send(&Count { left })?;
         if left == 0 {
             turn.close();
         } else {
-            turn.send(To::Held(turn.me()), &Count { left: left - 1 })?;
+            let me = turn.me();
+            turn.to::<Self>(To::Held(me)).send(&Count { left: left - 1 })?;
         }
 
-        Ok(())
-    }
-
-    fn end(self, _turn: &mut Ending<'_>) -> Result<(), Fault> {
         Ok(())
     }
 }

@@ -14,6 +14,7 @@ extern crate alloc;
 mod actor;
 mod arena;
 mod boundary;
+mod declared;
 mod effect;
 mod ended;
 mod fault;
@@ -26,6 +27,10 @@ mod turn;
 pub use actor::{Actor, Runs};
 pub use arena::{ARENA_BYTES, Arena, Payload, Span};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Made, Refers, Table, Within, WithinReader, WithinWriter};
+pub use declared::{
+    Allows, At, Declared, Handled, HandledList, Handler, Handles, Kinds, Marker, Others, Role, Sending, Sends, Target,
+    ToAny, ToSender, ToType,
+};
 pub use effect::{Code, Effect, Level, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
@@ -33,4 +38,6 @@ pub use item::Item;
 pub use mail::{Mail, MailId};
 pub use reference::ErasedActorRef;
 pub use seat::{SeatNumber, Seated, Seats};
-pub use turn::{Above, Asked, Beginning, Ending, Refused, Stood, Turn, Why};
+pub use turn::{
+    Above, Address, AnyAddress, Asked, Beginning, Chain, Closing, Ending, Refused, Stood, Turn, Turning, Why,
+};

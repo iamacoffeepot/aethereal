@@ -32,7 +32,9 @@
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
-use aethereal_actor::{Actor, Beginning, Ending, ErasedActorRef, Fault, Item, To, ToWithoutMail, Turn};
+use aethereal_actor::{
+    Actor, Allows, Beginning, Ending, ErasedActorRef, Fault, Handles, To, ToAny, ToSender, ToType, ToWithoutMail, Turn,
+};
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_substrate::{Clock, Engine};
@@ -163,32 +165,42 @@ impl Kind for Pinger {
 impl Actor for Pinger {
     type Config = Number;
     type Key = u64;
+    type Handles = (Ready, Pong);
+    type BeginSends = (ToType<Ponger, Ready>,);
+    type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         let Ok(ponger) = turn.spawn::<Ponger>(&0, Number { number: 0 }) else {
             panic!("the pong side begins");
         };
-        turn.send(ToWithoutMail::Held(ponger), &Ready)?;
+        turn.to::<Ponger>(ToWithoutMail::Held(ponger)).send(&Ready)?;
 
         Ok(Self)
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if matches!(mail.read()?, Some(Ready)) {
-            turn.send(To::Sender, &Ping { left: PINGS - 1 })?;
-        } else if let Some(Pong { left }) = mail.read()?
-            && left > 0
-        {
-            turn.send(To::Sender, &Ping { left: left - 1 })?;
-        }
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ready> for Pinger {
+    type Sends = (ToType<Ponger, Ping>,);
+
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.to::<Ponger>(To::Sender).send(&Ping { left: PINGS - 1 })?;
 
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+impl Handles<Pong> for Pinger {
+    type Sends = (ToType<Ponger, Ping>,);
+
+    fn handle(&mut self, Pong { left }: Pong, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        if left > 0 {
+            turn.to::<Ponger>(To::Sender).send(&Ping { left: left - 1 })?;
+        }
+
         Ok(())
     }
 }
@@ -204,25 +216,25 @@ impl Kind for Ponger {
 impl Actor for Ponger {
     type Config = Number;
     type Key = u64;
+    type Handles = (Ping, Ready);
+    type BeginSends = ();
+    type EndSends = ();
 
-    fn begin(_: Number, _: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(_: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if let Some(Ping { left }) = mail.read()? {
-            turn.send(To::Sender, &Pong { left })?;
-        } else if matches!(mail.read()?, Some(Ready)) {
-            turn.send(To::Sender, &Ready)?;
-        }
-
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+impl Handles<Ping> for Ponger {
+    type Sends = (ToSender<Pong>,);
+
+    fn handle(&mut self, Ping { left }: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.reply(&Pong { left })?;
+
         Ok(())
     }
 }
@@ -239,33 +251,43 @@ impl Kind for Producer {
 impl Actor for Producer {
     type Config = Number;
     type Key = u64;
+    type Handles = (Ready, Total);
+    type BeginSends = (ToType<Counter, Ready>,);
+    type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         let Ok(counter) = turn.spawn::<Counter>(&0, Number { number: 0 }) else {
             panic!("the counter begins");
         };
-        turn.send(ToWithoutMail::Held(counter), &Ready)?;
+        turn.to::<Counter>(ToWithoutMail::Held(counter)).send(&Ready)?;
 
         Ok(Self)
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if matches!(mail.read()?, Some(Ready)) {
-            for _ in 0..COUNTS {
-                turn.send(To::Sender, &Increment)?;
-            }
-            turn.send(To::Sender, &Retrieve)?;
-        } else if let Some(Total { count }) = mail.read()? {
-            assert_eq!(count, COUNTS, "the counter counts every piece of mail");
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ready> for Producer {
+    type Sends = (ToType<Counter, Increment>, ToType<Counter, Retrieve>);
+
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        for _ in 0..COUNTS {
+            turn.to::<Counter>(To::Sender).send(&Increment)?;
         }
+        turn.to::<Counter>(To::Sender).send(&Retrieve)?;
 
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+impl Handles<Total> for Producer {
+    type Sends = ();
+
+    fn handle(&mut self, Total { count }: Total, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        assert_eq!(count, COUNTS, "the counter counts every piece of mail");
+
         Ok(())
     }
 }
@@ -282,31 +304,33 @@ impl Kind for BeginProducer {
 impl Actor for BeginProducer {
     type Config = Number;
     type Key = u64;
+    type Handles = (Total,);
+    type BeginSends = (ToType<Counter, Increment>, ToType<Counter, Retrieve>);
+    type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         let Ok(counter) = turn.spawn::<Counter>(&0, Number { number: 0 }) else {
             panic!("the counter begins");
         };
         for _ in 0..COUNTS {
-            turn.send(ToWithoutMail::Held(counter), &Increment)?;
+            turn.to::<Counter>(ToWithoutMail::Held(counter)).send(&Increment)?;
         }
-        turn.send(ToWithoutMail::Held(counter), &Retrieve)?;
+        turn.to::<Counter>(ToWithoutMail::Held(counter)).send(&Retrieve)?;
 
         Ok(Self)
     }
 
-    fn handle(&mut self, item: Item<'_>, _: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if let Some(Total { count }) = mail.read()? {
-            assert_eq!(count, COUNTS, "the counter counts every piece of mail");
-        }
-
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+impl Handles<Total> for BeginProducer {
+    type Sends = ();
+
+    fn handle(&mut self, Total { count }: Total, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        assert_eq!(count, COUNTS, "the counter counts every piece of mail");
+
         Ok(())
     }
 }
@@ -324,27 +348,35 @@ impl Kind for Counter {
 impl Actor for Counter {
     type Config = Number;
     type Key = u64;
+    type Handles = (Increment, Retrieve, Ready);
+    type BeginSends = ();
+    type EndSends = ();
 
-    fn begin(_: Number, _: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(_: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self { count: 0 })
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if matches!(mail.read()?, Some(Increment)) {
-            self.count += 1;
-        } else if matches!(mail.read()?, Some(Retrieve)) {
-            turn.send(To::Sender, &Total { count: self.count })?;
-        } else if matches!(mail.read()?, Some(Ready)) {
-            turn.send(To::Sender, &Ready)?;
-        }
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Increment> for Counter {
+    type Sends = ();
+
+    fn handle(&mut self, _: Increment, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        self.count += 1;
 
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+impl Handles<Retrieve> for Counter {
+    type Sends = (ToSender<Total>,);
+
+    fn handle(&mut self, _: Retrieve, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.reply(&Total { count: self.count })?;
+
         Ok(())
     }
 }
@@ -363,30 +395,32 @@ impl Kind for Forker {
 impl Actor for Forker {
     type Config = Number;
     type Key = u64;
+    type Handles = (Ready,);
+    type BeginSends = (ToType<Forked, Ready>,);
+    type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
-        let workers: Vec<ErasedActorRef> = (0..FORKS).map(|number| spawned::<Forked>(turn, number)).collect();
-        ready(turn, &workers)?;
+    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let workers: Vec<ErasedActorRef> = (0..FORKS).map(|number| spawned::<Forked, _>(turn, number)).collect();
+        ready::<Forked, _, _>(turn, &workers)?;
 
         Ok(Self { workers })
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if matches!(mail.read()?, Some(Ready)) {
-            for _ in 0..FORKED {
-                for worker in &self.workers {
-                    turn.send(To::Held(*worker), &Work)?;
-                }
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ready> for Forker {
+    type Sends = (ToType<Forked, Work>,);
+
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        for _ in 0..FORKED {
+            for worker in &self.workers {
+                turn.to::<Forked>(To::Held(*worker)).send(&Work)?;
             }
         }
 
-        Ok(())
-    }
-
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -402,26 +436,26 @@ impl Kind for Forked {
 impl Actor for Forked {
     type Config = Number;
     type Key = u64;
+    type Handles = (Work, Ready);
+    type BeginSends = ();
+    type EndSends = ();
 
-    fn begin(_: Number, _: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(_: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if matches!(mail.read()?, Some(Work)) {
-            let sine = hint::black_box(37.2_f64).sin();
-            hint::black_box(sine * sine);
-        } else if matches!(mail.read()?, Some(Ready)) {
-            turn.send(To::Sender, &Ready)?;
-        }
-
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+impl Handles<Work> for Forked {
+    type Sends = ();
+
+    fn handle(&mut self, _: Work, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let sine = hint::black_box(37.2_f64).sin();
+        hint::black_box(sine * sine);
+
         Ok(())
     }
 }
@@ -440,31 +474,33 @@ impl Kind for Crowd {
 impl Actor for Crowd {
     type Config = Number;
     type Key = u64;
+    type Handles = (Ready,);
+    type BeginSends = (ToType<Pinging, Ready>,);
+    type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
-        let actors: Vec<ErasedActorRef> = (0..BIG_ACTORS).map(|number| spawned::<Pinging>(turn, number)).collect();
-        ready(turn, &actors)?;
+    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let actors: Vec<ErasedActorRef> = (0..BIG_ACTORS).map(|number| spawned::<Pinging, _>(turn, number)).collect();
+        ready::<Pinging, _, _>(turn, &actors)?;
 
         Ok(Self { actors })
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if matches!(mail.read()?, Some(Ready)) {
-            for actor in &self.actors {
-                for other in self.actors.iter().filter(|other| *other != actor) {
-                    turn.send(To::Held(*actor), &Neighbour { other: *other })?;
-                }
-                turn.send(To::Held(*actor), &Start)?;
-            }
-        }
-
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+impl Handles<Ready> for Crowd {
+    type Sends = (ToType<Pinging, Neighbour>, ToType<Pinging, Start>);
+
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        for actor in &self.actors {
+            for other in self.actors.iter().filter(|other| *other != actor) {
+                turn.to::<Pinging>(To::Held(*actor)).send(&Neighbour { other: *other })?;
+            }
+            turn.to::<Pinging>(To::Held(*actor)).send(&Start)?;
+        }
+
         Ok(())
     }
 }
@@ -484,13 +520,16 @@ impl Kind for Pinging {
 
 impl Pinging {
     /// Pings a neighbour picked at random, with `left` to go after it.
-    fn ping(&mut self, turn: &mut Turn<'_>, left: u64) -> Result<(), Fault> {
+    fn ping<S, I>(&mut self, turn: &mut Turn<'_, S>, left: u64) -> Result<(), Fault>
+    where
+        S: Allows<ToType<Self, Ping>, I>,
+    {
         self.random ^= self.random << 13;
         self.random ^= self.random >> 7;
         self.random ^= self.random << 17;
         let count = u64::try_from(self.neighbours.len()).unwrap_or(1).max(1);
         let picked = usize::try_from(self.random % count).unwrap_or(0);
-        turn.send(To::Held(self.neighbours[picked]), &Ping { left })?;
+        turn.to::<Self>(To::Held(self.neighbours[picked])).send(&Ping { left })?;
 
         Ok(())
     }
@@ -499,33 +538,55 @@ impl Pinging {
 impl Actor for Pinging {
     type Config = Number;
     type Key = u64;
+    type Handles = (Neighbour, Start, Ping, Pong, Ready);
+    type BeginSends = ();
+    type EndSends = ();
 
-    fn begin(config: Number, _: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(config: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self { neighbours: Vec::new(), random: config.number * 0x9e37_79b9_7f4a_7c15 + 1 })
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if let Some(Neighbour { other }) = mail.read()? {
-            self.neighbours.push(other);
-        } else if matches!(mail.read()?, Some(Start)) {
-            self.ping(turn, BIG_PINGS - 1)?;
-        } else if let Some(Ping { left }) = mail.read()? {
-            turn.send(To::Sender, &Pong { left })?;
-        } else if let Some(Pong { left }) = mail.read()?
-            && left > 0
-        {
-            self.ping(turn, left - 1)?;
-        } else if matches!(mail.read()?, Some(Ready)) {
-            turn.send(To::Sender, &Ready)?;
-        }
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Neighbour> for Pinging {
+    type Sends = ();
+
+    fn handle(&mut self, Neighbour { other }: Neighbour, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        self.neighbours.push(other);
 
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+impl Handles<Start> for Pinging {
+    type Sends = (ToType<Self, Ping>,);
+
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        self.ping(turn, BIG_PINGS - 1)
+    }
+}
+
+impl Handles<Ping> for Pinging {
+    type Sends = (ToSender<Pong>,);
+
+    fn handle(&mut self, Ping { left }: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.reply(&Pong { left })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Pong> for Pinging {
+    type Sends = (ToType<Self, Ping>,);
+
+    fn handle(&mut self, Pong { left }: Pong, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        if left > 0 {
+            self.ping(turn, left - 1)?;
+        }
+
         Ok(())
     }
 }
@@ -561,26 +622,37 @@ impl Kind for FibRoot {
 impl Actor for FibRoot {
     type Config = Number;
     type Key = u64;
+    type Handles = (Ready, Response);
+    type BeginSends = (ToType<Fib, Ready>,);
+    type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
-        let first = spawned::<Fib>(turn, 0);
-        ready(turn, &[first])?;
+    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let first = spawned::<Fib, _>(turn, 0);
+        ready::<Fib, _, _>(turn, &[first])?;
 
         Ok(Self)
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if matches!(mail.read()?, Some(Ready)) {
-            turn.send(To::Sender, &Request { number: FIB })?;
-        }
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ready> for FibRoot {
+    type Sends = (ToType<Fib, Request>,);
+
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.to::<Fib>(To::Sender).send(&Request { number: FIB })?;
 
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+/// The first actor's answer, which ends the program.
+impl Handles<Response> for FibRoot {
+    type Sends = ();
+
+    fn handle(&mut self, _: Response, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -597,45 +669,57 @@ impl Kind for Fib {
     const NAME: KindName = KindName::new("aether.savina.fib");
 }
 
+/// An answer to a parent, which is another actor of the fib program or its root: any actor that handles a
+/// [`Response`].
+type Answer = ToAny<(Response,), Response>;
+
 impl Actor for Fib {
     type Config = Number;
     type Key = u64;
+    type Handles = (Request, Response, Ready);
+    type BeginSends = ();
+    type EndSends = ();
 
-    fn begin(_: Number, _: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(_: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self { sum: 0, answers: 0 })
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if let Some(Request { number }) = mail.read()? {
-            if number <= 2 {
-                turn.send(To::Parent, &Response { value: 1 })?;
-                turn.close();
-            } else {
-                for (key, before) in [(0, number - 1), (1, number - 2)] {
-                    let Ok(child) = turn.spawn::<Self>(&key, Number { number: key }) else {
-                        panic!("a child begins");
-                    };
-                    turn.send(To::Held(child), &Request { number: before })?;
-                }
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Request> for Fib {
+    type Sends = (ToType<Self, Request>, Answer);
+
+    fn handle(&mut self, Request { number }: Request, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        if number <= 2 {
+            turn.to_any::<(Response,)>(To::Parent).send(&Response { value: 1 })?;
+            turn.close();
+        } else {
+            for (key, before) in [(0, number - 1), (1, number - 2)] {
+                let Ok(child) = turn.spawn::<Self>(&key, Number { number: key }) else {
+                    panic!("a child begins");
+                };
+                turn.to::<Self>(To::Held(child)).send(&Request { number: before })?;
             }
-        } else if let Some(Response { value }) = mail.read()? {
-            self.sum += value;
-            self.answers += 1;
-            if self.answers == 2 {
-                turn.send(To::Parent, &Response { value: self.sum })?;
-                turn.close();
-            }
-        } else if matches!(mail.read()?, Some(Ready)) {
-            turn.send(To::Sender, &Ready)?;
         }
 
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+impl Handles<Response> for Fib {
+    type Sends = (Answer,);
+
+    fn handle(&mut self, Response { value }: Response, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        self.sum += value;
+        self.answers += 1;
+        if self.answers == 2 {
+            turn.to_any::<(Response,)>(To::Parent).send(&Response { value: self.sum })?;
+            turn.close();
+        }
+
         Ok(())
     }
 }
@@ -670,31 +754,33 @@ impl Kind for Sieve {
 impl Actor for Sieve {
     type Config = Number;
     type Key = u64;
+    type Handles = (Ready,);
+    type BeginSends = (ToType<Filter, Ready>,);
+    type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         let Ok(first) = turn.spawn::<Filter>(&0, Number { number: 2 }) else {
             panic!("the first filter begins");
         };
-        ready(turn, &[first])?;
+        ready::<Filter, _, _>(turn, &[first])?;
 
         Ok(Self)
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if matches!(mail.read()?, Some(Ready)) {
-            for number in (3..=SIEVE_LIMIT).step_by(2) {
-                turn.send(To::Sender, &Candidate { number })?;
-            }
-            turn.send(To::Sender, &Exit)?;
-        }
-
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+impl Handles<Ready> for Sieve {
+    type Sends = (ToType<Filter, Candidate>, ToType<Filter, Exit>);
+
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        for number in (3..=SIEVE_LIMIT).step_by(2) {
+            turn.to::<Filter>(To::Sender).send(&Candidate { number })?;
+        }
+        turn.to::<Filter>(To::Sender).send(&Exit)?;
+
         Ok(())
     }
 }
@@ -726,43 +812,51 @@ impl Kind for Filter {
 impl Actor for Filter {
     type Config = Number;
     type Key = u64;
+    type Handles = (Candidate, Exit, Ready);
+    type BeginSends = ();
+    type EndSends = ();
 
-    fn begin(first: Number, _: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(first: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self { primes: vec![first.number], next: Next::Last })
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Candidate> for Filter {
+    type Sends = (ToType<Self, Candidate>,);
+
+    fn handle(&mut self, Candidate { number }: Candidate, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let divided = self.primes.iter().any(|prime| number % prime == 0);
+        if divided {
             return Ok(());
-        };
-        if let Some(Candidate { number }) = mail.read()? {
-            let divided = self.primes.iter().any(|prime| number % prime == 0);
-            if divided {
-                return Ok(());
+        }
+        match self.next {
+            Next::Filter(next) => turn.to::<Self>(To::Held(next)).send(&Candidate { number })?,
+            Next::Last if self.primes.len() < SIEVE_KEPT => self.primes.push(number),
+            Next::Last => {
+                let Ok(next) = turn.spawn::<Self>(&0, Number { number }) else {
+                    panic!("a filter begins");
+                };
+                self.next = Next::Filter(next);
             }
-            match self.next {
-                Next::Filter(next) => turn.send(To::Held(next), &Candidate { number })?,
-                Next::Last if self.primes.len() < SIEVE_KEPT => self.primes.push(number),
-                Next::Last => {
-                    let Ok(next) = turn.spawn::<Self>(&0, Number { number }) else {
-                        panic!("a filter begins");
-                    };
-                    self.next = Next::Filter(next);
-                }
-            }
-        } else if matches!(mail.read()?, Some(Exit)) {
-            if let Next::Filter(next) = self.next {
-                turn.send(To::Held(next), &Exit)?;
-            }
-            turn.close();
-        } else if matches!(mail.read()?, Some(Ready)) {
-            turn.send(To::Sender, &Ready)?;
         }
 
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+impl Handles<Exit> for Filter {
+    type Sends = (ToType<Self, Exit>,);
+
+    fn handle(&mut self, _: Exit, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        if let Next::Filter(next) = self.next {
+            turn.to::<Self>(To::Held(next)).send(&Exit)?;
+        }
+        turn.close();
+
         Ok(())
     }
 }
@@ -798,12 +892,15 @@ impl Kind for Churn {
 
 impl Churn {
     /// Spawns the next actor and starts its life.
-    fn spawn_next(&mut self, turn: &mut Turn<'_>) -> Result<(), Fault> {
+    fn spawn_next<S, I>(&mut self, turn: &mut Turn<'_, S>) -> Result<(), Fault>
+    where
+        S: Allows<ToType<Mortal, Live>, I>,
+    {
         let Ok(child) = turn.spawn::<Mortal>(&self.spawned, Number { number: self.spawned }) else {
             panic!("a churn actor begins");
         };
         self.spawned += 1;
-        turn.send(To::Held(child), &Live { left: CHURN_LIFE })?;
+        turn.to::<Mortal>(To::Held(child)).send(&Live { left: CHURN_LIFE })?;
 
         Ok(())
     }
@@ -812,31 +909,43 @@ impl Churn {
 impl Actor for Churn {
     type Config = Number;
     type Key = u64;
+    type Handles = (Ready, Died);
+    type BeginSends = (ToType<Mortal, Ready>,);
+    type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
-        let first = spawned::<Mortal>(turn, 0);
-        ready(turn, &[first])?;
+    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let first = spawned::<Mortal, _>(turn, 0);
+        ready::<Mortal, _, _>(turn, &[first])?;
 
         Ok(Self { spawned: 1 })
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if matches!(mail.read()?, Some(Ready)) {
-            turn.send(To::Sender, &Live { left: CHURN_LIFE })?;
-            while self.spawned < CHURN_ALIVE {
-                self.spawn_next(turn)?;
-            }
-        } else if matches!(mail.read()?, Some(Died)) && self.spawned < CHURN_TOTAL {
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ready> for Churn {
+    type Sends = (ToType<Mortal, Live>,);
+
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.to::<Mortal>(To::Sender).send(&Live { left: CHURN_LIFE })?;
+        while self.spawned < CHURN_ALIVE {
             self.spawn_next(turn)?;
         }
 
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+impl Handles<Died> for Churn {
+    type Sends = (ToType<Mortal, Live>,);
+
+    fn handle(&mut self, _: Died, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        if self.spawned < CHURN_TOTAL {
+            self.spawn_next(turn)?;
+        }
+
         Ok(())
     }
 }
@@ -852,30 +961,31 @@ impl Kind for Mortal {
 impl Actor for Mortal {
     type Config = Number;
     type Key = u64;
+    type Handles = (Live, Ready);
+    type BeginSends = ();
+    type EndSends = ();
 
-    fn begin(_: Number, _: &mut Beginning<'_>) -> Result<Self, Fault> {
+    fn begin(_: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        if let Some(Live { left }) = mail.read()? {
-            if left > 0 {
-                turn.send(To::Held(turn.me()), &Live { left: left - 1 })?;
-            } else {
-                turn.send(To::Parent, &Died)?;
-                turn.close();
-            }
-        } else if matches!(mail.read()?, Some(Ready)) {
-            turn.send(To::Sender, &Ready)?;
-        }
-
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
+}
 
-    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+impl Handles<Live> for Mortal {
+    type Sends = (ToType<Self, Live>, ToType<Churn, Died>);
+
+    fn handle(&mut self, Live { left }: Live, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        if left > 0 {
+            let me = turn.me();
+            turn.to::<Self>(To::Held(me)).send(&Live { left: left - 1 })?;
+        } else {
+            turn.to::<Churn>(To::Parent).send(&Died)?;
+            turn.close();
+        }
+
         Ok(())
     }
 }
@@ -933,17 +1043,37 @@ fn sieve_size() -> Size {
     Size { actors: count + 1, mails: mails + count }
 }
 
-/// Tells the last of `children` that the program can start, so it answers from a turn.
-fn ready(turn: &mut Beginning<'_>, children: &[ErasedActorRef]) -> Result<(), Fault> {
+/// Tells the last of `children`, each of type `T`, that the program can start, so it answers from a turn.
+fn ready<T: Handles<Ready>, S, I>(turn: &mut Beginning<'_, S>, children: &[ErasedActorRef]) -> Result<(), Fault>
+where
+    S: Allows<ToType<T, Ready>, I>,
+{
     if let Some(last) = children.last() {
-        turn.send(ToWithoutMail::Held(*last), &Ready)?;
+        turn.to::<T>(ToWithoutMail::Held(*last)).send(&Ready)?;
     }
 
     Ok(())
 }
 
+/// Each of `actors` answers the word that a program can start, to the root that sent it.
+macro_rules! answers_ready {
+    ($($actor:ty),*) => {$(
+        impl Handles<Ready> for $actor {
+            type Sends = (ToSender<Ready>,);
+
+            fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+                turn.reply(&Ready)?;
+
+                Ok(())
+            }
+        }
+    )*};
+}
+
+answers_ready!(Ponger, Counter, Forked, Pinging, Fib, Filter, Mortal);
+
 /// A child of type `A` numbered `number`, spawned by `turn`.
-fn spawned<A: Actor<Config = Number, Key = u64> + 'static>(turn: &mut Beginning<'_>, number: u64) -> ErasedActorRef {
+fn spawned<A: Actor<Config = Number, Key = u64>, S>(turn: &mut Beginning<'_, S>, number: u64) -> ErasedActorRef {
     let Ok(child) = turn.spawn::<A>(&number, Number { number }) else {
         panic!("a child begins");
     };
@@ -959,7 +1089,7 @@ struct Program {
 }
 
 /// Adds the root of type `A`, which starts a program.
-fn root<A: Actor<Config = Number, Key = u64> + 'static>(engine: &mut Engine) {
+fn root<A: Actor<Config = Number, Key = u64>>(engine: &mut Engine) {
     let Ok(_) = engine.add_root::<A>(&0, Number { number: 0 }) else {
         panic!("the root begins");
     };

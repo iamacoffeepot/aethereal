@@ -1,7 +1,7 @@
 //! The table as one actor's turn reads it: the step's start, and that actor's own spawns since (ADR-0009).
 
 use crate::{ActorTable, ByActor};
-use aethereal_actor::{Made, SeatNumber, Seated, Table};
+use aethereal_actor::{Declared, Made, SeatNumber, Seated, Table};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 
 /// The table as one actor's turn reads it (ADR-0009).
@@ -13,8 +13,9 @@ use aethereal_data::{ActorId, ActorPath, PathSegment};
 /// yet proven.
 pub(super) struct Since<'a> {
     pub(super) table: &'a ActorTable,
-    /// The paths and seats of the children the actor stood up in its earlier turns of the step, under their ids.
-    pub(super) stood: &'a ByActor<(ActorPath, SeatNumber)>,
+    /// The paths and seats of the children the actor stood up in its earlier turns of the step, and what their types
+    /// declare, under their ids.
+    pub(super) stood: &'a ByActor<(ActorPath, SeatNumber, &'static Declared)>,
 }
 
 /// A child stood up in an earlier turn is not yet proven to anyone, so a reference to it is not read back.
@@ -30,7 +31,7 @@ impl Table for Since<'_> {
     }
 
     fn path(&self, id: ActorId) -> Option<ActorPath> {
-        let stood = self.stood.get(&id.bits()).map(|(path, _)| path.clone());
+        let stood = self.stood.get(&id.bits()).map(|(path, _, _)| path.clone());
 
         stood.or_else(|| self.table.path(id))
     }
@@ -44,8 +45,14 @@ impl Table for Since<'_> {
     }
 
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber> {
-        let stood = self.stood.get(&id.bits()).map(|(_, seat)| *seat);
+        let stood = self.stood.get(&id.bits()).map(|(_, seat, _)| *seat);
 
         stood.or_else(|| self.table.seat(id))
+    }
+
+    fn declared(&self, id: ActorId) -> Option<&'static Declared> {
+        let stood = self.stood.get(&id.bits()).map(|(_, _, declared)| *declared);
+
+        stood.or_else(|| Table::declared(self.table, id))
     }
 }

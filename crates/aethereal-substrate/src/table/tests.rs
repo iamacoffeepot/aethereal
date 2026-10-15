@@ -3,7 +3,7 @@
 use super::*;
 use crate::Context;
 use crate::id::{child_id, root_id};
-use aethereal_actor::{Code, Fault, MailId, SeatNumber, Seated, Unreadable, What};
+use aethereal_actor::{Code, Declared, Fault, MailId, SeatNumber, Seated, Unreadable, What};
 use aethereal_data::{KeyName, KindName, PathSegment};
 
 /// The context the effects of these tests were emitted in, which the table does not read.
@@ -14,6 +14,10 @@ fn context() -> Context {
 const WINDOW: KindName = KindName::new("aether.window");
 const SURFACE: KindName = KindName::new("aether.window.surface");
 const LAYER: KindName = KindName::new("aether.window.layer");
+/// What the types of these actors declare: nothing they send or handle, which the table does not read.
+const WINDOW_TYPE: &Declared = &Declared::new(WINDOW, &[], &[], &[]);
+const SURFACE_TYPE: &Declared = &Declared::new(SURFACE, &[], &[], &[]);
+const LAYER_TYPE: &Declared = &Declared::new(LAYER, &[], &[], &[]);
 const LEFT: KeyName = KeyName::new("left");
 
 /// A table of `parts` parts.
@@ -34,13 +38,13 @@ fn at(id: ActorId) -> Seated {
 fn window() -> (ActorId, Effect) {
     let id = root_id(&PathSegment::new(WINDOW, &()));
 
-    (id, Effect::new(at(id), What::Root { from: Code::Linked(WINDOW) }))
+    (id, Effect::new(at(id), What::Root { from: Code::Linked(WINDOW_TYPE) }))
 }
 
 /// The id of the surface `left` beneath `parent`, and the effect by which `parent` spawns it.
 fn surface(parent: ActorId) -> (ActorId, Effect) {
     let id = child_id(parent, &PathSegment::instanced(SURFACE, LEFT));
-    let spawn = What::SpawnInstanced { from: Code::Linked(SURFACE), key: LEFT, seat: at(id).seat };
+    let spawn = What::SpawnInstanced { from: Code::Linked(SURFACE_TYPE), key: LEFT, seat: at(id).seat };
 
     (id, Effect::new(at(parent), spawn))
 }
@@ -49,7 +53,7 @@ fn surface(parent: ActorId) -> (ActorId, Effect) {
 fn layer(parent: ActorId) -> (ActorId, Effect) {
     let id = child_id(parent, &PathSegment::new(LAYER, &()));
 
-    (id, Effect::new(at(parent), What::Embed { from: Code::Linked(LAYER), seat: at(id).seat }))
+    (id, Effect::new(at(parent), What::Embed { from: Code::Linked(LAYER_TYPE), seat: at(id).seat }))
 }
 
 #[test]

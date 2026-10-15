@@ -1,6 +1,6 @@
 //! An effect: one thing an actor asks of the engine (ADR-0009).
 
-use crate::{ErasedActorRef, Fault, How, Payload, SeatNumber, Seated};
+use crate::{Declared, ErasedActorRef, Fault, How, Payload, SeatNumber, Seated};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
 use alloc::string::String;
 
@@ -149,16 +149,24 @@ impl From<ToWithoutMail> for To {
 /// A guest's code, a blob the engine holds, is a further case that enters with blobs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Code {
-    /// The program's own actor of this kind.
-    Linked(KindName),
+    /// The program's own actor type, as it declares itself (ADR-0013).
+    Linked(&'static Declared),
 }
 
 impl Code {
+    /// What the actor type the code makes declares (ADR-0013).
+    #[must_use]
+    pub const fn declared(&self) -> &'static Declared {
+        match self {
+            Self::Linked(declared) => declared,
+        }
+    }
+
     /// The kind of actor the code makes: the actor's name in its path.
     #[must_use]
     pub const fn kind(&self) -> &KindName {
         match self {
-            Self::Linked(kind) => kind,
+            Self::Linked(declared) => declared.name(),
         }
     }
 

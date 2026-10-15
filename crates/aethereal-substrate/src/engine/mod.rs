@@ -21,8 +21,8 @@ use crate::{
     rounded,
 };
 use aethereal_actor::{
-    Above, Actor, Arena, Asked, Beginning, Code, Effect, Ending, Fault, How, Item, Mail, MailId, Payload, Refused,
-    Runs, SeatNumber, Seated, Seats, Stood, Turn, What, Why,
+    Above, Actor, Arena, Asked, Beginning, Chain, Closing, Code, Declared, Effect, Fault, How, Item, Mail, MailId,
+    Payload, Refused, Runs, SeatNumber, Seated, Seats, Stood, Turning, What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 use begun::begun;
@@ -299,7 +299,7 @@ impl Engine {
     /// # Panics
     ///
     /// Panics when an actor is made under an id the table already holds for another path (ADR-0008).
-    pub fn add_root<A: Actor + 'static>(&mut self, key: &A::Key, config: A::Config) -> Result<ActorId, Refused> {
+    pub fn add_root<A: Actor>(&mut self, key: &A::Key, config: A::Config) -> Result<ActorId, Refused> {
         let segment = PathSegment::new(A::NAME, key);
         let id = root_id(&segment);
         let path = ActorPath::from_root(&segment);
@@ -314,7 +314,7 @@ impl Engine {
         let mut seats = self.lend_seats();
         let me = Seated { id, seat: seats.take() };
         let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats);
-        let began = A::begin(config, &mut Beginning::new(me, &path, &self.table, &mut asked));
+        let began = A::begin(config, &mut Beginning::new::<A>(me, &path, &self.table, &mut asked));
         let (asked, stood, arena, mut seats) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
         let root = match began {
@@ -330,7 +330,7 @@ impl Engine {
             }
         };
         self.take_back_lent(seats);
-        let from = Code::Linked(A::NAME);
+        let from = Code::Linked(Declared::of::<A>());
         let made = match segment.key() {
             None => What::Root { from },
             Some(key) => What::RootInstanced { from, key: key.clone() },
@@ -886,8 +886,8 @@ impl Reading<'_> {
                 asked.next_turn();
                 let begins = asked.effects_mut().len();
                 let why = why(how);
-                let mut ending = Ending::new(me, &seat.path, seat.above, self.table, asked, life.sent(), why);
-                let ended = tally.time(key(ItemKind::Closing), clock, || actor.end(&mut ending));
+                let closing = Closing::new(me, &seat.path, seat.above, self.table, asked, life.sent(), why);
+                let ended = tally.time(key(ItemKind::Closing), clock, || actor.end(closing));
                 let effects = asked.effects_mut();
                 // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds its
                 // fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after what the
@@ -923,8 +923,10 @@ impl Reading<'_> {
                         }
                         Handed::Ended { ended, context } => (Item::Ended(ended.clone()), *context),
                     };
-                    let mut turn = Turn::new(me, &seat.path, seat.above, &table, asked, count, source);
-                    let handled = tally.time(key(item_kind(handed)), clock, || actor.handle(item, &mut turn));
+                    // The item sits one above what the turn sends in its chain.
+                    let chain = Chain { root: context.root, depth: context.depth - 1 };
+                    let turning = Turning::new(me, &seat.path, seat.above, &table, asked, count, source, chain);
+                    let handled = tally.time(key(item_kind(handed)), clock, || actor.handle(item, turning));
                     let ran = Ran::of(me, handled, asked, context, begins);
 
                     if !ran.stood.is_empty() {
@@ -934,8 +936,9 @@ impl Reading<'_> {
                             lists.routes.lives.put(key, record);
                         }
                     }
-                    let stood =
-                        ran.stood.iter().map(|child| (child.id().bits(), (child.path().clone(), child.seated().seat)));
+                    let stood = ran.stood.iter().map(|child| {
+                        (child.id().bits(), (child.path().clone(), child.seated().seat, child.declared()))
+                    });
                     stood_since.extend(stood);
                     // Most turns of a busy actor ask for nothing, and then there is nothing to route.
                     let asked_nothing = ran.effects.is_empty() && ran.stood.is_empty();
