@@ -116,25 +116,11 @@ impl<V: View> Folded<V> {
         Routed { buckets: self.shards.iter().map(|_| Vec::new()).collect() }
     }
 
-    /// Folds in every writer's records of a step, part by part: each part takes its column, the bucket each row of
-    /// `rows` holds for it, one row after another. The buckets are emptied and keep their room.
+    /// Folds every writer's records for the part numbered `part` where it lies, one row after another: what
+    /// [`Column::fold`] does with the part taken out. The buckets are emptied and keep their room.
     ///
     /// The records of a key that has one owner come from that owner's turns, which one writer ran, in order, so they
     /// reach [`View::fold`] in the order the owner asked for them.
-    pub fn fold_routed<'r>(&mut self, rows: impl IntoIterator<Item = &'r mut Routed<V>>)
-    where
-        V: 'r,
-    {
-        let mut rows: Vec<&mut Routed<V>> = rows.into_iter().collect();
-        for (part, shard) in self.shards.iter_mut().enumerate() {
-            for row in &mut rows {
-                V::fold_all(shard, &mut row.buckets[part]);
-            }
-        }
-    }
-
-    /// Folds every writer's records for the part numbered `part` where it lies, one row after another: what
-    /// [`Column::fold`] does with the part taken out. The buckets are emptied and keep their room.
     pub fn fold_part<'r>(&mut self, part: usize, rows: impl IntoIterator<Item = &'r mut Routed<V>>)
     where
         V: 'r,
@@ -288,7 +274,8 @@ impl<V: View> Folded<V> {
 /// buckets (ADR-0011).
 ///
 /// A worker routes its turns' effects into its row as each turn finishes,
-/// and [`Folded::fold_routed`] folds each part's column of the rows.
+/// and the engine folds each part's column of the rows: only the parts some
+/// row holds records for.
 pub struct Routed<V: View> {
     /// A bucket for each part of the view.
     buckets: Vec<Vec<(u64, V::Record)>>,
@@ -317,8 +304,7 @@ impl<V: View> Routed<V> {
     /// Routes one effect, emitted in `context`.
     pub fn route(&mut self, effect: &Effect, context: &Context) {
         for (key, record) in V::takes(effect, context) {
-            let part = part(key, self.buckets.len());
-            self.buckets[part].push((key, record));
+            self.put(key, record);
         }
     }
 
@@ -330,8 +316,7 @@ impl<V: View> Routed<V> {
         V: Consumes,
     {
         for (key, record) in V::takes_owned(effect, context) {
-            let part = part(key, self.buckets.len());
-            self.buckets[part].push((key, record));
+            self.put(key, record);
         }
     }
 }

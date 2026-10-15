@@ -435,6 +435,7 @@ fn item_placed_under_a_seat_reaches_only_the_actor_it_was_placed_for() {
         let ended = Ended::new(Seated { id: node(root, 2), seat: SeatNumber::new(7) }, How::Closed);
         let to = Seated { id: to, seat: SeatNumber::new(seat) };
         engine.streams.shard_mut(seat).end(Notice { to, ended, context });
+        engine.waiting.push(engine.part(to.seat));
     };
 
     place(&mut engine, node(root, 3));
@@ -479,8 +480,8 @@ fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
     let actors = [root, two, three, node(two, 4), node(three, 5), node(three, 6)];
     let taken: Vec<u64> = actors.iter().filter_map(|id| engine.table().seat(*id)).map(SeatNumber::number).collect();
     assert_eq!(taken.len(), actors.len());
-    let free: Vec<u64> = engine.seating.iter().flat_map(|part| &part.free).map(|seat| seat.number()).collect();
-    let numbered = engine.seating.iter().zip(0..).flat_map(|(part, first)| (first..part.next).step_by(4));
+    let free: Vec<u64> = engine.free.iter().map(|seat| seat.number()).collect();
+    let numbered = engine.next.iter().zip(0..).flat_map(|(next, first)| (first..*next).step_by(4));
     let each_once = numbered.clone().all(|seat| taken.iter().chain(&free).filter(|held| **held == seat).count() == 1);
     assert!(each_once);
     assert_eq!(taken.len() + free.len(), numbered.count());

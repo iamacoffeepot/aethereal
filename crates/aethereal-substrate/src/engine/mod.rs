@@ -67,6 +67,13 @@ pub struct Engine {
     seating: Vec<Seating>,
     /// The actors themselves, in the same parts, kept apart from their seats, which the workers read while they run.
     actors: Vec<BySeat<Held>>,
+    /// The parts that may have something to run in the next step: each part the last fold reached, and every part once
+    /// a root is made. A part with something to run is always among them, so a step looks at no other.
+    waiting: Vec<usize>,
+    /// The empty seats, in any part, given out before new numbers are.
+    free: Vec<SeatNumber>,
+    /// The number of each part's next new seat.
+    next: Vec<u64>,
     /// What the turns waiting in each part are expected to cost, in nanoseconds, as of the last fold.
     expected: Vec<u64>,
     /// What planning and gathering a step pack parts in.
@@ -93,14 +100,10 @@ pub struct Engine {
     mail_bytes: usize,
 }
 
-/// One part of the engine's seats: the actors in them, and the seats it gives out next.
+/// One part of the engine's seats: the actors in them.
 struct Seating {
     /// Each actor in a seat of this part.
     seated: BySeat<Sitting>,
-    /// The part's empty seats, given out before new numbers are.
-    free: Vec<SeatNumber>,
-    /// The number of the part's next new seat.
-    next: u64,
 }
 
 /// An actor in its seat: what is fixed when it is seated.
@@ -141,6 +144,8 @@ struct Spare {
     piles: Vec<fold::Pile>,
     /// The endings the folded parts' watches hand on to the streams of the actors that watch.
     forward: Vec<Notice>,
+    /// The parts some writer routed a record to in a step.
+    touched: Vec<usize>,
 }
 
 /// One part of the engine as a worker owns it for a step: what has arrived for the actors seated in it, their lives,
@@ -184,6 +189,9 @@ pub struct Lists {
     routes: Routes,
     stood: Vec<Stood>,
     seats: Seats,
+    /// The seats of the actors whose closing turns ran, empty once the step is applied: no seat is given again in the
+    /// step that freed it, while its actor's last records are still to fold.
+    freed: Vec<SeatNumber>,
     /// How long the turns took, by what they were.
     tally: Tally,
     /// Each actor with items in the part running, as it was handed them: kept for its room.
@@ -232,10 +240,11 @@ impl Engine {
             watches: Folded::new(parts),
             log: Folded::new(parts),
             lives: Folded::new(parts),
-            seating: (0..parts.get())
-                .map(|part| Seating { seated: BySeat::empty(parts), free: Vec::new(), next: new_seat(part) })
-                .collect(),
+            seating: (0..parts.get()).map(|_| Seating { seated: BySeat::empty(parts) }).collect(),
             actors: (0..parts.get()).map(|_| BySeat::empty(parts)).collect(),
+            waiting: Vec::new(),
+            free: Vec::new(),
+            next: (0..parts.get()).map(new_seat).collect(),
             expected: vec![0; parts.get()],
             packing: Packing::default(),
             spare: Spare::default(),
@@ -275,10 +284,7 @@ impl Engine {
     /// Whether a step would run no turn: no actor has anything to react to, and none has a closing turn to run.
     #[must_use]
     pub fn is_idle(&self) -> bool {
-        let has_items = self.streams.shards().any(stream::Shard::has_items);
-        let has_ended = self.lives.shards().any(lives::Shard::has_ended);
-
-        !has_items && !has_ended
+        !self.waiting.iter().any(|part| self.has_work(*part))
     }
 
     /// Makes a root of type `A` under `key`, for the chassis, and answers with its id (ADR-0008).
@@ -301,8 +307,7 @@ impl Engine {
         // Mail sent between steps is read in the next step, with the mail the last step's turns sent. The root and the
         // children its `begin` stands up take the empty seats first, then new ones, in any part.
         let parity = parity(self.step);
-        let mut seats = Seats::default();
-        self.seats(0..self.seating.len(), &mut seats);
+        let mut seats = self.lend_seats();
         let me = Seated { id, seat: seats.take() };
         let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats);
         let began = A::begin(config, &mut Beginning::new(me, &path, &self.table, &mut asked));
@@ -315,12 +320,12 @@ impl Engine {
                 for child in stood {
                     seats.give_back(child.seated().seat);
                 }
-                self.take_back(&mut seats);
+                self.take_back_lent(seats);
 
                 return Err(Refused::Began(fault));
             }
         };
-        self.take_back(&mut seats);
+        self.take_back_lent(seats);
         let from = Code::Linked(A::NAME);
         let made = match segment.key() {
             None => What::Root { from },
@@ -343,6 +348,7 @@ impl Engine {
         for part in 0..self.seating.len() {
             self.expected[part] = self.expect(part);
         }
+        self.waiting.extend(0..self.seating.len());
 
         Ok(id)
     }
@@ -400,15 +406,13 @@ impl Engine {
     ///
     /// Panics when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn apply_whole(&mut self, whole: Whole) {
-        let Whole { arena, lists } = whole;
+        let Whole { arena, mut lists } = whole;
+        self.take_back_lent(mem::take(&mut lists.seats));
         self.take_in(lists, arena);
 
         let mut forward = mem::take(&mut self.spare.forward);
-        for part in 0..self.seating.len() {
-            let records: usize = self.lists.iter().map(|lists| lists.routes.records(part)).sum();
-            if records == 0 {
-                continue;
-            }
+        let mut touched = self.touched();
+        for &part in &touched {
             let rows = &mut self.lists;
             self.table.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.table));
             self.log.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.log));
@@ -417,7 +421,10 @@ impl Engine {
             self.watches.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.watches));
             self.watches.at_mut(part).settle(&mut forward);
             self.expected[part] = self.expect(part);
+            self.waiting.push(part);
         }
+        touched.clear();
+        self.spare.touched = touched;
         self.hand_on(forward);
     }
 
@@ -428,12 +435,17 @@ impl Engine {
     pub fn plan(&mut self, workers: Workers) -> Plan {
         self.step += 1;
 
+        // The parts in the order of their numbers, as a step runs them.
+        self.waiting.sort_unstable();
+        self.waiting.dedup();
         self.packing.parts.clear();
-        for part in 0..self.seating.len() {
+        for index in 0..self.waiting.len() {
+            let part = self.waiting[index];
             if self.has_work(part) {
                 self.packing.parts.push((part, self.expected[part]));
             }
         }
+        self.waiting.clear();
         let work = self.packing.parts.iter().map(|(_, cost)| cost).sum();
         let (delta, running) = plan::plan(&self.packing.parts, self.recent, workers);
         self.recent = toward(self.recent, work);
@@ -482,7 +494,11 @@ impl Engine {
         // What is left in its place allocates nothing, and the lists come back to the same place, so each stays with
         // the worker that fills it.
         let mut lists = mem::take(&mut self.lists[slot]);
-        self.seats((place..self.seating.len()).step_by(running), &mut lists.seats);
+        if running == 1 {
+            lists.seats = self.lend_seats();
+        } else {
+            self.seats(place, running, &mut lists.seats);
+        }
 
         (arena, lists)
     }
@@ -494,6 +510,7 @@ impl Engine {
         let slot = arena.slot();
         self.arenas[parity(self.step)][slot] = arena;
         self.take_back(&mut lists.seats);
+        self.free.append(&mut lists.freed);
         let mut stood = mem::take(&mut lists.stood);
         while let Some(child) = stood.pop() {
             self.seat(child.seated(), child.path().clone(), child.into_actor());
@@ -509,6 +526,7 @@ impl Engine {
             let part = self.part(notice.to.seat);
             self.streams.shard_mut(notice.to.seat.number()).end(notice);
             self.expected[part] = self.expect(part);
+            self.waiting.push(part);
         }
         self.spare.forward = forward;
     }
@@ -551,12 +569,14 @@ impl Engine {
         }
 
         self.packing.parts.clear();
-        for part in 0..self.seating.len() {
+        let mut touched = self.touched();
+        for &part in &touched {
             let records: usize = self.lists.iter().map(|lists| lists.routes.records(part)).sum();
-            if records > 0 {
-                self.packing.parts.push((part, u64::try_from(records).unwrap_or(u64::MAX)));
-            }
+            self.packing.parts.push((part, u64::try_from(records).unwrap_or(u64::MAX)));
+            self.waiting.push(part);
         }
+        touched.clear();
+        self.spare.touched = touched;
         let folding = running.min(self.packing.parts.len());
         if folding == 0 {
             return Vec::new();
@@ -598,6 +618,20 @@ impl Engine {
         self.hand_on(forward);
     }
 
+    /// The parts some writer routed a record to since the last fold, each once and in the order of their numbers: the
+    /// parts a fold folds.
+    fn touched(&mut self) -> Vec<usize> {
+        let mut touched = mem::take(&mut self.spare.touched);
+        for part in 0..self.seating.len() {
+            let records: usize = self.lists.iter().map(|lists| lists.routes.records(part)).sum();
+            if records > 0 {
+                touched.push(part);
+            }
+        }
+
+        touched
+    }
+
     /// Whether part `part` has anything to run: an item that has arrived, or a closing turn.
     fn has_work(&self, part: usize) -> bool {
         self.streams.at(part).has_items() || self.lives.at(part).has_ended()
@@ -612,7 +646,7 @@ impl Engine {
     fn pile(&mut self, part: usize) -> fold::Pile {
         let parts = NonZeroUsize::new(self.seating.len()).unwrap_or(NonZeroUsize::MIN);
         let mut pile = self.spare.piles.pop().unwrap_or_else(|| fold::Pile::empty(parts));
-        let empty = Seating { seated: BySeat::empty(parts), free: Vec::new(), next: new_seat(part) };
+        let empty = Seating { seated: BySeat::empty(parts) };
         let rows = &mut self.lists;
         self.table.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.table), &mut pile.table);
         self.log.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.log), &mut pile.log);
@@ -636,7 +670,7 @@ impl Engine {
         self.lives.empty(part, &mut pile.lives, rows.iter_mut().map(|lists| &mut lists.routes.lives));
         self.streams.empty(part, &mut pile.streams, rows.iter_mut().map(|lists| &mut lists.routes.streams));
         self.watches.empty(part, &mut pile.watches, rows.iter_mut().map(|lists| &mut lists.routes.watches));
-        let empty = Seating { seated: BySeat::empty(parts), free: Vec::new(), next: new_seat(part) };
+        let empty = Seating { seated: BySeat::empty(parts) };
         self.seating[part] = mem::replace(&mut pile.seating, empty);
         self.expected[part] = pile.expected;
     }
@@ -644,7 +678,7 @@ impl Engine {
     /// Takes part `part` out of the engine for a worker to run.
     fn parcel(&mut self, part: usize) -> Parcel {
         let parts = NonZeroUsize::new(self.seating.len()).unwrap_or(NonZeroUsize::MIN);
-        let empty = Seating { seated: BySeat::empty(parts), free: Vec::new(), next: new_seat(part) };
+        let empty = Seating { seated: BySeat::empty(parts) };
 
         Parcel {
             part,
@@ -715,26 +749,43 @@ impl Engine {
         part(seat, self.seating.len())
     }
 
-    /// Gives `seats` the seats a writer gives out in the parts `parts`: their free seats, then their new numbers.
-    fn seats(&mut self, parts: impl Iterator<Item = usize>, seats: &mut Seats) {
-        seats.clear(new_seat(self.seating.len()));
-        for part in parts {
-            let seating = &mut self.seating[part];
-            seats.give(seating.free.drain(..), seating.next);
+    /// Gives `seats` the seats the writer in place `place` of `running` gives out: the new numbers of every
+    /// `running`th part from its place, and for the first writer, every empty seat. An empty seat is given out once,
+    /// by whichever writer holds it.
+    fn seats(&mut self, place: usize, running: usize, seats: &mut Seats) {
+        seats.clear(new_seat(self.next.len()));
+        for part in (place..self.next.len()).step_by(running) {
+            let free = if part == 0 {
+                self.free.len()
+            } else {
+                0
+            };
+            seats.give(self.free.drain(..free), self.next[part]);
         }
     }
 
-    /// Takes back the seats a writer did not give out, into the parts they fall in, and where each part's new
-    /// numbers have got to, leaving `seats` empty.
+    /// Takes back the seats a writer did not give out, and where each part's new numbers have got to, leaving
+    /// `seats` empty.
     fn take_back(&mut self, seats: &mut Seats) {
-        let parts = self.seating.len();
+        let parts = self.next.len();
         let (free, next) = seats.drain();
-        for seat in free {
-            self.seating[part(seat, parts)].free.push(seat);
-        }
+        self.free.extend(free);
         for number in next {
-            self.seating[part(SeatNumber::new(number), parts)].next = number;
+            self.next[part(SeatNumber::new(number), parts)] = number;
         }
+    }
+
+    /// Every seat, the empty ones and each part's new numbers, lent to one writer whole: to the one worker of a step
+    /// run whole, or to a root's `begin`. [`Self::take_back_lent`] takes them back.
+    fn lend_seats(&mut self) -> Seats {
+        let stride = new_seat(self.next.len());
+
+        Seats::new(mem::take(&mut self.free), mem::take(&mut self.next), stride)
+    }
+
+    /// Takes back the seats lent whole by [`Self::lend_seats`].
+    fn take_back_lent(&mut self, seats: Seats) {
+        (self.free, self.next) = seats.into_parts();
     }
 }
 
@@ -838,7 +889,7 @@ impl Reading<'_> {
                 lists.route(ran, effects, me.id);
                 // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
                 seating.seated.remove(me);
-                seating.free.push(me.seat);
+                lists.freed.push(me.seat);
                 actors.remove(me);
             }
             (Work::Items(range), State::Live) => {
