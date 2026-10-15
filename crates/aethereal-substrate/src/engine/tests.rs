@@ -1,8 +1,8 @@
 //! The engine's tests: what a step runs, and what is there for the next one.
 
 use super::*;
-use crate::stream::Pending;
-use crate::{Entry, Standing, View, child_id};
+use crate::watch::Notice;
+use crate::{Entry, Standing, child_id};
 use aethereal_actor::{Ended, Fault, How, Item, Level, To, ToWithoutMail};
 use aethereal_data::{Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
@@ -433,9 +433,8 @@ fn item_placed_under_a_seat_reaches_only_the_actor_it_was_placed_for() {
     let context = Context { cause: None, root: MailId { sender: root, count: 0 }, depth: 1 };
     let place = |engine: &mut Engine, to: ActorId| {
         let ended = Ended::new(Seated { id: node(root, 2), seat: SeatNumber::new(7) }, How::Closed);
-        let pending = Pending::Ended(Box::new((ended, context)));
-        let record = stream::Record::Item { to: to.bits(), order: (2, u64::MAX), pending };
-        Streams::fold(engine.streams.shard_mut(seat), seat, record);
+        let to = Seated { id: to, seat: SeatNumber::new(seat) };
+        engine.streams.shard_mut(seat).end(Notice { to, ended, context });
     };
 
     place(&mut engine, node(root, 3));

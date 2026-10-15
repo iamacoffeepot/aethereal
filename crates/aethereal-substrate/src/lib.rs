@@ -23,6 +23,7 @@ mod mail;
 mod stream;
 mod table;
 mod view;
+mod watch;
 
 pub use by_actor::{ByActor, IdBits};
 pub use by_seat::BySeat;

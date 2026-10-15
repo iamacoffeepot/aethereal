@@ -4,6 +4,7 @@ use super::costs::{CostKey, Costs, ItemKind};
 use super::{Seating, Sitting, item_kind};
 use crate::stream::{self, Streams};
 use crate::table::Actors;
+use crate::watch::{Notice, Watches};
 use crate::{BySeat, Column, Lives, Log, Part, lives};
 use aethereal_actor::Seated;
 use std::num::NonZeroUsize;
@@ -21,9 +22,10 @@ pub(super) struct Pile {
     pub(super) log: Column<Log>,
     pub(super) lives: Column<Lives>,
     pub(super) streams: Column<Streams>,
+    pub(super) watches: Column<Watches>,
     pub(super) seating: Seating,
-    /// What the part's streams hand on to other parts once it settles: endings, for the actors that watch.
-    pub(super) forward: Vec<(u64, stream::Record)>,
+    /// What the part's watches hand on once it settles: endings, for the streams of the actors that watch.
+    pub(super) forward: Vec<Notice>,
     /// What the turns waiting in the part are expected to cost, in nanoseconds, once it is folded.
     pub(super) expected: u64,
 }
@@ -37,6 +39,7 @@ impl Pile {
             log: Column::empty(parts),
             lives: Column::empty(parts),
             streams: Column::empty(parts),
+            watches: Column::empty(parts),
             seating: Seating { seated: BySeat::empty(parts), free: Vec::new(), next: 0 },
             forward: Vec::new(),
             expected: 0,
@@ -50,15 +53,17 @@ pub struct Folding<'a> {
 }
 
 impl Folding<'_> {
-    /// Folds each part of `fold`: every worker's records for it, view by view, then the part's streams settle, and
+    /// Folds each part of `fold`: every worker's records for it, view by view, then the part's watches settle, and
     /// what its next turns are expected to cost is summed.
     #[must_use]
     pub fn fold(&self, mut fold: Fold) -> Fold {
         for pile in &mut fold.parts {
-            pile.table.fold(&mut Vec::new());
-            pile.log.fold(&mut Vec::new());
-            pile.lives.fold(&mut Vec::new());
-            pile.streams.fold(&mut pile.forward);
+            pile.table.fold();
+            pile.log.fold();
+            pile.lives.fold();
+            pile.streams.fold();
+            pile.watches.fold();
+            pile.watches.shard_mut().settle(&mut pile.forward);
             pile.expected = expected(pile.streams.shard(), pile.lives.shard(), &pile.seating.seated, self.costs);
         }
 
