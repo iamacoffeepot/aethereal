@@ -53,6 +53,9 @@ impl Kind for Counter {
     const NAME: KindName = KindName::new("aether.bench.counter");
 }
 
+/// The quota for the bytes of mail in flight, shared among the workers.
+const MAIL_BYTES: usize = 1 << 30;
+
 /// How many counts each counter takes.
 const TURNS: u64 = 50;
 
@@ -130,7 +133,7 @@ impl Actor for Counter {
 /// it took, and what its steps cost.
 fn run(children: u64, idle: u64, shape: u8, workers: NonZeroUsize) -> (u64, Measured) {
     let parts = NonZeroUsize::MIN.saturating_add(15);
-    let mut engine = Engine::new(parts, 1024);
+    let mut engine = Engine::new(parts, 1024, MAIL_BYTES);
     let Ok(_) = engine.add_root::<Counter>(&0, CounterConfig { number: 0, children, idle, shape }) else {
         panic!("the root begins");
     };

@@ -98,7 +98,7 @@ fn engine() -> (Engine, ActorId) {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024);
+    let mut engine = Engine::new(parts, 1024, 0);
     let Ok(root) = engine.add_root::<Fan>(&0, FanConfig { number: 0, children: CHILDREN }) else {
         panic!("the root begins");
     };
