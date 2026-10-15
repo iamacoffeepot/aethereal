@@ -34,4 +34,4 @@ pub use lives::{Life, Lives, State};
 pub use log::{Entry, Log, RECENT};
 pub use mail::Envelope;
 pub use table::{ActorTable, Standing};
-pub use view::{Consumes, Folded, Part, Routed, View};
+pub use view::{Consumes, Folded, Part, Routed, View, rounded};

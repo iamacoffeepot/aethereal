@@ -303,7 +303,7 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     let (effects, stood, _, seats) = asked.into_parts();
     assert_eq!(effects.last(), Some(&spawn_branch));
     assert_eq!(stood.len(), 1);
-    assert_eq!(seats.into_free(), [SeatNumber::new(2), SeatNumber::new(1)]);
+    assert_eq!(seats.into_parts().0, [SeatNumber::new(2), SeatNumber::new(1)]);
 }
 
 #[test]

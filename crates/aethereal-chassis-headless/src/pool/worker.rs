@@ -32,6 +32,11 @@ pub(super) enum Waiting {
 }
 
 /// What a worker answers.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a reply is sent once for each worker in a step, and a boxed one would be made on one thread and freed \
+              on another"
+)]
 pub(super) enum Reply {
     /// Its part of the step ran, left this, and cost it this.
     Done(Done, Report),
