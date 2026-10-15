@@ -15,6 +15,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::mem;
 
 /// What one turn has asked for: its effects in order, and the children it stood up (ADR-0009).
 ///
@@ -56,6 +57,31 @@ impl Asked {
         let start = effects.len();
 
         Self { effects, stood: Vec::new(), stood_seats: BTreeMap::new(), arena, seats, start }
+    }
+
+    /// Begins the next turn: its effects follow the earlier turns' still in the list. The children the last turn
+    /// stood up have been taken with [`Self::take_stood`].
+    ///
+    /// The engine keeps one of these for a worker's whole share of a step, and not one for each turn, so a turn
+    /// moves nothing in or out.
+    pub fn next_turn(&mut self) {
+        self.start = self.effects.len();
+        self.stood_seats.clear();
+    }
+
+    /// Takes the children this turn stood up, each in the order its `begin` finished.
+    pub fn take_stood(&mut self) -> Vec<Stood> {
+        mem::take(&mut self.stood)
+    }
+
+    /// Every effect in the list, earlier turns' first, for the engine to add its own to, route, and empty.
+    pub fn effects_mut(&mut self) -> &mut Vec<Effect> {
+        &mut self.effects
+    }
+
+    /// The seats children are given, for the engine to give back those of children that did not stay.
+    pub fn seats_mut(&mut self) -> &mut Seats {
+        &mut self.seats
     }
 
     /// The arena the turn's mail was written to.
