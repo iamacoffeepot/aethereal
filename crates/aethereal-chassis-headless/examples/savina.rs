@@ -560,7 +560,7 @@ const PROGRAMS: [Program; 5] = [
 /// and the steps.
 fn run(program: &Program, workers: NonZeroUsize) -> (u64, u64) {
     let parts = NonZeroUsize::MIN.saturating_add(15);
-    let mut engine = Engine::new(parts, 1024);
+    let mut engine = Engine::new(parts, 1024, 1 << 30);
     let clock = Monotonic::new();
     (program.start)(&mut engine);
     let mut headless = Headless::new(engine, workers);
