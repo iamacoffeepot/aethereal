@@ -148,7 +148,7 @@ fn record(effect: &Effect, context: &Context) -> Option<(u64, Record)> {
     let by = effect.seated();
     let (actor, change) = match effect.what() {
         What::Root { .. } | What::RootInstanced { .. } => (by, Change::Made),
-        What::Send { id, .. } => (by, Change::Sent(id.count)),
+        What::Send { count, .. } => (by, Change::Sent(*count)),
         What::Close => (by, Change::Ended(Box::new((How::Closed, *context)))),
         What::Failed(fault) => (by, Change::Ended(Box::new((How::Failed(fault.clone()), *context)))),
         What::Ended(_) => (by, Change::Over),

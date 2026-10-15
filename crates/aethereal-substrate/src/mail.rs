@@ -1,17 +1,17 @@
 //! A piece of mail as the engine carries it (ADR-0012).
 
 use aethereal_actor::{MailId, Payload, SeatNumber};
-use aethereal_data::{ActorId, KindId};
+use aethereal_data::KindId;
 
-/// A piece of mail as the engine carries it: who it is for, what it is, and what it follows from (ADR-0012).
+/// A piece of mail as the engine carries it: what it is, the seat it comes from, and what it follows from
+/// (ADR-0012).
+///
+/// It holds nothing the engine keeps beside it: the stream's entry names the
+/// actor it is for and the mail's id, its sender and that sender's count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Envelope {
-    /// The mail's own id.
-    pub id: MailId,
     /// The seat of the actor that sent it.
     pub sender_seat: SeatNumber,
-    /// The actor it is for.
-    pub to: ActorId,
     /// The mail whose turn sent this one. None for mail from outside the engine, or from a root's `begin`: fixed
     /// when the mail is made.
     pub cause: Option<MailId>,

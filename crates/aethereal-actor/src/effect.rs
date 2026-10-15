@@ -1,6 +1,6 @@
 //! An effect: one thing an actor asks of the engine (ADR-0009).
 
-use crate::{ErasedActorRef, Fault, How, MailId, Payload, SeatNumber, Seated};
+use crate::{ErasedActorRef, Fault, How, Payload, SeatNumber, Seated};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
 use alloc::string::String;
 
@@ -54,9 +54,9 @@ impl Effect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum What {
     /// Mail of kind `kind`, whose bytes are at `bytes`, in the arena of the worker that ran the turn or in bytes of
-    /// their own, is sent to the actor `to` names, in its seat, as the turn resolved the target it was given. `id` is
-    /// the mail's own: the asking actor, and its count of mail sent.
-    Send { to: Seated, id: MailId, kind: KindId, bytes: Payload },
+    /// their own, is sent to the actor `to` names, in its seat, as the turn resolved the target it was given. `count`
+    /// is the asking actor's count of mail sent, which with that actor is the mail's id.
+    Send { to: Seated, count: u64, kind: KindId, bytes: Payload },
     /// A root, a singleton, has been made. Written by the engine for the chassis, by the root itself.
     Root { from: Code },
     /// A root of an instanced type has been made. Written by the engine for the chassis, by the root itself.

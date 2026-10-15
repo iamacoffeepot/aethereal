@@ -1,7 +1,7 @@
 //! The view of what each actor has to react to (ADR-0009, ADR-0011).
 
 use crate::{ByActor, Consumes, Context, Envelope, View};
-use aethereal_actor::{Effect, Ended, How, SeatNumber, Seated, What};
+use aethereal_actor::{Effect, Ended, How, MailId, SeatNumber, Seated, What};
 use aethereal_data::ActorId;
 use std::collections::BTreeMap;
 use std::mem;
@@ -85,8 +85,9 @@ pub enum Record {
 pub enum Pending {
     /// A piece of mail.
     Mail(Envelope),
-    /// An actor it watches ended. What it does about it belongs to `context`, the chain that ended that actor.
-    Ended { ended: Ended, context: Context },
+    /// An actor it watches ended. What it does about it belongs to the context, the chain that ended that actor.
+    /// Endings are rare, so one is kept in bytes of its own and does not widen every item.
+    Ended(Box<(Ended, Context)>),
 }
 
 /// Where an item stands in its stream: its source's bits, then the order that source caused it in.
@@ -99,6 +100,7 @@ pub struct Entry {
     seat: u64,
     /// The bits of the actor it is for.
     to: u64,
+    /// Where it stands in that actor's stream. For mail, its id: its sender's bits and that sender's count.
     order: Order,
     item: Stored,
 }
@@ -115,8 +117,8 @@ enum Stored {
 /// An item handed out, as a turn reads it.
 #[derive(Clone, Copy)]
 pub enum Handed<'a> {
-    /// A piece of mail.
-    Mail(&'a Envelope),
+    /// A piece of mail, and its id.
+    Mail { id: MailId, envelope: &'a Envelope },
     /// An actor it watches ended. What it does about it belongs to `context`, the chain that ended that actor.
     Ended { ended: &'a Ended, context: &'a Context },
 }
@@ -150,29 +152,15 @@ impl Shard {
     /// The items handed out at the start of the step that lie in `range`.
     #[must_use]
     pub fn handed(&self, range: Range<usize>) -> impl ExactSizeIterator<Item = Handed<'_>> {
-        self.handed[range].iter().map(|entry| match &entry.item {
-            Stored::Mail(envelope) => Handed::Mail(envelope),
-            Stored::Ended(place) => {
-                let (ended, context) = &self.handed_endings[*place];
-
-                Handed::Ended { ended, context }
-            }
-        })
+        self.handed[range].iter().map(|entry| entry.handed(&self.handed_endings))
     }
 
     /// The items that arrived since the step began, in no order: the actor each is for, and the item.
     pub fn arrived(&self) -> impl Iterator<Item = (Seated, Handed<'_>)> {
         self.arrived.iter().map(|entry| {
-            let handed = match &entry.item {
-                Stored::Mail(envelope) => Handed::Mail(envelope),
-                Stored::Ended(place) => {
-                    let (ended, context) = &self.arrived_endings[*place];
+            let to = Seated { id: ActorId::new(entry.to), seat: SeatNumber::new(entry.seat) };
 
-                    Handed::Ended { ended, context }
-                }
-            };
-
-            (Seated { id: ActorId::new(entry.to), seat: SeatNumber::new(entry.seat) }, handed)
+            (to, entry.handed(&self.arrived_endings))
         })
     }
 
@@ -183,12 +171,30 @@ impl Shard {
     }
 }
 
+impl Entry {
+    /// The item as a turn reads it, its ending found in `endings` when it is one.
+    fn handed<'a>(&'a self, endings: &'a [(Ended, Context)]) -> Handed<'a> {
+        match &self.item {
+            Stored::Mail(envelope) => {
+                let (sender, count) = self.order;
+
+                Handed::Mail { id: MailId { sender: ActorId::new(sender), count }, envelope }
+            }
+            Stored::Ended(place) => {
+                let (ended, context) = &endings[*place];
+
+                Handed::Ended { ended, context }
+            }
+        }
+    }
+}
+
 impl Handed<'_> {
     /// The actor the item comes from, and its seat.
     #[must_use]
     pub const fn source(self) -> Seated {
         match self {
-            Self::Mail(envelope) => Seated { id: envelope.id.sender, seat: envelope.sender_seat },
+            Self::Mail { id, envelope } => Seated { id: id.sender, seat: envelope.sender_seat },
             Self::Ended { ended, .. } => ended.actor().seated(),
         }
     }
@@ -209,8 +215,8 @@ impl View for Streams {
             Record::Item { to, order, pending } => {
                 let item = match pending {
                     Pending::Mail(envelope) => Stored::Mail(envelope),
-                    Pending::Ended { ended, context } => {
-                        shard.arrived_endings.push((ended, context));
+                    Pending::Ended(ending) => {
+                        shard.arrived_endings.push(*ending);
 
                         Stored::Ended(shard.arrived_endings.len() - 1)
                     }
@@ -254,10 +260,10 @@ impl Consumes for Streams {
         // At most one record, and a mail's bytes are moved into its envelope.
         let by = effect.seated();
         let record = match effect.into_what() {
-            What::Send { to, id, kind, bytes } => {
+            What::Send { to, count, kind, bytes } => {
                 let (cause, root, depth) = (context.cause, context.root, context.depth);
-                let envelope = Envelope { id, sender_seat: by.seat, to: to.id, cause, root, depth, kind, bytes };
-                let order = (by.id.bits(), id.count);
+                let envelope = Envelope { sender_seat: by.seat, cause, root, depth, kind, bytes };
+                let order = (by.id.bits(), count);
 
                 Some((to.seat.number(), Record::Item { to: to.id.bits(), order, pending: Pending::Mail(envelope) }))
             }
@@ -274,7 +280,7 @@ impl Consumes for Streams {
 /// watcher's seat: last of what that actor caused.
 fn handed(to: Seated, ended: Seated, how: How, context: Context) -> (u64, Record) {
     let order = (ended.id.bits(), u64::MAX);
-    let pending = Pending::Ended { ended: Ended::new(ended, how), context };
+    let pending = Pending::Ended(Box::new((Ended::new(ended, how), context)));
 
     (to.seat.number(), Record::Item { to: to.id.bits(), order, pending })
 }
@@ -282,7 +288,6 @@ fn handed(to: Seated, ended: Seated, how: How, context: Context) -> (u64, Record
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aethereal_actor::MailId;
 
     /// The actor `bits` names, in the seat numbered `seat`.
     const fn seated(bits: u64, seat: u64) -> Seated {
@@ -294,7 +299,7 @@ mod tests {
         forward
             .into_iter()
             .filter_map(|(seat, record)| match record {
-                Record::Item { to, pending: Pending::Ended { ended, .. }, .. } => Some((seat, to, ended.how().clone())),
+                Record::Item { to, pending: Pending::Ended(ending), .. } => Some((seat, to, ending.0.how().clone())),
                 _ => None,
             })
             .collect()

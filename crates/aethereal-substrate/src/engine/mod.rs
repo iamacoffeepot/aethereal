@@ -740,7 +740,7 @@ impl Reading<'_> {
                         Asked::continuing(mem::take(&mut lists.effects), mem::take(arena), mem::take(&mut lists.seats));
                     let source = handed.source();
                     let (item, context) = match handed {
-                        Handed::Mail(&Envelope { id: cause, kind, bytes, root, depth, .. }) => {
+                        Handed::Mail { id: cause, envelope: &Envelope { kind, bytes, root, depth, .. } } => {
                             let bytes = self.bytes(bytes);
                             let mail = Mail::new(kind, bytes, source, root, depth, &table, self.read_limit);
 
@@ -865,8 +865,9 @@ fn ends(effects: &[Effect], id: ActorId) -> bool {
 fn sent(effects: &[Effect], id: ActorId) -> Option<u64> {
     effects
         .iter()
+        .filter(|effect| effect.by() == id)
         .filter_map(|effect| match effect.what() {
-            What::Send { id: mail, .. } if mail.sender == id => Some(mail.count),
+            What::Send { count, .. } => Some(*count),
             _ => None,
         })
         .max()
@@ -881,7 +882,7 @@ fn keep_lines(effects: &mut Vec<Effect>, begins: usize) {
 /// What a pending item is, as far as the cost of reacting to it goes.
 const fn item_kind(handed: Handed<'_>) -> ItemKind {
     match handed {
-        Handed::Mail(envelope) => ItemKind::Mail(envelope.kind),
+        Handed::Mail { envelope, .. } => ItemKind::Mail(envelope.kind),
         Handed::Ended { .. } => ItemKind::Ended,
     }
 }
