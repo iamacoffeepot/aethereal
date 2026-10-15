@@ -9,6 +9,11 @@
 //! - `fjthrput`: one actor sends each of 60 others 10,000 pieces of mail, each of which they do a little sum for;
 //! - `big`: 120 actors each ping a neighbour picked at random 20,000 times, the neighbour answering each ping.
 //!
+//! As in Savina, each program's root sends its first mail from a turn, on a start message: it tells its last child
+//! the program can start as it begins, and sends on the child's answer. `count-begin` is `count` with the producer sending everything from its `begin`
+//! instead, which runs between steps: it is beside the programs to show what a root that sends a great deal as it
+//! begins costs, and has no counterpart on the other frameworks.
+//!
 //! Each line is the best of three runs on the given numbers of workers (by default 1, 4, and 16), timed from the
 //! root's `begin` to the last step, which takes in starting the workers: the pieces of mail sent, mails a second,
 //! nanoseconds a piece of mail, and the steps the run took.
@@ -107,6 +112,16 @@ impl Kind for Start {
     const NAME: KindName = KindName::new("aether.savina.start");
 }
 
+/// The word that a program can start. A root sends it to its last child as it begins, the child answers it from a
+/// turn, and the root sends its first mail on that answer: from an ordinary turn, as Savina's producer acts on a
+/// start message, and not from its `begin`.
+#[derive(Plain)]
+struct Ready;
+
+impl Kind for Ready {
+    const NAME: KindName = KindName::new("aether.savina.ready");
+}
+
 /// What every actor here is made from: its number.
 #[derive(Plain)]
 struct Number {
@@ -133,7 +148,7 @@ impl Actor for Pinger {
         let Ok(ponger) = turn.spawn::<Ponger>(&0, Number { number: 0 }) else {
             panic!("the pong side begins");
         };
-        turn.send(ToWithoutMail::Held(ponger), &Ping { left: PINGS - 1 })?;
+        turn.send(ToWithoutMail::Held(ponger), &Ready)?;
 
         Ok(Self)
     }
@@ -142,7 +157,9 @@ impl Actor for Pinger {
         let Item::Mail(mail) = item else {
             return Ok(());
         };
-        if let Some(Pong { left }) = mail.read()?
+        if matches!(mail.read()?, Some(Ready)) {
+            turn.send(To::Sender, &Ping { left: PINGS - 1 })?;
+        } else if let Some(Pong { left }) = mail.read()?
             && left > 0
         {
             turn.send(To::Sender, &Ping { left: left - 1 })?;
@@ -178,6 +195,8 @@ impl Actor for Ponger {
         };
         if let Some(Ping { left }) = mail.read()? {
             turn.send(To::Sender, &Pong { left })?;
+        } else if matches!(mail.read()?, Some(Ready)) {
+            turn.send(To::Sender, &Ready)?;
         }
 
         Ok(())
@@ -188,8 +207,8 @@ impl Actor for Ponger {
     }
 }
 
-/// The producer of the counting program, and its root: it spawns the counter, sends it everything to count, then
-/// asks for the count.
+/// The producer of the counting program, and its root: it spawns the counter, and once the counter is ready sends
+/// it everything to count, then asks for the count.
 #[derive(Plain)]
 struct Producer;
 
@@ -198,6 +217,49 @@ impl Kind for Producer {
 }
 
 impl Actor for Producer {
+    type Config = Number;
+    type Key = u64;
+
+    fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
+        let Ok(counter) = turn.spawn::<Counter>(&0, Number { number: 0 }) else {
+            panic!("the counter begins");
+        };
+        turn.send(ToWithoutMail::Held(counter), &Ready)?;
+
+        Ok(Self)
+    }
+
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+        let Item::Mail(mail) = item else {
+            return Ok(());
+        };
+        if matches!(mail.read()?, Some(Ready)) {
+            for _ in 0..COUNTS {
+                turn.send(To::Sender, &Increment)?;
+            }
+            turn.send(To::Sender, &Retrieve)?;
+        } else if let Some(Total { count }) = mail.read()? {
+            assert_eq!(count, COUNTS, "the counter counts every piece of mail");
+        }
+
+        Ok(())
+    }
+
+    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// The counting program with its producer sending everything from its `begin`, between steps: what a root that
+/// sends a great deal as it begins costs.
+#[derive(Plain)]
+struct BeginProducer;
+
+impl Kind for BeginProducer {
+    const NAME: KindName = KindName::new("aether.savina.begin_producer");
+}
+
+impl Actor for BeginProducer {
     type Config = Number;
     type Key = u64;
 
@@ -255,6 +317,8 @@ impl Actor for Counter {
             self.count += 1;
         } else if matches!(mail.read()?, Some(Retrieve)) {
             turn.send(To::Sender, &Total { count: self.count })?;
+        } else if matches!(mail.read()?, Some(Ready)) {
+            turn.send(To::Sender, &Ready)?;
         }
 
         Ok(())
@@ -265,9 +329,12 @@ impl Actor for Counter {
     }
 }
 
-/// The root of the fork-join program: it spawns the workers and sends each its share of the work.
-#[derive(Plain)]
-struct Forker;
+/// The root of the fork-join program: it spawns the workers, and once they are ready sends each its share of the
+/// work.
+#[derive(Bound)]
+struct Forker {
+    workers: Vec<ErasedActorRef>,
+}
 
 impl Kind for Forker {
     const NAME: KindName = KindName::new("aether.savina.forker");
@@ -279,16 +346,23 @@ impl Actor for Forker {
 
     fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
         let workers: Vec<ErasedActorRef> = (0..FORKS).map(|number| spawned::<Forked>(turn, number)).collect();
-        for _ in 0..FORKED {
-            for worker in &workers {
-                turn.send(ToWithoutMail::Held(*worker), &Work)?;
+        ready(turn, &workers)?;
+
+        Ok(Self { workers })
+    }
+
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+        let Item::Mail(mail) = item else {
+            return Ok(());
+        };
+        if matches!(mail.read()?, Some(Ready)) {
+            for _ in 0..FORKED {
+                for worker in &self.workers {
+                    turn.send(To::Held(*worker), &Work)?;
+                }
             }
         }
 
-        Ok(Self)
-    }
-
-    fn handle(&mut self, _: Item<'_>, _: &mut Turn<'_>) -> Result<(), Fault> {
         Ok(())
     }
 
@@ -313,13 +387,15 @@ impl Actor for Forked {
         Ok(Self)
     }
 
-    fn handle(&mut self, item: Item<'_>, _: &mut Turn<'_>) -> Result<(), Fault> {
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
         let Item::Mail(mail) = item else {
             return Ok(());
         };
         if matches!(mail.read()?, Some(Work)) {
             let sine = hint::black_box(37.2_f64).sin();
             hint::black_box(sine * sine);
+        } else if matches!(mail.read()?, Some(Ready)) {
+            turn.send(To::Sender, &Ready)?;
         }
 
         Ok(())
@@ -330,9 +406,12 @@ impl Actor for Forked {
     }
 }
 
-/// The root of the big program: it spawns the actors, introduces each to every other, and starts them.
-#[derive(Plain)]
-struct Crowd;
+/// The root of the big program: it spawns the actors, and once they are ready introduces each to every other and
+/// starts them.
+#[derive(Bound)]
+struct Crowd {
+    actors: Vec<ErasedActorRef>,
+}
 
 impl Kind for Crowd {
     const NAME: KindName = KindName::new("aether.savina.crowd");
@@ -344,17 +423,24 @@ impl Actor for Crowd {
 
     fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
         let actors: Vec<ErasedActorRef> = (0..BIG_ACTORS).map(|number| spawned::<Pinging>(turn, number)).collect();
-        for actor in &actors {
-            for other in actors.iter().filter(|other| *other != actor) {
-                turn.send(ToWithoutMail::Held(*actor), &Neighbour { other: *other })?;
-            }
-            turn.send(ToWithoutMail::Held(*actor), &Start)?;
-        }
+        ready(turn, &actors)?;
 
-        Ok(Self)
+        Ok(Self { actors })
     }
 
-    fn handle(&mut self, _: Item<'_>, _: &mut Turn<'_>) -> Result<(), Fault> {
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+        let Item::Mail(mail) = item else {
+            return Ok(());
+        };
+        if matches!(mail.read()?, Some(Ready)) {
+            for actor in &self.actors {
+                for other in self.actors.iter().filter(|other| *other != actor) {
+                    turn.send(To::Held(*actor), &Neighbour { other: *other })?;
+                }
+                turn.send(To::Held(*actor), &Start)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -412,6 +498,8 @@ impl Actor for Pinging {
             && left > 0
         {
             self.ping(turn, left - 1)?;
+        } else if matches!(mail.read()?, Some(Ready)) {
+            turn.send(To::Sender, &Ready)?;
         }
 
         Ok(())
@@ -420,6 +508,15 @@ impl Actor for Pinging {
     fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
         Ok(())
     }
+}
+
+/// Tells the last of `children` that the program can start, so it answers from a turn.
+fn ready(turn: &mut Beginning<'_>, children: &[ErasedActorRef]) -> Result<(), Fault> {
+    if let Some(last) = children.last() {
+        turn.send(ToWithoutMail::Held(*last), &Ready)?;
+    }
+
+    Ok(())
 }
 
 /// A child of type `A` numbered `number`, spawned by `turn`.
@@ -446,9 +543,10 @@ fn root<A: Actor<Config = Number, Key = u64> + 'static>(engine: &mut Engine) {
     };
 }
 
-const PROGRAMS: [Program; 4] = [
+const PROGRAMS: [Program; 5] = [
     Program { name: "pingpong", actors: 2, mails: 2 * PINGS, start: root::<Pinger> },
     Program { name: "count", actors: 2, mails: COUNTS + 2, start: root::<Producer> },
+    Program { name: "count-begin", actors: 2, mails: COUNTS + 2, start: root::<BeginProducer> },
     Program { name: "fjthrput", actors: FORKS + 1, mails: FORKS * FORKED, start: root::<Forker> },
     Program {
         name: "big",
@@ -479,7 +577,7 @@ fn main() {
         .find_map(|arg| arg.strip_prefix("workers="))
         .map_or_else(|| vec![1, 4, 16], |given| given.split(',').filter_map(|count| count.parse().ok()).collect());
 
-    println!("program   actors workers      mails   M mails/s  ns/mail    steps");
+    println!("program     actors workers      mails   M mails/s  ns/mail    steps");
     for program in &PROGRAMS {
         let is_skipped = !named.is_empty() && !named.contains(&program.name);
         if is_skipped {
@@ -490,7 +588,7 @@ fn main() {
             let runs = (0..3).map(|_| run(program, workers));
             let (took, steps) = runs.min_by_key(|(took, _)| *took).unwrap_or_default();
             println!(
-                "{:9} {:6} {workers:7} {:10}   {:9.2} {:8} {steps:8}",
+                "{:11} {:6} {workers:7} {:10}   {:9.2} {:8} {steps:8}",
                 program.name,
                 program.actors,
                 program.mails,
