@@ -1,4 +1,5 @@
-//! Four programs of the Savina actor benchmark suite, to set beside the same programs on other actor frameworks.
+//! Six programs of the Savina actor benchmark suite, to set beside the same programs on other actor frameworks, and
+//! one of this engine's own.
 //!
 //! Run with `cargo run --release -p aethereal-chassis-headless --example savina [program...] [workers=N,...]`.
 //! The programs, at Savina's default sizes:
@@ -7,7 +8,17 @@
 //!   is in flight at a time;
 //! - `count`: one actor sends another 1,000,000 pieces of mail, which it counts, then asks for the count;
 //! - `fjthrput`: one actor sends each of 60 others 10,000 pieces of mail, each of which they do a little sum for;
-//! - `big`: 120 actors each ping a neighbour picked at random 20,000 times, the neighbour answering each ping.
+//! - `big`: 120 actors each ping a neighbour picked at random 20,000 times, the neighbour answering each ping;
+//! - `fib`: the 25th Fibonacci number, each actor asked for one spawning two children for the two before it, which
+//!   answer and close, so about 150,000 actors are made and closed;
+//! - `sieve`: the primes below 100,000, odd numbers passed down a pipeline of filters that each keep up to 1,000
+//!   primes, a filter spawning the next when it is full.
+//!
+//! And one of this engine's own, with no counterpart on the other frameworks:
+//!
+//! - `churn`: 1,000 actors alive at a time, each living 8 hops of mail to itself, then telling its parent and
+//!   closing, and the parent spawning one in its place, until 100,000 have lived: spawning and closing at a steady
+//!   population, as a game makes and ends what lives in it.
 //!
 //! As in Savina, each program's root sends its first mail from a turn, on a start message: it tells its last child
 //! the program can start as it begins, and sends on the child's answer. `count-begin` is `count` with the producer sending everything from its `begin`
@@ -39,6 +50,15 @@ const FORKED: u64 = 10_000;
 /// How many actors ping each other in the big program, and how many pings each sends.
 const BIG_ACTORS: u64 = 120;
 const BIG_PINGS: u64 = 20_000;
+/// Which Fibonacci number the fib program works out.
+const FIB: u64 = 25;
+/// The sieve program's limit, and how many primes each of its filters keeps.
+const SIEVE_LIMIT: u64 = 100_000;
+const SIEVE_KEPT: usize = 1_000;
+/// How many actors the churn program keeps alive, how many hops each lives, and how many live in all.
+const CHURN_ALIVE: u64 = 1_000;
+const CHURN_LIFE: u64 = 8;
+const CHURN_TOTAL: u64 = 100_000;
 
 /// A ping with this many to go after it.
 #[derive(Plain)]
@@ -510,6 +530,409 @@ impl Actor for Pinging {
     }
 }
 
+/// A request for the Fibonacci number at `number`.
+#[derive(Plain)]
+struct Request {
+    number: u64,
+}
+
+impl Kind for Request {
+    const NAME: KindName = KindName::new("aether.savina.request");
+}
+
+/// A Fibonacci number, answering a [`Request`].
+#[derive(Plain)]
+struct Response {
+    value: u64,
+}
+
+impl Kind for Response {
+    const NAME: KindName = KindName::new("aether.savina.response");
+}
+
+/// The root of the fib program: it spawns the first actor, and once it is ready asks it for the number.
+#[derive(Plain)]
+struct FibRoot;
+
+impl Kind for FibRoot {
+    const NAME: KindName = KindName::new("aether.savina.fib_root");
+}
+
+impl Actor for FibRoot {
+    type Config = Number;
+    type Key = u64;
+
+    fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
+        let first = spawned::<Fib>(turn, 0);
+        ready(turn, &[first])?;
+
+        Ok(Self)
+    }
+
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+        let Item::Mail(mail) = item else {
+            return Ok(());
+        };
+        if matches!(mail.read()?, Some(Ready)) {
+            turn.send(To::Sender, &Request { number: FIB })?;
+        }
+
+        Ok(())
+    }
+
+    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// An actor of the fib program: asked for a number, it answers at once if it is one of the first two, and otherwise
+/// spawns a child for each of the two before it and answers with their sum. It closes once it has answered.
+#[derive(Plain)]
+struct Fib {
+    sum: u64,
+    answers: u64,
+}
+
+impl Kind for Fib {
+    const NAME: KindName = KindName::new("aether.savina.fib");
+}
+
+impl Actor for Fib {
+    type Config = Number;
+    type Key = u64;
+
+    fn begin(_: Number, _: &mut Beginning<'_>) -> Result<Self, Fault> {
+        Ok(Self { sum: 0, answers: 0 })
+    }
+
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+        let Item::Mail(mail) = item else {
+            return Ok(());
+        };
+        if let Some(Request { number }) = mail.read()? {
+            if number <= 2 {
+                turn.send(To::Parent, &Response { value: 1 })?;
+                turn.close();
+            } else {
+                for (key, before) in [(0, number - 1), (1, number - 2)] {
+                    let Ok(child) = turn.spawn::<Self>(&key, Number { number: key }) else {
+                        panic!("a child begins");
+                    };
+                    turn.send(To::Held(child), &Request { number: before })?;
+                }
+            }
+        } else if let Some(Response { value }) = mail.read()? {
+            self.sum += value;
+            self.answers += 1;
+            if self.answers == 2 {
+                turn.send(To::Parent, &Response { value: self.sum })?;
+                turn.close();
+            }
+        } else if matches!(mail.read()?, Some(Ready)) {
+            turn.send(To::Sender, &Ready)?;
+        }
+
+        Ok(())
+    }
+
+    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// A number for the sieve to test.
+#[derive(Plain)]
+struct Candidate {
+    number: u64,
+}
+
+impl Kind for Candidate {
+    const NAME: KindName = KindName::new("aether.savina.candidate");
+}
+
+/// The word that the sieve has every number: each filter passes it on and closes.
+#[derive(Plain)]
+struct Exit;
+
+impl Kind for Exit {
+    const NAME: KindName = KindName::new("aether.savina.exit");
+}
+
+/// The root of the sieve program: it spawns the first filter, which keeps 2, and once it is ready sends it every
+/// odd number up to the limit, then the word to stop.
+#[derive(Plain)]
+struct Sieve;
+
+impl Kind for Sieve {
+    const NAME: KindName = KindName::new("aether.savina.sieve");
+}
+
+impl Actor for Sieve {
+    type Config = Number;
+    type Key = u64;
+
+    fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
+        let Ok(first) = turn.spawn::<Filter>(&0, Number { number: 2 }) else {
+            panic!("the first filter begins");
+        };
+        ready(turn, &[first])?;
+
+        Ok(Self)
+    }
+
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+        let Item::Mail(mail) = item else {
+            return Ok(());
+        };
+        if matches!(mail.read()?, Some(Ready)) {
+            for number in (3..=SIEVE_LIMIT).step_by(2) {
+                turn.send(To::Sender, &Candidate { number })?;
+            }
+            turn.send(To::Sender, &Exit)?;
+        }
+
+        Ok(())
+    }
+
+    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// What follows a filter in the sieve's pipeline.
+#[derive(Bound)]
+enum Next {
+    /// Nothing: it is the last filter, and keeps a number no filter divides.
+    Last,
+    /// The filter it spawned when it was full, which it passes every number on to.
+    Filter(ErasedActorRef),
+}
+
+impl Kind for Next {
+    const NAME: KindName = KindName::new("aether.savina.next");
+}
+
+/// A filter of the sieve: it drops a number one of its primes divides, and keeps or passes on the rest.
+#[derive(Bound)]
+struct Filter {
+    primes: Vec<u64>,
+    next: Next,
+}
+
+impl Kind for Filter {
+    const NAME: KindName = KindName::new("aether.savina.filter");
+}
+
+impl Actor for Filter {
+    type Config = Number;
+    type Key = u64;
+
+    fn begin(first: Number, _: &mut Beginning<'_>) -> Result<Self, Fault> {
+        Ok(Self { primes: vec![first.number], next: Next::Last })
+    }
+
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+        let Item::Mail(mail) = item else {
+            return Ok(());
+        };
+        if let Some(Candidate { number }) = mail.read()? {
+            let divided = self.primes.iter().any(|prime| number % prime == 0);
+            if divided {
+                return Ok(());
+            }
+            match self.next {
+                Next::Filter(next) => turn.send(To::Held(next), &Candidate { number })?,
+                Next::Last if self.primes.len() < SIEVE_KEPT => self.primes.push(number),
+                Next::Last => {
+                    let Ok(next) = turn.spawn::<Self>(&0, Number { number }) else {
+                        panic!("a filter begins");
+                    };
+                    self.next = Next::Filter(next);
+                }
+            }
+        } else if matches!(mail.read()?, Some(Exit)) {
+            if let Next::Filter(next) = self.next {
+                turn.send(To::Held(next), &Exit)?;
+            }
+            turn.close();
+        } else if matches!(mail.read()?, Some(Ready)) {
+            turn.send(To::Sender, &Ready)?;
+        }
+
+        Ok(())
+    }
+
+    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// One more hop of a churn actor's life, with this many to go after it.
+#[derive(Plain)]
+struct Live {
+    left: u64,
+}
+
+impl Kind for Live {
+    const NAME: KindName = KindName::new("aether.savina.live");
+}
+
+/// The word that a churn actor has lived its hops and is closing.
+#[derive(Plain)]
+struct Died;
+
+impl Kind for Died {
+    const NAME: KindName = KindName::new("aether.savina.died");
+}
+
+/// The root of the churn program: it keeps its population alive, spawning one in the place of each that closes,
+/// until the total has lived.
+#[derive(Plain)]
+struct Churn {
+    spawned: u64,
+}
+
+impl Kind for Churn {
+    const NAME: KindName = KindName::new("aether.savina.churn");
+}
+
+impl Churn {
+    /// Spawns the next actor and starts its life.
+    fn spawn_next(&mut self, turn: &mut Turn<'_>) -> Result<(), Fault> {
+        let Ok(child) = turn.spawn::<Mortal>(&self.spawned, Number { number: self.spawned }) else {
+            panic!("a churn actor begins");
+        };
+        self.spawned += 1;
+        turn.send(To::Held(child), &Live { left: CHURN_LIFE })?;
+
+        Ok(())
+    }
+}
+
+impl Actor for Churn {
+    type Config = Number;
+    type Key = u64;
+
+    fn begin(_: Number, turn: &mut Beginning<'_>) -> Result<Self, Fault> {
+        let first = spawned::<Mortal>(turn, 0);
+        ready(turn, &[first])?;
+
+        Ok(Self { spawned: 1 })
+    }
+
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+        let Item::Mail(mail) = item else {
+            return Ok(());
+        };
+        if matches!(mail.read()?, Some(Ready)) {
+            turn.send(To::Sender, &Live { left: CHURN_LIFE })?;
+            while self.spawned < CHURN_ALIVE {
+                self.spawn_next(turn)?;
+            }
+        } else if matches!(mail.read()?, Some(Died)) && self.spawned < CHURN_TOTAL {
+            self.spawn_next(turn)?;
+        }
+
+        Ok(())
+    }
+
+    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// An actor of the churn program: it lives a number of hops of mail to itself, then tells its parent and closes.
+#[derive(Plain)]
+struct Mortal;
+
+impl Kind for Mortal {
+    const NAME: KindName = KindName::new("aether.savina.mortal");
+}
+
+impl Actor for Mortal {
+    type Config = Number;
+    type Key = u64;
+
+    fn begin(_: Number, _: &mut Beginning<'_>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn handle(&mut self, item: Item<'_>, turn: &mut Turn<'_>) -> Result<(), Fault> {
+        let Item::Mail(mail) = item else {
+            return Ok(());
+        };
+        if let Some(Live { left }) = mail.read()? {
+            if left > 0 {
+                turn.send(To::Held(turn.me()), &Live { left: left - 1 })?;
+            } else {
+                turn.send(To::Parent, &Died)?;
+                turn.close();
+            }
+        } else if matches!(mail.read()?, Some(Ready)) {
+            turn.send(To::Sender, &Ready)?;
+        }
+
+        Ok(())
+    }
+
+    fn end(self, _: &mut Ending<'_>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// How many actors and pieces of mail a program makes.
+struct Size {
+    actors: u64,
+    mails: u64,
+}
+
+/// The fib program's size: an actor for each number asked for, each asked once and answering once, beside the
+/// root and its start.
+fn fib_size() -> Size {
+    let mut asked = 0;
+    let mut stack = vec![FIB];
+    while let Some(number) = stack.pop() {
+        asked += 1;
+        if number > 2 {
+            stack.extend([number - 1, number - 2]);
+        }
+    }
+
+    Size { actors: asked + 1, mails: 2 * asked + 2 }
+}
+
+/// The sieve program's size, found by running the same sieve without actors: every number sent and passed on, the
+/// word to stop passed down every filter, and the root's start.
+fn sieve_size() -> Size {
+    let mut filters: Vec<Vec<u64>> = vec![vec![2]];
+    let mut mails = 2;
+    for number in (3..=SIEVE_LIMIT).step_by(2) {
+        mails += 1;
+        let mut place = 0;
+        loop {
+            let divided = filters[place].iter().any(|prime| number % prime == 0);
+            if divided {
+                break;
+            }
+            let is_last = place + 1 == filters.len();
+            if !is_last {
+                mails += 1;
+                place += 1;
+                continue;
+            }
+            if filters[place].len() < SIEVE_KEPT {
+                filters[place].push(number);
+            } else {
+                filters.push(vec![number]);
+            }
+            break;
+        }
+    }
+    let count = u64::try_from(filters.len()).unwrap_or(u64::MAX);
+
+    Size { actors: count + 1, mails: mails + count }
+}
+
 /// Tells the last of `children` that the program can start, so it answers from a turn.
 fn ready(turn: &mut Beginning<'_>, children: &[ErasedActorRef]) -> Result<(), Fault> {
     if let Some(last) = children.last() {
@@ -531,8 +954,7 @@ fn spawned<A: Actor<Config = Number, Key = u64> + 'static>(turn: &mut Beginning<
 /// One program: its name, how many actors it runs, how many pieces of mail it sends, and how to start it.
 struct Program {
     name: &'static str,
-    actors: u64,
-    mails: u64,
+    size: fn() -> Size,
     start: fn(&mut Engine),
 }
 
@@ -543,16 +965,25 @@ fn root<A: Actor<Config = Number, Key = u64> + 'static>(engine: &mut Engine) {
     };
 }
 
-const PROGRAMS: [Program; 5] = [
-    Program { name: "pingpong", actors: 2, mails: 2 * PINGS, start: root::<Pinger> },
-    Program { name: "count", actors: 2, mails: COUNTS + 2, start: root::<Producer> },
-    Program { name: "count-begin", actors: 2, mails: COUNTS + 2, start: root::<BeginProducer> },
-    Program { name: "fjthrput", actors: FORKS + 1, mails: FORKS * FORKED, start: root::<Forker> },
+const PROGRAMS: [Program; 8] = [
+    Program { name: "pingpong", size: || Size { actors: 2, mails: 2 * PINGS }, start: root::<Pinger> },
+    Program { name: "count", size: || Size { actors: 2, mails: COUNTS + 2 }, start: root::<Producer> },
+    Program { name: "count-begin", size: || Size { actors: 2, mails: COUNTS + 2 }, start: root::<BeginProducer> },
+    Program { name: "fjthrput", size: || Size { actors: FORKS + 1, mails: FORKS * FORKED }, start: root::<Forker> },
     Program {
         name: "big",
-        actors: BIG_ACTORS + 1,
-        mails: BIG_ACTORS * (BIG_ACTORS - 1) + BIG_ACTORS + 2 * BIG_ACTORS * BIG_PINGS,
+        size: || Size {
+            actors: BIG_ACTORS + 1,
+            mails: BIG_ACTORS * (BIG_ACTORS - 1) + BIG_ACTORS + 2 * BIG_ACTORS * BIG_PINGS,
+        },
         start: root::<Crowd>,
+    },
+    Program { name: "fib", size: fib_size, start: root::<FibRoot> },
+    Program { name: "sieve", size: sieve_size, start: root::<Sieve> },
+    Program {
+        name: "churn",
+        size: || Size { actors: CHURN_TOTAL + 1, mails: CHURN_TOTAL * (CHURN_LIFE + 2) + 2 },
+        start: root::<Churn>,
     },
 ];
 
@@ -583,6 +1014,7 @@ fn main() {
         if is_skipped {
             continue;
         }
+        let size = (program.size)();
         for &count in &workers {
             let workers = NonZeroUsize::MIN.saturating_add(count.max(1) - 1);
             let runs = (0..3).map(|_| run(program, workers));
@@ -590,10 +1022,10 @@ fn main() {
             println!(
                 "{:11} {:6} {workers:7} {:10}   {:9.2} {:8} {steps:8}",
                 program.name,
-                program.actors,
-                program.mails,
-                program.mails as f64 * 1e3 / took.max(1) as f64,
-                took / program.mails.max(1),
+                size.actors,
+                size.mails,
+                size.mails as f64 * 1e3 / took.max(1) as f64,
+                took / size.mails.max(1),
             );
         }
     }
