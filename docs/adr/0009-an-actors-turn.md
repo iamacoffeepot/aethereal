@@ -149,6 +149,7 @@ pub enum Level {
 - A resolve never finds an actor whose spawn effect has not been applied, so a reference is never to an actor whose `begin` failed.
 - Mail caused by a spawn finds the child: the spawn is folded in the step that asked for it, and the mail is handled in a later one.
 - A resolve made while handling unrelated mail can miss an actor that is about to be live. An actor that must know waits to be told.
+- A fused turn also finds the children its own run stood up, and does not find the actors its own run ended (ADR-0013). The other promises here hold for it.
 
 **Mail sent to an actor is handled in the order its source sent it.** That is the one rule of order. Mail from two sources to one actor has no order between them, and none is made up. A turn's effects are applied in the order it asked for them, and a step's effects are folded before any mail sent in it is handled (ADR-0011): whoever comes to hold a reference finds its actor there, however far the reference travelled.
 
