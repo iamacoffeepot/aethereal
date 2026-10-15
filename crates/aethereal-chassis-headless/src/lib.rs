@@ -12,7 +12,7 @@ mod tests;
 
 pub use clock::Monotonic;
 
-use aethereal_substrate::{Clock, Engine};
+use aethereal_substrate::{Clock, Engine, Split};
 pub use pool::Measured;
 
 use pool::Pool;
@@ -55,21 +55,34 @@ impl Headless {
     }
 
     /// Runs one step: plans it for the workers there are, runs its shares on them, and applies what they left, each
-    /// part of the views folded on the workers that ran the step.
+    /// part of the views folded on the workers that ran the step. A step planned for one worker runs whole on this
+    /// thread, where its parts lie, and every worker spinning is parked.
     ///
     /// # Panics
     ///
     /// Panics with a turn's panic, and when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn step(&mut self) {
         let start = self.clock.nanos();
-        let shares = self.engine.plan(self.pool.workers()).into_shares();
+        let split = self.engine.plan(self.pool.workers()).into_split();
         let planned = self.clock.nanos();
-        let done = self.pool.lend(&self.engine.reading(), self.clock, shares);
+        let ran = match split {
+            Split::Whole(whole) => {
+                let left = self.pool.alone(self.clock, || self.engine.run_whole(whole, &self.clock));
+                let ran = self.clock.nanos();
+                self.engine.apply_whole(left);
 
-        let ran = self.clock.nanos();
-        let folds = self.engine.gather(done);
-        let folded = self.pool.fold(&self.engine.folding(), self.clock, folds);
-        self.engine.settle(folded);
+                ran
+            }
+            Split::Shares(shares) => {
+                let done = self.pool.lend(&self.engine.reading(), self.clock, shares);
+                let ran = self.clock.nanos();
+                let folds = self.engine.gather(done);
+                let folded = self.pool.fold(&self.engine.folding(), self.clock, folds);
+                self.engine.settle(folded);
+
+                ran
+            }
+        };
         let applied = self.clock.nanos();
         self.pool.measure_around(planned.saturating_sub(start), applied.saturating_sub(ran));
     }

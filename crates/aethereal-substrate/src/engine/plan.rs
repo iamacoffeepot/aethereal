@@ -24,9 +24,25 @@ pub struct Plan {
     /// Workers to wake when above zero, to park when below: never more than are parked, and never so many that
     /// none runs.
     pub(super) delta: isize,
-    /// What each running worker runs this step, the first for the thread that steps the engine. One for each
-    /// worker running once `delta` is taken.
-    pub(super) shares: Vec<Share>,
+    /// How the step's work is split among the workers running once `delta` is taken.
+    pub(super) split: Split,
+}
+
+/// How a step's work is split among the workers that run it (ADR-0011).
+#[allow(clippy::large_enum_variant, reason = "made and moved once a step, where a box would allocate every step")]
+pub enum Split {
+    /// One worker runs it, the thread that steps the engine, by [`super::Engine::run_whole`]: no part is taken out.
+    Whole(Whole),
+    /// Each running worker runs one share, the first for the thread that steps the engine.
+    Shares(Vec<Share>),
+}
+
+/// What the one worker of a step run whole writes to: its arena and its lists. The parts it runs stay in the engine.
+pub struct Whole {
+    /// Where the worker writes the bytes of the mail its turns send.
+    pub(super) arena: Arena,
+    /// What the worker fills as it runs.
+    pub(super) lists: Lists,
 }
 
 /// The parts of the engine one worker runs in a step, each taken out of the engine for the step with the actors in
@@ -46,10 +62,10 @@ impl Plan {
         self.delta
     }
 
-    /// What each running worker runs, the first for the thread that steps the engine.
+    /// How the step's work is split among the workers that run it.
     #[must_use]
-    pub fn into_shares(self) -> Vec<Share> {
-        self.shares
+    pub fn into_split(self) -> Split {
+        self.split
     }
 }
 

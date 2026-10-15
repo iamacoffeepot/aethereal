@@ -28,7 +28,7 @@ pub use by_actor::{ByActor, IdBits};
 pub use by_seat::BySeat;
 pub use clock::Clock;
 pub use context::Context;
-pub use engine::{Done, Engine, Fold, Folding, Plan, Reading, Share, Tally, Workers};
+pub use engine::{Done, Engine, Fold, Folding, Plan, Reading, Share, Split, Tally, Whole, Workers};
 pub use id::{child_id, path_id, root_id};
 pub use lives::{Life, Lives, State};
 pub use log::{Entry, Log, RECENT};
