@@ -8,6 +8,7 @@ use std::num::NonZeroUsize;
 use std::panic;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
+use std::vec::Drain;
 use worker::{Lent, Order, Reply, Report, Waiting};
 
 /// The threads besides the stepping thread that run a step's shares.
@@ -18,6 +19,10 @@ use worker::{Lent, Order, Reply, Report, Waiting};
 pub struct Pool {
     threads: Vec<Thread>,
     replies: Receiver<Reply>,
+    /// What the workers left from running a step, kept from one step to the next for its room.
+    done: Vec<Done>,
+    /// The folds the workers folded, kept likewise.
+    folded: Vec<Fold>,
     spinning: usize,
     wake_nanos: u64,
     measured: Measured,
@@ -65,7 +70,15 @@ impl Pool {
                 Thread { orders, handle }
             })
             .collect();
-        let mut pool = Self { threads, replies, spinning: 0, wake_nanos: 0, measured: Measured::default() };
+        let mut pool = Self {
+            threads,
+            replies,
+            done: Vec::new(),
+            folded: Vec::new(),
+            spinning: 0,
+            wake_nanos: 0,
+            measured: Measured::default(),
+        };
         pool.wake_nanos = pool.measure_wake(clock);
 
         pool
@@ -89,7 +102,7 @@ impl Pool {
     /// # Panics
     ///
     /// Panics with a share's own panic, once every worker has answered.
-    pub fn lend(&mut self, reading: &Reading<'_>, clock: Monotonic, shares: Vec<Share>) -> Vec<Done> {
+    pub fn lend(&mut self, reading: &Reading<'_>, clock: Monotonic, shares: Vec<Share>) -> Drain<'_, Done> {
         let start = clock.nanos();
         let running = shares.len().saturating_sub(1).min(self.threads.len());
         for parked in &self.threads[running..self.spinning.max(running)] {
@@ -99,7 +112,9 @@ impl Pool {
         self.measured.parks += u64::try_from(self.spinning.saturating_sub(running)).unwrap_or(0);
         self.spinning = running;
 
-        let (done, reports) = self.spread(
+        let busy = spread(
+            &self.threads,
+            &self.replies,
             shares,
             |share| Order::Run { lend: Lent::run(reading, clock, share), then: Waiting::Spin },
             |share| worker::perform(reading, clock, share),
@@ -107,10 +122,11 @@ impl Pool {
                 Reply::Done(done, report) => Some((done, report)),
                 _ => None,
             },
+            &mut self.done,
         );
-        self.measure(clock.nanos().saturating_sub(start), &reports);
+        self.measure(clock.nanos().saturating_sub(start), busy);
 
-        done
+        self.done.drain(..)
     }
 
     /// Folds a step's folds: the first on this thread, each other on a worker that ran a share of the step and
@@ -121,8 +137,10 @@ impl Pool {
     /// # Panics
     ///
     /// Panics with a fold's own panic, once every worker has answered.
-    pub fn fold(&mut self, folding: &Folding<'_>, clock: Monotonic, folds: Vec<Fold>) -> Vec<Fold> {
-        let (folded, _) = self.spread(
+    pub fn fold(&mut self, folding: &Folding<'_>, clock: Monotonic, folds: Vec<Fold>) -> Drain<'_, Fold> {
+        spread(
+            &self.threads,
+            &self.replies,
             folds,
             |share| Order::Fold { lend: Lent::fold(folding, clock, share) },
             |share| worker::fold(folding, clock, share),
@@ -130,64 +148,10 @@ impl Pool {
                 Reply::Folded(fold, report) => Some((fold, report)),
                 _ => None,
             },
+            &mut self.folded,
         );
 
-        folded
-    }
-
-    /// Hands out `shares`: the first is done on this thread with `here`, each other is sent to a worker as `order`
-    /// says, and any past the workers is done here after the first. Answers with what each left, as `answer` takes
-    /// it from a worker's reply, and how long each kept its thread busy.
-    fn spread<S, D>(
-        &self,
-        shares: Vec<S>,
-        order: impl Fn(S) -> Order,
-        here: impl Fn(S) -> (D, Report),
-        answer: impl Fn(Reply) -> Option<(D, Report)>,
-    ) -> (Vec<D>, Vec<Report>) {
-        let mut shares = shares.into_iter();
-        let first = shares.next();
-        let theirs: Vec<S> = shares.by_ref().take(self.threads.len()).collect();
-        // A plan has no more shares than workers; any past them would run here, after the first.
-        let mine: Vec<S> = first.into_iter().chain(shares).collect();
-
-        let mut sent = 0;
-        for (thread, share) in self.threads.iter().zip(theirs) {
-            let is_sent = thread.orders.send(order(share)).is_ok();
-            sent += usize::from(is_sent);
-        }
-
-        let mut done = Vec::with_capacity(sent + mine.len());
-        let mut reports = Vec::with_capacity(sent + 1);
-        let mut panicked = Vec::new();
-        for share in mine {
-            match panic::catch_unwind(panic::AssertUnwindSafe(|| here(share))) {
-                Ok((left, report)) => {
-                    done.push(left);
-                    reports.push(report);
-                }
-                Err(payload) => panicked.push(payload),
-            }
-        }
-        // Every worker lent what it reads answers before it goes. A worker that is gone has stopped reading it.
-        for _ in 0..sent {
-            match self.replies.recv() {
-                Ok(Reply::Panicked(payload)) => panicked.push(payload),
-                Ok(reply) => {
-                    if let Some((left, report)) = answer(reply) {
-                        done.push(left);
-                        reports.push(report);
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-
-        if let Some(payload) = panicked.into_iter().next() {
-            panic::resume_unwind(payload);
-        }
-
-        (done, reports)
+        self.folded.drain(..)
     }
 
     /// Adds a step's planning and applying, which took `plan_nanos` and `apply_nanos`, to what is measured.
@@ -196,13 +160,11 @@ impl Pool {
         self.measured.apply_nanos += apply_nanos;
     }
 
-    /// Adds a step that took `nanos`, whose workers reported `reports`, to what is measured.
-    fn measure(&mut self, nanos: u64, reports: &[Report]) {
+    /// Adds a step that took `nanos`, whose shares kept their threads busy as `busy` sums up, to what is measured.
+    const fn measure(&mut self, nanos: u64, busy: Busy) {
         self.measured.steps += 1;
         self.measured.step_nanos += nanos;
-        for report in reports {
-            self.measured.idle_nanos += nanos.saturating_sub(report.busy_nanos);
-        }
+        self.measured.idle_nanos += (nanos * busy.shares).saturating_sub(busy.nanos);
     }
 
     /// Parks every spinning worker: for when no step is coming soon.
@@ -233,6 +195,69 @@ impl Pool {
 
         wakes.get(wakes.len() / 2).copied().unwrap_or(0)
     }
+}
+
+/// How long a step's shares kept their threads busy: how many there were, and their nanoseconds summed.
+#[derive(Clone, Copy, Default)]
+struct Busy {
+    shares: u64,
+    nanos: u64,
+}
+
+/// Hands out `shares` among `threads`, whose replies come on `replies`: the first is done on this thread with
+/// `here`, each other is sent to a worker as `order` says, and any past the workers is done here after the first.
+/// Adds what each left to `done`, as `answer` takes it from a worker's reply, and answers with how long they kept
+/// their threads busy.
+fn spread<S, D>(
+    threads: &[Thread],
+    replies: &Receiver<Reply>,
+    shares: Vec<S>,
+    order: impl Fn(S) -> Order,
+    here: impl Fn(S) -> (D, Report),
+    answer: impl Fn(Reply) -> Option<(D, Report)>,
+    done: &mut Vec<D>,
+) -> Busy {
+    let mut shares = shares.into_iter();
+    let first = shares.next();
+    let mut sent = 0;
+    for (thread, share) in threads.iter().zip(shares.by_ref()) {
+        let is_sent = thread.orders.send(order(share)).is_ok();
+        sent += usize::from(is_sent);
+    }
+
+    let mut busy = Busy::default();
+    let mut panicked = Vec::new();
+    // A plan has no more shares than workers; any past them run here, after the first.
+    for share in first.into_iter().chain(shares) {
+        match panic::catch_unwind(panic::AssertUnwindSafe(|| here(share))) {
+            Ok((left, report)) => {
+                done.push(left);
+                busy.shares += 1;
+                busy.nanos += report.busy_nanos;
+            }
+            Err(payload) => panicked.push(payload),
+        }
+    }
+    // Every worker lent what it reads answers before it goes. A worker that is gone has stopped reading it.
+    for _ in 0..sent {
+        match replies.recv() {
+            Ok(Reply::Panicked(payload)) => panicked.push(payload),
+            Ok(reply) => {
+                if let Some((left, report)) = answer(reply) {
+                    done.push(left);
+                    busy.shares += 1;
+                    busy.nanos += report.busy_nanos;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    if let Some(payload) = panicked.into_iter().next() {
+        panic::resume_unwind(payload);
+    }
+
+    busy
 }
 
 impl Drop for Pool {
