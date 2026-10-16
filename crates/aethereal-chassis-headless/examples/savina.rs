@@ -1162,9 +1162,9 @@ fn main() {
                 took / size.mails.max(1),
             );
             if hops > 0 {
-                let Hops { fused, waiting, spilled, unseated, elsewhere, ended, burst, closing } = hopped;
+                let Hops { fused, spilled, unseated, elsewhere, ended, burst, closing } = hopped;
                 println!(
-                    "            fused={fused} waiting={waiting} spilled={spilled} unseated={unseated} \
+                    "            fused={fused} spilled={spilled} unseated={unseated} \
                      elsewhere={elsewhere} ended={ended} burst={burst} closing={closing}"
                 );
             }

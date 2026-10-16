@@ -157,6 +157,11 @@ impl Handles<Note> for Node {
                 let sender = turn.sender();
                 turn.watch(sender);
             }
+            ["self", ..] => {
+                let (_, rest) = text.split_once(' ').unwrap_or_default();
+                let me = turn.me();
+                turn.to::<Self>(To::Held(me)).send(&Note { text: String::from(rest) })?;
+            }
             ["where", ..] => say(format!("{} at depth {}", self.number, turn.chain().depth)),
             ["bye", number] => {
                 let watches = number == "5";
@@ -580,6 +585,46 @@ fn chain_runs_at_most_the_budget_of_hops_in_a_step() {
     let second = ["2 got bounce 0", "2 got bounce 7", "1 got bounce 6", "2 got bounce 5", "1 got bounce 4"];
     let third = ["2 got bounce 3", "1 got bounce 2", "2 got bounce 1", "1 got bounce 0"];
     assert_eq!(steps, [second.to_vec(), third.to_vec()]);
+}
+
+#[test]
+fn chains_begun_by_different_items_all_run_in_the_step_in_the_order_their_hops_were_made() {
+    // Catches a part fusing only the first chain its items begin, and hops run newest first. Node 2's `self self where`
+    // begins a chain to itself and its `reply` one to its parent; the parent's `re` runs between node 2's two hops.
+    let (mut engine, _) = fusing(8, &["spawn 2 self self where", "tell 2 reply"]);
+    step(&mut engine);
+
+    let second =
+        ["2 got self self where", "2 got reply", "2 got self where", "1 got re", "2 got where", "2 at depth 4"];
+    assert_eq!(step(&mut engine), second);
+    assert!(engine.is_idle());
+}
+
+#[test]
+fn each_run_sees_only_the_children_it_stood_up_and_a_part_begins_with_none() {
+    // Catches two runs of one part sharing what they stood up, and a run kept for its room still holding a child
+    // from the part a worker ran before.
+    let (engine, root) = fusing(8, &[]);
+    let Some(root_path) = engine.table().path(root) else {
+        panic!("the root is in the table");
+    };
+    let segment = PathSegment::new(Node::NAME, &2u64);
+    let Ok(child_path) = root_path.child(&segment) else {
+        panic!("a child of the root fits");
+    };
+    let child = Seated { id: child_id(root, &segment), seat: SeatNumber::new(9) };
+
+    let mut fusing = Fusing::default();
+    fusing.begin(8);
+    let first = fusing.begin_run();
+    let second = fusing.begin_run();
+    fusing.run_mut(first).stand([(child, child_path.clone())]);
+    assert_eq!(fusing.run(first).resolve(&child_path), Some(child));
+    assert_eq!(fusing.run(second).resolve(&child_path), None);
+
+    fusing.begin(8);
+    let again = fusing.begin_run();
+    assert_eq!(fusing.run(again).resolve(&child_path), None);
 }
 
 #[test]

@@ -3,26 +3,31 @@
 use crate::ByActor;
 use aethereal_actor::{Declared, MailId, SeatNumber, Seated};
 use aethereal_data::{ActorId, ActorPath, KindId};
+use std::collections::VecDeque;
 
-/// What one part keeps of its step while it runs it: the hop waiting, the budget left, what each actor that ran has
-/// done, the children stood up, and its run (ADR-0013).
+/// What one part keeps of its step while it runs it: the hops waiting, the budget left, what each actor that ran has
+/// done, the children stood up, and its runs (ADR-0013).
 ///
 /// A worker keeps one for every part it runs, emptied as each part begins, so nothing in it is allocated again.
 #[derive(Default)]
 pub(super) struct Fusing {
     /// The hops the part may still run in this step.
     budget: usize,
-    /// The hop waiting to run: never more than one, so a chain fuses and a burst spreads.
-    waiting: Vec<Hop>,
-    /// The bytes of the hop waiting, copied out of the arena its sender wrote, which the next turn writes on.
-    pub(super) bytes: Vec<u8>,
+    /// The hops waiting to run, in the order they were made.
+    waiting: VecDeque<Hop>,
+    /// The bytes of the hops waiting, copied out of the arenas their senders wrote, which later turns write on.
+    bytes: Vec<u8>,
+    /// The bytes of the hop running.
+    pub(super) handed: Vec<u8>,
     /// What each actor that ran in the part has done in the step, under its id.
     actors: ByActor<Stepped>,
     /// The paths and seats of the children stood up in the part in the step, and what their types declare, under
     /// their ids.
     pub(super) stood: ByActor<(ActorPath, SeatNumber, &'static Declared)>,
-    /// The spawns and endings of the part's run.
-    pub(super) run: Run,
+    /// The spawns and endings of each run the part has begun in the step, by the order it began them. Only the first
+    /// `began` are this step's: the rest are kept for their room.
+    runs: Vec<Run>,
+    began: usize,
     /// How the sends of the parts it ran fared, since the engine last took them in.
     pub(super) hops: Hops,
 }
@@ -34,8 +39,6 @@ pub(super) struct Fusing {
 pub struct Hops {
     /// Sends fused.
     pub fused: u64,
-    /// First sends of a turn made while a hop was waiting: a part runs one run in a step.
-    pub waiting: u64,
     /// First sends by an actor that had sent mail as mail to an actor in its part in the step.
     pub spilled: u64,
     /// First sends to a child stood up in the step, which is seated when the step is applied.
@@ -54,7 +57,6 @@ impl Hops {
     /// Adds `other` to these.
     pub(super) fn add(&mut self, other: Self) {
         self.fused += other.fused;
-        self.waiting += other.waiting;
         self.spilled += other.spilled;
         self.unseated += other.unseated;
         self.elsewhere += other.elsewhere;
@@ -67,7 +69,6 @@ impl Hops {
     pub(super) fn count(&mut self, hand: Hand) {
         let counter = match hand {
             Hand::Fuse => &mut self.fused,
-            Hand::Waiting => &mut self.waiting,
             Hand::Spilled => &mut self.spilled,
             Hand::Unseated => &mut self.unseated,
             Hand::Elsewhere => &mut self.elsewhere,
@@ -82,8 +83,6 @@ impl Hops {
 pub(super) enum Hand {
     /// It is fused.
     Fuse,
-    /// It goes out as mail: a hop is waiting.
-    Waiting,
     /// It goes out as mail: its sender has sent mail as mail to an actor in its part in the step.
     Spilled,
     /// It goes out as mail: its receiver was stood up in the step and has no seat yet.
@@ -108,6 +107,11 @@ pub(super) struct Hop {
     /// How far down its chain it is.
     pub(super) depth: u32,
     pub(super) kind: KindId,
+    /// The run it belongs to, by the order its part began it in the step.
+    pub(super) run: usize,
+    /// Where its bytes start in the part's bytes waiting, and how many there are.
+    pub(super) at: usize,
+    pub(super) len: usize,
 }
 
 /// What one actor has done in a step, in its part (ADR-0013).
@@ -125,8 +129,8 @@ pub(super) struct Stepped {
 /// What the turns of one run have done to the table: the children they stood up, and the actors that ended in them
 /// (ADR-0013).
 ///
-/// A run is the turn that made a part's first fused send and the turns of the hops that followed. Only its own turns
-/// see this, until the step is folded.
+/// A run is a turn of a waiting item that made a fused send and the turns of the hops that followed from it. Only its
+/// own turns see this, until the step is folded.
 #[derive(Default)]
 pub(super) struct Run {
     stood: Vec<(Seated, ActorPath)>,
@@ -138,17 +142,14 @@ impl Fusing {
     pub(super) fn begin(&mut self, budget: usize) {
         self.budget = budget;
         self.waiting.clear();
+        self.bytes.clear();
         self.actors.clear();
         self.stood.clear();
-        self.run.stood.clear();
-        self.run.ended.clear();
-    }
-
-    /// Whether the part takes a hop now: one is not waiting, and its budget has room.
-    pub(super) fn takes_a_hop(&self) -> bool {
-        let is_free = self.waiting.is_empty();
-
-        is_free && self.budget > 0
+        for run in &mut self.runs[..self.began] {
+            run.stood.clear();
+            run.ended.clear();
+        }
+        self.began = 0;
     }
 
     /// Whether the part may still make a hop in this step: its budget has room.
@@ -162,15 +163,50 @@ impl Fusing {
         self.may_hop() || !self.waiting.is_empty()
     }
 
-    /// Puts `hop` waiting, spending one hop of the budget.
-    pub(super) fn wait(&mut self, hop: Hop) {
-        self.budget -= 1;
-        self.waiting.push(hop);
+    /// Begins a run: one more chain of fused mail in the part's step, seeing nothing yet. Answers its number.
+    pub(super) fn begin_run(&mut self) -> usize {
+        if self.began == self.runs.len() {
+            self.runs.push(Run::default());
+        }
+        self.began += 1;
+
+        self.began - 1
     }
 
-    /// The hop waiting, taken to run.
+    /// The run numbered `run`.
+    pub(super) fn run(&self, run: usize) -> &Run {
+        &self.runs[run]
+    }
+
+    /// The run numbered `run`, to note what its turns did.
+    pub(super) fn run_mut(&mut self, run: usize) -> &mut Run {
+        &mut self.runs[run]
+    }
+
+    /// Puts `hop` at the back of those waiting, spending one hop of the budget.
+    pub(super) fn wait(&mut self, hop: Hop) {
+        self.budget -= 1;
+        self.waiting.push_back(hop);
+    }
+
+    /// Keeps `bytes`, a hop's, until it runs: where they start and how many there are.
+    pub(super) fn keep_bytes(&mut self, bytes: &[u8]) -> (usize, usize) {
+        let at = self.bytes.len();
+        self.bytes.extend_from_slice(bytes);
+
+        (at, bytes.len())
+    }
+
+    /// The hop at the front, taken to run, its bytes in `handed`.
     pub(super) fn next(&mut self) -> Option<Hop> {
-        self.waiting.pop()
+        let hop = self.waiting.pop_front()?;
+        self.handed.clear();
+        self.handed.extend_from_slice(&self.bytes[hop.at..hop.at + hop.len]);
+        if self.waiting.is_empty() {
+            self.bytes.clear();
+        }
+
+        Some(hop)
     }
 
     /// What the actor `me` names has done in the step, or, when it has not run, what it had done when the step began:
