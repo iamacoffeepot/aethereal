@@ -288,14 +288,13 @@ impl Engine {
         &self.table
     }
 
-    /// What the actor `id` stands for logged most recently, oldest first, as of the last step.
+    /// What `actor` logged most recently, oldest first, as of the last step.
     ///
-    /// It holds the fault of a turn that failed, and of a closing turn that did. Nothing for an actor that has
-    /// logged nothing, or whose seat another actor has taken and logged in since.
-    pub fn log(&self, id: ActorId) -> impl Iterator<Item = &Entry> {
-        let actor = self.table.seat(id).map(|seat| Seated { id, seat });
-
-        actor.and_then(|actor| self.log.shard(actor.seat.number()).get(actor)).into_iter().flatten()
+    /// It holds the fault of a turn that failed, and of a closing turn that did, so it is read after the actor has
+    /// ended, by the seat it sat in: the table no longer holds it (ADR-0008). Nothing for an actor that has logged
+    /// nothing, or whose seat another actor has taken and logged in since.
+    pub fn log(&self, actor: Seated) -> impl Iterator<Item = &Entry> {
+        self.log.shard(actor.seat.number()).get(actor).into_iter().flatten()
     }
 
     /// The number of the last step run, from one. Zero before the first.
@@ -329,7 +328,7 @@ impl Engine {
         let segment = PathSegment::new(A::NAME, key);
         let id = root_id(&segment);
         let path = ActorPath::from_root(&segment);
-        let is_taken = self.table.path(id).as_ref() == Some(&path);
+        let is_taken = self.table.holds_root(id);
         if is_taken {
             return Err(Refused::KeyTaken);
         }
@@ -366,6 +365,7 @@ impl Engine {
         let effects: Vec<Effect> = iter::once(Effect::new(me, made)).chain(asked).collect();
         let context = Context { root: MailId { sender: id, count: 0 }, depth: 1 };
 
+        self.table.made_root(id);
         self.seat(me, path, Above::Chassis, Box::new(root));
         let applied = begun(&effects).into_owned();
         self.fold_turn(&applied, stood, context);

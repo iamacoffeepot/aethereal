@@ -303,14 +303,17 @@ impl Seat<'_> {
         if target == Target::Sender {
             return;
         }
-        let receiver = self.declared_at(to.id);
-        let reaches = match (target, receiver) {
-            (Target::Sender, _) => true,
-            (Target::Type(name), Some(receiver)) => receiver.name() == name,
-            (Target::Handling(kinds), Some(receiver)) => kinds.iter().all(|kind| receiver.lists(*kind)),
-            (_, None) => false,
+        // An actor a reference names that the table no longer holds has ended: the mail is dropped where it would be
+        // handed over, and there is no type left to check it against (ADR-0008).
+        let Some(receiver) = self.declared_at(to.id) else {
+            return;
         };
-        let receiver = receiver.map(Declared::name);
+        let reaches = match target {
+            Target::Sender => true,
+            Target::Type(name) => receiver.name() == name,
+            Target::Handling(kinds) => kinds.iter().all(|kind| receiver.lists(*kind)),
+        };
+        let receiver = receiver.name();
         assert!(
             reaches,
             "false declaration: an actor of type {} sent {kind:?} in {} to {to:?}, of type {receiver:?}, which \
@@ -378,7 +381,7 @@ impl Seat<'_> {
         let segment = PathSegment::new(C::NAME, key);
         let path = self.path.child(&segment).map_err(|PathTooDeep| Refused::TooDeep)?;
         let id = self.table.child(self.me.id, &segment);
-        let is_made = self.table.path(id).as_ref() == Some(&path);
+        let is_made = self.table.has_made(self.me.id, id);
         let is_taken = is_made || self.asked.stood_seat(id).is_some();
         if is_taken {
             return Err(Refused::KeyTaken);

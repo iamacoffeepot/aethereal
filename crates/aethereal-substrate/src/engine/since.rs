@@ -53,10 +53,10 @@ impl Table for Since<'_> {
         (!has_ended).then_some(resolved)
     }
 
-    fn path(&self, id: ActorId) -> Option<ActorPath> {
-        let stood = self.stood.get(&id.bits()).map(|(path, _, _)| path.clone());
+    fn has_made(&self, parent: ActorId, child: ActorId) -> bool {
+        let is_stood = self.stood.contains_key(&child.bits());
 
-        stood.or_else(|| self.table.path(id))
+        is_stood || Table::has_made(self.table, parent, child)
     }
 
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {

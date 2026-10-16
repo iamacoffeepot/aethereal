@@ -12,8 +12,8 @@ pub trait Table {
     /// The actor `path` names, and its seat, when that actor is live.
     fn resolve(&self, path: &ActorPath) -> Option<Seated>;
 
-    /// The path `id` stands for, when an actor has been made under it, live or ended.
-    fn path(&self, id: ActorId) -> Option<ActorPath>;
+    /// Whether the actor `parent` stands for has made the child `child` stands for, live or ended (ADR-0008).
+    fn has_made(&self, parent: ActorId, child: ActorId) -> bool;
 
     /// The id of the child `segment` names beneath the actor `parent` stands for. Only the engine computes an id.
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId;

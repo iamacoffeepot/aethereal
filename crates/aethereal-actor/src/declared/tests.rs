@@ -28,8 +28,8 @@ impl Table for Typed {
         None
     }
 
-    fn path(&self, _: ActorId) -> Option<ActorPath> {
-        None
+    fn has_made(&self, _: ActorId, _: ActorId) -> bool {
+        false
     }
 
     fn child(&self, parent: ActorId, _: &PathSegment) -> ActorId {

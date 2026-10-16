@@ -22,8 +22,9 @@ impl Table for Listed {
         self.0.iter().find(|(_, held)| held == path).map(|(made, _)| *made)
     }
 
-    fn path(&self, id: ActorId) -> Option<ActorPath> {
-        self.0.iter().find(|(made, _)| made.id == id).map(|(_, path)| path.clone())
+    /// Every actor listed has been made, beneath whichever actor asks.
+    fn has_made(&self, _: ActorId, child: ActorId) -> bool {
+        self.0.iter().any(|(made, _)| made.id == child)
     }
 
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
