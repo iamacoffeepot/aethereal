@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::watch::Notice;
-use crate::{ByActor, Entry, Standing, child_id};
+use crate::{ByActor, Entry, child_id};
 use aethereal_actor::{Ended, Ending, Fault, Handles, How, Level, Table, To, ToSender, ToType, ToWithoutMail, Turn};
 use aethereal_data::{Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
@@ -34,11 +34,13 @@ impl Kind for Note {
     const NAME: KindName = KindName::new("aether.test.note");
 }
 
-/// A node's number, and the notes it sends itself as it begins.
+/// A node's number, the notes it sends itself as it begins, and the children it spawns as it begins, each of which
+/// closes on its first note.
 #[derive(Plain)]
 struct NodeConfig {
     number: u64,
     to_self: Vec<String>,
+    spawns: Vec<u64>,
 }
 
 impl Kind for NodeConfig {
@@ -51,6 +53,7 @@ impl Kind for NodeConfig {
 ///   first;
 /// - `spawn N text` spawns the node `N` beneath it and sends that child `text`, and `watch N text` watches the
 ///   child as well;
+/// - `nest N M` spawns the node `N`, which spawns the node `M` beneath itself as it begins;
 /// - `tell N text` sends the node `N` beneath it `text`;
 /// - `both` sends its parent `watchme` and itself `close`, and `watchme` has it watch the sender;
 /// - `up text` sends its parent `text from <number>`, and `reply` answers the sender with `re`;
@@ -58,7 +61,8 @@ impl Kind for NodeConfig {
 /// - `bye 5` has it watch the sender as well;
 /// - `where` has it say how deep in its chain that note is;
 /// - `bye N`, which a child sends as it ends, has it send that child `late`;
-/// - `bounce N` answers the sender `bounce N-1` until `N` is zero, and `pair` answers it `bounce 2`, then `last`.
+/// - `bounce N` answers the sender `bounce N-1` until `N` is zero, and `pair` answers it `bounce 2`, then `last`;
+/// - `keep` sends the sender `late` through the reference to it, as an actor of its own type.
 #[derive(Plain)]
 struct Node {
     number: u64,
@@ -83,6 +87,10 @@ impl Actor for Node {
     type EndSends = (ToType<Self, Note>,);
 
     fn begin(config: NodeConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        for number in config.spawns {
+            let to_self = vec![String::from("close")];
+            let _ = turn.spawn::<Self>(&number, NodeConfig { number, to_self, spawns: Vec::new() });
+        }
         for text in config.to_self {
             let me = turn.me();
             turn.to::<Self>(ToWithoutMail::Held(me)).send(&Note { text })?;
@@ -134,13 +142,19 @@ impl Handles<Note> for Node {
             ["up", said] => turn.to::<Self>(To::Parent).send(&Note { text: format!("{said} from {}", self.number) })?,
             ["spawn" | "watch", number, text] => {
                 let number = number.parse().unwrap_or_default();
-                if let Ok(child) = turn.spawn::<Self>(&number, NodeConfig { number, to_self: Vec::new() }) {
+                let config = NodeConfig { number, to_self: Vec::new(), spawns: Vec::new() };
+                if let Ok(child) = turn.spawn::<Self>(&number, config) {
                     let watches = words[0] == "watch";
                     if watches {
                         turn.watch(child);
                     }
                     turn.to::<Self>(Self::child(number)).send(&Note { text: String::from(text) })?;
                 }
+            }
+            ["nest", number, beneath] => {
+                let number = number.parse().unwrap_or_default();
+                let spawns = vec![beneath.parse().unwrap_or_default()];
+                let _ = turn.spawn::<Self>(&number, NodeConfig { number, to_self: Vec::new(), spawns });
             }
             ["tell", number, text] => {
                 let child = Self::child(number.parse().unwrap_or_default());
@@ -159,6 +173,10 @@ impl Handles<Note> for Node {
                 let (_, rest) = text.split_once(' ').unwrap_or_default();
                 let me = turn.me();
                 turn.to::<Self>(To::Held(me)).send(&Note { text: String::from(rest) })?;
+            }
+            ["keep", ..] => {
+                let sender = turn.sender();
+                turn.to::<Self>(To::Held(sender)).send(&Note { text: String::from("late") })?;
             }
             ["where", ..] => say(format!("{} at depth {}", self.number, turn.chain().depth)),
             ["bye", number] => {
@@ -221,7 +239,7 @@ fn fusing(hops: usize, to_self: &[&str]) -> (Engine, ActorId) {
     };
     let mut engine = Engine::new(parts, 1024, 0, hops);
     let to_self = to_self.iter().map(|text| String::from(*text)).collect();
-    let Ok(root) = engine.add_root::<Node>(&1, NodeConfig { number: 1, to_self }) else {
+    let Ok(root) = engine.add_root::<Node>(&1, NodeConfig { number: 1, to_self, spawns: Vec::new() }) else {
         panic!("the root begins");
     };
 
@@ -233,6 +251,15 @@ fn step(engine: &mut Engine) -> Vec<String> {
     engine.step(&Stopped);
 
     said()
+}
+
+/// The live actor `id` stands for, in its seat.
+fn seated(engine: &Engine, id: ActorId) -> Seated {
+    let Some(seat) = engine.table().seat(id) else {
+        panic!("the actor is live");
+    };
+
+    Seated { id, seat }
 }
 
 /// The id of the node `number` beneath `parent`.
@@ -260,7 +287,7 @@ fn child_takes_mail_sent_in_the_step_that_spawned_it() {
     let (mut engine, root) = engine(&["spawn 2 up hello"]);
 
     assert_eq!(step(&mut engine), ["1 got spawn 2 up hello"]);
-    assert_eq!(engine.table().standing(node(root, 2)), Standing::Live);
+    assert!(engine.table().is_live(node(root, 2)));
     assert_eq!(step(&mut engine), ["2 got up hello"]);
     assert_eq!(step(&mut engine), ["1 got hello from 2"]);
 }
@@ -276,7 +303,7 @@ fn closed_actor_handles_no_more_mail_and_ends_in_the_next_step() {
     let mut second = step(&mut engine);
     second.sort();
     assert_eq!(second, ["2 got close", "3 got up hi"]);
-    assert_eq!(engine.table().standing(node(root, 2)), Standing::Ended);
+    assert!(!engine.table().is_live(node(root, 2)));
 
     let mut third = step(&mut engine);
     third.sort();
@@ -305,9 +332,70 @@ fn failed_turn_ends_its_actor_and_sends_nothing() {
     step(&mut engine);
 
     assert_eq!(step(&mut engine), ["2 got fail"]);
-    assert_eq!(engine.table().standing(node(root, 2)), Standing::Ended);
+    assert!(!engine.table().is_live(node(root, 2)));
     assert_eq!(step(&mut engine), ["2 ended Faulted"]);
     assert_eq!(step(&mut engine), ["1 got bye 2"]);
+}
+
+#[test]
+fn send_through_a_reference_to_an_actor_that_has_ended_is_dropped() {
+    // Catches a send checked against the type of an actor the table no longer holds, which would stop the engine
+    // over mail that is only to be dropped, and mail handed to an actor that has ended.
+    let (mut engine, _) = engine(&["spawn 2 up keep", "tell 2 close"]);
+    step(&mut engine);
+    assert_eq!(step(&mut engine), ["2 got up keep", "2 got close"]);
+
+    let mut third = step(&mut engine);
+    third.sort();
+    assert_eq!(third, ["1 got keep from 2", "2 ended Closed"]);
+    assert_eq!(step(&mut engine), ["1 got bye 2"]);
+    assert_eq!(step(&mut engine), [""; 0]);
+}
+
+#[test]
+fn key_stays_taken_after_its_child_has_ended() {
+    // Catches a parent's key freed once its child has ended and left the table, which would bring a closed path
+    // back to life.
+    let (mut engine, _) = engine(&["spawn 2 close", "self self spawn 2 up again"]);
+    step(&mut engine);
+    step(&mut engine);
+
+    let mut third = step(&mut engine);
+    third.sort();
+    assert_eq!(third, ["1 got spawn 2 up again", "2 ended Closed"]);
+    assert_eq!(step(&mut engine), ["1 got bye 2"]);
+    assert_eq!(step(&mut engine), [""; 0]);
+}
+
+#[test]
+fn key_a_child_used_as_it_began_stays_taken() {
+    // Catches the children a child stands up in its `begin` going unnoted, as when a child is seated before its
+    // parent has a seat to note it in.
+    let (mut engine, _) = engine(&["nest 2 3", "self self tell 2 spawn 3 up again"]);
+    step(&mut engine);
+    let mut second = step(&mut engine);
+    second.sort();
+    assert_eq!(second, ["1 got self tell 2 spawn 3 up again", "3 got close"]);
+
+    let mut third = step(&mut engine);
+    third.sort();
+    assert_eq!(third, ["1 got tell 2 spawn 3 up again", "3 ended Closed"]);
+    let mut fourth = step(&mut engine);
+    fourth.sort();
+    assert_eq!(fourth, ["2 got bye 3", "2 got spawn 3 up again"]);
+    assert_eq!(step(&mut engine), [""; 0]);
+}
+
+#[test]
+fn root_key_stays_taken_after_its_root_has_ended() {
+    // Catches a root's key freed once the table no longer holds its ended root, which would bring a closed path
+    // back to life.
+    let (mut engine, _) = engine(&["close"]);
+    step(&mut engine);
+    step(&mut engine);
+
+    let again = engine.add_root::<Node>(&1, NodeConfig { number: 1, to_self: Vec::new(), spawns: Vec::new() });
+    assert!(matches!(again, Err(Refused::KeyTaken)));
 }
 
 #[test]
@@ -405,12 +493,13 @@ fn failed_turn_keeps_its_log_lines_and_leaves_its_fault() {
     // and a failure that leaves nothing to read.
     let (mut engine, root) = engine(&["spawn 2 fail low"]);
     step(&mut engine);
+    let child = seated(&engine, node(root, 2));
     step(&mut engine);
     let Ok(fault) = Fault::new(&Note { text: String::from("low") }) else {
         panic!("a short note encodes");
     };
 
-    let kept: Vec<&Entry> = engine.log(node(root, 2)).collect();
+    let kept: Vec<&Entry> = engine.log(child).collect();
     assert_eq!(kept, [&Entry::Line { level: Level::Warn, text: String::from("low") }, &Entry::Failed(fault)]);
     assert_eq!(step(&mut engine), ["2 ended Faulted"]);
     assert_eq!(step(&mut engine), ["1 got bye 2"]);
@@ -421,13 +510,14 @@ fn failed_closing_turn_leaves_its_fault_and_sends_nothing() {
     // Catches a closing turn whose failure leaves nothing to read, and one whose mail goes out all the same.
     let (mut engine, root) = engine(&["spawn 13 close"]);
     step(&mut engine);
+    let child = seated(&engine, node(root, 13));
     step(&mut engine);
     let Ok(fault) = Fault::new(&Note { text: String::from("unlucky") }) else {
         panic!("a short note encodes");
     };
 
     assert_eq!(step(&mut engine), ["13 ended Closed"]);
-    assert_eq!(engine.log(node(root, 13)).collect::<Vec<_>>(), [&Entry::EndFailed(fault)]);
+    assert_eq!(engine.log(child).collect::<Vec<_>>(), [&Entry::EndFailed(fault)]);
     assert_eq!(step(&mut engine), [""; 0]);
 }
 

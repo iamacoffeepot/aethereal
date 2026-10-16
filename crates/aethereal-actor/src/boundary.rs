@@ -12,9 +12,6 @@ pub trait Table {
     /// The actor `path` names, and its seat, when that actor is live.
     fn resolve(&self, path: &ActorPath) -> Option<Seated>;
 
-    /// The path `id` stands for, when an actor has been made under it, live or ended.
-    fn path(&self, id: ActorId) -> Option<ActorPath>;
-
     /// The id of the child `segment` names beneath the actor `parent` stands for. Only the engine computes an id.
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId;
 
@@ -28,6 +25,22 @@ pub trait Table {
     /// The seat of the child `id` stands for, beneath the actor whose turn reads the table, when it was made or that
     /// actor stood it up in an earlier turn of the step.
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber>;
+}
+
+/// The children an actor has made, live or ended, whose keys it may not use again (ADR-0008).
+///
+/// The engine answers it from the actor's seat, where a parent's own
+/// knowledge of its keys is kept.
+pub trait Children {
+    /// Whether the actor has made the child `child` stands for.
+    fn has_made(&self, child: ActorId) -> bool;
+}
+
+/// An actor that has made no child: one being stood up, or one whose turn cannot spawn.
+impl Children for () {
+    fn has_made(&self, _: ActorId) -> bool {
+        false
+    }
 }
 
 /// What a boundary's writer and reader offer a reference: leave to cross, and nothing else (ADR-0008).

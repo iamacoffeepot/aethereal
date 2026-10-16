@@ -4,12 +4,15 @@ mod actors;
 #[cfg(test)]
 mod tests;
 
+use crate::by_actor::IdBits;
 use crate::id::{child_id, path_id};
 use crate::{Column, Context, Folded, Routed};
 pub use actors::Actors;
 use actors::Entry;
 use aethereal_actor::{Declared, Effect, SeatNumber, Seated, Table};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
+use std::collections::HashSet;
+use std::hash::BuildHasherDefault;
 use std::num::NonZeroUsize;
 
 /// The table as a turn reads it. The id of a child is computed here, by the engine, and nowhere else.
@@ -20,16 +23,12 @@ impl Table for ActorTable {
         Some(Seated { id, seat: Self::seat(self, id)? })
     }
 
-    fn path(&self, id: ActorId) -> Option<ActorPath> {
-        Self::path(self, id)
-    }
-
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
         child_id(parent, segment)
     }
 
     fn is_live(&self, id: ActorId) -> bool {
-        self.standing(id) == Standing::Live
+        Self::is_live(self, id)
     }
 
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber> {
@@ -41,35 +40,29 @@ impl Table for ActorTable {
     }
 }
 
-/// How an actor stands in the table (ADR-0008).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Standing {
-    /// Not in the table: never made.
-    Absent,
-    /// Made, and not ended.
-    Live,
-    /// Ended. Its path is never used again.
-    Ended,
-}
-
-/// The engine's one table of actors: which there are, where each stands, and which have ended (ADR-0008).
+/// The engine's one table of live actors: which there are, and where each stands (ADR-0008).
 ///
 /// It is a view (ADR-0011), folded from the spawns and endings of finished
 /// turns. A turn reads it as it stood when the turn's step began, and it
 /// changes only between two steps.
 ///
-/// The table only grows. An actor is written once, when it is made, and
-/// marked once, by its own ending. The ending of an actor does not end the
-/// actors beneath it (ADR-0009).
+/// It holds the live actors. An actor is written once, when it is made, and
+/// taken out once, by its own ending, so for whoever holds a reference an
+/// actor that is not here has ended. The ending of an actor does not end the
+/// actors beneath it (ADR-0009). Whether a key is free is the parent's own
+/// knowledge, kept in its seat; the table keeps the roots the chassis has
+/// made, for the engine's life.
 pub struct ActorTable {
     actors: Folded<Actors>,
+    /// The ids of the roots made, live or ended.
+    roots: HashSet<u64, BuildHasherDefault<IdBits>>,
 }
 
 impl ActorTable {
     /// The empty table, its actors spread over `parts` parts.
     #[must_use]
     pub fn new(parts: NonZeroUsize) -> Self {
-        Self { actors: Folded::new(parts) }
+        Self { actors: Folded::new(parts), roots: HashSet::default() }
     }
 
     /// Folds in the effects of one turn, emitted in `context`, in the order given.
@@ -79,6 +72,11 @@ impl ActorTable {
     /// Panics when an effect makes an actor under an id the table already holds (ADR-0008).
     pub fn fold(&mut self, effects: &[Effect], context: &Context) {
         self.actors.fold(effects, context);
+    }
+
+    /// Notes that the chassis has made the root `id`, whose key is then never used again.
+    pub(crate) fn made_root(&mut self, id: ActorId) {
+        self.roots.insert(id.bits());
     }
 
     /// An empty row of buckets for one writer's records of the table.
@@ -113,28 +111,34 @@ impl ActorTable {
         self.actors.empty(part, column, rows);
     }
 
-    /// How the actor `id` stands for stands.
+    /// Whether the actor `id` stands for is live: made, and not ended.
     #[must_use]
-    pub fn standing(&self, id: ActorId) -> Standing {
-        match self.entry(id) {
-            None => Standing::Absent,
-            Some(entry) if entry.is_live() => Standing::Live,
-            Some(_) => Standing::Ended,
-        }
+    pub fn is_live(&self, id: ActorId) -> bool {
+        self.entry(id).is_some()
+    }
+
+    /// Whether a root has been made under the id `id`, live or ended.
+    #[must_use]
+    pub fn holds_root(&self, id: ActorId) -> bool {
+        self.roots.contains(&id.bits())
     }
 
     /// The id of the actor `path` names, when that actor is live.
+    ///
+    /// Its entry is the one at the path's id, with the path's last segment, beneath the actor at the id of the
+    /// path's parent: the actors above need not be live.
     #[must_use]
     pub fn resolve(&self, path: &ActorPath) -> Option<ActorId> {
         let id = path_id(path);
-        let is_live = self.standing(id) == Standing::Live;
-        let is_named = self.path(id).as_ref() == Some(path);
-        let resolves = is_live && is_named;
+        let entry = self.entry(id)?;
+        let is_last = *entry.segment() == path.last();
+        let is_beneath = entry.above() == path.parent().as_ref().map(path_id);
+        let resolves = is_last && is_beneath;
 
         resolves.then_some(id)
     }
 
-    /// The path `id` stands for, whether its actor is live or ended.
+    /// The path `id` stands for, when its actor and every actor above it are live.
     #[must_use]
     pub fn path(&self, id: ActorId) -> Option<ActorPath> {
         let mut entry = self.entry(id)?;
@@ -153,13 +157,13 @@ impl ActorTable {
         segments.iter().rev().try_fold(root, |path, segment| path.child(segment)).ok()
     }
 
-    /// The seat of the actor `id` stands for, which it sits in or sat in, when it is in the table.
+    /// The seat of the actor `id` stands for, when it is live.
     #[must_use]
     pub fn seat(&self, id: ActorId) -> Option<SeatNumber> {
         self.entry(id).map(Entry::seat)
     }
 
-    /// The actor directly above the one `id` stands for, when that one is in the table and is not a root.
+    /// The actor directly above the one `id` stands for, when that one is live and is not a root.
     #[must_use]
     pub fn parent(&self, id: ActorId) -> Option<ActorId> {
         self.entry(id)?.above()

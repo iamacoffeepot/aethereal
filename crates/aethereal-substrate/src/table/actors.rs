@@ -5,15 +5,15 @@ use crate::{ByActor, Context, View};
 use aethereal_actor::{Declared, Effect, SeatNumber, What};
 use aethereal_data::{ActorId, PathSegment};
 
-/// The view of which actors there are, keyed by an actor's own id (ADR-0011).
+/// The view of which actors are live, keyed by an actor's own id (ADR-0011).
 ///
 /// A key has one source for each of its two changes. An actor's entry is made
 /// by the spawn its parent asked for, or for a root by the chassis. It is
-/// marked ended by the actor's own ending and by nothing else: no ending of
+/// taken out by the actor's own ending and by nothing else: no ending of
 /// another actor, its parent's included, reaches it (ADR-0009).
 pub struct Actors;
 
-/// One actor's entry: where it stands, and whether it has ended.
+/// One live actor's entry: where it stands.
 pub struct Entry {
     /// The actor directly above. None for a root, which stands beneath nothing: fixed when the entry is made.
     above: Option<ActorId>,
@@ -23,15 +23,6 @@ pub struct Entry {
     seat: SeatNumber,
     /// What the actor's type declares (ADR-0013).
     declared: &'static Declared,
-    /// Whether the actor has ended.
-    life: Life,
-}
-
-/// Whether an actor in the table has ended.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Life {
-    Live,
-    Ended,
 }
 
 /// What the view keeps of an effect.
@@ -63,11 +54,6 @@ impl Entry {
     pub(super) const fn declared(&self) -> &'static Declared {
         self.declared
     }
-
-    /// Whether the actor has not ended.
-    pub(super) fn is_live(&self) -> bool {
-        self.life == Life::Live
-    }
 }
 
 impl View for Actors {
@@ -85,16 +71,14 @@ impl View for Actors {
     fn fold(shard: &mut ByActor<Entry>, key: u64, record: Record) {
         match record {
             Record::Made { above, segment, seat, declared } => {
-                let held = shard.insert(key, Entry { above, segment, seat, declared, life: Life::Live });
+                let held = shard.insert(key, Entry { above, segment, seat, declared });
                 assert!(
                     held.is_none(),
                     "actor table: an actor was made under the id {key:#018x}, which is already held"
                 );
             }
             Record::Ended => {
-                if let Some(entry) = shard.get_mut(&key) {
-                    entry.life = Life::Ended;
-                }
+                shard.remove(&key);
             }
         }
     }

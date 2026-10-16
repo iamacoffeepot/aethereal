@@ -28,10 +28,6 @@ impl Table for Typed {
         None
     }
 
-    fn path(&self, _: ActorId) -> Option<ActorPath> {
-        None
-    }
-
     fn child(&self, parent: ActorId, _: &PathSegment) -> ActorId {
         parent
     }
@@ -184,7 +180,7 @@ fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<What> {
     let table = Typed(Vec::new());
     let mut asked = Asked::new();
     let mut actor: Box<dyn Runs> = Box::new(actor);
-    let turning = Turning::new(ME, &PATH, Above::Chassis, &table, &mut asked, 0, OTHER, CHAIN);
+    let turning = Turning::new(ME, &PATH, Above::Chassis, &table, &(), &mut asked, 0, OTHER, CHAIN);
     let mail = Mail::new(kind, &[], OTHER, CHAIN.root, 1, 0);
     let handled = actor.handle(Item::Mail(mail), turning);
     assert!(handled.is_ok());
@@ -196,7 +192,7 @@ fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<What> {
 fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, <Keeper as Handles<Kept>>::Sends>)) -> Vec<What> {
     let mut asked = Asked::new();
     let kept = Role::Kind(KindId::of::<Kept>());
-    let turning = Turning::new(ME, &PATH, Above::Chassis, table, &mut asked, 0, OTHER, CHAIN);
+    let turning = Turning::new(ME, &PATH, Above::Chassis, table, &(), &mut asked, 0, OTHER, CHAIN);
     then(&mut turning.declaring::<Keeper, <Keeper as Handles<Kept>>::Sends>(kept));
 
     asked.into_parts().0.into_iter().map(Effect::into_what).collect()

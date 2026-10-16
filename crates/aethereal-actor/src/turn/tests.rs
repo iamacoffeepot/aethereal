@@ -22,10 +22,6 @@ impl Table for Listed {
         self.0.iter().find(|(_, held)| held == path).map(|(made, _)| *made)
     }
 
-    fn path(&self, id: ActorId) -> Option<ActorPath> {
-        self.0.iter().find(|(made, _)| made.id == id).map(|(_, path)| path.clone())
-    }
-
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
         ActorId::new(Fnv::resume(parent.bits()).bytes(segment.to_string().as_bytes()).finish())
     }
@@ -255,7 +251,7 @@ fn opened<'a, S: Sends>(
 ) -> Turn<'a, S> {
     let poke = Role::Kind(KindId::of::<Poke>());
 
-    Turning::new(me, path, above, table, asked, 0, source, CHAIN).declaring::<Leaf, S>(poke)
+    Turning::new(me, path, above, table, &(), asked, 0, source, CHAIN).declaring::<Leaf, S>(poke)
 }
 
 /// The actor `bits` names, in the seat numbered `seat`.
@@ -411,7 +407,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
     let mut leaf: Box<dyn Runs> = Box::new(Leaf);
     let handle = |leaf: &mut Box<dyn Runs>, table: &Listed, kind, bytes: &[u8]| {
         let mut asked = Asked::new();
-        let turning = Turning::new(ME, &ROOT, Above::Chassis, table, &mut asked, 0, other, CHAIN);
+        let turning = Turning::new(ME, &ROOT, Above::Chassis, table, &(), &mut asked, 0, other, CHAIN);
         let mail = Mail::new(kind, bytes, other, MailId { sender: other.id, count: 1 }, 1, 64);
         let handled = leaf.handle(Item::Mail(mail), turning);
 

@@ -75,8 +75,9 @@ fn spawned_actor_resolves_by_its_path() {
 }
 
 #[test]
-fn ending_marks_only_its_own_actor() {
-    // Catches an ending that reaches the actors beneath, and one that marks the parent of the actor that asked.
+fn ending_takes_out_only_its_own_actor() {
+    // Catches an ending that reaches the actors beneath, one that takes out the parent of the actor that asked, and
+    // a child whose path no longer resolves once the actor above it has gone.
     let (window, root) = window();
     let (surface, spawn) = surface(window);
     let (layer, embed) = layer(surface);
@@ -84,10 +85,10 @@ fn ending_marks_only_its_own_actor() {
     table.fold(&[root, spawn, embed], &context());
     table.fold(&[Effect::new(at(surface), What::Close)], &context());
 
-    assert_eq!(table.standing(window), Standing::Live);
-    assert_eq!(table.standing(surface), Standing::Ended);
-    assert_eq!(table.standing(layer), Standing::Live);
+    assert_eq!([window, surface, layer].map(|id| table.is_live(id)), [true, false, true]);
     assert_eq!(table.resolve(&ActorPath::new("aether.window/aether.window.surface:left")), None);
+    let beneath = ActorPath::new("aether.window/aether.window.surface:left/aether.window.layer");
+    assert_eq!(table.resolve(&beneath), Some(layer));
 }
 
 #[test]
@@ -100,17 +101,17 @@ fn failed_turn_ends_its_actor() {
     };
     table.fold(&[root, Effect::new(at(window), What::Failed(fault))], &context());
 
-    assert_eq!(table.standing(window), Standing::Ended);
+    assert!(!table.is_live(window));
 }
 
 #[test]
 #[should_panic(expected = "already held")]
 fn actor_made_under_a_held_id_stops_the_engine() {
-    // Catches a second actor made under an id quietly replacing the first, or bringing an ended path back to life.
+    // Catches a second actor made under a live actor's id quietly replacing the first.
     let (window, root) = window();
-    let (surface, spawn) = surface(window);
+    let (_, spawn) = surface(window);
     let mut table = table(4);
-    table.fold(&[root, spawn.clone(), Effect::new(at(surface), What::Close), spawn], &context());
+    table.fold(&[root, spawn.clone(), spawn], &context());
 }
 
 #[test]
@@ -120,7 +121,7 @@ fn reader_sees_nothing_before_the_fold() {
     let mut table = table(4);
     table.fold(&[Effect::new(at(window), What::Close)], &context());
 
-    assert_eq!(table.standing(window), Standing::Absent);
+    assert!(!table.is_live(window));
     assert_eq!(table.path(window), None);
 }
 
@@ -135,9 +136,9 @@ fn part_count_does_not_change_the_table() {
         let mut table = table(parts);
         table.fold(&effects, &context());
 
-        [window, surface, layer].map(|id| (table.standing(id), table.path(id), table.parent(id)))
+        [window, surface, layer].map(|id| (table.is_live(id), table.path(id), table.parent(id)))
     });
 
     assert!(seen.iter().all(|read| *read == seen[0]));
-    assert_eq!(seen[0][2].0, Standing::Ended);
+    assert!(!seen[0][2].0);
 }

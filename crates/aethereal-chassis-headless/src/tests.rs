@@ -1,7 +1,7 @@
 //! The chassis's tests: workers leave what one thread leaves.
 
 use super::*;
-use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Level, To, ToType, ToWithoutMail, Turn};
+use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Level, Seated, To, ToType, ToWithoutMail, Turn};
 use aethereal_data::{ActorId, Kind, KindName, PathSegment, Plain, TypedKey};
 use aethereal_substrate::child_id;
 use std::iter;
@@ -109,14 +109,19 @@ fn engine(hops: usize) -> (Engine, ActorId) {
     (engine, root)
 }
 
-/// Everything the engine shows of each fan: its standing and its log.
-fn shown(engine: &Engine, root: ActorId) -> Vec<String> {
+/// Every fan in `engine` beneath and including `root`, in its seat, while all are live.
+fn fans(engine: &Engine, root: ActorId) -> Vec<Seated> {
     let children = (1..=CHILDREN).map(|number| child_id(root, &PathSegment::new(Fan::NAME, &number)));
 
-    iter::once(root)
-        .chain(children)
-        .map(|id| format!("{:?} {:?}", engine.table().standing(id), engine.log(id).collect::<Vec<_>>()))
-        .collect()
+    iter::once(root).chain(children).filter_map(|id| Some(Seated { id, seat: engine.table().seat(id)? })).collect()
+}
+
+/// Everything the engine shows of each of `fans`: whether it is live, and its log.
+fn shown(engine: &Engine, fans: &[Seated]) -> Vec<String> {
+    let shown =
+        |fan: &Seated| format!("{:?} {:?}", engine.table().is_live(fan.id), engine.log(*fan).collect::<Vec<_>>());
+
+    fans.iter().map(shown).collect()
 }
 
 #[test]
@@ -125,6 +130,8 @@ fn workers_leave_what_one_thread_leaves() {
     // returns before every worker has answered, and chains fused differently by how many workers ran them.
     for hops in [0, 8] {
         let (mut alone, root) = engine(hops);
+        let alone_fans = fans(&alone, root);
+        assert_eq!(alone_fans.len(), 1 + usize::try_from(CHILDREN).unwrap_or(usize::MAX));
         let clock = Monotonic::new();
         while !alone.is_idle() {
             alone.step(&clock);
@@ -134,10 +141,11 @@ fn workers_leave_what_one_thread_leaves() {
             panic!("four is not zero");
         };
         let (engine, _) = engine(hops);
+        let split_fans = fans(&engine, root);
         let mut headless = Headless::new(engine, four);
         headless.run_until_idle();
 
         assert_eq!(headless.engine().step_number(), alone.step_number());
-        assert_eq!(shown(headless.engine(), root), shown(&alone, root));
+        assert_eq!(shown(headless.engine(), &split_fans), shown(&alone, &alone_fans));
     }
 }

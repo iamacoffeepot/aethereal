@@ -53,12 +53,6 @@ impl Table for Since<'_> {
         (!has_ended).then_some(resolved)
     }
 
-    fn path(&self, id: ActorId) -> Option<ActorPath> {
-        let stood = self.stood.get(&id.bits()).map(|(path, _, _)| path.clone());
-
-        stood.or_else(|| self.table.path(id))
-    }
-
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
         self.table.child(parent, segment)
     }

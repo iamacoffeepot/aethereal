@@ -34,5 +34,5 @@ pub use id::{child_id, path_id, root_id};
 pub use lives::{Life, Lives, State};
 pub use log::{Entry, Log, RECENT};
 pub use mail::Envelope;
-pub use table::{ActorTable, Standing};
+pub use table::ActorTable;
 pub use view::{Column, Consumes, Folded, Part, Routed, View, rounded};
