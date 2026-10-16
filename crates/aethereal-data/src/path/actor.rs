@@ -120,7 +120,7 @@ impl ActorPath {
 
     /// How many segments the path holds.
     fn depth(&self) -> usize {
-        self.text().split(char::from(SEGMENT_MARK)).count()
+        self.text().bytes().filter(|byte| *byte == SEGMENT_MARK).count() + 1
     }
 
     /// The path's text.
