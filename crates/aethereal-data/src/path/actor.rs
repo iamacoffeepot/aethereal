@@ -5,7 +5,6 @@ use crate::path::cut::cut;
 use crate::plain::write_text;
 use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Key, Plain, Reader, Schema, Shape, Writer};
 use alloc::borrow::Cow;
-use alloc::format;
 use alloc::string::{String, ToString};
 use core::error::Error;
 use core::fmt;
@@ -69,7 +68,16 @@ impl ActorPath {
         if is_full {
             Err(PathTooDeep)
         } else {
-            Ok(Self(Cow::Owned(format!("{self}{}{segment}", char::from(SEGMENT_MARK)))))
+            let pieces = segment.pieces();
+            let length = self.text().len() + 1 + pieces.iter().map(|piece| piece.len()).sum::<usize>();
+            let mut text = String::with_capacity(length);
+            text.push_str(self.text());
+            text.push(char::from(SEGMENT_MARK));
+            for piece in pieces {
+                text.push_str(piece);
+            }
+
+            Ok(Self(Cow::Owned(text)))
         }
     }
 
@@ -193,6 +201,7 @@ mod tests {
     use crate::path::samples::{Side, decode_text, deep};
     use crate::{KindName, to_bytes};
     use alloc::collections::BTreeMap;
+    use alloc::format;
     use alloc::vec::Vec;
     use core::cmp::Ordering;
 

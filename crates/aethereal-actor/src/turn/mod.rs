@@ -180,6 +180,13 @@ impl Stood {
     pub fn into_actor(self) -> Box<dyn Runs> {
         self.actor
     }
+
+    /// The child taken apart, for the engine to seat it: who it is and where it sits, its path, what stands above
+    /// it, and the child itself.
+    #[must_use]
+    pub fn into_parts(self) -> (Seated, ActorPath, Above, Box<dyn Runs>) {
+        (self.me, self.path, self.above, self.actor)
+    }
 }
 
 /// Whose turn it is, and what every kind of turn works with.

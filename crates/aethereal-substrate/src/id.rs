@@ -37,9 +37,9 @@ pub fn spawned(effect: &Effect) -> Option<(Seated, PathSegment)> {
     Some((Seated { id: child_id(effect.by(), &segment), seat }, segment))
 }
 
-/// A segment's hash: FNV-1a over the segment as the path spells it.
+/// A segment's hash: FNV-1a over the segment as the path spells it, read piece by piece.
 fn segment_hash(segment: &PathSegment) -> u64 {
-    Fnv::new().bytes(segment.to_string().as_bytes()).finish()
+    segment.pieces().iter().fold(Fnv::new(), |hash, piece| hash.bytes(piece.as_bytes())).finish()
 }
 
 /// FNV-1a continued from `above` over the eight bytes of `hash`, least significant first.

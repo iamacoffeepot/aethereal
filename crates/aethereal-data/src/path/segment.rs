@@ -8,6 +8,9 @@ use core::fmt;
 /// The mark between a segment's kind and its key.
 const KEY_MARK: u8 = b':';
 
+/// The mark, as text.
+const KEY_TEXT: &str = ":";
+
 /// One step of a path: the name of an actor's kind, and its key where the actor is instanced (ADR-0008).
 ///
 /// It prints as `name:key` for an instanced actor and as `name` alone for a singleton.
@@ -44,6 +47,15 @@ impl PathSegment {
     #[must_use]
     pub const fn key(&self) -> Option<&KeyName> {
         self.key.as_ref()
+    }
+
+    /// The segment as a path spells it, piece by piece: the kind's name, then for an instanced actor the mark and
+    /// the key's name, each empty for a singleton. What it prints as, without the text made.
+    #[must_use]
+    pub fn pieces(&self) -> [&str; 3] {
+        let kind = self.kind.text();
+
+        self.key.as_ref().map_or([kind, "", ""], |key| [kind, KEY_TEXT, key.text()])
     }
 
     /// Whether `bytes` spell a segment: a kind's name, then for an instanced actor the mark and the key's name.
