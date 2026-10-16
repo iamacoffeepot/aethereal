@@ -17,6 +17,7 @@ dependencies = [
  "aethereal-data",
  "aethereal-substrate",
  "core_affinity",
+ "libc",
 ]
 
 [[package]]

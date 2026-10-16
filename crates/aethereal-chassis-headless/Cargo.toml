@@ -10,6 +10,9 @@ description = "The headless chassis: the native host with nothing but the engine
 aethereal-substrate = { path = "../aethereal-substrate" }
 core_affinity = "0.8.3"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.190"
+
 [dev-dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }

@@ -5,7 +5,7 @@ mod worker;
 
 use crate::Monotonic;
 use aethereal_substrate::{Clock, Done, Fold, Folding, Reading, Share, SplitCost, Workers};
-use cores::Cores;
+use cores::{Cores, Kept};
 use std::num::NonZeroUsize;
 use std::panic;
 use std::sync::Arc;
@@ -29,6 +29,8 @@ pub struct Pool {
     spinning: usize,
     wake_nanos: u64,
     measured: Measured,
+    /// Where the stepping thread is kept while the pool lives.
+    _kept: Kept,
 }
 
 /// What the steps run so far cost, summed: for comparing one way of running a step with another (ADR-0011).
@@ -61,9 +63,12 @@ const WAKES_MEASURED: usize = 16;
 
 impl Pool {
     /// A pool of `workers` workers, the stepping thread among them, all parked, with the cost of a wake measured.
+    ///
+    /// The calling thread is the stepping thread: it is kept to the first workers' cores until the pool is dropped.
     pub fn new(workers: NonZeroUsize, clock: &Monotonic) -> Self {
         let (reply, replies) = mpsc::channel();
         let cores = Arc::new(Cores::of_host());
+        let kept = cores.keep_stepping();
         let threads = (1..workers.get())
             .map(|number| {
                 let (orders, inbox) = mpsc::channel();
@@ -86,6 +91,7 @@ impl Pool {
             spinning: 0,
             wake_nanos: 0,
             measured: Measured::default(),
+            _kept: kept,
         };
         pool.wake_nanos = pool.measure_wake(clock);
 
