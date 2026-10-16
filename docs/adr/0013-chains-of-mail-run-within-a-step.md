@@ -24,11 +24,13 @@ Work that is not a benchmark spawns and closes actors in the middle of chains. S
 - the send is one that the handler it was sent from declares, as every send is;
 - the receiver sits in the same part as the sender, and is seated;
 - the part has hops left in the step's budget;
-- the part has no fused hop waiting to run. A turn that sends several pieces of mail fuses at most the first, and the rest go out as mail. A chain fuses and a burst spreads, so a fan-out still reaches the workers.
+- the part has no fused hop waiting to run. A turn that sends several pieces of mail fuses at most the first, and the rest go out as mail. A chain fuses and a burst spreads, so a fan-out still reaches the workers;
+- the sender has sent no mail as mail, in this step, to an actor in its part. A hop runs in the step it was made and mail in a later one, so a hop after such mail could be handed over ahead of it, and mail from one source would no longer be handled in the order it was sent (ADR-0009). Mail to an actor in another part never fuses, so it cannot be overtaken;
+- the send is made by a turn handling an item: a closing turn's sends go out as mail.
 
 A part always runs on exactly one worker, whichever it is, so every one of these is the same however many workers run the step. The same turns leave the same views on one worker and on many (ADR-0011).
 
-**A part runs every item that was waiting before any fused hop.** Its waiting items run in the order ADR-0011 gives, then its fused hops in the order they were made. Mail an actor sent in an earlier step comes before anything it fuses in this one, so mail from one source is still handled in the order that source sent it (ADR-0009).
+**A part runs every item that was waiting before any fused hop.** Its waiting items run in the order ADR-0011 gives, then its closing turns, then its fused hops in the order they were made. Since only one hop waits at a time and every waiting item has run before the first hop does, a part runs at most one run in a step: the chain that its first fused send began. Mail an actor sent in an earlier step comes before anything it fuses in this one, so mail from one source is still handled in the order that source sent it (ADR-0009).
 
 **The hop budget is a setting of the engine**, given to `Engine::new` beside its read limit and the bytes of mail it holds. It bounds how many fused hops one part runs in one step, so a step still ends after bounded work, and one chain cannot hold back every other actor's next step.
 
@@ -39,9 +41,11 @@ A part always runs on exactly one worker, whichever it is, so every one of these
 
 The other views are not read by a turn, so their records wait for the step's fold, as now.
 
-**A child seated in the part of the turn that stood it up is seated at once**, so a run can mail it fused. A child seated anywhere else is seated when the step is applied, as today, and mail to it goes out as mail.
+**A child is seated when the step that stood it up is applied**, as today, wherever its seat is, so mail to it in that step goes out as mail.
 
-**A child is seated in its parent's part while that part has room.** Room means fewer actors than twice what an even spread would give each part, counting at least one. A child spawned anywhere else is spread across the parts, as today. A parent and the child it spawned are the likeliest partners in a chain, and this keeps them in one part without piling a large family into one. Seat counts are the same however many workers run, so placement is too.
+**A child is seated in its parent's part while that part has room.** Room means fewer actors than twice what an even spread would give each part, counting at least one, as the step began. A parent and the child it spawned are the likeliest partners in a chain, and this keeps them in one part without piling a large family into one.
+
+**Each part gives the seats of the children its turns spawn, and what it gives depends on the parts alone.** Whether a send fuses depends on which part its receiver sits in, so placement must be the same however many workers run the step. Seats given out by worker, each worker numbering new seats in every few parts by its place among the workers, would put the same child in a different part on a different number of workers. So each part keeps its own seats, its free ones and its next new number, and as a step begins the engine gives each part that runs its room, and makes up to eight the seats it sets aside for that part in the other parts that have room, one in each in turn from the part after it. A child takes a seat of its parent's part while there is room, then one set aside, then one of its parent's part again. A seat set aside stays with the part it was set aside for until a child takes it. A root sits in the part with the fewest actors, and the children its `begin` stands up take that part's seats while it has room, then a new seat in the part that has numbered fewest.
 
 **Every actor type declares what it handles, and each of its handlers declares what it may send.** An actor type lists what it handles: kinds of mail, the ending of an actor it watches, and, when it wants one, a fallback for mail of any kind it does not list. Each has a handler of its own, and each handler, the type's `begin`, and its `end` lists what it may send: a kind, and where it goes. Where it goes is one of three things:
 
@@ -79,12 +83,13 @@ impl Handles<Ping> for Ponger {
 - A run is invisible to the rest of the engine until the step is folded. A turn outside the run sees nothing of it during the step, as it saw nothing of other turns in the step before (ADR-0011).
 - What a fused turn sees differs from what it would have seen in a step of its own in one way: it does not see what unrelated actors did earlier in the step. ADR-0009 already says a resolve made while handling unrelated mail can miss an actor about to be live, and an actor that must know waits to be told.
 - Whether a chain fuses depends on placement. A chain between actors in different parts runs one step for each hop, on any number of workers. The 712 to 125 ns measured above was across parts on one worker, so it is what this gives for a chain whose actors share a part.
-- Seating a child in the middle of a step is new. The worker that owns the part seats it, as it already owns the part's actors for the step. A worker has to be able to give out a seat in its own parts.
+- A part fuses one chain in a step, so a fan-out of many chains in one part fuses only the first, and an actor that sends a burst into its own part fuses nothing more until the next step.
+- A part keeps up to eight seats in other parts set aside, unused until it spawns past its room.
 - Every actor type declares its handlers, and every send is checked. The types catch most false declarations when the program is built; the rest stop the engine, or fail a guest's turn, at the send.
 - A handler is handed its kind already read, so the handler of a kind cannot be handed mail of another. Mail of a kind the receiver neither lists nor falls back on stops the engine at delivery, where a send to the sender or a reference could not be checked before.
 - The reach of each handler is worked out again whenever a new type is first seated, which happens between steps.
 - A reference that names a protocol reaches every type that handles that protocol's kinds, so domains are as precise as the declarations are, and a reference whose target type is unknown makes them coarse.
-- **Not decided here:** domains with steps of their own; using the time a step would spend waiting at its end, and not a fixed count, as the budget; following where references go kind by kind, from what each send declares it carries; and references that can be used only by the actor they are sent to and passed no further, which would make that following unnecessary for them.
+- **Not decided here:** seating a child at once in its parent's part, in the step that stood it up, so a run could mail it fused; domains with steps of their own; using the time a step would spend waiting at its end, and not a fixed count, as the budget; following where references go kind by kind, from what each send declares it carries; and references that can be used only by the actor they are sent to and passed no further, which would make that following unnecessary for them.
 
 ## Alternatives considered
 

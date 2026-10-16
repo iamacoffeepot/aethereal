@@ -43,80 +43,138 @@ pub struct Seated {
     pub seat: SeatNumber,
 }
 
-/// The seats a worker gives the children its turns spawn: free ones first, then new numbers (ADR-0011).
+/// The seats one part of the engine gives the children its turns spawn (ADR-0011, ADR-0013).
 ///
 /// The engine keeps its seats in parts, a part holding every `stride`th
-/// number from its own. As a step begins it gives each worker the free seats
-/// of some parts and the next new number of each, and takes back what is left
-/// when the step is applied. A new seat goes in whichever of the worker's parts
-/// has numbered fewest, so new seats spread across them and no two workers give
-/// the same number.
+/// number from its own. Each part gives seats of its own, its free ones first
+/// and then new numbers, while it has room, so a child sits beside the parent
+/// that spawned it. Past that, it gives the seats in other parts the engine set
+/// aside for it as the step began, and then its own again. What a part gives
+/// depends only on the parts, never on how many workers run them, so a step
+/// seats the same children in the same seats on any number of workers.
 #[derive(Debug, Default)]
 pub struct Seats {
+    /// The part's free seats.
     free: Vec<SeatNumber>,
-    /// The next new number of each part this worker numbers seats in.
+    /// The part's next new number, first; then, while the seats are lent to a root's `begin`, every other part's.
     next: Vec<u64>,
     /// How far apart one part's numbers are: one for each part.
     stride: u64,
+    /// How many more children the part may seat in its own seats in this step.
+    room: usize,
+    /// The seats in other parts set aside for the children past its room, taken last first.
+    aside: Vec<SeatNumber>,
 }
 
 impl Seats {
-    /// The seats `free`, then new numbers in the parts whose next numbers are `next`, every `stride`th.
+    /// The seats of the part whose first new number is `first`, of parts numbered every `stride`th: none free, and
+    /// no room until a step gives it some.
     #[must_use]
-    pub const fn new(free: Vec<SeatNumber>, next: Vec<u64>, stride: u64) -> Self {
-        Self { free, next, stride }
+    pub fn of_part(first: u64, stride: u64) -> Self {
+        Self { free: Vec::new(), next: vec![first], stride, room: 0, aside: Vec::new() }
     }
 
-    /// No free seat, and new numbers from zero: the seats of an engine kept in one part.
+    /// No free seat, and new numbers from zero, with room for every child: the seats of an engine kept in one part.
     #[must_use]
     pub fn one_part() -> Self {
-        Self { free: Vec::new(), next: vec![0], stride: 1 }
+        Self { free: Vec::new(), next: vec![0], stride: 1, room: usize::MAX, aside: Vec::new() }
     }
 
-    /// Empties the worker's seats, keeping the room of its lists, for parts numbered every `stride`th.
-    pub fn clear(&mut self, stride: u64) {
-        self.free.clear();
-        self.next.clear();
-        self.stride = stride;
+    /// Gives the part room for `room` children in its own seats, for the step beginning.
+    pub const fn make_room(&mut self, room: usize) {
+        self.room = room;
     }
 
-    /// Gives the worker one part's seats: its free ones `free`, and its new numbers from `next`.
-    pub fn give(&mut self, free: impl IntoIterator<Item = SeatNumber>, next: u64) {
-        self.free.extend(free);
-        self.next.push(next);
+    /// Sets `seat`, in another part, aside for a child past the part's room.
+    pub fn set_aside(&mut self, seat: SeatNumber) {
+        self.aside.push(seat);
     }
 
-    /// Takes back the free seats not given out, and the next new number of each part, keeping the room of the
-    /// worker's lists.
-    pub fn drain(&mut self) -> (impl Iterator<Item = SeatNumber> + '_, impl Iterator<Item = u64> + '_) {
-        (self.free.drain(..), self.next.drain(..))
-    }
-
-    /// The free seats not given out, and the next new number of each part, for the engine to take back.
+    /// How many seats in other parts are set aside for the part.
     #[must_use]
-    pub fn into_parts(self) -> (Vec<SeatNumber>, Vec<u64>) {
-        (self.free, self.next)
+    pub const fn aside(&self) -> usize {
+        self.aside.len()
     }
 
-    /// A seat for a new actor: a free one, or the next new number of the part that has numbered fewest.
-    ///
-    /// # Panics
-    ///
-    /// Panics when no seat is free and the worker numbers seats in no part: the engine gives every worker a part.
-    pub fn take(&mut self) -> SeatNumber {
+    /// Lends a root's `begin` the new numbers of every other part, `others`, in the order of the parts, to seat the
+    /// children past the part's room in whichever has numbered fewest.
+    pub fn lend(&mut self, others: impl IntoIterator<Item = u64>) {
+        self.next.extend(others);
+    }
+
+    /// Takes back the other parts' new numbers lent by [`Self::lend`], in the order they were lent.
+    pub fn take_lent(&mut self) -> impl Iterator<Item = u64> + '_ {
+        self.next.drain(1..)
+    }
+
+    /// Frees `seat`, of this part, once the actor in it has gone, to be given again.
+    pub fn free(&mut self, seat: SeatNumber) {
+        self.free.push(seat);
+    }
+
+    /// A seat of this part's own, for the engine to set aside for another part's children.
+    pub fn own(&mut self) -> SeatNumber {
         self.free.pop().unwrap_or_else(|| {
-            let Some(next) = self.next.iter_mut().min() else {
-                panic!("a worker numbers new seats in at least one part");
-            };
-            let seat = SeatNumber(*next);
-            *next += self.stride.max(1);
+            let seat = SeatNumber(self.next[0]);
+            self.next[0] += self.stride.max(1);
 
             seat
         })
     }
 
-    /// Takes back the seat of a child that never began.
+    /// The part's next new number.
+    #[must_use]
+    pub fn own_next(&self) -> u64 {
+        self.next[0]
+    }
+
+    /// Sets the part's next new number to `next`, where a root's `begin` left it.
+    pub fn set_next(&mut self, next: u64) {
+        self.next[0] = next;
+    }
+
+    /// The seats the part holds and has not given: its free ones and those set aside for it in other parts, and its
+    /// next new number.
+    pub fn held(&self) -> (impl Iterator<Item = SeatNumber> + '_, u64) {
+        (self.free.iter().chain(&self.aside).copied(), self.next[0])
+    }
+
+    /// The part's free seats, and its new numbers, for a test to read.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<SeatNumber>, Vec<u64>) {
+        (self.free, self.next)
+    }
+
+    /// A seat for a new actor: the part's own while it has room, then one set aside in another part, then, while the
+    /// seats are lent to a root's `begin`, a new number of the part that has numbered fewest, and past all of those
+    /// the part's own again.
+    pub fn take(&mut self) -> SeatNumber {
+        if self.room > 0 {
+            self.room -= 1;
+
+            return self.own();
+        }
+        if let Some(seat) = self.aside.pop() {
+            return seat;
+        }
+        let Some(next) = self.next.iter_mut().skip(1).min() else {
+            return self.own();
+        };
+        let seat = SeatNumber(*next);
+        *next += self.stride.max(1);
+
+        seat
+    }
+
+    /// Takes back the seat of a child that never began: among the part's own when it is one, else among those set
+    /// aside.
     pub fn give_back(&mut self, seat: SeatNumber) {
-        self.free.push(seat);
+        let stride = self.stride.max(1);
+        let is_own = seat.number() % stride == self.next[0] % stride;
+        if is_own {
+            self.free.push(seat);
+        } else {
+            self.aside.push(seat);
+        }
     }
 }

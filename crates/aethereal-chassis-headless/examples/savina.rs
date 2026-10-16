@@ -1,7 +1,8 @@
 //! Six programs of the Savina actor benchmark suite, to set beside the same programs on other actor frameworks, and
 //! one of this engine's own.
 //!
-//! Run with `cargo run --release -p aethereal-chassis-headless --example savina [program...] [workers=N,...]`.
+//! Run with `cargo run --release -p aethereal-chassis-headless --example savina [program...] [workers=N,...]
+//! [hops=N]`, where `hops` is how many fused hops each part may run in a step (ADR-0013), none by default.
 //! The programs, at Savina's default sizes:
 //!
 //! - `pingpong`: two actors send one piece of mail back and forth 40,000 times each way, so only one piece of mail
@@ -1117,11 +1118,11 @@ const PROGRAMS: [Program; 8] = [
     },
 ];
 
-/// One run of `program` on `workers` workers: the nanoseconds it took, from its root's `begin` to the last step,
-/// and the steps.
-fn run(program: &Program, workers: NonZeroUsize) -> (u64, u64) {
+/// One run of `program` on `workers` workers, each part running at most `hops` fused hops a step: the nanoseconds it
+/// took, from its root's `begin` to the last step, and the steps.
+fn run(program: &Program, workers: NonZeroUsize, hops: usize) -> (u64, u64) {
     let parts = NonZeroUsize::MIN.saturating_add(15);
-    let mut engine = Engine::new(parts, 1024, 1 << 30);
+    let mut engine = Engine::new(parts, 1024, 1 << 30, hops);
     let clock = Monotonic::new();
     (program.start)(&mut engine);
     let mut headless = Headless::new(engine, workers);
@@ -1137,6 +1138,7 @@ fn main() {
         .iter()
         .find_map(|arg| arg.strip_prefix("workers="))
         .map_or_else(|| vec![1, 4, 16], |given| given.split(',').filter_map(|count| count.parse().ok()).collect());
+    let hops = args.iter().find_map(|arg| arg.strip_prefix("hops=")).and_then(|given| given.parse().ok()).unwrap_or(0);
 
     println!("program     actors workers      mails   M mails/s  ns/mail    steps");
     for program in &PROGRAMS {
@@ -1147,7 +1149,7 @@ fn main() {
         let size = (program.size)();
         for &count in &workers {
             let workers = NonZeroUsize::MIN.saturating_add(count.max(1) - 1);
-            let runs = (0..3).map(|_| run(program, workers));
+            let runs = (0..3).map(|_| run(program, workers, hops));
             let (took, steps) = runs.min_by_key(|(took, _)| *took).unwrap_or_default();
             println!(
                 "{:11} {:6} {workers:7} {:10}   {:9.2} {:8} {steps:8}",

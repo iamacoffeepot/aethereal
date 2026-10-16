@@ -1,33 +1,65 @@
-//! The table as one actor's turn reads it: the step's start, and that actor's own spawns since (ADR-0009).
+//! The table as one actor's turn reads it: the step's start, the children stood up in its part since, and what its
+//! run has done (ADR-0009, ADR-0013).
 
+use super::fuse::Run;
 use crate::{ActorTable, ByActor};
 use aethereal_actor::{Declared, Made, SeatNumber, Seated, Table};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 
-/// The table as one actor's turn reads it (ADR-0009).
+/// The table as one actor's turn reads it (ADR-0009, ADR-0013).
 ///
 /// Only an actor spawns beneath itself, so it knows whether a key is free
-/// from the table as the step began and from what it has itself stood up
-/// since, in its earlier turns of this step. Those children are not live to
+/// from the table as the step began and from the children stood up in its
+/// part since, in earlier turns of this step. Those children are not live to
 /// anyone yet: a resolve does not find them, and a reference to one is not
-/// yet proven.
+/// yet proven. A turn of a run sees, over that, the children its run stood up
+/// as live, and the actors that ended in its run as ended.
 pub(super) struct Since<'a> {
     pub(super) table: &'a ActorTable,
-    /// The paths and seats of the children the actor stood up in its earlier turns of the step, and what their types
+    /// The paths and seats of the children stood up in the part in earlier turns of the step, and what their types
     /// declare, under their ids.
     pub(super) stood: &'a ByActor<(ActorPath, SeatNumber, &'static Declared)>,
+    /// What else the turn sees.
+    pub(super) sees: Sees<'a>,
 }
 
-/// A child stood up in an earlier turn is not yet proven to anyone, so a reference to it is not read back.
+/// What a turn sees over the table as the step began and the children stood up since (ADR-0013).
+#[derive(Clone, Copy)]
+pub(super) enum Sees<'a> {
+    /// Nothing more: the turn is not in a run.
+    Step,
+    /// The spawns and endings of the run the turn is in.
+    Run(&'a Run),
+}
+
+impl Since<'_> {
+    /// The run the turn is in, when it is in one.
+    const fn run(&self) -> Option<&Run> {
+        match self.sees {
+            Sees::Step => None,
+            Sees::Run(run) => Some(run),
+        }
+    }
+}
+
+/// A child stood up in an earlier turn is not yet proven to anyone but the turns of the run that stood it up.
 impl Made for Since<'_> {
     fn seat(&self, id: ActorId) -> Option<SeatNumber> {
-        self.table.seat(id)
+        let stood = self.run().and_then(|run| run.stood(id));
+
+        stood.or_else(|| self.table.seat(id))
     }
 }
 
 impl Table for Since<'_> {
     fn resolve(&self, path: &ActorPath) -> Option<Seated> {
-        Table::resolve(self.table, path)
+        let Some(run) = self.run() else {
+            return Table::resolve(self.table, path);
+        };
+        let resolved = run.resolve(path).or_else(|| Table::resolve(self.table, path))?;
+        let has_ended = run.has_ended(resolved.id);
+
+        (!has_ended).then_some(resolved)
     }
 
     fn path(&self, id: ActorId) -> Option<ActorPath> {
@@ -41,7 +73,15 @@ impl Table for Since<'_> {
     }
 
     fn is_live(&self, id: ActorId) -> bool {
-        Table::is_live(self.table, id)
+        let Some(run) = self.run() else {
+            return Table::is_live(self.table, id);
+        };
+        if run.has_ended(id) {
+            return false;
+        }
+        let stood_up = run.stood(id).is_some();
+
+        stood_up || Table::is_live(self.table, id)
     }
 
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber> {
