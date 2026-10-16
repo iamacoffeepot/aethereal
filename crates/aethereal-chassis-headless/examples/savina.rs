@@ -1,5 +1,5 @@
 //! Six programs of the Savina actor benchmark suite, to set beside the same programs on other actor frameworks, and
-//! one of this engine's own.
+//! two of this engine's own.
 //!
 //! Run with `cargo run --release -p aethereal-chassis-headless --example savina [program...] [workers=N,...]
 //! [hops=N]`, where `hops` is how many fused hops each part may run in a step (ADR-0013), none by default.
@@ -15,11 +15,14 @@
 //! - `sieve`: the primes below 100,000, odd numbers passed down a pipeline of filters that each keep up to 1,000
 //!   primes, a filter spawning the next when it is full.
 //!
-//! And one of this engine's own, with no counterpart on the other frameworks:
+//! And two of this engine's own, with no counterpart on the other frameworks:
 //!
 //! - `churn`: 1,000 actors alive at a time, each living 8 hops of mail to itself, then telling its parent and
 //!   closing, and the parent spawning one in its place, until 100,000 have lived: spawning and closing at a steady
 //!   population, as a game makes and ends what lives in it.
+//! - `churn-wide`: `churn` split among 16 roots, each keeping a sixteenth of the population alive and spawning a
+//!   sixteenth of the total: the same work with no one actor that every spawn goes through, as a game whose many
+//!   places each make and end their own.
 //!
 //! As in Savina, each program's root sends its first mail from a turn, on a start message: it tells its last child
 //! the program can start as it begins, and sends on the child's answer. `count-begin` is `count` with the producer sending everything from its `begin`
@@ -61,6 +64,8 @@ const SIEVE_KEPT: usize = 1_000;
 const CHURN_ALIVE: u64 = 1_000;
 const CHURN_LIFE: u64 = 8;
 const CHURN_TOTAL: u64 = 100_000;
+/// How many roots the wide churn program splits the churn program among.
+const CHURN_SPAWNERS: u64 = 16;
 
 /// A ping with this many to go after it.
 #[derive(Plain)]
@@ -884,6 +889,8 @@ impl Kind for Died {
 #[derive(Plain)]
 struct Churn {
     spawned: u64,
+    /// How many roots share the program: the population and the total are each this one's share of them.
+    spawners: u64,
 }
 
 impl Kind for Churn {
@@ -913,11 +920,12 @@ impl Actor for Churn {
     type BeginSends = (ToType<Mortal, Ready>,);
     type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    /// A root configured with `number` shares the program among that many roots, none and one alike being the whole.
+    fn begin(config: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         let first = spawned::<Mortal, _>(turn, 0);
         ready(turn, &[first])?;
 
-        Ok(Self { spawned: 1 })
+        Ok(Self { spawned: 1, spawners: config.number.max(1) })
     }
 
     fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
@@ -930,7 +938,7 @@ impl Handles<Ready> for Churn {
 
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         turn.to::<Mortal>(To::Sender).send(&Live { left: CHURN_LIFE })?;
-        while self.spawned < CHURN_ALIVE {
+        while self.spawned < CHURN_ALIVE / self.spawners {
             self.spawn_next(turn)?;
         }
 
@@ -942,7 +950,7 @@ impl Handles<Died> for Churn {
     type Sends = (ToType<Mortal, Live>,);
 
     fn handle(&mut self, _: Died, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        if self.spawned < CHURN_TOTAL {
+        if self.spawned < CHURN_TOTAL / self.spawners {
             self.spawn_next(turn)?;
         }
 
@@ -1095,7 +1103,23 @@ fn root<A: Actor<Config = Number, Key = u64>>(engine: &mut Engine) {
     };
 }
 
-const PROGRAMS: [Program; 8] = [
+/// The roots of the wide churn program, each with its share of it.
+fn churn_wide(engine: &mut Engine) {
+    for key in 0..CHURN_SPAWNERS {
+        let Ok(_) = engine.add_root::<Churn>(&key, Number { number: CHURN_SPAWNERS }) else {
+            panic!("a root begins");
+        };
+    }
+}
+
+/// The wide churn program's size: each root's share of the churn program, and the roots.
+fn churn_wide_size() -> Size {
+    let lived = CHURN_TOTAL / CHURN_SPAWNERS * CHURN_SPAWNERS;
+
+    Size { actors: lived + CHURN_SPAWNERS, mails: lived * (CHURN_LIFE + 2) + 2 * CHURN_SPAWNERS }
+}
+
+const PROGRAMS: [Program; 9] = [
     Program { name: "pingpong", size: || Size { actors: 2, mails: 2 * PINGS }, start: root::<Pinger> },
     Program { name: "count", size: || Size { actors: 2, mails: COUNTS + 2 }, start: root::<Producer> },
     Program { name: "count-begin", size: || Size { actors: 2, mails: COUNTS + 2 }, start: root::<BeginProducer> },
@@ -1115,6 +1139,7 @@ const PROGRAMS: [Program; 8] = [
         size: || Size { actors: CHURN_TOTAL + 1, mails: CHURN_TOTAL * (CHURN_LIFE + 2) + 2 },
         start: root::<Churn>,
     },
+    Program { name: "churn-wide", size: churn_wide_size, start: churn_wide },
 ];
 
 /// One run of `program` on `workers` workers, each part running at most `hops` fused hops a step: the nanoseconds it
