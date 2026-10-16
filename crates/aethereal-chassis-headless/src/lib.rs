@@ -7,12 +7,13 @@
 
 mod clock;
 mod pool;
+mod rehearsal;
 #[cfg(test)]
 mod tests;
 
 pub use clock::Monotonic;
 
-use aethereal_substrate::{Clock, Engine, Split};
+use aethereal_substrate::{Clock, Engine, Split, SplitCost, Workers};
 pub use pool::Measured;
 
 use pool::Pool;
@@ -23,18 +24,22 @@ pub struct Headless {
     engine: Engine,
     pool: Pool,
     clock: Monotonic,
+    /// What splitting a step among the workers costs, as rehearsed when the host was made.
+    split: SplitCost,
 }
 
 impl Headless {
     /// `engine` run on at most `workers` workers, the calling thread among them.
     ///
-    /// Every worker but the calling thread starts parked, and the cost of waking one is measured here.
+    /// Every worker but the calling thread starts parked. What waking one costs, and what splitting a step among
+    /// them does, are measured here.
     #[must_use]
     pub fn new(engine: Engine, workers: NonZeroUsize) -> Self {
         let clock = Monotonic::new();
-        let pool = Pool::new(workers, &clock);
+        let mut pool = Pool::new(workers, &clock);
+        let split = rehearsal::split_cost(&engine, &mut pool, clock);
 
-        Self { engine, pool, clock }
+        Self { engine, pool, clock, split }
     }
 
     /// The engine, as of the last step.
@@ -56,35 +61,14 @@ impl Headless {
 
     /// Runs one step: plans it for the workers there are, runs its shares on them, and applies what they left, each
     /// part of the views folded on the workers that ran the step. A step planned for one worker runs whole on this
-    /// thread, where its parts lie, and every worker spinning is parked.
+    /// thread, where its parts lie, and the workers the plan keeps spin through it.
     ///
     /// # Panics
     ///
     /// Panics with a turn's panic, and when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn step(&mut self) {
-        let start = self.clock.nanos();
-        let split = self.engine.plan(self.pool.workers()).into_split();
-        let planned = self.clock.nanos();
-        let ran = match split {
-            Split::Whole(whole) => {
-                let left = self.pool.alone(self.clock, || self.engine.run_whole(whole, &self.clock));
-                let ran = self.clock.nanos();
-                self.engine.apply_whole(left);
-
-                ran
-            }
-            Split::Shares(shares) => {
-                let done = self.pool.lend(&self.engine.reading(), self.clock, shares);
-                let ran = self.clock.nanos();
-                let folds = self.engine.gather(done);
-                let folded = self.pool.fold(&self.engine.folding(), self.clock, folds);
-                self.engine.settle(folded);
-
-                ran
-            }
-        };
-        let applied = self.clock.nanos();
-        self.pool.measure_around(planned.saturating_sub(start), applied.saturating_sub(ran));
+        let workers = self.pool.workers(self.split);
+        step(&mut self.engine, &mut self.pool, self.clock, workers);
     }
 
     /// Runs steps until no actor has anything to run, then parks every worker.
@@ -95,4 +79,44 @@ impl Headless {
 
         self.pool.park();
     }
+}
+
+/// How long a step took, in nanoseconds, how long its plan expected its turns to take, and how many workers it was
+/// split among: one when it ran whole.
+struct Stepped {
+    nanos: u64,
+    expected_nanos: u64,
+    sharing: usize,
+}
+
+/// Runs one step of `engine` on `pool`, planned for `workers`, and how long it took, as [`Headless::step`] does.
+fn step(engine: &mut Engine, pool: &mut Pool, clock: Monotonic, workers: Workers) -> Stepped {
+    let start = clock.nanos();
+    let plan = engine.plan(workers);
+    let (delta, expected_nanos) = (plan.delta(), plan.expected_nanos());
+    let split = plan.into_split();
+    let planned = clock.nanos();
+    let (ran, sharing) = match split {
+        Split::Whole(whole) => {
+            let left = pool.alone(clock, delta, || engine.run_whole(whole, &clock));
+            let ran = clock.nanos();
+            engine.apply_whole(left);
+
+            (ran, 1)
+        }
+        Split::Shares(shares) => {
+            let sharing = shares.len();
+            let done = pool.lend(&engine.reading(), clock, shares);
+            let ran = clock.nanos();
+            let folds = engine.gather(done);
+            let folded = pool.fold(&engine.folding(), clock, folds);
+            engine.settle(folded);
+
+            (ran, sharing)
+        }
+    };
+    let applied = clock.nanos();
+    pool.measure_around(planned.saturating_sub(start), applied.saturating_sub(ran));
+
+    Stepped { nanos: applied.saturating_sub(start), expected_nanos, sharing }
 }

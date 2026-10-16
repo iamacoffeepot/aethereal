@@ -1,0 +1,80 @@
+//! An engine for a host to time steps on, to measure what splitting one among workers costs (ADR-0011).
+
+use super::Engine;
+use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, To, ToType, ToWithoutMail, Turn};
+use aethereal_data::{Kind, KindName, Plain};
+use std::num::NonZeroUsize;
+
+/// What each actor of a rehearsal sends itself, every step.
+#[derive(Plain)]
+struct Again;
+
+impl Kind for Again {
+    const NAME: KindName = KindName::new("aether.rehearsal.again");
+}
+
+/// An actor of a rehearsal: it sends itself [`Again`] as it begins, and again on each it is sent.
+#[derive(Plain)]
+struct Echo;
+
+impl Kind for Echo {
+    const NAME: KindName = KindName::new("aether.rehearsal.echo");
+}
+
+impl Actor for Echo {
+    type Config = Again;
+    type Key = u64;
+    type Handles = (Again,);
+    type BeginSends = (ToType<Self, Again>,);
+    type EndSends = ();
+
+    fn begin(_: Again, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let me = turn.me();
+        turn.to::<Self>(ToWithoutMail::Held(me)).send(&Again)?;
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Again> for Echo {
+    type Sends = (ToType<Self, Again>,);
+
+    fn handle(&mut self, _: Again, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let me = turn.me();
+        turn.to::<Self>(To::Held(me)).send(&Again)?;
+
+        Ok(())
+    }
+}
+
+/// The bytes of arena a rehearsal's mail is written to: a piece of mail for each part, each step, fits many times.
+const REHEARSAL_MAIL_BYTES: usize = 1 << 20;
+
+impl Engine {
+    /// An engine in as many parts as this one, for a host to time steps on: one actor in each part, each sending
+    /// itself a piece of mail every step, for ever. Each of its steps runs a turn in every part and folds a record
+    /// into every part, with turns that take almost no time, so what a step split among workers takes beyond the same
+    /// step run whole is what the split costs (ADR-0011).
+    ///
+    /// # Panics
+    ///
+    /// Panics when an actor of it cannot begin, which sending itself one piece of mail never fails.
+    #[must_use]
+    pub fn rehearsal(&self) -> Self {
+        let parts = NonZeroUsize::new(self.seating.len()).unwrap_or(NonZeroUsize::MIN);
+        let mut rehearsal = Self::new(parts, self.read_limit, REHEARSAL_MAIL_BYTES, 0);
+        // Each root sits in the part with fewest actors, so one goes in each part.
+        for part in 0..parts.get() {
+            let key = u64::try_from(part).unwrap_or(u64::MAX);
+            let Ok(_) = rehearsal.add_root::<Echo>(&key, Again) else {
+                panic!("an actor of a rehearsal begins");
+            };
+        }
+
+        rehearsal
+    }
+}

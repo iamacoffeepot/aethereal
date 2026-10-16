@@ -4,7 +4,7 @@ mod cores;
 mod worker;
 
 use crate::Monotonic;
-use aethereal_substrate::{Clock, Done, Fold, Folding, Reading, Share, Workers};
+use aethereal_substrate::{Clock, Done, Fold, Folding, Reading, Share, SplitCost, Workers};
 use cores::Cores;
 use std::num::NonZeroUsize;
 use std::panic;
@@ -92,9 +92,9 @@ impl Pool {
         pool
     }
 
-    /// The workers as a step's plan sees them.
-    pub const fn workers(&self) -> Workers {
-        Workers { active: self.spinning + 1, max: self.threads.len() + 1, wake_nanos: self.wake_nanos }
+    /// The workers as a step's plan sees them, a split among them costing `split`.
+    pub const fn workers(&self, split: SplitCost) -> Workers {
+        Workers { active: self.spinning + 1, max: self.threads.len() + 1, wake_nanos: self.wake_nanos, split }
     }
 
     /// What the steps run so far cost.
@@ -137,11 +137,18 @@ impl Pool {
         self.done.drain(..)
     }
 
-    /// Runs a step planned for one worker on this thread, by `run`, and answers with what it left. Every worker
-    /// spinning is parked: none runs a share of it.
-    pub fn alone<T>(&mut self, clock: Monotonic, run: impl FnOnce() -> T) -> T {
+    /// Runs a step planned for one worker on this thread, by `run`, and answers with what it left. None of the
+    /// workers runs a share of it: those the plan parks, by `delta` when it is below zero, are parked, and the rest
+    /// spin through it, for the steps after it.
+    pub fn alone<T>(&mut self, clock: Monotonic, delta: isize, run: impl FnOnce() -> T) -> T {
         let start = clock.nanos();
-        self.park();
+        let parked = delta.min(0).unsigned_abs().min(self.spinning);
+        let kept = self.spinning - parked;
+        for spinning in &self.threads[kept..self.spinning] {
+            let _ = spinning.orders.send(Order::Park);
+        }
+        self.measured.parks += u64::try_from(parked).unwrap_or(0);
+        self.spinning = kept;
         let left = run();
         let nanos = clock.nanos().saturating_sub(start);
         self.measure(nanos, Busy { shares: 1, nanos });
@@ -185,6 +192,11 @@ impl Pool {
         self.measured.steps += 1;
         self.measured.step_nanos += nanos;
         self.measured.idle_nanos += (nanos * busy.shares).saturating_sub(busy.nanos);
+    }
+
+    /// Forgets what the steps run so far cost: for steps a host ran for itself, such as a rehearsal's.
+    pub fn forget_measured(&mut self) {
+        self.measured = Measured::default();
     }
 
     /// Parks every spinning worker: for when no step is coming soon.
