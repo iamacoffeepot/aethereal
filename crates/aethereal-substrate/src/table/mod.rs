@@ -8,16 +8,9 @@ use crate::id::{child_id, path_id};
 use crate::{Column, Context, Folded, Routed};
 pub use actors::Actors;
 use actors::Entry;
-use aethereal_actor::{Declared, Effect, Made, SeatNumber, Seated, Table};
+use aethereal_actor::{Declared, Effect, SeatNumber, Seated, Table};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 use std::num::NonZeroUsize;
-
-/// The table proves a reference: an id names an actor once the table holds it, live or ended (ADR-0008).
-impl Made for ActorTable {
-    fn seat(&self, id: ActorId) -> Option<SeatNumber> {
-        Self::seat(self, id)
-    }
-}
 
 /// The table as a turn reads it. The id of a child is computed here, by the engine, and nowhere else.
 impl Table for ActorTable {

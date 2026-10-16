@@ -1,6 +1,6 @@
 //! Encode and decode failures for plain data (ADR-0004).
 
-use crate::{ActorId, SchemaFault};
+use crate::SchemaFault;
 use core::error::Error;
 use core::fmt;
 
@@ -48,8 +48,6 @@ pub enum DecodeError {
     InvalidKeyName,
     /// Text decoded as an actor path does not conform or is too deep (ADR-0008).
     InvalidActorPath,
-    /// A reference decoded names no actor the engine has made (ADR-0008).
-    UnknownActor(ActorId),
     /// An enum selector names no variant.
     InvalidSelector {
         /// The enum's name, for error messages.
@@ -92,7 +90,6 @@ impl fmt::Display for DecodeError {
             Self::InvalidKindName => f.write_str("plain data: kind name does not conform"),
             Self::InvalidKeyName => f.write_str("plain data: key name does not conform"),
             Self::InvalidActorPath => f.write_str("plain data: actor path does not conform"),
-            Self::UnknownActor(id) => write!(f, "reference: no actor has the id {:#018x}", id.bits()),
             Self::InvalidSelector { name, selector } => {
                 write!(f, "plain data: invalid selector {selector} for enum {name}")
             }

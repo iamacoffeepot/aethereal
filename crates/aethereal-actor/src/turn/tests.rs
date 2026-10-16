@@ -1,7 +1,7 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's list.
 
 use super::*;
-use crate::{Beginning, Ending, Fault, Item, Made, Mail, MailId, Payload, Span, Unreadable, Within};
+use crate::{Beginning, Ending, Fault, Item, Mail, MailId, Payload, Span, Within};
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
 use alloc::vec;
@@ -10,7 +10,8 @@ use alloc::vec;
 #[derive(Default)]
 struct Listed(Vec<(Seated, ActorPath)>);
 
-impl Made for Listed {
+impl Listed {
+    /// The seat of the actor listed under `id`.
     fn seat(&self, id: ActorId) -> Option<SeatNumber> {
         self.0.iter().find(|(made, _)| made.id == id).map(|(made, _)| made.seat)
     }
@@ -404,14 +405,14 @@ fn child_past_the_deepest_path_is_refused() {
 #[test]
 fn handler_asks_by_the_kind_of_its_mail() {
     // Catches mail read as a kind it is not, a send that loses its kind or its target, a reply left naming the
-    // sender instead of the actor the mail came from, and a reference in mail taken without the table's proof.
+    // sender instead of the actor the mail came from, and a reference in mail read as another actor.
     let other = seated(9, 5);
     let table = Listed(vec![(other, ActorPath::new("aether.test.other"))]);
     let mut leaf: Box<dyn Runs> = Box::new(Leaf);
     let handle = |leaf: &mut Box<dyn Runs>, table: &Listed, kind, bytes: &[u8]| {
         let mut asked = Asked::new();
         let turning = Turning::new(ME, &ROOT, Above::Chassis, table, &mut asked, 0, other, CHAIN);
-        let mail = Mail::new(kind, bytes, other, MailId { sender: other.id, count: 1 }, 1, table, 64);
+        let mail = Mail::new(kind, bytes, other, MailId { sender: other.id, count: 1 }, 1, 64);
         let handled = leaf.handle(Item::Mail(mail), turning);
 
         (handled, asked.into_parts().0)
@@ -427,13 +428,6 @@ fn handler_asks_by_the_kind_of_its_mail() {
     let meet = out.into_bytes();
     let poke = What::Send { to: other, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Meet>(), &meet), (Ok(()), vec![Effect::new(ME, poke)]));
-
-    let (handled, effects) = handle(&mut leaf, &Listed::default(), KindId::of::<Meet>(), &meet);
-    let Err(fault) = handled else {
-        panic!("the mail holds a reference to an actor this table has not made");
-    };
-    assert_eq!(fault.read(&mut Budget::new(0)), Ok(Some(Unreadable)));
-    assert!(effects.is_empty());
 }
 
 #[test]

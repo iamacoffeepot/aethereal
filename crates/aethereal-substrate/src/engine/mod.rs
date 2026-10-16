@@ -989,7 +989,7 @@ impl Reading<'_> {
                     let (item, context) = match handed {
                         Handed::Mail { id: cause, envelope: &Envelope { kind, bytes, root, depth, .. } } => {
                             let bytes = self.bytes(bytes);
-                            let mail = Mail::new(kind, bytes, source, root, depth, &table, self.read_limit);
+                            let mail = Mail::new(kind, bytes, source, root, depth, self.read_limit);
 
                             (Item::Mail(mail), Context { cause: Some(cause), root, depth: depth + 1 })
                         }
@@ -1057,7 +1057,7 @@ impl Reading<'_> {
         let handled = {
             let table =
                 Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Run(lists.fusing.run(hop.run)) };
-            let mail = Mail::new(hop.kind, &bytes, hop.from, hop.root, hop.depth, &table, self.read_limit);
+            let mail = Mail::new(hop.kind, &bytes, hop.from, hop.root, hop.depth, self.read_limit);
             let chain = Chain { root: hop.root, depth: hop.depth };
             let turning = Turning::new(me, &seat.path, seat.above, &table, asked, sent_before, hop.from, chain);
             let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };

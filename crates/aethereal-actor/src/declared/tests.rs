@@ -4,8 +4,8 @@
 use super::*;
 use crate::Effect;
 use crate::{
-    Above, Asked, Beginning, Chain, Ending, ErasedActorRef, Fault, Item, Level, Made, Mail, MailId, Runs, SeatNumber,
-    Seated, Table, To, Turn, Turning, What,
+    Above, Asked, Beginning, Chain, Ending, ErasedActorRef, Fault, Item, Level, Mail, MailId, Runs, SeatNumber, Seated,
+    Table, To, Turn, Turning, What,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -16,7 +16,8 @@ use alloc::vec::Vec;
 /// A table that holds the actors listed, each of the type its declaration names.
 struct Typed(Vec<(Seated, &'static Declared)>);
 
-impl Made for Typed {
+impl Typed {
+    /// The seat of the actor listed under `id`.
     fn seat(&self, id: ActorId) -> Option<SeatNumber> {
         self.0.iter().find(|(made, _)| made.id == id).map(|(made, _)| made.seat)
     }
@@ -184,7 +185,7 @@ fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<What> {
     let mut asked = Asked::new();
     let mut actor: Box<dyn Runs> = Box::new(actor);
     let turning = Turning::new(ME, &PATH, Above::Chassis, &table, &mut asked, 0, OTHER, CHAIN);
-    let mail = Mail::new(kind, &[], OTHER, CHAIN.root, 1, &table, 0);
+    let mail = Mail::new(kind, &[], OTHER, CHAIN.root, 1, 0);
     let handled = actor.handle(Item::Mail(mail), turning);
     assert!(handled.is_ok());
 

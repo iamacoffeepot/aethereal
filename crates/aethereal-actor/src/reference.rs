@@ -1,7 +1,9 @@
 //! A reference to an actor the engine has established exists (ADR-0008).
 
-use crate::{Made, Refers, SeatNumber, Seated};
-use aethereal_data::{ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Reader, Schema, Shape, Writer};
+use crate::{Refers, SeatNumber, Seated};
+use aethereal_data::{
+    ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Field, Reader, Schema, Shape, Writer,
+};
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
@@ -10,22 +12,18 @@ use core::marker::PhantomData;
 ///
 /// The seat is carried so that whatever is kept for the actor is found by its
 /// number, in the order the engine keeps its actors, with no lookup by id. It
-/// is not written where the reference crosses a boundary: a reference read
-/// back finds its seat again in the table that proves it.
+/// is written beside the id where the reference crosses a boundary.
 ///
 /// An actor comes to hold a reference by being handed one in mail, by being
 /// told the sender of mail, or by asking the engine to resolve a path. It says
 /// the actor existed when the reference was made, and not that the actor is
 /// still there.
 ///
-/// The engine's own constructors of a turn and of mail are public, so code
-/// can build one by hand for an id that was never made. Such a reference is
-/// caught where it matters: mail carrying it is refused where it is decoded,
-/// and a send to it is not delivered.
-///
 /// A reference is a bound value: it crosses [`Actors`](crate::Actors) and
-/// [`Within`](crate::Within), and it is proven against the table of actors
-/// wherever it is decoded. It does not cross `Bare`:
+/// [`Within`](crate::Within). It was proven when it was made, so it is read
+/// back as it was written, with nothing looked up. Bytes written by hand for
+/// an id that was never made are not caught there: a send to such a reference
+/// is not delivered. It does not cross `Bare`:
 ///
 /// ```compile_fail
 /// use aethereal_actor::ErasedActorRef;
@@ -78,9 +76,12 @@ impl ErasedActorRef {
     }
 }
 
-/// A reference is its actor's id in bytes. Its seat is found again where it is read.
+/// A reference is its actor's id and seat in bytes, read back as they were written.
 impl Schema for ErasedActorRef {
-    const SHAPE: Shape = ActorId::SHAPE;
+    const SHAPE: Shape = Shape::Struct {
+        name: "ErasedActorRef",
+        fields: &[Field { name: "id", shape: ActorId::SHAPE }, Field { name: "seat", shape: u64::SHAPE }],
+    };
 }
 
 impl<B: Boundary> Encode<B> for ErasedActorRef
@@ -88,17 +89,19 @@ where
     for<'a> B::WriterOffers<'a>: Refers,
 {
     fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
-        self.seated.id.encode(out)
+        self.seated.id.encode(out)?;
+        self.seated.seat.number().encode(out)
     }
 }
 
+/// A reference was proven when it was made, so the bytes are read with nothing looked up (ADR-0008).
 impl<B: Boundary> Decode<B> for ErasedActorRef
 where
-    for<'a> B::ReaderOffers<'a>: Made,
+    for<'a> B::ReaderOffers<'a>: Refers,
 {
     fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let id = ActorId::decode(input)?;
-        let seat = input.offers().seat(id).ok_or(DecodeError::UnknownActor(id))?;
+        let seat = SeatNumber::new(u64::decode(input)?);
 
         Ok(Self::new(Seated { id, seat }))
     }
@@ -196,7 +199,7 @@ where
 
 impl<B: Boundary, T> Decode<B> for ActorRef<T>
 where
-    for<'a> B::ReaderOffers<'a>: Made,
+    for<'a> B::ReaderOffers<'a>: Refers,
 {
     fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         ErasedActorRef::decode(input).map(|reference| Self::new(reference.seated()))
@@ -209,60 +212,37 @@ mod tests {
     use crate::{Actors, ActorsReader, ActorsWriter, Within, WithinReader, WithinWriter};
     use aethereal_data::{Bound, Budget};
 
-    /// A table that has made one actor.
-    struct Only(ActorId);
-
-    impl Made for Only {
-        fn seat(&self, id: ActorId) -> Option<SeatNumber> {
-            (id == self.0).then_some(SEAT)
-        }
+    /// A reference to the actor `bits` names, in seat `seat`.
+    const fn reference(bits: u64, seat: u64) -> ErasedActorRef {
+        ErasedActorRef::new(Seated { id: ActorId::new(bits), seat: SeatNumber::new(seat) })
     }
 
-    /// The seat every actor in these tests sits in.
-    const SEAT: SeatNumber = SeatNumber::new(3);
-
-    /// A reference to the actor `bits` names, in [`SEAT`].
-    const fn reference(bits: u64) -> ErasedActorRef {
-        ErasedActorRef::new(Seated { id: ActorId::new(bits), seat: SEAT })
-    }
-
-    /// A kind that holds a reference beside plain data.
+    /// A kind that holds references beside plain data.
     #[derive(Bound, Debug, PartialEq)]
     struct Subscribe {
         topic: u32,
         to: ErasedActorRef,
+        typed: ActorRef<()>,
     }
 
     #[test]
-    fn reference_in_mail_is_proven_where_it_is_read() {
-        // Catches a decode that takes an id as a reference without asking the table, and a derived codec that
-        // loses the reference's place among plain fields.
-        let sent = Subscribe { topic: 7, to: reference(41) };
+    fn reference_is_read_back_with_its_seat() {
+        // Catches a codec that drops the seat, or swaps it with the id, and a derived codec that loses a reference's
+        // place among plain fields, at either boundary a reference crosses.
+        let sent = Subscribe { topic: 7, to: reference(41, 3), typed: ActorRef::new(reference(42, 9).seated()) };
+
         let mut out = Writer::<Actors>::new(ActorsWriter::new());
         assert_eq!(sent.encode(&mut out), Ok(()));
         let bytes = out.into_bytes();
-
-        let table = Only(ActorId::new(41));
         let mut budget = Budget::new(64);
-        let mut reader = Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::new(&table));
-        assert_eq!(Subscribe::decode(&mut reader), Ok(sent));
+        let mut reader = Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::new());
+        assert_eq!(Subscribe::decode(&mut reader).as_ref(), Ok(&sent));
 
-        let other = Only(ActorId::new(42));
-        let mut reader = Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::new(&other));
-        assert_eq!(Subscribe::decode(&mut reader), Err(DecodeError::UnknownActor(ActorId::new(41))));
-    }
-
-    #[test]
-    fn reference_in_state_is_proven_when_read_back() {
-        // Catches `Within` taking a stored id on trust, where `Actors` proves it.
-        let held = reference(41);
         let mut out = Writer::<Within>::new(WithinWriter::new());
-        assert_eq!(held.encode(&mut out), Ok(()));
+        assert_eq!(sent.encode(&mut out), Ok(()));
         let bytes = out.into_bytes();
-
-        let other = Only(ActorId::new(42));
         let mut budget = Budget::new(64);
-        let mut reader = Reader::<Within>::new(&bytes, &mut budget, WithinReader::new(&other));
-        assert_eq!(ErasedActorRef::decode(&mut reader), Err(DecodeError::UnknownActor(ActorId::new(41))));
+        let mut reader = Reader::<Within>::new(&bytes, &mut budget, WithinReader::new());
+        assert_eq!(Subscribe::decode(&mut reader), Ok(sent));
     }
 }
