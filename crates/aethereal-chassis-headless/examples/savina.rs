@@ -28,7 +28,8 @@
 //!
 //! Each line is the best of three runs on the given numbers of workers (by default 1, 4, and 16), timed from the
 //! root's `begin` to the last step, which takes in starting the workers: the pieces of mail sent, mails a second,
-//! nanoseconds a piece of mail, and the steps the run took.
+//! nanoseconds a piece of mail, and the steps the run took. With hops, a line under it counts the sends made while a
+//! part could still fuse: those fused, and each other by the rule that sent it out as mail.
 
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
@@ -38,7 +39,7 @@ use aethereal_actor::{
 };
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{Bound, Kind, KindName, Plain};
-use aethereal_substrate::{Clock, Engine};
+use aethereal_substrate::{Clock, Engine, Hops};
 use std::env;
 use std::hint;
 use std::num::NonZeroUsize;
@@ -1119,8 +1120,9 @@ const PROGRAMS: [Program; 8] = [
 ];
 
 /// One run of `program` on `workers` workers, each part running at most `hops` fused hops a step: the nanoseconds it
-/// took, from its root's `begin` to the last step, and the steps.
-fn run(program: &Program, workers: NonZeroUsize, hops: usize) -> (u64, u64) {
+/// One run of `program` on `workers` workers, each part running at most `hops` fused hops a step: the nanoseconds it
+/// took, from its root's `begin` to the last step, the steps, and how its sends fared while parts could fuse.
+fn run(program: &Program, workers: NonZeroUsize, hops: usize) -> (u64, u64, Hops) {
     let parts = NonZeroUsize::MIN.saturating_add(15);
     let mut engine = Engine::new(parts, 1024, 1 << 30, hops);
     let clock = Monotonic::new();
@@ -1128,7 +1130,7 @@ fn run(program: &Program, workers: NonZeroUsize, hops: usize) -> (u64, u64) {
     let mut headless = Headless::new(engine, workers);
     headless.run_until_idle();
 
-    (clock.nanos(), headless.measured().steps)
+    (clock.nanos(), headless.measured().steps, headless.engine().hopped())
 }
 
 fn main() {
@@ -1150,7 +1152,7 @@ fn main() {
         for &count in &workers {
             let workers = NonZeroUsize::MIN.saturating_add(count.max(1) - 1);
             let runs = (0..3).map(|_| run(program, workers, hops));
-            let (took, steps) = runs.min_by_key(|(took, _)| *took).unwrap_or_default();
+            let (took, steps, hopped) = runs.min_by_key(|(took, _, _)| *took).unwrap_or_default();
             println!(
                 "{:11} {:6} {workers:7} {:10}   {:9.2} {:8} {steps:8}",
                 program.name,
@@ -1159,6 +1161,13 @@ fn main() {
                 size.mails as f64 * 1e3 / took.max(1) as f64,
                 took / size.mails.max(1),
             );
+            if hops > 0 {
+                let Hops { fused, waiting, spilled, unseated, elsewhere, ended, burst, closing } = hopped;
+                println!(
+                    "            fused={fused} waiting={waiting} spilled={spilled} unseated={unseated} \
+                     elsewhere={elsewhere} ended={ended} burst={burst} closing={closing}"
+                );
+            }
         }
     }
 }

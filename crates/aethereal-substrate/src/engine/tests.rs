@@ -594,6 +594,26 @@ fn hop_never_overtakes_mail_its_sender_sent_as_mail() {
 }
 
 #[test]
+fn each_send_a_part_could_fuse_is_counted_once_by_what_became_of_it() {
+    // Catches a send counted under the wrong rule, counted twice or not at all, and sends counted when the engine
+    // fuses nothing. The root's `spawn` mails an unseated child; the child's `up pair` fuses to the root, whose `pair`
+    // fuses `bounce 2` and sends `last` after it in its turn; the child's `bounce 1` fuses back, and the root's
+    // `bounce 0` is held back by the `last` it sent as mail.
+    let (mut fused, _) = fusing(8, &["spawn 2 up pair"]);
+    while !fused.is_idle() {
+        step(&mut fused);
+    }
+    let counted = Hops { fused: 3, spilled: 1, unseated: 1, burst: 1, ..Hops::default() };
+    assert_eq!(fused.hopped(), counted);
+
+    let (mut unfused, _) = engine(&["spawn 2 up pair"]);
+    while !unfused.is_idle() {
+        step(&mut unfused);
+    }
+    assert_eq!(unfused.hopped(), Hops::default());
+}
+
+#[test]
 fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
     // Catches a child a run stood up left unresolved or unproven to the run's later turns, an actor that ended in the
     // run still found by them, and either seen by a turn outside the run before the step is folded.

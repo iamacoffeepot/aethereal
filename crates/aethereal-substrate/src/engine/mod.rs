@@ -11,6 +11,7 @@ mod tests;
 
 pub use costs::Tally;
 pub use fold::{Fold, Folding};
+pub use fuse::Hops;
 pub use plan::{Plan, Share, Split, Whole, Workers};
 
 use crate::id::root_id;
@@ -27,7 +28,7 @@ use aethereal_actor::{
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 use begun::begun;
 use costs::{CostKey, Costs, ItemKind, KindIndex, Kinds, toward};
-use fuse::{Fusing, Hop, Stepped};
+use fuse::{Fusing, Hand, Hop, Stepped};
 use plan::Packing;
 use since::{Sees, Since};
 use std::borrow::Cow;
@@ -102,6 +103,8 @@ pub struct Engine {
     read_limit: usize,
     /// The most fused hops one part runs in one step (ADR-0013).
     hops: usize,
+    /// How the sends made while a part could still fuse have fared, over every step so far.
+    hopped: Hops,
     /// The host's quota for the bytes of mail in flight, shared equally among the arenas of every writer.
     mail_bytes: usize,
 }
@@ -273,6 +276,7 @@ impl Engine {
             step: 0,
             read_limit,
             hops,
+            hopped: Hops::default(),
             mail_bytes,
         }
     }
@@ -297,6 +301,13 @@ impl Engine {
     #[must_use]
     pub const fn step_number(&self) -> u64 {
         self.step
+    }
+
+    /// How the sends made while a part could still fuse have fared, over every step so far: how many were fused, and
+    /// why each other went out as mail (ADR-0013).
+    #[must_use]
+    pub const fn hopped(&self) -> Hops {
+        self.hopped
     }
 
     /// Whether a step would run no turn: no actor has anything to react to, and none has a closing turn to run.
@@ -521,6 +532,7 @@ impl Engine {
     /// did not give out, and the children its turns stood up, seated; and keeps its lists in their place.
     fn take_in(&mut self, mut lists: Lists, arena: Arena) {
         self.costs.merge(&mut lists.tally);
+        self.hopped.add(mem::take(&mut lists.fusing.hops));
         let slot = arena.slot();
         self.arenas[parity(self.step)][slot] = arena;
         for seat in lists.freed.drain(..) {
@@ -945,6 +957,10 @@ impl Reading<'_> {
                     effects.push(Effect::new(me, What::EndFailed(fault)));
                 }
                 effects.push(Effect::new(me, What::Ended(how.clone())));
+                if lists.fusing.may_hop() {
+                    let sends = effects[begins..].iter().filter(|effect| is_send_by(effect, me)).count();
+                    lists.fusing.hops.closing += u64::try_from(sends).unwrap_or(u64::MAX);
+                }
 
                 let ran = Ran { effects: begins..effects.len(), stood: Vec::new(), context: *context };
                 lists.route(ran, effects, me.id);
@@ -1089,33 +1105,27 @@ impl Reading<'_> {
         let mut fused = false;
         // Once the budget is spent no hop is made, so nothing that decides one need be looked at.
         if lists.fusing.may_hop() {
-            let takes = lists.fusing.takes_a_hop() && !stepped.spilled;
-            let in_part = |to: Seated| {
-                let seated = seating.seated.get(to).is_some();
-                let is_live = lives.life(to).is_some_and(lives::Life::is_live);
-                let has_ended = lists.fusing.stepped(to, 0).ended;
-
-                seated && is_live && !has_ended
-            };
             let effects = asked.effects_mut();
-            let first = if takes {
-                ran.effects.clone().find(|index| is_send_by(&effects[*index], me))
-            } else {
-                None
-            };
+            let mut sends = ran.effects.clone().filter(|index| is_send_by(&effects[*index], me));
+            let first = sends.next();
+            let burst = sends.count();
             if let Some(index) = first
                 && let What::Send { to, count, kind, bytes } = *effects[index].what()
-                && in_part(to)
             {
-                lists.fusing.bytes.clear();
-                lists.fusing.bytes.extend_from_slice(asked.arena().read(bytes).unwrap_or_default());
-                asked.effects_mut().remove(index);
-                ran.effects.end -= 1;
-                let id = MailId { sender: me.id, count };
-                let context = ran.context;
-                lists.fusing.wait(Hop { to, from: me, id, root: context.root, depth: context.depth, kind });
-                stepped.sent = stepped.sent.max(count);
-                fused = true;
+                let hand = hand(to, *stepped, seating, lives, &lists.fusing);
+                lists.fusing.hops.count(hand);
+                lists.fusing.hops.burst += u64::try_from(burst).unwrap_or(u64::MAX);
+                if hand == Hand::Fuse {
+                    lists.fusing.bytes.clear();
+                    lists.fusing.bytes.extend_from_slice(asked.arena().read(bytes).unwrap_or_default());
+                    asked.effects_mut().remove(index);
+                    ran.effects.end -= 1;
+                    let id = MailId { sender: me.id, count };
+                    let context = ran.context;
+                    lists.fusing.wait(Hop { to, from: me, id, root: context.root, depth: context.depth, kind });
+                    stepped.sent = stepped.sent.max(count);
+                    fused = true;
+                }
             }
             if !stepped.spilled {
                 let effects = &asked.effects_mut()[ran.effects.clone()];
@@ -1150,6 +1160,31 @@ impl Reading<'_> {
 enum Origin {
     Waiting,
     Hop,
+}
+
+/// What becomes of the first send of a turn, by an actor that has done `stepped` in the step, to `to`, while its part may still
+/// fuse: it is fused when `to` sits in the part, in `seating`, live in `lives` and not ended in the step, no hop is
+/// waiting, and its sender has sent no mail as mail into its part in the step (ADR-0013). What `to` is decides first,
+/// so a send the engine's own rules held back is one that could have been fused without them.
+fn hand(to: Seated, stepped: Stepped, seating: &Seating, lives: &lives::Shard, fusing: &Fusing) -> Hand {
+    let is_seated = seating.seated.get(to).is_some();
+    let is_live = lives.life(to).is_some_and(lives::Life::is_live);
+    let has_ended = fusing.stepped(to, 0).ended;
+    let was_stood = fusing.stood.contains_key(&to.id.bits());
+
+    if was_stood {
+        Hand::Unseated
+    } else if !is_seated {
+        Hand::Elsewhere
+    } else if !is_live || has_ended {
+        Hand::Ended
+    } else if !fusing.takes_a_hop() {
+        Hand::Waiting
+    } else if stepped.spilled {
+        Hand::Spilled
+    } else {
+        Hand::Fuse
+    }
 }
 
 /// Whether `effect` is mail the actor `me` sent.
