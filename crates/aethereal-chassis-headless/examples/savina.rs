@@ -34,9 +34,7 @@
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
-use aethereal_actor::{
-    Actor, Allows, Beginning, Ending, ErasedActorRef, Fault, Handles, To, ToAny, ToSender, ToType, ToWithoutMail, Turn,
-};
+use aethereal_actor::{Actor, ActorRef, Allows, Beginning, Ending, Fault, Handles, To, ToAny, ToSender, ToType, Turn};
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_substrate::{Clock, Engine, Hops};
@@ -121,7 +119,7 @@ impl Kind for Work {
 /// A neighbour, handed to an actor of the big program.
 #[derive(Bound)]
 struct Neighbour {
-    other: ErasedActorRef,
+    other: ActorRef<Pinging>,
 }
 
 impl Kind for Neighbour {
@@ -175,7 +173,7 @@ impl Actor for Pinger {
         let Ok(ponger) = turn.spawn::<Ponger>(&0, Number { number: 0 }) else {
             panic!("the pong side begins");
         };
-        turn.to::<Ponger>(ToWithoutMail::Held(ponger)).send(&Ready)?;
+        turn.to_actor(ponger).send(&Ready)?;
 
         Ok(Self)
     }
@@ -261,7 +259,7 @@ impl Actor for Producer {
         let Ok(counter) = turn.spawn::<Counter>(&0, Number { number: 0 }) else {
             panic!("the counter begins");
         };
-        turn.to::<Counter>(ToWithoutMail::Held(counter)).send(&Ready)?;
+        turn.to_actor(counter).send(&Ready)?;
 
         Ok(Self)
     }
@@ -315,9 +313,9 @@ impl Actor for BeginProducer {
             panic!("the counter begins");
         };
         for _ in 0..COUNTS {
-            turn.to::<Counter>(ToWithoutMail::Held(counter)).send(&Increment)?;
+            turn.to_actor(counter).send(&Increment)?;
         }
-        turn.to::<Counter>(ToWithoutMail::Held(counter)).send(&Retrieve)?;
+        turn.to_actor(counter).send(&Retrieve)?;
 
         Ok(Self)
     }
@@ -387,7 +385,7 @@ impl Handles<Retrieve> for Counter {
 /// work.
 #[derive(Bound)]
 struct Forker {
-    workers: Vec<ErasedActorRef>,
+    workers: Vec<ActorRef<Forked>>,
 }
 
 impl Kind for Forker {
@@ -402,8 +400,8 @@ impl Actor for Forker {
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let workers: Vec<ErasedActorRef> = (0..FORKS).map(|number| spawned::<Forked, _>(turn, number)).collect();
-        ready::<Forked, _, _>(turn, &workers)?;
+        let workers: Vec<ActorRef<Forked>> = (0..FORKS).map(|number| spawned(turn, number)).collect();
+        ready(turn, &workers)?;
 
         Ok(Self { workers })
     }
@@ -419,7 +417,7 @@ impl Handles<Ready> for Forker {
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         for _ in 0..FORKED {
             for worker in &self.workers {
-                turn.to::<Forked>(To::Held(*worker)).send(&Work)?;
+                turn.to_actor(*worker).send(&Work)?;
             }
         }
 
@@ -466,7 +464,7 @@ impl Handles<Work> for Forked {
 /// starts them.
 #[derive(Bound)]
 struct Crowd {
-    actors: Vec<ErasedActorRef>,
+    actors: Vec<ActorRef<Pinging>>,
 }
 
 impl Kind for Crowd {
@@ -481,8 +479,8 @@ impl Actor for Crowd {
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let actors: Vec<ErasedActorRef> = (0..BIG_ACTORS).map(|number| spawned::<Pinging, _>(turn, number)).collect();
-        ready::<Pinging, _, _>(turn, &actors)?;
+        let actors: Vec<ActorRef<Pinging>> = (0..BIG_ACTORS).map(|number| spawned(turn, number)).collect();
+        ready(turn, &actors)?;
 
         Ok(Self { actors })
     }
@@ -498,9 +496,9 @@ impl Handles<Ready> for Crowd {
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         for actor in &self.actors {
             for other in self.actors.iter().filter(|other| *other != actor) {
-                turn.to::<Pinging>(To::Held(*actor)).send(&Neighbour { other: *other })?;
+                turn.to_actor(*actor).send(&Neighbour { other: *other })?;
             }
-            turn.to::<Pinging>(To::Held(*actor)).send(&Start)?;
+            turn.to_actor(*actor).send(&Start)?;
         }
 
         Ok(())
@@ -511,7 +509,7 @@ impl Handles<Ready> for Crowd {
 /// sent all its pings. It answers every ping it is sent.
 #[derive(Bound)]
 struct Pinging {
-    neighbours: Vec<ErasedActorRef>,
+    neighbours: Vec<ActorRef<Self>>,
     /// The state of its random numbers.
     random: u64,
 }
@@ -531,7 +529,7 @@ impl Pinging {
         self.random ^= self.random << 17;
         let count = u64::try_from(self.neighbours.len()).unwrap_or(1).max(1);
         let picked = usize::try_from(self.random % count).unwrap_or(0);
-        turn.to::<Self>(To::Held(self.neighbours[picked])).send(&Ping { left })?;
+        turn.to_actor(self.neighbours[picked]).send(&Ping { left })?;
 
         Ok(())
     }
@@ -703,7 +701,7 @@ impl Handles<Request> for Fib {
                 let Ok(child) = turn.spawn::<Self>(&key, Number { number: key }) else {
                     panic!("a child begins");
                 };
-                turn.to::<Self>(To::Held(child)).send(&Request { number: before })?;
+                turn.to_actor(child).send(&Request { number: before })?;
             }
         }
 
@@ -764,7 +762,7 @@ impl Actor for Sieve {
         let Ok(first) = turn.spawn::<Filter>(&0, Number { number: 2 }) else {
             panic!("the first filter begins");
         };
-        ready::<Filter, _, _>(turn, &[first])?;
+        ready(turn, &[first])?;
 
         Ok(Self)
     }
@@ -793,7 +791,7 @@ enum Next {
     /// Nothing: it is the last filter, and keeps a number no filter divides.
     Last,
     /// The filter it spawned when it was full, which it passes every number on to.
-    Filter(ErasedActorRef),
+    Filter(ActorRef<Filter>),
 }
 
 impl Kind for Next {
@@ -836,7 +834,7 @@ impl Handles<Candidate> for Filter {
             return Ok(());
         }
         match self.next {
-            Next::Filter(next) => turn.to::<Self>(To::Held(next)).send(&Candidate { number })?,
+            Next::Filter(next) => turn.to_actor(next).send(&Candidate { number })?,
             Next::Last if self.primes.len() < SIEVE_KEPT => self.primes.push(number),
             Next::Last => {
                 let Ok(next) = turn.spawn::<Self>(&0, Number { number }) else {
@@ -855,7 +853,7 @@ impl Handles<Exit> for Filter {
 
     fn handle(&mut self, _: Exit, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         if let Next::Filter(next) = self.next {
-            turn.to::<Self>(To::Held(next)).send(&Exit)?;
+            turn.to_actor(next).send(&Exit)?;
         }
         turn.close();
 
@@ -902,7 +900,7 @@ impl Churn {
             panic!("a churn actor begins");
         };
         self.spawned += 1;
-        turn.to::<Mortal>(To::Held(child)).send(&Live { left: CHURN_LIFE })?;
+        turn.to_actor(child).send(&Live { left: CHURN_LIFE })?;
 
         Ok(())
     }
@@ -917,7 +915,7 @@ impl Actor for Churn {
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         let first = spawned::<Mortal, _>(turn, 0);
-        ready::<Mortal, _, _>(turn, &[first])?;
+        ready(turn, &[first])?;
 
         Ok(Self { spawned: 1 })
     }
@@ -1046,12 +1044,12 @@ fn sieve_size() -> Size {
 }
 
 /// Tells the last of `children`, each of type `T`, that the program can start, so it answers from a turn.
-fn ready<T: Handles<Ready>, S, I>(turn: &mut Beginning<'_, S>, children: &[ErasedActorRef]) -> Result<(), Fault>
+fn ready<T: Handles<Ready>, S, I>(turn: &mut Beginning<'_, S>, children: &[ActorRef<T>]) -> Result<(), Fault>
 where
     S: Allows<ToType<T, Ready>, I>,
 {
     if let Some(last) = children.last() {
-        turn.to::<T>(ToWithoutMail::Held(*last)).send(&Ready)?;
+        turn.to_actor(*last).send(&Ready)?;
     }
 
     Ok(())
@@ -1075,7 +1073,7 @@ macro_rules! answers_ready {
 answers_ready!(Ponger, Counter, Forked, Pinging, Fib, Filter, Mortal);
 
 /// A child of type `A` numbered `number`, spawned by `turn`.
-fn spawned<A: Actor<Config = Number, Key = u64>, S>(turn: &mut Beginning<'_, S>, number: u64) -> ErasedActorRef {
+fn spawned<A: Actor<Config = Number, Key = u64>, S>(turn: &mut Beginning<'_, S>, number: u64) -> ActorRef<A> {
     let Ok(child) = turn.spawn::<A>(&number, Number { number }) else {
         panic!("a child begins");
     };
