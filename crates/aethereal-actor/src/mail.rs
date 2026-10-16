@@ -1,6 +1,6 @@
 //! A piece of mail as its handler sees it (ADR-0009).
 
-use crate::{Actors, ActorsReader, ErasedActorRef, Seated, Table};
+use crate::{Actors, ActorsReader, ErasedActorRef, Seated};
 use aethereal_data::{ActorId, Budget, Decode, DecodeError, Kind, KindId, Plain, Reader};
 
 /// The id of a piece of mail: its sender, and that sender's count of what it has sent (ADR-0012).
@@ -23,7 +23,6 @@ pub struct Mail<'a> {
     sender: Seated,
     root: MailId,
     depth: u32,
-    table: &'a dyn Table,
     limit: usize,
 }
 
@@ -31,19 +30,10 @@ impl<'a> Mail<'a> {
     /// The mail of kind `kind` whose bytes are `bytes`, sent by the actor `sender` names, at `depth` in the
     /// chain that began at `root`.
     ///
-    /// For the engine, which has established that the sender exists. A read proves each reference in the mail
-    /// against `table`, and allocates no more than `limit` bytes.
+    /// For the engine, which has established that the sender exists. A read allocates no more than `limit` bytes.
     #[must_use]
-    pub const fn new(
-        kind: KindId,
-        bytes: &'a [u8],
-        sender: Seated,
-        root: MailId,
-        depth: u32,
-        table: &'a dyn Table,
-        limit: usize,
-    ) -> Self {
-        Self { kind, bytes, sender, root, depth, table, limit }
+    pub const fn new(kind: KindId, bytes: &'a [u8], sender: Seated, root: MailId, depth: u32, limit: usize) -> Self {
+        Self { kind, bytes, sender, root, depth, limit }
     }
 
     /// The id of the mail's kind.
@@ -88,7 +78,7 @@ impl<'a> Mail<'a> {
     /// The mail's contents, read as `K`, whose handler it was handed to: the kind is already known to match.
     pub(crate) fn contents<K: Decode<Actors>>(&self) -> Result<K, DecodeError> {
         let mut budget = Budget::new(self.limit);
-        let mut reader = Reader::<Actors>::new(self.bytes, &mut budget, ActorsReader::new(self.table));
+        let mut reader = Reader::<Actors>::new(self.bytes, &mut budget, ActorsReader::new());
         let contents = K::decode(&mut reader)?;
         let trailing = reader.input().len();
         let is_whole = trailing == 0;

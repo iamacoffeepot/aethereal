@@ -36,7 +36,7 @@ A part always runs on exactly one worker, whichever it is, so every one of these
 
 **A run sees the table changes it made.** A fused turn reads the table as it stood when the step began, as every turn does (ADR-0011), and over it the spawns and endings that the turns of its own run have made. Its own run starts at the turn of a waiting item that made a fused send. A run is named by the first send it fused, so two runs never share what they see, even when they share a part or a chain's root. A turn of another run, or of no run, does not see them until the step is folded. Two consequences follow:
 
-- **A child a run stood up is live to that run.** It is found by a resolve, and a reference to it is proven, in every later turn of the run, once the turn that stood it up has finished without failing. ADR-0009's promise holds: a resolve never finds an actor whose `begin` failed. To everyone else the child is live from the next step, as today.
+- **A child a run stood up is live to that run.** It is found by a resolve in every later turn of the run, once the turn that stood it up has finished without failing. ADR-0009's promise holds: a resolve never finds an actor whose `begin` failed. To everyone else the child is live from the next step, as today.
 - **An actor that ends in a run is ended to that run.** A later turn of the run does not resolve it. An actor that has ended handles nothing more, so a fused hop to it is dropped, as mail to it would be. Its closing turn runs in the next step (ADR-0011).
 
 The other views are not read by a turn, so their records wait for the step's fold, as now.

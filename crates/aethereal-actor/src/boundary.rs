@@ -4,20 +4,11 @@ use crate::{Declared, SeatNumber, Seated};
 use aethereal_data::{ActorId, ActorPath, Boundary, PathSegment};
 use core::marker::PhantomData;
 
-/// Whether the engine has made an actor under an id, and its seat: what proves a reference (ADR-0008).
-///
-/// The engine's table of actors answers it. An id that was decoded is a claim,
-/// and it names an actor only once the table holds it, live or ended.
-pub trait Made {
-    /// The seat of the actor made under `id`, which it sits in or sat in: none when no actor has been made under it.
-    fn seat(&self, id: ActorId) -> Option<SeatNumber>;
-}
-
 /// The table of actors as a turn reads it: as it stood when the turn's step began (ADR-0008, ADR-0011).
 ///
 /// The engine answers it. A turn writes nothing here: what it asks for is an
 /// effect, applied after it returns.
-pub trait Table: Made {
+pub trait Table {
     /// The actor `path` names, and its seat, when that actor is live.
     fn resolve(&self, path: &ActorPath) -> Option<Seated>;
 
@@ -39,10 +30,11 @@ pub trait Table: Made {
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber>;
 }
 
-/// What a boundary's writer offers a reference: leave to cross, and nothing else (ADR-0008).
+/// What a boundary's writer and reader offer a reference: leave to cross, and nothing else (ADR-0008).
 ///
 /// A reference means something only inside the engine that holds its actor,
-/// so it is written only at a boundary that stays inside one engine.
+/// so it is written and read only at a boundary that stays inside one engine.
+/// It was proven when it was made, so nothing is looked up to read it.
 pub trait Refers {}
 
 /// The boundary between actors in one engine: what mail and a config cross (ADR-0004).
@@ -79,23 +71,21 @@ impl ActorsWriter<'_> {
 impl Refers for ActorsWriter<'_> {}
 
 /// What a reader at [`Actors`] holds beside the bytes still to read and the budget.
+#[derive(Default)]
 pub struct ActorsReader<'a> {
-    made: &'a dyn Made,
+    /// Nothing is held yet. The lifetime is kept for what a later bound value needs held.
+    held: PhantomData<&'a ()>,
 }
 
-impl<'a> ActorsReader<'a> {
-    /// What a reader at [`Actors`] holds, proving each reference against `made`.
+impl ActorsReader<'_> {
+    /// What a reader at [`Actors`] holds.
     #[must_use]
-    pub const fn new(made: &'a dyn Made) -> Self {
-        Self { made }
+    pub const fn new() -> Self {
+        Self { held: PhantomData }
     }
 }
 
-impl Made for ActorsReader<'_> {
-    fn seat(&self, id: ActorId) -> Option<SeatNumber> {
-        self.made.seat(id)
-    }
-}
+impl Refers for ActorsReader<'_> {}
 
 /// What a writer at [`Within`] holds beside the bytes written so far.
 #[derive(Default)]
@@ -115,20 +105,18 @@ impl WithinWriter<'_> {
 impl Refers for WithinWriter<'_> {}
 
 /// What a reader at [`Within`] holds beside the bytes still to read and the budget.
+#[derive(Default)]
 pub struct WithinReader<'a> {
-    made: &'a dyn Made,
+    /// Nothing is held yet. The lifetime is kept for what a later bound value needs held.
+    held: PhantomData<&'a ()>,
 }
 
-impl<'a> WithinReader<'a> {
-    /// What a reader at [`Within`] holds, proving each reference against `made`.
+impl WithinReader<'_> {
+    /// What a reader at [`Within`] holds.
     #[must_use]
-    pub const fn new(made: &'a dyn Made) -> Self {
-        Self { made }
+    pub const fn new() -> Self {
+        Self { held: PhantomData }
     }
 }
 
-impl Made for WithinReader<'_> {
-    fn seat(&self, id: ActorId) -> Option<SeatNumber> {
-        self.made.seat(id)
-    }
-}
+impl Refers for WithinReader<'_> {}

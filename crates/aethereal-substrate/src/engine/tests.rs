@@ -3,9 +3,7 @@
 use super::*;
 use crate::watch::Notice;
 use crate::{ByActor, Entry, Standing, child_id};
-use aethereal_actor::{
-    Ended, Ending, Fault, Handles, How, Level, Made, Table, To, ToSender, ToType, ToWithoutMail, Turn,
-};
+use aethereal_actor::{Ended, Ending, Fault, Handles, How, Level, Table, To, ToSender, ToType, ToWithoutMail, Turn};
 use aethereal_data::{Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
 use std::mem;
@@ -660,8 +658,8 @@ fn each_send_a_part_could_fuse_is_counted_once_by_what_became_of_it() {
 
 #[test]
 fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
-    // Catches a child a run stood up left unresolved or unproven to the run's later turns, an actor that ended in the
-    // run still found by them, and either seen by a turn outside the run before the step is folded.
+    // Catches a child a run stood up left unresolved to the run's later turns, an actor that ended in the run still
+    // found by them, and either seen by a turn outside the run before the step is folded.
     let (engine, root) = fusing(8, &[]);
     let Some(root_path) = engine.table().path(root) else {
         panic!("the root is in the table");
@@ -679,13 +677,11 @@ fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
     let in_run = Since { table: engine.table(), stood: &stood, sees: Sees::Run(&run) };
     assert_eq!(Table::resolve(&in_run, &child_path), Some(child));
     assert!(Table::is_live(&in_run, child.id));
-    assert_eq!(Made::seat(&in_run, child.id), Some(child.seat));
     assert_eq!(Table::resolve(&in_run, &root_path), None);
     assert!(!Table::is_live(&in_run, root));
 
     let outside = Since { table: engine.table(), stood: &stood, sees: Sees::Step };
     assert_eq!(Table::resolve(&outside, &child_path), None);
     assert!(!Table::is_live(&outside, child.id));
-    assert_eq!(Made::seat(&outside, child.id), None);
     assert!(Table::is_live(&outside, root));
 }

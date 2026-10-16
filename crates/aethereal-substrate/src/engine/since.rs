@@ -3,7 +3,7 @@
 
 use super::fuse::Run;
 use crate::{ActorTable, ByActor};
-use aethereal_actor::{Declared, Made, SeatNumber, Seated, Table};
+use aethereal_actor::{Declared, SeatNumber, Seated, Table};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 
 /// The table as one actor's turn reads it (ADR-0009, ADR-0013).
@@ -11,9 +11,9 @@ use aethereal_data::{ActorId, ActorPath, PathSegment};
 /// Only an actor spawns beneath itself, so it knows whether a key is free
 /// from the table as the step began and from the children stood up in its
 /// part since, in earlier turns of this step. Those children are not live to
-/// anyone yet: a resolve does not find them, and a reference to one is not
-/// yet proven. A turn of a run sees, over that, the children its run stood up
-/// as live, and the actors that ended in its run as ended.
+/// anyone yet: a resolve does not find them. A turn of a run sees, over that,
+/// the children its run stood up as live, and the actors that ended in its run
+/// as ended.
 pub(super) struct Since<'a> {
     pub(super) table: &'a ActorTable,
     /// The paths and seats of the children stood up in the part in earlier turns of the step, and what their types
@@ -39,15 +39,6 @@ impl Since<'_> {
             Sees::Step => None,
             Sees::Run(run) => Some(run),
         }
-    }
-}
-
-/// A child stood up in an earlier turn is not yet proven to anyone but the turns of the run that stood it up.
-impl Made for Since<'_> {
-    fn seat(&self, id: ActorId) -> Option<SeatNumber> {
-        let stood = self.run().and_then(|run| run.stood(id));
-
-        stood.or_else(|| self.table.seat(id))
     }
 }
 
