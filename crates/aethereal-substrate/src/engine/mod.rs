@@ -4,6 +4,7 @@ mod begun;
 mod costs;
 mod fold;
 mod fuse;
+mod made;
 mod plan;
 mod rehearsal;
 mod since;
@@ -30,6 +31,7 @@ use aethereal_data::{ActorId, ActorPath, PathSegment};
 use begun::begun;
 use costs::{CostKey, Costs, ItemKind, KindIndex, Kinds, toward};
 use fuse::{Fusing, Hand, Hop, Stepped};
+use made::Made;
 use plan::Packing;
 use since::{Sees, Since};
 use std::borrow::Cow;
@@ -116,7 +118,7 @@ struct Seating {
     seated: BySeat<Sitting>,
 }
 
-/// An actor in its seat: what is fixed when it is seated.
+/// An actor in its seat: what is fixed when it is seated, and the children it has made since.
 struct Sitting {
     /// Where the actor stands.
     path: ActorPath,
@@ -124,6 +126,8 @@ struct Sitting {
     above: Above,
     /// Its kind, as the engine numbers it.
     kind: KindIndex,
+    /// The children it has made, noted as each is seated: its own knowledge of the keys it has used (ADR-0008).
+    made: Made,
 }
 
 /// Whether the engine holds the actor of a seat.
@@ -542,6 +546,7 @@ impl Engine {
             self.actors_seated -= 1;
             self.seats[part].free(seat);
         }
+        // A child is stood up after the children its `begin` stood up, so it is seated first, from the back.
         let mut stood = mem::take(&mut lists.stood);
         while let Some(child) = stood.pop() {
             let (me, path, above, actor) = child.into_parts();
@@ -748,7 +753,8 @@ impl Engine {
         self.log.fold(effects, &context);
         self.lives.fold(effects, &context);
 
-        for child in stood {
+        // A child is stood up after the children its `begin` stood up, so it is seated first, from the back.
+        for child in stood.into_iter().rev() {
             let (me, path, above, actor) = child.into_parts();
             self.seat(me, path, above, actor);
         }
@@ -786,8 +792,15 @@ impl Engine {
         let part = self.part(me.seat);
         self.seated[part] += 1;
         self.actors_seated += 1;
-        self.seating[part].seated.insert(me, Sitting { path, above, kind });
+        self.seating[part].seated.insert(me, Sitting { path, above, kind, made: Made::none() });
         self.actors[part].insert(me, Held::Here(actor));
+        // A parent is seated before the children it stood up, so its seat is there to note them in.
+        if let Above::Actor(parent, _) = above {
+            let parent_part = self.part(parent.seat);
+            if let Some(sitting) = self.seating[parent_part].seated.get_mut(parent) {
+                sitting.made.insert(me.id);
+            }
+        }
     }
 
     /// The part `seat` falls in.
@@ -997,7 +1010,17 @@ impl Reading<'_> {
                     };
                     // The item sits one above what the turn sends in its chain.
                     let chain = Chain { root: context.root, depth: context.depth - 1 };
-                    let turning = Turning::new(me, &seat.path, seat.above, &table, asked, stepped.sent, source, chain);
+                    let turning = Turning::new(
+                        me,
+                        &seat.path,
+                        seat.above,
+                        &table,
+                        &seat.made,
+                        asked,
+                        stepped.sent,
+                        source,
+                        chain,
+                    );
                     let handled = tally.time(key(item_kind(handed)), clock, || actor.handle(item, turning));
                     let ran = Ran::of(me, handled, asked, context, begins);
 
@@ -1059,7 +1082,8 @@ impl Reading<'_> {
                 Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Run(lists.fusing.run(hop.run)) };
             let mail = Mail::new(hop.kind, &bytes, hop.from, hop.root, hop.depth, self.read_limit);
             let chain = Chain { root: hop.root, depth: hop.depth };
-            let turning = Turning::new(me, &seat.path, seat.above, &table, asked, sent_before, hop.from, chain);
+            let turning =
+                Turning::new(me, &seat.path, seat.above, &table, &seat.made, asked, sent_before, hop.from, chain);
             let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
 
             tally.time(key, clock, || actor.handle(Item::Mail(mail), turning))

@@ -23,10 +23,6 @@ impl Table for ActorTable {
         Some(Seated { id, seat: Self::seat(self, id)? })
     }
 
-    fn has_made(&self, parent: ActorId, child: ActorId) -> bool {
-        self.entry(parent).is_some_and(|entry| entry.has_made(child))
-    }
-
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
         child_id(parent, segment)
     }
@@ -53,9 +49,9 @@ impl Table for ActorTable {
 /// It holds the live actors. An actor is written once, when it is made, and
 /// taken out once, by its own ending, so for whoever holds a reference an
 /// actor that is not here has ended. The ending of an actor does not end the
-/// actors beneath it (ADR-0009). Whether a key is free is kept by the parent:
-/// each entry holds the children its actor has made, and the table holds the
-/// roots the chassis has made, for the engine's life.
+/// actors beneath it (ADR-0009). Whether a key is free is the parent's own
+/// knowledge, kept in its seat; the table keeps the roots the chassis has
+/// made, for the engine's life.
 pub struct ActorTable {
     actors: Folded<Actors>,
     /// The ids of the roots made, live or ended.

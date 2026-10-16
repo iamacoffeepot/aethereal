@@ -53,12 +53,6 @@ impl Table for Since<'_> {
         (!has_ended).then_some(resolved)
     }
 
-    fn has_made(&self, parent: ActorId, child: ActorId) -> bool {
-        let is_stood = self.stood.contains_key(&child.bits());
-
-        is_stood || Table::has_made(self.table, parent, child)
-    }
-
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
         self.table.child(parent, segment)
     }

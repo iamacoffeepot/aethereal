@@ -34,11 +34,13 @@ impl Kind for Note {
     const NAME: KindName = KindName::new("aether.test.note");
 }
 
-/// A node's number, and the notes it sends itself as it begins.
+/// A node's number, the notes it sends itself as it begins, and the children it spawns as it begins, each of which
+/// closes on its first note.
 #[derive(Plain)]
 struct NodeConfig {
     number: u64,
     to_self: Vec<String>,
+    spawns: Vec<u64>,
 }
 
 impl Kind for NodeConfig {
@@ -51,6 +53,7 @@ impl Kind for NodeConfig {
 ///   first;
 /// - `spawn N text` spawns the node `N` beneath it and sends that child `text`, and `watch N text` watches the
 ///   child as well;
+/// - `nest N M` spawns the node `N`, which spawns the node `M` beneath itself as it begins;
 /// - `tell N text` sends the node `N` beneath it `text`;
 /// - `both` sends its parent `watchme` and itself `close`, and `watchme` has it watch the sender;
 /// - `up text` sends its parent `text from <number>`, and `reply` answers the sender with `re`;
@@ -84,6 +87,10 @@ impl Actor for Node {
     type EndSends = (ToType<Self, Note>,);
 
     fn begin(config: NodeConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        for number in config.spawns {
+            let to_self = vec![String::from("close")];
+            let _ = turn.spawn::<Self>(&number, NodeConfig { number, to_self, spawns: Vec::new() });
+        }
         for text in config.to_self {
             let me = turn.me();
             turn.to::<Self>(ToWithoutMail::Held(me)).send(&Note { text })?;
@@ -135,13 +142,19 @@ impl Handles<Note> for Node {
             ["up", said] => turn.to::<Self>(To::Parent).send(&Note { text: format!("{said} from {}", self.number) })?,
             ["spawn" | "watch", number, text] => {
                 let number = number.parse().unwrap_or_default();
-                if let Ok(child) = turn.spawn::<Self>(&number, NodeConfig { number, to_self: Vec::new() }) {
+                let config = NodeConfig { number, to_self: Vec::new(), spawns: Vec::new() };
+                if let Ok(child) = turn.spawn::<Self>(&number, config) {
                     let watches = words[0] == "watch";
                     if watches {
                         turn.watch(child);
                     }
                     turn.to::<Self>(Self::child(number)).send(&Note { text: String::from(text) })?;
                 }
+            }
+            ["nest", number, beneath] => {
+                let number = number.parse().unwrap_or_default();
+                let spawns = vec![beneath.parse().unwrap_or_default()];
+                let _ = turn.spawn::<Self>(&number, NodeConfig { number, to_self: Vec::new(), spawns });
             }
             ["tell", number, text] => {
                 let child = Self::child(number.parse().unwrap_or_default());
@@ -226,7 +239,7 @@ fn fusing(hops: usize, to_self: &[&str]) -> (Engine, ActorId) {
     };
     let mut engine = Engine::new(parts, 1024, 0, hops);
     let to_self = to_self.iter().map(|text| String::from(*text)).collect();
-    let Ok(root) = engine.add_root::<Node>(&1, NodeConfig { number: 1, to_self }) else {
+    let Ok(root) = engine.add_root::<Node>(&1, NodeConfig { number: 1, to_self, spawns: Vec::new() }) else {
         panic!("the root begins");
     };
 
@@ -340,6 +353,40 @@ fn send_through_a_reference_to_an_actor_that_has_ended_is_dropped() {
 }
 
 #[test]
+fn key_stays_taken_after_its_child_has_ended() {
+    // Catches a parent's key freed once its child has ended and left the table, which would bring a closed path
+    // back to life.
+    let (mut engine, _) = engine(&["spawn 2 close", "self self spawn 2 up again"]);
+    step(&mut engine);
+    step(&mut engine);
+
+    let mut third = step(&mut engine);
+    third.sort();
+    assert_eq!(third, ["1 got spawn 2 up again", "2 ended Closed"]);
+    assert_eq!(step(&mut engine), ["1 got bye 2"]);
+    assert_eq!(step(&mut engine), [""; 0]);
+}
+
+#[test]
+fn key_a_child_used_as_it_began_stays_taken() {
+    // Catches the children a child stands up in its `begin` going unnoted, as when a child is seated before its
+    // parent has a seat to note it in.
+    let (mut engine, _) = engine(&["nest 2 3", "self self tell 2 spawn 3 up again"]);
+    step(&mut engine);
+    let mut second = step(&mut engine);
+    second.sort();
+    assert_eq!(second, ["1 got self tell 2 spawn 3 up again", "3 got close"]);
+
+    let mut third = step(&mut engine);
+    third.sort();
+    assert_eq!(third, ["1 got tell 2 spawn 3 up again", "3 ended Closed"]);
+    let mut fourth = step(&mut engine);
+    fourth.sort();
+    assert_eq!(fourth, ["2 got bye 3", "2 got spawn 3 up again"]);
+    assert_eq!(step(&mut engine), [""; 0]);
+}
+
+#[test]
 fn root_key_stays_taken_after_its_root_has_ended() {
     // Catches a root's key freed once the table no longer holds its ended root, which would bring a closed path
     // back to life.
@@ -347,7 +394,7 @@ fn root_key_stays_taken_after_its_root_has_ended() {
     step(&mut engine);
     step(&mut engine);
 
-    let again = engine.add_root::<Node>(&1, NodeConfig { number: 1, to_self: Vec::new() });
+    let again = engine.add_root::<Node>(&1, NodeConfig { number: 1, to_self: Vec::new(), spawns: Vec::new() });
     assert!(matches!(again, Err(Refused::KeyTaken)));
 }
 

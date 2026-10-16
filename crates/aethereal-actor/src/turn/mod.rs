@@ -7,9 +7,9 @@ mod tests;
 pub use refused::Refused;
 
 use crate::{
-    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Code, Declared, Effect, ErasedActorRef, Handled, Handles,
-    Kinds, Level, MailId, Marker, Role, Runs, SeatNumber, Seated, Seats, Sends, Table, Target, To, ToAny, ToSender,
-    ToType, ToWithoutMail, What,
+    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
+    Handles, Kinds, Level, MailId, Marker, Role, Runs, SeatNumber, Seated, Seats, Sends, Table, Target, To, ToAny,
+    ToSender, ToType, ToWithoutMail, What,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
@@ -197,6 +197,8 @@ struct Seat<'a> {
     /// What stands above the actor, kept when it was stood up, so a send to its parent reads no path.
     above: Above,
     table: &'a dyn Table,
+    /// The children the actor made before this turn's step, whose keys it may not use again.
+    made: &'a dyn Children,
     asked: &'a mut Asked,
     /// How many pieces of mail this actor has sent, this turn's included.
     sent: u64,
@@ -374,15 +376,16 @@ impl Seat<'_> {
 
     /// Stands up a child of type `C` under `key`: adds its spawn effect, then runs its `begin` here.
     ///
-    /// A key is free when no actor has been made at the child's path and this turn has stood none up there. An
-    /// id the table holds under another path is not refused: that is two paths with one id, and the engine
-    /// stops when it folds the spawn (ADR-0008).
+    /// A key is free when this actor has made no child there: none its seat keeps from earlier steps, none live,
+    /// and none stood up earlier in the step or in this turn (ADR-0008).
     fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused> {
         let segment = PathSegment::new(C::NAME, key);
         let path = self.path.child(&segment).map_err(|PathTooDeep| Refused::TooDeep)?;
         let id = self.table.child(self.me.id, &segment);
-        let is_made = self.table.has_made(self.me.id, id);
-        let is_taken = is_made || self.asked.stood_seat(id).is_some();
+        let is_made = self.made.has_made(id);
+        let is_live = self.table.child_seat(id).is_some();
+        let is_stood = self.asked.stood_seat(id).is_some();
+        let is_taken = is_made || is_live || is_stood;
         if is_taken {
             return Err(Refused::KeyTaken);
         }
@@ -400,8 +403,8 @@ impl Seat<'_> {
         let stood_before = self.asked.stood.len();
         let above = Above::Actor(self.me, self.declared);
         let table = self.table;
-        let child =
-            Seat { me, path: &path, above, table, asked: &mut *self.asked, sent: 0, declared, during: During::Begin };
+        let asked = &mut *self.asked;
+        let child = Seat { me, path: &path, above, table, made: &(), asked, sent: 0, declared, during: During::Begin };
         match C::begin(config, &mut Beginning { seat: child, sends: PhantomData }) {
             Ok(actor) => {
                 self.asked.stood_seats.insert(id.bits(), (seat, declared));
@@ -501,6 +504,7 @@ pub struct Turning<'a> {
     path: &'a ActorPath,
     above: Above,
     table: &'a dyn Table,
+    made: &'a dyn Children,
     asked: &'a mut Asked,
     sent: u64,
     source: Seated,
@@ -519,19 +523,20 @@ impl<'a> Turning<'a> {
         path: &'a ActorPath,
         above: Above,
         table: &'a dyn Table,
+        made: &'a dyn Children,
         asked: &'a mut Asked,
         sent: u64,
         source: Seated,
         chain: Chain,
     ) -> Self {
-        Self { me, path, above, table, asked, sent, source, chain }
+        Self { me, path, above, table, made, asked, sent, source, chain }
     }
 
     /// The turn of the handler of `A` for `role`, which may send `S`.
     pub(crate) fn declaring<A: Actor, S: Sends>(self, role: Role) -> Turn<'a, S> {
-        let Self { me, path, above, table, asked, sent, source, chain } = self;
+        let Self { me, path, above, table, made, asked, sent, source, chain } = self;
         let declared = Declared::of::<A>();
-        let seat = Seat { me, path, above, table, asked, sent, declared, during: During::Handling(role) };
+        let seat = Seat { me, path, above, table, made, asked, sent, declared, during: During::Handling(role) };
 
         Turn { seat, source, chain, sends: PhantomData }
     }
@@ -662,7 +667,8 @@ impl<'a, S: Sends> Beginning<'a, S> {
         asked: &'a mut Asked,
     ) -> Self {
         let declared = Declared::of::<A>();
-        let seat = Seat { me, path, above: Above::Chassis, table, asked, sent: 0, declared, during: During::Begin };
+        let during = During::Begin;
+        let seat = Seat { me, path, above: Above::Chassis, table, made: &(), asked, sent: 0, declared, during };
 
         Self { seat, sends: PhantomData }
     }
@@ -759,7 +765,7 @@ impl<'a> Closing<'a> {
     pub(crate) fn declaring<A: Actor>(self) -> Ending<'a, A::EndSends> {
         let Self { me, path, above, table, asked, sent, why } = self;
         let declared = Declared::of::<A>();
-        let seat = Seat { me, path, above, table, asked, sent, declared, during: During::End };
+        let seat = Seat { me, path, above, table, made: &(), asked, sent, declared, during: During::End };
 
         Ending { seat, why, sends: PhantomData }
     }

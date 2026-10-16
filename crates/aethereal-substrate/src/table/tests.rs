@@ -92,21 +92,6 @@ fn ending_takes_out_only_its_own_actor() {
 }
 
 #[test]
-fn parent_keeps_the_children_it_made_after_they_end() {
-    // Catches a key that comes free when its child ends, which would bring a closed path back to life, and a child
-    // counted as made beneath an actor that did not make it.
-    let (window, root) = window();
-    let (surface, spawn) = surface(window);
-    let (layer, _) = layer(surface);
-    let mut table = table(4);
-    table.fold(&[root, spawn, Effect::new(at(surface), What::Close)], &context());
-
-    assert!(Table::has_made(&table, window, surface));
-    assert!(!Table::has_made(&table, window, layer));
-    assert!(!Table::has_made(&table, surface, surface));
-}
-
-#[test]
 fn failed_turn_ends_its_actor() {
     // Catches a view that follows `Close` and passes over the ending the engine writes for a failed turn.
     let (window, root) = window();
