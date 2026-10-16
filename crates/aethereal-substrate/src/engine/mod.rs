@@ -1229,8 +1229,9 @@ impl Lists {
     /// Routes a finished turn's effects into this worker's row of buckets for each view, taking them out of the
     /// list, keeps the children the turn stood up, to be seated, and answers with what it saw of the actor `me`.
     ///
-    /// Each effect is routed into every view in one pass: the other views borrow it, then the streams take it by
-    /// value. A turn that stood up a child whose `begin` failed is routed without what that child left.
+    /// Each effect is routed into every view that keeps anything of it in one pass: the other views borrow it, then
+    /// the streams take it by value. A turn that stood up a child whose `begin` failed is routed without what that
+    /// child left.
     fn route(&mut self, ran: Ran, list: &mut Vec<Effect>, me: ActorId) -> Seen {
         let Ran { effects, stood, context } = ran;
         let routes = &mut self.routes;
@@ -1239,16 +1240,14 @@ impl Lists {
             Cow::Borrowed(_) => {
                 for effect in list.drain(effects.start..) {
                     seen.see(&effect, me);
-                    routes.route(&effect, &context);
-                    routes.streams.route_one(effect, &context);
+                    routes.route_owned(effect, &context);
                 }
             }
             Cow::Owned(applied) => {
                 list.truncate(effects.start);
                 for effect in applied {
                     seen.see(&effect, me);
-                    routes.route(&effect, &context);
-                    routes.streams.route_one(effect, &context);
+                    routes.route_owned(effect, &context);
                 }
             }
         }
@@ -1272,6 +1271,16 @@ impl Routes {
         self.log.route(effect, context);
         self.lives.route(effect, context);
         self.watches.route(effect, context);
+    }
+
+    /// Routes one effect, emitted in `context`, into the bucket of every view that keeps anything of it, the streams
+    /// taking it by value. Mail is kept by the streams alone, so it goes past no other view.
+    fn route_owned(&mut self, effect: Effect, context: &Context) {
+        let is_mail = matches!(effect.what(), What::Send { .. });
+        if !is_mail {
+            self.route(&effect, context);
+        }
+        self.streams.route_one(effect, context);
     }
 }
 
