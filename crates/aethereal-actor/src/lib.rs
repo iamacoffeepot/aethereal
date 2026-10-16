@@ -31,7 +31,7 @@ pub use declared::{
     Allows, At, Declared, Handled, HandledList, Handler, Handles, Kinds, Marker, Others, Role, Sending, Sends, Target,
     ToAny, ToSender, ToType,
 };
-pub use effect::{Code, Effect, Level, To, ToWithoutMail, What};
+pub use effect::{Code, Effect, Level, Seen, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
 pub use item::Item;

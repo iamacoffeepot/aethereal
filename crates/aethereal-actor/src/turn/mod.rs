@@ -8,8 +8,8 @@ pub use refused::Refused;
 
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
-    Handles, Kinds, Level, MailId, Marker, Role, Runs, SeatNumber, Seated, Seats, Sends, Table, Target, To, ToAny,
-    ToSender, ToType, ToWithoutMail, What,
+    Handles, Kinds, Level, MailId, Marker, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Table, Target, To,
+    ToAny, ToSender, ToType, ToWithoutMail, What,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
@@ -249,7 +249,9 @@ impl Seat<'_> {
         self.ask(What::Log { level, text: text.into() });
     }
 
-    /// Adds the effect that watches the actor `of` refers to.
+    /// Adds the effect that watches the actor `of` refers to, with how this turn sees it: live when the table held
+    /// it as the step began or it was stood up since, and ended otherwise, since a reference's actor existed
+    /// (ADR-0008).
     ///
     /// # Panics
     ///
@@ -262,7 +264,15 @@ impl Seat<'_> {
             self.declared.name(),
             self.during,
         );
-        self.ask(What::Watch { of });
+        let id = of.seated().id;
+        let was_held = self.table.held(id);
+        let is_stood = self.asked.stood_seat(id).is_some();
+        let seen = if was_held || is_stood {
+            Seen::Live
+        } else {
+            Seen::Ended
+        };
+        self.ask(What::Watch { of, seen });
     }
 
     /// Encodes `mail` and adds the effect that sends it to the actor `to` names, which `target` says it may reach.

@@ -69,6 +69,12 @@ impl Table for Since<'_> {
         stood_up || Table::is_live(self.table, id)
     }
 
+    fn held(&self, id: ActorId) -> bool {
+        let is_stood = self.stood.contains_key(&id.bits());
+
+        is_stood || self.table.is_live(id)
+    }
+
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber> {
         let stood = self.stood.get(&id.bits()).map(|(_, seat, _)| *seat);
 

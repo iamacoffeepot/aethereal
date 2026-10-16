@@ -22,6 +22,10 @@ pub trait Table {
     /// actor stood it up in an earlier turn of the step.
     fn declared(&self, id: ActorId) -> Option<&'static Declared>;
 
+    /// Whether the table held the actor `id` stands for as the step began, or it was stood up since in this part of
+    /// the engine: whether, for whoever holds a reference to it, its ending is still to come (ADR-0008).
+    fn held(&self, id: ActorId) -> bool;
+
     /// The seat of the child `id` stands for, beneath the actor whose turn reads the table, when it was made or that
     /// actor stood it up in an earlier turn of the step.
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber>;

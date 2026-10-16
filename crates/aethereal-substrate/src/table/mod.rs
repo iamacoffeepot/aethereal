@@ -31,6 +31,10 @@ impl Table for ActorTable {
         Self::is_live(self, id)
     }
 
+    fn held(&self, id: ActorId) -> bool {
+        Self::is_live(self, id)
+    }
+
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber> {
         Self::seat(self, id)
     }
