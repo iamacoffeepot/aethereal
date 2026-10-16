@@ -364,7 +364,7 @@ impl Engine {
             Some(key) => What::RootInstanced { from, key: key.clone() },
         };
         let effects: Vec<Effect> = iter::once(Effect::new(me, made)).chain(asked).collect();
-        let context = Context { cause: None, root: MailId { sender: id, count: 0 }, depth: 1 };
+        let context = Context { root: MailId { sender: id, count: 0 }, depth: 1 };
 
         self.seat(me, path, Above::Chassis, Box::new(root));
         let applied = begun(&effects).into_owned();
@@ -987,11 +987,11 @@ impl Reading<'_> {
                     let begins = asked.effects_mut().len();
                     let source = handed.source();
                     let (item, context) = match handed {
-                        Handed::Mail { id: cause, envelope: &Envelope { kind, bytes, root, depth, .. } } => {
+                        Handed::Mail { envelope: &Envelope { kind, bytes, root, depth, .. }, .. } => {
                             let bytes = self.bytes(bytes);
                             let mail = Mail::new(kind, bytes, source, root, depth, self.read_limit);
 
-                            (Item::Mail(mail), Context { cause: Some(cause), root, depth: depth + 1 })
+                            (Item::Mail(mail), Context { root, depth: depth + 1 })
                         }
                         Handed::Ended { ended, context } => (Item::Ended(ended.clone()), *context),
                     };
@@ -1065,7 +1065,7 @@ impl Reading<'_> {
             tally.time(key, clock, || actor.handle(Item::Mail(mail), turning))
         };
         lists.fusing.handed = bytes;
-        let context = Context { cause: Some(hop.id), root: hop.root, depth: hop.depth + 1 };
+        let context = Context { root: hop.root, depth: hop.depth + 1 };
         let ran = Ran::of(me, handled, asked, context, begins);
         Self::finish(me, ran, Origin::Hop(hop.run), seating, lives, asked, lists, &mut stepped);
 
@@ -1127,12 +1127,10 @@ impl Reading<'_> {
                     let (at, len) = lists.fusing.keep_bytes(asked.arena().read(bytes).unwrap_or_default());
                     asked.effects_mut().remove(index);
                     ran.effects.end -= 1;
-                    let id = MailId { sender: me.id, count };
                     let context = ran.context;
                     // A fused send from a waiting item begins a run; one from a hop goes on with the hop's.
                     let chain = *run.get_or_insert_with(|| lists.fusing.begin_run());
-                    let hop =
-                        Hop { to, from: me, id, root: context.root, depth: context.depth, kind, run: chain, at, len };
+                    let hop = Hop { to, from: me, root: context.root, depth: context.depth, kind, run: chain, at, len };
                     lists.fusing.wait(hop);
                     stepped.sent = stepped.sent.max(count);
                 }

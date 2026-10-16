@@ -22,32 +22,37 @@ pub const ARENA_BYTES: usize = 64 * 1024;
 #[derive(Debug)]
 pub struct Arena {
     /// Which writer's arena this is, as the engine numbers them.
-    slot: usize,
+    slot: u32,
     slab: Vec<u8>,
     /// The mail that did not fit in the slab, each piece in bytes of its own, in the order written.
     spilled: Vec<Box<[u8]>>,
-    /// How many bytes the slab holds: the writer's share of the host's quota for mail, at least [`ARENA_BYTES`].
+    /// How many bytes the slab holds: the writer's share of the host's quota for mail, at least [`ARENA_BYTES`] and
+    /// at most [`SLAB_MOST`].
     bytes: usize,
 }
 
-/// Where the bytes of one piece of mail are, in the arena of the writer that wrote them.
+/// The most bytes one arena's slab holds, so that where a piece of mail lies in it is a 32-bit number.
+const SLAB_MOST: usize = u32::MAX as usize;
+
+/// Where the bytes of one piece of mail are, in the arena of the writer that wrote them: sixteen bytes, carried
+/// with every piece of mail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Payload {
     /// In the writer's slab.
     InArena(Span),
     /// Spilled, as it did not fit: the writer's `index`th spilled piece.
-    Spilled { slot: usize, index: usize },
+    Spilled { slot: u32, index: u32 },
 }
 
 /// A range of one writer's arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     /// The writer whose arena holds the bytes.
-    pub slot: usize,
+    pub slot: u32,
     /// Where they begin in it.
-    pub start: usize,
+    pub start: u32,
     /// How many there are.
-    pub len: usize,
+    pub len: u32,
 }
 
 impl Default for Arena {
@@ -59,40 +64,59 @@ impl Default for Arena {
 
 impl Arena {
     /// The empty arena of the writer numbered `slot`. Its slab is allocated when it is first written to.
+    ///
+    /// # Panics
+    ///
+    /// Panics for a writer numbered past `u32::MAX`, which no engine has.
     #[must_use]
-    pub const fn new(slot: usize) -> Self {
+    pub fn new(slot: usize) -> Self {
+        let Ok(slot) = u32::try_from(slot) else {
+            panic!("no engine has more than u32::MAX writers");
+        };
+
         Self { slot, slab: Vec::new(), spilled: Vec::new(), bytes: ARENA_BYTES }
     }
 
     /// Which writer's arena this is.
     #[must_use]
     pub const fn slot(&self) -> usize {
-        self.slot
+        self.slot as usize
     }
 
     /// Empties the arena, keeping its slab and freeing what was spilled, for when its writer writes it again, and
-    /// gives its slab `bytes`, at least [`ARENA_BYTES`]: the writer's share of the host's quota for mail.
+    /// gives its slab `bytes`, at least [`ARENA_BYTES`] and at most [`SLAB_MOST`]: the writer's share of the host's
+    /// quota for mail.
     pub fn clear(&mut self, bytes: usize) {
         self.slab.clear();
         self.spilled.clear();
-        self.bytes = bytes.max(ARENA_BYTES);
+        self.bytes = bytes.clamp(ARENA_BYTES, SLAB_MOST);
     }
 
     /// The bytes `payload` says where to find, when they are in this arena; nothing otherwise.
     #[must_use]
     pub fn read(&self, payload: Payload) -> Option<&[u8]> {
-        let is_own = payload.slot() == self.slot;
+        let is_own = payload.slot() == self.slot();
         let bytes = match payload {
-            Payload::InArena(span) => self.slab.get(span.start..span.start.checked_add(span.len)?),
-            Payload::Spilled { index, .. } => self.spilled.get(index).map(|bytes| &bytes[..]),
+            Payload::InArena(Span { start, len, .. }) => {
+                let start = start as usize;
+
+                self.slab.get(start..start.checked_add(len as usize)?)
+            }
+            Payload::Spilled { index, .. } => self.spilled.get(index as usize).map(|bytes| &bytes[..]),
         };
 
         is_own.then_some(bytes).flatten()
     }
 
     /// Keeps `bytes`, which did not fit in the slab, as a spilled piece of mail.
+    ///
+    /// # Panics
+    ///
+    /// Panics past `u32::MAX` spilled pieces in one arena, each of which holds its own allocation.
     fn spill(&mut self, bytes: Vec<u8>) -> Payload {
-        let index = self.spilled.len();
+        let Ok(index) = u32::try_from(self.spilled.len()) else {
+            panic!("no arena spills more than u32::MAX pieces of mail");
+        };
         self.spilled.push(bytes.into_boxed_slice());
 
         Payload::Spilled { slot: self.slot, index }
@@ -121,9 +145,10 @@ impl Arena {
             return Err(error);
         }
 
+        // The slab holds at most `SLAB_MOST` bytes, so mail that fits it always has a span.
         let fits = self.slab.len() <= self.bytes;
-        if fits {
-            return Ok(Payload::InArena(Span { slot: self.slot, start, len: self.slab.len() - start }));
+        if fits && let Some(span) = Span::between(self.slot, start, self.slab.len()) {
+            return Ok(Payload::InArena(span));
         }
         // It ran past the slab: its bytes are spilled, and the slab returns to its size.
         let own = self.slab.split_off(start);
@@ -133,14 +158,26 @@ impl Arena {
     }
 }
 
+impl Span {
+    /// The bytes from `start` to `end` of the arena of the writer numbered `slot`, when both are 32-bit numbers.
+    fn between(slot: u32, start: usize, end: usize) -> Option<Self> {
+        let start_at = u32::try_from(start).ok()?;
+        let len = u32::try_from(end - start).ok()?;
+
+        Some(Self { slot, start: start_at, len })
+    }
+}
+
 impl Payload {
     /// The writer whose arena holds the bytes.
     #[must_use]
     pub const fn slot(self) -> usize {
-        match self {
+        let slot = match self {
             Self::InArena(span) => span.slot,
             Self::Spilled { slot, .. } => slot,
-        }
+        };
+
+        slot as usize
     }
 }
 

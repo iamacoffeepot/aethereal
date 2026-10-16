@@ -100,8 +100,6 @@ pub(super) struct Hop {
     pub(super) to: Seated,
     /// The sender, and its seat.
     pub(super) from: Seated,
-    /// The mail's id.
-    pub(super) id: MailId,
     /// The first mail of its chain.
     pub(super) root: MailId,
     /// How far down its chain it is.
