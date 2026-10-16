@@ -905,7 +905,8 @@ impl Reading<'_> {
             self.turns(&mut room, me, Work::Closing, clock, tally, asked, lists);
         }
 
-        // Every item that was waiting has run, so a hop overtakes nothing its sender sent in an earlier step.
+        // Every item that was waiting has run, so a hop overtakes nothing its sender sent in an earlier step. The hops
+        // run in the order they were made, so two from one sender to one receiver are handled in the order sent.
         while let Some(hop) = lists.fusing.next() {
             self.hop(&mut room, hop, clock, tally, asked, lists);
         }
@@ -1049,9 +1050,10 @@ impl Reading<'_> {
         asked.next_turn();
         let begins = asked.effects_mut().len();
         let sent_before = stepped.sent;
-        let bytes = mem::take(&mut lists.fusing.bytes);
+        let bytes = mem::take(&mut lists.fusing.handed);
         let handled = {
-            let table = Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Run(&lists.fusing.run) };
+            let table =
+                Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Run(lists.fusing.run(hop.run)) };
             let mail = Mail::new(hop.kind, &bytes, hop.from, hop.root, hop.depth, &table, self.read_limit);
             let chain = Chain { root: hop.root, depth: hop.depth };
             let turning = Turning::new(me, &seat.path, seat.above, &table, asked, sent_before, hop.from, chain);
@@ -1059,10 +1061,10 @@ impl Reading<'_> {
 
             tally.time(key, clock, || actor.handle(Item::Mail(mail), turning))
         };
-        lists.fusing.bytes = bytes;
+        lists.fusing.handed = bytes;
         let context = Context { cause: Some(hop.id), root: hop.root, depth: hop.depth + 1 };
         let ran = Ran::of(me, handled, asked, context, begins);
-        Self::finish(me, ran, Origin::Hop, seating, lives, asked, lists, &mut stepped);
+        Self::finish(me, ran, Origin::Hop(hop.run), seating, lives, asked, lists, &mut stepped);
 
         if stepped.sent > sent_before {
             let (key, record) = lives::sent(me, stepped.sent);
@@ -1102,7 +1104,10 @@ impl Reading<'_> {
             .map(|child| (child.id().bits(), (child.path().clone(), child.seated().seat, child.declared())));
         lists.fusing.stood.extend(stood);
 
-        let mut fused = false;
+        let mut run = match origin {
+            Origin::Waiting => None,
+            Origin::Hop(run) => Some(run),
+        };
         // Once the budget is spent no hop is made, so nothing that decides one need be looked at.
         if lists.fusing.may_hop() {
             let effects = asked.effects_mut();
@@ -1116,15 +1121,17 @@ impl Reading<'_> {
                 lists.fusing.hops.count(hand);
                 lists.fusing.hops.burst += u64::try_from(burst).unwrap_or(u64::MAX);
                 if hand == Hand::Fuse {
-                    lists.fusing.bytes.clear();
-                    lists.fusing.bytes.extend_from_slice(asked.arena().read(bytes).unwrap_or_default());
+                    let (at, len) = lists.fusing.keep_bytes(asked.arena().read(bytes).unwrap_or_default());
                     asked.effects_mut().remove(index);
                     ran.effects.end -= 1;
                     let id = MailId { sender: me.id, count };
                     let context = ran.context;
-                    lists.fusing.wait(Hop { to, from: me, id, root: context.root, depth: context.depth, kind });
+                    // A fused send from a waiting item begins a run; one from a hop goes on with the hop's.
+                    let chain = *run.get_or_insert_with(|| lists.fusing.begin_run());
+                    let hop =
+                        Hop { to, from: me, id, root: context.root, depth: context.depth, kind, run: chain, at, len };
+                    lists.fusing.wait(hop);
                     stepped.sent = stepped.sent.max(count);
-                    fused = true;
                 }
             }
             if !stepped.spilled {
@@ -1133,10 +1140,9 @@ impl Reading<'_> {
             }
         }
 
-        let in_run = fused || matches!(origin, Origin::Hop);
-        if in_run {
+        if let Some(run) = run {
             let stood = ran.stood.iter().map(|child| (child.seated(), child.path().clone()));
-            lists.fusing.run.stand(stood);
+            lists.fusing.run_mut(run).stand(stood);
         }
         // Most turns of a busy actor ask for nothing, and then there is nothing to route.
         let asked_nothing = ran.effects.is_empty() && ran.stood.is_empty();
@@ -1148,8 +1154,8 @@ impl Reading<'_> {
         stepped.sent = seen.sent.map_or(stepped.sent, |sent| sent.max(stepped.sent));
         if seen.ends {
             stepped.ended = true;
-            if in_run {
-                lists.fusing.run.end(me.id);
+            if let Some(run) = run {
+                lists.fusing.run_mut(run).end(me.id);
             }
         }
     }
@@ -1159,13 +1165,14 @@ impl Reading<'_> {
 #[derive(Clone, Copy)]
 enum Origin {
     Waiting,
-    Hop,
+    /// A hop of the run numbered so in its part's step.
+    Hop(usize),
 }
 
-/// What becomes of the first send of a turn, by an actor that has done `stepped` in the step, to `to`, while its part may still
-/// fuse: it is fused when `to` sits in the part, in `seating`, live in `lives` and not ended in the step, no hop is
-/// waiting, and its sender has sent no mail as mail into its part in the step (ADR-0013). What `to` is decides first,
-/// so a send the engine's own rules held back is one that could have been fused without them.
+/// What becomes of the first send of a turn, by an actor that has done `stepped` in the step, to `to`, while its
+/// part may still fuse: it is fused when `to` sits in the part, in `seating`, live in `lives` and not ended in the
+/// step, and its sender has sent no mail as mail into its part in the step (ADR-0013). What `to` is decides first, so
+/// a send the spill rule held back is one that could have been fused without it.
 fn hand(to: Seated, stepped: Stepped, seating: &Seating, lives: &lives::Shard, fusing: &Fusing) -> Hand {
     let is_seated = seating.seated.get(to).is_some();
     let is_live = lives.life(to).is_some_and(lives::Life::is_live);
@@ -1178,8 +1185,6 @@ fn hand(to: Seated, stepped: Stepped, seating: &Seating, lives: &lives::Shard, f
         Hand::Elsewhere
     } else if !is_live || has_ended {
         Hand::Ended
-    } else if !fusing.takes_a_hop() {
-        Hand::Waiting
     } else if stepped.spilled {
         Hand::Spilled
     } else {
