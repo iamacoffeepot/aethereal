@@ -74,10 +74,22 @@ impl Folding<'_> {
 /// What the turns waiting in one part are expected to cost, in nanoseconds: one for each item that has arrived for
 /// an actor seated there, by the actor's kind, and each closing turn to run.
 pub(super) fn expected(streams: &stream::Shard, lives: &lives::Shard, seated: &BySeat<Sitting>, costs: &Costs) -> u64 {
-    let cost = |me: Seated, item: ItemKind| {
-        let kind = seated.get(me).map(|sitting| sitting.kind);
+    // Items that arrive together are mostly for one kind of actor, of one kind, so the last cost looked up is kept.
+    let mut last = None;
+    let mut cost = |me: Seated, item: ItemKind| {
+        let Some(actor) = seated.get(me).map(|sitting| sitting.kind) else {
+            return 0;
+        };
+        let key = CostKey { actor, item };
+        match last {
+            Some((kept, cost)) if kept == key => cost,
+            _ => {
+                let cost = costs.expect(&key);
+                last = Some((key, cost));
 
-        kind.map_or(0, |actor| costs.expect(&CostKey { actor, item }))
+                cost
+            }
+        }
     };
     let items: u64 = streams.arrived().map(|(me, handed)| cost(me, item_kind(handed))).sum();
     let closings: u64 = lives.ended().iter().map(|me| cost(*me, ItemKind::Closing)).sum();

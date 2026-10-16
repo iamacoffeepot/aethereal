@@ -76,6 +76,8 @@ pub(super) struct Costs {
 pub struct Tally {
     /// Under each key, what its turns this step have come to.
     sums: Vec<(CostKey, Sum)>,
+    /// Where in `sums` the last turn's key was, which the next turn's key mostly is.
+    last: usize,
 }
 
 /// What one key's turns in a step have come to.
@@ -123,11 +125,17 @@ impl Tally {
     /// Runs `turn`, a turn under `key`, and times it by `clock` when it is the first under that key or the
     /// [`SAMPLE`]th since one was timed.
     pub(super) fn time<R>(&mut self, key: CostKey, clock: &impl Clock, turn: impl FnOnce() -> R) -> R {
-        let place = self.sums.iter().position(|(kept, _)| *kept == key);
-        let place = place.unwrap_or_else(|| {
-            self.sums.push((key, Sum::default()));
-            self.sums.len() - 1
-        });
+        let is_last = self.sums.get(self.last).is_some_and(|(kept, _)| *kept == key);
+        let place = if is_last {
+            self.last
+        } else {
+            let found = self.sums.iter().position(|(kept, _)| *kept == key);
+            found.unwrap_or_else(|| {
+                self.sums.push((key, Sum::default()));
+                self.sums.len() - 1
+            })
+        };
+        self.last = place;
         let sum = &mut self.sums[place].1;
         let is_timed = sum.turns.is_multiple_of(SAMPLE);
         sum.turns += 1;
