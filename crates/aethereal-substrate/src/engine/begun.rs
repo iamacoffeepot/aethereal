@@ -12,9 +12,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// actor it stood up, but for the lines they logged. A parent may spawn at that key again in the same turn,
 /// and that later child is kept.
 pub(super) fn begun(effects: &[Effect]) -> Cow<'_, [Effect]> {
-    // Most turns spawn nothing, and then nothing is taken out.
-    let spawns = effects.iter().any(|effect| spawned(effect).is_some());
-    if !spawns {
+    // A child whose `begin` failed is reported by a `Faulted` of its own, and nothing is taken out without one. Most
+    // turns have none.
+    let faults = effects.iter().any(|effect| matches!(effect.what(), What::Faulted));
+    if !faults {
         return Cow::Borrowed(effects);
     }
 

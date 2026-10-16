@@ -544,7 +544,8 @@ impl Engine {
         }
         let mut stood = mem::take(&mut lists.stood);
         while let Some(child) = stood.pop() {
-            self.seat(child.seated(), child.path().clone(), child.above(), child.into_actor());
+            let (me, path, above, actor) = child.into_parts();
+            self.seat(me, path, above, actor);
         }
         lists.stood = stood;
         self.lists[slot] = lists;
@@ -748,7 +749,8 @@ impl Engine {
         self.lives.fold(effects, &context);
 
         for child in stood {
-            self.seat(child.seated(), child.path().clone(), child.above(), child.into_actor());
+            let (me, path, above, actor) = child.into_parts();
+            self.seat(me, path, above, actor);
         }
     }
 
@@ -780,7 +782,7 @@ impl Engine {
 
     /// Seats the actor `me` names, at `path`, in the seat it was given. It is run from the next step.
     fn seat(&mut self, me: Seated, path: ActorPath, above: Above, actor: Box<dyn Runs>) {
-        let kind = self.kinds.number(path.last().kind());
+        let kind = self.kinds.number(actor.declared().name());
         let part = self.part(me.seat);
         self.seated[part] += 1;
         self.actors_seated += 1;

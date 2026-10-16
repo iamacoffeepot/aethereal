@@ -60,7 +60,7 @@ impl KindName {
     }
 
     /// The name's text.
-    const fn text(&self) -> &str {
+    pub(crate) const fn text(&self) -> &str {
         match &self.0 {
             Cow::Borrowed(text) => text,
             Cow::Owned(text) => text.as_str(),
