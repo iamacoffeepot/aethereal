@@ -99,8 +99,19 @@ pub struct ActorId(u64);
 - **An id is built down from the root**, each from its parent's, so it stands for every segment above it. An id directly beneath an actor's enters the table only when that actor spawns, since only it spawns there.
 - **Whether a child's key is free is its parent's own knowledge.** A spawn is refused when its kind and key have been used beneath that parent, live or closed. A child whose `begin` failed was never live and does not use its key (ADR-0009). No other actor's spawn bears on the answer, so a parent decides it within its turn.
 - The table keeps each path's id beside it, live or closed.
-- **A reference is an id the engine has checked.** An `ErasedActorRef` holds an `ActorId` and nothing else. A reference built by hand for an id that was never made is caught the same way: refused where it is decoded, and not delivered to when it is sent to. It says nothing of what the actor handles: any actor can be sent any mail, and a reference typed by what its actor takes is a layer above, which keeps the name `ActorRef` for itself. Making one is the check that the id is in the table, and wherever a reference is read at a boundary the reader makes that check again. So a reference is eight bytes in mail and in an actor's state, and bytes that name no actor are refused.
+- **A reference is an id the engine has checked.** An `ErasedActorRef` holds an `ActorId` and nothing else. A reference built by hand for an id that was never made is caught the same way: refused where it is decoded, and not delivered to when it is sent to. It says nothing of what the actor handles: any actor can be sent any mail, and the reference typed by its actor's type is `ActorRef<T>`, below. Making one is the check that the id is in the table, and wherever a reference is read at a boundary the reader makes that check again. So a reference is eight bytes in mail and in an actor's state, and bytes that name no actor are refused.
 - A reference gives up its path by a read of the table, since the id alone does not say where the actor stands.
+
+**An actor holds an `ActorRef<T>`: a reference typed by its actor's type.**
+
+```rust
+pub struct ActorRef<T> { .. }
+```
+
+- Only the engine makes one, when it makes the actor: a spawn of a `T` answers with an `ActorRef<T>`. Its type is therefore proven for as long as it exists, and a send through it is not checked against the receiver's declaration (ADR-0013).
+- It crosses what an `ErasedActorRef` crosses, the same way: between actors in one engine, and into an actor's own state, never between engines. In a kind, the field's type is the reference's type.
+- It erases to an `ErasedActorRef`. The erased reference is for the few places that cannot name the type: the sender of mail, an ending, a resolve, and an actor's reference to itself. A send through one is checked against the declaration.
+- A codec written by hand could put any id where a reference is read. Nothing stops it, since stopping it would cost every reference read: kinds that carry a reference derive their codecs.
 
 ## Consequences
 
@@ -115,7 +126,7 @@ pub struct ActorId(u64);
 - An id does not say where its actor stands. A reader gets the path from the engine's table, or from the spawns in a record that began with the engine. Whether a reader outside the engine may ask for an id's path is not decided.
 - A reference made up from the id of a known path passes the check. It reaches nothing a resolve of that path would not, since any actor may ask the engine to resolve a path it knows.
 - Two paths are taken to have two ids. By accident they do: a million paths share an id with odds of about one in forty million. On purpose they need not, since FNV-1a can be run backwards and a parent picks its children's keys. **When an actor is made under an id the table already holds, the engine stops.** It panics as the step's effects are folded. Nothing reasonable follows a collision: the path can never be spawned at, and a refusal would give every spawn a way to fail that is handled nowhere else and never taken. A parent refuses a key it has itself used before the spawn is asked for, so what reaches the fold is two paths with one id, or a fault in the engine. Until ids are keyed, a guest that picks a colliding key stops its engine. The remedy is an id keyed with a secret the engine holds, which is possible because only the engine computes an id.
-- Typed references and typed paths, which say at build time what mail the actor on the other end handles, stand on these types and are a later ADR.
+- A reference typed by a protocol rather than an actor's type, and typed paths, which say at build time what mail the actor on the other end handles, stand on these types and are a later ADR.
 
 ## Alternatives considered
 

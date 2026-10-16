@@ -7,9 +7,9 @@ mod tests;
 pub use refused::Refused;
 
 use crate::{
-    Actor, Actors, ActorsWriter, Allows, Arena, Code, Declared, Effect, ErasedActorRef, Handled, Handles, Kinds, Level,
-    MailId, Marker, Role, Runs, SeatNumber, Seated, Seats, Sends, Table, Target, To, ToAny, ToSender, ToType,
-    ToWithoutMail, What,
+    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Code, Declared, Effect, ErasedActorRef, Handled, Handles,
+    Kinds, Level, MailId, Marker, Role, Runs, SeatNumber, Seated, Seats, Sends, Table, Target, To, ToAny, ToSender,
+    ToType, ToWithoutMail, What,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
@@ -273,6 +273,13 @@ impl Seat<'_> {
             return Ok(());
         };
         self.check(to, target, KindId::of::<K>());
+
+        self.write(to, mail)
+    }
+
+    /// Encodes `mail` and adds the effect that sends it to the actor `to`, which this actor reaches as it is: one a
+    /// typed reference proves, or the sender.
+    fn write<K: Kind + Encode<Actors>>(&mut self, to: Seated, mail: &K) -> Result<(), EncodeError> {
         let bytes = self.asked.arena.write(|bytes| {
             let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::new());
             let written = mail.encode(&mut out);
@@ -367,7 +374,7 @@ impl Seat<'_> {
     /// A key is free when no actor has been made at the child's path and this turn has stood none up there. An
     /// id the table holds under another path is not refused: that is two paths with one id, and the engine
     /// stops when it folds the spawn (ADR-0008).
-    fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ErasedActorRef, Refused> {
+    fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused> {
         let segment = PathSegment::new(C::NAME, key);
         let path = self.path.child(&segment).map_err(|PathTooDeep| Refused::TooDeep)?;
         let id = self.table.child(self.me.id, &segment);
@@ -397,7 +404,7 @@ impl Seat<'_> {
                 self.asked.stood_seats.insert(id.bits(), (seat, declared));
                 self.asked.stood.push(Stood { me, path, above, actor: Box::new(actor) });
 
-                Ok(ErasedActorRef::new(me))
+                Ok(ActorRef::new(me))
             }
             Err(fault) => {
                 // The child and every child it stood up never began, so their seats are given back.
@@ -418,8 +425,16 @@ impl Seat<'_> {
 /// (ADR-0013).
 pub struct Address<'t, 'a, T, S> {
     seat: &'t mut Seat<'a>,
-    to: To,
+    to: Receiver,
     declared: PhantomData<fn() -> (T, S)>,
+}
+
+/// Who an [`Address`] sends to.
+enum Receiver {
+    /// The actor a [`To`] names, whose type is checked when it is sent to.
+    Named(To),
+    /// The actor a typed reference refers to, whose type the reference proves.
+    Proven(Seated),
 }
 
 impl<T: Actor, S> Address<'_, '_, T, S> {
@@ -429,14 +444,17 @@ impl<T: Actor, S> Address<'_, '_, T, S> {
     ///
     /// # Panics
     ///
-    /// Panics when the actor named is not of type `T` (ADR-0013).
+    /// Panics when the actor a [`To`] named is not of type `T` (ADR-0013). An actor a typed reference refers to is.
     pub fn send<K, I>(self, mail: &K) -> Result<(), EncodeError>
     where
         K: Kind + Encode<Actors> + Handled,
         T: Handles<K>,
         S: Allows<ToType<T, K>, I>,
     {
-        self.seat.send(&self.to, <ToType<T, K> as Marker>::SENDING.to(), mail)
+        match &self.to {
+            Receiver::Named(to) => self.seat.send(to, <ToType<T, K> as Marker>::SENDING.to(), mail),
+            Receiver::Proven(to) => self.seat.write(*to, mail),
+        }
     }
 }
 
@@ -538,8 +556,8 @@ impl<'a, S> Turn<'a, S> {
     /// # Panics
     ///
     /// Panics when this actor's type does not handle [`Ended`](crate::Ended) (ADR-0013).
-    pub fn watch(&mut self, of: ErasedActorRef) {
-        self.seat.watch(of);
+    pub fn watch(&mut self, of: impl Into<ErasedActorRef>) {
+        self.seat.watch(of.into());
     }
 
     /// Where mail to the actor `to` names goes, when it is of type `T`.
@@ -549,7 +567,12 @@ impl<'a, S> Turn<'a, S> {
             named => named,
         };
 
-        Address { seat: &mut self.seat, to, declared: PhantomData }
+        Address { seat: &mut self.seat, to: Receiver::Named(to), declared: PhantomData }
+    }
+
+    /// Where mail to the actor `reference` refers to goes. Its type is proven, so nothing is checked when it is sent.
+    pub fn to_actor<T: Actor>(&mut self, reference: ActorRef<T>) -> Address<'_, 'a, T, S> {
+        Address { seat: &mut self.seat, to: Receiver::Proven(reference.seated()), declared: PhantomData }
     }
 
     /// Where mail to the actor `to` names goes, when its type lists every kind of `P`.
@@ -569,15 +592,13 @@ impl<'a, S> Turn<'a, S> {
     where
         S: Allows<ToSender<K>, I>,
     {
-        let to = To::Held(ErasedActorRef::new(self.source));
-
-        self.seat.send(&to, Target::Sender, mail)
+        self.seat.write(self.source, mail)
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
     ///
     /// The child takes its own mail. It is live once the engine applies this turn's effects.
-    pub fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ErasedActorRef, Refused> {
+    pub fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused> {
         self.seat.spawn::<C>(key, config)
     }
 
@@ -648,7 +669,12 @@ impl<'a, S> Beginning<'a, S> {
     /// Where mail to the actor `to` names goes, when it is of type `T`. It goes out with the mail of the turn this
     /// `begin` runs in.
     pub fn to<T: Actor>(&mut self, to: ToWithoutMail) -> Address<'_, 'a, T, S> {
-        Address { seat: &mut self.seat, to: to.into(), declared: PhantomData }
+        Address { seat: &mut self.seat, to: Receiver::Named(to.into()), declared: PhantomData }
+    }
+
+    /// Where mail to the actor `reference` refers to goes. Its type is proven, so nothing is checked when it is sent.
+    pub fn to_actor<T: Actor>(&mut self, reference: ActorRef<T>) -> Address<'_, 'a, T, S> {
+        Address { seat: &mut self.seat, to: Receiver::Proven(reference.seated()), declared: PhantomData }
     }
 
     /// Where mail to the actor `to` names goes, when its type lists every kind of `P`.
@@ -657,7 +683,7 @@ impl<'a, S> Beginning<'a, S> {
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
-    pub fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ErasedActorRef, Refused> {
+    pub fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused> {
         self.seat.spawn::<C>(key, config)
     }
 
@@ -666,8 +692,8 @@ impl<'a, S> Beginning<'a, S> {
     /// # Panics
     ///
     /// Panics when this actor's type does not handle [`Ended`](crate::Ended) (ADR-0013).
-    pub fn watch(&mut self, of: ErasedActorRef) {
-        self.seat.watch(of);
+    pub fn watch(&mut self, of: impl Into<ErasedActorRef>) {
+        self.seat.watch(of.into());
     }
 
     /// Logs `text` at `level`. The line is kept when this turn fails.
@@ -754,7 +780,13 @@ impl<'a, S> Ending<'a, S> {
 
     /// Where mail to the actor `to` names goes, when it is of type `T`: the actor's last mail.
     pub fn to<T: Actor>(&mut self, to: ToWithoutMail) -> Address<'_, 'a, T, S> {
-        Address { seat: &mut self.seat, to: to.into(), declared: PhantomData }
+        Address { seat: &mut self.seat, to: Receiver::Named(to.into()), declared: PhantomData }
+    }
+
+    /// Where mail to the actor `reference` refers to goes: the actor's last mail. Its type is proven, so nothing is
+    /// checked when it is sent.
+    pub fn to_actor<T: Actor>(&mut self, reference: ActorRef<T>) -> Address<'_, 'a, T, S> {
+        Address { seat: &mut self.seat, to: Receiver::Proven(reference.seated()), declared: PhantomData }
     }
 
     /// Where mail to the actor `to` names goes, when its type lists every kind of `P`.
