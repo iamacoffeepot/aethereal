@@ -502,7 +502,7 @@ fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
     engine.step(&clock);
     said();
 
-    let workers = Workers { active: 2, max: 2, wake_nanos: 0 };
+    let workers = Workers { active: 2, max: 2, wake_nanos: 0, split: SplitCost::NONE };
     let Split::Shares(shares) = engine.plan(workers).into_split() else {
         panic!("two workers share the step");
     };
@@ -538,7 +538,7 @@ fn children_seated_in_a_part_another_worker_ran_are_kept() {
     engine.step(&clock);
     said();
 
-    let workers = Workers { active: 2, max: 2, wake_nanos: 0 };
+    let workers = Workers { active: 2, max: 2, wake_nanos: 0, split: SplitCost::NONE };
     let Split::Shares(shares) = engine.plan(workers).into_split() else {
         panic!("two workers share the step");
     };

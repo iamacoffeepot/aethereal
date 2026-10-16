@@ -5,6 +5,7 @@ mod costs;
 mod fold;
 mod fuse;
 mod plan;
+mod rehearsal;
 mod since;
 #[cfg(test)]
 mod tests;
@@ -12,7 +13,7 @@ mod tests;
 pub use costs::Tally;
 pub use fold::{Fold, Folding};
 pub use fuse::Hops;
-pub use plan::{Plan, Share, Split, Whole, Workers};
+pub use plan::{Plan, Share, Split, SplitCost, Whole, Workers};
 
 use crate::id::root_id;
 use crate::stream::{self, Handed, Streams};
@@ -480,7 +481,7 @@ impl Engine {
             self.give_room(self.packing.parts[index].0);
         }
         let work = self.packing.parts.iter().map(|(_, cost)| cost).sum();
-        let (delta, running) = plan::plan(&self.packing.parts, self.recent, workers);
+        let (delta, running, expected_nanos) = plan::plan(&self.packing.parts, self.recent, workers);
         self.recent = toward(self.recent, work);
         let running = running.max(1);
 
@@ -494,7 +495,7 @@ impl Engine {
         if running == 1 {
             let (arena, lists) = self.writer(parity, 0, share);
 
-            return Plan { delta, split: Split::Whole(Whole { arena, lists }) };
+            return Plan { delta, split: Split::Whole(Whole { arena, lists }), expected_nanos };
         }
 
         self.packing.pack(running);
@@ -509,7 +510,7 @@ impl Engine {
             shares.push(Share { parcels, arena, lists });
         }
 
-        Plan { delta, split: Split::Shares(shares) }
+        Plan { delta, split: Split::Shares(shares), expected_nanos }
     }
 
     /// The arena and lists of the writer in place `place`, for steps of `parity`, its arena given `share` bytes:
