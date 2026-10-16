@@ -199,8 +199,8 @@ impl Consumes for Streams {
         let by = effect.seated();
         let record = match effect.into_what() {
             What::Send { to, count, kind, bytes } => {
-                let (cause, root, depth) = (context.cause, context.root, context.depth);
-                let envelope = Envelope { sender_seat: by.seat, cause, root, depth, kind, bytes };
+                let (root, depth) = (context.root, context.depth);
+                let envelope = Envelope { sender_seat: by.seat, root, depth, kind, bytes };
                 let entry = Entry { to: to.id.bits(), order: (by.id.bits(), count), item: Stored::Mail(envelope) };
 
                 Some((to.seat.number(), entry))

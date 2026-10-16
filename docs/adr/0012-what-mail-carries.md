@@ -24,11 +24,10 @@ pub struct MailId {
 - Two runs of the same turns give every piece of mail the same id, whichever worker ran which turn.
 - The id is the fixed order ADR-0011 asks for: mail that reaches an actor in one step is ordered by its id.
 
-**A piece of mail carries its cause and its root.** The engine carries mail as an `Envelope`. A handler sees ADR-0009's `Mail`, which is the envelope's kind, sender, and bytes to read.
+**A piece of mail carries its root and its depth, and not its cause.** The engine carries mail as an `Envelope`. A handler sees ADR-0009's `Mail`, which is the envelope's kind, sender, and bytes to read.
 
 ```rust
 pub struct Envelope {
-    pub cause: Option<MailId>,   // none for mail from outside the engine, or from a root's `begin`
     pub root: MailId,
     pub depth: u32,              // how far down its chain: one more than its cause's
     pub kind: KindId,
@@ -38,12 +37,12 @@ pub struct Envelope {
 
 The engine keeps a piece of mail under the actor it is for, with its id beside it, so the envelope does not copy either.
 
-- **The cause** is the mail whose turn sent this one.
+- **The cause** is the mail whose turn sent this one. Nothing reads it from mail, so mail does not carry it: it is what a record of the run says, where one is kept. Carried on every piece of mail it was twenty-four bytes that were copied with the mail and never read.
 - **The root** is the first mail of the chain. Mail sent while a piece of mail is handled takes that mail's root. Mail with no cause is its own root.
 - A chain is every piece of mail with one root.
 - **The depth** is how far down its chain a piece of mail is. Mail sent while a piece of mail is handled is one deeper than it. Mail with no cause is at depth zero, and the mail a root's `begin` sends is at depth one.
 
-**A turn's effects are emitted in a context.** The context is the item the turn handled: its cause, and its root. Every effect of one turn shares it, and the engine folds each effect into the views with it (ADR-0011). A piece of mail's id is the actor of its `Send` and the count the `Send` carries, since the turn counts what its actor sends. The engine keeps each actor's count from one step to the next. The worker that ran an actor's turns records it once, when they are done for the step, and not once for each send, and a child that sends from its `begin` has its count recorded in the turn that stood it up: measured with one turn sending 1,000,000 pieces, a record for each send made a piece about 5 percent dearer. The rest of the envelope, its cause and its root, comes from the context, and who it is for comes from the `Send`'s target, with `To::Sender` already put in place by the turn.
+**A turn's effects are emitted in a context.** The context is the chain of the item the turn handled: its root, and the depth the turn sends at. Every effect of one turn shares it, and the engine folds each effect into the views with it (ADR-0011). A piece of mail's id is the actor of its `Send` and the count the `Send` carries, since the turn counts what its actor sends. The engine keeps each actor's count from one step to the next. The worker that ran an actor's turns records it once, when they are done for the step, and not once for each send, and a child that sends from its `begin` has its count recorded in the turn that stood it up: measured with one turn sending 1,000,000 pieces, a record for each send made a piece about 5 percent dearer. The rest of the envelope, its root and its depth, comes from the context, and who it is for comes from the `Send`'s target, with `To::Sender` already put in place by the turn.
 
 **A chain begins where something from outside the engine comes in.** What a resource brings in reaches its owner as mail from its owner (ADR-0010). That mail has no cause, and it is the root of whatever follows from it.
 
@@ -68,13 +67,13 @@ The engine keeps a piece of mail under the actor it is for, with its id beside i
 ## Consequences
 
 - Whether a chain has finished is counted by root: mail sent, less mail handled (ADR-0011).
-- What happened can be followed back from any piece of mail by its causes, to the resource that began it.
-- Every piece of mail carries three ids, of sixteen bytes each, and its depth.
+- What happened is followed back by causes in a record of the run, to the resource that began it. A piece of mail alone names only its chain's root.
+- Every piece of mail carries two ids, of sixteen bytes each, its own and its root's, and its depth.
 - Every chain but a root's first begins at a resource, so the engine can say for any piece of mail what from outside set it off.
-- **Not decided here:** how a request and its answer are written over mail; how a `begin` and a closing turn, which handle no mail, read the chain and depth they send at; the chain of an ending that nothing inside the engine brought about, such as the host shutting down; large payloads; and whether the cause is kept on every piece of mail or only in the record of a run.
+- **Not decided here:** how a request and its answer are written over mail; how a `begin` and a closing turn, which handle no mail, read the chain and depth they send at; the chain of an ending that nothing inside the engine brought about, such as the host shutting down; large payloads; and how a record of the run keeps causes.
 
 ## Alternatives considered
 
 - **An id from one count the engine keeps.** One number, eight bytes. Every send by every worker takes from the same count, and which mail gets which id then depends on scheduling.
-- **The root alone, with no cause.** Sixteen bytes less on each piece of mail. The order within a chain is then read from the record of a run and not from the mail.
+- **The cause on every piece of mail.** What happened could then be followed back from any piece of mail. Nothing followed it, and measured on the Savina programs the twenty-four bytes it added to every piece of mail made a piece up to a quarter dearer, in the copying and sorting of what a step hands out.
 - **No chain on mail, and chains tracked beside it.** Mail stays small. A second structure then has to be kept in step with every send, which is what a view over effects replaces.

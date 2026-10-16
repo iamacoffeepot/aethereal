@@ -8,7 +8,7 @@ use aethereal_data::{KeyName, KindName, PathSegment};
 
 /// The context the effects of these tests were emitted in, which the table does not read.
 fn context() -> Context {
-    Context { cause: None, root: MailId { sender: ActorId::new(1), count: 0 }, depth: 1 }
+    Context { root: MailId { sender: ActorId::new(1), count: 0 }, depth: 1 }
 }
 
 const WINDOW: KindName = KindName::new("aether.window");

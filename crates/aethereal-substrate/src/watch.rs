@@ -141,7 +141,7 @@ mod tests {
     fn watch_and_ending_of_one_step_pair_in_either_order() {
         // Catches a pairing made record by record, where an ending folded before a watch of the same step leaves
         // that watcher shown `Earlier`, and an ending kept from one step that shows a later watch how it went.
-        let context = Context { cause: None, root: MailId { sender: ActorId::new(7), count: 0 }, depth: 1 };
+        let context = Context { root: MailId { sender: ActorId::new(7), count: 0 }, depth: 1 };
         let mut shard = Shard::default();
         let seven = SeatNumber::new(70);
         Watches::fold(&mut shard, 7, Record::Ended { seat: seven, how: How::Closed, context });

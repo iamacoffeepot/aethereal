@@ -467,7 +467,7 @@ fn item_placed_under_a_seat_reaches_only_the_actor_it_was_placed_for() {
     // has left the seat or never sat in it.
     let (mut engine, root) = engine(&[]);
     let seat = engine.table.seat(root).map_or(u64::MAX, SeatNumber::number);
-    let context = Context { cause: None, root: MailId { sender: root, count: 0 }, depth: 1 };
+    let context = Context { root: MailId { sender: root, count: 0 }, depth: 1 };
     let place = |engine: &mut Engine, to: ActorId| {
         let ended = Ended::new(Seated { id: node(root, 2), seat: SeatNumber::new(7) }, How::Closed);
         let to = Seated { id: to, seat: SeatNumber::new(seat) };
