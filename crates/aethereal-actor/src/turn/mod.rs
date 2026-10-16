@@ -292,6 +292,10 @@ impl Seat<'_> {
     ///
     /// Panics when the receiver's type is not the one `target` names, or does not list the kinds it names.
     fn check(&self, to: Seated, target: Target, kind: KindId) {
+        // A reply reaches its receiver by how it was made, so nothing is looked up for it.
+        if target == Target::Sender {
+            return;
+        }
         let receiver = self.declared_at(to.id);
         let reaches = match (target, receiver) {
             (Target::Sender, _) => true,
