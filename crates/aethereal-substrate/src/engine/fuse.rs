@@ -23,6 +23,75 @@ pub(super) struct Fusing {
     pub(super) stood: ByActor<(ActorPath, SeatNumber, &'static Declared)>,
     /// The spawns and endings of the part's run.
     pub(super) run: Run,
+    /// How the sends of the parts it ran fared, since the engine last took them in.
+    pub(super) hops: Hops,
+}
+
+/// How the sends made while a part could still fuse fared: how many were fused, and, for each other, the rule that
+/// sent it out as mail (ADR-0013). Sends made once a part's budget is spent are not counted, nor any when the engine
+/// fuses nothing.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hops {
+    /// Sends fused.
+    pub fused: u64,
+    /// First sends of a turn made while a hop was waiting: a part runs one run in a step.
+    pub waiting: u64,
+    /// First sends by an actor that had sent mail as mail to an actor in its part in the step.
+    pub spilled: u64,
+    /// First sends to a child stood up in the step, which is seated when the step is applied.
+    pub unseated: u64,
+    /// First sends to an actor in another part, or to one that is gone.
+    pub elsewhere: u64,
+    /// First sends to an actor that has ended.
+    pub ended: u64,
+    /// Sends after the first of their turn: a turn fuses at most one.
+    pub burst: u64,
+    /// Sends of closing turns, which never fuse.
+    pub closing: u64,
+}
+
+impl Hops {
+    /// Adds `other` to these.
+    pub(super) fn add(&mut self, other: Self) {
+        self.fused += other.fused;
+        self.waiting += other.waiting;
+        self.spilled += other.spilled;
+        self.unseated += other.unseated;
+        self.elsewhere += other.elsewhere;
+        self.ended += other.ended;
+        self.burst += other.burst;
+        self.closing += other.closing;
+    }
+
+    /// Counts a first send that `hand` handled.
+    pub(super) fn count(&mut self, hand: Hand) {
+        let counter = match hand {
+            Hand::Fuse => &mut self.fused,
+            Hand::Waiting => &mut self.waiting,
+            Hand::Spilled => &mut self.spilled,
+            Hand::Unseated => &mut self.unseated,
+            Hand::Elsewhere => &mut self.elsewhere,
+            Hand::Ended => &mut self.ended,
+        };
+        *counter += 1;
+    }
+}
+
+/// What becomes of a turn's first send while its part may still fuse (ADR-0013).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Hand {
+    /// It is fused.
+    Fuse,
+    /// It goes out as mail: a hop is waiting.
+    Waiting,
+    /// It goes out as mail: its sender has sent mail as mail to an actor in its part in the step.
+    Spilled,
+    /// It goes out as mail: its receiver was stood up in the step and has no seat yet.
+    Unseated,
+    /// It goes out as mail: its receiver sits in another part, or is gone.
+    Elsewhere,
+    /// It goes out as mail, to be dropped: its receiver has ended.
+    Ended,
 }
 
 /// One piece of mail handed straight to its receiver, in the same part, to run in the same step (ADR-0013).
