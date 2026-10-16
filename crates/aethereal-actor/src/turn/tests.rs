@@ -30,6 +30,10 @@ impl Table for Listed {
         self.0.iter().any(|(made, _)| made.id == id)
     }
 
+    fn held(&self, id: ActorId) -> bool {
+        self.is_live(id)
+    }
+
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber> {
         self.seat(id)
     }

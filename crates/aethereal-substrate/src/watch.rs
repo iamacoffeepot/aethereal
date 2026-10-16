@@ -1,11 +1,11 @@
-//! The view of who watches each actor, and which actors have ended (ADR-0009, ADR-0011).
+//! The view of who watches each actor whose ending is still to come (ADR-0009, ADR-0011).
 
 use crate::{ByActor, Context, View};
-use aethereal_actor::{Effect, Ended, How, SeatNumber, Seated, What};
+use aethereal_actor::{Effect, Ended, How, SeatNumber, Seated, Seen, What};
 use aethereal_data::ActorId;
 use std::collections::BTreeMap;
 
-/// The view of who watches each actor, and which actors have ended: what pairs a watch with an ending (ADR-0009).
+/// The view of who watches each actor whose ending is still to come: what pairs a watch with an ending (ADR-0009).
 ///
 /// It reads no other view. A watch and an ending are kept under the actor
 /// watched, so the two meet in one part, and are paired once the step's
@@ -13,42 +13,30 @@ use std::collections::BTreeMap;
 /// watches the one that ended, a watch asked for in the same step among them,
 /// and a watch of an actor that ended before the step is shown that it did.
 /// What is paired is handed on to the streams, as a [`Notice`] for the watcher.
+///
+/// It keeps nothing of an actor once it has ended (ADR-0008). A watch says how
+/// the turn that asked for it saw the actor, so a watch of one that ended
+/// before the step needs nothing kept to be answered.
 pub struct Watches;
 
 /// One part of the view.
 #[derive(Default)]
 pub struct Shard {
-    /// Who watches each actor, and whether it has ended, by the actor watched.
-    watched: ByActor<Watched>,
-    /// The watches asked for in this step, by the actor watched: that actor's seat, who asked, and in what context.
-    watches: Vec<(u64, SeatNumber, Seated, Context)>,
+    /// Who watches each actor whose ending is still to come, by the actor watched: the watchers' seats, by their
+    /// ids' bits.
+    watched: ByActor<BTreeMap<u64, SeatNumber>>,
+    /// The watches asked for in this step, by the actor watched: that actor's seat, who asked, in what context, and
+    /// how the asking turn saw it.
+    watches: Vec<(u64, SeatNumber, Seated, Context, Seen)>,
     /// The endings of this step: who ended, how, and in what context.
     endings: Vec<(Seated, How, Context)>,
 }
 
-/// One watched actor's entry.
-#[derive(Default)]
-struct Watched {
-    /// The actors that watch it: their seats, by their ids' bits.
-    by: BTreeMap<u64, SeatNumber>,
-    /// Whether its life is over.
-    life: Watching,
-}
-
-/// Whether a watched actor's life is over.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-enum Watching {
-    /// Its closing turn has not run.
-    #[default]
-    Running,
-    /// Its closing turn has run.
-    Over,
-}
-
 /// What the view keeps of an effect, under the actor watched.
 pub enum Record {
-    /// The actor `by` names watches the key's actor, which sits in `seat`, as asked in this context.
-    Watch { seat: SeatNumber, by: Seated, context: Context },
+    /// The actor `by` names watches the key's actor, which sits in `seat`, as asked in this context, seeing it as
+    /// `seen`.
+    Watch { seat: SeatNumber, by: Seated, context: Context, seen: Seen },
     /// The key's actor, which sits in `seat`, has had its closing turn run: it ended this way, in this context.
     Ended { seat: SeatNumber, how: How, context: Context },
 }
@@ -67,28 +55,39 @@ impl Shard {
     /// Pairs the step's watches and endings, each under the actor watched, and adds to `forward` an ending for each
     /// watcher.
     pub fn settle(&mut self, forward: &mut Vec<Notice>) {
-        // A watch of an actor that ended before this step is shown so, with how it ended no longer kept.
-        for (watched, seat, by, context) in self.watches.drain(..) {
-            let entry = self.watched.entry(watched).or_default();
-            let is_over = entry.life == Watching::Over;
-            if is_over {
+        // A watch is kept while its actor's ending is still to come: the actor was live to the turn that asked, it
+        // is watched already, or it ends in this step. A watch of one that ended before the step is shown so at
+        // once, with how it ended no longer kept.
+        for (watched, seat, by, context, seen) in self.watches.drain(..) {
+            let is_watched = self.watched.contains_key(&watched);
+            let was_live = seen == Seen::Live;
+            let is_kept = is_watched || was_live || ends_among(&self.endings, watched);
+            if is_kept {
+                self.watched.entry(watched).or_default().insert(by.id.bits(), by.seat);
+            } else {
                 let ended = Ended::new(Seated { id: ActorId::new(watched), seat }, How::Earlier);
                 forward.push(Notice { to: by, ended, context });
             }
-            entry.by.insert(by.id.bits(), by.seat);
         }
 
-        // An ending of this step goes to every watcher, those whose watch came in this step among them.
+        // An ending of this step goes to every watcher, those whose watch came in this step among them, and then
+        // nothing of the actor is kept.
         for (ended, how, context) in self.endings.drain(..) {
-            let entry = self.watched.entry(ended.id.bits()).or_default();
-            entry.life = Watching::Over;
-            forward.extend(entry.by.iter().map(|(watcher, seat)| {
-                let to = Seated { id: ActorId::new(*watcher), seat: *seat };
+            let Some(watching) = self.watched.remove(&ended.id.bits()) else {
+                continue;
+            };
+            forward.extend(watching.into_iter().map(|(watcher, seat)| {
+                let to = Seated { id: ActorId::new(watcher), seat };
 
                 Notice { to, ended: Ended::new(ended, how.clone()), context }
             }));
         }
     }
+}
+
+/// Whether the actor `watched` stands for is among `endings`, the step's.
+fn ends_among(endings: &[(Seated, How, Context)], watched: u64) -> bool {
+    endings.iter().any(|(ended, _, _)| ended.id.bits() == watched)
 }
 
 impl View for Watches {
@@ -98,7 +97,11 @@ impl View for Watches {
     fn takes<'a>(effect: &'a Effect, context: &'a Context) -> impl Iterator<Item = (u64, Record)> + 'a {
         let by = effect.seated();
         let record = match effect.what() {
-            What::Watch { of } => Some((of.id().bits(), Record::Watch { seat: of.seat(), by, context: *context })),
+            What::Watch { of, seen } => {
+                let record = Record::Watch { seat: of.seat(), by, context: *context, seen: *seen };
+
+                Some((of.id().bits(), record))
+            }
             What::Ended(how) => {
                 Some((by.id.bits(), Record::Ended { seat: by.seat, how: how.clone(), context: *context }))
             }
@@ -111,7 +114,7 @@ impl View for Watches {
     /// Watches and endings wait for the step to settle.
     fn fold(shard: &mut Shard, key: u64, record: Record) {
         match record {
-            Record::Watch { seat, by, context } => shard.watches.push((key, seat, by, context)),
+            Record::Watch { seat, by, context, seen } => shard.watches.push((key, seat, by, context, seen)),
             Record::Ended { seat, how, context } => {
                 shard.endings.push((Seated { id: ActorId::new(key), seat }, how, context));
             }
@@ -145,14 +148,36 @@ mod tests {
         let mut shard = Shard::default();
         let seven = SeatNumber::new(70);
         Watches::fold(&mut shard, 7, Record::Ended { seat: seven, how: How::Closed, context });
-        Watches::fold(&mut shard, 7, Record::Watch { seat: seven, by: seated(9, 90), context });
+        let watch = Record::Watch { seat: seven, by: seated(9, 90), context, seen: Seen::Ended };
+        Watches::fold(&mut shard, 7, watch);
         let mut forward = Vec::new();
         shard.settle(&mut forward);
         assert_eq!(handed_on(forward), [(90, 9, How::Closed)]);
 
-        Watches::fold(&mut shard, 7, Record::Watch { seat: seven, by: seated(11, 110), context });
+        let watch = Record::Watch { seat: seven, by: seated(11, 110), context, seen: Seen::Ended };
+        Watches::fold(&mut shard, 7, watch);
         let mut forward = Vec::new();
         shard.settle(&mut forward);
         assert_eq!(handed_on(forward), [(110, 11, How::Earlier)]);
+    }
+
+    #[test]
+    fn nothing_is_kept_of_an_actor_once_its_watchers_are_shown_its_ending() {
+        // Catches an ended actor's entry left behind, which grows the view by every actor that ever ended, and an
+        // ending kept for an actor no one watched.
+        let context = Context { root: MailId { sender: ActorId::new(7), count: 0 }, depth: 1 };
+        let mut shard = Shard::default();
+        let seven = SeatNumber::new(70);
+        let watch = Record::Watch { seat: seven, by: seated(9, 90), context, seen: Seen::Live };
+        Watches::fold(&mut shard, 7, watch);
+        Watches::fold(&mut shard, 8, Record::Ended { seat: SeatNumber::new(80), how: How::Closed, context });
+        shard.settle(&mut Vec::new());
+        assert_eq!(shard.watched.len(), 1);
+
+        Watches::fold(&mut shard, 7, Record::Ended { seat: seven, how: How::Closed, context });
+        let mut forward = Vec::new();
+        shard.settle(&mut forward);
+        assert_eq!(handed_on(forward), [(90, 9, How::Closed)]);
+        assert!(shard.watched.is_empty());
     }
 }

@@ -36,6 +36,10 @@ impl Table for Typed {
         self.seat(id).is_some()
     }
 
+    fn held(&self, id: ActorId) -> bool {
+        self.is_live(id)
+    }
+
     fn child_seat(&self, _: ActorId) -> Option<SeatNumber> {
         None
     }

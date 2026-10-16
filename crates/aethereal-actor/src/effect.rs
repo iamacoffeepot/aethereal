@@ -80,8 +80,9 @@ pub enum What {
     /// The asking actor's closing turn has run, and its life is over: this is how it ended. Written by the engine,
     /// with the closing turn's effects, so it comes after the actor's last mail.
     Ended(How),
-    /// The asking actor is shown the ending of `of`, once, when that actor ends.
-    Watch { of: ErasedActorRef },
+    /// The asking actor is shown the ending of `of`, once, when that actor ends. `seen` is how the asking turn saw
+    /// `of`, so the engine keeps nothing of an actor once it has ended (ADR-0008).
+    Watch { of: ErasedActorRef, seen: Seen },
     /// The asking actor closes.
     Close,
     /// The asking actor logs `text`. It is kept when the turn that asked for it fails.
@@ -89,6 +90,16 @@ pub enum What {
 }
 
 /// How much a logged line matters (ADR-0009).
+/// How a turn that watches an actor saw it: live as the turn's step began, or stood up earlier in the step, or
+/// already ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seen {
+    /// Live: its ending is still to come.
+    Live,
+    /// Ended: its closing turn runs in this step, or has run in one before.
+    Ended,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     Debug,
