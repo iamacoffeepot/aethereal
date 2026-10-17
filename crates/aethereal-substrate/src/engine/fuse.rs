@@ -1,7 +1,7 @@
 //! Chains of mail run within a step: what one part keeps while it fuses (ADR-0013).
 
 use crate::ByActor;
-use aethereal_actor::{Declared, MailId, SeatNumber, Seated};
+use aethereal_actor::{Declared, MailId, Payload, SeatNumber, Seated};
 use aethereal_data::{ActorId, ActorPath, KindId};
 use std::collections::VecDeque;
 
@@ -117,6 +117,9 @@ pub(super) struct Hop {
     /// Where its bytes start in the part's bytes waiting, and how many there are.
     pub(super) at: usize,
     pub(super) len: usize,
+    /// Where its bytes are in the arena of the worker running the part, which holds the pins of the blobs they refer
+    /// to until the step is over: a hop carried into the next step pins them for itself (ADR-0014).
+    pub(super) sent: Payload,
 }
 
 /// What one actor has done in a step, in its part (ADR-0013).

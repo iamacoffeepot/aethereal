@@ -118,13 +118,13 @@ impl Puts {
 }
 
 #[cfg(feature = "std")]
-pub use pinned::{BlobRef, pins};
+pub use pinned::{BlobRef, Held, pins, within};
 
 #[cfg(feature = "std")]
 mod pinned {
     use super::{BlobId, Puts};
     use crate::Refused;
-    use crate::Within;
+    use crate::{Actors, Within};
     use aethereal_data::{Decode, DecodeError, Encode, EncodeError, Field, Reader, Schema, Shape, Writer};
     use alloc::vec::Vec;
 
@@ -180,6 +180,40 @@ mod pinned {
 
             Ok(Self::pin(id))
         }
+    }
+
+    /// A reference in mail is its blob's id in bytes, and the mail holds a pin of its own while it is in flight:
+    /// the writer keeps it, at where the reference's bytes begin, beside the bytes it writes (ADR-0014). The receiver
+    /// that reads it back takes a pin of its own, and the mail's goes with the mail.
+    impl Encode<Actors> for BlobRef {
+        fn encode(&self, out: &mut Writer<'_, Actors>) -> Result<(), EncodeError> {
+            let at = u32::try_from(out.bytes().len()).unwrap_or(u32::MAX);
+            out.offers().hold(at, self.clone());
+            self.id.engine().encode(out)?;
+            self.id.bits().encode(out)
+        }
+    }
+
+    impl Decode<Actors> for BlobRef {
+        fn decode(input: &mut Reader<'_, Actors>) -> Result<Self, DecodeError> {
+            let engine = u32::decode(input)?;
+            let id = BlobId::new(engine, u64::decode(input)?);
+
+            Ok(Self::pin(id))
+        }
+    }
+
+    /// A pin some bytes hold, and where in them the reference it is for begins.
+    pub type Held = (u32, BlobRef);
+
+    /// The pins among `held`, kept in the order of where they lie, that lie within the `len` bytes from `start`.
+    #[must_use]
+    pub fn within(held: &[Held], start: u32, len: u32) -> &[Held] {
+        let end = start.saturating_add(len);
+        let first = held.partition_point(|(at, _)| *at < start);
+        let past = held.partition_point(|(at, _)| *at < end);
+
+        &held[first..past]
     }
 
     impl Clone for BlobRef {

@@ -1098,7 +1098,13 @@ impl Reading<'_> {
             if lists.fusing.carries(hop.to.id) {
                 let Hop { to, from, count, root, depth, kind, .. } = hop;
                 let envelope = |bytes| Envelope { sender_seat: from.seat, root, depth, kind, bytes };
-                room.streams.carry_hop(to, (from.id.bits(), count), envelope, lists.fusing.bytes(&hop));
+                room.streams.carry_hop(
+                    to,
+                    (from.id.bits(), count),
+                    envelope,
+                    lists.fusing.bytes(&hop),
+                    (asked.arena(), hop.sent),
+                );
                 continue;
             }
             self.hop(&mut room, hop, clock, tally, asked, lists);
@@ -1388,6 +1394,7 @@ impl Reading<'_> {
                         run: chain,
                         at,
                         len,
+                        sent: first,
                     };
                     lists.fusing.wait(hop);
                     stepped.sent = stepped.sent.max(count);
