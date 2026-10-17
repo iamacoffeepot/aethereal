@@ -42,6 +42,26 @@ pub struct Shard {
     handed: Vec<(u64, Entry)>,
     /// The endings among the items handed out at the start of the step, which their entries number.
     handed_endings: Vec<(Ended, Context)>,
+    /// How many items the part has been handed in a step of late: the most in one step, falling by an eighth with
+    /// each step it is handed fewer, and forgotten once it has been idle [`IDLE_STEPS`] steps in a row. What the
+    /// part's lists keep room for once emptied follows from it.
+    recent: usize,
+    /// How many steps in a row the part has had nothing to run.
+    idle: u32,
+}
+
+/// How many steps in a row a part is idle before it gives back the room its lists keep for what it was handed.
+pub const IDLE_STEPS: u32 = 4;
+
+/// The fewest items a list of a part's stream keeps room for once it is emptied.
+const KEPT_LEAST: usize = 256;
+
+/// Empties nothing, and gives back what room `list`, an empty list, has past `room`.
+fn trim<T>(list: &mut Vec<T>, room: usize) {
+    let is_spare = list.is_empty() && list.capacity() > room;
+    if is_spare {
+        list.shrink_to(room);
+    }
 }
 
 /// Where an item stands in its stream: its source's bits, then the order that source caused it in.
@@ -89,10 +109,15 @@ impl Shard {
     /// actor. An ending shown twice, from two watches of an actor already over, is handed once. What was handed out
     /// at the last step is dropped here.
     pub fn hand(&mut self) -> impl Iterator<Item = (u64, u64, Range<usize>)> + '_ {
+        self.recent = self.arrived.len().max(self.recent - self.recent / 8);
+        self.idle = 0;
         self.handed.clear();
         self.handed_endings.clear();
         mem::swap(&mut self.arrived, &mut self.handed);
         mem::swap(&mut self.arrived_endings, &mut self.handed_endings);
+        // What was handed out at the last step is the list items now arrive in.
+        let room = self.room();
+        trim(&mut self.arrived, room);
         self.handed.sort_unstable_by_key(|(seat, entry)| (*seat, entry.to, entry.order));
         self.handed.dedup_by_key(|(seat, entry)| (*seat, entry.to, entry.order));
 
@@ -130,6 +155,30 @@ impl Shard {
         self.arrived_endings.push((ended, context));
         let item = Stored::Ended(self.arrived_endings.len() - 1);
         self.arrived.push((to.seat.number(), Entry { to: to.id.bits(), order, item }));
+    }
+
+    /// How many items an emptied list of the part keeps room for: twice what it has been handed in a step of late.
+    #[must_use]
+    pub fn room(&self) -> usize {
+        self.recent.saturating_mul(2).max(KEPT_LEAST)
+    }
+
+    /// Counts a step in which the part had nothing to run, and, once it has been idle [`IDLE_STEPS`] steps in a row,
+    /// gives back its lists' room past the least: what it was handed in the last step it ran is no longer read.
+    /// Answers whether it gave back room, for the engine to trim the buckets the writers keep for it as well.
+    pub fn rest(&mut self) -> bool {
+        self.idle = self.idle.saturating_add(1);
+        let forgets = self.idle == IDLE_STEPS;
+        if !forgets {
+            return false;
+        }
+        self.recent = 0;
+        self.handed.clear();
+        self.handed_endings.clear();
+        trim(&mut self.handed, KEPT_LEAST);
+        trim(&mut self.arrived, KEPT_LEAST);
+
+        true
     }
 
     /// Whether any item has arrived since the step began.
@@ -257,6 +306,7 @@ impl View for Streams {
         } else {
             shard.arrived.append(records);
         }
+        trim(records, shard.room());
     }
 }
 
@@ -276,5 +326,47 @@ impl Consumes for Streams {
         };
 
         record.into_iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A part handed `items` items in a step, all for one actor.
+    fn handed(items: u64) -> Shard {
+        let mut shard = Shard::default();
+        for count in 0..items {
+            shard.arrived.push((0, Entry { to: 1, order: (2, count), item: Stored::Ended(0) }));
+        }
+        let runs = shard.hand().count();
+        assert_eq!(runs, 1);
+
+        shard
+    }
+
+    #[test]
+    fn idle_part_gives_back_the_room_of_a_burst_and_a_busy_one_keeps_it() {
+        // Catches a part that keeps a burst's room while it idles, so each part an engine ever ran a burst in holds
+        // it for good, and one that gives it back while still busy, so each burst grows its lists again.
+        let mut idle = handed(10_000);
+        for _ in 1..IDLE_STEPS {
+            assert!(!idle.rest());
+        }
+        assert!(idle.handed.capacity() >= 10_000, "a part idle fewer steps keeps its room");
+        assert!(idle.rest());
+        assert!(idle.handed.capacity() <= KEPT_LEAST);
+        assert!(idle.arrived.capacity() <= KEPT_LEAST);
+
+        let mut busy = handed(10_000);
+        for _ in 1..IDLE_STEPS {
+            assert!(!busy.rest());
+        }
+        busy.arrived.push((0, Entry { to: 1, order: (2, 0), item: Stored::Ended(0) }));
+        let _ = busy.hand().count();
+        for _ in 1..IDLE_STEPS {
+            assert!(!busy.rest());
+        }
+        assert!(busy.room() >= 10_000, "a part handed items is idle again from none");
     }
 }

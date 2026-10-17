@@ -295,6 +295,18 @@ impl<V: View> Routed<V> {
         self.buckets[part].len()
     }
 
+    /// Gives back what room this row's empty bucket for the part numbered `part` has past `room`. A row lent out has
+    /// no bucket, and is passed over.
+    pub fn trim(&mut self, part: usize, room: usize) {
+        let Some(bucket) = self.buckets.get_mut(part) else {
+            return;
+        };
+        let is_spare = bucket.is_empty() && bucket.capacity() > room;
+        if is_spare {
+            bucket.shrink_to(room);
+        }
+    }
+
     /// Puts one record under `key` in the bucket of the part it falls in.
     #[allow(clippy::inline_always, reason = "once for every turn: a call here costs a tenth of a turn, measured")]
     #[inline(always)]

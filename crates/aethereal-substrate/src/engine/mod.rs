@@ -477,6 +477,7 @@ impl Engine {
     /// lie, by [`Engine::run_whole`].
     pub fn plan(&mut self, workers: Workers) -> Plan {
         self.step += 1;
+        self.rest();
 
         // The parts in the order of their numbers, as a step runs them.
         self.waiting.sort_unstable();
@@ -678,6 +679,19 @@ impl Engine {
         }
 
         touched
+    }
+
+    /// Notes each part with nothing to run as idle a step, and trims the writers' buckets for each that gave back its
+    /// room: a part that ran a burst once keeps no room for it while it idles.
+    fn rest(&mut self) {
+        for part in 0..self.seating.len() {
+            let is_idle = !self.has_work(part);
+            if is_idle && self.streams.at_mut(part).rest() {
+                for lists in &mut self.lists {
+                    lists.routes.streams.trim(part, 0);
+                }
+            }
+        }
     }
 
     /// Whether part `part` has anything to run: an item that has arrived, or a closing turn.
