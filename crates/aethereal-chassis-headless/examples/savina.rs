@@ -18,7 +18,7 @@
 //! - `sieve`: the primes below 100,000, odd numbers passed down a pipeline of filters that each keep up to 1,000
 //!   primes, a filter spawning the next when it is full.
 //!
-//! And two of this engine's own, with no counterpart on the other frameworks:
+//! And three of this engine's own, with no counterpart on the other frameworks:
 //!
 //! - `churn`: 1,000 actors alive at a time, each living 8 hops of mail to itself, then telling its parent and
 //!   closing, and the parent spawning one in its place, until 100,000 have lived: spawning and closing at a steady
@@ -26,6 +26,10 @@
 //! - `churn-wide`: `churn` split among 16 roots, each keeping a sixteenth of the population alive and spawning a
 //!   sixteenth of the total: the same work with no one actor that every spawn goes through, as a game whose many
 //!   places each make and end their own.
+//! - `world`: 16 regions of 256 bodies each, run 64 frames in lockstep, as a game's world runs: each frame a region
+//!   sends each body its frame, the body moves, nudges the bodies either side of it, and answers, and the region
+//!   starts the next frame once all have answered. A body lives up to 32 frames, a few expiring each frame, and the
+//!   region puts a new one in the place of each.
 //!
 //! As in Savina, each program's root sends its first mail from a turn, on a start message: it tells its last child
 //! the program can start as it begins, and sends on the child's answer. `count-begin` is `count` with the producer sending everything from its `begin`
@@ -69,6 +73,12 @@ const CHURN_LIFE: u64 = 8;
 const CHURN_TOTAL: u64 = 100_000;
 /// How many roots the wide churn program splits the churn program among.
 const CHURN_SPAWNERS: u64 = 16;
+/// How many regions the world program has, how many bodies each keeps alive, how many frames it runs, and how many
+/// frames a body lives.
+const WORLD_REGIONS: u64 = 16;
+const WORLD_BODIES: u64 = 256;
+const WORLD_FRAMES: u64 = 64;
+const WORLD_LIFE: u64 = 32;
 
 /// A ping with this many to go after it.
 #[derive(Plain)]
@@ -1001,6 +1011,252 @@ impl Handles<Live> for Mortal {
     }
 }
 
+/// A frame of the world program for a body, with the bodies either side of it to nudge.
+#[derive(Bound)]
+struct Frame {
+    left: ActorRef<Body>,
+    right: ActorRef<Body>,
+}
+
+impl Kind for Frame {
+    const NAME: KindName = KindName::new("aether.savina.frame");
+}
+
+/// A push from the body beside it.
+#[derive(Plain)]
+struct Nudge {
+    push: f32,
+}
+
+impl Kind for Nudge {
+    const NAME: KindName = KindName::new("aether.savina.nudge");
+}
+
+/// A body's answer to its frame, its life going on.
+#[derive(Plain)]
+struct Moved;
+
+impl Kind for Moved {
+    const NAME: KindName = KindName::new("aether.savina.moved");
+}
+
+/// A body's answer to its frame, its last: the body in place `place` has lived its frames and is closing.
+#[derive(Plain)]
+struct Expired {
+    place: u64,
+}
+
+impl Kind for Expired {
+    const NAME: KindName = KindName::new("aether.savina.expired");
+}
+
+/// The word that the world program is over: each body closes.
+#[derive(Plain)]
+struct Over;
+
+impl Kind for Over {
+    const NAME: KindName = KindName::new("aether.savina.over");
+}
+
+/// A region of the world program, and one of its roots: it keeps its bodies in a row of places, and runs them a
+/// frame at a time, sending each its frame and starting the next once every body has answered. It puts a new body in
+/// the place of each that expires, and once the frames are run tells its bodies the world is over, and closes.
+#[derive(Bound)]
+struct Region {
+    places: Vec<ActorRef<Body>>,
+    frame: u64,
+    answered: u64,
+    spawned: u64,
+}
+
+impl Kind for Region {
+    const NAME: KindName = KindName::new("aether.savina.region");
+}
+
+impl Region {
+    /// Sends every body its frame, or, once the frames are run, the word that the world is over, and closes.
+    fn next_frame<S, I, J>(&mut self, turn: &mut Turn<'_, S>) -> Result<(), Fault>
+    where
+        S: Allows<ToType<Body, Frame>, I> + Allows<ToType<Body, Over>, J>,
+    {
+        self.answered = 0;
+        if self.frame == WORLD_FRAMES {
+            for body in &self.places {
+                turn.to_actor(*body).send(&Over)?;
+            }
+            turn.close();
+
+            return Ok(());
+        }
+
+        let count = self.places.len();
+        for (place, body) in self.places.iter().enumerate() {
+            let left = self.places[(place + count - 1) % count];
+            let right = self.places[(place + 1) % count];
+            turn.to_actor(*body).send(&Frame { left, right })?;
+        }
+        self.frame += 1;
+
+        Ok(())
+    }
+
+    /// Counts a body's answer, and starts the next frame once every body has answered.
+    fn answer<S, I, J>(&mut self, turn: &mut Turn<'_, S>) -> Result<(), Fault>
+    where
+        S: Allows<ToType<Body, Frame>, I> + Allows<ToType<Body, Over>, J>,
+    {
+        self.answered += 1;
+        let is_last = self.answered == WORLD_BODIES;
+        if is_last {
+            self.next_frame(turn)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Actor for Region {
+    type Config = Number;
+    type Key = u64;
+    type Handles = (Ready, Moved, Expired);
+    type BeginSends = (ToType<Body, Ready>,);
+    type EndSends = ();
+
+    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let places: Vec<ActorRef<Body>> = (0..WORLD_BODIES).map(|place| spawned(turn, place)).collect();
+        ready(turn, &places)?;
+
+        Ok(Self { places, frame: 0, answered: 0, spawned: WORLD_BODIES })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ready> for Region {
+    type Sends = (ToType<Body, Frame>, ToType<Body, Over>);
+
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        self.next_frame(turn)
+    }
+}
+
+impl Handles<Moved> for Region {
+    type Sends = (ToType<Body, Frame>, ToType<Body, Over>);
+
+    fn handle(&mut self, _: Moved, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        self.answer(turn)
+    }
+}
+
+impl Handles<Expired> for Region {
+    type Sends = (ToType<Body, Frame>, ToType<Body, Over>);
+
+    /// Puts a new body, with a whole life, in the expired one's place, unless the world is over after this frame.
+    fn handle(&mut self, Expired { place }: Expired, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        if self.frame < WORLD_FRAMES {
+            let Ok(body) = turn.spawn::<Body>(&self.spawned, Number { number: (WORLD_LIFE << 32) | place }) else {
+                panic!("a body begins");
+            };
+            self.spawned += 1;
+            let Ok(place) = usize::try_from(place) else {
+                panic!("a place is an index of the row");
+            };
+            self.places[place] = body;
+        }
+
+        self.answer(turn)
+    }
+}
+
+/// A body of the world program: each frame it moves, pushed by what its neighbours nudged it with, nudges them in
+/// turn, and answers its region. It lives a number of frames, its last answer saying it has expired.
+#[derive(Plain)]
+struct Body {
+    place: u64,
+    left: u64,
+    position: f32,
+    velocity: f32,
+    pushed: f32,
+}
+
+impl Kind for Body {
+    const NAME: KindName = KindName::new("aether.savina.body");
+}
+
+impl Actor for Body {
+    type Config = Number;
+    type Key = u64;
+    type Handles = (Frame, Nudge, Over, Ready);
+    type BeginSends = ();
+    type EndSends = ();
+
+    /// A body made from `number` has the frames it lives in its upper half, and its place in the lower; a body made
+    /// as its region begins, numbered by its place alone, lives a share of a life, so that bodies expire a few a
+    /// frame and not all at once.
+    fn begin(Number { number }: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let place = number & u64::from(u32::MAX);
+        let left = match number >> 32 {
+            0 => place % WORLD_LIFE + 1,
+            lived => lived,
+        };
+        let at = place as f32;
+
+        Ok(Self { place, left, position: at, velocity: 1.0 - at / WORLD_BODIES as f32, pushed: 0.0 })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Frame> for Body {
+    type Sends = (ToType<Self, Nudge>, ToType<Region, Moved>, ToType<Region, Expired>);
+
+    fn handle(&mut self, Frame { left, right }: Frame, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        self.velocity = (self.velocity + self.pushed) * 0.99;
+        self.position += self.velocity;
+        let is_out = self.position.abs() > WORLD_BODIES as f32;
+        if is_out {
+            self.velocity = -self.velocity;
+        }
+        self.pushed = 0.0;
+        turn.to_actor(left).send(&Nudge { push: -0.01 * self.velocity })?;
+        turn.to_actor(right).send(&Nudge { push: 0.01 * self.velocity })?;
+
+        self.left -= 1;
+        if self.left == 0 {
+            turn.to::<Region>(To::Parent).send(&Expired { place: self.place })?;
+            turn.close();
+        } else {
+            turn.to::<Region>(To::Parent).send(&Moved)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<Nudge> for Body {
+    type Sends = ();
+
+    fn handle(&mut self, Nudge { push }: Nudge, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        self.pushed += push;
+
+        Ok(())
+    }
+}
+
+impl Handles<Over> for Body {
+    type Sends = ();
+
+    fn handle(&mut self, _: Over, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.close();
+
+        Ok(())
+    }
+}
+
 /// How many actors and pieces of mail a program makes.
 struct Size {
     actors: u64,
@@ -1081,7 +1337,7 @@ macro_rules! answers_ready {
     )*};
 }
 
-answers_ready!(Ponger, Counter, Forked, Pinging, Fib, Filter, Mortal);
+answers_ready!(Ponger, Counter, Forked, Pinging, Fib, Filter, Mortal, Body);
 
 /// A child of type `A` numbered `number`, spawned by `turn`.
 fn spawned<A: Actor<Config = Number, Key = u64>, S>(turn: &mut Beginning<'_, S>, number: u64) -> ActorRef<A> {
@@ -1116,6 +1372,38 @@ fn churn_wide(engine: &mut Engine, round: u64) {
     }
 }
 
+/// The roots of the world program, its regions.
+fn world(engine: &mut Engine, round: u64) {
+    for key in 0..WORLD_REGIONS {
+        let Ok(_) = engine.add_root::<Region>(&(round * WORLD_REGIONS + key), Number { number: key }) else {
+            panic!("a region begins");
+        };
+    }
+}
+
+/// The world program's size, found by running its lives without actors: each region, its bodies, and one in the
+/// place of each that expires before the last frame; and for each region its start, every frame's mail to each
+/// body, the two nudges each body sends and its answer, and the word that the world is over.
+fn world_size() -> Size {
+    let mut lives: Vec<u64> = (0..WORLD_BODIES).map(|place| place % WORLD_LIFE + 1).collect();
+    let mut replaced = 0;
+    for frame in 0..WORLD_FRAMES {
+        for life in &mut lives {
+            *life -= 1;
+            let is_replaced = *life == 0 && frame + 1 < WORLD_FRAMES;
+            if is_replaced {
+                replaced += 1;
+                *life = WORLD_LIFE;
+            }
+        }
+    }
+
+    Size {
+        actors: WORLD_REGIONS * (1 + WORLD_BODIES + replaced),
+        mails: WORLD_REGIONS * (2 + 4 * WORLD_FRAMES * WORLD_BODIES + WORLD_BODIES),
+    }
+}
+
 /// The wide churn program's size: each root's share of the churn program, and the roots.
 fn churn_wide_size() -> Size {
     let lived = CHURN_TOTAL / CHURN_SPAWNERS * CHURN_SPAWNERS;
@@ -1123,7 +1411,7 @@ fn churn_wide_size() -> Size {
     Size { actors: lived + CHURN_SPAWNERS, mails: lived * (CHURN_LIFE + 2) + 2 * CHURN_SPAWNERS }
 }
 
-const PROGRAMS: [Program; 9] = [
+const PROGRAMS: [Program; 10] = [
     Program { name: "pingpong", size: || Size { actors: 2, mails: 2 * PINGS }, start: root::<Pinger> },
     Program { name: "count", size: || Size { actors: 2, mails: COUNTS + 2 }, start: root::<Producer> },
     Program { name: "count-begin", size: || Size { actors: 2, mails: COUNTS + 2 }, start: root::<BeginProducer> },
@@ -1144,9 +1432,9 @@ const PROGRAMS: [Program; 9] = [
         start: root::<Churn>,
     },
     Program { name: "churn-wide", size: churn_wide_size, start: churn_wide },
+    Program { name: "world", size: world_size, start: world },
 ];
 
-/// One run of `program` on `workers` workers, each part running at most `hops` fused hops a step: the nanoseconds it
 /// One run of `program` on `workers` workers, each part running at most `hops` fused hops a step: the nanoseconds it
 /// took, from its root's `begin` to the last step, the steps, and how its sends fared while parts could fuse. The host
 /// is made before the clock starts, so what it measures as it starts is not counted.
