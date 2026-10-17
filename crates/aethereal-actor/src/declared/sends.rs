@@ -25,7 +25,7 @@ pub trait Marker {
 
 impl<T: Actor + Handles<K>, K: Kind + Handled> Marker for ToType<T, K> {
     type Kind = K;
-    const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Type(Name::<T>::NAME));
+    const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Type(Name::<T>::NAME, KindId::of::<T>()));
 }
 
 impl<K: Kind> Marker for ToSender<K> {

@@ -325,7 +325,7 @@ impl Seat<'_> {
         };
         let reaches = match target {
             Target::Sender => true,
-            Target::Type(name) => receiver.name() == name,
+            Target::Type(_, id) => receiver.id() == id,
             Target::Handling(kinds) => kinds.iter().all(|kind| receiver.lists(*kind)),
         };
         let receiver = receiver.name();

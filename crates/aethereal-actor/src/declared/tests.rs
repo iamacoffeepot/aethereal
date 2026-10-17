@@ -276,8 +276,10 @@ fn declaration_lists_each_handler_with_the_sends_its_impl_names() {
     // Catches a handler's sends listed under another handler, or one dropped from the tuple the engine reads.
     const KEPT: KindId = KindId::of::<Kept>();
     const KEEPER: &KindName = &Keeper::NAME;
-    const SENDS: &[Sending] =
-        &[Sending::new(KEPT, Target::Type(KEEPER)), Sending::new(KEPT, Target::Handling(&[KEPT]))];
+    const SENDS: &[Sending] = &[
+        Sending::new(KEPT, Target::Type(KEEPER, KindId::of::<Keeper>())),
+        Sending::new(KEPT, Target::Handling(&[KEPT])),
+    ];
     let keeper = Declared::of::<Keeper>();
     let handlers = [Handler::new(Role::Kind(KEPT), SENDS), Handler::new(Role::Others, &[])];
 
