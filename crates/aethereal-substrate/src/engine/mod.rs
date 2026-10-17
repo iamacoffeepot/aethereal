@@ -1020,8 +1020,8 @@ impl Reading<'_> {
                         let begins = asked.effects_mut().len();
                         let source = handed.source();
                         let (item, context) = match handed {
-                            Handed::Mail { envelope: &Envelope { kind, bytes, root, depth, .. }, piece, .. } => {
-                                let bytes = self.bytes(bytes.piece(piece));
+                            Handed::Mail { envelope: &Envelope { kind, root, depth, .. }, bytes, .. } => {
+                                let bytes = self.bytes(bytes);
                                 let mail = Mail::new(kind, bytes, source, root, depth, self.read_limit);
 
                                 (Item::Mail(mail), Context { root, depth: depth + 1 })
@@ -1167,16 +1167,12 @@ impl Reading<'_> {
             {
                 let hand = hand(to, *stepped, seating, lives, &lists.fusing);
                 lists.fusing.hops.count(hand);
-                let is_run = matches!(bytes, Payload::Run { .. });
-                let after_first = if is_run {
-                    u64::from(bytes.pieces()) - 1
-                } else {
-                    0
-                };
-                lists.fusing.hops.burst += u64::try_from(burst).unwrap_or(u64::MAX) + after_first;
+                let pieces = bytes.pieces();
+                let is_run = pieces > 1;
+                lists.fusing.hops.burst += u64::try_from(burst).unwrap_or(u64::MAX) + u64::from(pieces) - 1;
                 if hand == Hand::Fuse {
                     let first = if is_run {
-                        bytes.piece(0)
+                        bytes.piece(0, bytes.each())
                     } else {
                         bytes
                     };
@@ -1184,8 +1180,12 @@ impl Reading<'_> {
                     let effects = asked.effects_mut();
                     // Of a run, the first piece is fused and the rest stays mail. The fused send is most often the
                     // turn's last effect, and nothing is moved for it.
-                    if is_run && let Some(rest) = bytes.rest() {
-                        effects[index] = Effect::new(me, What::Send { to, count: count + 1, kind, bytes: rest });
+                    if is_run
+                        && let Some(rest) = bytes.rest()
+                        && let What::Send { count, bytes, .. } = effects[index].what_mut()
+                    {
+                        *count += 1;
+                        *bytes = rest;
                     } else if index + 1 == effects.len() {
                         effects.pop();
                         ran.effects.end -= 1;

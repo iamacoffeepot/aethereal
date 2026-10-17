@@ -2,7 +2,7 @@
 
 use crate::watch::Notice;
 use crate::{Consumes, Context, Envelope, View};
-use aethereal_actor::{Effect, Ended, MailId, SeatNumber, Seated, What};
+use aethereal_actor::{Effect, Ended, MailId, Payload, SeatNumber, Seated, What};
 use aethereal_data::ActorId;
 use std::mem;
 use std::ops::Range;
@@ -72,8 +72,9 @@ enum Stored {
 /// An item handed out, as a turn reads it.
 #[derive(Clone, Copy)]
 pub enum Handed<'a> {
-    /// A piece of mail, and its id: the piece numbered `piece` of what `envelope` holds, which is one but for a run.
-    Mail { id: MailId, envelope: &'a Envelope, piece: u32 },
+    /// A piece of mail, and its id: of what `envelope` holds, which is one but for a run, the piece whose bytes are
+    /// `bytes`.
+    Mail { id: MailId, envelope: &'a Envelope, bytes: Payload },
     /// An actor it watches ended. What it does about it belongs to `context`, the chain that ended that actor.
     Ended { ended: &'a Ended, context: &'a Context },
 }
@@ -108,7 +109,7 @@ impl Shard {
 
     /// The items handed out at the start of the step that lie in `range`, a run of mail one piece after another.
     pub fn handed(&self, range: Range<usize>) -> Pieces<'_> {
-        Pieces { entries: &self.handed[range], endings: &self.handed_endings, at: 0, piece: 0 }
+        Pieces { entries: &self.handed[range], endings: &self.handed_endings, at: 0, piece: 0, each: 0 }
     }
 
     /// The items that arrived since the step began, in no order: the actor each is for, the item, the first of a
@@ -142,9 +143,10 @@ impl Shard {
 pub struct Pieces<'a> {
     entries: &'a [(u64, Entry)],
     endings: &'a [(Ended, Context)],
-    /// The entry the next item is of, and which of its pieces.
+    /// The entry the next item is of, which of its pieces, and how many bytes each of them is.
     at: usize,
     piece: u32,
+    each: u32,
 }
 
 impl<'a> Iterator for Pieces<'a> {
@@ -152,16 +154,16 @@ impl<'a> Iterator for Pieces<'a> {
 
     fn next(&mut self) -> Option<Handed<'a>> {
         let (_, entry) = self.entries.get(self.at)?;
-        let Stored::Mail(envelope) = &entry.item else {
-            self.at += 1;
-            return Some(entry.handed(self.endings));
-        };
-        let pieces = envelope.bytes.pieces();
+        let first = entry.handed(self.endings);
+        let pieces = entry.pieces();
         if pieces == 1 {
             self.at += 1;
-            return Some(entry.handed(self.endings));
+            return Some(first);
         }
-        let item = entry.piece(self.piece, self.endings);
+        if self.piece == 0 {
+            self.each = first.each();
+        }
+        let item = first.piece(self.piece, self.each);
         self.piece += 1;
         if self.piece == pieces {
             self.at += 1;
@@ -181,26 +183,13 @@ impl Entry {
         }
     }
 
-    /// The item numbered `index` it holds, as a turn reads it: the piece of a run of mail, with its own id and bytes.
-    fn piece<'a>(&'a self, index: u32, endings: &'a [(Ended, Context)]) -> Handed<'a> {
-        match &self.item {
-            Stored::Mail(envelope) => {
-                let (sender, count) = self.order;
-                let id = MailId { sender: ActorId::new(sender), count: count + u64::from(index) };
-
-                Handed::Mail { id, envelope, piece: index }
-            }
-            Stored::Ended(_) => self.handed(endings),
-        }
-    }
-
     /// The item as a turn reads it, its ending found in `endings` when it is one.
     fn handed<'a>(&'a self, endings: &'a [(Ended, Context)]) -> Handed<'a> {
         match &self.item {
             Stored::Mail(envelope) => {
                 let (sender, count) = self.order;
 
-                Handed::Mail { id: MailId { sender: ActorId::new(sender), count }, envelope, piece: 0 }
+                Handed::Mail { id: MailId { sender: ActorId::new(sender), count }, envelope, bytes: envelope.bytes }
             }
             Stored::Ended(place) => {
                 let (ended, context) = &endings[*place];
@@ -212,6 +201,29 @@ impl Entry {
 }
 
 impl Handed<'_> {
+    /// The piece numbered `index` of a run this is the first piece of, each of its pieces `each` bytes.
+    #[must_use]
+    pub fn piece(self, index: u32, each: u32) -> Self {
+        match self {
+            Self::Mail { id, envelope, .. } if index > 0 => {
+                let id = MailId { sender: id.sender, count: id.count + u64::from(index) };
+
+                Self::Mail { id, envelope, bytes: envelope.bytes.piece(index, each) }
+            }
+            Self::Mail { id, envelope, .. } => Self::Mail { id, envelope, bytes: envelope.bytes.piece(0, each) },
+            Self::Ended { .. } => self,
+        }
+    }
+
+    /// How many bytes each piece of a run this is the first piece of is.
+    #[must_use]
+    pub fn each(self) -> u32 {
+        match self {
+            Self::Mail { envelope, .. } => envelope.bytes.each(),
+            Self::Ended { .. } => 0,
+        }
+    }
+
     /// The actor the item comes from, and its seat.
     #[must_use]
     pub const fn source(self) -> Seated {

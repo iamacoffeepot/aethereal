@@ -1,7 +1,7 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's list.
 
 use super::*;
-use crate::{Beginning, Ending, Fault, Item, Mail, MailId, Payload, Span, Within};
+use crate::{Beginning, Ending, Fault, Item, Mail, MailId, Payload, Within};
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
 use alloc::vec;
@@ -236,7 +236,7 @@ impl Actor for Herald {
 }
 
 /// Where a turn's first piece of mail with no bytes is written: at the start of an arena of its own.
-const NOTHING: Payload = Payload::InArena(Span { slot: 0, start: 0, len: 0 });
+const NOTHING: Payload = Payload::InArena { slot: 0, start: 0, len: 0, pieces: 1 };
 
 static ROOT: ActorPath = ActorPath::new("aether.test.root");
 const ME: Seated = seated(1, 100);

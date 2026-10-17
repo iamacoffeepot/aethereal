@@ -309,9 +309,8 @@ impl Seat<'_> {
     /// Encodes `mail` and adds the effect that sends it to the actor `to`, which this actor reaches as it is: one a
     /// typed reference proves, or the sender.
     fn write<K: Kind + Encode<Actors>>(&mut self, to: Seated, mail: &K) -> Result<(), EncodeError> {
-        let is_like_last = self.last_send().is_some_and(|(last, kind)| last == to && kind == KindId::of::<K>());
-
-        self.write_after(to, mail, is_like_last)
+        // A reply goes on its own: a turn rarely answers one sender back to back.
+        self.write_after(to, mail, false)
     }
 
     /// As [`Self::write`], knowing whether `to` and the kind are those of the turn's last send.
