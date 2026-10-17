@@ -2,7 +2,10 @@
 //! two of this engine's own.
 //!
 //! Run with `cargo run --release -p aethereal-chassis-headless --example savina [program...] [workers=N,...]
-//! [hops=N]`, where `hops` is how many fused hops each part may run in a step (ADR-0013), none by default.
+//! [hops=N] [rounds=N]`, where `hops` is how many fused hops each part may run in a step (ADR-0013), none by default,
+//! and `rounds`, when given, runs each program that many times one after another on one engine, as a long-running
+//! engine runs, and reports it cold, then steady once the engine has learned: each round's cost of a piece of mail is
+//! its whole run's, and the steady figures are the median and the best of the rounds after the first third.
 //! The programs, at Savina's default sizes:
 //!
 //! - `pingpong`: two actors send one piece of mail back and forth 40,000 times each way, so only one piece of mail
@@ -1093,20 +1096,21 @@ fn spawned<A: Actor<Config = Number, Key = u64>, S>(turn: &mut Beginning<'_, S>,
 struct Program {
     name: &'static str,
     size: fn() -> Size,
-    start: fn(&mut Engine),
+    /// Adds the program's roots for its run numbered by the second argument, under keys no earlier run used.
+    start: fn(&mut Engine, u64),
 }
 
-/// Adds the root of type `A`, which starts a program.
-fn root<A: Actor<Config = Number, Key = u64>>(engine: &mut Engine) {
-    let Ok(_) = engine.add_root::<A>(&0, Number { number: 0 }) else {
+/// Adds the root of type `A` for the run numbered `round`, which starts a program.
+fn root<A: Actor<Config = Number, Key = u64>>(engine: &mut Engine, round: u64) {
+    let Ok(_) = engine.add_root::<A>(&round, Number { number: 0 }) else {
         panic!("the root begins");
     };
 }
 
 /// The roots of the wide churn program, each with its share of it.
-fn churn_wide(engine: &mut Engine) {
+fn churn_wide(engine: &mut Engine, round: u64) {
     for key in 0..CHURN_SPAWNERS {
-        let Ok(_) = engine.add_root::<Churn>(&key, Number { number: CHURN_SPAWNERS }) else {
+        let Ok(_) = engine.add_root::<Churn>(&(round * CHURN_SPAWNERS + key), Number { number: CHURN_SPAWNERS }) else {
             panic!("a root begins");
         };
     }
@@ -1151,10 +1155,53 @@ fn run(program: &Program, workers: NonZeroUsize, hops: usize) -> (u64, u64, Hops
     let engine = Engine::new(parts, 1024, 1 << 30, hops);
     let mut headless = Headless::new(engine, workers);
     let clock = Monotonic::new();
-    (program.start)(headless.engine_mut());
+    (program.start)(headless.engine_mut(), 0);
     headless.run_until_idle();
 
     (clock.nanos(), headless.measured().steps, headless.engine().hopped())
+}
+
+/// `rounds` runs of `program` one after another on one engine and one host, on `workers` workers, each part running
+/// at most `hops` fused hops a step: the nanoseconds each round took, from its roots' `begin` to the last step. What
+/// the engine learned in a round, of what turns cost, where parts run, and what splitting costs, it keeps for the
+/// next, as a long-running engine does.
+fn steady(program: &Program, workers: NonZeroUsize, hops: usize, rounds: u64) -> Vec<u64> {
+    let parts = NonZeroUsize::MIN.saturating_add(15);
+    let engine = Engine::new(parts, 1024, 1 << 30, hops);
+    let mut headless = Headless::new(engine, workers);
+
+    (0..rounds)
+        .map(|round| {
+            let clock = Monotonic::new();
+            (program.start)(headless.engine_mut(), round);
+            headless.run_until_idle();
+
+            clock.nanos()
+        })
+        .collect()
+}
+
+/// Prints `program`'s rounds of a steady run, `took` nanoseconds each: the first round's cost of a piece of mail,
+/// cold; the median and best of the rounds after the first third, once the engine has learned; and the first round
+/// within a twentieth of that median, where it settled.
+fn print_steady(program: &Program, size: Size, workers: NonZeroUsize, took: &[u64]) {
+    let per = |nanos: u64| nanos / size.mails.max(1);
+    let warm = (took.len() / 3).max(1).min(took.len().saturating_sub(1));
+    let mut settled: Vec<u64> = took[warm..].to_vec();
+    settled.sort_unstable();
+    let median = settled.get(settled.len() / 2).copied().unwrap_or_default();
+    let best = settled.first().copied().unwrap_or_default();
+    let within = median + median / 20;
+    let settles = took.iter().position(|nanos| *nanos <= within).map_or(0, |round| round + 1);
+    println!(
+        "{:11} {:6} {workers:7} {:10} {:9} {:9} {:9} {settles:8}",
+        program.name,
+        size.actors,
+        size.mails,
+        per(took[0]),
+        per(median),
+        per(best),
+    );
 }
 
 fn main() {
@@ -1165,6 +1212,24 @@ fn main() {
         .find_map(|arg| arg.strip_prefix("workers="))
         .map_or_else(|| vec![1, 4, 16], |given| given.split(',').filter_map(|count| count.parse().ok()).collect());
     let hops = args.iter().find_map(|arg| arg.strip_prefix("hops=")).and_then(|given| given.parse().ok()).unwrap_or(0);
+    let rounds: u64 =
+        args.iter().find_map(|arg| arg.strip_prefix("rounds=")).and_then(|given| given.parse().ok()).unwrap_or(0);
+
+    if rounds > 0 {
+        println!("program     actors workers      mails   cold ns  steady ns   best ns  settled");
+        for program in &PROGRAMS {
+            let is_skipped = !named.is_empty() && !named.contains(&program.name);
+            if is_skipped {
+                continue;
+            }
+            for &count in &workers {
+                let workers = NonZeroUsize::MIN.saturating_add(count.max(1) - 1);
+                let took = steady(program, workers, hops, rounds.max(2));
+                print_steady(program, (program.size)(), workers, &took);
+            }
+        }
+        return;
+    }
 
     println!("program     actors workers      mails   M mails/s  ns/mail    steps");
     for program in &PROGRAMS {
