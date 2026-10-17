@@ -189,8 +189,8 @@ impl Sending {
 /// Where a declared send may go (ADR-0013).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
-    /// An actor of the type of this name.
-    Type(&'static KindName),
+    /// An actor of the type of this name, and of this id: what a send is checked by, a name being slower to compare.
+    Type(&'static KindName, KindId),
     /// The source of the item being handled.
     Sender,
     /// Any actor whose type lists every one of these kinds: what a reference that names a protocol, and not a type,

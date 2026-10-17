@@ -69,7 +69,10 @@ impl Asked {
     /// moves nothing in or out.
     pub fn next_turn(&mut self) {
         self.start = self.effects.len();
-        self.stood_seats.clear();
+        // Most turns stand up no child, and clearing even an empty map walks it.
+        if !self.stood_seats.is_empty() {
+            self.stood_seats.clear();
+        }
     }
 
     /// Takes the children this turn stood up, each in the order its `begin` finished.
@@ -322,7 +325,7 @@ impl Seat<'_> {
         };
         let reaches = match target {
             Target::Sender => true,
-            Target::Type(name) => receiver.name() == name,
+            Target::Type(_, id) => receiver.id() == id,
             Target::Handling(kinds) => kinds.iter().all(|kind| receiver.lists(*kind)),
         };
         let receiver = receiver.name();

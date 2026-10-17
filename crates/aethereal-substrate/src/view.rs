@@ -296,6 +296,8 @@ impl<V: View> Routed<V> {
     }
 
     /// Puts one record under `key` in the bucket of the part it falls in.
+    #[allow(clippy::inline_always, reason = "once for every turn: a call here costs a tenth of a turn, measured")]
+    #[inline(always)]
     pub fn put(&mut self, key: u64, record: V::Record) {
         let part = part(key, self.buckets.len());
         self.buckets[part].push((key, record));
@@ -311,6 +313,8 @@ impl<V: View> Routed<V> {
     /// Routes one effect, emitted in `context`, taking it by value.
     ///
     /// The caller routes every other view that reads this effect first.
+    #[allow(clippy::inline_always, reason = "once for every turn: a call here costs a tenth of a turn, measured")]
+    #[inline(always)]
     pub fn route_one(&mut self, effect: Effect, context: &Context)
     where
         V: Consumes,

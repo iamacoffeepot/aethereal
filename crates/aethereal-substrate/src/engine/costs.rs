@@ -100,6 +100,8 @@ impl Costs {
 impl Tally {
     /// Runs `turn`, a turn under `key`, and times it by `clock` when it is the first under that key or the
     /// [`SAMPLE`]th since one was timed.
+    #[allow(clippy::inline_always, reason = "once for every turn: a call here costs a tenth of a turn, measured")]
+    #[inline(always)]
     pub(super) fn time<R>(&mut self, key: CostKey, clock: &impl Clock, turn: impl FnOnce() -> R) -> R {
         let is_last = self.sums.get(self.last).is_some_and(|(kept, _)| *kept == key);
         let place = if is_last {
