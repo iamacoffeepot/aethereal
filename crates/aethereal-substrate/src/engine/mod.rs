@@ -86,13 +86,6 @@ pub struct Engine {
     actors_seated: usize,
     /// What the turns waiting in each part are expected to cost, in nanoseconds, as of the last fold.
     expected: Vec<u64>,
-    /// What each part was expected to cost as the last step it ran was planned, and how long it took to run, in
-    /// nanoseconds.
-    planned: Vec<u64>,
-    took: Vec<u64>,
-    /// How far each part's turns have of late taken longer than its actors' kinds say, in 1024ths: its actors are
-    /// not all alike, and what is learned of a kind is an average over all of them.
-    scale: Vec<u64>,
     /// What planning and gathering a step pack parts in.
     packing: Packing,
     /// What the steps hand out, emptied and kept from one step to the next for its room, so a step allocates none of
@@ -190,10 +183,6 @@ struct Spare {
 pub struct Parcel {
     /// Which part it is.
     part: usize,
-    /// Whether it is timed as it runs, as one expected to take long enough to learn from, and how long it took, in
-    /// nanoseconds, once it has run.
-    is_timed: bool,
-    took: u64,
     streams: stream::Shard,
     lives: lives::Shard,
     seating: Seating,
@@ -288,9 +277,6 @@ impl Engine {
             seated: vec![0; parts.get()],
             actors_seated: 0,
             expected: vec![0; parts.get()],
-            planned: vec![0; parts.get()],
-            took: vec![0; parts.get()],
-            scale: vec![SCALE_ONE; parts.get()],
             packing: Packing::new(parts.get()),
             spare: Spare::default(),
             arenas: [Vec::new(), Vec::new()],
@@ -447,8 +433,7 @@ impl Engine {
                 actors: &mut self.actors[*part],
                 seats: &mut self.seats[*part],
             };
-            let is_timed = self.planned[*part] >= SCALE_TELLS;
-            self.took[*part] = reading.run_part(room, clock, &mut tally, &mut asked, &mut lists, is_timed);
+            reading.run_part(room, clock, &mut tally, &mut asked, &mut lists);
         }
         let (effects, _, arena, _) = asked.into_parts();
         lists.effects = effects;
@@ -466,10 +451,6 @@ impl Engine {
     /// Panics when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn apply_whole(&mut self, whole: Whole) {
         let Whole { arena, lists } = whole;
-        for index in 0..self.packing.parts.len() {
-            let part = self.packing.parts[index].0;
-            self.learn(part, self.took[part]);
-        }
         self.take_in(lists, arena);
 
         let mut forward = mem::take(&mut self.spare.forward);
@@ -526,9 +507,6 @@ impl Engine {
         self.waiting.clear();
         for index in 0..self.packing.parts.len() {
             self.give_room(self.packing.parts[index].0);
-        }
-        for &(part, cost) in &self.packing.parts {
-            self.planned[part] = cost;
         }
         let work = self.packing.parts.iter().map(|(_, cost)| cost).sum();
         let (delta, running, expected_nanos) = plan::plan(&self.packing.parts, self.recent, workers);
@@ -740,15 +718,7 @@ impl Engine {
 
     /// What the turns waiting in part `part` are expected to cost, in nanoseconds.
     fn expect(&self, part: usize) -> u64 {
-        let expected = fold::expected(
-            self.streams.at(part),
-            self.lives.at(part),
-            &self.seating[part].seated,
-            &self.costs,
-            self.slice,
-        );
-
-        self.scaled(part, expected)
+        fold::expected(self.streams.at(part), self.lives.at(part), &self.seating[part].seated, &self.costs, self.slice)
     }
 
     /// Takes part `part` of every view out, with every worker's records for it, to fold, into a spare pile.
@@ -788,7 +758,7 @@ impl Engine {
         let empty = Seating { seated: BySeat::empty(parts) };
         self.seating[part] = mem::replace(&mut pile.seating, empty);
         self.actors[part] = mem::replace(&mut pile.actors, BySeat::empty(parts));
-        self.expected[part] = self.scaled(part, pile.expected);
+        self.expected[part] = pile.expected;
     }
 
     /// Takes part `part` out of the engine for a worker to run.
@@ -798,8 +768,6 @@ impl Engine {
 
         Parcel {
             part,
-            is_timed: self.planned[part] >= SCALE_TELLS,
-            took: 0,
             streams: self.streams.take(part),
             lives: self.lives.take(part),
             seating: mem::replace(&mut self.seating[part], empty),
@@ -810,8 +778,7 @@ impl Engine {
 
     /// Puts back a part a worker ran.
     fn put(&mut self, parcel: Parcel) {
-        let Parcel { part, took, streams, lives, seating, actors, seats, .. } = parcel;
-        self.learn(part, took);
+        let Parcel { part, streams, lives, seating, actors, seats } = parcel;
         self.streams.put(part, streams);
         self.lives.put(part, lives);
         self.seating[part] = seating;
@@ -929,25 +896,6 @@ impl Engine {
         seats
     }
 
-    /// Learns from a part that took `took` nanoseconds to run how far its turns take longer than its actors' kinds
-    /// say: halfway from what it thought toward what this step showed. A part expected to take too little to tell
-    /// teaches nothing.
-    fn learn(&mut self, part: usize, took: u64) {
-        let planned = self.planned[part];
-        let is_telling = planned >= SCALE_TELLS && took > 0;
-        if !is_telling {
-            return;
-        }
-        let scale = self.scale[part];
-        let shown = scale.saturating_mul(took) / planned;
-        self.scale[part] = (scale + shown).div_ceil(2).clamp(SCALE_ONE / 8, SCALE_ONE * 16);
-    }
-
-    /// What `expected` nanoseconds, a part's by its actors' kinds, come to in that part, as it has run of late.
-    fn scaled(&self, part: usize, expected: u64) -> u64 {
-        expected.saturating_mul(self.scale[part]) / SCALE_ONE
-    }
-
     /// Takes back the seats lent to a root's `begin` by [`Self::lend_seats`].
     fn take_back_lent(&mut self, home: usize, mut seats: Seats) {
         let lent: Vec<u64> = seats.take_lent().collect();
@@ -972,8 +920,7 @@ impl Reading<'_> {
         // as it finishes.
         let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
         for parcel in &mut parcels {
-            let is_timed = parcel.is_timed;
-            parcel.took = self.run_part(parcel.room(), clock, &mut tally, &mut asked, &mut lists, is_timed);
+            self.run_part(parcel.room(), clock, &mut tally, &mut asked, &mut lists);
         }
         let (effects, _, arena, _) = asked.into_parts();
         lists.effects = effects;
@@ -992,13 +939,7 @@ impl Reading<'_> {
         tally: &mut Tally,
         asked: &mut Asked,
         lists: &mut Lists,
-        is_timed: bool,
-    ) -> u64 {
-        let begins = if is_timed {
-            clock.nanos()
-        } else {
-            0
-        };
+    ) {
         lists.fusing.begin(self.hops);
         mem::swap(asked.seats_mut(), room.seats);
         let mut runs = mem::take(&mut lists.runs);
@@ -1039,12 +980,6 @@ impl Reading<'_> {
             }
         }
         mem::swap(asked.seats_mut(), room.seats);
-
-        if is_timed {
-            clock.nanos().saturating_sub(begins)
-        } else {
-            0
-        }
     }
 
     /// The turns of the actor `me` names in `parcel` that `work` asks for, each measured into `tally`, what they
@@ -1613,11 +1548,6 @@ const fn why(how: &How) -> Why {
         How::Closed | How::Earlier => Why::Closed,
     }
 }
-
-/// A part's scale when it runs as its actors' kinds say: one, in 1024ths.
-const SCALE_ONE: u64 = 1024;
-/// The least a part is expected to cost, in nanoseconds, for how long it took to teach how far it runs from its kinds.
-const SCALE_TELLS: u64 = 20_000;
 
 /// How many turns an actor kept to a slice runs between looks at the clock.
 const SLICE_EVERY: u32 = 32;
