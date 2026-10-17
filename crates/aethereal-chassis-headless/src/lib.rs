@@ -74,22 +74,27 @@ impl Headless {
     ///
     /// Panics with a turn's panic, and when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn step(&mut self) {
+        self.step_sharing();
+    }
+
+    /// Runs one step as [`Headless::step`] does, and answers with how many workers it was split among.
+    fn step_sharing(&mut self) -> usize {
         let workers = self.pool.workers(SplitCost::new(&self.split));
-        step(&mut self.engine, &mut self.pool, self.clock, workers);
+        step(&mut self.engine, &mut self.pool, self.clock, workers).sharing
     }
 
     /// Spike: lets every part step on its own on every worker until no part has anything to step or a turn asks for
     /// a step of the whole engine; backs off when parts barely stepped.
     fn run_free(&mut self) {
         let workers = self.pool.workers(SplitCost::NONE).max;
-        let Some(shares) = self.engine.free_shares(workers) else {
+        let Some((shares, parts)) = self.engine.free_shares(workers) else {
             self.backoff = usize::MAX;
             return;
         };
-        let run = self.engine.free_run(workers);
+        let run = self.engine.free_run(workers, parts);
         let done: Vec<_> = self.pool.free(&run, self.clock, shares).collect();
-        drop(run);
-        let steps = self.engine.end_free(done);
+        let parts = run.into_parts();
+        let steps = self.engine.end_free(done, parts);
         let few = steps < 4 * u64::try_from(workers).unwrap_or(0);
         if few {
             self.backoff = 16;
@@ -99,8 +104,11 @@ impl Headless {
     /// Runs steps until no actor has anything to run, then parks every worker.
     pub fn run_until_idle(&mut self) {
         while !self.engine.is_idle() {
-            self.step();
-            if self.free && self.backoff == 0 {
+            // Parts step on their own only where the plan would split the step: a step it runs whole is a chain one
+            // warm thread runs faster than workers handing it on.
+            let sharing = self.step_sharing();
+            let splits = sharing > 1;
+            if self.free && splits && self.backoff == 0 {
                 self.run_free();
             } else {
                 self.backoff = self.backoff.saturating_sub(1);

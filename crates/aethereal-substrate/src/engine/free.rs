@@ -17,7 +17,7 @@ use aethereal_data::ActorId;
 use std::collections::VecDeque;
 use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError, RwLock};
 
 /// The first writer slot that names a part's inbound bytes and not an arena: slot `FREE + part` is part `part`'s.
 const FREE: u32 = u32::MAX - (1 << 20);
@@ -56,7 +56,7 @@ impl Inbound<'_> {
 /// ends: what a turn finds of a child in another part that it was told of.
 pub(super) struct Fresh {
     /// In shards by the bits of the child's id, so workers looking up different children seldom wait on each other.
-    shards: Vec<Mutex<ByActor<(SeatNumber, &'static Declared)>>>,
+    shards: Vec<RwLock<ByActor<(SeatNumber, &'static Declared)>>>,
 }
 
 /// How many shards [`Fresh`] keeps.
@@ -64,17 +64,17 @@ const FRESH_SHARDS: usize = 64;
 
 impl Default for Fresh {
     fn default() -> Self {
-        Self { shards: (0..FRESH_SHARDS).map(|_| Mutex::default()).collect() }
+        Self { shards: (0..FRESH_SHARDS).map(|_| RwLock::default()).collect() }
     }
 }
 
 impl Fresh {
     /// The seat of the child `id`, and what its type declares, when a part stood it up in the run.
     pub(super) fn find(&self, id: ActorId) -> Option<(SeatNumber, &'static Declared)> {
-        lock(self.shard(id.bits())).get(&id.bits()).copied()
+        self.shard(id.bits()).read().unwrap_or_else(PoisonError::into_inner).get(&id.bits()).copied()
     }
 
-    fn shard(&self, bits: u64) -> &Mutex<ByActor<(SeatNumber, &'static Declared)>> {
+    fn shard(&self, bits: u64) -> &RwLock<ByActor<(SeatNumber, &'static Declared)>> {
         &self.shards[usize::try_from(bits >> 58).unwrap_or(0) % FRESH_SHARDS]
     }
 }
@@ -94,6 +94,9 @@ struct Batch {
 pub struct FreeRun<'a> {
     reading: Reading<'a>,
     fresh: Fresh,
+    /// Every part, each locked by the worker stepping it: a worker steps its own first, then any other with work
+    /// that no worker holds.
+    parts: Vec<Mutex<FreePart>>,
     inboxes: Vec<Mutex<Vec<Batch>>>,
     /// How many batches each inbox holds, read without its lock: a worker locks an inbox only when it holds one.
     held: Vec<AtomicUsize>,
@@ -110,7 +113,8 @@ pub struct FreeRun<'a> {
 
 /// One worker's parts for a run, and what it writes to.
 pub struct FreeShare {
-    parts: Vec<FreePart>,
+    /// Its place among the workers: the parts it steps first are those whose numbers fall in it.
+    place: usize,
     /// Emptied batches, whose room is left in the writer's buckets as it hands records on.
     spare: Vec<Batch>,
     lists: Lists,
@@ -119,7 +123,8 @@ pub struct FreeShare {
     steps: u64,
 }
 
-struct FreePart {
+/// One part as a run holds it.
+pub struct FreePart {
     parcel: Parcel,
     log: BySeat<VecDeque<log::Entry>>,
     inbound: Vec<u8>,
@@ -130,7 +135,7 @@ struct FreePart {
 impl Engine {
     /// Takes every part out for `workers` workers to step on their own, part `p` to worker `p % workers`, when the
     /// engine can: with more than one worker and no fused hops.
-    pub fn free_shares(&mut self, workers: usize) -> Option<Vec<FreeShare>> {
+    pub fn free_shares(&mut self, workers: usize) -> Option<(Vec<FreeShare>, Vec<FreePart>)> {
         let parts = self.seating.len();
         let can = workers > 1 && self.hops == 0 && parts >= workers;
         if !can {
@@ -147,28 +152,31 @@ impl Engine {
         for arena in &mut self.arenas[parity] {
             arena.clear(share);
         }
-        let mut shares: Vec<FreeShare> = (0..workers)
+        let shares: Vec<FreeShare> = (0..workers)
             .map(|place| {
                 let (arena, lists) = self.writer(parity, place, share);
-                FreeShare { parts: Vec::new(), spare: Vec::new(), lists, arena, steps: 0 }
+                FreeShare { place, spare: Vec::new(), lists, arena, steps: 0 }
             })
             .collect();
-        for part in 0..parts {
-            let parcel = self.parcel(part);
-            let log = self.log.take(part);
-            let inbound = mem::take(&mut self.inbound[part]);
-            shares[part % workers].parts.push(FreePart { parcel, log, inbound, born: 0 });
-        }
+        let taken = (0..parts)
+            .map(|part| {
+                let parcel = self.parcel(part);
+                let log = self.log.take(part);
+                let inbound = mem::take(&mut self.inbound[part]);
+                FreePart { parcel, log, inbound, born: 0 }
+            })
+            .collect();
 
-        Some(shares)
+        Some((shares, taken))
     }
 
     /// The run the workers read while they step their parts.
     #[must_use]
-    pub fn free_run(&self, workers: usize) -> FreeRun<'_> {
+    pub fn free_run(&self, workers: usize, parts: Vec<FreePart>) -> FreeRun<'_> {
         FreeRun {
             reading: self.reading(),
             fresh: Fresh::default(),
+            parts: parts.into_iter().map(Mutex::new).collect(),
             inboxes: (0..self.seating.len()).map(|_| Mutex::new(Vec::new())).collect(),
             held: (0..self.seating.len()).map(|_| AtomicUsize::new(0)).collect(),
             in_flight: AtomicUsize::new(0),
@@ -181,18 +189,18 @@ impl Engine {
 
     /// Puts back what the workers' runs left, and folds where they lie what their turns asked for that only a step of
     /// the whole engine applies: answers with how many times parts stepped.
-    pub fn end_free(&mut self, shares: Vec<FreeShare>) -> u64 {
+    pub fn end_free(&mut self, shares: Vec<FreeShare>, parts: Vec<FreePart>) -> u64 {
         let mut steps = 0;
-        for FreeShare { parts, lists, arena, steps: stepped, .. } in shares {
+        for FreePart { parcel, log, inbound, born } in parts {
+            let part = parcel.part;
+            self.seated[part] += born;
+            self.actors_seated += born;
+            self.put(parcel);
+            self.log.put(part, log);
+            self.inbound[part] = inbound;
+        }
+        for FreeShare { lists, arena, steps: stepped, .. } in shares {
             steps += stepped;
-            for FreePart { parcel, log, inbound, born } in parts {
-                let part = parcel.part;
-                self.seated[part] += born;
-                self.actors_seated += born;
-                self.put(parcel);
-                self.log.put(part, log);
-                self.inbound[part] = inbound;
-            }
             self.take_in(lists, arena);
         }
         let mut forward = mem::take(&mut self.spare.forward);
@@ -220,10 +228,22 @@ impl Engine {
 }
 
 impl FreeRun<'_> {
+    /// The parts, once the run has ended.
+    #[must_use]
+    pub fn into_parts(self) -> Vec<FreePart> {
+        self.parts.into_iter().map(|part| part.into_inner().unwrap_or_else(PoisonError::into_inner)).collect()
+    }
+
     /// Steps `share`'s parts until no part anywhere has anything to step, or a turn stops the run, then folds what
     /// is left in its parts' inboxes, once every worker has stopped stepping.
     pub fn run(&self, share: FreeShare, clock: &impl Clock) -> FreeShare {
-        let FreeShare { mut parts, mut spare, mut lists, arena, mut steps } = share;
+        let FreeShare { place, mut spare, mut lists, arena, mut steps } = share;
+        // Its own parts first, then every other, from the one after its own.
+        let count = self.parts.len();
+        let order: Vec<usize> = (0..count)
+            .filter(|part| part % self.workers == place)
+            .chain((1..count).map(|offset| (place + offset) % count).filter(|part| part % self.workers != place))
+            .collect();
         let mut tally = mem::take(&mut lists.tally);
         let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
         let mut idle = false;
@@ -232,8 +252,17 @@ impl FreeRun<'_> {
         let mut empty = 0_u32;
         loop {
             let mut progressed = false;
-            for part in &mut parts {
-                let batches = self.take(part.parcel.part);
+            for &number in &order {
+                let held = self.held[number].load(Ordering::Acquire) > 0;
+                let Ok(mut part) = self.parts[number].try_lock() else {
+                    continue;
+                };
+                let part = &mut *part;
+                let has_work = held || part.parcel.streams.has_items() || part.parcel.lives.has_ended();
+                if !has_work {
+                    continue;
+                }
+                let batches = self.take(number);
                 if !batches.is_empty() {
                     if idle {
                         idle = false;
@@ -294,17 +323,17 @@ impl FreeRun<'_> {
         while self.drained.load(Ordering::SeqCst) < self.workers {
             std::hint::spin_loop();
         }
-        for part in &mut parts {
-            let batches = self.take(part.parcel.part);
-            for batch in batches {
-                spare.push(fold_in(part, batch));
+        for &number in order.iter().filter(|part| *part % self.workers == place) {
+            let mut part = lock(&self.parts[number]);
+            for batch in self.take(number) {
+                spare.push(fold_in(&mut part, batch));
             }
         }
         let (effects, _, arena, _) = asked.into_parts();
         lists.effects = effects;
         lists.tally = tally;
 
-        FreeShare { parts, spare, lists, arena, steps }
+        FreeShare { place, spare, lists, arena, steps }
     }
 
     /// Hands each part's records in `lists`, made by the part just stepped, to that part's inbox, the bytes of its
@@ -314,7 +343,7 @@ impl FreeRun<'_> {
         let has_stood = !lists.fusing.stood.is_empty();
         if has_stood {
             for (id, (_, seat, declared)) in &lists.fusing.stood {
-                lock(self.fresh.shard(*id)).insert(*id, (*seat, *declared));
+                self.fresh.shard(*id).write().unwrap_or_else(PoisonError::into_inner).insert(*id, (*seat, *declared));
             }
         }
         for (part, inbox) in self.inboxes.iter().enumerate() {

@@ -29,7 +29,7 @@ pub use by_actor::{ByActor, IdBits};
 pub use by_seat::BySeat;
 pub use clock::Clock;
 pub use context::Context;
-pub use engine::{DROPS, TURNS, Done, Engine, Fold, Folding, FreeRun, FreeShare, Hops, Plan, Reading, Share, Split, SplitCost, Tally, Whole, Workers};
+pub use engine::{DROPS, TURNS, Done, Engine, Fold, Folding, FreePart, FreeRun, FreeShare, Hops, Plan, Reading, Share, Split, SplitCost, Tally, Whole, Workers};
 pub use id::{child_id, path_id, root_id};
 pub use lives::{Life, Lives, State};
 pub use log::{Entry, Log, RECENT};
