@@ -24,8 +24,9 @@ pub struct Headless {
     engine: Engine,
     pool: Pool,
     clock: Monotonic,
-    /// What splitting a step among the workers costs, as rehearsed when the host was made.
-    split: SplitCost,
+    /// What splitting a step among the workers costs, as rehearsed when the host was made: among two first, then
+    /// three, and so on, as [`SplitCost::new`] reads it.
+    split: Vec<u64>,
 }
 
 impl Headless {
@@ -67,7 +68,7 @@ impl Headless {
     ///
     /// Panics with a turn's panic, and when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn step(&mut self) {
-        let workers = self.pool.workers(self.split);
+        let workers = self.pool.workers(SplitCost::new(&self.split));
         step(&mut self.engine, &mut self.pool, self.clock, workers);
     }
 

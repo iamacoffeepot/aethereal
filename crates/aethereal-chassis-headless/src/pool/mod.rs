@@ -100,7 +100,7 @@ impl Pool {
     }
 
     /// The workers as a step's plan sees them, a split among them costing `split`.
-    pub const fn workers(&self, split: SplitCost) -> Workers {
+    pub const fn workers<'a>(&self, split: SplitCost<'a>) -> Workers<'a> {
         Workers { active: self.spinning + 1, max: self.crew.threads.len() + 1, wake_nanos: self.wake_nanos, split }
     }
 

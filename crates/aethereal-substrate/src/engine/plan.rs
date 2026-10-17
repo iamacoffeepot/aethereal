@@ -5,7 +5,7 @@ use aethereal_actor::Arena;
 
 /// The workers a host has, as the engine plans a step for them (ADR-0011).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Workers {
+pub struct Workers<'a> {
     /// How many are running now, the thread that steps the engine among them: at least one.
     pub active: usize,
     /// How many there are, running or parked, that thread among them: at least one.
@@ -13,36 +13,46 @@ pub struct Workers {
     /// What waking a parked worker costs, as the host measured it, in nanoseconds.
     pub wake_nanos: u64,
     /// What running a step on several workers costs beyond running it on one, as the host measured it.
-    pub split: SplitCost,
+    pub split: SplitCost<'a>,
 }
 
-impl Workers {
+impl Workers<'static> {
     /// One worker, the thread that steps the engine: a pumped host's whole engine (ADR-0001).
     pub const ONE: Self = Self { active: 1, max: 1, wake_nanos: 0, split: SplitCost::NONE };
 }
 
-/// What running a step on several workers costs beyond running it on one, as a host measured it (ADR-0011): taking
-/// its parts out to the workers, gathering them back, and folding them on the workers.
+/// What running a step on several workers costs beyond running it on one, as a host measured it for each count of
+/// workers (ADR-0011): taking its parts out to the workers, gathering them back, and folding them on the workers.
+///
+/// It is measured for each count, and not drawn as a line through two: the
+/// workers past those sharing one cache with the thread that steps the engine
+/// cost more to split among than the ones before them, so the cost rises in
+/// steps where the caches end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SplitCost {
-    /// What splitting a step between two workers costs, in nanoseconds.
-    pub two_nanos: u64,
-    /// What each worker past two adds to it, in nanoseconds.
-    pub added_nanos: u64,
+pub struct SplitCost<'a> {
+    /// What splitting a step among two workers costs, in nanoseconds, then among three, and so on.
+    nanos: &'a [u64],
 }
 
-impl SplitCost {
+impl<'a> SplitCost<'a> {
     /// A split that costs nothing.
-    pub const NONE: Self = Self { two_nanos: 0, added_nanos: 0 };
+    pub const NONE: Self = Self { nanos: &[] };
+
+    /// The split whose cost among two workers is `nanos`' first, in nanoseconds, among three its second, and so on.
+    /// A count past the last costs what the last does.
+    #[must_use]
+    pub const fn new(nanos: &'a [u64]) -> Self {
+        Self { nanos }
+    }
 
     /// What splitting a step among `workers` costs, in nanoseconds: nothing for a step run whole, on one.
     #[must_use]
     pub fn among(self, workers: usize) -> u64 {
-        let past_two = u64::try_from(workers.saturating_sub(2)).unwrap_or(u64::MAX);
         let splits = workers > 1;
+        let measured = self.nanos.get(workers.saturating_sub(2)).or_else(|| self.nanos.last());
 
         if splits {
-            self.two_nanos.saturating_add(self.added_nanos.saturating_mul(past_two))
+            measured.copied().unwrap_or(0)
         } else {
             0
         }
@@ -111,7 +121,7 @@ impl Plan {
 /// Plans a step whose parts with something to run are `parts`, each with what its turns are expected to cost, on
 /// `workers`, given the expected work of `recent` steps: how the count of running workers changes, how many run,
 /// and how long their turns are expected to take.
-pub(super) fn plan(parts: &[(usize, u64)], recent: u64, workers: Workers) -> (isize, usize, u64) {
+pub(super) fn plan(parts: &[(usize, u64)], recent: u64, workers: Workers<'_>) -> (isize, usize, u64) {
     let work: u64 = parts.iter().map(|(_, cost)| cost).sum();
     let largest = parts.iter().map(|(_, cost)| *cost).max().unwrap_or(0);
     let Decided { awake, sharing } = decide(work, largest, parts.len(), recent, workers);
@@ -137,7 +147,7 @@ pub(super) struct Decided {
 /// costs, or run whole when that is least. A parked worker is woken only when the step it shortens saves more than
 /// the wake costs; a running one is parked only when recent steps would not have used it either, and a worker kept
 /// running through a step that does not use it is there for the steps after it.
-pub(super) fn decide(work: u64, largest: u64, actors: usize, recent: u64, workers: Workers) -> Decided {
+pub(super) fn decide(work: u64, largest: u64, actors: usize, recent: u64, workers: Workers<'_>) -> Decided {
     let max = workers.max.max(1);
     let active = workers.active.clamp(1, max);
     let useful = |work: u64| useful(work, largest, actors, max);
@@ -280,7 +290,7 @@ mod tests {
     use super::*;
 
     /// Four workers, `active` running, with waking costing `wake_nanos` and splitting nothing.
-    const fn four(active: usize, wake_nanos: u64) -> Workers {
+    const fn four(active: usize, wake_nanos: u64) -> Workers<'static> {
         Workers { active, max: 4, wake_nanos, split: SplitCost::NONE }
     }
 
@@ -303,24 +313,32 @@ mod tests {
     fn a_step_runs_whole_unless_splitting_it_saves_more_than_the_split_costs() {
         // Catches a step split when what the split costs is more than it saves, whether its workers are running or
         // parked, a step kept whole when the split pays, and workers parked because one step ran whole.
-        let splitting = |active, two_nanos| Workers {
-            active,
-            max: 4,
-            wake_nanos: 0,
-            split: SplitCost { two_nanos, added_nanos: 0 },
-        };
-        assert_eq!(decide(1_000, 10, 100, 0, splitting(4, 800)), Decided { awake: 4, sharing: 1 });
-        assert_eq!(decide(1_000, 10, 100, 0, splitting(1, 800)), Decided { awake: 1, sharing: 1 });
-        assert_eq!(decide(1_000, 10, 100, 0, splitting(4, 700)), Decided { awake: 4, sharing: 4 });
-        assert_eq!(decide(1_000, 10, 100, 0, splitting(1, 700)), Decided { awake: 4, sharing: 4 });
+        let (dear, cheap) = ([800; 3], [700; 3]);
+        let splitting = |active, nanos| Workers { active, max: 4, wake_nanos: 0, split: SplitCost::new(nanos) };
+        assert_eq!(decide(1_000, 10, 100, 0, splitting(4, &dear)), Decided { awake: 4, sharing: 1 });
+        assert_eq!(decide(1_000, 10, 100, 0, splitting(1, &dear)), Decided { awake: 1, sharing: 1 });
+        assert_eq!(decide(1_000, 10, 100, 0, splitting(4, &cheap)), Decided { awake: 4, sharing: 4 });
+        assert_eq!(decide(1_000, 10, 100, 0, splitting(1, &cheap)), Decided { awake: 4, sharing: 4 });
+    }
+
+    #[test]
+    fn a_split_costs_what_was_measured_for_its_count() {
+        // Catches a count read from the cost measured for another, a count past those measured costing nothing, and a
+        // step run whole charged for a split.
+        let split = SplitCost::new(&[100, 400, 150]);
+        let costs: Vec<u64> = (1..=6).map(|workers| split.among(workers)).collect();
+        assert_eq!(costs, [0, 100, 400, 150, 150, 150]);
+        assert_eq!(SplitCost::NONE.among(4), 0);
     }
 
     #[test]
     fn a_step_is_split_among_the_count_it_takes_least_time_on() {
-        // Catches a step split among every useful worker when each worker past two costs more than it saves.
-        let costly =
-            Workers { active: 4, max: 4, wake_nanos: 0, split: SplitCost { two_nanos: 100, added_nanos: 300 } };
+        // Catches a step split among every useful worker when each worker past two costs more than it saves, and a
+        // count passed over because the one before it cost more, as a count does past a cache that ends.
+        let costly = Workers { active: 4, max: 4, wake_nanos: 0, split: SplitCost::new(&[100, 400, 700]) };
         assert_eq!(decide(1_000, 10, 100, 0, costly), Decided { awake: 4, sharing: 2 });
+        let stepped = Workers { split: SplitCost::new(&[100, 400, 150]), ..costly };
+        assert_eq!(decide(1_000, 10, 100, 0, stepped), Decided { awake: 4, sharing: 4 });
     }
 
     #[test]
