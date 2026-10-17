@@ -3,7 +3,7 @@
 
 use super::fuse::Run;
 use crate::{ActorTable, Blobs, ByActor};
-use aethereal_actor::{BlobId, Declared, SeatNumber, Seated, Table};
+use aethereal_actor::{BlobHash, BlobId, Declared, SeatNumber, Seated, Table};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 
 /// The table as one actor's turn reads it (ADR-0009, ADR-0013).
@@ -91,5 +91,9 @@ impl Table for Since<'_> {
 
     fn blob(&self, id: BlobId) -> Option<&[u8]> {
         self.blobs.read(id)
+    }
+
+    fn blob_hash(&self, id: BlobId) -> Option<BlobHash> {
+        self.blobs.hash(id)
     }
 }

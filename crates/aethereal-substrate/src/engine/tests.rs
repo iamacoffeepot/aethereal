@@ -941,6 +941,7 @@ impl Kind for HolderConfig {
 ///
 /// - `put N` puts a blob of `N` bytes and keeps it, or says why it was refused;
 /// - `read` says how many bytes each blob it keeps holds;
+/// - `hash` says the hash of each blob it keeps;
 /// - `drop` lets go of the blob it kept last;
 /// - `fail` fails its turn;
 /// - `later text` sends itself `text`, for the next step;
@@ -1006,6 +1007,11 @@ impl Handles<Note> for Holder {
                     say(format!("read {}", turn.read(blob).len()));
                 }
             }
+            ["hash"] => {
+                for blob in &self.held {
+                    say(hashed(turn.hash(blob)));
+                }
+            }
             ["drop"] => drop(self.held.pop()),
             ["fail"] => return Err(Fault::new(&Note { text })?),
             ["send", ..] => {
@@ -1060,6 +1066,46 @@ fn holding(blob_bytes: usize, to_self: &[&str]) -> Engine {
     };
 
     engine
+}
+
+/// What a holder says of a blob with the hash `hash`.
+fn hashed(hash: BlobHash) -> String {
+    format!("hash {:?}", hash.bytes())
+}
+
+#[test]
+fn a_hash_asked_for_in_a_turn_is_kept_at_the_fold() {
+    // Catches a hash a turn computed never kept, one kept before the blobs put in its step are taken in, which loses
+    // the hash of a blob put and hashed in one step, and blobs hashed as they are put, which a blob nothing asks the
+    // hash of should never pay for.
+    let three = BlobHash::of(&[7; 3]);
+    let mut engine = holding(1 << 20, &["put 3", "hash", "put 4", "later hash"]);
+    assert_eq!(step(&mut engine), [hashed(three)]);
+    assert_eq!(engine.blobs.kept_hashes(), [three], "only the blob asked for is hashed");
+
+    let four = BlobHash::of(&[7; 4]);
+    assert_eq!(step(&mut engine), [hashed(three), hashed(four)]);
+    let mut kept = engine.blobs.kept_hashes();
+    kept.sort();
+    let mut both = [three, four];
+    both.sort();
+    assert_eq!(kept, both);
+}
+
+#[test]
+fn the_engine_keeps_a_hash_it_is_asked_for_between_steps() {
+    // Catches the chassis's ask for a hash answered and not kept, so a turn that asks for it later computes it again.
+    let Some(parts) = NonZeroUsize::new(4) else {
+        panic!("four is not zero");
+    };
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let Ok(blob) = engine.put_blob(vec![1, 2, 3]) else {
+        panic!("three bytes fit");
+    };
+    assert_eq!(engine.blobs.kept_hashes(), []);
+
+    assert_eq!(engine.hash(&blob), Some(BlobHash::of(&[1, 2, 3])));
+    assert_eq!(engine.blobs.kept_hashes(), [BlobHash::of(&[1, 2, 3])]);
 }
 
 #[test]

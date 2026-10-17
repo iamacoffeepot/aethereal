@@ -29,7 +29,7 @@ mod turn;
 
 pub use actor::{Actor, Runs};
 pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};
-pub use blob::{BlobId, Puts};
+pub use blob::{BlobHash, BlobId, Puts};
 #[cfg(feature = "std")]
 pub use blob::{BlobRef, Held, pins, within};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, Within, WithinReader, WithinWriter};

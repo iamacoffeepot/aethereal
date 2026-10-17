@@ -42,6 +42,10 @@ impl Table for Listed {
         None
     }
 
+    fn blob_hash(&self, _: crate::BlobId) -> Option<BlobHash> {
+        None
+    }
+
     /// Every actor listed is a leaf.
     fn declared(&self, id: ActorId) -> Option<&'static Declared> {
         let is_listed = self.is_live(id);

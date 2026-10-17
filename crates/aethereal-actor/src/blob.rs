@@ -37,11 +37,31 @@ impl BlobId {
     }
 }
 
+/// A blob's content hash: BLAKE3 over its bytes, computed the first time something asks for it and kept with the
+/// blob (ADR-0014). Two blobs of the same bytes have the same hash, in any engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BlobHash([u8; 32]);
+
+impl BlobHash {
+    /// The hash of `bytes`.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn of(bytes: &[u8]) -> Self {
+        Self(*blake3::hash(bytes).as_bytes())
+    }
+
+    /// Its 32 bytes.
+    #[must_use]
+    pub const fn bytes(self) -> [u8; 32] {
+        self.0
+    }
+}
+
 /// How many bits of a blob's id count the puts of its writer: the bits above them name the writer.
 const PUT_BITS: u32 = 48;
 
-/// The blobs one writer has put in a step, held until the step folds, and the room it has left in the step's share of
-/// the budget for blobs (ADR-0014).
+/// The blobs one writer has put in a step, held until the step folds, the hashes its turns computed in the step, and
+/// the room it has left in the step's share of the budget for blobs (ADR-0014).
 ///
 /// The engine keeps one for each writer from step to step, so the puts it counts give each blob an id no other blob
 /// has had.
@@ -58,6 +78,9 @@ pub struct Puts {
     room: usize,
     /// What it has put in this step, under its ids' bits.
     held: BTreeMap<u64, Box<[u8]>>,
+    /// The hashes its turns computed in this step, of blobs it put or the store holds, for the store to keep. Two
+    /// writers, or two turns, may hash one blob in a step, and the store keeps the one hash they all compute.
+    hashed: Vec<(BlobId, BlobHash)>,
 }
 
 impl Puts {
@@ -73,7 +96,7 @@ impl Puts {
         };
         assert!(writer < 1 << (u64::BITS - PUT_BITS), "no engine has more writers than an id's high bits number");
 
-        Self { engine, writer, made: 0, room, held: BTreeMap::new() }
+        Self { engine, writer, made: 0, room, held: BTreeMap::new(), hashed: Vec::new() }
     }
 
     /// Gives the writer `room` bytes to put in the coming step.
@@ -85,6 +108,16 @@ impl Puts {
     #[must_use]
     pub fn read(&self, id: BlobId) -> Option<&[u8]> {
         self.held.get(&id.bits()).map(|bytes| &bytes[..])
+    }
+
+    /// Notes that the blob `id` names has the hash `hash`, for the store to keep.
+    pub fn hashed(&mut self, id: BlobId, hash: BlobHash) {
+        self.hashed.push((id, hash));
+    }
+
+    /// Takes the hashes computed in this step, each with its blob's id, for the store to keep, leaving none.
+    pub fn take_hashed(&mut self) -> impl Iterator<Item = (BlobId, BlobHash)> + '_ {
+        self.hashed.drain(..)
     }
 
     /// Takes the blobs put in this step, each with its id, for the store to take in, leaving none held.
