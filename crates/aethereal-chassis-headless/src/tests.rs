@@ -149,3 +149,27 @@ fn workers_leave_what_one_thread_leaves() {
         assert_eq!(shown(headless.engine(), &split_fans), shown(&alone, &alone_fans));
     }
 }
+
+#[test]
+fn a_worker_the_plan_keeps_awake_is_not_parked_by_a_step_split_among_fewer() {
+    // Catches the pool parking every worker past a split step's shares whatever the plan kept awake, so a step split
+    // among fewer workers than are running parks the rest, and the step after wakes them again.
+    let Some(four) = NonZeroUsize::new(4) else {
+        panic!("four is not zero");
+    };
+    // One actor in each part, all of one kind, so every part is expected to cost the same and a step is split among
+    // every worker it may be.
+    let mut engine = engine(0).0.rehearsal();
+    let clock = Monotonic::new();
+    let mut pool = Pool::new(four, &clock);
+    let all = Workers { active: 4, max: 4, wake_nanos: 0, split: SplitCost::NONE };
+    let two = Workers { active: 2, max: 2, ..all };
+    step(&mut engine, &mut pool, clock, all);
+    let spread = step(&mut engine, &mut pool, clock, all);
+    assert_eq!(spread.sharing, 4);
+
+    let parks = pool.measured().parks;
+    let fewer = step(&mut engine, &mut pool, clock, two);
+    assert_eq!(fewer.sharing, 2);
+    assert_eq!(pool.measured().parks, parks);
+}

@@ -110,22 +110,32 @@ impl Pool {
     }
 
     /// Runs a step's shares: the first on this thread, each other on a worker,
-    /// and answers with what they left. Workers past the shares are parked; the ones given a share spin after it.
+    /// and answers with what they left. Of the workers past the shares, those the plan parks, by `delta` when it is
+    /// below zero, are parked, and the rest spin through it, for the steps after it; the ones given a share spin
+    /// after it.
     ///
     /// The workers read `reading` while they run, so this returns only once every one of them has answered.
     ///
     /// # Panics
     ///
     /// Panics with a share's own panic, once every worker has answered.
-    pub fn lend(&mut self, reading: &Reading<'_>, clock: Monotonic, shares: Vec<Share>) -> Drain<'_, Done> {
+    pub fn lend(
+        &mut self,
+        reading: &Reading<'_>,
+        clock: Monotonic,
+        delta: isize,
+        shares: Vec<Share>,
+    ) -> Drain<'_, Done> {
         let start = clock.nanos();
         let running = shares.len().saturating_sub(1).min(self.crew.threads.len());
-        for parked in running..self.spinning.max(running) {
-            self.crew.post(parked, Order::Park);
+        let parked = delta.min(0).unsigned_abs();
+        let kept = self.spinning.saturating_sub(parked).max(running);
+        for spinning in kept..self.spinning {
+            self.crew.post(spinning, Order::Park);
         }
-        self.measured.wakes += u64::try_from(running.saturating_sub(self.spinning)).unwrap_or(0);
-        self.measured.parks += u64::try_from(self.spinning.saturating_sub(running)).unwrap_or(0);
-        self.spinning = running;
+        self.measured.wakes += u64::try_from(kept.saturating_sub(self.spinning)).unwrap_or(0);
+        self.measured.parks += u64::try_from(self.spinning.saturating_sub(kept)).unwrap_or(0);
+        self.spinning = kept;
 
         let busy = spread(
             &mut self.crew,

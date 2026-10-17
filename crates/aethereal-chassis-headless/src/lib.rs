@@ -106,7 +106,7 @@ fn step(engine: &mut Engine, pool: &mut Pool, clock: Monotonic, workers: Workers
         }
         Split::Shares(shares) => {
             let sharing = shares.len();
-            let done = pool.lend(&engine.reading(), clock, shares);
+            let done = pool.lend(&engine.reading(), clock, delta, shares);
             let ran = clock.nanos();
             let folds = engine.gather(done);
             let folded = pool.fold(&engine.folding(), clock, folds);
