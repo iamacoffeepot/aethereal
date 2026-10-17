@@ -1184,7 +1184,7 @@ fn steady(program: &Program, workers: NonZeroUsize, hops: usize, rounds: u64) ->
 /// Prints `program`'s rounds of a steady run, `took` nanoseconds each: the first round's cost of a piece of mail,
 /// cold; the median and best of the rounds after the first third, once the engine has learned; and the first round
 /// within a twentieth of that median, where it settled.
-fn print_steady(program: &Program, size: Size, workers: NonZeroUsize, took: &[u64]) {
+fn print_steady(program: &Program, size: &Size, workers: NonZeroUsize, took: &[u64]) {
     let per = |nanos: u64| nanos / size.mails.max(1);
     let warm = (took.len() / 3).max(1).min(took.len().saturating_sub(1));
     let mut settled: Vec<u64> = took[warm..].to_vec();
@@ -1225,7 +1225,7 @@ fn main() {
             for &count in &workers {
                 let workers = NonZeroUsize::MIN.saturating_add(count.max(1) - 1);
                 let took = steady(program, workers, hops, rounds.max(2));
-                print_steady(program, (program.size)(), workers, &took);
+                print_steady(program, &(program.size)(), workers, &took);
             }
         }
         return;
