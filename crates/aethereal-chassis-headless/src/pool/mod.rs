@@ -69,10 +69,11 @@ const WAKES_MEASURED: usize = 16;
 impl Pool {
     /// A pool of `workers` workers, the stepping thread among them, all parked, with the cost of a wake measured.
     ///
-    /// The calling thread is the stepping thread: it is kept to the first workers' cores until the pool is dropped.
+    /// The calling thread is the stepping thread: it is kept to the first workers' group of cores, off those the
+    /// other workers are pinned to, until the pool is dropped.
     pub fn new(workers: NonZeroUsize, clock: &Monotonic) -> Self {
         let cores = Arc::new(Cores::of_host());
-        let kept = cores.keep_stepping();
+        let kept = cores.keep_stepping(workers.get());
         let board = Arc::new(Board::new(workers.get() - 1));
         let threads = (1..workers.get())
             .map(|number| {
