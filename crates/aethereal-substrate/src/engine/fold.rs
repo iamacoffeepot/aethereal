@@ -1,7 +1,8 @@
 //! The end of a step: each part of the views folded by itself, on the workers (ADR-0011).
 
+use super::birth::{self, Birth};
 use super::costs::{CostKey, Costs, ItemKind};
-use super::{Seating, Sitting, item_kind};
+use super::{Held, Seating, Sitting, item_kind};
 use crate::stream::{self, Streams};
 use crate::table::Actors;
 use crate::watch::{Notice, Watches};
@@ -24,6 +25,13 @@ pub(super) struct Pile {
     pub(super) streams: Column<Streams>,
     pub(super) watches: Column<Watches>,
     pub(super) seating: Seating,
+    /// The part's actors, which the children routed to it join.
+    pub(super) actors: BySeat<Held>,
+    /// Each writer's children for the part, and notes of children for its parents, in the writers' order: emptied as
+    /// they are seated, and handed back to their rows for their room.
+    pub(super) births: Vec<Vec<Birth>>,
+    /// How many children were seated in the part when it was folded.
+    pub(super) born: usize,
     /// What the part's watches hand on once it settles: endings, for the streams of the actors that watch.
     pub(super) forward: Vec<Notice>,
     /// What the turns waiting in the part are expected to cost, in nanoseconds, once it is folded.
@@ -41,6 +49,9 @@ impl Pile {
             streams: Column::empty(parts),
             watches: Column::empty(parts),
             seating: Seating { seated: BySeat::empty(parts) },
+            actors: BySeat::empty(parts),
+            births: Vec::new(),
+            born: 0,
             forward: Vec::new(),
             expected: 0,
         }
@@ -53,11 +64,15 @@ pub struct Folding<'a> {
 }
 
 impl Folding<'_> {
-    /// Folds each part of `fold`: every worker's records for it, view by view, then the part's watches settle, and
-    /// what its next turns are expected to cost is summed.
+    /// Folds each part of `fold`: the children every worker stood up in it are seated, every worker's records for it
+    /// are folded, view by view, then the part's watches settle, and what its next turns are expected to cost is
+    /// summed.
     #[must_use]
     pub fn fold(&self, mut fold: Fold) -> Fold {
         for pile in &mut fold.parts {
+            for bucket in &mut pile.births {
+                pile.born += birth::seat_all(&mut pile.seating, &mut pile.actors, bucket);
+            }
             pile.table.fold();
             pile.log.fold();
             pile.lives.fold();

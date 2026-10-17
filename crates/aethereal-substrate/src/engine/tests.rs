@@ -615,6 +615,34 @@ fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
 }
 
 #[test]
+fn keys_used_on_two_workers_stay_taken_after_their_children_have_ended() {
+    // Catches the children stood up in a step shared among workers going unnoted in their parents' seats when their
+    // parts are folded, which would free a key once its child has ended and left the table.
+    let notes = ["spawn 2 spawn 20 close", "spawn 3 spawn 30 close", "self self self tell 2 spawn 20 up again"];
+    let (mut engine, _) = engine(&[notes[0], notes[1], notes[2], "self self self tell 3 spawn 30 up again"]);
+    let clock = Ticking::default();
+    engine.step(&clock);
+    said();
+
+    let workers = Workers { active: 2, max: 2, wake_nanos: 0, split: SplitCost::NONE };
+    let Split::Shares(shares) = engine.plan(workers).into_split() else {
+        panic!("two workers share the step");
+    };
+    let reading = engine.reading();
+    let done = shares.into_iter().map(|share| reading.run(share, &clock)).collect();
+    engine.apply(done);
+    let mut heard = said();
+    while !engine.is_idle() {
+        heard.extend(step(&mut engine));
+    }
+
+    assert!(heard.contains(&String::from("2 got spawn 20 up again")));
+    assert!(heard.contains(&String::from("3 got spawn 30 up again")));
+    let respawned = heard.iter().any(|line| line.contains("again from"));
+    assert!(!respawned, "{heard:?}");
+}
+
+#[test]
 fn children_seated_in_a_part_another_worker_ran_are_kept() {
     // Catches a worker's children being seated in a part another worker still holds, and lost when that worker's
     // part is put back over them. Node 2 sits beside the root in part 0, which is full, so its children take the

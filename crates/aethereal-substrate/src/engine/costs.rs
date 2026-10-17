@@ -1,7 +1,7 @@
 //! How long turns take, as measured so far: what the engine plans a step's workers from (ADR-0011).
 
 use crate::Clock;
-use aethereal_data::{KindId, KindName};
+use aethereal_data::KindId;
 use std::collections::BTreeMap;
 
 /// What a measured time is kept under: the kind of actor that took the turn, and what the turn reacted to.
@@ -12,34 +12,10 @@ use std::collections::BTreeMap;
 /// step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct CostKey {
-    /// The kind of actor.
-    pub(super) actor: KindIndex,
+    /// The kind of actor: its type's id.
+    pub(super) actor: KindId,
     /// What its turn reacted to.
     pub(super) item: ItemKind,
-}
-
-/// A kind of actor as the engine numbers it: given when the first actor of the kind is seated, so a turn's cost
-/// is found by number and never by name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct KindIndex(u32);
-
-/// The number given to each kind of actor the engine has seated.
-pub(super) struct Kinds {
-    numbered: BTreeMap<KindName, KindIndex>,
-}
-
-impl Kinds {
-    /// No kind numbered yet.
-    pub(super) const fn new() -> Self {
-        Self { numbered: BTreeMap::new() }
-    }
-
-    /// The number of `kind`, given now when it has none.
-    pub(super) fn number(&mut self, kind: &KindName) -> KindIndex {
-        let next = KindIndex(u32::try_from(self.numbered.len()).unwrap_or(u32::MAX));
-
-        *self.numbered.entry(kind.clone()).or_insert(next)
-    }
 }
 
 /// What a turn reacted to, as far as its cost goes.
