@@ -836,3 +836,56 @@ fn run_fuses_its_first_piece_and_mails_the_rest() {
     assert_eq!(step(&mut engine), ["1 got a1", "1 got a2"]);
     assert!(engine.is_idle());
 }
+
+/// Runs one step planned for `workers` workers on this thread, shared or whole as the plan says, timed by `clock`,
+/// and answers with what its turns said.
+fn step_on(engine: &mut Engine, workers: usize, clock: &Ticking) -> Vec<String> {
+    let workers = Workers { active: workers, max: workers, wake_nanos: 0, split: SplitCost::NONE };
+    match engine.plan(workers).into_split() {
+        Split::Whole(whole) => {
+            let left = engine.run_whole(whole, clock);
+            engine.apply_whole(left);
+        }
+        Split::Shares(shares) => {
+            let reading = engine.reading();
+            let done = shares.into_iter().map(|share| reading.run(share, clock)).collect();
+            engine.apply(done);
+        }
+    }
+
+    said()
+}
+
+#[test]
+fn an_actor_that_sends_past_its_slice_hands_on_the_rest_in_later_steps_in_order() {
+    // Catches a slice that never cuts, items an actor was cut off from lost, handed twice, or out of order, among them
+    // through a backlog moved to its front, and a hop to an actor cut off in its step run ahead of what it carries.
+    for hops in [0, 64] {
+        // Notes of two lengths, one after the other, so they are not joined into runs and leave a backlog of many.
+        let name = |index: u64| {
+            if index.is_multiple_of(2) {
+                format!("y{index:04}")
+            } else {
+                format!("y{index:05}")
+            }
+        };
+        let mut notes = vec![String::from("spawn 2 hi")];
+        notes.extend((0..3000).map(|index| format!("tell 2 up {}", name(index))));
+        let notes: Vec<&str> = notes.iter().map(String::as_str).collect();
+        let (mut engine, _) = fusing(hops, &notes);
+        let clock = Ticking::default();
+        let mut steps = Vec::new();
+        while !engine.is_idle() {
+            steps.push(step_on(&mut engine, 2, &clock));
+        }
+
+        let told: Vec<&str> = steps.iter().flatten().filter_map(|line| line.strip_prefix("2 got up ")).collect();
+        let answered: Vec<&str> =
+            steps.iter().flatten().filter_map(|line| line.strip_prefix("1 got ")?.strip_suffix(" from 2")).collect();
+        let sent: Vec<String> = (0..3000).map(name).collect();
+        assert_eq!(told, sent, "hops={hops}");
+        assert_eq!(answered, sent, "hops={hops}");
+        let telling = steps.iter().filter(|said| said.iter().any(|line| line.starts_with("1 got tell"))).count();
+        assert!(telling > 1, "the root is cut off at its slice, hops={hops}");
+    }
+}

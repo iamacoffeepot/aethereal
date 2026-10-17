@@ -26,9 +26,10 @@ Work that is not a benchmark spawns and closes actors in the middle of chains. S
 - the part has hops left in the step's budget;
 - the send is the first its turn makes. A turn that sends several pieces of mail fuses at most the first, and the rest go out as mail. A chain fuses and a burst spreads, so a fan-out still reaches the workers;
 - the sender has sent no mail as mail, in this step, to an actor in its part. A hop runs in the step it was made and mail in a later one, so a hop after such mail could be handed over ahead of it, and mail from one source would no longer be handled in the order it was sent (ADR-0009). Mail to an actor in another part never fuses, so it cannot be overtaken;
-- the send is made by a turn handling an item: a closing turn's sends go out as mail.
+- the send is made by a turn handling an item: a closing turn's sends go out as mail;
+- the receiver has not been cut off at its slice in the step (ADR-0011). A hop to it would be handed ahead of what it carries over; a hop made to it before it was cut off is carried over after what it carries, in the order made.
 
-A part always runs on exactly one worker, whichever it is, so every one of these is the same however many workers run the step. The same turns leave the same views on one worker and on many (ADR-0011).
+A part always runs on exactly one worker, whichever it is, so every one of these is the same however many workers run the step, but for where an actor is cut off at its slice, which happens only on more than one (ADR-0011).
 
 **A part runs every item that was waiting before any fused hop.** Its waiting items run in the order ADR-0011 gives, then its closing turns, then its fused hops. The hops wait in a queue, each joining the back as it is made, and run from the front, so every chain a waiting item began moves on before any moves twice, and two hops from one sender to one receiver are handled in the order they were sent. Each waiting item whose send fuses begins a run of its own, so a part runs as many runs in a step as its waiting items begin, sharing its budget. Mail an actor sent in an earlier step comes before anything it fuses in this one, so mail from one source is still handled in the order that source sent it (ADR-0009).
 

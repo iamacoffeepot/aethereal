@@ -34,6 +34,10 @@ pub struct Arena {
 /// The most bytes one arena's slab holds, so that where a piece of mail lies in it is a 32-bit number.
 const SLAB_MOST: usize = u32::MAX as usize;
 
+/// The slot of no writer: a payload with it lies in the bytes its receiver's part carried over from a step in which
+/// the receiver was not handed it.
+pub const CARRIED: u32 = u32::MAX;
+
 /// Where the bytes of one piece of mail are, in the arena of the writer that wrote them, or of a run of mail: sixteen
 /// bytes, carried with every piece of mail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +198,25 @@ impl Payload {
         match self {
             Self::InArena { slot, start, pieces, .. } if pieces > 1 => {
                 Self::InArena { slot, start: start + index * each, len: each, pieces: 1 }
+            }
+            Self::InArena { .. } | Self::Spilled { .. } => self,
+        }
+    }
+
+    /// What it holds from the piece numbered `index` on, one of its pieces: itself, for the first.
+    #[must_use]
+    pub fn from_piece(self, index: u32) -> Self {
+        match self {
+            Self::InArena { slot, start, len, pieces } if index > 0 => {
+                let each = len / u32::from(pieces);
+                let taken = u16::try_from(index).unwrap_or(pieces).min(pieces);
+
+                Self::InArena {
+                    slot,
+                    start: start + u32::from(taken) * each,
+                    len: len - u32::from(taken) * each,
+                    pieces: pieces - taken,
+                }
             }
             Self::InArena { .. } | Self::Spilled { .. } => self,
         }

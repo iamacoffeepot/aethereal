@@ -29,6 +29,9 @@ pub(super) struct Fusing {
     began: usize,
     /// How the sends of the parts it ran fared, since the engine last took them in.
     pub(super) hops: Hops,
+    /// The bits of the actors of the part that are handed only some of their items in the step, the rest carried over:
+    /// a hop to one would overtake what it carries.
+    carrying: Vec<u64>,
 }
 
 /// How the sends made while a part could still fuse fared: how many were fused, and, for each other, the rule that
@@ -99,6 +102,8 @@ pub(super) struct Hop {
     pub(super) to: Seated,
     /// The sender, and its seat.
     pub(super) from: Seated,
+    /// Its sender's count of mail sent, with it: with the sender, its id.
+    pub(super) count: u64,
     /// The first mail of its chain.
     pub(super) root: MailId,
     /// How far down its chain it is.
@@ -147,6 +152,17 @@ impl Fusing {
             run.ended.clear();
         }
         self.began = 0;
+        self.carrying.clear();
+    }
+
+    /// Notes that the actor `bits` names carries items over into the next step.
+    pub(super) fn carry(&mut self, bits: u64) {
+        self.carrying.push(bits);
+    }
+
+    /// Whether the actor `id` names carries items over into the next step.
+    pub(super) fn carries(&self, id: ActorId) -> bool {
+        !self.carrying.is_empty() && self.carrying.contains(&id.bits())
     }
 
     /// Whether the part may still make a hop in this step: its budget has room.

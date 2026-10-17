@@ -26,7 +26,7 @@ use crate::{
 };
 use aethereal_actor::{
     Above, Actor, Arena, Asked, Beginning, Chain, Closing, Code, Declared, Effect, Fault, How, Item, Mail, MailId,
-    Payload, Refused, Runs, SeatNumber, Seated, Seats, Stood, Turning, What, Why,
+    Refused, Runs, SeatNumber, Seated, Seats, Stood, Turning, What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use begun::begun;
@@ -86,6 +86,13 @@ pub struct Engine {
     actors_seated: usize,
     /// What the turns waiting in each part are expected to cost, in nanoseconds, as of the last fold.
     expected: Vec<u64>,
+    /// What each part was expected to cost as the last step it ran was planned, and how long it took to run, in
+    /// nanoseconds.
+    planned: Vec<u64>,
+    took: Vec<u64>,
+    /// How far each part's turns have of late taken longer than its actors' kinds say, in 1024ths: its actors are
+    /// not all alike, and what is learned of a kind is an average over all of them.
+    scale: Vec<u64>,
     /// What planning and gathering a step pack parts in.
     packing: Packing,
     /// What the steps hand out, emptied and kept from one step to the next for its room, so a step allocates none of
@@ -108,6 +115,8 @@ pub struct Engine {
     read_limit: usize,
     /// The most fused hops one part runs in one step (ADR-0013).
     hops: usize,
+    /// The most nanoseconds one actor's turns take in a step before the rest are carried over: none on one worker.
+    slice: u64,
     /// How the sends made while a part could still fuse have fared, over every step so far.
     hopped: Hops,
     /// The host's quota for the bytes of mail in flight, shared equally among the arenas of every writer.
@@ -151,6 +160,8 @@ pub struct Reading<'a> {
     read_limit: usize,
     /// The most fused hops one part runs in the step.
     hops: usize,
+    /// The most nanoseconds one actor's turns take in the step before the rest of its items are carried over.
+    slice: u64,
 }
 
 /// What a step hands out and takes back, kept empty between steps for its room.
@@ -179,6 +190,10 @@ struct Spare {
 pub struct Parcel {
     /// Which part it is.
     part: usize,
+    /// Whether it is timed as it runs, as one expected to take long enough to learn from, and how long it took, in
+    /// nanoseconds, once it has run.
+    is_timed: bool,
+    took: u64,
     streams: stream::Shard,
     lives: lives::Shard,
     seating: Seating,
@@ -217,7 +232,7 @@ pub struct Lists {
     /// How long the turns took, by what they were.
     tally: Tally,
     /// Each actor with items in the part running, as it was handed them: kept for its room.
-    runs: Vec<(u64, u64, Range<usize>)>,
+    runs: Vec<stream::Run>,
     /// What the part running keeps of its step while it fuses chains of mail.
     fusing: Fusing,
 }
@@ -235,8 +250,8 @@ struct Routes {
 
 /// What an actor runs in a step.
 enum Work {
-    /// One turn for each item its part of the streams handed out in this range, in order.
-    Items(Range<usize>),
+    /// One turn for each item its part of the streams handed out for this run, in order.
+    Items(stream::Run),
     /// Its closing turn.
     Closing,
 }
@@ -273,6 +288,9 @@ impl Engine {
             seated: vec![0; parts.get()],
             actors_seated: 0,
             expected: vec![0; parts.get()],
+            planned: vec![0; parts.get()],
+            took: vec![0; parts.get()],
+            scale: vec![SCALE_ONE; parts.get()],
             packing: Packing::new(parts.get()),
             spare: Spare::default(),
             arenas: [Vec::new(), Vec::new()],
@@ -283,6 +301,7 @@ impl Engine {
             step: 0,
             read_limit,
             hops,
+            slice: u64::MAX,
             hopped: Hops::default(),
             mail_bytes,
         }
@@ -418,7 +437,8 @@ impl Engine {
         let mut tally = mem::take(&mut lists.tally);
         let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
         let mail = &self.arenas[parity(self.step + 1)];
-        let reading = Reading { table: &self.table, mail, read_limit: self.read_limit, hops: self.hops };
+        let reading =
+            Reading { table: &self.table, mail, read_limit: self.read_limit, hops: self.hops, slice: self.slice };
         for (part, _) in &self.packing.parts {
             let room = Room {
                 streams: self.streams.at_mut(*part),
@@ -427,7 +447,8 @@ impl Engine {
                 actors: &mut self.actors[*part],
                 seats: &mut self.seats[*part],
             };
-            reading.run_part(room, clock, &mut tally, &mut asked, &mut lists);
+            let is_timed = self.planned[*part] >= SCALE_TELLS;
+            self.took[*part] = reading.run_part(room, clock, &mut tally, &mut asked, &mut lists, is_timed);
         }
         let (effects, _, arena, _) = asked.into_parts();
         lists.effects = effects;
@@ -445,6 +466,10 @@ impl Engine {
     /// Panics when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn apply_whole(&mut self, whole: Whole) {
         let Whole { arena, lists } = whole;
+        for index in 0..self.packing.parts.len() {
+            let part = self.packing.parts[index].0;
+            self.learn(part, self.took[part]);
+        }
         self.take_in(lists, arena);
 
         let mut forward = mem::take(&mut self.spare.forward);
@@ -478,6 +503,15 @@ impl Engine {
     pub fn plan(&mut self, workers: Workers) -> Plan {
         self.step += 1;
         self.rest();
+        // An actor kept to a slice runs long enough for what splitting the step costs to be a small part of it, and
+        // leaves what it carries for another worker, so on one worker none is kept to one.
+        let slice = workers.split.among(workers.max).saturating_mul(SLICE_SPLITS).max(SLICE_LEAST);
+        let shares_work = workers.max > 1;
+        self.slice = if shares_work {
+            slice
+        } else {
+            u64::MAX
+        };
 
         // The parts in the order of their numbers, as a step runs them.
         self.waiting.sort_unstable();
@@ -492,6 +526,9 @@ impl Engine {
         self.waiting.clear();
         for index in 0..self.packing.parts.len() {
             self.give_room(self.packing.parts[index].0);
+        }
+        for &(part, cost) in &self.packing.parts {
+            self.planned[part] = cost;
         }
         let work = self.packing.parts.iter().map(|(_, cost)| cost).sum();
         let (delta, running, expected_nanos) = plan::plan(&self.packing.parts, self.recent, workers);
@@ -577,7 +614,7 @@ impl Engine {
     pub fn reading(&self) -> Reading<'_> {
         let mail = &self.arenas[parity(self.step + 1)];
 
-        Reading { table: &self.table, mail, read_limit: self.read_limit, hops: self.hops }
+        Reading { table: &self.table, mail, read_limit: self.read_limit, hops: self.hops, slice: self.slice }
     }
 
     /// Ends a step on the thread that calls it: gathers what the workers left, folds every part, and settles
@@ -646,7 +683,7 @@ impl Engine {
     /// The engine as the step's workers read it while they fold.
     #[must_use]
     pub fn folding(&self) -> Folding<'_> {
-        Folding { costs: &self.costs }
+        Folding { costs: &self.costs, slice: self.slice }
     }
 
     /// Ends a step: puts back every part the workers folded, and puts the endings their watches handed on in the
@@ -673,7 +710,9 @@ impl Engine {
         let mut touched = mem::take(&mut self.spare.touched);
         for part in 0..self.seating.len() {
             let records: usize = self.lists[self.writing.clone()].iter().map(|lists| lists.routes.records(part)).sum();
-            if records > 0 {
+            // A part that carried items over has them to run, whether or not anything else reached it.
+            let carried = self.streams.at(part).has_items();
+            if records > 0 || carried {
                 touched.push(part);
             }
         }
@@ -701,7 +740,15 @@ impl Engine {
 
     /// What the turns waiting in part `part` are expected to cost, in nanoseconds.
     fn expect(&self, part: usize) -> u64 {
-        fold::expected(self.streams.at(part), self.lives.at(part), &self.seating[part].seated, &self.costs)
+        let expected = fold::expected(
+            self.streams.at(part),
+            self.lives.at(part),
+            &self.seating[part].seated,
+            &self.costs,
+            self.slice,
+        );
+
+        self.scaled(part, expected)
     }
 
     /// Takes part `part` of every view out, with every worker's records for it, to fold, into a spare pile.
@@ -741,7 +788,7 @@ impl Engine {
         let empty = Seating { seated: BySeat::empty(parts) };
         self.seating[part] = mem::replace(&mut pile.seating, empty);
         self.actors[part] = mem::replace(&mut pile.actors, BySeat::empty(parts));
-        self.expected[part] = pile.expected;
+        self.expected[part] = self.scaled(part, pile.expected);
     }
 
     /// Takes part `part` out of the engine for a worker to run.
@@ -751,6 +798,8 @@ impl Engine {
 
         Parcel {
             part,
+            is_timed: self.planned[part] >= SCALE_TELLS,
+            took: 0,
             streams: self.streams.take(part),
             lives: self.lives.take(part),
             seating: mem::replace(&mut self.seating[part], empty),
@@ -761,7 +810,8 @@ impl Engine {
 
     /// Puts back a part a worker ran.
     fn put(&mut self, parcel: Parcel) {
-        let Parcel { part, streams, lives, seating, actors, seats } = parcel;
+        let Parcel { part, took, streams, lives, seating, actors, seats, .. } = parcel;
+        self.learn(part, took);
         self.streams.put(part, streams);
         self.lives.put(part, lives);
         self.seating[part] = seating;
@@ -879,6 +929,25 @@ impl Engine {
         seats
     }
 
+    /// Learns from a part that took `took` nanoseconds to run how far its turns take longer than its actors' kinds
+    /// say: halfway from what it thought toward what this step showed. A part expected to take too little to tell
+    /// teaches nothing.
+    fn learn(&mut self, part: usize, took: u64) {
+        let planned = self.planned[part];
+        let is_telling = planned >= SCALE_TELLS && took > 0;
+        if !is_telling {
+            return;
+        }
+        let scale = self.scale[part];
+        let shown = scale.saturating_mul(took) / planned;
+        self.scale[part] = (scale + shown).div_ceil(2).clamp(SCALE_ONE / 8, SCALE_ONE * 16);
+    }
+
+    /// What `expected` nanoseconds, a part's by its actors' kinds, come to in that part, as it has run of late.
+    fn scaled(&self, part: usize, expected: u64) -> u64 {
+        expected.saturating_mul(self.scale[part]) / SCALE_ONE
+    }
+
     /// Takes back the seats lent to a root's `begin` by [`Self::lend_seats`].
     fn take_back_lent(&mut self, home: usize, mut seats: Seats) {
         let lent: Vec<u64> = seats.take_lent().collect();
@@ -903,7 +972,8 @@ impl Reading<'_> {
         // as it finishes.
         let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
         for parcel in &mut parcels {
-            self.run_part(parcel.room(), clock, &mut tally, &mut asked, &mut lists);
+            let is_timed = parcel.is_timed;
+            parcel.took = self.run_part(parcel.room(), clock, &mut tally, &mut asked, &mut lists, is_timed);
         }
         let (effects, _, arena, _) = asked.into_parts();
         lists.effects = effects;
@@ -922,16 +992,22 @@ impl Reading<'_> {
         tally: &mut Tally,
         asked: &mut Asked,
         lists: &mut Lists,
-    ) {
+        is_timed: bool,
+    ) -> u64 {
+        let begins = if is_timed {
+            clock.nanos()
+        } else {
+            0
+        };
         lists.fusing.begin(self.hops);
         mem::swap(asked.seats_mut(), room.seats);
         let mut runs = mem::take(&mut lists.runs);
-        runs.extend(room.streams.hand());
-        for (seat, bits, range) in &runs {
-            let me = Seated { id: ActorId::new(*bits), seat: SeatNumber::new(*seat) };
+        room.streams.hand(&mut runs);
+        for run in &runs {
+            let me = Seated { id: ActorId::new(run.bits), seat: SeatNumber::new(run.seat) };
             let is_live = room.lives.life(me).is_some_and(lives::Life::is_live);
             if is_live {
-                self.turns(&mut room, me, Work::Items(range.clone()), clock, tally, asked, lists);
+                self.turns(&mut room, me, Work::Items(*run), clock, tally, asked, lists);
             }
         }
         runs.clear();
@@ -944,6 +1020,14 @@ impl Reading<'_> {
         // Every item that was waiting has run, so a hop overtakes nothing its sender sent in an earlier step. The hops
         // run in the order they were made, so two from one sender to one receiver are handled in the order sent.
         while let Some(hop) = lists.fusing.next() {
+            // A hop to an actor that was cut off in the step would overtake what it carries, so it is carried
+            // after that.
+            if lists.fusing.carries(hop.to.id) {
+                let Hop { to, from, count, root, depth, kind, .. } = hop;
+                let envelope = |bytes| Envelope { sender_seat: from.seat, root, depth, kind, bytes };
+                room.streams.carry_hop(to, (from.id.bits(), count), envelope, lists.fusing.bytes(&hop));
+                continue;
+            }
             self.hop(&mut room, hop, clock, tally, asked, lists);
         }
         // What each actor kept as the part ran sent is noted once, however many turns it took.
@@ -955,11 +1039,12 @@ impl Reading<'_> {
             }
         }
         mem::swap(asked.seats_mut(), room.seats);
-    }
 
-    /// The bytes of a piece of mail sent in the last step.
-    fn bytes(&self, payload: Payload) -> &[u8] {
-        self.mail.get(payload.slot()).and_then(|arena| arena.read(payload)).unwrap_or_default()
+        if is_timed {
+            clock.nanos().saturating_sub(begins)
+        } else {
+            0
+        }
     }
 
     /// The turns of the actor `me` names in `parcel` that `work` asks for, each measured into `tally`, what they
@@ -1017,7 +1102,7 @@ impl Reading<'_> {
                 lists.freed.push(me.seat);
                 actors.remove(me);
             }
-            (Work::Items(range), State::Live) => {
+            (Work::Items(run), State::Live) => {
                 let sent_before = life.sent();
                 let fresh = Stepped { sent: sent_before, spilled: false, ended: false };
                 let mut stepped = if lists.fusing.is_open() {
@@ -1025,7 +1110,11 @@ impl Reading<'_> {
                 } else {
                     fresh
                 };
-                for handed in streams.handed(range) {
+                // An actor that sends is kept to its slice, the rest of its items carried over, so what it sends
+                // runs on other workers while it goes on; one that sends nothing would only take more steps.
+                let mut slice = Slice::new(self.slice);
+                let mut is_spent = false;
+                for handed in streams.items(&run) {
                     // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
                     // worker, beyond what the actor's code takes.
                     tally.time(key(item_kind(handed)), clock, || {
@@ -1035,7 +1124,7 @@ impl Reading<'_> {
                         let source = handed.source();
                         let (item, context) = match handed {
                             Handed::Mail { envelope: &Envelope { kind, root, depth, .. }, bytes, .. } => {
-                                let bytes = self.bytes(bytes);
+                                let bytes = stream::read(bytes, self.mail, streams.carried());
                                 let mail = Mail::new(kind, bytes, source, root, depth, self.read_limit);
 
                                 (Item::Mail(mail), Context { root, depth: depth + 1 })
@@ -1062,6 +1151,15 @@ impl Reading<'_> {
                     if stepped.ended {
                         break;
                     }
+                    let has_sent = stepped.sent > sent_before;
+                    is_spent = slice.is_spent(clock) && has_sent;
+                    if is_spent {
+                        break;
+                    }
+                }
+                if is_spent && !stepped.ended {
+                    streams.carry(&run, slice.taken, self.mail);
+                    lists.fusing.carry(me.id.bits());
                 }
 
                 // An actor its part may still fuse to is kept, and what it sent is noted once the part has run.
@@ -1210,7 +1308,17 @@ impl Reading<'_> {
                     let context = ran.context;
                     // A fused send from a waiting item begins a run; one from a hop goes on with the hop's.
                     let chain = *run.get_or_insert_with(|| lists.fusing.begin_run());
-                    let hop = Hop { to, from: me, root: context.root, depth: context.depth, kind, run: chain, at, len };
+                    let hop = Hop {
+                        to,
+                        from: me,
+                        count,
+                        root: context.root,
+                        depth: context.depth,
+                        kind,
+                        run: chain,
+                        at,
+                        len,
+                    };
                     lists.fusing.wait(hop);
                     stepped.sent = stepped.sent.max(count);
                 }
@@ -1274,7 +1382,7 @@ fn hand(to: Seated, stepped: Stepped, seating: &Seating, lives: &lives::Shard, f
         return Hand::Ended;
     }
 
-    if stepped.spilled {
+    if stepped.spilled || fusing.carries(to.id) {
         Hand::Spilled
     } else {
         Hand::Fuse
@@ -1505,3 +1613,51 @@ const fn why(how: &How) -> Why {
         How::Closed | How::Earlier => Why::Closed,
     }
 }
+
+/// A part's scale when it runs as its actors' kinds say: one, in 1024ths.
+const SCALE_ONE: u64 = 1024;
+/// The least a part is expected to cost, in nanoseconds, for how long it took to teach how far it runs from its kinds.
+const SCALE_TELLS: u64 = 20_000;
+
+/// How many turns an actor kept to a slice runs between looks at the clock.
+const SLICE_EVERY: u32 = 32;
+
+/// How far one actor has gone into its slice of a step: how many turns it has taken, and when its slice began.
+struct Slice {
+    /// The most nanoseconds its turns take: none past `u64::MAX`, which keeps it to no slice.
+    nanos: u64,
+    taken: u32,
+    began: u64,
+}
+
+impl Slice {
+    /// An actor's slice of `nanos` nanoseconds, before it has taken a turn.
+    const fn new(nanos: u64) -> Self {
+        Self { nanos, taken: 0, began: 0 }
+    }
+
+    /// Counts a turn taken, and answers whether the actor has run past its slice. The clock is read every
+    /// [`SLICE_EVERY`] turns, and the slice timed from the first read, so an actor with few items reads it never.
+    fn is_spent(&mut self, clock: &impl Clock) -> bool {
+        self.taken += 1;
+        let is_kept = self.nanos != u64::MAX;
+        let is_checked = is_kept && self.taken.is_multiple_of(SLICE_EVERY);
+        if !is_checked {
+            return false;
+        }
+        let now = clock.nanos();
+        if self.taken == SLICE_EVERY {
+            self.began = now;
+        }
+
+        now.saturating_sub(self.began) >= self.nanos
+    }
+}
+
+/// How many times what splitting a step among every worker costs an actor kept to a slice runs before its items are
+/// carried over.
+const SLICE_SPLITS: u64 = 16;
+/// The least an actor kept to a slice runs, in nanoseconds, on a host that measured no cost of splitting.
+const SLICE_LEAST: u64 = 50_000;
+/// How many carried items of one actor the plan walks to weigh them: a slice's worth for any but the cheapest items.
+const CARRIED_WEIGHED: u64 = 4096;
