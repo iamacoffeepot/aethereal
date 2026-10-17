@@ -1144,13 +1144,14 @@ const PROGRAMS: [Program; 9] = [
 
 /// One run of `program` on `workers` workers, each part running at most `hops` fused hops a step: the nanoseconds it
 /// One run of `program` on `workers` workers, each part running at most `hops` fused hops a step: the nanoseconds it
-/// took, from its root's `begin` to the last step, the steps, and how its sends fared while parts could fuse.
+/// took, from its root's `begin` to the last step, the steps, and how its sends fared while parts could fuse. The host
+/// is made before the clock starts, so what it measures as it starts is not counted.
 fn run(program: &Program, workers: NonZeroUsize, hops: usize) -> (u64, u64, Hops) {
     let parts = NonZeroUsize::MIN.saturating_add(15);
-    let mut engine = Engine::new(parts, 1024, 1 << 30, hops);
-    let clock = Monotonic::new();
-    (program.start)(&mut engine);
+    let engine = Engine::new(parts, 1024, 1 << 30, hops);
     let mut headless = Headless::new(engine, workers);
+    let clock = Monotonic::new();
+    (program.start)(headless.engine_mut());
     headless.run_until_idle();
 
     (clock.nanos(), headless.measured().steps, headless.engine().hopped())
