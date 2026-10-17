@@ -421,6 +421,14 @@ impl Seat<'_> {
         mail: &K,
         is_like_last: bool,
     ) -> Result<(), EncodeError> {
+        #[cfg(feature = "std")]
+        let bytes = self.asked.arena.write_holding(|bytes, held| {
+            let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::new(held));
+            let written = mail.encode(&mut out);
+
+            (out.into_bytes(), written)
+        })?;
+        #[cfg(not(feature = "std"))]
         let bytes = self.asked.arena.write(|bytes| {
             let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::new());
             let written = mail.encode(&mut out);

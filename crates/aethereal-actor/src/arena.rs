@@ -30,6 +30,17 @@ pub struct Arena {
     /// How many bytes the slab holds: the writer's share of the host's quota for mail, at least [`ARENA_BYTES`] and
     /// at most [`SLAB_MOST`].
     bytes: usize,
+    /// The pins the mail in the slab holds, each at where its reference begins in the slab, in that order: dropped
+    /// when the arena is emptied (ADR-0014).
+    #[cfg(feature = "std")]
+    held: Vec<crate::Held>,
+    /// The pins the spilled mail holds, each with the index of its piece and where in that piece its reference
+    /// begins, in that order.
+    #[cfg(feature = "std")]
+    held_spilled: Vec<(u32, crate::Held)>,
+    /// Where a write keeps the pins of what it writes until it is known whether the slab took it: empty between.
+    #[cfg(feature = "std")]
+    holding: Vec<crate::Held>,
 }
 
 /// The most bytes one arena's slab holds, so that where a piece of mail lies in it is a 32-bit number.
@@ -71,7 +82,18 @@ impl Arena {
             panic!("no engine has more than u32::MAX writers");
         };
 
-        Self { slot, slab: Vec::new(), spilled: Vec::new(), bytes: ARENA_BYTES }
+        Self {
+            slot,
+            slab: Vec::new(),
+            spilled: Vec::new(),
+            bytes: ARENA_BYTES,
+            #[cfg(feature = "std")]
+            held: Vec::new(),
+            #[cfg(feature = "std")]
+            held_spilled: Vec::new(),
+            #[cfg(feature = "std")]
+            holding: Vec::new(),
+        }
     }
 
     /// Which writer's arena this is.
@@ -86,6 +108,12 @@ impl Arena {
     pub fn clear(&mut self, bytes: usize) {
         self.slab.clear();
         self.spilled.clear();
+        // What was never read lets go of its blobs with it.
+        #[cfg(feature = "std")]
+        {
+            self.held.clear();
+            self.held_spilled.clear();
+        }
         self.bytes = bytes.clamp(ARENA_BYTES, SLAB_MOST);
     }
 
@@ -152,6 +180,57 @@ impl Arena {
         self.slab.shrink_to(self.bytes);
 
         Ok(self.spill(own))
+    }
+}
+
+#[cfg(feature = "std")]
+impl Arena {
+    /// Writes one piece of mail with `write`, as [`Self::write`] does, which is handed beside the bytes the list to
+    /// keep the pins of the blobs it refers to, each at where its reference begins. The arena keeps them with the
+    /// piece, and drops them when the piece is not written.
+    pub(crate) fn write_holding<E>(
+        &mut self,
+        write: impl FnOnce(Vec<u8>, &mut Vec<crate::Held>) -> (Vec<u8>, Result<(), E>),
+    ) -> Result<Payload, E> {
+        let mut holding = mem::take(&mut self.holding);
+        let mut begins = 0;
+        let written = self.write(|bytes| {
+            begins = bytes.len();
+            write(bytes, &mut holding)
+        });
+        match written {
+            Ok(Payload::InArena { .. }) => self.held.append(&mut holding),
+            Ok(Payload::Spilled { index, .. }) => {
+                let begins = u32::try_from(begins).unwrap_or(u32::MAX);
+                #[allow(clippy::iter_with_drain, reason = "the list is kept for its room, for the next write")]
+                self.held_spilled.extend(holding.drain(..).map(|(at, pin)| (index, (at - begins, pin))));
+            }
+            Err(_) => holding.clear(),
+        }
+        self.holding = holding;
+
+        written
+    }
+
+    /// Adds to `into` a pin of its own on each blob the bytes of `payload` refer to, when they are in this arena, each
+    /// at `base` more than where its reference begins in them: for bytes copied out to `base`.
+    pub fn pin_copied(&self, payload: Payload, base: u32, into: &mut Vec<crate::Held>) {
+        let is_own = payload.slot() == self.slot();
+        if !is_own {
+            return;
+        }
+        match payload {
+            Payload::InArena { start, len, .. } => {
+                let pinned = crate::within(&self.held, start, len).iter();
+                into.extend(pinned.map(|(at, pin)| (base + (at - start), pin.clone())));
+            }
+            Payload::Spilled { index, .. } => {
+                let first = self.held_spilled.partition_point(|(piece, _)| *piece < index);
+                let past = self.held_spilled.partition_point(|(piece, _)| *piece <= index);
+                let pinned = self.held_spilled[first..past].iter();
+                into.extend(pinned.map(|(_, (at, pin))| (base + at, pin.clone())));
+            }
+        }
     }
 }
 

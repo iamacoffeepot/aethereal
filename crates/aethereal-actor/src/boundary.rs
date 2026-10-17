@@ -2,6 +2,8 @@
 
 use crate::{BlobId, Declared, SeatNumber, Seated};
 use aethereal_data::{ActorId, ActorPath, Boundary, PathSegment};
+#[cfg(feature = "std")]
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 /// The table of actors as a turn reads it: as it stood when the turn's step began (ADR-0008, ADR-0011).
@@ -73,13 +75,36 @@ impl Boundary for Within {
     type ReaderOffers<'a> = WithinReader<'a>;
 }
 
+/// What a writer at [`Actors`] holds beside the bytes written so far: the pins of the blobs it refers to, each at
+/// where its reference begins (ADR-0014).
+#[cfg(feature = "std")]
+pub struct ActorsWriter<'a> {
+    held: &'a mut Vec<crate::Held>,
+}
+
+#[cfg(feature = "std")]
+impl<'a> ActorsWriter<'a> {
+    /// A writer at [`Actors`] that keeps the pins of what it writes in `held`.
+    #[must_use]
+    pub const fn new(held: &'a mut Vec<crate::Held>) -> Self {
+        Self { held }
+    }
+
+    /// Keeps `pin`, for a reference whose bytes begin at `at`.
+    pub(crate) fn hold(&mut self, at: u32, pin: crate::BlobRef) {
+        self.held.push((at, pin));
+    }
+}
+
 /// What a writer at [`Actors`] holds beside the bytes written so far.
+#[cfg(not(feature = "std"))]
 #[derive(Default)]
 pub struct ActorsWriter<'a> {
-    /// Nothing is held yet. The lifetime is kept for what a later bound value needs held.
+    /// Nothing is held: no blob can be referred to without the pins `std` keeps.
     held: PhantomData<&'a ()>,
 }
 
+#[cfg(not(feature = "std"))]
 impl ActorsWriter<'_> {
     /// What a writer at [`Actors`] holds.
     #[must_use]

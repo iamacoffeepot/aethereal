@@ -914,10 +914,23 @@ fn a_child_stood_up_in_a_turn_counts_what_it_sent_from_its_begin() {
     assert_eq!(count, Some(1), "3 sent itself close from its begin");
 }
 
-/// The notes a holder sends itself as it begins.
+/// The notes a holder sends itself as it begins, and how many times it mails itself a blob of three bytes there,
+/// keeping none of it.
 #[derive(Plain)]
 struct HolderConfig {
     to_self: Vec<String>,
+    gives: u64,
+}
+
+/// A blob, given in mail, to be given on `left` more times.
+#[derive(Bound)]
+struct Given {
+    blob: BlobRef,
+    left: u64,
+}
+
+impl Kind for Given {
+    const NAME: KindName = KindName::new("aether.test.given");
 }
 
 impl Kind for HolderConfig {
@@ -930,10 +943,16 @@ impl Kind for HolderConfig {
 /// - `read` says how many bytes each blob it keeps holds;
 /// - `drop` lets go of the blob it kept last;
 /// - `fail` fails its turn;
-/// - `later text` sends itself `text`, for the next step.
+/// - `later text` sends itself `text`, for the next step;
+/// - `send` mails itself the blob it kept last, keeping none of it, and `send close` closes as well;
+///
+/// and keeps a blob it is given, saying how many bytes it holds, but for one it gave itself as it began, which it
+/// reads, gives itself on while it has more times to go, and lets go of.
 #[derive(Bound)]
 struct Holder {
     held: Vec<BlobRef>,
+    /// Whether it gave itself a blob as it began.
+    gave: bool,
 }
 
 impl Kind for Holder {
@@ -943,8 +962,8 @@ impl Kind for Holder {
 impl Actor for Holder {
     type Config = HolderConfig;
     type Key = ();
-    type Handles = (Note,);
-    type BeginSends = (ToType<Self, Note>,);
+    type Handles = (Note, Given);
+    type BeginSends = (ToType<Self, Note>, ToType<Self, Given>);
     type EndSends = ();
 
     fn begin(config: HolderConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
@@ -952,8 +971,20 @@ impl Actor for Holder {
             let me = turn.me();
             turn.to::<Self>(ToWithoutMail::Held(me)).send(&Note { text })?;
         }
+        if config.gives > 0 {
+            let Ok(blob) = turn.put(vec![9; 3]) else {
+                return Err(Fault::new(&Note { text: String::from("no room") })?);
+            };
+            // A note between each two keeps them from joining into one run, so the part carries many items.
+            let given = Given { blob, left: 1 };
+            for _ in 0..config.gives {
+                let me = turn.me();
+                turn.to::<Self>(ToWithoutMail::Held(me)).send(&given)?;
+                turn.to::<Self>(ToWithoutMail::Held(me)).send(&Note { text: String::from("between") })?;
+            }
+        }
 
-        Ok(Self { held: Vec::new() })
+        Ok(Self { held: Vec::new(), gave: config.gives > 0 })
     }
 
     fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
@@ -962,7 +993,7 @@ impl Actor for Holder {
 }
 
 impl Handles<Note> for Holder {
-    type Sends = (ToType<Self, Note>,);
+    type Sends = (ToType<Self, Note>, ToType<Self, Given>);
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let Note { text } = note;
@@ -979,11 +1010,40 @@ impl Handles<Note> for Holder {
             }
             ["drop"] => drop(self.held.pop()),
             ["fail"] => return Err(Fault::new(&Note { text })?),
+            ["send", ..] => {
+                if let Some(blob) = self.held.pop() {
+                    let me = turn.me();
+                    turn.to::<Self>(To::Held(me)).send(&Given { blob, left: 0 })?;
+                }
+                if words.get(1) == Some(&"close") {
+                    turn.close();
+                }
+            }
             ["later", rest] => {
                 let me = turn.me();
                 turn.to::<Self>(To::Held(me)).send(&Note { text: String::from(rest) })?;
             }
             _ => {}
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<Given> for Holder {
+    type Sends = (ToType<Self, Given>,);
+
+    fn handle(&mut self, given: Given, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let held = turn.read(&given.blob).len();
+        if self.gave {
+            let Given { blob, left } = given;
+            if left > 0 {
+                let me = turn.me();
+                turn.to::<Self>(To::Held(me)).send(&Given { blob, left: left - 1 })?;
+            }
+        } else {
+            say(format!("given {held}"));
+            self.held.push(given.blob);
         }
 
         Ok(())
@@ -997,7 +1057,7 @@ fn holding(blob_bytes: usize, to_self: &[&str]) -> Engine {
     };
     let mut engine = Engine::new(parts, 1024, 0, blob_bytes, 0);
     let to_self = to_self.iter().map(|text| String::from(*text)).collect();
-    let Ok(_) = engine.add_root::<Holder>(&(), HolderConfig { to_self }) else {
+    let Ok(_) = engine.add_root::<Holder>(&(), HolderConfig { to_self, gives: 0 }) else {
         panic!("the holder begins");
     };
 
@@ -1094,4 +1154,61 @@ fn one_engine_sums_only_the_changes_to_its_own_blobs() {
 
     assert_eq!(kept.blobs_held(), (1, 3));
     assert_eq!(dropping.blobs_held(), (0, 0));
+}
+
+#[test]
+fn a_blob_sent_in_mail_lives_until_its_receiver_holds_it() {
+    // Catches mail that holds no pin, so a blob nobody else refers to is freed before it is delivered, and a receiver
+    // that reads a reference back with no pin of its own, so the blob goes once the mail's arena is emptied.
+    let mut engine = holding(1 << 20, &["put 3", "later send"]);
+    step(&mut engine);
+    assert_eq!(step(&mut engine), [""; 0]);
+    assert_eq!(engine.blobs_held(), (1, 3), "only the mail refers to it");
+
+    assert_eq!(step(&mut engine), ["given 3"]);
+    for _ in 0..3 {
+        step(&mut engine);
+    }
+    assert_eq!(engine.blobs_held(), (1, 3), "the receiver keeps it once the mail is gone");
+}
+
+#[test]
+fn mail_that_is_never_delivered_lets_go_of_its_blob() {
+    // Catches the pin of mail dropped undelivered kept for good, which holds its blob past everything that could
+    // read it.
+    let mut engine = holding(1 << 20, &["put 3", "later send close"]);
+    for _ in 0..6 {
+        step(&mut engine);
+    }
+
+    assert_eq!(engine.blobs_held(), (0, 0));
+}
+
+#[test]
+fn mail_carried_past_its_receivers_slice_keeps_its_blob_until_it_is_handed() {
+    // Catches the bytes of mail carried over into a part's backlog without the pins of what they refer to, so the
+    // blob is freed once the arena it was sent in is emptied while the backlog still holds mail that refers to it:
+    // mail carried as it arrived, mail moved to the front of a backlog, and a hop to an actor cut off in its step.
+    let Some(parts) = NonZeroUsize::new(4) else {
+        panic!("four is not zero");
+    };
+    for hops in [0, 64] {
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops);
+        let Ok(_) = engine.add_root::<Holder>(&(), HolderConfig { to_self: Vec::new(), gives: 3000 }) else {
+            panic!("the holder begins");
+        };
+        let clock = Ticking::default();
+        let mut steps = 0;
+        while !engine.is_idle() {
+            step_on(&mut engine, 2, &clock);
+            steps += 1;
+        }
+        assert!(steps > 10, "the holder is cut off at its slice and carries what it was given, hops={hops}");
+
+        // A part idle for long enough gives back what it carried, and the pins with it.
+        for _ in 0..=stream::IDLE_STEPS {
+            step_on(&mut engine, 2, &clock);
+        }
+        assert_eq!(engine.blobs_held(), (0, 0), "hops={hops}");
+    }
 }

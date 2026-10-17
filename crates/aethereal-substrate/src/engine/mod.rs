@@ -1098,7 +1098,13 @@ impl Reading<'_> {
             if lists.fusing.carries(hop.to.id) {
                 let Hop { to, from, count, root, depth, kind, .. } = hop;
                 let envelope = |bytes| Envelope { sender_seat: from.seat, root, depth, kind, bytes };
-                room.streams.carry_hop(to, (from.id.bits(), count), envelope, lists.fusing.bytes(&hop));
+                room.streams.carry_hop(
+                    to,
+                    (from.id.bits(), count),
+                    envelope,
+                    lists.fusing.bytes(&hop),
+                    lists.fusing.pins(&hop),
+                );
                 continue;
             }
             self.hop(&mut room, hop, clock, tally, asked, lists);
@@ -1363,7 +1369,7 @@ impl Reading<'_> {
                     } else {
                         bytes
                     };
-                    let (at, len) = lists.fusing.keep_bytes(asked.arena().read(first).unwrap_or_default());
+                    let (at, len) = lists.fusing.keep_bytes(asked.arena(), first);
                     let mailed = &mut asked.buffers_mut().mailed;
                     // Of a run, the first piece is fused and the rest stays mail. The fused send is most often the
                     // turn's last piece of mail, and nothing is moved for it.

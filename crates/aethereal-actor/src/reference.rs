@@ -211,6 +211,7 @@ mod tests {
     use super::*;
     use crate::{Actors, ActorsReader, ActorsWriter, Within, WithinReader, WithinWriter};
     use aethereal_data::{Bound, Budget};
+    use alloc::vec::Vec;
 
     /// A reference to the actor `bits` names, in seat `seat`.
     const fn reference(bits: u64, seat: u64) -> ErasedActorRef {
@@ -231,7 +232,8 @@ mod tests {
         // place among plain fields, at either boundary a reference crosses.
         let sent = Subscribe { topic: 7, to: reference(41, 3), typed: ActorRef::new(reference(42, 9).seated()) };
 
-        let mut out = Writer::<Actors>::new(ActorsWriter::new());
+        let mut held = Vec::new();
+        let mut out = Writer::<Actors>::new(ActorsWriter::new(&mut held));
         assert_eq!(sent.encode(&mut out), Ok(()));
         let bytes = out.into_bytes();
         let mut budget = Budget::new(64);

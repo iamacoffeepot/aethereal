@@ -2,7 +2,7 @@
 
 use crate::watch::Notice;
 use crate::{Context, Envelope, View};
-use aethereal_actor::{Arena, CARRIED, Effect, Ended, MailId, Mailed, Payload, SeatNumber, Seated};
+use aethereal_actor::{Arena, CARRIED, Effect, Ended, Held, MailId, Mailed, Payload, SeatNumber, Seated, within};
 use aethereal_data::ActorId;
 use std::iter;
 use std::mem;
@@ -54,6 +54,9 @@ pub struct Shard {
     backlog: Vec<(u64, Entry)>,
     backlog_endings: Vec<(Ended, Context)>,
     backlog_bytes: Vec<u8>,
+    /// The pins of the blobs the carried mail refers to, each at where its reference begins in `backlog_bytes`, in
+    /// that order: the backlog keeps a blob for as long as it keeps the mail that refers to it (ADR-0014).
+    backlog_pins: Vec<Held>,
     /// The runs of the backlog to hand out at the next step, by seat and actor, each actor's in the order carried.
     segments: Vec<Segment>,
     /// The runs of the backlog handed out at the start of this step.
@@ -201,6 +204,7 @@ impl Shard {
             self.backlog.clear();
             self.backlog_endings.clear();
             self.backlog_bytes.clear();
+            self.backlog_pins.clear();
         }
         // What was handed out of the backlog stays in it until it is drained, or until it is most of it.
         let live: usize = self.handing.iter().map(|segment| segment.range.len()).sum();
@@ -267,10 +271,11 @@ impl Shard {
 
     /// Moves what the backlog still holds to the front of its lists, in order, and drops what was handed out of it.
     fn compact(&mut self) {
-        let Self { backlog, backlog_endings, backlog_bytes, handing, .. } = self;
+        let Self { backlog, backlog_endings, backlog_bytes, backlog_pins, handing, .. } = self;
         let mut entries = Vec::new();
         let mut endings = Vec::new();
         let mut bytes = Vec::new();
+        let mut pins = Vec::new();
         for segment in handing.iter_mut() {
             let begins = entries.len();
             for &(seat, mut entry) in &backlog[segment.range.clone()] {
@@ -278,6 +283,10 @@ impl Shard {
                     Stored::Mail(mut envelope) => {
                         let start = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
                         bytes.extend_from_slice(read_carried(envelope.bytes, backlog_bytes));
+                        if let Payload::InArena { start: was, len, .. } = envelope.bytes {
+                            let kept = within(backlog_pins, was, len).iter();
+                            pins.extend(kept.map(|(at, pin)| (start + (at - was), pin.clone())));
+                        }
                         envelope.bytes = carried_from(envelope.bytes, start);
 
                         Stored::Mail(envelope)
@@ -295,6 +304,8 @@ impl Shard {
         *backlog = entries;
         *backlog_endings = endings;
         *backlog_bytes = bytes;
+        // The pins of what was handed out go with the old list.
+        *backlog_pins = pins;
     }
 
     /// The items of `run`, in order: what it carried over, then what arrived for it, a run of mail one piece after
@@ -380,6 +391,9 @@ impl Shard {
                         panic!("a part carries less than u32::MAX bytes of mail");
                     };
                     self.backlog_bytes.extend_from_slice(bytes);
+                    if let Some(arena) = mail.get(rest.slot()) {
+                        arena.pin_copied(rest, start, &mut self.backlog_pins);
+                    }
                     let left = u16::try_from(rest.pieces()).unwrap_or(u16::MAX);
 
                     Stored::Mail(Envelope {
@@ -404,12 +418,21 @@ impl Shard {
     }
 
     /// Carries over into the next step a hop to `to`, an actor cut off in this step, after what it carries already:
-    /// the mail of id `order` that `envelope` makes of where its bytes are carried, whose bytes are `bytes`.
-    pub fn carry_hop(&mut self, to: Seated, order: Order, envelope: impl FnOnce(Payload) -> Envelope, bytes: &[u8]) {
+    /// the mail of id `order` that `envelope` makes of where its bytes are carried, whose bytes are `bytes` and the
+    /// pins of whose blobs are `pins`, each at where its reference begins in `bytes`.
+    pub fn carry_hop(
+        &mut self,
+        to: Seated,
+        order: Order,
+        envelope: impl FnOnce(Payload) -> Envelope,
+        bytes: &[u8],
+        pins: impl IntoIterator<Item = Held>,
+    ) {
         let (Ok(start), Ok(len)) = (u32::try_from(self.backlog_bytes.len()), u32::try_from(bytes.len())) else {
             panic!("a part carries less than u32::MAX bytes of mail");
         };
         self.backlog_bytes.extend_from_slice(bytes);
+        self.backlog_pins.extend(pins.into_iter().map(|(at, pin)| (start + at, pin)));
         let bytes = Payload::InArena { slot: CARRIED, start, len, pieces: 1 };
         let entry = Entry { to: to.id.bits(), order, item: Stored::Mail(envelope(bytes)) };
         let seat = to.seat.number();
@@ -490,6 +513,7 @@ impl Shard {
         self.backlog.clear();
         self.backlog_endings.clear();
         self.backlog_bytes.clear();
+        self.backlog_pins.clear();
         trim(&mut self.handing, KEPT_LEAST);
         trim(&mut self.backlog, KEPT_LEAST);
         trim(&mut self.backlog_endings, KEPT_LEAST);
