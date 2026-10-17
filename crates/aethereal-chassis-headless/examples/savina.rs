@@ -51,6 +51,7 @@ use aethereal_substrate::{Clock, Engine, Hops};
 use std::env;
 use std::hint;
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// How many times each way the ping-pong mail goes.
 const PINGS: u64 = 40_000;
@@ -1085,6 +1086,7 @@ impl Region {
                 turn.to_actor(*body).send(&Over)?;
             }
             turn.close();
+            WORLD_OVER.fetch_add(1, Ordering::Relaxed);
 
             return Ok(());
         }
@@ -1354,7 +1356,13 @@ struct Program {
     size: fn() -> Size,
     /// Adds the program's roots for its run numbered by the second argument, under keys no earlier run used.
     start: fn(&mut Engine, u64),
+    /// Stops the benchmark unless the run just done did all its work, for a program whose actors would otherwise go
+    /// idle unseen when mail they wait on is lost.
+    check: fn(),
 }
+
+/// Checks nothing, for a program whose actors check their own work as they close.
+fn unchecked() {}
 
 /// Adds the root of type `A` for the run numbered `round`, which starts a program.
 fn root<A: Actor<Config = Number, Key = u64>>(engine: &mut Engine, round: u64) {
@@ -1379,6 +1387,16 @@ fn world(engine: &mut Engine, round: u64) {
             panic!("a region begins");
         };
     }
+}
+
+/// How many regions of the world program have run every frame since its last run was checked.
+static WORLD_OVER: AtomicU64 = AtomicU64::new(0);
+
+/// Stops the benchmark unless every region of the world program's last run ran every frame: a region waiting on a
+/// body's answer that was lost goes idle unseen, and the run looks quicker.
+fn world_check() {
+    let over = WORLD_OVER.swap(0, Ordering::Relaxed);
+    assert_eq!(over, WORLD_REGIONS, "every region of the world runs every frame");
 }
 
 /// The world program's size, found by running its lives without actors: each region, its bodies, and one in the
@@ -1412,10 +1430,30 @@ fn churn_wide_size() -> Size {
 }
 
 const PROGRAMS: [Program; 10] = [
-    Program { name: "pingpong", size: || Size { actors: 2, mails: 2 * PINGS }, start: root::<Pinger> },
-    Program { name: "count", size: || Size { actors: 2, mails: COUNTS + 2 }, start: root::<Producer> },
-    Program { name: "count-begin", size: || Size { actors: 2, mails: COUNTS + 2 }, start: root::<BeginProducer> },
-    Program { name: "fjthrput", size: || Size { actors: FORKS + 1, mails: FORKS * FORKED }, start: root::<Forker> },
+    Program {
+        name: "pingpong",
+        size: || Size { actors: 2, mails: 2 * PINGS },
+        start: root::<Pinger>,
+        check: unchecked,
+    },
+    Program {
+        name: "count",
+        size: || Size { actors: 2, mails: COUNTS + 2 },
+        start: root::<Producer>,
+        check: unchecked,
+    },
+    Program {
+        name: "count-begin",
+        size: || Size { actors: 2, mails: COUNTS + 2 },
+        start: root::<BeginProducer>,
+        check: unchecked,
+    },
+    Program {
+        name: "fjthrput",
+        size: || Size { actors: FORKS + 1, mails: FORKS * FORKED },
+        start: root::<Forker>,
+        check: unchecked,
+    },
     Program {
         name: "big",
         size: || Size {
@@ -1423,16 +1461,18 @@ const PROGRAMS: [Program; 10] = [
             mails: BIG_ACTORS * (BIG_ACTORS - 1) + BIG_ACTORS + 2 * BIG_ACTORS * BIG_PINGS,
         },
         start: root::<Crowd>,
+        check: unchecked,
     },
-    Program { name: "fib", size: fib_size, start: root::<FibRoot> },
-    Program { name: "sieve", size: sieve_size, start: root::<Sieve> },
+    Program { name: "fib", size: fib_size, start: root::<FibRoot>, check: unchecked },
+    Program { name: "sieve", size: sieve_size, start: root::<Sieve>, check: unchecked },
     Program {
         name: "churn",
         size: || Size { actors: CHURN_TOTAL + 1, mails: CHURN_TOTAL * (CHURN_LIFE + 2) + 2 },
         start: root::<Churn>,
+        check: unchecked,
     },
-    Program { name: "churn-wide", size: churn_wide_size, start: churn_wide },
-    Program { name: "world", size: world_size, start: world },
+    Program { name: "churn-wide", size: churn_wide_size, start: churn_wide, check: unchecked },
+    Program { name: "world", size: world_size, start: world, check: world_check },
 ];
 
 /// One run of `program` on `workers` workers, each part running at most `hops` fused hops a step: the nanoseconds it
@@ -1445,6 +1485,7 @@ fn run(program: &Program, workers: NonZeroUsize, hops: usize) -> (u64, u64, Hops
     let clock = Monotonic::new();
     (program.start)(headless.engine_mut(), 0);
     headless.run_until_idle();
+    (program.check)();
 
     (clock.nanos(), headless.measured().steps, headless.engine().hopped())
 }
@@ -1463,6 +1504,7 @@ fn steady(program: &Program, workers: NonZeroUsize, hops: usize, rounds: u64) ->
             let clock = Monotonic::new();
             (program.start)(headless.engine_mut(), round);
             headless.run_until_idle();
+            (program.check)();
 
             clock.nanos()
         })

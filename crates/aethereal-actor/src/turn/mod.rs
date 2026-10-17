@@ -209,6 +209,18 @@ struct Seat<'a> {
     declared: &'static Declared,
     /// Which of its turns this is, named when a send breaks the declaration.
     during: During,
+    /// The last send of the turn that was checked against the declaration, if it is still the turn's last effect.
+    checked: Checked,
+}
+
+/// Which send of a turn was last checked against the actor's declaration (ADR-0013): a send like it that follows it
+/// straight after need not be checked again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Checked {
+    /// No send of the turn has been checked.
+    Nothing,
+    /// The send that was the turn's last effect when the turn had made `effects` of them, checked against `target`.
+    Last { effects: usize, target: Target },
 }
 
 /// Which of an actor's turns runs: named when a send breaks the declaration (ADR-0013).
@@ -287,13 +299,18 @@ impl Seat<'_> {
         let Some(to) = self.receiver(to) else {
             return Ok(());
         };
-        // A send to the receiver and of the kind of the turn's last was checked with it.
+        // A send to the receiver and of the kind of the turn's last, made by the same declared send, was checked with
+        // it. A reply or a send through a reference is never checked, so one that went before proves nothing.
         let is_like_last = self.last_send().is_some_and(|(last, kind)| last == to && kind == KindId::of::<K>());
-        if !is_like_last {
+        let was_checked = self.checked == Checked::Last { effects: self.asked.effects.len(), target };
+        let is_checked = is_like_last && was_checked;
+        if !is_checked {
             self.check(to, target, KindId::of::<K>());
         }
+        self.write_after(to, mail, is_like_last)?;
+        self.checked = Checked::Last { effects: self.asked.effects.len(), target };
 
-        self.write_after(to, mail, is_like_last)
+        Ok(())
     }
 
     /// The receiver and kind of this turn's last effect, when it is a send by this actor.
@@ -328,7 +345,8 @@ impl Seat<'_> {
         })?;
         self.sent += 1;
         let kind = KindId::of::<K>();
-        // Mail of one kind to one receiver, sent back to back, is one run: one effect, one item in its stream.
+        // Mail of one kind to one receiver, sent back to back by sends the turn named, is one run: one effect, one item
+        // in its stream.
         if is_like_last
             && let Some(last) = self.asked.effects.last_mut()
             && let What::Send { count, bytes: run, .. } = last.what_mut()
@@ -454,7 +472,18 @@ impl Seat<'_> {
         let above = Above::Actor(self.me, self.declared);
         let table = self.table;
         let asked = &mut *self.asked;
-        let child = Seat { me, path: &path, above, table, made: &(), asked, sent: 0, declared, during: During::Begin };
+        let child = Seat {
+            me,
+            path: &path,
+            above,
+            table,
+            made: &(),
+            asked,
+            sent: 0,
+            declared,
+            during: During::Begin,
+            checked: Checked::Nothing,
+        };
         match C::begin(config, &mut Beginning { seat: child, sends: PhantomData }) {
             Ok(actor) => {
                 self.asked.stood_seats.insert(id.bits(), (seat, declared));
@@ -586,7 +615,18 @@ impl<'a> Turning<'a> {
     pub(crate) fn declaring<A: Actor, S: Sends>(self, role: Role) -> Turn<'a, S> {
         let Self { me, path, above, table, made, asked, sent, source, chain } = self;
         let declared = Declared::of::<A>();
-        let seat = Seat { me, path, above, table, made, asked, sent, declared, during: During::Handling(role) };
+        let seat = Seat {
+            me,
+            path,
+            above,
+            table,
+            made,
+            asked,
+            sent,
+            declared,
+            during: During::Handling(role),
+            checked: Checked::Nothing,
+        };
 
         Turn { seat, source, chain, sends: PhantomData }
     }
@@ -718,7 +758,18 @@ impl<'a, S: Sends> Beginning<'a, S> {
     ) -> Self {
         let declared = Declared::of::<A>();
         let during = During::Begin;
-        let seat = Seat { me, path, above: Above::Chassis, table, made: &(), asked, sent: 0, declared, during };
+        let seat = Seat {
+            me,
+            path,
+            above: Above::Chassis,
+            table,
+            made: &(),
+            asked,
+            sent: 0,
+            declared,
+            during,
+            checked: Checked::Nothing,
+        };
 
         Self { seat, sends: PhantomData }
     }
@@ -815,7 +866,18 @@ impl<'a> Closing<'a> {
     pub(crate) fn declaring<A: Actor>(self) -> Ending<'a, A::EndSends> {
         let Self { me, path, above, table, asked, sent, why } = self;
         let declared = Declared::of::<A>();
-        let seat = Seat { me, path, above, table, made: &(), asked, sent, declared, during: During::End };
+        let seat = Seat {
+            me,
+            path,
+            above,
+            table,
+            made: &(),
+            asked,
+            sent,
+            declared,
+            during: During::End,
+            checked: Checked::Nothing,
+        };
 
         Ending { seat, why, sends: PhantomData }
     }
