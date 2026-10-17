@@ -83,39 +83,99 @@ impl Headless {
         step(&mut self.engine, &mut self.pool, self.clock, workers).sharing
     }
 
-    /// Spike: lets every part step on its own on every worker until no part has anything to step or a turn asks for
-    /// a step of the whole engine; backs off when parts barely stepped.
-    fn run_free(&mut self) {
+    /// Spike: lets every part step on its own on every worker for at most `budget_nanos`, or until no part has
+    /// anything to step, and answers with the turns run and the nanoseconds taken, when the engine could.
+    fn run_free(&mut self, budget_nanos: u64) -> Option<(u64, u64)> {
         let workers = self.pool.workers(SplitCost::NONE).max;
-        let Some((shares, parts)) = self.engine.free_shares(workers) else {
-            self.backoff = usize::MAX;
-            return;
-        };
-        let run = self.engine.free_run(workers, parts);
+        let (shares, parts) = self.engine.free_shares(workers)?;
+        let began = self.clock.nanos();
+        let turns = aethereal_substrate::TURNS.load(std::sync::atomic::Ordering::Relaxed);
+        let run = self.engine.free_run(workers, parts, began + budget_nanos);
         let done: Vec<_> = self.pool.free(&run, self.clock, shares).collect();
         let parts = run.into_parts();
         let steps = self.engine.end_free(done, parts);
-        let few = steps < 4 * u64::try_from(workers).unwrap_or(0);
-        if few {
-            self.backoff = 16;
+        // Steps after it begin as any would, the workers parked: kept spinning, they make a step's split look free.
+        self.pool.park();
+        let took = self.clock.nanos() - began;
+        let ran = aethereal_substrate::TURNS.load(std::sync::atomic::Ordering::Relaxed) - turns;
+        #[allow(clippy::disallowed_methods, reason = "spike probe")]
+        let shows = std::env::var("FREE_SHOW").is_ok();
+        if shows {
+            eprintln!("  free run: {steps} part steps, {ran} turns in {} us", took / 1000);
         }
+
+        Some((ran, took))
     }
 
     /// Runs steps until no actor has anything to run, then parks every worker.
     pub fn run_until_idle(&mut self) {
+        // Spike: the host weighs the two ways of running by what a turn took in each, over windows of time, and runs
+        // the cheaper, giving the other one window in every few to measure it again: steps of the whole engine, and
+        // parts stepping on their own until the window ends.
+        let mut by_step = Rate::default();
+        let mut by_free = Rate::default();
+        let mut windows = 0_u32;
         while !self.engine.is_idle() {
-            // Parts step on their own only where the plan would split the step: a step it runs whole is a chain one
-            // warm thread runs faster than workers handing it on.
-            let sharing = self.step_sharing();
-            let splits = sharing > 1;
-            if self.free && splits && self.backoff == 0 {
-                self.run_free();
+            let measured = by_step.turn_nanos != 0 && by_free.turn_nanos != 0;
+            let favours_free = measured && by_free.turn_nanos < by_step.turn_nanos;
+            let probes = windows % PROBE_EVERY == PROBE_EVERY - 1;
+            // The first two windows measure each way once: steps first.
+            let runs_free = if measured { favours_free != probes } else { by_step.turn_nanos != 0 };
+            let runs_free = self.free && runs_free;
+            windows += 1;
+            if runs_free {
+                let Some((turns, nanos)) = self.run_free(WINDOW_NANOS) else {
+                    self.free = false;
+                    continue;
+                };
+                by_free.learn(turns, nanos);
             } else {
-                self.backoff = self.backoff.saturating_sub(1);
+                let began = self.clock.nanos();
+                let turns = aethereal_substrate::TURNS.load(std::sync::atomic::Ordering::Relaxed);
+                while self.clock.nanos() - began < WINDOW_NANOS && !self.engine.is_idle() {
+                    self.step_sharing();
+                }
+                let ran = aethereal_substrate::TURNS.load(std::sync::atomic::Ordering::Relaxed) - turns;
+                by_step.learn(ran, self.clock.nanos() - began);
+            }
+            #[allow(clippy::disallowed_methods, reason = "spike probe")]
+            let shows = std::env::var("FREE_SHOW").is_ok();
+            if shows {
+                eprintln!("  window {windows} free={runs_free}: free {} step {} (ns/turn x1024)", by_free.turn_nanos, by_step.turn_nanos);
             }
         }
 
         self.pool.park();
+    }
+}
+
+/// Spike: in how many windows the way not favoured runs once.
+const PROBE_EVERY: u32 = 16;
+/// Spike: how long one window of either way runs.
+const WINDOW_NANOS: u64 = 4_000_000;
+
+/// Spike: what turns cost run one way, as a moving average.
+#[derive(Default)]
+struct Rate {
+    /// Nanoseconds a turn took, in fixed point of 1/1024: zero until measured.
+    turn_nanos: u64,
+    /// Nanoseconds a run took.
+    step_nanos: u64,
+}
+
+impl Rate {
+    fn learn(&mut self, turns: u64, nanos: u64) {
+        if turns == 0 {
+            return;
+        }
+        let sample = nanos.saturating_mul(1024) / turns;
+        self.turn_nanos = if self.turn_nanos == 0 { sample } else { self.turn_nanos - self.turn_nanos / 4 + sample / 4 };
+        self.step_nanos = if self.step_nanos == 0 { nanos } else { self.step_nanos - self.step_nanos / 8 + nanos / 8 };
+    }
+
+    /// Whether turns run this way are known to cost less than run `other`'s, or this way is not yet measured.
+    fn cheaper_than(&self, other: &Self) -> bool {
+        self.turn_nanos == 0 || (other.turn_nanos != 0 && self.turn_nanos < other.turn_nanos)
     }
 }
 

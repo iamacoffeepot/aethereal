@@ -19,6 +19,9 @@ use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError, RwLock};
 
+/// Passes in a row a worker finds nothing of its own to step before it steps another's part that mail waits for.
+const STEAL_AFTER: u32 = 8;
+
 /// The first writer slot that names a part's inbound bytes and not an arena: slot `FREE + part` is part `part`'s.
 const FREE: u32 = u32::MAX - (1 << 20);
 
@@ -109,6 +112,9 @@ pub struct FreeRun<'a> {
     /// Workers that have stopped stepping, before any folds what is left in its inboxes.
     drained: AtomicUsize,
     workers: usize,
+    /// When the run ends whatever is left, by the clock its workers read, in nanoseconds: so the host can weigh the
+    /// run against steps of the whole engine.
+    deadline_nanos: u64,
 }
 
 /// One worker's parts for a run, and what it writes to.
@@ -172,7 +178,7 @@ impl Engine {
 
     /// The run the workers read while they step their parts.
     #[must_use]
-    pub fn free_run(&self, workers: usize, parts: Vec<FreePart>) -> FreeRun<'_> {
+    pub fn free_run(&self, workers: usize, parts: Vec<FreePart>, deadline_nanos: u64) -> FreeRun<'_> {
         FreeRun {
             reading: self.reading(),
             fresh: Fresh::default(),
@@ -184,6 +190,7 @@ impl Engine {
             stopped: AtomicBool::new(false),
             drained: AtomicUsize::new(0),
             workers,
+            deadline_nanos,
         }
     }
 
@@ -199,8 +206,10 @@ impl Engine {
             self.log.put(part, log);
             self.inbound[part] = inbound;
         }
-        for FreeShare { lists, arena, steps: stepped, .. } in shares {
+        for FreeShare { mut lists, arena, steps: stepped, .. } in shares {
             steps += stepped;
+            // What turns took in a run is not what they take in a step, so it does not move the plan's costs.
+            lists.tally = super::costs::Tally::default();
             self.take_in(lists, arena);
         }
         let mut forward = mem::take(&mut self.spare.forward);
@@ -237,6 +246,7 @@ impl FreeRun<'_> {
     /// Steps `share`'s parts until no part anywhere has anything to step, or a turn stops the run, then folds what
     /// is left in its parts' inboxes, once every worker has stopped stepping.
     pub fn run(&self, share: FreeShare, clock: &impl Clock) -> FreeShare {
+        let began = std::time::Instant::now();
         let FreeShare { place, mut spare, mut lists, arena, mut steps } = share;
         // Its own parts first, then every other, from the one after its own.
         let count = self.parts.len();
@@ -244,6 +254,9 @@ impl FreeRun<'_> {
             .filter(|part| part % self.workers == place)
             .chain((1..count).map(|offset| (place + offset) % count).filter(|part| part % self.workers != place))
             .collect();
+        #[allow(clippy::disallowed_methods, reason = "spike switch")]
+        let own_only = std::env::var("FREE_OWN").is_ok();
+        let order: Vec<usize> = if own_only { order.into_iter().filter(|part| part % self.workers == place).collect() } else { order };
         let mut tally = mem::take(&mut lists.tally);
         let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
         let mut idle = false;
@@ -254,6 +267,13 @@ impl FreeRun<'_> {
             let mut progressed = false;
             for &number in &order {
                 let held = self.held[number].load(Ordering::Acquire) > 0;
+                // Another worker's part is looked at only when mail waits for it: trying its lock on every pass
+                // would move its line between the cores that try.
+                let is_own = number % self.workers == place;
+                let steals = held && empty >= STEAL_AFTER;
+                if !is_own && !steals {
+                    continue;
+                }
                 let Ok(mut part) = self.parts[number].try_lock() else {
                     continue;
                 };
@@ -269,9 +289,11 @@ impl FreeRun<'_> {
                         self.idle.fetch_sub(1, Ordering::SeqCst);
                     }
                     let count = batches.len();
+                    let t0 = std::time::Instant::now();
                     for batch in batches {
                         spare.push(fold_in(part, batch));
                     }
+                    SPENT[2].fetch_add(t0.elapsed().as_nanos() as usize, Ordering::Relaxed);
                     self.in_flight.fetch_sub(count, Ordering::SeqCst);
                 }
                 let has_work = part.parcel.streams.has_items() || part.parcel.lives.has_ended();
@@ -285,17 +307,25 @@ impl FreeRun<'_> {
                 let own = part.parcel.part;
                 let reading =
                     Reading { inbound: Inbound::One(own, &part.inbound), fresh: Some(&self.fresh), ..self.reading };
+                let t0 = std::time::Instant::now();
                 reading.run_part(part.parcel.room(), clock, &mut tally, &mut asked, &mut lists);
+                SPENT[0].fetch_add(t0.elapsed().as_nanos() as usize, Ordering::Relaxed);
+                let t0 = std::time::Instant::now();
                 part.inbound.clear();
                 steps += 1;
                 progressed = true;
                 // The table's and the watches' records wait for the run to end, as a step's do, and the engine folds
                 // them; the children are found in the run's own list until then.
                 self.hand_on(&mut lists, &asked, &mut spare);
+                SPENT[1].fetch_add(t0.elapsed().as_nanos() as usize, Ordering::Relaxed);
                 let (effects, stood, mut arena, seats) = asked.into_parts();
                 drop(stood);
                 arena.clear(0);
                 asked = Asked::continuing(effects, arena, seats);
+            }
+            let late = clock.nanos() >= self.deadline_nanos;
+            if late {
+                self.stopped.store(true, Ordering::SeqCst);
             }
             if self.stopped.load(Ordering::SeqCst) {
                 break;
@@ -319,6 +349,7 @@ impl FreeRun<'_> {
             std::hint::spin_loop();
         }
 
+        SPENT[3].fetch_add(began.elapsed().as_nanos() as usize, Ordering::Relaxed);
         self.drained.fetch_add(1, Ordering::SeqCst);
         while self.drained.load(Ordering::SeqCst) < self.workers {
             std::hint::spin_loop();
@@ -417,3 +448,6 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+
+/// Spike probe: nanoseconds in turns, handing on, folding in, and in the run, summed over workers.
+pub static SPENT: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];

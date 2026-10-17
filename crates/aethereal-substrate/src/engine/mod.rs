@@ -5,7 +5,7 @@ mod birth;
 mod costs;
 mod fold;
 mod free;
-pub use free::{FreePart, FreeRun, FreeShare};
+pub use free::{FreePart, FreeRun, FreeShare, SPENT as FREE_SPENT};
 mod fuse;
 mod made;
 mod plan;
