@@ -4,20 +4,42 @@ use super::*;
 use crate::Context;
 use crate::id::{child_id, root_id};
 use aethereal_actor::{Code, Declared, Fault, MailId, SeatNumber, Seated, Unreadable, What};
-use aethereal_data::{KeyName, KindName, PathSegment};
+use aethereal_data::{KeyName, Kind, KindId, KindName, PathSegment, Plain};
 
 /// The context the effects of these tests were emitted in, which the table does not read.
 fn context() -> Context {
     Context { root: MailId { sender: ActorId::new(1), count: 0 }, depth: 1 }
 }
 
-const WINDOW: KindName = KindName::new("aether.window");
-const SURFACE: KindName = KindName::new("aether.window.surface");
-const LAYER: KindName = KindName::new("aether.window.layer");
+/// The types of these actors.
+#[derive(Plain)]
+struct Window;
+
+impl Kind for Window {
+    const NAME: KindName = KindName::new("aether.window");
+}
+
+#[derive(Plain)]
+struct Surface;
+
+impl Kind for Surface {
+    const NAME: KindName = KindName::new("aether.window.surface");
+}
+
+#[derive(Plain)]
+struct Layer;
+
+impl Kind for Layer {
+    const NAME: KindName = KindName::new("aether.window.layer");
+}
+
+const WINDOW: KindName = Window::NAME;
+const SURFACE: KindName = Surface::NAME;
+const LAYER: KindName = Layer::NAME;
 /// What the types of these actors declare: nothing they send or handle, which the table does not read.
-const WINDOW_TYPE: &Declared = &Declared::new(WINDOW, &[], &[], &[]);
-const SURFACE_TYPE: &Declared = &Declared::new(SURFACE, &[], &[], &[]);
-const LAYER_TYPE: &Declared = &Declared::new(LAYER, &[], &[], &[]);
+const WINDOW_TYPE: &Declared = &Declared::new(WINDOW, KindId::of::<Window>(), &[], &[], &[]);
+const SURFACE_TYPE: &Declared = &Declared::new(SURFACE, KindId::of::<Surface>(), &[], &[], &[]);
+const LAYER_TYPE: &Declared = &Declared::new(LAYER, KindId::of::<Layer>(), &[], &[], &[]);
 const LEFT: KeyName = KeyName::new("left");
 
 /// A table of `parts` parts.

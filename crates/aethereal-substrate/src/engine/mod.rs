@@ -1,6 +1,7 @@
 //! The engine: it runs turns in steps, and applies what they asked for (ADR-0009, ADR-0011).
 
 mod begun;
+mod birth;
 mod costs;
 mod fold;
 mod fuse;
@@ -27,9 +28,10 @@ use aethereal_actor::{
     Above, Actor, Arena, Asked, Beginning, Chain, Closing, Code, Declared, Effect, Fault, How, Item, Mail, MailId,
     Payload, Refused, Runs, SeatNumber, Seated, Seats, Stood, Turning, What, Why,
 };
-use aethereal_data::{ActorId, ActorPath, PathSegment};
+use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use begun::begun;
-use costs::{CostKey, Costs, ItemKind, KindIndex, Kinds, toward};
+use birth::Births;
+use costs::{CostKey, Costs, ItemKind, toward};
 use fuse::{Fusing, Hand, Hop, Stepped};
 use made::Made;
 use plan::Packing;
@@ -94,8 +96,6 @@ pub struct Engine {
     arenas: [Vec<Arena>; 2],
     /// What each worker fills in a step, by writer, emptied and kept from one step to the next for its room.
     lists: Vec<Lists>,
-    /// The number given to each kind of actor seated so far.
-    kinds: Kinds,
     /// How long turns take, as measured so far.
     costs: Costs,
     /// The expected work of recent steps, in nanoseconds: a moving average weighted to the most recent.
@@ -124,8 +124,8 @@ struct Sitting {
     path: ActorPath,
     /// What stands above it.
     above: Above,
-    /// Its kind, as the engine numbers it.
-    kind: KindIndex,
+    /// Its kind: its type's id.
+    kind: KindId,
     /// The children it has made, noted as each is seated: its own knowledge of the keys it has used (ADR-0008).
     made: Made,
 }
@@ -201,15 +201,14 @@ pub struct Done {
     parcels: Vec<Parcel>,
 }
 
-/// What a worker fills in a step: its row of buckets for each view, the children its turns stood up, and each actor
-/// it ran, and the seats it gives the children. The engine empties it and hands it back the next step, so nothing in
+/// What a worker fills in a step: its row of buckets for each view and for the children its turns stood up, each
+/// actor it ran, and the seats it gives the children. The engine empties it and hands it back the next step, so nothing in
 /// it is allocated again.
 #[derive(Default)]
 pub struct Lists {
     /// The effects of the turn running, routed into the buckets when it finishes.
     effects: Vec<Effect>,
     routes: Routes,
-    stood: Vec<Stood>,
     /// The seats of the actors whose closing turns ran, empty once the step is applied: no seat is given again in the
     /// step that freed it, while its actor's last records are still to fold.
     freed: Vec<SeatNumber>,
@@ -221,7 +220,7 @@ pub struct Lists {
     fusing: Fusing,
 }
 
-/// One writer's row of buckets for each view.
+/// One writer's row of buckets for each view, and for the children its turns stood up, to seat.
 #[derive(Default)]
 struct Routes {
     table: Routed<Actors>,
@@ -229,6 +228,7 @@ struct Routes {
     lives: Routed<Lives>,
     streams: Routed<Streams>,
     watches: Routed<Watches>,
+    births: Births,
 }
 
 /// What an actor runs in a step.
@@ -275,7 +275,6 @@ impl Engine {
             spare: Spare::default(),
             arenas: [Vec::new(), Vec::new()],
             lists: Vec::new(),
-            kinds: Kinds::new(),
             costs: Costs::new(),
             recent: 0,
             step: 0,
@@ -449,6 +448,12 @@ impl Engine {
         let mut touched = self.touched();
         for &part in &touched {
             let rows = &mut self.lists;
+            for row in rows.iter_mut() {
+                let bucket = row.routes.births.bucket_mut(part);
+                let born = birth::seat_all(&mut self.seating[part], &mut self.actors[part], bucket);
+                self.seated[part] += born;
+                self.actors_seated += born;
+            }
             self.table.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.table));
             self.log.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.log));
             self.lives.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.lives));
@@ -533,8 +538,9 @@ impl Engine {
         (arena, lists)
     }
 
-    /// Takes in what a writer left once the parts it ran are back: how long its turns took, its arena, the seats it
-    /// did not give out, and the children its turns stood up, seated; and keeps its lists in their place.
+    /// Takes in what a writer left once the parts it ran are back: how long its turns took, its arena, and the seats
+    /// it did not give out; and keeps its lists in their place. The children its turns stood up are seated when their
+    /// parts are folded.
     fn take_in(&mut self, mut lists: Lists, arena: Arena) {
         self.costs.merge(&mut lists.tally);
         self.hopped.add(mem::take(&mut lists.fusing.hops));
@@ -546,13 +552,6 @@ impl Engine {
             self.actors_seated -= 1;
             self.seats[part].free(seat);
         }
-        // A child is stood up after the children its `begin` stood up, so it is seated first, from the back.
-        let mut stood = mem::take(&mut lists.stood);
-        while let Some(child) = stood.pop() {
-            let (me, path, above, actor) = child.into_parts();
-            self.seat(me, path, above, actor);
-        }
-        lists.stood = stood;
         self.lists[slot] = lists;
     }
 
@@ -597,8 +596,6 @@ impl Engine {
     /// record reached is not touched.
     pub fn gather(&mut self, done: impl ExactSizeIterator<Item = Done>) -> Vec<Fold> {
         let running = done.len();
-        // Every part goes back before any child is seated: a worker seats its children in parts another worker may
-        // have run, and putting that part back would put its seats back over them.
         let mut left = mem::take(&mut self.spare.left);
         for Done { lists, arena, mut parcels } in done {
             while let Some(parcel) = parcels.pop() {
@@ -607,7 +604,7 @@ impl Engine {
             self.spare.parcels.push(parcels);
             left.push((lists, arena));
         }
-        // Taken in the order the workers were given, so a step seats the same children in the same order every time.
+        // Taken in the order the workers were given, so a step's costs are merged in the same order every time.
         left.reverse();
         while let Some((lists, arena)) = left.pop() {
             self.take_in(lists, arena);
@@ -655,6 +652,8 @@ impl Engine {
         for Fold { parts: mut piles } in folds {
             while let Some(mut pile) = piles.pop() {
                 forward.append(&mut pile.forward);
+                self.seated[pile.part] += pile.born;
+                self.actors_seated += pile.born;
                 self.unpile(&mut pile);
                 self.spare.piles.push(pile);
             }
@@ -699,9 +698,12 @@ impl Engine {
         self.lives.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.lives), &mut pile.lives);
         self.streams.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.streams), &mut pile.streams);
         self.watches.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.watches), &mut pile.watches);
+        pile.births.extend(rows.iter_mut().map(|lists| lists.routes.births.take(part)));
         pile.seating = mem::replace(&mut self.seating[part], empty);
+        pile.actors = mem::replace(&mut self.actors[part], BySeat::empty(parts));
         pile.part = part;
         pile.expected = 0;
+        pile.born = 0;
 
         pile
     }
@@ -716,8 +718,12 @@ impl Engine {
         self.lives.empty(part, &mut pile.lives, rows.iter_mut().map(|lists| &mut lists.routes.lives));
         self.streams.empty(part, &mut pile.streams, rows.iter_mut().map(|lists| &mut lists.routes.streams));
         self.watches.empty(part, &mut pile.watches, rows.iter_mut().map(|lists| &mut lists.routes.watches));
+        for (row, bucket) in rows.iter_mut().zip(pile.births.drain(..)) {
+            row.routes.births.give_back(part, bucket);
+        }
         let empty = Seating { seated: BySeat::empty(parts) };
         self.seating[part] = mem::replace(&mut pile.seating, empty);
+        self.actors[part] = mem::replace(&mut pile.actors, BySeat::empty(parts));
         self.expected[part] = pile.expected;
     }
 
@@ -768,6 +774,7 @@ impl Engine {
             lives: self.lives.routed(),
             streams: self.streams.routed(),
             watches: self.watches.routed(),
+            births: Births::of_parts(self.seating.len()),
         };
 
         Lists { routes, ..Lists::default() }
@@ -786,20 +793,16 @@ impl Engine {
         mem::replace(&mut arenas[slot], Arena::new(slot))
     }
 
-    /// Seats the actor `me` names, at `path`, in the seat it was given. It is run from the next step.
+    /// Seats the actor `me` names, at `path`, in the seat it was given, and notes it in its parent's seat. It is run
+    /// from the next step. A parent is seated before the children it stood up, so its seat is there to note them in.
     fn seat(&mut self, me: Seated, path: ActorPath, above: Above, actor: Box<dyn Runs>) {
-        let kind = self.kinds.number(actor.declared().name());
         let part = self.part(me.seat);
         self.seated[part] += 1;
         self.actors_seated += 1;
-        self.seating[part].seated.insert(me, Sitting { path, above, kind, made: Made::none() });
-        self.actors[part].insert(me, Held::Here(actor));
-        // A parent is seated before the children it stood up, so its seat is there to note them in.
+        birth::sit(&mut self.seating[part], &mut self.actors[part], me, path, above, actor);
         if let Above::Actor(parent, _) = above {
             let parent_part = self.part(parent.seat);
-            if let Some(sitting) = self.seating[parent_part].seated.get_mut(parent) {
-                sitting.made.insert(me.id);
-            }
+            birth::note(&mut self.seating[parent_part], parent, me.id);
         }
     }
 
@@ -1249,7 +1252,8 @@ impl Parcel {
 
 impl Lists {
     /// Routes a finished turn's effects into this worker's row of buckets for each view, taking them out of the
-    /// list, keeps the children the turn stood up, to be seated, and answers with what it saw of the actor `me`.
+    /// list, routes the children the turn stood up to the parts that seat them, and answers with what it saw of the
+    /// actor `me`.
     ///
     /// Each effect is routed into every view that keeps anything of it in one pass: the other views borrow it, then
     /// the streams take it by value. A turn that stood up a child whose `begin` failed is routed without what that
@@ -1274,7 +1278,10 @@ impl Lists {
             }
         }
 
-        self.stood.extend(stood);
+        // Most turns stand up no child.
+        if !stood.is_empty() {
+            self.routes.births.stand(stood);
+        }
         seen
     }
 }
@@ -1284,7 +1291,7 @@ impl Routes {
     fn records(&self, part: usize) -> usize {
         let views = self.table.records(part) + self.log.records(part) + self.lives.records(part);
 
-        views + self.streams.records(part) + self.watches.records(part)
+        views + self.streams.records(part) + self.watches.records(part) + self.births.records(part)
     }
 
     /// Routes one effect, emitted in `context`, into every view's bucket but the streams'.

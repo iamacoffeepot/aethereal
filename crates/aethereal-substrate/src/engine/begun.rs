@@ -66,13 +66,28 @@ mod tests {
     use super::*;
     use crate::id::child_id;
     use aethereal_actor::{Code, Declared, Level, SeatNumber, Seated};
-    use aethereal_data::{ActorId, KindName, PathSegment};
+    use aethereal_data::{ActorId, Kind, KindId, KindName, PathSegment, Plain};
 
-    const BRANCH: KindName = KindName::new("aether.test.branch");
-    const LEAF: KindName = KindName::new("aether.test.leaf");
+    /// The types of the children these tests stand up.
+    #[derive(Plain)]
+    struct Branch;
+
+    impl Kind for Branch {
+        const NAME: KindName = KindName::new("aether.test.branch");
+    }
+
+    #[derive(Plain)]
+    struct Leaf;
+
+    impl Kind for Leaf {
+        const NAME: KindName = KindName::new("aether.test.leaf");
+    }
+
+    const BRANCH: KindName = Branch::NAME;
+    const LEAF: KindName = Leaf::NAME;
     /// What their types declare: nothing they send or handle, which this does not read.
-    const BRANCH_TYPE: &Declared = &Declared::new(BRANCH, &[], &[], &[]);
-    const LEAF_TYPE: &Declared = &Declared::new(LEAF, &[], &[], &[]);
+    const BRANCH_TYPE: &Declared = &Declared::new(BRANCH, KindId::of::<Branch>(), &[], &[], &[]);
+    const LEAF_TYPE: &Declared = &Declared::new(LEAF, KindId::of::<Leaf>(), &[], &[], &[]);
 
     #[test]
     fn failed_begin_takes_out_its_child_and_all_beneath() {
