@@ -34,25 +34,17 @@ pub struct Arena {
 /// The most bytes one arena's slab holds, so that where a piece of mail lies in it is a 32-bit number.
 const SLAB_MOST: usize = u32::MAX as usize;
 
-/// Where the bytes of one piece of mail are, in the arena of the writer that wrote them: sixteen bytes, carried
-/// with every piece of mail.
+/// Where the bytes of one piece of mail are, in the arena of the writer that wrote them, or of a run of mail: sixteen
+/// bytes, carried with every piece of mail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Payload {
-    /// In the writer's slab.
-    InArena(Span),
+    /// In the writer's slab: `len` bytes from `start`, the writer numbered `slot`'s. They are `pieces` pieces of
+    /// mail of `len / pieces` bytes each, one after another: one, but for a run, what one turn sent to one receiver,
+    /// of one kind, back to back. The count of pieces sits beside the variant's tag, so a payload stays sixteen
+    /// bytes, and a run holds at most `u16::MAX` pieces.
+    InArena { slot: u32, start: u32, len: u32, pieces: u16 },
     /// Spilled, as it did not fit: the writer's `index`th spilled piece.
     Spilled { slot: u32, index: u32 },
-}
-
-/// A range of one writer's arena.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
-    /// The writer whose arena holds the bytes.
-    pub slot: u32,
-    /// Where they begin in it.
-    pub start: u32,
-    /// How many there are.
-    pub len: u32,
 }
 
 impl Default for Arena {
@@ -97,7 +89,7 @@ impl Arena {
     pub fn read(&self, payload: Payload) -> Option<&[u8]> {
         let is_own = payload.slot() == self.slot();
         let bytes = match payload {
-            Payload::InArena(Span { start, len, .. }) => {
+            Payload::InArena { start, len, .. } => {
                 let start = start as usize;
 
                 self.slab.get(start..start.checked_add(len as usize)?)
@@ -147,8 +139,8 @@ impl Arena {
 
         // The slab holds at most `SLAB_MOST` bytes, so mail that fits it always has a span.
         let fits = self.slab.len() <= self.bytes;
-        if fits && let Some(span) = Span::between(self.slot, start, self.slab.len()) {
-            return Ok(Payload::InArena(span));
+        if fits && let Some(payload) = Payload::between(self.slot, start, self.slab.len()) {
+            return Ok(payload);
         }
         // It ran past the slab: its bytes are spilled, and the slab returns to its size.
         let own = self.slab.split_off(start);
@@ -158,26 +150,87 @@ impl Arena {
     }
 }
 
-impl Span {
-    /// The bytes from `start` to `end` of the arena of the writer numbered `slot`, when both are 32-bit numbers.
+impl Payload {
+    /// The bytes from `start` to `end` of the arena of the writer numbered `slot`, one piece of mail, when both are
+    /// 32-bit numbers.
     fn between(slot: u32, start: usize, end: usize) -> Option<Self> {
         let start_at = u32::try_from(start).ok()?;
         let len = u32::try_from(end - start).ok()?;
 
-        Some(Self { slot, start: start_at, len })
+        Some(Self::InArena { slot, start: start_at, len, pieces: 1 })
     }
-}
 
-impl Payload {
     /// The writer whose arena holds the bytes.
     #[must_use]
     pub const fn slot(self) -> usize {
         let slot = match self {
-            Self::InArena(span) => span.slot,
-            Self::Spilled { slot, .. } => slot,
+            Self::InArena { slot, .. } | Self::Spilled { slot, .. } => slot,
         };
 
         slot as usize
+    }
+
+    /// How many pieces of mail it holds: one, but for a run.
+    #[must_use]
+    pub const fn pieces(self) -> u32 {
+        match self {
+            Self::InArena { pieces, .. } => pieces as u32,
+            Self::Spilled { .. } => 1,
+        }
+    }
+
+    /// How many bytes each of its pieces is, for a run.
+    #[must_use]
+    pub const fn each(self) -> u32 {
+        match self {
+            Self::InArena { len, pieces, .. } => len / pieces as u32,
+            Self::Spilled { .. } => 0,
+        }
+    }
+
+    /// The piece numbered `index` of what it holds, each of its pieces `each` bytes: itself, but for a run.
+    #[must_use]
+    pub const fn piece(self, index: u32, each: u32) -> Self {
+        match self {
+            Self::InArena { slot, start, pieces, .. } if pieces > 1 => {
+                Self::InArena { slot, start: start + index * each, len: each, pieces: 1 }
+            }
+            Self::InArena { .. } | Self::Spilled { .. } => self,
+        }
+    }
+
+    /// What a run holds once its first piece is taken out: nothing for one piece.
+    #[must_use]
+    pub const fn rest(self) -> Option<Self> {
+        match self {
+            Self::InArena { slot, start, len, pieces } if pieces > 1 => {
+                let each = len / pieces as u32;
+
+                Some(Self::InArena { slot, start: start + each, len: len - each, pieces: pieces - 1 })
+            }
+            Self::InArena { .. } | Self::Spilled { .. } => None,
+        }
+    }
+
+    /// It, with `next` after it, as one run: when `next` is one piece lying in the slab straight after it, as long as
+    /// each of its pieces, and the run has room.
+    #[must_use]
+    pub const fn joined(self, next: Self) -> Option<Self> {
+        let Self::InArena { slot: next_slot, start: next_start, len: next_len, pieces: 1 } = next else {
+            return None;
+        };
+        let Self::InArena { slot, start, len, pieces } = self else {
+            return None;
+        };
+        let is_after = next_slot == slot && next_start == start + len;
+        let is_alike = next_len == len / pieces as u32;
+        let has_room = pieces < u16::MAX;
+
+        if is_after && is_alike && has_room {
+            Some(Self::InArena { slot, start, len: len + next_len, pieces: pieces + 1 })
+        } else {
+            None
+        }
     }
 }
 
@@ -205,7 +258,7 @@ mod tests {
         // written into it anyway, spilled mail read as another piece, and spilled mail kept past a clear.
         let mut arena = Arena::new(3);
         let first = put(&mut arena, &vec![1; ARENA_BYTES - 8]);
-        assert!(matches!(first, Payload::InArena(_)), "the first piece of mail fits");
+        assert!(matches!(first, Payload::InArena { .. }), "the first piece of mail fits");
         assert_eq!(arena.read(first), Some(&vec![1; ARENA_BYTES - 8][..]));
 
         let past = put(&mut arena, &[2; 16]);
@@ -214,7 +267,7 @@ mod tests {
         assert_eq!(arena.read(first), Some(&vec![1; ARENA_BYTES - 8][..]));
 
         let last = put(&mut arena, &[3; 8]);
-        assert!(matches!(last, Payload::InArena(_)), "what is left of the slab holds mail that fits it");
+        assert!(matches!(last, Payload::InArena { .. }), "what is left of the slab holds mail that fits it");
         assert_eq!(arena.read(last), Some(&[3; 8][..]));
         let full = put(&mut arena, &[4]);
         assert_eq!(arena.read(past), Some(&[2; 16][..]));
