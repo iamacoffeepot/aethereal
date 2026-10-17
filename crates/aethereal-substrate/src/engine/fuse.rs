@@ -15,12 +15,11 @@ pub(super) struct Fusing {
     budget: usize,
     /// The hops waiting to run, in the order they were made.
     waiting: VecDeque<Hop>,
-    /// The bytes of the hops waiting, copied out of the arenas their senders wrote, which later turns write on.
+    /// The bytes of the hops waiting, and of the hop running, copied out of the arenas their senders wrote, which
+    /// later turns write on.
     bytes: Vec<u8>,
-    /// The bytes of the hop running.
-    pub(super) handed: Vec<u8>,
-    /// What each actor that ran in the part has done in the step, under its id.
-    actors: ByActor<Stepped>,
+    /// What each actor that ran in the part has done in the step, and its seat, under its id.
+    actors: ByActor<(SeatNumber, Stepped)>,
     /// The paths and seats of the children stood up in the part in the step, and what their types declare, under
     /// their ids.
     pub(super) stood: ByActor<(ActorPath, SeatNumber, &'static Declared)>,
@@ -187,24 +186,26 @@ impl Fusing {
         self.waiting.push_back(hop);
     }
 
-    /// Keeps `bytes`, a hop's, until it runs: where they start and how many there are.
+    /// Keeps `bytes`, a hop's, until it runs: where they start and how many there are. The hop that made it has run,
+    /// so with none waiting no bytes kept are read again.
     pub(super) fn keep_bytes(&mut self, bytes: &[u8]) -> (usize, usize) {
+        if self.waiting.is_empty() {
+            self.bytes.clear();
+        }
         let at = self.bytes.len();
         self.bytes.extend_from_slice(bytes);
 
         (at, bytes.len())
     }
 
-    /// The hop at the front, taken to run, its bytes in `handed`.
+    /// The hop at the front, taken to run.
     pub(super) fn next(&mut self) -> Option<Hop> {
-        let hop = self.waiting.pop_front()?;
-        self.handed.clear();
-        self.handed.extend_from_slice(&self.bytes[hop.at..hop.at + hop.len]);
-        if self.waiting.is_empty() {
-            self.bytes.clear();
-        }
+        self.waiting.pop_front()
+    }
 
-        Some(hop)
+    /// The bytes of `hop`, taken to run and not yet run: they are kept until a later hop is.
+    pub(super) fn bytes(&self, hop: &Hop) -> &[u8] {
+        &self.bytes[hop.at..hop.at + hop.len]
     }
 
     /// What the actor `me` names has done in the step, or, when it has not run, what it had done when the step began:
@@ -212,12 +213,17 @@ impl Fusing {
     pub(super) fn stepped(&self, me: Seated, sent: u64) -> Stepped {
         let fresh = Stepped { sent, spilled: false, ended: false };
 
-        self.actors.get(&me.id.bits()).copied().unwrap_or(fresh)
+        self.actors.get(&me.id.bits()).map_or(fresh, |(_, stepped)| *stepped)
     }
 
     /// Keeps what the actor `me` names has done in the step.
     pub(super) fn keep(&mut self, me: Seated, stepped: Stepped) {
-        self.actors.insert(me.id.bits(), stepped);
+        self.actors.insert(me.id.bits(), (me.seat, stepped));
+    }
+
+    /// Each actor that ran in the part in the step, and what it did.
+    pub(super) fn kept(&self) -> impl Iterator<Item = (Seated, Stepped)> + '_ {
+        self.actors.iter().map(|(bits, (seat, stepped))| (Seated { id: ActorId::new(*bits), seat: *seat }, *stepped))
     }
 }
 

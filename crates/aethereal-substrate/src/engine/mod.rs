@@ -932,6 +932,14 @@ impl Reading<'_> {
         while let Some(hop) = lists.fusing.next() {
             self.hop(&mut room, hop, clock, tally, asked, lists);
         }
+        // What each actor kept as the part ran sent is noted once, however many turns it took.
+        for (me, stepped) in lists.fusing.kept() {
+            let was = room.lives.life(me).map_or(0, lives::Life::sent);
+            if stepped.sent > was {
+                let (key, record) = lives::sent(me, stepped.sent);
+                lists.routes.lives.put(key, record);
+            }
+        }
         mem::swap(asked.seats_mut(), room.seats);
     }
 
@@ -1042,12 +1050,12 @@ impl Reading<'_> {
                     }
                 }
 
-                if stepped.sent > sent_before {
-                    let (key, record) = lives::sent(me, stepped.sent);
-                    lists.routes.lives.put(key, record);
-                }
+                // An actor its part may still fuse to is kept, and what it sent is noted once the part has run.
                 if lists.fusing.is_open() {
                     lists.fusing.keep(me, stepped);
+                } else if stepped.sent > sent_before {
+                    let (key, record) = lives::sent(me, stepped.sent);
+                    lists.routes.lives.put(key, record);
                 }
                 put_back(actors, me, actor);
             }
@@ -1091,27 +1099,22 @@ impl Reading<'_> {
         tally.time(key, clock, || {
             asked.next_turn();
             let begins = asked.effects_mut().len();
-            let bytes = mem::take(&mut lists.fusing.handed);
             let handled = {
                 let table =
                     Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Run(lists.fusing.run(hop.run)) };
-                let mail = Mail::new(hop.kind, &bytes, hop.from, hop.root, hop.depth, self.read_limit);
+                let bytes = lists.fusing.bytes(&hop);
+                let mail = Mail::new(hop.kind, bytes, hop.from, hop.root, hop.depth, self.read_limit);
                 let chain = Chain { root: hop.root, depth: hop.depth };
                 let turning =
                     Turning::new(me, &seat.path, seat.above, &table, &seat.made, asked, sent_before, hop.from, chain);
 
                 actor.handle(Item::Mail(mail), turning)
             };
-            lists.fusing.handed = bytes;
             let context = Context { root: hop.root, depth: hop.depth + 1 };
             let ran = Ran::of(me, handled, asked, context, begins);
             Self::finish(me, ran, Origin::Hop(hop.run), seating, lives, asked, lists, &mut stepped);
         });
 
-        if stepped.sent > sent_before {
-            let (key, record) = lives::sent(me, stepped.sent);
-            lists.routes.lives.put(key, record);
-        }
         lists.fusing.keep(me, stepped);
         put_back(actors, me, actor);
     }
@@ -1164,7 +1167,13 @@ impl Reading<'_> {
                 lists.fusing.hops.burst += u64::try_from(burst).unwrap_or(u64::MAX);
                 if hand == Hand::Fuse {
                     let (at, len) = lists.fusing.keep_bytes(asked.arena().read(bytes).unwrap_or_default());
-                    asked.effects_mut().remove(index);
+                    let effects = asked.effects_mut();
+                    // The fused send is most often the turn's last effect, and nothing is moved for it.
+                    if index + 1 == effects.len() {
+                        effects.pop();
+                    } else {
+                        effects.remove(index);
+                    }
                     ran.effects.end -= 1;
                     let context = ran.context;
                     // A fused send from a waiting item begins a run; one from a hop goes on with the hop's.
@@ -1180,7 +1189,9 @@ impl Reading<'_> {
             }
         }
 
-        if let Some(run) = run {
+        if let Some(run) = run
+            && !ran.stood.is_empty()
+        {
             let stood = ran.stood.iter().map(|child| (child.seated(), child.path().clone()));
             lists.fusing.run_mut(run).stand(stood);
         }
