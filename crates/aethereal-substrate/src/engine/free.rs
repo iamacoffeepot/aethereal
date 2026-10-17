@@ -63,6 +63,8 @@ struct Batch {
 pub struct FreeRun<'a> {
     reading: Reading<'a>,
     inboxes: Vec<Mutex<Vec<Batch>>>,
+    /// How many batches each inbox holds, read without its lock: a worker locks an inbox only when it holds one.
+    held: Vec<AtomicUsize>,
     /// Batches handed to an inbox and not yet folded.
     in_flight: AtomicUsize,
     /// Workers with nothing to step.
@@ -131,6 +133,7 @@ impl Engine {
         FreeRun {
             reading: self.reading(),
             inboxes: (0..self.seating.len()).map(|_| Mutex::new(Vec::new())).collect(),
+            held: (0..self.seating.len()).map(|_| AtomicUsize::new(0)).collect(),
             in_flight: AtomicUsize::new(0),
             idle: AtomicUsize::new(0),
             stopped: AtomicBool::new(false),
@@ -185,10 +188,13 @@ impl FreeRun<'_> {
         let mut tally = mem::take(&mut lists.tally);
         let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
         let mut idle = false;
+        // Passes in a row that found nothing to step: an idle worker waits longer between looks, so the counts every
+        // worker reads are not read so often that writing them, as mail is handed on, is slowed.
+        let mut empty = 0_u32;
         loop {
             let mut progressed = false;
             for part in &mut parts {
-                let batches = mem::take(&mut *lock(&self.inboxes[part.parcel.part]));
+                let batches = self.take(part.parcel.part);
                 if !batches.is_empty() {
                     if idle {
                         idle = false;
@@ -214,21 +220,30 @@ impl FreeRun<'_> {
                 part.inbound.clear();
                 steps += 1;
                 progressed = true;
+                // A step that stood up a child, or changed the table, hands nothing on: mail to the child would reach
+                // its part before the child is seated there and be dropped. Its records, and the bytes of its mail in
+                // the arena, are left for the engine to fold, and the worker steps nothing more.
+                let stops = lists.routes.needs_a_step();
+                if stops {
+                    self.stopped.store(true, Ordering::SeqCst);
+                    break;
+                }
                 self.hand_on(&mut lists, &asked);
                 let (effects, stood, mut arena, seats) = asked.into_parts();
                 drop(stood);
                 arena.clear(0);
                 asked = Asked::continuing(effects, arena, seats);
-                let stops = lists.routes.needs_a_step();
-                if stops {
-                    self.stopped.store(true, Ordering::SeqCst);
-                }
             }
             if self.stopped.load(Ordering::SeqCst) {
                 break;
             }
             if progressed {
+                empty = 0;
                 continue;
+            }
+            empty = empty.saturating_add(1);
+            for _ in 0..1_u32 << empty.min(8) {
+                std::hint::spin_loop();
             }
             if !idle {
                 idle = true;
@@ -246,7 +261,7 @@ impl FreeRun<'_> {
             std::hint::spin_loop();
         }
         for part in &mut parts {
-            let batches = mem::take(&mut *lock(&self.inboxes[part.parcel.part]));
+            let batches = self.take(part.parcel.part);
             for batch in batches {
                 fold_in(part, batch);
             }
@@ -282,8 +297,22 @@ impl FreeRun<'_> {
                 *payload = Payload::InArena(Span { slot, start, len });
             }
             self.in_flight.fetch_add(1, Ordering::SeqCst);
-            lock(inbox).push(batch);
+            let mut held = lock(inbox);
+            held.push(batch);
+            self.held[part].store(held.len(), Ordering::Release);
         }
+    }
+
+    /// The batches in part `part`'s inbox, taken out: none, with no lock taken, when it holds none.
+    fn take(&self, part: usize) -> Vec<Batch> {
+        let holds = self.held[part].load(Ordering::Acquire) > 0;
+        if !holds {
+            return Vec::new();
+        }
+        let mut held = lock(&self.inboxes[part]);
+        self.held[part].store(0, Ordering::Release);
+
+        mem::take(&mut *held)
     }
 }
 

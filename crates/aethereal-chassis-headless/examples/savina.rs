@@ -823,6 +823,7 @@ impl Actor for Filter {
     type EndSends = ();
 
     fn begin(first: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        PRIMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(Self { primes: vec![first.number], next: Next::Last })
     }
 
@@ -841,7 +842,10 @@ impl Handles<Candidate> for Filter {
         }
         match self.next {
             Next::Filter(next) => turn.to_actor(next).send(&Candidate { number })?,
-            Next::Last if self.primes.len() < SIEVE_KEPT => self.primes.push(number),
+            Next::Last if self.primes.len() < SIEVE_KEPT => {
+                PRIMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.primes.push(number);
+            }
             Next::Last => {
                 let Ok(next) = turn.spawn::<Self>(&0, Number { number }) else {
                     panic!("a filter begins");
@@ -1154,12 +1158,14 @@ fn run(program: &Program, workers: NonZeroUsize, hops: usize) -> (u64, u64, Hops
     let clock = Monotonic::new();
     (program.start)(headless.engine_mut());
     headless.run_until_idle();
-    eprintln!("  pongs={}", PONGS.swap(0, std::sync::atomic::Ordering::Relaxed));
+    eprintln!("  pongs={} primes={}", PONGS.swap(0, std::sync::atomic::Ordering::Relaxed), PRIMES.swap(0, std::sync::atomic::Ordering::Relaxed));
 
     (clock.nanos(), headless.measured().steps, headless.engine().hopped())
 }
 
 /// Spike check.
+/// Spike check.
+static PRIMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PONGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn main() {
