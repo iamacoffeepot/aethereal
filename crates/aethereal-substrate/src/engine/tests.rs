@@ -860,15 +860,27 @@ fn step_on(engine: &mut Engine, workers: usize, clock: &Ticking) -> Vec<String> 
 fn an_actor_that_sends_past_its_slice_hands_on_the_rest_in_later_steps_in_order() {
     // Catches a slice that never cuts, items an actor was cut off from lost, handed twice, or out of order, among them
     // through a backlog moved to its front, and a hop to an actor cut off in its step run ahead of what it carries.
+    // Notes of two lengths, one after the other, are not joined into runs and leave a backlog of many.
+    sliced(|index| {
+        if index.is_multiple_of(2) {
+            format!("y{index:04}")
+        } else {
+            format!("y{index:05}")
+        }
+    });
+}
+
+#[test]
+fn an_actor_cut_off_inside_a_run_hands_on_the_rest_of_it_in_order() {
+    // Catches a run cut at the slice that hands on pieces it already handed, skips some, or numbers what it carries
+    // as the pieces it began with: notes of one length, all sent by the root's begin, are one run.
+    sliced(|index| format!("y{index:04}"));
+}
+
+/// Runs a root handed 3,000 notes, named by `name`, that each tell a child, on two workers, and checks the root was
+/// cut off at its slice and the child was told, and answered, every note in the order sent, with and without fusion.
+fn sliced(name: impl Fn(u64) -> String) {
     for hops in [0, 64] {
-        // Notes of two lengths, one after the other, so they are not joined into runs and leave a backlog of many.
-        let name = |index: u64| {
-            if index.is_multiple_of(2) {
-                format!("y{index:04}")
-            } else {
-                format!("y{index:05}")
-            }
-        };
         let mut notes = vec![String::from("spawn 2 hi")];
         notes.extend((0..3000).map(|index| format!("tell 2 up {}", name(index))));
         let notes: Vec<&str> = notes.iter().map(String::as_str).collect();
@@ -882,7 +894,7 @@ fn an_actor_that_sends_past_its_slice_hands_on_the_rest_in_later_steps_in_order(
         let told: Vec<&str> = steps.iter().flatten().filter_map(|line| line.strip_prefix("2 got up ")).collect();
         let answered: Vec<&str> =
             steps.iter().flatten().filter_map(|line| line.strip_prefix("1 got ")?.strip_suffix(" from 2")).collect();
-        let sent: Vec<String> = (0..3000).map(name).collect();
+        let sent: Vec<String> = (0..3000).map(&name).collect();
         assert_eq!(told, sent, "hops={hops}");
         assert_eq!(answered, sent, "hops={hops}");
         let telling = steps.iter().filter(|said| said.iter().any(|line| line.starts_with("1 got tell"))).count();

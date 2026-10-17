@@ -251,12 +251,17 @@ impl Shard {
                 (Some(key), None) | (None, Some(key)) => key,
             };
             let first = segment;
-            while self.handing.get(segment).is_some_and(|run| (run.seat, run.to) == key) {
+            while self.is_carried_for(segment, key) {
                 segment += 1;
             }
             let arrived = fresh.next_if(|(seat, bits, _)| (*seat, *bits) == key).map_or(0..0, |(_, _, range)| range);
             runs.push(Run { seat: key.0, bits: key.1, carried: Span::of(first..segment), fresh: Span::of(arrived) });
         }
+    }
+
+    /// Whether the carried segment `segment` is there, and of the actor `key` names, by its seat and its bits.
+    fn is_carried_for(&self, segment: usize, key: (u64, u64)) -> bool {
+        self.handing.get(segment).is_some_and(|run| (run.seat, run.to) == key)
     }
 
     /// Moves what the backlog still holds to the front of its lists, in order, and drops what was handed out of it.
@@ -332,7 +337,13 @@ impl Shard {
         for index in run.carried.range() {
             let Segment { seat, to, range } = self.handing[index].clone();
             let mut start = range.start;
-            while start < range.end && taken > 0 {
+            loop {
+                let is_left = start < range.end;
+                let owes = taken > 0;
+                let goes_on = is_left && owes;
+                if !goes_on {
+                    break;
+                }
                 let entry = &mut self.backlog[start].1;
                 let pieces = entry.pieces();
                 if taken >= pieces {
@@ -472,8 +483,15 @@ impl Shard {
         self.handed_endings.clear();
         trim(&mut self.handed, KEPT_LEAST);
         trim(&mut self.arrived, KEPT_LEAST);
-        // An idle part carries nothing, as a part with items to run is never idle.
+        // An idle part carries nothing, as a part with items to run is never idle, so all its backlog holds was
+        // handed in the last step it ran.
+        self.handing.clear();
+        self.backlog.clear();
+        self.backlog_endings.clear();
+        self.backlog_bytes.clear();
+        trim(&mut self.handing, KEPT_LEAST);
         trim(&mut self.backlog, KEPT_LEAST);
+        trim(&mut self.backlog_endings, KEPT_LEAST);
         trim(&mut self.backlog_bytes, KEPT_LEAST);
 
         true
@@ -702,5 +720,24 @@ mod tests {
             assert!(!busy.rest());
         }
         assert!(busy.room() >= 10_000, "a part handed items is idle again from none");
+    }
+
+    #[test]
+    fn idle_part_gives_back_a_backlog_it_handed_in_full() {
+        // Catches a part that keeps what it carried once it is all handed: the backlog is cleared when a part is next
+        // handed, and an idle part is never handed again until mail reaches it.
+        let mut part = handed(1);
+        part.backlog.extend((0..10_000).map(|count| (0, Entry { to: 1, order: (2, count), item: Stored::Ended(0) })));
+        part.backlog_bytes.resize(10_000, 0);
+        part.handing.push(Segment { seat: 0, to: 1, range: 0..10_000 });
+        assert!(!part.has_items());
+
+        for _ in 0..IDLE_STEPS {
+            part.rest();
+        }
+
+        assert!(part.backlog.capacity() <= KEPT_LEAST);
+        assert!(part.backlog_bytes.capacity() <= KEPT_LEAST);
+        assert!(part.handing.is_empty());
     }
 }

@@ -65,8 +65,8 @@ impl Kind for Stray {
     const NAME: KindName = KindName::new("aether.test.stray");
 }
 
-/// An actor that handles kept mail, sends it on to keepers and to any actor that handles it, and falls back on the
-/// rest, logging which handler it reached.
+/// An actor that handles kept mail, sends it on to keepers, to any actor that handles it, and back to its sender, and
+/// falls back on the rest, logging which handler it reached.
 #[derive(Plain)]
 struct Keeper;
 
@@ -91,7 +91,7 @@ impl Actor for Keeper {
 }
 
 impl Handles<Kept> for Keeper {
-    type Sends = (ToType<Self, Kept>, ToAny<(Kept,), Kept>);
+    type Sends = (ToType<Self, Kept>, ToAny<(Kept,), Kept>, ToSender<Kept>);
 
     fn handle(&mut self, _: Kept, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         turn.log(Level::Info, "kept");
@@ -243,6 +243,18 @@ fn send_to_an_actor_of_another_type_stops_the_engine() {
 }
 
 #[test]
+#[should_panic(expected = "false declaration")]
+fn send_like_a_reply_before_it_is_checked_all_the_same() {
+    // Catches a send skipping its check because the turn's last send, a reply that is never checked, went to the same
+    // actor with the same kind: the two would join one run, and the send would reach a type it does not declare.
+    let table = Typed(vec![(OTHER, Declared::of::<Strict>())]);
+    keeping(&table, |turn| {
+        assert!(turn.reply(&Kept).is_ok());
+        let _ = turn.to::<Keeper>(To::Held(ErasedActorRef::new(OTHER))).send(&Kept);
+    });
+}
+
+#[test]
 fn send_to_any_reaches_a_type_that_lists_every_kind() {
     // Catches a protocol send refused to a type that lists its kinds.
     let table = Typed(vec![(OTHER, Declared::of::<Strict>())]);
@@ -279,6 +291,7 @@ fn declaration_lists_each_handler_with_the_sends_its_impl_names() {
     const SENDS: &[Sending] = &[
         Sending::new(KEPT, Target::Type(KEEPER, KindId::of::<Keeper>())),
         Sending::new(KEPT, Target::Handling(&[KEPT])),
+        Sending::new(KEPT, Target::Sender),
     ];
     let keeper = Declared::of::<Keeper>();
     let handlers = [Handler::new(Role::Kind(KEPT), SENDS), Handler::new(Role::Others, &[])];

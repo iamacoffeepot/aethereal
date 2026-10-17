@@ -39,9 +39,11 @@ pub(super) struct Fusing {
 /// fuses nothing.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hops {
-    /// Sends fused.
+    /// Sends fused, among them hops carried into the next step because their receiver was cut off at its slice
+    /// after they were made.
     pub fused: u64,
-    /// First sends by an actor that had sent mail as mail to an actor in its part in the step.
+    /// First sends by an actor that had sent mail as mail to an actor in its part in the step, or to an actor cut off
+    /// at its slice.
     pub spilled: u64,
     /// First sends to a child stood up in the step, which is seated when the step is applied.
     pub unseated: u64,
@@ -85,7 +87,8 @@ impl Hops {
 pub(super) enum Hand {
     /// It is fused.
     Fuse,
-    /// It goes out as mail: its sender has sent mail as mail to an actor in its part in the step.
+    /// It goes out as mail: its sender has sent mail as mail to an actor in its part in the step, or its receiver was
+    /// cut off at its slice, and a hop would overtake what it carries.
     Spilled,
     /// It goes out as mail: its receiver was stood up in the step and has no seat yet.
     Unseated,

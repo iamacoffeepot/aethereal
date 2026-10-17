@@ -18,7 +18,9 @@ use std::mem;
 /// it on any of the group's cores after it sleeps through the workers' run,
 /// the cores the workers are pinned to among them; but not on the other
 /// hardware thread of a worker's core, where it would share the core with a
-/// worker spinning between steps.
+/// worker spinning between steps. It always keeps the first core, which no
+/// worker takes while there are cores enough, so it is never kept only to
+/// cores where workers spin.
 pub(super) struct Cores {
     /// Logical CPU numbers, one per worker in turn, wrapping round when there are more workers.
     order: Vec<usize>,
@@ -83,15 +85,22 @@ impl Cores {
     }
 
     /// Keeps the calling thread, the stepping thread of a pool of `workers` workers, to the first core's group until
-    /// the answer is dropped: to each of the group's hardware threads but those beside one another worker is pinned
-    /// to, on the same core.
+    /// the answer is dropped: to the first core, which [`Self::pin`] leaves to it, and to each of the group's hardware
+    /// threads but those beside one another worker is pinned to, on the same core.
     pub(super) fn keep_stepping(&self, workers: usize) -> Kept {
+        Kept::to(&self.stepping(workers))
+    }
+
+    /// The hardware threads [`Self::keep_stepping`] keeps the stepping thread of `workers` workers to.
+    fn stepping(&self, workers: usize) -> Vec<usize> {
         let pinned: Vec<usize> = (1..workers).filter_map(|worker| self.of_worker(worker)).collect();
         let taken: Vec<&String> = pinned.iter().filter_map(|id| self.core_of.get(id)).collect();
-        let kept: Vec<usize> =
-            self.group.iter().copied().filter(|id| pinned.contains(id) || !self.is_beside(*id, &taken)).collect();
-
-        Kept::to(&kept)
+        let own = self.order.first();
+        self.group
+            .iter()
+            .copied()
+            .filter(|id| own == Some(id) || pinned.contains(id) || !self.is_beside(*id, &taken))
+            .collect()
     }
 
     /// Whether the hardware thread `id` is on one of the cores `taken`.
@@ -153,5 +162,42 @@ impl Drop for Kept {
             // SAFETY: the set is as large as the size given, and thread 0 is the calling thread, the one kept.
             let _ = unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &raw const *before) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::Cores;
+
+    /// A host of `cores` cores of two hardware threads each, sharing one cache, numbered as Linux numbers them: each
+    /// core's first threads, then their seconds.
+    fn one_cache(cores: usize) -> Cores {
+        let order: Vec<usize> = (0..2 * cores).collect();
+        let core_of: BTreeMap<usize, String> =
+            order.iter().map(|id| (*id, format!("{},{}", id % cores, id % cores + cores))).collect();
+
+        Cores { group: order.clone(), order, core_of }
+    }
+
+    #[test]
+    fn the_stepping_thread_keeps_its_own_core_when_a_worker_takes_the_thread_beside_it() {
+        let cores = one_cache(8);
+
+        // Workers 1 to 15 take every thread but the first, its sibling among them.
+        let kept = cores.stepping(16);
+
+        assert!(kept.contains(&0), "kept {kept:?}");
+    }
+
+    #[test]
+    fn the_stepping_thread_keeps_off_the_threads_beside_the_workers() {
+        let cores = one_cache(8);
+
+        // Workers 1 to 3 take threads 1 to 3, whose siblings are 9 to 11.
+        let kept = cores.stepping(4);
+
+        assert_eq!(kept, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 15]);
     }
 }

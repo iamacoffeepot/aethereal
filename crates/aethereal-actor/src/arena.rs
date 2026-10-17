@@ -44,7 +44,7 @@ pub const CARRIED: u32 = u32::MAX;
 pub enum Payload {
     /// In the writer's slab: `len` bytes from `start`, the writer numbered `slot`'s. They are `pieces` pieces of
     /// mail of `len / pieces` bytes each, one after another: one, but for a run, what one turn sent to one receiver,
-    /// of one kind, back to back. The count of pieces sits beside the variant's tag, so a payload stays sixteen
+    /// of one kind, back to back, by sends it named. The count of pieces sits beside the variant's tag, so a payload stays sixteen
     /// bytes, and a run holds at most `u16::MAX` pieces.
     InArena { slot: u32, start: u32, len: u32, pieces: u16 },
     /// Spilled, as it did not fit: the writer's `index`th spilled piece.

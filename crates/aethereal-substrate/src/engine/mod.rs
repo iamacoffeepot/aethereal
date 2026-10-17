@@ -1297,7 +1297,7 @@ enum Origin {
 
 /// What becomes of the first send of a turn, by an actor that has done `stepped` in the step, to `to`, while its
 /// part may still fuse: it is fused when `to` sits in the part, in `seating`, live in `lives` and not ended in the
-/// step, and its sender has sent no mail as mail into its part in the step (ADR-0013). What `to` is decides first, so
+/// step nor cut off at its slice, and its sender has sent no mail as mail into its part in the step (ADR-0013). What `to` is decides first, so
 /// a send the spill rule held back is one that could have been fused without it.
 ///
 /// Each rule is looked at only once the ones before it have passed, so a send to another part costs no lookup of
