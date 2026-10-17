@@ -1,9 +1,10 @@
 //! The view of what each actor has to react to (ADR-0009, ADR-0011).
 
 use crate::watch::Notice;
-use crate::{Consumes, Context, Envelope, View};
-use aethereal_actor::{Arena, CARRIED, Effect, Ended, MailId, Payload, SeatNumber, Seated, What};
+use crate::{Context, Envelope, View};
+use aethereal_actor::{Arena, CARRIED, Effect, Ended, MailId, Mailed, Payload, SeatNumber, Seated};
 use aethereal_data::ActorId;
+use std::iter;
 use std::mem;
 use std::ops::Range;
 
@@ -638,19 +639,20 @@ impl View for Streams {
     type Shard = Shard;
     type Record = Entry;
 
-    fn takes<'a>(effect: &'a Effect, context: &'a Context) -> impl Iterator<Item = (u64, Entry)> + 'a {
-        Self::takes_owned(effect.clone(), context)
+    /// Mail comes in its own buffer, by [`entry`], and no effect is mail.
+    fn takes<'a>(_: &'a Effect, _: &'a Context) -> impl Iterator<Item = (u64, Entry)> + 'a {
+        iter::empty()
     }
 
     /// Items are kept as they arrive and put in order when they are handed out, by [`Shard::hand`].
-    fn fold(shard: &mut Shard, key: u64, record: Entry) {
+    fn fold(shard: &mut Shard, key: u64, record: Entry, _: &[Arena]) {
         shard.arrived.push((key, record));
     }
 
     /// A writer's bucket is taken whole: in place of the part's list when nothing has arrived yet and the list has
     /// no more room than the bucket, or added to its end. The bucket is left empty, with room, and never with more
     /// than it had, so a writer's buckets keep only the room its own records took.
-    fn fold_all(shard: &mut Shard, records: &mut Vec<(u64, Entry)>) {
+    fn fold_all(shard: &mut Shard, records: &mut Vec<(u64, Entry)>, _: &[Arena]) {
         let takes_place = shard.arrived.is_empty() && shard.arrived.capacity() <= records.capacity();
         if takes_place {
             mem::swap(&mut shard.arrived, records);
@@ -661,23 +663,15 @@ impl View for Streams {
     }
 }
 
-impl Consumes for Streams {
-    fn takes_owned(effect: Effect, context: &Context) -> impl Iterator<Item = (u64, Entry)> + '_ {
-        // At most one record, and a mail's bytes are moved into its envelope.
-        let by = effect.seated();
-        let record = match effect.into_what() {
-            What::Send { to, count, kind, bytes } => {
-                let (root, depth) = (context.root, context.depth);
-                let envelope = Envelope { sender_seat: by.seat, root, depth, kind, bytes };
-                let entry = Entry { to: to.id.bits(), order: (by.id.bits(), count), item: Stored::Mail(envelope) };
+/// The key and entry the streams keep of `mailed`, sent in `context`: its receiver's seat, and the mail in its
+/// envelope.
+#[must_use]
+pub fn entry(mailed: Mailed, context: &Context) -> (u64, Entry) {
+    let Mailed { by, to, count, kind, bytes } = mailed;
+    let envelope = Envelope { sender_seat: by.seat, root: context.root, depth: context.depth, kind, bytes };
+    let entry = Entry { to: to.id.bits(), order: (by.id.bits(), count), item: Stored::Mail(envelope) };
 
-                Some((to.seat.number(), entry))
-            }
-            _ => None,
-        };
-
-        record.into_iter()
-    }
+    (to.seat.number(), entry)
 }
 
 #[cfg(test)]

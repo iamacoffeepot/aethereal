@@ -8,34 +8,68 @@ pub use refused::Refused;
 
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
-    Handles, Kinds, Level, MailId, Marker, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Table, Target, To,
-    ToAny, ToSender, ToType, ToWithoutMail, What,
+    Handles, Kinds, Level, Line, MailId, Mailed, Marker, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Table,
+    Target, To, ToAny, ToSender, ToType, ToWithoutMail, What,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 use core::marker::PhantomData;
 use core::mem;
+use core::str;
 
-/// What one turn has asked for: its effects in order, and the children it stood up (ADR-0009).
+/// What one turn has asked for, in three lists it fills as it runs: the mail it sent, the lines it logged, and its
+/// effects, in the order it asked for each; and the children it stood up (ADR-0009).
 ///
 /// The engine makes one for a turn and takes it back when the turn returns.
-/// Nothing in it has happened yet: the engine alone applies effects.
+/// Nothing in it has happened yet: the engine alone applies what is asked.
 pub struct Asked {
-    effects: Vec<Effect>,
+    buffers: Buffers,
     stood: Vec<Stood>,
     /// The seats of the children in `stood`, and what their types declare, under the bits of their ids, to find
     /// whether one stands at a key, where it sits, and what it is in a lookup.
     stood_seats: BTreeMap<u64, (SeatNumber, &'static Declared)>,
-    /// Where the bytes of the mail the turn sends are written.
+    /// Where the bytes of the mail the turn sends, and the text of the lines it logs, are written.
     arena: Arena,
     /// The seats the children the turn spawns are given.
     seats: Seats,
-    /// Where this turn's effects begin in `effects`: what is before them is earlier turns'.
-    start: usize,
+}
+
+/// The three buffers of what turns ask for: kept by a worker over its share of a step, and filled by each turn in turn.
+#[derive(Debug, Default)]
+pub struct Buffers {
+    /// The mail sent, in the order sent.
+    pub mailed: Vec<Mailed>,
+    /// The lines logged, in the order logged.
+    pub lines: Vec<Line>,
+    /// Everything else asked for: the effects on the lives of actors, in the order asked for.
+    pub effects: Vec<Effect>,
+}
+
+/// How long each of the buffers was at some moment: where what was asked after it begins.
+#[derive(Clone, Copy)]
+struct Marks {
+    mailed: usize,
+    effects: usize,
+}
+
+impl Buffers {
+    /// How long the buffers a failed `begin` takes back from are.
+    fn marks(&self) -> Marks {
+        Marks { mailed: self.mailed.len(), effects: self.effects.len() }
+    }
+
+    /// Whether every buffer is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        let no_mail = self.mailed.is_empty();
+        let no_lines = self.lines.is_empty();
+        let no_effects = self.effects.is_empty();
+
+        no_mail && no_lines && no_effects
+    }
 }
 
 impl Asked {
@@ -50,29 +84,35 @@ impl Asked {
     /// `seats`.
     #[must_use]
     pub fn writing(arena: Arena, seats: Seats) -> Self {
-        Self::continuing(Vec::new(), arena, seats)
+        Self::continuing(Buffers::default(), arena, seats)
     }
 
-    /// Nothing asked for yet, with effects added after `effects`, the effects of earlier turns kept in one list,
-    /// mail written to `arena`, after what it already holds, and children seated from `seats`.
+    /// Nothing asked for yet, in `buffers`, emptied and kept for their room, with mail written to `arena`, after what
+    /// it already holds, and children seated from `seats`.
     #[must_use]
-    pub fn continuing(effects: Vec<Effect>, arena: Arena, seats: Seats) -> Self {
-        let start = effects.len();
+    pub fn continuing(buffers: Buffers, arena: Arena, seats: Seats) -> Self {
+        debug_assert!(buffers.is_empty(), "a turn begins with its buffers emptied");
 
-        Self { effects, stood: Vec::new(), stood_seats: BTreeMap::new(), arena, seats, start }
+        Self { buffers, stood: Vec::new(), stood_seats: BTreeMap::new(), arena, seats }
     }
 
-    /// Begins the next turn: its effects follow the earlier turns' still in the list. The children the last turn
-    /// stood up have been taken with [`Self::take_stood`].
+    /// Begins the next turn, once what the last asked for has been taken out of the buffers. The children the last
+    /// turn stood up have been taken with [`Self::take_stood`].
     ///
     /// The engine keeps one of these for a worker's whole share of a step, and not one for each turn, so a turn
-    /// moves nothing in or out.
+    /// moves nothing in or out, and every buffer holds only what the turn running asked for.
     pub fn next_turn(&mut self) {
-        self.start = self.effects.len();
+        debug_assert!(self.buffers.is_empty(), "a turn begins with its buffers emptied");
         // Most turns stand up no child, and clearing even an empty map walks it.
         if !self.stood_seats.is_empty() {
             self.stood_seats.clear();
         }
+    }
+
+    /// Whether this turn has asked for nothing in any buffer.
+    #[must_use]
+    pub fn asked_nothing(&self) -> bool {
+        self.buffers.is_empty()
     }
 
     /// Takes the children this turn stood up, each in the order its `begin` finished.
@@ -80,9 +120,9 @@ impl Asked {
         mem::take(&mut self.stood)
     }
 
-    /// Every effect in the list, earlier turns' first, for the engine to add its own to, route, and empty.
-    pub fn effects_mut(&mut self) -> &mut Vec<Effect> {
-        &mut self.effects
+    /// Every list, earlier turns' entries first, for the engine to add its own to, route, and empty.
+    pub fn buffers_mut(&mut self) -> &mut Buffers {
+        &mut self.buffers
     }
 
     /// The seats children are given, for the engine to give back those of children that did not stay.
@@ -90,23 +130,43 @@ impl Asked {
         &mut self.seats
     }
 
-    /// The arena the turn's mail was written to.
+    /// The arena the turn's mail and lines were written to.
     #[must_use]
     pub const fn arena(&self) -> &Arena {
         &self.arena
     }
 
-    /// The effects asked for so far, in the order they were asked for.
+    /// The mail this turn sent, in the order sent.
     #[must_use]
-    pub fn effects(&self) -> &[Effect] {
-        &self.effects[self.start..]
+    pub fn mailed(&self) -> &[Mailed] {
+        &self.buffers.mailed
     }
 
-    /// The effects, earlier turns' first when the list was continued, the children stood up, each child in the order
-    /// its `begin` finished, the arena the mail was written to, and the seats not given out.
+    /// The lines this turn logged, in the order logged.
     #[must_use]
-    pub fn into_parts(self) -> (Vec<Effect>, Vec<Stood>, Arena, Seats) {
-        (self.effects, self.stood, self.arena, self.seats)
+    pub fn lines(&self) -> &[Line] {
+        &self.buffers.lines
+    }
+
+    /// The text of `line`, one this arena holds.
+    #[must_use]
+    pub fn text(&self, line: &Line) -> &str {
+        let bytes = self.arena.read(line.text).unwrap_or_default();
+
+        str::from_utf8(bytes).unwrap_or_default()
+    }
+
+    /// This turn's other effects, in the order they were asked for.
+    #[must_use]
+    pub fn effects(&self) -> &[Effect] {
+        &self.buffers.effects
+    }
+
+    /// The lists, earlier turns' entries first when they were continued, the children stood up, each child in the
+    /// order its `begin` finished, the arena the mail was written to, and the seats not given out.
+    #[must_use]
+    pub fn into_parts(self) -> (Buffers, Vec<Stood>, Arena, Seats) {
+        (self.buffers, self.stood, self.arena, self.seats)
     }
 
     /// The seat of the child stood up in this turn under the id `id`, when there is one.
@@ -219,8 +279,8 @@ struct Seat<'a> {
 enum Checked {
     /// No send of the turn has been checked.
     Nothing,
-    /// The send that was the turn's last effect when the turn had made `effects` of them, checked against `target`.
-    Last { effects: usize, target: Target },
+    /// The send that was the last in the mail buffer when it held `mailed` pieces, checked against `target`.
+    Last { mailed: usize, target: Target },
 }
 
 /// Which of an actor's turns runs: named when a send breaks the declaration (ADR-0013).
@@ -246,7 +306,7 @@ impl fmt::Display for During {
 impl Seat<'_> {
     /// Adds the effect by which this actor asks for `what`.
     fn ask(&mut self, what: What) {
-        self.asked.effects.push(Effect::new(self.me, what));
+        self.asked.buffers.effects.push(Effect::new(self.me, what));
     }
 
     /// A reference to this actor.
@@ -259,9 +319,9 @@ impl Seat<'_> {
         self.table.resolve(path).map(ErasedActorRef::new)
     }
 
-    /// Adds the effect that logs `text` at `level`.
-    fn log(&mut self, level: Level, text: impl Into<String>) {
-        self.ask(What::Log { level, text: text.into() });
+    /// A handle that logs as this actor and does nothing else.
+    const fn logger(&mut self) -> Logger<'_> {
+        Logger { me: self.me, asked: self.asked }
     }
 
     /// Adds the effect that watches the actor `of` refers to, with how this turn sees it: live when the table held
@@ -302,25 +362,23 @@ impl Seat<'_> {
         // A send to the receiver and of the kind of the turn's last, made by the same declared send, was checked with
         // it. A reply or a send through a reference is never checked, so one that went before proves nothing.
         let is_like_last = self.last_send().is_some_and(|(last, kind)| last == to && kind == KindId::of::<K>());
-        let was_checked = self.checked == Checked::Last { effects: self.asked.effects.len(), target };
+        let was_checked = self.checked == Checked::Last { mailed: self.asked.buffers.mailed.len(), target };
         let is_checked = is_like_last && was_checked;
         if !is_checked {
             self.check(to, target, KindId::of::<K>());
         }
         self.write_after(to, mail, is_like_last)?;
-        self.checked = Checked::Last { effects: self.asked.effects.len(), target };
+        self.checked = Checked::Last { mailed: self.asked.buffers.mailed.len(), target };
 
         Ok(())
     }
 
-    /// The receiver and kind of this turn's last effect, when it is a send by this actor.
+    /// The receiver and kind of this turn's last mail, when this actor sent it.
     fn last_send(&self) -> Option<(Seated, KindId)> {
-        let is_this_turns = self.asked.effects.len() > self.asked.start;
-        let last = self.asked.effects.last().filter(|_| is_this_turns)?;
-        match last.what() {
-            What::Send { to, kind, .. } if last.by() == self.me.id => Some((*to, *kind)),
-            _ => None,
-        }
+        let last = self.asked.buffers.mailed.last()?;
+        let is_mine = last.by.id == self.me.id;
+
+        is_mine.then_some((last.to, last.kind))
     }
 
     /// Encodes `mail` and adds the effect that sends it to the actor `to`, which this actor reaches as it is: one a
@@ -348,15 +406,14 @@ impl Seat<'_> {
         // Mail of one kind to one receiver, sent back to back by sends the turn named, is one run: one effect, one item
         // in its stream.
         if is_like_last
-            && let Some(last) = self.asked.effects.last_mut()
-            && let What::Send { count, bytes: run, .. } = last.what_mut()
-            && *count + u64::from(run.pieces()) == self.sent
-            && let Some(joined) = run.joined(bytes)
+            && let Some(last) = self.asked.buffers.mailed.last_mut()
+            && last.count + u64::from(last.bytes.pieces()) == self.sent
+            && let Some(joined) = last.bytes.joined(bytes)
         {
-            *run = joined;
+            last.bytes = joined;
             return Ok(());
         }
-        self.ask(What::Send { to, count: self.sent, kind, bytes });
+        self.asked.buffers.mailed.push(Mailed { by: self.me, to, count: self.sent, kind, bytes });
 
         Ok(())
     }
@@ -461,6 +518,7 @@ impl Seat<'_> {
         let declared = Declared::of::<C>();
         let from = Code::Linked(declared);
         let seat = self.asked.seats.take();
+        let before = self.asked.buffers.marks();
         let spawn = match segment.key() {
             None => What::Spawn { from, seat },
             Some(key) => What::SpawnInstanced { from, key: key.clone(), seat },
@@ -492,8 +550,10 @@ impl Seat<'_> {
                 Ok(ActorRef::new(me))
             }
             Err(fault) => {
-                // The child and every child it stood up never began, so their seats are given back.
-                self.asked.effects.push(Effect::new(me, What::Faulted));
+                // The child and every child it stood up never began, so their seats are given back, and what they
+                // asked for, the spawn of the child among it, is taken back but for the lines they logged.
+                self.asked.buffers.mailed.truncate(before.mailed);
+                self.asked.buffers.effects.truncate(before.effects);
                 for below in self.asked.stood.drain(stood_before..) {
                     self.asked.stood_seats.remove(&below.me.id.bits());
                     self.asked.seats.give_back(below.me.seat);
@@ -502,6 +562,22 @@ impl Seat<'_> {
 
                 Err(Refused::Began(fault))
             }
+        }
+    }
+}
+
+/// What logs as one actor in its turn, and does nothing else (ADR-0009): lent by a turn to a helper that logs.
+pub struct Logger<'t> {
+    me: Seated,
+    asked: &'t mut Asked,
+}
+
+impl Logger<'_> {
+    /// Logs `text` at `level`, as the turn that lent this does. The line is kept when the turn fails. A text whose
+    /// `Display` fails logs nothing.
+    pub fn log(&mut self, level: Level, text: impl fmt::Display) {
+        if let Ok(text) = self.asked.arena.write_text(text) {
+            self.asked.buffers.lines.push(Line { by: self.me, level, text });
         }
     }
 }
@@ -635,7 +711,7 @@ impl<'a> Turning<'a> {
 /// What an actor asks of the engine while it handles one item, through a handler that may send `S` (ADR-0009,
 /// ADR-0013).
 ///
-/// Each ask adds an effect to the turn's list, and nothing asked for happens
+/// Each ask adds an effect to the turn's buffer of its class, and nothing asked for happens
 /// until the turn has returned `Ok`. Each read answers from the table of
 /// actors as it stood when the turn's step began.
 pub struct Turn<'a, S> {
@@ -706,8 +782,16 @@ impl<'a, S> Turn<'a, S> {
     }
 
     /// Logs `text` at `level`. The line is kept when this turn fails.
-    pub fn log(&mut self, level: Level, text: impl Into<String>) {
-        self.seat.log(level, text);
+    ///
+    /// The text is written as `Display` shows it straight into the worker's arena, so a line built with
+    /// `format_args!` allocates nothing.
+    pub fn log(&mut self, level: Level, text: impl fmt::Display) {
+        self.seat.logger().log(level, text);
+    }
+
+    /// A handle that logs as this actor and does nothing else: for a helper that logs and should not send.
+    pub const fn logger(&mut self) -> Logger<'_> {
+        self.seat.logger()
     }
 
     /// A reference to this actor.
@@ -807,8 +891,16 @@ impl<'a, S> Beginning<'a, S> {
     }
 
     /// Logs `text` at `level`. The line is kept when this turn fails.
-    pub fn log(&mut self, level: Level, text: impl Into<String>) {
-        self.seat.log(level, text);
+    ///
+    /// The text is written as `Display` shows it straight into the worker's arena, so a line built with
+    /// `format_args!` allocates nothing.
+    pub fn log(&mut self, level: Level, text: impl fmt::Display) {
+        self.seat.logger().log(level, text);
+    }
+
+    /// A handle that logs as this actor and does nothing else: for a helper that logs and should not send.
+    pub const fn logger(&mut self) -> Logger<'_> {
+        self.seat.logger()
     }
 
     /// A reference to this actor.
@@ -916,8 +1008,16 @@ impl<'a, S> Ending<'a, S> {
     }
 
     /// Logs `text` at `level`. The line is kept when this turn fails.
-    pub fn log(&mut self, level: Level, text: impl Into<String>) {
-        self.seat.log(level, text);
+    ///
+    /// The text is written as `Display` shows it straight into the worker's arena, so a line built with
+    /// `format_args!` allocates nothing.
+    pub fn log(&mut self, level: Level, text: impl fmt::Display) {
+        self.seat.logger().log(level, text);
+    }
+
+    /// A handle that logs as this actor and does nothing else: for a helper that logs and should not send.
+    pub const fn logger(&mut self) -> Logger<'_> {
+        self.seat.logger()
     }
 
     /// A reference to this actor.

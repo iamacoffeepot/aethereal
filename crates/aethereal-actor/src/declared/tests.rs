@@ -2,10 +2,9 @@
 //! reads of it.
 
 use super::*;
-use crate::Effect;
 use crate::{
-    Above, Asked, Beginning, Chain, Ending, ErasedActorRef, Fault, Item, Level, Mail, MailId, Runs, SeatNumber, Seated,
-    Table, To, Turn, Turning, What,
+    Above, Asked, Beginning, Chain, Ending, ErasedActorRef, Fault, Item, Level, Mail, MailId, Mailed, Runs, SeatNumber,
+    Seated, Table, To, Turn, Turning,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -179,8 +178,8 @@ const ME: Seated = Seated { id: ActorId::new(1), seat: SeatNumber::new(0) };
 const OTHER: Seated = Seated { id: ActorId::new(2), seat: SeatNumber::new(1) };
 const CHAIN: Chain = Chain { root: MailId { sender: OTHER.id, count: 1 }, depth: 1 };
 
-/// What an actor of type `A` asked for when it was handed mail of `kind` from `OTHER`.
-fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<What> {
+/// The lines an actor of type `A` logged when it was handed mail of `kind` from `OTHER`.
+fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<String> {
     let table = Typed(Vec::new());
     let mut asked = Asked::new();
     let mut actor: Box<dyn Runs> = Box::new(actor);
@@ -189,29 +188,24 @@ fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<What> {
     let handled = actor.handle(Item::Mail(mail), turning);
     assert!(handled.is_ok());
 
-    asked.into_parts().0.into_iter().map(Effect::into_what).collect()
+    asked.lines().iter().map(|line| String::from(asked.text(line))).collect()
 }
 
-/// What a keeper's handler of kept mail asks for when it runs `then` with the actors of `table`.
-fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, <Keeper as Handles<Kept>>::Sends>)) -> Vec<What> {
+/// The mail a keeper's handler of kept mail sends when it runs `then` with the actors of `table`.
+fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, <Keeper as Handles<Kept>>::Sends>)) -> Vec<Mailed> {
     let mut asked = Asked::new();
     let kept = Role::Kind(KindId::of::<Kept>());
     let turning = Turning::new(ME, &PATH, Above::Chassis, table, &(), &mut asked, 0, OTHER, CHAIN);
     then(&mut turning.declaring::<Keeper, <Keeper as Handles<Kept>>::Sends>(kept));
 
-    asked.into_parts().0.into_iter().map(Effect::into_what).collect()
-}
-
-/// The log line an effect asks for.
-fn line(text: &str) -> What {
-    What::Log { level: Level::Info, text: String::from(text) }
+    asked.into_parts().0.mailed
 }
 
 #[test]
 fn mail_reaches_the_handler_of_its_kind_and_the_fallback_takes_the_rest() {
     // Catches a fallback that shadows a kind the actor lists, and an unlisted kind not handed to the fallback.
-    assert_eq!(handed(Keeper, KindId::of::<Kept>()), [line("kept")]);
-    assert_eq!(handed(Keeper, KindId::of::<Stray>()), [line("other")]);
+    assert_eq!(handed(Keeper, KindId::of::<Kept>()), ["kept"]);
+    assert_eq!(handed(Keeper, KindId::of::<Stray>()), ["other"]);
 }
 
 #[test]
@@ -229,7 +223,7 @@ fn send_to_a_type_reaches_an_actor_of_that_type() {
         assert!(turn.to::<Keeper>(To::Held(ErasedActorRef::new(OTHER))).send(&Kept).is_ok());
     });
 
-    assert!(matches!(asked[..], [What::Send { to: OTHER, .. }]));
+    assert!(matches!(asked[..], [Mailed { to: OTHER, .. }]));
 }
 
 #[test]
@@ -262,7 +256,7 @@ fn send_to_any_reaches_a_type_that_lists_every_kind() {
         assert!(turn.to_any::<(Kept,)>(To::Held(ErasedActorRef::new(OTHER))).send(&Kept).is_ok());
     });
 
-    assert!(matches!(asked[..], [What::Send { to: OTHER, .. }]));
+    assert!(matches!(asked[..], [Mailed { to: OTHER, .. }]));
 }
 
 #[test]

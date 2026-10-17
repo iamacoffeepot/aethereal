@@ -1,7 +1,7 @@
 //! A view: state many actors read, folded from the effects of finished turns (ADR-0011).
 
 use crate::Context;
-use aethereal_actor::Effect;
+use aethereal_actor::{Arena, Effect};
 use std::mem;
 use std::num::NonZeroUsize;
 
@@ -29,14 +29,15 @@ pub trait View {
     /// `context` is the context the effect was emitted in.
     fn takes<'a>(effect: &'a Effect, context: &'a Context) -> impl Iterator<Item = (u64, Self::Record)> + 'a;
 
-    /// Folds one record into the part its key falls in.
-    fn fold(shard: &mut Self::Shard, key: u64, record: Self::Record);
+    /// Folds one record into the part its key falls in. `written` is the step's arenas, by writer, where the bytes a
+    /// record names lie until the step after next.
+    fn fold(shard: &mut Self::Shard, key: u64, record: Self::Record, written: &[Arena]);
 
     /// Folds one writer's records for a part, in the order the writer routed them, and leaves the list empty, with
     /// its room. One by one, unless the part keeps its records as they come and takes the list whole.
-    fn fold_all(shard: &mut Self::Shard, records: &mut Vec<(u64, Self::Record)>) {
+    fn fold_all(shard: &mut Self::Shard, records: &mut Vec<(u64, Self::Record)>, written: &[Arena]) {
         for (key, record) in records.drain(..) {
-            Self::fold(shard, key, record);
+            Self::fold(shard, key, record, written);
         }
     }
 }
@@ -55,16 +56,6 @@ impl<T: Default> Part for T {
     fn empty(_: NonZeroUsize) -> Self {
         T::default()
     }
-}
-
-/// A view that can take an effect by value, so what it keeps of the effect is moved in and not copied.
-///
-/// Only the last view to fold a turn's effects can take them, since nothing
-/// reads an effect after it is taken. [`View::takes`] gives the same records
-/// from a borrowed effect.
-pub trait Consumes: View {
-    /// The keys and records of `effect`, taken by value, as [`View::takes`] gives them.
-    fn takes_owned(effect: Effect, context: &Context) -> impl Iterator<Item = (u64, Self::Record)> + '_;
 }
 
 /// A view as the engine keeps it: its state in parts, each holding the keys that fall in it (ADR-0011).
@@ -90,23 +81,10 @@ impl<V: View> Folded<V> {
     }
 
     /// Folds in the effects of one turn, emitted in `context`, in the order given.
-    pub fn fold(&mut self, effects: &[Effect], context: &Context) {
+    pub fn fold(&mut self, effects: &[Effect], context: &Context, written: &[Arena]) {
         for (key, record) in effects.iter().flat_map(|effect| V::takes(effect, context)) {
             let part = self.part(key);
-            V::fold(&mut self.shards[part], key, record);
-        }
-    }
-
-    /// Folds in the effects of one turn, emitted in `context`, taking each by value.
-    ///
-    /// The caller folds every other view that reads these effects first.
-    pub fn fold_owned(&mut self, effects: impl IntoIterator<Item = Effect>, context: &Context)
-    where
-        V: Consumes,
-    {
-        for (key, record) in effects.into_iter().flat_map(|effect| V::takes_owned(effect, context)) {
-            let part = self.part(key);
-            V::fold(&mut self.shards[part], key, record);
+            V::fold(&mut self.shards[part], key, record, written);
         }
     }
 
@@ -121,12 +99,12 @@ impl<V: View> Folded<V> {
     ///
     /// The records of a key that has one owner come from that owner's turns, which one writer ran, in order, so they
     /// reach [`View::fold`] in the order the owner asked for them.
-    pub fn fold_part<'r>(&mut self, part: usize, rows: impl IntoIterator<Item = &'r mut Routed<V>>)
+    pub fn fold_part<'r>(&mut self, part: usize, rows: impl IntoIterator<Item = &'r mut Routed<V>>, written: &[Arena])
     where
         V: 'r,
     {
         for row in rows {
-            V::fold_all(&mut self.shards[part], &mut row.buckets[part]);
+            V::fold_all(&mut self.shards[part], &mut row.buckets[part], written);
         }
     }
 
@@ -200,9 +178,9 @@ pub struct Column<V: View> {
 
 impl<V: View> Column<V> {
     /// Folds every writer's bucket into the part, one writer after another.
-    pub fn fold(&mut self) {
+    pub fn fold(&mut self, written: &[Arena]) {
         for bucket in &mut self.buckets {
-            V::fold_all(&mut self.shard, bucket);
+            V::fold_all(&mut self.shard, bucket, written);
         }
     }
 
@@ -262,10 +240,10 @@ impl<V: View> Folded<V> {
     }
 
     /// Folds records made outside a step's turns, each into the part its key falls in.
-    pub fn fold_records(&mut self, records: impl IntoIterator<Item = (u64, V::Record)>) {
+    pub fn fold_records(&mut self, records: impl IntoIterator<Item = (u64, V::Record)>, written: &[Arena]) {
         for (key, record) in records {
             let part = self.part(key);
-            V::fold(&mut self.shards[part], key, record);
+            V::fold(&mut self.shards[part], key, record, written);
         }
     }
 }
@@ -318,20 +296,6 @@ impl<V: View> Routed<V> {
     /// Routes one effect, emitted in `context`.
     pub fn route(&mut self, effect: &Effect, context: &Context) {
         for (key, record) in V::takes(effect, context) {
-            self.put(key, record);
-        }
-    }
-
-    /// Routes one effect, emitted in `context`, taking it by value.
-    ///
-    /// The caller routes every other view that reads this effect first.
-    #[allow(clippy::inline_always, reason = "once for every turn: a call here costs a tenth of a turn, measured")]
-    #[inline(always)]
-    pub fn route_one(&mut self, effect: Effect, context: &Context)
-    where
-        V: Consumes,
-    {
-        for (key, record) in V::takes_owned(effect, context) {
             self.put(key, record);
         }
     }

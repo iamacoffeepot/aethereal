@@ -1,8 +1,8 @@
-//! An effect: one thing an actor asks of the engine (ADR-0009).
+//! What an actor asks of the engine, in three lists a turn fills as it runs: the mail it sends, the lines it logs,
+//! and the rest, its effects on the lives of actors (ADR-0009).
 
 use crate::{Declared, ErasedActorRef, Fault, How, Payload, SeatNumber, Seated};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
-use alloc::string::String;
 
 /// One thing an actor asks of the engine, and which actor asked (ADR-0009).
 ///
@@ -26,12 +26,6 @@ impl Effect {
     #[must_use]
     pub const fn by(&self) -> ActorId {
         self.by.id
-    }
-
-    /// What is asked for, to change before the engine applies it: a turn's send that joins the one before it, or a
-    /// run whose first piece the engine fused.
-    pub const fn what_mut(&mut self) -> &mut What {
-        &mut self.what
     }
 
     /// The actor that asked, and its seat.
@@ -59,10 +53,6 @@ impl Effect {
 /// lists enter with the piece of the engine that applies each.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum What {
-    /// Mail of kind `kind`, whose bytes are at `bytes`, in the arena of the worker that ran the turn or in bytes of
-    /// their own, is sent to the actor `to` names, in its seat, as the turn resolved the target it was given. `count`
-    /// is the asking actor's count of mail sent, which with that actor is the mail's id.
-    Send { to: Seated, count: u64, kind: KindId, bytes: Payload },
     /// A root, a singleton, has been made. Written by the engine for the chassis, by the root itself.
     Root { from: Code },
     /// A root of an instanced type has been made. Written by the engine for the chassis, by the root itself.
@@ -75,8 +65,6 @@ pub enum What {
     Embed { from: Code, seat: SeatNumber },
     /// A child of an instanced type stands beneath the asking actor in `seat`, and its mail is handed to that actor.
     EmbedInstanced { from: Code, key: KeyName, seat: SeatNumber },
-    /// The asking actor's `begin` failed, and the actor was never live. It reports, and asks for nothing.
-    Faulted,
     /// The asking actor's turn failed with this fault, and the actor has ended. Written by the engine, since the
     /// actor asked for nothing.
     Failed(Fault),
@@ -91,11 +79,31 @@ pub enum What {
     Watch { of: ErasedActorRef, seen: Seen },
     /// The asking actor closes.
     Close,
-    /// The asking actor logs `text`. It is kept when the turn that asked for it fails.
-    Log { level: Level, text: String },
 }
 
-/// How much a logged line matters (ADR-0009).
+/// A piece of mail a turn sends, or a run of them (ADR-0009, ADR-0011).
+///
+/// Mail of kind `kind`, whose bytes are at `bytes`, in the arena of the worker that ran the turn or in bytes of
+/// their own, is sent by the actor `by` names to the actor `to` names, in its seat, as the turn resolved the target
+/// it was given. `count` is the sender's count of mail sent, which with the sender is the mail's id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mailed {
+    pub by: Seated,
+    pub to: Seated,
+    pub count: u64,
+    pub kind: KindId,
+    pub bytes: Payload,
+}
+
+/// A line a turn logs (ADR-0009): by the actor `by` names, at `level`, its text at `text` in the arena of the worker
+/// that ran the turn. It is kept when the turn fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Line {
+    pub by: Seated,
+    pub level: Level,
+    pub text: Payload,
+}
+
 /// How a turn that watches an actor saw it: live as the turn's step began, or stood up earlier in the step, or
 /// already ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +114,7 @@ pub enum Seen {
     Ended,
 }
 
+/// How much a logged line matters (ADR-0009).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     Debug,

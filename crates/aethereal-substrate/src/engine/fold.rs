@@ -7,7 +7,7 @@ use crate::stream::{self, Streams};
 use crate::table::Actors;
 use crate::watch::{Notice, Watches};
 use crate::{BySeat, Column, Lives, Log, Part, lives};
-use aethereal_actor::Seated;
+use aethereal_actor::{Arena, Seated};
 use std::num::NonZeroUsize;
 
 /// The parts of the views one worker folds at the end of a step (ADR-0011).
@@ -63,6 +63,8 @@ pub struct Folding<'a> {
     pub(super) costs: &'a Costs,
     /// How long an actor kept to a slice runs in a step, in nanoseconds.
     pub(super) slice: u64,
+    /// The step's arenas, by writer, where the text of the lines its turns logged lies.
+    pub(super) written: &'a [Arena],
 }
 
 impl Folding<'_> {
@@ -75,11 +77,11 @@ impl Folding<'_> {
             for bucket in &mut pile.births {
                 pile.born += birth::seat_all(&mut pile.seating, &mut pile.actors, bucket);
             }
-            pile.table.fold();
-            pile.log.fold();
-            pile.lives.fold();
-            pile.streams.fold();
-            pile.watches.fold();
+            pile.table.fold(self.written);
+            pile.log.fold(self.written);
+            pile.lives.fold(self.written);
+            pile.streams.fold(self.written);
+            pile.watches.fold(self.written);
             pile.watches.shard_mut().settle(&mut pile.forward);
             pile.expected =
                 expected(pile.streams.shard(), pile.lives.shard(), &pile.seating.seated, self.costs, self.slice);
