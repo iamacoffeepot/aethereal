@@ -22,11 +22,13 @@ use crate::stream::{self, Handed, Streams};
 use crate::table::Actors;
 use crate::watch::{Notice, Watches};
 use crate::{
-    ActorTable, BySeat, Clock, Context, Entry, Envelope, Folded, Lives, Log, Part, Routed, State, lives, rounded,
+    ActorTable, Blobs, ByActor, BySeat, Clock, Context, Entry, Envelope, Folded, Lives, Log, Part, Routed, State,
+    lives, rounded,
 };
+use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
-    Above, Actor, Arena, Asked, Beginning, Buffers, Chain, Closing, Code, Declared, Effect, Fault, How, Item, Mail,
-    MailId, Mailed, Refused, Runs, SeatNumber, Seated, Seats, Stood, Turning, What, Why,
+    Above, Actor, Arena, Asked, Beginning, BlobRef, Buffers, Chain, Closing, Code, Declared, Effect, Fault, How, Item,
+    Mail, MailId, Mailed, Puts, Refused, Runs, SeatNumber, Seated, Seats, Stood, Turning, What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use birth::Births;
@@ -39,6 +41,7 @@ use std::iter;
 use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The engine: its actors, the views of them, and the steps their turns run in (ADR-0011).
 ///
@@ -112,6 +115,43 @@ pub struct Engine {
     hopped: Hops,
     /// The host's quota for the bytes of mail in flight, shared equally among the arenas of every writer.
     mail_bytes: usize,
+    /// The blobs the engine holds, with their pins (ADR-0014).
+    blobs: Blobs,
+    /// Where each writer holds the blobs its turns put, by its slot: kept from step to step, so each blob it puts
+    /// has an id no other has had.
+    puts: Vec<Puts>,
+    /// The changes to pins made where no worker's buffer was open, taken at each sweep: kept for its room.
+    unbuffered: Vec<Change>,
+    /// Which engine of the process this is, in the id of each blob it holds. Last, so what the engine's actors held
+    /// is let go of before the engine is forgotten.
+    number: Number,
+}
+
+/// Which engine of the process an engine is: the engines a process makes are numbered in turn.
+struct Number(u32);
+
+/// The number the next engine the process makes takes.
+static ENGINES: AtomicU32 = AtomicU32::new(0);
+
+impl Number {
+    /// The next engine's number.
+    ///
+    /// # Panics
+    ///
+    /// Panics once a process has made `u32::MAX` engines.
+    fn next() -> Self {
+        let number = ENGINES.fetch_add(1, Ordering::Relaxed);
+        assert!(number < u32::MAX, "no process makes u32::MAX engines");
+
+        Self(number)
+    }
+}
+
+impl Drop for Number {
+    /// Forgets what was left for the engine's pins once its actors and blobs have gone.
+    fn drop(&mut self) {
+        pins::forget(self.0);
+    }
 }
 
 /// One part of the engine's seats: the actors in them.
@@ -145,7 +185,11 @@ enum Held {
 /// What a worker reads of its own actors, their seats, lives, and items, it
 /// owns for the step, in the parts it was given.
 pub struct Reading<'a> {
+    /// Which engine of the process it reads, whose pins its turns change.
+    engine: u32,
     table: &'a ActorTable,
+    /// The blobs the store held as the step began.
+    blobs: &'a Blobs,
     /// The arenas the last step's mail was written to, by writer.
     mail: &'a [Arena],
     read_limit: usize,
@@ -169,7 +213,7 @@ struct Spare {
     /// The parts some writer routed a record to in a step.
     touched: Vec<usize>,
     /// What each worker of a shared step left, while its parts are put back: empty between.
-    left: Vec<(Lists, Arena)>,
+    left: Vec<(Lists, Arena, Puts)>,
 }
 
 /// One part of the engine as a worker owns it for a step: what has arrived for the actors seated in it, their lives,
@@ -202,6 +246,8 @@ pub struct Done {
     lists: Lists,
     /// The arena the worker wrote its mail to, to keep for the step after next.
     arena: Arena,
+    /// The blobs the worker's turns put, for the store to take in.
+    puts: Puts,
     parcels: Vec<Parcel>,
 }
 
@@ -222,6 +268,8 @@ pub struct Lists {
     runs: Vec<stream::Run>,
     /// What the part running keeps of its step while it fuses chains of mail.
     fusing: Fusing,
+    /// The changes to blobs' pins its turns made, noted on the worker's thread as they ran (ADR-0014).
+    pins: Vec<Change>,
 }
 
 /// One writer's row of buckets for each view, and for the children its turns stood up, to seat.
@@ -254,10 +302,11 @@ struct Ran {
 impl Engine {
     /// An engine with no actors, its views in `parts` parts [`rounded`] up to a power of two, whose turns read at
     /// most `read_limit` bytes into any one piece of mail, whose mail in flight is written to `mail_bytes` of
-    /// arenas, shared equally among the writers, two arenas each, and whose parts each run at most `hops` fused hops
-    /// in a step (ADR-0013). With no hops, every piece of mail is handled in a later step.
+    /// arenas, shared equally among the writers, two arenas each, whose blobs hold at most `blob_bytes` (ADR-0014),
+    /// and whose parts each run at most `hops` fused hops in a step (ADR-0013). With no hops, every piece of mail is
+    /// handled in a later step.
     #[must_use]
-    pub fn new(parts: NonZeroUsize, read_limit: usize, mail_bytes: usize, hops: usize) -> Self {
+    pub fn new(parts: NonZeroUsize, read_limit: usize, mail_bytes: usize, blob_bytes: usize, hops: usize) -> Self {
         let parts = rounded(parts);
 
         Self {
@@ -286,6 +335,10 @@ impl Engine {
             slice: u64::MAX,
             hopped: Hops::default(),
             mail_bytes,
+            blobs: Blobs::new(blob_bytes),
+            puts: Vec::new(),
+            unbuffered: Vec::new(),
+            number: Number::next(),
         }
     }
 
@@ -323,6 +376,30 @@ impl Engine {
         !self.waiting.iter().any(|part| self.has_work(*part))
     }
 
+    /// Puts `bytes` as a blob, for the chassis, between steps, and answers with the first reference to it
+    /// (ADR-0014): refused when they would take the blobs past the host's budget.
+    pub fn put_blob(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {
+        let room = self.blobs.room();
+        let mut puts = self.puts(ROOTS, room);
+        let put = puts.pinned(bytes);
+        self.blobs.take_in(puts.take());
+        self.puts[ROOTS] = puts;
+
+        put
+    }
+
+    /// The bytes of the blob `blob` refers to, as the store holds them between steps.
+    #[must_use]
+    pub fn blob(&self, blob: &BlobRef) -> Option<&[u8]> {
+        self.blobs.read(blob.id())
+    }
+
+    /// How many blobs the engine holds, and their bytes.
+    #[must_use]
+    pub fn blobs_held(&self) -> (usize, usize) {
+        self.blobs.held()
+    }
+
     /// Makes a root of type `A` under `key`, for the chassis, and answers with its id (ADR-0008).
     ///
     /// The root's `begin` runs here, and what it asked for is applied before this returns, as a step's effects
@@ -347,10 +424,16 @@ impl Engine {
         let home = self.emptiest();
         let mut seats = self.lend_seats(home);
         let me = Seated { id, seat: seats.own() };
-        let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats);
-        let began = A::begin(config, &mut Beginning::new::<A>(me, &path, &self.table, &mut asked));
-        let (buffers, stood, arena, mut seats) = asked.into_parts();
+        let blob_room = self.blobs.room();
+        let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats, self.puts(ROOTS, blob_room));
+        let stood_before = ByActor::default();
+        let table = Since { table: &self.table, stood: &stood_before, sees: Sees::Step, blobs: &self.blobs };
+        let began = A::begin(config, &mut Beginning::new::<A>(me, &path, &table, &mut asked));
+        let (buffers, stood, arena, mut seats, mut puts) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
+        // A root is made between steps, when nothing reads the store, so what its `begin` put is taken in at once.
+        self.blobs.take_in(puts.take());
+        self.puts[ROOTS] = puts;
         let root = match began {
             Ok(root) => root,
             Err(fault) => {
@@ -419,12 +502,20 @@ impl Engine {
     /// Runs a step planned for one worker on the thread that calls it, each part where it lies: what
     /// [`Reading::run`] does with the parts taken out. [`Engine::apply_whole`] applies what it left.
     pub fn run_whole(&mut self, whole: Whole, clock: &impl Clock) -> Whole {
-        let Whole { arena, mut lists } = whole;
+        let Whole { arena, puts, mut lists } = whole;
         let mut tally = mem::take(&mut lists.tally);
-        let mut asked = Asked::continuing(mem::take(&mut lists.buffers), arena, Seats::default());
+        let mut asked = Asked::continuing(mem::take(&mut lists.buffers), arena, Seats::default(), puts);
+        pins::open(self.number.0, mem::take(&mut lists.pins));
         let mail = &self.arenas[parity(self.step + 1)];
-        let reading =
-            Reading { table: &self.table, mail, read_limit: self.read_limit, hops: self.hops, slice: self.slice };
+        let reading = Reading {
+            engine: self.number.0,
+            table: &self.table,
+            blobs: &self.blobs,
+            mail,
+            read_limit: self.read_limit,
+            hops: self.hops,
+            slice: self.slice,
+        };
         for (part, _) in &self.packing.parts {
             let room = Room {
                 streams: self.streams.at_mut(*part),
@@ -435,11 +526,12 @@ impl Engine {
             };
             reading.run_part(room, clock, &mut tally, &mut asked, &mut lists);
         }
-        let (buffers, _, arena, _) = asked.into_parts();
+        let (buffers, _, arena, _, puts) = asked.into_parts();
         lists.buffers = buffers;
         lists.tally = tally;
+        lists.pins = pins::close();
 
-        Whole { arena, lists }
+        Whole { arena, puts, lists }
     }
 
     /// Ends a step run by [`Engine::run_whole`] on the thread that calls it: takes in what its turns left, and folds
@@ -450,8 +542,9 @@ impl Engine {
     ///
     /// Panics when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn apply_whole(&mut self, whole: Whole) {
-        let Whole { arena, lists } = whole;
-        self.take_in(lists, arena);
+        let Whole { arena, puts, lists } = whole;
+        self.take_in(lists, arena, puts);
+        self.sweep_blobs();
 
         let mut forward = mem::take(&mut self.spare.forward);
         let mut touched = self.touched();
@@ -522,32 +615,35 @@ impl Engine {
         for arena in &mut self.arenas[parity] {
             arena.clear(share);
         }
+        // Each writer may put an equal share of what the budget for blobs has left (ADR-0014).
+        let blob_share = self.blobs.room() / running;
         if running == 1 {
-            let (arena, lists) = self.writer(parity, 0, share);
+            let (arena, lists, puts) = self.writer(parity, 0, share, blob_share);
 
-            return Plan { delta, split: Split::Whole(Whole { arena, lists }), expected_nanos };
+            return Plan { delta, split: Split::Whole(Whole { arena, puts, lists }), expected_nanos };
         }
 
         self.packing.pack(running);
         let mut shares = Vec::with_capacity(running);
         for place in 0..running {
-            let (arena, lists) = self.writer(parity, place, share);
+            let (arena, lists, puts) = self.writer(parity, place, share, blob_share);
             let mut parcels = self.spare.parcels.pop().unwrap_or_default();
             for index in 0..self.packing.shares[place].1.len() {
                 let part = self.packing.shares[place].1[index];
                 parcels.push(self.parcel(part));
             }
-            shares.push(Share { parcels, arena, lists });
+            shares.push(Share { parcels, arena, puts, lists });
         }
 
         Plan { delta, split: Split::Shares(shares), expected_nanos }
     }
 
-    /// The arena and lists of the writer in place `place`, for steps of `parity`, its arena given `share` bytes:
-    /// taken out to fill.
-    fn writer(&mut self, parity: usize, place: usize, share: usize) -> (Arena, Lists) {
+    /// The arena, lists, and puts of the writer in place `place`, for steps of `parity`, its arena given `share`
+    /// bytes and its puts `blob_share`: taken out to fill.
+    fn writer(&mut self, parity: usize, place: usize, share: usize, blob_share: usize) -> (Arena, Lists, Puts) {
         let slot = ROOTS + 1 + place;
         let arena = self.arena(parity, slot, share);
+        let puts = self.puts(slot, blob_share);
         while self.lists.len() <= slot {
             let lists = self.lists();
             self.lists.push(lists);
@@ -556,14 +652,17 @@ impl Engine {
         // the worker that fills it.
         let lists = mem::take(&mut self.lists[slot]);
 
-        (arena, lists)
+        (arena, lists, puts)
     }
 
     /// Takes in what a writer left once the parts it ran are back: how long its turns took, its arena, and the seats
     /// it did not give out; and keeps its lists in their place. The children its turns stood up are seated when their
     /// parts are folded.
-    fn take_in(&mut self, mut lists: Lists, arena: Arena) {
+    fn take_in(&mut self, mut lists: Lists, arena: Arena, mut puts: Puts) {
         self.costs.merge(&mut lists.tally);
+        self.blobs.take_in(puts.take());
+        self.blobs.change(&mut lists.pins);
+        self.puts[arena.slot()] = puts;
         self.hopped.add(mem::take(&mut lists.fusing.hops));
         let slot = arena.slot();
         self.arenas[parity(self.step)][slot] = arena;
@@ -593,7 +692,15 @@ impl Engine {
     pub fn reading(&self) -> Reading<'_> {
         let mail = &self.arenas[parity(self.step + 1)];
 
-        Reading { table: &self.table, mail, read_limit: self.read_limit, hops: self.hops, slice: self.slice }
+        Reading {
+            engine: self.number.0,
+            table: &self.table,
+            blobs: &self.blobs,
+            mail,
+            read_limit: self.read_limit,
+            hops: self.hops,
+            slice: self.slice,
+        }
     }
 
     /// Ends a step on the thread that calls it: gathers what the workers left, folds every part, and settles
@@ -618,19 +725,20 @@ impl Engine {
     pub fn gather(&mut self, done: impl ExactSizeIterator<Item = Done>) -> Vec<Fold> {
         let running = done.len();
         let mut left = mem::take(&mut self.spare.left);
-        for Done { lists, arena, mut parcels } in done {
+        for Done { lists, arena, puts, mut parcels } in done {
             while let Some(parcel) = parcels.pop() {
                 self.put(parcel);
             }
             self.spare.parcels.push(parcels);
-            left.push((lists, arena));
+            left.push((lists, arena, puts));
         }
         // Taken in the order the workers were given, so a step's costs are merged in the same order every time.
         left.reverse();
-        while let Some((lists, arena)) = left.pop() {
-            self.take_in(lists, arena);
+        while let Some((lists, arena, puts)) = left.pop() {
+            self.take_in(lists, arena, puts);
         }
         self.spare.left = left;
+        self.sweep_blobs();
 
         self.packing.parts.clear();
         let mut touched = self.touched();
@@ -816,6 +924,26 @@ impl Engine {
         Lists { routes, ..Lists::default() }
     }
 
+    /// Where the writer numbered `slot` holds the blobs it puts, given `room` bytes to put, taken out to fill.
+    fn puts(&mut self, slot: usize, room: usize) -> Puts {
+        let engine = self.number.0;
+        while self.puts.len() <= slot {
+            self.puts.push(Puts::new(engine, self.puts.len(), 0));
+        }
+        let mut puts = mem::replace(&mut self.puts[slot], Puts::new(engine, slot, 0));
+        puts.give_room(room);
+
+        puts
+    }
+
+    /// Sums every change to blobs' pins the step made, those made where no worker's buffer was open among them, and
+    /// frees each blob left with no pin (ADR-0014).
+    fn sweep_blobs(&mut self) {
+        pins::take_shared(self.number.0, &mut self.unbuffered);
+        self.blobs.change(&mut self.unbuffered);
+        self.blobs.sweep();
+    }
+
     /// The arena of the writer numbered `slot` for steps of `parity`, taken out to write to; made when it is the
     /// first, its slab given `bytes`.
     fn arena(&mut self, parity: usize, slot: usize, bytes: usize) -> Arena {
@@ -916,19 +1044,21 @@ impl Reading<'_> {
     ///
     /// An actor that closes or fails handles nothing more, so what it was handed behind that turn is dropped.
     pub fn run(&self, share: Share, clock: &impl Clock) -> Done {
-        let Share { mut parcels, arena, mut lists } = share;
+        let Share { mut parcels, arena, puts, mut lists } = share;
         let mut tally = mem::take(&mut lists.tally);
         // One list of what turns ask for, over the share: each turn adds to it, and its effects are routed out of it
         // as it finishes.
-        let mut asked = Asked::continuing(mem::take(&mut lists.buffers), arena, Seats::default());
+        let mut asked = Asked::continuing(mem::take(&mut lists.buffers), arena, Seats::default(), puts);
+        pins::open(self.engine, mem::take(&mut lists.pins));
         for parcel in &mut parcels {
             self.run_part(parcel.room(), clock, &mut tally, &mut asked, &mut lists);
         }
-        let (buffers, _, arena, _) = asked.into_parts();
+        let (buffers, _, arena, _, puts) = asked.into_parts();
         lists.buffers = buffers;
         lists.tally = tally;
+        lists.pins = pins::close();
 
-        Done { lists, arena, parcels }
+        Done { lists, arena, puts, parcels }
     }
 
     /// Runs one part: hands out what has arrived, then runs every actor with items, in the order of the seats, and
@@ -1054,7 +1184,12 @@ impl Reading<'_> {
                     // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
                     // worker, beyond what the actor's code takes.
                     tally.time(key(item_kind(handed)), clock, || {
-                        let table = Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Step };
+                        let table = Since {
+                            table: self.table,
+                            stood: &lists.fusing.stood,
+                            sees: Sees::Step,
+                            blobs: self.blobs,
+                        };
                         asked.next_turn();
                         let source = handed.source();
                         let (item, context) = match handed {
@@ -1146,8 +1281,12 @@ impl Reading<'_> {
         tally.time(key, clock, || {
             asked.next_turn();
             let handled = {
-                let table =
-                    Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Run(lists.fusing.run(hop.run)) };
+                let table = Since {
+                    table: self.table,
+                    stood: &lists.fusing.stood,
+                    sees: Sees::Run(lists.fusing.run(hop.run)),
+                    blobs: self.blobs,
+                };
                 let bytes = lists.fusing.bytes(&hop);
                 let mail = Mail::new(hop.kind, bytes, hop.from, hop.root, hop.depth, self.read_limit);
                 let chain = Chain { root: hop.root, depth: hop.depth };

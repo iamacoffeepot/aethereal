@@ -29,7 +29,7 @@ impl Turn<'_> {
 **Pins are counted as the step folds, not as turns run.** Each thread of the engine, every worker and the thread that steps it, keeps a buffer of pin changes of its own: a clone adds one, and a drop takes one away. Neither touches a count shared with another thread. When the step's turns are done, the changes are folded into the pins, a view kept under each blob (ADR-0011). Many actors change one blob's pins, and a sum is the same in whatever order its records arrive, so this is a key with many writers that the fold makes whole. A blob is freed at the fold that leaves it with no pin, so a blob dropped and referenced again within one step is never freed in between, and the step a blob is freed in is the same in every run.
 
 - A turn that fails still hands in its pin changes. The values it held were dropped whether or not its effects were applied, as its lines are kept (ADR-0009).
-- A reference dropped on a thread with no buffer of its own, such as the chassis's between steps, goes to one shared buffer, folded with the rest.
+- A reference dropped on a thread with no buffer of its own, such as the chassis's between steps, goes to a buffer kept for its engine, folded with the rest. A process may hold several engines, each numbered as it is made, and a blob's id names the engine that holds it as well as the blob, so one engine never sums another's changes, and a thread's buffer takes only the changes of the engine it runs a step for.
 
 **A blob is read through the turn.** `turn.read` borrows the bytes from the engine's store for as long as the turn has them. The store is a view, and no view changes while a step's turns run (ADR-0011), so every reader in a step sees the same bytes without a lock.
 

@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+mod blob;
 mod by_actor;
 mod by_seat;
 mod clock;
@@ -25,6 +26,7 @@ mod table;
 mod view;
 mod watch;
 
+pub use blob::Blobs;
 pub use by_actor::{ByActor, IdBits};
 pub use by_seat::BySeat;
 pub use clock::Clock;

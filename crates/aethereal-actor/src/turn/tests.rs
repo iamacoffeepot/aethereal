@@ -38,6 +38,10 @@ impl Table for Listed {
         self.seat(id)
     }
 
+    fn blob(&self, _: crate::BlobId) -> Option<&[u8]> {
+        None
+    }
+
     /// Every actor listed is a leaf.
     fn declared(&self, id: ActorId) -> Option<&'static Declared> {
         let is_listed = self.is_live(id);
@@ -296,7 +300,7 @@ fn child_begins_inside_its_parents_turn() {
     let spawn_branch = Effect::new(ME, branch_spawn(0));
     assert_eq!(asked.effects(), [spawn_branch, by_branch(leaf_spawn(0, 1)), by_branch(leaf_spawn(1, 2))]);
 
-    let (_, stood, _, _) = asked.into_parts();
+    let (_, stood, _, _, _) = asked.into_parts();
     let paths: Vec<_> = stood.iter().map(|child| child.path().clone()).collect();
     let leaves = [
         "aether.test.root/aether.test.branch/aether.test.leaf:0",
@@ -347,7 +351,7 @@ fn failed_begin_leaves_its_fault_and_no_child() {
 
     let mut turn = opened::<()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     assert!(turn.spawn::<Branch>(&(), BranchConfig { leaves: 0, last_fails: false }).is_ok());
-    let (buffers, stood, _, seats) = asked.into_parts();
+    let (buffers, stood, _, seats, _) = asked.into_parts();
     assert_eq!(buffers.effects, [Effect::new(ME, branch_spawn(0))]);
     assert_eq!(stood.len(), 1);
     assert_eq!(seats.into_parts().0, [SeatNumber::new(2), SeatNumber::new(1)]);
@@ -474,7 +478,7 @@ fn back_to_back_mail_of_one_kind_to_one_receiver_is_one_run() {
         assert_eq!(sent, Ok(()));
     }
 
-    let (buffers, _, arena, _) = asked.into_parts();
+    let (buffers, _, arena, _, _) = asked.into_parts();
     let seen: Vec<(Seated, u64, KindId, u32)> =
         buffers.mailed.iter().map(|mailed| (mailed.to, mailed.count, mailed.kind, mailed.bytes.pieces())).collect();
     let (meets, pokes) = (KindId::of::<Meet>(), KindId::of::<Poke>());

@@ -6,10 +6,12 @@ mod tests;
 
 pub use refused::Refused;
 
+#[cfg(feature = "std")]
+use crate::BlobRef;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
-    Handles, Kinds, Level, Line, MailId, Mailed, Marker, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Table,
-    Target, To, ToAny, ToSender, ToType, ToWithoutMail, What,
+    Handles, Kinds, Level, Line, MailId, Mailed, Marker, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends,
+    Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, What,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
@@ -35,6 +37,8 @@ pub struct Asked {
     arena: Arena,
     /// The seats the children the turn spawns are given.
     seats: Seats,
+    /// The blobs its worker has put in the step, and the room it has left to put more (ADR-0014).
+    puts: Puts,
 }
 
 /// The three buffers of what turns ask for: kept by a worker over its share of a step, and filled by each turn in turn.
@@ -73,27 +77,27 @@ impl Buffers {
 }
 
 impl Asked {
-    /// Nothing asked for yet, with mail written to an arena of its own, and children seated as in an engine kept in
-    /// one part.
+    /// Nothing asked for yet, with mail written to an arena of its own, children seated as in an engine kept in one
+    /// part, and blobs put with no bound on their bytes, for no engine: none numbers itself `u32::MAX`.
     #[must_use]
     pub fn new() -> Self {
-        Self::writing(Arena::default(), Seats::one_part())
+        Self::writing(Arena::default(), Seats::one_part(), Puts::new(u32::MAX, 0, usize::MAX))
     }
 
-    /// Nothing asked for yet, with mail written to `arena`, after what it already holds, and children seated from
-    /// `seats`.
+    /// Nothing asked for yet, with mail written to `arena`, after what it already holds, children seated from
+    /// `seats`, and blobs put into `puts`.
     #[must_use]
-    pub fn writing(arena: Arena, seats: Seats) -> Self {
-        Self::continuing(Buffers::default(), arena, seats)
+    pub fn writing(arena: Arena, seats: Seats, puts: Puts) -> Self {
+        Self::continuing(Buffers::default(), arena, seats, puts)
     }
 
     /// Nothing asked for yet, in `buffers`, emptied and kept for their room, with mail written to `arena`, after what
-    /// it already holds, and children seated from `seats`.
+    /// it already holds, children seated from `seats`, and blobs put into `puts`, after what it already holds.
     #[must_use]
-    pub fn continuing(buffers: Buffers, arena: Arena, seats: Seats) -> Self {
+    pub fn continuing(buffers: Buffers, arena: Arena, seats: Seats, puts: Puts) -> Self {
         debug_assert!(buffers.is_empty(), "a turn begins with its buffers emptied");
 
-        Self { buffers, stood: Vec::new(), stood_seats: BTreeMap::new(), arena, seats }
+        Self { buffers, stood: Vec::new(), stood_seats: BTreeMap::new(), arena, seats, puts }
     }
 
     /// Begins the next turn, once what the last asked for has been taken out of the buffers. The children the last
@@ -162,11 +166,11 @@ impl Asked {
         &self.buffers.effects
     }
 
-    /// The lists, earlier turns' entries first when they were continued, the children stood up, each child in the
-    /// order its `begin` finished, the arena the mail was written to, and the seats not given out.
+    /// The buffers, the children stood up, each child in the order its `begin` finished, the arena the mail was
+    /// written to, the seats not given out, and the blobs put.
     #[must_use]
-    pub fn into_parts(self) -> (Buffers, Vec<Stood>, Arena, Seats) {
-        (self.buffers, self.stood, self.arena, self.seats)
+    pub fn into_parts(self) -> (Buffers, Vec<Stood>, Arena, Seats, Puts) {
+        (self.buffers, self.stood, self.arena, self.seats, self.puts)
     }
 
     /// The seat of the child stood up in this turn under the id `id`, when there is one.
@@ -322,6 +326,28 @@ impl Seat<'_> {
     /// A handle that logs as this actor and does nothing else.
     const fn logger(&mut self) -> Logger<'_> {
         Logger { me: self.me, asked: self.asked }
+    }
+
+    /// Puts `bytes` as a blob and answers with the first pin on it: refused when they would take this worker past
+    /// its share of the budget for blobs (ADR-0014).
+    #[cfg(feature = "std")]
+    fn put(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {
+        self.asked.puts.pinned(bytes)
+    }
+
+    /// The bytes of the blob `blob` pins: put by this worker in this step, or in the store.
+    ///
+    /// # Panics
+    ///
+    /// Panics when neither holds it, which a pin rules out.
+    #[cfg(feature = "std")]
+    fn read(&self, blob: &BlobRef) -> &[u8] {
+        let id = blob.id();
+        let Some(bytes) = self.asked.puts.read(id).or_else(|| self.table.blob(id)) else {
+            panic!("blob store: the blob {id:?} is pinned and not held");
+        };
+
+        bytes
     }
 
     /// Adds the effect that watches the actor `of` refers to, with how this turn sees it: live when the table held
@@ -794,6 +820,20 @@ impl<'a, S> Turn<'a, S> {
         self.seat.logger()
     }
 
+    /// Puts `bytes` as a blob, which nobody changes from then on, and answers with the first reference to it
+    /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs.
+    #[cfg(feature = "std")]
+    pub fn put(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {
+        self.seat.put(bytes)
+    }
+
+    /// The bytes of the blob `blob` refers to.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn read(&self, blob: &BlobRef) -> &[u8] {
+        self.seat.read(blob)
+    }
+
     /// A reference to this actor.
     #[must_use]
     pub const fn me(&self) -> ErasedActorRef {
@@ -901,6 +941,20 @@ impl<'a, S> Beginning<'a, S> {
     /// A handle that logs as this actor and does nothing else: for a helper that logs and should not send.
     pub const fn logger(&mut self) -> Logger<'_> {
         self.seat.logger()
+    }
+
+    /// Puts `bytes` as a blob, which nobody changes from then on, and answers with the first reference to it
+    /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs.
+    #[cfg(feature = "std")]
+    pub fn put(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {
+        self.seat.put(bytes)
+    }
+
+    /// The bytes of the blob `blob` refers to.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn read(&self, blob: &BlobRef) -> &[u8] {
+        self.seat.read(blob)
     }
 
     /// A reference to this actor.
@@ -1018,6 +1072,20 @@ impl<'a, S> Ending<'a, S> {
     /// A handle that logs as this actor and does nothing else: for a helper that logs and should not send.
     pub const fn logger(&mut self) -> Logger<'_> {
         self.seat.logger()
+    }
+
+    /// Puts `bytes` as a blob, which nobody changes from then on, and answers with the first reference to it
+    /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs.
+    #[cfg(feature = "std")]
+    pub fn put(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {
+        self.seat.put(bytes)
+    }
+
+    /// The bytes of the blob `blob` refers to.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn read(&self, blob: &BlobRef) -> &[u8] {
+        self.seat.read(blob)
     }
 
     /// A reference to this actor.

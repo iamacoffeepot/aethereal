@@ -2,8 +2,8 @@
 //! run has done (ADR-0009, ADR-0013).
 
 use super::fuse::Run;
-use crate::{ActorTable, ByActor};
-use aethereal_actor::{Declared, SeatNumber, Seated, Table};
+use crate::{ActorTable, Blobs, ByActor};
+use aethereal_actor::{BlobId, Declared, SeatNumber, Seated, Table};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 
 /// The table as one actor's turn reads it (ADR-0009, ADR-0013).
@@ -21,6 +21,8 @@ pub(super) struct Since<'a> {
     pub(super) stood: &'a ByActor<(ActorPath, SeatNumber, &'static Declared)>,
     /// What else the turn sees.
     pub(super) sees: Sees<'a>,
+    /// The blobs the store held as the step began (ADR-0014).
+    pub(super) blobs: &'a Blobs,
 }
 
 /// What a turn sees over the table as the step began and the children stood up since (ADR-0013).
@@ -85,5 +87,9 @@ impl Table for Since<'_> {
         let stood = self.stood.get(&id.bits()).map(|(_, _, declared)| *declared);
 
         stood.or_else(|| Table::declared(self.table, id))
+    }
+
+    fn blob(&self, id: BlobId) -> Option<&[u8]> {
+        self.blobs.read(id)
     }
 }

@@ -43,6 +43,10 @@ impl Table for Typed {
         None
     }
 
+    fn blob(&self, _: crate::BlobId) -> Option<&[u8]> {
+        None
+    }
+
     fn declared(&self, id: ActorId) -> Option<&'static Declared> {
         self.0.iter().find(|(made, _)| made.id == id).map(|(_, declared)| *declared)
     }
