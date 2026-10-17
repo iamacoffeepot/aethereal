@@ -1185,13 +1185,16 @@ impl Reading<'_> {
         lists: &mut Lists,
         stepped: &mut Stepped,
     ) {
-        // Most turns stand up no child.
-        if !ran.stood.is_empty() {
+        // Most turns stand up no child. What a child sent from its `begin` is put once the turn is routed, behind the
+        // spawn that makes its life: the view drops a count for an actor it does not hold.
+        let begun_sent = if ran.stood.is_empty() {
+            Vec::new()
+        } else {
             let effects = &asked.effects_mut()[ran.effects.clone()];
-            for (child, sent) in senders(effects).into_iter().filter(|(actor, _)| actor.id != me.id) {
-                let (key, record) = lives::sent(child, sent);
-                lists.routes.lives.put(key, record);
-            }
+
+            senders(effects).into_iter().filter(|(actor, _)| actor.id != me.id).collect()
+        };
+        if !ran.stood.is_empty() {
             let stood = ran
                 .stood
                 .iter()
@@ -1277,6 +1280,10 @@ impl Reading<'_> {
         } else {
             lists.route(ran, asked.effects_mut(), me.id)
         };
+        for (child, sent) in begun_sent {
+            let (key, record) = lives::sent(child, sent);
+            lists.routes.lives.put(key, record);
+        }
         stepped.sent = seen.sent.map_or(stepped.sent, |sent| sent.max(stepped.sent));
         if seen.ends {
             stepped.ended = true;
