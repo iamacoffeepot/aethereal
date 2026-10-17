@@ -71,11 +71,11 @@ fn surface(parent: ActorId) -> (ActorId, Effect) {
     (id, Effect::new(at(parent), spawn))
 }
 
-/// The id of the layer beneath `parent`, and the effect by which `parent` embeds it.
+/// The id of the layer beneath `parent`, and the effect by which `parent` spawns it.
 fn layer(parent: ActorId) -> (ActorId, Effect) {
     let id = child_id(parent, &PathSegment::new(LAYER, &()));
 
-    (id, Effect::new(at(parent), What::Embed { from: Code::Linked(LAYER_TYPE), seat: at(id).seat }))
+    (id, Effect::new(at(parent), What::Spawn { from: Code::Linked(LAYER_TYPE), seat: at(id).seat }))
 }
 
 #[test]
@@ -84,9 +84,9 @@ fn spawned_actor_resolves_by_its_path() {
     // order, and a child kept in its parent's seat.
     let (window, root) = window();
     let (surface, spawn) = surface(window);
-    let (layer, embed) = layer(surface);
+    let (layer, spawn_layer) = layer(surface);
     let mut table = table(4);
-    table.fold(&[root, spawn, embed], &context());
+    table.fold(&[root, spawn, spawn_layer], &context());
 
     let path = ActorPath::new("aether.window/aether.window.surface:left/aether.window.layer");
     assert_eq!(table.resolve(&path), Some(layer));
@@ -102,9 +102,9 @@ fn ending_takes_out_only_its_own_actor() {
     // a child whose path no longer resolves once the actor above it has gone.
     let (window, root) = window();
     let (surface, spawn) = surface(window);
-    let (layer, embed) = layer(surface);
+    let (layer, spawn_layer) = layer(surface);
     let mut table = table(4);
-    table.fold(&[root, spawn, embed], &context());
+    table.fold(&[root, spawn, spawn_layer], &context());
     table.fold(&[Effect::new(at(surface), What::Close)], &context());
 
     assert_eq!([window, surface, layer].map(|id| table.is_live(id)), [true, false, true]);
@@ -152,8 +152,8 @@ fn part_count_does_not_change_the_table() {
     // Catches a record folded into one part and read from another: every read agrees for one part and for many.
     let (window, root) = window();
     let (surface, spawn) = surface(window);
-    let (layer, embed) = layer(surface);
-    let effects = [root, spawn, embed, Effect::new(at(layer), What::Close)];
+    let (layer, spawn_layer) = layer(surface);
+    let effects = [root, spawn, spawn_layer, Effect::new(at(layer), What::Close)];
     let seen = [1, 2, 7, 64].map(|parts| {
         let mut table = table(parts);
         table.fold(&effects, &context());

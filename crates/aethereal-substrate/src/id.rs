@@ -23,14 +23,11 @@ pub fn path_id(path: &ActorPath) -> ActorId {
     ActorId::new(path.segments().fold(basis, |above, segment| fold(above, segment_hash(&segment))))
 }
 
-/// The child `effect` stands up beneath the actor that asked, with its seat, and its segment, when it is a spawn or an
-/// embed.
+/// The child `effect` stands up beneath the actor that asked, with its seat, and its segment, when it is a spawn.
 pub fn spawned(effect: &Effect) -> Option<(Seated, PathSegment)> {
     let (segment, seat) = match effect.what() {
-        What::Spawn { from, seat } | What::Embed { from, seat } => (from.singleton(), *seat),
-        What::SpawnInstanced { from, key, seat } | What::EmbedInstanced { from, key, seat } => {
-            (from.instanced(key), *seat)
-        }
+        What::Spawn { from, seat } => (from.singleton(), *seat),
+        What::SpawnInstanced { from, key, seat } => (from.instanced(key), *seat),
         _ => return None,
     };
 
