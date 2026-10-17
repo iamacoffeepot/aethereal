@@ -15,24 +15,29 @@ use std::mem;
 /// next, and one hardware thread of each core before its sibling. The stepping
 /// thread keeps to the group of the first core, where the first workers are,
 /// and is not pinned to one core within it, so the host's scheduler can wake
-/// it on any of the group's cores after it sleeps through the workers' run.
+/// it on any of the group's cores after it sleeps through the workers' run,
+/// the cores the workers are pinned to among them; but not on the other
+/// hardware thread of a worker's core, where it would share the core with a
+/// worker spinning between steps.
 pub(super) struct Cores {
     /// Logical CPU numbers, one per worker in turn, wrapping round when there are more workers.
     order: Vec<usize>,
     /// Logical CPU numbers sharing a last-level cache with the first core, both hardware threads of each.
     group: Vec<usize>,
+    /// The core of each logical CPU, as the hardware threads it shares with.
+    core_of: BTreeMap<usize, String>,
 }
 
 impl Cores {
     /// The cores of this host, read from Linux's description of its caches. None are known on another host, or
     /// when that description cannot be read, and then no thread is pinned.
     pub(super) fn of_host() -> Self {
-        let none = Self { order: Vec::new(), group: Vec::new() };
+        let none = Self { order: Vec::new(), group: Vec::new(), core_of: BTreeMap::new() };
         let ids = core_affinity::get_core_ids().unwrap_or_default();
         // Each core's first hardware thread, then its others, by the cache they share.
         let mut firsts: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         let mut seconds: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-        let mut seen_siblings = Vec::new();
+        let mut core_of = BTreeMap::new();
         for id in ids.iter().map(|core| core.id) {
             let cpu = format!("/sys/devices/system/cpu/cpu{id}");
             let (Ok(cache), Ok(siblings)) = (
@@ -41,14 +46,15 @@ impl Cores {
             ) else {
                 return none;
             };
-            let is_sibling = seen_siblings.contains(&siblings);
+            let siblings = siblings.trim().to_owned();
+            let is_sibling = core_of.values().any(|core| *core == siblings);
             let groups = if is_sibling {
                 &mut seconds
             } else {
                 &mut firsts
             };
             groups.entry(cache.trim().to_owned()).or_default().push(id);
-            seen_siblings.push(siblings);
+            core_of.insert(id, siblings);
         }
         let Some(first_cache) = firsts.keys().next().cloned() else {
             return none;
@@ -59,21 +65,38 @@ impl Cores {
         let mut order: Vec<usize> = firsts.into_values().flatten().collect();
         order.extend(seconds.into_values().flatten());
 
-        Self { order, group }
+        Self { order, group, core_of }
+    }
+
+    /// The logical CPU the worker numbered `worker` from one is pinned to, when any is known.
+    fn of_worker(&self, worker: usize) -> Option<usize> {
+        self.order.get(worker % self.order.len().max(1)).copied()
     }
 
     /// Pins the calling thread, the worker numbered `worker` from one, to its core. The first core is left to the
     /// stepping thread while there are cores enough.
     pub(super) fn pin(&self, worker: usize) {
-        let Some(&id) = self.order.get(worker % self.order.len().max(1)) else {
+        let Some(id) = self.of_worker(worker) else {
             return;
         };
         let _ = core_affinity::set_for_current(core_affinity::CoreId { id });
     }
 
-    /// Keeps the calling thread, the stepping thread, to the first core's group until the answer is dropped.
-    pub(super) fn keep_stepping(&self) -> Kept {
-        Kept::to(&self.group)
+    /// Keeps the calling thread, the stepping thread of a pool of `workers` workers, to the first core's group until
+    /// the answer is dropped: to each of the group's hardware threads but those beside one another worker is pinned
+    /// to, on the same core.
+    pub(super) fn keep_stepping(&self, workers: usize) -> Kept {
+        let pinned: Vec<usize> = (1..workers).filter_map(|worker| self.of_worker(worker)).collect();
+        let taken: Vec<&String> = pinned.iter().filter_map(|id| self.core_of.get(id)).collect();
+        let kept: Vec<usize> =
+            self.group.iter().copied().filter(|id| pinned.contains(id) || !self.is_beside(*id, &taken)).collect();
+
+        Kept::to(&kept)
+    }
+
+    /// Whether the hardware thread `id` is on one of the cores `taken`.
+    fn is_beside(&self, id: usize, taken: &[&String]) -> bool {
+        self.core_of.get(&id).is_some_and(|core| taken.contains(&core))
     }
 }
 
