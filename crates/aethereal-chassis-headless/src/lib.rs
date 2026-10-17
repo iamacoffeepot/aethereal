@@ -27,6 +27,10 @@ pub struct Headless {
     /// What splitting a step among the workers costs, as rehearsed when the host was made: among two first, then
     /// three, and so on, as [`SplitCost::new`] reads it.
     split: Vec<u64>,
+    /// Spike: steps of the whole engine to run before parts are let step on their own again.
+    backoff: usize,
+    /// Spike: whether parts may step on their own at all.
+    free: bool,
 }
 
 impl Headless {
@@ -40,7 +44,9 @@ impl Headless {
         let mut pool = Pool::new(workers, &clock);
         let split = rehearsal::split_cost(&engine, &mut pool, clock);
 
-        Self { engine, pool, clock, split }
+        #[allow(clippy::disallowed_methods, reason = "spike switch")]
+        let free = std::env::var("FREE").is_ok_and(|on| on == "1");
+        Self { engine, pool, clock, split, backoff: 0, free }
     }
 
     /// The engine, as of the last step.
@@ -72,10 +78,33 @@ impl Headless {
         step(&mut self.engine, &mut self.pool, self.clock, workers);
     }
 
+    /// Spike: lets every part step on its own on every worker until no part has anything to step or a turn asks for
+    /// a step of the whole engine; backs off when parts barely stepped.
+    fn run_free(&mut self) {
+        let workers = self.pool.workers(SplitCost::NONE).max;
+        let Some(shares) = self.engine.free_shares(workers) else {
+            self.backoff = usize::MAX;
+            return;
+        };
+        let run = self.engine.free_run(workers);
+        let done: Vec<_> = self.pool.free(&run, self.clock, shares).collect();
+        drop(run);
+        let steps = self.engine.end_free(done);
+        let few = steps < 4 * u64::try_from(workers).unwrap_or(0);
+        if few {
+            self.backoff = 16;
+        }
+    }
+
     /// Runs steps until no actor has anything to run, then parks every worker.
     pub fn run_until_idle(&mut self) {
         while !self.engine.is_idle() {
             self.step();
+            if self.free && self.backoff == 0 {
+                self.run_free();
+            } else {
+                self.backoff = self.backoff.saturating_sub(1);
+            }
         }
 
         self.pool.park();

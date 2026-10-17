@@ -289,6 +289,11 @@ impl<V: View> Default for Routed<V> {
 }
 
 impl<V: View> Routed<V> {
+    /// Takes this row's records for the part numbered `part` out, leaving an empty bucket.
+    pub fn take(&mut self, part: usize) -> Vec<(u64, V::Record)> {
+        mem::take(&mut self.buckets[part])
+    }
+
     /// How many records this row holds for the part numbered `part`.
     #[must_use]
     pub fn records(&self, part: usize) -> usize {

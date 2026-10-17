@@ -5,7 +5,7 @@ mod slot;
 mod worker;
 
 use crate::Monotonic;
-use aethereal_substrate::{Clock, Done, Fold, Folding, Reading, Share, SplitCost, Workers};
+use aethereal_substrate::{Clock, Done, Fold, Folding, FreeRun, FreeShare, Reading, Share, SplitCost, Workers};
 use cores::{Cores, Kept};
 use slot::Board;
 use std::num::NonZeroUsize;
@@ -26,6 +26,8 @@ pub struct Pool {
     done: Vec<Done>,
     /// The folds the workers folded, kept likewise.
     folded: Vec<Fold>,
+    /// Spike: the shares of a free run, kept likewise.
+    freed: Vec<FreeShare>,
     spinning: usize,
     wake_nanos: u64,
     measured: Measured,
@@ -89,6 +91,7 @@ impl Pool {
             crew: Crew { threads, board, heard: 0, answers: Vec::new() },
             done: Vec::new(),
             folded: Vec::new(),
+            freed: Vec::new(),
             spinning: 0,
             wake_nanos: 0,
             measured: Measured::default(),
@@ -198,6 +201,29 @@ impl Pool {
         );
 
         self.folded.drain(..)
+    }
+
+    /// Spike: steps parts on their own on every worker, each given one of `shares`, until `run` ends; the workers spin
+    /// after it.
+    pub fn free(&mut self, run: &FreeRun<'_>, clock: Monotonic, shares: Vec<FreeShare>) -> Drain<'_, FreeShare> {
+        let running = shares.len().saturating_sub(1).min(self.crew.threads.len());
+        self.measured.wakes += u64::try_from(running.saturating_sub(self.spinning)).unwrap_or(0);
+        self.spinning = self.spinning.max(running);
+        spread(
+            &mut self.crew,
+            clock,
+            self.wake_nanos,
+            shares,
+            |share| Order::Free { lend: Lent::free(run, clock, share) },
+            |share| worker::free(run, clock, share),
+            |reply| match reply {
+                Reply::Freed(share, report) => Some((share, report)),
+                _ => None,
+            },
+            &mut self.freed,
+        );
+
+        self.freed.drain(..)
     }
 
     /// Adds a step's planning and applying, which took `plan_nanos` and `apply_nanos`, to what is measured.

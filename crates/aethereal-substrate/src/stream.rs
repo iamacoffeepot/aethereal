@@ -139,6 +139,14 @@ impl Shard {
 }
 
 impl Entry {
+    /// Where its mail's bytes are, to move them: nothing for an ending.
+    pub(crate) const fn payload_mut(&mut self) -> Option<&mut aethereal_actor::Payload> {
+        match &mut self.item {
+            Stored::Mail(envelope) => Some(&mut envelope.bytes),
+            Stored::Ended(_) => None,
+        }
+    }
+
     /// The item as a turn reads it, its ending found in `endings` when it is one.
     fn handed<'a>(&'a self, endings: &'a [(Ended, Context)]) -> Handed<'a> {
         match &self.item {

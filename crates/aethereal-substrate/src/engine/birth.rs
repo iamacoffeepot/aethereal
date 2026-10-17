@@ -29,6 +29,11 @@ impl Births {
         Self { buckets: (0..parts).map(|_| Vec::new()).collect() }
     }
 
+    /// How many parts this row has a bucket for.
+    pub(super) const fn parts(&self) -> usize {
+        self.buckets.len()
+    }
+
     /// How many births this row holds for the part numbered `part`.
     pub(super) fn records(&self, part: usize) -> usize {
         self.buckets[part].len()

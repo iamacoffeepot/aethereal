@@ -588,6 +588,7 @@ impl Handles<Pong> for Pinging {
     type Sends = (ToType<Self, Ping>,);
 
     fn handle(&mut self, Pong { left }: Pong, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        PONGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if left > 0 {
             self.ping(turn, left - 1)?;
         }
@@ -1153,9 +1154,13 @@ fn run(program: &Program, workers: NonZeroUsize, hops: usize) -> (u64, u64, Hops
     let clock = Monotonic::new();
     (program.start)(headless.engine_mut());
     headless.run_until_idle();
+    eprintln!("  pongs={}", PONGS.swap(0, std::sync::atomic::Ordering::Relaxed));
 
     (clock.nanos(), headless.measured().steps, headless.engine().hopped())
 }
+
+/// Spike check.
+static PONGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();

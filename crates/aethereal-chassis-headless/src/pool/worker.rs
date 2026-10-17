@@ -2,7 +2,7 @@
 
 use super::slot::Board;
 use crate::Monotonic;
-use aethereal_substrate::{Clock, Done, Fold, Folding, Reading, Share};
+use aethereal_substrate::{Clock, Done, Fold, Folding, FreeRun, FreeShare, Reading, Share};
 use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
 
@@ -17,6 +17,8 @@ pub(super) enum Order {
     Run { lend: Lent<Reading<'static>, Share>, then: Waiting },
     /// Fold some parts of the views at the end of the step, then spin for the next order.
     Fold { lend: Lent<Folding<'static>, Fold> },
+    /// Spike: step some parts on their own until the run ends, then spin for the next order.
+    Free { lend: Lent<FreeRun<'static>, FreeShare> },
     /// Wait parked for the next order.
     Park,
     /// Answer at once, to measure how long a parked worker takes to wake.
@@ -45,6 +47,8 @@ pub(super) enum Reply {
     Done(Done, Report),
     /// Its parts of the views were folded, and cost it this.
     Folded(Fold, Report),
+    /// Its parts stepped on their own, and left this.
+    Freed(FreeShare, Report),
     /// Its part of the step panicked with this.
     Panicked(Box<dyn Any + Send>),
     /// It was pinged.
@@ -97,6 +101,18 @@ impl<S> Lent<Folding<'static>, S> {
     }
 }
 
+impl<S> Lent<FreeRun<'static>, S> {
+    /// `run` lent for `share`, as in [`Lent::run`].
+    pub(super) fn free<'a>(run: &'a FreeRun<'a>, clock: Monotonic, share: S) -> Self
+    where
+        FreeRun<'a>: Sync,
+    {
+        let run = (&raw const *run).cast::<FreeRun<'static>>();
+
+        Self { reading: run, clock, share }
+    }
+}
+
 /// The life of the worker numbered `worker` on `board`: it waits as it was last told, runs what it is given, and
 /// ends when it is told to stop.
 pub(super) fn work(board: &Board, worker: usize) {
@@ -123,6 +139,15 @@ pub(super) fn work(board: &Board, worker: usize) {
 
                 folded.map_or_else(Reply::Panicked, |(fold, report)| Reply::Folded(fold, report))
             }
+            Order::Free { lend } => {
+                waiting = Waiting::Spin;
+                let Lent { reading: run, clock, share } = lend;
+                // SAFETY: as for `Order::Run`: `Pool::spread` keeps this `FreeRun` alive until this answer arrives.
+                let run = unsafe { &*run };
+                let freed = panic::catch_unwind(AssertUnwindSafe(|| free(run, clock, share)));
+
+                freed.map_or_else(Reply::Panicked, |(share, report)| Reply::Freed(share, report))
+            }
             Order::Park => {
                 waiting = Waiting::Park;
                 continue;
@@ -148,4 +173,12 @@ pub(super) fn perform(reading: &Reading<'_>, clock: Monotonic, share: Share) -> 
     let done = reading.run(share, &clock);
 
     (done, Report { busy_nanos: clock.nanos().saturating_sub(start) })
+}
+
+/// Steps `share`'s parts on their own in `run`, timed by `clock`.
+pub(super) fn free(run: &FreeRun<'_>, clock: Monotonic, share: FreeShare) -> (FreeShare, Report) {
+    let start = clock.nanos();
+    let share = run.run(share, &clock);
+
+    (share, Report { busy_nanos: clock.nanos().saturating_sub(start) })
 }

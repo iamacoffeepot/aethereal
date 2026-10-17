@@ -4,6 +4,8 @@ mod begun;
 mod birth;
 mod costs;
 mod fold;
+mod free;
+pub use free::{FreeRun, FreeShare};
 mod fuse;
 mod made;
 mod plan;
@@ -96,6 +98,8 @@ pub struct Engine {
     arenas: [Vec<Arena>; 2],
     /// What each worker fills in a step, by writer, emptied and kept from one step to the next for its room.
     lists: Vec<Lists>,
+    /// Spike: each part's bytes of mail handed to it while parts stepped on their own, until they are handed out.
+    inbound: Vec<Vec<u8>>,
     /// The writers the last plan handed lists to: the only rows of `lists` that step's turns route records into.
     writing: Range<usize>,
     /// How long turns take, as measured so far.
@@ -144,10 +148,13 @@ enum Held {
 ///
 /// What a worker reads of its own actors, their seats, lives, and items, it
 /// owns for the step, in the parts it was given.
+#[derive(Clone, Copy)]
 pub struct Reading<'a> {
     table: &'a ActorTable,
     /// The arenas the last step's mail was written to, by writer.
     mail: &'a [Arena],
+    /// Spike: the bytes of mail handed straight to a part while parts stepped on their own.
+    inbound: free::Inbound<'a>,
     read_limit: usize,
     /// The most fused hops one part runs in the step.
     hops: usize,
@@ -277,6 +284,7 @@ impl Engine {
             spare: Spare::default(),
             arenas: [Vec::new(), Vec::new()],
             lists: Vec::new(),
+            inbound: vec![Vec::new(); parts.get()],
             writing: 0..0,
             costs: Costs::new(),
             recent: 0,
@@ -418,7 +426,7 @@ impl Engine {
         let mut tally = mem::take(&mut lists.tally);
         let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
         let mail = &self.arenas[parity(self.step + 1)];
-        let reading = Reading { table: &self.table, mail, read_limit: self.read_limit, hops: self.hops };
+        let reading = Reading { table: &self.table, mail, inbound: free::Inbound::All(&self.inbound), read_limit: self.read_limit, hops: self.hops };
         for (part, _) in &self.packing.parts {
             let room = Room {
                 streams: self.streams.at_mut(*part),
@@ -428,6 +436,9 @@ impl Engine {
                 seats: &mut self.seats[*part],
             };
             reading.run_part(room, clock, &mut tally, &mut asked, &mut lists);
+        }
+        for (part, _) in &self.packing.parts {
+            self.inbound[*part].clear();
         }
         let (effects, _, arena, _) = asked.into_parts();
         lists.effects = effects;
@@ -576,7 +587,7 @@ impl Engine {
     pub fn reading(&self) -> Reading<'_> {
         let mail = &self.arenas[parity(self.step + 1)];
 
-        Reading { table: &self.table, mail, read_limit: self.read_limit, hops: self.hops }
+        Reading { table: &self.table, mail, inbound: free::Inbound::All(&self.inbound), read_limit: self.read_limit, hops: self.hops }
     }
 
     /// Ends a step on the thread that calls it: gathers what the workers left, folds every part, and settles
@@ -748,6 +759,7 @@ impl Engine {
     /// Puts back a part a worker ran.
     fn put(&mut self, parcel: Parcel) {
         let Parcel { part, streams, lives, seating, actors, seats } = parcel;
+        self.inbound[part].clear();
         self.streams.put(part, streams);
         self.lives.put(part, lives);
         self.seating[part] = seating;
@@ -937,6 +949,9 @@ impl Reading<'_> {
 
     /// The bytes of a piece of mail sent in the last step.
     fn bytes(&self, payload: Payload) -> &[u8] {
+        if let Some(bytes) = self.inbound.read(payload) {
+            return bytes;
+        }
         self.mail.get(payload.slot()).and_then(|arena| arena.read(payload)).unwrap_or_default()
     }
 
@@ -1299,6 +1314,14 @@ impl Lists {
 }
 
 impl Routes {
+    /// Spike: whether this row holds records only a step of the whole engine applies: of the table, the watches, or
+    /// children stood up.
+    fn needs_a_step(&self) -> bool {
+        (0..self.births.parts()).any(|part| {
+            self.table.records(part) + self.watches.records(part) + self.births.records(part) > 0
+        })
+    }
+
     /// How many records this row holds for part `part`, across the views.
     fn records(&self, part: usize) -> usize {
         let views = self.table.records(part) + self.log.records(part) + self.lives.records(part);
