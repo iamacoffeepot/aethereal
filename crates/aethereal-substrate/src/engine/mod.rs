@@ -1126,6 +1126,8 @@ impl Reading<'_> {
     /// and the receiver sits in `seating` and is live in `lives`. A turn of a hop, and the turn that made the part's
     /// first hop, are its run, so what they stood up and ended is noted in the run.
     #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
+    #[allow(clippy::inline_always, reason = "once for every turn: a call here costs a tenth of a turn, measured")]
+    #[inline(always)]
     fn finish(
         me: Seated,
         mut ran: Ran,
@@ -1136,18 +1138,19 @@ impl Reading<'_> {
         lists: &mut Lists,
         stepped: &mut Stepped,
     ) {
+        // Most turns stand up no child.
         if !ran.stood.is_empty() {
             let effects = &asked.effects_mut()[ran.effects.clone()];
             for (child, sent) in senders(effects).into_iter().filter(|(actor, _)| actor.id != me.id) {
                 let (key, record) = lives::sent(child, sent);
                 lists.routes.lives.put(key, record);
             }
+            let stood = ran
+                .stood
+                .iter()
+                .map(|child| (child.id().bits(), (child.path().clone(), child.seated().seat, child.declared())));
+            lists.fusing.stood.extend(stood);
         }
-        let stood = ran
-            .stood
-            .iter()
-            .map(|child| (child.id().bits(), (child.path().clone(), child.seated().seat, child.declared())));
-        lists.fusing.stood.extend(stood);
 
         let mut run = match origin {
             Origin::Waiting => None,
@@ -1224,19 +1227,25 @@ enum Origin {
 /// part may still fuse: it is fused when `to` sits in the part, in `seating`, live in `lives` and not ended in the
 /// step, and its sender has sent no mail as mail into its part in the step (ADR-0013). What `to` is decides first, so
 /// a send the spill rule held back is one that could have been fused without it.
+///
+/// Each rule is looked at only once the ones before it have passed, so a send to another part costs no lookup of
+/// what was done in the step.
 fn hand(to: Seated, stepped: Stepped, seating: &Seating, lives: &lives::Shard, fusing: &Fusing) -> Hand {
-    let is_seated = seating.seated.get(to).is_some();
-    let is_live = lives.life(to).is_some_and(lives::Life::is_live);
-    let has_ended = fusing.stepped(to, 0).ended;
-    let was_stood = fusing.stood.contains_key(&to.id.bits());
-
+    let was_stood = !fusing.stood.is_empty() && fusing.stood.contains_key(&to.id.bits());
     if was_stood {
-        Hand::Unseated
-    } else if !is_seated {
-        Hand::Elsewhere
-    } else if !is_live || has_ended {
-        Hand::Ended
-    } else if stepped.spilled {
+        return Hand::Unseated;
+    }
+    let is_seated = seating.seated.get(to).is_some();
+    if !is_seated {
+        return Hand::Elsewhere;
+    }
+    let is_live = lives.life(to).is_some_and(lives::Life::is_live);
+    let is_over = !is_live || fusing.stepped(to, 0).ended;
+    if is_over {
+        return Hand::Ended;
+    }
+
+    if stepped.spilled {
         Hand::Spilled
     } else {
         Hand::Fuse
@@ -1281,6 +1290,8 @@ impl Lists {
     /// Each effect is routed into every view that keeps anything of it in one pass: the other views borrow it, then
     /// the streams take it by value. A turn that stood up a child whose `begin` failed is routed without what that
     /// child left.
+    #[allow(clippy::inline_always, reason = "once for every turn: a call here costs a tenth of a turn, measured")]
+    #[inline(always)]
     fn route(&mut self, ran: Ran, list: &mut Vec<Effect>, me: ActorId) -> Seen {
         let Ran { effects, stood, context } = ran;
         let routes = &mut self.routes;
@@ -1343,6 +1354,8 @@ impl Ran {
     /// A turn that fails changes nothing outside its actor: what it asked for is dropped but for its log lines,
     /// and the engine writes the one effect that says the actor ended (ADR-0009). The seats of the children it
     /// stood up are given back.
+    #[allow(clippy::inline_always, reason = "once for every turn: a call here costs a tenth of a turn, measured")]
+    #[inline(always)]
     fn of(me: Seated, outcome: Result<(), Fault>, asked: &mut Asked, context: Context, begins: usize) -> Self {
         let mut stood = asked.take_stood();
         if let Err(fault) = outcome {

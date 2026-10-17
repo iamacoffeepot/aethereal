@@ -24,6 +24,11 @@ syn = { version = "2", features = ["full"] }
 [profile.dev]
 debug = "line-tables-only"
 
+# The engine's turn runs through several crates, and is only as fast as what is inlined across them.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
 [workspace.lints.rust]
 # A path the compiler can shorten is written short.
 unused_qualifications = "warn"
