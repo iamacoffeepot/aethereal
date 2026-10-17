@@ -971,17 +971,15 @@ impl Actor for Holder {
             let me = turn.me();
             turn.to::<Self>(ToWithoutMail::Held(me)).send(&Note { text })?;
         }
-        if config.gives > 0 {
+        // Each blob it gives is one only that mail refers to, so mail that loses its pin loses its blob.
+        for _ in 0..config.gives {
             let Ok(blob) = turn.put(vec![9; 3]) else {
                 return Err(Fault::new(&Note { text: String::from("no room") })?);
             };
             // A note between each two keeps them from joining into one run, so the part carries many items.
-            let given = Given { blob, left: 1 };
-            for _ in 0..config.gives {
-                let me = turn.me();
-                turn.to::<Self>(ToWithoutMail::Held(me)).send(&given)?;
-                turn.to::<Self>(ToWithoutMail::Held(me)).send(&Note { text: String::from("between") })?;
-            }
+            let me = turn.me();
+            turn.to::<Self>(ToWithoutMail::Held(me)).send(&Given { blob, left: 1 })?;
+            turn.to::<Self>(ToWithoutMail::Held(me)).send(&Note { text: String::from("between") })?;
         }
 
         Ok(Self { held: Vec::new(), gave: config.gives > 0 })

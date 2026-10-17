@@ -22,14 +22,7 @@ pub const ARENA_BYTES: usize = 64 * 1024;
 /// mail is never owns anything and is dropped without a look.
 #[derive(Debug)]
 pub struct Arena {
-    /// Which writer's arena this is, as the engine numbers them.
-    slot: u32,
-    slab: Vec<u8>,
-    /// The mail that did not fit in the slab, each piece in bytes of its own, in the order written.
-    spilled: Vec<Box<[u8]>>,
-    /// How many bytes the slab holds: the writer's share of the host's quota for mail, at least [`ARENA_BYTES`] and
-    /// at most [`SLAB_MOST`].
-    bytes: usize,
+    pieces: Pieces,
     /// The pins the mail in the slab holds, each at where its reference begins in the slab, in that order: dropped
     /// when the arena is emptied (ADR-0014).
     #[cfg(feature = "std")]
@@ -38,9 +31,19 @@ pub struct Arena {
     /// begins, in that order.
     #[cfg(feature = "std")]
     held_spilled: Vec<(u32, crate::Held)>,
-    /// Where a write keeps the pins of what it writes until it is known whether the slab took it: empty between.
-    #[cfg(feature = "std")]
-    holding: Vec<crate::Held>,
+}
+
+/// The pieces of mail an arena holds, apart from the pins they hold, so that a write keeps pins while it writes them.
+#[derive(Debug)]
+struct Pieces {
+    /// Which writer's arena this is, as the engine numbers them.
+    slot: u32,
+    slab: Vec<u8>,
+    /// The mail that did not fit in the slab, each piece in bytes of its own, in the order written.
+    spilled: Vec<Box<[u8]>>,
+    /// How many bytes the slab holds: the writer's share of the host's quota for mail, at least [`ARENA_BYTES`] and
+    /// at most [`SLAB_MOST`].
+    bytes: usize,
 }
 
 /// The most bytes one arena's slab holds, so that where a piece of mail lies in it is a 32-bit number.
@@ -83,38 +86,33 @@ impl Arena {
         };
 
         Self {
-            slot,
-            slab: Vec::new(),
-            spilled: Vec::new(),
-            bytes: ARENA_BYTES,
+            pieces: Pieces { slot, slab: Vec::new(), spilled: Vec::new(), bytes: ARENA_BYTES },
             #[cfg(feature = "std")]
             held: Vec::new(),
             #[cfg(feature = "std")]
             held_spilled: Vec::new(),
-            #[cfg(feature = "std")]
-            holding: Vec::new(),
         }
     }
 
     /// Which writer's arena this is.
     #[must_use]
     pub const fn slot(&self) -> usize {
-        self.slot as usize
+        self.pieces.slot as usize
     }
 
     /// Empties the arena, keeping its slab and freeing what was spilled, for when its writer writes it again, and
     /// gives its slab `bytes`, at least [`ARENA_BYTES`] and at most [`SLAB_MOST`]: the writer's share of the host's
     /// quota for mail.
     pub fn clear(&mut self, bytes: usize) {
-        self.slab.clear();
-        self.spilled.clear();
+        self.pieces.slab.clear();
+        self.pieces.spilled.clear();
         // What was never read lets go of its blobs with it.
         #[cfg(feature = "std")]
         {
             self.held.clear();
             self.held_spilled.clear();
         }
-        self.bytes = bytes.clamp(ARENA_BYTES, SLAB_MOST);
+        self.pieces.bytes = bytes.clamp(ARENA_BYTES, SLAB_MOST);
     }
 
     /// The bytes `payload` says where to find, when they are in this arena; nothing otherwise.
@@ -125,14 +123,23 @@ impl Arena {
             Payload::InArena { start, len, .. } => {
                 let start = start as usize;
 
-                self.slab.get(start..start.checked_add(len as usize)?)
+                self.pieces.slab.get(start..start.checked_add(len as usize)?)
             }
-            Payload::Spilled { index, .. } => self.spilled.get(index as usize).map(|bytes| &bytes[..]),
+            Payload::Spilled { index, .. } => self.pieces.spilled.get(index as usize).map(|bytes| &bytes[..]),
         };
 
         is_own.then_some(bytes).flatten()
     }
 
+    /// Writes one piece of mail with `write`, which appends its bytes to the vector it is given, and answers
+    /// with where they are: in the slab when they fit, spilled otherwise. Nothing is written
+    /// when `write` fails.
+    pub(crate) fn write<E>(&mut self, write: impl FnOnce(Vec<u8>) -> (Vec<u8>, Result<(), E>)) -> Result<Payload, E> {
+        self.pieces.write(write)
+    }
+}
+
+impl Pieces {
     /// Keeps `bytes`, which did not fit in the slab, as a spilled piece of mail.
     ///
     /// # Panics
@@ -147,10 +154,8 @@ impl Arena {
         Payload::Spilled { slot: self.slot, index }
     }
 
-    /// Writes one piece of mail with `write`, which appends its bytes to the vector it is given, and answers
-    /// with where they are: in the slab when they fit, spilled otherwise. Nothing is written
-    /// when `write` fails.
-    pub(crate) fn write<E>(&mut self, write: impl FnOnce(Vec<u8>) -> (Vec<u8>, Result<(), E>)) -> Result<Payload, E> {
+    /// As [`Arena::write`].
+    fn write<E>(&mut self, write: impl FnOnce(Vec<u8>) -> (Vec<u8>, Result<(), E>)) -> Result<Payload, E> {
         let is_full = self.slab.len() >= self.bytes;
         if is_full {
             let (bytes, written) = write(Vec::new());
@@ -192,33 +197,50 @@ impl Arena {
         &mut self,
         write: impl FnOnce(Vec<u8>, &mut Vec<crate::Held>) -> (Vec<u8>, Result<(), E>),
     ) -> Result<Payload, E> {
-        let mut holding = mem::take(&mut self.holding);
+        let Self { pieces, held, .. } = self;
+        let mark = held.len();
         let mut begins = 0;
-        let written = self.write(|bytes| {
+        let written = pieces.write(|bytes| {
             begins = bytes.len();
-            write(bytes, &mut holding)
+            write(bytes, held)
         });
-        match written {
-            Ok(Payload::InArena { .. }) => self.held.append(&mut holding),
-            Ok(Payload::Spilled { index, .. }) => {
-                let begins = u32::try_from(begins).unwrap_or(u32::MAX);
-                #[allow(clippy::iter_with_drain, reason = "the list is kept for its room, for the next write")]
-                self.held_spilled.extend(holding.drain(..).map(|(at, pin)| (index, (at - begins, pin))));
-            }
-            Err(_) => holding.clear(),
+        let pinned = held.len() > mark;
+        if pinned {
+            self.file_pins(&written, mark, begins);
         }
-        self.holding = holding;
 
         written
     }
 
+    /// Files the pins a write kept from `mark` on in [`Self::held`] by what became of the piece: kept where they are
+    /// in the slab, moved with it when it spilled, and dropped when it was not written.
+    #[inline(never)]
+    fn file_pins<E>(&mut self, written: &Result<Payload, E>, mark: usize, begins: usize) {
+        match *written {
+            Ok(Payload::InArena { .. }) => {}
+            Ok(Payload::Spilled { index, .. }) => {
+                let begins = u32::try_from(begins).unwrap_or(u32::MAX);
+                let moved = self.held.drain(mark..).map(|(at, pin)| (index, (at - begins, pin)));
+                self.held_spilled.extend(moved);
+            }
+            Err(_) => self.held.truncate(mark),
+        }
+    }
+
     /// Adds to `into` a pin of its own on each blob the bytes of `payload` refer to, when they are in this arena, each
     /// at `base` more than where its reference begins in them: for bytes copied out to `base`.
+    #[inline]
     pub fn pin_copied(&self, payload: Payload, base: u32, into: &mut Vec<crate::Held>) {
         let is_own = payload.slot() == self.slot();
-        if !is_own {
-            return;
+        let holds = !self.held.is_empty() || !self.held_spilled.is_empty();
+        if is_own && holds {
+            self.pin_held(payload, base, into);
         }
+    }
+
+    /// [`Self::pin_copied`], for an arena whose mail holds pins: most holds none.
+    #[inline(never)]
+    fn pin_held(&self, payload: Payload, base: u32, into: &mut Vec<crate::Held>) {
         match payload {
             Payload::InArena { start, len, .. } => {
                 let pinned = crate::within(&self.held, start, len).iter();
@@ -394,7 +416,7 @@ mod tests {
 
         let past = put(&mut arena, &[2; 16]);
         assert!(matches!(past, Payload::Spilled { .. }), "mail past the slab is spilled");
-        assert_eq!(arena.slab.capacity(), ARENA_BYTES);
+        assert_eq!(arena.pieces.slab.capacity(), ARENA_BYTES);
         assert_eq!(arena.read(first), Some(&vec![1; ARENA_BYTES - 8][..]));
 
         let last = put(&mut arena, &[3; 8]);

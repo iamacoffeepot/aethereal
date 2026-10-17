@@ -418,21 +418,23 @@ impl Shard {
     }
 
     /// Carries over into the next step a hop to `to`, an actor cut off in this step, after what it carries already:
-    /// the mail of id `order` that `envelope` makes of where its bytes are carried, whose bytes are `bytes` and the
-    /// pins of whose blobs are `pins`, each at where its reference begins in `bytes`.
+    /// the mail of id `order` that `envelope` makes of where its bytes are carried, whose bytes are `bytes`, and
+    /// which was written in `arena` at `written`, where the pins of the blobs it refers to are kept. A hop is carried
+    /// seldom, so this stays out of the loop that runs them.
+    #[inline(never)]
     pub fn carry_hop(
         &mut self,
         to: Seated,
         order: Order,
         envelope: impl FnOnce(Payload) -> Envelope,
         bytes: &[u8],
-        pins: impl IntoIterator<Item = Held>,
+        (arena, written): (&Arena, Payload),
     ) {
         let (Ok(start), Ok(len)) = (u32::try_from(self.backlog_bytes.len()), u32::try_from(bytes.len())) else {
             panic!("a part carries less than u32::MAX bytes of mail");
         };
         self.backlog_bytes.extend_from_slice(bytes);
-        self.backlog_pins.extend(pins.into_iter().map(|(at, pin)| (start + at, pin)));
+        arena.pin_copied(written, start, &mut self.backlog_pins);
         let bytes = Payload::InArena { slot: CARRIED, start, len, pieces: 1 };
         let entry = Entry { to: to.id.bits(), order, item: Stored::Mail(envelope(bytes)) };
         let seat = to.seat.number();

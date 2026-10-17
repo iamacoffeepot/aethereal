@@ -1103,7 +1103,7 @@ impl Reading<'_> {
                     (from.id.bits(), count),
                     envelope,
                     lists.fusing.bytes(&hop),
-                    lists.fusing.pins(&hop),
+                    (asked.arena(), hop.sent),
                 );
                 continue;
             }
@@ -1369,7 +1369,7 @@ impl Reading<'_> {
                     } else {
                         bytes
                     };
-                    let (at, len) = lists.fusing.keep_bytes(asked.arena(), first);
+                    let (at, len) = lists.fusing.keep_bytes(asked.arena().read(first).unwrap_or_default());
                     let mailed = &mut asked.buffers_mut().mailed;
                     // Of a run, the first piece is fused and the rest stays mail. The fused send is most often the
                     // turn's last piece of mail, and nothing is moved for it.
@@ -1394,6 +1394,7 @@ impl Reading<'_> {
                         run: chain,
                         at,
                         len,
+                        sent: first,
                     };
                     lists.fusing.wait(hop);
                     stepped.sent = stepped.sent.max(count);

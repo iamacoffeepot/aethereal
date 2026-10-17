@@ -1,7 +1,7 @@
 //! Chains of mail run within a step: what one part keeps while it fuses (ADR-0013).
 
 use crate::ByActor;
-use aethereal_actor::{Arena, Declared, Held, MailId, Payload, SeatNumber, Seated, within};
+use aethereal_actor::{Declared, MailId, Payload, SeatNumber, Seated};
 use aethereal_data::{ActorId, ActorPath, KindId};
 use std::collections::VecDeque;
 
@@ -18,9 +18,6 @@ pub(super) struct Fusing {
     /// The bytes of the hops waiting, and of the hop running, copied out of the arenas their senders wrote, which
     /// later turns write on.
     bytes: Vec<u8>,
-    /// The pins of the blobs those bytes refer to, each at where its reference begins in them, in that order, so a hop
-    /// carried over carries them (ADR-0014).
-    pins: Vec<Held>,
     /// What each actor that ran in the part has done in the step, and its seat, under its id.
     actors: ByActor<(SeatNumber, Stepped)>,
     /// The paths and seats of the children stood up in the part in the step, and what their types declare, under
@@ -120,6 +117,9 @@ pub(super) struct Hop {
     /// Where its bytes start in the part's bytes waiting, and how many there are.
     pub(super) at: usize,
     pub(super) len: usize,
+    /// Where its bytes are in the arena of the worker running the part, which holds the pins of the blobs they refer
+    /// to until the step is over: a hop carried into the next step pins them for itself (ADR-0014).
+    pub(super) sent: Payload,
 }
 
 /// What one actor has done in a step, in its part (ADR-0013).
@@ -151,7 +151,6 @@ impl Fusing {
         self.budget = budget;
         self.waiting.clear();
         self.bytes.clear();
-        self.pins.clear();
         self.actors.clear();
         self.stood.clear();
         for run in &mut self.runs[..self.began] {
@@ -211,25 +210,14 @@ impl Fusing {
 
     /// Keeps `bytes`, a hop's, until it runs: where they start and how many there are. The hop that made it has run,
     /// so with none waiting no bytes kept are read again.
-    pub(super) fn keep_bytes(&mut self, arena: &Arena, payload: Payload) -> (usize, usize) {
+    pub(super) fn keep_bytes(&mut self, bytes: &[u8]) -> (usize, usize) {
         if self.waiting.is_empty() {
             self.bytes.clear();
-            self.pins.clear();
         }
-        let bytes = arena.read(payload).unwrap_or_default();
         let at = self.bytes.len();
         self.bytes.extend_from_slice(bytes);
-        arena.pin_copied(payload, u32::try_from(at).unwrap_or(u32::MAX), &mut self.pins);
 
         (at, bytes.len())
-    }
-
-    /// Pins of their own on the blobs the bytes of `hop` refer to, each at where its reference begins in them.
-    pub(super) fn pins(&self, hop: &Hop) -> impl Iterator<Item = Held> + '_ {
-        let start = u32::try_from(hop.at).unwrap_or(u32::MAX);
-        let len = u32::try_from(hop.len).unwrap_or(u32::MAX);
-
-        within(&self.pins, start, len).iter().map(move |(at, pin)| (at - start, pin.clone()))
     }
 
     /// The hop at the front, taken to run.
