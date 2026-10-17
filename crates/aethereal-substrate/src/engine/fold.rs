@@ -61,6 +61,8 @@ impl Pile {
 /// The engine as a step's workers read it while they fold: what turns are expected to cost (ADR-0011).
 pub struct Folding<'a> {
     pub(super) costs: &'a Costs,
+    /// How long an actor kept to a slice runs in a step, in nanoseconds.
+    pub(super) slice: u64,
 }
 
 impl Folding<'_> {
@@ -79,7 +81,8 @@ impl Folding<'_> {
             pile.streams.fold();
             pile.watches.fold();
             pile.watches.shard_mut().settle(&mut pile.forward);
-            pile.expected = expected(pile.streams.shard(), pile.lives.shard(), &pile.seating.seated, self.costs);
+            pile.expected =
+                expected(pile.streams.shard(), pile.lives.shard(), &pile.seating.seated, self.costs, self.slice);
         }
 
         fold
@@ -88,7 +91,13 @@ impl Folding<'_> {
 
 /// What the turns waiting in one part are expected to cost, in nanoseconds: one for each item that has arrived for
 /// an actor seated there, by the actor's kind, and each closing turn to run.
-pub(super) fn expected(streams: &stream::Shard, lives: &lives::Shard, seated: &BySeat<Sitting>, costs: &Costs) -> u64 {
+pub(super) fn expected(
+    streams: &stream::Shard,
+    lives: &lives::Shard,
+    seated: &BySeat<Sitting>,
+    costs: &Costs,
+    slice: u64,
+) -> u64 {
     // Items that arrive together are mostly for one kind of actor, of one kind, so the last cost looked up is kept.
     let mut last = None;
     let mut cost = |me: Seated, item: ItemKind| {
@@ -108,6 +117,11 @@ pub(super) fn expected(streams: &stream::Shard, lives: &lives::Shard, seated: &B
     };
     let items: u64 =
         streams.arrived().map(|(me, handed, pieces)| cost(me, item_kind(handed)) * u64::from(pieces)).sum();
+    let carried: u64 = streams
+        .backlog(super::CARRIED_WEIGHED)
+        .map(|(me, handed, pieces)| (cost(me, item_kind(handed)) * pieces).min(slice))
+        .sum();
+    let items = items + carried;
     let closings: u64 = lives.ended().iter().map(|me| cost(*me, ItemKind::Closing)).sum();
 
     items + closings

@@ -25,7 +25,7 @@ mod seat;
 mod turn;
 
 pub use actor::{Actor, Runs};
-pub use arena::{ARENA_BYTES, Arena, Payload};
+pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, Within, WithinReader, WithinWriter};
 pub use declared::{
     Allows, At, Declared, Handled, HandledList, Handler, Handles, Kinds, Marker, Others, Role, Sending, Sends, Target,

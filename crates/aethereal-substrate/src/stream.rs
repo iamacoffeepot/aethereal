@@ -2,7 +2,7 @@
 
 use crate::watch::Notice;
 use crate::{Consumes, Context, Envelope, View};
-use aethereal_actor::{Effect, Ended, MailId, Payload, SeatNumber, Seated, What};
+use aethereal_actor::{Arena, CARRIED, Effect, Ended, MailId, Payload, SeatNumber, Seated, What};
 use aethereal_data::ActorId;
 use std::mem;
 use std::ops::Range;
@@ -48,6 +48,86 @@ pub struct Shard {
     recent: usize,
     /// How many steps in a row the part has had nothing to run.
     idle: u32,
+    /// The items the part's actors were not handed in the step they were handed out, carried over, each actor's in
+    /// order: with the endings among them and the bytes of their mail, copied out of the writers' arenas once.
+    backlog: Vec<(u64, Entry)>,
+    backlog_endings: Vec<(Ended, Context)>,
+    backlog_bytes: Vec<u8>,
+    /// The runs of the backlog to hand out at the next step, by seat and actor, each actor's in the order carried.
+    segments: Vec<Segment>,
+    /// The runs of the backlog handed out at the start of this step.
+    handing: Vec<Segment>,
+}
+
+/// A run of one actor's items in a part's backlog.
+#[derive(Clone)]
+struct Segment {
+    seat: u64,
+    to: u64,
+    range: Range<usize>,
+}
+
+/// One actor's items handed out at the start of a step: the number of the seat it sat in when they were sent, its
+/// bits, the runs of the backlog it carried over, which come first, and where what arrived for it lies.
+#[derive(Clone, Copy)]
+pub struct Run {
+    pub seat: u64,
+    pub bits: u64,
+    carried: Span,
+    fresh: Span,
+}
+
+/// Where a run of entries lies in a list of them: a range in eight bytes, as a part holds fewer than `u32::MAX`.
+#[derive(Clone, Copy)]
+struct Span {
+    start: u32,
+    end: u32,
+}
+
+impl Span {
+    /// The entries from `range.start` to `range.end`.
+    fn of(range: Range<usize>) -> Self {
+        let to = |index: usize| u32::try_from(index).unwrap_or(u32::MAX);
+
+        Self { start: to(range.start), end: to(range.end) }
+    }
+
+    fn range(self) -> Range<usize> {
+        self.start as usize..self.end as usize
+    }
+
+    const fn is_empty(self) -> bool {
+        self.start == self.end
+    }
+}
+
+/// The bytes `payload` says where to find: in the arenas of the writers, `mail`, or in `carried`, the bytes a part
+/// carried over.
+#[must_use]
+pub fn read<'a>(payload: Payload, mail: &'a [Arena], carried: &'a [u8]) -> &'a [u8] {
+    // No writer has the carried slot, so mail that was carried is not found among the arenas.
+    mail.get(payload.slot()).and_then(|arena| arena.read(payload)).unwrap_or_else(|| read_carried(payload, carried))
+}
+
+/// `payload`, carried, as it lies from `start` of its part's carried bytes.
+const fn carried_from(payload: Payload, start: u32) -> Payload {
+    match payload {
+        Payload::InArena { len, pieces, .. } => Payload::InArena { slot: CARRIED, start, len, pieces },
+        Payload::Spilled { .. } => payload,
+    }
+}
+
+/// The bytes of `payload` among `carried`, a part's carried bytes, when it was carried: none otherwise.
+#[cold]
+fn read_carried(payload: Payload, carried: &[u8]) -> &[u8] {
+    match payload {
+        Payload::InArena { slot: CARRIED, start, len, .. } => {
+            let start = start as usize;
+
+            carried.get(start..start + len as usize).unwrap_or_default()
+        }
+        _ => &[],
+    }
 }
 
 /// How many steps in a row a part is idle before it gives back the room its lists keep for what it was handed.
@@ -107,8 +187,27 @@ impl Shard {
     /// The order is by seat and actor, then by source, then the order that source caused each item, so it does not
     /// depend on the order the items arrived in. A seat is taken again once its actor has gone, so a run names its
     /// actor. An ending shown twice, from two watches of an actor already over, is handed once. What was handed out
-    /// at the last step is dropped here.
-    pub fn hand(&mut self) -> impl Iterator<Item = (u64, u64, Range<usize>)> + '_ {
+    /// at the last step is dropped here. An actor's runs of what it carried over come before what arrived for it,
+    /// as they are older than anything from the same source that arrived since.
+    pub fn hand(&mut self, runs: &mut Vec<Run>) {
+        mem::swap(&mut self.segments, &mut self.handing);
+        self.segments.clear();
+        // Hops carried after an actor was cut off add runs behind those of the actors after it: a stable sort keeps
+        // each actor's in order.
+        self.handing.sort_by_key(|segment| (segment.seat, segment.to));
+        let is_drained = self.handing.is_empty();
+        if is_drained {
+            self.backlog.clear();
+            self.backlog_endings.clear();
+            self.backlog_bytes.clear();
+        }
+        // What was handed out of the backlog stays in it until it is drained, or until it is most of it.
+        let live: usize = self.handing.iter().map(|segment| segment.range.len()).sum();
+        let spent = self.backlog.len() - live;
+        let is_sparse = spent > live && spent > KEPT_LEAST;
+        if is_sparse {
+            self.compact();
+        }
         self.recent = self.arrived.len().max(self.recent - self.recent / 8);
         self.idle = 0;
         self.handed.clear();
@@ -122,19 +221,215 @@ impl Shard {
         self.handed.dedup_by_key(|(seat, entry)| (*seat, entry.to, entry.order));
 
         let mut begins = 0;
-        self.handed.chunk_by(|(seat, one), (next_seat, next)| (*seat, one.to) == (*next_seat, next.to)).map(
-            move |run| {
+        let mut fresh = self
+            .handed
+            .chunk_by(|(seat, one), (next_seat, next)| (*seat, one.to) == (*next_seat, next.to))
+            .map(|run| {
                 let range = begins..begins + run.len();
                 begins = range.end;
 
                 (run[0].0, run[0].1.to, range)
-            },
-        )
+            })
+            .peekable();
+        // Most steps carry nothing over, and the runs are what arrived.
+        if self.handing.is_empty() {
+            runs.extend(fresh.map(|(seat, bits, fresh)| Run {
+                seat,
+                bits,
+                carried: Span::of(0..0),
+                fresh: Span::of(fresh),
+            }));
+            return;
+        }
+        let mut segment = 0;
+        loop {
+            let carried_key = self.handing.get(segment).map(|run| (run.seat, run.to));
+            let fresh_key = fresh.peek().map(|(seat, bits, _)| (*seat, *bits));
+            let key = match (carried_key, fresh_key) {
+                (None, None) => break,
+                (Some(carried), Some(fresh)) => carried.min(fresh),
+                (Some(key), None) | (None, Some(key)) => key,
+            };
+            let first = segment;
+            while self.handing.get(segment).is_some_and(|run| (run.seat, run.to) == key) {
+                segment += 1;
+            }
+            let arrived = fresh.next_if(|(seat, bits, _)| (*seat, *bits) == key).map_or(0..0, |(_, _, range)| range);
+            runs.push(Run { seat: key.0, bits: key.1, carried: Span::of(first..segment), fresh: Span::of(arrived) });
+        }
     }
 
-    /// The items handed out at the start of the step that lie in `range`, a run of mail one piece after another.
-    pub fn handed(&self, range: Range<usize>) -> Pieces<'_> {
-        Pieces { entries: &self.handed[range], endings: &self.handed_endings, at: 0, piece: 0, each: 0 }
+    /// Moves what the backlog still holds to the front of its lists, in order, and drops what was handed out of it.
+    fn compact(&mut self) {
+        let Self { backlog, backlog_endings, backlog_bytes, handing, .. } = self;
+        let mut entries = Vec::new();
+        let mut endings = Vec::new();
+        let mut bytes = Vec::new();
+        for segment in handing.iter_mut() {
+            let begins = entries.len();
+            for &(seat, mut entry) in &backlog[segment.range.clone()] {
+                entry.item = match entry.item {
+                    Stored::Mail(mut envelope) => {
+                        let start = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+                        bytes.extend_from_slice(read_carried(envelope.bytes, backlog_bytes));
+                        envelope.bytes = carried_from(envelope.bytes, start);
+
+                        Stored::Mail(envelope)
+                    }
+                    Stored::Ended(place) => {
+                        endings.push(backlog_endings[place].clone());
+
+                        Stored::Ended(endings.len() - 1)
+                    }
+                };
+                entries.push((seat, entry));
+            }
+            segment.range = begins..entries.len();
+        }
+        *backlog = entries;
+        *backlog_endings = endings;
+        *backlog_bytes = bytes;
+    }
+
+    /// The items of `run`, in order: what it carried over, then what arrived for it, a run of mail one piece after
+    /// another.
+    #[allow(
+        clippy::inline_always,
+        reason = "once for every actor that runs: a call here cost 5 percent of a turn, measured"
+    )]
+    #[inline(always)]
+    pub fn items<'a>(&'a self, run: &Run) -> Pieces<'a> {
+        // Most runs carried nothing, and are what arrived.
+        let carries = !run.carried.is_empty();
+        let mut pieces = Pieces {
+            entries: &self.handed[run.fresh.range()],
+            endings: &self.handed_endings,
+            at: 0,
+            piece: 0,
+            each: 0,
+            shard: self,
+            segments: run.carried.range(),
+            fresh: run.fresh.range(),
+            on_fresh: !carries,
+        };
+        if carries {
+            pieces.advance();
+        }
+
+        pieces
+    }
+
+    /// The bytes of the mail carried over.
+    #[must_use]
+    pub fn carried(&self) -> &[u8] {
+        &self.backlog_bytes
+    }
+
+    /// Carries over into the next step the items of `run` but the first `taken`, which its actor was not handed in
+    /// this step. What it carried already stays where it is; what arrived for it is copied into the backlog, its
+    /// bytes out of `mail`, the writers' arenas, which later steps write on.
+    pub fn carry(&mut self, run: &Run, mut taken: u32, mail: &[Arena]) {
+        for index in run.carried.range() {
+            let Segment { seat, to, range } = self.handing[index].clone();
+            let mut start = range.start;
+            while start < range.end && taken > 0 {
+                let entry = &mut self.backlog[start].1;
+                let pieces = entry.pieces();
+                if taken >= pieces {
+                    taken -= pieces;
+                    start += 1;
+                    continue;
+                }
+                if let Stored::Mail(envelope) = &mut entry.item {
+                    envelope.bytes = envelope.bytes.from_piece(taken);
+                }
+                entry.order.1 += u64::from(taken);
+                taken = 0;
+            }
+            if start < range.end {
+                self.segments.push(Segment { seat, to, range: start..range.end });
+            }
+        }
+
+        let begins = self.backlog.len();
+        for index in run.fresh.range() {
+            let (seat, entry) = self.handed[index];
+            let pieces = entry.pieces();
+            if taken >= pieces {
+                taken -= pieces;
+                continue;
+            }
+            let item = match entry.item {
+                Stored::Mail(envelope) => {
+                    let rest = envelope.bytes.from_piece(taken);
+                    let bytes = read(rest, mail, &[]);
+                    let (Ok(start), Ok(len)) = (u32::try_from(self.backlog_bytes.len()), u32::try_from(bytes.len()))
+                    else {
+                        panic!("a part carries less than u32::MAX bytes of mail");
+                    };
+                    self.backlog_bytes.extend_from_slice(bytes);
+                    let left = u16::try_from(rest.pieces()).unwrap_or(u16::MAX);
+
+                    Stored::Mail(Envelope {
+                        bytes: Payload::InArena { slot: CARRIED, start, len, pieces: left },
+                        ..envelope
+                    })
+                }
+                Stored::Ended(place) => {
+                    self.backlog_endings.push(self.handed_endings[place].clone());
+
+                    Stored::Ended(self.backlog_endings.len() - 1)
+                }
+            };
+            let (sender, count) = entry.order;
+            let order = (sender, count + u64::from(taken));
+            taken = 0;
+            self.backlog.push((seat, Entry { to: entry.to, order, item }));
+        }
+        if self.backlog.len() > begins {
+            self.segments.push(Segment { seat: run.seat, to: run.bits, range: begins..self.backlog.len() });
+        }
+    }
+
+    /// Carries over into the next step a hop to `to`, an actor cut off in this step, after what it carries already:
+    /// the mail of id `order` that `envelope` makes of where its bytes are carried, whose bytes are `bytes`.
+    pub fn carry_hop(&mut self, to: Seated, order: Order, envelope: impl FnOnce(Payload) -> Envelope, bytes: &[u8]) {
+        let (Ok(start), Ok(len)) = (u32::try_from(self.backlog_bytes.len()), u32::try_from(bytes.len())) else {
+            panic!("a part carries less than u32::MAX bytes of mail");
+        };
+        self.backlog_bytes.extend_from_slice(bytes);
+        let bytes = Payload::InArena { slot: CARRIED, start, len, pieces: 1 };
+        let entry = Entry { to: to.id.bits(), order, item: Stored::Mail(envelope(bytes)) };
+        let seat = to.seat.number();
+        let at = self.backlog.len();
+        self.backlog.push((seat, entry));
+        let goes_on =
+            self.segments.last().is_some_and(|last| (last.seat, last.to) == (seat, entry.to) && last.range.end == at);
+        if goes_on {
+            if let Some(last) = self.segments.last_mut() {
+                last.range.end = at + 1;
+            }
+        } else {
+            self.segments.push(Segment { seat, to: entry.to, range: at..at + 1 });
+        }
+    }
+
+    /// What the backlog holds for the next step, as the plan weighs it: each actor's first carried item, and how
+    /// many items of its runs carried, at most `most`.
+    pub fn backlog(&self, most: u64) -> impl Iterator<Item = (Seated, Handed<'_>, u64)> {
+        self.segments.iter().map(move |segment| {
+            let (seat, entry) = &self.backlog[segment.range.start];
+            let to = Seated { id: ActorId::new(entry.to), seat: SeatNumber::new(*seat) };
+            let mut pieces = 0;
+            for (_, entry) in &self.backlog[segment.range.clone()] {
+                pieces += u64::from(entry.pieces());
+                if pieces >= most {
+                    break;
+                }
+            }
+
+            (to, entry.handed(&self.backlog_endings), pieces.min(most))
+        })
     }
 
     /// The items that arrived since the step began, in no order: the actor each is for, the item, the first of a
@@ -177,14 +472,17 @@ impl Shard {
         self.handed_endings.clear();
         trim(&mut self.handed, KEPT_LEAST);
         trim(&mut self.arrived, KEPT_LEAST);
+        // An idle part carries nothing, as a part with items to run is never idle.
+        trim(&mut self.backlog, KEPT_LEAST);
+        trim(&mut self.backlog_bytes, KEPT_LEAST);
 
         true
     }
 
-    /// Whether any item has arrived since the step began.
+    /// Whether any item has arrived since the step began, or is carried over into the next.
     #[must_use]
     pub fn has_items(&self) -> bool {
-        !self.arrived.is_empty()
+        !self.arrived.is_empty() || !self.segments.is_empty()
     }
 }
 
@@ -196,13 +494,48 @@ pub struct Pieces<'a> {
     at: usize,
     piece: u32,
     each: u32,
+    /// The part the items are of, the runs of its backlog still to hand out after `entries`, and where what arrived
+    /// lies, unless `entries` are that already.
+    shard: &'a Shard,
+    segments: Range<usize>,
+    fresh: Range<usize>,
+    on_fresh: bool,
+}
+
+impl Pieces<'_> {
+    /// Moves on to the next run of entries: the next carried, then what arrived. Answers whether there was one.
+    #[cold]
+    #[inline(never)]
+    fn advance(&mut self) -> bool {
+        self.at = 0;
+        let shard = self.shard;
+        if let Some(segment) = self.segments.next() {
+            self.entries = &shard.backlog[shard.handing[segment].range.clone()];
+            self.endings = &shard.backlog_endings;
+            return true;
+        }
+        if self.on_fresh {
+            return false;
+        }
+        self.entries = &shard.handed[self.fresh.clone()];
+        self.endings = &shard.handed_endings;
+        self.on_fresh = true;
+
+        true
+    }
 }
 
 impl<'a> Iterator for Pieces<'a> {
     type Item = Handed<'a>;
 
     fn next(&mut self) -> Option<Handed<'a>> {
-        let (_, entry) = self.entries.get(self.at)?;
+        let (_, entry) = loop {
+            match self.entries.get(self.at) {
+                Some(found) => break found,
+                None if self.advance() => {}
+                None => return None,
+            }
+        };
         let first = entry.handed(self.endings);
         let pieces = entry.pieces();
         if pieces == 1 {
@@ -339,8 +672,9 @@ mod tests {
         for count in 0..items {
             shard.arrived.push((0, Entry { to: 1, order: (2, count), item: Stored::Ended(0) }));
         }
-        let runs = shard.hand().count();
-        assert_eq!(runs, 1);
+        let mut runs = Vec::new();
+        shard.hand(&mut runs);
+        assert_eq!(runs.len(), 1);
 
         shard
     }
@@ -363,7 +697,7 @@ mod tests {
             assert!(!busy.rest());
         }
         busy.arrived.push((0, Entry { to: 1, order: (2, 0), item: Stored::Ended(0) }));
-        let _ = busy.hand().count();
+        busy.hand(&mut Vec::new());
         for _ in 1..IDLE_STEPS {
             assert!(!busy.rest());
         }
