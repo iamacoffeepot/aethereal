@@ -1,7 +1,7 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's list.
 
 use super::*;
-use crate::{Beginning, Ending, Fault, Item, Mail, MailId, Payload, Span, Within};
+use crate::{Beginning, Ending, Fault, Item, Mail, MailId, Payload, Within};
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
 use alloc::vec;
@@ -236,7 +236,7 @@ impl Actor for Herald {
 }
 
 /// Where a turn's first piece of mail with no bytes is written: at the start of an arena of its own.
-const NOTHING: Payload = Payload::InArena(Span { slot: 0, start: 0, len: 0 });
+const NOTHING: Payload = Payload::InArena { slot: 0, start: 0, len: 0, pieces: 1 };
 
 static ROOT: ActorPath = ActorPath::new("aether.test.root");
 const ME: Seated = seated(1, 100);
@@ -450,4 +450,46 @@ fn mail_to_a_parent_goes_only_while_it_is_live() {
     let to_parent = What::Send { to: parent, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING };
     assert_eq!(send(&live), (true, vec![Effect::new(ME, to_parent)]));
     assert_eq!(send(&Listed::default()), (true, Vec::new()));
+}
+
+#[test]
+fn back_to_back_mail_of_one_kind_to_one_receiver_is_one_run() {
+    // Catches a run joining mail to another receiver or of another kind, one counted from the wrong piece, and a
+    // piece of a run read from the bytes of another.
+    let (other, third) = (seated(9, 5), seated(8, 6));
+    let table =
+        Listed(vec![(other, ActorPath::new("aether.test.other")), (third, ActorPath::new("aether.test.third"))]);
+    let mut asked = Asked::new();
+    let mut turn =
+        opened::<(ToType<Leaf, Meet>, ToType<Leaf, Poke>)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let meet = |to: Seated| Meet { other: ErasedActorRef::new(to) };
+    let sends = [(other, true), (other, true), (other, true), (other, false), (third, true), (other, true)];
+    for (to, meets) in sends {
+        let target = turn.to::<Leaf>(To::Held(ErasedActorRef::new(to)));
+        let sent = if meets {
+            target.send(&meet(third))
+        } else {
+            target.send(&Poke)
+        };
+        assert_eq!(sent, Ok(()));
+    }
+
+    let (effects, _, arena, _) = asked.into_parts();
+    let seen: Vec<(Seated, u64, KindId, u32)> = effects
+        .iter()
+        .filter_map(|effect| match *effect.what() {
+            What::Send { to, count, kind, bytes } => Some((to, count, kind, bytes.pieces())),
+            _ => None,
+        })
+        .collect();
+    let (meets, pokes) = (KindId::of::<Meet>(), KindId::of::<Poke>());
+    assert_eq!(seen, [(other, 1, meets, 3), (other, 4, pokes, 1), (third, 5, meets, 1), (other, 6, meets, 1)]);
+
+    let What::Send { bytes: run, .. } = *effects[0].what() else {
+        panic!("the first effect is the run");
+    };
+    let What::Send { bytes: alone, .. } = *effects[2].what() else {
+        panic!("the third effect is a send");
+    };
+    assert_eq!(arena.read(run.piece(2, run.each())), arena.read(alone), "each piece holds a meeting with the third");
 }

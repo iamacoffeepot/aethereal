@@ -106,7 +106,8 @@ pub(super) fn expected(streams: &stream::Shard, lives: &lives::Shard, seated: &B
             }
         }
     };
-    let items: u64 = streams.arrived().map(|(me, handed)| cost(me, item_kind(handed))).sum();
+    let items: u64 =
+        streams.arrived().map(|(me, handed, pieces)| cost(me, item_kind(handed)) * u64::from(pieces)).sum();
     let closings: u64 = lives.ended().iter().map(|me| cost(*me, ItemKind::Closing)).sum();
 
     items + closings

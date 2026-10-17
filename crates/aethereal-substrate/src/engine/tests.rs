@@ -62,7 +62,8 @@ impl Kind for NodeConfig {
 /// - `where` has it say how deep in its chain that note is;
 /// - `bye N`, which a child sends as it ends, has it send that child `late`;
 /// - `bounce N` answers the sender `bounce N-1` until `N` is zero, and `pair` answers it `bounce 2`, then `last`;
-/// - `keep` sends the sender `late` through the reference to it, as an actor of its own type.
+/// - `keep` sends the sender `late` through the reference to it, as an actor of its own type;
+/// - `many N text` sends itself `textI` for each `I` below `N`, a single digit: notes of one length, back to back.
 #[derive(Plain)]
 struct Node {
     number: u64,
@@ -177,6 +178,12 @@ impl Handles<Note> for Node {
             ["keep", ..] => {
                 let sender = turn.sender();
                 turn.to::<Self>(To::Held(sender)).send(&Note { text: String::from("late") })?;
+            }
+            ["many", count, text] => {
+                let me = turn.me();
+                for index in 0..count.parse().unwrap_or(0u64) {
+                    turn.to::<Self>(To::Held(me)).send(&Note { text: format!("{text}{index}") })?;
+                }
             }
             ["where", ..] => say(format!("{} at depth {}", self.number, turn.chain().depth)),
             ["bye", number] => {
@@ -802,4 +809,30 @@ fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
     assert_eq!(Table::resolve(&outside, &child_path), None);
     assert!(!Table::is_live(&outside, child.id));
     assert!(Table::is_live(&outside, root));
+}
+
+#[test]
+fn back_to_back_mail_to_one_actor_is_one_run_handed_out_piece_by_piece() {
+    // Catches a run that loses or repeats a piece, hands its pieces out of another order than they were sent, is
+    // kept as an item for each piece, or counts its sender's mail short, so a later piece of mail reuses an id.
+    let (mut engine, root) = engine(&["many 3 a"]);
+    assert_eq!(step(&mut engine), ["1 got many 3 a"]);
+
+    let me = seated(&engine, root);
+    let pieces: Vec<u32> = engine.streams.shard(me.seat.number()).arrived().map(|(_, _, pieces)| pieces).collect();
+    assert_eq!(pieces, [3], "one item, of three pieces");
+    let count = engine.lives.shard(me.seat.number()).life(me).map(lives::Life::sent);
+    assert_eq!(count, Some(4), "one piece from its begin, three from its first turn");
+
+    assert_eq!(step(&mut engine), ["1 got a0", "1 got a1", "1 got a2"]);
+}
+
+#[test]
+fn run_fuses_its_first_piece_and_mails_the_rest() {
+    // Catches a fused run whose rest is dropped, handed over twice, or run in the step ahead of the piece fused.
+    let (mut engine, _) = fusing(8, &["many 3 a"]);
+
+    assert_eq!(step(&mut engine), ["1 got many 3 a", "1 got a0"]);
+    assert_eq!(step(&mut engine), ["1 got a1", "1 got a2"]);
+    assert!(engine.is_idle());
 }
