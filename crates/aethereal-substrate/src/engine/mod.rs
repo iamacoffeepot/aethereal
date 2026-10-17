@@ -155,6 +155,8 @@ pub struct Reading<'a> {
     mail: &'a [Arena],
     /// Spike: the bytes of mail handed straight to a part while parts stepped on their own.
     inbound: free::Inbound<'a>,
+    /// Spike: the children stood up while parts step on their own, not yet in the table.
+    fresh: Option<&'a free::Fresh>,
     read_limit: usize,
     /// The most fused hops one part runs in the step.
     hops: usize,
@@ -426,7 +428,7 @@ impl Engine {
         let mut tally = mem::take(&mut lists.tally);
         let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
         let mail = &self.arenas[parity(self.step + 1)];
-        let reading = Reading { table: &self.table, mail, inbound: free::Inbound::All(&self.inbound), read_limit: self.read_limit, hops: self.hops };
+        let reading = Reading { table: &self.table, mail, inbound: free::Inbound::All(&self.inbound), fresh: None, read_limit: self.read_limit, hops: self.hops };
         for (part, _) in &self.packing.parts {
             let room = Room {
                 streams: self.streams.at_mut(*part),
@@ -587,7 +589,7 @@ impl Engine {
     pub fn reading(&self) -> Reading<'_> {
         let mail = &self.arenas[parity(self.step + 1)];
 
-        Reading { table: &self.table, mail, inbound: free::Inbound::All(&self.inbound), read_limit: self.read_limit, hops: self.hops }
+        Reading { table: &self.table, mail, inbound: free::Inbound::All(&self.inbound), fresh: None, read_limit: self.read_limit, hops: self.hops }
     }
 
     /// Ends a step on the thread that calls it: gathers what the workers left, folds every part, and settles
@@ -928,6 +930,10 @@ impl Reading<'_> {
         for (seat, bits, range) in &runs {
             let me = Seated { id: ActorId::new(*bits), seat: SeatNumber::new(*seat) };
             let is_live = room.lives.life(me).is_some_and(lives::Life::is_live);
+            if !is_live {
+                let lived = room.lives.life(me).is_some();
+                DROPS[usize::from(lived)].fetch_add(range.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            }
             if is_live {
                 self.turns(&mut room, me, Work::Items(range.clone()), clock, tally, asked, lists);
             }
@@ -971,6 +977,7 @@ impl Reading<'_> {
     ) {
         let Room { streams, lives, seating, actors, .. } = room;
         let (Some(seat), Some(life), Some(held)) = (seating.seated.get(me), lives.life(me), actors.get_mut(me)) else {
+            DROPS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return;
         };
         let Held::Here(mut actor) = mem::replace(held, Held::Away) else {
@@ -1022,7 +1029,7 @@ impl Reading<'_> {
                     // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
                     // worker, beyond what the actor's code takes.
                     tally.time(key(item_kind(handed)), clock, || {
-                        let table = Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Step };
+                        let table = Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Step, fresh: self.fresh };
                         asked.next_turn();
                         let begins = asked.effects_mut().len();
                         let source = handed.source();
@@ -1048,7 +1055,7 @@ impl Reading<'_> {
                             source,
                             chain,
                         );
-                        let ran = Ran::of(me, actor.handle(item, turning), asked, context, begins);
+                        let ran = Ran::of(me, { TURNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); actor.handle(item, turning) }, asked, context, begins);
 
                         Self::finish(me, ran, Origin::Waiting, seating, lives, asked, lists, &mut stepped);
                     });
@@ -1109,12 +1116,18 @@ impl Reading<'_> {
             let bytes = mem::take(&mut lists.fusing.handed);
             let handled = {
                 let table =
-                    Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Run(lists.fusing.run(hop.run)) };
+                    Since {
+                    table: self.table,
+                    stood: &lists.fusing.stood,
+                    sees: Sees::Run(lists.fusing.run(hop.run)),
+                    fresh: self.fresh,
+                };
                 let mail = Mail::new(hop.kind, &bytes, hop.from, hop.root, hop.depth, self.read_limit);
                 let chain = Chain { root: hop.root, depth: hop.depth };
                 let turning =
                     Turning::new(me, &seat.path, seat.above, &table, &seat.made, asked, sent_before, hop.from, chain);
 
+                TURNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 actor.handle(Item::Mail(mail), turning)
             };
             lists.fusing.handed = bytes;
@@ -1358,6 +1371,9 @@ impl Ran {
     fn of(me: Seated, outcome: Result<(), Fault>, asked: &mut Asked, context: Context, begins: usize) -> Self {
         let mut stood = asked.take_stood();
         if let Err(fault) = outcome {
+            if DROPS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3 {
+                eprintln!("  fault: {fault:?}");
+            }
             keep_lines(asked.effects_mut(), begins);
             asked.effects_mut().push(Effect::new(me, What::Failed(fault)));
             for child in mem::take(&mut stood) {
@@ -1473,3 +1489,8 @@ const fn why(how: &How) -> Why {
         How::Closed | How::Earlier => Why::Closed,
     }
 }
+
+/// Spike check: turns run.
+pub static TURNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Spike check: items dropped: [no life, not live, unseated].
+pub static DROPS: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];

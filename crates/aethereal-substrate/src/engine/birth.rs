@@ -55,6 +55,11 @@ impl Births {
         }
     }
 
+    /// Takes the bucket of the part numbered `part` out, leaving `room`, emptied, in its place.
+    pub(super) fn take_leaving(&mut self, part: usize, room: Vec<Birth>) -> Vec<Birth> {
+        mem::replace(&mut self.buckets[part], room)
+    }
+
     /// Takes the bucket of the part numbered `part` out, leaving an empty one in its place, to fold.
     pub(super) fn take(&mut self, part: usize) -> Vec<Birth> {
         mem::take(&mut self.buckets[part])

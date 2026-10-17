@@ -21,6 +21,16 @@ pub(super) struct Since<'a> {
     pub(super) stood: &'a ByActor<(ActorPath, SeatNumber, &'static Declared)>,
     /// What else the turn sees.
     pub(super) sees: Sees<'a>,
+    /// Spike: the children every part stood up while parts step on their own, not yet in the table.
+    pub(super) fresh: Option<&'a super::free::Fresh>,
+}
+
+impl Since<'_> {
+    /// Spike: the seat of the child `id` and what its type declares, when a part stood it up while parts step on
+    /// their own.
+    fn fresh(&self, id: ActorId) -> Option<(SeatNumber, &'static Declared)> {
+        self.fresh.and_then(|fresh| fresh.find(id))
+    }
 }
 
 /// What a turn sees over the table as the step began and the children stood up since (ADR-0013).
@@ -59,31 +69,31 @@ impl Table for Since<'_> {
 
     fn is_live(&self, id: ActorId) -> bool {
         let Some(run) = self.run() else {
-            return Table::is_live(self.table, id);
+            return Table::is_live(self.table, id) || self.fresh(id).is_some();
         };
         if run.has_ended(id) {
             return false;
         }
         let stood_up = run.stood(id).is_some();
 
-        stood_up || Table::is_live(self.table, id)
+        stood_up || Table::is_live(self.table, id) || self.fresh(id).is_some()
     }
 
     fn held(&self, id: ActorId) -> bool {
         let is_stood = self.stood.contains_key(&id.bits());
 
-        is_stood || self.table.is_live(id)
+        is_stood || self.table.is_live(id) || self.fresh(id).is_some()
     }
 
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber> {
         let stood = self.stood.get(&id.bits()).map(|(_, seat, _)| *seat);
 
-        stood.or_else(|| self.table.seat(id))
+        stood.or_else(|| self.table.seat(id)).or_else(|| self.fresh(id).map(|(seat, _)| seat))
     }
 
     fn declared(&self, id: ActorId) -> Option<&'static Declared> {
         let stood = self.stood.get(&id.bits()).map(|(_, _, declared)| *declared);
 
-        stood.or_else(|| Table::declared(self.table, id))
+        stood.or_else(|| Table::declared(self.table, id)).or_else(|| self.fresh(id).map(|(_, declared)| declared))
     }
 }

@@ -6,12 +6,14 @@
 //! for, the bytes of mail copied with it. A turn that changes the table, or stands up or watches an actor, stops the
 //! run: what it asked for is folded by the engine once every worker has stopped, as a step's records are.
 
-use super::{Engine, Lists, Parcel, ROOTS, Reading, birth, parity};
+use super::birth::{self, Birth};
+use super::{Engine, Lists, Parcel, ROOTS, Reading, parity};
 use crate::lives::{self, Lives};
 use crate::log::{self, Log};
 use crate::stream::{self, Streams};
-use crate::{BySeat, Clock, View};
-use aethereal_actor::{Arena, Asked, Payload, Seats, Span};
+use crate::{ByActor, BySeat, Clock, View};
+use aethereal_actor::{Arena, Asked, Declared, Payload, SeatNumber, Seats, Span};
+use aethereal_data::ActorId;
 use std::collections::VecDeque;
 use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -50,9 +52,38 @@ impl Inbound<'_> {
     }
 }
 
-/// What one part's turns handed to another: its records of the streams, the lives, and the logs, and the bytes of
-/// the mail among them.
+/// The children every part stood up while parts step on their own, which the table does not hold until the run
+/// ends: what a turn finds of a child in another part that it was told of.
+pub(super) struct Fresh {
+    /// In shards by the bits of the child's id, so workers looking up different children seldom wait on each other.
+    shards: Vec<Mutex<ByActor<(SeatNumber, &'static Declared)>>>,
+}
+
+/// How many shards [`Fresh`] keeps.
+const FRESH_SHARDS: usize = 64;
+
+impl Default for Fresh {
+    fn default() -> Self {
+        Self { shards: (0..FRESH_SHARDS).map(|_| Mutex::default()).collect() }
+    }
+}
+
+impl Fresh {
+    /// The seat of the child `id`, and what its type declares, when a part stood it up in the run.
+    pub(super) fn find(&self, id: ActorId) -> Option<(SeatNumber, &'static Declared)> {
+        lock(self.shard(id.bits())).get(&id.bits()).copied()
+    }
+
+    fn shard(&self, bits: u64) -> &Mutex<ByActor<(SeatNumber, &'static Declared)>> {
+        &self.shards[usize::try_from(bits >> 58).unwrap_or(0) % FRESH_SHARDS]
+    }
+}
+
+/// What one part's turns handed to another: the children to seat in it, its records of the streams, the lives, and
+/// the logs, and the bytes of the mail among them.
+#[derive(Default)]
 struct Batch {
+    births: Vec<Birth>,
     streams: Vec<(u64, stream::Entry)>,
     lives: Vec<(u64, lives::Record)>,
     log: Vec<(u64, <Log as View>::Record)>,
@@ -62,6 +93,7 @@ struct Batch {
 /// A run of parts stepping on their own, as every worker reads it.
 pub struct FreeRun<'a> {
     reading: Reading<'a>,
+    fresh: Fresh,
     inboxes: Vec<Mutex<Vec<Batch>>>,
     /// How many batches each inbox holds, read without its lock: a worker locks an inbox only when it holds one.
     held: Vec<AtomicUsize>,
@@ -79,6 +111,8 @@ pub struct FreeRun<'a> {
 /// One worker's parts for a run, and what it writes to.
 pub struct FreeShare {
     parts: Vec<FreePart>,
+    /// Emptied batches, whose room is left in the writer's buckets as it hands records on.
+    spare: Vec<Batch>,
     lists: Lists,
     arena: Arena,
     /// How many times its parts stepped.
@@ -89,6 +123,8 @@ struct FreePart {
     parcel: Parcel,
     log: BySeat<VecDeque<log::Entry>>,
     inbound: Vec<u8>,
+    /// How many children were seated in it.
+    born: usize,
 }
 
 impl Engine {
@@ -114,14 +150,14 @@ impl Engine {
         let mut shares: Vec<FreeShare> = (0..workers)
             .map(|place| {
                 let (arena, lists) = self.writer(parity, place, share);
-                FreeShare { parts: Vec::new(), lists, arena, steps: 0 }
+                FreeShare { parts: Vec::new(), spare: Vec::new(), lists, arena, steps: 0 }
             })
             .collect();
         for part in 0..parts {
             let parcel = self.parcel(part);
             let log = self.log.take(part);
             let inbound = mem::take(&mut self.inbound[part]);
-            shares[part % workers].parts.push(FreePart { parcel, log, inbound });
+            shares[part % workers].parts.push(FreePart { parcel, log, inbound, born: 0 });
         }
 
         Some(shares)
@@ -132,6 +168,7 @@ impl Engine {
     pub fn free_run(&self, workers: usize) -> FreeRun<'_> {
         FreeRun {
             reading: self.reading(),
+            fresh: Fresh::default(),
             inboxes: (0..self.seating.len()).map(|_| Mutex::new(Vec::new())).collect(),
             held: (0..self.seating.len()).map(|_| AtomicUsize::new(0)).collect(),
             in_flight: AtomicUsize::new(0),
@@ -146,10 +183,12 @@ impl Engine {
     /// the whole engine applies: answers with how many times parts stepped.
     pub fn end_free(&mut self, shares: Vec<FreeShare>) -> u64 {
         let mut steps = 0;
-        for FreeShare { parts, lists, arena, steps: stepped } in shares {
+        for FreeShare { parts, lists, arena, steps: stepped, .. } in shares {
             steps += stepped;
-            for FreePart { parcel, log, inbound } in parts {
+            for FreePart { parcel, log, inbound, born } in parts {
                 let part = parcel.part;
+                self.seated[part] += born;
+                self.actors_seated += born;
                 self.put(parcel);
                 self.log.put(part, log);
                 self.inbound[part] = inbound;
@@ -184,7 +223,7 @@ impl FreeRun<'_> {
     /// Steps `share`'s parts until no part anywhere has anything to step, or a turn stops the run, then folds what
     /// is left in its parts' inboxes, once every worker has stopped stepping.
     pub fn run(&self, share: FreeShare, clock: &impl Clock) -> FreeShare {
-        let FreeShare { mut parts, mut lists, arena, mut steps } = share;
+        let FreeShare { mut parts, mut spare, mut lists, arena, mut steps } = share;
         let mut tally = mem::take(&mut lists.tally);
         let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
         let mut idle = false;
@@ -202,7 +241,7 @@ impl FreeRun<'_> {
                     }
                     let count = batches.len();
                     for batch in batches {
-                        fold_in(part, batch);
+                        spare.push(fold_in(part, batch));
                     }
                     self.in_flight.fetch_sub(count, Ordering::SeqCst);
                 }
@@ -215,20 +254,15 @@ impl FreeRun<'_> {
                     self.idle.fetch_sub(1, Ordering::SeqCst);
                 }
                 let own = part.parcel.part;
-                let reading = Reading { inbound: Inbound::One(own, &part.inbound), ..self.reading };
+                let reading =
+                    Reading { inbound: Inbound::One(own, &part.inbound), fresh: Some(&self.fresh), ..self.reading };
                 reading.run_part(part.parcel.room(), clock, &mut tally, &mut asked, &mut lists);
                 part.inbound.clear();
                 steps += 1;
                 progressed = true;
-                // A step that stood up a child, or changed the table, hands nothing on: mail to the child would reach
-                // its part before the child is seated there and be dropped. Its records, and the bytes of its mail in
-                // the arena, are left for the engine to fold, and the worker steps nothing more.
-                let stops = lists.routes.needs_a_step();
-                if stops {
-                    self.stopped.store(true, Ordering::SeqCst);
-                    break;
-                }
-                self.hand_on(&mut lists, &asked);
+                // The table's and the watches' records wait for the run to end, as a step's do, and the engine folds
+                // them; the children are found in the run's own list until then.
+                self.hand_on(&mut lists, &asked, &mut spare);
                 let (effects, stood, mut arena, seats) = asked.into_parts();
                 drop(stood);
                 arena.clear(0);
@@ -263,28 +297,44 @@ impl FreeRun<'_> {
         for part in &mut parts {
             let batches = self.take(part.parcel.part);
             for batch in batches {
-                fold_in(part, batch);
+                spare.push(fold_in(part, batch));
             }
         }
         let (effects, _, arena, _) = asked.into_parts();
         lists.effects = effects;
         lists.tally = tally;
 
-        FreeShare { parts, lists, arena, steps }
+        FreeShare { parts, spare, lists, arena, steps }
     }
 
     /// Hands each part's records in `lists`, made by the part just stepped, to that part's inbox, the bytes of its
     /// mail copied out of `asked`'s arena.
-    fn hand_on(&self, lists: &mut Lists, asked: &Asked) {
+    fn hand_on(&self, lists: &mut Lists, asked: &Asked, spare: &mut Vec<Batch>) {
+        // The children are put where every turn finds them before any mail that could name them is handed on.
+        let has_stood = !lists.fusing.stood.is_empty();
+        if has_stood {
+            for (id, (_, seat, declared)) in &lists.fusing.stood {
+                lock(self.fresh.shard(*id)).insert(*id, (*seat, *declared));
+            }
+        }
         for (part, inbox) in self.inboxes.iter().enumerate() {
-            let streams = lists.routes.streams.take(part);
-            let lives = lists.routes.lives.take(part);
-            let log = lists.routes.log.take(part);
-            let empty = streams.is_empty() && lives.is_empty() && log.is_empty();
-            if empty {
+            let routes = &lists.routes;
+            let records = routes.births.records(part)
+                + routes.streams.records(part)
+                + routes.lives.records(part)
+                + routes.log.records(part);
+            if records == 0 {
                 continue;
             }
-            let mut batch = Batch { streams, lives, log, bytes: Vec::new() };
+            let room = spare.pop().unwrap_or_default();
+            let routes = &mut lists.routes;
+            let mut batch = Batch {
+                births: routes.births.take_leaving(part, room.births),
+                streams: routes.streams.take_leaving(part, room.streams),
+                lives: routes.lives.take_leaving(part, room.lives),
+                log: routes.log.take_leaving(part, room.log),
+                bytes: room.bytes,
+            };
             let slot = FREE + u32::try_from(part).unwrap_or(0);
             for (_, entry) in &mut batch.streams {
                 let Some(payload) = entry.payload_mut() else {
@@ -316,8 +366,8 @@ impl FreeRun<'_> {
     }
 }
 
-/// Folds `batch` into `part`, its mail's bytes put after the part's.
-fn fold_in(part: &mut FreePart, mut batch: Batch) {
+/// Folds `batch` into `part`, its mail's bytes put after the part's, and answers with it emptied, for its room.
+fn fold_in(part: &mut FreePart, mut batch: Batch) -> Batch {
     let base = u32::try_from(part.inbound.len()).unwrap_or(u32::MAX);
     part.inbound.extend_from_slice(&batch.bytes);
     for (_, entry) in &mut batch.streams {
@@ -325,9 +375,13 @@ fn fold_in(part: &mut FreePart, mut batch: Batch) {
             span.start += base;
         }
     }
+    part.born += birth::seat_all(&mut part.parcel.seating, &mut part.parcel.actors, &mut batch.births);
     Streams::fold_all(&mut part.parcel.streams, &mut batch.streams);
     Lives::fold_all(&mut part.parcel.lives, &mut batch.lives);
     Log::fold_all(&mut part.log, &mut batch.log);
+    batch.bytes.clear();
+
+    batch
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

@@ -294,6 +294,11 @@ impl<V: View> Routed<V> {
         mem::take(&mut self.buckets[part])
     }
 
+    /// Takes this row's records for the part numbered `part` out, leaving `room`, emptied, in their place.
+    pub fn take_leaving(&mut self, part: usize, room: Vec<(u64, V::Record)>) -> Vec<(u64, V::Record)> {
+        mem::replace(&mut self.buckets[part], room)
+    }
+
     /// How many records this row holds for the part numbered `part`.
     #[must_use]
     pub fn records(&self, part: usize) -> usize {

@@ -699,6 +699,7 @@ impl Handles<Request> for Fib {
     type Sends = (ToType<Self, Request>, Answer);
 
     fn handle(&mut self, Request { number }: Request, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        PRIMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if number <= 2 {
             turn.to_any::<(Response,)>(To::Parent).send(&Response { value: 1 })?;
             turn.close();
@@ -719,6 +720,7 @@ impl Handles<Response> for Fib {
     type Sends = (Answer,);
 
     fn handle(&mut self, Response { value }: Response, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        PONGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.sum += value;
         self.answers += 1;
         if self.answers == 2 {
@@ -1158,7 +1160,8 @@ fn run(program: &Program, workers: NonZeroUsize, hops: usize) -> (u64, u64, Hops
     let clock = Monotonic::new();
     (program.start)(headless.engine_mut());
     headless.run_until_idle();
-    eprintln!("  pongs={} primes={}", PONGS.swap(0, std::sync::atomic::Ordering::Relaxed), PRIMES.swap(0, std::sync::atomic::Ordering::Relaxed));
+    eprintln!("  check pongs={} primes={} turns={}", PONGS.swap(0, std::sync::atomic::Ordering::Relaxed), PRIMES.swap(0, std::sync::atomic::Ordering::Relaxed), aethereal_substrate::TURNS.swap(0, std::sync::atomic::Ordering::Relaxed));
+    eprintln!("  drops={:?}", aethereal_substrate::DROPS.iter().map(|d| d.swap(0, std::sync::atomic::Ordering::Relaxed)).collect::<Vec<_>>());
 
     (clock.nanos(), headless.measured().steps, headless.engine().hopped())
 }
