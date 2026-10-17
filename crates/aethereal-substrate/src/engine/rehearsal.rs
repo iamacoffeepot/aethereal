@@ -51,14 +51,19 @@ impl Handles<Again> for Echo {
     }
 }
 
-/// The bytes of arena a rehearsal's mail is written to: a piece of mail for each part, each step, fits many times.
+/// The bytes of arena a rehearsal's mail is written to: a piece of mail for each actor, each step, fits many times.
 const REHEARSAL_MAIL_BYTES: usize = 1 << 20;
 
+/// The actors a rehearsal has in each part. With one, a step's turns take so little that what the plan expects of them
+/// is off by more than a split costs: measured on 2 to 16 workers, every count's cost came out about 15 µs more than
+/// with eight, and with eight each count's came within about 6 µs of what steps of 120 actors passing mail paid.
+const ACTORS_EACH_PART: usize = 8;
+
 impl Engine {
-    /// An engine in as many parts as this one, for a host to time steps on: one actor in each part, each sending
-    /// itself a piece of mail every step, for ever. Each of its steps runs a turn in every part and folds a record
-    /// into every part, with turns that take almost no time, so what a step split among workers takes beyond the same
-    /// step run whole is what the split costs (ADR-0011).
+    /// An engine in as many parts as this one, for a host to time steps on: [`ACTORS_EACH_PART`] actors in each
+    /// part, each sending itself a piece of mail every step, for ever. Each of its steps runs turns in every part and
+    /// folds records into every part, with turns that take little time, so what a step split among workers takes
+    /// beyond the same step run whole is what the split costs (ADR-0011).
     ///
     /// # Panics
     ///
@@ -67,9 +72,9 @@ impl Engine {
     pub fn rehearsal(&self) -> Self {
         let parts = NonZeroUsize::new(self.seating.len()).unwrap_or(NonZeroUsize::MIN);
         let mut rehearsal = Self::new(parts, self.read_limit, REHEARSAL_MAIL_BYTES, 0);
-        // Each root sits in the part with fewest actors, so one goes in each part.
-        for part in 0..parts.get() {
-            let key = u64::try_from(part).unwrap_or(u64::MAX);
+        // Each root sits in the part with fewest actors, so as many go in each part.
+        for number in 0..parts.get() * ACTORS_EACH_PART {
+            let key = u64::try_from(number).unwrap_or(u64::MAX);
             let Ok(_) = rehearsal.add_root::<Echo>(&key, Again) else {
                 panic!("an actor of a rehearsal begins");
             };

@@ -11,36 +11,32 @@ const SETTLING: usize = 3;
 /// Steps timed on each count of workers, of which the median is taken.
 const TIMED: usize = 15;
 
-/// What splitting a step of `engine` among `pool`'s workers costs: a rehearsal of it is run whole, split between two
-/// workers, and split among as many as it can be, and what each split took beyond the step run whole, but for the
-/// time its turns saved, is what the split costs. The workers are parked after, and the steps rehearsed are not
-/// counted among those measured.
-pub fn split_cost(engine: &Engine, pool: &mut Pool, clock: Monotonic) -> SplitCost {
+/// What splitting a step of `engine` among `pool`'s workers costs, in nanoseconds, among two workers first, then
+/// three, and so on, as [`SplitCost::new`] reads it: a rehearsal of it is run whole, and split among each count in
+/// turn, and what each split took beyond the step run whole, but for the time its turns saved, is what the split
+/// costs. Counts past the engine's parts are not measured, as no step is split among more workers than it has parts.
+/// The workers are parked after, and the steps rehearsed are not counted among those measured.
+pub fn split_cost(engine: &Engine, pool: &mut Pool, clock: Monotonic) -> Vec<u64> {
     let max = pool.workers(SplitCost::NONE).max;
-    if max < 2 {
-        return SplitCost::NONE;
-    }
-
     let mut rehearsal = engine.rehearsal();
     let on = |count| Workers { active: count, max: count, wake_nanos: 0, split: SplitCost::NONE };
     for _ in 0..WARMING {
         step(&mut rehearsal, pool, clock, on(1));
     }
     let whole = timed(&mut rehearsal, pool, clock, on(1));
-    let two = timed(&mut rehearsal, pool, clock, on(2));
-    let most = timed(&mut rehearsal, pool, clock, on(max));
+    let nanos = (2..=max)
+        .map(|count| (count, timed(&mut rehearsal, pool, clock, on(count))))
+        .take_while(|(count, split)| split.sharing == *count)
+        .map(|(_, split)| split.beyond(&whole))
+        .collect();
     pool.park();
     pool.forget_measured();
 
-    let two_nanos = two.beyond(&whole);
-    let past_two = u64::try_from(most.sharing.saturating_sub(2)).unwrap_or(0);
-    let added_nanos = most.beyond(&whole).saturating_sub(two_nanos).checked_div(past_two).unwrap_or(0);
-
-    SplitCost { two_nanos, added_nanos }
+    nanos
 }
 
 /// The median of [`TIMED`] steps of `rehearsal` on `pool`, planned for `workers`, after [`SETTLING`] untimed.
-fn timed(rehearsal: &mut Engine, pool: &mut Pool, clock: Monotonic, workers: Workers) -> Stepped {
+fn timed(rehearsal: &mut Engine, pool: &mut Pool, clock: Monotonic, workers: Workers<'_>) -> Stepped {
     for _ in 0..SETTLING {
         step(rehearsal, pool, clock, workers);
     }
