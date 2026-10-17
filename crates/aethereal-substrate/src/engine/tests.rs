@@ -4,7 +4,7 @@ use super::*;
 use crate::watch::Notice;
 use crate::{ByActor, Entry, child_id};
 use aethereal_actor::{Ended, Ending, Fault, Handles, How, Level, Table, To, ToSender, ToType, ToWithoutMail, Turn};
-use aethereal_data::{Budget, Kind, KindName, Plain, TypedKey};
+use aethereal_data::{Bound, Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
 use std::mem;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -244,7 +244,7 @@ fn fusing(hops: usize, to_self: &[&str]) -> (Engine, ActorId) {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 0, hops);
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops);
     let to_self = to_self.iter().map(|text| String::from(*text)).collect();
     let Ok(root) = engine.add_root::<Node>(&1, NodeConfig { number: 1, to_self, spawns: Vec::new() }) else {
         panic!("the root begins");
@@ -799,13 +799,13 @@ fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
     run.end(root);
     let stood = ByActor::default();
 
-    let in_run = Since { table: engine.table(), stood: &stood, sees: Sees::Run(&run) };
+    let in_run = Since { table: engine.table(), stood: &stood, sees: Sees::Run(&run), blobs: &engine.blobs };
     assert_eq!(Table::resolve(&in_run, &child_path), Some(child));
     assert!(Table::is_live(&in_run, child.id));
     assert_eq!(Table::resolve(&in_run, &root_path), None);
     assert!(!Table::is_live(&in_run, root));
 
-    let outside = Since { table: engine.table(), stood: &stood, sees: Sees::Step };
+    let outside = Since { table: engine.table(), stood: &stood, sees: Sees::Step, blobs: &engine.blobs };
     assert_eq!(Table::resolve(&outside, &child_path), None);
     assert!(!Table::is_live(&outside, child.id));
     assert!(Table::is_live(&outside, root));
@@ -912,4 +912,186 @@ fn a_child_stood_up_in_a_turn_counts_what_it_sent_from_its_begin() {
     let me = seated(&engine, grandchild);
     let count = engine.lives.shard(me.seat.number()).life(me).map(lives::Life::sent);
     assert_eq!(count, Some(1), "3 sent itself close from its begin");
+}
+
+/// The notes a holder sends itself as it begins.
+#[derive(Plain)]
+struct HolderConfig {
+    to_self: Vec<String>,
+}
+
+impl Kind for HolderConfig {
+    const NAME: KindName = KindName::new("aether.test.holder_config");
+}
+
+/// An actor that puts, keeps, reads, and lets go of blobs as its notes say (ADR-0014):
+///
+/// - `put N` puts a blob of `N` bytes and keeps it, or says why it was refused;
+/// - `read` says how many bytes each blob it keeps holds;
+/// - `drop` lets go of the blob it kept last;
+/// - `fail` fails its turn;
+/// - `later text` sends itself `text`, for the next step.
+#[derive(Bound)]
+struct Holder {
+    held: Vec<BlobRef>,
+}
+
+impl Kind for Holder {
+    const NAME: KindName = KindName::new("aether.test.holder");
+}
+
+impl Actor for Holder {
+    type Config = HolderConfig;
+    type Key = ();
+    type Handles = (Note,);
+    type BeginSends = (ToType<Self, Note>,);
+    type EndSends = ();
+
+    fn begin(config: HolderConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        for text in config.to_self {
+            let me = turn.me();
+            turn.to::<Self>(ToWithoutMail::Held(me)).send(&Note { text })?;
+        }
+
+        Ok(Self { held: Vec::new() })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Note> for Holder {
+    type Sends = (ToType<Self, Note>,);
+
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let Note { text } = note;
+        let words: Vec<&str> = text.splitn(2, ' ').collect();
+        match words[..] {
+            ["put", bytes] => match turn.put(vec![7; bytes.parse().unwrap_or_default()]) {
+                Ok(blob) => self.held.push(blob),
+                Err(refused) => say(format!("refused {refused:?}")),
+            },
+            ["read"] => {
+                for blob in &self.held {
+                    say(format!("read {}", turn.read(blob).len()));
+                }
+            }
+            ["drop"] => drop(self.held.pop()),
+            ["fail"] => return Err(Fault::new(&Note { text })?),
+            ["later", rest] => {
+                let me = turn.me();
+                turn.to::<Self>(To::Held(me)).send(&Note { text: String::from(rest) })?;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+}
+
+/// An engine whose blobs hold at most `blob_bytes`, with a holder that sends itself `to_self` as it begins.
+fn holding(blob_bytes: usize, to_self: &[&str]) -> Engine {
+    let Some(parts) = NonZeroUsize::new(4) else {
+        panic!("four is not zero");
+    };
+    let mut engine = Engine::new(parts, 1024, 0, blob_bytes, 0);
+    let to_self = to_self.iter().map(|text| String::from(*text)).collect();
+    let Ok(_) = engine.add_root::<Holder>(&(), HolderConfig { to_self }) else {
+        panic!("the holder begins");
+    };
+
+    engine
+}
+
+#[test]
+fn a_blob_put_in_a_turn_is_read_in_that_step_and_the_ones_after() {
+    // Catches a read that looks only in the store and misses what its worker put in the step, and a store that never
+    // takes in what was put.
+    let mut engine = holding(1 << 20, &["put 3", "read", "later read"]);
+    assert_eq!(step(&mut engine), ["read 3"]);
+    assert_eq!(engine.blobs_held(), (1, 3));
+
+    assert_eq!(step(&mut engine), ["read 3"]);
+}
+
+#[test]
+fn a_blob_is_freed_at_the_fold_after_its_last_reference_goes() {
+    // Catches a blob kept once nothing refers to it, and the bytes it held kept against the budget.
+    let mut engine = holding(1 << 20, &["put 4", "put 5", "later drop"]);
+    step(&mut engine);
+    assert_eq!(engine.blobs_held(), (2, 9));
+
+    step(&mut engine);
+    assert_eq!(engine.blobs_held(), (1, 4));
+}
+
+#[test]
+fn a_put_past_the_budget_is_refused_until_a_blob_is_freed() {
+    // Catches a put that goes past the budget, a refusal the actor is not told of, and freed bytes never given back.
+    let mut engine = holding(8, &["put 6", "put 6", "later drop", "later later put 6"]);
+    assert_eq!(step(&mut engine), ["refused NoRoom"]);
+    assert_eq!(engine.blobs_held(), (1, 6));
+
+    step(&mut engine);
+    assert_eq!(engine.blobs_held(), (0, 0));
+    assert_eq!(step(&mut engine), [""; 0]);
+    assert_eq!(engine.blobs_held(), (1, 6));
+}
+
+#[test]
+fn an_actor_that_fails_lets_go_of_what_it_held_when_it_ends() {
+    // Catches the pins an actor's state held lost when the actor is dropped, which leaves its blobs held for good.
+    let mut engine = holding(1 << 20, &["put 4", "later fail"]);
+    step(&mut engine);
+    assert_eq!(engine.blobs_held(), (1, 4));
+
+    step(&mut engine);
+    step(&mut engine);
+    assert_eq!(engine.blobs_held(), (0, 0));
+}
+
+#[test]
+fn references_held_or_dropped_between_steps_are_counted() {
+    // Catches the changes made outside a step's turns never summed: a blob the chassis let go of kept for good, and
+    // one it holds freed for want of its pin.
+    let Some(parts) = NonZeroUsize::new(4) else {
+        panic!("four is not zero");
+    };
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let Ok(kept) = engine.put_blob(vec![1, 2, 3]) else {
+        panic!("three bytes fit");
+    };
+    let Ok(dropped) = engine.put_blob(vec![4; 5]) else {
+        panic!("five bytes fit");
+    };
+    drop(dropped);
+    engine.step(&Stopped);
+
+    assert_eq!(engine.blobs_held(), (1, 3));
+    assert_eq!(engine.blob(&kept), Some(&[1, 2, 3][..]));
+}
+
+#[test]
+fn one_engine_sums_only_the_changes_to_its_own_blobs() {
+    // Catches the changes made outside a step shared by every engine of the process, so one engine's dropped
+    // reference takes a pin from another's blob that has the same number, and frees it while it is held.
+    let Some(parts) = NonZeroUsize::new(4) else {
+        panic!("four is not zero");
+    };
+    let mut kept = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let mut dropping = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let Ok(blob) = kept.put_blob(vec![1, 2, 3]) else {
+        panic!("three bytes fit");
+    };
+    let Ok(other) = dropping.put_blob(vec![4, 5, 6]) else {
+        panic!("three bytes fit");
+    };
+    assert_eq!(blob.id().bits(), other.id().bits(), "the two engines number their first blobs alike");
+    drop(other);
+    kept.step(&Stopped);
+    dropping.step(&Stopped);
+
+    assert_eq!(kept.blobs_held(), (1, 3));
+    assert_eq!(dropping.blobs_held(), (0, 0));
 }

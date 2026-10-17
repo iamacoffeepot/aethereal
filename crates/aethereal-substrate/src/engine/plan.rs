@@ -1,7 +1,7 @@
 //! How many workers a step runs on, and which parts of the engine each runs (ADR-0011).
 
 use super::{Lists, Parcel};
-use aethereal_actor::Arena;
+use aethereal_actor::{Arena, Puts};
 
 /// The workers a host has, as the engine plans a step for them (ADR-0011).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +83,8 @@ pub enum Split {
 pub struct Whole {
     /// Where the worker writes the bytes of the mail its turns send.
     pub(super) arena: Arena,
+    /// Where the worker holds the blobs its turns put (ADR-0014).
+    pub(super) puts: Puts,
     /// What the worker fills as it runs.
     pub(super) lists: Lists,
 }
@@ -93,6 +95,8 @@ pub struct Share {
     pub(super) parcels: Vec<Parcel>,
     /// Where the worker writes the bytes of the mail its turns send.
     pub(super) arena: Arena,
+    /// Where the worker holds the blobs its turns put (ADR-0014).
+    pub(super) puts: Puts,
     /// What the worker fills as it runs.
     pub(super) lists: Lists,
 }

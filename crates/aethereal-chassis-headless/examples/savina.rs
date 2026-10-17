@@ -1480,7 +1480,7 @@ const PROGRAMS: [Program; 10] = [
 /// is made before the clock starts, so what it measures as it starts is not counted.
 fn run(program: &Program, workers: NonZeroUsize, hops: usize) -> (u64, u64, Hops) {
     let parts = NonZeroUsize::MIN.saturating_add(15);
-    let engine = Engine::new(parts, 1024, 1 << 30, hops);
+    let engine = Engine::new(parts, 1024, 1 << 30, 1 << 30, hops);
     let mut headless = Headless::new(engine, workers);
     let clock = Monotonic::new();
     (program.start)(headless.engine_mut(), 0);
@@ -1496,7 +1496,7 @@ fn run(program: &Program, workers: NonZeroUsize, hops: usize) -> (u64, u64, Hops
 /// next, as a long-running engine does.
 fn steady(program: &Program, workers: NonZeroUsize, hops: usize, rounds: u64) -> Vec<u64> {
     let parts = NonZeroUsize::MIN.saturating_add(15);
-    let engine = Engine::new(parts, 1024, 1 << 30, hops);
+    let engine = Engine::new(parts, 1024, 1 << 30, 1 << 30, hops);
     let mut headless = Headless::new(engine, workers);
 
     (0..rounds)

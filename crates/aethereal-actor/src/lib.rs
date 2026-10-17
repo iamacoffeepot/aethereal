@@ -10,9 +10,12 @@
 #![forbid(unsafe_code)]
 
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 
 mod actor;
 mod arena;
+mod blob;
 mod boundary;
 mod declared;
 mod effect;
@@ -26,6 +29,9 @@ mod turn;
 
 pub use actor::{Actor, Runs};
 pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};
+pub use blob::{BlobId, Puts};
+#[cfg(feature = "std")]
+pub use blob::{BlobRef, pins};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, Within, WithinReader, WithinWriter};
 pub use declared::{
     Allows, At, Declared, Handled, HandledList, Handler, Handles, Kinds, Marker, Others, Role, Sending, Sends, Target,

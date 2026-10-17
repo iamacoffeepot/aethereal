@@ -6,6 +6,11 @@ license.workspace = true
 publish.workspace = true
 description = "What an actor's code is written against: the effects a turn asks of the engine, and the fault a turn returns"
 
+[features]
+default = ["std"]
+# References that pin blobs (ADR-0014), whose pins are noted in a buffer each thread keeps.
+std = []
+
 [dependencies]
 aethereal-data = { path = "../aethereal-data" }
 

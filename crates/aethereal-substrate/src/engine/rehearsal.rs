@@ -71,7 +71,7 @@ impl Engine {
     #[must_use]
     pub fn rehearsal(&self) -> Self {
         let parts = NonZeroUsize::new(self.seating.len()).unwrap_or(NonZeroUsize::MIN);
-        let mut rehearsal = Self::new(parts, self.read_limit, REHEARSAL_MAIL_BYTES, 0);
+        let mut rehearsal = Self::new(parts, self.read_limit, REHEARSAL_MAIL_BYTES, 0, 0);
         // Each root sits in the part with fewest actors, so as many go in each part.
         for number in 0..parts.get() * ACTORS_EACH_PART {
             let key = u64::try_from(number).unwrap_or(u64::MAX);

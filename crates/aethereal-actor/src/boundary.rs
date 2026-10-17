@@ -1,6 +1,6 @@
 //! The boundaries an actor's values cross: `Within` and `Actors` (ADR-0004).
 
-use crate::{Declared, SeatNumber, Seated};
+use crate::{BlobId, Declared, SeatNumber, Seated};
 use aethereal_data::{ActorId, ActorPath, Boundary, PathSegment};
 use core::marker::PhantomData;
 
@@ -29,6 +29,9 @@ pub trait Table {
     /// The seat of the child `id` stands for, beneath the actor whose turn reads the table, when it was made or that
     /// actor stood it up in an earlier turn of the step.
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber>;
+
+    /// The bytes of the blob `id` names, when the store held it as the step began (ADR-0014).
+    fn blob(&self, id: BlobId) -> Option<&[u8]>;
 }
 
 /// The children an actor has made, live or ended, whose keys it may not use again (ADR-0008).
