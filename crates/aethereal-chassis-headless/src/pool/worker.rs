@@ -1,11 +1,10 @@
 //! One worker thread: what it is told, what it answers, and how it waits between steps.
 
+use super::slot::Board;
 use crate::Monotonic;
 use aethereal_substrate::{Clock, Done, Fold, Folding, Reading, Share};
 use std::any::Any;
-use std::hint;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::mpsc::{Receiver, RecvError, Sender, TryRecvError};
 
 /// What the stepping thread tells a worker.
 #[allow(
@@ -22,6 +21,8 @@ pub(super) enum Order {
     Park,
     /// Answer at once, to measure how long a parked worker takes to wake.
     Ping,
+    /// End: no order will follow.
+    Stop,
 }
 
 /// How a worker waits between steps.
@@ -96,25 +97,17 @@ impl<S> Lent<Folding<'static>, S> {
     }
 }
 
-/// A worker's life: it waits as it was last told, runs what it is given, and ends when the stepping thread drops
-/// its end of `orders`.
-pub(super) fn work(orders: &Receiver<Order>, replies: &Sender<Reply>) {
+/// The life of the worker numbered `worker` on `board`: it waits as it was last told, runs what it is given, and
+/// ends when it is told to stop.
+pub(super) fn work(board: &Board, worker: usize) {
     let mut waiting = Waiting::Park;
     loop {
-        let order = match waiting {
-            Waiting::Spin => spin(orders),
-            Waiting::Park => orders.recv(),
-        };
-        let Ok(order) = order else {
-            return;
-        };
-
-        let reply = match order {
+        let reply = match board.take(worker, waiting) {
             Order::Run { lend, then } => {
                 waiting = then;
                 let Lent { reading, clock, share } = lend;
                 // SAFETY: the stepping thread lent this `Reading` in `Pool::spread`, which does not return, and so
-                // does not let the `Reading` go, until this worker's reply arrives; the reply is sent after the
+                // does not let the `Reading` go, until this worker's answer arrives; the answer is given after the
                 // last use of it.
                 let reading = unsafe { &*reading };
                 let ran = panic::catch_unwind(AssertUnwindSafe(|| perform(reading, clock, share)));
@@ -124,7 +117,7 @@ pub(super) fn work(orders: &Receiver<Order>, replies: &Sender<Reply>) {
             Order::Fold { lend } => {
                 waiting = Waiting::Spin;
                 let Lent { reading: folding, clock, share } = lend;
-                // SAFETY: as for `Order::Run`: `Pool::spread` keeps this `Folding` alive until this reply arrives.
+                // SAFETY: as for `Order::Run`: `Pool::spread` keeps this `Folding` alive until this answer arrives.
                 let folding = unsafe { &*folding };
                 let folded = panic::catch_unwind(AssertUnwindSafe(|| fold(folding, clock, share)));
 
@@ -135,22 +128,9 @@ pub(super) fn work(orders: &Receiver<Order>, replies: &Sender<Reply>) {
                 continue;
             }
             Order::Ping => Reply::Pong,
+            Order::Stop => return,
         };
-        let is_heard = replies.send(reply).is_ok();
-        if !is_heard {
-            return;
-        }
-    }
-}
-
-/// The next order, spun for.
-fn spin(orders: &Receiver<Order>) -> Result<Order, RecvError> {
-    loop {
-        match orders.try_recv() {
-            Ok(order) => return Ok(order),
-            Err(TryRecvError::Empty) => hint::spin_loop(),
-            Err(TryRecvError::Disconnected) => return Err(RecvError),
-        }
+        board.answer(worker, reply);
     }
 }
 
