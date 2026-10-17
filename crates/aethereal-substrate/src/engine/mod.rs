@@ -966,27 +966,30 @@ impl Reading<'_> {
         match (work, life.state()) {
             (Work::Closing, State::Ending(ending)) => {
                 let (how, context) = &**ending;
-                asked.next_turn();
-                let begins = asked.effects_mut().len();
-                let why = why(how);
-                let closing = Closing::new(me, &seat.path, seat.above, self.table, asked, life.sent(), why);
-                let ended = tally.time(key(ItemKind::Closing), clock, || actor.end(closing));
-                let effects = asked.effects_mut();
-                // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds its
-                // fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after what the
-                // turn sent.
-                if let Err(fault) = ended {
-                    keep_lines(effects, begins);
-                    effects.push(Effect::new(me, What::EndFailed(fault)));
-                }
-                effects.push(Effect::new(me, What::Ended(how.clone())));
-                if lists.fusing.may_hop() {
-                    let sends = effects[begins..].iter().filter(|effect| is_send_by(effect, me)).count();
-                    lists.fusing.hops.closing += u64::try_from(sends).unwrap_or(u64::MAX);
-                }
+                // Timed whole, as a turn of a waiting item is.
+                tally.time(key(ItemKind::Closing), clock, || {
+                    asked.next_turn();
+                    let begins = asked.effects_mut().len();
+                    let why = why(how);
+                    let closing = Closing::new(me, &seat.path, seat.above, self.table, asked, life.sent(), why);
+                    let ended = actor.end(closing);
+                    let effects = asked.effects_mut();
+                    // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds
+                    // its fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after
+                    // what the turn sent.
+                    if let Err(fault) = ended {
+                        keep_lines(effects, begins);
+                        effects.push(Effect::new(me, What::EndFailed(fault)));
+                    }
+                    effects.push(Effect::new(me, What::Ended(how.clone())));
+                    if lists.fusing.may_hop() {
+                        let sends = effects[begins..].iter().filter(|effect| is_send_by(effect, me)).count();
+                        lists.fusing.hops.closing += u64::try_from(sends).unwrap_or(u64::MAX);
+                    }
 
-                let ran = Ran { effects: begins..effects.len(), stood: Vec::new(), context: *context };
-                lists.route(ran, effects, me.id);
+                    let ran = Ran { effects: begins..effects.len(), stood: Vec::new(), context: *context };
+                    lists.route(ran, effects, me.id);
+                });
                 // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
                 seating.seated.remove(me);
                 lists.freed.push(me.seat);
@@ -1001,36 +1004,39 @@ impl Reading<'_> {
                     fresh
                 };
                 for handed in streams.handed(range) {
-                    let table = Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Step };
-                    asked.next_turn();
-                    let begins = asked.effects_mut().len();
-                    let source = handed.source();
-                    let (item, context) = match handed {
-                        Handed::Mail { envelope: &Envelope { kind, bytes, root, depth, .. }, .. } => {
-                            let bytes = self.bytes(bytes);
-                            let mail = Mail::new(kind, bytes, source, root, depth, self.read_limit);
+                    // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
+                    // worker, beyond what the actor's code takes.
+                    tally.time(key(item_kind(handed)), clock, || {
+                        let table = Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Step };
+                        asked.next_turn();
+                        let begins = asked.effects_mut().len();
+                        let source = handed.source();
+                        let (item, context) = match handed {
+                            Handed::Mail { envelope: &Envelope { kind, bytes, root, depth, .. }, .. } => {
+                                let bytes = self.bytes(bytes);
+                                let mail = Mail::new(kind, bytes, source, root, depth, self.read_limit);
 
-                            (Item::Mail(mail), Context { root, depth: depth + 1 })
-                        }
-                        Handed::Ended { ended, context } => (Item::Ended(ended.clone()), *context),
-                    };
-                    // The item sits one above what the turn sends in its chain.
-                    let chain = Chain { root: context.root, depth: context.depth - 1 };
-                    let turning = Turning::new(
-                        me,
-                        &seat.path,
-                        seat.above,
-                        &table,
-                        &seat.made,
-                        asked,
-                        stepped.sent,
-                        source,
-                        chain,
-                    );
-                    let handled = tally.time(key(item_kind(handed)), clock, || actor.handle(item, turning));
-                    let ran = Ran::of(me, handled, asked, context, begins);
+                                (Item::Mail(mail), Context { root, depth: depth + 1 })
+                            }
+                            Handed::Ended { ended, context } => (Item::Ended(ended.clone()), *context),
+                        };
+                        // The item sits one above what the turn sends in its chain.
+                        let chain = Chain { root: context.root, depth: context.depth - 1 };
+                        let turning = Turning::new(
+                            me,
+                            &seat.path,
+                            seat.above,
+                            &table,
+                            &seat.made,
+                            asked,
+                            stepped.sent,
+                            source,
+                            chain,
+                        );
+                        let ran = Ran::of(me, actor.handle(item, turning), asked, context, begins);
 
-                    Self::finish(me, ran, Origin::Waiting, seating, lives, asked, lists, &mut stepped);
+                        Self::finish(me, ran, Origin::Waiting, seating, lives, asked, lists, &mut stepped);
+                    });
                     if stepped.ended {
                         break;
                     }
@@ -1079,25 +1085,28 @@ impl Reading<'_> {
             return;
         };
 
-        asked.next_turn();
-        let begins = asked.effects_mut().len();
         let sent_before = stepped.sent;
-        let bytes = mem::take(&mut lists.fusing.handed);
-        let handled = {
-            let table =
-                Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Run(lists.fusing.run(hop.run)) };
-            let mail = Mail::new(hop.kind, &bytes, hop.from, hop.root, hop.depth, self.read_limit);
-            let chain = Chain { root: hop.root, depth: hop.depth };
-            let turning =
-                Turning::new(me, &seat.path, seat.above, &table, &seat.made, asked, sent_before, hop.from, chain);
-            let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
+        let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
+        // Timed whole, as a turn of a waiting item is.
+        tally.time(key, clock, || {
+            asked.next_turn();
+            let begins = asked.effects_mut().len();
+            let bytes = mem::take(&mut lists.fusing.handed);
+            let handled = {
+                let table =
+                    Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Run(lists.fusing.run(hop.run)) };
+                let mail = Mail::new(hop.kind, &bytes, hop.from, hop.root, hop.depth, self.read_limit);
+                let chain = Chain { root: hop.root, depth: hop.depth };
+                let turning =
+                    Turning::new(me, &seat.path, seat.above, &table, &seat.made, asked, sent_before, hop.from, chain);
 
-            tally.time(key, clock, || actor.handle(Item::Mail(mail), turning))
-        };
-        lists.fusing.handed = bytes;
-        let context = Context { root: hop.root, depth: hop.depth + 1 };
-        let ran = Ran::of(me, handled, asked, context, begins);
-        Self::finish(me, ran, Origin::Hop(hop.run), seating, lives, asked, lists, &mut stepped);
+                actor.handle(Item::Mail(mail), turning)
+            };
+            lists.fusing.handed = bytes;
+            let context = Context { root: hop.root, depth: hop.depth + 1 };
+            let ran = Ran::of(me, handled, asked, context, begins);
+            Self::finish(me, ran, Origin::Hop(hop.run), seating, lives, asked, lists, &mut stepped);
+        });
 
         if stepped.sent > sent_before {
             let (key, record) = lives::sent(me, stepped.sent);
