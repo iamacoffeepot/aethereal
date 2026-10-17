@@ -110,10 +110,7 @@ fn record(effect: &Effect) -> Option<(u64, Record)> {
 /// What the type of the child `effect` stands up declares, or none for an effect that stands up no child.
 const fn made_from(effect: &Effect) -> Option<&'static Declared> {
     match effect.what() {
-        What::Spawn { from, .. }
-        | What::SpawnInstanced { from, .. }
-        | What::Embed { from, .. }
-        | What::EmbedInstanced { from, .. } => Some(from.declared()),
+        What::Spawn { from, .. } | What::SpawnInstanced { from, .. } => Some(from.declared()),
         _ => None,
     }
 }

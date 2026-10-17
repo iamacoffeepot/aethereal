@@ -61,10 +61,6 @@ pub enum What {
     Spawn { from: Code, seat: SeatNumber },
     /// A child of an instanced type stands beneath the asking actor in `seat` and takes its own mail.
     SpawnInstanced { from: Code, key: KeyName, seat: SeatNumber },
-    /// A child, a singleton, stands beneath the asking actor in `seat`, and its mail is handed to that actor.
-    Embed { from: Code, seat: SeatNumber },
-    /// A child of an instanced type stands beneath the asking actor in `seat`, and its mail is handed to that actor.
-    EmbedInstanced { from: Code, key: KeyName, seat: SeatNumber },
     /// The asking actor's turn failed with this fault, and the actor has ended. Written by the engine, since the
     /// actor asked for nothing.
     Failed(Fault),
