@@ -6,13 +6,13 @@ mod tests;
 
 pub use refused::Refused;
 
-#[cfg(feature = "std")]
-use crate::BlobRef;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
     Handles, Kinds, Level, Line, MailId, Mailed, Marker, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends,
     Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, What,
 };
+#[cfg(feature = "std")]
+use crate::{BlobHash, BlobRef};
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -348,6 +348,20 @@ impl Seat<'_> {
         };
 
         bytes
+    }
+
+    /// The content hash of the blob `blob` pins: the one the store kept, or one computed now and noted for the store
+    /// to keep at the fold (ADR-0014).
+    #[cfg(feature = "std")]
+    fn hash(&mut self, blob: &BlobRef) -> BlobHash {
+        let id = blob.id();
+        if let Some(kept) = self.table.blob_hash(id) {
+            return kept;
+        }
+        let hash = BlobHash::of(self.read(blob));
+        self.asked.puts.hashed(id, hash);
+
+        hash
     }
 
     /// Adds the effect that watches the actor `of` refers to, with how this turn sees it: live when the table held
@@ -842,6 +856,13 @@ impl<'a, S> Turn<'a, S> {
         self.seat.read(blob)
     }
 
+    /// The content hash of the blob `blob` refers to: BLAKE3 over its bytes, computed the first time it is asked for
+    /// and kept with the blob from the step's fold on.
+    #[cfg(feature = "std")]
+    pub fn hash(&mut self, blob: &BlobRef) -> BlobHash {
+        self.seat.hash(blob)
+    }
+
     /// A reference to this actor.
     #[must_use]
     pub const fn me(&self) -> ErasedActorRef {
@@ -963,6 +984,13 @@ impl<'a, S> Beginning<'a, S> {
     #[must_use]
     pub fn read(&self, blob: &BlobRef) -> &[u8] {
         self.seat.read(blob)
+    }
+
+    /// The content hash of the blob `blob` refers to: BLAKE3 over its bytes, computed the first time it is asked for
+    /// and kept with the blob from the step's fold on.
+    #[cfg(feature = "std")]
+    pub fn hash(&mut self, blob: &BlobRef) -> BlobHash {
+        self.seat.hash(blob)
     }
 
     /// A reference to this actor.
@@ -1094,6 +1122,13 @@ impl<'a, S> Ending<'a, S> {
     #[must_use]
     pub fn read(&self, blob: &BlobRef) -> &[u8] {
         self.seat.read(blob)
+    }
+
+    /// The content hash of the blob `blob` refers to: BLAKE3 over its bytes, computed the first time it is asked for
+    /// and kept with the blob from the step's fold on.
+    #[cfg(feature = "std")]
+    pub fn hash(&mut self, blob: &BlobRef) -> BlobHash {
+        self.seat.hash(blob)
     }
 
     /// A reference to this actor.

@@ -1,7 +1,7 @@
 //! The blobs the engine holds, and the pins that keep each one (ADR-0014).
 
-use aethereal_actor::BlobId;
 use aethereal_actor::pins::Change;
+use aethereal_actor::{BlobHash, BlobId, Puts};
 use std::collections::HashMap;
 
 /// The blobs the engine holds, each with its pins, and the budget their bytes come out of (ADR-0014).
@@ -19,10 +19,18 @@ pub struct Blobs {
     touched: Vec<u64>,
 }
 
-/// One blob, and how many pins it has.
+/// One blob, how many pins it has, and whether its hash is known.
 struct Held {
     bytes: Box<[u8]>,
     pins: i64,
+    content: Content,
+}
+
+/// What the store knows of a blob's content beyond its bytes: its hash, once something has asked for it (ADR-0014).
+#[derive(Clone, Copy)]
+enum Content {
+    Unhashed,
+    Hashed(BlobHash),
 }
 
 impl Blobs {
@@ -38,6 +46,39 @@ impl Blobs {
         self.held.get(&id.bits()).map(|held| &held.bytes[..])
     }
 
+    /// The hash kept for the blob `id` names, when it is held and something has asked for its hash.
+    #[must_use]
+    pub fn hash(&self, id: BlobId) -> Option<BlobHash> {
+        match self.held.get(&id.bits())?.content {
+            Content::Hashed(hash) => Some(hash),
+            Content::Unhashed => None,
+        }
+    }
+
+    /// The hash of the blob `id` names, when it is held: the one kept, or one computed now and kept.
+    pub fn hash_now(&mut self, id: BlobId) -> Option<BlobHash> {
+        let held = self.held.get_mut(&id.bits())?;
+        let hash = match held.content {
+            Content::Hashed(hash) => hash,
+            Content::Unhashed => BlobHash::of(&held.bytes),
+        };
+        held.content = Content::Hashed(hash);
+
+        Some(hash)
+    }
+
+    /// Every hash kept, in no order.
+    #[cfg(test)]
+    pub(crate) fn kept_hashes(&self) -> Vec<BlobHash> {
+        let kept = self.held.values().map(|held| held.content);
+
+        kept.filter_map(|content| match content {
+            Content::Hashed(hash) => Some(hash),
+            Content::Unhashed => None,
+        })
+        .collect()
+    }
+
     /// The bytes the budget has left.
     #[must_use]
     pub const fn room(&self) -> usize {
@@ -50,17 +91,24 @@ impl Blobs {
         (self.held.len(), self.in_use)
     }
 
-    /// Takes in blobs that were put, with no pins yet: the pins each was put with come with the changes.
+    /// Takes in what one writer left: the blobs it put, with no pins yet, as the pins each was put with come with the
+    /// changes; then the hashes its turns computed, of those blobs or of ones already held.
     ///
     /// # Panics
     ///
     /// Panics when a blob comes in under an id one held has, which the writers' counts rule out.
-    pub fn take_in(&mut self, puts: impl IntoIterator<Item = (BlobId, Box<[u8]>)>) {
-        for (id, bytes) in puts {
+    pub fn take_in(&mut self, puts: &mut Puts) {
+        for (id, bytes) in puts.take() {
             self.in_use += bytes.len();
-            let was_held = self.held.insert(id.bits(), Held { bytes, pins: 0 }).is_some();
+            let was_held = self.held.insert(id.bits(), Held { bytes, pins: 0, content: Content::Unhashed }).is_some();
             assert!(!was_held, "blob store: a blob was put under the id {id:?}, which is already held");
             self.touched.push(id.bits());
+        }
+        // A blob freed since its hash was computed has nothing to keep it with.
+        for (id, hash) in puts.take_hashed() {
+            if let Some(held) = self.held.get_mut(&id.bits()) {
+                held.content = Content::Hashed(hash);
+            }
         }
     }
 

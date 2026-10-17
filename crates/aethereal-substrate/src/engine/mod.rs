@@ -27,8 +27,8 @@ use crate::{
 };
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
-    Above, Actor, Arena, Asked, Beginning, BlobRef, Buffers, Chain, Closing, Code, Declared, Effect, Fault, How, Item,
-    Mail, MailId, Mailed, Puts, Refused, Runs, SeatNumber, Seated, Seats, Stood, Turning, What, Why,
+    Above, Actor, Arena, Asked, Beginning, BlobHash, BlobRef, Buffers, Chain, Closing, Code, Declared, Effect, Fault,
+    How, Item, Mail, MailId, Mailed, Puts, Refused, Runs, SeatNumber, Seated, Seats, Stood, Turning, What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use birth::Births;
@@ -382,7 +382,7 @@ impl Engine {
         let room = self.blobs.room();
         let mut puts = self.puts(ROOTS, room);
         let put = puts.pinned(bytes);
-        self.blobs.take_in(puts.take());
+        self.blobs.take_in(&mut puts);
         self.puts[ROOTS] = puts;
 
         put
@@ -392,6 +392,12 @@ impl Engine {
     #[must_use]
     pub fn blob(&self, blob: &BlobRef) -> Option<&[u8]> {
         self.blobs.read(blob.id())
+    }
+
+    /// The content hash of the blob `blob` refers to, as the store holds it between steps: the one kept, or one
+    /// computed now and kept (ADR-0014). Nothing when this engine does not hold it.
+    pub fn hash(&mut self, blob: &BlobRef) -> Option<BlobHash> {
+        self.blobs.hash_now(blob.id())
     }
 
     /// How many blobs the engine holds, and their bytes.
@@ -432,7 +438,7 @@ impl Engine {
         let (buffers, stood, arena, mut seats, mut puts) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
         // A root is made between steps, when nothing reads the store, so what its `begin` put is taken in at once.
-        self.blobs.take_in(puts.take());
+        self.blobs.take_in(&mut puts);
         self.puts[ROOTS] = puts;
         let root = match began {
             Ok(root) => root,
@@ -660,7 +666,7 @@ impl Engine {
     /// parts are folded.
     fn take_in(&mut self, mut lists: Lists, arena: Arena, mut puts: Puts) {
         self.costs.merge(&mut lists.tally);
-        self.blobs.take_in(puts.take());
+        self.blobs.take_in(&mut puts);
         self.blobs.change(&mut lists.pins);
         self.puts[arena.slot()] = puts;
         self.hopped.add(mem::take(&mut lists.fusing.hops));
