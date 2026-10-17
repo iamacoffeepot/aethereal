@@ -96,6 +96,8 @@ pub struct Engine {
     arenas: [Vec<Arena>; 2],
     /// What each worker fills in a step, by writer, emptied and kept from one step to the next for its room.
     lists: Vec<Lists>,
+    /// The writers the last plan handed lists to: the only rows of `lists` that step's turns route records into.
+    writing: Range<usize>,
     /// How long turns take, as measured so far.
     costs: Costs,
     /// The expected work of recent steps, in nanoseconds: a moving average weighted to the most recent.
@@ -275,6 +277,7 @@ impl Engine {
             spare: Spare::default(),
             arenas: [Vec::new(), Vec::new()],
             lists: Vec::new(),
+            writing: 0..0,
             costs: Costs::new(),
             recent: 0,
             step: 0,
@@ -447,7 +450,7 @@ impl Engine {
         let mut forward = mem::take(&mut self.spare.forward);
         let mut touched = self.touched();
         for &part in &touched {
-            let rows = &mut self.lists;
+            let rows = &mut self.lists[self.writing.clone()];
             for row in rows.iter_mut() {
                 let bucket = row.routes.births.bucket_mut(part);
                 let born = birth::seat_all(&mut self.seating[part], &mut self.actors[part], bucket);
@@ -493,6 +496,7 @@ impl Engine {
         let (delta, running, expected_nanos) = plan::plan(&self.packing.parts, self.recent, workers);
         self.recent = toward(self.recent, work);
         let running = running.max(1);
+        self.writing = ROOTS + 1..ROOTS + 1 + running;
 
         // This step writes the arenas of its parity, which hold mail read two steps ago and no longer, each given an
         // equal share of the host's quota for mail. The seats children take are each part's own, given it above.
@@ -614,7 +618,7 @@ impl Engine {
         self.packing.parts.clear();
         let mut touched = self.touched();
         for &part in &touched {
-            let records: usize = self.lists.iter().map(|lists| lists.routes.records(part)).sum();
+            let records: usize = self.lists[self.writing.clone()].iter().map(|lists| lists.routes.records(part)).sum();
             self.packing.parts.push((part, u64::try_from(records).unwrap_or(u64::MAX)));
             self.waiting.push(part);
         }
@@ -668,7 +672,7 @@ impl Engine {
     fn touched(&mut self) -> Vec<usize> {
         let mut touched = mem::take(&mut self.spare.touched);
         for part in 0..self.seating.len() {
-            let records: usize = self.lists.iter().map(|lists| lists.routes.records(part)).sum();
+            let records: usize = self.lists[self.writing.clone()].iter().map(|lists| lists.routes.records(part)).sum();
             if records > 0 {
                 touched.push(part);
             }
@@ -692,7 +696,7 @@ impl Engine {
         let parts = NonZeroUsize::new(self.seating.len()).unwrap_or(NonZeroUsize::MIN);
         let mut pile = self.spare.piles.pop().unwrap_or_else(|| fold::Pile::empty(parts));
         let empty = Seating { seated: BySeat::empty(parts) };
-        let rows = &mut self.lists;
+        let rows = &mut self.lists[self.writing.clone()];
         self.table.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.table), &mut pile.table);
         self.log.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.log), &mut pile.log);
         self.lives.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.lives), &mut pile.lives);
@@ -712,7 +716,7 @@ impl Engine {
     fn unpile(&mut self, pile: &mut fold::Pile) {
         let parts = NonZeroUsize::new(self.seating.len()).unwrap_or(NonZeroUsize::MIN);
         let part = pile.part;
-        let rows = &mut self.lists;
+        let rows = &mut self.lists[self.writing.clone()];
         self.table.empty(part, &mut pile.table, rows.iter_mut().map(|lists| &mut lists.routes.table));
         self.log.empty(part, &mut pile.log, rows.iter_mut().map(|lists| &mut lists.routes.log));
         self.lives.empty(part, &mut pile.lives, rows.iter_mut().map(|lists| &mut lists.routes.lives));
