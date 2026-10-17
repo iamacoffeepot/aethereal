@@ -45,7 +45,7 @@ impl Headless {
         let split = rehearsal::split_cost(&engine, &mut pool, clock);
 
         #[allow(clippy::disallowed_methods, reason = "spike switch")]
-        let free = std::env::var("FREE").is_ok_and(|on| on == "1");
+        let free = std::env::var("FREE").is_ok_and(|on| on == "1" || on == "2");
         Self { engine, pool, clock, split, backoff: 0, free }
     }
 
@@ -90,7 +90,7 @@ impl Headless {
         let (shares, parts) = self.engine.free_shares(workers)?;
         let began = self.clock.nanos();
         let turns = aethereal_substrate::TURNS.load(std::sync::atomic::Ordering::Relaxed);
-        let run = self.engine.free_run(workers, parts, began + budget_nanos);
+        let run = self.engine.free_run(workers, parts, began.saturating_add(budget_nanos));
         let done: Vec<_> = self.pool.free(&run, self.clock, shares).collect();
         let parts = run.into_parts();
         let steps = self.engine.end_free(done, parts);
@@ -115,6 +115,18 @@ impl Headless {
         let mut by_step = Rate::default();
         let mut by_free = Rate::default();
         let mut windows = 0_u32;
+        #[allow(clippy::disallowed_methods, reason = "spike switch")]
+        let always = std::env::var("FREE").is_ok_and(|on| on == "2");
+        if always {
+            // Spike: parts step on their own whenever they can, a step of the whole engine between runs.
+            while !self.engine.is_idle() {
+                self.step_sharing();
+                let ran = self.run_free(u64::MAX);
+                if ran.is_none() {
+                    break;
+                }
+            }
+        }
         while !self.engine.is_idle() {
             let measured = by_step.turn_nanos != 0 && by_free.turn_nanos != 0;
             let favours_free = measured && by_free.turn_nanos < by_step.turn_nanos;

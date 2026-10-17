@@ -146,7 +146,7 @@ fn workers_leave_what_one_thread_leaves() {
         headless.run_until_idle();
 
         #[allow(clippy::disallowed_methods, reason = "spike switch")]
-        let free = std::env::var("FREE").is_ok_and(|on| on == "1");
+        let free = std::env::var("FREE").is_ok_and(|on| on == "1" || on == "2");
         if !free {
             assert_eq!(headless.engine().step_number(), alone.step_number());
         }

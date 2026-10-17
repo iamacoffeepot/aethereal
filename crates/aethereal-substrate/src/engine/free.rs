@@ -107,6 +107,10 @@ pub struct FreeRun<'a> {
     in_flight: AtomicUsize,
     /// Workers with nothing to step.
     idle: AtomicUsize,
+    /// By worker: whether it is stepping a part now.
+    busy: Vec<AtomicBool>,
+    /// By worker: whether its last pass found nothing to step.
+    resting: Vec<AtomicBool>,
     /// Whether a turn asked for what only a step of the whole engine applies.
     stopped: AtomicBool,
     /// Workers that have stopped stepping, before any folds what is left in its inboxes.
@@ -187,6 +191,8 @@ impl Engine {
             held: (0..self.seating.len()).map(|_| AtomicUsize::new(0)).collect(),
             in_flight: AtomicUsize::new(0),
             idle: AtomicUsize::new(0),
+            busy: (0..workers).map(|_| AtomicBool::new(false)).collect(),
+            resting: (0..workers).map(|_| AtomicBool::new(false)).collect(),
             stopped: AtomicBool::new(false),
             drained: AtomicUsize::new(0),
             workers,
@@ -257,21 +263,38 @@ impl FreeRun<'_> {
         #[allow(clippy::disallowed_methods, reason = "spike switch")]
         let own_only = std::env::var("FREE_OWN").is_ok();
         let order: Vec<usize> = if own_only { order.into_iter().filter(|part| part % self.workers == place).collect() } else { order };
+        #[allow(clippy::disallowed_methods, reason = "spike switch")]
+        let no_follow = std::env::var("FREE_NOFOLLOW").is_ok();
+        #[allow(clippy::disallowed_methods, reason = "spike switch")]
+        let no_steal = std::env::var("FREE_NOSTEAL").is_ok();
         let mut tally = mem::take(&mut lists.tally);
         let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
         let mut idle = false;
         // Passes in a row that found nothing to step: an idle worker waits longer between looks, so the counts every
         // worker reads are not read so often that writing them, as mail is handed on, is slowed.
         let mut empty = 0_u32;
+        // The parts this worker handed mail to in its last pass: it steps one itself when the part's owner rests, so
+        // a chain of mail stays on the core that has it.
+        let mut followed: Vec<usize> = Vec::new();
+        let mut looked: Vec<usize> = Vec::new();
         loop {
             let mut progressed = false;
-            for &number in &order {
+            looked.clear();
+            looked.append(&mut followed);
+            let followed_count = looked.len();
+            looked.extend_from_slice(&order);
+            for index in 0..looked.len() {
+                let number = looked[index];
                 let held = self.held[number].load(Ordering::Acquire) > 0;
-                // Another worker's part is looked at only when mail waits for it: trying its lock on every pass
-                // would move its line between the cores that try.
-                let is_own = number % self.workers == place;
-                let steals = held && empty >= STEAL_AFTER;
-                if !is_own && !steals {
+                // Another worker's part is looked at only when mail waits for it: when its owner rests and this
+                // worker handed the mail on, or when its owner is busy with another part and this one has been idle a
+                // while. Trying its lock on every pass would move its line between the cores that try.
+                let owner = number % self.workers;
+                let is_own = owner == place;
+                let was_followed = index < followed_count;
+                let follows = !no_follow && held && was_followed && self.resting[owner].load(Ordering::Relaxed);
+                let steals = !no_steal && held && empty >= STEAL_AFTER && self.busy[owner].load(Ordering::Relaxed);
+                if !is_own && !follows && !steals {
                     continue;
                 }
                 let Ok(mut part) = self.parts[number].try_lock() else {
@@ -305,6 +328,7 @@ impl FreeRun<'_> {
                     self.idle.fetch_sub(1, Ordering::SeqCst);
                 }
                 let own = part.parcel.part;
+                self.busy[place].store(true, Ordering::Relaxed);
                 let reading =
                     Reading { inbound: Inbound::One(own, &part.inbound), fresh: Some(&self.fresh), ..self.reading };
                 let t0 = std::time::Instant::now();
@@ -316,12 +340,22 @@ impl FreeRun<'_> {
                 progressed = true;
                 // The table's and the watches' records wait for the run to end, as a step's do, and the engine folds
                 // them; the children are found in the run's own list until then.
-                self.hand_on(&mut lists, &asked, &mut spare);
-                SPENT[1].fetch_add(t0.elapsed().as_nanos() as usize, Ordering::Relaxed);
+                // Everything else goes before the part is let go: held past it, a later step of the part by another
+                // worker could send its actors' next mail ahead of this, against the order of one sender's mail.
+                self.stand(&mut lists);
+                // What the part's turns asked of the part itself, such as how much each actor has sent, is folded into
+                // it at once, while this worker holds it: through an inbox, a later step of the part by another worker
+                // could run before it lands.
+                if let Some(batch) = self.batch(own, &mut lists, &asked, &mut spare) {
+                    spare.push(fold_in(part, batch));
+                }
+                self.hand_on(&mut lists, &asked, &mut spare, &mut followed, Hands::All);
                 let (effects, stood, mut arena, seats) = asked.into_parts();
                 drop(stood);
                 arena.clear(0);
                 asked = Asked::continuing(effects, arena, seats);
+                self.busy[place].store(false, Ordering::Relaxed);
+                SPENT[1].fetch_add(t0.elapsed().as_nanos() as usize, Ordering::Relaxed);
             }
             let late = clock.nanos() >= self.deadline_nanos;
             if late {
@@ -332,8 +366,10 @@ impl FreeRun<'_> {
             }
             if progressed {
                 empty = 0;
+                self.resting[place].store(false, Ordering::Relaxed);
                 continue;
             }
+            self.resting[place].store(true, Ordering::Relaxed);
             empty = empty.saturating_add(1);
             for _ in 0..1_u32 << empty.min(8) {
                 std::hint::spin_loop();
@@ -369,43 +405,28 @@ impl FreeRun<'_> {
 
     /// Hands each part's records in `lists`, made by the part just stepped, to that part's inbox, the bytes of its
     /// mail copied out of `asked`'s arena.
-    fn hand_on(&self, lists: &mut Lists, asked: &Asked, spare: &mut Vec<Batch>) {
-        // The children are put where every turn finds them before any mail that could name them is handed on.
-        let has_stood = !lists.fusing.stood.is_empty();
-        if has_stood {
-            for (id, (_, seat, declared)) in &lists.fusing.stood {
-                self.fresh.shard(*id).write().unwrap_or_else(PoisonError::into_inner).insert(*id, (*seat, *declared));
-            }
+    /// Puts the children the part just stepped stood up where every turn finds them, before any mail that could name
+    /// them is handed on.
+    fn stand(&self, lists: &mut Lists) {
+        for (id, (_, seat, declared)) in &lists.fusing.stood {
+            self.fresh.shard(*id).write().unwrap_or_else(PoisonError::into_inner).insert(*id, (*seat, *declared));
         }
+    }
+
+    fn hand_on(&self, lists: &mut Lists, asked: &Asked, spare: &mut Vec<Batch>, followed: &mut Vec<usize>, hands: Hands) {
         for (part, inbox) in self.inboxes.iter().enumerate() {
-            let routes = &lists.routes;
-            let records = routes.births.records(part)
-                + routes.streams.records(part)
-                + routes.lives.records(part)
-                + routes.log.records(part);
-            if records == 0 {
+            let waits = self.resting[part % self.workers].load(Ordering::Relaxed);
+            let goes = match hands {
+                Hands::All => true,
+                Hands::Waiting => waits,
+            };
+            if !goes {
                 continue;
             }
-            let room = spare.pop().unwrap_or_default();
-            let routes = &mut lists.routes;
-            let mut batch = Batch {
-                births: routes.births.take_leaving(part, room.births),
-                streams: routes.streams.take_leaving(part, room.streams),
-                lives: routes.lives.take_leaving(part, room.lives),
-                log: routes.log.take_leaving(part, room.log),
-                bytes: room.bytes,
+            let Some(batch) = self.batch(part, lists, asked, spare) else {
+                continue;
             };
-            let slot = FREE + u32::try_from(part).unwrap_or(0);
-            for (_, entry) in &mut batch.streams {
-                let Some(payload) = entry.payload_mut() else {
-                    continue;
-                };
-                let bytes = asked.arena().read(*payload).unwrap_or_default();
-                let start = u32::try_from(batch.bytes.len()).unwrap_or(u32::MAX);
-                let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
-                batch.bytes.extend_from_slice(bytes);
-                *payload = Payload::InArena(Span { slot, start, len });
-            }
+            followed.push(part);
             self.in_flight.fetch_add(1, Ordering::SeqCst);
             let mut held = lock(inbox);
             held.push(batch);
@@ -424,6 +445,50 @@ impl FreeRun<'_> {
 
         mem::take(&mut *held)
     }
+}
+
+impl FreeRun<'_> {
+    /// The records in `lists` for part `part`, taken out as a batch, the bytes of their mail copied out of `asked`'s
+    /// arena: nothing when there are none.
+    fn batch(&self, part: usize, lists: &mut Lists, asked: &Asked, spare: &mut Vec<Batch>) -> Option<Batch> {
+        let routes = &lists.routes;
+        let records =
+            routes.births.records(part) + routes.streams.records(part) + routes.lives.records(part) + routes.log.records(part);
+        if records == 0 {
+            return None;
+        }
+        let room = spare.pop().unwrap_or_default();
+        let routes = &mut lists.routes;
+        let mut batch = Batch {
+            births: routes.births.take_leaving(part, room.births),
+            streams: routes.streams.take_leaving(part, room.streams),
+            lives: routes.lives.take_leaving(part, room.lives),
+            log: routes.log.take_leaving(part, room.log),
+            bytes: room.bytes,
+        };
+        let slot = FREE + u32::try_from(part).unwrap_or(0);
+        for (_, entry) in &mut batch.streams {
+            let Some(payload) = entry.payload_mut() else {
+                continue;
+            };
+            let bytes = asked.arena().read(*payload).unwrap_or_default();
+            let start = u32::try_from(batch.bytes.len()).unwrap_or(u32::MAX);
+            let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+            batch.bytes.extend_from_slice(bytes);
+            *payload = Payload::InArena(Span { slot, start, len });
+        }
+
+        Some(batch)
+    }
+}
+
+/// Which parts' records a worker hands on.
+#[derive(Clone, Copy)]
+enum Hands {
+    /// Every part's.
+    All,
+    /// Only those of parts whose owner rests, waiting on them.
+    Waiting,
 }
 
 /// Folds `batch` into `part`, its mail's bytes put after the part's, and answers with it emptied, for its room.
