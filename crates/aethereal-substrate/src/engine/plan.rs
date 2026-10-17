@@ -187,7 +187,6 @@ fn takes(work: u64, largest: u64, workers: usize) -> u64 {
 }
 
 /// What packing parts into shares works in, kept from one step to the next for its room.
-#[derive(Default)]
 pub(super) struct Packing {
     /// The parts to pack, each with what it is expected to cost.
     pub(super) parts: Vec<(usize, u64)>,
@@ -195,12 +194,25 @@ pub(super) struct Packing {
     order: Vec<(u64, usize)>,
     /// Each share's load and the parts given it: the first `running` of them, as the last [`Packing::pack`] made.
     pub(super) shares: Vec<(u64, Vec<usize>)>,
+    /// The share each part was last given to run, by part number: where its memory is warm. A part that has not run
+    /// is at home in the share its number falls in.
+    homes: Vec<usize>,
 }
 
 impl Packing {
-    /// Gives each of [`Packing::parts`] to one of `running` shares: the most costly first, each to the share with the
-    /// least so far, and of parts that cost the same, the lower first. Each share then runs its parts in the order of
-    /// their numbers.
+    /// Packing for an engine of `parts` parts.
+    pub(super) fn new(parts: usize) -> Self {
+        Self { parts: Vec::new(), order: Vec::new(), shares: Vec::new(), homes: (0..parts).collect() }
+    }
+
+    /// Gives each of [`Packing::parts`] to one of `running` shares, the most costly first, and of parts that cost the
+    /// same, the lower first: to the share it last ran in while that share stays within the step's target, and
+    /// otherwise to the share with the least so far. The target is an even split of the step's work, or its most
+    /// costly part when that is more, so no share is given more than a share the least-loaded rule would give. Each
+    /// share then runs its parts in the order of their numbers.
+    ///
+    /// A part's memory is warm in the cache of the worker that last ran it, so keeping it there saves what moving it
+    /// costs, which grows with the distance between the two workers' caches.
     pub(super) fn pack(&mut self, running: usize) {
         let running = running.max(1);
         self.order.clear();
@@ -214,13 +226,45 @@ impl Packing {
             *load = 0;
             parts.clear();
         }
-        for (cost, part) in &self.order {
-            if let Some((load, share)) = self.shares[..running].iter_mut().min_by_key(|(load, _)| *load) {
-                *load += cost;
-                share.push(*part);
-            }
+        let total: u64 = self.order.iter().map(|(cost, _)| cost).sum();
+        let largest = self.order.first().map_or(0, |(cost, _)| *cost);
+        let target = total.div_ceil(u64::try_from(running).unwrap_or(u64::MAX)).max(largest);
+        for &(cost, part) in &self.order {
+            let home = self.homes[part] % running;
+            let fits = self.shares[home].0 + cost <= target;
+            let least = (0..running).min_by_key(|share| self.shares[*share].0).unwrap_or(home);
+            let given = if fits {
+                home
+            } else {
+                least
+            };
+            let (load, share) = &mut self.shares[given];
+            *load += cost;
+            share.push(part);
+            self.homes[part] = given;
         }
         for (_, share) in &mut self.shares[..running] {
+            share.sort_unstable();
+        }
+    }
+
+    /// Gives each of [`Packing::parts`] to the one of `folding` shares it last ran in, to be folded where its memory is
+    /// warm. Each share then folds its parts in the order of their numbers.
+    pub(super) fn pack_at_home(&mut self, folding: usize) {
+        let folding = folding.max(1);
+        if self.shares.len() < folding {
+            self.shares.resize_with(folding, Default::default);
+        }
+        for (load, parts) in &mut self.shares {
+            *load = 0;
+            parts.clear();
+        }
+        for &(part, records) in &self.parts {
+            let (load, share) = &mut self.shares[self.homes[part] % folding];
+            *load += records;
+            share.push(part);
+        }
+        for (_, share) in &mut self.shares[..folding] {
             share.sort_unstable();
         }
     }
@@ -277,6 +321,27 @@ mod tests {
         let costly =
             Workers { active: 4, max: 4, wake_nanos: 0, split: SplitCost { two_nanos: 100, added_nanos: 300 } };
         assert_eq!(decide(1_000, 10, 100, 0, costly), Decided { awake: 4, sharing: 2 });
+    }
+
+    #[test]
+    fn a_part_stays_where_it_last_ran_while_that_share_has_room() {
+        // Catches a part moved off the worker that last ran it though that worker had room, which loses its warm
+        // cache, and a share loaded past an even split because the homes of costly parts all point at it.
+        let mut packing = Packing::new(4);
+        let shares = |packing: &Packing| packing.shares[..2].iter().map(|(_, parts)| parts.clone()).collect::<Vec<_>>();
+        packing.parts = vec![(1, 100)];
+        packing.pack(2);
+        assert_eq!(shares(&packing), [vec![], vec![1]]);
+
+        packing.parts = vec![(0, 300), (1, 10), (2, 300), (3, 10)];
+        packing.pack(2);
+        assert_eq!(shares(&packing), [vec![0, 3], vec![1, 2]]);
+        let loads: Vec<u64> = packing.shares[..2].iter().map(|(load, _)| *load).collect();
+        assert_eq!(loads, [310, 310]);
+
+        packing.parts = vec![(2, 100)];
+        packing.pack(2);
+        assert_eq!(shares(&packing), [vec![], vec![2]]);
     }
 
     #[test]

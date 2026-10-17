@@ -273,7 +273,7 @@ impl Engine {
             seated: vec![0; parts.get()],
             actors_seated: 0,
             expected: vec![0; parts.get()],
-            packing: Packing::default(),
+            packing: Packing::new(parts.get()),
             spare: Spare::default(),
             arenas: [Vec::new(), Vec::new()],
             lists: Vec::new(),
@@ -594,9 +594,9 @@ impl Engine {
         self.settle(folded);
     }
 
-    /// Begins the end of a step: puts back the parts the workers ran, takes in how long their turns took, seats the
-    /// children the turns stood up, and takes out each part some worker routed a record to, with every worker's
-    /// records for it, shared among as many folds as there were workers by how many records each holds. A part no
+    /// Begins the end of a step: puts back the parts the workers ran, takes in how long their turns took, and takes out
+    /// each part some worker routed a record to, with every worker's records for it and the children stood up in it,
+    /// one fold for each worker that ran the step, each part in the fold of the worker that last ran it. A part no
     /// record reached is not touched.
     pub fn gather(&mut self, done: impl ExactSizeIterator<Item = Done>) -> Vec<Fold> {
         let running = done.len();
@@ -624,14 +624,13 @@ impl Engine {
         }
         touched.clear();
         self.spare.touched = touched;
-        let folding = running.min(self.packing.parts.len());
-        if folding == 0 {
+        if self.packing.parts.is_empty() {
             return Vec::new();
         }
-        self.packing.pack(folding);
+        self.packing.pack_at_home(running);
 
-        let mut folds = Vec::with_capacity(folding);
-        for index in 0..folding {
+        let mut folds = Vec::with_capacity(running);
+        for index in 0..running {
             let mut piles = self.spare.folds.pop().unwrap_or_default();
             for place in 0..self.packing.shares[index].1.len() {
                 let part = self.packing.shares[index].1[place];
