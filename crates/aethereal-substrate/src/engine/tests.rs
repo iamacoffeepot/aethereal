@@ -901,3 +901,15 @@ fn sliced(name: impl Fn(u64) -> String) {
         assert!(telling > 1, "the root is cut off at its slice, hops={hops}");
     }
 }
+
+#[test]
+fn a_child_stood_up_in_a_turn_counts_what_it_sent_from_its_begin() {
+    // Catches the count of a child's `begin` routed ahead of the spawn that makes its life, and dropped, so its next
+    // turn numbers its mail from nought and gives a later piece the id of one its `begin` sent.
+    let (mut engine, root) = engine(&["nest 2 3"]);
+    assert_eq!(step(&mut engine), ["1 got nest 2 3"]);
+    let grandchild = node(node(root, 2), 3);
+    let me = seated(&engine, grandchild);
+    let count = engine.lives.shard(me.seat.number()).life(me).map(lives::Life::sent);
+    assert_eq!(count, Some(1), "3 sent itself close from its begin");
+}
