@@ -1,7 +1,7 @@
 //! The view of who watches each actor whose ending is still to come (ADR-0009, ADR-0011).
 
 use crate::{ByActor, Context, View};
-use aethereal_actor::{Effect, Ended, How, SeatNumber, Seated, Seen, What};
+use aethereal_actor::{Arena, Effect, Ended, How, SeatNumber, Seated, Seen, What};
 use aethereal_data::ActorId;
 use std::collections::BTreeMap;
 
@@ -112,7 +112,7 @@ impl View for Watches {
     }
 
     /// Watches and endings wait for the step to settle.
-    fn fold(shard: &mut Shard, key: u64, record: Record) {
+    fn fold(shard: &mut Shard, key: u64, record: Record, _: &[Arena]) {
         match record {
             Record::Watch { seat, by, context, seen } => shard.watches.push((key, seat, by, context, seen)),
             Record::Ended { seat, how, context } => {
@@ -147,15 +147,15 @@ mod tests {
         let context = Context { root: MailId { sender: ActorId::new(7), count: 0 }, depth: 1 };
         let mut shard = Shard::default();
         let seven = SeatNumber::new(70);
-        Watches::fold(&mut shard, 7, Record::Ended { seat: seven, how: How::Closed, context });
+        Watches::fold(&mut shard, 7, Record::Ended { seat: seven, how: How::Closed, context }, &[]);
         let watch = Record::Watch { seat: seven, by: seated(9, 90), context, seen: Seen::Ended };
-        Watches::fold(&mut shard, 7, watch);
+        Watches::fold(&mut shard, 7, watch, &[]);
         let mut forward = Vec::new();
         shard.settle(&mut forward);
         assert_eq!(handed_on(forward), [(90, 9, How::Closed)]);
 
         let watch = Record::Watch { seat: seven, by: seated(11, 110), context, seen: Seen::Ended };
-        Watches::fold(&mut shard, 7, watch);
+        Watches::fold(&mut shard, 7, watch, &[]);
         let mut forward = Vec::new();
         shard.settle(&mut forward);
         assert_eq!(handed_on(forward), [(110, 11, How::Earlier)]);
@@ -169,12 +169,12 @@ mod tests {
         let mut shard = Shard::default();
         let seven = SeatNumber::new(70);
         let watch = Record::Watch { seat: seven, by: seated(9, 90), context, seen: Seen::Live };
-        Watches::fold(&mut shard, 7, watch);
-        Watches::fold(&mut shard, 8, Record::Ended { seat: SeatNumber::new(80), how: How::Closed, context });
+        Watches::fold(&mut shard, 7, watch, &[]);
+        Watches::fold(&mut shard, 8, Record::Ended { seat: SeatNumber::new(80), how: How::Closed, context }, &[]);
         shard.settle(&mut Vec::new());
         assert_eq!(shard.watched.len(), 1);
 
-        Watches::fold(&mut shard, 7, Record::Ended { seat: seven, how: How::Closed, context });
+        Watches::fold(&mut shard, 7, Record::Ended { seat: seven, how: How::Closed, context }, &[]);
         let mut forward = Vec::new();
         shard.settle(&mut forward);
         assert_eq!(handed_on(forward), [(90, 9, How::Closed)]);

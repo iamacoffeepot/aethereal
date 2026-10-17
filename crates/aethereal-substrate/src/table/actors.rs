@@ -2,7 +2,7 @@
 
 use crate::id::spawned;
 use crate::{ByActor, Context, View};
-use aethereal_actor::{Declared, Effect, SeatNumber, What};
+use aethereal_actor::{Arena, Declared, Effect, SeatNumber, What};
 use aethereal_data::{ActorId, PathSegment};
 
 /// The view of which actors are live, keyed by an actor's own id (ADR-0011).
@@ -68,7 +68,7 @@ impl View for Actors {
     ///
     /// Panics when an actor is made under an id the table already holds (ADR-0008). A parent refuses a key it has
     /// used before it asks, so that is two paths with one id or a fault in the engine, and neither has a way on.
-    fn fold(shard: &mut ByActor<Entry>, key: u64, record: Record) {
+    fn fold(shard: &mut ByActor<Entry>, key: u64, record: Record, _: &[Arena]) {
         match record {
             Record::Made { above, segment, seat, declared } => {
                 let held = shard.insert(key, Entry { above, segment, seat, declared });

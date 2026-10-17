@@ -1,4 +1,4 @@
-//! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's list.
+//! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's effect buffers.
 
 use super::*;
 use crate::{Beginning, Ending, Fault, Item, Mail, MailId, Payload, Within};
@@ -113,8 +113,9 @@ impl Actor for Leaf {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(config: LeafConfig, _turn: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+    fn begin(config: LeafConfig, turn: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
         if config.fails {
+            turn.log(Level::Warn, "told to fail");
             return Err(Fault::new(&ToldToFail)?);
         }
 
@@ -184,15 +185,18 @@ impl Actor for Branch {
     type Config = BranchConfig;
     type Key = ();
     type Handles = ();
-    type BeginSends = ();
+    type BeginSends = (ToType<Leaf, Poke>,);
     type EndSends = ();
 
-    fn begin(config: BranchConfig, turn: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+    /// Spawns its leaves, poking each that begins.
+    fn begin(config: BranchConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         for key in 0..config.leaves {
             let is_last = key + 1 == config.leaves;
             let fails = is_last && config.last_fails;
-            if let Err(Refused::Began(fault)) = turn.spawn::<Leaf>(&key, LeafConfig { fails }) {
-                return Err(fault);
+            match turn.spawn::<Leaf>(&key, LeafConfig { fails }) {
+                Ok(leaf) => turn.to_actor(leaf).send(&Poke)?,
+                Err(Refused::Began(fault)) => return Err(fault),
+                Err(_) => {}
             }
         }
 
@@ -325,8 +329,8 @@ fn used_key_is_refused_and_asks_for_nothing() {
 
 #[test]
 fn failed_begin_leaves_its_fault_and_no_child() {
-    // Catches a failed child held aside as if it began, the children it stood up outliving it, and a key or a seat
-    // that a failed begin used up.
+    // Catches a failed child held aside as if it began, the children it stood up outliving it, a key or a seat that a
+    // failed begin used up, mail it or a child of it sent kept, and a line it logged lost.
     let table = Listed::default();
     let mut asked = Asked::new();
     let mut turn = opened::<()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
@@ -336,23 +340,15 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     };
     assert_eq!(fault.read(&mut Budget::new(0)), Ok(Some(ToldToFail)));
 
-    let branch = Seated { id: table.child(ME.id, &PathSegment::new(Branch::NAME, &())), seat: SeatNumber::new(0) };
-    let last_leaf =
-        Seated { id: table.child(branch.id, &PathSegment::new(Leaf::NAME, &1u64)), seat: SeatNumber::new(2) };
-    let spawn_branch = Effect::new(ME, branch_spawn(0));
-    let expected = [
-        spawn_branch.clone(),
-        Effect::new(branch, leaf_spawn(0, 1)),
-        Effect::new(branch, leaf_spawn(1, 2)),
-        Effect::new(last_leaf, What::Faulted),
-        Effect::new(branch, What::Faulted),
-    ];
-    assert_eq!(asked.effects(), expected);
+    assert_eq!(asked.effects(), [], "the failed branch's spawn, and its leaves', are taken back");
+    assert_eq!(asked.mailed(), [], "the poke of the leaf that began is taken back with the branch");
+    let lines: Vec<&str> = asked.lines().iter().map(|line| asked.text(line)).collect();
+    assert_eq!(lines, ["told to fail"]);
 
     let mut turn = opened::<()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     assert!(turn.spawn::<Branch>(&(), BranchConfig { leaves: 0, last_fails: false }).is_ok());
-    let (effects, stood, _, seats) = asked.into_parts();
-    assert_eq!(effects.last(), Some(&spawn_branch));
+    let (buffers, stood, _, seats) = asked.into_parts();
+    assert_eq!(buffers.effects, [Effect::new(ME, branch_spawn(0))]);
     assert_eq!(stood.len(), 1);
     assert_eq!(seats.into_parts().0, [SeatNumber::new(2), SeatNumber::new(1)]);
 }
@@ -367,9 +363,10 @@ fn begin_and_end_send_as_their_own_actor() {
     let Ok(herald) = turn.spawn::<Herald>(&(), Poke) else {
         panic!("the herald begins");
     };
-    let to_parent = |kind| What::Send { to: ME, count: 1, kind, bytes: NOTHING };
+    let to_parent = |kind| Mailed { by: herald.seated(), to: ME, count: 1, kind, bytes: NOTHING };
     let spawn = Effect::new(ME, What::Spawn { from: Code::Linked(Declared::of::<Herald>()), seat: SeatNumber::new(0) });
-    assert_eq!(asked.effects(), [spawn, Effect::new(herald.seated(), to_parent(KindId::of::<Poked>()))]);
+    assert_eq!(asked.effects(), [spawn]);
+    assert_eq!(asked.mailed(), [to_parent(KindId::of::<Poked>())]);
 
     let Ok(path) = ROOT.child(&PathSegment::new(Herald::NAME, &())) else {
         panic!("a child of the root fits");
@@ -380,9 +377,9 @@ fn begin_and_end_send_as_their_own_actor() {
         let closing = Closing::new(herald.seated(), &path, above, &table, &mut asked, 0, why);
         let ended = Runs::end(Box::new(Herald), closing);
 
-        (ended, asked.into_parts().0)
+        (ended, asked.into_parts().0.mailed)
     };
-    assert_eq!(end(Why::Closed), (Ok(()), vec![Effect::new(herald.seated(), to_parent(KindId::of::<Shut>()))]));
+    assert_eq!(end(Why::Closed), (Ok(()), vec![to_parent(KindId::of::<Shut>())]));
     assert_eq!(end(Why::Faulted), (Ok(()), Vec::new()));
 }
 
@@ -415,19 +412,22 @@ fn handler_asks_by_the_kind_of_its_mail() {
         let mail = Mail::new(kind, bytes, other, MailId { sender: other.id, count: 1 }, 1, 64);
         let handled = leaf.handle(Item::Mail(mail), turning);
 
-        (handled, asked.into_parts().0)
+        let Buffers { mailed, effects, .. } = asked.into_parts().0;
+
+        (handled, mailed, effects)
     };
 
-    let poked = What::Send { to: other, count: 1, kind: KindId::of::<Poked>(), bytes: NOTHING };
-    assert_eq!(handle(&mut leaf, &table, KindId::of::<Poke>(), &[]), (Ok(()), vec![Effect::new(ME, poked)]));
-    assert_eq!(handle(&mut leaf, &table, KindId::of::<Shut>(), &[]), (Ok(()), vec![Effect::new(ME, What::Close)]));
-    assert_eq!(handle(&mut leaf, &table, KindId::of::<Poked>(), &[]), (Ok(()), Vec::new()));
+    let poked = Mailed { by: ME, to: other, count: 1, kind: KindId::of::<Poked>(), bytes: NOTHING };
+    assert_eq!(handle(&mut leaf, &table, KindId::of::<Poke>(), &[]), (Ok(()), vec![poked], Vec::new()));
+    let closed = vec![Effect::new(ME, What::Close)];
+    assert_eq!(handle(&mut leaf, &table, KindId::of::<Shut>(), &[]), (Ok(()), Vec::new(), closed));
+    assert_eq!(handle(&mut leaf, &table, KindId::of::<Poked>(), &[]), (Ok(()), Vec::new(), Vec::new()));
 
     let mut out = Writer::<Within>::new(crate::WithinWriter::new());
     assert_eq!(ErasedActorRef::new(other).encode(&mut out), Ok(()));
     let meet = out.into_bytes();
-    let poke = What::Send { to: other, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING };
-    assert_eq!(handle(&mut leaf, &table, KindId::of::<Meet>(), &meet), (Ok(()), vec![Effect::new(ME, poke)]));
+    let poke = Mailed { by: ME, to: other, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING };
+    assert_eq!(handle(&mut leaf, &table, KindId::of::<Meet>(), &meet), (Ok(()), vec![poke], Vec::new()));
 }
 
 #[test]
@@ -443,12 +443,12 @@ fn mail_to_a_parent_goes_only_while_it_is_live() {
         let mut turn = opened::<<Leaf as Handles<Meet>>::Sends>(ME, &path, above, table, &mut asked, ME);
         let sent = turn.to::<Leaf>(To::Parent).send(&Poke);
 
-        (sent.is_ok(), asked.into_parts().0)
+        (sent.is_ok(), asked.into_parts().0.mailed)
     };
 
     let live = Listed(vec![(parent, ROOT.clone())]);
-    let to_parent = What::Send { to: parent, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING };
-    assert_eq!(send(&live), (true, vec![Effect::new(ME, to_parent)]));
+    let to_parent = Mailed { by: ME, to: parent, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING };
+    assert_eq!(send(&live), (true, vec![to_parent]));
     assert_eq!(send(&Listed::default()), (true, Vec::new()));
 }
 
@@ -474,22 +474,13 @@ fn back_to_back_mail_of_one_kind_to_one_receiver_is_one_run() {
         assert_eq!(sent, Ok(()));
     }
 
-    let (effects, _, arena, _) = asked.into_parts();
-    let seen: Vec<(Seated, u64, KindId, u32)> = effects
-        .iter()
-        .filter_map(|effect| match *effect.what() {
-            What::Send { to, count, kind, bytes } => Some((to, count, kind, bytes.pieces())),
-            _ => None,
-        })
-        .collect();
+    let (buffers, _, arena, _) = asked.into_parts();
+    let seen: Vec<(Seated, u64, KindId, u32)> =
+        buffers.mailed.iter().map(|mailed| (mailed.to, mailed.count, mailed.kind, mailed.bytes.pieces())).collect();
     let (meets, pokes) = (KindId::of::<Meet>(), KindId::of::<Poke>());
     assert_eq!(seen, [(other, 1, meets, 3), (other, 4, pokes, 1), (third, 5, meets, 1), (other, 6, meets, 1)]);
 
-    let What::Send { bytes: run, .. } = *effects[0].what() else {
-        panic!("the first effect is the run");
-    };
-    let What::Send { bytes: alone, .. } = *effects[2].what() else {
-        panic!("the third effect is a send");
-    };
+    let run = buffers.mailed[0].bytes;
+    let alone = buffers.mailed[2].bytes;
     assert_eq!(arena.read(run.piece(2, run.each())), arena.read(alone), "each piece holds a meeting with the third");
 }

@@ -3,7 +3,7 @@
 
 use crate::id::spawned;
 use crate::{BySeat, Context, Part, View};
-use aethereal_actor::{Effect, How, SeatNumber, Seated, What};
+use aethereal_actor::{Arena, Effect, How, SeatNumber, Seated, What};
 use aethereal_data::ActorId;
 use std::mem;
 use std::num::NonZeroUsize;
@@ -119,7 +119,7 @@ impl View for Lives {
         record(effect, context).into_iter()
     }
 
-    fn fold(shard: &mut Shard, key: u64, Record { id, change }: Record) {
+    fn fold(shard: &mut Shard, key: u64, Record { id, change }: Record, _: &[Arena]) {
         let actor = Seated { id, seat: SeatNumber::new(key) };
         match change {
             Change::Made => {

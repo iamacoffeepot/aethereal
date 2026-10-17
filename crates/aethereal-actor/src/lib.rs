@@ -31,7 +31,7 @@ pub use declared::{
     Allows, At, Declared, Handled, HandledList, Handler, Handles, Kinds, Marker, Others, Role, Sending, Sends, Target,
     ToAny, ToSender, ToType,
 };
-pub use effect::{Code, Effect, Level, Seen, To, ToWithoutMail, What};
+pub use effect::{Code, Effect, Level, Line, Mailed, Seen, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
 pub use item::Item;
@@ -39,5 +39,6 @@ pub use mail::{Mail, MailId};
 pub use reference::{ActorRef, ErasedActorRef};
 pub use seat::{SeatNumber, Seated, Seats};
 pub use turn::{
-    Above, Address, AnyAddress, Asked, Beginning, Chain, Closing, Ending, Refused, Stood, Turn, Turning, Why,
+    Above, Address, AnyAddress, Asked, Beginning, Buffers, Chain, Closing, Ending, Logger, Refused, Stood, Turn,
+    Turning, Why,
 };

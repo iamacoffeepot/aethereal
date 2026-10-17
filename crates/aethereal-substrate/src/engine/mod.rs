@@ -1,6 +1,5 @@
 //! The engine: it runs turns in steps, and applies what they asked for (ADR-0009, ADR-0011).
 
-mod begun;
 mod birth;
 mod costs;
 mod fold;
@@ -18,6 +17,7 @@ pub use fuse::Hops;
 pub use plan::{Plan, Share, Split, SplitCost, Whole, Workers};
 
 use crate::id::root_id;
+use crate::log;
 use crate::stream::{self, Handed, Streams};
 use crate::table::Actors;
 use crate::watch::{Notice, Watches};
@@ -25,18 +25,16 @@ use crate::{
     ActorTable, BySeat, Clock, Context, Entry, Envelope, Folded, Lives, Log, Part, Routed, State, lives, rounded,
 };
 use aethereal_actor::{
-    Above, Actor, Arena, Asked, Beginning, Chain, Closing, Code, Declared, Effect, Fault, How, Item, Mail, MailId,
-    Refused, Runs, SeatNumber, Seated, Seats, Stood, Turning, What, Why,
+    Above, Actor, Arena, Asked, Beginning, Buffers, Chain, Closing, Code, Declared, Effect, Fault, How, Item, Mail,
+    MailId, Mailed, Refused, Runs, SeatNumber, Seated, Seats, Stood, Turning, What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
-use begun::begun;
 use birth::Births;
 use costs::{CostKey, Costs, ItemKind, toward};
 use fuse::{Fusing, Hand, Hop, Stepped};
 use made::Made;
 use plan::Packing;
 use since::{Sees, Since};
-use std::borrow::Cow;
 use std::iter;
 use std::mem;
 use std::num::NonZeroUsize;
@@ -212,8 +210,8 @@ pub struct Done {
 /// it is allocated again.
 #[derive(Default)]
 pub struct Lists {
-    /// The effects of the turn running, routed into the buckets when it finishes.
-    effects: Vec<Effect>,
+    /// What the turn running asks for, routed into the buckets when it finishes.
+    buffers: Buffers,
     routes: Routes,
     /// The seats of the actors whose closing turns ran, empty once the step is applied: no seat is given again in the
     /// step that freed it, while its actor's last records are still to fold.
@@ -247,8 +245,6 @@ enum Work {
 
 /// One finished turn, as its worker routes it.
 struct Ran {
-    /// What the turn asked for, in order: a range of its worker's effects.
-    effects: Range<usize>,
     /// The children it stood up.
     stood: Vec<Stood>,
     /// The context its effects were emitted in.
@@ -353,7 +349,7 @@ impl Engine {
         let me = Seated { id, seat: seats.own() };
         let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats);
         let began = A::begin(config, &mut Beginning::new::<A>(me, &path, &self.table, &mut asked));
-        let (asked, stood, arena, mut seats) = asked.into_parts();
+        let (buffers, stood, arena, mut seats) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
         let root = match began {
             Ok(root) => root,
@@ -373,16 +369,20 @@ impl Engine {
             None => What::Root { from },
             Some(key) => What::RootInstanced { from, key: key.clone() },
         };
-        let effects: Vec<Effect> = iter::once(Effect::new(me, made)).chain(asked).collect();
+        let Buffers { mailed, lines, effects } = buffers;
+        let effects: Vec<Effect> = iter::once(Effect::new(me, made)).chain(effects).collect();
         let context = Context { root: MailId { sender: id, count: 0 }, depth: 1 };
 
         self.table.made_root(id);
         self.seat(me, path, Above::Chassis, Box::new(root));
-        let applied = begun(&effects).into_owned();
-        self.fold_turn(&applied, stood, context);
-        self.lives.fold_records(senders(&applied).into_iter().map(|(actor, count)| lives::sent(actor, count)));
-        self.watches.fold(&applied, &context);
-        self.streams.fold_owned(applied, &context);
+        let written = &self.arenas[parity];
+        self.log.fold_records(lines.into_iter().map(log::line), written);
+        self.fold_turn(&effects, stood, context);
+        let written = &self.arenas[parity];
+        let sent = senders(&mailed).into_iter().map(|(actor, count)| lives::sent(actor, count));
+        self.lives.fold_records(sent, written);
+        self.watches.fold(&effects, &context, written);
+        self.streams.fold_records(mailed.into_iter().map(|mailed| stream::entry(mailed, &context)), written);
         let mut forward = mem::take(&mut self.spare.forward);
         for shard in self.watches.shards_mut() {
             shard.settle(&mut forward);
@@ -421,7 +421,7 @@ impl Engine {
     pub fn run_whole(&mut self, whole: Whole, clock: &impl Clock) -> Whole {
         let Whole { arena, mut lists } = whole;
         let mut tally = mem::take(&mut lists.tally);
-        let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
+        let mut asked = Asked::continuing(mem::take(&mut lists.buffers), arena, Seats::default());
         let mail = &self.arenas[parity(self.step + 1)];
         let reading =
             Reading { table: &self.table, mail, read_limit: self.read_limit, hops: self.hops, slice: self.slice };
@@ -435,8 +435,8 @@ impl Engine {
             };
             reading.run_part(room, clock, &mut tally, &mut asked, &mut lists);
         }
-        let (effects, _, arena, _) = asked.into_parts();
-        lists.effects = effects;
+        let (buffers, _, arena, _) = asked.into_parts();
+        lists.buffers = buffers;
         lists.tally = tally;
 
         Whole { arena, lists }
@@ -456,6 +456,7 @@ impl Engine {
         let mut forward = mem::take(&mut self.spare.forward);
         let mut touched = self.touched();
         for &part in &touched {
+            let written = &self.arenas[parity(self.step)];
             let rows = &mut self.lists[self.writing.clone()];
             for row in rows.iter_mut() {
                 let bucket = row.routes.births.bucket_mut(part);
@@ -464,10 +465,10 @@ impl Engine {
                 self.actors_seated += born;
             }
             self.table.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.table));
-            self.log.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.log));
-            self.lives.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.lives));
-            self.streams.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.streams));
-            self.watches.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.watches));
+            self.log.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.log), written);
+            self.lives.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.lives), written);
+            self.streams.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.streams), written);
+            self.watches.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.watches), written);
             self.watches.at_mut(part).settle(&mut forward);
             self.expected[part] = self.expect(part);
             self.waiting.push(part);
@@ -661,7 +662,7 @@ impl Engine {
     /// The engine as the step's workers read it while they fold.
     #[must_use]
     pub fn folding(&self) -> Folding<'_> {
-        Folding { costs: &self.costs, slice: self.slice }
+        Folding { costs: &self.costs, slice: self.slice, written: &self.arenas[parity(self.step)] }
     }
 
     /// Ends a step: puts back every part the workers folded, and puts the endings their watches handed on in the
@@ -789,9 +790,10 @@ impl Engine {
     /// Folds one turn's effects, emitted in `context`, into every view but the streams, and seats the children
     /// it stood up.
     fn fold_turn(&mut self, effects: &[Effect], stood: Vec<Stood>, context: Context) {
+        let written = &self.arenas[parity(self.step)];
         self.table.fold(effects, &context);
-        self.log.fold(effects, &context);
-        self.lives.fold(effects, &context);
+        self.log.fold(effects, &context, written);
+        self.lives.fold(effects, &context, written);
 
         // A child is stood up after the children its `begin` stood up, so it is seated first, from the back.
         for child in stood.into_iter().rev() {
@@ -918,12 +920,12 @@ impl Reading<'_> {
         let mut tally = mem::take(&mut lists.tally);
         // One list of what turns ask for, over the share: each turn adds to it, and its effects are routed out of it
         // as it finishes.
-        let mut asked = Asked::continuing(mem::take(&mut lists.effects), arena, Seats::default());
+        let mut asked = Asked::continuing(mem::take(&mut lists.buffers), arena, Seats::default());
         for parcel in &mut parcels {
             self.run_part(parcel.room(), clock, &mut tally, &mut asked, &mut lists);
         }
-        let (effects, _, arena, _) = asked.into_parts();
-        lists.effects = effects;
+        let (buffers, _, arena, _) = asked.into_parts();
+        lists.buffers = buffers;
         lists.tally = tally;
 
         Done { lists, arena, parcels }
@@ -1011,26 +1013,25 @@ impl Reading<'_> {
                 // Timed whole, as a turn of a waiting item is.
                 tally.time(key(ItemKind::Closing), clock, || {
                     asked.next_turn();
-                    let begins = asked.effects_mut().len();
                     let why = why(how);
                     let closing = Closing::new(me, &seat.path, seat.above, self.table, asked, life.sent(), why);
                     let ended = actor.end(closing);
-                    let effects = asked.effects_mut();
+                    let buffers = asked.buffers_mut();
                     // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds
                     // its fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after
                     // what the turn sent.
                     if let Err(fault) = ended {
-                        keep_lines(effects, begins);
-                        effects.push(Effect::new(me, What::EndFailed(fault)));
+                        keep_lines(buffers);
+                        buffers.effects.push(Effect::new(me, What::EndFailed(fault)));
                     }
-                    effects.push(Effect::new(me, What::Ended(how.clone())));
+                    buffers.effects.push(Effect::new(me, What::Ended(how.clone())));
                     if lists.fusing.may_hop() {
-                        let sends = effects[begins..].iter().filter(|effect| is_send_by(effect, me)).count();
+                        let sends = buffers.mailed.iter().filter(|mailed| is_send_by(mailed, me)).count();
                         lists.fusing.hops.closing += u64::try_from(sends).unwrap_or(u64::MAX);
                     }
 
-                    let ran = Ran { effects: begins..effects.len(), stood: Vec::new(), context: *context };
-                    lists.route(ran, effects, me.id);
+                    let ran = Ran { stood: Vec::new(), context: *context };
+                    lists.route(ran, asked, me.id);
                 });
                 // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
                 seating.seated.remove(me);
@@ -1055,7 +1056,6 @@ impl Reading<'_> {
                     tally.time(key(item_kind(handed)), clock, || {
                         let table = Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Step };
                         asked.next_turn();
-                        let begins = asked.effects_mut().len();
                         let source = handed.source();
                         let (item, context) = match handed {
                             Handed::Mail { envelope: &Envelope { kind, root, depth, .. }, bytes, .. } => {
@@ -1079,7 +1079,7 @@ impl Reading<'_> {
                             source,
                             chain,
                         );
-                        let ran = Ran::of(me, actor.handle(item, turning), asked, context, begins);
+                        let ran = Ran::of(me, actor.handle(item, turning), asked, context);
 
                         Self::finish(me, ran, Origin::Waiting, seating, lives, asked, lists, &mut stepped);
                     });
@@ -1145,7 +1145,6 @@ impl Reading<'_> {
         // Timed whole, as a turn of a waiting item is.
         tally.time(key, clock, || {
             asked.next_turn();
-            let begins = asked.effects_mut().len();
             let handled = {
                 let table =
                     Since { table: self.table, stood: &lists.fusing.stood, sees: Sees::Run(lists.fusing.run(hop.run)) };
@@ -1158,7 +1157,7 @@ impl Reading<'_> {
                 actor.handle(Item::Mail(mail), turning)
             };
             let context = Context { root: hop.root, depth: hop.depth + 1 };
-            let ran = Ran::of(me, handled, asked, context, begins);
+            let ran = Ran::of(me, handled, asked, context);
             Self::finish(me, ran, Origin::Hop(hop.run), seating, lives, asked, lists, &mut stepped);
         });
 
@@ -1177,7 +1176,7 @@ impl Reading<'_> {
     #[inline(always)]
     fn finish(
         me: Seated,
-        mut ran: Ran,
+        ran: Ran,
         origin: Origin,
         seating: &Seating,
         lives: &lives::Shard,
@@ -1190,9 +1189,9 @@ impl Reading<'_> {
         let begun_sent = if ran.stood.is_empty() {
             Vec::new()
         } else {
-            let effects = &asked.effects_mut()[ran.effects.clone()];
+            let mailed = &asked.buffers_mut().mailed;
 
-            senders(effects).into_iter().filter(|(actor, _)| actor.id != me.id).collect()
+            senders(mailed).into_iter().filter(|(actor, _)| actor.id != me.id).collect()
         };
         if !ran.stood.is_empty() {
             let stood = ran
@@ -1208,13 +1207,12 @@ impl Reading<'_> {
         };
         // Once the budget is spent no hop is made, so nothing that decides one need be looked at.
         if lists.fusing.may_hop() {
-            let effects = asked.effects_mut();
-            let mut sends = ran.effects.clone().filter(|index| is_send_by(&effects[*index], me));
+            let mailed = &asked.buffers_mut().mailed;
+            let mut sends = (0..mailed.len()).filter(|index| is_send_by(&mailed[*index], me));
             let first = sends.next();
             let burst = sends.count();
-            if let Some(index) = first
-                && let What::Send { to, count, kind, bytes } = *effects[index].what()
-            {
+            if let Some(index) = first {
+                let Mailed { to, count, kind, bytes, .. } = mailed[index];
                 let hand = hand(to, *stepped, seating, lives, &lists.fusing);
                 lists.fusing.hops.count(hand);
                 let pieces = bytes.pieces();
@@ -1227,21 +1225,16 @@ impl Reading<'_> {
                         bytes
                     };
                     let (at, len) = lists.fusing.keep_bytes(asked.arena().read(first).unwrap_or_default());
-                    let effects = asked.effects_mut();
+                    let mailed = &mut asked.buffers_mut().mailed;
                     // Of a run, the first piece is fused and the rest stays mail. The fused send is most often the
-                    // turn's last effect, and nothing is moved for it.
-                    if is_run
-                        && let Some(rest) = bytes.rest()
-                        && let What::Send { count, bytes, .. } = effects[index].what_mut()
-                    {
-                        *count += 1;
-                        *bytes = rest;
-                    } else if index + 1 == effects.len() {
-                        effects.pop();
-                        ran.effects.end -= 1;
+                    // turn's last piece of mail, and nothing is moved for it.
+                    if is_run && let Some(rest) = bytes.rest() {
+                        mailed[index].count += 1;
+                        mailed[index].bytes = rest;
+                    } else if index + 1 == mailed.len() {
+                        mailed.pop();
                     } else {
-                        effects.remove(index);
-                        ran.effects.end -= 1;
+                        mailed.remove(index);
                     }
                     let context = ran.context;
                     // A fused send from a waiting item begins a run; one from a hop goes on with the hop's.
@@ -1262,8 +1255,8 @@ impl Reading<'_> {
                 }
             }
             if !stepped.spilled {
-                let effects = &asked.effects_mut()[ran.effects.clone()];
-                stepped.spilled = effects.iter().any(|effect| send_into(effect, me, seating));
+                let mailed = &asked.buffers_mut().mailed;
+                stepped.spilled = mailed.iter().any(|mailed| send_into(mailed, me, seating));
             }
         }
 
@@ -1274,11 +1267,11 @@ impl Reading<'_> {
             lists.fusing.run_mut(run).stand(stood);
         }
         // Most turns of a busy actor ask for nothing, and then there is nothing to route.
-        let asked_nothing = ran.effects.is_empty() && ran.stood.is_empty();
+        let asked_nothing = asked.asked_nothing() && ran.stood.is_empty();
         let seen = if asked_nothing {
             Seen::default()
         } else {
-            lists.route(ran, asked.effects_mut(), me.id)
+            lists.route(ran, asked, me.id)
         };
         for (child, sent) in begun_sent {
             let (key, record) = lives::sent(child, sent);
@@ -1331,21 +1324,16 @@ fn hand(to: Seated, stepped: Stepped, seating: &Seating, lives: &lives::Shard, f
     }
 }
 
-/// Whether `effect` is mail the actor `me` sent.
-fn is_send_by(effect: &Effect, me: Seated) -> bool {
-    let is_own = effect.by() == me.id;
-
-    is_own && matches!(effect.what(), What::Send { .. })
+/// Whether `mailed` is mail the actor `me` sent.
+fn is_send_by(mailed: &Mailed, me: Seated) -> bool {
+    mailed.by.id == me.id
 }
 
-/// Whether `effect` is mail the actor `me` sent to an actor seated in `seating`, its own part.
-fn send_into(effect: &Effect, me: Seated, seating: &Seating) -> bool {
-    let is_own = effect.by() == me.id;
-    let What::Send { to, .. } = effect.what() else {
-        return false;
-    };
+/// Whether `mailed` is mail the actor `me` sent to an actor seated in `seating`, its own part.
+fn send_into(mailed: &Mailed, me: Seated, seating: &Seating) -> bool {
+    let is_own = mailed.by.id == me.id;
 
-    is_own && seating.seated.get(*to).is_some()
+    is_own && seating.seated.get(mailed.to).is_some()
 }
 
 impl Parcel {
@@ -1371,24 +1359,25 @@ impl Lists {
     /// child left.
     #[allow(clippy::inline_always, reason = "once for every turn: a call here costs a tenth of a turn, measured")]
     #[inline(always)]
-    fn route(&mut self, ran: Ran, list: &mut Vec<Effect>, me: ActorId) -> Seen {
-        let Ran { effects, stood, context } = ran;
+    fn route(&mut self, ran: Ran, asked: &mut Asked, me: ActorId) -> Seen {
+        let Ran { stood, context } = ran;
         let routes = &mut self.routes;
+        let buffers = asked.buffers_mut();
         let mut seen = Seen::default();
-        match begun(&list[effects.clone()]) {
-            Cow::Borrowed(_) => {
-                for effect in list.drain(effects.start..) {
-                    seen.see(&effect, me);
-                    routes.route_owned(effect, &context);
-                }
-            }
-            Cow::Owned(applied) => {
-                list.truncate(effects.start);
-                for effect in applied {
-                    seen.see(&effect, me);
-                    routes.route_owned(effect, &context);
-                }
-            }
+        // Each buffer goes to the views that read it: the lines to the log, ahead of the fault a failed turn ends
+        // with; the effects to every view that keeps something of them; the mail to the streams alone.
+        for line in buffers.lines.drain(..) {
+            let (key, record) = log::line(line);
+            routes.log.put(key, record);
+        }
+        for effect in buffers.effects.drain(..) {
+            seen.see(&effect, me);
+            routes.route(&effect, &context);
+        }
+        for mailed in buffers.mailed.drain(..) {
+            seen.sent(&mailed, me);
+            let (key, entry) = stream::entry(mailed, &context);
+            routes.streams.put(key, entry);
         }
 
         // Most turns stand up no child.
@@ -1414,20 +1403,10 @@ impl Routes {
         self.lives.route(effect, context);
         self.watches.route(effect, context);
     }
-
-    /// Routes one effect, emitted in `context`, into the bucket of every view that keeps anything of it, the streams
-    /// taking it by value. Mail is kept by the streams alone, so it goes past no other view.
-    fn route_owned(&mut self, effect: Effect, context: &Context) {
-        let is_mail = matches!(effect.what(), What::Send { .. });
-        if !is_mail {
-            self.route(&effect, context);
-        }
-        self.streams.route_one(effect, context);
-    }
 }
 
 impl Ran {
-    /// The turn of the actor `me` names that returned `outcome`, having asked for what is in `asked` from `begins` on,
+    /// The turn of the actor `me` names that returned `outcome`, having asked for what is in `asked` since its turn began,
     /// in `context`.
     ///
     /// A turn that fails changes nothing outside its actor: what it asked for is dropped but for its log lines,
@@ -1435,17 +1414,17 @@ impl Ran {
     /// stood up are given back.
     #[allow(clippy::inline_always, reason = "once for every turn: a call here costs a tenth of a turn, measured")]
     #[inline(always)]
-    fn of(me: Seated, outcome: Result<(), Fault>, asked: &mut Asked, context: Context, begins: usize) -> Self {
+    fn of(me: Seated, outcome: Result<(), Fault>, asked: &mut Asked, context: Context) -> Self {
         let mut stood = asked.take_stood();
         if let Err(fault) = outcome {
-            keep_lines(asked.effects_mut(), begins);
-            asked.effects_mut().push(Effect::new(me, What::Failed(fault)));
+            keep_lines(asked.buffers_mut());
+            asked.buffers_mut().effects.push(Effect::new(me, What::Failed(fault)));
             for child in mem::take(&mut stood) {
                 asked.seats_mut().give_back(child.seated().seat);
             }
         }
 
-        Self { effects: begins..asked.effects_mut().len(), stood, context }
+        Self { stood, context }
     }
 }
 
@@ -1456,15 +1435,11 @@ fn put_back(actors: &mut BySeat<Held>, me: Seated, actor: Box<dyn Runs>) {
     }
 }
 
-/// Each actor that sent mail among `effects`, with the count of the last piece it sent.
-fn senders(effects: &[Effect]) -> Vec<(Seated, u64)> {
+/// Each actor that sent mail among `mailed`, with the count of the last piece it sent.
+fn senders(mailed: &[Mailed]) -> Vec<(Seated, u64)> {
     let mut senders: Vec<(Seated, u64)> = Vec::new();
-    for effect in effects {
-        let What::Send { count, bytes, .. } = effect.what() else {
-            continue;
-        };
+    for &Mailed { by, count, bytes, .. } in mailed {
         let count = &(count + u64::from(bytes.pieces()) - 1);
-        let by = effect.seated();
         match senders.iter_mut().find(|(actor, _)| *actor == by) {
             Some((_, last)) => *last = (*last).max(*count),
             None => senders.push((by, *count)),
@@ -1487,21 +1462,25 @@ impl Seen {
     /// Notes `effect`, when it is by the actor `me`.
     fn see(&mut self, effect: &Effect, me: ActorId) {
         let is_own = effect.by() == me;
-        if !is_own {
-            return;
+        if is_own {
+            self.ends |= ending(effect, me).is_some();
         }
-        if let What::Send { count, bytes, .. } = effect.what() {
-            let last = count + u64::from(bytes.pieces()) - 1;
+    }
+
+    /// Notes `mailed`, when the actor `me` sent it.
+    fn sent(&mut self, mailed: &Mailed, me: ActorId) {
+        let is_own = mailed.by.id == me;
+        if is_own {
+            let last = mailed.count + u64::from(mailed.bytes.pieces()) - 1;
             self.sent = Some(self.sent.map_or(last, |sent| sent.max(last)));
         }
-        self.ends |= ending(effect, me).is_some();
     }
 }
 
-/// Drops every effect from `begins` on but the logged lines: what is kept of a turn that failed (ADR-0009).
-fn keep_lines(effects: &mut Vec<Effect>, begins: usize) {
-    let lines: Vec<Effect> = effects.drain(begins..).filter(is_line).collect();
-    effects.extend(lines);
+/// Drops all the turn running asked for but the lines it logged: what is kept of a turn that failed (ADR-0009).
+fn keep_lines(buffers: &mut Buffers) {
+    buffers.mailed.clear();
+    buffers.effects.clear();
 }
 
 /// What a pending item is, as far as the cost of reacting to it goes.
@@ -1531,11 +1510,6 @@ const ASIDE: usize = 8;
 /// Which of the two arenas of each writer step `step` writes.
 const fn parity(step: u64) -> usize {
     (step % 2) as usize
-}
-
-/// Whether `effect` is a logged line: what is kept of a turn that failed (ADR-0009).
-fn is_line(effect: &Effect) -> bool {
-    matches!(effect.what(), What::Log { .. })
 }
 
 /// How the actor `id` stands for ends, when `effect` is that actor's own ending.

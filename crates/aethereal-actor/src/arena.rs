@@ -2,6 +2,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::fmt;
 use core::mem;
 
 /// The fewest bytes of mail one arena's slab holds: what it holds until the engine gives it its share of the host's
@@ -151,6 +152,34 @@ impl Arena {
         self.slab.shrink_to(self.bytes);
 
         Ok(self.spill(own))
+    }
+}
+
+impl Arena {
+    /// Writes `text`, as `Display` shows it, and answers with where it is, as [`Self::write`] does a piece of mail.
+    /// Nothing is written when `Display` fails.
+    ///
+    /// # Errors
+    ///
+    /// The error `Display` returned.
+    pub fn write_text(&mut self, text: impl fmt::Display) -> Result<Payload, fmt::Error> {
+        self.write(|bytes| {
+            let mut out = Text(bytes);
+            let written = fmt::write(&mut out, format_args!("{text}"));
+
+            (out.0, written)
+        })
+    }
+}
+
+/// Text, written onto the end of an arena's bytes.
+struct Text(Vec<u8>);
+
+impl fmt::Write for Text {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.0.extend_from_slice(text.as_bytes());
+
+        Ok(())
     }
 }
 
