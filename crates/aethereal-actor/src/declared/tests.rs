@@ -4,7 +4,7 @@
 use super::*;
 use crate::{
     Above, Asked, Beginning, Chain, Ending, ErasedActorRef, Fault, Item, Level, Mail, MailId, Mailed, Runs, SeatNumber,
-    Seated, Table, To, Turn, Turning,
+    Seated, Table, To, Turn, Turning, section,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -303,4 +303,22 @@ fn declaration_lists_each_handler_with_the_sends_its_impl_names() {
     assert!(keeper.takes(KindId::of::<Stray>()));
     assert!(!keeper.lists(KindId::of::<Stray>()));
     assert!(!Declared::of::<Strict>().handles_endings());
+}
+
+#[test]
+fn a_section_written_in_a_constant_reads_back_as_what_its_types_declare() {
+    // Catches the constant writer of a guest's section and the plain types a host reads it as drifting apart: a field
+    // written in another order, or a selector numbered otherwise than the enum it stands for, so a host reads a
+    // declaration other than the one the guest was built with (ADR-0015).
+    const TYPES: &[&Declared] = &[Declared::of::<Keeper>(), Declared::of::<Strict>(), Declared::of::<Sink>()];
+    const LEN: usize = section::len(TYPES);
+    const BYTES: [u8; LEN] = section::bytes::<LEN>(TYPES);
+
+    let mut budget = aethereal_data::Budget::new(1 << 16);
+    let Ok(made) = aethereal_data::from_bytes::<Vec<section::Made>>(&BYTES, &mut budget) else {
+        panic!("a section reads back");
+    };
+
+    let leaked: Vec<&Declared> = made.iter().map(section::Made::leak).collect();
+    assert_eq!(leaked, TYPES);
 }

@@ -1,0 +1,21 @@
+[package]
+name = "aethereal-guest-echo"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "A guest the headless chassis's tests run: it answers each ping it is sent (ADR-0015)"
+
+# Built by the chassis's build script for wasm32, apart from the workspace.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+aethereal-actor = { path = "../../../aethereal-actor", features = ["guest"] }
+aethereal-data = { path = "../../../aethereal-data" }
+
+[profile.release]
+opt-level = 3
+panic = "abort"

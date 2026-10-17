@@ -21,10 +21,13 @@ mod declared;
 mod effect;
 mod ended;
 mod fault;
+#[cfg(feature = "guest")]
+pub mod guest;
 mod item;
 mod mail;
 mod reference;
 mod seat;
+pub mod section;
 mod turn;
 
 pub use actor::{Actor, Runs};
@@ -45,6 +48,6 @@ pub use mail::{Mail, MailId};
 pub use reference::{ActorRef, ErasedActorRef};
 pub use seat::{SeatNumber, Seated, Seats};
 pub use turn::{
-    Above, Address, AnyAddress, Asked, Beginning, Buffers, Chain, Closing, Ending, Logger, Refused, Stood, Turn,
-    Turning, Why,
+    Above, Address, AnyAddress, Asked, Beginning, Buffers, Chain, Closing, Ending, FalseSend, Hosted, Logger, Refused,
+    Stood, Trapped, Turn, Turning, Why,
 };

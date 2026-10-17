@@ -7,15 +7,20 @@ publish.workspace = true
 description = "The headless chassis: the native host with nothing but the engine, its workers, and its clock"
 
 [dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-data = { path = "../aethereal-data" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 core_affinity = "0.8.3"
+
+# The native guest host (ADR-0015); a browser runs guests with its own WebAssembly.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wasmparser = { version = "=0.246.2", default-features = false }
+wasmtime = { version = "=44.0.3", default-features = false, features = ["cranelift", "runtime"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.190"
 
 [dev-dependencies]
-aethereal-actor = { path = "../aethereal-actor" }
-aethereal-data = { path = "../aethereal-data" }
 
 [lints]
 workspace = true

@@ -44,6 +44,12 @@ impl KindName {
         Self(Cow::Borrowed(name))
     }
 
+    /// The name's text, for a writer that runs in a constant.
+    #[must_use]
+    pub const fn as_str(&self) -> &str {
+        self.text()
+    }
+
     /// Whether `bytes` spell a kind's name, for text that holds a name among other parts (ADR-0008).
     pub(crate) const fn spells(bytes: &[u8]) -> bool {
         conforms(bytes)

@@ -416,6 +416,31 @@ impl Engine {
     /// Panics when an actor is made under an id the table already holds for another path (ADR-0008).
     pub fn add_root<A: Actor>(&mut self, key: &A::Key, config: A::Config) -> Result<ActorId, Refused> {
         let segment = PathSegment::new(A::NAME, key);
+
+        self.add_root_made(segment, Declared::of::<A>(), |me, path, table, asked| {
+            let root = A::begin(config, &mut Beginning::new::<A>(me, path, table, asked))?;
+
+            Ok(Box::new(root))
+        })
+    }
+
+    /// Makes a root at `segment`, of a type that declares `declared`, which `begin` makes as it is seated as `me`, at
+    /// its path, reading the table and adding to what is asked: [`Self::add_root`] for a type the engine does not
+    /// name, such as a guest's (ADR-0015).
+    ///
+    /// # Errors
+    ///
+    /// Refused when the key is taken, or when `begin` fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics when an actor is made under an id the table already holds for another path (ADR-0008).
+    pub fn add_root_made(
+        &mut self,
+        segment: PathSegment,
+        declared: &'static Declared,
+        begin: impl FnOnce(Seated, &ActorPath, &dyn aethereal_actor::Table, &mut Asked) -> Result<Box<dyn Runs>, Fault>,
+    ) -> Result<ActorId, Refused> {
         let id = root_id(&segment);
         let path = ActorPath::from_root(&segment);
         let is_taken = self.table.holds_root(id);
@@ -434,7 +459,7 @@ impl Engine {
         let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats, self.puts(ROOTS, blob_room));
         let stood_before = ByActor::default();
         let table = Since { table: &self.table, stood: &stood_before, sees: Sees::Step, blobs: &self.blobs };
-        let began = A::begin(config, &mut Beginning::new::<A>(me, &path, &table, &mut asked));
+        let began = begin(me, &path, &table, &mut asked);
         let (buffers, stood, arena, mut seats, mut puts) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
         // A root is made between steps, when nothing reads the store, so what its `begin` put is taken in at once.
@@ -453,7 +478,7 @@ impl Engine {
             }
         };
         self.take_back_lent(home, seats);
-        let from = Code::Linked(Declared::of::<A>());
+        let from = Code::Linked(declared);
         let made = match segment.key() {
             None => What::Root { from },
             Some(key) => What::RootInstanced { from, key: key.clone() },
@@ -463,7 +488,7 @@ impl Engine {
         let context = Context { root: MailId { sender: id, count: 0 }, depth: 1 };
 
         self.table.made_root(id);
-        self.seat(me, path, Above::Chassis, Box::new(root));
+        self.seat(me, path, Above::Chassis, root);
         let written = &self.arenas[parity];
         self.log.fold_records(lines.into_iter().map(log::line), written);
         self.fold_turn(&effects, stood, context);

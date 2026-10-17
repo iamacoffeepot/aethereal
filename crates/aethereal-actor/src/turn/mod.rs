@@ -1,9 +1,11 @@
 //! A turn: what an actor asks of the engine while it handles one item (ADR-0009).
 
+mod hosted;
 mod refused;
 #[cfg(test)]
 mod tests;
 
+pub use hosted::{FalseSend, Hosted, Trapped};
 pub use refused::Refused;
 
 use crate::{
@@ -111,6 +113,18 @@ impl Asked {
         if !self.stood_seats.is_empty() {
             self.stood_seats.clear();
         }
+    }
+
+    /// Empties everything asked for, the arena's bytes among it, keeping the room of each: for a guest, whose host has
+    /// read what it asked for after each call (ADR-0015).
+    #[cfg(feature = "guest")]
+    pub(crate) fn empty(&mut self) {
+        self.buffers.mailed.clear();
+        self.buffers.lines.clear();
+        self.buffers.effects.clear();
+        self.stood.clear();
+        self.stood_seats.clear();
+        self.arena.clear(0);
     }
 
     /// Whether this turn has asked for nothing in any buffer.

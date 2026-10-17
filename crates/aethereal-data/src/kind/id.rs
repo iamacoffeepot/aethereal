@@ -38,6 +38,13 @@ impl KindId {
         Self::from_layout(name, nodes_layout(schema))
     }
 
+    /// The id's bytes as plain data writes them (ADR-0002), for a writer that runs in a constant: a guest's section of
+    /// what it makes (ADR-0015). They say nothing encoding the id does not.
+    #[must_use]
+    pub const fn plain_bytes(self) -> [u8; 8] {
+        self.0.to_le_bytes()
+    }
+
     /// The id of a name and the layout hash of its schema; the only place an id is made.
     const fn from_layout(name: &KindName, layout: u64) -> Self {
         Self(Fnv::new().bytes(name.bytes()).hash(layout).finish())
