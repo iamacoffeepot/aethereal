@@ -233,7 +233,7 @@ pub enum Code {
 
 - What an actor's code names is a crate of its own, `aethereal-actor`: the turn, mail, effects, and a fault. It holds nothing of the engine. A guest is compiled apart from the engine and depends on that crate alone, and the engine depends on it to run turns and apply effects.
 - The rules about mail in flight have one place to live. The engine is the only thing that moves mail and creates or closes an actor, and it sees every request to do so as data.
-- A guest is one call per turn: the mail's bytes in, the effects' bytes out, both through the codec of ADR-0004. Each buffer is entries of one fixed shape, so a guest's could be read in place in ADR-0002's layout rather than decoded. A spawn is one more call, out to its host. The host must be able to make an instance without waiting.
+- A guest is one call for a run of turns: its items' bytes in, and its effects out, in effect buffers its host reads in place in ADR-0002's layout (ADR-0015). A spawn is one more call, out to its host. The host must be able to make an instance without waiting.
 - A turn can be recorded and compared: the same state and mail give the same effects, as far as the actor's own code is deterministic.
 - A buffer can be read one entry at a time: each says who asked, and no entry depends on the ones around it to say so. The buffers of many turns join into one without being rewritten, for as long as the engine that made the ids lives.
 - An effect is something to be done, and it can be dropped or go undelivered. What the engine did with each effect is a separate record and a later ADR; the word *event* is kept for that record's entries.

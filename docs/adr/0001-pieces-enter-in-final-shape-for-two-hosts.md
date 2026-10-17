@@ -45,7 +45,7 @@ Rules 3 and 4 cover calls that compile for wasm32 and fail only when run there (
 - The core is designed here. Open design questions about the core are settled as ADRs before the piece they govern enters, since "final shape" leaves no room to settle them afterwards.
 - A capability that needs a thread, a socket, or a file on native needs a stated browser answer before it enters: an alternative implementation behind the same mail surface, or a declaration that it is a native-only host crate.
 - The engine's control surface cannot assume the engine listens on a socket. A browser engine dials out.
-- Which implementation the browser host uses behind the guest-runtime seam is not decided here. It is its own ADR, due before the component host enters.
+- Which implementation each host uses behind the guest-runtime seam is ADR-0015's: wasmtime on native, and the browser's own `WebAssembly` in a browser.
 - The lab repository keeps moving. A fix made there does not arrive here by itself.
 
 ## Alternatives considered
