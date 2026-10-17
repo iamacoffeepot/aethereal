@@ -72,8 +72,8 @@ enum Stored {
 /// An item handed out, as a turn reads it.
 #[derive(Clone, Copy)]
 pub enum Handed<'a> {
-    /// A piece of mail, and its id.
-    Mail { id: MailId, envelope: &'a Envelope },
+    /// A piece of mail, and its id: the piece numbered `piece` of what `envelope` holds, which is one but for a run.
+    Mail { id: MailId, envelope: &'a Envelope, piece: u32 },
     /// An actor it watches ended. What it does about it belongs to `context`, the chain that ended that actor.
     Ended { ended: &'a Ended, context: &'a Context },
 }
@@ -106,18 +106,18 @@ impl Shard {
         )
     }
 
-    /// The items handed out at the start of the step that lie in `range`.
-    #[must_use]
-    pub fn handed(&self, range: Range<usize>) -> impl ExactSizeIterator<Item = Handed<'_>> {
-        self.handed[range].iter().map(|(_, entry)| entry.handed(&self.handed_endings))
+    /// The items handed out at the start of the step that lie in `range`, a run of mail one piece after another.
+    pub fn handed(&self, range: Range<usize>) -> Pieces<'_> {
+        Pieces { entries: &self.handed[range], endings: &self.handed_endings, at: 0, piece: 0 }
     }
 
-    /// The items that arrived since the step began, in no order: the actor each is for, and the item.
-    pub fn arrived(&self) -> impl Iterator<Item = (Seated, Handed<'_>)> {
+    /// The items that arrived since the step began, in no order: the actor each is for, the item, the first of a
+    /// run, and how many pieces it holds.
+    pub fn arrived(&self) -> impl Iterator<Item = (Seated, Handed<'_>, u32)> {
         self.arrived.iter().map(|(seat, entry)| {
             let to = Seated { id: ActorId::new(entry.to), seat: SeatNumber::new(*seat) };
 
-            (to, entry.handed(&self.arrived_endings))
+            (to, entry.handed(&self.arrived_endings), entry.pieces())
         })
     }
 
@@ -138,14 +138,69 @@ impl Shard {
     }
 }
 
+/// The items of a range of a part's stream, a run of mail one piece after another.
+pub struct Pieces<'a> {
+    entries: &'a [(u64, Entry)],
+    endings: &'a [(Ended, Context)],
+    /// The entry the next item is of, and which of its pieces.
+    at: usize,
+    piece: u32,
+}
+
+impl<'a> Iterator for Pieces<'a> {
+    type Item = Handed<'a>;
+
+    fn next(&mut self) -> Option<Handed<'a>> {
+        let (_, entry) = self.entries.get(self.at)?;
+        let Stored::Mail(envelope) = &entry.item else {
+            self.at += 1;
+            return Some(entry.handed(self.endings));
+        };
+        let pieces = envelope.bytes.pieces();
+        if pieces == 1 {
+            self.at += 1;
+            return Some(entry.handed(self.endings));
+        }
+        let item = entry.piece(self.piece, self.endings);
+        self.piece += 1;
+        if self.piece == pieces {
+            self.at += 1;
+            self.piece = 0;
+        }
+
+        Some(item)
+    }
+}
+
 impl Entry {
+    /// How many items it holds: one, but for a run of mail.
+    fn pieces(&self) -> u32 {
+        match &self.item {
+            Stored::Mail(envelope) => envelope.bytes.pieces(),
+            Stored::Ended(_) => 1,
+        }
+    }
+
+    /// The item numbered `index` it holds, as a turn reads it: the piece of a run of mail, with its own id and bytes.
+    fn piece<'a>(&'a self, index: u32, endings: &'a [(Ended, Context)]) -> Handed<'a> {
+        match &self.item {
+            Stored::Mail(envelope) => {
+                let (sender, count) = self.order;
+                let id = MailId { sender: ActorId::new(sender), count: count + u64::from(index) };
+
+                Handed::Mail { id, envelope, piece: index }
+            }
+            Stored::Ended(_) => self.handed(endings),
+        }
+    }
+
     /// The item as a turn reads it, its ending found in `endings` when it is one.
     fn handed<'a>(&'a self, endings: &'a [(Ended, Context)]) -> Handed<'a> {
         match &self.item {
             Stored::Mail(envelope) => {
                 let (sender, count) = self.order;
 
-                Handed::Mail { id: MailId { sender: ActorId::new(sender), count }, envelope }
+                Handed::Mail { id: MailId { sender: ActorId::new(sender), count }, envelope, piece: 0 }
             }
             Stored::Ended(place) => {
                 let (ended, context) = &endings[*place];
@@ -161,7 +216,7 @@ impl Handed<'_> {
     #[must_use]
     pub const fn source(self) -> Seated {
         match self {
-            Self::Mail { id, envelope } => Seated { id: id.sender, seat: envelope.sender_seat },
+            Self::Mail { id, envelope, .. } => Seated { id: id.sender, seat: envelope.sender_seat },
             Self::Ended { ended, .. } => ended.actor().seated(),
         }
     }

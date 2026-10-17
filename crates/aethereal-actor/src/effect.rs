@@ -28,6 +28,11 @@ impl Effect {
         self.by.id
     }
 
+    /// What is asked for, to change before the engine applies it: for a turn's send that joins the one before it.
+    pub(crate) const fn what_mut(&mut self) -> &mut What {
+        &mut self.what
+    }
+
     /// The actor that asked, and its seat.
     #[must_use]
     pub const fn seated(&self) -> Seated {

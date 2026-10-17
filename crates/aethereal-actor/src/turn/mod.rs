@@ -287,14 +287,40 @@ impl Seat<'_> {
         let Some(to) = self.receiver(to) else {
             return Ok(());
         };
-        self.check(to, target, KindId::of::<K>());
+        // A send to the receiver and of the kind of the turn's last was checked with it.
+        let is_like_last = self.last_send().is_some_and(|(last, kind)| last == to && kind == KindId::of::<K>());
+        if !is_like_last {
+            self.check(to, target, KindId::of::<K>());
+        }
 
-        self.write(to, mail)
+        self.write_after(to, mail, is_like_last)
+    }
+
+    /// The receiver and kind of this turn's last effect, when it is a send by this actor.
+    fn last_send(&self) -> Option<(Seated, KindId)> {
+        let is_this_turns = self.asked.effects.len() > self.asked.start;
+        let last = self.asked.effects.last().filter(|_| is_this_turns)?;
+        match last.what() {
+            What::Send { to, kind, .. } if last.by() == self.me.id => Some((*to, *kind)),
+            _ => None,
+        }
     }
 
     /// Encodes `mail` and adds the effect that sends it to the actor `to`, which this actor reaches as it is: one a
     /// typed reference proves, or the sender.
     fn write<K: Kind + Encode<Actors>>(&mut self, to: Seated, mail: &K) -> Result<(), EncodeError> {
+        let is_like_last = self.last_send().is_some_and(|(last, kind)| last == to && kind == KindId::of::<K>());
+
+        self.write_after(to, mail, is_like_last)
+    }
+
+    /// As [`Self::write`], knowing whether `to` and the kind are those of the turn's last send.
+    fn write_after<K: Kind + Encode<Actors>>(
+        &mut self,
+        to: Seated,
+        mail: &K,
+        is_like_last: bool,
+    ) -> Result<(), EncodeError> {
         let bytes = self.asked.arena.write(|bytes| {
             let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::new());
             let written = mail.encode(&mut out);
@@ -302,7 +328,18 @@ impl Seat<'_> {
             (out.into_bytes(), written)
         })?;
         self.sent += 1;
-        self.ask(What::Send { to, count: self.sent, kind: KindId::of::<K>(), bytes });
+        let kind = KindId::of::<K>();
+        // Mail of one kind to one receiver, sent back to back, is one run: one effect, one item in its stream.
+        if is_like_last
+            && let Some(last) = self.asked.effects.last_mut()
+            && let What::Send { count, bytes: run, .. } = last.what_mut()
+            && *count + u64::from(run.pieces()) == self.sent
+            && let Some(joined) = run.joined(bytes)
+        {
+            *run = joined;
+            return Ok(());
+        }
+        self.ask(What::Send { to, count: self.sent, kind, bytes });
 
         Ok(())
     }
@@ -357,6 +394,7 @@ impl Seat<'_> {
 
     /// The actor `to` names, beside this one, and its seat: none for a parent this turn cannot see, or a child that
     /// was never made.
+    #[inline]
     fn receiver(&self, to: &To) -> Option<Seated> {
         match to {
             To::Parent => self.parent(),

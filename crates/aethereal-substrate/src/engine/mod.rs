@@ -1020,8 +1020,8 @@ impl Reading<'_> {
                         let begins = asked.effects_mut().len();
                         let source = handed.source();
                         let (item, context) = match handed {
-                            Handed::Mail { envelope: &Envelope { kind, bytes, root, depth, .. }, .. } => {
-                                let bytes = self.bytes(bytes);
+                            Handed::Mail { envelope: &Envelope { kind, bytes, root, depth, .. }, piece, .. } => {
+                                let bytes = self.bytes(bytes.piece(piece));
                                 let mail = Mail::new(kind, bytes, source, root, depth, self.read_limit);
 
                                 (Item::Mail(mail), Context { root, depth: depth + 1 })
@@ -1167,17 +1167,32 @@ impl Reading<'_> {
             {
                 let hand = hand(to, *stepped, seating, lives, &lists.fusing);
                 lists.fusing.hops.count(hand);
-                lists.fusing.hops.burst += u64::try_from(burst).unwrap_or(u64::MAX);
+                let is_run = matches!(bytes, Payload::Run { .. });
+                let after_first = if is_run {
+                    u64::from(bytes.pieces()) - 1
+                } else {
+                    0
+                };
+                lists.fusing.hops.burst += u64::try_from(burst).unwrap_or(u64::MAX) + after_first;
                 if hand == Hand::Fuse {
-                    let (at, len) = lists.fusing.keep_bytes(asked.arena().read(bytes).unwrap_or_default());
+                    let first = if is_run {
+                        bytes.piece(0)
+                    } else {
+                        bytes
+                    };
+                    let (at, len) = lists.fusing.keep_bytes(asked.arena().read(first).unwrap_or_default());
                     let effects = asked.effects_mut();
-                    // The fused send is most often the turn's last effect, and nothing is moved for it.
-                    if index + 1 == effects.len() {
+                    // Of a run, the first piece is fused and the rest stays mail. The fused send is most often the
+                    // turn's last effect, and nothing is moved for it.
+                    if is_run && let Some(rest) = bytes.rest() {
+                        effects[index] = Effect::new(me, What::Send { to, count: count + 1, kind, bytes: rest });
+                    } else if index + 1 == effects.len() {
                         effects.pop();
+                        ran.effects.end -= 1;
                     } else {
                         effects.remove(index);
+                        ran.effects.end -= 1;
                     }
-                    ran.effects.end -= 1;
                     let context = ran.context;
                     // A fused send from a waiting item begins a run; one from a hop goes on with the hop's.
                     let chain = *run.get_or_insert_with(|| lists.fusing.begin_run());
@@ -1381,9 +1396,10 @@ fn put_back(actors: &mut BySeat<Held>, me: Seated, actor: Box<dyn Runs>) {
 fn senders(effects: &[Effect]) -> Vec<(Seated, u64)> {
     let mut senders: Vec<(Seated, u64)> = Vec::new();
     for effect in effects {
-        let What::Send { count, .. } = effect.what() else {
+        let What::Send { count, bytes, .. } = effect.what() else {
             continue;
         };
+        let count = &(count + u64::from(bytes.pieces()) - 1);
         let by = effect.seated();
         match senders.iter_mut().find(|(actor, _)| *actor == by) {
             Some((_, last)) => *last = (*last).max(*count),
@@ -1410,8 +1426,9 @@ impl Seen {
         if !is_own {
             return;
         }
-        if let What::Send { count, .. } = effect.what() {
-            self.sent = Some(self.sent.map_or(*count, |sent| sent.max(*count)));
+        if let What::Send { count, bytes, .. } = effect.what() {
+            let last = count + u64::from(bytes.pieces()) - 1;
+            self.sent = Some(self.sent.map_or(last, |sent| sent.max(last)));
         }
         self.ends |= ending(effect, me).is_some();
     }

@@ -42,6 +42,10 @@ pub enum Payload {
     InArena(Span),
     /// Spilled, as it did not fit: the writer's `index`th spilled piece.
     Spilled { slot: u32, index: u32 },
+    /// A run of `n` pieces of mail in the writer's slab, from `start` on, one after another, each `each` bytes: what
+    /// one turn sent to one receiver, of one kind, back to back. Its writer's number is kept in sixteen bits, so a
+    /// payload stays sixteen bytes: no run is made in the arena of a writer past them.
+    Run { start: u32, each: u32, n: u32, slot: u16 },
 }
 
 /// A range of one writer's arena.
@@ -103,6 +107,12 @@ impl Arena {
                 self.slab.get(start..start.checked_add(len as usize)?)
             }
             Payload::Spilled { index, .. } => self.spilled.get(index as usize).map(|bytes| &bytes[..]),
+            Payload::Run { start, each, n, .. } => {
+                let start = start as usize;
+                let len = (each as usize).checked_mul(n as usize)?;
+
+                self.slab.get(start..start.checked_add(len)?)
+            }
         };
 
         is_own.then_some(bytes).flatten()
@@ -175,9 +185,69 @@ impl Payload {
         let slot = match self {
             Self::InArena(span) => span.slot,
             Self::Spilled { slot, .. } => slot,
+            Self::Run { slot, .. } => slot as u32,
         };
 
         slot as usize
+    }
+
+    /// How many pieces of mail it holds: one, but for a run.
+    #[must_use]
+    pub const fn pieces(self) -> u32 {
+        match self {
+            Self::Run { n, .. } => n,
+            Self::InArena(_) | Self::Spilled { .. } => 1,
+        }
+    }
+
+    /// The piece numbered `index` of what it holds: itself, but for a run.
+    #[must_use]
+    pub const fn piece(self, index: u32) -> Self {
+        match self {
+            Self::Run { slot, start, each, .. } => {
+                Self::InArena(Span { slot: slot as u32, start: start + index * each, len: each })
+            }
+            Self::InArena(_) | Self::Spilled { .. } => self,
+        }
+    }
+
+    /// What it holds once its first piece is taken out: nothing for one piece, the rest of a run.
+    #[must_use]
+    pub const fn rest(self) -> Option<Self> {
+        match self {
+            Self::Run { slot, start, each, n } if n > 2 => {
+                Some(Self::Run { slot, start: start + each, each, n: n - 1 })
+            }
+            Self::Run { slot, start, each, .. } => {
+                Some(Self::InArena(Span { slot: slot as u32, start: start + each, len: each }))
+            }
+            Self::InArena(_) | Self::Spilled { .. } => None,
+        }
+    }
+
+    /// It, with `next` after it, as one run: when `next` lies in the slab straight after it and is as long as each of
+    /// its pieces.
+    #[must_use]
+    pub const fn joined(self, next: Self) -> Option<Self> {
+        let Self::InArena(Span { slot: next_slot, start: next_start, len: next_len }) = next else {
+            return None;
+        };
+        let (slot, start, each, n) = match self {
+            Self::InArena(Span { slot, start, len }) => (slot, start, len, 1),
+            Self::Run { slot, start, each, n } => (slot as u32, start, each, n),
+            Self::Spilled { .. } => return None,
+        };
+        let is_after = next_slot == slot && next_start == start + each * n;
+        let is_alike = next_len == each;
+        let fits = slot <= u16::MAX as u32;
+
+        if is_after && is_alike && fits {
+            #[allow(clippy::cast_possible_truncation, reason = "it fits sixteen bits, as checked")]
+            let slot = slot as u16;
+            Some(Self::Run { slot, start, each, n: n + 1 })
+        } else {
+            None
+        }
     }
 }
 
