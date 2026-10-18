@@ -936,6 +936,11 @@ impl Runs for Guest {
         self.declared
     }
 
+    /// Always: a guest's code is costly to enter, so it runs each batch's turns in one call.
+    fn prepares(&self) -> bool {
+        true
+    }
+
     /// Runs every turn of the batch in the guest, in one call into its instance, its calls out answered from what the
     /// batch was lent, and keeps what they asked for for [`Self::turn`] to hand back. The guest stops after a turn that
     /// fails or closes it, as the engine does. An actor taken out of the instance it began in, another part's, is
