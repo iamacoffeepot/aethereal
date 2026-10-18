@@ -2,7 +2,8 @@
 
 use super::{Checked, During, Seat, Turning};
 use crate::{
-    Above, Asked, Chain, Declared, Instances, Level, MailId, Mailed, Role, Seated, Sending, Table, Target, What,
+    Above, Asked, Chain, Declared, Effect, Fault, Instances, Level, MailId, Mailed, Role, Seated, Sending, Table,
+    Target, What,
 };
 use aethereal_data::{ActorPath, KindId, KindName, Plain};
 use core::convert::Infallible;
@@ -150,6 +151,21 @@ impl<'a> Hosted<'a> {
     /// Logs `text` at `level`, as this actor.
     pub fn log(&mut self, level: Level, text: &str) {
         self.seat.logger().log(level, text);
+    }
+
+    /// Ends each of `with` but this actor, the actors whose code ran in the instance that trapped in this turn, as a
+    /// failed turn of its own would end it: the trap may have left the memory they live in half changed (ADR-0015).
+    /// The engine keeps what this asks for when the turn fails, as it keeps the turn's lines.
+    pub fn trapped(&mut self, with: impl IntoIterator<Item = Seated>) {
+        let Ok(fault) = Fault::new(&Trapped) else {
+            return;
+        };
+        for other in with {
+            let is_other = other != self.seat.me;
+            if is_other {
+                self.seat.asked.buffers.effects.push(Effect::new(other, What::Failed(fault.clone())));
+            }
+        }
     }
 
     /// Whether `sending` sends mail of `kind` to the actor `to` names. An actor the table no longer holds has ended,

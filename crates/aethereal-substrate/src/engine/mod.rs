@@ -1310,7 +1310,7 @@ impl Reading<'_> {
             // its fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after
             // what the turn sent.
             if let Err(fault) = ended {
-                keep_lines(buffers);
+                keep_lines(buffers, me);
                 buffers.effects.push(Effect::new(me, What::EndFailed(fault)));
             }
             buffers.effects.push(Effect::new(me, What::Ended(how.clone())));
@@ -1647,7 +1647,7 @@ impl Ran {
     fn of(me: Seated, outcome: Result<(), Fault>, asked: &mut Asked, context: Context) -> Self {
         let mut stood = asked.take_stood();
         if let Err(fault) = outcome {
-            keep_lines(asked.buffers_mut());
+            keep_lines(asked.buffers_mut(), me);
             asked.buffers_mut().effects.push(Effect::new(me, What::Failed(fault)));
             for child in mem::take(&mut stood) {
                 asked.seats_mut().give_back(child.seated().seat);
@@ -1707,10 +1707,20 @@ impl Seen {
     }
 }
 
-/// Drops all the turn running asked for but the lines it logged: what is kept of a turn that failed (ADR-0009).
-fn keep_lines(buffers: &mut Buffers) {
+/// Drops all the turn of the actor `me` names asked for but the lines it logged and the failures of other actors its
+/// host reported, which only a hosted turn whose instance trapped writes: what is kept of a turn that failed
+/// (ADR-0009, ADR-0015).
+fn keep_lines(buffers: &mut Buffers, me: Seated) {
     buffers.mailed.clear();
-    buffers.effects.clear();
+    buffers.effects.retain(|effect| is_reported_failure(effect, me));
+}
+
+/// Whether `effect` is the failure of an actor other than `me` that its host reported.
+fn is_reported_failure(effect: &Effect, me: Seated) -> bool {
+    let is_failure = matches!(effect.what(), What::Failed(_));
+    let is_other = effect.by() != me.id;
+
+    is_failure && is_other
 }
 
 /// What a pending item is, as far as the cost of reacting to it goes.

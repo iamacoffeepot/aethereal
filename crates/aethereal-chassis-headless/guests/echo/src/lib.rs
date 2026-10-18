@@ -39,6 +39,14 @@ impl Kind for Shut {
     const NAME: KindName = KindName::new("aether.guest.shut");
 }
 
+/// A word to crash, on which a mirror panics, which traps, as a guest's panic does.
+#[derive(Plain)]
+pub struct Crash;
+
+impl Kind for Crash {
+    const NAME: KindName = KindName::new("aether.guest.crash");
+}
+
 /// What an echo is made from: nothing.
 #[derive(Plain)]
 pub struct EchoConfig;
@@ -119,7 +127,7 @@ impl Kind for Mirror {
 impl Actor for Mirror {
     type Config = EchoConfig;
     type Key = ();
-    type Handles = (Ping, Shut);
+    type Handles = (Ping, Shut, Crash);
     type BeginSends = ();
     type EndSends = ();
 
@@ -149,6 +157,14 @@ impl Handles<Shut> for Mirror {
         turn.close();
 
         Ok(())
+    }
+}
+
+impl Handles<Crash> for Mirror {
+    type Sends = ();
+
+    fn handle(&mut self, _: Crash, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        panic!("a mirror crashes when it is told to");
     }
 }
 

@@ -45,6 +45,14 @@ impl Instances {
         instance
     }
 
+    /// The instance of type `I` kept under `key`: nothing when none is loaded.
+    pub fn get<I: Any + Send>(&mut self, key: u64) -> Option<&mut I> {
+        let host = TypeId::of::<I>();
+        let loaded = self.loaded.iter_mut().find(|loaded| loaded.is(host, key))?;
+
+        loaded.instance.downcast_mut::<I>()
+    }
+
     /// Drops the instance of type `I` kept under `key`, for a host whose last actor that ran in it has ended: the
     /// next actor of the part that wants it loads a new one. Nothing when there is none.
     pub fn drop_instance<I: Any + Send>(&mut self, key: u64) {

@@ -10,7 +10,8 @@
 use aethereal_actor::records::{ItemHead, LineRecord, OutHead, SendRecord, Span, Stopped, TurnEnds};
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Batch, Declared, FalseSend, Fault, Hosted, Instances, Item, Preparing, Refused, Role, Runs, Trapped, Turning,
+    Batch, Declared, FalseSend, Fault, Hosted, Instances, Item, Preparing, Refused, Role, Runs, Seated, Trapped,
+    Turning,
 };
 use aethereal_data::{ActorId, Budget, PathSegment, from_bytes};
 use aethereal_substrate::Engine;
@@ -59,14 +60,16 @@ struct Instance {
     /// Where the guest's inbox is, and how many bytes it has room for: asked for again only when it must grow.
     inbox_at: usize,
     inbox_room: usize,
-    /// How many actors have begun in it and not ended: the part drops it when the last ends.
-    actors: u32,
+    /// The actors that have begun in it and not ended: the part drops it when the last ends, and a trap in it ends
+    /// them all.
+    actors: Vec<Seated>,
 }
 
 /// An actor whose code runs in a guest's instance, as the engine holds it: the instance is its part's, which it
 /// takes from what its part lends each batch and turn.
 struct Guest {
     code: Code,
+    me: Seated,
     /// Which actor it is in its instance.
     handle: u32,
     declared: &'static Declared,
@@ -159,7 +162,7 @@ impl Instance {
             panic!("guest code that entered has its exports");
         };
 
-        Self { store, memory, inbox, out, begin, turns, inbox_at: 0, inbox_room: 0, actors: 0 }
+        Self { store, memory, inbox, out, begin, turns, inbox_at: 0, inbox_room: 0, actors: Vec::new() }
     }
 }
 
@@ -194,9 +197,9 @@ pub fn add_root(engine: &mut Engine, code: &Code, of: usize, config: &[u8]) -> R
         let data = held.memory.data(&held.store);
         let (began, _) = replay(data, &wrote, 0, TurnEnds { sends: 0, lines: 0 }, &mut hosted).ok_or_else(trapped)?;
         began?;
-        held.actors += 1;
+        held.actors.push(me);
 
-        Ok(Box::new(Guest { code: code.clone(), handle, declared, ran: Ran::Nothing }))
+        Ok(Box::new(Guest { code: code.clone(), me, handle, declared, ran: Ran::Nothing }))
     })
 }
 
@@ -218,34 +221,46 @@ impl Runs for Guest {
     }
 
     /// Hands back the next turn [`Self::prepare`] ran: what it asked for, each send checked against what the guest
-    /// declares.
+    /// declares. When the call that ran it trapped, or wrote what does not read back, the turn fails, every other actor
+    /// in the instance ends with it, and the part drops the instance (ADR-0015).
     fn turn(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
-        let Ran::At { head, next, before } = self.ran else {
-            return Err(trapped());
-        };
         let role = match &item {
             Item::Mail(mail) if self.declared.lists(mail.kind()) => Role::Kind(mail.kind()),
             Item::Mail(_) => Role::Others,
             Item::Ended(_) => Role::Ended,
         };
         let (mut hosted, instances) = turning.hosted(self.declared, role);
-        let held = self.code.instance(instances);
-        let replayed = replay(held.memory.data(&held.store), &head, next, before, &mut hosted);
-        let Some((replayed, ends)) = replayed else {
+        let replayed = match self.ran {
+            Ran::At { head, next, before } => {
+                let held = self.code.instance(instances);
+                replay(held.memory.data(&held.store), &head, next, before, &mut hosted)
+                    .map(|(replayed, ends)| (replayed, Ran::At { head, next: next + 1, before: ends }))
+            }
+            Ran::Nothing | Ran::Trapped => None,
+        };
+        let Some((replayed, ran)) = replayed else {
             self.ran = Ran::Trapped;
+            // What the trap left in the instance's memory cannot be trusted, so nothing runs in it again.
+            if let Some(held) = instances.get::<Instance>(self.code.key) {
+                hosted.trapped(held.actors.iter().copied());
+            }
+            instances.drop_instance::<Instance>(self.code.key);
             return Err(trapped());
         };
-        self.ran = Ran::At { head, next: next + 1, before: ends };
+        self.ran = ran;
 
         replayed
     }
 
-    /// Ends the actor in its part's instance, and drops the instance when it was the last actor in it.
+    /// Ends the actor in its part's instance, and drops the instance when it was the last actor in it. An instance a
+    /// trap dropped is not loaded again for it.
     fn end(self: Box<Self>, closing: aethereal_actor::Closing<'_>) -> Result<(), Fault> {
         let instances = closing.hosted();
-        let held = self.code.instance(instances);
-        held.actors = held.actors.saturating_sub(1);
-        let is_last = held.actors == 0;
+        let Some(held) = instances.get::<Instance>(self.code.key) else {
+            return Ok(());
+        };
+        held.actors.retain(|actor| *actor != self.me);
+        let is_last = held.actors.is_empty();
         if is_last {
             instances.drop_instance::<Instance>(self.code.key);
         }
@@ -760,5 +775,93 @@ mod tests {
         let failed = engine.log(echo).any(|entry| matches!(entry, aethereal_substrate::Entry::Failed(_)));
         assert!(!failed, "the echo ran on in its instance");
         assert_eq!(VOLLEYER_PONGS.load(Ordering::Relaxed), 4);
+    }
+
+    /// The word to crash, as the echo guest declares it.
+    #[derive(Plain)]
+    struct Crash;
+
+    impl Kind for Crash {
+        const NAME: KindName = KindName::new("aether.guest.crash");
+    }
+
+    /// A native actor that tells the mirror guest to crash as it begins.
+    #[derive(aethereal_data::Bound)]
+    struct Crasher;
+
+    impl Kind for Crasher {
+        const NAME: KindName = KindName::new("aether.test.crasher");
+    }
+
+    impl Actor for Crasher {
+        type Config = Volley;
+        type Key = ();
+        type Handles = (Pong,);
+        type BeginSends = (ToAny<(Crash,), Crash>,);
+        type EndSends = ();
+
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let mirror = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.mirror"), &()));
+            if let Some(mirror) = turn.resolve(&mirror) {
+                turn.to_any::<(Crash,)>(ToWithoutMail::Held(mirror)).send(&Crash)?;
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Pong> for Crasher {
+        type Sends = ();
+
+        fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_trap_ends_every_actor_in_its_instance() {
+        // Catches a trap that ends only the actor whose turn trapped, leaving an actor that lives in the same memory
+        // looking live, and the ending a host reports for it dropped with the rest of the failed turn.
+        let guests = Guests::default();
+        let Ok(code) = guests.code(ECHO) else {
+            panic!("the echo guest is fit to run");
+        };
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+        let Ok(echo) = add_root(&mut engine, &code, 0, &[]) else {
+            panic!("the echo begins");
+        };
+        let Ok(mirror) = add_root(&mut engine, &code, 1, &[]) else {
+            panic!("the mirror begins");
+        };
+        let Ok(_) = engine.add_root::<Crasher>(&(), Volley { pings: 0 }) else {
+            panic!("the crasher begins");
+        };
+        let (Some(echo_seat), Some(mirror_seat)) = (engine.table().seat(echo), engine.table().seat(mirror)) else {
+            panic!("the echo and the mirror are seated");
+        };
+        let echo = Seated { id: echo, seat: echo_seat };
+        let mirror = Seated { id: mirror, seat: mirror_seat };
+        let clock = Monotonic::new();
+        while !engine.is_idle() {
+            engine.step(&clock);
+        }
+
+        let trapped = |actor| {
+            let is_trap = |entry: &aethereal_substrate::Entry| match entry {
+                aethereal_substrate::Entry::Failed(fault) => fault.kind() == aethereal_data::KindId::of::<Trapped>(),
+                _ => false,
+            };
+            engine.log(actor).any(is_trap)
+        };
+        assert!(trapped(mirror), "the mirror's turn trapped");
+        assert!(trapped(echo), "the echo, in the same instance, ended with it");
+        assert!(!engine.table().is_live(echo.id));
     }
 }
