@@ -61,12 +61,63 @@ impl aethereal_data::Kind for FalseWatch {
     const NAME: KindName = KindName::new("aether.actor.false_watch");
 }
 
-/// The reason of a guest's turn that trapped: every actor of its instance ends with it (ADR-0015).
+/// The reason of a guest's call that trapped: every actor of its instance ends with it (ADR-0015).
 #[derive(Debug, PartialEq, Eq, Plain)]
 pub struct Trapped;
 
 impl aethereal_data::Kind for Trapped {
     const NAME: KindName = KindName::new("aether.actor.trapped");
+}
+
+/// The reason of a guest's call that wrote what does not read back: every actor of its instance ends with it
+/// (ADR-0015).
+#[derive(Debug, PartialEq, Eq, Plain)]
+pub struct Garbled;
+
+impl aethereal_data::Kind for Garbled {
+    const NAME: KindName = KindName::new("aether.actor.garbled");
+}
+
+/// The reason of a guest's call that changed its references to a blob it was not given, or dropped more of them than
+/// it held: every actor of its instance ends with it (ADR-0014, ADR-0015).
+#[derive(Debug, PartialEq, Eq, Plain)]
+pub struct Forged;
+
+impl aethereal_data::Kind for Forged {
+    const NAME: KindName = KindName::new("aether.actor.forged");
+}
+
+/// Why a call into a guest broke, so that nothing runs in its instance again: its host drops the instance, and every
+/// actor of it ends with this reason (ADR-0015).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Broke {
+    /// The code trapped.
+    Trapped,
+    /// What the call wrote does not read back, or names what the call did not make.
+    Garbled,
+    /// The call changed its references to a blob it was not given, or dropped more of them than it held.
+    Forged,
+}
+
+impl Broke {
+    /// The fault every actor of the instance ends with.
+    ///
+    /// # Panics
+    ///
+    /// Never: each reason holds nothing, so it is always written.
+    #[must_use]
+    pub fn fault(self) -> Fault {
+        let fault = match self {
+            Self::Trapped => Fault::new(&Trapped),
+            Self::Garbled => Fault::new(&Garbled),
+            Self::Forged => Fault::new(&Forged),
+        };
+        let Ok(fault) = fault else {
+            panic!("a reason that holds nothing is written");
+        };
+
+        fault
+    }
 }
 
 impl<'a> Turning<'a> {
@@ -382,13 +433,11 @@ impl<'a> Hosted<'a> {
         Some(())
     }
 
-    /// Ends each of `with` but this actor, the actors whose code ran in the instance that trapped in this turn, as a
-    /// failed turn of its own would end it: the trap may have left the memory they live in half changed (ADR-0015).
-    /// The engine keeps what this asks for when the turn fails, as it keeps the turn's lines.
-    pub fn trapped(&mut self, with: impl IntoIterator<Item = Seated>) {
-        let Ok(fault) = Fault::new(&Trapped) else {
-            return;
-        };
+    /// Ends each of `with` but this actor, the actors whose code ran in the instance a call of this turn broke, as a
+    /// failed turn of its own would end it, for why it `broke`: what the call left in the memory they live in cannot be
+    /// trusted (ADR-0015). The engine keeps what this asks for when the turn fails, as it keeps the turn's lines.
+    pub fn broken(&mut self, broke: Broke, with: impl IntoIterator<Item = Seated>) {
+        let fault = broke.fault();
         for other in with {
             let is_other = other != self.seat.me;
             if is_other {

@@ -890,6 +890,33 @@ impl Actor for Forger {
     }
 }
 
+/// An actor that makes a reference to a blob out of an id it was told as numbers, and keeps it, reading nothing: its
+/// host finds, among what its `begin` changed of its references, one to a blob the guest was never given.
+#[derive(Bound)]
+pub struct Hoarder {
+    forged: BlobRef,
+}
+
+impl Kind for Hoarder {
+    const NAME: KindName = KindName::new("aether.guest.hoarder");
+}
+
+impl Actor for Hoarder {
+    type Config = Forge;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(forge: Forge, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self { forged: BlobRef::pin(BlobId::new(forge.engine, forge.bits)) })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
 /// An actor that, pinged for `n`, puts a blob of `n` sevens, spawns a librarian to keep it that tells no one, and then
 /// answers with a reference to a blob it was never given: its host refuses that send, and the turn fails with the librarian it stood
 /// up, which the engine never ends.
@@ -1096,6 +1123,7 @@ aethereal_actor::guest!(
     Boomerang,
     Librarian,
     Forger,
+    Hoarder,
     Spendthrift,
     Parting,
     Archive,
