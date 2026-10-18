@@ -175,17 +175,13 @@ impl<'a> Hosted<'a> {
         Ok(())
     }
 
-    /// Spawns, by `by`, the actor whose turn this is or a child it spawned, a child of the type `declared`, under
+    /// Spawns, by `by`, the actor whose turn this is or a child it spawned, a child of the type `from` makes, under
     /// `key`, in `seat`, as a turn spawns one: the spawn is asked for, and the child is the turn's to stand up with
-    /// [`Self::stand`] once its `begin` has run. Answers with the child: nothing when `by` is not who it says, the key
-    /// is not of the type's keying, or the key is taken, so the guest's records do not read back.
-    pub fn spawn(
-        &mut self,
-        by: Seated,
-        declared: &'static Declared,
-        key: Option<KeyName>,
-        seat: SeatNumber,
-    ) -> Option<Seated> {
+    /// [`Self::stand`] once its `begin` has run, or [`Self::take_in`] when its host ran that apart. Answers with the
+    /// child: nothing when `by` is not who it says, the key is not of the type's keying, or the key is taken, so the
+    /// guest's records do not read back.
+    pub fn spawn(&mut self, by: Seated, from: Code, key: Option<KeyName>, seat: SeatNumber) -> Option<Seated> {
+        let declared = from.declared();
         let by_path = if by == self.seat.me {
             self.seat.path.clone()
         } else {
@@ -206,11 +202,7 @@ impl<'a> Hosted<'a> {
         if is_taken {
             return None;
         }
-        let from = Code::Linked(declared);
-        let what = match key {
-            None => What::Spawn { from, seat },
-            Some(key) => What::SpawnInstanced { from, key, seat },
-        };
+        let what = key.map_or(What::Spawn { from, seat }, |key| What::SpawnInstanced { from, key, seat });
         self.seat.asked.buffers.effects.push(Effect::new(by, what));
         let me = Seated { id, seat };
         self.spawned.push(Spawned { me, path, declared, by, sent: 0 });
@@ -232,6 +224,23 @@ impl<'a> Hosted<'a> {
         self.seat.asked.stood.push(Stood { me, path: child.path.clone(), above, actor: runs });
 
         Some(())
+    }
+
+    /// Stands up `me`, a child [`Self::spawn`] spawned that is of other code than the turn's, run by `runs`: its host
+    /// began it apart while the turn's code waited on a call out, into `asked`, and what that `begin` asked for is
+    /// taken into this turn's, ahead of the child (ADR-0015). Nothing when the turn spawned no such child.
+    #[cfg(feature = "std")]
+    pub fn take_in(&mut self, me: Seated, asked: Asked, runs: Box<dyn Runs>) -> Option<()> {
+        self.spawned.iter().find(|child| child.me == me)?;
+        self.seat.asked.take_in(asked);
+
+        self.stand(me, runs)
+    }
+
+    /// Keeps the lines a child's `begin` logged into `asked`, one its host ran apart that was refused or taken back:
+    /// a refused child's lines are kept, as natively.
+    pub fn take_lines(&mut self, asked: &Asked) {
+        self.seat.asked.take_lines(asked);
     }
 
     /// Who spawned `me`, a child [`Self::spawn`] spawned in this turn, and what its type declares: nothing when the

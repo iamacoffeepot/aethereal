@@ -19,6 +19,8 @@ use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, Path
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+#[cfg(feature = "std")]
+use core::convert::Infallible;
 use core::fmt;
 use core::marker::PhantomData;
 use core::mem;
@@ -153,6 +155,58 @@ impl Asked {
     /// The seats children are given, for the engine to give back those of children that did not stay.
     pub fn seats_mut(&mut self) -> &mut Seats {
         &mut self.seats
+    }
+
+    /// The seats children are given and the blobs' puts, lent together: to a batch prepared ahead, whose turns'
+    /// children and blobs its host asks for in calls out (ADR-0015), and to a child its host begins apart.
+    pub fn lent(&mut self) -> (&mut Seats, &mut Puts) {
+        (&mut self.seats, &mut self.puts)
+    }
+
+    /// Takes in what `other` asked for: a child's `begin` its host ran apart from the turn that spawned it, while the
+    /// turn's code waited on a call out (ADR-0015). Its mail and lines are copied into this arena, each piece of mail
+    /// with pins of its own, and its effects and the children it stood up follow this turn's own.
+    #[cfg(feature = "std")]
+    pub fn take_in(&mut self, other: Self) {
+        self.take_lines(&other);
+        let Self { buffers, stood, stood_seats, arena, .. } = other;
+        for mailed in buffers.mailed {
+            self.copy_mail(&arena, mailed);
+        }
+        self.buffers.effects.extend(buffers.effects);
+        self.stood.extend(stood);
+        self.stood_seats.extend(stood_seats);
+    }
+
+    /// Copies the lines `other` logged into this arena, after this turn's own: what a child's `begin` its host ran
+    /// apart leaves when it was refused, as a refused child's lines are kept.
+    pub fn take_lines(&mut self, other: &Self) {
+        for line in &other.buffers.lines {
+            if let Ok(text) = self.arena.write_text(other.text(line)) {
+                self.buffers.lines.push(Line { text, ..*line });
+            }
+        }
+    }
+
+    /// Copies `mailed`, whose bytes lie in `from`, into this arena, piece by piece, each holding pins of its own on
+    /// the blobs it refers to.
+    #[cfg(feature = "std")]
+    fn copy_mail(&mut self, from: &Arena, mailed: Mailed) {
+        for (index, piece) in (0_u64..).zip(mailed.bytes.each_piece()) {
+            let Some(bytes) = from.read(piece) else {
+                continue;
+            };
+            let copied = self.arena.write_holding(|mut out, held| {
+                let base = u32::try_from(out.len()).unwrap_or(u32::MAX);
+                out.extend_from_slice(bytes);
+                from.pin_copied(piece, base, held);
+
+                (out, Ok::<(), Infallible>(()))
+            });
+            let Ok(copied) = copied;
+            let count = mailed.count + index;
+            self.buffers.mailed.push(Mailed { count, bytes: copied, ..mailed });
+        }
     }
 
     /// The arena the turn's mail and lines were written to.
@@ -573,6 +627,7 @@ impl Seat<'_> {
     }
 
     /// Stands up a child of type `C` under `key`: adds its spawn effect, then runs its `begin` here, lent `instances`.
+    /// A guest begins only its own types here, and asks its host to begin a child of any other (ADR-0015).
     fn spawn<C: Actor>(
         &mut self,
         instances: &mut Instances,
@@ -582,6 +637,16 @@ impl Seat<'_> {
         let segment = PathSegment::new(C::NAME, key);
         let (path, id) = self.free_child(&segment)?;
         let declared = Declared::of::<C>();
+        #[cfg(feature = "std")]
+        if !instances.is_own(declared) {
+            let guests = instances.guests();
+            let config = config_bytes(&config).map_err(|_| Refused::NotMade)?;
+            let from = Code::Linked(declared);
+
+            return self.spawn_other(instances, id, &segment, path, from, |birth| {
+                guests.begin_linked(declared, &config, birth)
+            });
+        }
         let (me, before) = self.ask_spawn(id, &segment, Code::Linked(declared));
 
         let stood_before = self.asked.stood.len();
@@ -628,19 +693,32 @@ impl Seat<'_> {
         let segment = PathSegment::new(C::NAME, key);
         let (path, id) = self.free_child(&segment)?;
         let guests = instances.guests();
-        let made = guests.made(code.id(), &C::NAME).ok_or(Refused::NotMade)?;
-        let declared = made.declared;
-        let is_same = *declared == *Declared::of::<C>();
-        if !is_same {
-            return Err(Refused::NotMade);
-        }
+        let made = guests.made(code.id(), Declared::of::<C>()).ok_or(Refused::NotMade)?;
         let config = config_bytes(config).map_err(|_| Refused::NotMade)?;
-        let (me, before) = self.ask_spawn(id, &segment, Code::Blob(made));
+
+        self.spawn_other(instances, id, &segment, path, Code::Blob(made), |birth| guests.begin(made, &config, birth))
+    }
+
+    /// Stands up the child `id`, which `segment` names beneath this actor at `path`, from `from`, code the turn does
+    /// not run: adds its spawn effect, then has `begin` begin it where its code runs, lent `instances`. The child is
+    /// taken back when its `begin` was refused.
+    #[cfg(feature = "std")]
+    fn spawn_other<C: Actor>(
+        &mut self,
+        instances: &mut Instances,
+        id: ActorId,
+        segment: &PathSegment,
+        path: ActorPath,
+        from: Code,
+        begin: impl FnOnce(Birth<'_>) -> Result<Box<dyn Runs>, Refused>,
+    ) -> Result<ActorRef<C>, Refused> {
+        let declared = from.declared();
+        let (me, before) = self.ask_spawn(id, segment, from);
 
         let stood_before = self.asked.stood.len();
         let above = Above::Actor(self.me, self.declared);
         let birth = Birth { me, path: &path, above, table: self.table, asked: &mut *self.asked, instances };
-        match guests.begin(made, &config, birth) {
+        match begin(birth) {
             Ok(actor) => {
                 self.stand(me, path, above, declared, actor);
 
@@ -676,10 +754,11 @@ impl Seat<'_> {
     fn ask_spawn(&mut self, id: ActorId, segment: &PathSegment, from: Code) -> (Seated, Marks) {
         let seat = self.asked.seats.take();
         let before = self.asked.buffers.marks();
-        let spawn = match segment.key() {
-            None => What::Spawn { from, seat },
-            Some(key) => What::SpawnInstanced { from, key: key.clone(), seat },
-        };
+        let spawn = segment.key().map_or(What::Spawn { from, seat }, |key| What::SpawnInstanced {
+            from,
+            key: key.clone(),
+            seat,
+        });
         self.ask(spawn);
 
         (Seated { id, seat }, before)
@@ -1056,8 +1135,8 @@ impl<'a, S: Sends> Beginning<'a, S> {
 
     /// The `begin` of an actor of type `A` that `me` names, at `path`, beneath `above`, reading `table`, adding to
     /// `asked`, and lent `instances`: for a guest's library, which begins an actor its host stood up from the guest's
-    /// blob, beneath a parent of any code or none (ADR-0015).
-    #[cfg(feature = "guest")]
+    /// blob, beneath a parent of any code or none, and for a guest's host, which begins a native child of a guest
+    /// (ADR-0015).
     #[must_use]
     pub fn beneath<A: Actor<BeginSends = S>>(
         me: Seated,

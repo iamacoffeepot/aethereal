@@ -1,8 +1,8 @@
 //! A guest that answers each ping it is sent with a pong, to its sender (ADR-0015).
 
 use aethereal_actor::{
-    Actor, Beginning, Ended, Ending, ErasedActorRef, Fault, Handles, How, Level, To, ToAny, ToSender, ToWithoutMail,
-    Turn,
+    Actor, Beginning, BlobRef, Ended, Ending, ErasedActorRef, Fault, Handles, How, Level, Refused, To, ToAny, ToSender,
+    ToType, ToWithoutMail, Turn,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindName, Plain};
 
@@ -519,4 +519,249 @@ impl Handles<Ping> for Reporter {
     }
 }
 
-aethereal_actor::guest!(Echo, Mirror, Responder, Doomed, Brood, Adder, Seeker, Watcher, Reporter);
+/// A number for why a spawn was refused, as a hatchling tells it.
+const fn refused(refused: &Refused) -> u64 {
+    match refused {
+        Refused::KeyTaken => 1,
+        Refused::TooDeep => 2,
+        Refused::Began(_) => 3,
+        Refused::NoRoom => 4,
+        Refused::NotMade => 5,
+        Refused::Waiting => 6,
+    }
+}
+
+/// A native actor the guest's crate holds but its blob does not make: one a guest spawns is begun by its host. It
+/// tells its parent, as it begins, a pong of a hundred and what it is made to add, and logs that it began.
+#[derive(Bound)]
+pub struct Chick;
+
+impl Kind for Chick {
+    const NAME: KindName = KindName::new("aether.guest.chick");
+}
+
+impl Actor for Chick {
+    type Config = AddBy;
+    type Key = u64;
+    type Handles = ();
+    type BeginSends = (ToAny<(Pong,), Pong>,);
+    type EndSends = ();
+
+    fn begin(config: AddBy, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.to_any::<(Pong,)>(ToWithoutMail::Parent).send(&Pong { n: 100 + config.by })?;
+        turn.log(Level::Info, "a chick began");
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// A native actor named as a chick is, which declares other handlers: a guest's spawn of it is refused, as what the
+/// program keeps of the name is not it.
+#[derive(Bound)]
+pub struct FakeChick;
+
+impl Kind for FakeChick {
+    const NAME: KindName = KindName::new("aether.guest.chick");
+}
+
+impl Actor for FakeChick {
+    type Config = AddBy;
+    type Key = u64;
+    type Handles = (Ping,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: AddBy, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for FakeChick {
+    type Sends = ();
+
+    fn handle(&mut self, _: Ping, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// A native actor no program keeps for a guest to spawn.
+#[derive(Bound)]
+pub struct Stray;
+
+impl Kind for Stray {
+    const NAME: KindName = KindName::new("aether.guest.stray");
+}
+
+impl Actor for Stray {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// Why a hatcher did not begin: a spawn was refused, for the reason numbered so.
+#[derive(Plain)]
+pub struct Unhatched {
+    pub why: u64,
+}
+
+impl Kind for Unhatched {
+    const NAME: KindName = KindName::new("aether.guest.unhatched");
+}
+
+/// The fault of a hatcher whose spawn was refused for `why`.
+fn unhatched(why: &Refused) -> Fault {
+    Fault::new(&Unhatched { why: refused(why) }).unwrap_or_else(|fault| fault.into())
+}
+
+/// What a hatcher is made from: another blob of code, and its own.
+#[derive(Bound)]
+pub struct Hatch {
+    pub other: BlobRef,
+    pub home: BlobRef,
+}
+
+impl Kind for Hatch {
+    const NAME: KindName = KindName::new("aether.guest.hatch");
+}
+
+/// An actor that spawns children of other code and tells its parent each pong they tell it. As it begins it spawns a
+/// reporter of the other blob, adding twenty, which it pings. On the `k`th word to grow it spawns a chick, a native
+/// child, adding `10 k + 2`; a stray and a fake chick, whose refusals it tells its parent as five and six hundred and
+/// why; and, on the first, a boomerang of the other blob, which it pings.
+#[derive(Bound)]
+pub struct Hatcher {
+    other: BlobRef,
+    home: BlobRef,
+    grown: u64,
+}
+
+impl Kind for Hatcher {
+    const NAME: KindName = KindName::new("aether.guest.hatcher");
+}
+
+impl Actor for Hatcher {
+    type Config = Hatch;
+    type Key = ();
+    type Handles = (Pong, Grow);
+    type BeginSends = (ToType<Reporter, Ping>,);
+    type EndSends = ();
+
+    fn begin(hatch: Hatch, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let reporter = turn.spawn_from::<Reporter>(&hatch.other, &7, &AddBy { by: 20, deeper: 0 });
+        turn.to_actor(reporter.map_err(|why| unhatched(&why))?).send(&Ping { n: 0 })?;
+
+        Ok(Self { other: hatch.other, home: hatch.home, grown: 0 })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Pong> for Hatcher {
+    type Sends = (ToAny<(Pong,), Pong>,);
+
+    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.to_any::<(Pong,)>(To::Parent).send(&pong)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Grow> for Hatcher {
+    type Sends = (ToType<Boomerang, Ping>, ToAny<(Pong,), Pong>);
+
+    fn handle(&mut self, _: Grow, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let chick = AddBy { by: 10 * self.grown + 2, deeper: 0 };
+        turn.spawn::<Chick>(&self.grown, chick).map_err(|why| unhatched(&why))?;
+        if let Err(why) = turn.spawn::<Stray>(&(), EchoConfig) {
+            turn.to_any::<(Pong,)>(To::Parent).send(&Pong { n: 500 + refused(&why) })?;
+        }
+        if let Err(why) = turn.spawn::<FakeChick>(&(100 + self.grown), AddBy { by: 0, deeper: 0 }) {
+            turn.to_any::<(Pong,)>(To::Parent).send(&Pong { n: 600 + refused(&why) })?;
+        }
+        let is_first = self.grown == 0;
+        if is_first {
+            let home = Home { home: self.home.clone() };
+            let boomerang = turn.spawn_from::<Boomerang>(&self.other, &(), &home).map_err(|why| unhatched(&why))?;
+            turn.to_actor(boomerang).send(&Ping { n: 0 })?;
+        }
+        self.grown += 1;
+
+        Ok(())
+    }
+}
+
+/// What a boomerang is made from: the blob of code that spawned it.
+#[derive(Bound)]
+pub struct Home {
+    pub home: BlobRef,
+}
+
+impl Kind for Home {
+    const NAME: KindName = KindName::new("aether.guest.home");
+}
+
+/// An actor that spawns a reporter of the blob it was spawned from: refused as it begins, as that blob's instance waits
+/// on the call out that begins it, which it tells its parent as three hundred and why, and made on a ping, which it
+/// tells as four hundred.
+#[derive(Bound)]
+pub struct Boomerang {
+    home: BlobRef,
+}
+
+impl Kind for Boomerang {
+    const NAME: KindName = KindName::new("aether.guest.boomerang");
+}
+
+impl Actor for Boomerang {
+    type Config = Home;
+    type Key = ();
+    type Handles = (Ping,);
+    type BeginSends = (ToAny<(Pong,), Pong>,);
+    type EndSends = ();
+
+    fn begin(home: Home, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let spawned = turn.spawn_from::<Reporter>(&home.home, &0, &AddBy { by: 0, deeper: 0 });
+        let n = spawned.err().map_or(300, |why| 300 + refused(&why));
+        turn.to_any::<(Pong,)>(ToWithoutMail::Parent).send(&Pong { n })?;
+
+        Ok(Self { home: home.home })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Boomerang {
+    type Sends = (ToAny<(Pong,), Pong>,);
+
+    fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let spawned = turn.spawn_from::<Reporter>(&self.home, &1, &AddBy { by: 0, deeper: 0 });
+        let n = spawned.err().map_or(400, |why| 400 + refused(&why));
+        turn.to_any::<(Pong,)>(To::Parent).send(&Pong { n })?;
+
+        Ok(())
+    }
+}
+
+aethereal_actor::guest!(Echo, Mirror, Responder, Doomed, Brood, Adder, Seeker, Watcher, Reporter, Hatcher, Boomerang);

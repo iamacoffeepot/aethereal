@@ -14,11 +14,16 @@
 //! them, as watches do: the actor whose turn it was, or a child it spawned, in
 //! its `begin`.
 //!
+//! A child of other code, a native kind or another blob's, the guest asks its
+//! host to begin in a call out, with a [`Spawning`]; the host answers as
+//! [`refusal`] writes it.
+//!
 //! Every number is little-endian, and every address is one in the guest's
 //! 32-bit memory.
 
-use crate::{Chain, Level, MailId, SeatNumber, Seated};
+use crate::{Chain, Fault, Level, MailId, Refused, SeatNumber, Seated};
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
+use alloc::vec::Vec;
 
 /// The head of an item in the inbox: what it is, its source's id and seat, its chain's root, sender and count, its
 /// depth, and the length of the bytes after it.
@@ -311,6 +316,85 @@ pub enum Parent {
     Beneath { id: u64, seat: u64 },
 }
 
+/// A child of other code a guest's turn spawns, as it asks its host to begin it: which of the call's turns spawns it,
+/// counted from zero, and who; the child, by its id and the seat the host gave it; where it stands; its code; its
+/// type's kind and what the guest holds that type declares, as a section writes it; and its config's bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+pub struct Spawning {
+    pub turn: u32,
+    pub by: u64,
+    pub by_seat: u64,
+    pub me: u64,
+    pub me_seat: u64,
+    pub path: ActorPath,
+    pub from: Other,
+    pub kind: KindName,
+    pub declared: Vec<u8>,
+    pub config: Vec<u8>,
+}
+
+/// The code of a child a guest asks its host to begin: a native kind the program keeps by name, or a blob's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Other {
+    Linked,
+    Blob { engine: u32, bits: u64 },
+}
+
+impl Spawning {
+    /// Who spawns the child.
+    #[must_use]
+    pub const fn by(&self) -> Seated {
+        Seated { id: ActorId::new(self.by), seat: SeatNumber::new(self.by_seat) }
+    }
+
+    /// The child.
+    #[must_use]
+    pub const fn me(&self) -> Seated {
+        Seated { id: ActorId::new(self.me), seat: SeatNumber::new(self.me_seat) }
+    }
+}
+
+/// What a host answers a [`Spawning`] with: zero when the child began, and else why it was refused, in the low 32
+/// bits, with the length of the bytes of the fault its `begin` returned in the high 32 bits, for the guest to make
+/// room for before it asks for them.
+#[must_use]
+pub fn refusal(refused: &Refused) -> u64 {
+    match refused {
+        Refused::KeyTaken => 1,
+        Refused::TooDeep => 2,
+        Refused::Began(fault) => 3 | u64::try_from(fault.bytes().len()).unwrap_or(0) << 32,
+        Refused::NoRoom => 4,
+        Refused::NotMade => 5,
+        Refused::Waiting => 6,
+    }
+}
+
+/// How a spawn whose host answered `answer`, as [`refusal`] writes it, ended: the fault of a `begin` that failed read
+/// with `fault`, handed the length of its bytes, which answers with the fault's reason's kind and its bytes.
+///
+/// # Errors
+///
+/// Why the spawn was refused.
+pub fn refused(answer: u64, fault: impl FnOnce(usize) -> Option<(KindId, Vec<u8>)>) -> Result<(), Refused> {
+    let refused = match answer & u64::from(u32::MAX) {
+        0 => return Ok(()),
+        1 => Refused::KeyTaken,
+        2 => Refused::TooDeep,
+        3 => {
+            let len = usize::try_from(answer >> 32).unwrap_or(0);
+            match fault(len) {
+                Some((kind, bytes)) => Refused::Began(Fault::of_parts(kind, bytes)),
+                None => Refused::NotMade,
+            }
+        }
+        4 => Refused::NoRoom,
+        6 => Refused::Waiting,
+        _ => Refused::NotMade,
+    };
+
+    Err(refused)
+}
+
 /// A child a turn spawned, as the spawn is asked for: by whom, of what type, under what key, and in what seat. A
 /// child whose `begin` failed has no record: its spawn was taken back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -414,6 +498,8 @@ pub enum Kept {
     /// Taken out, as it sits in another part: its path and state, written at `Within`, lie where `state` says, for its
     /// host to take into its own part's instance.
     Out { state: Span },
+    /// Nowhere in the guest: it is of other code, which its host began and holds.
+    Elsewhere,
 }
 
 impl StoodRecord {
@@ -436,6 +522,7 @@ impl StoodRecord {
                 out[40..44].copy_from_slice(&state.len.to_le_bytes());
                 1
             }
+            Kept::Elsewhere => 2,
         };
         out[32..36].copy_from_slice(&kept.to_le_bytes());
 
@@ -448,6 +535,7 @@ impl StoodRecord {
         let held = match u32_at(bytes, 32)? {
             0 => Kept::Here { handle: u32_at(bytes, 36)? },
             1 => Kept::Out { state: Span { at: u32_at(bytes, 36)?, len: u32_at(bytes, 40)? } },
+            2 => Kept::Elsewhere,
             _ => return None,
         };
 

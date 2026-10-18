@@ -333,6 +333,13 @@ impl Payload {
         }
     }
 
+    /// Each piece of mail it holds, in order, as a payload of its own: itself, but for a run.
+    pub fn each_piece(self) -> impl Iterator<Item = Self> {
+        let each = self.each();
+
+        (0..self.pieces()).map(move |index| self.piece(index, each))
+    }
+
     /// What it holds from the piece numbered `index` on, one of its pieces: itself, for the first.
     #[must_use]
     pub fn from_piece(self, index: u32) -> Self {

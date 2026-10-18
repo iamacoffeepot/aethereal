@@ -29,7 +29,7 @@ use crate::{
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, Actor, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Chain, Closing, Code, Declared, Effect,
-    Fault, Guests, How, Instances, Item, Mail, MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused, Runs,
+    Fault, Guests, How, Instances, Item, Links, Mail, MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused, Runs,
     SeatNumber, Seated, Seats, Stood, Turning, Unfit, What, Why, config_bytes,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
@@ -86,6 +86,9 @@ pub struct Engine {
     /// The guests' code the engine runs, which each part's instances carry (ADR-0015): none for an engine made
     /// without it.
     guests: Arc<dyn Guests>,
+    /// The native types the program keeps by name, which a guest may spawn, and each part's instances carry
+    /// (ADR-0009): none for an engine made without them.
+    links: Arc<Links>,
     /// The seats each part gives the children its turns spawn: its own free seats and new numbers, and those set
     /// aside for it in other parts (ADR-0013).
     seats: Vec<Seats>,
@@ -340,6 +343,7 @@ impl Engine {
             waiting: Vec::new(),
             instances: (0..parts.get()).map(|_| Instances::default()).collect(),
             guests: Arc::new(NoGuests),
+            links: Arc::default(),
             seats: (0..parts.get()).map(|part| Seats::of_part(new_seat(part), new_seat(parts.get()))).collect(),
             seated: vec![0; parts.get()],
             actors_seated: 0,
@@ -367,12 +371,27 @@ impl Engine {
     /// The engine, running the guests' code `guests` holds (ADR-0015): set as the engine is made, before any actor.
     #[must_use]
     pub fn with_guests(mut self, guests: Arc<dyn Guests>) -> Self {
-        for instances in &mut self.instances {
-            *instances = Instances::new(Arc::clone(&guests));
-        }
         self.guests = guests;
+        self.carry();
 
         self
+    }
+
+    /// The engine, keeping the native types `links` by name, for a guest to spawn (ADR-0009): set as the engine is
+    /// made, before any actor.
+    #[must_use]
+    pub fn with_links(mut self, links: Links) -> Self {
+        self.links = Arc::new(links);
+        self.carry();
+
+        self
+    }
+
+    /// Gives each part instances that carry the engine's guests' code and the native types it keeps.
+    fn carry(&mut self) {
+        for instances in &mut self.instances {
+            *instances = Instances::new(Arc::clone(&self.guests), Arc::clone(&self.links));
+        }
     }
 
     /// The table of actors, as of the last step.
@@ -492,11 +511,7 @@ impl Engine {
         config: &C::Config,
     ) -> Result<ActorId, Refused> {
         let segment = PathSegment::new(C::NAME, key);
-        let made = self.guests.made(code.id(), &C::NAME).ok_or(Refused::NotMade)?;
-        let is_same = *made.declared == *Declared::of::<C>();
-        if !is_same {
-            return Err(Refused::NotMade);
-        }
+        let made = self.guests.made(code.id(), Declared::of::<C>()).ok_or(Refused::NotMade)?;
         let config = config_bytes(config).map_err(|_| Refused::NotMade)?;
         let guests = Arc::clone(&self.guests);
 
@@ -565,10 +580,7 @@ impl Engine {
             }
         };
         self.take_back_lent(home, seats);
-        let made = match segment.key() {
-            None => What::Root { from },
-            Some(key) => What::RootInstanced { from, key: key.clone() },
-        };
+        let made = segment.key().map_or(What::Root { from }, |key| What::RootInstanced { from, key: key.clone() });
         buffers.effects.insert(0, Effect::new(me, made));
 
         self.table.made_root(id);
@@ -1304,7 +1316,8 @@ impl Reading<'_> {
                             sees: Sees::Step,
                             blobs: self.blobs,
                         };
-                        let reads = Reads { table: &table, made: &seat.made, seats: asked.seats_mut() };
+                        let (seats, puts) = asked.lent();
+                        let reads = Reads { table: &table, made: &seat.made, seats, puts };
                         actor.prepare(Preparing::new(&batch, instances, reads));
                     }
                     // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
@@ -1443,7 +1456,8 @@ impl Reading<'_> {
             sees: Sees::Run(lists.fusing.run(hop.run)),
             blobs: self.blobs,
         };
-        let reads = Reads { table: &table, made: &seat.made, seats: asked.seats_mut() };
+        let (seats, puts) = asked.lent();
+        let reads = Reads { table: &table, made: &seat.made, seats, puts };
         actor.prepare(Preparing::new(&batch::OneHop { reading: self, hop: &hop, lists }, instances, reads));
         let sent_before = stepped.sent;
         let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };

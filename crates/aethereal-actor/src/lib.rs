@@ -48,8 +48,8 @@ pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
 #[cfg(feature = "std")]
 pub use guests::config_bytes;
-pub use guests::{Birth, Guests, NoGuests, Unfit};
-pub use instances::Instances;
+pub use guests::{Birth, Guests, Link, Links, NoGuests, Unfit};
+pub use instances::{Instances, Lent};
 pub use item::Item;
 pub use mail::{Mail, MailId};
 pub use reference::{ActorRef, ErasedActorRef};

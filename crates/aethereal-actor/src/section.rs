@@ -81,6 +81,17 @@ pub const fn bytes<const N: usize>(types: &[&Declared]) -> [u8; N] {
     out
 }
 
+/// The section of the one type `declared`: what a guest's host compares what a guest holds of a type with, as each
+/// writes it the same way (ADR-0015).
+#[must_use]
+pub fn of(declared: &Declared) -> Vec<u8> {
+    let types = [declared];
+    let mut out = alloc::vec![0; len(&types)];
+    write(&types, &mut out);
+
+    out
+}
+
 /// Writes the section of `types` into `out` as far as it has room, and answers with how many bytes it takes.
 const fn write(types: &[&Declared], out: &mut [u8]) -> usize {
     let mut at = count(out, 0, types.len());

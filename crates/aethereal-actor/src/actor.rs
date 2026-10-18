@@ -1,8 +1,8 @@
 //! An actor: the calls the engine makes of it (ADR-0009, ADR-0013).
 
 use crate::{
-    Actors, Beginning, Chain, Children, Closing, Declared, Ending, Fault, HandledList, Instances, Item, Seated, Seats,
-    Sends, Table, Turning, Within,
+    Actors, Beginning, Chain, Children, Closing, Declared, Ending, Fault, HandledList, Instances, Item, Puts, Seated,
+    Seats, Sends, Table, Turning, Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
 use alloc::boxed::Box;
@@ -115,8 +115,8 @@ pub struct Preparing<'a> {
     reads: Reads<'a>,
 }
 
-/// What a batch's turns read of the engine, and the seats their children are given, lent to [`Runs::prepare`] so a
-/// turn computed ahead is answered as it would be in its own turn (ADR-0015).
+/// What a batch's turns read of the engine, the seats their children are given, and where the blobs they put go,
+/// lent to [`Runs::prepare`] so a turn computed ahead is answered as it would be in its own turn (ADR-0015).
 pub struct Reads<'a> {
     /// The table, as the batch's turns read it.
     pub table: &'a dyn Table,
@@ -124,6 +124,8 @@ pub struct Reads<'a> {
     pub made: &'a dyn Children,
     /// The seats the batch's children are given.
     pub seats: &'a mut Seats,
+    /// The puts of the worker, which a blob a turn computed ahead puts, or a child it spawns puts, goes into.
+    pub puts: &'a mut Puts,
 }
 
 impl<'a> Preparing<'a> {

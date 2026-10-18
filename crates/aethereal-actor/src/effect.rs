@@ -167,7 +167,7 @@ impl From<ToWithoutMail> for To {
 }
 
 /// The code an actor is made from (ADR-0009).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Code {
     /// The program's own actor type, as it declares itself (ADR-0013).
     Linked(&'static Declared),
@@ -181,6 +181,17 @@ pub enum Code {
 pub struct BlobType {
     pub blob: BlobId,
     pub declared: &'static Declared,
+}
+
+impl BlobType {
+    /// Whether it is the type of the blob `blob` that declares itself as `declared` does, by its kind.
+    #[must_use]
+    pub fn is(&self, blob: BlobId, declared: &Declared) -> bool {
+        let is_blob = self.blob == blob;
+        let is_kind = self.declared.id() == declared.id();
+
+        is_blob && is_kind
+    }
 }
 
 impl Code {

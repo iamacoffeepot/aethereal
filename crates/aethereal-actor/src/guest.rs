@@ -11,22 +11,24 @@
 //! where it lies, the bytes of mail and the text of lines among them. A child
 //! that sits in the part of the actor that spawned it lives in the same
 //! instance; one that sits in another part is taken out at [`Within`], for its
-//! host to take into that part's instance.
+//! host to take into that part's instance. A child of other code, a native
+//! type or another blob's, its host begins in a call out, and holds.
 
 use crate::records::{
-    Born, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, OutHead, Parent, SendRecord, Span, SpawnRecord,
-    StoodRecord, Stopped, TurnEnds, WatchRecord,
+    self, Born, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, Other, OutHead, Parent, SendRecord, Span,
+    SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds, WatchRecord,
 };
 use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Ended, Fault, How, Item};
-use crate::{Beginning, Instances, Mail, Peeked, Runs, SeatNumber, Seated, Seats};
-use crate::{Table, Turning, What, Within, WithinReader, WithinWriter};
+use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Mail, Peeked, Preparing, Refused, Runs};
+use crate::{SeatNumber, Seated, Seats, Table, Turning, Unfit, What, Within, WithinReader, WithinWriter, section};
 use aethereal_data::{
-    ActorId, ActorPath, Budget, Decode, DecodeError, Encode, PathSegment, Reader, Writer, from_bytes, to_bytes,
+    ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, PathSegment, Reader, Writer, from_bytes, to_bytes,
 };
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::mem;
 
 /// Begins an actor of one type as it is seated, where it stands, from its config's bytes.
@@ -105,6 +107,14 @@ pub struct Calls {
     pub take: fn() -> SeatNumber,
     /// Hands back the seat of a child that never began.
     pub give_back: fn(SeatNumber),
+    /// Begins the child of other code the [`Spawning`] written at the address, of the length, names: answers as
+    /// [`records::refusal`] writes it.
+    pub spawn: extern "C" fn(u32, u32) -> u64,
+    /// Writes the fault the `begin` of the last child of other code refused returned at the address: its reason's
+    /// kind, and then its bytes, of the length the spawn's answer said.
+    pub refusal: extern "C" fn(u32),
+    /// The actor types the guest's blob makes, which it begins itself: its host begins a child of any other.
+    pub made: &'static [&'static Declared],
 }
 
 /// What the guest holds: its actors, where its host writes what it hands in, and where it writes what it asked for.
@@ -117,7 +127,8 @@ struct Guest {
     /// state of children taken out.
     held: Vec<u8>,
     asked: Asked,
-    /// What its actors' turns are lent: a guest's actors are its own code, run in no instance, so it is always empty.
+    /// What its actors' turns are lent: a guest's actors are its own code, run in no instance, so it holds no
+    /// instance, and it carries the calls out to its host that begin a child of any other code.
     instances: Instances,
 }
 
@@ -136,6 +147,11 @@ std::thread_local! {
     static GUEST: RefCell<Guest> = RefCell::new(Guest::default());
     /// The seats the host gave in the call under way that are in another part than the actor whose call it is.
     static ELSEWHERE: RefCell<Vec<SeatNumber>> = const { RefCell::new(Vec::new()) };
+    /// Which of the call under way's turns is running, counted from zero.
+    static TURN: Cell<u32> = const { Cell::new(0) };
+    /// The type of each blob's the guest has spawned from, as it holds the type declares: kept for as long as the
+    /// guest runs, as what its own types declare is.
+    static BLOB_TYPES: RefCell<Vec<&'static BlobType>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The most bytes a guest's read of its mail allocates.
@@ -234,7 +250,7 @@ pub fn begin_at(types: &[Type], calls: &'static Calls, of: u32, me: u64, seat: u
         };
         guest.out.clear();
         guest.out.resize(OutHead::BYTES, 0);
-        write_ends(&mut guest.out, &guest.asked);
+        write_ends(&mut guest.out, &guest.asked, &mut Counted::default());
         guest.write_records(types, 1, 0, last);
 
         handle
@@ -318,20 +334,22 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         let mut ran: u32 = 0;
         let mut last = Last::Ran;
         let mut stood_before = 0;
+        let mut counted = Counted::default();
         for _ in 0..items {
             let Some((Peeked { item, source, chain }, after)) = read_item(rest) else {
                 break;
             };
             rest = after;
+            TURN.set(ran);
             stood_before = asked.stood_count();
             let Standing { path, above } = &*standing;
             let turning = Turning::new(*me, path, *above, &host, &host, asked, instances, 0, source, chain);
             let result = runs.turn(item, turning);
-            write_ends(out, asked);
+            write_ends(out, asked, &mut counted);
             ran += 1;
             last = match result {
                 Err(fault) => Last::Failed(fault),
-                Ok(()) if asks_close(asked) => Last::Closed,
+                Ok(()) if counted.closes => Last::Closed,
                 Ok(()) => Last::Ran,
             };
             // The engine asks for no turn after one that fails or closes the actor, so none is run.
@@ -381,11 +399,12 @@ fn ended(gone: Gone, source: Seated, bytes: &[u8]) -> Ended {
     Ended::new(source, how)
 }
 
-/// Where a child's state is, as its stood record is written: under a handle in this instance, or taken out, at an
-/// offset into the guest's held bytes and of a length.
+/// Where a child's state is, as its stood record is written: under a handle in this instance, taken out, at an
+/// offset into the guest's held bytes and of a length, or with its host, as it is of other code.
 enum Held {
     Here(u32),
     Out(usize, usize),
+    Elsewhere,
 }
 
 impl Guest {
@@ -397,8 +416,13 @@ impl Guest {
         if !is_hosted {
             *self.asked.seats_mut() = Seats::of_host(calls.take, calls.give_back);
         }
+        let is_calling = self.instances.is_guest();
+        if !is_calling {
+            self.instances = Instances::of_guest(Arc::new(Calling { calls }), calls.made);
+        }
         self.held.clear();
         ELSEWHERE.with_borrow_mut(Vec::clear);
+        TURN.set(0);
     }
 
     /// Keeps `runs`, the actor `me` names at `path`, under a new handle.
@@ -425,6 +449,11 @@ impl Guest {
             let Above::Actor(parent, _) = above else {
                 continue;
             };
+            let is_begun = (&*runs as &dyn Any).is::<Begun>();
+            if is_begun {
+                kept.push((me, parent, Held::Elsewhere));
+                continue;
+            }
             let standing = Standing { path, above };
             let is_dropped = is_failed && index >= stood_before;
             let is_elsewhere = ELSEWHERE.with_borrow(|elsewhere| elsewhere.contains(&me.seat));
@@ -474,9 +503,14 @@ impl Guest {
         let held_at = address(held.as_ptr());
         let in_held = |(at, len): (usize, usize)| Span { at: held_at + count(at), len: count(len) };
         let sends_at = out.len();
-        for piece in asked.mailed() {
-            let bytes = asked.arena().read(piece.bytes).unwrap_or_default();
-            let record = SendRecord { by: piece.by, to: piece.to, kind: piece.kind, bytes: span(bytes) };
+        for mailed in asked.mailed() {
+            let is_run = mailed.bytes.pieces() > 1;
+            if is_run {
+                write_run(out, asked, mailed);
+                continue;
+            }
+            let bytes = asked.arena().read(mailed.bytes).unwrap_or_default();
+            let record = SendRecord { by: mailed.by, to: mailed.to, kind: mailed.kind, bytes: span(bytes) };
             out.extend_from_slice(&record.to_bytes());
         }
         let lines_at = out.len();
@@ -499,6 +533,7 @@ impl Guest {
             let held = match held {
                 Held::Here(handle) => Kept::Here { handle },
                 Held::Out(at, len) => Kept::Out { state: in_held((at, len)) },
+                Held::Elsewhere => Kept::Elsewhere,
             };
             out.extend_from_slice(&StoodRecord { me, above, held }.to_bytes());
         }
@@ -539,34 +574,52 @@ impl Guest {
     }
 }
 
-/// Whether the turn that filled `asked` asked to close its actor.
-fn asks_close(asked: &Asked) -> bool {
-    asked.effects().iter().any(|effect| matches!(effect.what(), What::Close))
-}
-
 /// Whether `what` is the spawn of a child.
 const fn is_spawn(what: &What) -> bool {
     matches!(what, What::Spawn { .. } | What::SpawnInstanced { .. })
 }
 
-/// Writes where the turn just run ends in `asked`'s buffers, after the ends of the turns before it.
-fn write_ends(out: &mut Vec<u8>, asked: &Asked) {
-    let mut spawns = 0;
-    let mut watches = 0;
-    for effect in asked.effects() {
+/// Writes a record for each piece of `mailed`, a run of mail in `asked`, after `out`: each is a send its host checks
+/// and hands over. Kept out of line, as a turn seldom sends a run.
+#[cold]
+#[inline(never)]
+fn write_run(out: &mut Vec<u8>, asked: &Asked, mailed: &crate::Mailed) {
+    for piece in mailed.bytes.each_piece() {
+        let bytes = asked.arena().read(piece).unwrap_or_default();
+        let record = SendRecord { by: mailed.by, to: mailed.to, kind: mailed.kind, bytes: span(bytes) };
+        out.extend_from_slice(&record.to_bytes());
+    }
+}
+
+/// How far a call's turns' ends have been counted in what they asked for, so each turn counts only what it added.
+#[derive(Default)]
+struct Counted {
+    mailed: usize,
+    effects: usize,
+    ends: TurnEnds,
+    /// Whether the turn counted last asked to close its actor.
+    closes: bool,
+}
+
+/// Writes where the turn just run ends in `asked`'s buffers, after the ends of the turns before it, which `counted`
+/// says, counting what it added: a send for each piece of mail, as a run's pieces are each a send.
+fn write_ends(out: &mut Vec<u8>, asked: &Asked, counted: &mut Counted) {
+    let Counted { mailed, effects, ends, closes } = counted;
+    for added in &asked.mailed()[*mailed..] {
+        ends.sends += added.bytes.pieces();
+    }
+    for effect in &asked.effects()[*effects..] {
         match effect.what() {
-            What::Spawn { .. } | What::SpawnInstanced { .. } => spawns += 1,
-            What::Watch { .. } => watches += 1,
+            What::Spawn { .. } | What::SpawnInstanced { .. } => ends.spawns += 1,
+            What::Watch { .. } => ends.watches += 1,
+            What::Close => *closes = true,
             _ => {}
         }
     }
-    let ends = TurnEnds {
-        sends: count(asked.mailed().len()),
-        lines: count(asked.lines().len()),
-        spawns,
-        stood: count(asked.stood_count()),
-        watches,
-    };
+    *mailed = asked.mailed().len();
+    *effects = asked.effects().len();
+    ends.lines = count(asked.lines().len());
+    ends.stood = count(asked.stood_count());
     out.extend_from_slice(&ends.to_bytes());
 }
 
@@ -601,6 +654,115 @@ pub fn given_seat(given: u64) -> SeatNumber {
     }
 
     seat
+}
+
+/// What a guest's turns reach other code through: its host, which begins a child of a native type or of another
+/// blob's in a call out, and holds it (ADR-0015).
+struct Calling {
+    calls: &'static Calls,
+}
+
+impl Guests for Calling {
+    /// Refused: a guest takes in no code.
+    fn load(&self, _: BlobId, _: &[u8]) -> Result<(), Unfit> {
+        Err(Unfit::NoRuntime)
+    }
+
+    fn unload(&self, _: BlobId) {}
+
+    /// The type the guest holds `declared` declares, of the blob `code`: its host checks that the blob makes it as
+    /// the guest holds it when it is asked to begin a child of it, and refuses the child otherwise.
+    fn made(&self, code: BlobId, declared: &'static Declared) -> Option<&'static BlobType> {
+        BLOB_TYPES.with_borrow_mut(|types| {
+            let known = types.iter().copied().find(|made| made.is(code, declared));
+            if let Some(made) = known {
+                return Some(made);
+            }
+            let made: &'static BlobType = Box::leak(Box::new(BlobType { blob: code, declared }));
+            types.push(made);
+
+            Some(made)
+        })
+    }
+
+    fn begin(&self, made: &'static BlobType, config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Runs>, Refused> {
+        let from = Other::Blob { engine: made.blob.engine(), bits: made.blob.bits() };
+
+        self.spawn(from, made.declared, config, &birth)
+    }
+
+    fn begin_linked(
+        &self,
+        declared: &'static Declared,
+        config: &[u8],
+        birth: Birth<'_>,
+    ) -> Result<Box<dyn Runs>, Refused> {
+        self.spawn(Other::Linked, declared, config, &birth)
+    }
+}
+
+impl Calling {
+    /// Asks the host to begin `birth`'s child, of the type `declared` of the code `from`, from `config`: answers with
+    /// what the guest holds of it, which it keeps nothing of, once it began.
+    fn spawn(
+        &self,
+        from: Other,
+        declared: &'static Declared,
+        config: &[u8],
+        birth: &Birth<'_>,
+    ) -> Result<Box<dyn Runs>, Refused> {
+        let by = match birth.above {
+            Above::Actor(by, _) | Above::Elsewhere(by) => by,
+            Above::Chassis => return Err(Refused::NotMade),
+        };
+        let spawning = Spawning {
+            turn: TURN.get(),
+            by: by.id.bits(),
+            by_seat: by.seat.number(),
+            me: birth.me.id.bits(),
+            me_seat: birth.me.seat.number(),
+            path: birth.path.clone(),
+            from,
+            kind: declared.name().clone(),
+            declared: section::of(declared),
+            config: config.to_vec(),
+        };
+        let bytes = to_bytes(&spawning).map_err(|_| Refused::NotMade)?;
+        let answer = (self.calls.spawn)(address(bytes.as_ptr()), count(bytes.len()));
+        records::refused(answer, |len| {
+            let mut fault = alloc::vec![0; 8 + len];
+            (self.calls.refusal)(address(fault.as_mut_ptr()));
+            let bytes = fault.split_off(8);
+            let kind = from_bytes::<KindId>(&fault, &mut Budget::new(8)).ok()?;
+
+            Some((kind, bytes))
+        })?;
+
+        Ok(Box::new(Begun { declared }))
+    }
+}
+
+/// A child of other code that the guest's host began, as the guest's turn holds it: the guest keeps nothing of it,
+/// and its host hands it to the engine (ADR-0015).
+struct Begun {
+    declared: &'static Declared,
+}
+
+impl Runs for Begun {
+    fn declared(&self) -> &'static Declared {
+        self.declared
+    }
+
+    fn prepare(&mut self, _: Preparing<'_>) {}
+
+    /// Nothing: the guest never runs it, as it keeps nothing of it.
+    fn turn(&mut self, _: Item<'_>, _: Turning<'_>) -> Result<(), Fault> {
+        Ok(())
+    }
+
+    fn end(self: Box<Self>, _: Closing<'_>) -> Result<(), Fault> {
+        Ok(())
+    }
 }
 
 /// What a guest's turn reads of the engine, asked of its host in calls out. It holds the declaration of no other
@@ -700,6 +862,8 @@ macro_rules! guest {
                 safe fn aethereal_held(id: u64) -> u32;
                 safe fn aethereal_take_seat() -> u64;
                 safe fn aethereal_give_back_seat(seat: u64);
+                safe fn aethereal_spawn(spawning: u32, len: u32) -> u64;
+                safe fn aethereal_refusal(fault: u32);
             }
 
             fn take() -> $crate::SeatNumber {
@@ -719,6 +883,9 @@ macro_rules! guest {
                 held: aethereal_held,
                 take,
                 give_back,
+                spawn: aethereal_spawn,
+                refusal: aethereal_refusal,
+                made: TYPES,
             };
 
             #[unsafe(no_mangle)]
