@@ -21,12 +21,16 @@ mod declared;
 mod effect;
 mod ended;
 mod fault;
+#[cfg(feature = "guest")]
+pub mod guest;
 mod guests;
 mod instances;
 mod item;
 mod mail;
+pub mod records;
 mod reference;
 mod seat;
+pub mod section;
 mod turn;
 
 pub use actor::{Actor, Batch, Peeked, Preparing, Reads, Runs};
