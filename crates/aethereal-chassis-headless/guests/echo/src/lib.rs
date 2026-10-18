@@ -23,6 +23,14 @@ impl Kind for Pong {
     const NAME: KindName = KindName::new("aether.guest.pong");
 }
 
+/// One to count, which an echo counts and does not answer.
+#[derive(Plain)]
+pub struct Increment;
+
+impl Kind for Increment {
+    const NAME: KindName = KindName::new("aether.guest.increment");
+}
+
 /// What an echo is made from: nothing.
 #[derive(Plain)]
 pub struct EchoConfig;
@@ -35,6 +43,7 @@ impl Kind for EchoConfig {
 #[derive(Bound)]
 pub struct Echo {
     answered: u64,
+    counted: u64,
 }
 
 impl Kind for Echo {
@@ -44,14 +53,14 @@ impl Kind for Echo {
 impl Actor for Echo {
     type Config = EchoConfig;
     type Key = ();
-    type Handles = (Ping,);
+    type Handles = (Ping, Increment);
     type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         turn.log(Level::Info, "echo began");
 
-        Ok(Self { answered: 0 })
+        Ok(Self { answered: 0, counted: 0 })
     }
 
     fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
@@ -65,6 +74,16 @@ impl Handles<Ping> for Echo {
     fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         self.answered += 1;
         turn.reply(&Pong { n: ping.n })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Increment> for Echo {
+    type Sends = ();
+
+    fn handle(&mut self, _: Increment, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        self.counted += 1;
 
         Ok(())
     }
