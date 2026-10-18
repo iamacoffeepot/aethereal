@@ -6,6 +6,8 @@
 //! plan says (ADR-0011).
 
 mod clock;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod guest;
 mod pool;
 mod rehearsal;
 #[cfg(test)]
