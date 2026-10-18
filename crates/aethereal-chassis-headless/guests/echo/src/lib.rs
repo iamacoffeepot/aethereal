@@ -1001,6 +1001,87 @@ impl Handles<Shut> for Parting {
     }
 }
 
+/// What an archive is made from: the book its readers keep, and how many readers it spawns.
+#[derive(Bound)]
+pub struct Stacks {
+    pub book: BlobRef,
+    pub readers: u64,
+}
+
+impl Kind for Stacks {
+    const NAME: KindName = KindName::new("aether.guest.stacks");
+}
+
+/// An actor that spawns readers as it begins, each keeping a reference to the book it was made with, and keeps none
+/// itself.
+#[derive(Bound)]
+pub struct Archive;
+
+impl Kind for Archive {
+    const NAME: KindName = KindName::new("aether.guest.archive");
+}
+
+impl Actor for Archive {
+    type Config = Stacks;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(stacks: Stacks, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        for key in 0..stacks.readers {
+            if turn.spawn::<Reader>(&key, Book { blob: stacks.book.clone() }).is_err() {
+                turn.log(Level::Error, "a reader was refused");
+            }
+        }
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// An actor that keeps a reference to a book, and answers a ping with a pong of the ping's number and the length it
+/// reads the book to be, and closes.
+#[derive(Bound)]
+pub struct Reader {
+    book: BlobRef,
+}
+
+impl Kind for Reader {
+    const NAME: KindName = KindName::new("aether.guest.reader");
+}
+
+impl Actor for Reader {
+    type Config = Book;
+    type Key = u64;
+    type Handles = (Ping,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(book: Book, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self { book: book.blob })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Reader {
+    type Sends = (ToSender<Pong>,);
+
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let n = ping.n + turn.read(&self.book).len() as u64;
+        turn.reply(&Pong { n })?;
+        turn.close();
+
+        Ok(())
+    }
+}
+
 aethereal_actor::guest!(
     Echo,
     Mirror,
@@ -1016,5 +1097,7 @@ aethereal_actor::guest!(
     Librarian,
     Forger,
     Spendthrift,
-    Parting
+    Parting,
+    Archive,
+    Reader
 );
