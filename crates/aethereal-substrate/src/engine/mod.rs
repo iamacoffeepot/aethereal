@@ -198,8 +198,6 @@ pub struct Reading<'a> {
     hops: usize,
     /// The most nanoseconds one actor's turns take in the step before the rest of its items are carried over.
     slice: u64,
-    /// What each kind of turn has cost, by which a batch is sized to what is left of its actor's slice.
-    costs: &'a Costs,
 }
 
 /// What a step hands out and takes back, kept empty between steps for its room.
@@ -420,7 +418,7 @@ impl Engine {
     pub fn add_root<A: Actor>(&mut self, key: &A::Key, config: A::Config) -> Result<ActorId, Refused> {
         let segment = PathSegment::new(A::NAME, key);
 
-        self.add_root_made(segment, Declared::of::<A>(), |me, path, table, asked| {
+        self.add_root_made(&segment, Declared::of::<A>(), |me, path, table, asked| {
             let root = A::begin(config, &mut Beginning::new::<A>(me, path, table, asked))?;
 
             Ok(Box::new(root))
@@ -440,12 +438,12 @@ impl Engine {
     /// Panics when an actor is made under an id the table already holds for another path (ADR-0008).
     pub fn add_root_made(
         &mut self,
-        segment: PathSegment,
+        segment: &PathSegment,
         declared: &'static Declared,
         begin: impl FnOnce(Seated, &ActorPath, &dyn aethereal_actor::Table, &mut Asked) -> Result<Box<dyn Runs>, Fault>,
     ) -> Result<ActorId, Refused> {
-        let id = root_id(&segment);
-        let path = ActorPath::from_root(&segment);
+        let id = root_id(segment);
+        let path = ActorPath::from_root(segment);
         let is_taken = self.table.holds_root(id);
         if is_taken {
             return Err(Refused::KeyTaken);
@@ -462,13 +460,13 @@ impl Engine {
         let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats, self.puts(ROOTS, blob_room));
         let stood_before = ByActor::default();
         let table = Since { table: &self.table, stood: &stood_before, sees: Sees::Step, blobs: &self.blobs };
-        let began = begin(me, &path, &table, &mut asked);
+        let made = begin(me, &path, &table, &mut asked);
         let (buffers, stood, arena, mut seats, mut puts) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
         // A root is made between steps, when nothing reads the store, so what its `begin` put is taken in at once.
         self.blobs.take_in(&mut puts);
         self.puts[ROOTS] = puts;
-        let root = match began {
+        let root = match made {
             Ok(root) => root,
             Err(fault) => {
                 seats.give_back(me.seat);
@@ -549,7 +547,6 @@ impl Engine {
             read_limit: self.read_limit,
             hops: self.hops,
             slice: self.slice,
-            costs: &self.costs,
         };
         for (part, _) in &self.packing.parts {
             let room = Room {
@@ -735,7 +732,6 @@ impl Engine {
             read_limit: self.read_limit,
             hops: self.hops,
             slice: self.slice,
-            costs: &self.costs,
         }
     }
 
@@ -1181,30 +1177,7 @@ impl Reading<'_> {
 
         match (work, life.state()) {
             (Work::Closing, State::Ending(ending)) => {
-                let (how, context) = &**ending;
-                // Timed whole, as a turn of a waiting item is.
-                tally.time(key(ItemKind::Closing), clock, || {
-                    asked.next_turn();
-                    let why = why(how);
-                    let closing = Closing::new(me, &seat.path, seat.above, self.table, asked, life.sent(), why);
-                    let ended = actor.end(closing);
-                    let buffers = asked.buffers_mut();
-                    // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds
-                    // its fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after
-                    // what the turn sent.
-                    if let Err(fault) = ended {
-                        keep_lines(buffers);
-                        buffers.effects.push(Effect::new(me, What::EndFailed(fault)));
-                    }
-                    buffers.effects.push(Effect::new(me, What::Ended(how.clone())));
-                    if lists.fusing.may_hop() {
-                        let sends = buffers.mailed.iter().filter(|mailed| is_send_by(mailed, me)).count();
-                        lists.fusing.hops.closing += u64::try_from(sends).unwrap_or(u64::MAX);
-                    }
-
-                    let ran = Ran { stood: Vec::new(), context: *context };
-                    lists.route(ran, asked, me.id);
-                });
+                self.closing(actor, me, seat, life.sent(), ending, clock, tally, asked, lists);
                 // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
                 seating.seated.remove(me);
                 lists.freed.push(me.seat);
@@ -1219,65 +1192,59 @@ impl Reading<'_> {
                     fresh
                 };
                 // An actor that sends is kept to its slice, the rest of its items carried over, so what it sends
-                // runs on other workers while it goes on; one that sends nothing would only take more steps. It is
-                // handed its items in batches, each as many as what is left of its slice is expected to cover.
+                // runs on other workers while it goes on; one that sends nothing would only take more steps. Its
+                // items are prepared in batches, each the turns between two looks at the clock, so the slice ends
+                // only where a batch does.
                 let mut slice = Slice::new(self.slice);
                 let mut pieces = streams.items(&run);
                 let carried = streams.carried();
-                let mut taken = 0;
                 let mut is_spent = false;
-                'batches: loop {
-                    let fits = self.fits(&mut slice, clock, seat.kind, &pieces);
-                    actor.prepare(&batch::Waiting { reading: self, pieces: &pieces, carried, fits });
-                    for _ in 0..fits {
-                        let Some(handed) = pieces.next() else {
-                            break 'batches;
+                while let Some(handed) = pieces.next() {
+                    // A batch is prepared once its first item is in hand, so it holds at least one.
+                    let begins_batch = slice.taken.is_multiple_of(SLICE_EVERY);
+                    if begins_batch {
+                        actor.prepare(&batch::Waiting { reading: self, first: handed, rest: &pieces, carried });
+                    }
+                    // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
+                    // worker, beyond what the actor's code takes.
+                    tally.time(key(item_kind(handed)), clock, || {
+                        let table = Since {
+                            table: self.table,
+                            stood: &lists.fusing.stood,
+                            sees: Sees::Step,
+                            blobs: self.blobs,
                         };
-                        // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
-                        // worker, beyond what the actor's code takes.
-                        tally.time(key(item_kind(handed)), clock, || {
-                            let table = Since {
-                                table: self.table,
-                                stood: &lists.fusing.stood,
-                                sees: Sees::Step,
-                                blobs: self.blobs,
-                            };
-                            asked.next_turn();
-                            let source = handed.source();
-                            let (item, context) = batch::read(handed, self, carried);
-                            // The item sits one above what the turn sends in its chain.
-                            let chain = Chain { root: context.root, depth: context.depth - 1 };
-                            let turning = Turning::new(
-                                me,
-                                &seat.path,
-                                seat.above,
-                                &table,
-                                &seat.made,
-                                asked,
-                                stepped.sent,
-                                source,
-                                chain,
-                            );
-                            let ran = Ran::of(me, actor.turn(item, turning), asked, context);
+                        asked.next_turn();
+                        let source = handed.source();
+                        let (item, context) = batch::read(handed, self, carried);
+                        // The item sits one above what the turn sends in its chain.
+                        let chain = Chain { root: context.root, depth: context.depth - 1 };
+                        let turning = Turning::new(
+                            me,
+                            &seat.path,
+                            seat.above,
+                            &table,
+                            &seat.made,
+                            asked,
+                            stepped.sent,
+                            source,
+                            chain,
+                        );
+                        let ran = Ran::of(me, actor.turn(item, turning), asked, context);
 
-                            Self::finish(me, ran, Origin::Waiting, seating, lives, asked, lists, &mut stepped);
-                        });
-                        taken += 1;
-                        if stepped.ended {
-                            break 'batches;
-                        }
+                        Self::finish(me, ran, Origin::Waiting, seating, lives, asked, lists, &mut stepped);
+                    });
+                    if stepped.ended {
+                        break;
                     }
                     let has_sent = stepped.sent > sent_before;
-                    is_spent = has_sent && slice.is_spent(clock);
-                    // A batch holds at least one item, so none is prepared once every item is taken.
-                    let is_taken = pieces.clone().next().is_none();
-                    let is_done = is_spent || is_taken;
-                    if is_done {
+                    is_spent = slice.is_spent(clock) && has_sent;
+                    if is_spent {
                         break;
                     }
                 }
                 if is_spent && !stepped.ended {
-                    streams.carry(&run, taken, self.mail);
+                    streams.carry(&run, slice.taken, self.mail);
                     lists.fusing.carry(me.id.bits());
                 }
 
@@ -1294,29 +1261,46 @@ impl Reading<'_> {
             _ => put_back(actors, me, actor),
         }
     }
-}
 
-impl Reading<'_> {
-    /// How many of the items `pieces` holds an actor of kind `actor` is expected to run in what is left of `slice`:
-    /// all, for an actor kept to no slice; as many as the clock is read after, as a slice is checked, while what its
-    /// next item's kind costs is not known; and otherwise as many as that cost goes into what is left, at least one.
-    fn fits(&self, slice: &mut Slice, clock: &impl Clock, actor: KindId, pieces: &stream::Pieces<'_>) -> usize {
-        if !slice.is_kept() {
-            return usize::MAX;
-        }
-        // Most actors have fewer items than the clock is read after, and their slice is never timed.
-        let is_first = slice.is_untimed();
-        if is_first {
-            return SLICE_EVERY as usize;
-        }
-        let Some(next) = pieces.clone().next() else {
-            return 0;
-        };
-        let Some(cost) = self.costs.measured(&CostKey { actor, item: item_kind(next) }) else {
-            return SLICE_EVERY as usize;
-        };
+    /// The closing turn of the actor `me` names, sitting as `sitting` says, which has sent `sent` pieces of mail and whose life
+    /// ended as `ending` says: measured into `tally`, what it asks for added to `asked` and routed into `lists`.
+    #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
+    fn closing(
+        &self,
+        actor: Box<dyn Runs>,
+        me: Seated,
+        sitting: &Sitting,
+        sent: u64,
+        ending: &(How, Context),
+        clock: &impl Clock,
+        tally: &mut Tally,
+        asked: &mut Asked,
+        lists: &mut Lists,
+    ) {
+        let (how, context) = ending;
+        // Timed whole, as a turn of a waiting item is.
+        tally.time(CostKey { actor: sitting.kind, item: ItemKind::Closing }, clock, || {
+            asked.next_turn();
+            let why = why(how);
+            let closing = Closing::new(me, &sitting.path, sitting.above, self.table, asked, sent, why);
+            let ended = actor.end(closing);
+            let buffers = asked.buffers_mut();
+            // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds
+            // its fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after
+            // what the turn sent.
+            if let Err(fault) = ended {
+                keep_lines(buffers);
+                buffers.effects.push(Effect::new(me, What::EndFailed(fault)));
+            }
+            buffers.effects.push(Effect::new(me, What::Ended(how.clone())));
+            if lists.fusing.may_hop() {
+                let sends = buffers.mailed.iter().filter(|mailed| is_send_by(mailed, me)).count();
+                lists.fusing.hops.closing += u64::try_from(sends).unwrap_or(u64::MAX);
+            }
 
-        usize::try_from(slice.left(clock) / cost.max(1)).unwrap_or(usize::MAX).max(1)
+            let ran = Ran { stood: Vec::new(), context: *context };
+            lists.route(ran, asked, me.id);
+        });
     }
 }
 
@@ -1744,57 +1728,39 @@ const fn why(how: &How) -> Why {
     }
 }
 
-/// How many turns an actor kept to a slice runs between looks at the clock.
+/// How many turns an actor kept to a slice runs between looks at the clock: the most items a batch holds.
 const SLICE_EVERY: u32 = 32;
 
 /// How far one actor has gone into its slice of a step: how many turns it has taken, and when its slice began.
 struct Slice {
     /// The most nanoseconds its turns take: none past `u64::MAX`, which keeps it to no slice.
     nanos: u64,
-    began: Began,
-}
-
-/// When an actor's slice began to be timed.
-#[derive(Clone, Copy)]
-enum Began {
-    /// Not yet: the clock has not been read for it.
-    Not,
-    At(u64),
+    taken: u32,
+    began: u64,
 }
 
 impl Slice {
     /// An actor's slice of `nanos` nanoseconds, before it has taken a turn.
     const fn new(nanos: u64) -> Self {
-        Self { nanos, began: Began::Not }
+        Self { nanos, taken: 0, began: 0 }
     }
 
-    /// Whether the clock has not yet been read for it.
-    const fn is_untimed(&self) -> bool {
-        matches!(self.began, Began::Not)
-    }
-
-    /// Whether the slice keeps the actor to anything.
-    const fn is_kept(&self) -> bool {
-        self.nanos != u64::MAX
-    }
-
-    /// The nanoseconds left of it, timed from the first time this is asked.
-    fn left(&mut self, clock: &impl Clock) -> u64 {
-        let now = clock.nanos();
-        let began = match self.began {
-            Began::Not => {
-                self.began = Began::At(now);
-                now
-            }
-            Began::At(began) => began,
-        };
-
-        self.nanos.saturating_sub(now.saturating_sub(began))
-    }
-
-    /// Whether the actor has run past its slice.
+    /// Counts a turn taken, and answers whether the actor has run past its slice. The clock is read every
+    /// [`SLICE_EVERY`] turns, at the end of a batch, and the slice timed from the first read, so an actor with few
+    /// items reads it never.
     fn is_spent(&mut self, clock: &impl Clock) -> bool {
-        self.is_kept() && self.left(clock) == 0
+        self.taken += 1;
+        let is_kept = self.nanos != u64::MAX;
+        let is_checked = is_kept && self.taken.is_multiple_of(SLICE_EVERY);
+        if !is_checked {
+            return false;
+        }
+        let now = clock.nanos();
+        if self.taken == SLICE_EVERY {
+            self.began = now;
+        }
+
+        now.saturating_sub(self.began) >= self.nanos
     }
 }
 

@@ -9,10 +9,12 @@ use aethereal_actor::{
 };
 use aethereal_data::{ActorId, Budget, KindId, PathSegment, from_bytes};
 use aethereal_substrate::Engine;
+use std::mem;
 use std::sync::{Arc, Mutex, MutexGuard};
 use wasmtime::{Memory, Module, Store, TypedFunc};
 
 /// What runs guests' code: one compiler, for every blob.
+#[derive(Default)]
 pub struct Guests {
     engine: wasmtime::Engine,
 }
@@ -70,12 +72,6 @@ enum Ran {
     At { out: u64, read: usize },
     /// The call that ran them trapped: every turn of the batch fails.
     Trapped,
-}
-
-impl Default for Guests {
-    fn default() -> Self {
-        Self { engine: wasmtime::Engine::default() }
-    }
 }
 
 impl Guests {
@@ -178,7 +174,7 @@ pub fn add_root(
     };
     let segment = PathSegment::new(declared.name().clone(), &());
 
-    engine.add_root_made(segment, declared, |me, path, table, asked| {
+    engine.add_root_made(&segment, declared, |me, path, table, asked| {
         let mut hosted = Hosted::beginning(me, path, table, asked, declared);
         let mut guard = lock(instance);
         let held = &mut *guard;
@@ -210,15 +206,13 @@ impl Runs for Guest {
     fn prepare(&mut self, batch: &dyn Batch) {
         let mut guard = lock(&self.instance);
         let held = &mut *guard;
-        let mut staged = std::mem::take(&mut held.staged);
+        let mut staged = mem::take(&mut held.staged);
         let items = stage(batch, &mut staged);
         let len = held.write_inbox(&[&staged]);
         held.staged = staged;
         let called = held.turns.call(&mut held.store, (self.handle, items, len));
-        self.ran = match called {
-            Ok(out) => Ran::At { out, read: 4 },
-            Err(_) => Ran::Trapped,
-        };
+        drop(guard);
+        self.ran = called.map_or(Ran::Trapped, |out| Ran::At { out, read: 4 });
     }
 
     /// Hands back the next turn [`Self::prepare`] ran: what it asked for, each send checked against what the guest
@@ -305,8 +299,8 @@ impl Instance {
 
     /// What the guest's last call asked for, where it lies in the guest's memory, which `out` says.
     fn out_bytes(&self, out: u64) -> Option<&[u8]> {
-        let at = (out >> 32) as usize;
-        let len = (out & u64::from(u32::MAX)) as usize;
+        let at = usize::try_from(out >> 32).ok()?;
+        let len = usize::try_from(out & u64::from(u32::MAX)).ok()?;
 
         self.memory.data(&self.store).get(at..at + len)
     }
@@ -340,8 +334,8 @@ fn read_turn(out: &mut &[u8], hosted: &mut Hosted<'_>) -> Option<Result<(), Faul
         let len = take_u32(out)? as usize;
         let bytes = take(out, len)?;
         let to = Seated { id: ActorId::new(id), seat: SeatNumber::new(seat) };
-        let sent = hosted.send(to, kind, bytes);
-        if sent.is_err() {
+        let is_refused = hosted.send(to, kind, bytes).is_err();
+        if is_refused {
             return Some(Err(Fault::new(&FalseSend).unwrap_or_else(|_| trapped())));
         }
     }
@@ -354,7 +348,7 @@ fn read_turn(out: &mut &[u8], hosted: &mut Hosted<'_>) -> Option<Result<(), Faul
             _ => Level::Error,
         };
         let len = take_u32(out)? as usize;
-        let text = std::str::from_utf8(take(out, len)?).ok()?;
+        let text = str::from_utf8(take(out, len)?).ok()?;
         hosted.log(level, text);
     }
 

@@ -57,8 +57,8 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized + 'static
 /// 2. Turns are asked for in the order `prepare` showed their items, each item once, and `turn` is handed the item
 ///    itself.
 /// 3. Every prepared item's turn is asked for, unless one of the actor's own turns fails or asks to close it: then no
-///    turn after that one is asked for, in this batch or any other. Nothing else cuts a batch short: the engine
-///    decides how many items fit in what is left of the actor's slice before it prepares them.
+///    turn after that one is asked for, in this batch or any other. Nothing else cuts a batch short: the engine looks
+///    at the clock for the actor's slice only between batches.
 /// 4. A batch holds at least one item. A hop is a batch of one (ADR-0013).
 ///
 /// **How to use it.** Only the engine calls these. An actor written in Rust implements [`Actor`], and every `Actor`
@@ -88,8 +88,8 @@ pub trait Runs: Send {
     fn end(self: Box<Self>, closing: Closing<'_>) -> Result<(), Fault>;
 }
 
-/// The items of a batch, as [`Runs::prepare`] is shown them: as many as the rest of the actor's slice is expected to
-/// cover, and at least one (ADR-0011, ADR-0015).
+/// The items of a batch, as [`Runs::prepare`] is shown them: as many as the engine takes turns of between two looks at
+/// the clock, or fewer when fewer are waiting, and at least one (ADR-0011, ADR-0015).
 pub trait Batch {
     /// Shows `visit` each of its items, in the order their turns will be asked for.
     fn each(&self, visit: &mut dyn FnMut(Peeked<'_>));

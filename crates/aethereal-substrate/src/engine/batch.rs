@@ -1,5 +1,5 @@
-//! The batches the engine prepares an actor for before their turns: its waiting items, as many as the rest of its slice is
-//! expected to cover, or one hop (ADR-0011, ADR-0013, ADR-0015).
+//! The batches the engine prepares an actor for before their turns: its waiting items, as many as it takes turns of
+//! between two looks at the clock, or one hop (ADR-0011, ADR-0013, ADR-0015).
 
 use super::Lists;
 use super::Reading;
@@ -7,14 +7,16 @@ use super::fuse::Hop;
 use crate::stream::{self, Handed, Pieces};
 use crate::{Context, Envelope};
 use aethereal_actor::{Batch, Chain, Item, Mail, Peeked};
+use std::iter;
 
-/// A batch of one actor's waiting items: the next `fits` of `pieces`.
+/// A batch of one actor's waiting items: `first`, and after it as many of `rest` as make
+/// [`SLICE_EVERY`](super::SLICE_EVERY), or as are left.
 pub(super) struct Waiting<'w, 'r, 'p> {
     pub(super) reading: &'w Reading<'r>,
-    pub(super) pieces: &'w Pieces<'p>,
+    pub(super) first: Handed<'p>,
+    pub(super) rest: &'w Pieces<'p>,
     /// The bytes of the mail its part carried over.
     pub(super) carried: &'p [u8],
-    pub(super) fits: usize,
 }
 
 /// A batch of one hop, a piece of mail handed straight to its receiver in the step (ADR-0013).
@@ -43,7 +45,8 @@ pub(super) fn read<'a>(handed: Handed<'a>, reading: &Reading<'a>, carried: &'a [
 
 impl Batch for Waiting<'_, '_, '_> {
     fn each(&self, visit: &mut dyn FnMut(Peeked<'_>)) {
-        for handed in self.pieces.clone().take(self.fits) {
+        let rest = self.rest.clone().take(super::SLICE_EVERY as usize - 1);
+        for handed in iter::once(self.first).chain(rest) {
             let source = handed.source();
             let (item, context) = read(handed, self.reading, self.carried);
             let chain = Chain { root: context.root, depth: context.depth - 1 };
