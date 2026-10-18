@@ -834,9 +834,21 @@ impl Guests for Runtime {
         Ok(())
     }
 
+    /// Lets go of the blob's code, and of its bytes' compiled code once no blob of those bytes is left: code put again
+    /// and again as it is changed would otherwise keep every compiled version for as long as the runtime runs.
     fn unload(&self, code: BlobId) {
-        if let Ok(mut codes) = self.codes.write() {
-            codes.remove(&code);
+        let Ok(mut codes) = self.codes.write() else {
+            return;
+        };
+        let Some(gone) = codes.remove(&code) else {
+            return;
+        };
+        let is_held = codes.values().any(|held| held.key == gone.key);
+        drop(codes);
+        // The same bytes put while this lets go of them may be compiled again, under a key of their own: their actors
+        // then run in instances of their own, which nothing shares.
+        if !is_held && let Ok(mut compiled) = self.compiled.write() {
+            compiled.retain(|_, compiled| compiled.key != gone.key);
         }
     }
 
@@ -3264,6 +3276,32 @@ mod tests {
         assert_eq!(answers(8), [11; 8]);
         // The code and the book while the readers live, and the code alone once they have closed.
         assert_eq!((held_while_reading, engine.blobs_held().0), (2, 1));
+    }
+
+    #[test]
+    fn compiled_code_is_let_go_of_with_the_last_blob_of_its_bytes() {
+        // Catches compiled code kept once the engine has let go of every blob of its bytes, which a runtime whose code
+        // is put again each time it is changed would keep forever, and compiled code let go of while another blob of
+        // the same bytes is held.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let runtime = Arc::new(Runtime::default());
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_guests(Arc::clone(&runtime) as Arc<dyn Guests>);
+        let (Ok(first), Ok(second)) = (engine.put_code(ECHO.to_vec()), engine.put_code(ECHO.to_vec())) else {
+            panic!("the echo guest is fit to run");
+        };
+        assert_ne!(first.id(), second.id(), "each put is a blob of its own");
+        let compiled = || runtime.compiled.read().map_or(usize::MAX, |compiled| compiled.len());
+        let clock = Monotonic::new();
+
+        drop(first);
+        engine.step(&clock);
+        let with_one = compiled();
+        drop(second);
+        engine.step(&clock);
+
+        assert_eq!((with_one, compiled()), (1, 0));
     }
 
     #[test]
