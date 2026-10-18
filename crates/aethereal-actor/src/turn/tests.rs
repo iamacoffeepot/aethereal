@@ -386,7 +386,8 @@ fn begin_and_end_send_as_their_own_actor() {
     let end = |why| {
         let mut asked = Asked::new();
         let above = Above::Actor(ME, Declared::of::<Leaf>());
-        let closing = Closing::new(herald.seated(), &path, above, &table, &mut asked, 0, why);
+        let mut instances = Instances::default();
+        let closing = Closing::new(herald.seated(), &path, above, &table, &mut asked, &mut instances, 0, why);
         let ended = Runs::end(Box::new(Herald), closing);
 
         (ended, asked.into_parts().0.mailed)

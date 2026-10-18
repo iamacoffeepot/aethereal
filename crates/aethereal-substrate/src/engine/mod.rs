@@ -1194,7 +1194,7 @@ impl Reading<'_> {
 
         match (work, life.state()) {
             (Work::Closing, State::Ending(ending)) => {
-                self.closing(actor, me, seat, life.sent(), ending, clock, tally, asked, lists);
+                self.closing(actor, me, seat, life.sent(), ending, clock, tally, asked, instances, lists);
                 // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
                 seating.seated.remove(me);
                 lists.freed.push(me.seat);
@@ -1295,6 +1295,7 @@ impl Reading<'_> {
         clock: &impl Clock,
         tally: &mut Tally,
         asked: &mut Asked,
+        instances: &mut Instances,
         lists: &mut Lists,
     ) {
         let (how, context) = ending;
@@ -1302,7 +1303,7 @@ impl Reading<'_> {
         tally.time(CostKey { actor: sitting.kind, item: ItemKind::Closing }, clock, || {
             asked.next_turn();
             let why = why(how);
-            let closing = Closing::new(me, &sitting.path, sitting.above, self.table, asked, sent, why);
+            let closing = Closing::new(me, &sitting.path, sitting.above, self.table, asked, instances, sent, why);
             let ended = actor.end(closing);
             let buffers = asked.buffers_mut();
             // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds

@@ -107,4 +107,49 @@ impl Handles<Shut> for Echo {
     }
 }
 
-aethereal_actor::guest!(Echo);
+/// A second kind of actor the blob makes, so two of its actors can live in one instance: it answers pings, and
+/// closes on the word to.
+#[derive(Bound)]
+pub struct Mirror;
+
+impl Kind for Mirror {
+    const NAME: KindName = KindName::new("aether.guest.mirror");
+}
+
+impl Actor for Mirror {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Ping, Shut);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Mirror {
+    type Sends = (ToSender<Pong>,);
+
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.reply(&Pong { n: ping.n })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Shut> for Mirror {
+    type Sends = ();
+
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.close();
+
+        Ok(())
+    }
+}
+
+aethereal_actor::guest!(Echo, Mirror);

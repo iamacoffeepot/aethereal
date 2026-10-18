@@ -1052,15 +1052,18 @@ pub struct Closing<'a> {
     above: Above,
     table: &'a dyn Table,
     asked: &'a mut Asked,
+    /// The instances of the actor's part, lent for the turn (ADR-0015).
+    instances: &'a mut Instances,
     sent: u64,
     why: Why,
 }
 
 impl<'a> Closing<'a> {
-    /// The closing turn of the actor `me` names, at `path`, which runs because of `why`, after the actor has sent
-    /// `sent` pieces of mail.
+    /// The closing turn of the actor `me` names, at `path`, lent its part's `instances`, which runs because of `why`,
+    /// after the actor has sent `sent` pieces of mail.
     ///
     /// For the engine.
+    #[allow(clippy::too_many_arguments, reason = "what a closing turn is opened with, each fixed by the engine")]
     #[must_use]
     pub const fn new(
         me: Seated,
@@ -1068,15 +1071,23 @@ impl<'a> Closing<'a> {
         above: Above,
         table: &'a dyn Table,
         asked: &'a mut Asked,
+        instances: &'a mut Instances,
         sent: u64,
         why: Why,
     ) -> Self {
-        Self { me, path, above, table, asked, sent, why }
+        Self { me, path, above, table, asked, instances, sent, why }
+    }
+
+    /// The instances of the actor's part, as a host's closing turn is lent them: a guest's own closing turn is not run
+    /// yet, so this is all a host takes of it (ADR-0015).
+    #[must_use]
+    pub fn hosted(self) -> &'a mut Instances {
+        self.instances
     }
 
     /// The closing turn of an actor of type `A`.
     pub(crate) fn declaring<A: Actor>(self) -> Ending<'a, A::EndSends> {
-        let Self { me, path, above, table, asked, sent, why } = self;
+        let Self { me, path, above, table, asked, sent, why, .. } = self;
         let declared = Declared::of::<A>();
         let seat = Seat {
             me,

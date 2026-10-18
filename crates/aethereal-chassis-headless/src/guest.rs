@@ -59,6 +59,8 @@ struct Instance {
     /// Where the guest's inbox is, and how many bytes it has room for: asked for again only when it must grow.
     inbox_at: usize,
     inbox_room: usize,
+    /// How many actors have begun in it and not ended: the part drops it when the last ends.
+    actors: u32,
 }
 
 /// An actor whose code runs in a guest's instance, as the engine holds it: the instance is its part's, which it
@@ -157,7 +159,7 @@ impl Instance {
             panic!("guest code that entered has its exports");
         };
 
-        Self { store, memory, inbox, out, begin, turns, inbox_at: 0, inbox_room: 0 }
+        Self { store, memory, inbox, out, begin, turns, inbox_at: 0, inbox_room: 0, actors: 0 }
     }
 }
 
@@ -192,6 +194,7 @@ pub fn add_root(engine: &mut Engine, code: &Code, of: usize, config: &[u8]) -> R
         let data = held.memory.data(&held.store);
         let (began, _) = replay(data, &wrote, 0, TurnEnds { sends: 0, lines: 0 }, &mut hosted).ok_or_else(trapped)?;
         began?;
+        held.actors += 1;
 
         Ok(Box::new(Guest { code: code.clone(), handle, declared, ran: Ran::Nothing }))
     })
@@ -237,7 +240,16 @@ impl Runs for Guest {
         replayed
     }
 
-    fn end(self: Box<Self>, _: aethereal_actor::Closing<'_>) -> Result<(), Fault> {
+    /// Ends the actor in its part's instance, and drops the instance when it was the last actor in it.
+    fn end(self: Box<Self>, closing: aethereal_actor::Closing<'_>) -> Result<(), Fault> {
+        let instances = closing.hosted();
+        let held = self.code.instance(instances);
+        held.actors = held.actors.saturating_sub(1);
+        let is_last = held.actors == 0;
+        if is_last {
+            instances.drop_instance::<Instance>(self.code.key);
+        }
+
         Ok(())
     }
 }
@@ -663,5 +675,90 @@ mod tests {
 
         assert_eq!(CALLERS_ANSWERED.load(Ordering::Relaxed), (1 << callers) - 1);
         assert_eq!(CALLER_ANSWERS.load(Ordering::Relaxed), callers);
+    }
+
+    /// The pongs the volleyer has been answered with.
+    static VOLLEYER_PONGS: AtomicU64 = AtomicU64::new(0);
+
+    /// A native actor that tells the mirror guest to close, and volleys with the echo guest, both of one blob.
+    #[derive(aethereal_data::Bound)]
+    struct Volleyer;
+
+    impl Kind for Volleyer {
+        const NAME: KindName = KindName::new("aether.test.volleyer");
+    }
+
+    impl Actor for Volleyer {
+        type Config = Volley;
+        type Key = ();
+        type Handles = (Pong,);
+        type BeginSends = (ToAny<(Ping, Shut), Ping>, ToAny<(Ping, Shut), Shut>);
+        type EndSends = ();
+
+        fn begin(volley: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let mirror = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.mirror"), &()));
+            let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
+            if let Some(mirror) = turn.resolve(&mirror) {
+                turn.to_any::<(Ping, Shut)>(ToWithoutMail::Held(mirror)).send(&Shut)?;
+            }
+            if let Some(echo) = turn.resolve(&echo) {
+                turn.to_any::<(Ping, Shut)>(ToWithoutMail::Held(echo)).send(&Ping { n: volley.pings })?;
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Pong> for Volleyer {
+        type Sends = (ToSender<Ping>,);
+
+        fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            VOLLEYER_PONGS.fetch_add(1, Ordering::Relaxed);
+            if pong.n > 0 {
+                turn.reply(&Ping { n: pong.n - 1 })?;
+            }
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_guest_answers_from_its_instance_after_another_in_it_has_ended() {
+        // Catches two actors of one blob in one part each loading an instance of their own, and an instance dropped
+        // when an actor in it ends while another still runs in it: the echo, asked for its turns from an instance that
+        // does not hold it, would fail.
+        let guests = Guests::default();
+        let Ok(code) = guests.code(ECHO) else {
+            panic!("the echo guest is fit to run");
+        };
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+        let Ok(echo) = add_root(&mut engine, &code, 0, &[]) else {
+            panic!("the echo begins");
+        };
+        let Ok(_) = add_root(&mut engine, &code, 1, &[]) else {
+            panic!("the mirror begins");
+        };
+        let Ok(_) = engine.add_root::<Volleyer>(&(), Volley { pings: 3 }) else {
+            panic!("the volleyer begins");
+        };
+        let Some(seat) = engine.table().seat(echo) else {
+            panic!("the echo is seated");
+        };
+        let echo = Seated { id: echo, seat };
+        let clock = Monotonic::new();
+        while !engine.is_idle() {
+            engine.step(&clock);
+        }
+
+        let failed = engine.log(echo).any(|entry| matches!(entry, aethereal_substrate::Entry::Failed(_)));
+        assert!(!failed, "the echo ran on in its instance");
+        assert_eq!(VOLLEYER_PONGS.load(Ordering::Relaxed), 4);
     }
 }

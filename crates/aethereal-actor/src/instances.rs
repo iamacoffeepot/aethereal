@@ -44,6 +44,16 @@ impl Instances {
 
         instance
     }
+
+    /// Drops the instance of type `I` kept under `key`, for a host whose last actor that ran in it has ended: the
+    /// next actor of the part that wants it loads a new one. Nothing when there is none.
+    pub fn drop_instance<I: Any + Send>(&mut self, key: u64) {
+        let host = TypeId::of::<I>();
+        let found = self.loaded.iter().position(|loaded| loaded.is(host, key));
+        if let Some(at) = found {
+            self.loaded.swap_remove(at);
+        }
+    }
 }
 
 impl Loaded {
@@ -53,5 +63,38 @@ impl Loaded {
         let is_key = self.key == key;
 
         is_host && is_key
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An instance of one host, numbered by the load that made it.
+    struct Made(u32);
+
+    /// An instance of another host.
+    struct Other(u32);
+
+    #[test]
+    fn an_instance_is_loaded_once_for_its_key_and_type() {
+        // Catches a lookup that misses what it loaded and loads again, a key or a host's type read as another's, and
+        // a drop that takes the wrong instance or none.
+        let mut instances = Instances::default();
+        let mut loads = 0;
+        let mut load = || {
+            loads += 1;
+            Made(loads)
+        };
+
+        let first = instances.get_or_load(1, &mut load).0;
+        let again = instances.get_or_load(1, &mut load).0;
+        let other_key = instances.get_or_load(2, &mut load).0;
+        let other_host = instances.get_or_load(1, || Other(99)).0;
+        instances.drop_instance::<Made>(1);
+        let reloaded = instances.get_or_load(1, &mut load).0;
+        let kept = instances.get_or_load(2, &mut load).0;
+
+        assert_eq!((first, again, other_key, other_host, reloaded, kept), (1, 1, 2, 99, 3, 2));
     }
 }
