@@ -28,8 +28,8 @@ use crate::{
 };
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
-    Above, Actor, Arena, Asked, Batch, Beginning, BlobHash, BlobRef, Buffers, Closing, Code, Declared, Effect, Fault,
-    How, MailId, Mailed, Mark, Puts, Refused, Runs, SeatNumber, Seated, Seats, Stood, What, Why,
+    Above, Actor, Arena, Asked, Batch, Batched, Beginning, BlobHash, BlobRef, Buffers, Closing, Code, Declared, Effect,
+    Fault, How, MailId, Mailed, Mark, Puts, Refused, Runs, SeatNumber, Seated, Seats, Stood, What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use birth::Births;
@@ -1237,7 +1237,7 @@ impl Reading<'_> {
                     // A batch is timed whole, from its items handed to what its turns asked for routed: what it
                     // costs the worker, beyond what the actor's code takes.
                     let ran = tally.time_batch(key(item_kind(first)), clock, || {
-                        let outcome = {
+                        let done = {
                             let table = Since {
                                 table: self.table,
                                 stood: &lists.fusing.stood,
@@ -1258,10 +1258,10 @@ impl Reading<'_> {
                             );
                             actor.run(&mut batch);
 
-                            batch.into_outcome()
+                            batch.into_done()
                         };
 
-                        Self::route_batch(me, Origin::Waiting, outcome, seating, lives, asked, lists, &mut stepped)
+                        Self::route_batch(me, Origin::Waiting, done, seating, lives, asked, lists, &mut stepped)
                     });
                     taken += ran;
                     let is_over = stepped.ended || (ran as usize) < fits;
@@ -1323,6 +1323,8 @@ impl Reading<'_> {
     /// it asks for added to `asked` and routed into `lists` (ADR-0013). Nothing when the receiver is gone or has
     /// ended: the hop is dropped, as mail to it would be.
     #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
+    #[allow(clippy::inline_always, reason = "once for every hop, inline in the loop that runs them")]
+    #[inline(always)]
     fn hop(
         &self,
         room: &mut Room<'_>,
@@ -1349,7 +1351,7 @@ impl Reading<'_> {
         let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
         // Timed whole, as a batch of waiting items is.
         tally.time_batch(key, clock, || {
-            let outcome = {
+            let done = {
                 let table = Since {
                     table: self.table,
                     stood: &lists.fusing.stood,
@@ -1357,104 +1359,100 @@ impl Reading<'_> {
                     blobs: self.blobs,
                 };
                 let item = batch::hop_item(self, &hop, lists);
-                let mut batch = Batch::one(item, me, &seat.path, seat.above, &table, &seat.made, asked, stepped.sent);
+                let mut batch = Batch::one(&item, me, &seat.path, seat.above, &table, &seat.made, asked, stepped.sent);
                 actor.run(&mut batch);
 
-                batch.into_outcome()
+                batch.into_done()
             };
 
-            Self::route_batch(me, Origin::Hop(hop.run), outcome, seating, lives, asked, lists, &mut stepped)
+            Self::route_batch(me, Origin::Hop(hop.run), done, seating, lives, asked, lists, &mut stepped)
         });
 
         lists.fusing.keep(me, stepped);
         put_back(actors, me, actor);
     }
 
-    /// Routes the turns of the batch the actor `me` names just ran, for `origin`, which ended in `outcome`, turn by
-    /// turn as each was marked, into `lists`, and empties the buffers: how many turns there were.
+    /// Routes the turns of the batch the actor `me` names just ran, for `origin`, which did `done`, turn by turn as
+    /// each was marked, into `lists`, and empties the buffers: how many turns there were.
     #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
     #[allow(clippy::inline_always, reason = "once for every batch: a call here costs a tenth of a turn, measured")]
     #[inline(always)]
     fn route_batch(
         me: Seated,
         origin: Origin,
-        outcome: Result<(), Fault>,
+        done: Batched,
         seating: &Seating,
         lives: &lives::Shard,
         asked: &mut Asked,
         lists: &mut Lists,
         stepped: &mut Stepped,
     ) -> u32 {
-        let turns = asked.marks().len();
-        let Some(last) = turns.checked_sub(1) else {
-            return 0;
-        };
+        let Batched { turns, last, outcome } = done;
+        // Each turn but the last is marked where it ends; the last ends where the buffers do.
+        let marked = asked.marks().len();
         // Most batches stand up no child, and their list is left where it is.
         let mut stood = if asked.has_stood() {
             asked.take_stood()
         } else {
             Vec::new()
         };
-        let first = asked.marks()[0];
+        let stood_total = stood.len();
         // A turn that fails changes nothing outside its actor: what it asked for is dropped but for its log lines,
         // and the engine writes the one effect that says the actor ended (ADR-0009). The seats of the children it
         // stood up are given back. Only the last turn of a batch fails.
         if let Err(fault) = outcome {
-            let began = last.checked_sub(1).map_or_else(|| Mark::start(first.chain), |before| asked.marks()[before]);
+            let began_last = marked.checked_sub(1).map_or_else(|| Mark::start(last), |before| asked.marks()[before]);
             let buffers = asked.buffers_mut();
-            buffers.mailed.truncate(began.mailed);
-            buffers.effects.truncate(began.effects);
+            buffers.mailed.truncate(began_last.mailed);
+            buffers.effects.truncate(began_last.effects);
             buffers.effects.push(Effect::new(me, What::Failed(fault)));
-            for child in stood.drain(began.stood.min(stood.len())..) {
+            for child in stood.drain(began_last.stood.min(stood.len())..) {
                 asked.seats_mut().give_back(child.seated().seat);
             }
         }
-        // A batch of one turn, as a hop's is, holds that turn's entries alone.
-        if turns == 1 {
-            let buffers = asked.buffers();
-            let context = Context { root: first.chain.root, depth: first.chain.depth + 1 };
-            let ran = Ran {
-                mailed: 0..buffers.mailed.len(),
-                lines: 0..buffers.lines.len(),
-                effects: 0..buffers.effects.len(),
-                stood,
-                context,
-            };
-            Self::finish(me, ran, origin, seating, lives, asked, lists, stepped);
+        // A batch whose one turn is unmarked holds that turn's entries alone, and its children are that turn's.
+        if marked == 0 {
+            if turns > 0 {
+                let buffers = asked.buffers();
+                let (mailed, lines, effects) = (buffers.mailed.len(), buffers.lines.len(), buffers.effects.len());
+                let context = Context { root: last.root, depth: last.depth + 1 };
+                let ran = Ran { mailed: 0..mailed, lines: 0..lines, effects: 0..effects, stood, context };
+                Self::finish(me, ran, origin, seating, lives, asked, lists, stepped);
+            }
             asked.empty_buffers();
-            return 1;
+            return turns;
         }
-        let mut began = Mark::start(first.chain);
-        for index in 0..turns {
-            let mark = asked.marks()[index];
-            let buffers = asked.buffers();
-            let mailed = began.mailed..mark.mailed.min(buffers.mailed.len());
-            let effects_end = if index == last {
-                buffers.effects.len()
+        let mut began = Mark::start(last);
+        for index in 0..turns as usize {
+            // The last turn ends where the buffers do, after every child the batch stood up.
+            let end = if index < marked {
+                asked.marks()[index]
             } else {
-                mark.effects
+                let buffers = asked.buffers();
+                let (mailed, lines, effects) = (buffers.mailed.len(), buffers.lines.len(), buffers.effects.len());
+
+                Mark { mailed, lines, effects, stood: stood_total, chain: last }
             };
-            let children = (mark.stood - began.stood).min(stood.len());
+            let children = (end.stood - began.stood).min(stood.len());
             // Most turns stand up no child, and taking none out of the list would still walk it.
             let turn_stood = if children == 0 {
                 Vec::new()
             } else {
                 stood.drain(..children).collect()
             };
-            let context = Context { root: mark.chain.root, depth: mark.chain.depth + 1 };
             let ran = Ran {
-                mailed,
-                lines: began.lines..mark.lines,
-                effects: began.effects..effects_end,
+                mailed: began.mailed..end.mailed,
+                lines: began.lines..end.lines,
+                effects: began.effects..end.effects,
                 stood: turn_stood,
-                context,
+                context: Context { root: end.chain.root, depth: end.chain.depth + 1 },
             };
             Self::finish(me, ran, origin, seating, lives, asked, lists, stepped);
-            began = mark;
+            began = end;
         }
         asked.empty_buffers();
 
-        u32::try_from(turns).unwrap_or(u32::MAX)
+        turns
     }
 
     /// Routes the finished turn `ran` of the actor `me` names into `lists`, and notes in `stepped` what it did: the

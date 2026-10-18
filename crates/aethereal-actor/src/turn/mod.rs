@@ -197,6 +197,12 @@ impl Asked {
         !self.stood.is_empty()
     }
 
+    /// How many children the turns since the last [`Self::take_stood`] stood up.
+    #[must_use]
+    pub fn stood_count(&self) -> usize {
+        self.stood.len()
+    }
+
     /// Every list, as the engine reads them to route.
     #[must_use]
     pub const fn buffers(&self) -> &Buffers {

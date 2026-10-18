@@ -8,7 +8,7 @@
 //! reads where it lies.
 
 use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Chain, Children, Declared, Fault, Item};
-use crate::{Batch, Beginning, Level, Mail, MailId, Peeked, Runs, SeatNumber, Seated, Table, Turning};
+use crate::{Batch, Beginning, Level, Mail, MailId, Mark, Peeked, Runs, SeatNumber, Seated, Table, Turning};
 use aethereal_data::{ActorId, ActorPath, Budget, Decode, KindId, PathSegment, Reader, from_bytes};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -130,20 +130,24 @@ pub fn turns(handle: u32, items: u32, len: u32) -> u64 {
         let mut peeked = peeked.into_iter();
         let mut batch = Batch::new(&mut peeked, fits, *me, path, Above::Chassis, &Host, &(), asked, 0);
         runs.run(&mut batch);
-        let outcome = batch.into_outcome();
-        let marks = asked.marks().to_vec();
+        let done = batch.into_done();
+        // Each turn but the last is marked where it ends; the last ends where the buffers do.
+        let mut ends: Vec<Mark> = asked.marks().to_vec();
+        if done.turns > 0 {
+            ends.push(Mark::end(asked, done.last));
+        }
         let mut began = (0, 0);
-        for (index, mark) in marks.iter().enumerate() {
-            let is_last = index + 1 == marks.len();
+        for (index, end) in ends.iter().enumerate() {
+            let is_last = index + 1 == ends.len();
             let fault = if is_last {
-                outcome.as_ref().err()
+                done.outcome.as_ref().err()
             } else {
                 None
             };
-            write_turn(out, asked, began.0..mark.mailed, began.1..mark.lines, fault);
-            began = (mark.mailed, mark.lines);
+            write_turn(out, asked, began.0..end.mailed, began.1..end.lines, fault);
+            began = (end.mailed, end.lines);
         }
-        let ran = u32::try_from(marks.len()).unwrap_or(u32::MAX);
+        let ran = done.turns;
         asked.empty();
         out[..4].copy_from_slice(&ran.to_le_bytes());
 

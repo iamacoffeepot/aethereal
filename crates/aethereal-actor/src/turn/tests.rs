@@ -420,7 +420,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
         let mut items = vec![crate::Peeked { item: Item::Mail(mail), source: other, chain: CHAIN }].into_iter();
         let mut batch = crate::Batch::new(&mut items, 1, ME, &ROOT, Above::Chassis, table, &(), &mut asked, 0);
         leaf.run(&mut batch);
-        let handled = batch.into_outcome();
+        let handled = batch.into_done().outcome;
 
         let Buffers { mailed, effects, .. } = asked.into_parts().0;
 

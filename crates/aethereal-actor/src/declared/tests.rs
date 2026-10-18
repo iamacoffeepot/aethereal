@@ -195,7 +195,7 @@ fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<String> {
     let mut items = vec![Peeked { item: Item::Mail(mail), source: OTHER, chain: CHAIN }].into_iter();
     let mut batch = Batch::new(&mut items, 1, ME, &PATH, Above::Chassis, &table, &(), &mut asked, 0);
     actor.run(&mut batch);
-    let handled = batch.into_outcome();
+    let handled = batch.into_done().outcome;
     assert!(handled.is_ok());
 
     asked.lines().iter().map(|line| String::from(asked.text(line))).collect()

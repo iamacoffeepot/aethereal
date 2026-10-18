@@ -203,26 +203,23 @@ impl Runs for Guest {
         let out = called.ok().and_then(|out| held.out_bytes(out));
         let Some(mut out) = out else {
             // Every actor of a trapped instance ends with it: its next turn fails.
-            if let Some((_, _)) = batch.next() {
-                batch.mark(Err(trapped()));
-            }
+            batch.turn(|_, _| Err(trapped()));
             return;
         };
         let ran = take_u32(&mut out).unwrap_or(0);
         let declared = self.declared;
         for _ in 0..ran {
-            let Some((item, turning)) = batch.next() else {
-                break;
-            };
-            let role = match &item {
-                Item::Mail(mail) if declared.lists(mail.kind()) => Role::Kind(mail.kind()),
-                Item::Mail(_) => Role::Others,
-                Item::Ended(_) => Role::Ended,
-            };
-            let mut hosted = turning.hosted(declared, role);
-            let result = read_turn(&mut out, &mut hosted).unwrap_or_else(|| Err(trapped()));
-            let failed = batch.mark(result);
-            if failed {
+            let goes_on = batch.turn(|item, turning| {
+                let role = match &item {
+                    Item::Mail(mail) if declared.lists(mail.kind()) => Role::Kind(mail.kind()),
+                    Item::Mail(_) => Role::Others,
+                    Item::Ended(_) => Role::Ended,
+                };
+                let mut hosted = turning.hosted(declared, role);
+
+                read_turn(&mut out, &mut hosted).unwrap_or_else(|| Err(trapped()))
+            });
+            if !goes_on {
                 break;
             }
         }

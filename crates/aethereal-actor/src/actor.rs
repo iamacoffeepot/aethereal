@@ -49,7 +49,7 @@ pub trait Runs: Send {
     /// What the actor's type declares (ADR-0013).
     fn declared(&self) -> &'static Declared;
 
-    /// Runs a turn for each item of `batch`, in order, through [`Batch::next`] and [`Batch::mark`], until one fails
+    /// Runs a turn for each item of `batch`, in order, through [`Batch::turn`], until one fails or closes the actor,
     /// or the batch is done.
     fn run(&mut self, batch: &mut Batch<'_, '_>);
 
@@ -63,13 +63,7 @@ impl<A: Actor> Runs for A {
     }
 
     fn run(&mut self, batch: &mut Batch<'_, '_>) {
-        while let Some((item, turning)) = batch.next() {
-            let result = A::Handles::dispatch(self, item, turning);
-            let failed = batch.mark(result);
-            if failed {
-                break;
-            }
-        }
+        while batch.turn(|item, turning| A::Handles::dispatch(self, item, turning)) {}
     }
 
     fn end(self: Box<Self>, closing: Closing<'_>) -> Result<(), Fault> {
@@ -123,10 +117,19 @@ impl Mark {
     pub const fn start(chain: Chain) -> Self {
         Self { mailed: 0, lines: 0, effects: 0, stood: 0, chain }
     }
+
+    /// Where the last turn of a batch, of an item at `chain`, ends in `asked`: where its buffers do.
+    #[must_use]
+    pub fn end(asked: &Asked, chain: Chain) -> Self {
+        let buffers = asked.buffers();
+        let stood = asked.stood_count();
+
+        Self { mailed: buffers.mailed.len(), lines: buffers.lines.len(), effects: buffers.effects.len(), stood, chain }
+    }
 }
 
 /// An actor's items for one go, and what its turns of them write into: as many as the rest of its slice is expected
-/// to cover (ADR-0011, ADR-0015). Each turn is opened by [`Self::next`] and closed by [`Self::mark`].
+/// to cover (ADR-0011, ADR-0015). Each turn is run by [`Self::turn`].
 pub struct Batch<'b, 'a> {
     items: Source<'b, 'a>,
     left: usize,
@@ -138,21 +141,31 @@ pub struct Batch<'b, 'a> {
     asked: &'b mut Asked,
     /// How many pieces of mail the actor has sent, its turns of this batch so far included.
     sent: u64,
-    /// The chain of the item whose turn is open.
+    /// The chain of the item whose turn is open, or ran last.
     chain: Chain,
+    /// How many of its turns have been opened.
+    turns: u32,
     /// Whether a turn of it has ended the actor, which ends the batch.
     ended: Ended,
 }
 
+/// What a batch did: how many turns it ran, the chain of the item of the last, and whether that one failed. Each
+/// turn but the last is marked where it ends; the last ends where the buffers do.
+pub struct Batched {
+    pub turns: u32,
+    pub last: Chain,
+    pub outcome: Result<(), Fault>,
+}
+
 /// Where a batch's items come from: one in hand, as a hop is, or many, read one after another.
 enum Source<'b, 'a> {
-    One(Waiting<'a>),
+    One(Waiting<'b, 'a>),
     Many(&'b mut dyn Items<'a>),
 }
 
 /// The one item of a batch of one, until it is taken.
-enum Waiting<'a> {
-    Here(Peeked<'a>),
+enum Waiting<'b, 'a> {
+    Here(&'b Peeked<'a>),
     Taken,
 }
 
@@ -186,14 +199,14 @@ impl<'b, 'a> Batch<'b, 'a> {
         let chain = Chain { root: crate::MailId { sender: me.id, count: 0 }, depth: 0 };
         let items = Source::Many(items);
 
-        Self { items, left: fits, me, path, above, table, made, asked, sent, chain, ended: Ended::Not }
+        Self { items, left: fits, me, path, above, table, made, asked, sent, chain, turns: 0, ended: Ended::Not }
     }
 
     /// The batch of the one item `item`, as [`Self::new`] makes a batch of many: a hop's (ADR-0013).
     #[allow(clippy::too_many_arguments, reason = "what a batch of turns is opened with, each fixed by the engine")]
     #[must_use]
     pub fn one(
-        item: Peeked<'a>,
+        item: &'b Peeked<'a>,
         me: Seated,
         path: &'b ActorPath,
         above: Above,
@@ -206,66 +219,70 @@ impl<'b, 'a> Batch<'b, 'a> {
         let chain = item.chain;
         let items = Source::One(Waiting::Here(item));
 
-        Self { items, left: 1, me, path, above, table, made, asked, sent, chain, ended: Ended::Not }
+        Self { items, left: 1, me, path, above, table, made, asked, sent, chain, turns: 0, ended: Ended::Not }
     }
 
     /// Shows `visit` each item of the batch, in order, before its first turn: for an actor that hands its items on
     /// whole, as a guest's host copies them into the guest.
     pub fn each(&self, visit: &mut dyn FnMut(Peeked<'a>)) {
         match &self.items {
-            Source::One(Waiting::Here(item)) => visit(item.clone()),
+            Source::One(Waiting::Here(item)) => visit((*item).clone()),
             Source::One(Waiting::Taken) => {}
             Source::Many(items) => items.each(self.left, visit),
         }
     }
 
-    /// Opens the turn of the next item: nothing once the batch is done, or a turn of it failed.
-    pub fn next(&mut self) -> Option<(Item<'a>, Turning<'_>)> {
+    /// Runs the turn of the next item with `run`, which is handed the item and its turn, and answers whether the batch
+    /// goes on: not once it is done, nor after a turn that failed or closed the actor.
+    #[inline]
+    pub fn turn(&mut self, run: impl FnOnce(Item<'a>, Turning<'_>) -> Result<(), Fault>) -> bool {
         let is_over = !matches!(self.ended, Ended::Not);
         if is_over || self.left == 0 {
-            return None;
+            return false;
         }
         let next = match &mut self.items {
             Source::One(waiting) => match core::mem::replace(waiting, Waiting::Taken) {
-                Waiting::Here(item) => Some(item),
+                Waiting::Here(item) => Some(item.clone()),
                 Waiting::Taken => None,
             },
             Source::Many(items) => items.next(),
         };
-        let Peeked { item, source, chain } = next?;
+        let Some(Peeked { item, source, chain }) = next else {
+            return false;
+        };
+        // The turn before ends where this one begins; the last ends where the buffers do, and is never marked.
+        if self.turns > 0 {
+            self.asked.mark(self.chain);
+        }
+        self.turns += 1;
         self.left -= 1;
         self.chain = chain;
         self.asked.begin_turn(self.sent);
         let turning =
             Turning::new(self.me, self.path, self.above, self.table, self.made, self.asked, self.sent, source, chain);
-
-        Some((item, turning))
-    }
-
-    /// Closes the turn opened last, which returned `result`: marks where its entries end, and answers whether it
-    /// failed, which ends the batch, as a turn that closes the actor does.
-    pub fn mark(&mut self, result: Result<(), Fault>) -> bool {
+        let result = run(item, turning);
         self.sent = self.asked.sent();
         let closed = self.asked.closes();
-        self.asked.mark(self.chain);
         match result {
             Err(fault) => {
                 self.ended = Ended::Failed(fault);
-                true
+                false
             }
             Ok(()) if closed => {
                 self.ended = Ended::Closed;
                 false
             }
-            Ok(()) => false,
+            Ok(()) => self.left > 0,
         }
     }
 
-    /// What the batch's last turn returned, once it is done: a failure, or that none failed.
-    pub fn into_outcome(self) -> Result<(), Fault> {
-        match self.ended {
+    /// What the batch did, once it is done.
+    pub fn into_done(self) -> Batched {
+        let outcome = match self.ended {
             Ended::Failed(fault) => Err(fault),
             Ended::Not | Ended::Closed => Ok(()),
-        }
+        };
+
+        Batched { turns: self.turns, last: self.chain, outcome }
     }
 }
