@@ -10,6 +10,8 @@ description = "What an actor's code is written against: the effects a turn asks 
 default = ["std"]
 # References that pin blobs (ADR-0014), whose pins are noted in a buffer each thread keeps, and their content's hash.
 std = ["dep:blake3", "blake3/std"]
+# What a guest's code runs on inside its instance: the calls its host makes (ADR-0015).
+guest = ["std"]
 
 [dependencies]
 aethereal-data = { path = "../aethereal-data" }

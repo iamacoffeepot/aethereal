@@ -4,7 +4,7 @@ use super::*;
 use crate::Context;
 use crate::id::{child_id, root_id};
 use aethereal_actor::{Code, Declared, Fault, MailId, SeatNumber, Seated, Unreadable, What};
-use aethereal_data::{KeyName, Kind, KindId, KindName, PathSegment, Plain};
+use aethereal_data::{KeyName, Keyed, Kind, KindId, KindName, PathSegment, Plain};
 
 /// The context the effects of these tests were emitted in, which the table does not read.
 fn context() -> Context {
@@ -37,9 +37,9 @@ const WINDOW: KindName = Window::NAME;
 const SURFACE: KindName = Surface::NAME;
 const LAYER: KindName = Layer::NAME;
 /// What the types of these actors declare: nothing they send or handle, which the table does not read.
-const WINDOW_TYPE: &Declared = &Declared::new(WINDOW, KindId::of::<Window>(), &[], &[], &[]);
-const SURFACE_TYPE: &Declared = &Declared::new(SURFACE, KindId::of::<Surface>(), &[], &[], &[]);
-const LAYER_TYPE: &Declared = &Declared::new(LAYER, KindId::of::<Layer>(), &[], &[], &[]);
+const WINDOW_TYPE: &Declared = &Declared::new(WINDOW, KindId::of::<Window>(), Keyed::Singleton, &[], &[], &[]);
+const SURFACE_TYPE: &Declared = &Declared::new(SURFACE, KindId::of::<Surface>(), Keyed::Instanced, &[], &[], &[]);
+const LAYER_TYPE: &Declared = &Declared::new(LAYER, KindId::of::<Layer>(), Keyed::Singleton, &[], &[], &[]);
 const LEFT: KeyName = KeyName::new("left");
 
 /// A table of `parts` parts.

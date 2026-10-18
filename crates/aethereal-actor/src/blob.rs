@@ -50,6 +50,12 @@ impl BlobHash {
         Self(*blake3::hash(bytes).as_bytes())
     }
 
+    /// The hash whose 32 bytes are `bytes`: for a guest, whose host hashed the blob (ADR-0015).
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     /// Its 32 bytes.
     #[must_use]
     pub const fn bytes(self) -> [u8; 32] {
@@ -78,6 +84,8 @@ pub struct Puts {
     room: usize,
     /// What it has put in this step, under its ids' bits.
     held: BTreeMap<u64, Box<[u8]>>,
+    /// Who takes in what it puts.
+    putter: Putter,
     /// The hashes its turns computed in this step, of blobs it put or the store holds, for the store to keep. Two
     /// writers, or two turns, may hash one blob in a step, and the store keeps the one hash they all compute.
     hashed: Vec<(BlobId, BlobHash)>,
@@ -96,7 +104,19 @@ impl Puts {
         };
         assert!(writer < 1 << (u64::BITS - PUT_BITS), "no engine has more writers than an id's high bits number");
 
-        Self { engine, writer, made: 0, room, held: BTreeMap::new(), hashed: Vec::new() }
+        Self { engine, writer, made: 0, room, held: BTreeMap::new(), hashed: Vec::new(), putter: Putter::Writer }
+    }
+
+    /// Puts a guest's host takes in, in a call out, for a guest whose turns cannot reach the engine's store (ADR-0015).
+    #[must_use]
+    pub fn of_host(put: fn(Vec<u8>) -> Result<BlobId, Refused>) -> Self {
+        Self { putter: Putter::Host(put), ..Self::new(0, 0, 0) }
+    }
+
+    /// Whether a guest's host takes them in.
+    #[must_use]
+    pub const fn is_of_host(&self) -> bool {
+        matches!(self.putter, Putter::Host(_))
     }
 
     /// Gives the writer `room` bytes to put in the coming step.
@@ -136,6 +156,9 @@ impl Puts {
     /// Panics past `2^48` puts by one writer, which no engine lives to make.
     #[cfg_attr(not(feature = "std"), expect(dead_code, reason = "blobs are put only where their pins can be noted"))]
     fn put(&mut self, bytes: Vec<u8>) -> Result<BlobId, Refused> {
+        if let Putter::Host(put) = self.putter {
+            return put(bytes);
+        }
         let fits = bytes.len() <= self.room;
         if !fits {
             return Err(Refused::NoRoom);
@@ -148,6 +171,15 @@ impl Puts {
 
         Ok(id)
     }
+}
+
+/// Who takes in what one writer puts.
+#[derive(Debug, Clone, Copy)]
+enum Putter {
+    /// The writer itself, for the store to take in as its step folds.
+    Writer,
+    /// A guest's host, in a call out, which answers with the blob's id.
+    Host(fn(Vec<u8>) -> Result<BlobId, Refused>),
 }
 
 #[cfg(feature = "std")]
@@ -201,6 +233,7 @@ mod pinned {
     /// the state it was written from still holds its own.
     impl Encode<Within> for BlobRef {
         fn encode(&self, out: &mut Writer<'_, Within>) -> Result<(), EncodeError> {
+            out.offers().note(self.id);
             self.id.engine().encode(out)?;
             self.id.bits().encode(out)
         }
@@ -292,7 +325,16 @@ mod pinned {
         /// Whether this thread has a buffer of its own open, and for which engine.
         enum Buffer {
             Closed,
-            Open { engine: u32, changes: Vec<Change> },
+            Open {
+                engine: u32,
+                changes: Vec<Change>,
+            },
+            /// Open for the changes of every engine: a guest's, which holds references of whatever engine its host
+            /// runs in (ADR-0015).
+            #[cfg(feature = "guest")]
+            Every {
+                changes: Vec<Change>,
+            },
         }
 
         std::thread_local! {
@@ -307,6 +349,11 @@ mod pinned {
             // A thread being torn down has no buffer left to borrow, and its changes go where unbuffered ones do.
             let noted = OWN.try_with(|own| match &mut *own.borrow_mut() {
                 Buffer::Open { engine, changes } if *engine == id.engine() => {
+                    changes.push((id, by));
+                    true
+                }
+                #[cfg(feature = "guest")]
+                Buffer::Every { changes } => {
                     changes.push((id, by));
                     true
                 }
@@ -331,8 +378,21 @@ mod pinned {
         pub fn close() -> Vec<Change> {
             OWN.with(|own| match mem::replace(&mut *own.borrow_mut(), Buffer::Closed) {
                 Buffer::Open { changes, .. } => changes,
+                #[cfg(feature = "guest")]
+                Buffer::Every { changes } => changes,
                 Buffer::Closed => Vec::new(),
             })
+        }
+
+        /// Takes the changes this thread has made since it last did, adding them to `into`, and keeps its buffer open
+        /// for those of every engine: for a guest's library, which hands its changes to its host after each call
+        /// (ADR-0014, ADR-0015). Changes made before its buffer was first open went where unbuffered ones go.
+        #[cfg(feature = "guest")]
+        pub fn take_own(into: &mut Vec<Change>) {
+            OWN.with(|own| match &mut *own.borrow_mut() {
+                Buffer::Every { changes } => into.append(changes),
+                buffer => *buffer = Buffer::Every { changes: Vec::new() },
+            });
         }
 
         /// Takes the changes to the pins of the engine numbered `engine` made where no buffer for it was open, adding

@@ -42,6 +42,18 @@ impl<'a> Mail<'a> {
         self.kind
     }
 
+    /// The mail's bytes, as written: for a host, which hands them to a guest that reads them itself (ADR-0015).
+    #[must_use]
+    pub const fn bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    /// The seat of the actor that sent the mail, with its id.
+    #[must_use]
+    pub const fn sender_seated(&self) -> Seated {
+        self.sender
+    }
+
     /// The actor that sent the mail. Every piece of mail has one.
     #[must_use]
     pub const fn sender(&self) -> ErasedActorRef {

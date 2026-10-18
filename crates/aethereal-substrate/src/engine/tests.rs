@@ -3,7 +3,9 @@
 use super::*;
 use crate::watch::Notice;
 use crate::{ByActor, Entry, child_id};
-use aethereal_actor::{Ended, Ending, Fault, Handles, How, Level, Table, To, ToSender, ToType, ToWithoutMail, Turn};
+use aethereal_actor::{
+    Ended, Ending, Fault, Handles, How, Level, Table, To, ToSender, ToType, ToWithoutMail, Turn, Watches,
+};
 use aethereal_data::{Bound, Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
 use std::mem;
@@ -113,7 +115,7 @@ impl Actor for Node {
 }
 
 impl Handles<Note> for Node {
-    type Sends = (ToType<Self, Note>, ToSender<Note>);
+    type Sends = (ToType<Self, Note>, ToSender<Note>, Watches);
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let Note { text } = note;

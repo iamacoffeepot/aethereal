@@ -1,5 +1,6 @@
 //! The engine: it runs turns in steps, and applies what they asked for (ADR-0009, ADR-0011).
 
+mod batch;
 mod birth;
 mod costs;
 mod fold;
@@ -27,8 +28,9 @@ use crate::{
 };
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
-    Above, Actor, Arena, Asked, Beginning, BlobHash, BlobRef, Buffers, Chain, Closing, Code, Declared, Effect, Fault,
-    How, Item, Mail, MailId, Mailed, Puts, Refused, Runs, SeatNumber, Seated, Seats, Stood, Turning, What, Why,
+    Above, Actor, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Chain, Closing, Code, Declared, Effect,
+    Fault, Guests, How, Instances, Item, Links, Mail, MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused, Runs,
+    SeatNumber, Seated, Seats, Stood, Turning, Unfit, What, Why, config_bytes,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use birth::Births;
@@ -37,10 +39,10 @@ use fuse::{Fusing, Hand, Hop, Stepped};
 use made::Made;
 use plan::Packing;
 use since::{Sees, Since};
-use std::iter;
 use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The engine: its actors, the views of them, and the steps their turns run in (ADR-0011).
@@ -78,6 +80,15 @@ pub struct Engine {
     /// The parts that may have something to run in the next step: each part the last fold reached, and every part once
     /// a root is made. A part with something to run is always among them, so a step looks at no other.
     waiting: Vec<usize>,
+    /// The instances each part's actors run their code in, which the engine carries with the part and never looks
+    /// into (ADR-0015).
+    instances: Vec<Instances>,
+    /// The guests' code the engine runs, which each part's instances carry (ADR-0015): none for an engine made
+    /// without it.
+    guests: Arc<dyn Guests>,
+    /// The native types the program keeps by name, which a guest may spawn, and each part's instances carry
+    /// (ADR-0009): none for an engine made without them.
+    links: Arc<Links>,
     /// The seats each part gives the children its turns spawn: its own free seats and new numbers, and those set
     /// aside for it in other parts (ADR-0013).
     seats: Vec<Seats>,
@@ -125,6 +136,15 @@ pub struct Engine {
     /// Which engine of the process this is, in the id of each blob it holds. Last, so what the engine's actors held
     /// is let go of before the engine is forgotten.
     number: Number,
+}
+
+/// Why code put between steps was refused (ADR-0015).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodeRefused {
+    /// Its bytes would take the blobs past the host's budget.
+    NoRoom,
+    /// Its guests cannot run it.
+    Unfit(Unfit),
 }
 
 /// Which engine of the process an engine is: the engines a process makes are numbered in turn.
@@ -229,6 +249,7 @@ pub struct Parcel {
     lives: lives::Shard,
     seating: Seating,
     actors: BySeat<Held>,
+    instances: Instances,
     seats: Seats,
 }
 
@@ -238,6 +259,7 @@ struct Room<'a> {
     lives: &'a mut lives::Shard,
     seating: &'a mut Seating,
     actors: &'a mut BySeat<Held>,
+    instances: &'a mut Instances,
     seats: &'a mut Seats,
 }
 
@@ -308,6 +330,7 @@ impl Engine {
     #[must_use]
     pub fn new(parts: NonZeroUsize, read_limit: usize, mail_bytes: usize, blob_bytes: usize, hops: usize) -> Self {
         let parts = rounded(parts);
+        let number = Number::next();
 
         Self {
             table: ActorTable::new(parts),
@@ -318,6 +341,9 @@ impl Engine {
             seating: (0..parts.get()).map(|_| Seating { seated: BySeat::empty(parts) }).collect(),
             actors: (0..parts.get()).map(|_| BySeat::empty(parts)).collect(),
             waiting: Vec::new(),
+            instances: (0..parts.get()).map(|_| Instances::default()).collect(),
+            guests: Arc::new(NoGuests),
+            links: Arc::default(),
             seats: (0..parts.get()).map(|part| Seats::of_part(new_seat(part), new_seat(parts.get()))).collect(),
             seated: vec![0; parts.get()],
             actors_seated: 0,
@@ -335,10 +361,36 @@ impl Engine {
             slice: u64::MAX,
             hopped: Hops::default(),
             mail_bytes,
-            blobs: Blobs::new(blob_bytes),
+            blobs: Blobs::new(number.0, blob_bytes),
             puts: Vec::new(),
             unbuffered: Vec::new(),
-            number: Number::next(),
+            number,
+        }
+    }
+
+    /// The engine, running the guests' code `guests` holds (ADR-0015): set as the engine is made, before any actor.
+    #[must_use]
+    pub fn with_guests(mut self, guests: Arc<dyn Guests>) -> Self {
+        self.guests = guests;
+        self.carry();
+
+        self
+    }
+
+    /// The engine, keeping the native types `links` by name, for a guest to spawn (ADR-0009): set as the engine is
+    /// made, before any actor.
+    #[must_use]
+    pub fn with_links(mut self, links: Links) -> Self {
+        self.links = Arc::new(links);
+        self.carry();
+
+        self
+    }
+
+    /// Gives each part instances that carry the engine's guests' code, the native types it keeps, and its read limit.
+    fn carry(&mut self) {
+        for instances in &mut self.instances {
+            *instances = Instances::new(Arc::clone(&self.guests), Arc::clone(&self.links), self.read_limit);
         }
     }
 
@@ -388,6 +440,21 @@ impl Engine {
         put
     }
 
+    /// Puts `bytes` as a blob that is code, for the chassis, between steps, and answers with the first reference to it
+    /// (ADR-0014, ADR-0015): refused when they would take the blobs past the host's budget, or are not code its guests
+    /// can run, and then the blob goes at the next step's fold.
+    ///
+    /// # Errors
+    ///
+    /// Why the code was refused.
+    pub fn put_code(&mut self, bytes: Vec<u8>) -> Result<BlobRef, CodeRefused> {
+        let unchecked = bytes.clone();
+        let code = self.put_blob(bytes).map_err(|_| CodeRefused::NoRoom)?;
+        self.guests.load(code.id(), &unchecked).map_err(CodeRefused::Unfit)?;
+
+        Ok(code)
+    }
+
     /// The bytes of the blob `blob` refers to, as the store holds them between steps.
     #[must_use]
     pub fn blob(&self, blob: &BlobRef) -> Option<&[u8]> {
@@ -416,8 +483,61 @@ impl Engine {
     /// Panics when an actor is made under an id the table already holds for another path (ADR-0008).
     pub fn add_root<A: Actor>(&mut self, key: &A::Key, config: A::Config) -> Result<ActorId, Refused> {
         let segment = PathSegment::new(A::NAME, key);
-        let id = root_id(&segment);
-        let path = ActorPath::from_root(&segment);
+
+        let declared = Declared::of::<A>();
+        self.add_root_made(&segment, Code::Linked(declared), |me, path, table, asked, instances| {
+            let root = A::begin(config, &mut Beginning::new::<A>(me, path, table, asked, instances))
+                .map_err(Refused::Began)?;
+
+            Ok(Box::new(root))
+        })
+    }
+
+    /// Makes a root of type `C` under `key` whose code is the blob `code` pins, for the chassis, and answers with its
+    /// id (ADR-0009, ADR-0015): [`Self::add_root`] for a root a guest runs. Its `begin` runs in the instance of the
+    /// blob of the part it is seated in.
+    ///
+    /// # Errors
+    ///
+    /// Refused when the key is taken, the blob makes no actor of `C`'s type, or `begin` fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics when an actor is made under an id the table already holds for another path (ADR-0008).
+    pub fn add_root_from<C: Actor>(
+        &mut self,
+        code: &BlobRef,
+        key: &C::Key,
+        config: &C::Config,
+    ) -> Result<ActorId, Refused> {
+        let segment = PathSegment::new(C::NAME, key);
+        let made = self.guests.made(code.id(), Declared::of::<C>()).ok_or(Refused::NotMade)?;
+        let config = config_bytes(config).map_err(|_| Refused::NotMade)?;
+        let guests = Arc::clone(&self.guests);
+
+        self.add_root_made(&segment, Code::Blob(made), |me, path, table, asked, instances| {
+            let birth = Birth { me, path, above: Above::Chassis, table, asked, instances, refers: &config.held };
+
+            guests.begin(made, &config.bytes, birth)
+        })
+    }
+
+    /// Makes a root at `segment`, from `from`, which `begin` makes as it is seated as `me`, at its path, reading the
+    /// table, adding to what is asked, and lent its part's instances.
+    fn add_root_made(
+        &mut self,
+        segment: &PathSegment,
+        from: Code,
+        begin: impl FnOnce(
+            Seated,
+            &ActorPath,
+            &dyn aethereal_actor::Table,
+            &mut Asked,
+            &mut Instances,
+        ) -> Result<Box<dyn Runs>, Refused>,
+    ) -> Result<ActorId, Refused> {
+        let id = root_id(segment);
+        let path = ActorPath::from_root(segment);
         let is_taken = self.table.holds_root(id);
         if is_taken {
             return Err(Refused::KeyTaken);
@@ -434,36 +554,46 @@ impl Engine {
         let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats, self.puts(ROOTS, blob_room));
         let stood_before = ByActor::default();
         let table = Since { table: &self.table, stood: &stood_before, sees: Sees::Step, blobs: &self.blobs };
-        let began = A::begin(config, &mut Beginning::new::<A>(me, &path, &table, &mut asked));
-        let (buffers, stood, arena, mut seats, mut puts) = asked.into_parts();
+        // The root begins in the part it is seated in, lent that part's instances.
+        let made = begin(me, &path, &table, &mut asked, &mut self.instances[home]);
+        let (mut buffers, stood, arena, mut seats, mut puts) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
         // A root is made between steps, when nothing reads the store, so what its `begin` put is taken in at once.
         self.blobs.take_in(&mut puts);
         self.puts[ROOTS] = puts;
-        let root = match began {
+        let context = Context { root: MailId { sender: id, count: 0 }, depth: 1 };
+        let root = match made {
             Ok(root) => root,
-            Err(fault) => {
+            Err(refused) => {
                 seats.give_back(me.seat);
                 for child in stood {
                     seats.give_back(child.seated().seat);
                 }
                 self.take_back_lent(home, seats);
+                // A `begin` that fails asks for nothing, as a failed turn does, but for the endings its host reported
+                // of other actors, which are folded as a root's effects are; its lines are dropped (ADR-0009).
+                keep_lines(&mut buffers, me);
+                buffers.lines.clear();
+                self.fold_began(buffers, Vec::new(), context, parity);
 
-                return Err(Refused::Began(fault));
+                return Err(refused);
             }
         };
         self.take_back_lent(home, seats);
-        let from = Code::Linked(Declared::of::<A>());
-        let made = match segment.key() {
-            None => What::Root { from },
-            Some(key) => What::RootInstanced { from, key: key.clone() },
-        };
-        let Buffers { mailed, lines, effects } = buffers;
-        let effects: Vec<Effect> = iter::once(Effect::new(me, made)).chain(effects).collect();
-        let context = Context { root: MailId { sender: id, count: 0 }, depth: 1 };
+        let made = segment.key().map_or(What::Root { from }, |key| What::RootInstanced { from, key: key.clone() });
+        buffers.effects.insert(0, Effect::new(me, made));
 
         self.table.made_root(id);
-        self.seat(me, path, Above::Chassis, Box::new(root));
+        self.seat(me, path, Above::Chassis, root);
+        self.fold_began(buffers, stood, context, parity);
+
+        Ok(id)
+    }
+
+    /// Folds what a root's `begin` asked for, in `context`, between steps: its lines, its effects with the children
+    /// it stood up, and its mail, into every view, and marks every part waiting for what they hand on.
+    fn fold_began(&mut self, buffers: Buffers, stood: Vec<Stood>, context: Context, parity: usize) {
+        let Buffers { mailed, lines, effects } = buffers;
         let written = &self.arenas[parity];
         self.log.fold_records(lines.into_iter().map(log::line), written);
         self.fold_turn(&effects, stood, context);
@@ -481,8 +611,6 @@ impl Engine {
             self.expected[part] = self.expect(part);
         }
         self.waiting.extend(0..self.seating.len());
-
-        Ok(id)
     }
 
     /// Runs one step on the thread that calls it: plans it for one worker, runs it where its parts lie, and applies
@@ -528,6 +656,7 @@ impl Engine {
                 lives: self.lives.at_mut(*part),
                 seating: &mut self.seating[*part],
                 actors: &mut self.actors[*part],
+                instances: &mut self.instances[*part],
                 seats: &mut self.seats[*part],
             };
             reading.run_part(room, clock, &mut tally, &mut asked, &mut lists);
@@ -887,17 +1016,19 @@ impl Engine {
             lives: self.lives.take(part),
             seating: mem::replace(&mut self.seating[part], empty),
             actors: mem::replace(&mut self.actors[part], BySeat::empty(parts)),
+            instances: mem::take(&mut self.instances[part]),
             seats: mem::take(&mut self.seats[part]),
         }
     }
 
     /// Puts back a part a worker ran.
     fn put(&mut self, parcel: Parcel) {
-        let Parcel { part, streams, lives, seating, actors, seats } = parcel;
+        let Parcel { part, streams, lives, seating, actors, instances, seats } = parcel;
         self.streams.put(part, streams);
         self.lives.put(part, lives);
         self.seating[part] = seating;
         self.actors[part] = actors;
+        self.instances[part] = instances;
         self.seats[part] = seats;
     }
 
@@ -947,7 +1078,8 @@ impl Engine {
     fn sweep_blobs(&mut self) {
         pins::take_shared(self.number.0, &mut self.unbuffered);
         self.blobs.change(&mut self.unbuffered);
-        self.blobs.sweep();
+        let guests = &*self.guests;
+        self.blobs.sweep(|freed| guests.unload(freed));
     }
 
     /// The arena of the writer numbered `slot` for steps of `parity`, taken out to write to; made when it is the
@@ -1140,7 +1272,7 @@ impl Reading<'_> {
         asked: &mut Asked,
         lists: &mut Lists,
     ) {
-        let Room { streams, lives, seating, actors, .. } = room;
+        let Room { streams, lives, seating, actors, instances, .. } = room;
         let (Some(seat), Some(life), Some(held)) = (seating.seated.get(me), lives.life(me), actors.get_mut(me)) else {
             return;
         };
@@ -1151,30 +1283,7 @@ impl Reading<'_> {
 
         match (work, life.state()) {
             (Work::Closing, State::Ending(ending)) => {
-                let (how, context) = &**ending;
-                // Timed whole, as a turn of a waiting item is.
-                tally.time(key(ItemKind::Closing), clock, || {
-                    asked.next_turn();
-                    let why = why(how);
-                    let closing = Closing::new(me, &seat.path, seat.above, self.table, asked, life.sent(), why);
-                    let ended = actor.end(closing);
-                    let buffers = asked.buffers_mut();
-                    // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds
-                    // its fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after
-                    // what the turn sent.
-                    if let Err(fault) = ended {
-                        keep_lines(buffers);
-                        buffers.effects.push(Effect::new(me, What::EndFailed(fault)));
-                    }
-                    buffers.effects.push(Effect::new(me, What::Ended(how.clone())));
-                    if lists.fusing.may_hop() {
-                        let sends = buffers.mailed.iter().filter(|mailed| is_send_by(mailed, me)).count();
-                        lists.fusing.hops.closing += u64::try_from(sends).unwrap_or(u64::MAX);
-                    }
-
-                    let ran = Ran { stood: Vec::new(), context: *context };
-                    lists.route(ran, asked, me.id);
-                });
+                self.closing(actor, me, seat, life.sent(), ending, clock, tally, asked, instances, lists);
                 // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
                 seating.seated.remove(me);
                 lists.freed.push(me.seat);
@@ -1189,10 +1298,30 @@ impl Reading<'_> {
                     fresh
                 };
                 // An actor that sends is kept to its slice, the rest of its items carried over, so what it sends
-                // runs on other workers while it goes on; one that sends nothing would only take more steps.
+                // runs on other workers while it goes on; one that sends nothing would only take more steps. Its
+                // items are prepared in batches, each the turns between two looks at the clock, so the slice ends
+                // only where a batch does.
                 let mut slice = Slice::new(self.slice);
+                let mut pieces = streams.items(&run);
+                let carried = streams.carried();
+                let carried_pins = streams.carried_pins();
                 let mut is_spent = false;
-                for handed in streams.items(&run) {
+                while let Some(handed) = pieces.next() {
+                    // A batch is prepared once its first item is in hand, so it holds at least one.
+                    let begins_batch = slice.taken.is_multiple_of(SLICE_EVERY);
+                    if begins_batch {
+                        let batch =
+                            batch::Waiting { reading: self, first: handed, rest: &pieces, carried, carried_pins };
+                        let table = Since {
+                            table: self.table,
+                            stood: &lists.fusing.stood,
+                            sees: Sees::Step,
+                            blobs: self.blobs,
+                        };
+                        let (seats, puts, _) = asked.lent();
+                        let reads = Reads { table: &table, made: &seat.made, seats, puts };
+                        actor.prepare(Preparing::new(&batch, instances, reads));
+                    }
                     // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
                     // worker, beyond what the actor's code takes.
                     tally.time(key(item_kind(handed)), clock, || {
@@ -1204,15 +1333,7 @@ impl Reading<'_> {
                         };
                         asked.next_turn();
                         let source = handed.source();
-                        let (item, context) = match handed {
-                            Handed::Mail { envelope: &Envelope { kind, root, depth, .. }, bytes, .. } => {
-                                let bytes = stream::read(bytes, self.mail, streams.carried());
-                                let mail = Mail::new(kind, bytes, source, root, depth, self.read_limit);
-
-                                (Item::Mail(mail), Context { root, depth: depth + 1 })
-                            }
-                            Handed::Ended { ended, context } => (Item::Ended(ended.clone()), *context),
-                        };
+                        let (item, context) = batch::read(handed, self, carried);
                         // The item sits one above what the turn sends in its chain.
                         let chain = Chain { root: context.root, depth: context.depth - 1 };
                         let turning = Turning::new(
@@ -1222,11 +1343,12 @@ impl Reading<'_> {
                             &table,
                             &seat.made,
                             asked,
+                            instances,
                             stepped.sent,
                             source,
                             chain,
                         );
-                        let ran = Ran::of(me, actor.handle(item, turning), asked, context);
+                        let ran = Ran::of(me, actor.turn(item, turning), asked, context);
 
                         Self::finish(me, ran, Origin::Waiting, seating, lives, asked, lists, &mut stepped);
                     });
@@ -1257,6 +1379,49 @@ impl Reading<'_> {
             _ => put_back(actors, me, actor),
         }
     }
+
+    /// The closing turn of the actor `me` names, sitting as `sitting` says, which has sent `sent` pieces of mail and
+    /// whose life ended as `ending` says: measured into `tally`, what it asks for added to `asked` and routed into
+    /// `lists`.
+    #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
+    fn closing(
+        &self,
+        actor: Box<dyn Runs>,
+        me: Seated,
+        sitting: &Sitting,
+        sent: u64,
+        ending: &(How, Context),
+        clock: &impl Clock,
+        tally: &mut Tally,
+        asked: &mut Asked,
+        instances: &mut Instances,
+        lists: &mut Lists,
+    ) {
+        let (how, context) = ending;
+        // Timed whole, as a turn of a waiting item is.
+        tally.time(CostKey { actor: sitting.kind, item: ItemKind::Closing }, clock, || {
+            asked.next_turn();
+            let why = why(how);
+            let closing = Closing::new(me, &sitting.path, sitting.above, self.table, asked, instances, sent, why);
+            let ended = actor.end(closing);
+            let buffers = asked.buffers_mut();
+            // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds
+            // its fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after
+            // what the turn sent.
+            if let Err(fault) = ended {
+                keep_lines(buffers, me);
+                buffers.effects.push(Effect::new(me, What::EndFailed(fault)));
+            }
+            buffers.effects.push(Effect::new(me, What::Ended(how.clone())));
+            if lists.fusing.may_hop() {
+                let sends = buffers.mailed.iter().filter(|mailed| is_send_by(mailed, me)).count();
+                lists.fusing.hops.closing += u64::try_from(sends).unwrap_or(u64::MAX);
+            }
+
+            let ran = Ran { stood: Vec::new(), context: *context };
+            lists.route(ran, asked, me.id);
+        });
+    }
 }
 
 impl Reading<'_> {
@@ -1273,7 +1438,7 @@ impl Reading<'_> {
         asked: &mut Asked,
         lists: &mut Lists,
     ) {
-        let Room { lives, seating, actors, .. } = room;
+        let Room { lives, seating, actors, instances, .. } = room;
         let me = hop.to;
         let (Some(seat), Some(life), Some(held)) = (seating.seated.get(me), lives.life(me), actors.get_mut(me)) else {
             return;
@@ -1287,6 +1452,16 @@ impl Reading<'_> {
             return;
         };
 
+        let table = Since {
+            table: self.table,
+            stood: &lists.fusing.stood,
+            sees: Sees::Run(lists.fusing.run(hop.run)),
+            blobs: self.blobs,
+        };
+        let (seats, puts, arena) = asked.lent();
+        let reads = Reads { table: &table, made: &seat.made, seats, puts };
+        let batch = batch::OneHop { reading: self, hop: &hop, lists, arena };
+        actor.prepare(Preparing::new(&batch, instances, reads));
         let sent_before = stepped.sent;
         let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
         // Timed whole, as a turn of a waiting item is.
@@ -1302,10 +1477,20 @@ impl Reading<'_> {
                 let bytes = lists.fusing.bytes(&hop);
                 let mail = Mail::new(hop.kind, bytes, hop.from, hop.root, hop.depth, self.read_limit);
                 let chain = Chain { root: hop.root, depth: hop.depth };
-                let turning =
-                    Turning::new(me, &seat.path, seat.above, &table, &seat.made, asked, sent_before, hop.from, chain);
+                let turning = Turning::new(
+                    me,
+                    &seat.path,
+                    seat.above,
+                    &table,
+                    &seat.made,
+                    asked,
+                    instances,
+                    sent_before,
+                    hop.from,
+                    chain,
+                );
 
-                actor.handle(Item::Mail(mail), turning)
+                actor.turn(Item::Mail(mail), turning)
             };
             let context = Context { root: hop.root, depth: hop.depth + 1 };
             let ran = Ran::of(me, handled, asked, context);
@@ -1496,6 +1681,7 @@ impl Parcel {
             lives: &mut self.lives,
             seating: &mut self.seating,
             actors: &mut self.actors,
+            instances: &mut self.instances,
             seats: &mut self.seats,
         }
     }
@@ -1569,7 +1755,7 @@ impl Ran {
     fn of(me: Seated, outcome: Result<(), Fault>, asked: &mut Asked, context: Context) -> Self {
         let mut stood = asked.take_stood();
         if let Err(fault) = outcome {
-            keep_lines(asked.buffers_mut());
+            keep_lines(asked.buffers_mut(), me);
             asked.buffers_mut().effects.push(Effect::new(me, What::Failed(fault)));
             for child in mem::take(&mut stood) {
                 asked.seats_mut().give_back(child.seated().seat);
@@ -1629,10 +1815,20 @@ impl Seen {
     }
 }
 
-/// Drops all the turn running asked for but the lines it logged: what is kept of a turn that failed (ADR-0009).
-fn keep_lines(buffers: &mut Buffers) {
+/// Drops all the turn of the actor `me` names asked for but the lines it logged and the failures of other actors its
+/// host reported, which only a hosted turn whose instance trapped writes: what is kept of a turn that failed
+/// (ADR-0009, ADR-0015).
+fn keep_lines(buffers: &mut Buffers, me: Seated) {
     buffers.mailed.clear();
-    buffers.effects.clear();
+    buffers.effects.retain(|effect| is_reported_failure(effect, me));
+}
+
+/// Whether `effect` is the failure of an actor other than `me` that its host reported.
+fn is_reported_failure(effect: &Effect, me: Seated) -> bool {
+    let is_failure = matches!(effect.what(), What::Failed(_));
+    let is_other = effect.by() != me.id;
+
+    is_failure && is_other
 }
 
 /// What a pending item is, as far as the cost of reacting to it goes.
@@ -1682,7 +1878,7 @@ const fn why(how: &How) -> Why {
     }
 }
 
-/// How many turns an actor kept to a slice runs between looks at the clock.
+/// How many turns an actor kept to a slice runs between looks at the clock: the most items a batch holds.
 const SLICE_EVERY: u32 = 32;
 
 /// How far one actor has gone into its slice of a step: how many turns it has taken, and when its slice began.
@@ -1700,7 +1896,8 @@ impl Slice {
     }
 
     /// Counts a turn taken, and answers whether the actor has run past its slice. The clock is read every
-    /// [`SLICE_EVERY`] turns, and the slice timed from the first read, so an actor with few items reads it never.
+    /// [`SLICE_EVERY`] turns, at the end of a batch, and the slice timed from the first read, so an actor with few
+    /// items reads it never.
     fn is_spent(&mut self, clock: &impl Clock) -> bool {
         self.taken += 1;
         let is_kept = self.nanos != u64::MAX;

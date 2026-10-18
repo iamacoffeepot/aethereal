@@ -16,6 +16,11 @@ pub enum Refused {
     Began(Fault),
     /// The blob's bytes would take the turn's worker past its share of the budget for blobs in this step.
     NoRoom,
+    /// The blob is not code the engine holds, or makes no actor of the child's type (ADR-0009).
+    NotMade,
+    /// The child would begin in an instance that is waiting on a call out of its own: a chain of `begin`s left its
+    /// blob and came back to it within one turn (ADR-0015).
+    Waiting,
 }
 
 impl fmt::Display for Refused {
@@ -25,6 +30,8 @@ impl fmt::Display for Refused {
             Self::TooDeep => write!(f, "spawn: a child would stand deeper than {} segments", ActorPath::MAX_DEPTH),
             Self::Began(_) => write!(f, "spawn: the child's begin returned a fault"),
             Self::NoRoom => write!(f, "put: the blob would take its worker past its share of the budget for blobs"),
+            Self::NotMade => write!(f, "spawn: the blob makes no actor of the child's type"),
+            Self::Waiting => write!(f, "spawn: the child's instance is waiting on a call out of its own"),
         }
     }
 }

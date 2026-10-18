@@ -3,8 +3,9 @@
 //! An author writes the declaration as types: one [`Handles`] impl for each
 //! kind an actor handles, whose `Sends` lists what its handler may send, and
 //! the handled kinds as a tuple on the [`Actor`](crate::Actor). The typed turn
-//! a handler is given offers only those sends, so the declaration is the
-//! handler's own signature. The engine reads the same declaration as the plain
+//! a handler is given offers only those sends, and a watch only to a handler
+//! that lists [`Watches`], so the declaration is the handler's own signature.
+//! An actor that declares a watch and handles no ending does not build. The engine reads the same declaration as the plain
 //! data here, made from those types when the program is built.
 
 mod handles;
@@ -13,10 +14,10 @@ mod sends;
 mod tests;
 
 pub use handles::{Handled, HandledList, Handles, Others};
-pub use sends::{Allows, At, Kinds, Marker, Sends, ToAny, ToSender, ToType};
+pub use sends::{Allows, At, Kinds, Marker, Sends, ToAny, ToSender, ToType, Watches};
 
 use crate::Actor;
-use aethereal_data::{KindId, KindName};
+use aethereal_data::{ActorKey, Keyed, KindId, KindName};
 use core::marker::PhantomData;
 
 /// What an actor type declares, as the engine reads it: its name, what each of its turns may send, and what it
@@ -26,6 +27,8 @@ pub struct Declared {
     name: KindName,
     /// The type's id, made from its name and layout when the program is built: what the engine knows its kind by.
     id: KindId,
+    /// Whether it has one actor or many, each under its own key.
+    keyed: Keyed,
     /// What its `begin` may send.
     begins: &'static [Sending],
     /// Each thing it handles, and what its handler may send.
@@ -35,17 +38,18 @@ pub struct Declared {
 }
 
 impl Declared {
-    /// The declaration of the type named `name`, of id `id`, whose `begin` may send `begins`, which handles
-    /// `handlers`, and whose closing turn may send `ends`.
+    /// The declaration of the type named `name`, of id `id`, keyed as `keyed`, whose `begin` may send `begins`,
+    /// which handles `handlers`, and whose closing turn may send `ends`.
     #[must_use]
     pub const fn new(
         name: KindName,
         id: KindId,
+        keyed: Keyed,
         begins: &'static [Sending],
         handlers: &'static [Handler],
         ends: &'static [Sending],
     ) -> Self {
-        Self { name, id, begins, handlers, ends }
+        Self { name, id, keyed, begins, handlers, ends }
     }
 
     /// The declaration of the actor type `A`, made when the program is built.
@@ -64,6 +68,12 @@ impl Declared {
     #[must_use]
     pub const fn id(&self) -> KindId {
         self.id
+    }
+
+    /// Whether it has one actor or many, each under its own key.
+    #[must_use]
+    pub const fn keyed(&self) -> Keyed {
+        self.keyed
     }
 
     /// What its `begin` may send.
@@ -115,10 +125,49 @@ impl<A: Actor> Of<A> {
     const DECLARED: &'static Declared = &Declared::new(
         A::NAME,
         KindId::of::<A>(),
+        <A::Key as ActorKey>::KEYED,
         <A::BeginSends as Sends>::SENDINGS,
         <A::Handles as HandledList<A>>::HANDLERS,
         <A::EndSends as Sends>::SENDINGS,
-    );
+    )
+    .checked();
+}
+
+impl Declared {
+    /// It, when what it declares holds together: a type that declares a watch handles endings, as the ending of what
+    /// it watches is handed to it.
+    ///
+    /// # Panics
+    ///
+    /// Panics, as the type's declaration is made when the program is built, stopping the build, when it does not.
+    const fn checked(self) -> Self {
+        let mut watches = declares_watch(self.begins) || declares_watch(self.ends);
+        let mut handles_endings = false;
+        let mut index = 0;
+        while index < self.handlers.len() {
+            let handler = &self.handlers[index];
+            watches = watches || declares_watch(handler.sends);
+            handles_endings = handles_endings || matches!(handler.role, Role::Ended);
+            index += 1;
+        }
+        let holds = !watches || handles_endings;
+        assert!(holds, "false declaration: a type declares a watch, and does not handle endings");
+
+        self
+    }
+}
+
+/// Whether `sendings` declare a watch.
+const fn declares_watch(sendings: &[Sending]) -> bool {
+    let mut index = 0;
+    while index < sendings.len() {
+        if matches!(sendings[index].to, Target::Watched) {
+            return true;
+        }
+        index += 1;
+    }
+
+    false
 }
 
 /// One thing an actor type handles, and what its handler may send (ADR-0013).
@@ -196,4 +245,6 @@ pub enum Target {
     /// Any actor whose type lists every one of these kinds: what a reference that names a protocol, and not a type,
     /// reaches.
     Handling(&'static [KindId]),
+    /// No actor: the handler may watch one, which is no send.
+    Watched,
 }

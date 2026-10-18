@@ -135,18 +135,49 @@ impl ActorsReader<'_> {
 
 impl Refers for ActorsReader<'_> {}
 
-/// What a writer at [`Within`] holds beside the bytes written so far.
+/// What a writer at [`Within`] holds beside the bytes written so far: where it notes the blobs written, when it is
+/// asked to.
 #[derive(Default)]
 pub struct WithinWriter<'a> {
-    /// Nothing is held yet. The lifetime is kept for what a later bound value needs held.
-    held: PhantomData<&'a ()>,
+    #[cfg_attr(not(feature = "std"), expect(dead_code, reason = "no blob is referred to without std"))]
+    noting: Noting<'a>,
 }
 
-impl WithinWriter<'_> {
+/// Whether a writer at [`Within`] notes the blobs it writes references to.
+#[derive(Default)]
+enum Noting<'a> {
+    #[default]
+    No,
+    /// Into this list, each once for each reference.
+    #[cfg(feature = "std")]
+    Into(&'a mut Vec<BlobId>),
+    /// Nothing is noted without std, where no blob is referred to; the lifetime is kept for the list it would hold.
+    #[cfg(not(feature = "std"))]
+    #[expect(dead_code, reason = "no blob is referred to without std")]
+    Into(PhantomData<&'a ()>),
+}
+
+impl<'a> WithinWriter<'a> {
     /// What a writer at [`Within`] holds.
     #[must_use]
     pub const fn new() -> Self {
-        Self { held: PhantomData }
+        Self { noting: Noting::No }
+    }
+
+    /// A writer at [`Within`] that notes in `blobs` the blob of each reference it writes: for a guest's library, which
+    /// tells its host what an actor's state taken out refers to (ADR-0014, ADR-0015).
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub const fn noting(blobs: &'a mut Vec<BlobId>) -> Self {
+        Self { noting: Noting::Into(blobs) }
+    }
+
+    /// Notes that a reference to the blob `blob` is written, when it is asked to.
+    #[cfg(feature = "std")]
+    pub(crate) fn note(&mut self, blob: BlobId) {
+        if let Noting::Into(blobs) = &mut self.noting {
+            blobs.push(blob);
+        }
     }
 }
 
