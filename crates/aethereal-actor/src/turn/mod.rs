@@ -10,8 +10,8 @@ pub use refused::Refused;
 
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
-    Handles, Kinds, Level, Line, MailId, Mailed, Marker, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends,
-    Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, What,
+    Handles, Instances, Kinds, Level, Line, MailId, Mailed, Marker, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen,
+    Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, What,
 };
 #[cfg(feature = "std")]
 use crate::{BlobHash, BlobRef};
@@ -723,14 +723,17 @@ pub struct Turning<'a> {
     table: &'a dyn Table,
     made: &'a dyn Children,
     asked: &'a mut Asked,
+    /// The instances of the actor's part, lent for the turn (ADR-0015).
+    instances: &'a mut Instances,
     sent: u64,
     source: Seated,
     chain: Chain,
 }
 
 impl<'a> Turning<'a> {
-    /// The turn of the actor `me` names, at `path`, reading `table` and adding to `asked`, which handles an item
-    /// from the actor `source` names, at `chain`, and has sent `sent` pieces of mail before it.
+    /// The turn of the actor `me` names, at `path`, reading `table`, adding to `asked` and lent its part's
+    /// `instances`, which handles an item from the actor `source` names, at `chain`, and has sent `sent` pieces of mail
+    /// before it.
     ///
     /// For the engine. `table` answers for the step's start and for what this actor has spawned since.
     #[allow(clippy::too_many_arguments, reason = "what a turn is opened with, each fixed by the engine")]
@@ -742,11 +745,12 @@ impl<'a> Turning<'a> {
         table: &'a dyn Table,
         made: &'a dyn Children,
         asked: &'a mut Asked,
+        instances: &'a mut Instances,
         sent: u64,
         source: Seated,
         chain: Chain,
     ) -> Self {
-        Self { me, path, above, table, made, asked, sent, source, chain }
+        Self { me, path, above, table, made, asked, instances, sent, source, chain }
     }
 
     /// The source of the item the turn handles.
@@ -763,7 +767,7 @@ impl<'a> Turning<'a> {
 
     /// The turn of the handler of `A` for `role`, which may send `S`.
     pub(crate) fn declaring<A: Actor, S: Sends>(self, role: Role) -> Turn<'a, S> {
-        let Self { me, path, above, table, made, asked, sent, source, chain } = self;
+        let Self { me, path, above, table, made, asked, sent, source, chain, .. } = self;
         let declared = Declared::of::<A>();
         let seat = Seat {
             me,

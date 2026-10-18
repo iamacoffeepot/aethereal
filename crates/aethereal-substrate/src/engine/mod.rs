@@ -29,7 +29,8 @@ use crate::{
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, Actor, Arena, Asked, Beginning, BlobHash, BlobRef, Buffers, Chain, Closing, Code, Declared, Effect, Fault,
-    How, Item, Mail, MailId, Mailed, Puts, Refused, Runs, SeatNumber, Seated, Seats, Stood, Turning, What, Why,
+    How, Instances, Item, Mail, MailId, Mailed, Preparing, Puts, Refused, Runs, SeatNumber, Seated, Seats, Stood,
+    Turning, What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use birth::Births;
@@ -79,6 +80,9 @@ pub struct Engine {
     /// The parts that may have something to run in the next step: each part the last fold reached, and every part once
     /// a root is made. A part with something to run is always among them, so a step looks at no other.
     waiting: Vec<usize>,
+    /// The instances each part's actors run their code in, which the engine carries with the part and never looks
+    /// into (ADR-0015).
+    instances: Vec<Instances>,
     /// The seats each part gives the children its turns spawn: its own free seats and new numbers, and those set
     /// aside for it in other parts (ADR-0013).
     seats: Vec<Seats>,
@@ -230,6 +234,7 @@ pub struct Parcel {
     lives: lives::Shard,
     seating: Seating,
     actors: BySeat<Held>,
+    instances: Instances,
     seats: Seats,
 }
 
@@ -239,6 +244,7 @@ struct Room<'a> {
     lives: &'a mut lives::Shard,
     seating: &'a mut Seating,
     actors: &'a mut BySeat<Held>,
+    instances: &'a mut Instances,
     seats: &'a mut Seats,
 }
 
@@ -319,6 +325,7 @@ impl Engine {
             seating: (0..parts.get()).map(|_| Seating { seated: BySeat::empty(parts) }).collect(),
             actors: (0..parts.get()).map(|_| BySeat::empty(parts)).collect(),
             waiting: Vec::new(),
+            instances: (0..parts.get()).map(|_| Instances::default()).collect(),
             seats: (0..parts.get()).map(|part| Seats::of_part(new_seat(part), new_seat(parts.get()))).collect(),
             seated: vec![0; parts.get()],
             actors_seated: 0,
@@ -418,7 +425,7 @@ impl Engine {
     pub fn add_root<A: Actor>(&mut self, key: &A::Key, config: A::Config) -> Result<ActorId, Refused> {
         let segment = PathSegment::new(A::NAME, key);
 
-        self.add_root_made(&segment, Declared::of::<A>(), |me, path, table, asked| {
+        self.add_root_made(&segment, Declared::of::<A>(), |me, path, table, asked, _| {
             let root = A::begin(config, &mut Beginning::new::<A>(me, path, table, asked))?;
 
             Ok(Box::new(root))
@@ -440,7 +447,13 @@ impl Engine {
         &mut self,
         segment: &PathSegment,
         declared: &'static Declared,
-        begin: impl FnOnce(Seated, &ActorPath, &dyn aethereal_actor::Table, &mut Asked) -> Result<Box<dyn Runs>, Fault>,
+        begin: impl FnOnce(
+            Seated,
+            &ActorPath,
+            &dyn aethereal_actor::Table,
+            &mut Asked,
+            &mut Instances,
+        ) -> Result<Box<dyn Runs>, Fault>,
     ) -> Result<ActorId, Refused> {
         let id = root_id(segment);
         let path = ActorPath::from_root(segment);
@@ -460,7 +473,8 @@ impl Engine {
         let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats, self.puts(ROOTS, blob_room));
         let stood_before = ByActor::default();
         let table = Since { table: &self.table, stood: &stood_before, sees: Sees::Step, blobs: &self.blobs };
-        let made = begin(me, &path, &table, &mut asked);
+        // The root begins in the part it is seated in, lent that part's instances.
+        let made = begin(me, &path, &table, &mut asked, &mut self.instances[home]);
         let (buffers, stood, arena, mut seats, mut puts) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
         // A root is made between steps, when nothing reads the store, so what its `begin` put is taken in at once.
@@ -554,6 +568,7 @@ impl Engine {
                 lives: self.lives.at_mut(*part),
                 seating: &mut self.seating[*part],
                 actors: &mut self.actors[*part],
+                instances: &mut self.instances[*part],
                 seats: &mut self.seats[*part],
             };
             reading.run_part(room, clock, &mut tally, &mut asked, &mut lists);
@@ -913,17 +928,19 @@ impl Engine {
             lives: self.lives.take(part),
             seating: mem::replace(&mut self.seating[part], empty),
             actors: mem::replace(&mut self.actors[part], BySeat::empty(parts)),
+            instances: mem::take(&mut self.instances[part]),
             seats: mem::take(&mut self.seats[part]),
         }
     }
 
     /// Puts back a part a worker ran.
     fn put(&mut self, parcel: Parcel) {
-        let Parcel { part, streams, lives, seating, actors, seats } = parcel;
+        let Parcel { part, streams, lives, seating, actors, instances, seats } = parcel;
         self.streams.put(part, streams);
         self.lives.put(part, lives);
         self.seating[part] = seating;
         self.actors[part] = actors;
+        self.instances[part] = instances;
         self.seats[part] = seats;
     }
 
@@ -1166,7 +1183,7 @@ impl Reading<'_> {
         asked: &mut Asked,
         lists: &mut Lists,
     ) {
-        let Room { streams, lives, seating, actors, .. } = room;
+        let Room { streams, lives, seating, actors, instances, .. } = room;
         let (Some(seat), Some(life), Some(held)) = (seating.seated.get(me), lives.life(me), actors.get_mut(me)) else {
             return;
         };
@@ -1203,7 +1220,8 @@ impl Reading<'_> {
                     // A batch is prepared once its first item is in hand, so it holds at least one.
                     let begins_batch = slice.taken.is_multiple_of(SLICE_EVERY);
                     if begins_batch {
-                        actor.prepare(&batch::Waiting { reading: self, first: handed, rest: &pieces, carried });
+                        let batch = batch::Waiting { reading: self, first: handed, rest: &pieces, carried };
+                        actor.prepare(Preparing::new(&batch, instances));
                     }
                     // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
                     // worker, beyond what the actor's code takes.
@@ -1226,6 +1244,7 @@ impl Reading<'_> {
                             &table,
                             &seat.made,
                             asked,
+                            instances,
                             stepped.sent,
                             source,
                             chain,
@@ -1262,8 +1281,9 @@ impl Reading<'_> {
         }
     }
 
-    /// The closing turn of the actor `me` names, sitting as `sitting` says, which has sent `sent` pieces of mail and whose life
-    /// ended as `ending` says: measured into `tally`, what it asks for added to `asked` and routed into `lists`.
+    /// The closing turn of the actor `me` names, sitting as `sitting` says, which has sent `sent` pieces of mail and
+    /// whose life ended as `ending` says: measured into `tally`, what it asks for added to `asked` and routed into
+    /// `lists`.
     #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
     fn closing(
         &self,
@@ -1318,7 +1338,7 @@ impl Reading<'_> {
         asked: &mut Asked,
         lists: &mut Lists,
     ) {
-        let Room { lives, seating, actors, .. } = room;
+        let Room { lives, seating, actors, instances, .. } = room;
         let me = hop.to;
         let (Some(seat), Some(life), Some(held)) = (seating.seated.get(me), lives.life(me), actors.get_mut(me)) else {
             return;
@@ -1332,7 +1352,7 @@ impl Reading<'_> {
             return;
         };
 
-        actor.prepare(&batch::OneHop { reading: self, hop: &hop, lists });
+        actor.prepare(Preparing::new(&batch::OneHop { reading: self, hop: &hop, lists }, instances));
         let sent_before = stepped.sent;
         let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
         // Timed whole, as a turn of a waiting item is.
@@ -1348,8 +1368,18 @@ impl Reading<'_> {
                 let bytes = lists.fusing.bytes(&hop);
                 let mail = Mail::new(hop.kind, bytes, hop.from, hop.root, hop.depth, self.read_limit);
                 let chain = Chain { root: hop.root, depth: hop.depth };
-                let turning =
-                    Turning::new(me, &seat.path, seat.above, &table, &seat.made, asked, sent_before, hop.from, chain);
+                let turning = Turning::new(
+                    me,
+                    &seat.path,
+                    seat.above,
+                    &table,
+                    &seat.made,
+                    asked,
+                    instances,
+                    sent_before,
+                    hop.from,
+                    chain,
+                );
 
                 actor.turn(Item::Mail(mail), turning)
             };
@@ -1542,6 +1572,7 @@ impl Parcel {
             lives: &mut self.lives,
             seating: &mut self.seating,
             actors: &mut self.actors,
+            instances: &mut self.instances,
             seats: &mut self.seats,
         }
     }

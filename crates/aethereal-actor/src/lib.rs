@@ -23,6 +23,7 @@ mod ended;
 mod fault;
 #[cfg(feature = "guest")]
 pub mod guest;
+mod instances;
 mod item;
 mod mail;
 pub mod records;
@@ -31,7 +32,7 @@ mod seat;
 pub mod section;
 mod turn;
 
-pub use actor::{Actor, Batch, Peeked, Runs};
+pub use actor::{Actor, Batch, Peeked, Preparing, Runs};
 pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};
 pub use blob::{BlobHash, BlobId, Puts};
 #[cfg(feature = "std")]
@@ -44,6 +45,7 @@ pub use declared::{
 pub use effect::{Code, Effect, Level, Line, Mailed, Seen, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
+pub use instances::Instances;
 pub use item::Item;
 pub use mail::{Mail, MailId};
 pub use reference::{ActorRef, ErasedActorRef};

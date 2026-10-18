@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::{
-    Above, Asked, Beginning, Chain, Ending, ErasedActorRef, Fault, Item, Level, Mail, MailId, Mailed, Runs, SeatNumber,
-    Seated, Table, To, Turn, Turning, section,
+    Above, Asked, Beginning, Chain, Ending, ErasedActorRef, Fault, Instances, Item, Level, Mail, MailId, Mailed, Runs,
+    SeatNumber, Seated, Table, To, Turn, Turning, section,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -191,7 +191,8 @@ fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<String> {
     let table = Typed(Vec::new());
     let mut asked = Asked::new();
     let mut actor: Box<dyn Runs> = Box::new(actor);
-    let turning = Turning::new(ME, &PATH, Above::Chassis, &table, &(), &mut asked, 0, OTHER, CHAIN);
+    let mut instances = Instances::default();
+    let turning = Turning::new(ME, &PATH, Above::Chassis, &table, &(), &mut asked, &mut instances, 0, OTHER, CHAIN);
     let mail = Mail::new(kind, &[], OTHER, CHAIN.root, 1, 0);
     let handled = actor.turn(Item::Mail(mail), turning);
     assert!(handled.is_ok());
@@ -203,7 +204,8 @@ fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<String> {
 fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, <Keeper as Handles<Kept>>::Sends>)) -> Vec<Mailed> {
     let mut asked = Asked::new();
     let kept = Role::Kind(KindId::of::<Kept>());
-    let turning = Turning::new(ME, &PATH, Above::Chassis, table, &(), &mut asked, 0, OTHER, CHAIN);
+    let mut instances = Instances::default();
+    let turning = Turning::new(ME, &PATH, Above::Chassis, table, &(), &mut asked, &mut instances, 0, OTHER, CHAIN);
     then(&mut turning.declaring::<Keeper, <Keeper as Handles<Kept>>::Sends>(kept));
 
     asked.into_parts().0.mailed

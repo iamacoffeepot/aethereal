@@ -1,15 +1,20 @@
 //! The native guest host: guests' code run with wasmtime (ADR-0015).
 //!
-//! A spike: one instance for each blob, shared by all its actors behind a
-//! lock. A batch's items are written straight into the guest's inbox, and what
-//! its turns asked for is read where the guest wrote it (ADR-0015).
+//! A blob's code is compiled once. Each part runs it in an instance of its
+//! own, which the first actor of the blob to run in the part loads into the
+//! part's [`Instances`] and every other actor of it there reuses, so nothing is
+//! shared between workers and nothing is locked. A batch's items are written
+//! straight into the guest's inbox, and what its turns asked for is read where
+//! the guest wrote it (ADR-0015).
 
 use aethereal_actor::records::{ItemHead, LineRecord, OutHead, SendRecord, Span, Stopped, TurnEnds};
 use aethereal_actor::section::{self, Made};
-use aethereal_actor::{Batch, Declared, FalseSend, Fault, Hosted, Item, Refused, Role, Runs, Trapped, Turning};
+use aethereal_actor::{
+    Batch, Declared, FalseSend, Fault, Hosted, Instances, Item, Preparing, Refused, Role, Runs, Trapped, Turning,
+};
 use aethereal_data::{ActorId, Budget, PathSegment, from_bytes};
 use aethereal_substrate::Engine;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicU64, Ordering};
 use wasmtime::{Memory, Module, Store, TypedFunc};
 
 /// What runs guests' code: one compiler, for every blob.
@@ -18,11 +23,19 @@ pub struct Guests {
     engine: wasmtime::Engine,
 }
 
-/// A blob of guest code, compiled, and what each actor type it makes declares.
+/// A blob of guest code, compiled, and what each actor type it makes declares: what every part makes its instance
+/// of the blob from. Cloning it shares the compiled code.
+#[derive(Clone)]
 pub struct Code {
+    /// What its instances are kept under in a part's [`Instances`]: a number no other code compiled in the process
+    /// has.
+    key: u64,
     module: Module,
     made: Vec<&'static Declared>,
 }
+
+/// The key the next code compiled takes.
+static CODES: AtomicU64 = AtomicU64::new(0);
 
 /// Why a blob of code was refused as it entered.
 #[derive(Debug)]
@@ -35,8 +48,8 @@ pub enum Unfit {
     Unexported(&'static str),
 }
 
-/// One instance of a blob, and the calls its host makes of it.
-pub struct Instance {
+/// One instance of a blob, a part's, and the calls its host makes of it.
+struct Instance {
     store: Store<()>,
     memory: Memory,
     inbox: TypedFunc<u32, u32>,
@@ -48,12 +61,11 @@ pub struct Instance {
     inbox_room: usize,
 }
 
-/// An instance its actors share.
-pub type Shared = Arc<Mutex<Instance>>;
-
-/// An actor whose code runs in a guest's instance, as the engine holds it.
+/// An actor whose code runs in a guest's instance, as the engine holds it: the instance is its part's, which it
+/// takes from what its part lends each batch and turn.
 struct Guest {
-    instance: Shared,
+    code: Code,
+    /// Which actor it is in its instance.
     handle: u32,
     declared: &'static Declared,
     /// What the guest's turns of the batch prepared last asked for, and how far its host has handed them back.
@@ -106,17 +118,33 @@ impl Guests {
             }
         }
 
-        Ok(Code { module, made: made.iter().map(Made::leak).collect() })
+        let key = CODES.fetch_add(1, Ordering::Relaxed);
+
+        Ok(Code { key, module, made: made.iter().map(Made::leak).collect() })
+    }
+}
+
+impl Code {
+    /// What the `of`th type it makes declares.
+    #[must_use]
+    pub fn declared(&self, of: usize) -> Option<&'static Declared> {
+        self.made.get(of).copied()
     }
 
+    /// Its instance in the part whose `instances` are lent: loaded there by the first of its actors to want it.
+    fn instance<'i>(&self, instances: &'i mut Instances) -> &'i mut Instance {
+        instances.get_or_load(self.key, || Instance::load(self))
+    }
+}
+
+impl Instance {
     /// A new instance of `code`.
     ///
     /// # Panics
     ///
     /// Panics when the code cannot be instantiated, which its checks as it entered rule out.
-    #[must_use]
-    pub fn instance(&self, code: &Code) -> Shared {
-        let mut store = Store::new(&self.engine, ());
+    fn load(code: &Code) -> Self {
+        let mut store = Store::new(code.module.engine(), ());
         let Ok(instance) = wasmtime::Instance::new(&mut store, &code.module, &[]) else {
             panic!("guest code that entered is instantiated");
         };
@@ -129,19 +157,11 @@ impl Guests {
             panic!("guest code that entered has its exports");
         };
 
-        Arc::new(Mutex::new(Instance { store, memory, inbox, out, begin, turns, inbox_at: 0, inbox_room: 0 }))
+        Self { store, memory, inbox, out, begin, turns, inbox_at: 0, inbox_room: 0 }
     }
 }
 
-impl Code {
-    /// What the `of`th type it makes declares.
-    #[must_use]
-    pub fn declared(&self, of: usize) -> Option<&'static Declared> {
-        self.made.get(of).copied()
-    }
-}
-
-/// Makes a root of the `of`th type `code` makes, in `instance`, from the bytes of its config.
+/// Makes a root of the `of`th type `code` makes, from the bytes of its config, in its part's instance of `code`.
 ///
 /// # Errors
 ///
@@ -150,22 +170,15 @@ impl Code {
 /// # Panics
 ///
 /// Panics when `code` makes no `of`th type.
-pub fn add_root(
-    engine: &mut Engine,
-    code: &Code,
-    instance: &Shared,
-    of: usize,
-    config: &[u8],
-) -> Result<ActorId, Refused> {
+pub fn add_root(engine: &mut Engine, code: &Code, of: usize, config: &[u8]) -> Result<ActorId, Refused> {
     let Some(declared) = code.declared(of) else {
         panic!("the code makes no type {of}");
     };
     let segment = PathSegment::new(declared.name().clone(), &());
 
-    engine.add_root_made(&segment, declared, |me, path, table, asked| {
+    engine.add_root_made(&segment, declared, |me, path, table, asked, instances| {
         let mut hosted = Hosted::beginning(me, path, table, asked, declared);
-        let mut guard = lock(instance);
-        let held = &mut *guard;
+        let held = code.instance(instances);
         let len = held.write_inbox(config);
         let of = u32::try_from(of).unwrap_or(u32::MAX);
         let handle = held.begin.call(&mut held.store, (of, me.id.bits(), me.seat.number(), len));
@@ -179,9 +192,8 @@ pub fn add_root(
         let data = held.memory.data(&held.store);
         let (began, _) = replay(data, &wrote, 0, TurnEnds { sends: 0, lines: 0 }, &mut hosted).ok_or_else(trapped)?;
         began?;
-        drop(guard);
 
-        Ok(Box::new(Guest { instance: Arc::clone(instance), handle, declared, ran: Ran::Nothing }))
+        Ok(Box::new(Guest { code: code.clone(), handle, declared, ran: Ran::Nothing }))
     })
 }
 
@@ -192,13 +204,12 @@ impl Runs for Guest {
 
     /// Runs every turn of the batch in the guest, in one call into its instance, and keeps what they asked for for
     /// [`Self::turn`] to hand back. The guest stops after a turn that fails or closes it, as the engine does.
-    fn prepare(&mut self, batch: &dyn Batch) {
-        let mut guard = lock(&self.instance);
-        let held = &mut *guard;
+    fn prepare(&mut self, preparing: Preparing<'_>) {
+        let (batch, instances) = preparing.hosted();
+        let held = self.code.instance(instances);
         let (items, len) = held.hand_in(batch);
         let called = held.turns.call(&mut held.store, (self.handle, items, len));
         let wrote = called.ok().and_then(|out| held.out_head(out));
-        drop(guard);
         let first = TurnEnds { sends: 0, lines: 0 };
         self.ran = wrote.map_or(Ran::Trapped, |head| Ran::At { head, next: 0, before: first });
     }
@@ -214,10 +225,9 @@ impl Runs for Guest {
             Item::Mail(_) => Role::Others,
             Item::Ended(_) => Role::Ended,
         };
-        let mut hosted = turning.hosted(self.declared, role);
-        let guard = lock(&self.instance);
-        let replayed = replay(guard.memory.data(&guard.store), &head, next, before, &mut hosted);
-        drop(guard);
+        let (mut hosted, instances) = turning.hosted(self.declared, role);
+        let held = self.code.instance(instances);
+        let replayed = replay(held.memory.data(&held.store), &head, next, before, &mut hosted);
         let Some((replayed, ends)) = replayed else {
             self.ran = Ran::Trapped;
             return Err(trapped());
@@ -367,14 +377,6 @@ fn trapped() -> Fault {
     fault
 }
 
-/// The instance `shared` holds, for the one worker that runs its part.
-fn lock(shared: &Shared) -> MutexGuard<'_, Instance> {
-    match shared.lock() {
-        Ok(held) => held,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
 /// The bytes of the `aethereal.declared` section of the module `bytes`, when it has one.
 fn declared_section(bytes: &[u8]) -> Option<&[u8]> {
     for payload in wasmparser::Parser::new(0).parse_all(bytes) {
@@ -482,12 +484,11 @@ mod tests {
         let Ok(code) = guests.code(ECHO) else {
             panic!("the echo guest is fit to run");
         };
-        let instance = guests.instance(&code);
         let Some(parts) = NonZeroUsize::new(4) else {
             panic!("four is not zero");
         };
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 64);
-        let Ok(_) = add_root(&mut engine, &code, &instance, 0, &[]) else {
+        let Ok(_) = add_root(&mut engine, &code, 0, &[]) else {
             panic!("the echo begins");
         };
         let Ok(_) = engine.add_root::<Pinger>(&(), Volley { pings: 9 }) else {
@@ -561,12 +562,11 @@ mod tests {
         let Ok(code) = guests.code(ECHO) else {
             panic!("the echo guest is fit to run");
         };
-        let instance = guests.instance(&code);
         let Some(parts) = NonZeroUsize::new(1) else {
             panic!("one is not zero");
         };
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
-        let Ok(echo) = add_root(&mut engine, &code, &instance, 0, &[]) else {
+        let Ok(echo) = add_root(&mut engine, &code, 0, &[]) else {
             panic!("the echo begins");
         };
         let Ok(_) = engine.add_root::<Closer>(&(), Volley { pings: 0 }) else {
@@ -643,12 +643,11 @@ mod tests {
         let Ok(code) = guests.code(ECHO) else {
             panic!("the echo guest is fit to run");
         };
-        let instance = guests.instance(&code);
         let Some(parts) = NonZeroUsize::new(1) else {
             panic!("one is not zero");
         };
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
-        let Ok(_) = add_root(&mut engine, &code, &instance, 0, &[]) else {
+        let Ok(_) = add_root(&mut engine, &code, 0, &[]) else {
             panic!("the echo begins");
         };
         let callers = 50;

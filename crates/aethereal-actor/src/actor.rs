@@ -1,7 +1,8 @@
 //! An actor: the calls the engine makes of it (ADR-0009, ADR-0013).
 
 use crate::{
-    Actors, Beginning, Chain, Closing, Declared, Ending, Fault, HandledList, Item, Seated, Sends, Turning, Within,
+    Actors, Beginning, Chain, Closing, Declared, Ending, Fault, HandledList, Instances, Item, Seated, Sends, Turning,
+    Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
 use alloc::boxed::Box;
@@ -69,6 +70,10 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized + 'static
 ///   asks of the engine is asked there; nothing reaches the engine from `prepare`, which has no turn to ask through.
 /// - stops computing after the first turn that fails or closes the actor, since by (3) no later turn is asked for,
 ///   and a turn computed but never asked for would have changed the actor for an item the engine did not run.
+///
+/// Code that runs in an instance, as a guest's does, owns none: it takes the instance it wants from the
+/// [`Instances`] its part lends it in each [`Preparing`] and [`Turning`], and loads it there when the part has none
+/// yet. The part's other actors of the same code take the same instance (ADR-0015).
 pub trait Runs: Send {
     /// What the actor's type declares (ADR-0013).
     fn declared(&self) -> &'static Declared;
@@ -76,7 +81,7 @@ pub trait Runs: Send {
     /// Shown the items of its next batch, in the order their turns will be asked for, before the first of them.
     ///
     /// The actor may compute all of their turns here, or leave each until [`Self::turn`] asks for it.
-    fn prepare(&mut self, batch: &dyn Batch);
+    fn prepare(&mut self, preparing: Preparing<'_>);
 
     /// The turn of `item`, the next of the batch prepared last: what the turn asks for goes into `turning`, and it
     /// answers with how the turn ended.
@@ -95,6 +100,34 @@ pub trait Batch {
     fn each(&self, visit: &mut dyn FnMut(Peeked<'_>));
 }
 
+/// A batch as the engine opens it for an actor to prepare, before its first turn: its items, and the instances of the
+/// actor's part, lent for the call (ADR-0015). What [`Runs::prepare`] is given, as a [`Turning`] is what
+/// [`Runs::turn`] is.
+pub struct Preparing<'a> {
+    batch: &'a dyn Batch,
+    instances: &'a mut Instances,
+}
+
+impl<'a> Preparing<'a> {
+    /// The preparing of `batch`, by an actor lent its part's `instances`: for the engine.
+    #[must_use]
+    pub const fn new(batch: &'a dyn Batch, instances: &'a mut Instances) -> Self {
+        Self { batch, instances }
+    }
+
+    /// Shows `visit` each item of the batch, in the order their turns will be asked for.
+    pub fn each(&self, visit: &mut dyn FnMut(Peeked<'_>)) {
+        self.batch.each(visit);
+    }
+
+    /// The batch, and the instances of the part, as a host prepares it: for code that runs in an instance, which it
+    /// takes from them while it hands the batch's items in.
+    #[must_use]
+    pub fn hosted(self) -> (&'a dyn Batch, &'a mut Instances) {
+        (self.batch, self.instances)
+    }
+}
+
 /// An item of a batch, looked at before its turn: what it is, who it comes from, and where it stands in its chain.
 pub struct Peeked<'a> {
     pub item: Item<'a>,
@@ -108,7 +141,7 @@ impl<A: Actor> Runs for A {
     }
 
     /// An `Actor` computes each turn when it is asked for, so there is nothing to do before them.
-    fn prepare(&mut self, _: &dyn Batch) {}
+    fn prepare(&mut self, _: Preparing<'_>) {}
 
     fn turn(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
         A::Handles::dispatch(self, item, turning)

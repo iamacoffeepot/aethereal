@@ -1,7 +1,9 @@
 //! A turn a host runs for an actor whose code runs where the engine cannot see it: a guest (ADR-0015).
 
 use super::{Checked, During, Seat, Turning};
-use crate::{Above, Asked, Chain, Declared, Level, MailId, Mailed, Role, Seated, Sending, Table, Target, What};
+use crate::{
+    Above, Asked, Chain, Declared, Instances, Level, MailId, Mailed, Role, Seated, Sending, Table, Target, What,
+};
 use aethereal_data::{ActorPath, KindId, KindName, Plain};
 use core::convert::Infallible;
 
@@ -42,16 +44,17 @@ impl aethereal_data::Kind for Trapped {
 }
 
 impl<'a> Turning<'a> {
-    /// The turn of the handler for `role` of an actor whose type declares `declared`, as a host runs it.
+    /// The turn of the handler for `role` of an actor whose type declares `declared`, as a host runs it, and the
+    /// instances of its part it was lent, for the host to take the instance its code runs in from.
     #[must_use]
-    pub fn hosted(self, declared: &'static Declared, role: Role) -> Hosted<'a> {
-        let Self { me, path, above, table, made, asked, sent, source, chain } = self;
+    pub fn hosted(self, declared: &'static Declared, role: Role) -> (Hosted<'a>, &'a mut Instances) {
+        let Self { me, path, above, table, made, asked, instances, sent, source, chain } = self;
         let handler = declared.handlers().iter().find(|handler| handler.role() == role);
         let sends = handler.map_or(&[][..], |handler| handler.sends());
         let during = During::Handling(role);
         let seat = Seat { me, path, above, table, made, asked, sent, declared, during, checked: Checked::Nothing };
 
-        Hosted { seat, sends, source: Source::Item(source), chain }
+        (Hosted { seat, sends, source: Source::Item(source), chain }, instances)
     }
 }
 

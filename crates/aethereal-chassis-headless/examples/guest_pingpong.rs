@@ -100,9 +100,8 @@ fn main() {
         env::args().find_map(|arg| arg.strip_prefix("pingers=").and_then(|count| count.parse().ok())).unwrap_or(1);
     let pings = 200_000 / pingers;
     for round in 0..5 {
-        let instance = guests.instance(&code);
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 64);
-        let Ok(_) = add_root(&mut engine, &code, &instance, 0, &[]) else {
+        let Ok(_) = add_root(&mut engine, &code, 0, &[]) else {
             panic!("the echo begins");
         };
         for key in 0..pingers {

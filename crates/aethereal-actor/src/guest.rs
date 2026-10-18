@@ -10,7 +10,7 @@
 
 use crate::records::{ItemHead, LineRecord, OutHead, SendRecord, Span, Stopped, TurnEnds};
 use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Fault, Item};
-use crate::{Batch, Beginning, Mail, Peeked, Runs, SeatNumber, Seated, Table, Turning, What};
+use crate::{Batch, Beginning, Instances, Mail, Peeked, Preparing, Runs, SeatNumber, Seated, Table, Turning, What};
 use aethereal_data::{ActorId, ActorPath, Budget, Decode, PathSegment, Reader};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -27,6 +27,9 @@ struct Guest {
     inbox: Vec<u8>,
     out: Vec<u8>,
     asked: Asked,
+    /// What its actors' batches and turns are lent: a guest's actors are its own code, run in no instance, so it is
+    /// always empty.
+    instances: Instances,
 }
 
 /// One actor of the guest, by the handle its host knows it by.
@@ -115,7 +118,7 @@ pub fn begin_at(begins: &[Begin], of: u32, me: u64, seat: u64, len: u32) -> u32 
 #[must_use]
 pub fn turns(handle: u32, items: u32, len: u32) -> u64 {
     GUEST.with_borrow_mut(|guest| {
-        let Guest { actors, inbox, asked, out } = &mut *guest;
+        let Guest { actors, inbox, asked, out, instances } = &mut *guest;
         // What the last call asked for has been read by now, so its buffers are emptied for this batch, whose turns
         // all add to them.
         asked.empty();
@@ -125,7 +128,7 @@ pub fn turns(handle: u32, items: u32, len: u32) -> u64 {
             return 0;
         };
         let inbox = &inbox[..(len as usize).min(inbox.len())];
-        runs.prepare(&Inboxed { items: inbox, fits: items as usize });
+        runs.prepare(Preparing::new(&Inboxed { items: inbox, fits: items as usize }, instances));
         let mut rest = inbox;
         let mut ran: u32 = 0;
         let mut last = Last::Ran;
@@ -134,7 +137,7 @@ pub fn turns(handle: u32, items: u32, len: u32) -> u64 {
                 break;
             };
             rest = after;
-            let turning = Turning::new(*me, path, Above::Chassis, &Host, &(), asked, 0, source, chain);
+            let turning = Turning::new(*me, path, Above::Chassis, &Host, &(), asked, instances, 0, source, chain);
             let result = runs.turn(item, turning);
             write_ends(out, asked);
             ran += 1;
