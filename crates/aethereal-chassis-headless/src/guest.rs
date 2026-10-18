@@ -2061,7 +2061,7 @@ mod tests {
     }
 
     /// The answers each test's askers were given, by the tally the test keeps them in.
-    static ANSWERS: [Mutex<Vec<u64>>; 8] = [const { Mutex::new(Vec::new()) }; 8];
+    static ANSWERS: [Mutex<Vec<u64>>; 9] = [const { Mutex::new(Vec::new()) }; 9];
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
@@ -3041,6 +3041,59 @@ mod tests {
         settle(&mut engine);
 
         assert_eq!(answers(7), [611, 620]);
+    }
+
+    #[test]
+    fn a_guest_state_taken_into_another_parts_instance_keeps_the_blobs_it_refers_to() {
+        // Catches a child taken out of one part's instance whose blob is let go while its state is out, one taken into
+        // its own part's instance that is not served the blob its state refers to, and a reference still counted in
+        // the instance it left, or counted twice in the one it joined, that keeps the blob once the child has ended.
+        let Some(parts) = NonZeroUsize::new(2) else {
+            panic!("two is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        // An echo and the archive are seated in the two parts, each keeping its part's instance for as long as it
+        // lives, so a reference left counted in either keeps the book.
+        let Ok(_) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
+            panic!("an echo begins");
+        };
+        let Ok(book) = engine.put_blob(b"hello world".to_vec()) else {
+            panic!("the book is put");
+        };
+        let Ok(_) = engine.add_root_from::<echo::Archive>(&code, &(), &echo::Stacks { book, readers: 8 }) else {
+            panic!("the archive begins, with its readers");
+        };
+        settle(&mut engine);
+
+        let part_of = |path: &ActorPath| {
+            let seat = engine.table().resolve(path).and_then(|id| engine.table().seat(id));
+            let Some(seat) = seat else {
+                panic!("{path} is seated");
+            };
+            seat.index() % parts.get()
+        };
+        let archive = ActorPath::from_root(&PathSegment::new(echo::Archive::NAME, &()));
+        let echo = ActorPath::from_root(&PathSegment::new(echo::Echo::NAME, &()));
+        let reader = |key: u64| {
+            let Ok(path) = archive.child(&PathSegment::new(echo::Reader::NAME, &key)) else {
+                panic!("a reader's path is not too deep");
+            };
+            path
+        };
+        let readers: Vec<ActorPath> = (0..8).map(reader).collect();
+        let elsewhere = readers.iter().filter(|path| part_of(path) != part_of(&archive)).count();
+        assert_ne!(part_of(&echo), part_of(&archive), "the echo and the archive keep both parts' instances");
+        assert!(elsewhere > 0, "some reader is seated in another part than the archive");
+        let held_while_reading = engine.blobs_held().0;
+
+        let Ok(_) = engine.add_root::<Asker>(&8, Asks { paths: readers, tally: 8 }) else {
+            panic!("the asker begins");
+        };
+        settle(&mut engine);
+
+        assert_eq!(answers(8), [11; 8]);
+        // The code and the book while the readers live, and the code alone once they have closed.
+        assert_eq!((held_while_reading, engine.blobs_held().0), (2, 1));
     }
 
     #[test]
