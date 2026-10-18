@@ -931,6 +931,76 @@ impl Handles<Ping> for Spendthrift {
     }
 }
 
+/// What a parting actor is made from: the path of the actor it tells as it ends.
+#[derive(Bound)]
+pub struct Farewell {
+    pub tell: ActorPath,
+}
+
+impl Kind for Farewell {
+    const NAME: KindName = KindName::new("aether.guest.farewell");
+}
+
+/// An actor that counts the pings it is sent, and fails on a ping of zero; closes on a word to shut; and, in its
+/// closing turn, tells the actor it was made to tell a pong of six hundred, ten for each ping it counted, and one when
+/// it ends because a turn of its own failed.
+#[derive(Bound)]
+pub struct Parting {
+    tell: ErasedActorRef,
+    pings: u64,
+}
+
+impl Kind for Parting {
+    const NAME: KindName = KindName::new("aether.guest.parting");
+}
+
+impl Actor for Parting {
+    type Config = Farewell;
+    type Key = u64;
+    type Handles = (Ping, Shut);
+    type BeginSends = ();
+    type EndSends = (ToAny<(Pong,), Pong>,);
+
+    fn begin(farewell: Farewell, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let Some(tell) = turn.resolve(&farewell.tell) else {
+            return Err(Fault::new(&Untold)?);
+        };
+
+        Ok(Self { tell, pings: 0 })
+    }
+
+    fn end(self, turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        let is_faulted = turn.why() == aethereal_actor::Why::Faulted;
+        let n = 600 + 10 * self.pings + u64::from(is_faulted);
+        turn.to_any::<(Pong,)>(ToWithoutMail::Held(self.tell)).send(&Pong { n })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Parting {
+    type Sends = ();
+
+    fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        if ping.n == 0 {
+            return Err(Fault::new(&Untold)?);
+        }
+        self.pings += 1;
+
+        Ok(())
+    }
+}
+
+impl Handles<Shut> for Parting {
+    type Sends = ();
+
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.close();
+
+        Ok(())
+    }
+}
+
 aethereal_actor::guest!(
     Echo,
     Mirror,
@@ -945,5 +1015,6 @@ aethereal_actor::guest!(
     Boomerang,
     Librarian,
     Forger,
-    Spendthrift
+    Spendthrift,
+    Parting
 );

@@ -23,7 +23,7 @@ use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
     Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Children, Declared, FalseSend, FalseWatch,
     Fault, Guests, Held as Pinning, Hosted, How, Instances, Item, Preparing, Puts, Reads, Refused, Role, Runs,
-    SeatNumber, Seated, Seats, Table, Trapped, Turning, Unfit,
+    SeatNumber, Seated, Seats, Table, Trapped, Turning, Unfit, Why,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindName, from_bytes, to_bytes};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -91,7 +91,8 @@ struct Instance {
     take_out: TypedFunc<u32, u64>,
     turns: TypedFunc<(u32, u32, u32), u64>,
     pins: TypedFunc<(), u64>,
-    end: TypedFunc<u32, ()>,
+    end: TypedFunc<(u32, u32), u64>,
+    drop: TypedFunc<u32, ()>,
     /// Where the guest's inbox is, and how many bytes it has room for: asked for again only when it must grow.
     inbox_at: usize,
     inbox_room: usize,
@@ -252,7 +253,8 @@ impl Runtime {
         let mut budget = Budget::new(1 << 20);
         let made = from_bytes::<Vec<Made>>(section, &mut budget).map_err(|_| Unfit::Undeclared)?;
         let exports = ["memory", "aethereal_inbox", "aethereal_out", "aethereal_begin", "aethereal_take_in"];
-        let more = ["aethereal_take_out", "aethereal_turns", "aethereal_pins", "aethereal_end", "aethereal_read_limit"];
+        let more = ["aethereal_take_out", "aethereal_turns", "aethereal_pins", "aethereal_end", "aethereal_drop"];
+        let more = more.into_iter().chain(["aethereal_read_limit"]);
         for export in exports.into_iter().chain(more) {
             let has = module.get_export(export).is_some();
             if !has {
@@ -773,10 +775,14 @@ impl Instance {
         let turns = instance.get_typed_func(&mut store, "aethereal_turns");
         let pins = instance.get_typed_func(&mut store, "aethereal_pins");
         let end = instance.get_typed_func(&mut store, "aethereal_end");
+        let drop = instance.get_typed_func(&mut store, "aethereal_drop");
         let limit = instance.get_typed_func::<u32, ()>(&mut store, "aethereal_read_limit");
         let (Some(memory), Ok(inbox), Ok(out), Ok(begin), Ok(take_in), Ok(take_out), Ok(turns), Ok(pins), Ok(end)) =
             (memory, inbox, out, begin, take_in, take_out, turns, pins, end)
         else {
+            panic!("guest code that entered has its exports");
+        };
+        let Ok(drop) = drop else {
             panic!("guest code that entered has its exports");
         };
         // A limit past what a guest's memory can address holds it to that memory.
@@ -796,6 +802,7 @@ impl Instance {
             turns,
             pins,
             end,
+            drop,
             inbox_at: 0,
             inbox_room: 0,
             actors: Vec::new(),
@@ -905,6 +912,22 @@ impl Guests for Runtime {
 }
 
 impl Guest {
+    /// The handle the guest keeps the actor under in `held`, its part's instance: taken in first when it was taken out
+    /// of another part's. Nothing when it could not be taken in.
+    fn handle_in(&mut self, held: &mut Instance) -> Option<u32> {
+        if let Lives::Out { state, carried } = &self.lives {
+            let (of, _) = self.code.made_of(self.declared.id())?;
+            let handle = held.take_in(of, self.me, state, carried)?;
+            held.actors.push(self.me);
+            self.lives = Lives::In { handle };
+        }
+
+        match self.lives {
+            Lives::In { handle } => Some(handle),
+            Lives::Out { .. } => None,
+        }
+    }
+
     /// Ends in the guest each child the turn between `was` and `ran` stood up and the guest kept in the instance, as the
     /// turn failed: the engine drops it with the rest of what the turn asked for and never ends it, though the guest
     /// still holds its state. Kept out of line, as turns seldom fail.
@@ -926,7 +949,7 @@ impl Guest {
             })
             .collect();
         for handle in kept {
-            held.end_actor(handle);
+            held.drop_actor(handle);
         }
     }
 }
@@ -953,19 +976,9 @@ impl Runs for Guest {
             self.ran = Ran::Trapped;
             return;
         };
-        if let Lives::Out { state, carried } = &self.lives {
-            let taken =
-                self.code.made_of(self.declared.id()).and_then(|(of, _)| held.take_in(of, self.me, state, carried));
-            let Some(handle) = taken else {
-                instances.put_back(self.code.key, held);
-                self.ran = Ran::Trapped;
-                return;
-            };
-            held.actors.push(self.me);
-            self.lives = Lives::In { handle };
-        }
-        let Lives::In { handle } = self.lives else {
+        let Some(handle) = self.handle_in(&mut held) else {
             instances.put_back(self.code.key, held);
+            self.ran = Ran::Trapped;
             return;
         };
         let (items, len) = held.hand_in(batch, &mut self.given.offered);
@@ -1034,25 +1047,57 @@ impl Runs for Guest {
         replayed
     }
 
-    /// Ends the actor in its part's instance, and drops the instance when it was the last actor in it. An instance a
-    /// trap dropped is not loaded again for it, and an actor never taken into one leaves none.
-    fn end(self: Box<Self>, closing: aethereal_actor::Closing<'_>) -> Result<(), Fault> {
-        let instances = closing.hosted();
-        let Some(held) = instances.get::<Instance>(self.code.key) else {
+    /// Runs the actor's closing turn in its part's instance, each send checked against what its type's `end` declares,
+    /// and drops the instance when it was the last actor in it. An actor taken out of another part's instance is
+    /// taken into this part's first. An instance a trap dropped is not loaded again, so an actor of one runs no
+    /// closing turn: the trap left its state half changed (ADR-0015).
+    fn end(mut self: Box<Self>, closing: aethereal_actor::Closing<'_>) -> Result<(), Fault> {
+        let (mut hosted, why, instances) = closing.hosted(self.declared);
+        let key = self.code.key;
+        let is_in = matches!(self.lives, Lives::In { .. });
+        let has_instance = instances.get::<Instance>(key).is_some();
+        let was_trapped = is_in && !has_instance;
+        if was_trapped {
+            return Ok(());
+        }
+        // The engine runs no closing turn while a call into a guest is under way, so the instance is never lent out
+        // here.
+        let read_limit = instances.read_limit();
+        let Ok(mut held) = instances.lend(key, || Instance::load(&self.code, read_limit)) else {
             return Ok(());
         };
-        // Its state is dropped in the guest, and the references it held with it: the instance holds no pin for them
-        // past the actor's end.
-        if let Lives::In { handle } = self.lives {
-            held.end_actor(handle);
-        }
+        let Some(handle) = self.handle_in(&mut held) else {
+            instances.put_back(key, held);
+            return Err(trapped());
+        };
+        let mut given = Given::default();
+        let mut holdings = mem::take(&mut held.holdings);
+        let (table, seats, puts) = hosted.lent();
+        let reads = Reads { table, made: &(), seats, puts };
+        let mut answering = Answering::of(reads, instances, &self.code.codes, &mut given, &holdings);
+        let wrote = held.end(handle, why, &mut answering);
+        let wrote = wrote.filter(|wrote| held.take_pins(wrote, &mut holdings, &given));
+        held.holdings = holdings;
         held.actors.retain(|actor| *actor != self.me);
+        let replayed = wrote.and_then(|wrote| {
+            let Instance { store, memory, actors, holdings, .. } = &mut *held;
+            let data = memory.data(&*store);
+            replay(data, &self.code, &wrote, 0, TurnEnds::default(), &mut given, holdings, actors, &mut hosted)
+        });
+        let Some((ended, _)) = replayed else {
+            // A trap in a closing turn ends every other actor in the instance, as one in a turn does (ADR-0015).
+            hosted.trapped(held.actors.iter().copied());
+            instances.drop_instance::<Instance>(key);
+            return Err(trapped());
+        };
         let is_last = held.actors.is_empty();
         if is_last {
-            instances.drop_instance::<Instance>(self.code.key);
+            instances.drop_instance::<Instance>(key);
+        } else {
+            instances.put_back(key, held);
         }
 
-        Ok(())
+        ended
     }
 }
 
@@ -1101,11 +1146,21 @@ impl Instance {
         (is_taken && is_honest).then_some(handle)
     }
 
-    /// Ends the actor the guest keeps under `handle`, which drops its state and its references, and takes in what that
-    /// changed of the instance's pins.
-    fn end_actor(&mut self, handle: u32) {
-        let ended = self.end.call(&mut self.store, handle);
-        let pins = ended.ok().and_then(|()| self.pins());
+    /// Runs the closing turn of the actor the guest keeps under `handle`, which runs as `why` says, its calls out
+    /// answered from `answering`: the head of what it asked for. Nothing when the call trapped, or wrote what does not
+    /// read back.
+    fn end(&mut self, handle: u32, why: Why, answering: &mut Answering<'_>) -> Option<OutHead> {
+        let Self { store, end, .. } = self;
+        let out = lending(store, answering, |store| end.call(store, (handle, records::why_code(why))));
+
+        self.out_head(out.ok()?).filter(|wrote| wrote.ran == 1)
+    }
+
+    /// Drops the actor the guest keeps under `handle`, with no closing turn, which drops its state and its references,
+    /// and takes in what that changed of the instance's pins.
+    fn drop_actor(&mut self, handle: u32) {
+        let dropped = self.drop.call(&mut self.store, handle);
+        let pins = dropped.ok().and_then(|()| self.pins());
         if let Some(pins) = pins {
             self.holdings.change(pins, &[]);
         }
@@ -2006,7 +2061,7 @@ mod tests {
     }
 
     /// The answers each test's askers were given, by the tally the test keeps them in.
-    static ANSWERS: [Mutex<Vec<u64>>; 7] = [const { Mutex::new(Vec::new()) }; 7];
+    static ANSWERS: [Mutex<Vec<u64>>; 8] = [const { Mutex::new(Vec::new()) }; 8];
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
@@ -2888,6 +2943,104 @@ mod tests {
         }
 
         assert_eq!(began, [false, true], "a shelf past the engine's limit is not read");
+    }
+
+    /// A native actor that keeps in the eighth of [`ANSWERS`] each pong it is told.
+    #[derive(aethereal_data::Bound)]
+    struct Mourner;
+
+    impl Kind for Mourner {
+        const NAME: KindName = KindName::new("aether.test.mourner");
+    }
+
+    impl Actor for Mourner {
+        type Config = Volley;
+        type Key = ();
+        type Handles = (Pong,);
+        type BeginSends = ();
+        type EndSends = ();
+
+        fn begin(_: Volley, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Pong> for Mourner {
+        type Sends = ();
+
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            if let Ok(mut answers) = ANSWERS[7].lock() {
+                answers.push(pong.n);
+            }
+
+            Ok(())
+        }
+    }
+
+    /// A native actor that, as it begins, pings the first parting twice and tells it to shut, and pings the second
+    /// once and then with a zero, which fails it.
+    #[derive(aethereal_data::Bound)]
+    struct Dismisser;
+
+    impl Kind for Dismisser {
+        const NAME: KindName = KindName::new("aether.test.dismisser");
+    }
+
+    impl Actor for Dismisser {
+        type Config = Volley;
+        type Key = ();
+        type Handles = ();
+        type BeginSends = (ToAny<(Ping,), Ping>, ToAny<(echo::Shut,), echo::Shut>);
+        type EndSends = ();
+
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let parting = |key: u64| ActorPath::from_root(&PathSegment::new(echo::Parting::NAME, &key));
+            if let Some(first) = turn.resolve(&parting(1)) {
+                turn.to_any::<(Ping,)>(ToWithoutMail::Held(first)).send(&Ping { n: 1 })?;
+                turn.to_any::<(Ping,)>(ToWithoutMail::Held(first)).send(&Ping { n: 1 })?;
+                turn.to_any::<(echo::Shut,)>(ToWithoutMail::Held(first)).send(&echo::Shut)?;
+            }
+            if let Some(second) = turn.resolve(&parting(2)) {
+                turn.to_any::<(Ping,)>(ToWithoutMail::Held(second)).send(&Ping { n: 1 })?;
+                turn.to_any::<(Ping,)>(ToWithoutMail::Held(second)).send(&Ping { n: 0 })?;
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_guests_closing_turn_runs_on_its_state_and_sends_what_its_end_declares() {
+        // Catches a guest actor that ends with no closing turn, one whose closing turn runs on another's state or is
+        // not told why it runs, and a closing turn's send checked against what another of its handlers declares.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(_) = engine.add_root::<Mourner>(&(), Volley { pings: 0 }) else {
+            panic!("the mourner begins");
+        };
+        let tell = ActorPath::from_root(&PathSegment::new(Mourner::NAME, &()));
+        for key in [1, 2] {
+            let farewell = echo::Farewell { tell: tell.clone() };
+            let Ok(_) = engine.add_root_from::<echo::Parting>(&code, &key, &farewell) else {
+                panic!("a parting begins");
+            };
+        }
+        let Ok(_) = engine.add_root::<Dismisser>(&(), Volley { pings: 0 }) else {
+            panic!("the dismisser begins");
+        };
+        settle(&mut engine);
+
+        assert_eq!(answers(7), [611, 620]);
     }
 
     #[test]
