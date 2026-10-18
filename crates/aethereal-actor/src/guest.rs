@@ -2,9 +2,10 @@
 //! (ADR-0015).
 //!
 //! A guest runs the same actors a native program does, on the same turns. What
-//! a turn reads of the engine to spawn a child, and the child's seat, it asks
-//! its host for in a call out, which the host answers from what its batch was
-//! lent; it checks no send, which its host checks as it reads the turn's mail.
+//! a turn reads of the engine, the actor a path names, whether an actor is
+//! live, and what it needs to spawn a child, it asks its host for in a call
+//! out, which the host answers from what its batch was lent; it checks no
+//! send, which its host checks as it reads the turn's mail.
 //! After each call the guest writes a record of what each of its turns asked
 //! for, in the layout of [`records`](crate::records), and its host reads each
 //! where it lies, the bytes of mail and the text of lines among them. A child
@@ -59,6 +60,14 @@ pub struct Calls {
     pub child_seat: extern "C" fn(u64) -> u64,
     /// Whether the actor whose call it is has made the child of the id: one when it has.
     pub has_made: extern "C" fn(u64) -> u32,
+    /// Whether the path written at the address, of the length, names a live actor: one when it does, and then its
+    /// id and seat are written at the third address, as 16 bytes.
+    pub resolve: extern "C" fn(u32, u32, u32) -> u32,
+    /// Whether the actor of the id is live: one when it is.
+    pub is_live: extern "C" fn(u64) -> u32,
+    /// Whether the table held the actor of the id as the step began, or it was stood up since in the part: one when
+    /// it was.
+    pub held: extern "C" fn(u64) -> u32,
     /// A seat for a child, which [`given_seat`] reads from what the host answers.
     pub take: fn() -> SeatNumber,
     /// Hands back the seat of a child that never began.
@@ -473,6 +482,11 @@ fn count(count: usize) -> u32 {
     u32::try_from(count).unwrap_or(u32::MAX)
 }
 
+/// The number `bytes` hold, in ADR-0002's order: nothing when they are not eight.
+fn u64_of(bytes: &[u8]) -> Option<u64> {
+    Some(u64::from_le_bytes(bytes.try_into().ok()?))
+}
+
 /// An address in the guest's memory, which is 32-bit.
 fn address(pointer: *const u8) -> u32 {
     u32::try_from(pointer as usize).unwrap_or(u32::MAX)
@@ -491,15 +505,25 @@ pub fn given_seat(given: u64) -> SeatNumber {
     seat
 }
 
-/// What a guest's turn reads of the engine: what it needs to spawn a child, asked of its host in calls out. It reads
-/// nothing else yet, so it checks no send, and leaves that to its host.
+/// What a guest's turn reads of the engine, asked of its host in calls out. It holds the declaration of no other
+/// actor's type, so it checks no send, and leaves that to its host (ADR-0015).
 pub struct Host {
     calls: &'static Calls,
 }
 
 impl Table for Host {
-    fn resolve(&self, _: &ActorPath) -> Option<Seated> {
-        None
+    /// The actor `path` names, asked of the host, which writes its id and seat into the guest's memory.
+    fn resolve(&self, path: &ActorPath) -> Option<Seated> {
+        let path = to_bytes(path).ok()?;
+        let mut seated = [0u8; 16];
+        let at = address(seated.as_mut_ptr());
+        let is_live = (self.calls.resolve)(address(path.as_ptr()), count(path.len()), at) == 1;
+        if !is_live {
+            return None;
+        }
+        let (id, seat) = seated.split_at(8);
+
+        Some(Seated { id: ActorId::new(u64_of(id)?), seat: SeatNumber::new(u64_of(seat)?) })
     }
 
     /// The child's id, asked of the host, which alone computes one.
@@ -509,16 +533,18 @@ impl Table for Host {
         ActorId::new((self.calls.child)(parent.bits(), address(naming.as_ptr()), count(naming.len())))
     }
 
-    fn is_live(&self, _: ActorId) -> bool {
-        true
+    fn is_live(&self, id: ActorId) -> bool {
+        (self.calls.is_live)(id.bits()) == 1
     }
 
+    /// Nothing: the guest holds no other actor's type, and leaves every check of a send to its host, which fails the
+    /// turn of a send its declaration does not reach where a native one stops the engine (ADR-0013, ADR-0015).
     fn declared(&self, _: ActorId) -> Option<&'static Declared> {
         None
     }
 
-    fn held(&self, _: ActorId) -> bool {
-        true
+    fn held(&self, id: ActorId) -> bool {
+        (self.calls.held)(id.bits()) == 1
     }
 
     fn child_seat(&self, id: ActorId) -> Option<SeatNumber> {
@@ -532,10 +558,13 @@ impl Table for Host {
         }
     }
 
+    /// Nothing, for now: a blob's bytes lie in the host's store, and how a guest reads them, and what its records
+    /// hold of the blobs it pins, is not decided (ADR-0015).
     fn blob(&self, _: BlobId) -> Option<&[u8]> {
         None
     }
 
+    /// Nothing, for now, as for [`Self::blob`].
     fn blob_hash(&self, _: BlobId) -> Option<BlobHash> {
         None
     }
@@ -565,6 +594,9 @@ macro_rules! guest {
                 safe fn aethereal_child(parent: u64, naming: u32, len: u32) -> u64;
                 safe fn aethereal_child_seat(id: u64) -> u64;
                 safe fn aethereal_has_made(id: u64) -> u32;
+                safe fn aethereal_resolve(path: u32, len: u32, seated: u32) -> u32;
+                safe fn aethereal_is_live(id: u64) -> u32;
+                safe fn aethereal_held(id: u64) -> u32;
                 safe fn aethereal_take_seat() -> u64;
                 safe fn aethereal_give_back_seat(seat: u64);
             }
@@ -581,6 +613,9 @@ macro_rules! guest {
                 child: aethereal_child,
                 child_seat: aethereal_child_seat,
                 has_made: aethereal_has_made,
+                resolve: aethereal_resolve,
+                is_live: aethereal_is_live,
+                held: aethereal_held,
                 take,
                 give_back,
             };

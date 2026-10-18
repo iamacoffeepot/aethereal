@@ -18,11 +18,11 @@ use aethereal_actor::{
     Batch, Children, Declared, FalseSend, Fault, Hosted, Instances, Item, Preparing, Reads, Refused, Role, Runs,
     SeatNumber, Seated, Seats, Table, Trapped, Turning,
 };
-use aethereal_data::{ActorId, ActorKey, Budget, KeyName, PathSegment, from_bytes, to_bytes};
+use aethereal_data::{ActorId, ActorKey, ActorPath, Budget, KeyName, PathSegment, from_bytes, to_bytes};
 use aethereal_substrate::Engine;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
-use wasmtime::{Caller, InstancePre, Linker, Memory, Module, Store, TypedFunc};
+use wasmtime::{Caller, Extern, InstancePre, Linker, Memory, Module, Store, TypedFunc};
 
 /// What runs guests' code: one compiler, for every blob.
 #[derive(Default)]
@@ -203,6 +203,34 @@ fn calls_out(engine: &wasmtime::Engine) -> wasmtime::Result<Linker<Lending>> {
     })?;
     linker.func_wrap("aethereal", "aethereal_has_made", |mut caller: Caller<'_, Lending>, id: u64| {
         answer(&mut caller, |answering| u32::from(answering.made.has_made(ActorId::new(id))))
+    })?;
+    linker.func_wrap(
+        "aethereal",
+        "aethereal_resolve",
+        |mut caller: Caller<'_, Lending>, at: u32, len: u32, seated: u32| {
+            let path = guest_bytes(&mut caller, Span { at, len });
+            let path = path.and_then(|path| from_bytes::<ActorPath>(&path, &mut Budget::new(1 << 16)).ok());
+            let resolved = answer(&mut caller, |answering| path.and_then(|path| answering.table.resolve(&path)))?;
+            let Some(resolved) = resolved else {
+                return Ok(0);
+            };
+            let mut bytes = [0u8; 16];
+            bytes[..8].copy_from_slice(&resolved.id.bits().to_le_bytes());
+            bytes[8..].copy_from_slice(&resolved.seat.number().to_le_bytes());
+            let memory = caller.get_export("memory").and_then(Extern::into_memory);
+            let Some(memory) = memory else {
+                return Err(wasmtime::Error::msg("a guest that resolves a path has no memory"));
+            };
+            memory.write(&mut caller, usize::try_from(seated).unwrap_or(usize::MAX), &bytes)?;
+
+            Ok(1)
+        },
+    )?;
+    linker.func_wrap("aethereal", "aethereal_is_live", |mut caller: Caller<'_, Lending>, id: u64| {
+        answer(&mut caller, |answering| u32::from(answering.table.is_live(ActorId::new(id))))
+    })?;
+    linker.func_wrap("aethereal", "aethereal_held", |mut caller: Caller<'_, Lending>, id: u64| {
+        answer(&mut caller, |answering| u32::from(answering.table.held(ActorId::new(id))))
     })?;
     linker.func_wrap("aethereal", "aethereal_take_seat", |mut caller: Caller<'_, Lending>| {
         answer(&mut caller, |answering| {
@@ -1274,7 +1302,7 @@ mod tests {
     }
 
     /// The answers each test's askers were given, by the tally the test keeps them in.
-    static ANSWERS: [Mutex<Vec<u64>>; 2] = [Mutex::new(Vec::new()), Mutex::new(Vec::new())];
+    static ANSWERS: [Mutex<Vec<u64>>; 3] = [Mutex::new(Vec::new()), Mutex::new(Vec::new()), Mutex::new(Vec::new())];
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
@@ -1452,5 +1480,84 @@ mod tests {
         settle(&mut engine);
 
         assert_eq!(answers(1), [1, 11, 21, 31, 41, 51, 61, 71, 1001]);
+    }
+
+    /// Which of the blob's types the seeker is.
+    const SEEKER: usize = 6;
+
+    /// What a seeker is made from, as the echo guest declares it.
+    #[derive(Plain)]
+    struct Seek {
+        paths: Vec<ActorPath>,
+    }
+
+    impl Kind for Seek {
+        const NAME: KindName = KindName::new("aether.guest.seek");
+    }
+
+    /// A native actor that keeps each ping it is sent in the third of [`ANSWERS`], with a hundred for each of its key.
+    #[derive(aethereal_data::Bound)]
+    struct Keeper {
+        key: u64,
+    }
+
+    impl Kind for Keeper {
+        const NAME: KindName = KindName::new("aether.test.keeper");
+    }
+
+    impl Actor for Keeper {
+        type Config = Volley;
+        type Key = u64;
+        type Handles = (Ping,);
+        type BeginSends = ();
+        type EndSends = ();
+
+        fn begin(volley: Volley, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            Ok(Self { key: volley.pings })
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Ping> for Keeper {
+        type Sends = ();
+
+        fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            if let Ok(mut answers) = ANSWERS[2].lock() {
+                answers.push(100 * self.key + ping.n);
+            }
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_guest_resolves_a_path_to_the_actor_it_names() {
+        // Catches a guest's resolve that finds nothing, finds an actor that is not live, or hands back an id or seat
+        // its mail does not reach the actor by.
+        let Ok(code) = Guests::default().code(ECHO) else {
+            panic!("the echo guest is fit to run");
+        };
+        let Some(parts) = NonZeroUsize::new(2) else {
+            panic!("two is not zero");
+        };
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+        for key in [0, 1] {
+            let Ok(_) = engine.add_root::<Keeper>(&key, Volley { pings: key }) else {
+                panic!("a keeper begins");
+            };
+        }
+        let keeper = |key: u64| ActorPath::from_root(&PathSegment::new(Keeper::NAME, &key));
+        let Ok(config) = to_bytes(&Seek { paths: vec![keeper(0), keeper(9), keeper(1)] }) else {
+            panic!("a seeker's config is written");
+        };
+        let Ok(_) = add_root(&mut engine, &code, SEEKER, &(), &config) else {
+            panic!("the seeker begins");
+        };
+        settle(&mut engine);
+
+        assert_eq!(answers(2), [0, 102]);
     }
 }

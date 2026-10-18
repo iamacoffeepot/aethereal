@@ -1,7 +1,7 @@
 //! A guest that answers each ping it is sent with a pong, to its sender (ADR-0015).
 
-use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Level, ToSender, Turn};
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Level, ToAny, ToSender, ToWithoutMail, Turn};
+use aethereal_data::{ActorPath, Bound, Kind, KindName, Plain};
 
 /// A ping, which an echo answers with a pong of the same number.
 #[derive(Plain)]
@@ -361,4 +361,45 @@ impl Handles<Ping> for Adder {
     }
 }
 
-aethereal_actor::guest!(Echo, Mirror, Responder, Doomed, Brood, Adder);
+/// What a seeker is made from: the paths it resolves as it begins.
+#[derive(Plain)]
+pub struct Seek {
+    pub paths: Vec<ActorPath>,
+}
+
+impl Kind for Seek {
+    const NAME: KindName = KindName::new("aether.guest.seek");
+}
+
+/// An actor that resolves each path it is made with as it begins, and pings each actor one names with its place in
+/// the list, so what is pinged says which paths it found.
+#[derive(Bound)]
+pub struct Seeker;
+
+impl Kind for Seeker {
+    const NAME: KindName = KindName::new("aether.guest.seeker");
+}
+
+impl Actor for Seeker {
+    type Config = Seek;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = (ToAny<(Ping,), Ping>,);
+    type EndSends = ();
+
+    fn begin(seek: Seek, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        for (n, path) in (0..).zip(&seek.paths) {
+            if let Some(found) = turn.resolve(path) {
+                turn.to_any::<(Ping,)>(ToWithoutMail::Held(found)).send(&Ping { n })?;
+            }
+        }
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+aethereal_actor::guest!(Echo, Mirror, Responder, Doomed, Brood, Adder, Seeker);
