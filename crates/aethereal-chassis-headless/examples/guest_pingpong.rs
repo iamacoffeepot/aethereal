@@ -99,7 +99,10 @@ fn main() {
     let pingers: u64 =
         env::args().find_map(|arg| arg.strip_prefix("pingers=").and_then(|count| count.parse().ok())).unwrap_or(1);
     let pings = 200_000 / pingers;
-    for round in 0..5 {
+    // `rounds=N`: how many rounds to run, five by default.
+    let rounds: u64 =
+        env::args().find_map(|arg| arg.strip_prefix("rounds=").and_then(|count| count.parse().ok())).unwrap_or(5);
+    for round in 0..rounds {
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 64);
         let Ok(_) = add_root(&mut engine, &code, 0, &(), &[]) else {
             panic!("the echo begins");

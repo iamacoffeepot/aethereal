@@ -224,6 +224,15 @@ impl<'a> Hosted<'a> {
         Some(())
     }
 
+    /// Who spawned `me`, a child [`Self::spawn`] spawned in this turn, and what its type declares: nothing when the
+    /// turn spawned no such child.
+    #[must_use]
+    pub fn spawned(&self, me: Seated) -> Option<(Seated, &'static Declared)> {
+        let child = self.spawned.iter().find(|child| child.me == me)?;
+
+        Some((child.by, child.declared))
+    }
+
     /// Gives back `seat`, one the turn's host took for a child that was never stood up.
     pub fn give_back(&mut self, seat: SeatNumber) {
         self.seat.asked.seats.give_back(seat);

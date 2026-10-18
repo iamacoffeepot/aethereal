@@ -162,7 +162,10 @@ fn main() {
     let each: u64 =
         env::args().find_map(|arg| arg.strip_prefix("each=").and_then(|count| count.parse().ok())).unwrap_or(1000);
     let bursts = 1_000_000 / each;
-    for round in 0..5 {
+    // `rounds=N`: how many rounds to run, five by default.
+    let rounds: u64 =
+        env::args().find_map(|arg| arg.strip_prefix("rounds=").and_then(|count| count.parse().ok())).unwrap_or(5);
+    for round in 0..rounds {
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 64);
         if native {
             let Ok(_) = engine.add_root::<Echo>(&(), EchoConfig) else {

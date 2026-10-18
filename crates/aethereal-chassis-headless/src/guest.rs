@@ -452,7 +452,8 @@ impl Runs for Guest {
         self.ran = ran;
         let is_last = matches!(ran, Ran::At { head, next, .. } if next == head.ran);
         let is_failed = replayed.is_err();
-        if is_failed || is_last {
+        let gives_back = !self.handed.is_empty() && (is_failed || is_last);
+        if gives_back {
             for seat in self.handed.drain(..) {
                 hosted.give_back(seat);
             }
@@ -586,8 +587,9 @@ fn replay(
     let replayed = replay_records(data, code, head, next, before, handed, actors, hosted);
     // A failed turn's children are dropped by the engine, and never live in the instance; nor do those of a turn whose
     // records do not read back.
+    let has_more = actors.len() > actors_before;
     let is_kept = matches!(replayed, Some((Ok(()), _)));
-    if !is_kept {
+    if has_more && !is_kept {
         actors.truncate(actors_before);
     }
 
@@ -611,18 +613,9 @@ fn replay_records(
         return None;
     }
     let ends = TurnEnds::read(record(data, head.turns_at, next, TurnEnds::BYTES)?)?;
-    let mut spawned = Vec::new();
-    for index in before.spawns..ends.spawns {
-        let spawn = SpawnRecord::read(record(data, head.spawns_at, index, SpawnRecord::BYTES)?)?;
-        let (_, declared) = code.made_of(spawn.kind)?;
-        let key = match spawn.key {
-            Keying::Singleton => None,
-            Keying::Keyed(key) => Some(from_bytes::<KeyName>(lying(data, key)?, &mut Budget::new(1 << 10)).ok()?),
-        };
-        let given = handed.iter().position(|seat| *seat == spawn.seat)?;
-        handed.remove(given);
-        let child = hosted.spawn(spawn.by, declared, key, spawn.seat)?;
-        spawned.push((child, spawn.by, declared));
+    let spawns = ends.spawns > before.spawns;
+    if spawns {
+        spawn(data, code, head, before, ends, handed, hosted)?;
     }
     for index in before.sends..ends.sends {
         let send = SendRecord::read(record(data, head.sends_at, index, SendRecord::BYTES)?)?;
@@ -635,9 +628,69 @@ fn replay_records(
         let line = LineRecord::read(record(data, head.lines_at, index, LineRecord::BYTES)?)?;
         hosted.log(line.by, line.level, str::from_utf8(lying(data, line.text)?).ok()?)?;
     }
+    let stands = ends.stood > before.stood;
+    if stands {
+        stand(data, code, head, before, ends, handed, actors, hosted)?;
+    }
+    let is_last = next + 1 == head.ran;
+    let ended = match head.stopped {
+        _ if !is_last => Ok(()),
+        Stopped::No => Ok(()),
+        // A `begin` cannot close its actor, so a record that says one did does not read back.
+        Stopped::Closed if !hosted.may_close() => return None,
+        Stopped::Closed => {
+            hosted.close();
+            Ok(())
+        }
+        Stopped::Failed { kind, bytes } => Err(Fault::of_parts(kind, lying(data, bytes)?.to_vec())),
+    };
+    Some((ended, ends))
+}
+
+/// Hands `hosted` the spawns a turn recorded, from the first after those `before` ends at to the last `ends` does, each
+/// seat taken from `handed`. Nothing when a record does not read back.
+fn spawn(
+    data: &[u8],
+    code: &Code,
+    head: &OutHead,
+    before: TurnEnds,
+    ends: TurnEnds,
+    handed: &mut Vec<SeatNumber>,
+    hosted: &mut Hosted<'_>,
+) -> Option<()> {
+    for index in before.spawns..ends.spawns {
+        let spawn = SpawnRecord::read(record(data, head.spawns_at, index, SpawnRecord::BYTES)?)?;
+        let (_, declared) = code.made_of(spawn.kind)?;
+        let key = match spawn.key {
+            Keying::Singleton => None,
+            Keying::Keyed(key) => Some(from_bytes::<KeyName>(lying(data, key)?, &mut Budget::new(1 << 10)).ok()?),
+        };
+        let given = handed.iter().position(|seat| *seat == spawn.seat)?;
+        handed.remove(given);
+        hosted.spawn(spawn.by, declared, key, spawn.seat)?;
+    }
+
+    Some(())
+}
+
+/// Stands up, in `hosted`, the children that began in a turn, from the first after those `before` ends at to the
+/// last `ends` does, each kept in the instance added to `actors`, and the seat of each the guest dropped put back in
+/// `handed`. Nothing when a record does not read back.
+#[allow(clippy::too_many_arguments, reason = "what a replay reads and what it hands back to, each its own")]
+fn stand(
+    data: &[u8],
+    code: &Code,
+    head: &OutHead,
+    before: TurnEnds,
+    ends: TurnEnds,
+    handed: &mut Vec<SeatNumber>,
+    actors: &mut Vec<Seated>,
+    hosted: &mut Hosted<'_>,
+) -> Option<()> {
     for index in before.stood..ends.stood {
         let stood = StoodRecord::read(record(data, head.stood_at, index, StoodRecord::BYTES)?)?;
-        let (me, by, declared) = *spawned.iter().find(|(child, ..)| *child == stood.me)?;
+        let me = stood.me;
+        let (by, declared) = hosted.spawned(me)?;
         let is_above = by == stood.above;
         if !is_above {
             return None;
@@ -657,19 +710,8 @@ fn replay_records(
         let runs = Guest { code: code.clone(), me, lives, declared, ran: Ran::Nothing, handed: Vec::new() };
         hosted.stand(me, Box::new(runs))?;
     }
-    let is_last = next + 1 == head.ran;
-    let ended = match head.stopped {
-        _ if !is_last => Ok(()),
-        Stopped::No => Ok(()),
-        // A `begin` cannot close its actor, so a record that says one did does not read back.
-        Stopped::Closed if !hosted.may_close() => return None,
-        Stopped::Closed => {
-            hosted.close();
-            Ok(())
-        }
-        Stopped::Failed { kind, bytes } => Err(Fault::of_parts(kind, lying(data, bytes)?.to_vec())),
-    };
-    Some((ended, ends))
+
+    Some(())
 }
 
 /// The `index`th record of `len` bytes of those that begin at `at` in the guest's memory `data`.

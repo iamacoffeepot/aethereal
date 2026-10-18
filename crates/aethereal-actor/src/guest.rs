@@ -16,7 +16,7 @@ use crate::records::{
     ItemHead, Kept, Keying, LineRecord, Naming, OutHead, SendRecord, Span, SpawnRecord, StoodRecord, Stopped, TurnEnds,
 };
 use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Fault, Item, Within};
-use crate::{Batch, Beginning, Instances, Mail, Peeked, Preparing, Reads, Runs, SeatNumber, Seated, Seats};
+use crate::{Beginning, Instances, Mail, Peeked, Runs, SeatNumber, Seated, Seats};
 use crate::{Table, Turning, What, WithinReader, WithinWriter};
 use aethereal_data::{
     ActorId, ActorPath, Budget, Decode, DecodeError, Encode, PathSegment, Reader, Writer, from_bytes, to_bytes,
@@ -75,8 +75,7 @@ struct Guest {
     /// state of children taken out.
     held: Vec<u8>,
     asked: Asked,
-    /// What its actors' batches and turns are lent: a guest's actors are its own code, run in no instance, so it is
-    /// always empty.
+    /// What its actors' turns are lent: a guest's actors are its own code, run in no instance, so it is always empty.
     instances: Instances,
 }
 
@@ -237,11 +236,9 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         let Some(Slot::Live { runs, me, path }) = actors.get_mut(handle as usize) else {
             return 0;
         };
+        // Every actor a guest holds is an `Actor`, which computes each turn when it is asked for and has nothing to
+        // prepare, so its batch goes straight to its turns.
         let inbox = &inbox[..(len as usize).min(inbox.len())];
-        let batch = Inboxed { items: inbox, fits: items as usize };
-        // A guest's actor computes each turn when it is asked for, so its own `prepare` reads nothing and seats no one.
-        let mut unused = Seats::default();
-        runs.prepare(Preparing::new(&batch, instances, Reads { table: &host, made: &host, seats: &mut unused }));
         let mut rest = inbox;
         let mut ran: u32 = 0;
         let mut last = Last::Ran;
@@ -280,12 +277,6 @@ enum Last {
     Closed,
 }
 
-/// The batch a guest's host wrote into its inbox.
-struct Inboxed<'a> {
-    items: &'a [u8],
-    fits: usize,
-}
-
 /// One item read from the inbox, and what follows it.
 fn read_item(items: &[u8]) -> Option<(Peeked<'_>, &[u8])> {
     let head = ItemHead::read(items)?;
@@ -295,19 +286,6 @@ fn read_item(items: &[u8]) -> Option<(Peeked<'_>, &[u8])> {
     let mail = Mail::new(kind, bytes, source, chain.root, chain.depth, READ_LIMIT);
 
     Some((Peeked { item: Item::Mail(mail), source, chain }, rest))
-}
-
-impl Batch for Inboxed<'_> {
-    fn each(&self, visit: &mut dyn FnMut(Peeked<'_>)) {
-        let mut items = self.items;
-        for _ in 0..self.fits {
-            let Some((peeked, rest)) = read_item(items) else {
-                return;
-            };
-            visit(peeked);
-            items = rest;
-        }
-    }
 }
 
 /// Where a child's state is, as its stood record is written: under a handle in this instance, or taken out, at an
@@ -382,7 +360,8 @@ impl Guest {
     fn write_records(&mut self, types: &[Type], ran: u32, stood_before: usize, last: Last) {
         let is_failed = matches!(last, Last::Failed(_));
         // Most calls spawn nothing, and a child that began was spawned, so they keep no child and write no key.
-        let spawned = self.asked.effects().iter().any(|effect| is_spawn(effect.what()));
+        let spawned =
+            !self.asked.effects().is_empty() && self.asked.effects().iter().any(|effect| is_spawn(effect.what()));
         let mut kept = Vec::new();
         let mut keys = Vec::new();
         if spawned {
@@ -469,7 +448,12 @@ const fn is_spawn(what: &What) -> bool {
 
 /// Writes where the turn just run ends in `asked`'s buffers, after the ends of the turns before it.
 fn write_ends(out: &mut Vec<u8>, asked: &Asked) {
-    let spawns = asked.effects().iter().filter(|effect| is_spawn(effect.what())).count();
+    let asks_more = !asked.effects().is_empty();
+    let spawns = if asks_more {
+        asked.effects().iter().filter(|effect| is_spawn(effect.what())).count()
+    } else {
+        0
+    };
     let ends = TurnEnds {
         sends: count(asked.mailed().len()),
         lines: count(asked.lines().len()),
