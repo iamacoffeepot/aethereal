@@ -40,12 +40,13 @@ pub struct Runtime {
     engine: wasmtime::Engine,
     codes: Arc<Codes>,
     /// Each code compiled, by its bytes' hash, so the same code put again, into this engine or another, is compiled
-    /// once.
+    /// once. Locked, as one runtime may serve several engines, each of which puts code between its own steps.
     compiled: RwLock<HashMap<BlobHash, Compiled>>,
 }
 
 /// The blobs a runtime has taken in as code, by their ids: each code reaches the rest, as a child of another blob's
-/// its actor spawns is begun from them in a call out.
+/// its actor spawns is begun from them in a call out. Locked, as every worker reads it while it runs its parts, apart
+/// from the mail each handles, and the engine adds and lets go of code between steps.
 type Codes = RwLock<HashMap<BlobId, Code>>;
 
 /// Code as it is compiled, shared by every blob of the same bytes.
@@ -75,7 +76,8 @@ struct Code {
     made: Arc<[&'static Declared]>,
 }
 
-/// The key the next code compiled takes.
+/// The key the next code compiled takes. Atomic, as runtimes serving any engine compile at once, and each code's key
+/// must differ from every other's in the instances of a part.
 static CODES: AtomicU64 = AtomicU64::new(0);
 
 /// One instance of a blob, a part's, and the calls its host makes of it.
