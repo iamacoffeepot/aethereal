@@ -159,7 +159,7 @@ impl Kind for Sink {
 
 impl Actor for Sink {
     type Config = Kept;
-    type Key = ();
+    type Key = u64;
     type Handles = (Others,);
     type BeginSends = ();
     type EndSends = ();
@@ -310,7 +310,7 @@ fn declaration_lists_each_handler_with_the_sends_its_impl_names() {
 #[test]
 fn a_section_written_in_a_constant_reads_back_as_what_its_types_declare() {
     // Catches the constant writer of a guest's section and the plain types a host reads it as drifting apart: a field
-    // written in another order, or a selector numbered otherwise than the enum it stands for, so a host reads a
+    // written in another order, or a selector numbered otherwise than the enum it stands for (a singleton read as keyed), so a host reads a
     // declaration other than the one the guest was built with (ADR-0015).
     const TYPES: &[&Declared] = &[Declared::of::<Keeper>(), Declared::of::<Strict>(), Declared::of::<Sink>()];
     const LEN: usize = section::len(TYPES);

@@ -168,4 +168,52 @@ impl Handles<Crash> for Mirror {
     }
 }
 
-aethereal_actor::guest!(Echo, Mirror);
+/// An actor of which the blob makes many, each under its own key: it answers pings, and counts them, so each keeps
+/// state of its own in the instance it lives in, and closes on the word to.
+#[derive(Bound)]
+pub struct Responder {
+    answered: u64,
+}
+
+impl Kind for Responder {
+    const NAME: KindName = KindName::new("aether.guest.responder");
+}
+
+impl Actor for Responder {
+    type Config = EchoConfig;
+    type Key = u64;
+    type Handles = (Ping, Shut);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self { answered: 0 })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Responder {
+    type Sends = (ToSender<Pong>,);
+
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        self.answered += 1;
+        turn.reply(&Pong { n: ping.n })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Shut> for Responder {
+    type Sends = ();
+
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.close();
+
+        Ok(())
+    }
+}
+
+aethereal_actor::guest!(Echo, Mirror, Responder);

@@ -16,7 +16,7 @@ pub use handles::{Handled, HandledList, Handles, Others};
 pub use sends::{Allows, At, Kinds, Marker, Sends, ToAny, ToSender, ToType};
 
 use crate::Actor;
-use aethereal_data::{KindId, KindName};
+use aethereal_data::{ActorKey, Keyed, KindId, KindName};
 use core::marker::PhantomData;
 
 /// What an actor type declares, as the engine reads it: its name, what each of its turns may send, and what it
@@ -26,6 +26,8 @@ pub struct Declared {
     name: KindName,
     /// The type's id, made from its name and layout when the program is built: what the engine knows its kind by.
     id: KindId,
+    /// Whether it has one actor or many, each under its own key.
+    keyed: Keyed,
     /// What its `begin` may send.
     begins: &'static [Sending],
     /// Each thing it handles, and what its handler may send.
@@ -35,17 +37,18 @@ pub struct Declared {
 }
 
 impl Declared {
-    /// The declaration of the type named `name`, of id `id`, whose `begin` may send `begins`, which handles
-    /// `handlers`, and whose closing turn may send `ends`.
+    /// The declaration of the type named `name`, of id `id`, keyed as `keyed`, whose `begin` may send `begins`,
+    /// which handles `handlers`, and whose closing turn may send `ends`.
     #[must_use]
     pub const fn new(
         name: KindName,
         id: KindId,
+        keyed: Keyed,
         begins: &'static [Sending],
         handlers: &'static [Handler],
         ends: &'static [Sending],
     ) -> Self {
-        Self { name, id, begins, handlers, ends }
+        Self { name, id, keyed, begins, handlers, ends }
     }
 
     /// The declaration of the actor type `A`, made when the program is built.
@@ -64,6 +67,12 @@ impl Declared {
     #[must_use]
     pub const fn id(&self) -> KindId {
         self.id
+    }
+
+    /// Whether it has one actor or many, each under its own key.
+    #[must_use]
+    pub const fn keyed(&self) -> Keyed {
+        self.keyed
     }
 
     /// What its `begin` may send.
@@ -115,6 +124,7 @@ impl<A: Actor> Of<A> {
     const DECLARED: &'static Declared = &Declared::new(
         A::NAME,
         KindId::of::<A>(),
+        <A::Key as ActorKey>::KEYED,
         <A::BeginSends as Sends>::SENDINGS,
         <A::Handles as HandledList<A>>::HANDLERS,
         <A::EndSends as Sends>::SENDINGS,

@@ -6,7 +6,7 @@
 //! the plain types here, without making an instance.
 
 use crate::{Declared, Handler, Role, Sending, Target};
-use aethereal_data::{KindId, KindName, Plain};
+use aethereal_data::{Keyed, KindId, KindName, Plain};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
@@ -18,9 +18,17 @@ pub const NAME: &str = "aethereal.declared";
 pub struct Made {
     pub name: KindName,
     pub id: KindId,
+    pub keyed: Key,
     pub begins: Vec<Send>,
     pub handlers: Vec<Handles>,
     pub ends: Vec<Send>,
+}
+
+/// Whether a type has one actor or many, as a section holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Key {
+    Singleton,
+    Instanced,
 }
 
 /// One send a handler may make, as a section holds it.
@@ -81,6 +89,10 @@ const fn write(types: &[&Declared], out: &mut [u8]) -> usize {
         let declared = types[index];
         at = name(out, at, declared.name());
         at = id(out, at, declared.id());
+        at = match declared.keyed() {
+            Keyed::Singleton => count(out, at, 0),
+            Keyed::Instanced => count(out, at, 1),
+        };
         at = sendings(out, at, declared.begins());
         at = handlers(out, at, declared.handlers());
         at = sendings(out, at, declared.ends());
@@ -191,7 +203,12 @@ impl Made {
             Handler::new(role, leak_sends(&handles.sends))
         });
         let handlers: &'static [Handler] = Box::leak(handlers.collect::<Box<[Handler]>>());
-        let declared = Declared::new(name.clone(), self.id, leak_sends(&self.begins), handlers, leak_sends(&self.ends));
+        let keyed = match self.keyed {
+            Key::Singleton => Keyed::Singleton,
+            Key::Instanced => Keyed::Instanced,
+        };
+        let begins = leak_sends(&self.begins);
+        let declared = Declared::new(name.clone(), self.id, keyed, begins, handlers, leak_sends(&self.ends));
 
         Box::leak(Box::new(declared))
     }

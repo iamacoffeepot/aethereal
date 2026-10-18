@@ -101,7 +101,7 @@ fn main() {
     let pings = 200_000 / pingers;
     for round in 0..5 {
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 64);
-        let Ok(_) = add_root(&mut engine, &code, 0, &[]) else {
+        let Ok(_) = add_root(&mut engine, &code, 0, &(), &[]) else {
             panic!("the echo begins");
         };
         for key in 0..pingers {

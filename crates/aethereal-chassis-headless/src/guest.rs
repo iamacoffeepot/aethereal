@@ -13,7 +13,7 @@ use aethereal_actor::{
     Batch, Declared, FalseSend, Fault, Hosted, Instances, Item, Preparing, Refused, Role, Runs, Seated, Trapped,
     Turning,
 };
-use aethereal_data::{ActorId, Budget, PathSegment, from_bytes};
+use aethereal_data::{ActorId, ActorKey, Budget, PathSegment, from_bytes};
 use aethereal_substrate::Engine;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wasmtime::{Memory, Module, Store, TypedFunc};
@@ -166,7 +166,8 @@ impl Instance {
     }
 }
 
-/// Makes a root of the `of`th type `code` makes, from the bytes of its config, in its part's instance of `code`.
+/// Makes a root of the `of`th type `code` makes, under `key`, from the bytes of its config, in its part's instance
+/// of `code`: `()` for a singleton type, as a native root is keyed.
 ///
 /// # Errors
 ///
@@ -174,12 +175,20 @@ impl Instance {
 ///
 /// # Panics
 ///
-/// Panics when `code` makes no `of`th type.
-pub fn add_root(engine: &mut Engine, code: &Code, of: usize, config: &[u8]) -> Result<ActorId, Refused> {
+/// Panics when `code` makes no `of`th type, or when the type is keyed otherwise than `key` is.
+pub fn add_root<K: ActorKey>(
+    engine: &mut Engine,
+    code: &Code,
+    of: usize,
+    key: &K,
+    config: &[u8],
+) -> Result<ActorId, Refused> {
     let Some(declared) = code.declared(of) else {
         panic!("the code makes no type {of}");
     };
-    let segment = PathSegment::new(declared.name().clone(), &());
+    let is_keyed_so = declared.keyed() == K::KEYED;
+    assert!(is_keyed_so, "the code's type {of} is keyed as {:?}", declared.keyed());
+    let segment = PathSegment::new(declared.name().clone(), key);
 
     engine.add_root_made(&segment, declared, |me, path, table, asked, instances| {
         let mut hosted = Hosted::beginning(me, path, table, asked, declared);
@@ -515,7 +524,7 @@ mod tests {
             panic!("four is not zero");
         };
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 64);
-        let Ok(_) = add_root(&mut engine, &code, 0, &[]) else {
+        let Ok(_) = add_root(&mut engine, &code, 0, &(), &[]) else {
             panic!("the echo begins");
         };
         let Ok(_) = engine.add_root::<Pinger>(&(), Volley { pings: 9 }) else {
@@ -593,7 +602,7 @@ mod tests {
             panic!("one is not zero");
         };
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
-        let Ok(echo) = add_root(&mut engine, &code, 0, &[]) else {
+        let Ok(echo) = add_root(&mut engine, &code, 0, &(), &[]) else {
             panic!("the echo begins");
         };
         let Ok(_) = engine.add_root::<Closer>(&(), Volley { pings: 0 }) else {
@@ -674,7 +683,7 @@ mod tests {
             panic!("one is not zero");
         };
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
-        let Ok(_) = add_root(&mut engine, &code, 0, &[]) else {
+        let Ok(_) = add_root(&mut engine, &code, 0, &(), &[]) else {
             panic!("the echo begins");
         };
         let callers = 50;
@@ -754,10 +763,10 @@ mod tests {
             panic!("one is not zero");
         };
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
-        let Ok(echo) = add_root(&mut engine, &code, 0, &[]) else {
+        let Ok(echo) = add_root(&mut engine, &code, 0, &(), &[]) else {
             panic!("the echo begins");
         };
-        let Ok(_) = add_root(&mut engine, &code, 1, &[]) else {
+        let Ok(_) = add_root(&mut engine, &code, 1, &(), &[]) else {
             panic!("the mirror begins");
         };
         let Ok(_) = engine.add_root::<Volleyer>(&(), Volley { pings: 3 }) else {
@@ -834,10 +843,10 @@ mod tests {
             panic!("one is not zero");
         };
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
-        let Ok(echo) = add_root(&mut engine, &code, 0, &[]) else {
+        let Ok(echo) = add_root(&mut engine, &code, 0, &(), &[]) else {
             panic!("the echo begins");
         };
-        let Ok(mirror) = add_root(&mut engine, &code, 1, &[]) else {
+        let Ok(mirror) = add_root(&mut engine, &code, 1, &(), &[]) else {
             panic!("the mirror begins");
         };
         let Ok(_) = engine.add_root::<Crasher>(&(), Volley { pings: 0 }) else {

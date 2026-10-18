@@ -169,7 +169,7 @@ fn main() {
                 panic!("the echo begins");
             };
         } else {
-            let Ok(_) = add_root(&mut engine, &code, 0, &[]) else {
+            let Ok(_) = add_root(&mut engine, &code, 0, &(), &[]) else {
                 panic!("the echo begins");
             };
         }
