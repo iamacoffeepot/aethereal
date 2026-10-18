@@ -1,10 +1,14 @@
 //! The one seam through which the engine runs guests' code, whatever runtime its host has (ADR-0001, ADR-0015).
 
+#[cfg(feature = "std")]
+use crate::ActorsWriter;
 use crate::{
-    Above, Actor, Actors, ActorsReader, ActorsWriter, Asked, Beginning, BlobId, BlobType, Declared, Fault, Instances,
-    Refused, Runs, Seated, Table,
+    Above, Actor, Actors, ActorsReader, Asked, Beginning, BlobId, BlobType, Declared, Fault, Instances, Refused, Runs,
+    Seated, Table,
 };
-use aethereal_data::{ActorPath, Budget, Decode, Encode, EncodeError, KindName, Reader, Writer};
+use aethereal_data::{ActorPath, Budget, Decode, KindName, Reader};
+#[cfg(feature = "std")]
+use aethereal_data::{Encode, EncodeError, Writer};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -103,10 +107,6 @@ pub struct Link {
 /// Begins a child of one native type as a [`Birth`] says, from its config's bytes.
 pub type BeginLinked = fn(&[u8], Birth<'_>) -> Result<Box<dyn Runs>, Refused>;
 
-/// The most bytes a config read for a native type a guest spawned allocates, for now: the engine's own limit is to be
-/// handed here.
-const CONFIG_LIMIT: usize = 1 << 20;
-
 impl Links {
     /// These, and the type `A`.
     #[must_use]
@@ -125,7 +125,7 @@ impl Links {
 
 /// Begins `birth`'s child, of type `A`, from its config's bytes `config`.
 fn begin_linked<A: Actor>(config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Runs>, Refused> {
-    let mut budget = Budget::new(CONFIG_LIMIT);
+    let mut budget = Budget::new(birth.instances.read_limit());
     let mut reader = Reader::<Actors>::new(config, &mut budget, ActorsReader::new());
     let config = A::Config::decode(&mut reader).map_err(|error| Refused::Began(Fault::from(error)))?;
     let Birth { me, path, above, table, asked, instances, .. } = birth;

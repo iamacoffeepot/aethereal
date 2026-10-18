@@ -139,6 +139,7 @@ impl Refers for ActorsReader<'_> {}
 /// asked to.
 #[derive(Default)]
 pub struct WithinWriter<'a> {
+    #[cfg_attr(not(feature = "std"), expect(dead_code, reason = "no blob is referred to without std"))]
     noting: Noting<'a>,
 }
 
@@ -153,7 +154,7 @@ enum Noting<'a> {
     /// Nothing is noted without std, where no blob is referred to; the lifetime is kept for the list it would hold.
     #[cfg(not(feature = "std"))]
     #[expect(dead_code, reason = "no blob is referred to without std")]
-    Into(core::marker::PhantomData<&'a ()>),
+    Into(PhantomData<&'a ()>),
 }
 
 impl<'a> WithinWriter<'a> {

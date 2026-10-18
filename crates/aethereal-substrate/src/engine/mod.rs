@@ -387,10 +387,10 @@ impl Engine {
         self
     }
 
-    /// Gives each part instances that carry the engine's guests' code and the native types it keeps.
+    /// Gives each part instances that carry the engine's guests' code, the native types it keeps, and its read limit.
     fn carry(&mut self) {
         for instances in &mut self.instances {
-            *instances = Instances::new(Arc::clone(&self.guests), Arc::clone(&self.links));
+            *instances = Instances::new(Arc::clone(&self.guests), Arc::clone(&self.links), self.read_limit);
         }
     }
 

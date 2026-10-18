@@ -20,20 +20,22 @@ use core::ops::{Deref, DerefMut};
 ///
 /// It also carries the engine's [`Guests`], the code it loads from, so a turn
 /// that spawns a child from a blob reaches it through what it is lent, and the
-/// native types the program keeps by name, which a guest's host begins for it.
-/// In a guest, it says which types are the guest's own: a child of any other is
+/// native types the program keeps by name, which a guest's host begins for it,
+/// and the most bytes the engine allows a read of one piece of mail or config to
+/// allocate, which hosts and their guests read within. In a guest, it says which types are the guest's own: a child of any other is
 /// begun by its host (ADR-0015).
 pub struct Instances {
     guests: Arc<dyn Guests>,
     links: Arc<Links>,
     own: Own,
+    read_limit: usize,
     loaded: Vec<Loaded>,
 }
 
 impl Default for Instances {
-    /// No instances, for an engine that runs no guests.
+    /// No instances, for an engine that runs no guests: they read nothing, as nothing is loaded into them.
     fn default() -> Self {
-        Self::new(Arc::new(NoGuests), Arc::default())
+        Self::new(Arc::new(NoGuests), Arc::default(), 0)
     }
 }
 
@@ -82,18 +84,19 @@ enum Held {
 }
 
 impl Instances {
-    /// No instances yet, of the code `guests` holds, in a program that keeps the native types `links` by name.
+    /// No instances yet, of the code `guests` holds, in a program that keeps the native types `links` by name, whose
+    /// reads of mail and config allocate at most `read_limit` bytes.
     #[must_use]
-    pub fn new(guests: Arc<dyn Guests>, links: Arc<Links>) -> Self {
-        Self { guests, links, own: Own::Every, loaded: Vec::new() }
+    pub fn new(guests: Arc<dyn Guests>, links: Arc<Links>, read_limit: usize) -> Self {
+        Self { guests, links, own: Own::Every, read_limit, loaded: Vec::new() }
     }
 
     /// No instances, for a guest's turns, whose own types are `made`: a child of any other is begun by its host,
-    /// through `host` (ADR-0015).
+    /// through `host` (ADR-0015). Its reads allocate at most `read_limit` bytes, as its host's do.
     #[cfg(feature = "guest")]
     #[must_use]
-    pub fn of_guest(host: Arc<dyn Guests>, made: &'static [&'static Declared]) -> Self {
-        Self { guests: host, links: Arc::default(), own: Own::Made(made), loaded: Vec::new() }
+    pub fn of_guest(host: Arc<dyn Guests>, made: &'static [&'static Declared], read_limit: usize) -> Self {
+        Self { guests: host, links: Arc::default(), own: Own::Made(made), read_limit, loaded: Vec::new() }
     }
 
     /// Whether they are a guest's.
@@ -113,6 +116,12 @@ impl Instances {
     #[must_use]
     pub fn links(&self) -> Arc<Links> {
         Arc::clone(&self.links)
+    }
+
+    /// The most bytes a read of one piece of mail or config allocates, as the engine allows.
+    #[must_use]
+    pub const fn read_limit(&self) -> usize {
+        self.read_limit
     }
 
     /// Whether the code the turns run begins a child of the type `declared` where it runs: any type, natively, and

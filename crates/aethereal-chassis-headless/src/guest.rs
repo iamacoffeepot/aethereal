@@ -48,9 +48,6 @@ pub struct Runtime {
 /// its actor spawns is begun from them in a call out.
 type Codes = RwLock<HashMap<BlobId, Code>>;
 
-/// The most bytes a read of what a guest asks of its host in a call out allocates.
-const CALL_LIMIT: usize = 1 << 20;
-
 /// Code as it is compiled, shared by every blob of the same bytes.
 #[derive(Clone)]
 struct Compiled {
@@ -253,7 +250,7 @@ impl Runtime {
         let mut budget = Budget::new(1 << 20);
         let made = from_bytes::<Vec<Made>>(section, &mut budget).map_err(|_| Unfit::Undeclared)?;
         let exports = ["memory", "aethereal_inbox", "aethereal_out", "aethereal_begin", "aethereal_take_in"];
-        let more = ["aethereal_take_out", "aethereal_turns", "aethereal_pins", "aethereal_end"];
+        let more = ["aethereal_take_out", "aethereal_turns", "aethereal_pins", "aethereal_end", "aethereal_read_limit"];
         for export in exports.into_iter().chain(more) {
             let has = module.get_export(export).is_some();
             if !has {
@@ -365,8 +362,10 @@ fn spawns_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
     })?;
     linker.func_wrap("aethereal", "aethereal_spawn", |mut caller: Caller<'_, Lending>, at: u32, len: u32| {
         let spawning = guest_bytes(&mut caller, Span { at, len });
-        let spawning = spawning.and_then(|bytes| from_bytes::<Spawning>(&bytes, &mut Budget::new(CALL_LIMIT)).ok());
         answer(&mut caller, |answering| {
+            // Read within the engine's limit, as a config the engine reads is.
+            let mut budget = Budget::new(answering.instances.read_limit());
+            let spawning = spawning.and_then(|bytes| from_bytes::<Spawning>(&bytes, &mut budget).ok());
             spawning.map_or_else(|| refusal(&Refused::NotMade), |spawning| answering.spawn(&spawning))
         })
     })?;
@@ -745,17 +744,20 @@ impl Code {
 
     /// Its instance in the part whose `instances` are lent: loaded there by the first of its actors to want it.
     fn instance<'i>(&self, instances: &'i mut Instances) -> &'i mut Instance {
-        instances.get_or_load(self.key, || Instance::load(self))
+        let read_limit = instances.read_limit();
+
+        instances.get_or_load(self.key, || Instance::load(self, read_limit))
     }
 }
 
 impl Instance {
-    /// A new instance of `code`.
+    /// A new instance of `code`, whose reads of mail, config, and state allocate at most `read_limit` bytes, as the
+    /// engine's do.
     ///
     /// # Panics
     ///
     /// Panics when the code cannot be instantiated, which its checks as it entered rule out.
-    fn load(code: &Code) -> Self {
+    fn load(code: &Code, read_limit: usize) -> Self {
         let mut store = Store::new(code.module.module().engine(), Lending::Between);
         let Ok(instance) = code.module.instantiate(&mut store) else {
             panic!("guest code that entered is instantiated");
@@ -769,10 +771,16 @@ impl Instance {
         let turns = instance.get_typed_func(&mut store, "aethereal_turns");
         let pins = instance.get_typed_func(&mut store, "aethereal_pins");
         let end = instance.get_typed_func(&mut store, "aethereal_end");
+        let limit = instance.get_typed_func::<u32, ()>(&mut store, "aethereal_read_limit");
         let (Some(memory), Ok(inbox), Ok(out), Ok(begin), Ok(take_in), Ok(take_out), Ok(turns), Ok(pins), Ok(end)) =
             (memory, inbox, out, begin, take_in, take_out, turns, pins, end)
         else {
             panic!("guest code that entered has its exports");
+        };
+        // A limit past what a guest's memory can address holds it to that memory.
+        let read_limit = u32::try_from(read_limit).unwrap_or(u32::MAX);
+        let Ok(()) = limit.and_then(|limit| limit.call(&mut store, read_limit)) else {
+            panic!("guest code that entered takes its read limit");
         };
 
         Self {
@@ -846,7 +854,8 @@ impl Guests for Runtime {
         let born = to_bytes(&Born { path: path.clone(), parent }).map_err(|_| Refused::NotMade)?;
         let handed: Vec<u8> = count(born.len()).to_le_bytes().into_iter().chain(born).chain(config.to_vec()).collect();
 
-        let mut held = instances.lend(code.key, || Instance::load(&code))?;
+        let read_limit = instances.read_limit();
+        let mut held = instances.lend(code.key, || Instance::load(&code, read_limit))?;
         let (seats, puts, _) = asked.lent();
         let reads = Reads { table, made: &(), seats, puts };
         // What the config refers to is offered to the call, as the child takes references of its own to it.
@@ -893,6 +902,33 @@ impl Guests for Runtime {
     }
 }
 
+impl Guest {
+    /// Ends in the guest each child the turn between `was` and `ran` stood up and the guest kept in the instance, as the
+    /// turn failed: the engine drops it with the rest of what the turn asked for and never ends it, though the guest
+    /// still holds its state. Kept out of line, as turns seldom fail.
+    #[cold]
+    #[inline(never)]
+    fn end_unkept(&self, was: Ran, ran: Ran, instances: &mut Instances) {
+        let (Ran::At { head, before, .. }, Ran::At { before: ends, .. }) = (was, ran) else {
+            return;
+        };
+        let Some(held) = instances.get::<Instance>(self.code.key) else {
+            return;
+        };
+        let data = held.memory.data(&held.store);
+        let kept: Vec<u32> = (before.stood..ends.stood)
+            .filter_map(|index| StoodRecord::read(record(data, head.stood_at, index, StoodRecord::BYTES)?))
+            .filter_map(|stood| match stood.held {
+                Kept::Here { handle } if handle != NO_HANDLE => Some(handle),
+                _ => None,
+            })
+            .collect();
+        for handle in kept {
+            held.end_actor(handle);
+        }
+    }
+}
+
 impl Runs for Guest {
     fn declared(&self) -> &'static Declared {
         self.declared
@@ -905,7 +941,8 @@ impl Runs for Guest {
     fn prepare(&mut self, preparing: Preparing<'_>) {
         let (batch, instances, reads) = preparing.hosted();
         // The engine prepares no batch while a call into a guest is under way, so the instance is never lent out here.
-        let Ok(mut held) = instances.lend(self.code.key, || Instance::load(&self.code)) else {
+        let read_limit = instances.read_limit();
+        let Ok(mut held) = instances.lend(self.code.key, || Instance::load(&self.code, read_limit)) else {
             self.ran = Ran::Trapped;
             return;
         };
@@ -976,9 +1013,12 @@ impl Runs for Guest {
             instances.drop_instance::<Instance>(self.code.key);
             return Err(trapped());
         };
-        self.ran = ran;
+        let was = mem::replace(&mut self.ran, ran);
         let is_last = matches!(ran, Ran::At { head, next, .. } if next == head.ran);
         let is_failed = replayed.is_err();
+        if is_failed {
+            self.end_unkept(was, ran, instances);
+        }
         let gives_back = !self.given.is_empty() && (is_failed || is_last);
         if gives_back {
             self.given.give_back(|seat| hosted.give_back(seat));
@@ -2747,6 +2787,100 @@ mod tests {
         // The blob lent out goes once the mail that carried it is gone, by the time the librarian has closed.
         assert_eq!((kept_by_librarian, after_closing), (2, 1));
         assert!(matches!(forged, Err(Refused::Began(_))));
+    }
+
+    /// A native actor that pings the spendthrift for a book of three, as it begins.
+    #[derive(aethereal_data::Bound)]
+    struct Dun;
+
+    impl Kind for Dun {
+        const NAME: KindName = KindName::new("aether.test.dun");
+    }
+
+    impl Actor for Dun {
+        type Config = Volley;
+        type Key = ();
+        type Handles = (echo::Book,);
+        type BeginSends = (ToAny<(Ping,), Ping>,);
+        type EndSends = ();
+
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let spendthrift = ActorPath::from_root(&PathSegment::new(echo::Spendthrift::NAME, &()));
+            if let Some(spendthrift) = turn.resolve(&spendthrift) {
+                turn.to_any::<(Ping,)>(ToWithoutMail::Held(spendthrift)).send(&Ping { n: 3 })?;
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<echo::Book> for Dun {
+        type Sends = ();
+
+        fn handle(&mut self, _: echo::Book, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_child_of_a_guests_turn_its_host_fails_is_ended_in_the_guest() {
+        // Catches a child the guest kept in its instance in a turn whose send its host refused, which the engine drops
+        // and never ends: its state, and the references in it, would stay in the instance for as long as it lives.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        // An echo keeps the blob's instance after the spendthrift fails.
+        let Ok(_) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
+            panic!("an echo begins");
+        };
+        let Ok(spendthrift) = engine.add_root_from::<echo::Spendthrift>(&code, &(), &echo::EchoConfig) else {
+            panic!("the spendthrift begins");
+        };
+        let Some(seat) = engine.table().seat(spendthrift) else {
+            panic!("the spendthrift is seated");
+        };
+        let spendthrift = Seated { id: spendthrift, seat };
+        settle(&mut engine);
+        let before = engine.blobs_held().0;
+
+        let Ok(_) = engine.add_root::<Dun>(&(), Volley { pings: 0 }) else {
+            panic!("the dun begins");
+        };
+        settle(&mut engine);
+        let after = engine.blobs_held().0;
+
+        let failed = engine.log(spendthrift).any(|entry| matches!(entry, aethereal_substrate::Entry::Failed(_)));
+        assert!(failed, "the spendthrift's false send failed it");
+        assert_eq!(after, before, "the book its librarian kept is let go");
+    }
+
+    #[test]
+    fn a_guest_reads_within_the_engines_limit() {
+        // Catches a guest that reads its config, or its host what it hands in, within a limit of its own and not the
+        // engine's.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let mut tell = ActorPath::from_root(&PathSegment::new(echo::Librarian::NAME, &()));
+        while let Ok(deeper) = tell.child(&PathSegment::new(echo::Librarian::NAME, &())) {
+            tell = deeper;
+        }
+        let mut began = Vec::new();
+        for read_limit in [256, 1 << 20] {
+            let (mut engine, code) = with_echo(Engine::new(parts, read_limit, 0, 1 << 20, 0));
+            let Ok(book) = engine.put_blob(b"hello world".to_vec()) else {
+                panic!("the book is put");
+            };
+            let shelf = echo::Shelf { book, tell: tell.clone() };
+            began.push(engine.add_root_from::<echo::Librarian>(&code, &(), &shelf).is_ok());
+        }
+
+        assert_eq!(began, [false, true], "a shelf past the engine's limit is not read");
     }
 
     #[test]

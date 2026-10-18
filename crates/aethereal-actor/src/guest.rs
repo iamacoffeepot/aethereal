@@ -45,7 +45,7 @@ use core::mem;
 type Begin = fn(&[u8], Seated, &Standing, &Host, &mut Asked, &mut Instances) -> Result<Box<dyn Runs>, Fault>;
 
 /// Takes an actor of one type in from where it stands and its state, as [`take_out`] wrote them.
-type TakeIn = fn(&[u8]) -> Option<(Box<dyn Runs>, Standing)>;
+type TakeIn = fn(&[u8], usize) -> Option<(Box<dyn Runs>, Standing)>;
 
 /// Where an actor of the guest stands: its path, and what is above it.
 struct Standing {
@@ -141,6 +141,11 @@ pub struct Calls {
 #[derive(Default)]
 struct Guest {
     actors: Vec<Slot>,
+    /// The most bytes a read of one piece of mail, config, or state allocates, as its host sets it as it loads the
+    /// instance: none before, so nothing is read.
+    read_limit: usize,
+    /// The handles of the slots in `actors` that are empty, given to the next actors the guest keeps.
+    free: Vec<u32>,
     inbox: Vec<u8>,
     out: Vec<u8>,
     /// The bytes the records point to that no buffer of `asked` holds: the keys of children spawned, and the paths and
@@ -163,8 +168,8 @@ enum Slot {
         me: Seated,
         standing: Standing,
     },
-    /// Taken out of the instance, for its host to keep or take into another: its handle is not used again.
-    Out,
+    /// Empty, as its actor ended or was taken out of the instance: its handle is given to the next actor kept.
+    Empty,
 }
 
 std::thread_local! {
@@ -177,9 +182,6 @@ std::thread_local! {
     /// guest runs, as what its own types declare is.
     static BLOB_TYPES: RefCell<Vec<&'static BlobType>> = const { RefCell::new(Vec::new()) };
 }
-
-/// The most bytes a guest's read of its mail allocates.
-const READ_LIMIT: usize = 1 << 20;
 
 /// The handle of an actor that did not begin, or was not kept in this instance.
 const NO_HANDLE: u32 = u32::MAX;
@@ -196,7 +198,7 @@ fn begin<A: Actor>(
     asked: &mut Asked,
     instances: &mut Instances,
 ) -> Result<Box<dyn Runs>, Fault> {
-    let mut budget = Budget::new(READ_LIMIT);
+    let mut budget = Budget::new(instances.read_limit());
     let mut reader = Reader::<Actors>::new(config, &mut budget, ActorsReader::new());
     let config = A::Config::decode(&mut reader)?;
     let Standing { path, above } = standing;
@@ -205,11 +207,11 @@ fn begin<A: Actor>(
     Ok(Box::new(actor))
 }
 
-/// An actor of type `A` taken in from `bytes`, its path and state as [`take_out`] wrote them: nothing when they do not
-/// read back.
-fn take_in<A: Actor>(bytes: &[u8]) -> Option<(Box<dyn Runs>, Standing)> {
+/// An actor of type `A` taken in from `bytes`, its path and state as [`take_out`] wrote them, read within `read_limit`
+/// bytes: nothing when they do not read back.
+fn take_in<A: Actor>(bytes: &[u8], read_limit: usize) -> Option<(Box<dyn Runs>, Standing)> {
     let (state, _) = records::carried(bytes)?;
-    let mut budget = Budget::new(READ_LIMIT);
+    let mut budget = Budget::new(read_limit);
     let mut reader = Reader::<Within>::new(state, &mut budget, WithinReader::new());
     let born = Born::decode(&mut reader).ok()?;
     let actor = A::decode(&mut reader).ok()?;
@@ -271,7 +273,7 @@ pub fn begin_at(types: &[Type], calls: &'static Calls, of: u32, me: u64, seat: u
         guest.open(calls);
         let inbox = mem::take(&mut guest.inbox);
         let len = (len as usize).min(inbox.len());
-        let began = standing(&inbox[..len]).map_err(Fault::from).and_then(|(standing, config)| {
+        let began = standing(&inbox[..len], guest.read_limit).map_err(Fault::from).and_then(|(standing, config)| {
             let Guest { asked, instances, .. } = &mut *guest;
             let runs = (made.begin)(config, me, &standing, &Host::new(calls), asked, instances)?;
             Ok((runs, standing))
@@ -291,12 +293,12 @@ pub fn begin_at(types: &[Type], calls: &'static Calls, of: u32, me: u64, seat: u
 }
 
 /// Where an actor to begin stands, and its config, from what its host handed in: a [`Born`], its length first, and then
-/// the config's bytes.
-fn standing(handed: &[u8]) -> Result<(Standing, &[u8]), DecodeError> {
+/// the config's bytes. The [`Born`] is read within `read_limit` bytes.
+fn standing(handed: &[u8], read_limit: usize) -> Result<(Standing, &[u8]), DecodeError> {
     let (len, rest) = handed.split_at_checked(4).ok_or(DecodeError::UnexpectedEnd)?;
     let len = len.try_into().map_or(0, u32::from_le_bytes) as usize;
     let (born, config) = rest.split_at_checked(len).ok_or(DecodeError::UnexpectedEnd)?;
-    let born = from_bytes::<Born>(born, &mut Budget::new(READ_LIMIT))?;
+    let born = from_bytes::<Born>(born, &mut Budget::new(read_limit))?;
 
     Ok((Standing::of(born), config))
 }
@@ -312,7 +314,7 @@ pub fn take_in_at(types: &[Type], of: u32, me: u64, seat: u64, len: u32) -> u32 
             return NO_HANDLE;
         };
         let len = (len as usize).min(guest.inbox.len());
-        let Some((runs, standing)) = (made.take_in)(&guest.inbox[..len]) else {
+        let Some((runs, standing)) = (made.take_in)(&guest.inbox[..len], guest.read_limit) else {
             return NO_HANDLE;
         };
 
@@ -329,9 +331,10 @@ pub fn take_out_at(types: &[Type], handle: u32) -> u64 {
         let Some(slot) = guest.actors.get_mut(handle as usize) else {
             return 0;
         };
-        let Slot::Live { runs, standing, .. } = mem::replace(slot, Slot::Out) else {
+        let Slot::Live { runs, standing, .. } = mem::replace(slot, Slot::Empty) else {
             return 0;
         };
+        guest.free.push(handle);
         let id = runs.declared().id();
         let made = types.iter().find(|made| made.declared.id() == id);
         guest.held.clear();
@@ -356,7 +359,8 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         guest.out.clear();
         guest.out.resize(OutHead::BYTES, 0);
         let host = Host::new(calls);
-        let Guest { actors, inbox, asked, out, instances, .. } = &mut *guest;
+        let Guest { actors, inbox, asked, out, instances, read_limit, .. } = &mut *guest;
+        let read_limit = *read_limit;
         let Some(Slot::Live { runs, me, standing }) = actors.get_mut(handle as usize) else {
             return 0;
         };
@@ -369,7 +373,7 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         let mut stood_before = 0;
         let mut counted = Counted::default();
         for _ in 0..items {
-            let Some((Peeked { item, source, chain, .. }, after)) = read_item(rest) else {
+            let Some((Peeked { item, source, chain, .. }, after)) = read_item(rest, read_limit) else {
                 break;
             };
             rest = after;
@@ -404,14 +408,14 @@ enum Last {
     Closed,
 }
 
-/// One item read from the inbox, and what follows it.
-fn read_item(items: &[u8]) -> Option<(Peeked<'_>, &[u8])> {
+/// One item read from the inbox, and what follows it, its mail read within `read_limit` bytes.
+fn read_item(items: &[u8], read_limit: usize) -> Option<(Peeked<'_>, &[u8])> {
     let head = ItemHead::read(items)?;
     let rest = items.get(ItemHead::BYTES..)?;
     let (bytes, rest) = rest.split_at_checked(head.len as usize)?;
     let ItemHead { handed, source, chain, .. } = head;
     let item = match handed {
-        Handed::Mail { kind } => Item::Mail(Mail::new(kind, bytes, source, chain.root, chain.depth, READ_LIMIT)),
+        Handed::Mail { kind } => Item::Mail(Mail::new(kind, bytes, source, chain.root, chain.depth, read_limit)),
         Handed::Ended(gone) => Item::Ended(ended(gone, source, bytes)),
     };
 
@@ -451,7 +455,7 @@ impl Guest {
         }
         let is_calling = self.instances.is_guest();
         if !is_calling {
-            self.instances = Instances::of_guest(Arc::new(Calling { calls }), calls.made);
+            self.instances = Instances::of_guest(Arc::new(Calling { calls }), calls.made, self.read_limit);
         }
         let (_, puts, _) = self.asked.lent();
         let puts_hosted = puts.is_of_host();
@@ -470,10 +474,14 @@ impl Guest {
         Self::default()
     }
 
-    /// Keeps `runs`, the actor `me` names at `path`, under a new handle.
+    /// Keeps `runs`, the actor `me` names at `path`, under the handle of an empty slot, or a new one when none is.
     fn seat(&mut self, runs: Box<dyn Runs>, me: Seated, standing: Standing) -> u32 {
-        let handle = count(self.actors.len());
-        self.actors.push(Slot::Live { runs, me, standing });
+        let live = Slot::Live { runs, me, standing };
+        let Some(handle) = self.free.pop() else {
+            self.actors.push(live);
+            return count(self.actors.len() - 1);
+        };
+        self.actors[handle as usize] = live;
 
         handle
     }
@@ -719,10 +727,20 @@ pub fn pins_out() -> u64 {
 /// tells its host of. Nothing when it holds no such actor.
 pub fn end_at(handle: u32) {
     GUEST.with_borrow_mut(|guest| {
-        if let Some(slot) = guest.actors.get_mut(handle as usize) {
-            *slot = Slot::Out;
+        let Some(slot) = guest.actors.get_mut(handle as usize) else {
+            return;
+        };
+        let was_live = matches!(mem::replace(slot, Slot::Empty), Slot::Live { .. });
+        if was_live {
+            guest.free.push(handle);
         }
     });
+}
+
+/// Sets the most bytes a read of one piece of mail, config, or state allocates in the guest to `bytes`, as its host's
+/// reads do: the host sets it once, as it loads the instance, before any other call.
+pub fn read_limit_at(bytes: u32) {
+    GUEST.with_borrow_mut(|guest| guest.read_limit = bytes as usize);
 }
 
 /// Puts `bytes` as a blob in a call out to its host through `put`, the call out [`Calls::put`] wraps: answers with
@@ -1088,6 +1106,11 @@ macro_rules! guest {
                 blob_hash: aethereal_blob_hash,
                 put,
             };
+
+            #[unsafe(no_mangle)]
+            extern "C" fn aethereal_read_limit(bytes: u32) {
+                $crate::guest::read_limit_at(bytes)
+            }
 
             #[unsafe(no_mangle)]
             extern "C" fn aethereal_pins() -> u64 {

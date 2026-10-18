@@ -890,6 +890,60 @@ impl Actor for Forger {
     }
 }
 
+/// An actor that, pinged for `n`, puts a blob of `n` sevens, spawns a librarian to keep it that tells no one, and then
+/// answers with a reference to a blob it was never given: its host refuses that send, and the turn fails with the librarian it stood
+/// up, which the engine never ends.
+#[derive(Bound)]
+pub struct Spendthrift;
+
+impl Kind for Spendthrift {
+    const NAME: KindName = KindName::new("aether.guest.spendthrift");
+}
+
+impl Actor for Spendthrift {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Ping,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Spendthrift {
+    type Sends = (ToSender<Book>,);
+
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let len = usize::try_from(ping.n).unwrap_or(0);
+        let book = turn.put(vec![7; len]).map_err(|why| unhatched(&why))?;
+        let tell = ActorPath::from_root(&aethereal_data::PathSegment::new(KindName::new("aether.guest.no_one"), &()));
+        let engine = book.id().engine();
+        turn.spawn::<Librarian>(&(), Shelf { book, tell }).map_err(|why| unhatched(&why))?;
+        turn.reply(&Book { blob: BlobRef::pin(BlobId::new(engine, u64::MAX)) })?;
+
+        Ok(())
+    }
+}
+
 aethereal_actor::guest!(
-    Echo, Mirror, Responder, Doomed, Brood, Adder, Seeker, Watcher, Reporter, Hatcher, Boomerang, Librarian, Forger
+    Echo,
+    Mirror,
+    Responder,
+    Doomed,
+    Brood,
+    Adder,
+    Seeker,
+    Watcher,
+    Reporter,
+    Hatcher,
+    Boomerang,
+    Librarian,
+    Forger,
+    Spendthrift
 );
