@@ -240,4 +240,125 @@ impl Actor for Doomed {
     }
 }
 
-aethereal_actor::guest!(Echo, Mirror, Responder, Doomed);
+/// What a brood is made from: how many children it spawns as it begins.
+#[derive(Plain)]
+pub struct BroodConfig {
+    pub children: u64,
+}
+
+impl Kind for BroodConfig {
+    const NAME: KindName = KindName::new("aether.guest.brood_config");
+}
+
+/// A word to a brood to spawn one more child.
+#[derive(Plain)]
+pub struct Grow;
+
+impl Kind for Grow {
+    const NAME: KindName = KindName::new("aether.guest.grow");
+}
+
+/// An actor that spawns adders: some as it begins, and one more on each word to grow. The `k`th adds `10 k + 1`, and
+/// the first spawns one of its own.
+#[derive(Bound)]
+pub struct Brood {
+    next: u64,
+}
+
+impl Kind for Brood {
+    const NAME: KindName = KindName::new("aether.guest.brood");
+}
+
+impl Actor for Brood {
+    type Config = BroodConfig;
+    type Key = ();
+    type Handles = (Grow,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(config: BroodConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        for key in 0..config.children {
+            let config = AddBy { by: 10 * key + 1, deeper: u64::from(key == 0) };
+            if turn.spawn::<Adder>(&key, config).is_err() {
+                turn.log(Level::Error, "an adder was refused");
+            }
+        }
+
+        Ok(Self { next: config.children })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Grow> for Brood {
+    type Sends = ();
+
+    fn handle(&mut self, _: Grow, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let key = self.next;
+        if turn.spawn::<Adder>(&key, AddBy { by: 10 * key + 1, deeper: 0 }).is_err() {
+            turn.log(Level::Error, "an adder was refused");
+        }
+        self.next += 1;
+
+        Ok(())
+    }
+}
+
+/// What an adder is made from: what it adds, and how many generations of adders to spawn beneath it.
+#[derive(Plain)]
+pub struct AddBy {
+    pub by: u64,
+    pub deeper: u64,
+}
+
+impl Kind for AddBy {
+    const NAME: KindName = KindName::new("aether.guest.add_by");
+}
+
+/// An actor that answers a ping with a pong of the ping's number and its own, so the answer says its state survived
+/// wherever it was kept. Made deeper, it spawns an adder of its own that adds a thousand more.
+#[derive(Bound)]
+pub struct Adder {
+    by: u64,
+}
+
+impl Kind for Adder {
+    const NAME: KindName = KindName::new("aether.guest.adder");
+}
+
+impl Actor for Adder {
+    type Config = AddBy;
+    type Key = u64;
+    type Handles = (Ping,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(config: AddBy, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        if config.deeper > 0 {
+            let below = AddBy { by: config.by + 1000, deeper: config.deeper - 1 };
+            if turn.spawn::<Self>(&0, below).is_err() {
+                turn.log(Level::Error, "an adder below was refused");
+            }
+        }
+
+        Ok(Self { by: config.by })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Adder {
+    type Sends = (ToSender<Pong>,);
+
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.reply(&Pong { n: ping.n + self.by })?;
+
+        Ok(())
+    }
+}
+
+aethereal_actor::guest!(Echo, Mirror, Responder, Doomed, Brood, Adder);

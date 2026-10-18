@@ -127,6 +127,13 @@ impl Asked {
         self.arena.clear(0);
     }
 
+    /// How many children have been stood up since the buffers were last emptied: for a guest, whose turns of a batch
+    /// all add to them (ADR-0015).
+    #[cfg(feature = "guest")]
+    pub(crate) fn stood_count(&self) -> usize {
+        self.stood.len()
+    }
+
     /// Whether this turn has asked for nothing in any buffer.
     #[must_use]
     pub fn asked_nothing(&self) -> bool {

@@ -29,8 +29,8 @@ use crate::{
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, Actor, Arena, Asked, Beginning, BlobHash, BlobRef, Buffers, Chain, Closing, Code, Declared, Effect, Fault,
-    How, Instances, Item, Mail, MailId, Mailed, Preparing, Puts, Refused, Runs, SeatNumber, Seated, Seats, Stood,
-    Turning, What, Why,
+    How, Instances, Item, Mail, MailId, Mailed, Preparing, Puts, Reads, Refused, Runs, SeatNumber, Seated, Seats,
+    Stood, Turning, What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use birth::Births;
@@ -1231,7 +1231,14 @@ impl Reading<'_> {
                     let begins_batch = slice.taken.is_multiple_of(SLICE_EVERY);
                     if begins_batch {
                         let batch = batch::Waiting { reading: self, first: handed, rest: &pieces, carried };
-                        actor.prepare(Preparing::new(&batch, instances));
+                        let table = Since {
+                            table: self.table,
+                            stood: &lists.fusing.stood,
+                            sees: Sees::Step,
+                            blobs: self.blobs,
+                        };
+                        let reads = Reads { table: &table, made: &seat.made, seats: asked.seats_mut() };
+                        actor.prepare(Preparing::new(&batch, instances, reads));
                     }
                     // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
                     // worker, beyond what the actor's code takes.
@@ -1363,7 +1370,14 @@ impl Reading<'_> {
             return;
         };
 
-        actor.prepare(Preparing::new(&batch::OneHop { reading: self, hop: &hop, lists }, instances));
+        let table = Since {
+            table: self.table,
+            stood: &lists.fusing.stood,
+            sees: Sees::Run(lists.fusing.run(hop.run)),
+            blobs: self.blobs,
+        };
+        let reads = Reads { table: &table, made: &seat.made, seats: asked.seats_mut() };
+        actor.prepare(Preparing::new(&batch::OneHop { reading: self, hop: &hop, lists }, instances, reads));
         let sent_before = stepped.sent;
         let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
         // Timed whole, as a turn of a waiting item is.

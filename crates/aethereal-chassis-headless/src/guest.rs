@@ -5,18 +5,24 @@
 //! part's [`Instances`] and every other actor of it there reuses, so nothing is
 //! shared between workers and nothing is locked. A batch's items are written
 //! straight into the guest's inbox, and what its turns asked for is read where
-//! the guest wrote it (ADR-0015).
+//! the guest wrote it. What a turn asks of the engine to spawn a child, and the
+//! child's seat, the guest asks in a call out, answered from what the batch was
+//! lent. A child seated in another part than its parent's is taken out of the
+//! parent's instance, and into its own part's on its first batch (ADR-0015).
 
-use aethereal_actor::records::{ItemHead, LineRecord, OutHead, SendRecord, Span, Stopped, TurnEnds};
+use aethereal_actor::records::{
+    ItemHead, Kept, Keying, LineRecord, Naming, OutHead, SendRecord, Span, SpawnRecord, StoodRecord, Stopped, TurnEnds,
+};
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Batch, Declared, FalseSend, Fault, Hosted, Instances, Item, Preparing, Refused, Role, Runs, Seated, Trapped,
-    Turning,
+    Batch, Children, Declared, FalseSend, Fault, Hosted, Instances, Item, Preparing, Reads, Refused, Role, Runs,
+    SeatNumber, Seated, Seats, Table, Trapped, Turning,
 };
-use aethereal_data::{ActorId, ActorKey, Budget, PathSegment, from_bytes};
+use aethereal_data::{ActorId, ActorKey, Budget, KeyName, PathSegment, from_bytes, to_bytes};
 use aethereal_substrate::Engine;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
-use wasmtime::{Memory, Module, Store, TypedFunc};
+use wasmtime::{Caller, InstancePre, Linker, Memory, Module, Store, TypedFunc};
 
 /// What runs guests' code: one compiler, for every blob.
 #[derive(Default)]
@@ -31,7 +37,8 @@ pub struct Code {
     /// What its instances are kept under in a part's [`Instances`]: a number no other code compiled in the process
     /// has.
     key: u64,
-    module: Module,
+    /// The module, with the calls out it imports linked in.
+    module: InstancePre<Lending>,
     made: Vec<&'static Declared>,
 }
 
@@ -47,22 +54,45 @@ pub enum Unfit {
     Undeclared,
     /// It lacks an export a guest must have, or has it with the wrong signature.
     Unexported(&'static str),
+    /// It imports what its host does not offer.
+    Unlinked(String),
 }
 
 /// One instance of a blob, a part's, and the calls its host makes of it.
 struct Instance {
-    store: Store<()>,
+    store: Store<Lending>,
     memory: Memory,
     inbox: TypedFunc<u32, u32>,
     out: TypedFunc<(), u64>,
     begin: TypedFunc<(u32, u64, u64, u32), u32>,
+    take_in: TypedFunc<(u32, u64, u64, u32), u32>,
     turns: TypedFunc<(u32, u32, u32), u64>,
     /// Where the guest's inbox is, and how many bytes it has room for: asked for again only when it must grow.
     inbox_at: usize,
     inbox_room: usize,
-    /// The actors that have begun in it and not ended: the part drops it when the last ends, and a trap in it ends
-    /// them all.
+    /// The actors that live in it: the part drops it when the last ends, and a trap in it ends them all.
     actors: Vec<Seated>,
+}
+
+/// What an instance's calls out are answered from: lent for the length of one call into it.
+enum Lending {
+    /// No call is under way, and nothing is lent.
+    Between,
+    /// A call is under way, lent what answers its calls out, which lives on the caller's stack for the call.
+    During(NonNull<Answering<'static>>),
+}
+
+// SAFETY: a `Lending` crosses threads only as `Between`, when the instance moves with its part: it is `During` only
+// for the length of one call into the instance, on the thread that makes it, which sets it back before it returns.
+unsafe impl Send for Lending {}
+
+/// What a call's calls out are answered from: what its batch, or its root's `begin`, was lent, and the seats it gave.
+struct Answering<'a> {
+    table: &'a dyn Table,
+    made: &'a dyn Children,
+    seats: &'a mut Seats,
+    /// The seats it gave the guest's children and has not had back, in the order given.
+    handed: Vec<SeatNumber>,
 }
 
 /// An actor whose code runs in a guest's instance, as the engine holds it: the instance is its part's, which it
@@ -70,11 +100,21 @@ struct Instance {
 struct Guest {
     code: Code,
     me: Seated,
-    /// Which actor it is in its instance.
-    handle: u32,
+    lives: Lives,
     declared: &'static Declared,
     /// What the guest's turns of the batch prepared last asked for, and how far its host has handed them back.
     ran: Ran,
+    /// The seats the batch prepared last gave the guest's children, not yet handed to the engine with a child.
+    handed: Vec<SeatNumber>,
+}
+
+/// Where a guest actor's state is.
+enum Lives {
+    /// In its part's instance, under the handle the guest knows it by.
+    In { handle: u32 },
+    /// Taken out of the instance it began in, which is another part's, as its path and state written at `Within`:
+    /// taken into its own part's instance on its first batch.
+    Out { state: Vec<u8> },
 }
 
 /// What a guest's batch left to hand back.
@@ -88,6 +128,12 @@ enum Ran {
     /// The call that ran them trapped, or wrote what does not read back: every turn of the batch fails.
     Trapped,
 }
+
+/// The top bit of a seat given to a guest's child, set when the seat is in another part than its parent's.
+const ELSEWHERE_BIT: u64 = 1 << 63;
+
+/// The handle a guest writes for a child it did not keep.
+const NO_HANDLE: u32 = u32::MAX;
 
 impl Guests {
     /// A host whose guests' compiled code is named to a profiler through a perf map: a spike's measure.
@@ -116,16 +162,101 @@ impl Guests {
         let section = declared_section(bytes).ok_or(Unfit::Undeclared)?;
         let mut budget = Budget::new(1 << 20);
         let made = from_bytes::<Vec<Made>>(section, &mut budget).map_err(|_| Unfit::Undeclared)?;
-        for export in ["memory", "aethereal_inbox", "aethereal_out", "aethereal_begin", "aethereal_turns"] {
+        let exports = ["memory", "aethereal_inbox", "aethereal_out", "aethereal_begin", "aethereal_take_in"];
+        for export in exports.into_iter().chain(["aethereal_turns"]) {
             let has = module.get_export(export).is_some();
             if !has {
                 return Err(Unfit::Unexported(export));
             }
         }
+        let module = calls_out(&self.engine)
+            .and_then(|linker| linker.instantiate_pre(&module))
+            .map_err(|error| Unfit::Unlinked(error.to_string()))?;
 
         let key = CODES.fetch_add(1, Ordering::Relaxed);
 
         Ok(Code { key, module, made: made.iter().map(Made::leak).collect() })
+    }
+}
+
+/// The calls out a guest makes, each answered from what the call under way was lent (ADR-0015).
+fn calls_out(engine: &wasmtime::Engine) -> wasmtime::Result<Linker<Lending>> {
+    let mut linker = Linker::new(engine);
+    linker.func_wrap(
+        "aethereal",
+        "aethereal_child",
+        |mut caller: Caller<'_, Lending>, parent: u64, at: u32, len| {
+            let naming = guest_bytes(&mut caller, Span { at, len });
+            let naming = naming.and_then(|naming| from_bytes::<Naming>(&naming, &mut Budget::new(1 << 10)).ok());
+            answer(&mut caller, |answering| {
+                let Some(naming) = naming else {
+                    return u64::MAX;
+                };
+                answering.table.child(ActorId::new(parent), &naming.segment()).bits()
+            })
+        },
+    )?;
+    linker.func_wrap("aethereal", "aethereal_child_seat", |mut caller: Caller<'_, Lending>, id: u64| {
+        answer(&mut caller, |answering| {
+            answering.table.child_seat(ActorId::new(id)).map_or(u64::MAX, SeatNumber::number)
+        })
+    })?;
+    linker.func_wrap("aethereal", "aethereal_has_made", |mut caller: Caller<'_, Lending>, id: u64| {
+        answer(&mut caller, |answering| u32::from(answering.made.has_made(ActorId::new(id))))
+    })?;
+    linker.func_wrap("aethereal", "aethereal_take_seat", |mut caller: Caller<'_, Lending>| {
+        answer(&mut caller, |answering| {
+            let seat = answering.seats.take();
+            answering.handed.push(seat);
+            let is_elsewhere = !answering.seats.is_own(seat);
+            let elsewhere = if is_elsewhere {
+                ELSEWHERE_BIT
+            } else {
+                0
+            };
+
+            seat.number() | elsewhere
+        })
+    })?;
+    linker.func_wrap("aethereal", "aethereal_give_back_seat", |mut caller: Caller<'_, Lending>, seat: u64| {
+        answer(&mut caller, |answering| {
+            let seat = SeatNumber::new(seat);
+            let given = answering.handed.iter().position(|handed| *handed == seat);
+            if let Some(given) = given {
+                answering.handed.remove(given);
+                answering.seats.give_back(seat);
+            }
+        })
+    })?;
+
+    Ok(linker)
+}
+
+/// Answers a call out with `answer`, from what the call under way was lent. A call out made with nothing lent, which
+/// only a call the host does not lend to makes, traps the guest.
+fn answer<R>(caller: &mut Caller<'_, Lending>, answer: impl FnOnce(&mut Answering<'_>) -> R) -> wasmtime::Result<R> {
+    let Lending::During(mut answering) = *caller.data() else {
+        return Err(wasmtime::Error::msg("a call out made outside a call that answers one"));
+    };
+    // SAFETY: `During` holds a pointer to the `Answering` its call lent, which lives on the stack of
+    // `Instance::lending`, and is set back to `Between` before that returns. The guest's call out runs within that
+    // call, on its thread, and nothing else reaches the `Answering` while it runs.
+    let answering = unsafe { answering.as_mut() };
+
+    Ok(answer(answering))
+}
+
+/// The bytes `span` says lie in the memory of the guest that makes a call out: nothing when they lie outside it.
+fn guest_bytes(caller: &mut Caller<'_, Lending>, span: Span) -> Option<Vec<u8>> {
+    let memory = caller.get_export("memory")?.into_memory()?;
+
+    lying(memory.data(&*caller), span).map(<[u8]>::to_vec)
+}
+
+impl<'a> Answering<'a> {
+    /// What answers a call's calls out, from what its batch was lent.
+    fn of(Reads { table, made, seats }: Reads<'a>) -> Self {
+        Self { table, made, seats, handed: Vec::new() }
     }
 }
 
@@ -134,6 +265,13 @@ impl Code {
     #[must_use]
     pub fn declared(&self, of: usize) -> Option<&'static Declared> {
         self.made.get(of).copied()
+    }
+
+    /// Which of the types it makes is the one of id `kind`, and what it declares.
+    fn made_of(&self, kind: aethereal_data::KindId) -> Option<(u32, &'static Declared)> {
+        let of = self.made.iter().position(|declared| declared.id() == kind)?;
+
+        Some((u32::try_from(of).ok()?, self.made[of]))
     }
 
     /// Its instance in the part whose `instances` are lent: loaded there by the first of its actors to want it.
@@ -149,21 +287,37 @@ impl Instance {
     ///
     /// Panics when the code cannot be instantiated, which its checks as it entered rule out.
     fn load(code: &Code) -> Self {
-        let mut store = Store::new(code.module.engine(), ());
-        let Ok(instance) = wasmtime::Instance::new(&mut store, &code.module, &[]) else {
+        let mut store = Store::new(code.module.module().engine(), Lending::Between);
+        let Ok(instance) = code.module.instantiate(&mut store) else {
             panic!("guest code that entered is instantiated");
         };
         let memory = instance.get_memory(&mut store, "memory");
         let inbox = instance.get_typed_func(&mut store, "aethereal_inbox");
         let out = instance.get_typed_func(&mut store, "aethereal_out");
         let begin = instance.get_typed_func(&mut store, "aethereal_begin");
+        let take_in = instance.get_typed_func(&mut store, "aethereal_take_in");
         let turns = instance.get_typed_func(&mut store, "aethereal_turns");
-        let (Some(memory), Ok(inbox), Ok(out), Ok(begin), Ok(turns)) = (memory, inbox, out, begin, turns) else {
+        let (Some(memory), Ok(inbox), Ok(out), Ok(begin), Ok(take_in), Ok(turns)) =
+            (memory, inbox, out, begin, take_in, turns)
+        else {
             panic!("guest code that entered has its exports");
         };
 
-        Self { store, memory, inbox, out, begin, turns, inbox_at: 0, inbox_room: 0, actors: Vec::new() }
+        Self { store, memory, inbox, out, begin, take_in, turns, inbox_at: 0, inbox_room: 0, actors: Vec::new() }
     }
+}
+
+/// Makes `call` into the instance whose store is `store`, its calls out answered from `answering` for its length.
+fn lending<R>(
+    store: &mut Store<Lending>,
+    answering: &mut Answering<'_>,
+    call: impl FnOnce(&mut Store<Lending>) -> R,
+) -> R {
+    *store.data_mut() = Lending::During(NonNull::from(answering).cast());
+    let called = call(store);
+    *store.data_mut() = Lending::Between;
+
+    called
 }
 
 /// Makes a root of the `of`th type `code` makes, under `key`, from the bytes of its config, in its part's instance
@@ -189,12 +343,28 @@ pub fn add_root<K: ActorKey>(
     let is_keyed_so = declared.keyed() == K::KEYED;
     assert!(is_keyed_so, "the code's type {of} is keyed as {:?}", declared.keyed());
     let segment = PathSegment::new(declared.name().clone(), key);
+    let Ok(naming) = to_bytes(&Naming::of(&segment)) else {
+        panic!("a segment's naming is written");
+    };
+    let handed: Vec<u8> = count(naming.len()).to_le_bytes().into_iter().chain(naming).chain(config.to_vec()).collect();
 
     engine.add_root_made(&segment, declared, |me, path, table, asked, instances| {
-        let mut hosted = Hosted::beginning(me, path, table, asked, declared);
         let held = code.instance(instances);
         let of = u32::try_from(of).unwrap_or(u32::MAX);
-        let Some((handle, began)) = held.begin(of, me, config, &mut hosted) else {
+        let mut answering = Answering { table, made: &(), seats: asked.seats_mut(), handed: Vec::new() };
+        let began = held.begin(of, me, &handed, &mut answering);
+        let mut handing = answering.handed;
+        let mut hosted = Hosted::beginning(me, path, table, asked, declared);
+        let replayed = began.and_then(|(handle, wrote)| {
+            let Instance { store, memory, actors, .. } = &mut *held;
+            let data = memory.data(&*store);
+            let replayed = replay(data, code, &wrote, 0, TurnEnds::default(), &mut handing, actors, &mut hosted)?;
+            Some((handle, replayed))
+        });
+        for seat in handing {
+            hosted.give_back(seat);
+        }
+        let Some((handle, (began, _))) = replayed else {
             // A trap in a `begin` ends every actor in the instance, as one in a turn does (ADR-0015).
             hosted.trapped(held.actors.iter().copied());
             instances.drop_instance::<Instance>(code.key);
@@ -203,7 +373,8 @@ pub fn add_root<K: ActorKey>(
         began?;
         held.actors.push(me);
 
-        Ok(Box::new(Guest { code: code.clone(), me, handle, declared, ran: Ran::Nothing }))
+        let lives = Lives::In { handle };
+        Ok(Box::new(Guest { code: code.clone(), me, lives, declared, ran: Ran::Nothing, handed: Vec::new() }))
     })
 }
 
@@ -212,21 +383,44 @@ impl Runs for Guest {
         self.declared
     }
 
-    /// Runs every turn of the batch in the guest, in one call into its instance, and keeps what they asked for for
-    /// [`Self::turn`] to hand back. The guest stops after a turn that fails or closes it, as the engine does.
+    /// Runs every turn of the batch in the guest, in one call into its instance, its calls out answered from what the
+    /// batch was lent, and keeps what they asked for for [`Self::turn`] to hand back. The guest stops after a turn that
+    /// fails or closes it, as the engine does. An actor taken out of the instance it began in, another part's, is
+    /// first taken into this part's.
     fn prepare(&mut self, preparing: Preparing<'_>) {
-        let (batch, instances) = preparing.hosted();
+        let (batch, instances, reads) = preparing.hosted();
         let held = self.code.instance(instances);
+        if let Lives::Out { state } = &self.lives {
+            let taken = self.code.made_of(self.declared.id()).and_then(|(of, _)| held.take_in(of, self.me, state));
+            let Some(handle) = taken else {
+                self.ran = Ran::Trapped;
+                return;
+            };
+            held.actors.push(self.me);
+            self.lives = Lives::In { handle };
+        }
+        let Lives::In { handle } = self.lives else {
+            return;
+        };
         let (items, len) = held.hand_in(batch);
-        let called = held.turns.call(&mut held.store, (self.handle, items, len));
+        let mut answering = Answering::of(reads);
+        let Instance { store, turns, .. } = &mut *held;
+        let called = lending(store, &mut answering, |store| turns.call(store, (handle, items, len)));
         let wrote = called.ok().and_then(|out| held.out_head(out));
-        let first = TurnEnds { sends: 0, lines: 0 };
-        self.ran = wrote.map_or(Ran::Trapped, |head| Ran::At { head, next: 0, before: first });
+        if wrote.is_none() {
+            // Nothing the trapped call stood up will be handed to the engine, so every seat it took goes back now.
+            for seat in answering.handed.drain(..) {
+                answering.seats.give_back(seat);
+            }
+        }
+        self.handed = answering.handed;
+        self.ran = wrote.map_or(Ran::Trapped, |head| Ran::At { head, next: 0, before: TurnEnds::default() });
     }
 
     /// Hands back the next turn [`Self::prepare`] ran: what it asked for, each send checked against what the guest
-    /// declares. When the call that ran it trapped, or wrote what does not read back, the turn fails, every other actor
-    /// in the instance ends with it, and the part drops the instance (ADR-0015).
+    /// declares, and each child it stood up. When the call that ran it trapped, or wrote what does not read back, the
+    /// turn fails, every other actor in the instance ends with it, and the part drops the instance (ADR-0015). A turn
+    /// that fails gives back the seats the batch took for children it never handed to the engine.
     fn turn(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
         let role = match &item {
             Item::Mail(mail) if self.declared.lists(mail.kind()) => Role::Kind(mail.kind()),
@@ -236,14 +430,18 @@ impl Runs for Guest {
         let (mut hosted, instances) = turning.hosted(self.declared, role);
         let replayed = match self.ran {
             Ran::At { head, next, before } => {
-                let held = self.code.instance(instances);
-                replay(held.memory.data(&held.store), &head, next, before, &mut hosted)
+                let Instance { store, memory, actors, .. } = self.code.instance(instances);
+                let data = memory.data(&*store);
+                replay(data, &self.code, &head, next, before, &mut self.handed, actors, &mut hosted)
                     .map(|(replayed, ends)| (replayed, Ran::At { head, next: next + 1, before: ends }))
             }
             Ran::Nothing | Ran::Trapped => None,
         };
         let Some((replayed, ran)) = replayed else {
             self.ran = Ran::Trapped;
+            for seat in self.handed.drain(..) {
+                hosted.give_back(seat);
+            }
             // What the trap left in the instance's memory cannot be trusted, so nothing runs in it again.
             if let Some(held) = instances.get::<Instance>(self.code.key) {
                 hosted.trapped(held.actors.iter().copied());
@@ -252,12 +450,19 @@ impl Runs for Guest {
             return Err(trapped());
         };
         self.ran = ran;
+        let is_last = matches!(ran, Ran::At { head, next, .. } if next == head.ran);
+        let is_failed = replayed.is_err();
+        if is_failed || is_last {
+            for seat in self.handed.drain(..) {
+                hosted.give_back(seat);
+            }
+        }
 
         replayed
     }
 
     /// Ends the actor in its part's instance, and drops the instance when it was the last actor in it. An instance a
-    /// trap dropped is not loaded again for it.
+    /// trap dropped is not loaded again for it, and an actor never taken into one leaves none.
     fn end(self: Box<Self>, closing: aethereal_actor::Closing<'_>) -> Result<(), Fault> {
         let instances = closing.hosted();
         let Some(held) = instances.get::<Instance>(self.code.key) else {
@@ -274,25 +479,30 @@ impl Runs for Guest {
 }
 
 impl Instance {
-    /// Runs the `begin` of the `of`th type the code makes, for `me`, from the bytes of its config, and hands what it
-    /// asked for to `hosted`: the handle the guest keeps the actor under, and whether it began. Nothing when the call
-    /// trapped, or wrote what does not read back.
-    fn begin(
-        &mut self,
-        of: u32,
-        me: Seated,
-        config: &[u8],
-        hosted: &mut Hosted<'_>,
-    ) -> Option<(u32, Result<(), Fault>)> {
-        let len = self.write_inbox(config);
-        let handle = self.begin.call(&mut self.store, (of, me.id.bits(), me.seat.number(), len)).ok()?;
-        let out = self.out.call(&mut self.store, ()).ok()?;
+    /// Runs the `begin` of the `of`th type the code makes, for `me`, from `handed`, its segment's naming and config,
+    /// its calls out answered from `answering`: the handle the guest keeps the actor under, and the head of what it
+    /// asked for. Nothing when the call trapped, or wrote what does not read back.
+    fn begin(&mut self, of: u32, me: Seated, handed: &[u8], answering: &mut Answering<'_>) -> Option<(u32, OutHead)> {
+        let len = self.write_inbox(handed);
+        let Self { store, begin, out, .. } = self;
+        let handle = lending(store, answering, |store| begin.call(store, (of, me.id.bits(), me.seat.number(), len)));
+        let handle = handle.ok()?;
+        let out = out.call(&mut *store, ()).ok()?;
         let wrote = self.out_head(out).filter(|wrote| wrote.ran == 1)?;
-        let (began, _) = replay(self.memory.data(&self.store), &wrote, 0, TurnEnds { sends: 0, lines: 0 }, hosted)?;
 
-        Some((handle, began))
+        Some((handle, wrote))
     }
 
+    /// Takes `me`, an actor of the `of`th type the code makes, into the instance from `state`, its path and state as
+    /// the guest that took it out wrote them: the handle the guest keeps it under. Nothing when the call trapped, or
+    /// the state did not read back.
+    fn take_in(&mut self, of: u32, me: Seated, state: &[u8]) -> Option<u32> {
+        let len = self.write_inbox(state);
+        let handle = self.take_in.call(&mut self.store, (of, me.id.bits(), me.seat.number(), len)).ok()?;
+        let is_taken = handle != NO_HANDLE;
+
+        is_taken.then_some(handle)
+    }
     /// Writes the mail of `batch` straight into the guest's inbox, each item an [`ItemHead`] and then its bytes, and
     /// answers with how many items and how many bytes: as far as its first item that is not mail, which a guest does
     /// not handle yet.
@@ -357,14 +567,43 @@ impl Instance {
 }
 
 /// Hands the `next` turn of those `head` says the guest ran into `hosted`, read from the guest's memory `data` where
-/// it wrote them, the turns before it ending where `before` says: its sends, each checked against what the guest
-/// declares, its lines, and how it ended. Answers with that, and where it ends: nothing when the guest ran no such
-/// turn, or its records do not read back.
+/// it wrote them, the turns before it ending where `before` says: the children it spawned, their seats taken from
+/// `handed`, those the host gave the call; its sends, each checked against what its sender declares; its lines; the
+/// children that began, each kept in the instance added to `actors` unless the turn failed; and how it ended. Answers
+/// with that, and where it ends: nothing when the guest ran no such turn, or its records do not read back.
+#[allow(clippy::too_many_arguments, reason = "what a replay reads and what it hands back to, each its own")]
 fn replay(
     data: &[u8],
+    code: &Code,
     head: &OutHead,
     next: u32,
     before: TurnEnds,
+    handed: &mut Vec<SeatNumber>,
+    actors: &mut Vec<Seated>,
+    hosted: &mut Hosted<'_>,
+) -> Option<(Result<(), Fault>, TurnEnds)> {
+    let actors_before = actors.len();
+    let replayed = replay_records(data, code, head, next, before, handed, actors, hosted);
+    // A failed turn's children are dropped by the engine, and never live in the instance; nor do those of a turn whose
+    // records do not read back.
+    let is_kept = matches!(replayed, Some((Ok(()), _)));
+    if !is_kept {
+        actors.truncate(actors_before);
+    }
+
+    replayed
+}
+
+/// What [`replay`] hands back, the children kept in the instance added to `actors` whatever the turn's end.
+#[allow(clippy::too_many_arguments, reason = "what a replay reads and what it hands back to, each its own")]
+fn replay_records(
+    data: &[u8],
+    code: &Code,
+    head: &OutHead,
+    next: u32,
+    before: TurnEnds,
+    handed: &mut Vec<SeatNumber>,
+    actors: &mut Vec<Seated>,
     hosted: &mut Hosted<'_>,
 ) -> Option<(Result<(), Fault>, TurnEnds)> {
     let was_run = next < head.ran;
@@ -372,16 +611,51 @@ fn replay(
         return None;
     }
     let ends = TurnEnds::read(record(data, head.turns_at, next, TurnEnds::BYTES)?)?;
+    let mut spawned = Vec::new();
+    for index in before.spawns..ends.spawns {
+        let spawn = SpawnRecord::read(record(data, head.spawns_at, index, SpawnRecord::BYTES)?)?;
+        let (_, declared) = code.made_of(spawn.kind)?;
+        let key = match spawn.key {
+            Keying::Singleton => None,
+            Keying::Keyed(key) => Some(from_bytes::<KeyName>(lying(data, key)?, &mut Budget::new(1 << 10)).ok()?),
+        };
+        let given = handed.iter().position(|seat| *seat == spawn.seat)?;
+        handed.remove(given);
+        let child = hosted.spawn(spawn.by, declared, key, spawn.seat)?;
+        spawned.push((child, spawn.by, declared));
+    }
     for index in before.sends..ends.sends {
         let send = SendRecord::read(record(data, head.sends_at, index, SendRecord::BYTES)?)?;
-        let is_refused = hosted.send(send.to, send.kind, lying(data, send.bytes)?).is_err();
+        let is_refused = hosted.send(send.by, send.to, send.kind, lying(data, send.bytes)?).is_err();
         if is_refused {
             return Some((Err(Fault::new(&FalseSend).unwrap_or_else(|_| trapped())), ends));
         }
     }
     for index in before.lines..ends.lines {
         let line = LineRecord::read(record(data, head.lines_at, index, LineRecord::BYTES)?)?;
-        hosted.log(line.level, str::from_utf8(lying(data, line.text)?).ok()?);
+        hosted.log(line.by, line.level, str::from_utf8(lying(data, line.text)?).ok()?)?;
+    }
+    for index in before.stood..ends.stood {
+        let stood = StoodRecord::read(record(data, head.stood_at, index, StoodRecord::BYTES)?)?;
+        let (me, by, declared) = *spawned.iter().find(|(child, ..)| *child == stood.me)?;
+        let is_above = by == stood.above;
+        if !is_above {
+            return None;
+        }
+        let lives = match stood.held {
+            // A child the guest dropped, as the turn that stood it up failed, is not handed to the engine.
+            Kept::Here { handle: NO_HANDLE } => {
+                handed.push(me.seat);
+                continue;
+            }
+            Kept::Here { handle } => {
+                actors.push(me);
+                Lives::In { handle }
+            }
+            Kept::Out { state } => Lives::Out { state: lying(data, state)?.to_vec() },
+        };
+        let runs = Guest { code: code.clone(), me, lives, declared, ran: Ran::Nothing, handed: Vec::new() };
+        hosted.stand(me, Box::new(runs))?;
     }
     let is_last = next + 1 == head.ran;
     let ended = match head.stopped {
@@ -395,7 +669,6 @@ fn replay(
         }
         Stopped::Failed { kind, bytes } => Err(Fault::of_parts(kind, lying(data, bytes)?.to_vec())),
     };
-
     Some((ended, ends))
 }
 
@@ -447,6 +720,7 @@ mod tests {
     use aethereal_actor::{Actor, Beginning, Ending, Handles, Seated, ToAny, ToSender, ToWithoutMail, Turn};
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
     use std::num::NonZeroUsize;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// The echo guest the build script built.
@@ -923,5 +1197,218 @@ mod tests {
         assert!(refused_trapped, "the doomed root is refused with its trap");
         assert!(engine.log(echo).any(is_trap), "the echo, in the same instance, ended with it");
         assert!(!engine.table().is_live(echo.id));
+    }
+
+    /// Which of the echo guest's types a brood is.
+    const BROOD: usize = 4;
+
+    /// What a brood is made from, as the echo guest declares it.
+    #[derive(Plain)]
+    struct BroodConfig {
+        children: u64,
+    }
+
+    impl Kind for BroodConfig {
+        const NAME: KindName = KindName::new("aether.guest.brood_config");
+    }
+
+    /// The word to a brood to spawn one more child, as the echo guest declares it.
+    #[derive(Plain)]
+    struct Grow;
+
+    impl Kind for Grow {
+        const NAME: KindName = KindName::new("aether.guest.grow");
+    }
+
+    /// What an asker pings, and which of [`ANSWERS`] it keeps its answers in.
+    #[derive(Plain)]
+    struct Asks {
+        paths: Vec<ActorPath>,
+        tally: u64,
+    }
+
+    impl Kind for Asks {
+        const NAME: KindName = KindName::new("aether.test.asks");
+    }
+
+    /// The answers each test's askers were given, by the tally the test keeps them in.
+    static ANSWERS: [Mutex<Vec<u64>>; 2] = [Mutex::new(Vec::new()), Mutex::new(Vec::new())];
+
+    /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
+    #[derive(aethereal_data::Bound)]
+    struct Asker {
+        tally: u64,
+    }
+
+    impl Kind for Asker {
+        const NAME: KindName = KindName::new("aether.test.asker");
+    }
+
+    impl Actor for Asker {
+        type Config = Asks;
+        type Key = u64;
+        type Handles = (Pong,);
+        type BeginSends = (ToAny<(Ping,), Ping>,);
+        type EndSends = ();
+
+        fn begin(asks: Asks, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            for path in &asks.paths {
+                if let Some(asked) = turn.resolve(path) {
+                    turn.to_any::<(Ping,)>(ToWithoutMail::Held(asked)).send(&Ping { n: 0 })?;
+                }
+            }
+
+            Ok(Self { tally: asks.tally })
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Pong> for Asker {
+        type Sends = ();
+
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            if let Ok(mut answers) = ANSWERS[usize::try_from(self.tally).unwrap_or_default()].lock() {
+                answers.push(pong.n);
+            }
+
+            Ok(())
+        }
+    }
+
+    /// A native actor that tells the brood to grow, as it begins.
+    #[derive(aethereal_data::Bound)]
+    struct Grower;
+
+    impl Kind for Grower {
+        const NAME: KindName = KindName::new("aether.test.grower");
+    }
+
+    impl Actor for Grower {
+        type Config = Volley;
+        type Key = ();
+        type Handles = ();
+        type BeginSends = (ToAny<(Grow,), Grow>,);
+        type EndSends = ();
+
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            if let Some(brood) = turn.resolve(&brood_path()) {
+                turn.to_any::<(Grow,)>(ToWithoutMail::Held(brood)).send(&Grow)?;
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    /// The path of the brood root.
+    fn brood_path() -> ActorPath {
+        ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.brood"), &()))
+    }
+
+    /// The path of the adder keyed `key` beneath `above`.
+    fn adder(above: &ActorPath, key: u64) -> ActorPath {
+        let Ok(path) = above.child(&PathSegment::new(KindName::new("aether.guest.adder"), &key)) else {
+            panic!("an adder's path is not too deep");
+        };
+
+        path
+    }
+
+    /// An engine of `parts` parts with a brood of `children` adders begun in it.
+    fn brood(code: &Code, parts: usize, children: u64) -> Engine {
+        let Some(parts) = NonZeroUsize::new(parts) else {
+            panic!("a brood's engine has parts");
+        };
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+        let Ok(config) = to_bytes(&BroodConfig { children }) else {
+            panic!("a brood's config is written");
+        };
+        let Ok(_) = add_root(&mut engine, code, BROOD, &(), &config) else {
+            panic!("the brood begins");
+        };
+
+        engine
+    }
+
+    /// Steps `engine` until it is idle.
+    fn settle(engine: &mut Engine) {
+        let clock = Monotonic::new();
+        while !engine.is_idle() {
+            engine.step(&clock);
+        }
+    }
+
+    /// The answers kept in `tally`, in order.
+    fn answers(tally: usize) -> Vec<u64> {
+        let Ok(answers) = ANSWERS[tally].lock() else {
+            panic!("no asker panicked holding the answers");
+        };
+        let mut answers = answers.clone();
+        answers.sort_unstable();
+
+        answers
+    }
+
+    #[test]
+    fn a_guest_spawns_children_that_answer_from_their_own_state() {
+        // Catches a spawn in a guest's `begin`, one beneath a child in the child's `begin`, or one in a turn, that
+        // the engine never stands up or stands at the wrong path; and a child whose state is not its own.
+        let Ok(code) = Guests::default().code(ECHO) else {
+            panic!("the echo guest is fit to run");
+        };
+        let mut engine = brood(&code, 1, 3);
+        let Ok(_) = engine.add_root::<Grower>(&(), Volley { pings: 0 }) else {
+            panic!("the grower begins");
+        };
+        settle(&mut engine);
+
+        let first = adder(&brood_path(), 0);
+        let paths =
+            vec![adder(&first, 0), first, adder(&brood_path(), 1), adder(&brood_path(), 2), adder(&brood_path(), 3)];
+        let Ok(_) = engine.add_root::<Asker>(&0, Asks { paths, tally: 0 }) else {
+            panic!("the asker begins");
+        };
+        settle(&mut engine);
+
+        assert_eq!(answers(0), [1, 11, 21, 31, 1001]);
+    }
+
+    #[test]
+    fn a_child_seated_in_another_part_is_taken_into_that_parts_instance() {
+        // Catches a child seated in another part than its parent's that runs in no instance, in its parent's, or with
+        // state that did not survive being taken out and in.
+        let Ok(code) = Guests::default().code(ECHO) else {
+            panic!("the echo guest is fit to run");
+        };
+        let parts = 2;
+        let mut engine = brood(&code, parts, 8);
+        settle(&mut engine);
+
+        let part_of = |path: &ActorPath| {
+            let seat = engine.table().resolve(path).and_then(|id| engine.table().seat(id));
+            let Some(seat) = seat else {
+                panic!("{path} is seated");
+            };
+            seat.index() % parts
+        };
+        let brood_part = part_of(&brood_path());
+        let elsewhere = (0..8).filter(|key| part_of(&adder(&brood_path(), *key)) != brood_part).count();
+        assert!(elsewhere > 0, "some adder is seated in another part than the brood");
+
+        let first = adder(&brood_path(), 0);
+        let mut paths: Vec<ActorPath> = (0..8).map(|key| adder(&brood_path(), key)).collect();
+        paths.push(adder(&first, 0));
+        let Ok(_) = engine.add_root::<Asker>(&1, Asks { paths, tally: 1 }) else {
+            panic!("the asker begins");
+        };
+        settle(&mut engine);
+
+        assert_eq!(answers(1), [1, 11, 21, 31, 41, 51, 61, 71, 1001]);
     }
 }

@@ -1,11 +1,13 @@
 //! A turn a host runs for an actor whose code runs where the engine cannot see it: a guest (ADR-0015).
 
-use super::{Checked, During, Seat, Turning};
+use super::{Checked, During, Seat, Stood, Turning};
 use crate::{
-    Above, Asked, Chain, Declared, Effect, Fault, Instances, Level, MailId, Mailed, Role, Seated, Sending, Table,
-    Target, What,
+    Above, Asked, Chain, Code, Declared, Effect, Fault, Instances, Level, Line, MailId, Mailed, Role, Runs, SeatNumber,
+    Seated, Sending, Table, Target, What,
 };
-use aethereal_data::{ActorPath, KindId, KindName, Plain};
+use aethereal_data::{ActorPath, KeyName, Keyed, KindId, KindName, PathSegment, Plain};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::convert::Infallible;
 
 /// A turn as a host runs it: the guest's sends and lines are handed in after its code ran, each send checked against
@@ -17,6 +19,18 @@ pub struct Hosted<'a> {
     /// Who a send to the sender reaches.
     source: Source,
     chain: Chain,
+    /// The children the turn spawned, in the order it spawned them, whose `begin`s send and log as themselves.
+    spawned: Vec<Spawned>,
+}
+
+/// A child a hosted turn spawned: who it is, where it stands, what its type declares, who spawned it, and how many
+/// pieces of mail its `begin` has sent.
+struct Spawned {
+    me: Seated,
+    path: ActorPath,
+    declared: &'static Declared,
+    by: Seated,
+    sent: u64,
 }
 
 /// Who a hosted turn's sender is.
@@ -55,7 +69,7 @@ impl<'a> Turning<'a> {
         let during = During::Handling(role);
         let seat = Seat { me, path, above, table, made, asked, sent, declared, during, checked: Checked::Nothing };
 
-        (Hosted { seat, sends, source: Source::Item(source), chain }, instances)
+        (Hosted { seat, sends, source: Source::Item(source), chain, spawned: Vec::new() }, instances)
     }
 }
 
@@ -84,7 +98,7 @@ impl<'a> Hosted<'a> {
         };
         let chain = Chain { root: MailId { sender: me.id, count: 0 }, depth: 0 };
 
-        Self { seat, sends: declared.begins(), source: Source::Begin, chain }
+        Self { seat, sends: declared.begins(), source: Source::Begin, chain, spawned: Vec::new() }
     }
 
     /// The actor whose turn this is.
@@ -114,13 +128,20 @@ impl<'a> Hosted<'a> {
         self.seat.sent
     }
 
-    /// Sends `bytes`, mail of `kind`, to the actor `to` names: refused when no send the turn declares reaches it.
+    /// Sends `bytes`, mail of `kind`, to the actor `to` names, by `by`: the actor whose turn this is, or a child it
+    /// spawned, in its `begin`. Refused when no send the sender declares there reaches it.
     ///
     /// # Errors
     ///
-    /// [`FalseSend`] when the turn's declaration does not allow it.
-    pub fn send(&mut self, to: Seated, kind: KindId, bytes: &[u8]) -> Result<(), FalseSend> {
-        let allowed = self.sends.iter().any(|sending| self.allows(*sending, to, kind));
+    /// [`FalseSend`] when the sender's declaration does not allow it, or the turn spawned no such child.
+    pub fn send(&mut self, by: Seated, to: Seated, kind: KindId, bytes: &[u8]) -> Result<(), FalseSend> {
+        let (sends, source) = if by == self.seat.me {
+            (self.sends, self.source)
+        } else {
+            let child = self.spawned.iter().find(|child| child.me == by).ok_or(FalseSend)?;
+            (child.declared.begins(), Source::Begin)
+        };
+        let allowed = sends.iter().any(|sending| self.allows(*sending, source, to, kind));
         if !allowed {
             return Err(FalseSend);
         }
@@ -130,11 +151,82 @@ impl<'a> Hosted<'a> {
             (out, Ok::<(), Infallible>(()))
         });
         let Ok(bytes) = written;
-        self.seat.sent += 1;
-        let mailed = Mailed { by: self.seat.me, to, count: self.seat.sent, kind, bytes };
+        let count = if by == self.seat.me {
+            self.seat.sent += 1;
+            self.seat.sent
+        } else {
+            let child = self.spawned.iter_mut().find(|child| child.me == by).ok_or(FalseSend)?;
+            child.sent += 1;
+            child.sent
+        };
+        let mailed = Mailed { by, to, count, kind, bytes };
         self.seat.asked.buffers.mailed.push(mailed);
 
         Ok(())
+    }
+
+    /// Spawns, by `by`, the actor whose turn this is or a child it spawned, a child of the type `declared`, under
+    /// `key`, in `seat`, as a turn spawns one: the spawn is asked for, and the child is the turn's to stand up with
+    /// [`Self::stand`] once its `begin` has run. Answers with the child: nothing when `by` is not who it says, the key
+    /// is not of the type's keying, or the key is taken, so the guest's records do not read back.
+    pub fn spawn(
+        &mut self,
+        by: Seated,
+        declared: &'static Declared,
+        key: Option<KeyName>,
+        seat: SeatNumber,
+    ) -> Option<Seated> {
+        let by_path = if by == self.seat.me {
+            self.seat.path.clone()
+        } else {
+            self.spawned.iter().find(|child| child.me == by)?.path.clone()
+        };
+        let segment = match (&key, declared.keyed()) {
+            (None, Keyed::Singleton) => PathSegment::new(declared.name().clone(), &()),
+            (Some(key), Keyed::Instanced) => PathSegment::instanced(declared.name().clone(), key.clone()),
+            _ => return None,
+        };
+        let path = by_path.child(&segment).ok()?;
+        let id = self.seat.table.child(by.id, &segment);
+        let is_live = self.seat.table.child_seat(id).is_some();
+        let is_made = by == self.seat.me && self.seat.made.has_made(id);
+        let is_stood = self.seat.asked.stood_seat(id).is_some();
+        let is_spawned = self.spawned.iter().any(|child| child.me.id == id);
+        let is_taken = is_live || is_made || is_stood || is_spawned;
+        if is_taken {
+            return None;
+        }
+        let from = Code::Linked(declared);
+        let what = match key {
+            None => What::Spawn { from, seat },
+            Some(key) => What::SpawnInstanced { from, key, seat },
+        };
+        self.seat.asked.buffers.effects.push(Effect::new(by, what));
+        let me = Seated { id, seat };
+        self.spawned.push(Spawned { me, path, declared, by, sent: 0 });
+
+        Some(me)
+    }
+
+    /// Stands up `me`, a child [`Self::spawn`] spawned whose `begin` succeeded, run by `runs`: the engine seats it
+    /// with the turn's other children. Nothing when the turn spawned no such child.
+    pub fn stand(&mut self, me: Seated, runs: Box<dyn Runs>) -> Option<()> {
+        let child = self.spawned.iter().find(|child| child.me == me)?;
+        let above_declared = if child.by == self.seat.me {
+            self.seat.declared
+        } else {
+            self.spawned.iter().find(|above| above.me == child.by)?.declared
+        };
+        let above = Above::Actor(child.by, above_declared);
+        self.seat.asked.stood_seats.insert(me.id.bits(), (me.seat, child.declared));
+        self.seat.asked.stood.push(Stood { me, path: child.path.clone(), above, actor: runs });
+
+        Some(())
+    }
+
+    /// Gives back `seat`, one the turn's host took for a child that was never stood up.
+    pub fn give_back(&mut self, seat: SeatNumber) {
+        self.seat.asked.seats.give_back(seat);
     }
 
     /// Whether the turn may close its actor: a turn of an item may, and a `begin` may not.
@@ -148,9 +240,18 @@ impl<'a> Hosted<'a> {
         self.seat.ask(What::Close);
     }
 
-    /// Logs `text` at `level`, as this actor.
-    pub fn log(&mut self, level: Level, text: &str) {
-        self.seat.logger().log(level, text);
+    /// Logs `text` at `level`, as `by`: the actor whose turn this is, or a child it spawned, in its `begin`. Nothing
+    /// when the turn spawned no such child.
+    pub fn log(&mut self, by: Seated, level: Level, text: &str) -> Option<()> {
+        let is_child = by != self.seat.me;
+        if is_child {
+            self.spawned.iter().find(|child| child.me == by)?;
+        }
+        if let Ok(text) = self.seat.asked.arena.write_text(text) {
+            self.seat.asked.buffers.lines.push(Line { by, level, text });
+        }
+
+        Some(())
     }
 
     /// Ends each of `with` but this actor, the actors whose code ran in the instance that trapped in this turn, as a
@@ -170,13 +271,13 @@ impl<'a> Hosted<'a> {
 
     /// Whether `sending` sends mail of `kind` to the actor `to` names. An actor the table no longer holds has ended,
     /// and its mail is dropped where it would be handed over, so any send of the kind reaches it.
-    fn allows(&self, sending: Sending, to: Seated, kind: KindId) -> bool {
+    fn allows(&self, sending: Sending, source: Source, to: Seated, kind: KindId) -> bool {
         let is_kind = sending.kind() == kind;
         if !is_kind {
             return false;
         }
         match sending.to() {
-            Target::Sender => matches!(self.source, Source::Item(source) if source == to),
+            Target::Sender => matches!(source, Source::Item(source) if source == to),
             Target::Type(_, id) => self.seat.declared_at(to.id).is_none_or(|receiver| receiver.id() == id),
             Target::Handling(kinds) => {
                 let receiver = self.seat.declared_at(to.id);

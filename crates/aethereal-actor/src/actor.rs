@@ -1,11 +1,12 @@
 //! An actor: the calls the engine makes of it (ADR-0009, ADR-0013).
 
 use crate::{
-    Actors, Beginning, Chain, Closing, Declared, Ending, Fault, HandledList, Instances, Item, Seated, Sends, Turning,
-    Within,
+    Actors, Beginning, Chain, Children, Closing, Declared, Ending, Fault, HandledList, Instances, Item, Seated, Seats,
+    Sends, Table, Turning, Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
 use alloc::boxed::Box;
+use core::any::Any;
 
 /// An actor: a kind that is its own state, made from a config, handed what it must react to one item at a time,
 /// and ended once (ADR-0009).
@@ -67,14 +68,19 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized + 'static
 /// code the engine cannot see, as a guest's host does. One that computes ahead:
 ///
 /// - computes in `prepare`, and hands each turn back from `turn`, into the [`Turning`] it is given. Everything a turn
-///   asks of the engine is asked there; nothing reaches the engine from `prepare`, which has no turn to ask through.
+///   asks of the engine is asked there. `prepare` asks nothing, but it is lent what a turn's code reads: the table
+///   as the batch's turns see it, the children the actor has made, and the seats its children are given, so a turn
+///   computed there is answered as it would be in its own turn. By (1) nothing changes them between the two, but the
+///   batch's own turns, whose children the host keeps track of itself.
+/// - hands each child it stood up in `prepare` to the engine in the turn that stood it up, and gives back, in a turn
+///   of the batch, each seat it took and gave no child.
 /// - stops computing after the first turn that fails or closes the actor, since by (3) no later turn is asked for,
 ///   and a turn computed but never asked for would have changed the actor for an item the engine did not run.
 ///
 /// Code that runs in an instance, as a guest's does, owns none: it takes the instance it wants from the
 /// [`Instances`] its part lends it in each [`Preparing`] and [`Turning`], and loads it there when the part has none
 /// yet. The part's other actors of the same code take the same instance (ADR-0015).
-pub trait Runs: Send {
+pub trait Runs: Any + Send {
     /// What the actor's type declares (ADR-0013).
     fn declared(&self) -> &'static Declared;
 
@@ -106,13 +112,26 @@ pub trait Batch {
 pub struct Preparing<'a> {
     batch: &'a dyn Batch,
     instances: &'a mut Instances,
+    reads: Reads<'a>,
+}
+
+/// What a batch's turns read of the engine, and the seats their children are given, lent to [`Runs::prepare`] so a
+/// turn computed ahead is answered as it would be in its own turn (ADR-0015).
+pub struct Reads<'a> {
+    /// The table, as the batch's turns read it.
+    pub table: &'a dyn Table,
+    /// The children the actor has made.
+    pub made: &'a dyn Children,
+    /// The seats the batch's children are given.
+    pub seats: &'a mut Seats,
 }
 
 impl<'a> Preparing<'a> {
-    /// The preparing of `batch`, by an actor lent its part's `instances`: for the engine.
+    /// The preparing of `batch`, by an actor lent its part's `instances` and what its turns read, `reads`: for the
+    /// engine.
     #[must_use]
-    pub const fn new(batch: &'a dyn Batch, instances: &'a mut Instances) -> Self {
-        Self { batch, instances }
+    pub const fn new(batch: &'a dyn Batch, instances: &'a mut Instances, reads: Reads<'a>) -> Self {
+        Self { batch, instances, reads }
     }
 
     /// Shows `visit` each item of the batch, in the order their turns will be asked for.
@@ -120,11 +139,11 @@ impl<'a> Preparing<'a> {
         self.batch.each(visit);
     }
 
-    /// The batch, and the instances of the part, as a host prepares it: for code that runs in an instance, which it
-    /// takes from them while it hands the batch's items in.
+    /// The batch, the instances of the part, and what the batch's turns read, as a host prepares it: for code that
+    /// runs in an instance, which it takes from them while it hands the batch's items in, and answers the reads of.
     #[must_use]
-    pub fn hosted(self) -> (&'a dyn Batch, &'a mut Instances) {
-        (self.batch, self.instances)
+    pub fn hosted(self) -> (&'a dyn Batch, &'a mut Instances, Reads<'a>) {
+        (self.batch, self.instances, self.reads)
     }
 }
 

@@ -64,6 +64,19 @@ pub struct Seats {
     room: usize,
     /// The seats in other parts set aside for the children past its room, taken last first.
     aside: Vec<SeatNumber>,
+    /// Who gives the seats: the part, or the host of a guest, whose seats are its part's (ADR-0015).
+    giver: Giver,
+}
+
+/// Who gives a turn's children their seats.
+#[derive(Debug, Default, Clone, Copy)]
+enum Giver {
+    /// The part the seats are of, from its own and those set aside for it.
+    #[default]
+    Part,
+    /// A guest's host, from the seats of the part its actor sits in: `take` asks it for one, and `give_back` hands
+    /// one back that a child that never began was given.
+    Host { take: fn() -> SeatNumber, give_back: fn(SeatNumber) },
 }
 
 impl Seats {
@@ -71,13 +84,34 @@ impl Seats {
     /// no room until a step gives it some.
     #[must_use]
     pub fn of_part(first: u64, stride: u64) -> Self {
-        Self { free: Vec::new(), next: vec![first], stride, room: 0, aside: Vec::new() }
+        Self { free: Vec::new(), next: vec![first], stride, room: 0, aside: Vec::new(), giver: Giver::Part }
     }
 
     /// No free seat, and new numbers from zero, with room for every child: the seats of an engine kept in one part.
     #[must_use]
     pub fn one_part() -> Self {
-        Self { free: Vec::new(), next: vec![0], stride: 1, room: usize::MAX, aside: Vec::new() }
+        Self { free: Vec::new(), next: vec![0], stride: 1, room: usize::MAX, aside: Vec::new(), giver: Giver::Part }
+    }
+
+    /// Seats a guest's host gives, from the seats of the part its actor sits in: `take` asks it for one, and
+    /// `give_back` hands back one a child that never began was given (ADR-0015).
+    #[must_use]
+    pub fn of_host(take: fn() -> SeatNumber, give_back: fn(SeatNumber)) -> Self {
+        Self { giver: Giver::Host { take, give_back }, ..Self::default() }
+    }
+
+    /// Whether a guest's host gives them.
+    #[must_use]
+    pub const fn is_of_host(&self) -> bool {
+        matches!(self.giver, Giver::Host { .. })
+    }
+
+    /// Whether `seat` is one of this part's own, and not one set aside for it in another part.
+    #[must_use]
+    pub fn is_own(&self, seat: SeatNumber) -> bool {
+        let stride = self.stride.max(1);
+
+        seat.number() % stride == self.next[0] % stride
     }
 
     /// Gives the part room for `room` children in its own seats, for the step beginning.
@@ -149,6 +183,9 @@ impl Seats {
     /// seats are lent to a root's `begin`, a new number of the part that has numbered fewest, and past all of those
     /// the part's own again.
     pub fn take(&mut self) -> SeatNumber {
+        if let Giver::Host { take, .. } = self.giver {
+            return take();
+        }
         if self.room > 0 {
             self.room -= 1;
 
@@ -169,9 +206,11 @@ impl Seats {
     /// Takes back the seat of a child that never began: among the part's own when it is one, else among those set
     /// aside.
     pub fn give_back(&mut self, seat: SeatNumber) {
-        let stride = self.stride.max(1);
-        let is_own = seat.number() % stride == self.next[0] % stride;
-        if is_own {
+        if let Giver::Host { give_back, .. } = self.giver {
+            give_back(seat);
+            return;
+        }
+        if self.is_own(seat) {
             self.free.push(seat);
         } else {
             self.aside.push(seat);
