@@ -128,7 +128,7 @@ impl Mark {
 /// An actor's items for one go, and what its turns of them write into: as many as the rest of its slice is expected
 /// to cover (ADR-0011, ADR-0015). Each turn is opened by [`Self::next`] and closed by [`Self::mark`].
 pub struct Batch<'b, 'a> {
-    items: &'b mut dyn Items<'a>,
+    items: Source<'b, 'a>,
     left: usize,
     me: Seated,
     path: &'b ActorPath,
@@ -142,6 +142,18 @@ pub struct Batch<'b, 'a> {
     chain: Chain,
     /// Whether a turn of it has ended the actor, which ends the batch.
     ended: Ended,
+}
+
+/// Where a batch's items come from: one in hand, as a hop is, or many, read one after another.
+enum Source<'b, 'a> {
+    One(Waiting<'a>),
+    Many(&'b mut dyn Items<'a>),
+}
+
+/// The one item of a batch of one, until it is taken.
+enum Waiting<'a> {
+    Here(Peeked<'a>),
+    Taken,
 }
 
 /// Whether a batch's turns have ended its actor.
@@ -172,14 +184,39 @@ impl<'b, 'a> Batch<'b, 'a> {
     ) -> Self {
         asked.begin_batch();
         let chain = Chain { root: crate::MailId { sender: me.id, count: 0 }, depth: 0 };
+        let items = Source::Many(items);
 
         Self { items, left: fits, me, path, above, table, made, asked, sent, chain, ended: Ended::Not }
+    }
+
+    /// The batch of the one item `item`, as [`Self::new`] makes a batch of many: a hop's (ADR-0013).
+    #[allow(clippy::too_many_arguments, reason = "what a batch of turns is opened with, each fixed by the engine")]
+    #[must_use]
+    pub fn one(
+        item: Peeked<'a>,
+        me: Seated,
+        path: &'b ActorPath,
+        above: Above,
+        table: &'b dyn Table,
+        made: &'b dyn Children,
+        asked: &'b mut Asked,
+        sent: u64,
+    ) -> Self {
+        asked.begin_batch();
+        let chain = item.chain;
+        let items = Source::One(Waiting::Here(item));
+
+        Self { items, left: 1, me, path, above, table, made, asked, sent, chain, ended: Ended::Not }
     }
 
     /// Shows `visit` each item of the batch, in order, before its first turn: for an actor that hands its items on
     /// whole, as a guest's host copies them into the guest.
     pub fn each(&self, visit: &mut dyn FnMut(Peeked<'a>)) {
-        self.items.each(self.left, visit);
+        match &self.items {
+            Source::One(Waiting::Here(item)) => visit(item.clone()),
+            Source::One(Waiting::Taken) => {}
+            Source::Many(items) => items.each(self.left, visit),
+        }
     }
 
     /// Opens the turn of the next item: nothing once the batch is done, or a turn of it failed.
@@ -188,7 +225,14 @@ impl<'b, 'a> Batch<'b, 'a> {
         if is_over || self.left == 0 {
             return None;
         }
-        let Peeked { item, source, chain } = self.items.next()?;
+        let next = match &mut self.items {
+            Source::One(waiting) => match core::mem::replace(waiting, Waiting::Taken) {
+                Waiting::Here(item) => Some(item),
+                Waiting::Taken => None,
+            },
+            Source::Many(items) => items.next(),
+        };
+        let Peeked { item, source, chain } = next?;
         self.left -= 1;
         self.chain = chain;
         self.asked.begin_turn(self.sent);

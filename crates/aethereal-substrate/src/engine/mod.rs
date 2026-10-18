@@ -1356,9 +1356,8 @@ impl Reading<'_> {
                     sees: Sees::Run(lists.fusing.run(hop.run)),
                     blobs: self.blobs,
                 };
-                let mut items = batch::OneHop::new(self, &hop, lists);
-                let mut batch =
-                    Batch::new(&mut items, 1, me, &seat.path, seat.above, &table, &seat.made, asked, stepped.sent);
+                let item = batch::hop_item(self, &hop, lists);
+                let mut batch = Batch::one(item, me, &seat.path, seat.above, &table, &seat.made, asked, stepped.sent);
                 actor.run(&mut batch);
 
                 batch.into_outcome()
@@ -1409,6 +1408,21 @@ impl Reading<'_> {
             for child in stood.drain(began.stood.min(stood.len())..) {
                 asked.seats_mut().give_back(child.seated().seat);
             }
+        }
+        // A batch of one turn, as a hop's is, holds that turn's entries alone.
+        if turns == 1 {
+            let buffers = asked.buffers();
+            let context = Context { root: first.chain.root, depth: first.chain.depth + 1 };
+            let ran = Ran {
+                mailed: 0..buffers.mailed.len(),
+                lines: 0..buffers.lines.len(),
+                effects: 0..buffers.effects.len(),
+                stood,
+                context,
+            };
+            Self::finish(me, ran, origin, seating, lives, asked, lists, stepped);
+            asked.empty_buffers();
+            return 1;
         }
         let mut began = Mark::start(first.chain);
         for index in 0..turns {

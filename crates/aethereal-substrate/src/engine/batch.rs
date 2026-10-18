@@ -15,14 +15,6 @@ pub(super) struct Waiting<'w, 'r, 'p> {
     pub(super) carried: &'p [u8],
 }
 
-/// One hop, a piece of mail handed straight to its receiver in the step (ADR-0013), until it is taken.
-pub(super) struct OneHop<'w> {
-    hop: &'w Hop,
-    bytes: &'w [u8],
-    read_limit: usize,
-    taken: bool,
-}
-
 /// The item `handed` is, as a turn reads it, and where it stands in its chain: bytes read from `reading`'s arenas, or
 /// from `carried`.
 #[allow(clippy::inline_always, reason = "once for every item, read inline in the loop that hands it")]
@@ -64,33 +56,10 @@ impl<'r: 'p, 'p> Items<'p> for Waiting<'_, 'r, 'p> {
     }
 }
 
-impl<'w> OneHop<'w> {
-    /// The hop `hop`, whose bytes `lists` keeps, as `reading` reads mail.
-    pub(super) fn new(reading: &Reading<'_>, hop: &'w Hop, lists: &'w Lists) -> Self {
-        Self { hop, bytes: lists.fusing.bytes(hop), read_limit: reading.read_limit, taken: false }
-    }
+/// The item `hop` is, a piece of mail handed straight to its receiver in the step (ADR-0013), its bytes kept in
+/// `lists`.
+pub(super) fn hop_item<'w>(reading: &Reading<'_>, hop: &Hop, lists: &'w Lists) -> Peeked<'w> {
+    let mail = Mail::new(hop.kind, lists.fusing.bytes(hop), hop.from, hop.root, hop.depth, reading.read_limit);
 
-    fn peeked(&self) -> Peeked<'w> {
-        let hop = self.hop;
-        let mail = Mail::new(hop.kind, self.bytes, hop.from, hop.root, hop.depth, self.read_limit);
-
-        Peeked { item: Item::Mail(mail), source: hop.from, chain: Chain { root: hop.root, depth: hop.depth } }
-    }
-}
-
-impl<'w> Items<'w> for OneHop<'w> {
-    fn next(&mut self) -> Option<Peeked<'w>> {
-        if self.taken {
-            return None;
-        }
-        self.taken = true;
-
-        Some(self.peeked())
-    }
-
-    fn each(&self, count: usize, visit: &mut dyn FnMut(Peeked<'w>)) {
-        if !self.taken && count > 0 {
-            visit(self.peeked());
-        }
-    }
+    Peeked { item: Item::Mail(mail), source: hop.from, chain: Chain { root: hop.root, depth: hop.depth } }
 }
