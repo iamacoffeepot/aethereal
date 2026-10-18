@@ -190,6 +190,8 @@ struct Sitting {
     kind: KindId,
     /// The children it has made, noted as each is seated: its own knowledge of the keys it has used (ADR-0008).
     made: Made,
+    /// Whether it computes its turns ahead, and is shown each batch first, as it said when it was seated (ADR-0015).
+    prepares: bool,
 }
 
 /// Whether the engine holds the actor of a seat.
@@ -1309,7 +1311,8 @@ impl Reading<'_> {
                 while let Some(handed) = pieces.next() {
                     // A batch is prepared once its first item is in hand, so it holds at least one.
                     let begins_batch = slice.taken.is_multiple_of(SLICE_EVERY);
-                    if begins_batch {
+                    let is_prepared = begins_batch && seat.prepares;
+                    if is_prepared {
                         let batch =
                             batch::Waiting { reading: self, first: handed, rest: &pieces, carried, carried_pins };
                         let table = Since {
@@ -1458,10 +1461,12 @@ impl Reading<'_> {
             sees: Sees::Run(lists.fusing.run(hop.run)),
             blobs: self.blobs,
         };
-        let (seats, puts, arena) = asked.lent();
-        let reads = Reads { table: &table, made: &seat.made, seats, puts };
-        let batch = batch::OneHop { reading: self, hop: &hop, lists, arena };
-        actor.prepare(Preparing::new(&batch, instances, reads));
+        if seat.prepares {
+            let (seats, puts, arena) = asked.lent();
+            let reads = Reads { table: &table, made: &seat.made, seats, puts };
+            let batch = batch::OneHop { reading: self, hop: &hop, lists, arena };
+            actor.prepare(Preparing::new(&batch, instances, reads));
+        }
         let sent_before = stepped.sent;
         let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
         // Timed whole, as a turn of a waiting item is.
