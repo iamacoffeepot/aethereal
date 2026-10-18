@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::{
-    Above, Asked, Beginning, Chain, Ending, ErasedActorRef, Fault, Instances, Item, Level, Mail, MailId, Mailed, Runs,
+    Above, Asked, Beginning, Chain, Each, Ending, ErasedActorRef, Fault, Instances, Item, Level, Mail, MailId, Mailed,
     SeatNumber, Seated, Table, To, Turn, Turning, section,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, PathSegment, Plain};
@@ -190,7 +190,7 @@ const CHAIN: Chain = Chain { root: MailId { sender: OTHER.id, count: 1 }, depth:
 fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<String> {
     let table = Typed(Vec::new());
     let mut asked = Asked::new();
-    let mut actor: Box<dyn Runs> = Box::new(actor);
+    let mut actor: Box<dyn Each> = Box::new(actor);
     let mut instances = Instances::default();
     let turning = Turning::new(ME, &PATH, Above::Chassis, &table, &(), &mut asked, &mut instances, 0, OTHER, CHAIN);
     let mail = Mail::new(kind, &[], OTHER, CHAIN.root, 1, 0);

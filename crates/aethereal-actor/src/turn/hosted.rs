@@ -3,10 +3,9 @@
 use super::{Checked, During, Seat, Stood, Turning};
 use crate::{
     Above, Asked, Chain, Code, Declared, Effect, ErasedActorRef, Fault, Instances, Level, Line, MailId, Mailed,
-    Payload, Role, Runs, SeatNumber, Seated, Seen, Sending, Table, Target, What,
+    Payload, Role, Runner, SeatNumber, Seated, Seen, Sending, Table, Target, What,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, KindName, PathSegment, Plain};
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::convert::Infallible;
 
@@ -252,7 +251,7 @@ impl<'a> Hosted<'a> {
 
     /// Stands up `me`, a child [`Self::spawn`] spawned whose `begin` succeeded, run by `runs`: the engine seats it
     /// with the turn's other children. Nothing when the turn spawned no such child.
-    pub fn stand(&mut self, me: Seated, runs: Box<dyn Runs>) -> Option<()> {
+    pub fn stand(&mut self, me: Seated, runs: Runner) -> Option<()> {
         let child = self.spawned.iter().find(|child| child.me == me)?;
         let above_declared = if child.by == self.seat.me {
             self.seat.declared
@@ -270,7 +269,7 @@ impl<'a> Hosted<'a> {
     /// began it apart while the turn's code waited on a call out, into `asked`, and what that `begin` asked for is
     /// taken into this turn's, ahead of the child (ADR-0015). Nothing when the turn spawned no such child.
     #[cfg(feature = "std")]
-    pub fn take_in(&mut self, me: Seated, asked: Asked, runs: Box<dyn Runs>) -> Option<()> {
+    pub fn take_in(&mut self, me: Seated, asked: Asked, runs: Runner) -> Option<()> {
         self.spawned.iter().find(|child| child.me == me)?;
         self.seat.asked.take_in(asked);
 

@@ -10,13 +10,12 @@ pub use refused::Refused;
 
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
-    Handles, Instances, Kinds, Level, Line, MailId, Mailed, Marker, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen,
-    Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
+    Handles, Instances, Kinds, Level, Line, MailId, Mailed, Marker, Puts, Role, Runner, SeatNumber, Seated, Seats,
+    Seen, Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
@@ -281,7 +280,7 @@ pub struct Stood {
     me: Seated,
     path: ActorPath,
     above: Above,
-    actor: Box<dyn Runs>,
+    actor: Runner,
 }
 
 /// What stands directly above an actor: the actor [`To::Parent`] names.
@@ -330,14 +329,14 @@ impl Stood {
 
     /// The child itself, for the engine to run.
     #[must_use]
-    pub fn into_actor(self) -> Box<dyn Runs> {
+    pub fn into_actor(self) -> Runner {
         self.actor
     }
 
     /// The child taken apart, for the engine to seat it: who it is and where it sits, its path, what stands above
     /// it, and the child itself.
     #[must_use]
-    pub fn into_parts(self) -> (Seated, ActorPath, Above, Box<dyn Runs>) {
+    pub fn into_parts(self) -> (Seated, ActorPath, Above, Runner) {
         (self.me, self.path, self.above, self.actor)
     }
 }
@@ -665,7 +664,7 @@ impl Seat<'_> {
         };
         match C::begin(config, &mut Beginning { seat: child, instances, sends: PhantomData }) {
             Ok(actor) => {
-                self.stand(me, path, above, declared, Box::new(actor));
+                self.stand(me, path, above, declared, Runner::each(actor));
 
                 Ok(ActorRef::new(me))
             }
@@ -712,7 +711,7 @@ impl Seat<'_> {
         path: ActorPath,
         from: Code,
         config: &Config,
-        begin: impl FnOnce(&[u8], Birth<'_>) -> Result<Box<dyn Runs>, Refused>,
+        begin: impl FnOnce(&[u8], Birth<'_>) -> Result<Runner, Refused>,
     ) -> Result<ActorRef<C>, Refused> {
         let declared = from.declared();
         let (me, before) = self.ask_spawn(id, segment, from);
@@ -769,7 +768,7 @@ impl Seat<'_> {
 
     /// Stands up the child `me`, at `path`, beneath `above`, of the type `declared`, run by `actor`, once its `begin`
     /// succeeded.
-    fn stand(&mut self, me: Seated, path: ActorPath, above: Above, declared: &'static Declared, actor: Box<dyn Runs>) {
+    fn stand(&mut self, me: Seated, path: ActorPath, above: Above, declared: &'static Declared, actor: Runner) {
         self.asked.stood_seats.insert(me.id.bits(), (me.seat, declared));
         self.asked.stood.push(Stood { me, path, above, actor });
     }

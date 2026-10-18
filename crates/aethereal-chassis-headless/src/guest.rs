@@ -21,9 +21,9 @@ use aethereal_actor::records::{
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Children, Declared, FalseSend, FalseWatch,
-    Fault, Guests, Held as Pinning, Hosted, How, Instances, Item, Preparing, Puts, Reads, Refused, Role, Runs,
-    SeatNumber, Seated, Seats, Table, Trapped, Turning, Unfit,
+    Above, Arena, Asked, Batch, Batched, Birth, BlobHash, BlobId, BlobRef, BlobType, Children, Computed, Declared,
+    FalseSend, FalseWatch, Fault, Guests, Held as Pinning, Hosted, How, Instances, Item, Prepared, Preparing, Puts,
+    Reads, Refused, Role, Runner, SeatNumber, Seated, Seats, Table, Trapped, Turning, Unfit,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindName, from_bytes, to_bytes};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -157,7 +157,7 @@ struct Given {
 /// its `begin` asked for when it is handed back (ADR-0015).
 enum Foreign {
     /// It began, from `from`, run by `runs`, and its `begin` asked for what is in `asked`.
-    Began { me: Seated, from: aethereal_actor::Code, runs: Box<dyn Runs>, asked: Asked },
+    Began { me: Seated, from: aethereal_actor::Code, runs: Runner, asked: Asked },
     /// It was refused so: of what its `begin` asked for, only the lines in `asked` are kept.
     Refused { asked: Asked, refused: Refused },
     /// It began, and the guest took it back, as the `begin` that spawned it was refused: only the lines in `asked`
@@ -575,7 +575,7 @@ impl<'a> Answering<'a> {
         spawning: &Spawning,
         refers: &[Pinning],
         asked: &mut Asked,
-    ) -> Result<(aethereal_actor::Code, Box<dyn Runs>), Refused> {
+    ) -> Result<(aethereal_actor::Code, Runner), Refused> {
         let me = spawning.me();
         let path = &spawning.path;
         let above = Above::Elsewhere(spawning.by());
@@ -842,7 +842,7 @@ impl Guests for Runtime {
     /// Begins the child in its part's instance of the blob: its `begin` runs there, handed where it stands and its
     /// config, and what it asked for is read back as a root's or a child's `begin` is (ADR-0015). Refused while that
     /// instance is lent to a call into it that is under way.
-    fn begin(&self, made: &'static BlobType, config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Runs>, Refused> {
+    fn begin(&self, made: &'static BlobType, config: &[u8], birth: Birth<'_>) -> Result<Runner, Refused> {
         let BlobType { blob, declared } = *made;
         let code = self.codes.read().ok().and_then(|codes| codes.get(&blob).cloned()).ok_or(Refused::NotMade)?;
         let (of, _) = code.made_of(declared.id()).ok_or(Refused::NotMade)?;
@@ -900,7 +900,7 @@ impl Guests for Runtime {
         let lives = lives?;
 
         let pin = BlobRef::pin(code.blob);
-        Ok(Box::new(Guest { code, pin, me, lives, declared, ran: Ran::Nothing, given: Given::default() }))
+        Ok(Runner::batched(Guest { code, pin, me, lives, declared, ran: Ran::Nothing, given: Given::default() }))
     }
 }
 
@@ -931,16 +931,46 @@ impl Guest {
     }
 }
 
-impl Runs for Guest {
+impl Batched for Guest {
     fn declared(&self) -> &'static Declared {
         self.declared
     }
 
     /// Runs every turn of the batch in the guest, in one call into its instance, its calls out answered from what the
-    /// batch was lent, and keeps what they asked for for [`Self::turn`] to hand back. The guest stops after a turn that
+    /// batch was lent, and keeps what they asked for for its [`Prepared`] to hand back. The guest stops after a turn that
     /// fails or closes it, as the engine does. An actor taken out of the instance it began in, another part's, is
     /// first taken into this part's.
-    fn prepare(&mut self, preparing: Preparing<'_>) {
+    fn prepare<'a>(&'a mut self, preparing: Preparing<'_>) -> Prepared<'a> {
+        self.run_batch(preparing);
+
+        Prepared::new(self)
+    }
+
+    /// Ends the actor in its part's instance, and drops the instance when it was the last actor in it. An instance a
+    /// trap dropped is not loaded again for it, and an actor never taken into one leaves none.
+    fn end(self: Box<Self>, closing: aethereal_actor::Closing<'_>) -> Result<(), Fault> {
+        let instances = closing.hosted();
+        let Some(held) = instances.get::<Instance>(self.code.key) else {
+            return Ok(());
+        };
+        // Its state is dropped in the guest, and the references it held with it: the instance holds no pin for them
+        // past the actor's end.
+        if let Lives::In { handle } = self.lives {
+            held.end_actor(handle);
+        }
+        held.actors.retain(|actor| *actor != self.me);
+        let is_last = held.actors.is_empty();
+        if is_last {
+            instances.drop_instance::<Instance>(self.code.key);
+        }
+
+        Ok(())
+    }
+}
+
+impl Guest {
+    /// What [`Batched::prepare`] does: runs the batch's turns in the guest, and keeps what they asked for.
+    fn run_batch(&mut self, preparing: Preparing<'_>) {
         let (batch, instances, reads) = preparing.hosted();
         // The engine prepares no batch while a call into a guest is under way, so the instance is never lent out here.
         let read_limit = instances.read_limit();
@@ -984,8 +1014,10 @@ impl Runs for Guest {
         instances.put_back(self.code.key, held);
         self.ran = wrote.map_or(Ran::Trapped, |head| Ran::At { head, next: 0, before: TurnEnds::default() });
     }
+}
 
-    /// Hands back the next turn [`Self::prepare`] ran: what it asked for, each send checked against what the guest
+impl Computed for Guest {
+    /// Hands back the next turn [`Batched::prepare`] ran: what it asked for, each send checked against what the guest
     /// declares, and each child it stood up. When the call that ran it trapped, or wrote what does not read back, the
     /// turn fails, every other actor in the instance ends with it, and the part drops the instance (ADR-0015). A turn
     /// that fails gives back the seats the batch took for children it never handed to the engine.
@@ -1027,27 +1059,6 @@ impl Runs for Guest {
         }
 
         replayed
-    }
-
-    /// Ends the actor in its part's instance, and drops the instance when it was the last actor in it. An instance a
-    /// trap dropped is not loaded again for it, and an actor never taken into one leaves none.
-    fn end(self: Box<Self>, closing: aethereal_actor::Closing<'_>) -> Result<(), Fault> {
-        let instances = closing.hosted();
-        let Some(held) = instances.get::<Instance>(self.code.key) else {
-            return Ok(());
-        };
-        // Its state is dropped in the guest, and the references it held with it: the instance holds no pin for them
-        // past the actor's end.
-        if let Lives::In { handle } = self.lives {
-            held.end_actor(handle);
-        }
-        held.actors.retain(|actor| *actor != self.me);
-        let is_last = held.actors.is_empty();
-        if is_last {
-            instances.drop_instance::<Instance>(self.code.key);
-        }
-
-        Ok(())
     }
 }
 
@@ -1423,7 +1434,7 @@ fn stand(
             ran: Ran::Nothing,
             given: Given::default(),
         };
-        hosted.stand(me, Box::new(runs))?;
+        hosted.stand(me, Runner::batched(runs))?;
     }
 
     Some(())

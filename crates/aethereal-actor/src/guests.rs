@@ -3,13 +3,12 @@
 #[cfg(feature = "std")]
 use crate::ActorsWriter;
 use crate::{
-    Above, Actor, Actors, ActorsReader, Asked, Beginning, BlobId, BlobType, Declared, Fault, Instances, Refused, Runs,
-    Seated, Table,
+    Above, Actor, Actors, ActorsReader, Asked, Beginning, BlobId, BlobType, Declared, Fault, Instances, Refused,
+    Runner, Seated, Table,
 };
 use aethereal_data::{ActorPath, Budget, Decode, KindName, Reader};
 #[cfg(feature = "std")]
 use aethereal_data::{Encode, EncodeError, Writer};
-use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -41,7 +40,7 @@ pub trait Guests: Send + Sync {
     ///
     /// [`Refused::Began`] when its `begin` failed, and [`Refused::Waiting`] when the instance it would begin in is
     /// waiting on a call out of its own (ADR-0015).
-    fn begin(&self, made: &'static BlobType, config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Runs>, Refused>;
+    fn begin(&self, made: &'static BlobType, config: &[u8], birth: Birth<'_>) -> Result<Runner, Refused>;
 
     /// Begins `birth`'s child, of the native type `declared`, which the code that spawns it does not hold, from its
     /// config's bytes `config`: for a guest, whose host begins it from the types its program keeps by name
@@ -51,7 +50,7 @@ pub trait Guests: Send + Sync {
     /// # Errors
     ///
     /// As [`Self::begin`], and [`Refused::NotMade`] when the program keeps no such type.
-    fn begin_linked(&self, _: &'static Declared, _: &[u8], _: Birth<'_>) -> Result<Box<dyn Runs>, Refused> {
+    fn begin_linked(&self, _: &'static Declared, _: &[u8], _: Birth<'_>) -> Result<Runner, Refused> {
         Err(Refused::NotMade)
     }
 }
@@ -70,7 +69,7 @@ impl Guests for NoGuests {
         None
     }
 
-    fn begin(&self, _: &'static BlobType, _: &[u8], _: Birth<'_>) -> Result<Box<dyn Runs>, Refused> {
+    fn begin(&self, _: &'static BlobType, _: &[u8], _: Birth<'_>) -> Result<Runner, Refused> {
         Err(Refused::NotMade)
     }
 }
@@ -105,7 +104,7 @@ pub struct Link {
 }
 
 /// Begins a child of one native type as a [`Birth`] says, from its config's bytes.
-pub type BeginLinked = fn(&[u8], Birth<'_>) -> Result<Box<dyn Runs>, Refused>;
+pub type BeginLinked = fn(&[u8], Birth<'_>) -> Result<Runner, Refused>;
 
 impl Links {
     /// These, and the type `A`.
@@ -124,14 +123,14 @@ impl Links {
 }
 
 /// Begins `birth`'s child, of type `A`, from its config's bytes `config`.
-fn begin_linked<A: Actor>(config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Runs>, Refused> {
+fn begin_linked<A: Actor>(config: &[u8], birth: Birth<'_>) -> Result<Runner, Refused> {
     let mut budget = Budget::new(birth.instances.read_limit());
     let mut reader = Reader::<Actors>::new(config, &mut budget, ActorsReader::new());
     let config = A::Config::decode(&mut reader).map_err(|error| Refused::Began(Fault::from(error)))?;
     let Birth { me, path, above, table, asked, instances, .. } = birth;
     let actor = A::begin(config, &mut Beginning::beneath::<A>(me, path, above, table, asked, instances));
 
-    Ok(Box::new(actor.map_err(Refused::Began)?))
+    Ok(Runner::each(actor.map_err(Refused::Began)?))
 }
 
 /// A config for a child begun in other code, as it crosses to that code at [`Actors`]: its bytes, and the pins on the

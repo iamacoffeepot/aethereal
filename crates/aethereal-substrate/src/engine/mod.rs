@@ -29,8 +29,8 @@ use crate::{
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, Actor, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Chain, Closing, Code, Declared, Effect,
-    Fault, Guests, How, Instances, Item, Links, Mail, MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused, Runs,
-    SeatNumber, Seated, Seats, Stood, Turning, Unfit, What, Why, config_bytes,
+    Fault, Guests, How, Instances, Item, Links, Mail, MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused,
+    Runner, SeatNumber, Seated, Seats, Stood, Turning, Unfit, What, Why, config_bytes,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use birth::Births;
@@ -195,7 +195,7 @@ struct Sitting {
 /// Whether the engine holds the actor of a seat.
 enum Held {
     /// It does.
-    Here(Box<dyn Runs>),
+    Here(Runner),
     /// It does not: the actor is out with a worker for the step.
     Away,
 }
@@ -489,7 +489,7 @@ impl Engine {
             let root = A::begin(config, &mut Beginning::new::<A>(me, path, table, asked, instances))
                 .map_err(Refused::Began)?;
 
-            Ok(Box::new(root))
+            Ok(Runner::each(root))
         })
     }
 
@@ -534,7 +534,7 @@ impl Engine {
             &dyn aethereal_actor::Table,
             &mut Asked,
             &mut Instances,
-        ) -> Result<Box<dyn Runs>, Refused>,
+        ) -> Result<Runner, Refused>,
     ) -> Result<ActorId, Refused> {
         let id = root_id(segment);
         let path = ActorPath::from_root(segment);
@@ -1097,7 +1097,7 @@ impl Engine {
 
     /// Seats the actor `me` names, at `path`, in the seat it was given, and notes it in its parent's seat. It is run
     /// from the next step. A parent is seated before the children it stood up, so its seat is there to note them in.
-    fn seat(&mut self, me: Seated, path: ActorPath, above: Above, actor: Box<dyn Runs>) {
+    fn seat(&mut self, me: Seated, path: ActorPath, above: Above, actor: Runner) {
         let part = self.part(me.seat);
         self.seated[part] += 1;
         self.actors_seated += 1;
@@ -1306,59 +1306,75 @@ impl Reading<'_> {
                 let carried = streams.carried();
                 let carried_pins = streams.carried_pins();
                 let mut is_spent = false;
-                while let Some(handed) = pieces.next() {
-                    // A batch is prepared once its first item is in hand, so it holds at least one.
-                    let begins_batch = slice.taken.is_multiple_of(SLICE_EVERY);
-                    if begins_batch {
-                        let batch =
-                            batch::Waiting { reading: self, first: handed, rest: &pieces, carried, carried_pins };
-                        let table = Since {
-                            table: self.table,
-                            stood: &lists.fusing.stood,
-                            sees: Sees::Step,
-                            blobs: self.blobs,
-                        };
-                        let (seats, puts, _) = asked.lent();
-                        let reads = Reads { table: &table, made: &seat.made, seats, puts };
-                        actor.prepare(Preparing::new(&batch, instances, reads));
-                    }
-                    // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
-                    // worker, beyond what the actor's code takes.
-                    tally.time(key(item_kind(handed)), clock, || {
-                        let table = Since {
-                            table: self.table,
-                            stood: &lists.fusing.stood,
-                            sees: Sees::Step,
-                            blobs: self.blobs,
-                        };
-                        asked.next_turn();
-                        let source = handed.source();
-                        let (item, context) = batch::read(handed, self, carried);
-                        // The item sits one above what the turn sends in its chain.
-                        let chain = Chain { root: context.root, depth: context.depth - 1 };
-                        let turning = Turning::new(
-                            me,
-                            &seat.path,
-                            seat.above,
-                            &table,
-                            &seat.made,
-                            asked,
-                            instances,
-                            stepped.sent,
-                            source,
-                            chain,
-                        );
-                        let ran = Ran::of(me, actor.turn(item, turning), asked, context);
+                // A batch is prepared once its first item is in hand, so it holds at least one, and only for an
+                // actor that computes its turns ahead.
+                macro_rules! open {
+                    ($first:expr) => {
+                        actor.turns(|batched| {
+                            let batch =
+                                batch::Waiting { reading: self, first: $first, rest: &pieces, carried, carried_pins };
+                            let table = Since {
+                                table: self.table,
+                                stood: &lists.fusing.stood,
+                                sees: Sees::Step,
+                                blobs: self.blobs,
+                            };
+                            let (seats, puts, _) = asked.lent();
+                            let reads = Reads { table: &table, made: &seat.made, seats, puts };
 
-                        Self::finish(me, ran, Origin::Waiting, seating, lives, asked, lists, &mut stepped);
-                    });
-                    if stepped.ended {
-                        break;
-                    }
-                    let has_sent = stepped.sent > sent_before;
-                    is_spent = slice.is_spent(clock) && has_sent;
-                    if is_spent {
-                        break;
+                            batched.prepare(Preparing::new(&batch, instances, reads))
+                        })
+                    };
+                }
+                if let Some(mut handed) = pieces.next() {
+                    let mut turns = open!(handed);
+                    loop {
+                        // A turn is timed whole, from the item handed to what it asked for routed: what it costs
+                        // the worker, beyond what the actor's code takes.
+                        tally.time(key(item_kind(handed)), clock, || {
+                            let table = Since {
+                                table: self.table,
+                                stood: &lists.fusing.stood,
+                                sees: Sees::Step,
+                                blobs: self.blobs,
+                            };
+                            asked.next_turn();
+                            let source = handed.source();
+                            let (item, context) = batch::read(handed, self, carried);
+                            // The item sits one above what the turn sends in its chain.
+                            let chain = Chain { root: context.root, depth: context.depth - 1 };
+                            let turning = Turning::new(
+                                me,
+                                &seat.path,
+                                seat.above,
+                                &table,
+                                &seat.made,
+                                asked,
+                                instances,
+                                stepped.sent,
+                                source,
+                                chain,
+                            );
+                            let ran = Ran::of(me, turns.turn(item, turning), asked, context);
+
+                            Self::finish(me, ran, Origin::Waiting, seating, lives, asked, lists, &mut stepped);
+                        });
+                        if stepped.ended {
+                            break;
+                        }
+                        let has_sent = stepped.sent > sent_before;
+                        is_spent = slice.is_spent(clock) && has_sent;
+                        if is_spent {
+                            break;
+                        }
+                        let Some(after) = pieces.next() else {
+                            break;
+                        };
+                        handed = after;
+                        let begins_batch = slice.taken.is_multiple_of(SLICE_EVERY);
+                        if begins_batch {
+                            turns = open!(handed);
+                        }
                     }
                 }
                 if is_spent && !stepped.ended {
@@ -1386,7 +1402,7 @@ impl Reading<'_> {
     #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
     fn closing(
         &self,
-        actor: Box<dyn Runs>,
+        actor: Runner,
         me: Seated,
         sitting: &Sitting,
         sent: u64,
@@ -1458,10 +1474,13 @@ impl Reading<'_> {
             sees: Sees::Run(lists.fusing.run(hop.run)),
             blobs: self.blobs,
         };
-        let (seats, puts, arena) = asked.lent();
-        let reads = Reads { table: &table, made: &seat.made, seats, puts };
-        let batch = batch::OneHop { reading: self, hop: &hop, lists, arena };
-        actor.prepare(Preparing::new(&batch, instances, reads));
+        let mut turns = actor.turns(|batched| {
+            let (seats, puts, arena) = asked.lent();
+            let reads = Reads { table: &table, made: &seat.made, seats, puts };
+            let batch = batch::OneHop { reading: self, hop: &hop, lists, arena };
+
+            batched.prepare(Preparing::new(&batch, instances, reads))
+        });
         let sent_before = stepped.sent;
         let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
         // Timed whole, as a turn of a waiting item is.
@@ -1490,7 +1509,7 @@ impl Reading<'_> {
                     chain,
                 );
 
-                actor.turn(Item::Mail(mail), turning)
+                turns.turn(Item::Mail(mail), turning)
             };
             let context = Context { root: hop.root, depth: hop.depth + 1 };
             let ran = Ran::of(me, handled, asked, context);
@@ -1767,7 +1786,7 @@ impl Ran {
 }
 
 /// Puts the actor `me` names back in its seat in `actors` after its turns.
-fn put_back(actors: &mut BySeat<Held>, me: Seated, actor: Box<dyn Runs>) {
+fn put_back(actors: &mut BySeat<Held>, me: Seated, actor: Runner) {
     if let Some(held) = actors.get_mut(me) {
         *held = Held::Here(actor);
     }

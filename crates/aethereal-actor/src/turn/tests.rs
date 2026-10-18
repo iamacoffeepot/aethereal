@@ -1,8 +1,9 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's effect buffers.
 
 use super::*;
-use crate::{Beginning, Ending, Fault, Item, Mail, MailId, Payload, Within};
+use crate::{Beginning, Each, Ending, Fault, Item, Mail, MailId, Payload, Within};
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
+use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec;
 
@@ -388,7 +389,7 @@ fn begin_and_end_send_as_their_own_actor() {
         let above = Above::Actor(ME, Declared::of::<Leaf>());
         let mut instances = Instances::default();
         let closing = Closing::new(herald.seated(), &path, above, &table, &mut asked, &mut instances, 0, why);
-        let ended = Runs::end(Box::new(Herald), closing);
+        let ended = Runner::each(Herald).end(closing);
 
         (ended, asked.into_parts().0.mailed)
     };
@@ -418,8 +419,8 @@ fn handler_asks_by_the_kind_of_its_mail() {
     // sender instead of the actor the mail came from, and a reference in mail read as another actor.
     let other = seated(9, 5);
     let table = Listed(vec![(other, ActorPath::new("aether.test.other"))]);
-    let mut leaf: Box<dyn Runs> = Box::new(Leaf);
-    let handle = |leaf: &mut Box<dyn Runs>, table: &Listed, kind, bytes: &[u8]| {
+    let mut leaf: Box<dyn Each> = Box::new(Leaf);
+    let handle = |leaf: &mut Box<dyn Each>, table: &Listed, kind, bytes: &[u8]| {
         let mut asked = Asked::new();
         let mut instances = Instances::default();
         let turning = Turning::new(ME, &ROOT, Above::Chassis, table, &(), &mut asked, &mut instances, 0, other, CHAIN);

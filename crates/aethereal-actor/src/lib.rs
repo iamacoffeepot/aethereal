@@ -33,7 +33,7 @@ mod seat;
 pub mod section;
 mod turn;
 
-pub use actor::{Actor, Batch, Peeked, Preparing, Reads, Runs};
+pub use actor::{Actor, Batch, Batched, Computed, Each, Peeked, Prepared, Preparing, Reads, Runner, Turns};
 #[cfg(feature = "std")]
 pub use arena::Pinned;
 pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};

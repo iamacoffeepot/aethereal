@@ -595,7 +595,8 @@ impl Pieces<'_> {
 impl<'a> Iterator for Pieces<'a> {
     type Item = Handed<'a>;
 
-    #[inline]
+    #[allow(clippy::inline_always, reason = "once for every item, read inline in the loop that takes its turn")]
+    #[inline(always)]
     fn next(&mut self) -> Option<Handed<'a>> {
         let (_, entry) = loop {
             match self.entries.get(self.at) {

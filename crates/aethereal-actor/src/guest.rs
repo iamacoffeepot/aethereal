@@ -27,8 +27,10 @@ use crate::records::{
 };
 use crate::section;
 use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Ended, Fault, How, Item};
-use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Mail, Peeked, Pinned, Preparing, Puts, Refused};
-use crate::{Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, What, Within, WithinReader, WithinWriter, pins};
+use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Mail, Peeked, Pinned, Puts, Refused};
+use crate::{
+    Each, Runner, SeatNumber, Seated, Seats, Table, Turning, Unfit, What, Within, WithinReader, WithinWriter, pins,
+};
 use aethereal_data::{
     ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, PathSegment, Reader, Writer, from_bytes, to_bytes,
 };
@@ -42,10 +44,10 @@ use core::cell::{Cell, RefCell};
 use core::mem;
 
 /// Begins an actor of one type as it is seated, where it stands, from its config's bytes.
-type Begin = fn(&[u8], Seated, &Standing, &Host, &mut Asked, &mut Instances) -> Result<Box<dyn Runs>, Fault>;
+type Begin = fn(&[u8], Seated, &Standing, &Host, &mut Asked, &mut Instances) -> Result<Box<dyn Each>, Fault>;
 
 /// Takes an actor of one type in from where it stands and its state, as [`take_out`] wrote them.
-type TakeIn = fn(&[u8], usize) -> Option<(Box<dyn Runs>, Standing)>;
+type TakeIn = fn(&[u8], usize) -> Option<(Box<dyn Each>, Standing)>;
 
 /// Where an actor of the guest stands: its path, and what is above it.
 struct Standing {
@@ -84,7 +86,7 @@ pub struct Type {
     declared: &'static Declared,
     begin: Begin,
     take_in: TakeIn,
-    take_out: fn(&dyn Runs, &Standing, &mut Vec<u8>) -> Option<()>,
+    take_out: fn(&dyn Each, &Standing, &mut Vec<u8>) -> Option<()>,
 }
 
 impl Type {
@@ -164,7 +166,7 @@ struct Guest {
 /// One actor of the guest, by the handle its host knows it by.
 enum Slot {
     Live {
-        runs: Box<dyn Runs>,
+        runs: Box<dyn Each>,
         me: Seated,
         standing: Standing,
     },
@@ -197,7 +199,7 @@ fn begin<A: Actor>(
     host: &Host,
     asked: &mut Asked,
     instances: &mut Instances,
-) -> Result<Box<dyn Runs>, Fault> {
+) -> Result<Box<dyn Each>, Fault> {
     let mut budget = Budget::new(instances.read_limit());
     let mut reader = Reader::<Actors>::new(config, &mut budget, ActorsReader::new());
     let config = A::Config::decode(&mut reader)?;
@@ -209,7 +211,7 @@ fn begin<A: Actor>(
 
 /// An actor of type `A` taken in from `bytes`, its path and state as [`take_out`] wrote them, read within `read_limit`
 /// bytes: nothing when they do not read back.
-fn take_in<A: Actor>(bytes: &[u8], read_limit: usize) -> Option<(Box<dyn Runs>, Standing)> {
+fn take_in<A: Actor>(bytes: &[u8], read_limit: usize) -> Option<(Box<dyn Each>, Standing)> {
     let (state, _) = records::carried(bytes)?;
     let mut budget = Budget::new(read_limit);
     let mut reader = Reader::<Within>::new(state, &mut budget, WithinReader::new());
@@ -222,7 +224,7 @@ fn take_in<A: Actor>(bytes: &[u8], read_limit: usize) -> Option<(Box<dyn Runs>, 
 /// Writes `runs`, an actor of type `A` that stands where `standing` says, after `out`, as
 /// [`records::carried`] reads it: the length of what follows, where it stands and then its state, at [`Within`], and
 /// then the blob of each reference in them. Nothing when it is not of type `A`, or does not encode.
-fn take_out<A: Actor>(runs: &dyn Runs, standing: &Standing, out: &mut Vec<u8>) -> Option<()> {
+fn take_out<A: Actor>(runs: &dyn Each, standing: &Standing, out: &mut Vec<u8>) -> Option<()> {
     let actor = (runs as &dyn Any).downcast_ref::<A>()?;
     let mut blobs = Vec::new();
     let mut writer = Writer::<Within>::new(WithinWriter::noting(&mut blobs));
@@ -475,7 +477,7 @@ impl Guest {
     }
 
     /// Keeps `runs`, the actor `me` names at `path`, under the handle of an empty slot, or a new one when none is.
-    fn seat(&mut self, runs: Box<dyn Runs>, me: Seated, standing: Standing) -> u32 {
+    fn seat(&mut self, runs: Box<dyn Each>, me: Seated, standing: Standing) -> u32 {
         let live = Slot::Live { runs, me, standing };
         let Some(handle) = self.free.pop() else {
             self.actors.push(live);
@@ -499,7 +501,8 @@ impl Guest {
         let mut kept = Vec::with_capacity(stood.len());
         for (index, child) in stood.into_iter().enumerate() {
             let (me, path, above, runs) = child.into_parts();
-            let Above::Actor(parent, _) = above else {
+            // A guest's children are its own types, which are actors, or of other code, which its host begins.
+            let (Above::Actor(parent, _), Runner::Each(runs)) = (above, runs) else {
                 continue;
             };
             let is_begun = (&*runs as &dyn Any).is::<Begun>();
@@ -851,18 +854,13 @@ impl Guests for Calling {
         })
     }
 
-    fn begin(&self, made: &'static BlobType, config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Runs>, Refused> {
+    fn begin(&self, made: &'static BlobType, config: &[u8], birth: Birth<'_>) -> Result<Runner, Refused> {
         let from = Other::Blob { engine: made.blob.engine(), bits: made.blob.bits() };
 
         self.spawn(from, made.declared, config, &birth)
     }
 
-    fn begin_linked(
-        &self,
-        declared: &'static Declared,
-        config: &[u8],
-        birth: Birth<'_>,
-    ) -> Result<Box<dyn Runs>, Refused> {
+    fn begin_linked(&self, declared: &'static Declared, config: &[u8], birth: Birth<'_>) -> Result<Runner, Refused> {
         self.spawn(Other::Linked, declared, config, &birth)
     }
 }
@@ -876,7 +874,7 @@ impl Calling {
         declared: &'static Declared,
         config: &[u8],
         birth: &Birth<'_>,
-    ) -> Result<Box<dyn Runs>, Refused> {
+    ) -> Result<Runner, Refused> {
         let by = match birth.above {
             Above::Actor(by, _) | Above::Elsewhere(by) => by,
             Above::Chassis => return Err(Refused::NotMade),
@@ -905,7 +903,7 @@ impl Calling {
             Some((kind, bytes))
         })?;
 
-        Ok(Box::new(Begun { declared }))
+        Ok(Runner::Each(Box::new(Begun { declared })))
     }
 }
 
@@ -915,12 +913,10 @@ struct Begun {
     declared: &'static Declared,
 }
 
-impl Runs for Begun {
+impl Each for Begun {
     fn declared(&self) -> &'static Declared {
         self.declared
     }
-
-    fn prepare(&mut self, _: Preparing<'_>) {}
 
     /// Nothing: the guest never runs it, as it keeps nothing of it.
     fn turn(&mut self, _: Item<'_>, _: Turning<'_>) -> Result<(), Fault> {

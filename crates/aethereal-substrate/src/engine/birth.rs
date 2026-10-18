@@ -3,14 +3,14 @@
 use super::made::Made;
 use super::{Held, Seating, Sitting, part};
 use crate::BySeat;
-use aethereal_actor::{Above, Runs, Seated, Stood};
+use aethereal_actor::{Above, Runner, Seated, Stood};
 use aethereal_data::{ActorId, ActorPath};
 use std::mem;
 
 /// What one child a turn stood up asks of a part: to be seated in it, or to be noted in its parent's seat there.
 pub(super) enum Birth {
     /// The child the actor `me` names, at `path`, under `above`, to seat.
-    Child { me: Seated, path: ActorPath, above: Above, actor: Box<dyn Runs> },
+    Child { me: Seated, path: ActorPath, above: Above, actor: Runner },
     /// The child `child` the actor `parent` made, to note in the parent's seat (ADR-0008).
     Made { parent: Seated, child: ActorId },
 }
@@ -90,7 +90,7 @@ pub(super) fn sit(
     me: Seated,
     path: ActorPath,
     above: Above,
-    actor: Box<dyn Runs>,
+    actor: Runner,
 ) {
     let kind = actor.declared().id();
     seating.seated.insert(me, Sitting { path, above, kind, made: Made::none() });
