@@ -1,7 +1,7 @@
 //! A turn a host runs for an actor whose code runs where the engine cannot see it: a guest (ADR-0015).
 
 use super::{Checked, During, Seat, Turning};
-use crate::{Above, Asked, Chain, Declared, Level, MailId, Mailed, Role, Seated, Sending, Table, Target};
+use crate::{Above, Asked, Chain, Declared, Level, MailId, Mailed, Role, Seated, Sending, Table, Target, What};
 use aethereal_data::{ActorPath, KindId, KindName, Plain};
 use core::convert::Infallible;
 
@@ -131,6 +131,17 @@ impl<'a> Hosted<'a> {
         self.seat.asked.buffers.mailed.push(mailed);
 
         Ok(())
+    }
+
+    /// Whether the turn may close its actor: a turn of an item may, and a `begin` may not.
+    #[must_use]
+    pub const fn may_close(&self) -> bool {
+        matches!(self.source, Source::Item(_))
+    }
+
+    /// Closes this actor, as [`Turn::close`](crate::Turn::close) does.
+    pub fn close(&mut self) {
+        self.seat.ask(What::Close);
     }
 
     /// Logs `text` at `level`, as this actor.

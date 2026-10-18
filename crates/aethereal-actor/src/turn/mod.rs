@@ -715,7 +715,7 @@ pub struct Chain {
     pub depth: u32,
 }
 
-/// A turn as the engine opens it, before the handler it runs is known: what [`Runs::handle`] is given.
+/// A turn as the engine opens it, before the handler it runs is known: what [`Runs::turn`] is given.
 pub struct Turning<'a> {
     me: Seated,
     path: &'a ActorPath,

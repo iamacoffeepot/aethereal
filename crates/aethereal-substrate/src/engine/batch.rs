@@ -1,4 +1,4 @@
-//! The batches the engine shows an actor before their turns: its waiting items, as many as the rest of its slice is
+//! The batches the engine prepares an actor for before their turns: its waiting items, as many as the rest of its slice is
 //! expected to cover, or one hop (ADR-0011, ADR-0013, ADR-0015).
 
 use super::Lists;
@@ -42,10 +42,6 @@ pub(super) fn read<'a>(handed: Handed<'a>, reading: &Reading<'a>, carried: &'a [
 }
 
 impl Batch for Waiting<'_, '_, '_> {
-    fn fits(&self) -> usize {
-        self.fits
-    }
-
     fn each(&self, visit: &mut dyn FnMut(Peeked<'_>)) {
         for handed in self.pieces.clone().take(self.fits) {
             let source = handed.source();
@@ -57,10 +53,6 @@ impl Batch for Waiting<'_, '_, '_> {
 }
 
 impl Batch for OneHop<'_, '_> {
-    fn fits(&self) -> usize {
-        1
-    }
-
     fn each(&self, visit: &mut dyn FnMut(Peeked<'_>)) {
         let hop = self.hop;
         let bytes = self.lists.fusing.bytes(hop);

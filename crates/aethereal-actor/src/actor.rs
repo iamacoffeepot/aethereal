@@ -37,34 +37,61 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized + 'static
     fn end(self, turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault>;
 }
 
-/// An actor the engine runs without naming its type (ADR-0009).
+/// An actor the engine runs without naming its type: its items prepared in batches, then taken a turn at a time
+/// (ADR-0009, ADR-0015).
 ///
-/// Every [`Actor`] is one, and so is a guest's actor, whose code runs in its
-/// instance (ADR-0015). The engine hands each actor its items in batches: it
-/// shows the actor a batch, then hands it a turn for each item of it in order,
-/// routing what each turn asked for before the next.
+/// **What it does.** For each batch of an actor's items, the engine calls [`Self::prepare`] once, showing it the
+/// items, then [`Self::turn`] for each of them in order, and routes what each turn asked for before it asks for the
+/// next. [`Self::end`] runs the closing turn, which belongs to no batch.
+///
+/// **Why it is two calls.** The engine decides what follows a turn one item at a time: it routes the turn's mail,
+/// fuses its first send, and ends the actor at a turn that fails or closes it (ADR-0011, ADR-0013). So it takes turns
+/// one at a time. But an actor can be costly to enter: a guest's code runs in its instance, and every call into it
+/// pays for the crossing (ADR-0015). So the actor is shown what is coming first, and may compute the turns of the
+/// whole batch at once, ahead of being asked for them, or each when it is asked for.
+///
+/// **What the engine gives.** An implementation may rely on each of these:
+///
+/// 1. Every turn belongs to the batch prepared last. Once a batch is prepared, the actor is called for nothing but
+///    the turns of it until the batch is done: no other `prepare`, and no `end`.
+/// 2. Turns are asked for in the order `prepare` showed their items, each item once, and `turn` is handed the item
+///    itself.
+/// 3. Every prepared item's turn is asked for, unless one of the actor's own turns fails or asks to close it: then no
+///    turn after that one is asked for, in this batch or any other. Nothing else cuts a batch short: the engine
+///    decides how many items fit in what is left of the actor's slice before it prepares them.
+/// 4. A batch holds at least one item. A hop is a batch of one (ADR-0013).
+///
+/// **How to use it.** Only the engine calls these. An actor written in Rust implements [`Actor`], and every `Actor`
+/// is a `Runs` that computes each turn when it is asked for, so it needs nothing more. A host implements `Runs` for
+/// code the engine cannot see, as a guest's host does. One that computes ahead:
+///
+/// - computes in `prepare`, and hands each turn back from `turn`, into the [`Turning`] it is given. Everything a turn
+///   asks of the engine is asked there; nothing reaches the engine from `prepare`, which has no turn to ask through.
+/// - stops computing after the first turn that fails or closes the actor, since by (3) no later turn is asked for,
+///   and a turn computed but never asked for would have changed the actor for an item the engine did not run.
 pub trait Runs: Send {
     /// What the actor's type declares (ADR-0013).
     fn declared(&self) -> &'static Declared;
 
-    /// Shown the batch of items its next turns are for, before the first of them: a guest runs them all here, in
-    /// one call into its instance (ADR-0015). Its turns follow in order, until one fails or the batch is done.
-    fn open(&mut self, batch: &dyn Batch);
+    /// Shown the items of its next batch, in the order their turns will be asked for, before the first of them.
+    ///
+    /// The actor may compute all of their turns here, or leave each until [`Self::turn`] asks for it.
+    fn prepare(&mut self, batch: &dyn Batch);
 
-    /// Hands one item to the handler for it: a turn of the actor's own, the next of the batch it was shown.
-    fn handle(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault>;
+    /// The turn of `item`, the next of the batch prepared last: what the turn asks for goes into `turning`, and it
+    /// answers with how the turn ended.
+    ///
+    /// An actor that computed the turn in [`Self::prepare`] hands it back here; one that did not computes it now.
+    fn turn(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault>;
 
     /// The actor's closing turn, which takes the actor.
     fn end(self: Box<Self>, closing: Closing<'_>) -> Result<(), Fault>;
 }
 
-/// An actor's items for one go, as the engine shows them to it: as many as the rest of its slice is expected to cover
-/// (ADR-0011, ADR-0015).
+/// The items of a batch, as [`Runs::prepare`] is shown them: as many as the rest of the actor's slice is expected to
+/// cover, and at least one (ADR-0011, ADR-0015).
 pub trait Batch {
-    /// How many items it holds.
-    fn fits(&self) -> usize;
-
-    /// Shows `visit` each of its items, in order.
+    /// Shows `visit` each of its items, in the order their turns will be asked for.
     fn each(&self, visit: &mut dyn FnMut(Peeked<'_>));
 }
 
@@ -80,10 +107,10 @@ impl<A: Actor> Runs for A {
         Declared::of::<A>()
     }
 
-    /// A native actor runs each turn as it is handed it, so there is nothing to do before them.
-    fn open(&mut self, _: &dyn Batch) {}
+    /// An `Actor` computes each turn when it is asked for, so there is nothing to do before them.
+    fn prepare(&mut self, _: &dyn Batch) {}
 
-    fn handle(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
+    fn turn(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
         A::Handles::dispatch(self, item, turning)
     }
 

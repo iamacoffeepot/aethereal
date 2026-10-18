@@ -193,7 +193,7 @@ fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<String> {
     let mut actor: Box<dyn Runs> = Box::new(actor);
     let turning = Turning::new(ME, &PATH, Above::Chassis, &table, &(), &mut asked, 0, OTHER, CHAIN);
     let mail = Mail::new(kind, &[], OTHER, CHAIN.root, 1, 0);
-    let handled = actor.handle(Item::Mail(mail), turning);
+    let handled = actor.turn(Item::Mail(mail), turning);
     assert!(handled.is_ok());
 
     asked.lines().iter().map(|line| String::from(asked.text(line))).collect()

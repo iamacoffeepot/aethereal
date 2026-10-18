@@ -8,7 +8,7 @@
 //! reads where it lies.
 
 use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Chain, Children, Declared, Fault, Item};
-use crate::{Batch, Beginning, Level, Mail, MailId, Peeked, Runs, SeatNumber, Seated, Table, Turning};
+use crate::{Batch, Beginning, Level, Mail, MailId, Peeked, Runs, SeatNumber, Seated, Table, Turning, What};
 use aethereal_data::{ActorId, ActorPath, Budget, Decode, KindId, PathSegment, Reader, from_bytes};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -84,9 +84,10 @@ pub fn begin_at(begins: &[Begin], of: u32, me: u64, seat: u64, len: u32) -> u32 
             return u32::MAX;
         };
         let inbox = mem::take(&mut guest.inbox);
-        let began = begin(&inbox[..len.min(inbox.len() as u32) as usize], me, &mut guest.asked);
+        let len = (len as usize).min(inbox.len());
+        let made = begin(&inbox[..len], me, &mut guest.asked);
         guest.inbox = inbox;
-        let (handle, fault) = match began {
+        let (handle, fault) = match made {
             Ok((runs, path)) => {
                 let handle = u32::try_from(guest.actors.len()).unwrap_or(u32::MAX);
                 guest.actors.push(Slot::Live { runs, me, path });
@@ -117,7 +118,7 @@ pub fn turns(handle: u32, items: u32, len: u32) -> u64 {
             return 0;
         };
         let inbox = &inbox[..(len as usize).min(inbox.len())];
-        runs.open(&Inboxed { items: inbox, fits: items as usize });
+        runs.prepare(&Inboxed { items: inbox, fits: items as usize });
         let mut rest = inbox;
         let mut ran: u32 = 0;
         for _ in 0..items {
@@ -126,11 +127,14 @@ pub fn turns(handle: u32, items: u32, len: u32) -> u64 {
             };
             rest = after;
             let turning = Turning::new(*me, path, Above::Chassis, &Host, &(), asked, 0, source, chain);
-            let result = runs.handle(item, turning);
+            let result = runs.turn(item, turning);
             let failed = result.is_err();
+            let closes = asks_close(asked);
             write_turn(out, asked, result.err().as_ref());
             ran += 1;
-            if failed {
+            // The engine asks for no turn after one that fails or closes the actor, so none is run.
+            let ends = failed || closes;
+            if ends {
                 break;
             }
         }
@@ -163,10 +167,6 @@ fn read_item(items: &[u8]) -> Option<(Peeked<'_>, &[u8])> {
 }
 
 impl Batch for Inboxed<'_> {
-    fn fits(&self) -> usize {
-        self.fits
-    }
-
     fn each(&self, visit: &mut dyn FnMut(Peeked<'_>)) {
         let mut items = self.items;
         for _ in 0..self.fits {
@@ -194,6 +194,11 @@ impl Guest {
     }
 }
 
+/// Whether the turn that filled `asked` asked to close its actor.
+fn asks_close(asked: &Asked) -> bool {
+    asked.effects().iter().any(|effect| matches!(effect.what(), What::Close))
+}
+
 /// Writes what one turn asked for after what `out` holds, and empties the buffers it was asked into: whether it
 /// failed, and with what fault; the mail it sent; and the lines it logged.
 fn write_turn(out: &mut Vec<u8>, asked: &mut Asked, fault: Option<&Fault>) {
@@ -205,6 +210,7 @@ fn write_turn(out: &mut Vec<u8>, asked: &mut Asked, fault: Option<&Fault>) {
             write_bytes(out, fault.bytes());
         }
     }
+    out.extend_from_slice(&u32::from(asks_close(asked)).to_le_bytes());
     let mailed = asked.mailed();
     out.extend_from_slice(&count(mailed.len()).to_le_bytes());
     for piece in mailed {

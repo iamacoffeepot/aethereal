@@ -57,7 +57,7 @@ struct Guest {
     instance: Shared,
     handle: u32,
     declared: &'static Declared,
-    /// What the guest's turns of the batch it was last shown asked for, and how far its host has read.
+    /// What the guest's turns of the batch prepared last asked for, and how far its host has handed them back.
     ran: Ran,
 }
 
@@ -205,7 +205,9 @@ impl Runs for Guest {
         self.declared
     }
 
-    fn open(&mut self, batch: &dyn Batch) {
+    /// Runs every turn of the batch in the guest, in one call into its instance, and keeps what they asked for for
+    /// [`Self::turn`] to hand back. The guest stops after a turn that fails or closes it, as the engine does.
+    fn prepare(&mut self, batch: &dyn Batch) {
         let mut guard = lock(&self.instance);
         let held = &mut *guard;
         let mut staged = std::mem::take(&mut held.staged);
@@ -219,7 +221,9 @@ impl Runs for Guest {
         };
     }
 
-    fn handle(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
+    /// Hands back the next turn [`Self::prepare`] ran: what it asked for, each send checked against what the guest
+    /// declares.
+    fn turn(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
         let Ran::At { out, read } = self.ran else {
             return Err(trapped());
         };
@@ -319,6 +323,15 @@ fn read_turn(out: &mut &[u8], hosted: &mut Hosted<'_>) -> Option<Result<(), Faul
     } else {
         None
     };
+    let closes = take_u32(out)? == 1;
+    // A `begin` cannot close its actor, so a record that says one did does not read back.
+    let is_false_close = closes && !hosted.may_close();
+    if is_false_close {
+        return None;
+    }
+    if closes {
+        hosted.close();
+    }
     let mailed = take_u32(out)?;
     for _ in 0..mailed {
         let id = take_u64(out)?;
@@ -404,7 +417,7 @@ mod tests {
     use super::*;
     use crate::Monotonic;
     use aethereal_actor::{Actor, Beginning, Ending, Handles, ToAny, ToSender, ToWithoutMail, Turn};
-    use aethereal_data::{ActorPath, Kind, KindName, Plain};
+    use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
     use std::num::NonZeroUsize;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -510,5 +523,90 @@ mod tests {
         }
 
         assert_eq!(PONGS.load(Ordering::Relaxed), 10);
+    }
+
+    /// The word to close, as the echo guest declares it.
+    #[derive(Plain)]
+    struct Shut;
+
+    impl Kind for Shut {
+        const NAME: KindName = KindName::new("aether.guest.shut");
+    }
+
+    /// The pongs the closer has been answered with.
+    static CLOSER_PONGS: AtomicU64 = AtomicU64::new(0);
+
+    /// A native actor that sends the echo guest a ping, the word to close, and another ping, all in its `begin`.
+    #[derive(aethereal_data::Bound)]
+    struct Closer;
+
+    impl Kind for Closer {
+        const NAME: KindName = KindName::new("aether.test.closer");
+    }
+
+    impl Actor for Closer {
+        type Config = Volley;
+        type Key = ();
+        type Handles = (Pong,);
+        type BeginSends = (ToAny<(Ping, Shut), Ping>, ToAny<(Ping, Shut), Shut>);
+        type EndSends = ();
+
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
+            if let Some(echo) = turn.resolve(&echo) {
+                turn.to_any::<(Ping, Shut)>(ToWithoutMail::Held(echo)).send(&Ping { n: 0 })?;
+                turn.to_any::<(Ping, Shut)>(ToWithoutMail::Held(echo)).send(&Shut)?;
+                turn.to_any::<(Ping, Shut)>(ToWithoutMail::Held(echo)).send(&Ping { n: 0 })?;
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Pong> for Closer {
+        type Sends = ();
+
+        fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            CLOSER_PONGS.fetch_add(1, Ordering::Relaxed);
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_guest_that_closes_answers_nothing_after() {
+        // Catches a guest's close lost on its way out of the guest: the echo would then be asked for the turn of the
+        // ping after it, which the guest did not run, and fail.
+        let guests = Guests::default();
+        let Ok(code) = guests.code(ECHO) else {
+            panic!("the echo guest is fit to run");
+        };
+        let instance = guests.instance(&code);
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+        let Ok(echo) = add_root(&mut engine, &code, &instance, 0, &[]) else {
+            panic!("the echo begins");
+        };
+        let Ok(_) = engine.add_root::<Closer>(&(), Volley { pings: 0 }) else {
+            panic!("the closer begins");
+        };
+        let Some(seat) = engine.table().seat(echo) else {
+            panic!("the echo is seated");
+        };
+        let echo = Seated { id: echo, seat };
+        let clock = Monotonic::new();
+        while !engine.is_idle() {
+            engine.step(&clock);
+        }
+
+        let failed = engine.log(echo).any(|entry| matches!(entry, aethereal_substrate::Entry::Failed(_)));
+        assert!(!failed, "the echo closed, and did not fail");
+        assert_eq!(CLOSER_PONGS.load(Ordering::Relaxed), 1);
     }
 }

@@ -1228,7 +1228,7 @@ impl Reading<'_> {
                 let mut is_spent = false;
                 'batches: loop {
                     let fits = self.fits(&mut slice, clock, seat.kind, &pieces);
-                    actor.open(&batch::Waiting { reading: self, pieces: &pieces, carried, fits });
+                    actor.prepare(&batch::Waiting { reading: self, pieces: &pieces, carried, fits });
                     for _ in 0..fits {
                         let Some(handed) = pieces.next() else {
                             break 'batches;
@@ -1258,7 +1258,7 @@ impl Reading<'_> {
                                 source,
                                 chain,
                             );
-                            let ran = Ran::of(me, actor.handle(item, turning), asked, context);
+                            let ran = Ran::of(me, actor.turn(item, turning), asked, context);
 
                             Self::finish(me, ran, Origin::Waiting, seating, lives, asked, lists, &mut stepped);
                         });
@@ -1269,7 +1269,10 @@ impl Reading<'_> {
                     }
                     let has_sent = stepped.sent > sent_before;
                     is_spent = has_sent && slice.is_spent(clock);
-                    if is_spent {
+                    // A batch holds at least one item, so none is prepared once every item is taken.
+                    let is_taken = pieces.clone().next().is_none();
+                    let is_done = is_spent || is_taken;
+                    if is_done {
                         break;
                     }
                 }
@@ -1345,7 +1348,7 @@ impl Reading<'_> {
             return;
         };
 
-        actor.open(&batch::OneHop { reading: self, hop: &hop, lists });
+        actor.prepare(&batch::OneHop { reading: self, hop: &hop, lists });
         let sent_before = stepped.sent;
         let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
         // Timed whole, as a turn of a waiting item is.
@@ -1364,7 +1367,7 @@ impl Reading<'_> {
                 let turning =
                     Turning::new(me, &seat.path, seat.above, &table, &seat.made, asked, sent_before, hop.from, chain);
 
-                actor.handle(Item::Mail(mail), turning)
+                actor.turn(Item::Mail(mail), turning)
             };
             let context = Context { root: hop.root, depth: hop.depth + 1 };
             let ran = Ran::of(me, handled, asked, context);
