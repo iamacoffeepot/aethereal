@@ -49,51 +49,100 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized + 'static
 /// batch of its items first, computes their turns at once, and hands them back one by one. Which of the two an actor
 /// is, is its type's, so the engine never shows a batch to an actor that would do nothing with it, and never asks a
 /// batched actor for a turn it did not prepare.
-pub enum Runner {
-    /// Each turn computed when the engine asks for it: every [`Actor`].
-    Each(Box<dyn Each>),
-    /// Turns computed ahead, a batch at a time: code a host runs where the engine cannot see it, as a guest's.
-    Batched(Box<dyn Batched>),
+pub struct Runner(Box<dyn Flows>);
+
+/// How a [`Runner`] holds its actor: one box whatever the actor's flow, which says it when the engine opens a batch.
+trait Flows: Any + Send {
+    fn declared(&self) -> &'static Declared;
+    fn as_any(&self) -> &dyn Any;
+    fn turns<'a>(&'a mut self, prepare: &mut dyn FnMut(&'a mut dyn Batched) -> Prepared<'a>) -> Turns<'a>;
+    fn into_each(self: Box<Self>) -> Option<Box<dyn Each>>;
+    fn end(self: Box<Self>, closing: Closing<'_>) -> Result<(), Fault>;
+}
+
+impl<T: Each> Flows for T {
+    fn declared(&self) -> &'static Declared {
+        Each::declared(self)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn turns<'a>(&'a mut self, _: &mut dyn FnMut(&'a mut dyn Batched) -> Prepared<'a>) -> Turns<'a> {
+        Turns::Each(self)
+    }
+
+    fn into_each(self: Box<Self>) -> Option<Box<dyn Each>> {
+        Some(self)
+    }
+
+    fn end(self: Box<Self>, closing: Closing<'_>) -> Result<(), Fault> {
+        Each::end(self, closing)
+    }
+}
+
+/// A [`Batched`] actor, as a [`Runner`] holds it.
+struct AsBatched<B>(B);
+
+impl<B: Batched> Flows for AsBatched<B> {
+    fn declared(&self) -> &'static Declared {
+        self.0.declared()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        &self.0
+    }
+
+    fn turns<'a>(&'a mut self, prepare: &mut dyn FnMut(&'a mut dyn Batched) -> Prepared<'a>) -> Turns<'a> {
+        Turns::Prepared(prepare(&mut self.0))
+    }
+
+    fn into_each(self: Box<Self>) -> Option<Box<dyn Each>> {
+        None
+    }
+
+    fn end(self: Box<Self>, closing: Closing<'_>) -> Result<(), Fault> {
+        Box::new(self.0).end(closing)
+    }
 }
 
 impl Runner {
     /// The actor `actor`, which computes each turn when it is asked for.
     #[must_use]
-    pub fn each<A: Actor>(actor: A) -> Self {
-        Self::Each(Box::new(actor))
+    pub fn each(actor: impl Each) -> Self {
+        Self(Box::new(actor))
     }
 
     /// The actor `actor`, which computes its turns ahead.
     #[must_use]
     pub fn batched(actor: impl Batched) -> Self {
-        Self::Batched(Box::new(actor))
+        Self(Box::new(AsBatched(actor)))
     }
 
     /// What the actor's type declares (ADR-0013).
     #[must_use]
     pub fn declared(&self) -> &'static Declared {
-        match self {
-            Self::Each(actor) => actor.declared(),
-            Self::Batched(actor) => actor.declared(),
-        }
+        self.0.declared()
     }
 
     /// The actor, for code that holds actors of its own types and reads them back by type.
     #[must_use]
     pub fn as_any(&self) -> &dyn Any {
-        match self {
-            Self::Each(actor) => &**actor,
-            Self::Batched(actor) => &**actor,
-        }
+        self.0.as_any()
+    }
+
+    /// The actor, when it computes each turn as it is asked for: nothing when it computes its turns ahead.
+    #[must_use]
+    pub fn into_each(self) -> Option<Box<dyn Each>> {
+        self.0.into_each()
     }
 
     /// The turns of the actor's next batch: taken as they come from an actor that computes each when it is asked for,
     /// and from what `prepare` answers with for one that computes ahead, which is only then shown the batch.
-    pub fn turns<'a>(&'a mut self, prepare: impl FnOnce(&'a mut dyn Batched) -> Prepared<'a>) -> Turns<'a> {
-        match self {
-            Self::Each(actor) => Turns::Each(&mut **actor),
-            Self::Batched(actor) => Turns::Prepared(prepare(&mut **actor)),
-        }
+    #[inline]
+    pub fn turns<'a>(&'a mut self, mut prepare: impl FnMut(&'a mut dyn Batched) -> Prepared<'a>) -> Turns<'a> {
+        self.0.turns(&mut prepare)
     }
 
     /// The actor's closing turn, which takes the actor.
@@ -102,10 +151,7 @@ impl Runner {
     ///
     /// The fault the closing turn ended with.
     pub fn end(self, closing: Closing<'_>) -> Result<(), Fault> {
-        match self {
-            Self::Each(actor) => actor.end(closing),
-            Self::Batched(actor) => actor.end(closing),
-        }
+        self.0.end(closing)
     }
 }
 
@@ -218,6 +264,7 @@ impl Turns<'_> {
     /// # Errors
     ///
     /// The fault the turn ended with.
+    #[inline]
     pub fn turn(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
         match self {
             Self::Each(actor) => actor.turn(item, turning),

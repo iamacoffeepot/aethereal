@@ -502,7 +502,7 @@ impl Guest {
         for (index, child) in stood.into_iter().enumerate() {
             let (me, path, above, runs) = child.into_parts();
             // A guest's children are its own types, which are actors, or of other code, which its host begins.
-            let (Above::Actor(parent, _), Runner::Each(runs)) = (above, runs) else {
+            let (Above::Actor(parent, _), Some(runs)) = (above, runs.into_each()) else {
                 continue;
             };
             let is_begun = (&*runs as &dyn Any).is::<Begun>();
@@ -903,7 +903,7 @@ impl Calling {
             Some((kind, bytes))
         })?;
 
-        Ok(Runner::Each(Box::new(Begun { declared })))
+        Ok(Runner::each(Begun { declared }))
     }
 }
 
