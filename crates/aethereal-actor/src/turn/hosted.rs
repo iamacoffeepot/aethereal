@@ -127,6 +127,7 @@ impl<'a> Hosted<'a> {
         });
         let Ok(bytes) = written;
         self.seat.sent += 1;
+        self.seat.asked.turn_sent = self.seat.sent;
         let mailed = Mailed { by: self.seat.me, to, count: self.seat.sent, kind, bytes };
         self.seat.asked.buffers.mailed.push(mailed);
 

@@ -10,8 +10,8 @@ pub use refused::Refused;
 
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
-    Handles, Kinds, Level, Line, MailId, Mailed, Marker, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends,
-    Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, What,
+    Handles, Kinds, Level, Line, MailId, Mailed, Mark, Marker, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen,
+    Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, What,
 };
 #[cfg(feature = "std")]
 use crate::{BlobHash, BlobRef};
@@ -41,6 +41,14 @@ pub struct Asked {
     seats: Seats,
     /// The blobs its worker has put in the step, and the room it has left to put more (ADR-0014).
     puts: Puts,
+    /// Where each turn of the batch running ends in the buffers, in order.
+    marks: Vec<Mark>,
+    /// How much mail the buffer held as the open turn began: a send never joins a run another turn sent.
+    turn_mailed: usize,
+    /// How many pieces of mail the actor of the turn open has sent, that turn's so far included.
+    turn_sent: u64,
+    /// Whether the turn open has asked to close its actor.
+    turn_closes: bool,
 }
 
 /// The three buffers of what turns ask for: kept by a worker over its share of a step, and filled by each turn in turn.
@@ -99,7 +107,18 @@ impl Asked {
     pub fn continuing(buffers: Buffers, arena: Arena, seats: Seats, puts: Puts) -> Self {
         debug_assert!(buffers.is_empty(), "a turn begins with its buffers emptied");
 
-        Self { buffers, stood: Vec::new(), stood_seats: BTreeMap::new(), arena, seats, puts }
+        Self {
+            buffers,
+            stood: Vec::new(),
+            stood_seats: BTreeMap::new(),
+            arena,
+            seats,
+            puts,
+            marks: Vec::new(),
+            turn_mailed: 0,
+            turn_sent: 0,
+            turn_closes: false,
+        }
     }
 
     /// Begins the next turn, once what the last asked for has been taken out of the buffers. The children the last
@@ -109,6 +128,7 @@ impl Asked {
     /// moves nothing in or out, and every buffer holds only what the turn running asked for.
     pub fn next_turn(&mut self) {
         debug_assert!(self.buffers.is_empty(), "a turn begins with its buffers emptied");
+        self.turn_mailed = 0;
         // Most turns stand up no child, and clearing even an empty map walks it.
         if !self.stood_seats.is_empty() {
             self.stood_seats.clear();
@@ -125,6 +145,69 @@ impl Asked {
         self.stood.clear();
         self.stood_seats.clear();
         self.arena.clear(0);
+    }
+
+    /// Begins a batch of turns, once what the last asked for has been routed and taken out of the buffers.
+    pub(crate) fn begin_batch(&mut self) {
+        debug_assert!(self.buffers.is_empty(), "a batch begins with its buffers emptied");
+        self.marks.clear();
+        if !self.stood_seats.is_empty() {
+            self.stood_seats.clear();
+        }
+    }
+
+    /// Opens the next turn of the batch.
+    pub(crate) fn begin_turn(&mut self, sent: u64) {
+        self.turn_mailed = self.buffers.mailed.len();
+        self.turn_sent = sent;
+        self.turn_closes = false;
+    }
+
+    /// Whether the turn open asked to close its actor.
+    pub(crate) const fn closes(&self) -> bool {
+        self.turn_closes
+    }
+
+    /// How many pieces of mail the actor of the turn open has sent, that turn's so far included.
+    pub(crate) const fn sent(&self) -> u64 {
+        self.turn_sent
+    }
+
+    /// Marks where the turn open ends, which handled an item at `chain`.
+    pub(crate) fn mark(&mut self, chain: Chain) {
+        let mark = Mark {
+            mailed: self.buffers.mailed.len(),
+            lines: self.buffers.lines.len(),
+            effects: self.buffers.effects.len(),
+            stood: self.stood.len(),
+            chain,
+        };
+        self.marks.push(mark);
+    }
+
+    /// Where each turn of the batch that ran last ends in the buffers, in order, for the engine to route them by.
+    #[must_use]
+    pub fn marks(&self) -> &[Mark] {
+        &self.marks
+    }
+
+    /// Whether a turn since the last [`Self::take_stood`] stood up a child.
+    #[must_use]
+    pub fn has_stood(&self) -> bool {
+        !self.stood.is_empty()
+    }
+
+    /// Every list, as the engine reads them to route.
+    #[must_use]
+    pub const fn buffers(&self) -> &Buffers {
+        &self.buffers
+    }
+
+    /// Empties the three buffers, once what they hold has been routed, keeping their room.
+    pub fn empty_buffers(&mut self) {
+        self.buffers.mailed.clear();
+        self.buffers.lines.clear();
+        self.buffers.effects.clear();
     }
 
     /// Whether this turn has asked for nothing in any buffer.
@@ -464,10 +547,16 @@ impl Seat<'_> {
             (out.into_bytes(), written)
         })?;
         self.sent += 1;
+        // The turn handled notes its actor's count for its batch; a child's `begin` inside it counts its own.
+        if let During::Handling(_) = self.during {
+            self.asked.turn_sent = self.sent;
+        }
         let kind = KindId::of::<K>();
         // Mail of one kind to one receiver, sent back to back by sends the turn named, is one run: one effect, one item
         // in its stream.
+        let is_this_turns = self.asked.buffers.mailed.len() > self.asked.turn_mailed;
         if is_like_last
+            && is_this_turns
             && let Some(last) = self.asked.buffers.mailed.last_mut()
             && last.count + u64::from(last.bytes.pieces()) == self.sent
             && let Some(joined) = last.bytes.joined(bytes)
@@ -853,6 +942,7 @@ impl<'a, S> Turn<'a, S> {
     /// Closes this actor. Its closing turn runs in the next step.
     pub fn close(&mut self) {
         self.seat.ask(What::Close);
+        self.seat.asked.turn_closes = true;
     }
 
     /// Logs `text` at `level`. The line is kept when this turn fails.

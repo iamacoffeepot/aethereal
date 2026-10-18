@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::{
-    Above, Asked, Beginning, Chain, Ending, ErasedActorRef, Fault, Item, Level, Mail, MailId, Mailed, Runs, SeatNumber,
-    Seated, Table, To, Turn, Turning, section,
+    Above, Asked, Batch, Beginning, Chain, Ending, ErasedActorRef, Fault, Item, Level, Mail, MailId, Mailed, Peeked,
+    Runs, SeatNumber, Seated, Table, To, Turn, Turning, section,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -191,9 +191,11 @@ fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<String> {
     let table = Typed(Vec::new());
     let mut asked = Asked::new();
     let mut actor: Box<dyn Runs> = Box::new(actor);
-    let turning = Turning::new(ME, &PATH, Above::Chassis, &table, &(), &mut asked, 0, OTHER, CHAIN);
     let mail = Mail::new(kind, &[], OTHER, CHAIN.root, 1, 0);
-    let handled = actor.handle(Item::Mail(mail), turning);
+    let mut items = vec![Peeked { item: Item::Mail(mail), source: OTHER, chain: CHAIN }].into_iter();
+    let mut batch = Batch::new(&mut items, 1, ME, &PATH, Above::Chassis, &table, &(), &mut asked, 0);
+    actor.run(&mut batch);
+    let handled = batch.into_outcome();
     assert!(handled.is_ok());
 
     asked.lines().iter().map(|line| String::from(asked.text(line))).collect()

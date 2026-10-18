@@ -14,6 +14,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::mem;
+use core::ops::Range;
 
 /// Begins an actor of one type from its config's bytes.
 pub type Begin = fn(&[u8], Seated, &mut Asked) -> Result<(Box<dyn Runs>, ActorPath), Fault>;
@@ -116,34 +117,38 @@ pub fn turns(handle: u32, items: u32, len: u32) -> u64 {
         let Some(Slot::Live { runs, me, path }) = actors.get_mut(handle as usize) else {
             return 0;
         };
-        let inbox = &inbox[..(len as usize).min(inbox.len())];
-        runs.open(&Inboxed { items: inbox, fits: items as usize });
-        let mut rest = inbox;
-        let mut ran: u32 = 0;
+        let mut rest = &inbox[..(len as usize).min(inbox.len())];
+        let mut peeked = Vec::new();
         for _ in 0..items {
-            let Some((Peeked { item, source, chain }, after)) = read_item(rest) else {
+            let Some((item, after)) = read_item(rest) else {
                 break;
             };
+            peeked.push(item);
             rest = after;
-            let turning = Turning::new(*me, path, Above::Chassis, &Host, &(), asked, 0, source, chain);
-            let result = runs.handle(item, turning);
-            let failed = result.is_err();
-            write_turn(out, asked, result.err().as_ref());
-            ran += 1;
-            if failed {
-                break;
-            }
         }
+        let fits = peeked.len();
+        let mut peeked = peeked.into_iter();
+        let mut batch = Batch::new(&mut peeked, fits, *me, path, Above::Chassis, &Host, &(), asked, 0);
+        runs.run(&mut batch);
+        let outcome = batch.into_outcome();
+        let marks = asked.marks().to_vec();
+        let mut began = (0, 0);
+        for (index, mark) in marks.iter().enumerate() {
+            let is_last = index + 1 == marks.len();
+            let fault = if is_last {
+                outcome.as_ref().err()
+            } else {
+                None
+            };
+            write_turn(out, asked, began.0..mark.mailed, began.1..mark.lines, fault);
+            began = (mark.mailed, mark.lines);
+        }
+        let ran = u32::try_from(marks.len()).unwrap_or(u32::MAX);
+        asked.empty();
         out[..4].copy_from_slice(&ran.to_le_bytes());
 
         guest.out_at()
     })
-}
-
-/// The batch a guest's host wrote into its inbox.
-struct Inboxed<'a> {
-    items: &'a [u8],
-    fits: usize,
 }
 
 /// One item read from the inbox, and what follows it.
@@ -162,23 +167,6 @@ fn read_item(items: &[u8]) -> Option<(Peeked<'_>, &[u8])> {
     Some((Peeked { item: Item::Mail(mail), source, chain: Chain { root, depth } }, rest))
 }
 
-impl Batch for Inboxed<'_> {
-    fn fits(&self) -> usize {
-        self.fits
-    }
-
-    fn each(&self, visit: &mut dyn FnMut(Peeked<'_>)) {
-        let mut items = self.items;
-        for _ in 0..self.fits {
-            let Some((peeked, rest)) = read_item(items) else {
-                return;
-            };
-            visit(peeked);
-            items = rest;
-        }
-    }
-}
-
 impl Guest {
     /// Where what the last call asked for lies.
     fn out_at(&self) -> u64 {
@@ -190,13 +178,16 @@ impl Guest {
         let Self { out, asked, .. } = self;
         out.clear();
         out.extend_from_slice(&1_u32.to_le_bytes());
-        write_turn(out, asked, fault);
+        let buffers = asked.buffers();
+        let (mailed, lines) = (0..buffers.mailed.len(), 0..buffers.lines.len());
+        write_turn(out, asked, mailed, lines, fault);
+        asked.empty();
     }
 }
 
-/// Writes what one turn asked for after what `out` holds, and empties the buffers it was asked into: whether it
-/// failed, and with what fault; the mail it sent; and the lines it logged.
-fn write_turn(out: &mut Vec<u8>, asked: &mut Asked, fault: Option<&Fault>) {
+/// Writes what one turn asked for after what `out` holds, its mail at `mailed` and its lines at `lines` in the
+/// buffers: whether it failed, and with what fault; the mail it sent; and the lines it logged.
+fn write_turn(out: &mut Vec<u8>, asked: &Asked, mailed: Range<usize>, lines: Range<usize>, fault: Option<&Fault>) {
     match fault {
         None => out.extend_from_slice(&0_u32.to_le_bytes()),
         Some(fault) => {
@@ -205,7 +196,8 @@ fn write_turn(out: &mut Vec<u8>, asked: &mut Asked, fault: Option<&Fault>) {
             write_bytes(out, fault.bytes());
         }
     }
-    let mailed = asked.mailed();
+    let buffers = asked.buffers();
+    let mailed = &buffers.mailed[mailed];
     out.extend_from_slice(&count(mailed.len()).to_le_bytes());
     for piece in mailed {
         out.extend_from_slice(&piece.to.id.bits().to_le_bytes());
@@ -213,7 +205,7 @@ fn write_turn(out: &mut Vec<u8>, asked: &mut Asked, fault: Option<&Fault>) {
         out.extend_from_slice(&piece.kind.plain_bytes());
         write_bytes(out, asked.arena().read(piece.bytes).unwrap_or_default());
     }
-    let lines = asked.lines();
+    let lines = &buffers.lines[lines];
     out.extend_from_slice(&count(lines.len()).to_le_bytes());
     for line in lines {
         let level: u32 = match line.level {
@@ -225,8 +217,6 @@ fn write_turn(out: &mut Vec<u8>, asked: &mut Asked, fault: Option<&Fault>) {
         out.extend_from_slice(&level.to_le_bytes());
         write_bytes(out, asked.text(line).as_bytes());
     }
-
-    asked.empty();
 }
 
 /// Writes `bytes` after their count.

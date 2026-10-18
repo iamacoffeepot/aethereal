@@ -578,13 +578,23 @@ fn item_placed_under_a_seat_reaches_only_the_actor_it_was_placed_for() {
     assert_eq!(step(&mut engine), ["1 saw closed"]);
 }
 
-/// A clock that moves a microsecond each time it is read, so every turn is measured to cost something.
+/// A clock that moves a microsecond each time it is read, so every batch of turns is measured to cost something.
 #[derive(Default)]
 struct Ticking(AtomicU64);
 
 impl Clock for Ticking {
     fn nanos(&self) -> u64 {
         self.0.fetch_add(1_000, Ordering::Relaxed)
+    }
+}
+
+/// A clock that moves a slice's worth each time it is read, so an actor is cut off at its slice after its first batch.
+#[derive(Default)]
+struct Racing(AtomicU64);
+
+impl Clock for Racing {
+    fn nanos(&self) -> u64 {
+        self.0.fetch_add(50_000, Ordering::Relaxed)
     }
 }
 
@@ -839,7 +849,7 @@ fn run_fuses_its_first_piece_and_mails_the_rest() {
 
 /// Runs one step planned for `workers` workers on this thread, shared or whole as the plan says, timed by `clock`,
 /// and answers with what its turns said.
-fn step_on(engine: &mut Engine, workers: usize, clock: &Ticking) -> Vec<String> {
+fn step_on(engine: &mut Engine, workers: usize, clock: &impl Clock) -> Vec<String> {
     let workers = Workers { active: workers, max: workers, wake_nanos: 0, split: SplitCost::NONE };
     match engine.plan(workers).into_split() {
         Split::Whole(whole) => {
@@ -1241,7 +1251,7 @@ fn mail_carried_past_its_receivers_slice_keeps_its_blob_until_it_is_handed() {
         let Ok(_) = engine.add_root::<Holder>(&(), HolderConfig { to_self: Vec::new(), gives: 3000 }) else {
             panic!("the holder begins");
         };
-        let clock = Ticking::default();
+        let clock = Racing::default();
         let mut steps = 0;
         while !engine.is_idle() {
             step_on(&mut engine, 2, &clock);

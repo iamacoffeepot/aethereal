@@ -28,8 +28,8 @@ use crate::{
 };
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
-    Above, Actor, Arena, Asked, Beginning, BlobHash, BlobRef, Buffers, Chain, Closing, Code, Declared, Effect, Fault,
-    How, Item, Mail, MailId, Mailed, Puts, Refused, Runs, SeatNumber, Seated, Seats, Stood, Turning, What, Why,
+    Above, Actor, Arena, Asked, Batch, Beginning, BlobHash, BlobRef, Buffers, Closing, Code, Declared, Effect, Fault,
+    How, MailId, Mailed, Mark, Puts, Refused, Runs, SeatNumber, Seated, Seats, Stood, What, Why,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use birth::Births;
@@ -294,11 +294,13 @@ enum Work {
     Closing,
 }
 
-/// One finished turn, as its worker routes it.
+/// One finished turn, as its worker routes it: where its entries lie in the buffers, the children it stood up, and
+/// the context its effects were emitted in.
 struct Ran {
-    /// The children it stood up.
+    mailed: Range<usize>,
+    lines: Range<usize>,
+    effects: Range<usize>,
     stood: Vec<Stood>,
-    /// The context its effects were emitted in.
     context: Context,
 }
 
@@ -1202,8 +1204,9 @@ impl Reading<'_> {
                         lists.fusing.hops.closing += u64::try_from(sends).unwrap_or(u64::MAX);
                     }
 
-                    let ran = Ran { stood: Vec::new(), context: *context };
-                    lists.route(ran, asked, me.id);
+                    let ran = Ran::all(asked, *context);
+                    lists.route(ran, asked, me.id, None);
+                    asked.empty_buffers();
                 });
                 // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
                 seating.seated.remove(me);
@@ -1226,28 +1229,25 @@ impl Reading<'_> {
                 let carried = streams.carried();
                 let mut taken = 0;
                 let mut is_spent = false;
-                'batches: loop {
+                loop {
                     let fits = self.fits(&mut slice, clock, seat.kind, &pieces);
-                    actor.open(&batch::Waiting { reading: self, pieces: &pieces, carried, fits });
-                    for _ in 0..fits {
-                        let Some(handed) = pieces.next() else {
-                            break 'batches;
-                        };
-                        // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
-                        // worker, beyond what the actor's code takes.
-                        tally.time(key(item_kind(handed)), clock, || {
+                    let Some(first) = pieces.clone().next() else {
+                        break;
+                    };
+                    // A batch is timed whole, from its items handed to what its turns asked for routed: what it
+                    // costs the worker, beyond what the actor's code takes.
+                    let ran = tally.time_batch(key(item_kind(first)), clock, || {
+                        let outcome = {
                             let table = Since {
                                 table: self.table,
                                 stood: &lists.fusing.stood,
                                 sees: Sees::Step,
                                 blobs: self.blobs,
                             };
-                            asked.next_turn();
-                            let source = handed.source();
-                            let (item, context) = batch::read(handed, self, carried);
-                            // The item sits one above what the turn sends in its chain.
-                            let chain = Chain { root: context.root, depth: context.depth - 1 };
-                            let turning = Turning::new(
+                            let mut items = batch::Waiting { reading: self, pieces: &mut pieces, carried };
+                            let mut batch = Batch::new(
+                                &mut items,
+                                fits,
                                 me,
                                 &seat.path,
                                 seat.above,
@@ -1255,17 +1255,18 @@ impl Reading<'_> {
                                 &seat.made,
                                 asked,
                                 stepped.sent,
-                                source,
-                                chain,
                             );
-                            let ran = Ran::of(me, actor.handle(item, turning), asked, context);
+                            actor.run(&mut batch);
 
-                            Self::finish(me, ran, Origin::Waiting, seating, lives, asked, lists, &mut stepped);
-                        });
-                        taken += 1;
-                        if stepped.ended {
-                            break 'batches;
-                        }
+                            batch.into_outcome()
+                        };
+
+                        Self::route_batch(me, Origin::Waiting, outcome, seating, lives, asked, lists, &mut stepped)
+                    });
+                    taken += ran;
+                    let is_over = stepped.ended || (ran as usize) < fits;
+                    if is_over {
+                        break;
                     }
                     let has_sent = stepped.sent > sent_before;
                     is_spent = has_sent && slice.is_spent(clock);
@@ -1299,7 +1300,7 @@ impl Reading<'_> {
     /// next item's kind costs is not known; and otherwise as many as that cost goes into what is left, at least one.
     fn fits(&self, slice: &mut Slice, clock: &impl Clock, actor: KindId, pieces: &stream::Pieces<'_>) -> usize {
         if !slice.is_kept() {
-            return usize::MAX;
+            return BATCH_MOST;
         }
         // Most actors have fewer items than the clock is read after, and their slice is never timed.
         let is_first = slice.is_untimed();
@@ -1313,7 +1314,7 @@ impl Reading<'_> {
             return SLICE_EVERY as usize;
         };
 
-        usize::try_from(slice.left(clock) / cost.max(1)).unwrap_or(usize::MAX).max(1)
+        usize::try_from(slice.left(clock) / cost.max(1)).unwrap_or(usize::MAX).clamp(1, BATCH_MOST)
     }
 }
 
@@ -1345,34 +1346,101 @@ impl Reading<'_> {
             return;
         };
 
-        actor.open(&batch::OneHop { reading: self, hop: &hop, lists });
-        let sent_before = stepped.sent;
         let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
-        // Timed whole, as a turn of a waiting item is.
-        tally.time(key, clock, || {
-            asked.next_turn();
-            let handled = {
+        // Timed whole, as a batch of waiting items is.
+        tally.time_batch(key, clock, || {
+            let outcome = {
                 let table = Since {
                     table: self.table,
                     stood: &lists.fusing.stood,
                     sees: Sees::Run(lists.fusing.run(hop.run)),
                     blobs: self.blobs,
                 };
-                let bytes = lists.fusing.bytes(&hop);
-                let mail = Mail::new(hop.kind, bytes, hop.from, hop.root, hop.depth, self.read_limit);
-                let chain = Chain { root: hop.root, depth: hop.depth };
-                let turning =
-                    Turning::new(me, &seat.path, seat.above, &table, &seat.made, asked, sent_before, hop.from, chain);
+                let mut items = batch::OneHop::new(self, &hop, lists);
+                let mut batch =
+                    Batch::new(&mut items, 1, me, &seat.path, seat.above, &table, &seat.made, asked, stepped.sent);
+                actor.run(&mut batch);
 
-                actor.handle(Item::Mail(mail), turning)
+                batch.into_outcome()
             };
-            let context = Context { root: hop.root, depth: hop.depth + 1 };
-            let ran = Ran::of(me, handled, asked, context);
-            Self::finish(me, ran, Origin::Hop(hop.run), seating, lives, asked, lists, &mut stepped);
+
+            Self::route_batch(me, Origin::Hop(hop.run), outcome, seating, lives, asked, lists, &mut stepped)
         });
 
         lists.fusing.keep(me, stepped);
         put_back(actors, me, actor);
+    }
+
+    /// Routes the turns of the batch the actor `me` names just ran, for `origin`, which ended in `outcome`, turn by
+    /// turn as each was marked, into `lists`, and empties the buffers: how many turns there were.
+    #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
+    #[allow(clippy::inline_always, reason = "once for every batch: a call here costs a tenth of a turn, measured")]
+    #[inline(always)]
+    fn route_batch(
+        me: Seated,
+        origin: Origin,
+        outcome: Result<(), Fault>,
+        seating: &Seating,
+        lives: &lives::Shard,
+        asked: &mut Asked,
+        lists: &mut Lists,
+        stepped: &mut Stepped,
+    ) -> u32 {
+        let turns = asked.marks().len();
+        let Some(last) = turns.checked_sub(1) else {
+            return 0;
+        };
+        // Most batches stand up no child, and their list is left where it is.
+        let mut stood = if asked.has_stood() {
+            asked.take_stood()
+        } else {
+            Vec::new()
+        };
+        let first = asked.marks()[0];
+        // A turn that fails changes nothing outside its actor: what it asked for is dropped but for its log lines,
+        // and the engine writes the one effect that says the actor ended (ADR-0009). The seats of the children it
+        // stood up are given back. Only the last turn of a batch fails.
+        if let Err(fault) = outcome {
+            let began = last.checked_sub(1).map_or_else(|| Mark::start(first.chain), |before| asked.marks()[before]);
+            let buffers = asked.buffers_mut();
+            buffers.mailed.truncate(began.mailed);
+            buffers.effects.truncate(began.effects);
+            buffers.effects.push(Effect::new(me, What::Failed(fault)));
+            for child in stood.drain(began.stood.min(stood.len())..) {
+                asked.seats_mut().give_back(child.seated().seat);
+            }
+        }
+        let mut began = Mark::start(first.chain);
+        for index in 0..turns {
+            let mark = asked.marks()[index];
+            let buffers = asked.buffers();
+            let mailed = began.mailed..mark.mailed.min(buffers.mailed.len());
+            let effects_end = if index == last {
+                buffers.effects.len()
+            } else {
+                mark.effects
+            };
+            let children = (mark.stood - began.stood).min(stood.len());
+            // Most turns stand up no child, and taking none out of the list would still walk it.
+            let turn_stood = if children == 0 {
+                Vec::new()
+            } else {
+                stood.drain(..children).collect()
+            };
+            let context = Context { root: mark.chain.root, depth: mark.chain.depth + 1 };
+            let ran = Ran {
+                mailed,
+                lines: began.lines..mark.lines,
+                effects: began.effects..effects_end,
+                stood: turn_stood,
+                context,
+            };
+            Self::finish(me, ran, origin, seating, lives, asked, lists, stepped);
+            began = mark;
+        }
+        asked.empty_buffers();
+
+        u32::try_from(turns).unwrap_or(u32::MAX)
     }
 
     /// Routes the finished turn `ran` of the actor `me` names into `lists`, and notes in `stepped` what it did: the
@@ -1399,7 +1467,7 @@ impl Reading<'_> {
         let begun_sent = if ran.stood.is_empty() {
             Vec::new()
         } else {
-            let mailed = &asked.buffers_mut().mailed;
+            let mailed = &asked.buffers_mut().mailed[ran.mailed.clone()];
 
             senders(mailed).into_iter().filter(|(actor, _)| actor.id != me.id).collect()
         };
@@ -1415,10 +1483,12 @@ impl Reading<'_> {
             Origin::Waiting => None,
             Origin::Hop(run) => Some(run),
         };
+        // The send that became a hop, which is routed as nothing else.
+        let mut fused = None;
         // Once the budget is spent no hop is made, so nothing that decides one need be looked at.
         if lists.fusing.may_hop() {
             let mailed = &asked.buffers_mut().mailed;
-            let mut sends = (0..mailed.len()).filter(|index| is_send_by(&mailed[*index], me));
+            let mut sends = ran.mailed.clone().filter(|index| is_send_by(&mailed[*index], me));
             let first = sends.next();
             let burst = sends.count();
             if let Some(index) = first {
@@ -1436,15 +1506,12 @@ impl Reading<'_> {
                     };
                     let (at, len) = lists.fusing.keep_bytes(asked.arena().read(first).unwrap_or_default());
                     let mailed = &mut asked.buffers_mut().mailed;
-                    // Of a run, the first piece is fused and the rest stays mail. The fused send is most often the
-                    // turn's last piece of mail, and nothing is moved for it.
+                    // Of a run, the first piece is fused and the rest stays mail; a send of one piece is not routed.
                     if is_run && let Some(rest) = bytes.rest() {
                         mailed[index].count += 1;
                         mailed[index].bytes = rest;
-                    } else if index + 1 == mailed.len() {
-                        mailed.pop();
                     } else {
-                        mailed.remove(index);
+                        fused = Some(index);
                     }
                     let context = ran.context;
                     // A fused send from a waiting item begins a run; one from a hop goes on with the hop's.
@@ -1467,7 +1534,8 @@ impl Reading<'_> {
             }
             if !stepped.spilled {
                 let mailed = &asked.buffers_mut().mailed;
-                stepped.spilled = mailed.iter().any(|mailed| send_into(mailed, me, seating));
+                let unfused = ran.mailed.clone().filter(|index| Some(*index) != fused);
+                stepped.spilled = unfused.into_iter().any(|index| send_into(&mailed[index], me, seating));
             }
         }
 
@@ -1478,11 +1546,11 @@ impl Reading<'_> {
             lists.fusing.run_mut(run).stand(stood);
         }
         // Most turns of a busy actor ask for nothing, and then there is nothing to route.
-        let asked_nothing = asked.asked_nothing() && ran.stood.is_empty();
+        let asked_nothing = ran.is_empty() && ran.stood.is_empty();
         let seen = if asked_nothing {
             Seen::default()
         } else {
-            lists.route(ran, asked, me.id)
+            lists.route(ran, asked, me.id, fused)
         };
         for (child, sent) in begun_sent {
             let (key, record) = lives::sent(child, sent);
@@ -1570,22 +1638,26 @@ impl Lists {
     /// child left.
     #[allow(clippy::inline_always, reason = "once for every turn: a call here costs a tenth of a turn, measured")]
     #[inline(always)]
-    fn route(&mut self, ran: Ran, asked: &mut Asked, me: ActorId) -> Seen {
-        let Ran { stood, context } = ran;
+    fn route(&mut self, ran: Ran, asked: &Asked, me: ActorId, fused: Option<usize>) -> Seen {
+        let Ran { mailed, lines, effects, stood, context } = ran;
         let routes = &mut self.routes;
-        let buffers = asked.buffers_mut();
+        let buffers = asked.buffers();
         let mut seen = Seen::default();
         // Each buffer goes to the views that read it: the lines to the log, ahead of the fault a failed turn ends
         // with; the effects to every view that keeps something of them; the mail to the streams alone.
-        for line in buffers.lines.drain(..) {
-            let (key, record) = log::line(line);
+        for line in &buffers.lines[lines] {
+            let (key, record) = log::line(*line);
             routes.log.put(key, record);
         }
-        for effect in buffers.effects.drain(..) {
-            seen.see(&effect, me);
-            routes.route(&effect, &context);
+        for effect in &buffers.effects[effects] {
+            seen.see(effect, me);
+            routes.route(effect, &context);
         }
-        for mailed in buffers.mailed.drain(..) {
+        for index in mailed {
+            if Some(index) == fused {
+                continue;
+            }
+            let mailed = buffers.mailed[index];
             seen.sent(&mailed, me);
             let (key, entry) = stream::entry(mailed, &context);
             routes.streams.put(key, entry);
@@ -1617,25 +1689,22 @@ impl Routes {
 }
 
 impl Ran {
-    /// The turn of the actor `me` names that returned `outcome`, having asked for what is in `asked` since its turn began,
-    /// in `context`.
-    ///
-    /// A turn that fails changes nothing outside its actor: what it asked for is dropped but for its log lines,
-    /// and the engine writes the one effect that says the actor ended (ADR-0009). The seats of the children it
-    /// stood up are given back.
-    #[allow(clippy::inline_always, reason = "once for every turn: a call here costs a tenth of a turn, measured")]
-    #[inline(always)]
-    fn of(me: Seated, outcome: Result<(), Fault>, asked: &mut Asked, context: Context) -> Self {
-        let mut stood = asked.take_stood();
-        if let Err(fault) = outcome {
-            keep_lines(asked.buffers_mut());
-            asked.buffers_mut().effects.push(Effect::new(me, What::Failed(fault)));
-            for child in mem::take(&mut stood) {
-                asked.seats_mut().give_back(child.seated().seat);
-            }
-        }
+    /// The one turn whose entries are everything in `asked`, in `context`: a closing turn's.
+    fn all(asked: &mut Asked, context: Context) -> Self {
+        let buffers = asked.buffers_mut();
 
-        Self { stood, context }
+        Self {
+            mailed: 0..buffers.mailed.len(),
+            lines: 0..buffers.lines.len(),
+            effects: 0..buffers.effects.len(),
+            stood: Vec::new(),
+            context,
+        }
+    }
+
+    /// Whether it asked for nothing in any buffer.
+    fn is_empty(&self) -> bool {
+        self.mailed.is_empty() && self.lines.is_empty() && self.effects.is_empty()
     }
 }
 
@@ -1743,6 +1812,10 @@ const fn why(how: &How) -> Why {
 
 /// How many turns an actor kept to a slice runs between looks at the clock.
 const SLICE_EVERY: u32 = 32;
+
+/// The most items one batch holds, however much of its slice is left: what its turns ask for waits in the buffers until
+/// the batch is routed, and stays in cache while the buffers are small.
+const BATCH_MOST: usize = 64;
 
 /// How far one actor has gone into its slice of a step: how many turns it has taken, and when its slice began.
 struct Slice {

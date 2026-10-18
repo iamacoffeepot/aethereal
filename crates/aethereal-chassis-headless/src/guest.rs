@@ -5,7 +5,7 @@
 
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Batch, Declared, FalseSend, Fault, Hosted, Item, Level, Refused, Role, Runs, SeatNumber, Seated, Trapped, Turning,
+    Batch, Declared, FalseSend, Fault, Hosted, Item, Level, Refused, Role, Runs, SeatNumber, Seated, Trapped,
 };
 use aethereal_data::{ActorId, Budget, KindId, PathSegment, from_bytes};
 use aethereal_substrate::Engine;
@@ -57,19 +57,6 @@ struct Guest {
     instance: Shared,
     handle: u32,
     declared: &'static Declared,
-    /// What the guest's turns of the batch it was last shown asked for, and how far its host has read.
-    ran: Ran,
-}
-
-/// What a guest's batch left to read.
-#[derive(Clone, Copy)]
-enum Ran {
-    /// No batch yet, or one whose turns are all read.
-    Nothing,
-    /// Its turns lie where `out` says in the guest's memory, read up to `read` bytes in.
-    At { out: u64, read: usize },
-    /// The call that ran them trapped: every turn of the batch fails.
-    Trapped,
 }
 
 impl Default for Guests {
@@ -196,7 +183,7 @@ pub fn add_root(
         read_turn(&mut out, &mut hosted).filter(|_| one == Some(1)).unwrap_or_else(|| Err(trapped()))?;
         drop(guard);
 
-        Ok(Box::new(Guest { instance: Arc::clone(instance), handle, declared, ran: Ran::Nothing }))
+        Ok(Box::new(Guest { instance: Arc::clone(instance), handle, declared }))
     })
 }
 
@@ -205,7 +192,7 @@ impl Runs for Guest {
         self.declared
     }
 
-    fn open(&mut self, batch: &dyn Batch) {
+    fn run(&mut self, batch: &mut Batch<'_, '_>) {
         let mut guard = lock(&self.instance);
         let held = &mut *guard;
         let mut staged = std::mem::take(&mut held.staged);
@@ -213,33 +200,32 @@ impl Runs for Guest {
         let len = held.write_inbox(&[&staged]);
         held.staged = staged;
         let called = held.turns.call(&mut held.store, (self.handle, items, len));
-        self.ran = match called {
-            Ok(out) => Ran::At { out, read: 4 },
-            Err(_) => Ran::Trapped,
+        let out = called.ok().and_then(|out| held.out_bytes(out));
+        let Some(mut out) = out else {
+            // Every actor of a trapped instance ends with it: its next turn fails.
+            if let Some((_, _)) = batch.next() {
+                batch.mark(Err(trapped()));
+            }
+            return;
         };
-    }
-
-    fn handle(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
-        let Ran::At { out, read } = self.ran else {
-            return Err(trapped());
-        };
-        let role = match &item {
-            Item::Mail(mail) if self.declared.lists(mail.kind()) => Role::Kind(mail.kind()),
-            Item::Mail(_) => Role::Others,
-            Item::Ended(_) => Role::Ended,
-        };
-        let mut hosted = turning.hosted(self.declared, role);
-        let guard = lock(&self.instance);
-        let Some(all) = guard.out_bytes(out) else {
-            return Err(trapped());
-        };
-        let mut rest = all.get(read..).unwrap_or_default();
-        let replayed = read_turn(&mut rest, &mut hosted).unwrap_or_else(|| Err(trapped()));
-        let read = all.len() - rest.len();
-        drop(guard);
-        self.ran = Ran::At { out, read };
-
-        replayed
+        let ran = take_u32(&mut out).unwrap_or(0);
+        let declared = self.declared;
+        for _ in 0..ran {
+            let Some((item, turning)) = batch.next() else {
+                break;
+            };
+            let role = match &item {
+                Item::Mail(mail) if declared.lists(mail.kind()) => Role::Kind(mail.kind()),
+                Item::Mail(_) => Role::Others,
+                Item::Ended(_) => Role::Ended,
+            };
+            let mut hosted = turning.hosted(declared, role);
+            let result = read_turn(&mut out, &mut hosted).unwrap_or_else(|| Err(trapped()));
+            let failed = batch.mark(result);
+            if failed {
+                break;
+            }
+        }
     }
 
     fn end(self: Box<Self>, _: aethereal_actor::Closing<'_>) -> Result<(), Fault> {
@@ -249,7 +235,7 @@ impl Runs for Guest {
 
 /// Writes the mail `batch` fits into `staged`, each as the guest reads an item, and answers with how many there are: as
 /// far as its first item that is not mail, which a guest does not handle yet.
-fn stage(batch: &dyn Batch, staged: &mut Vec<u8>) -> u32 {
+fn stage(batch: &Batch<'_, '_>, staged: &mut Vec<u8>) -> u32 {
     staged.clear();
     let mut count = 0;
     let mut is_mail = true;

@@ -65,6 +65,8 @@ struct Sum {
     timed: u64,
     /// The nanoseconds the timed turns took.
     nanos: u64,
+    /// How many turns have gone by untimed since one was timed.
+    untimed: u64,
 }
 
 /// One turn in this many under a key is timed, after the first.
@@ -132,6 +134,44 @@ impl Tally {
         sum.timed += 1;
 
         done
+    }
+}
+
+impl Tally {
+    /// Runs `batch`, a batch of turns whose first is under `key`, which answers how many turns it ran, and times it by
+    /// `clock`, every turn of it counted under `key`, when it is the first under that key or [`SAMPLE`] turns have
+    /// gone by untimed since one was.
+    #[allow(clippy::inline_always, reason = "once for every batch: a call here costs a tenth of a turn, measured")]
+    #[inline(always)]
+    pub(super) fn time_batch(&mut self, key: CostKey, clock: &impl Clock, batch: impl FnOnce() -> u32) -> u32 {
+        let is_last = self.sums.get(self.last).is_some_and(|(kept, _)| *kept == key);
+        let place = if is_last {
+            self.last
+        } else {
+            let found = self.sums.iter().position(|(kept, _)| *kept == key);
+            found.unwrap_or_else(|| {
+                self.sums.push((key, Sum::default()));
+                self.sums.len() - 1
+            })
+        };
+        self.last = place;
+        let sum = &mut self.sums[place].1;
+        let is_timed = sum.timed == 0 || sum.untimed >= SAMPLE;
+        if !is_timed {
+            let turns = u64::from(batch());
+            sum.turns += turns;
+            sum.untimed += turns;
+            return u32::try_from(turns).unwrap_or(u32::MAX);
+        }
+
+        let start = clock.nanos();
+        let turns = batch();
+        sum.nanos += clock.nanos().saturating_sub(start);
+        sum.turns += u64::from(turns);
+        sum.timed += u64::from(turns);
+        sum.untimed = 0;
+
+        turns
     }
 }
 
