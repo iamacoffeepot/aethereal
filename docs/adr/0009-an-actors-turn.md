@@ -202,12 +202,12 @@ pub enum To {
 
 ```rust
 pub enum Code {
-    Linked(KindName),           // the program's actor of this kind
-    Blob(BlobId, KindName),     // a guest: this blob, and which actor in it
+    Linked(&'static Declared),  // the program's actor of this type, as it declares itself
+    Blob(&'static BlobType),    // a guest: a type a blob makes, its blob and what it declares, kept by its host
 }
 ```
 
-- **A spawn of a guest says which blob, and which actor in it.** Each spawn effect carries the child's `Code`, and a `Code` holds what its case needs and nothing beside it. A guest is named by a place: the blob, and the kind of the actor in it, since one blob makes several kinds. A native actor is named by its kind alone. The kind in either case is the child's name in its path (ADR-0008). A guest child runs that blob from then on.
+- **A spawn of a guest says which blob, and which actor in it.** Each spawn effect carries the child's `Code`, and a `Code` holds what its case needs and nothing beside it, behind one pointer in either case: a blob's id held in place made every effect, spawn or not, 16 bytes wider, and a program that spawns much paid for it on every piece of mail. A guest is named by a place: the blob, and the kind of the actor in it, since one blob makes several kinds. A native actor is named by its kind alone. The kind in either case is the child's name in its path (ADR-0008). A guest child runs that blob from then on.
 - **Any actor may spawn a native kind, a guest among them.** The program keeps the native kinds it can make, by name. A native parent names the child's type and a guest names its kind, and either way the child's code is the one the program was built with for that name. A program holds one such code for a name, so a spawn of a native kind has nothing further to choose: its `Code` is `Linked` and holds the kind. Which build the program is belongs to a record of the engine as a whole, stated once, and no effect carries it.
 - **A library is a root, and it alone says which blob a kind is.** A library registers a namespace, and a namespace is registered once. The kinds named under it are the library's: `aether.chat.room` is `aether.chat`'s. Only the library puts a blob for one of its kinds into the engine, and only it says which blob is that kind's now. That is the kind's **head**.
 - **A library moves a head with `Publish`.** The effect names one of the library's kinds and the blob its head now points at. The kind is under the namespace the library registered, which the library knows, so that is checked where the effect is asked for. A blob that makes several kinds takes one `Publish` for each. The engine applies a `Publish` and keeps the heads.
