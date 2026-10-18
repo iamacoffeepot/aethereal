@@ -25,6 +25,7 @@ mod fault;
 pub mod guest;
 mod item;
 mod mail;
+pub mod records;
 mod reference;
 mod seat;
 pub mod section;

@@ -4,12 +4,14 @@
 //! A guest runs the same actors a native program does, on the same turns. Its
 //! table answers nothing about other actors, so the turn checks no send: its
 //! host checks each one as it reads the turn's mail. After each call the guest
-//! writes what its turn asked for into one buffer of plain bytes, which its host
-//! reads where it lies.
+//! writes a record of what each of its turns asked for, in the layout of
+//! [`records`](crate::records), and its host reads each where it lies, the
+//! bytes of mail and the text of lines among them.
 
-use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Chain, Children, Declared, Fault, Item};
-use crate::{Batch, Beginning, Level, Mail, MailId, Peeked, Runs, SeatNumber, Seated, Table, Turning, What};
-use aethereal_data::{ActorId, ActorPath, Budget, Decode, KindId, PathSegment, Reader, from_bytes};
+use crate::records::{ItemHead, LineRecord, OutHead, SendRecord, Span, Stopped, TurnEnds};
+use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Fault, Item};
+use crate::{Batch, Beginning, Mail, Peeked, Runs, SeatNumber, Seated, Table, Turning, What};
+use aethereal_data::{ActorId, ActorPath, Budget, Decode, PathSegment, Reader};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::cell::RefCell;
@@ -83,37 +85,42 @@ pub fn begin_at(begins: &[Begin], of: u32, me: u64, seat: u64, len: u32) -> u32 
         let Some(begin) = begins.get(of as usize) else {
             return u32::MAX;
         };
+        // What the last call asked for has been read by now, so its buffers are emptied for this one.
+        guest.asked.empty();
         let inbox = mem::take(&mut guest.inbox);
         let len = (len as usize).min(inbox.len());
         let made = begin(&inbox[..len], me, &mut guest.asked);
         guest.inbox = inbox;
-        let (handle, fault) = match made {
+        let (handle, last) = match made {
             Ok((runs, path)) => {
                 let handle = u32::try_from(guest.actors.len()).unwrap_or(u32::MAX);
                 guest.actors.push(Slot::Live { runs, me, path });
-                (handle, None)
+                (handle, Last::Ran)
             }
-            Err(fault) => (u32::MAX, Some(fault)),
+            Err(fault) => (u32::MAX, Last::Failed(fault)),
         };
-        guest.write_out(fault.as_ref());
+        let Guest { asked, out, .. } = guest;
+        out.clear();
+        out.resize(OutHead::BYTES, 0);
+        write_ends(out, asked);
+        write_records(out, asked, 1, last);
 
         handle
     })
 }
 
-/// How many bytes each item in the inbox begins with: its kind's id, its source's id and seat, its chain's root,
-/// sender and count, its depth, and the length of its bytes.
-pub const ITEM_HEAD: usize = 8 + 8 + 8 + 8 + 8 + 4 + 4;
-
-/// Runs the actor `handle` names on the `items` items written into the first `len` bytes of the inbox, each a head of
-/// [`ITEM_HEAD`] bytes and then its bytes, one turn for each until one fails. Answers where what the turns asked for
-/// lies, as [`out`] does: how many turns ran, then for each whether it failed, and with what, its mail, and its lines.
+/// Runs the actor `handle` names on the `items` items written into the first `len` bytes of the inbox, each an
+/// [`ItemHead`] and then its bytes, one turn for each until one fails or closes the actor. Answers where what the turns
+/// asked for lies, as [`out`] does.
 #[must_use]
 pub fn turns(handle: u32, items: u32, len: u32) -> u64 {
     GUEST.with_borrow_mut(|guest| {
         let Guest { actors, inbox, asked, out } = &mut *guest;
+        // What the last call asked for has been read by now, so its buffers are emptied for this batch, whose turns
+        // all add to them.
+        asked.empty();
         out.clear();
-        out.extend_from_slice(&0_u32.to_le_bytes());
+        out.resize(OutHead::BYTES, 0);
         let Some(Slot::Live { runs, me, path }) = actors.get_mut(handle as usize) else {
             return 0;
         };
@@ -121,6 +128,7 @@ pub fn turns(handle: u32, items: u32, len: u32) -> u64 {
         runs.prepare(&Inboxed { items: inbox, fits: items as usize });
         let mut rest = inbox;
         let mut ran: u32 = 0;
+        let mut last = Last::Ran;
         for _ in 0..items {
             let Some((Peeked { item, source, chain }, after)) = read_item(rest) else {
                 break;
@@ -128,20 +136,30 @@ pub fn turns(handle: u32, items: u32, len: u32) -> u64 {
             rest = after;
             let turning = Turning::new(*me, path, Above::Chassis, &Host, &(), asked, 0, source, chain);
             let result = runs.turn(item, turning);
-            let failed = result.is_err();
-            let closes = asks_close(asked);
-            write_turn(out, asked, result.err().as_ref());
+            write_ends(out, asked);
             ran += 1;
+            last = match result {
+                Err(fault) => Last::Failed(fault),
+                Ok(()) if asks_close(asked) => Last::Closed,
+                Ok(()) => Last::Ran,
+            };
             // The engine asks for no turn after one that fails or closes the actor, so none is run.
-            let ends = failed || closes;
-            if ends {
+            let ends_batch = !matches!(last, Last::Ran);
+            if ends_batch {
                 break;
             }
         }
-        out[..4].copy_from_slice(&ran.to_le_bytes());
+        write_records(out, asked, ran, last);
 
         guest.out_at()
     })
+}
+
+/// How the last turn a guest ran ended: as [`Stopped`] says, with the fault itself while the guest still holds it.
+enum Last {
+    Ran,
+    Failed(Fault),
+    Closed,
 }
 
 /// The batch a guest's host wrote into its inbox.
@@ -152,18 +170,13 @@ struct Inboxed<'a> {
 
 /// One item read from the inbox, and what follows it.
 fn read_item(items: &[u8]) -> Option<(Peeked<'_>, &[u8])> {
-    let (head, rest) = items.split_at_checked(ITEM_HEAD)?;
-    let mut budget = Budget::new(8);
-    let kind = from_bytes::<KindId>(&head[..8], &mut budget).ok()?;
-    let number = |at: usize| u64::from_le_bytes(head[at..at + 8].try_into().unwrap_or_default());
-    let source = Seated { id: ActorId::new(number(8)), seat: SeatNumber::new(number(16)) };
-    let root = MailId { sender: ActorId::new(number(24)), count: number(32) };
-    let depth = u32::from_le_bytes(head[40..44].try_into().unwrap_or_default());
-    let len = u32::from_le_bytes(head[44..48].try_into().unwrap_or_default()) as usize;
-    let (bytes, rest) = rest.split_at_checked(len)?;
-    let mail = Mail::new(kind, bytes, source, root, depth, READ_LIMIT);
+    let head = ItemHead::read(items)?;
+    let rest = items.get(ItemHead::BYTES..)?;
+    let (bytes, rest) = rest.split_at_checked(head.len as usize)?;
+    let ItemHead { kind, source, chain, .. } = head;
+    let mail = Mail::new(kind, bytes, source, chain.root, chain.depth, READ_LIMIT);
 
-    Some((Peeked { item: Item::Mail(mail), source, chain: Chain { root, depth } }, rest))
+    Some((Peeked { item: Item::Mail(mail), source, chain }, rest))
 }
 
 impl Batch for Inboxed<'_> {
@@ -184,14 +197,6 @@ impl Guest {
     fn out_at(&self) -> u64 {
         (u64::from(address(self.out.as_ptr())) << 32) | self.out.len() as u64
     }
-
-    /// Writes what the last call, a `begin`, asked for into `out`, as one turn, as [`turns`] writes its turns.
-    fn write_out(&mut self, fault: Option<&Fault>) {
-        let Self { out, asked, .. } = self;
-        out.clear();
-        out.extend_from_slice(&1_u32.to_le_bytes());
-        write_turn(out, asked, fault);
-    }
 }
 
 /// Whether the turn that filled `asked` asked to close its actor.
@@ -199,46 +204,46 @@ fn asks_close(asked: &Asked) -> bool {
     asked.effects().iter().any(|effect| matches!(effect.what(), What::Close))
 }
 
-/// Writes what one turn asked for after what `out` holds, and empties the buffers it was asked into: whether it
-/// failed, and with what fault; the mail it sent; and the lines it logged.
-fn write_turn(out: &mut Vec<u8>, asked: &mut Asked, fault: Option<&Fault>) {
-    match fault {
-        None => out.extend_from_slice(&0_u32.to_le_bytes()),
-        Some(fault) => {
-            out.extend_from_slice(&1_u32.to_le_bytes());
-            out.extend_from_slice(&fault.kind().plain_bytes());
-            write_bytes(out, fault.bytes());
-        }
-    }
-    out.extend_from_slice(&u32::from(asks_close(asked)).to_le_bytes());
-    let mailed = asked.mailed();
-    out.extend_from_slice(&count(mailed.len()).to_le_bytes());
-    for piece in mailed {
-        out.extend_from_slice(&piece.to.id.bits().to_le_bytes());
-        out.extend_from_slice(&piece.to.seat.number().to_le_bytes());
-        out.extend_from_slice(&piece.kind.plain_bytes());
-        write_bytes(out, asked.arena().read(piece.bytes).unwrap_or_default());
-    }
-    let lines = asked.lines();
-    out.extend_from_slice(&count(lines.len()).to_le_bytes());
-    for line in lines {
-        let level: u32 = match line.level {
-            Level::Debug => 0,
-            Level::Info => 1,
-            Level::Warn => 2,
-            Level::Error => 3,
-        };
-        out.extend_from_slice(&level.to_le_bytes());
-        write_bytes(out, asked.text(line).as_bytes());
-    }
-
-    asked.empty();
+/// Writes where the turn just run ends in `asked`'s buffers, after the ends of the turns before it.
+fn write_ends(out: &mut Vec<u8>, asked: &Asked) {
+    let ends = TurnEnds { sends: count(asked.mailed().len()), lines: count(asked.lines().len()) };
+    out.extend_from_slice(&ends.to_bytes());
 }
 
-/// Writes `bytes` after their count.
-fn write_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
-    out.extend_from_slice(&count(bytes.len()).to_le_bytes());
-    out.extend_from_slice(bytes);
+/// Writes the record of each send and line in `asked`, after the ends of the `ran` turns that asked for them, and the
+/// head before them all, saying how the last of them ended. Each record says where its bytes lie in `asked`'s arena,
+/// which keeps them until the next call; a fault's bytes are copied after the records.
+fn write_records(out: &mut Vec<u8>, asked: &Asked, ran: u32, last: Last) {
+    let sends_at = out.len();
+    for piece in asked.mailed() {
+        let bytes = asked.arena().read(piece.bytes).unwrap_or_default();
+        out.extend_from_slice(&SendRecord { to: piece.to, kind: piece.kind, bytes: span(bytes) }.to_bytes());
+    }
+    let lines_at = out.len();
+    for line in asked.lines() {
+        out.extend_from_slice(&LineRecord { level: line.level, text: span(asked.text(line).as_bytes()) }.to_bytes());
+    }
+    let fault_at = out.len();
+    if let Last::Failed(fault) = &last {
+        out.extend_from_slice(fault.bytes());
+    }
+    // Every address is taken once the buffer is written, as it moves when it grows.
+    let base = address(out.as_ptr());
+    let at = |offset: usize| base + count(offset);
+    let stopped = match last {
+        Last::Ran => Stopped::No,
+        Last::Closed => Stopped::Closed,
+        Last::Failed(fault) => {
+            Stopped::Failed { kind: fault.kind(), bytes: Span { at: at(fault_at), len: count(fault.bytes().len()) } }
+        }
+    };
+    let head = OutHead { ran, stopped, turns_at: at(OutHead::BYTES), sends_at: at(sends_at), lines_at: at(lines_at) };
+    out[..OutHead::BYTES].copy_from_slice(&head.to_bytes());
+}
+
+/// Where `bytes` lie in the guest's memory.
+fn span(bytes: &[u8]) -> Span {
+    Span { at: address(bytes.as_ptr()), len: count(bytes.len()) }
 }
 
 /// A count of a guest's, which its 32-bit memory holds.

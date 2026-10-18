@@ -1,15 +1,14 @@
 //! The native guest host: guests' code run with wasmtime (ADR-0015).
 //!
 //! A spike: one instance for each blob, shared by all its actors behind a
-//! lock, and one item handed in for each call.
+//! lock. A batch's items are written straight into the guest's inbox, and what
+//! its turns asked for is read where the guest wrote it (ADR-0015).
 
+use aethereal_actor::records::{ItemHead, LineRecord, OutHead, SendRecord, Span, Stopped, TurnEnds};
 use aethereal_actor::section::{self, Made};
-use aethereal_actor::{
-    Batch, Declared, FalseSend, Fault, Hosted, Item, Level, Refused, Role, Runs, SeatNumber, Seated, Trapped, Turning,
-};
-use aethereal_data::{ActorId, Budget, KindId, PathSegment, from_bytes};
+use aethereal_actor::{Batch, Declared, FalseSend, Fault, Hosted, Item, Refused, Role, Runs, Trapped, Turning};
+use aethereal_data::{ActorId, Budget, PathSegment, from_bytes};
 use aethereal_substrate::Engine;
-use std::mem;
 use std::sync::{Arc, Mutex, MutexGuard};
 use wasmtime::{Memory, Module, Store, TypedFunc};
 
@@ -44,8 +43,6 @@ pub struct Instance {
     out: TypedFunc<(), u64>,
     begin: TypedFunc<(u32, u64, u64, u32), u32>,
     turns: TypedFunc<(u32, u32, u32), u64>,
-    /// Where a batch's items are written before they are copied into the guest's inbox, kept for its room.
-    staged: Vec<u8>,
     /// Where the guest's inbox is, and how many bytes it has room for: asked for again only when it must grow.
     inbox_at: usize,
     inbox_room: usize,
@@ -63,14 +60,15 @@ struct Guest {
     ran: Ran,
 }
 
-/// What a guest's batch left to read.
+/// What a guest's batch left to hand back.
 #[derive(Clone, Copy)]
 enum Ran {
-    /// No batch yet, or one whose turns are all read.
+    /// No batch yet.
     Nothing,
-    /// Its turns lie where `out` says in the guest's memory, read up to `read` bytes in.
-    At { out: u64, read: usize },
-    /// The call that ran them trapped: every turn of the batch fails.
+    /// Its turns' records lie where `head` says in the guest's memory: the `next` is to be handed back, and the turns
+    /// before it end where `before` says.
+    At { head: OutHead, next: u32, before: TurnEnds },
+    /// The call that ran them trapped, or wrote what does not read back: every turn of the batch fails.
     Trapped,
 }
 
@@ -131,17 +129,7 @@ impl Guests {
             panic!("guest code that entered has its exports");
         };
 
-        Arc::new(Mutex::new(Instance {
-            store,
-            memory,
-            inbox,
-            out,
-            begin,
-            turns,
-            staged: Vec::new(),
-            inbox_at: 0,
-            inbox_room: 0,
-        }))
+        Arc::new(Mutex::new(Instance { store, memory, inbox, out, begin, turns, inbox_at: 0, inbox_room: 0 }))
     }
 }
 
@@ -178,7 +166,7 @@ pub fn add_root(
         let mut hosted = Hosted::beginning(me, path, table, asked, declared);
         let mut guard = lock(instance);
         let held = &mut *guard;
-        let len = held.write_inbox(&[config]);
+        let len = held.write_inbox(config);
         let of = u32::try_from(of).unwrap_or(u32::MAX);
         let handle = held.begin.call(&mut held.store, (of, me.id.bits(), me.seat.number(), len));
         let Ok(handle) = handle else {
@@ -187,9 +175,10 @@ pub fn add_root(
         let Ok(out) = held.out.call(&mut held.store, ()) else {
             return Err(trapped());
         };
-        let mut out = held.out_bytes(out).ok_or_else(trapped)?;
-        let one = take_u32(&mut out);
-        read_turn(&mut out, &mut hosted).filter(|_| one == Some(1)).unwrap_or_else(|| Err(trapped()))?;
+        let wrote = held.out_head(out).filter(|wrote| wrote.ran == 1).ok_or_else(trapped)?;
+        let data = held.memory.data(&held.store);
+        let (began, _) = replay(data, &wrote, 0, TurnEnds { sends: 0, lines: 0 }, &mut hosted).ok_or_else(trapped)?;
+        began?;
         drop(guard);
 
         Ok(Box::new(Guest { instance: Arc::clone(instance), handle, declared, ran: Ran::Nothing }))
@@ -206,19 +195,18 @@ impl Runs for Guest {
     fn prepare(&mut self, batch: &dyn Batch) {
         let mut guard = lock(&self.instance);
         let held = &mut *guard;
-        let mut staged = mem::take(&mut held.staged);
-        let items = stage(batch, &mut staged);
-        let len = held.write_inbox(&[&staged]);
-        held.staged = staged;
+        let (items, len) = held.hand_in(batch);
         let called = held.turns.call(&mut held.store, (self.handle, items, len));
+        let wrote = called.ok().and_then(|out| held.out_head(out));
         drop(guard);
-        self.ran = called.map_or(Ran::Trapped, |out| Ran::At { out, read: 4 });
+        let first = TurnEnds { sends: 0, lines: 0 };
+        self.ran = wrote.map_or(Ran::Trapped, |head| Ran::At { head, next: 0, before: first });
     }
 
     /// Hands back the next turn [`Self::prepare`] ran: what it asked for, each send checked against what the guest
     /// declares.
     fn turn(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
-        let Ran::At { out, read } = self.ran else {
+        let Ran::At { head, next, before } = self.ran else {
             return Err(trapped());
         };
         let role = match &item {
@@ -228,14 +216,13 @@ impl Runs for Guest {
         };
         let mut hosted = turning.hosted(self.declared, role);
         let guard = lock(&self.instance);
-        let Some(all) = guard.out_bytes(out) else {
+        let replayed = replay(guard.memory.data(&guard.store), &head, next, before, &mut hosted);
+        drop(guard);
+        let Some((replayed, ends)) = replayed else {
+            self.ran = Ran::Trapped;
             return Err(trapped());
         };
-        let mut rest = all.get(read..).unwrap_or_default();
-        let replayed = read_turn(&mut rest, &mut hosted).unwrap_or_else(|| Err(trapped()));
-        let read = all.len() - rest.len();
-        drop(guard);
-        self.ran = Ran::At { out, read };
+        self.ran = Ran::At { head, next: next + 1, before: ends };
 
         replayed
     }
@@ -245,135 +232,130 @@ impl Runs for Guest {
     }
 }
 
-/// Writes the mail `batch` fits into `staged`, each as the guest reads an item, and answers with how many there are: as
-/// far as its first item that is not mail, which a guest does not handle yet.
-fn stage(batch: &dyn Batch, staged: &mut Vec<u8>) -> u32 {
-    staged.clear();
-    let mut count = 0;
-    let mut is_mail = true;
-    batch.each(&mut |peeked| {
-        let Item::Mail(mail) = peeked.item else {
-            is_mail = false;
-            return;
-        };
-        if !is_mail {
-            return;
-        }
-        staged.extend_from_slice(&mail.kind().plain_bytes());
-        staged.extend_from_slice(&peeked.source.id.bits().to_le_bytes());
-        staged.extend_from_slice(&peeked.source.seat.number().to_le_bytes());
-        staged.extend_from_slice(&peeked.chain.root.sender.bits().to_le_bytes());
-        staged.extend_from_slice(&peeked.chain.root.count.to_le_bytes());
-        staged.extend_from_slice(&peeked.chain.depth.to_le_bytes());
-        let bytes = mail.bytes();
-        staged.extend_from_slice(&u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_le_bytes());
-        staged.extend_from_slice(bytes);
-        count += 1;
-    });
-
-    count
-}
-
 impl Instance {
-    /// Copies `parts`, one after another, into the guest's inbox, and answers with how many bytes they are.
-    fn write_inbox(&mut self, parts: &[&[u8]]) -> u32 {
-        let len: usize = parts.iter().map(|part| part.len()).sum();
-        let short = self.inbox_room < len;
-        if short {
-            let room = len.max(256);
-            let Ok(at) = self.inbox.call(&mut self.store, u32::try_from(room).unwrap_or(u32::MAX)) else {
-                panic!("a guest makes room for what it is handed");
+    /// Writes the mail of `batch` straight into the guest's inbox, each item an [`ItemHead`] and then its bytes, and
+    /// answers with how many items and how many bytes: as far as its first item that is not mail, which a guest does
+    /// not handle yet.
+    fn hand_in(&mut self, batch: &dyn Batch) -> (u32, u32) {
+        let mut items = 0;
+        let mut len = 0;
+        let mut is_mail = true;
+        batch.each(&mut |peeked| {
+            let Item::Mail(mail) = peeked.item else {
+                is_mail = false;
+                return;
             };
-            self.inbox_at = at as usize;
-            self.inbox_room = room;
-        }
-        let mut at = self.inbox_at;
-        let data = self.memory.data_mut(&mut self.store);
-        for part in parts {
-            data[at..at + part.len()].copy_from_slice(part);
-            at += part.len();
-        }
+            if !is_mail {
+                return;
+            }
+            let bytes = mail.bytes();
+            let head =
+                ItemHead { kind: mail.kind(), source: peeked.source, chain: peeked.chain, len: count(bytes.len()) };
+            let at = len;
+            len += ItemHead::BYTES + bytes.len();
+            self.make_room(len);
+            let inbox = &mut self.memory.data_mut(&mut self.store)[self.inbox_at..];
+            inbox[at..at + ItemHead::BYTES].copy_from_slice(&head.to_bytes());
+            inbox[at + ItemHead::BYTES..len].copy_from_slice(bytes);
+            items += 1;
+        });
 
-        u32::try_from(len).unwrap_or(u32::MAX)
+        (items, count(len))
     }
 
-    /// What the guest's last call asked for, where it lies in the guest's memory, which `out` says.
-    fn out_bytes(&self, out: u64) -> Option<&[u8]> {
+    /// Copies `bytes` into the guest's inbox, and answers with how many there are.
+    fn write_inbox(&mut self, bytes: &[u8]) -> u32 {
+        self.make_room(bytes.len());
+        self.memory.data_mut(&mut self.store)[self.inbox_at..][..bytes.len()].copy_from_slice(bytes);
+
+        count(bytes.len())
+    }
+
+    /// Makes the guest's inbox hold at least `len` bytes, keeping what it holds: at least twice its room when it grows,
+    /// so a batch that writes item after item asks for room only now and then.
+    fn make_room(&mut self, len: usize) {
+        let short = self.inbox_room < len;
+        if !short {
+            return;
+        }
+        let room = len.max(2 * self.inbox_room).max(256);
+        let Ok(at) = self.inbox.call(&mut self.store, count(room)) else {
+            panic!("a guest makes room for what it is handed");
+        };
+        self.inbox_at = at as usize;
+        self.inbox_room = room;
+    }
+
+    /// The head of what the guest's last call asked for, which `out` says where it lies: nothing when it does not read
+    /// back.
+    fn out_head(&self, out: u64) -> Option<OutHead> {
         let at = usize::try_from(out >> 32).ok()?;
         let len = usize::try_from(out & u64::from(u32::MAX)).ok()?;
 
-        self.memory.data(&self.store).get(at..at + len)
+        OutHead::read(self.memory.data(&self.store).get(at..at + len)?)
     }
 }
 
-/// Reads what one of a guest's turns asked for out of `out` into `hosted`, and moves `out` past it: nothing when `out`
-/// does not read back.
-fn read_turn(out: &mut &[u8], hosted: &mut Hosted<'_>) -> Option<Result<(), Fault>> {
-    let failed = take_u32(out)? == 1;
-    let fault = if failed {
-        let kind = take_kind(out)?;
-        let len = take_u32(out)? as usize;
-        Some(Fault::of_parts(kind, take(out, len)?.to_vec()))
-    } else {
-        None
-    };
-    let closes = take_u32(out)? == 1;
-    // A `begin` cannot close its actor, so a record that says one did does not read back.
-    let is_false_close = closes && !hosted.may_close();
-    if is_false_close {
+/// Hands the `next` turn of those `head` says the guest ran into `hosted`, read from the guest's memory `data` where
+/// it wrote them, the turns before it ending where `before` says: its sends, each checked against what the guest
+/// declares, its lines, and how it ended. Answers with that, and where it ends: nothing when the guest ran no such
+/// turn, or its records do not read back.
+fn replay(
+    data: &[u8],
+    head: &OutHead,
+    next: u32,
+    before: TurnEnds,
+    hosted: &mut Hosted<'_>,
+) -> Option<(Result<(), Fault>, TurnEnds)> {
+    let was_run = next < head.ran;
+    if !was_run {
         return None;
     }
-    if closes {
-        hosted.close();
-    }
-    let mailed = take_u32(out)?;
-    for _ in 0..mailed {
-        let id = take_u64(out)?;
-        let seat = take_u64(out)?;
-        let kind = take_kind(out)?;
-        let len = take_u32(out)? as usize;
-        let bytes = take(out, len)?;
-        let to = Seated { id: ActorId::new(id), seat: SeatNumber::new(seat) };
-        let is_refused = hosted.send(to, kind, bytes).is_err();
+    let ends = TurnEnds::read(record(data, head.turns_at, next, TurnEnds::BYTES)?)?;
+    for index in before.sends..ends.sends {
+        let send = SendRecord::read(record(data, head.sends_at, index, SendRecord::BYTES)?)?;
+        let is_refused = hosted.send(send.to, send.kind, lying(data, send.bytes)?).is_err();
         if is_refused {
-            return Some(Err(Fault::new(&FalseSend).unwrap_or_else(|_| trapped())));
+            return Some((Err(Fault::new(&FalseSend).unwrap_or_else(|_| trapped())), ends));
         }
     }
-    let lines = take_u32(out)?;
-    for _ in 0..lines {
-        let level = match take_u32(out)? {
-            0 => Level::Debug,
-            1 => Level::Info,
-            2 => Level::Warn,
-            _ => Level::Error,
-        };
-        let len = take_u32(out)? as usize;
-        let text = str::from_utf8(take(out, len)?).ok()?;
-        hosted.log(level, text);
+    for index in before.lines..ends.lines {
+        let line = LineRecord::read(record(data, head.lines_at, index, LineRecord::BYTES)?)?;
+        hosted.log(line.level, str::from_utf8(lying(data, line.text)?).ok()?);
     }
+    let is_last = next + 1 == head.ran;
+    let ended = match head.stopped {
+        _ if !is_last => Ok(()),
+        Stopped::No => Ok(()),
+        // A `begin` cannot close its actor, so a record that says one did does not read back.
+        Stopped::Closed if !hosted.may_close() => return None,
+        Stopped::Closed => {
+            hosted.close();
+            Ok(())
+        }
+        Stopped::Failed { kind, bytes } => Err(Fault::of_parts(kind, lying(data, bytes)?.to_vec())),
+    };
 
-    Some(fault.map_or(Ok(()), Err))
+    Some((ended, ends))
 }
 
-fn take<'a>(out: &mut &'a [u8], len: usize) -> Option<&'a [u8]> {
-    let (taken, rest) = out.split_at_checked(len)?;
-    *out = rest;
+/// The `index`th record of `len` bytes of those that begin at `at` in the guest's memory `data`.
+fn record(data: &[u8], at: u32, index: u32, len: usize) -> Option<&[u8]> {
+    let start = usize::try_from(at).ok()? + usize::try_from(index).ok()? * len;
 
-    Some(taken)
+    data.get(start..start + len)
 }
 
-fn take_u32(out: &mut &[u8]) -> Option<u32> {
-    Some(u32::from_le_bytes(take(out, 4)?.try_into().ok()?))
+/// The bytes `span` says lie in the guest's memory `data`.
+fn lying(data: &[u8], span: Span) -> Option<&[u8]> {
+    let start = usize::try_from(span.at).ok()?;
+
+    data.get(start..start + usize::try_from(span.len).ok()?)
 }
 
-fn take_u64(out: &mut &[u8]) -> Option<u64> {
-    Some(u64::from_le_bytes(take(out, 8)?.try_into().ok()?))
-}
-
-fn take_kind(out: &mut &[u8]) -> Option<KindId> {
-    let mut budget = Budget::new(8);
-
-    from_bytes::<KindId>(take(out, 8)?, &mut budget).ok()
+/// A count the guest's 32-bit memory holds.
+fn count(count: usize) -> u32 {
+    u32::try_from(count).unwrap_or(u32::MAX)
 }
 
 /// The fault of a turn that trapped.
@@ -410,7 +392,7 @@ fn declared_section(bytes: &[u8]) -> Option<&[u8]> {
 mod tests {
     use super::*;
     use crate::Monotonic;
-    use aethereal_actor::{Actor, Beginning, Ending, Handles, ToAny, ToSender, ToWithoutMail, Turn};
+    use aethereal_actor::{Actor, Beginning, Ending, Handles, Seated, ToAny, ToSender, ToWithoutMail, Turn};
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
     use std::num::NonZeroUsize;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -602,5 +584,85 @@ mod tests {
         let failed = engine.log(echo).any(|entry| matches!(entry, aethereal_substrate::Entry::Failed(_)));
         assert!(!failed, "the echo closed, and did not fail");
         assert_eq!(CLOSER_PONGS.load(Ordering::Relaxed), 1);
+    }
+
+    /// Which callers have been answered, a bit for each, and how many answers there were.
+    static CALLERS_ANSWERED: AtomicU64 = AtomicU64::new(0);
+    static CALLER_ANSWERS: AtomicU64 = AtomicU64::new(0);
+
+    /// A native actor that pings the echo guest once as it begins, and notes its answer under its key.
+    #[derive(aethereal_data::Bound)]
+    struct Caller {
+        key: u64,
+    }
+
+    impl Kind for Caller {
+        const NAME: KindName = KindName::new("aether.test.caller");
+    }
+
+    impl Actor for Caller {
+        type Config = Volley;
+        type Key = u64;
+        type Handles = (Pong,);
+        type BeginSends = (ToAny<(Ping,), Ping>,);
+        type EndSends = ();
+
+        fn begin(volley: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
+            if let Some(echo) = turn.resolve(&echo) {
+                turn.to_any::<(Ping,)>(ToWithoutMail::Held(echo)).send(&Ping { n: volley.pings })?;
+            }
+
+            Ok(Self { key: volley.pings })
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Pong> for Caller {
+        type Sends = ();
+
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            let is_own = pong.n == self.key;
+            if is_own {
+                CALLERS_ANSWERED.fetch_or(1 << self.key, Ordering::Relaxed);
+            }
+            CALLER_ANSWERS.fetch_add(1, Ordering::Relaxed);
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn each_of_a_batch_of_callers_is_answered_once() {
+        // Catches a turn handed back what another turn of its batch sent, a send handed back twice or not at all, and
+        // an item written over another as the inbox grows while a batch is written into it.
+        let guests = Guests::default();
+        let Ok(code) = guests.code(ECHO) else {
+            panic!("the echo guest is fit to run");
+        };
+        let instance = guests.instance(&code);
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+        let Ok(_) = add_root(&mut engine, &code, &instance, 0, &[]) else {
+            panic!("the echo begins");
+        };
+        let callers = 50;
+        for key in 0..callers {
+            let Ok(_) = engine.add_root::<Caller>(&key, Volley { pings: key }) else {
+                panic!("a caller begins");
+            };
+        }
+        let clock = Monotonic::new();
+        while !engine.is_idle() {
+            engine.step(&clock);
+        }
+
+        assert_eq!(CALLERS_ANSWERED.load(Ordering::Relaxed), (1 << callers) - 1);
+        assert_eq!(CALLER_ANSWERS.load(Ordering::Relaxed), callers);
     }
 }
