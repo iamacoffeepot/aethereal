@@ -22,7 +22,7 @@
 //! Every number is little-endian, and every address is one in the guest's
 //! 32-bit memory.
 
-use crate::{BlobId, Chain, Fault, Level, MailId, Refused, SeatNumber, Seated};
+use crate::{BlobId, Chain, Fault, Level, MailId, Refused, SeatNumber, Seated, Why};
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
 use alloc::vec::Vec;
 
@@ -708,4 +708,23 @@ fn kind_at(bytes: &[u8], at: usize) -> Option<KindId> {
     let mut budget = Budget::new(8);
 
     from_bytes::<KindId>(bytes.get(at..at + 8)?, &mut budget).ok()
+}
+
+/// Why a closing turn runs, as its host hands it to the guest: one number.
+#[must_use]
+pub const fn why_code(why: Why) -> u32 {
+    match why {
+        Why::Closed => 0,
+        Why::Faulted => 1,
+    }
+}
+
+/// Why a closing turn runs, from the number its host handed in: nothing for a number no reason has.
+#[must_use]
+pub const fn why_of(code: u32) -> Option<Why> {
+    match code {
+        0 => Some(Why::Closed),
+        1 => Some(Why::Faulted),
+        _ => None,
+    }
 }

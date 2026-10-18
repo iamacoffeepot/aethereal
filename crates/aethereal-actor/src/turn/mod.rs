@@ -1370,13 +1370,6 @@ impl<'a> Closing<'a> {
         Self { me, path, above, table, asked, instances, sent, why }
     }
 
-    /// The instances of the actor's part, as a host's closing turn is lent them: a guest's own closing turn is not run
-    /// yet, so this is all a host takes of it (ADR-0015).
-    #[must_use]
-    pub fn hosted(self) -> &'a mut Instances {
-        self.instances
-    }
-
     /// The closing turn of an actor of type `A`.
     pub(crate) fn declaring<A: Actor>(self) -> Ending<'a, A::EndSends> {
         let Self { me, path, above, table, asked, sent, why, .. } = self;

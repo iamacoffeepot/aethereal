@@ -723,9 +723,44 @@ pub fn pins_out() -> u64 {
     })
 }
 
-/// Ends the actor `handle` names: drops its state, and the references it holds with it, which [`pins_out`] then
-/// tells its host of. Nothing when it holds no such actor.
-pub fn end_at(handle: u32) {
+/// Runs the closing turn of the actor `handle` names, which runs as the number `why` says (ADR-0009): the actor ends
+/// with it, and its state and the references it holds are dropped. Answers where what the turn asked for lies, as
+/// [`out`] does: nothing, `0`, when it holds no such actor, or `why` names no reason.
+#[must_use]
+pub fn end_at(types: &[Type], calls: &'static Calls, handle: u32, why: u32) -> u64 {
+    GUEST.with_borrow_mut(|guest| {
+        let Some(why) = records::why_of(why) else {
+            return 0;
+        };
+        let Some(slot) = guest.actors.get_mut(handle as usize) else {
+            return 0;
+        };
+        let Slot::Live { runs, me, standing } = mem::replace(slot, Slot::Empty) else {
+            return 0;
+        };
+        guest.free.push(handle);
+        // What the last call asked for has been read by now, so its buffers are emptied for this one.
+        guest.open(calls);
+        guest.out.clear();
+        guest.out.resize(OutHead::BYTES, 0);
+        let host = Host::new(calls);
+        let Guest { asked, instances, out, .. } = &mut *guest;
+        let Standing { path, above } = &standing;
+        let ended = runs.end(Closing::new(me, path, *above, &host, asked, instances, 0, why));
+        write_ends(out, asked, &mut Counted::default());
+        let last = match ended {
+            Ok(()) => Last::Ran,
+            Err(fault) => Last::Failed(fault),
+        };
+        guest.write_records(types, 1, 0, last);
+
+        guest.out_at()
+    })
+}
+
+/// Drops the actor `handle` names, with no closing turn, as the engine drops a child of a turn that failed: its state,
+/// and the references it holds with it, which [`pins_out`] then tells its host of. Nothing when it holds no such actor.
+pub fn drop_at(handle: u32) {
     GUEST.with_borrow_mut(|guest| {
         let Some(slot) = guest.actors.get_mut(handle as usize) else {
             return;
@@ -1123,8 +1158,13 @@ macro_rules! guest {
             }
 
             #[unsafe(no_mangle)]
-            extern "C" fn aethereal_end(handle: u32) {
-                $crate::guest::end_at(handle)
+            extern "C" fn aethereal_end(handle: u32, why: u32) -> u64 {
+                $crate::guest::end_at(MADE, &CALLS, handle, why)
+            }
+
+            #[unsafe(no_mangle)]
+            extern "C" fn aethereal_drop(handle: u32) {
+                $crate::guest::drop_at(handle)
             }
 
             #[unsafe(no_mangle)]

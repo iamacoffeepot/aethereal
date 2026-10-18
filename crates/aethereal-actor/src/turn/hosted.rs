@@ -1,9 +1,9 @@
 //! A turn a host runs for an actor whose code runs where the engine cannot see it: a guest (ADR-0015).
 
-use super::{Checked, During, Seat, Stood, Turning};
+use super::{Checked, Closing, During, Seat, Stood, Turning, Why};
 use crate::{
     Above, Asked, Chain, Code, Declared, Effect, ErasedActorRef, Fault, Instances, Level, Line, MailId, Mailed,
-    Payload, Role, Runs, SeatNumber, Seated, Seen, Sending, Table, Target, What,
+    Payload, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen, Sending, Table, Target, What,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, KindName, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -40,6 +40,8 @@ enum Source {
     Begin,
     /// The source of the item handled.
     Item(Seated),
+    /// The actor's closing turn, which handles nothing.
+    End,
 }
 
 /// The reason of a guest's turn that sent what its declaration does not allow (ADR-0013, ADR-0015).
@@ -82,6 +84,22 @@ impl<'a> Turning<'a> {
     }
 }
 
+impl<'a> Closing<'a> {
+    /// The closing turn of an actor whose type declares `declared`, as a host runs it: the turn, which may send what
+    /// the type's `end` declares, why it runs, and the instances of its part, for the host to take the instance its
+    /// code runs in from (ADR-0009, ADR-0015).
+    #[must_use]
+    pub fn hosted(self, declared: &'static Declared) -> (Hosted<'a>, Why, &'a mut Instances) {
+        let Self { me, path, above, table, asked, instances, sent, why } = self;
+        let during = During::End;
+        let seat = Seat { me, path, above, table, made: &(), asked, sent, declared, during, checked: Checked::Nothing };
+        let chain = Chain { root: MailId { sender: me.id, count: sent }, depth: 0 };
+        let hosted = Hosted { seat, sends: declared.ends(), source: Source::End, chain, spawned: Vec::new() };
+
+        (hosted, why, instances)
+    }
+}
+
 impl<'a> Hosted<'a> {
     /// The `begin` of the actor `me` names, at `path`, beneath `above`, whose type declares `declared`, reading
     /// `table` and adding to `asked`: for a host, which begins a root or a child of its guest's code.
@@ -121,7 +139,7 @@ impl<'a> Hosted<'a> {
     #[must_use]
     pub const fn source(&self) -> Option<Seated> {
         match self.source {
-            Source::Begin => None,
+            Source::Begin | Source::End => None,
             Source::Item(source) => Some(source),
         }
     }
@@ -324,6 +342,14 @@ impl<'a> Hosted<'a> {
         self.seat.asked.buffers.effects.push(Effect::new(by, watch));
 
         Ok(())
+    }
+
+    /// What a call into the guest's code reads and adds to, made before the turn's records are handed in: the table,
+    /// the seats its children are given, and the puts of its blobs.
+    pub fn lent(&mut self) -> (&'a dyn Table, &mut Seats, &mut Puts) {
+        let (seats, puts, _) = self.seat.asked.lent();
+
+        (self.seat.table, seats, puts)
     }
 
     /// Gives back `seat`, one the turn's host took for a child that was never stood up.
