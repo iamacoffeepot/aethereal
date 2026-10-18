@@ -44,6 +44,7 @@ pub enum To {
     Type { name: KindName, id: KindId },
     Sender,
     Handling { kinds: Vec<KindId> },
+    Watched,
 }
 
 /// One thing a type handles and what its handler may send, as a section holds it.
@@ -170,6 +171,7 @@ const fn sendings(out: &mut [u8], at: usize, sendings: &[Sending]) -> usize {
 
                 at
             }
+            Target::Watched => count(out, at, 3),
         };
         index += 1;
     }
@@ -232,6 +234,7 @@ fn leak_sends(sends: &[Send]) -> &'static [Sending] {
             To::Type { name, id } => Target::Type(Box::leak(Box::new(name.clone())), *id),
             To::Sender => Target::Sender,
             To::Handling { kinds } => Target::Handling(Box::leak(kinds.clone().into_boxed_slice())),
+            To::Watched => Target::Watched,
         };
 
         Sending::new(send.kind, to)

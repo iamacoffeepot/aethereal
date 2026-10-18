@@ -11,7 +11,7 @@ pub use refused::Refused;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
     Handles, Instances, Kinds, Level, Line, MailId, Mailed, Marker, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen,
-    Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, What,
+    Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, config_bytes};
@@ -444,19 +444,8 @@ impl Seat<'_> {
 
     /// Adds the effect that watches the actor `of` refers to, with how this turn sees it: live when the table held
     /// it as the step began or it was stood up since, and ended otherwise, since a reference's actor existed
-    /// (ADR-0008).
-    ///
-    /// # Panics
-    ///
-    /// Panics when this actor's type does not handle endings: the ending could not be handed to it (ADR-0013).
+    /// (ADR-0008). The turn's declaration lists the watch, and its type handles endings, as it built (ADR-0013).
     fn watch(&mut self, of: ErasedActorRef) {
-        let handles_endings = self.declared.handles_endings();
-        assert!(
-            handles_endings,
-            "false declaration: an actor of type {} watched an actor in {}, and its type does not handle endings",
-            self.declared.name(),
-            self.during,
-        );
         let id = of.seated().id;
         let was_held = self.table.held(id);
         let is_stood = self.asked.stood_seat(id).is_some();
@@ -564,6 +553,7 @@ impl Seat<'_> {
             Target::Sender => true,
             Target::Type(_, id) => receiver.id() == id,
             Target::Handling(kinds) => kinds.iter().all(|kind| receiver.lists(*kind)),
+            Target::Watched => false,
         };
         let receiver = receiver.name();
         assert!(
@@ -964,10 +954,50 @@ impl<'a, S> Turn<'a, S> {
     ///
     /// Watching an actor already watched changes nothing.
     ///
-    /// # Panics
+    /// It builds only when the turn's sends list [`Watches`](crate::Watches), which only a type that handles
+    /// [`Ended`](crate::Ended) may (ADR-0013):
     ///
-    /// Panics when this actor's type does not handle [`Ended`](crate::Ended) (ADR-0013).
-    pub fn watch(&mut self, of: impl Into<ErasedActorRef>) {
+    /// ```compile_fail,E0277
+    /// use aethereal_actor::{Actor, Beginning, Ending, Fault};
+    /// use aethereal_data::{Bound, Kind, KindName, Plain};
+    ///
+    /// #[derive(Plain)]
+    /// struct Nothing;
+    ///
+    /// impl Kind for Nothing {
+    ///     const NAME: KindName = KindName::new("aether.doc.nothing");
+    /// }
+    ///
+    /// #[derive(Bound)]
+    /// struct Watcher;
+    ///
+    /// impl Kind for Watcher {
+    ///     const NAME: KindName = KindName::new("aether.doc.watcher");
+    /// }
+    ///
+    /// impl Actor for Watcher {
+    ///     type Config = Nothing;
+    ///     type Key = ();
+    ///     type Handles = ();
+    ///     type BeginSends = ();
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(_: Nothing, turn: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+    ///         let me = turn.me();
+    ///         turn.watch(me);
+    ///
+    ///         Ok(Self)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    pub fn watch<I>(&mut self, of: impl Into<ErasedActorRef>)
+    where
+        S: Allows<Watches, I>,
+    {
         self.seat.watch(of.into());
     }
 
@@ -1189,10 +1219,52 @@ impl<'a, S> Beginning<'a, S> {
 
     /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.
     ///
-    /// # Panics
+    /// It builds only when the `begin`'s sends list [`Watches`](crate::Watches), which only a type that handles
+    /// [`Ended`](crate::Ended) may (ADR-0013):
     ///
-    /// Panics when this actor's type does not handle [`Ended`](crate::Ended) (ADR-0013).
-    pub fn watch(&mut self, of: impl Into<ErasedActorRef>) {
+    /// ```compile_fail,E0080
+    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Watches};
+    /// use aethereal_data::{Bound, Kind, KindName, Plain};
+    ///
+    /// #[derive(Plain)]
+    /// struct Nothing;
+    ///
+    /// impl Kind for Nothing {
+    ///     const NAME: KindName = KindName::new("aether.doc.nothing");
+    /// }
+    ///
+    /// #[derive(Bound)]
+    /// struct Watcher;
+    ///
+    /// impl Kind for Watcher {
+    ///     const NAME: KindName = KindName::new("aether.doc.watcher");
+    /// }
+    ///
+    /// impl Actor for Watcher {
+    ///     type Config = Nothing;
+    ///     type Key = ();
+    ///     type Handles = ();
+    ///     type BeginSends = (Watches,);
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(_: Nothing, turn: &mut Beginning<'_, (Watches,)>) -> Result<Self, Fault> {
+    ///         let me = turn.me();
+    ///         turn.watch(me);
+    ///
+    ///         Ok(Self)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// let declared = aethereal_actor::Declared::of::<Watcher>();
+    /// ```
+    pub fn watch<I>(&mut self, of: impl Into<ErasedActorRef>)
+    where
+        S: Allows<Watches, I>,
+    {
         self.seat.watch(of.into());
     }
 

@@ -41,7 +41,7 @@ pub use blob::{BlobRef, Held, pins, within};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, Within, WithinReader, WithinWriter};
 pub use declared::{
     Allows, At, Declared, Handled, HandledList, Handler, Handles, Kinds, Marker, Others, Role, Sending, Sends, Target,
-    ToAny, ToSender, ToType,
+    ToAny, ToSender, ToType, Watches,
 };
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, To, ToWithoutMail, What};
 pub use ended::{Ended, How};

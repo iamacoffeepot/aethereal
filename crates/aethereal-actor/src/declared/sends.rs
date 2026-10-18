@@ -1,8 +1,8 @@
-//! What a handler may send, written as a tuple of markers (ADR-0013).
+//! What a handler may send, and whether it may watch, written as a tuple of markers (ADR-0013).
 
 use super::{Handled, Handles, Sending, Target};
 use crate::Actor;
-use aethereal_data::{Kind, KindId, KindName};
+use aethereal_data::{Kind, KindId, KindName, Plain};
 use core::marker::PhantomData;
 
 /// A handler may send mail of kind `K` to an actor of type `T`, which handles it.
@@ -15,26 +15,37 @@ pub struct ToSender<K>(PhantomData<fn() -> K>);
 /// actors a reference that names a protocol, and not a type, reaches.
 pub struct ToAny<P, K>(PhantomData<fn() -> (P, K)>);
 
-/// One send a handler declares: the kind it sends, and where to (ADR-0013).
+/// A handler may watch an actor, to be handed its ending: only an actor whose type handles
+/// [`Ended`](crate::Ended) may declare it, as its build fails otherwise (ADR-0013).
+pub struct Watches;
+
+/// What a watch is declared under: a kind of its own, which no mail is.
+#[derive(Plain)]
+struct Watch;
+
+impl Kind for Watch {
+    const NAME: KindName = KindName::new("aether.actor.watches");
+}
+
+/// One thing a handler declares it may do: a send, the kind it sends and where to, or a watch (ADR-0013).
 pub trait Marker {
-    /// The kind of mail sent.
-    type Kind: Kind;
-    /// The send, as the engine reads it.
+    /// What it declares, as the engine reads it.
     const SENDING: Sending;
 }
 
+impl Marker for Watches {
+    const SENDING: Sending = Sending::new(KindId::of::<Watch>(), Target::Watched);
+}
+
 impl<T: Actor + Handles<K>, K: Kind + Handled> Marker for ToType<T, K> {
-    type Kind = K;
     const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Type(Name::<T>::NAME, KindId::of::<T>()));
 }
 
 impl<K: Kind> Marker for ToSender<K> {
-    type Kind = K;
     const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Sender);
 }
 
 impl<P: Kinds, K: Kind> Marker for ToAny<P, K> {
-    type Kind = K;
     const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Handling(P::KINDS));
 }
 

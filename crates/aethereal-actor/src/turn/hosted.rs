@@ -258,14 +258,19 @@ impl<'a> Hosted<'a> {
     ///
     /// # Errors
     ///
-    /// [`FalseWatch`] when the watcher's type does not handle endings, or the turn spawned no such child.
+    /// [`FalseWatch`] when what the watcher's turn may do does not list a watch, its type does not handle endings, or
+    /// the turn spawned no such child: what a guest's library would not have built (ADR-0013).
     pub fn watch(&mut self, by: Seated, of: Seated) -> Result<(), FalseWatch> {
-        let declared = if by == self.seat.me {
-            self.seat.declared
+        let (declared, sends) = if by == self.seat.me {
+            (self.seat.declared, self.sends)
         } else {
-            self.spawned.iter().find(|child| child.me == by).ok_or(FalseWatch)?.declared
+            let child = self.spawned.iter().find(|child| child.me == by).ok_or(FalseWatch)?;
+            (child.declared, child.declared.begins())
         };
-        if !declared.handles_endings() {
+        let declares_watch = sends.iter().any(|sending| sending.to() == Target::Watched);
+        let handles_endings = declared.handles_endings();
+        let holds = declares_watch && handles_endings;
+        if !holds {
             return Err(FalseWatch);
         }
         let was_held = self.seat.table.held(of.id);
@@ -340,6 +345,7 @@ impl<'a> Hosted<'a> {
                 let receiver = self.seat.declared_at(to.id);
                 receiver.is_none_or(|receiver| kinds.iter().all(|kind| receiver.lists(*kind)))
             }
+            Target::Watched => false,
         }
     }
 }

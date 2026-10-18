@@ -281,10 +281,24 @@ fn send_to_any_by_a_type_that_only_falls_back_stops_the_engine() {
 
 #[test]
 #[should_panic(expected = "does not handle endings")]
-fn watch_by_a_type_that_does_not_handle_endings_stops_the_engine() {
-    // Catches a watch whose ending could never be handed to its watcher.
-    let table = Typed(vec![(OTHER, Declared::of::<Strict>())]);
-    keeping(&table, |turn| turn.watch(ErasedActorRef::new(OTHER)));
+fn a_declaration_that_watches_and_handles_no_ending_does_not_hold() {
+    // Catches a type that declares a watch, in its `begin`, a handler, or its closing turn, built though the ending of
+    // what it watches could never be handed to it.
+    const WATCH: &[Sending] = &[<Watches as Marker>::SENDING];
+    let begins = Declared::new(Keeper::NAME, KindId::of::<Keeper>(), Keyed::Singleton, &[], &[], WATCH);
+
+    let _ = begins.checked();
+}
+
+#[test]
+fn a_declaration_that_watches_holds_when_it_handles_endings() {
+    // Catches a check that refuses every watch, or reads one handler's role as another's.
+    const WATCH: &[Sending] = &[<Watches as Marker>::SENDING];
+    const HANDLERS: &[Handler] =
+        &[Handler::new(Role::Kind(KindId::of::<Kept>()), WATCH), Handler::new(Role::Ended, &[])];
+    let watching = Declared::new(Keeper::NAME, KindId::of::<Keeper>(), Keyed::Singleton, &[], HANDLERS, &[]);
+
+    assert_eq!(watching.checked().handlers().len(), 2);
 }
 
 #[test]

@@ -2,7 +2,7 @@
 
 use aethereal_actor::{
     Actor, Beginning, BlobRef, Ended, Ending, ErasedActorRef, Fault, Handles, How, Level, Refused, To, ToAny, ToSender,
-    ToType, ToWithoutMail, Turn,
+    ToType, ToWithoutMail, Turn, Watches,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindName, Plain};
 
@@ -441,7 +441,7 @@ impl Actor for Watcher {
     type Config = Watching;
     type Key = ();
     type Handles = (Ended,);
-    type BeginSends = ();
+    type BeginSends = (Watches,);
     type EndSends = ();
 
     fn begin(watching: Watching, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
