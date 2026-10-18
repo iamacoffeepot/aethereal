@@ -43,7 +43,7 @@ impl Turn<'_> {
 
 **The chassis may put blobs between steps, as it makes roots.** It puts the code a root of a guest is made from before that root, and anything a root is handed at birth in its config. Each put returns the reference the chassis hands on.
 
-**A guest holds its references through its host.** A guest cannot reach the engine's store, so its host keeps a table of the pins each of the guest's actors holds, and the actor holds an index into it. A guest drops a reference by saying so in the effects its turn returns. When an actor ends, its host drops whatever pins its table still holds, so a guest that forgets a reference leaks nothing past its own end. A guest reads a blob by having a range of it copied into its own memory.
+**A guest holds the same references, and its host holds it to them.** A guest's `BlobRef` is the one native code holds, its blob's id, so a reference crosses into and out of a guest's mail as the bytes it already is. Its clones and drops are noted in the guest's own buffer of pin changes, which its turn hands back with its effects. A guest cannot reach the engine's store, so its host keeps a count of the pins each of the guest's actors holds on each blob, and takes a turn's pin changes into those counts and into the engine's. Nothing in the guest's code is trusted to have come by an id honestly: a pin change, a reference in a send, or a read that names a blob its actor holds no pin on fails the turn. When an actor ends, its host drops whatever pins it still counts, so a guest that forgets a reference leaks nothing past its own end. A guest reads a blob by having a range of it copied into its own memory, and puts one by handing its bytes to its host, each a call out (ADR-0015).
 
 ## Consequences
 
@@ -67,3 +67,4 @@ impl Turn<'_> {
 - **Blobs that last a fixed number of steps.** Cheap for what is remade each frame. Two kinds of lifetime, and a reference held past its steps names freed bytes.
 - **A blob with one owner, moved as a resource is.** No counting. A buffer many actors read must then be copied for each.
 - **Memory a guest and its host share.** A guest reads a blob with no copy. Every guest then needs atomics, and a browser serves such memory only to pages it isolates.
+- **A guest's references as indices into its host's table.** A guest could name only what its table holds. Its host would rewrite every reference in a guest's mail, going in and coming out, and a guest's reference would be a type of its own, so one actor's code would not build both natively and as a guest. Its host checks an index as it checks an id.
