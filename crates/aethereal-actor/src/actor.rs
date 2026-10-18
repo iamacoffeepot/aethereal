@@ -43,7 +43,7 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized + 'static
 /// (ADR-0009, ADR-0015).
 ///
 /// **What it does.** For each batch of an actor's items, the engine calls [`Self::prepare`] once, showing it the
-/// items, then [`Self::turn`] for each of them in order, and routes what each turn asked for before it asks for the
+/// items, when [`Self::prepares`] says it computes ahead, then [`Self::turn`] for each of them in order, and routes what each turn asked for before it asks for the
 /// next. [`Self::end`] runs the closing turn, which belongs to no batch.
 ///
 /// **Why it is two calls.** The engine decides what follows a turn one item at a time: it routes the turn's mail,
@@ -83,6 +83,10 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized + 'static
 pub trait Runs: Any + Send {
     /// What the actor's type declares (ADR-0013).
     fn declared(&self) -> &'static Declared;
+
+    /// Whether it computes its turns ahead, in [`Self::prepare`]: the engine reads it once, as the actor is seated, and
+    /// shows a batch only to an actor that does.
+    fn prepares(&self) -> bool;
 
     /// Shown the items of its next batch, in the order their turns will be asked for, before the first of them.
     ///
@@ -164,7 +168,11 @@ impl<A: Actor> Runs for A {
         Declared::of::<A>()
     }
 
-    /// An `Actor` computes each turn when it is asked for, so there is nothing to do before them.
+    /// An `Actor` computes each turn when it is asked for, so it is never shown a batch.
+    fn prepares(&self) -> bool {
+        false
+    }
+
     fn prepare(&mut self, _: Preparing<'_>) {}
 
     fn turn(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {

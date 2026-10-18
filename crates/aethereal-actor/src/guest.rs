@@ -920,6 +920,11 @@ impl Runs for Begun {
         self.declared
     }
 
+    /// Never: the guest never runs it.
+    fn prepares(&self) -> bool {
+        false
+    }
+
     fn prepare(&mut self, _: Preparing<'_>) {}
 
     /// Nothing: the guest never runs it, as it keeps nothing of it.
