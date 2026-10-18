@@ -1,22 +1,26 @@
 //! A turn: what an actor asks of the engine while it handles one item (ADR-0009).
 
+mod hosted;
 mod refused;
 #[cfg(test)]
 mod tests;
 
+pub use hosted::{FalseSend, FalseWatch, Hosted, Trapped};
 pub use refused::Refused;
 
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
-    Handles, Kinds, Level, Line, MailId, Mailed, Marker, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends,
-    Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, What,
+    Handles, Instances, Kinds, Level, Line, MailId, Mailed, Marker, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen,
+    Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
 };
 #[cfg(feature = "std")]
-use crate::{BlobHash, BlobRef};
+use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+#[cfg(feature = "std")]
+use core::convert::Infallible;
 use core::fmt;
 use core::marker::PhantomData;
 use core::mem;
@@ -134,6 +138,59 @@ impl Asked {
         &mut self.seats
     }
 
+    /// The seats children are given, the blobs' puts, and the arena mail is written to, lent together: to a batch
+    /// prepared ahead, whose turns' children and blobs its host asks for in calls out, and whose hop's pins lie in
+    /// the arena (ADR-0015), and to a child its host begins apart.
+    pub fn lent(&mut self) -> (&mut Seats, &mut Puts, &Arena) {
+        (&mut self.seats, &mut self.puts, &self.arena)
+    }
+
+    /// Takes in what `other` asked for: a child's `begin` its host ran apart from the turn that spawned it, while the
+    /// turn's code waited on a call out (ADR-0015). Its mail and lines are copied into this arena, each piece of mail
+    /// with pins of its own, and its effects and the children it stood up follow this turn's own.
+    #[cfg(feature = "std")]
+    pub fn take_in(&mut self, other: Self) {
+        self.take_lines(&other);
+        let Self { buffers, stood, stood_seats, arena, .. } = other;
+        for mailed in buffers.mailed {
+            self.copy_mail(&arena, mailed);
+        }
+        self.buffers.effects.extend(buffers.effects);
+        self.stood.extend(stood);
+        self.stood_seats.extend(stood_seats);
+    }
+
+    /// Copies the lines `other` logged into this arena, after this turn's own: what a child's `begin` its host ran
+    /// apart leaves when it was refused, as a refused child's lines are kept.
+    pub fn take_lines(&mut self, other: &Self) {
+        for line in &other.buffers.lines {
+            if let Ok(text) = self.arena.write_text(other.text(line)) {
+                self.buffers.lines.push(Line { text, ..*line });
+            }
+        }
+    }
+
+    /// Copies `mailed`, whose bytes lie in `from`, into this arena, piece by piece, each holding pins of its own on
+    /// the blobs it refers to.
+    #[cfg(feature = "std")]
+    fn copy_mail(&mut self, from: &Arena, mailed: Mailed) {
+        for (index, piece) in (0_u64..).zip(mailed.bytes.each_piece()) {
+            let Some(bytes) = from.read(piece) else {
+                continue;
+            };
+            let copied = self.arena.write_holding(|mut out, held| {
+                let base = u32::try_from(out.len()).unwrap_or(u32::MAX);
+                out.extend_from_slice(bytes);
+                from.pin_copied(piece, base, held);
+
+                (out, Ok::<(), Infallible>(()))
+            });
+            let Ok(copied) = copied;
+            let count = mailed.count + index;
+            self.buffers.mailed.push(Mailed { count, bytes: copied, ..mailed });
+        }
+    }
+
     /// The arena the turn's mail and lines were written to.
     #[must_use]
     pub const fn arena(&self) -> &Arena {
@@ -209,6 +266,9 @@ pub enum Above {
     /// The actor that spawned it, its seat, and what its type declares, which a child's `begin` cannot read from the
     /// table while its parent is still being stood up.
     Actor(Seated, &'static Declared),
+    /// The actor that spawned it, and its seat, of a type the code running this one does not hold: a parent of other
+    /// code, as a guest sees it. Its sends to it are checked by its host (ADR-0015).
+    Elsewhere(Seated),
 }
 
 impl Stood {
@@ -366,19 +426,8 @@ impl Seat<'_> {
 
     /// Adds the effect that watches the actor `of` refers to, with how this turn sees it: live when the table held
     /// it as the step began or it was stood up since, and ended otherwise, since a reference's actor existed
-    /// (ADR-0008).
-    ///
-    /// # Panics
-    ///
-    /// Panics when this actor's type does not handle endings: the ending could not be handed to it (ADR-0013).
+    /// (ADR-0008). The turn's declaration lists the watch, and its type handles endings, as it built (ADR-0013).
     fn watch(&mut self, of: ErasedActorRef) {
-        let handles_endings = self.declared.handles_endings();
-        assert!(
-            handles_endings,
-            "false declaration: an actor of type {} watched an actor in {}, and its type does not handle endings",
-            self.declared.name(),
-            self.during,
-        );
         let id = of.seated().id;
         let was_held = self.table.held(id);
         let is_stood = self.asked.stood_seat(id).is_some();
@@ -486,6 +535,7 @@ impl Seat<'_> {
             Target::Sender => true,
             Target::Type(_, id) => receiver.id() == id,
             Target::Handling(kinds) => kinds.iter().all(|kind| receiver.lists(*kind)),
+            Target::Watched => false,
         };
         let receiver = receiver.name();
         assert!(
@@ -530,8 +580,9 @@ impl Seat<'_> {
 
     /// The actor directly above this one, and its seat, when it is live.
     fn parent(&self) -> Option<Seated> {
-        let Above::Actor(parent, _) = self.above else {
-            return None;
+        let parent = match self.above {
+            Above::Chassis => return None,
+            Above::Actor(parent, _) | Above::Elsewhere(parent) => parent,
         };
         let is_live = self.table.is_live(parent.id);
 
@@ -547,33 +598,29 @@ impl Seat<'_> {
         Some(Seated { id, seat })
     }
 
-    /// Stands up a child of type `C` under `key`: adds its spawn effect, then runs its `begin` here.
-    ///
-    /// A key is free when this actor has made no child there: none its seat keeps from earlier steps, none live,
-    /// and none stood up earlier in the step or in this turn (ADR-0008).
-    fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused> {
+    /// Stands up a child of type `C` under `key`: adds its spawn effect, then runs its `begin` here, lent `instances`.
+    /// A guest begins only its own types here, and asks its host to begin a child of any other (ADR-0015).
+    fn spawn<C: Actor>(
+        &mut self,
+        instances: &mut Instances,
+        key: &C::Key,
+        config: C::Config,
+    ) -> Result<ActorRef<C>, Refused> {
         let segment = PathSegment::new(C::NAME, key);
-        let path = self.path.child(&segment).map_err(|PathTooDeep| Refused::TooDeep)?;
-        let id = self.table.child(self.me.id, &segment);
-        let is_made = self.made.has_made(id);
-        let is_live = self.table.child_seat(id).is_some();
-        let is_stood = self.asked.stood_seat(id).is_some();
-        let is_taken = is_made || is_live || is_stood;
-        if is_taken {
-            return Err(Refused::KeyTaken);
-        }
-
+        let (path, id) = self.free_child(&segment)?;
         let declared = Declared::of::<C>();
-        let from = Code::Linked(declared);
-        let seat = self.asked.seats.take();
-        let before = self.asked.buffers.marks();
-        let spawn = match segment.key() {
-            None => What::Spawn { from, seat },
-            Some(key) => What::SpawnInstanced { from, key: key.clone(), seat },
-        };
-        self.ask(spawn);
+        #[cfg(feature = "std")]
+        if !instances.is_own(declared) {
+            let guests = instances.guests();
+            let config = config_bytes(&config).map_err(|_| Refused::NotMade)?;
+            let from = Code::Linked(declared);
 
-        let me = Seated { id, seat };
+            return self.spawn_other(instances, id, &segment, path, from, &config, |config, birth| {
+                guests.begin_linked(declared, config, birth)
+            });
+        }
+        let (me, before) = self.ask_spawn(id, &segment, Code::Linked(declared));
+
         let stood_before = self.asked.stood.len();
         let above = Above::Actor(self.me, self.declared);
         let table = self.table;
@@ -590,27 +637,128 @@ impl Seat<'_> {
             during: During::Begin,
             checked: Checked::Nothing,
         };
-        match C::begin(config, &mut Beginning { seat: child, sends: PhantomData }) {
+        match C::begin(config, &mut Beginning { seat: child, instances, sends: PhantomData }) {
             Ok(actor) => {
-                self.asked.stood_seats.insert(id.bits(), (seat, declared));
-                self.asked.stood.push(Stood { me, path, above, actor: Box::new(actor) });
+                self.stand(me, path, above, declared, Box::new(actor));
 
                 Ok(ActorRef::new(me))
             }
             Err(fault) => {
-                // The child and every child it stood up never began, so their seats are given back, and what they
-                // asked for, the spawn of the child among it, is taken back but for the lines they logged.
-                self.asked.buffers.mailed.truncate(before.mailed);
-                self.asked.buffers.effects.truncate(before.effects);
-                for below in self.asked.stood.drain(stood_before..) {
-                    self.asked.stood_seats.remove(&below.me.id.bits());
-                    self.asked.seats.give_back(below.me.seat);
-                }
-                self.asked.seats.give_back(seat);
+                self.take_back(before, stood_before, me.seat);
 
                 Err(Refused::Began(fault))
             }
         }
+    }
+
+    /// Stands up a child of type `C` under `key` whose code is the blob `code` pins: adds its spawn effect, then has
+    /// the blob's host run its `begin` here, in its part's instance of the blob, lent `instances` (ADR-0009,
+    /// ADR-0015). Refused when the blob makes no actor of `C`'s type, as `C` declares it.
+    #[cfg(feature = "std")]
+    fn spawn_from<C: Actor>(
+        &mut self,
+        instances: &mut Instances,
+        code: &BlobRef,
+        key: &C::Key,
+        config: &C::Config,
+    ) -> Result<ActorRef<C>, Refused> {
+        let segment = PathSegment::new(C::NAME, key);
+        let (path, id) = self.free_child(&segment)?;
+        let guests = instances.guests();
+        let made = guests.made(code.id(), Declared::of::<C>()).ok_or(Refused::NotMade)?;
+        let config = config_bytes(config).map_err(|_| Refused::NotMade)?;
+
+        self.spawn_other(instances, id, &segment, path, Code::Blob(made), &config, |config, birth| {
+            guests.begin(made, config, birth)
+        })
+    }
+
+    /// Stands up the child `id`, which `segment` names beneath this actor at `path`, from `from`, code the turn does
+    /// not run, made from `config`: adds its spawn effect, then has `begin` begin it where its code runs from the
+    /// config's bytes, lent `instances`. The child is taken back when its `begin` was refused.
+    #[cfg(feature = "std")]
+    #[allow(clippy::too_many_arguments, reason = "the child, what it is made from, and what begins it, each its own")]
+    fn spawn_other<C: Actor>(
+        &mut self,
+        instances: &mut Instances,
+        id: ActorId,
+        segment: &PathSegment,
+        path: ActorPath,
+        from: Code,
+        config: &Config,
+        begin: impl FnOnce(&[u8], Birth<'_>) -> Result<Box<dyn Runs>, Refused>,
+    ) -> Result<ActorRef<C>, Refused> {
+        let declared = from.declared();
+        let (me, before) = self.ask_spawn(id, segment, from);
+
+        let stood_before = self.asked.stood.len();
+        let above = Above::Actor(self.me, self.declared);
+        let refers = &config.held;
+        let birth = Birth { me, path: &path, above, table: self.table, asked: &mut *self.asked, instances, refers };
+        match begin(&config.bytes, birth) {
+            Ok(actor) => {
+                self.stand(me, path, above, declared, actor);
+
+                Ok(ActorRef::new(me))
+            }
+            Err(refused) => {
+                self.take_back(before, stood_before, me.seat);
+
+                Err(refused)
+            }
+        }
+    }
+
+    /// The path and id of the child `segment` names beneath this actor, when its key is free: when this actor has
+    /// made no child there, none its seat keeps from earlier steps, none live, and none stood up earlier in the step
+    /// or in this turn (ADR-0008).
+    fn free_child(&self, segment: &PathSegment) -> Result<(ActorPath, ActorId), Refused> {
+        let path = self.path.child(segment).map_err(|PathTooDeep| Refused::TooDeep)?;
+        let id = self.table.child(self.me.id, segment);
+        let is_made = self.made.has_made(id);
+        let is_live = self.table.child_seat(id).is_some();
+        let is_stood = self.asked.stood_seat(id).is_some();
+        let is_taken = is_made || is_live || is_stood;
+        if is_taken {
+            return Err(Refused::KeyTaken);
+        }
+
+        Ok((path, id))
+    }
+
+    /// Asks for the spawn of the child `id`, which `segment` names beneath this actor, from `from`, in a seat taken
+    /// for it: answers with the child, and where the buffers stood before.
+    fn ask_spawn(&mut self, id: ActorId, segment: &PathSegment, from: Code) -> (Seated, Marks) {
+        let seat = self.asked.seats.take();
+        let before = self.asked.buffers.marks();
+        let spawn = segment.key().map_or(What::Spawn { from, seat }, |key| What::SpawnInstanced {
+            from,
+            key: key.clone(),
+            seat,
+        });
+        self.ask(spawn);
+
+        (Seated { id, seat }, before)
+    }
+
+    /// Stands up the child `me`, at `path`, beneath `above`, of the type `declared`, run by `actor`, once its `begin`
+    /// succeeded.
+    fn stand(&mut self, me: Seated, path: ActorPath, above: Above, declared: &'static Declared, actor: Box<dyn Runs>) {
+        self.asked.stood_seats.insert(me.id.bits(), (me.seat, declared));
+        self.asked.stood.push(Stood { me, path, above, actor });
+    }
+
+    /// Takes back a child that never began, in `seat`, and every child it stood up from the `stood_before`th: their
+    /// seats are given back, and what they asked for since `before`, the spawn of the child among it, is taken back
+    /// but for the lines they logged.
+    fn take_back(&mut self, before: Marks, stood_before: usize, seat: SeatNumber) {
+        self.asked.buffers.mailed.truncate(before.mailed);
+        self.asked.buffers.effects.truncate(before.effects);
+        for below in self.asked.stood.drain(stood_before..) {
+            self.asked.stood_seats.remove(&below.me.id.bits());
+            self.asked.seats.give_back(below.me.seat);
+        }
+        self.asked.seats.give_back(seat);
     }
 }
 
@@ -701,7 +849,7 @@ pub struct Chain {
     pub depth: u32,
 }
 
-/// A turn as the engine opens it, before the handler it runs is known: what [`Runs::handle`] is given.
+/// A turn as the engine opens it, before the handler it runs is known: what [`Runs::turn`] is given.
 pub struct Turning<'a> {
     me: Seated,
     path: &'a ActorPath,
@@ -709,14 +857,17 @@ pub struct Turning<'a> {
     table: &'a dyn Table,
     made: &'a dyn Children,
     asked: &'a mut Asked,
+    /// The instances of the actor's part, lent for the turn (ADR-0015).
+    instances: &'a mut Instances,
     sent: u64,
     source: Seated,
     chain: Chain,
 }
 
 impl<'a> Turning<'a> {
-    /// The turn of the actor `me` names, at `path`, reading `table` and adding to `asked`, which handles an item
-    /// from the actor `source` names, at `chain`, and has sent `sent` pieces of mail before it.
+    /// The turn of the actor `me` names, at `path`, reading `table`, adding to `asked` and lent its part's
+    /// `instances`, which handles an item from the actor `source` names, at `chain`, and has sent `sent` pieces of mail
+    /// before it.
     ///
     /// For the engine. `table` answers for the step's start and for what this actor has spawned since.
     #[allow(clippy::too_many_arguments, reason = "what a turn is opened with, each fixed by the engine")]
@@ -728,16 +879,29 @@ impl<'a> Turning<'a> {
         table: &'a dyn Table,
         made: &'a dyn Children,
         asked: &'a mut Asked,
+        instances: &'a mut Instances,
         sent: u64,
         source: Seated,
         chain: Chain,
     ) -> Self {
-        Self { me, path, above, table, made, asked, sent, source, chain }
+        Self { me, path, above, table, made, asked, instances, sent, source, chain }
+    }
+
+    /// The source of the item the turn handles.
+    #[must_use]
+    pub const fn source(&self) -> Seated {
+        self.source
+    }
+
+    /// Where the item the turn handles stands in its chain.
+    #[must_use]
+    pub const fn chain(&self) -> Chain {
+        self.chain
     }
 
     /// The turn of the handler of `A` for `role`, which may send `S`.
     pub(crate) fn declaring<A: Actor, S: Sends>(self, role: Role) -> Turn<'a, S> {
-        let Self { me, path, above, table, made, asked, sent, source, chain } = self;
+        let Self { me, path, above, table, made, asked, instances, sent, source, chain } = self;
         let declared = Declared::of::<A>();
         let seat = Seat {
             me,
@@ -752,7 +916,7 @@ impl<'a> Turning<'a> {
             checked: Checked::Nothing,
         };
 
-        Turn { seat, source, chain, sends: PhantomData }
+        Turn { seat, instances, source, chain, sends: PhantomData }
     }
 }
 
@@ -764,6 +928,8 @@ impl<'a> Turning<'a> {
 /// actors as it stood when the turn's step began.
 pub struct Turn<'a, S> {
     seat: Seat<'a>,
+    /// The instances of the actor's part, which a child spawned from a blob begins in (ADR-0015).
+    instances: &'a mut Instances,
     /// The actor the item being handled comes from: who [`To::Sender`] names.
     source: Seated,
     chain: Chain,
@@ -775,10 +941,50 @@ impl<'a, S> Turn<'a, S> {
     ///
     /// Watching an actor already watched changes nothing.
     ///
-    /// # Panics
+    /// It builds only when the turn's sends list [`Watches`](crate::Watches), which only a type that handles
+    /// [`Ended`](crate::Ended) may (ADR-0013):
     ///
-    /// Panics when this actor's type does not handle [`Ended`](crate::Ended) (ADR-0013).
-    pub fn watch(&mut self, of: impl Into<ErasedActorRef>) {
+    /// ```compile_fail,E0277
+    /// use aethereal_actor::{Actor, Beginning, Ending, Fault};
+    /// use aethereal_data::{Bound, Kind, KindName, Plain};
+    ///
+    /// #[derive(Plain)]
+    /// struct Nothing;
+    ///
+    /// impl Kind for Nothing {
+    ///     const NAME: KindName = KindName::new("aether.doc.nothing");
+    /// }
+    ///
+    /// #[derive(Bound)]
+    /// struct Watcher;
+    ///
+    /// impl Kind for Watcher {
+    ///     const NAME: KindName = KindName::new("aether.doc.watcher");
+    /// }
+    ///
+    /// impl Actor for Watcher {
+    ///     type Config = Nothing;
+    ///     type Key = ();
+    ///     type Handles = ();
+    ///     type BeginSends = ();
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(_: Nothing, turn: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+    ///         let me = turn.me();
+    ///         turn.watch(me);
+    ///
+    ///         Ok(Self)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    pub fn watch<I>(&mut self, of: impl Into<ErasedActorRef>)
+    where
+        S: Allows<Watches, I>,
+    {
         self.seat.watch(of.into());
     }
 
@@ -821,7 +1027,19 @@ impl<'a, S> Turn<'a, S> {
     ///
     /// The child takes its own mail. It is live once the engine applies this turn's effects.
     pub fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused> {
-        self.seat.spawn::<C>(key, config)
+        self.seat.spawn::<C>(self.instances, key, config)
+    }
+
+    /// Stands up a child of type `C` under `key` whose code is the blob `code` pins, running its `begin` here in the
+    /// blob, and answers with a reference to it (ADR-0009). Refused when the blob makes no actor of `C`'s type.
+    #[cfg(feature = "std")]
+    pub fn spawn_from<C: Actor>(
+        &mut self,
+        code: &BlobRef,
+        key: &C::Key,
+        config: &C::Config,
+    ) -> Result<ActorRef<C>, Refused> {
+        self.seat.spawn_from::<C>(self.instances, code, key, config)
     }
 
     /// Closes this actor. Its closing turn runs in the next step.
@@ -895,19 +1113,24 @@ impl<'a, S> Turn<'a, S> {
 /// sender to send to.
 pub struct Beginning<'a, S> {
     seat: Seat<'a>,
+    /// The instances of the actor's part, which a child spawned from a blob begins in (ADR-0015).
+    instances: &'a mut Instances,
     sends: PhantomData<fn() -> S>,
 }
 
 impl<'a, S: Sends> Beginning<'a, S> {
-    /// The `begin` of the root of type `A` that `me` names, at `path`, reading `table` and adding to `asked`.
+    /// The `begin` of the root of type `A` that `me` names, at `path`, reading `table`, adding to `asked`, and lent
+    /// its part's `instances`.
     ///
-    /// For the engine, which makes a root for the chassis. A child's is made by the turn that spawns it.
+    /// For the engine, which makes a root for the chassis. A child's is made by the turn that spawns it, but for a
+    /// guest's, which [`Self::beneath`] makes.
     #[must_use]
     pub fn new<A: Actor<BeginSends = S>>(
         me: Seated,
         path: &'a ActorPath,
         table: &'a dyn Table,
         asked: &'a mut Asked,
+        instances: &'a mut Instances,
     ) -> Self {
         let declared = Declared::of::<A>();
         let during = During::Begin;
@@ -924,7 +1147,26 @@ impl<'a, S: Sends> Beginning<'a, S> {
             checked: Checked::Nothing,
         };
 
-        Self { seat, sends: PhantomData }
+        Self { seat, instances, sends: PhantomData }
+    }
+
+    /// The `begin` of an actor of type `A` that `me` names, at `path`, beneath `above`, reading `table`, adding to
+    /// `asked`, and lent `instances`: for a guest's library, which begins an actor its host stood up from the guest's
+    /// blob, beneath a parent of any code or none, and for a guest's host, which begins a native child of a guest
+    /// (ADR-0015).
+    #[must_use]
+    pub fn beneath<A: Actor<BeginSends = S>>(
+        me: Seated,
+        path: &'a ActorPath,
+        above: Above,
+        table: &'a dyn Table,
+        asked: &'a mut Asked,
+        instances: &'a mut Instances,
+    ) -> Self {
+        let mut beginning = Self::new::<A>(me, path, table, asked, instances);
+        beginning.seat.above = above;
+
+        beginning
     }
 }
 
@@ -947,15 +1189,69 @@ impl<'a, S> Beginning<'a, S> {
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
     pub fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused> {
-        self.seat.spawn::<C>(key, config)
+        self.seat.spawn::<C>(self.instances, key, config)
+    }
+
+    /// Stands up a child of type `C` under `key` whose code is the blob `code` pins, running its `begin` here in the
+    /// blob, and answers with a reference to it (ADR-0009). Refused when the blob makes no actor of `C`'s type.
+    #[cfg(feature = "std")]
+    pub fn spawn_from<C: Actor>(
+        &mut self,
+        code: &BlobRef,
+        key: &C::Key,
+        config: &C::Config,
+    ) -> Result<ActorRef<C>, Refused> {
+        self.seat.spawn_from::<C>(self.instances, code, key, config)
     }
 
     /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.
     ///
-    /// # Panics
+    /// It builds only when the `begin`'s sends list [`Watches`](crate::Watches), which only a type that handles
+    /// [`Ended`](crate::Ended) may (ADR-0013):
     ///
-    /// Panics when this actor's type does not handle [`Ended`](crate::Ended) (ADR-0013).
-    pub fn watch(&mut self, of: impl Into<ErasedActorRef>) {
+    /// ```compile_fail,E0080
+    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Watches};
+    /// use aethereal_data::{Bound, Kind, KindName, Plain};
+    ///
+    /// #[derive(Plain)]
+    /// struct Nothing;
+    ///
+    /// impl Kind for Nothing {
+    ///     const NAME: KindName = KindName::new("aether.doc.nothing");
+    /// }
+    ///
+    /// #[derive(Bound)]
+    /// struct Watcher;
+    ///
+    /// impl Kind for Watcher {
+    ///     const NAME: KindName = KindName::new("aether.doc.watcher");
+    /// }
+    ///
+    /// impl Actor for Watcher {
+    ///     type Config = Nothing;
+    ///     type Key = ();
+    ///     type Handles = ();
+    ///     type BeginSends = (Watches,);
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(_: Nothing, turn: &mut Beginning<'_, (Watches,)>) -> Result<Self, Fault> {
+    ///         let me = turn.me();
+    ///         turn.watch(me);
+    ///
+    ///         Ok(Self)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// let declared = aethereal_actor::Declared::of::<Watcher>();
+    /// ```
+    pub fn watch<I>(&mut self, of: impl Into<ErasedActorRef>)
+    where
+        S: Allows<Watches, I>,
+    {
         self.seat.watch(of.into());
     }
 
@@ -1022,15 +1318,18 @@ pub struct Closing<'a> {
     above: Above,
     table: &'a dyn Table,
     asked: &'a mut Asked,
+    /// The instances of the actor's part, lent for the turn (ADR-0015).
+    instances: &'a mut Instances,
     sent: u64,
     why: Why,
 }
 
 impl<'a> Closing<'a> {
-    /// The closing turn of the actor `me` names, at `path`, which runs because of `why`, after the actor has sent
-    /// `sent` pieces of mail.
+    /// The closing turn of the actor `me` names, at `path`, lent its part's `instances`, which runs because of `why`,
+    /// after the actor has sent `sent` pieces of mail.
     ///
     /// For the engine.
+    #[allow(clippy::too_many_arguments, reason = "what a closing turn is opened with, each fixed by the engine")]
     #[must_use]
     pub const fn new(
         me: Seated,
@@ -1038,15 +1337,23 @@ impl<'a> Closing<'a> {
         above: Above,
         table: &'a dyn Table,
         asked: &'a mut Asked,
+        instances: &'a mut Instances,
         sent: u64,
         why: Why,
     ) -> Self {
-        Self { me, path, above, table, asked, sent, why }
+        Self { me, path, above, table, asked, instances, sent, why }
+    }
+
+    /// The instances of the actor's part, as a host's closing turn is lent them: a guest's own closing turn is not run
+    /// yet, so this is all a host takes of it (ADR-0015).
+    #[must_use]
+    pub fn hosted(self) -> &'a mut Instances {
+        self.instances
     }
 
     /// The closing turn of an actor of type `A`.
     pub(crate) fn declaring<A: Actor>(self) -> Ending<'a, A::EndSends> {
-        let Self { me, path, above, table, asked, sent, why } = self;
+        let Self { me, path, above, table, asked, sent, why, .. } = self;
         let declared = Declared::of::<A>();
         let seat = Seat {
             me,

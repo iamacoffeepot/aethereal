@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::{
-    Above, Asked, Beginning, Chain, Ending, ErasedActorRef, Fault, Item, Level, Mail, MailId, Mailed, Runs, SeatNumber,
-    Seated, Table, To, Turn, Turning,
+    Above, Asked, Beginning, Chain, Ending, ErasedActorRef, Fault, Instances, Item, Level, Mail, MailId, Mailed, Runs,
+    SeatNumber, Seated, Table, To, Turn, Turning,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -159,7 +159,7 @@ impl Kind for Sink {
 
 impl Actor for Sink {
     type Config = Kept;
-    type Key = ();
+    type Key = u64;
     type Handles = (Others,);
     type BeginSends = ();
     type EndSends = ();
@@ -191,9 +191,10 @@ fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<String> {
     let table = Typed(Vec::new());
     let mut asked = Asked::new();
     let mut actor: Box<dyn Runs> = Box::new(actor);
-    let turning = Turning::new(ME, &PATH, Above::Chassis, &table, &(), &mut asked, 0, OTHER, CHAIN);
+    let mut instances = Instances::default();
+    let turning = Turning::new(ME, &PATH, Above::Chassis, &table, &(), &mut asked, &mut instances, 0, OTHER, CHAIN);
     let mail = Mail::new(kind, &[], OTHER, CHAIN.root, 1, 0);
-    let handled = actor.handle(Item::Mail(mail), turning);
+    let handled = actor.turn(Item::Mail(mail), turning);
     assert!(handled.is_ok());
 
     asked.lines().iter().map(|line| String::from(asked.text(line))).collect()
@@ -203,7 +204,8 @@ fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<String> {
 fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, <Keeper as Handles<Kept>>::Sends>)) -> Vec<Mailed> {
     let mut asked = Asked::new();
     let kept = Role::Kind(KindId::of::<Kept>());
-    let turning = Turning::new(ME, &PATH, Above::Chassis, table, &(), &mut asked, 0, OTHER, CHAIN);
+    let mut instances = Instances::default();
+    let turning = Turning::new(ME, &PATH, Above::Chassis, table, &(), &mut asked, &mut instances, 0, OTHER, CHAIN);
     then(&mut turning.declaring::<Keeper, <Keeper as Handles<Kept>>::Sends>(kept));
 
     asked.into_parts().0.mailed
@@ -279,10 +281,24 @@ fn send_to_any_by_a_type_that_only_falls_back_stops_the_engine() {
 
 #[test]
 #[should_panic(expected = "does not handle endings")]
-fn watch_by_a_type_that_does_not_handle_endings_stops_the_engine() {
-    // Catches a watch whose ending could never be handed to its watcher.
-    let table = Typed(vec![(OTHER, Declared::of::<Strict>())]);
-    keeping(&table, |turn| turn.watch(ErasedActorRef::new(OTHER)));
+fn a_declaration_that_watches_and_handles_no_ending_does_not_hold() {
+    // Catches a type that declares a watch, in its `begin`, a handler, or its closing turn, built though the ending of
+    // what it watches could never be handed to it.
+    const WATCH: &[Sending] = &[<Watches as Marker>::SENDING];
+    let begins = Declared::new(Keeper::NAME, KindId::of::<Keeper>(), Keyed::Singleton, &[], &[], WATCH);
+
+    let _ = begins.checked();
+}
+
+#[test]
+fn a_declaration_that_watches_holds_when_it_handles_endings() {
+    // Catches a check that refuses every watch, or reads one handler's role as another's.
+    const WATCH: &[Sending] = &[<Watches as Marker>::SENDING];
+    const HANDLERS: &[Handler] =
+        &[Handler::new(Role::Kind(KindId::of::<Kept>()), WATCH), Handler::new(Role::Ended, &[])];
+    let watching = Declared::new(Keeper::NAME, KindId::of::<Keeper>(), Keyed::Singleton, &[], HANDLERS, &[]);
+
+    assert_eq!(watching.checked().handlers().len(), 2);
 }
 
 #[test]

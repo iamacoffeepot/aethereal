@@ -241,16 +241,70 @@ impl Arena {
     /// [`Self::pin_copied`], for an arena whose mail holds pins: most holds none.
     #[inline(never)]
     fn pin_held(&self, payload: Payload, base: u32, into: &mut Vec<crate::Held>) {
+        self.held_by(payload).each(|at, pin| into.push((base + at, pin.clone())));
+    }
+
+    /// Whether any of its mail holds a pin.
+    #[must_use]
+    pub fn holds_pins(&self) -> bool {
+        !self.held.is_empty() || !self.held_spilled.is_empty()
+    }
+
+    /// Where the references in the bytes of `payload` lie, and the pins on their blobs, when they are in this arena:
+    /// for a host, which hands the bytes to code that takes pins of its own (ADR-0014).
+    #[must_use]
+    pub fn pinned(&self, payload: Payload) -> Pinned<'_> {
+        let is_own = payload.slot() == self.slot();
+        let holds = !self.held.is_empty() || !self.held_spilled.is_empty();
+        if !is_own || !holds {
+            return Pinned::Nothing;
+        }
+
+        self.held_by(payload)
+    }
+
+    /// [`Self::pinned`], for an arena whose mail holds pins.
+    fn held_by(&self, payload: Payload) -> Pinned<'_> {
         match payload {
-            Payload::InArena { start, len, .. } => {
-                let pinned = crate::within(&self.held, start, len).iter();
-                into.extend(pinned.map(|(at, pin)| (base + (at - start), pin.clone())));
-            }
+            Payload::InArena { start, len, .. } => Pinned::Lying { held: crate::within(&self.held, start, len), start },
             Payload::Spilled { index, .. } => {
                 let first = self.held_spilled.partition_point(|(piece, _)| *piece < index);
                 let past = self.held_spilled.partition_point(|(piece, _)| *piece <= index);
-                let pinned = self.held_spilled[first..past].iter();
-                into.extend(pinned.map(|(_, (at, pin))| (base + at, pin.clone())));
+
+                Pinned::Spilled { held: &self.held_spilled[first..past] }
+            }
+        }
+    }
+}
+
+/// Where the references in some bytes of mail lie, and the pins on their blobs: what an arena, a part's carried bytes,
+/// or a hop keeps beside them, shown to a host that hands the bytes to code that takes pins of its own (ADR-0014).
+#[cfg(feature = "std")]
+#[derive(Clone, Copy)]
+pub enum Pinned<'a> {
+    /// The bytes refer to no blob.
+    Nothing,
+    /// The pins among `held`, each at where its reference begins, counted from `start`.
+    Lying { held: &'a [crate::Held], start: u32 },
+    /// The pins of a spilled piece, each at where its reference begins in it.
+    Spilled { held: &'a [(u32, crate::Held)] },
+}
+
+#[cfg(feature = "std")]
+impl Pinned<'_> {
+    /// Shows `visit` each reference: where it begins in the bytes, and the pin on its blob.
+    pub fn each(self, mut visit: impl FnMut(u32, &crate::BlobRef)) {
+        match self {
+            Self::Nothing => {}
+            Self::Lying { held, start } => {
+                for (at, pin) in held {
+                    visit(at - start, pin);
+                }
+            }
+            Self::Spilled { held } => {
+                for (_, (at, pin)) in held {
+                    visit(*at, pin);
+                }
             }
         }
     }
@@ -331,6 +385,13 @@ impl Payload {
             }
             Self::InArena { .. } | Self::Spilled { .. } => self,
         }
+    }
+
+    /// Each piece of mail it holds, in order, as a payload of its own: itself, but for a run.
+    pub fn each_piece(self) -> impl Iterator<Item = Self> {
+        let each = self.each();
+
+        (0..self.pieces()).map(move |index| self.piece(index, each))
     }
 
     /// What it holds from the piece numbered `index` on, one of its pieces: itself, for the first.

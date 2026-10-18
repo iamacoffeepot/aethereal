@@ -21,13 +21,17 @@ mod declared;
 mod effect;
 mod ended;
 mod fault;
+mod guests;
+mod instances;
 mod item;
 mod mail;
 mod reference;
 mod seat;
 mod turn;
 
-pub use actor::{Actor, Runs};
+pub use actor::{Actor, Batch, Peeked, Preparing, Reads, Runs};
+#[cfg(feature = "std")]
+pub use arena::Pinned;
 pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};
 pub use blob::{BlobHash, BlobId, Puts};
 #[cfg(feature = "std")]
@@ -35,16 +39,20 @@ pub use blob::{BlobRef, Held, pins, within};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, Within, WithinReader, WithinWriter};
 pub use declared::{
     Allows, At, Declared, Handled, HandledList, Handler, Handles, Kinds, Marker, Others, Role, Sending, Sends, Target,
-    ToAny, ToSender, ToType,
+    ToAny, ToSender, ToType, Watches,
 };
-pub use effect::{Code, Effect, Level, Line, Mailed, Seen, To, ToWithoutMail, What};
+pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
+pub use guests::{Birth, Guests, Link, Links, NoGuests, Unfit};
+#[cfg(feature = "std")]
+pub use guests::{Config, config_bytes};
+pub use instances::{Instances, Lent};
 pub use item::Item;
 pub use mail::{Mail, MailId};
 pub use reference::{ActorRef, ErasedActorRef};
 pub use seat::{SeatNumber, Seated, Seats};
 pub use turn::{
-    Above, Address, AnyAddress, Asked, Beginning, Buffers, Chain, Closing, Ending, Logger, Refused, Stood, Turn,
-    Turning, Why,
+    Above, Address, AnyAddress, Asked, Beginning, Buffers, Chain, Closing, Ending, FalseSend, FalseWatch, Hosted,
+    Logger, Refused, Stood, Trapped, Turn, Turning, Why,
 };

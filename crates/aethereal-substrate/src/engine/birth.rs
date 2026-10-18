@@ -93,7 +93,8 @@ pub(super) fn sit(
     actor: Box<dyn Runs>,
 ) {
     let kind = actor.declared().id();
-    seating.seated.insert(me, Sitting { path, above, kind, made: Made::none() });
+    let prepares = actor.prepares();
+    seating.seated.insert(me, Sitting { path, above, kind, made: Made::none(), prepares });
     actors.insert(me, Held::Here(actor));
 }
 

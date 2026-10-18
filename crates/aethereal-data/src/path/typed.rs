@@ -85,17 +85,31 @@ impl TypedKey for u64 {
 /// }
 /// ```
 pub trait ActorKey: sealed::Sealed {
+    /// Whether an actor of a type keyed by it is the type's one, or one of many each under its own key.
+    const KEYED: Keyed;
+
     /// The key's name, or none for a singleton, which has no key.
     fn name(&self) -> Option<KeyName>;
 }
 
+/// Whether an actor type has one actor, at its name alone, or many, each at its name and a key (ADR-0008).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keyed {
+    Singleton,
+    Instanced,
+}
+
 impl ActorKey for () {
+    const KEYED: Keyed = Keyed::Singleton;
+
     fn name(&self) -> Option<KeyName> {
         None
     }
 }
 
 impl<K: TypedKey> ActorKey for K {
+    const KEYED: Keyed = Keyed::Instanced;
+
     fn name(&self) -> Option<KeyName> {
         Some(self.to_name())
     }

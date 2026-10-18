@@ -22,6 +22,19 @@ impl Fault {
         Ok(Self { kind: KindId::of::<K>(), bytes: to_bytes(reason)? })
     }
 
+    /// The fault whose reason is of the kind `kind`, written as `bytes`: for a host, handing on a fault a guest
+    /// returned (ADR-0015).
+    #[must_use]
+    pub const fn of_parts(kind: KindId, bytes: Vec<u8>) -> Self {
+        Self { kind, bytes }
+    }
+
+    /// The bytes of the reason.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     /// The fault whose reason is the kind `K`, which holds nothing and so has no bytes.
     fn bare<K: Kind + Plain>() -> Self {
         Self { kind: KindId::of::<K>(), bytes: Vec::new() }

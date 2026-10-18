@@ -1,7 +1,7 @@
 //! What an actor asks of the engine, in three lists a turn fills as it runs: the mail it sends, the lines it logs,
 //! and the rest, its effects on the lives of actors (ADR-0009).
 
-use crate::{Declared, ErasedActorRef, Fault, How, Payload, SeatNumber, Seated};
+use crate::{BlobId, Declared, ErasedActorRef, Fault, How, Payload, SeatNumber, Seated};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
 
 /// One thing an actor asks of the engine, and which actor asked (ADR-0009).
@@ -167,12 +167,31 @@ impl From<ToWithoutMail> for To {
 }
 
 /// The code an actor is made from (ADR-0009).
-///
-/// A guest's code, a blob the engine holds, is a further case that enters with blobs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Code {
     /// The program's own actor type, as it declares itself (ADR-0013).
     Linked(&'static Declared),
+    /// An actor type a blob makes, as its section declares it, kept by the blob's host (ADR-0015).
+    Blob(&'static BlobType),
+}
+
+/// An actor type a blob makes: the blob, and what the type declares, as the blob's section says. Its host keeps one
+/// for each type of each blob it takes in, so a [`Code`] names it by one pointer, as it names a linked type.
+#[derive(Debug, PartialEq, Eq)]
+pub struct BlobType {
+    pub blob: BlobId,
+    pub declared: &'static Declared,
+}
+
+impl BlobType {
+    /// Whether it is the type of the blob `blob` that declares itself as `declared` does, by its kind.
+    #[must_use]
+    pub fn is(&self, blob: BlobId, declared: &Declared) -> bool {
+        let is_blob = self.blob == blob;
+        let is_kind = self.declared.id() == declared.id();
+
+        is_blob && is_kind
+    }
 }
 
 impl Code {
@@ -181,6 +200,7 @@ impl Code {
     pub const fn declared(&self) -> &'static Declared {
         match self {
             Self::Linked(declared) => declared,
+            Self::Blob(made) => made.declared,
         }
     }
 
@@ -189,6 +209,7 @@ impl Code {
     pub const fn kind(&self) -> &KindName {
         match self {
             Self::Linked(declared) => declared.name(),
+            Self::Blob(made) => made.declared.name(),
         }
     }
 
