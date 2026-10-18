@@ -2,8 +2,8 @@
 
 use super::{Checked, During, Seat, Stood, Turning};
 use crate::{
-    Above, Asked, Chain, Code, Declared, Effect, ErasedActorRef, Fault, Instances, Level, Line, MailId, Mailed, Role,
-    Runs, SeatNumber, Seated, Seen, Sending, Table, Target, What,
+    Above, Asked, Chain, Code, Declared, Effect, ErasedActorRef, Fault, Instances, Level, Line, MailId, Mailed,
+    Payload, Role, Runs, SeatNumber, Seated, Seen, Sending, Table, Target, What,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, KindName, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -139,12 +139,21 @@ impl<'a> Hosted<'a> {
     }
 
     /// Sends `bytes`, mail of `kind`, to the actor `to` names, by `by`: the actor whose turn this is, or a child it
-    /// spawned, in its `begin`. Refused when no send the sender declares there reaches it.
+    /// spawned, in its `begin`. The mail holds `held`, a pin on each blob its bytes refer to, each at where its
+    /// reference begins in them, as a native send's does (ADR-0014). Refused when no send the sender declares there
+    /// reaches it.
     ///
     /// # Errors
     ///
     /// [`FalseSend`] when the sender's declaration does not allow it, or the turn spawned no such child.
-    pub fn send(&mut self, by: Seated, to: Seated, kind: KindId, bytes: &[u8]) -> Result<(), FalseSend> {
+    pub fn send(
+        &mut self,
+        by: Seated,
+        to: Seated,
+        kind: KindId,
+        bytes: &[u8],
+        #[cfg(feature = "std")] held: &[crate::Held],
+    ) -> Result<(), FalseSend> {
         let (sends, source) = if by == self.seat.me {
             (self.sends, self.source)
         } else {
@@ -155,12 +164,15 @@ impl<'a> Hosted<'a> {
         if !allowed {
             return Err(FalseSend);
         }
-        let written = self.seat.asked.arena.write(|mut out| {
-            out.extend_from_slice(bytes);
-
-            (out, Ok::<(), Infallible>(()))
-        });
-        let Ok(bytes) = written;
+        // Most mail refers to no blob, and is written with nothing kept beside it.
+        #[cfg(feature = "std")]
+        let bytes = if held.is_empty() {
+            self.write(bytes)
+        } else {
+            self.write_holding(bytes, held)
+        };
+        #[cfg(not(feature = "std"))]
+        let bytes = self.write(bytes);
         let count = if by == self.seat.me {
             self.seat.sent += 1;
             self.seat.sent
@@ -173,6 +185,34 @@ impl<'a> Hosted<'a> {
         self.seat.asked.buffers.mailed.push(mailed);
 
         Ok(())
+    }
+
+    /// Writes `bytes`, a piece of mail its guest wrote, into the turn's arena.
+    fn write(&mut self, bytes: &[u8]) -> Payload {
+        let written = self.seat.asked.arena.write(|mut out| {
+            out.extend_from_slice(bytes);
+
+            (out, Ok::<(), Infallible>(()))
+        });
+        let Ok(payload) = written;
+
+        payload
+    }
+
+    /// Writes `bytes`, a piece of mail its guest wrote, into the turn's arena, kept with `held`, a pin on each blob
+    /// they refer to, each at where its reference begins in them.
+    #[cfg(feature = "std")]
+    fn write_holding(&mut self, bytes: &[u8], held: &[crate::Held]) -> Payload {
+        let written = self.seat.asked.arena.write_holding(|mut out, pins| {
+            let base = u32::try_from(out.len()).unwrap_or(u32::MAX);
+            out.extend_from_slice(bytes);
+            pins.extend(held.iter().map(|(at, pin)| (base + at, pin.clone())));
+
+            (out, Ok::<(), Infallible>(()))
+        });
+        let Ok(payload) = written;
+
+        payload
     }
 
     /// Spawns, by `by`, the actor whose turn this is or a child it spawned, a child of the type `from` makes, under

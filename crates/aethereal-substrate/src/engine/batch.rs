@@ -6,7 +6,7 @@ use super::Reading;
 use super::fuse::Hop;
 use crate::stream::{self, Handed, Pieces};
 use crate::{Context, Envelope};
-use aethereal_actor::{Batch, Chain, Item, Mail, Peeked};
+use aethereal_actor::{Arena, Batch, Chain, Held, Item, Mail, Peeked, Pinned};
 use std::iter;
 
 /// A batch of one actor's waiting items: `first`, and after it as many of `rest` as make
@@ -15,8 +15,9 @@ pub(super) struct Waiting<'w, 'r, 'p> {
     pub(super) reading: &'w Reading<'r>,
     pub(super) first: Handed<'p>,
     pub(super) rest: &'w Pieces<'p>,
-    /// The bytes of the mail its part carried over.
+    /// The bytes of the mail its part carried over, and the pins of the blobs they refer to.
     pub(super) carried: &'p [u8],
+    pub(super) carried_pins: &'p [Held],
 }
 
 /// A batch of one hop, a piece of mail handed straight to its receiver in the step (ADR-0013).
@@ -24,6 +25,8 @@ pub(super) struct OneHop<'w, 'r> {
     pub(super) reading: &'w Reading<'r>,
     pub(super) hop: &'w Hop,
     pub(super) lists: &'w Lists,
+    /// The arena the hop's bytes were written in, which holds the pins of the blobs they refer to.
+    pub(super) arena: &'w Arena,
 }
 
 /// The item `handed` is, as a turn reads it, and the context of what its turn asks for: bytes read from `reading`'s
@@ -48,9 +51,13 @@ impl Batch for Waiting<'_, '_, '_> {
         let rest = self.rest.clone().take(super::SLICE_EVERY as usize - 1);
         for handed in iter::once(self.first).chain(rest) {
             let source = handed.source();
+            let pinned = match handed {
+                Handed::Mail { bytes, .. } => stream::pinned(bytes, self.reading.mail, self.carried_pins),
+                Handed::Ended { .. } => Pinned::Nothing,
+            };
             let (item, context) = read(handed, self.reading, self.carried);
             let chain = Chain { root: context.root, depth: context.depth - 1 };
-            visit(Peeked { item, source, chain });
+            visit(Peeked { item, source, chain, pinned });
         }
     }
 }
@@ -61,6 +68,7 @@ impl Batch for OneHop<'_, '_> {
         let bytes = self.lists.fusing.bytes(hop);
         let mail = Mail::new(hop.kind, bytes, hop.from, hop.root, hop.depth, self.reading.read_limit);
         let chain = Chain { root: hop.root, depth: hop.depth };
-        visit(Peeked { item: Item::Mail(mail), source: hop.from, chain });
+        let pinned = self.arena.pinned(hop.sent);
+        visit(Peeked { item: Item::Mail(mail), source: hop.from, chain, pinned });
     }
 }

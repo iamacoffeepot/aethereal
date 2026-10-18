@@ -13,21 +13,31 @@
 //! instance; one that sits in another part is taken out at [`Within`], for its
 //! host to take into that part's instance. A child of other code, a native
 //! type or another blob's, its host begins in a call out, and holds.
+//!
+//! The guest's references to blobs are the ids native code holds, and their
+//! pins are noted in the guest's own buffer: after each call the guest hands
+//! its host what the call's pin changes came to for each blob, where each
+//! reference lies in what it sent, and the blobs an actor's state taken out
+//! refers to, and its host holds the instance to them (ADR-0014). A read of a
+//! blob, its hash, and a put are calls out.
 
 use crate::records::{
-    self, Born, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, Other, OutHead, Parent, SendRecord, Span,
-    SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds, WatchRecord,
+    self, Born, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, Other, OutHead, Parent, PinRecord, RefRecord,
+    SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds, WatchRecord,
 };
+use crate::section;
 use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Ended, Fault, How, Item};
-use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Mail, Peeked, Preparing, Refused, Runs};
-use crate::{SeatNumber, Seated, Seats, Table, Turning, Unfit, What, Within, WithinReader, WithinWriter, section};
+use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Mail, Peeked, Pinned, Preparing, Puts, Refused};
+use crate::{Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, What, Within, WithinReader, WithinWriter, pins};
 use aethereal_data::{
     ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, PathSegment, Reader, Writer, from_bytes, to_bytes,
 };
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
+use core::cell::OnceCell;
 use core::cell::{Cell, RefCell};
 use core::mem;
 
@@ -115,6 +125,16 @@ pub struct Calls {
     pub refusal: extern "C" fn(u32),
     /// The actor types the guest's blob makes, which it begins itself: its host begins a child of any other.
     pub made: &'static [&'static Declared],
+    /// How many bytes the blob of the engine's number and bits holds, when the instance holds a pin on it or one was
+    /// offered to the call: `u64::MAX` otherwise.
+    pub blob_len: extern "C" fn(u32, u64) -> u64,
+    /// Copies the bytes of the blob of the engine's number and bits to the address, as [`Self::blob_len`] allows.
+    pub blob_read: extern "C" fn(u32, u64, u32),
+    /// Writes the content hash of the blob of the engine's number and bits at the address, as 32 bytes, as
+    /// [`Self::blob_len`] allows: one when it did.
+    pub blob_hash: extern "C" fn(u32, u64, u32) -> u32,
+    /// Puts the bytes as a blob, in a call out to its host, which [`put_with`] answers.
+    pub put: fn(Vec<u8>) -> Result<BlobId, Refused>,
 }
 
 /// What the guest holds: its actors, where its host writes what it hands in, and where it writes what it asked for.
@@ -126,6 +146,10 @@ struct Guest {
     /// The bytes the records point to that no buffer of `asked` holds: the keys of children spawned, and the paths and
     /// state of children taken out.
     held: Vec<u8>,
+    /// The pin records of a call that writes no other records, as its host asks for them after it.
+    pinned: Vec<u8>,
+    /// The pin changes taken from the guest's buffer, emptied and kept for its room.
+    changes: Vec<pins::Change>,
     asked: Asked,
     /// What its actors' turns are lent: a guest's actors are its own code, run in no instance, so it holds no
     /// instance, and it carries the calls out to its host that begin a child of any other code.
@@ -144,7 +168,7 @@ enum Slot {
 }
 
 std::thread_local! {
-    static GUEST: RefCell<Guest> = RefCell::new(Guest::default());
+    static GUEST: RefCell<Guest> = RefCell::new(Guest::new());
     /// The seats the host gave in the call under way that are in another part than the actor whose call it is.
     static ELSEWHERE: RefCell<Vec<SeatNumber>> = const { RefCell::new(Vec::new()) };
     /// Which of the call under way's turns is running, counted from zero.
@@ -184,22 +208,31 @@ fn begin<A: Actor>(
 /// An actor of type `A` taken in from `bytes`, its path and state as [`take_out`] wrote them: nothing when they do not
 /// read back.
 fn take_in<A: Actor>(bytes: &[u8]) -> Option<(Box<dyn Runs>, Standing)> {
+    let (state, _) = records::carried(bytes)?;
     let mut budget = Budget::new(READ_LIMIT);
-    let mut reader = Reader::<Within>::new(bytes, &mut budget, WithinReader::new());
+    let mut reader = Reader::<Within>::new(state, &mut budget, WithinReader::new());
     let born = Born::decode(&mut reader).ok()?;
     let actor = A::decode(&mut reader).ok()?;
 
     Some((Box::new(actor), Standing::of(born)))
 }
 
-/// Writes `runs`, an actor of type `A` that stands where `standing` says, after `out`: where it stands and then its
-/// state, at [`Within`]. Nothing when it is not of type `A`, or does not encode.
+/// Writes `runs`, an actor of type `A` that stands where `standing` says, after `out`, as
+/// [`records::carried`] reads it: the length of what follows, where it stands and then its state, at [`Within`], and
+/// then the blob of each reference in them. Nothing when it is not of type `A`, or does not encode.
 fn take_out<A: Actor>(runs: &dyn Runs, standing: &Standing, out: &mut Vec<u8>) -> Option<()> {
     let actor = (runs as &dyn Any).downcast_ref::<A>()?;
-    let mut writer = Writer::<Within>::new(WithinWriter::new());
+    let mut blobs = Vec::new();
+    let mut writer = Writer::<Within>::new(WithinWriter::noting(&mut blobs));
     standing.born().encode(&mut writer).ok()?;
     actor.encode(&mut writer).ok()?;
-    out.extend_from_slice(&writer.into_bytes());
+    let state = writer.into_bytes();
+    out.extend_from_slice(&count(state.len()).to_le_bytes());
+    out.extend_from_slice(&state);
+    for blob in blobs {
+        out.extend_from_slice(&blob.engine().to_le_bytes());
+        out.extend_from_slice(&blob.bits().to_le_bytes());
+    }
 
     Some(())
 }
@@ -240,7 +273,7 @@ pub fn begin_at(types: &[Type], calls: &'static Calls, of: u32, me: u64, seat: u
         let len = (len as usize).min(inbox.len());
         let began = standing(&inbox[..len]).map_err(Fault::from).and_then(|(standing, config)| {
             let Guest { asked, instances, .. } = &mut *guest;
-            let runs = (made.begin)(config, me, &standing, &Host { calls }, asked, instances)?;
+            let runs = (made.begin)(config, me, &standing, &Host::new(calls), asked, instances)?;
             Ok((runs, standing))
         });
         guest.inbox = inbox;
@@ -322,7 +355,7 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         guest.open(calls);
         guest.out.clear();
         guest.out.resize(OutHead::BYTES, 0);
-        let host = Host { calls };
+        let host = Host::new(calls);
         let Guest { actors, inbox, asked, out, instances, .. } = &mut *guest;
         let Some(Slot::Live { runs, me, standing }) = actors.get_mut(handle as usize) else {
             return 0;
@@ -336,7 +369,7 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         let mut stood_before = 0;
         let mut counted = Counted::default();
         for _ in 0..items {
-            let Some((Peeked { item, source, chain }, after)) = read_item(rest) else {
+            let Some((Peeked { item, source, chain, .. }, after)) = read_item(rest) else {
                 break;
             };
             rest = after;
@@ -382,7 +415,7 @@ fn read_item(items: &[u8]) -> Option<(Peeked<'_>, &[u8])> {
         Handed::Ended(gone) => Item::Ended(ended(gone, source, bytes)),
     };
 
-    Some((Peeked { item, source, chain }, rest))
+    Some((Peeked { item, source, chain, pinned: Pinned::Nothing }, rest))
 }
 
 /// The ending of `source`, which ended as `gone` says, a fault's bytes in `bytes`. Kept out of line: built in the
@@ -420,9 +453,21 @@ impl Guest {
         if !is_calling {
             self.instances = Instances::of_guest(Arc::new(Calling { calls }), calls.made);
         }
+        let (_, puts, _) = self.asked.lent();
+        let puts_hosted = puts.is_of_host();
+        if !puts_hosted {
+            *puts = Puts::of_host(calls.put);
+        }
         self.held.clear();
         ELSEWHERE.with_borrow_mut(Vec::clear);
         TURN.set(0);
+    }
+
+    /// A guest that holds nothing yet, whose pin changes go to a buffer of its own from then on.
+    fn new() -> Self {
+        pins::take_own(&mut Vec::new());
+
+        Self::default()
     }
 
     /// Keeps `runs`, the actor `me` names at `path`, under a new handle.
@@ -499,20 +544,11 @@ impl Guest {
             }
         }
 
-        let Self { out, asked, held, .. } = self;
+        let Self { out, asked, held, changes, .. } = self;
         let held_at = address(held.as_ptr());
         let in_held = |(at, len): (usize, usize)| Span { at: held_at + count(at), len: count(len) };
         let sends_at = out.len();
-        for mailed in asked.mailed() {
-            let is_run = mailed.bytes.pieces() > 1;
-            if is_run {
-                write_run(out, asked, mailed);
-                continue;
-            }
-            let bytes = asked.arena().read(mailed.bytes).unwrap_or_default();
-            let record = SendRecord { by: mailed.by, to: mailed.to, kind: mailed.kind, bytes: span(bytes) };
-            out.extend_from_slice(&record.to_bytes());
-        }
+        let (refs, refers) = write_sends(out, asked, sends_at);
         let lines_at = out.len();
         for line in asked.lines() {
             let text = span(asked.text(line).as_bytes());
@@ -545,6 +581,17 @@ impl Guest {
         for watch in watches {
             out.extend_from_slice(&watch.to_bytes());
         }
+        // Where its mail's references lie is written, and its host pins them itself, so the guest's own pins go now and
+        // count among the call's changes.
+        if refers {
+            asked.let_go_of_pins();
+        }
+        let pins_at = out.len();
+        let pins = write_pins(out, changes);
+        let refs_at = out.len();
+        for reference in &refs {
+            out.extend_from_slice(&reference.to_bytes());
+        }
         let fault_at = out.len();
         if let Last::Failed(fault) = &last {
             out.extend_from_slice(fault.bytes());
@@ -569,6 +616,10 @@ impl Guest {
             spawns_at: at(spawns_at),
             stood_at: at(stood_at),
             watches_at: at(watches_at),
+            pins_at: at(pins_at),
+            pins,
+            refs_at: at(refs_at),
+            refs: count(refs.len()),
         };
         out[..OutHead::BYTES].copy_from_slice(&head.to_bytes());
     }
@@ -579,16 +630,113 @@ const fn is_spawn(what: &What) -> bool {
     matches!(what, What::Spawn { .. } | What::SpawnInstanced { .. })
 }
 
+/// Writes a [`SendRecord`] after `out` for each piece of mail in `asked`, from `sends_at`, and answers with where each
+/// reference in them lies, and whether any piece holds a pin.
+fn write_sends(out: &mut Vec<u8>, asked: &Asked, sends_at: usize) -> (Vec<RefRecord>, bool) {
+    let mut refs = Vec::new();
+    // Most calls send no reference to a blob, and their mail holds no pin.
+    let refers = asked.arena().holds_pins();
+    for mailed in asked.mailed() {
+        let is_run = mailed.bytes.pieces() > 1;
+        if is_run {
+            write_run(out, asked, mailed, &mut refs);
+            continue;
+        }
+        let bytes = asked.arena().read(mailed.bytes).unwrap_or_default();
+        if refers {
+            note_refs(asked, mailed.bytes, sends_at, out.len(), &mut refs);
+        }
+        let record = SendRecord { by: mailed.by, to: mailed.to, kind: mailed.kind, bytes: span(bytes) };
+        out.extend_from_slice(&record.to_bytes());
+    }
+
+    (refs, refers)
+}
+
 /// Writes a record for each piece of `mailed`, a run of mail in `asked`, after `out`: each is a send its host checks
 /// and hands over. Kept out of line, as a turn seldom sends a run.
 #[cold]
 #[inline(never)]
-fn write_run(out: &mut Vec<u8>, asked: &Asked, mailed: &crate::Mailed) {
+fn write_run(out: &mut Vec<u8>, asked: &Asked, mailed: &crate::Mailed, refs: &mut Vec<RefRecord>) {
+    let sends_at = out.len() - out.len() % SendRecord::BYTES;
     for piece in mailed.bytes.each_piece() {
         let bytes = asked.arena().read(piece).unwrap_or_default();
+        note_refs(asked, piece, sends_at, out.len(), refs);
         let record = SendRecord { by: mailed.by, to: mailed.to, kind: mailed.kind, bytes: span(bytes) };
         out.extend_from_slice(&record.to_bytes());
     }
+}
+
+/// Notes in `refs` where each reference in the piece of mail `piece` lies, which the send whose record is written at
+/// `written`, of those written from `sends_at` in the out buffer, sends.
+fn note_refs(asked: &Asked, piece: crate::Payload, sends_at: usize, written: usize, refs: &mut Vec<RefRecord>) {
+    let pinned = asked.arena().pinned(piece);
+    if matches!(pinned, Pinned::Nothing) {
+        return;
+    }
+    let send = count((written - sends_at) / SendRecord::BYTES);
+    pinned.each(|at, _| refs.push(RefRecord { send, at }));
+}
+
+/// Writes after `out` a [`PinRecord`] for each blob whose pins the guest's references to it have changed since this
+/// was last done, with what the changes came to, and answers with how many: taken through `changes`, emptied and
+/// kept for its room.
+fn write_pins(out: &mut Vec<u8>, changes: &mut Vec<pins::Change>) -> u32 {
+    pins::take_own(changes);
+    if changes.is_empty() {
+        return 0;
+    }
+    let mut summed: BTreeMap<(u32, u64), i64> = BTreeMap::new();
+    for (blob, by) in changes.drain(..) {
+        *summed.entry((blob.engine(), blob.bits())).or_default() += by;
+    }
+    let mut written = 0;
+    for ((engine, bits), by) in summed {
+        let is_changed = by != 0;
+        if is_changed {
+            out.extend_from_slice(&PinRecord { blob: BlobId::new(engine, bits), by }.to_bytes());
+            written += 1;
+        }
+    }
+
+    written
+}
+
+/// Writes the [`PinRecord`]s of what the call that just returned changed, for a call that writes no other records:
+/// answers where they lie, as [`out`] does.
+#[must_use]
+pub fn pins_out() -> u64 {
+    GUEST.with_borrow_mut(|guest| {
+        let Guest { pinned, changes, .. } = &mut *guest;
+        pinned.clear();
+        write_pins(pinned, changes);
+
+        (u64::from(address(guest.pinned.as_ptr())) << 32) | guest.pinned.len() as u64
+    })
+}
+
+/// Ends the actor `handle` names: drops its state, and the references it holds with it, which [`pins_out`] then
+/// tells its host of. Nothing when it holds no such actor.
+pub fn end_at(handle: u32) {
+    GUEST.with_borrow_mut(|guest| {
+        if let Some(slot) = guest.actors.get_mut(handle as usize) {
+            *slot = Slot::Out;
+        }
+    });
+}
+
+/// Puts `bytes` as a blob in a call out to its host through `put`, the call out [`Calls::put`] wraps: answers with
+/// its id.
+///
+/// # Errors
+///
+/// Why the host refused it.
+pub fn put_with(put: extern "C" fn(u32, u32, u32) -> u64, bytes: &[u8]) -> Result<BlobId, Refused> {
+    let mut id = [0u8; 12];
+    let answer = put(address(bytes.as_ptr()), count(bytes.len()), address(id.as_mut_ptr()));
+    records::refused(answer, |_| None)?;
+
+    records::blob_at(&id).ok_or(Refused::NotMade)
 }
 
 /// How far a call's turns' ends have been counted in what they asked for, so each turn counts only what it added.
@@ -726,6 +874,7 @@ impl Calling {
             kind: declared.name().clone(),
             declared: section::of(declared),
             config: config.to_vec(),
+            refs: birth.refers.iter().map(|(at, _)| *at).collect(),
         };
         let bytes = to_bytes(&spawning).map_err(|_| Refused::NotMade)?;
         let answer = (self.calls.spawn)(address(bytes.as_ptr()), count(bytes.len()));
@@ -769,6 +918,44 @@ impl Runs for Begun {
 /// actor's type, so it checks no send, and leaves that to its host (ADR-0015).
 pub struct Host {
     calls: &'static Calls,
+    /// The blobs the call has read, each copied once into the guest's memory and kept for as long as the call.
+    read: OnceCell<Box<Read>>,
+}
+
+/// A blob a call has read: its bytes, copied from its host, and the next blob read.
+struct Read {
+    blob: BlobId,
+    bytes: Box<[u8]>,
+    next: OnceCell<Box<Self>>,
+}
+
+impl Host {
+    /// What a call's turns read of the engine, asked of its host through `calls`.
+    const fn new(calls: &'static Calls) -> Self {
+        Self { calls, read: OnceCell::new() }
+    }
+
+    /// The bytes of the blob `blob`, copied from its host the first time the call reads it: nothing when the host
+    /// refuses, as the instance holds no pin on it and none was offered to the call.
+    fn bytes(&self, blob: BlobId) -> Option<&[u8]> {
+        let mut at = &self.read;
+        while let Some(read) = at.get() {
+            if read.blob == blob {
+                return Some(&read.bytes);
+            }
+            at = &read.next;
+        }
+        let len = (self.calls.blob_len)(blob.engine(), blob.bits());
+        let is_refused = len == u64::MAX;
+        if is_refused {
+            return None;
+        }
+        let mut bytes = alloc::vec![0; usize::try_from(len).ok()?].into_boxed_slice();
+        (self.calls.blob_read)(blob.engine(), blob.bits(), address(bytes.as_mut_ptr()));
+        let read = at.get_or_init(|| Box::new(Read { blob, bytes, next: OnceCell::new() }));
+
+        Some(&read.bytes)
+    }
 }
 
 impl Table for Host {
@@ -818,15 +1005,17 @@ impl Table for Host {
         }
     }
 
-    /// Nothing, for now: a blob's bytes lie in the host's store, and how a guest reads them, and what its records
-    /// hold of the blobs it pins, is not decided (ADR-0015).
-    fn blob(&self, _: BlobId) -> Option<&[u8]> {
-        None
+    /// The blob's bytes, copied into the guest's memory from its host's store.
+    fn blob(&self, id: BlobId) -> Option<&[u8]> {
+        self.bytes(id)
     }
 
-    /// Nothing, for now, as for [`Self::blob`].
-    fn blob_hash(&self, _: BlobId) -> Option<BlobHash> {
-        None
+    /// The blob's content hash, as its host keeps it or computes it.
+    fn blob_hash(&self, id: BlobId) -> Option<BlobHash> {
+        let mut hash = [0u8; 32];
+        let is_hashed = (self.calls.blob_hash)(id.engine(), id.bits(), address(hash.as_mut_ptr())) == 1;
+
+        is_hashed.then_some(BlobHash::from_bytes(hash))
     }
 }
 
@@ -864,6 +1053,14 @@ macro_rules! guest {
                 safe fn aethereal_give_back_seat(seat: u64);
                 safe fn aethereal_spawn(spawning: u32, len: u32) -> u64;
                 safe fn aethereal_refusal(fault: u32);
+                safe fn aethereal_blob_len(engine: u32, bits: u64) -> u64;
+                safe fn aethereal_blob_read(engine: u32, bits: u64, at: u32);
+                safe fn aethereal_blob_hash(engine: u32, bits: u64, at: u32) -> u32;
+                safe fn aethereal_put(at: u32, len: u32, id: u32) -> u64;
+            }
+
+            fn put(bytes: Vec<u8>) -> Result<$crate::BlobId, $crate::Refused> {
+                $crate::guest::put_with(aethereal_put, &bytes)
             }
 
             fn take() -> $crate::SeatNumber {
@@ -886,7 +1083,21 @@ macro_rules! guest {
                 spawn: aethereal_spawn,
                 refusal: aethereal_refusal,
                 made: TYPES,
+                blob_len: aethereal_blob_len,
+                blob_read: aethereal_blob_read,
+                blob_hash: aethereal_blob_hash,
+                put,
             };
+
+            #[unsafe(no_mangle)]
+            extern "C" fn aethereal_pins() -> u64 {
+                $crate::guest::pins_out()
+            }
+
+            #[unsafe(no_mangle)]
+            extern "C" fn aethereal_end(handle: u32) {
+                $crate::guest::end_at(handle)
+            }
 
             #[unsafe(no_mangle)]
             extern "C" fn aethereal_inbox(len: u32) -> u32 {

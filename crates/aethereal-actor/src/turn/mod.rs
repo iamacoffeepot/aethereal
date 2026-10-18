@@ -14,7 +14,7 @@ use crate::{
     Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
 };
 #[cfg(feature = "std")]
-use crate::{Birth, BlobHash, BlobRef, config_bytes};
+use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -129,6 +129,13 @@ impl Asked {
         self.arena.clear(0);
     }
 
+    /// Lets go of the pins the mail written holds, keeping the mail: for a guest, whose host pins what its mail refers
+    /// to itself (ADR-0015).
+    #[cfg(feature = "guest")]
+    pub(crate) fn let_go_of_pins(&mut self) {
+        self.arena.let_go();
+    }
+
     /// How many children have been stood up since the buffers were last emptied: for a guest, whose turns of a batch
     /// all add to them (ADR-0015).
     #[cfg(feature = "guest")]
@@ -157,10 +164,11 @@ impl Asked {
         &mut self.seats
     }
 
-    /// The seats children are given and the blobs' puts, lent together: to a batch prepared ahead, whose turns'
-    /// children and blobs its host asks for in calls out (ADR-0015), and to a child its host begins apart.
-    pub fn lent(&mut self) -> (&mut Seats, &mut Puts) {
-        (&mut self.seats, &mut self.puts)
+    /// The seats children are given, the blobs' puts, and the arena mail is written to, lent together: to a batch
+    /// prepared ahead, whose turns' children and blobs its host asks for in calls out, and whose hop's pins lie in
+    /// the arena (ADR-0015), and to a child its host begins apart.
+    pub fn lent(&mut self) -> (&mut Seats, &mut Puts, &Arena) {
+        (&mut self.seats, &mut self.puts, &self.arena)
     }
 
     /// Takes in what `other` asked for: a child's `begin` its host ran apart from the turn that spawned it, while the
@@ -633,8 +641,8 @@ impl Seat<'_> {
             let config = config_bytes(&config).map_err(|_| Refused::NotMade)?;
             let from = Code::Linked(declared);
 
-            return self.spawn_other(instances, id, &segment, path, from, |birth| {
-                guests.begin_linked(declared, &config, birth)
+            return self.spawn_other(instances, id, &segment, path, from, &config, |config, birth| {
+                guests.begin_linked(declared, config, birth)
             });
         }
         let (me, before) = self.ask_spawn(id, &segment, Code::Linked(declared));
@@ -686,13 +694,16 @@ impl Seat<'_> {
         let made = guests.made(code.id(), Declared::of::<C>()).ok_or(Refused::NotMade)?;
         let config = config_bytes(config).map_err(|_| Refused::NotMade)?;
 
-        self.spawn_other(instances, id, &segment, path, Code::Blob(made), |birth| guests.begin(made, &config, birth))
+        self.spawn_other(instances, id, &segment, path, Code::Blob(made), &config, |config, birth| {
+            guests.begin(made, config, birth)
+        })
     }
 
     /// Stands up the child `id`, which `segment` names beneath this actor at `path`, from `from`, code the turn does
-    /// not run: adds its spawn effect, then has `begin` begin it where its code runs, lent `instances`. The child is
-    /// taken back when its `begin` was refused.
+    /// not run, made from `config`: adds its spawn effect, then has `begin` begin it where its code runs from the
+    /// config's bytes, lent `instances`. The child is taken back when its `begin` was refused.
     #[cfg(feature = "std")]
+    #[allow(clippy::too_many_arguments, reason = "the child, what it is made from, and what begins it, each its own")]
     fn spawn_other<C: Actor>(
         &mut self,
         instances: &mut Instances,
@@ -700,15 +711,17 @@ impl Seat<'_> {
         segment: &PathSegment,
         path: ActorPath,
         from: Code,
-        begin: impl FnOnce(Birth<'_>) -> Result<Box<dyn Runs>, Refused>,
+        config: &Config,
+        begin: impl FnOnce(&[u8], Birth<'_>) -> Result<Box<dyn Runs>, Refused>,
     ) -> Result<ActorRef<C>, Refused> {
         let declared = from.declared();
         let (me, before) = self.ask_spawn(id, segment, from);
 
         let stood_before = self.asked.stood.len();
         let above = Above::Actor(self.me, self.declared);
-        let birth = Birth { me, path: &path, above, table: self.table, asked: &mut *self.asked, instances };
-        match begin(birth) {
+        let refers = &config.held;
+        let birth = Birth { me, path: &path, above, table: self.table, asked: &mut *self.asked, instances, refers };
+        match begin(&config.bytes, birth) {
             Ok(actor) => {
                 self.stand(me, path, above, declared, actor);
 

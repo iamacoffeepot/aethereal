@@ -149,11 +149,14 @@ impl<'a> Preparing<'a> {
     }
 }
 
-/// An item of a batch, looked at before its turn: what it is, who it comes from, and where it stands in its chain.
+/// An item of a batch, looked at before its turn: what it is, who it comes from, where it stands in its chain, and
+/// where the references in its bytes lie, for a host that hands them to code that takes pins of its own (ADR-0014).
 pub struct Peeked<'a> {
     pub item: Item<'a>,
     pub source: Seated,
     pub chain: Chain,
+    #[cfg(feature = "std")]
+    pub pinned: crate::Pinned<'a>,
 }
 
 impl<A: Actor> Runs for A {

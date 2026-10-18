@@ -16,17 +16,17 @@
 //! back to it is refused.
 
 use aethereal_actor::records::{
-    Born, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, Other, OutHead, Parent, SendRecord, Span,
-    SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds, WatchRecord, refusal,
+    self, Born, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, Other, OutHead, Parent, PinRecord, RefRecord,
+    SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds, WatchRecord, blob_at, refusal,
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
     Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Children, Declared, FalseSend, FalseWatch,
-    Fault, Guests, Hosted, How, Instances, Item, Preparing, Puts, Reads, Refused, Role, Runs, SeatNumber, Seated,
-    Seats, Table, Trapped, Turning, Unfit,
+    Fault, Guests, Held as Pinning, Hosted, How, Instances, Item, Preparing, Puts, Reads, Refused, Role, Runs,
+    SeatNumber, Seated, Seats, Table, Trapped, Turning, Unfit,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindName, from_bytes, to_bytes};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::mem;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -91,11 +91,29 @@ struct Instance {
     take_in: TypedFunc<(u32, u64, u64, u32), u32>,
     take_out: TypedFunc<u32, u64>,
     turns: TypedFunc<(u32, u32, u32), u64>,
+    pins: TypedFunc<(), u64>,
+    end: TypedFunc<u32, ()>,
     /// Where the guest's inbox is, and how many bytes it has room for: asked for again only when it must grow.
     inbox_at: usize,
     inbox_room: usize,
     /// The actors that live in it: the part drops it when the last ends, and a trap in it ends them all.
     actors: Vec<Seated>,
+    /// The pins its actors hold on blobs: dropped with it, as a trap drops it (ADR-0014).
+    holdings: Holdings,
+}
+
+/// The pins an instance's actors hold on blobs, by blob: how many references to each the instance holds, and one pin
+/// of the engine's that keeps the blob while it holds any (ADR-0014). An instance's actors share one memory and trust
+/// one another, so its references are counted together.
+#[derive(Default)]
+struct Holdings {
+    blobs: BTreeMap<BlobId, Holding>,
+}
+
+/// How many references to one blob an instance holds, and the pin that keeps the blob for them.
+struct Holding {
+    pin: BlobRef,
+    count: u64,
 }
 
 /// What an instance's calls out are answered from: lent for the length of one call into it.
@@ -120,6 +138,8 @@ struct Answering<'a> {
     instances: &'a mut Instances,
     codes: &'a Weak<Codes>,
     given: &'a mut Given,
+    /// The pins the call's instance holds, as the call began.
+    holdings: &'a Holdings,
 }
 
 /// What the host gave a call into a guest that is still to be handed to the engine: the seats it gave the guest's
@@ -129,6 +149,9 @@ struct Answering<'a> {
 struct Given {
     seats: Vec<SeatNumber>,
     births: VecDeque<(u32, Foreign)>,
+    /// The pins on the blobs offered to the call's instance, which it may take references to though it holds none:
+    /// what the items handed in, a config, a state taken in, or a put refer to (ADR-0014).
+    offered: Vec<BlobRef>,
 }
 
 /// A child of other code its host was asked to begin for a guest, apart from the guest's turn, which takes in what
@@ -163,9 +186,9 @@ struct Guest {
 enum Lives {
     /// In its part's instance, under the handle the guest knows it by.
     In { handle: u32 },
-    /// Taken out of the instance it began in, which is another part's, as its path and state written at `Within`:
-    /// taken into its own part's instance on its first batch.
-    Out { state: Vec<u8> },
+    /// Taken out of the instance it began in, which is another part's, as its path and state written at `Within`,
+    /// with the pins on the blobs they refer to: taken into its own part's instance on its first batch.
+    Out { state: Vec<u8>, carried: Vec<BlobRef> },
 }
 
 /// What a guest's batch left to hand back.
@@ -230,7 +253,8 @@ impl Runtime {
         let mut budget = Budget::new(1 << 20);
         let made = from_bytes::<Vec<Made>>(section, &mut budget).map_err(|_| Unfit::Undeclared)?;
         let exports = ["memory", "aethereal_inbox", "aethereal_out", "aethereal_begin", "aethereal_take_in"];
-        for export in exports.into_iter().chain(["aethereal_take_out", "aethereal_turns"]) {
+        let more = ["aethereal_take_out", "aethereal_turns", "aethereal_pins", "aethereal_end"];
+        for export in exports.into_iter().chain(more) {
             let has = module.get_export(export).is_some();
             if !has {
                 return Err(Unfit::Unexported(export));
@@ -249,6 +273,15 @@ impl Runtime {
 /// The calls out a guest makes, each answered from what the call under way was lent (ADR-0015).
 fn calls_out(engine: &wasmtime::Engine) -> wasmtime::Result<Linker<Lending>> {
     let mut linker = Linker::new(engine);
+    reads_out(&mut linker)?;
+    spawns_out(&mut linker)?;
+    blobs_out(&mut linker)?;
+
+    Ok(linker)
+}
+
+/// Links the calls out that read the table into `linker`.
+fn reads_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
     linker.func_wrap(
         "aethereal",
         "aethereal_child",
@@ -299,6 +332,12 @@ fn calls_out(engine: &wasmtime::Engine) -> wasmtime::Result<Linker<Lending>> {
     linker.func_wrap("aethereal", "aethereal_held", |mut caller: Caller<'_, Lending>, id: u64| {
         answer(&mut caller, |answering| u32::from(answering.table.held(ActorId::new(id))))
     })?;
+
+    Ok(())
+}
+
+/// Links the calls out that seat and spawn children into `linker`.
+fn spawns_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
     linker.func_wrap("aethereal", "aethereal_take_seat", |mut caller: Caller<'_, Lending>| {
         answer(&mut caller, |answering| {
             let seat = answering.seats.take();
@@ -331,6 +370,58 @@ fn calls_out(engine: &wasmtime::Engine) -> wasmtime::Result<Linker<Lending>> {
             spawning.map_or_else(|| refusal(&Refused::NotMade), |spawning| answering.spawn(&spawning))
         })
     })?;
+
+    Ok(())
+}
+
+/// Links the calls out that read and put blobs, and that read a refusal's fault, into `linker`.
+fn blobs_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
+    linker.func_wrap(
+        "aethereal",
+        "aethereal_blob_len",
+        |mut caller: Caller<'_, Lending>, engine: u32, bits: u64| {
+            answer(&mut caller, |answering| {
+                let blob = answering.blob(BlobId::new(engine, bits));
+                blob.map_or(u64::MAX, |bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+            })
+        },
+    )?;
+    linker.func_wrap(
+        "aethereal",
+        "aethereal_blob_read",
+        |mut caller: Caller<'_, Lending>, engine: u32, bits: u64, at: u32| {
+            let bytes = answer(&mut caller, |answering| answering.blob(BlobId::new(engine, bits)).map(<[u8]>::to_vec))?;
+            write_guest(&mut caller, at, &bytes.unwrap_or_default())
+        },
+    )?;
+    linker.func_wrap(
+        "aethereal",
+        "aethereal_blob_hash",
+        |mut caller: Caller<'_, Lending>, engine: u32, bits: u64, at: u32| {
+            let hash = answer(&mut caller, |answering| answering.hash(BlobId::new(engine, bits)))?;
+            let Some(hash) = hash else {
+                return Ok(0);
+            };
+            write_guest(&mut caller, at, &hash.bytes())?;
+
+            Ok(1)
+        },
+    )?;
+    linker.func_wrap("aethereal", "aethereal_put", |mut caller: Caller<'_, Lending>, at: u32, len: u32, id: u32| {
+        let bytes = guest_bytes(&mut caller, Span { at, len });
+        let put =
+            answer(&mut caller, |answering| bytes.ok_or(Refused::NotMade).and_then(|bytes| answering.put(bytes)))?;
+        let put = match put {
+            Ok(blob) => blob,
+            Err(refused) => return Ok(refusal(&refused)),
+        };
+        let mut written = [0u8; 12];
+        written[..4].copy_from_slice(&put.engine().to_le_bytes());
+        written[4..].copy_from_slice(&put.bits().to_le_bytes());
+        write_guest(&mut caller, id, &written)?;
+
+        Ok(0)
+    })?;
     linker.func_wrap("aethereal", "aethereal_refusal", |mut caller: Caller<'_, Lending>, at: u32| {
         let fault =
             answer(&mut caller, |answering| answering.given.births.back().and_then(|(_, birth)| birth.fault()))?;
@@ -347,7 +438,7 @@ fn calls_out(engine: &wasmtime::Engine) -> wasmtime::Result<Linker<Lending>> {
         memory.write(&mut caller, usize::try_from(at).unwrap_or(usize::MAX), &bytes).map_err(wasmtime::Error::from)
     })?;
 
-    Ok(linker)
+    Ok(())
 }
 
 /// Answers a call out with `answer`, from what the call under way was lent. A call out made with nothing lent, which
@@ -362,6 +453,16 @@ fn answer<R>(caller: &mut Caller<'_, Lending>, answer: impl FnOnce(&mut Answerin
     let answering = unsafe { answering.as_mut() };
 
     Ok(answer(answering))
+}
+
+/// Writes `bytes` at `at` in the memory of the guest that makes a call out.
+fn write_guest(caller: &mut Caller<'_, Lending>, at: u32, bytes: &[u8]) -> wasmtime::Result<()> {
+    let memory = caller.get_export("memory").and_then(Extern::into_memory);
+    let Some(memory) = memory else {
+        return Err(wasmtime::Error::msg("a guest answered a call out has no memory"));
+    };
+
+    memory.write(caller, usize::try_from(at).unwrap_or(usize::MAX), bytes).map_err(wasmtime::Error::from)
 }
 
 /// The bytes `span` says lie in the memory of the guest that makes a call out: nothing when they lie outside it.
@@ -379,8 +480,44 @@ impl<'a> Answering<'a> {
         instances: &'a mut Instances,
         codes: &'a Weak<Codes>,
         given: &'a mut Given,
+        holdings: &'a Holdings,
     ) -> Self {
-        Self { table, made, seats, puts, instances, codes, given }
+        Self { table, made, seats, puts, instances, codes, given, holdings }
+    }
+
+    /// A pin on the blob `blob`, when the call's instance holds one or one was offered to the call: what lets its guest
+    /// name the blob (ADR-0014).
+    fn knows(&self, blob: BlobId) -> Option<BlobRef> {
+        self.holdings.pin(blob).or_else(|| self.given.offer(blob))
+    }
+
+    /// The bytes of the blob `blob`, when the guest may read it.
+    fn blob(&self, blob: BlobId) -> Option<&[u8]> {
+        self.knows(blob)?;
+
+        self.puts.read(blob).or_else(|| self.table.blob(blob))
+    }
+
+    /// The content hash of the blob `blob`, when the guest may read it: the one the store kept, or one computed now and
+    /// noted for the store to keep, as a native turn's is.
+    fn hash(&mut self, blob: BlobId) -> Option<BlobHash> {
+        if let Some(kept) = self.table.blob_hash(blob) {
+            self.knows(blob)?;
+            return Some(kept);
+        }
+        let hash = BlobHash::of(self.blob(blob)?);
+        self.puts.hashed(blob, hash);
+
+        Some(hash)
+    }
+
+    /// Puts `bytes` as a blob, into the worker's puts, and offers it to the call: answers with its id.
+    fn put(&mut self, bytes: Vec<u8>) -> Result<BlobId, Refused> {
+        let pin = self.puts.pinned(bytes)?;
+        let id = pin.id();
+        self.given.offered.push(pin);
+
+        Ok(id)
     }
 
     /// Begins the child of other code `spawning` names, apart from the call under way, into what it asks for of its
@@ -393,9 +530,18 @@ impl<'a> Answering<'a> {
         if !is_given || is_begun {
             return refusal(&Refused::NotMade);
         }
+        // Each reference in the config names a blob the guest may name, and its pin goes with the config.
+        let mut refers = Vec::with_capacity(spawning.refs.len());
+        for &at in &spawning.refs {
+            let pin = spawning.config.get(at as usize..).and_then(blob_at).and_then(|blob| self.knows(blob));
+            let Some(pin) = pin else {
+                return refusal(&Refused::NotMade);
+            };
+            refers.push((at, pin));
+        }
         let mut asked = Asked::writing(Arena::default(), Seats::default(), Puts::new(0, 0, 0));
         self.lend(&mut asked);
-        let began = self.begin(spawning, &mut asked);
+        let began = self.begin(spawning, &refers, &mut asked);
         self.lend(&mut asked);
         let (birth, answer) = match began {
             Ok((from, runs)) => (Foreign::Began { me, from, runs, asked }, 0),
@@ -416,7 +562,7 @@ impl<'a> Answering<'a> {
 
     /// Swaps the call's seats and puts with `asked`'s: lends them to a child begun apart, and takes them back.
     fn lend(&mut self, asked: &mut Asked) {
-        let (seats, puts) = asked.lent();
+        let (seats, puts, _) = asked.lent();
         mem::swap(self.seats, seats);
         mem::swap(self.puts, puts);
     }
@@ -426,6 +572,7 @@ impl<'a> Answering<'a> {
     fn begin(
         &mut self,
         spawning: &Spawning,
+        refers: &[Pinning],
         asked: &mut Asked,
     ) -> Result<(aethereal_actor::Code, Box<dyn Runs>), Refused> {
         let me = spawning.me();
@@ -439,7 +586,7 @@ impl<'a> Answering<'a> {
                 if !is_same {
                     return Err(Refused::NotMade);
                 }
-                let birth = Birth { me, path, above, table, asked, instances: self.instances };
+                let birth = Birth { me, path, above, table, asked, instances: self.instances, refers };
 
                 Ok((aethereal_actor::Code::Linked(link.declared), (link.begin)(&spawning.config, birth)?))
             }
@@ -453,7 +600,7 @@ impl<'a> Answering<'a> {
                     return Err(Refused::NotMade);
                 }
                 let guests = self.instances.guests();
-                let birth = Birth { me, path, above, table, asked, instances: self.instances };
+                let birth = Birth { me, path, above, table, asked, instances: self.instances, refers };
 
                 Ok((aethereal_actor::Code::Blob(made), guests.begin(made, &spawning.config, birth)?))
             }
@@ -466,8 +613,14 @@ impl Given {
     fn is_empty(&self) -> bool {
         let no_seats = self.seats.is_empty();
         let no_births = self.births.is_empty();
+        let no_offers = self.offered.is_empty();
 
-        no_seats && no_births
+        no_seats && no_births && no_offers
+    }
+
+    /// A pin on the blob `blob`, when one was offered to the call.
+    fn offer(&self, blob: BlobId) -> Option<BlobRef> {
+        self.offered.iter().find(|offered| offered.id() == blob).cloned()
     }
 
     /// Notes that the guest took back the child in `seat`, whose seat went back to `seats`: when it is a child of
@@ -496,6 +649,44 @@ impl Given {
                 }
             }
         }
+        self.offered.clear();
+    }
+}
+
+impl Holdings {
+    /// A pin on the blob `blob`, when the instance holds a reference to it.
+    fn pin(&self, blob: BlobId) -> Option<BlobRef> {
+        self.blobs.get(&blob).map(|holding| holding.pin.clone())
+    }
+
+    /// Takes in `changes`, what a call into the instance changed of its references to blobs, a pin on a blob it held
+    /// none of taken from `offered`: false when one names a blob the instance held no reference to and none was
+    /// offered, or drops more than it holds, as its code then came by an id it was not given (ADR-0014).
+    fn change(&mut self, changes: impl IntoIterator<Item = PinRecord>, offered: &[BlobRef]) -> bool {
+        for PinRecord { blob, by } in changes {
+            let had = self.blobs.get(&blob).map_or(0, |holding| holding.count);
+            let Some(count) = had.checked_add_signed(by) else {
+                return false;
+            };
+            match (had, count) {
+                (_, 0) => {
+                    self.blobs.remove(&blob);
+                }
+                (0, _) => {
+                    let Some(pin) = offered.iter().find(|offered| offered.id() == blob) else {
+                        return false;
+                    };
+                    self.blobs.insert(blob, Holding { pin: pin.clone(), count });
+                }
+                _ => {
+                    if let Some(holding) = self.blobs.get_mut(&blob) {
+                        holding.count = count;
+                    }
+                }
+            }
+        }
+
+        true
     }
 }
 
@@ -576,8 +767,10 @@ impl Instance {
         let take_in = instance.get_typed_func(&mut store, "aethereal_take_in");
         let take_out = instance.get_typed_func(&mut store, "aethereal_take_out");
         let turns = instance.get_typed_func(&mut store, "aethereal_turns");
-        let (Some(memory), Ok(inbox), Ok(out), Ok(begin), Ok(take_in), Ok(take_out), Ok(turns)) =
-            (memory, inbox, out, begin, take_in, take_out, turns)
+        let pins = instance.get_typed_func(&mut store, "aethereal_pins");
+        let end = instance.get_typed_func(&mut store, "aethereal_end");
+        let (Some(memory), Ok(inbox), Ok(out), Ok(begin), Ok(take_in), Ok(take_out), Ok(turns), Ok(pins), Ok(end)) =
+            (memory, inbox, out, begin, take_in, take_out, turns, pins, end)
         else {
             panic!("guest code that entered has its exports");
         };
@@ -591,9 +784,12 @@ impl Instance {
             take_in,
             take_out,
             turns,
+            pins,
+            end,
             inbox_at: 0,
             inbox_room: 0,
             actors: Vec::new(),
+            holdings: Holdings::default(),
         }
     }
 }
@@ -640,7 +836,7 @@ impl Guests for Runtime {
         let BlobType { blob, declared } = *made;
         let code = self.codes.read().ok().and_then(|codes| codes.get(&blob).cloned()).ok_or(Refused::NotMade)?;
         let (of, _) = code.made_of(declared.id()).ok_or(Refused::NotMade)?;
-        let Birth { me, path, above, table, asked, instances } = birth;
+        let Birth { me, path, above, table, asked, instances, refers } = birth;
         let parent = match above {
             Above::Chassis => Parent::Chassis,
             Above::Actor(above, _) | Above::Elsewhere(above) => {
@@ -651,16 +847,22 @@ impl Guests for Runtime {
         let handed: Vec<u8> = count(born.len()).to_le_bytes().into_iter().chain(born).chain(config.to_vec()).collect();
 
         let mut held = instances.lend(code.key, || Instance::load(&code))?;
-        let (seats, puts) = asked.lent();
+        let (seats, puts, _) = asked.lent();
         let reads = Reads { table, made: &(), seats, puts };
-        let mut given = Given::default();
-        let mut answering = Answering::of(reads, instances, &code.codes, &mut given);
+        // What the config refers to is offered to the call, as the child takes references of its own to it.
+        let offered = refers.iter().map(|(_, pin)| pin.clone()).collect();
+        let mut given = Given { offered, ..Given::default() };
+        let mut holdings = mem::take(&mut held.holdings);
+        let mut answering = Answering::of(reads, instances, &code.codes, &mut given, &holdings);
         let began = held.begin(of, me, &handed, &mut answering);
+        let began = began.filter(|(_, wrote)| held.take_pins(wrote, &mut holdings, &given));
+        held.holdings = holdings;
         let mut hosted = Hosted::beginning(me, path, above, table, asked, declared);
         let replayed = began.and_then(|(handle, wrote)| {
-            let Instance { store, memory, actors, .. } = &mut *held;
+            let Instance { store, memory, actors, holdings, .. } = &mut *held;
             let data = memory.data(&*store);
-            let replayed = replay(data, &code, &wrote, 0, TurnEnds::default(), &mut given, actors, &mut hosted)?;
+            let ends = TurnEnds::default();
+            let replayed = replay(data, &code, &wrote, 0, ends, &mut given, holdings, actors, &mut hosted)?;
             Some((handle, replayed))
         });
         given.give_back(|seat| hosted.give_back(seat));
@@ -681,7 +883,7 @@ impl Guests for Runtime {
             held.actors.push(me);
             Ok(Lives::In { handle })
         } else {
-            held.take_out(handle).map(|state| Lives::Out { state }).ok_or_else(|| Refused::Began(trapped()))
+            held.take_out(handle).ok_or_else(|| Refused::Began(trapped()))
         };
         instances.put_back(code.key, held);
         let lives = lives?;
@@ -707,8 +909,9 @@ impl Runs for Guest {
             self.ran = Ran::Trapped;
             return;
         };
-        if let Lives::Out { state } = &self.lives {
-            let taken = self.code.made_of(self.declared.id()).and_then(|(of, _)| held.take_in(of, self.me, state));
+        if let Lives::Out { state, carried } = &self.lives {
+            let taken =
+                self.code.made_of(self.declared.id()).and_then(|(of, _)| held.take_in(of, self.me, state, carried));
             let Some(handle) = taken else {
                 instances.put_back(self.code.key, held);
                 self.ran = Ran::Trapped;
@@ -721,12 +924,20 @@ impl Runs for Guest {
             instances.put_back(self.code.key, held);
             return;
         };
-        let (items, len) = held.hand_in(batch);
-        let mut answering = Answering::of(reads, instances, &self.code.codes, &mut self.given);
+        let (items, len) = held.hand_in(batch, &mut self.given.offered);
+        let mut holdings = mem::take(&mut held.holdings);
+        let Reads { table, made, seats, puts } = reads;
+        let lent = Reads { table, made, seats: &mut *seats, puts };
+        let mut answering = Answering::of(lent, &mut *instances, &self.code.codes, &mut self.given, &holdings);
         let Instance { store, turns, .. } = &mut *held;
         let called = lending(store, &mut answering, |store| turns.call(store, (handle, items, len)));
         let wrote = called.ok().and_then(|out| held.out_head(out));
-        let Answering { seats, given, instances, .. } = answering;
+        // The references a child taken out of the instance in the call holds go with it, so their pins are offered
+        // to its turn before the call's own changes, which drop the instance's references to them, are taken in.
+        let given = &mut self.given;
+        let wrote = wrote.filter(|wrote| held.offer_taken_out(wrote, &holdings, given));
+        let wrote = wrote.filter(|wrote| held.take_pins(wrote, &mut holdings, given));
+        held.holdings = holdings;
         if wrote.is_none() {
             // Nothing the trapped call stood up will be handed to the engine, so every seat it took goes back now.
             given.give_back(|seat| seats.give_back(seat));
@@ -748,9 +959,9 @@ impl Runs for Guest {
         let (mut hosted, instances) = turning.hosted(self.declared, role);
         let replayed = match self.ran {
             Ran::At { head, next, before } => {
-                let Instance { store, memory, actors, .. } = self.code.instance(instances);
+                let Instance { store, memory, actors, holdings, .. } = self.code.instance(instances);
                 let data = memory.data(&*store);
-                replay(data, &self.code, &head, next, before, &mut self.given, actors, &mut hosted)
+                replay(data, &self.code, &head, next, before, &mut self.given, holdings, actors, &mut hosted)
                     .map(|(replayed, ends)| (replayed, Ran::At { head, next: next + 1, before: ends }))
             }
             Ran::Nothing | Ran::Trapped => None,
@@ -783,6 +994,11 @@ impl Runs for Guest {
         let Some(held) = instances.get::<Instance>(self.code.key) else {
             return Ok(());
         };
+        // Its state is dropped in the guest, and the references it held with it: the instance holds no pin for them
+        // past the actor's end.
+        if let Lives::In { handle } = self.lives {
+            held.end_actor(handle);
+        }
         held.actors.retain(|actor| *actor != self.me);
         let is_last = held.actors.is_empty();
         if is_last {
@@ -809,32 +1025,105 @@ impl Instance {
     }
 
     /// Takes the actor the guest keeps under `handle` out of the instance: where it stands and its state, as the guest
-    /// wrote them. Nothing when the call trapped, or wrote what does not read back.
-    fn take_out(&mut self, handle: u32) -> Option<Vec<u8>> {
+    /// wrote them, and a pin on each blob they refer to, which the instance no longer counts. Nothing when the call
+    /// trapped, or wrote what does not read back.
+    fn take_out(&mut self, handle: u32) -> Option<Lives> {
         let out = self.take_out.call(&mut self.store, handle).ok()?;
         let at = usize::try_from(out >> 32).ok()?;
         let len = usize::try_from(out & u64::from(u32::MAX)).ok()?;
         let is_written = len > 0;
+        let state = is_written.then(|| self.memory.data(&self.store).get(at..at + len).map(<[u8]>::to_vec))??;
+        let carried = carried_pins(&state, &self.holdings, &[])?;
+        let pins = self.pins()?;
+        let is_honest = self.holdings.change(pins, &[]);
 
-        is_written.then(|| self.memory.data(&self.store).get(at..at + len).map(<[u8]>::to_vec))?
+        is_honest.then_some(Lives::Out { state, carried })
     }
 
     /// Takes `me`, an actor of the `of`th type the code makes, into the instance from `state`, its path and state as
-    /// the guest that took it out wrote them: the handle the guest keeps it under. Nothing when the call trapped, or
-    /// the state did not read back.
-    fn take_in(&mut self, of: u32, me: Seated, state: &[u8]) -> Option<u32> {
+    /// the guest that took it out wrote them, the references in them to the blobs `carried` pins: the handle the guest
+    /// keeps it under. Nothing when the call trapped, the state did not read back, or the guest took a reference it
+    /// was not given.
+    fn take_in(&mut self, of: u32, me: Seated, state: &[u8], carried: &[BlobRef]) -> Option<u32> {
         let len = self.write_inbox(state);
         let handle = self.take_in.call(&mut self.store, (of, me.id.bits(), me.seat.number(), len)).ok()?;
         let is_taken = handle != NO_HANDLE;
+        let pins = self.pins()?;
+        let is_honest = self.holdings.change(pins, carried);
 
-        is_taken.then_some(handle)
+        (is_taken && is_honest).then_some(handle)
     }
-    /// Writes the items of `batch` straight into the guest's inbox, each an [`ItemHead`] and then its bytes, and
-    /// answers with how many items and how many bytes.
-    fn hand_in(&mut self, batch: &dyn Batch) -> (u32, u32) {
+
+    /// Ends the actor the guest keeps under `handle`, which drops its state and its references, and takes in what that
+    /// changed of the instance's pins.
+    fn end_actor(&mut self, handle: u32) {
+        let ended = self.end.call(&mut self.store, handle);
+        let pins = ended.ok().and_then(|()| self.pins());
+        if let Some(pins) = pins {
+            self.holdings.change(pins, &[]);
+        }
+    }
+
+    /// What the guest's last call changed of its references to blobs, asked of it after a call that writes no other
+    /// records. Nothing when the call trapped, or wrote what does not read back.
+    fn pins(&mut self) -> Option<Vec<PinRecord>> {
+        let out = self.pins.call(&mut self.store, ()).ok()?;
+        let at = usize::try_from(out >> 32).ok()?;
+        let len = usize::try_from(out & u64::from(u32::MAX)).ok()?;
+        let data = self.memory.data(&self.store).get(at..at + len)?;
+
+        data.chunks(PinRecord::BYTES).map(PinRecord::read).collect()
+    }
+
+    /// Takes into `holdings` what the call that wrote `wrote` changed of the instance's references to blobs, a
+    /// reference to a blob it held none of allowed when `given` offered it: false when the guest named a blob it was
+    /// not given, or the records do not read back.
+    fn take_pins(&self, wrote: &OutHead, holdings: &mut Holdings, given: &Given) -> bool {
+        // Most calls change no reference to a blob.
+        if wrote.pins == 0 {
+            return true;
+        }
+        let data = self.memory.data(&self.store);
+        let pins = (0..wrote.pins).map(|index| PinRecord::read(record(data, wrote.pins_at, index, PinRecord::BYTES)?));
+        let pins: Option<Vec<PinRecord>> = pins.collect();
+
+        pins.is_some_and(|pins| holdings.change(pins, &given.offered))
+    }
+
+    /// Offers to the batch's turns a pin on each blob each child the call that wrote `wrote` took out of the instance
+    /// refers to, from `holdings`, the instance's as the call began, or `given`'s offers: false when the instance
+    /// held no reference to one, or the records do not read back.
+    fn offer_taken_out(&self, wrote: &OutHead, holdings: &Holdings, given: &mut Given) -> bool {
+        // Most calls stand up no child.
+        let stood = (wrote.watches_at.saturating_sub(wrote.stood_at)) as usize / StoodRecord::BYTES;
+        if stood == 0 {
+            return true;
+        }
+        let data = self.memory.data(&self.store);
+        for index in 0..count(stood) {
+            let stood = record(data, wrote.stood_at, index, StoodRecord::BYTES).and_then(StoodRecord::read);
+            let Some(stood) = stood else {
+                return false;
+            };
+            let Kept::Out { state } = stood.held else {
+                continue;
+            };
+            let carried = lying(data, state).and_then(|state| carried_pins(state, holdings, &given.offered));
+            let Some(carried) = carried else {
+                return false;
+            };
+            given.offered.extend(carried);
+        }
+
+        true
+    }
+    /// Writes the items of `batch` straight into the guest's inbox, each an [`ItemHead`] and then its bytes, adds to
+    /// `offered` a pin on each blob an item refers to, and answers with how many items and how many bytes.
+    fn hand_in(&mut self, batch: &dyn Batch, offered: &mut Vec<BlobRef>) -> (u32, u32) {
         let mut items = 0;
         let mut len = 0;
         batch.each(&mut |peeked| {
+            peeked.pinned.each(|_, pin| offered.push(pin.clone()));
             let (handed, bytes) = match &peeked.item {
                 Item::Mail(mail) => (Handed::Mail { kind: mail.kind() }, mail.bytes()),
                 Item::Ended(ended) => match ended.how() {
@@ -903,11 +1192,12 @@ fn replay(
     next: u32,
     before: TurnEnds,
     given: &mut Given,
+    holdings: &Holdings,
     actors: &mut Vec<Seated>,
     hosted: &mut Hosted<'_>,
 ) -> Option<(Result<(), Fault>, TurnEnds)> {
     let actors_before = actors.len();
-    let replayed = replay_records(data, code, head, next, before, given, actors, hosted);
+    let replayed = replay_records(data, code, head, next, before, given, holdings, actors, hosted);
     // A failed turn's children are dropped by the engine, and never live in the instance; nor do those of a turn whose
     // records do not read back.
     let has_more = actors.len() > actors_before;
@@ -928,6 +1218,7 @@ fn replay_records(
     next: u32,
     before: TurnEnds,
     given: &mut Given,
+    holdings: &Holdings,
     actors: &mut Vec<Seated>,
     hosted: &mut Hosted<'_>,
 ) -> Option<(Result<(), Fault>, TurnEnds)> {
@@ -947,7 +1238,14 @@ fn replay_records(
     }
     for index in before.sends..ends.sends {
         let send = SendRecord::read(record(data, head.sends_at, index, SendRecord::BYTES)?)?;
-        let is_refused = hosted.send(send.by, send.to, send.kind, lying(data, send.bytes)?).is_err();
+        let bytes = lying(data, send.bytes)?;
+        // Most mail refers to no blob, and a call whose mail refers to none wrote no reference.
+        let pins = if head.refs == 0 {
+            Some(Vec::new())
+        } else {
+            send_pins(data, head, index, bytes, holdings, given)
+        };
+        let is_refused = pins.is_none_or(|pins| hosted.send(send.by, send.to, send.kind, bytes, &pins).is_err());
         if is_refused {
             return Some((Err(Fault::new(&FalseSend).unwrap_or_else(|_| trapped())), ends));
         }
@@ -958,7 +1256,7 @@ fn replay_records(
     }
     let stands = ends.stood > before.stood;
     if stands {
-        stand(data, code, head, before, ends, &mut given.seats, actors, hosted)?;
+        stand(data, code, head, before, ends, given, holdings, actors, hosted)?;
     }
     for index in before.watches..ends.watches {
         let watch = WatchRecord::read(record(data, head.watches_at, index, WatchRecord::BYTES)?)?;
@@ -1042,10 +1340,12 @@ fn stand(
     head: &OutHead,
     before: TurnEnds,
     ends: TurnEnds,
-    handed: &mut Vec<SeatNumber>,
+    given: &mut Given,
+    holdings: &Holdings,
     actors: &mut Vec<Seated>,
     hosted: &mut Hosted<'_>,
 ) -> Option<()> {
+    let handed = &mut given.seats;
     for index in before.stood..ends.stood {
         let stood = StoodRecord::read(record(data, head.stood_at, index, StoodRecord::BYTES)?)?;
         let me = stood.me;
@@ -1066,7 +1366,11 @@ fn stand(
                 actors.push(me);
                 Lives::In { handle }
             }
-            Kept::Out { state } => Lives::Out { state: lying(data, state)?.to_vec() },
+            Kept::Out { state } => {
+                let state = lying(data, state)?;
+                let carried = carried_pins(state, holdings, &given.offered)?;
+                Lives::Out { state: state.to_vec(), carried }
+            }
         };
         let runs = Guest {
             code: code.clone(),
@@ -1081,6 +1385,41 @@ fn stand(
     }
 
     Some(())
+}
+
+/// A pin on each blob the references in the piece of mail `bytes` name, each at where its reference begins in them,
+/// which the call's `index`th send, of those `head` says it made, sends: each a blob the instance holds a reference to
+/// in `holdings`, or `given` offered. Nothing when one is not, as the guest sent a reference it was not given, or the
+/// records do not read back.
+fn send_pins(
+    data: &[u8],
+    head: &OutHead,
+    index: u32,
+    bytes: &[u8],
+    holdings: &Holdings,
+    given: &Given,
+) -> Option<Vec<Pinning>> {
+    let mut pins = Vec::new();
+    for at in 0..head.refs {
+        let reference = RefRecord::read(record(data, head.refs_at, at, RefRecord::BYTES)?)?;
+        let is_this = reference.send == index;
+        if is_this {
+            let blob = blob_at(bytes.get(reference.at as usize..)?)?;
+            let pin = holdings.pin(blob).or_else(|| given.offer(blob))?;
+            pins.push((reference.at, pin));
+        }
+    }
+
+    Some(pins)
+}
+
+/// A pin on each blob an actor's state taken out of a guest refers to, `bytes` as [`records::carried`] reads them:
+/// each a blob `holdings` hold a reference to, or `offered` offers. Nothing when one is not, or they do not read back.
+fn carried_pins(bytes: &[u8], holdings: &Holdings, offered: &[BlobRef]) -> Option<Vec<BlobRef>> {
+    let (_, blobs) = records::carried(bytes)?;
+    let offer = |blob: BlobId| offered.iter().find(|offered| offered.id() == blob).cloned();
+
+    blobs.into_iter().map(|blob| holdings.pin(blob).or_else(|| offer(blob))).collect()
 }
 
 /// The `index`th record of `len` bytes of those that begin at `at` in the guest's memory `data`.
@@ -1620,7 +1959,7 @@ mod tests {
     }
 
     /// The answers each test's askers were given, by the tally the test keeps them in.
-    static ANSWERS: [Mutex<Vec<u64>>; 6] = [const { Mutex::new(Vec::new()) }; 6];
+    static ANSWERS: [Mutex<Vec<u64>>; 7] = [const { Mutex::new(Vec::new()) }; 7];
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
@@ -2231,6 +2570,183 @@ mod tests {
         settle(&mut engine);
 
         assert_eq!(answers(5), [20, 102, 112, 306, 400, 505, 505, 605, 605]);
+    }
+
+    /// A native actor that keeps each pong it is sent in the seventh of [`ANSWERS`].
+    #[derive(aethereal_data::Bound)]
+    struct Ledger;
+
+    impl Kind for Ledger {
+        const NAME: KindName = KindName::new("aether.test.ledger");
+    }
+
+    impl Actor for Ledger {
+        type Config = Volley;
+        type Key = ();
+        type Handles = (Pong,);
+        type BeginSends = ();
+        type EndSends = ();
+
+        fn begin(_: Volley, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Pong> for Ledger {
+        type Sends = ();
+
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            if let Ok(mut answers) = ANSWERS[6].lock() {
+                answers.push(pong.n);
+            }
+
+            Ok(())
+        }
+    }
+
+    /// The path of the librarian root.
+    fn librarian() -> ActorPath {
+        ActorPath::from_root(&PathSegment::new(echo::Librarian::NAME, &()))
+    }
+
+    /// A native actor that pings the librarian for a book of five as it begins, keeps in the seventh of [`ANSWERS`]
+    /// how long the book it is sent is and what its first byte is, read from the store, and sends the book back; and
+    /// keeps the pong it is answered with there too.
+    #[derive(aethereal_data::Bound)]
+    struct Borrower;
+
+    impl Kind for Borrower {
+        const NAME: KindName = KindName::new("aether.test.borrower");
+    }
+
+    impl Actor for Borrower {
+        type Config = Volley;
+        type Key = ();
+        type Handles = (echo::Book, Pong);
+        type BeginSends = (ToAny<(Ping,), Ping>,);
+        type EndSends = ();
+
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            if let Some(librarian) = turn.resolve(&librarian()) {
+                turn.to_any::<(Ping,)>(ToWithoutMail::Held(librarian)).send(&Ping { n: 5 })?;
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<echo::Book> for Borrower {
+        type Sends = (ToSender<echo::Book>,);
+
+        fn handle(&mut self, book: echo::Book, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            let bytes = turn.read(&book.blob);
+            let read = [bytes.len() as u64, bytes.first().copied().map_or(0, u64::from)];
+            if let Ok(mut answers) = ANSWERS[6].lock() {
+                answers.extend(read);
+            }
+            turn.reply(&book)?;
+
+            Ok(())
+        }
+    }
+
+    impl Handles<Pong> for Borrower {
+        type Sends = ();
+
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            if let Ok(mut answers) = ANSWERS[6].lock() {
+                answers.push(pong.n);
+            }
+
+            Ok(())
+        }
+    }
+
+    /// A native actor that tells the librarian to shut, as it begins.
+    #[derive(aethereal_data::Bound)]
+    struct Shutter;
+
+    impl Kind for Shutter {
+        const NAME: KindName = KindName::new("aether.test.shutter");
+    }
+
+    impl Actor for Shutter {
+        type Config = Volley;
+        type Key = ();
+        type Handles = ();
+        type BeginSends = (ToAny<(echo::Shut,), echo::Shut>,);
+        type EndSends = ();
+
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            if let Some(librarian) = turn.resolve(&librarian()) {
+                turn.to_any::<(echo::Shut,)>(ToWithoutMail::Held(librarian)).send(&echo::Shut)?;
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_guest_holds_the_blobs_it_refers_to_and_no_other() {
+        // Catches a guest's reference that does not keep its blob, one read out of its config or mail that its host
+        // does not take, a blob it read or put that its host does not serve it, mail it sends whose reference does not
+        // keep the blob until it is read, a reference kept past its actor's end, and a reference made from an id the
+        // guest was never given that its host honours.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(_) = engine.add_root::<Ledger>(&(), Volley { pings: 0 }) else {
+            panic!("the ledger begins");
+        };
+        let Ok(book) = engine.put_blob(b"hello world".to_vec()) else {
+            panic!("the book is put");
+        };
+        let tell = ActorPath::from_root(&PathSegment::new(Ledger::NAME, &()));
+        let Ok(_) = engine.add_root_from::<echo::Librarian>(&code, &(), &echo::Shelf { book, tell }) else {
+            panic!("the librarian begins, and reads its book");
+        };
+        settle(&mut engine);
+        let kept_by_librarian = engine.blobs_held().0;
+
+        let Ok(_) = engine.add_root::<Borrower>(&(), Volley { pings: 0 }) else {
+            panic!("the borrower begins");
+        };
+        settle(&mut engine);
+
+        // An echo keeps the blob's instance after the librarian ends, so what the librarian held goes as it ends, and
+        // not with the instance.
+        let Ok(_) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
+            panic!("an echo begins");
+        };
+        let Ok(_) = engine.add_root::<Shutter>(&(), Volley { pings: 0 }) else {
+            panic!("the shutter begins");
+        };
+        settle(&mut engine);
+        let after_closing = engine.blobs_held().0;
+
+        let Ok(secret) = engine.put_blob(b"secret".to_vec()) else {
+            panic!("the secret is put");
+        };
+        let forge = echo::Forge { engine: secret.id().engine(), bits: secret.id().bits() };
+        let forged = engine.add_root_from::<echo::Forger>(&code, &(), &forge);
+
+        assert_eq!(answers(6), [5, 7, 11, 105]);
+        // The blob lent out goes once the mail that carried it is gone, by the time the librarian has closed.
+        assert_eq!((kept_by_librarian, after_closing), (2, 1));
+        assert!(matches!(forged, Err(Refused::Began(_))));
     }
 
     #[test]

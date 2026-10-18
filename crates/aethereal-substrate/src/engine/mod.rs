@@ -516,9 +516,9 @@ impl Engine {
         let guests = Arc::clone(&self.guests);
 
         self.add_root_made(&segment, Code::Blob(made), |me, path, table, asked, instances| {
-            let birth = Birth { me, path, above: Above::Chassis, table, asked, instances };
+            let birth = Birth { me, path, above: Above::Chassis, table, asked, instances, refers: &config.held };
 
-            guests.begin(made, &config, birth)
+            guests.begin(made, &config.bytes, birth)
         })
     }
 
@@ -1304,19 +1304,21 @@ impl Reading<'_> {
                 let mut slice = Slice::new(self.slice);
                 let mut pieces = streams.items(&run);
                 let carried = streams.carried();
+                let carried_pins = streams.carried_pins();
                 let mut is_spent = false;
                 while let Some(handed) = pieces.next() {
                     // A batch is prepared once its first item is in hand, so it holds at least one.
                     let begins_batch = slice.taken.is_multiple_of(SLICE_EVERY);
                     if begins_batch {
-                        let batch = batch::Waiting { reading: self, first: handed, rest: &pieces, carried };
+                        let batch =
+                            batch::Waiting { reading: self, first: handed, rest: &pieces, carried, carried_pins };
                         let table = Since {
                             table: self.table,
                             stood: &lists.fusing.stood,
                             sees: Sees::Step,
                             blobs: self.blobs,
                         };
-                        let (seats, puts) = asked.lent();
+                        let (seats, puts, _) = asked.lent();
                         let reads = Reads { table: &table, made: &seat.made, seats, puts };
                         actor.prepare(Preparing::new(&batch, instances, reads));
                     }
@@ -1456,9 +1458,10 @@ impl Reading<'_> {
             sees: Sees::Run(lists.fusing.run(hop.run)),
             blobs: self.blobs,
         };
-        let (seats, puts) = asked.lent();
+        let (seats, puts, arena) = asked.lent();
         let reads = Reads { table: &table, made: &seat.made, seats, puts };
-        actor.prepare(Preparing::new(&batch::OneHop { reading: self, hop: &hop, lists }, instances, reads));
+        let batch = batch::OneHop { reading: self, hop: &hop, lists, arena };
+        actor.prepare(Preparing::new(&batch, instances, reads));
         let sent_before = stepped.sent;
         let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
         // Timed whole, as a turn of a waiting item is.

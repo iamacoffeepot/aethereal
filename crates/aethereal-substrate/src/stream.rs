@@ -2,7 +2,9 @@
 
 use crate::watch::Notice;
 use crate::{Context, Envelope, View};
-use aethereal_actor::{Arena, CARRIED, Effect, Ended, Held, MailId, Mailed, Payload, SeatNumber, Seated, within};
+use aethereal_actor::{
+    Arena, CARRIED, Effect, Ended, Held, MailId, Mailed, Payload, Pinned, SeatNumber, Seated, within,
+};
 use aethereal_data::ActorId;
 use std::iter;
 use std::mem;
@@ -111,6 +113,19 @@ impl Span {
 pub fn read<'a>(payload: Payload, mail: &'a [Arena], carried: &'a [u8]) -> &'a [u8] {
     // No writer has the carried slot, so mail that was carried is not found among the arenas.
     mail.get(payload.slot()).and_then(|arena| arena.read(payload)).unwrap_or_else(|| read_carried(payload, carried))
+}
+
+/// Where the references in the bytes of `payload` lie, and the pins on their blobs: among `mail`, the writers' arenas,
+/// or `carried_pins`, those of its part's carried bytes, when it was carried (ADR-0014).
+#[must_use]
+pub fn pinned<'a>(payload: Payload, mail: &'a [Arena], carried_pins: &'a [Held]) -> Pinned<'a> {
+    match (mail.get(payload.slot()), payload) {
+        (Some(arena), _) => arena.pinned(payload),
+        (None, Payload::InArena { slot: CARRIED, start, len, .. }) if !carried_pins.is_empty() => {
+            Pinned::Lying { held: within(carried_pins, start, len), start }
+        }
+        (None, _) => Pinned::Nothing,
+    }
 }
 
 /// `payload`, carried, as it lies from `start` of its part's carried bytes.
@@ -340,6 +355,12 @@ impl Shard {
     #[must_use]
     pub fn carried(&self) -> &[u8] {
         &self.backlog_bytes
+    }
+
+    /// The pins of the blobs the carried mail refers to, each at where its reference begins in [`Self::carried`].
+    #[must_use]
+    pub fn carried_pins(&self) -> &[Held] {
+        &self.backlog_pins
     }
 
     /// Carries over into the next step the items of `run` but the first `taken`, which its actor was not handed in

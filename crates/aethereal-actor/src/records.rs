@@ -8,7 +8,8 @@
 //! each piece of mail its turns sent, a [`LineRecord`] for each line they
 //! logged, a [`SpawnRecord`] for each child they spawned, a [`StoodRecord`]
 //! for each child that began, and a [`WatchRecord`] for each actor they
-//! watched. A send's bytes, a line's text, a key and a moved
+//! watched; and, for the call as a whole, a [`PinRecord`] for each blob whose
+//! pins it changed, and a [`RefRecord`] for each reference in what it sent. A send's bytes, a line's text, a key and a moved
 //! child's state are not copied out: each record says where they lie in the
 //! guest's memory, and the host reads them there. Sends and lines say who made
 //! them, as watches do: the actor whose turn it was, or a child it spawned, in
@@ -21,7 +22,7 @@
 //! Every number is little-endian, and every address is one in the guest's
 //! 32-bit memory.
 
-use crate::{Chain, Fault, Level, MailId, Refused, SeatNumber, Seated};
+use crate::{BlobId, Chain, Fault, Level, MailId, Refused, SeatNumber, Seated};
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
 use alloc::vec::Vec;
 
@@ -130,6 +131,12 @@ pub struct OutHead {
     pub spawns_at: u32,
     pub stood_at: u32,
     pub watches_at: u32,
+    /// Where the call's [`PinRecord`]s begin, and how many there are.
+    pub pins_at: u32,
+    pub pins: u32,
+    /// Where the call's [`RefRecord`]s begin, and how many there are.
+    pub refs_at: u32,
+    pub refs: u32,
 }
 
 /// Where some bytes lie in a guest's memory: their address, and how many there are.
@@ -141,7 +148,7 @@ pub struct Span {
 
 impl OutHead {
     /// How many bytes it is.
-    pub const BYTES: usize = 48;
+    pub const BYTES: usize = 64;
 
     /// It, as the out buffer holds it.
     #[must_use]
@@ -165,6 +172,10 @@ impl OutHead {
         out[36..40].copy_from_slice(&self.spawns_at.to_le_bytes());
         out[40..44].copy_from_slice(&self.stood_at.to_le_bytes());
         out[44..48].copy_from_slice(&self.watches_at.to_le_bytes());
+        out[48..52].copy_from_slice(&self.pins_at.to_le_bytes());
+        out[52..56].copy_from_slice(&self.pins.to_le_bytes());
+        out[56..60].copy_from_slice(&self.refs_at.to_le_bytes());
+        out[60..64].copy_from_slice(&self.refs.to_le_bytes());
 
         out
     }
@@ -192,6 +203,10 @@ impl OutHead {
             spawns_at: u32_at(head, 36)?,
             stood_at: u32_at(head, 40)?,
             watches_at: u32_at(head, 44)?,
+            pins_at: u32_at(head, 48)?,
+            pins: u32_at(head, 52)?,
+            refs_at: u32_at(head, 56)?,
+            refs: u32_at(head, 60)?,
         })
     }
 }
@@ -331,6 +346,8 @@ pub struct Spawning {
     pub kind: KindName,
     pub declared: Vec<u8>,
     pub config: Vec<u8>,
+    /// Where each reference in the config begins.
+    pub refs: Vec<u32>,
 }
 
 /// The code of a child a guest asks its host to begin: a native kind the program keeps by name, or a blob's.
@@ -452,6 +469,85 @@ impl SpawnRecord {
             seat: SeatNumber::new(u64_at(bytes, 24)?),
         })
     }
+}
+
+/// How a call changed the pins on one blob, summed over its turns: what the guest's references to it, made and
+/// dropped, came to (ADR-0014).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PinRecord {
+    pub blob: BlobId,
+    pub by: i64,
+}
+
+impl PinRecord {
+    /// How many bytes it is.
+    pub const BYTES: usize = 24;
+
+    /// It, as the out buffer holds it.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::BYTES] {
+        let mut out = [0; Self::BYTES];
+        out[..4].copy_from_slice(&self.blob.engine().to_le_bytes());
+        out[8..16].copy_from_slice(&self.blob.bits().to_le_bytes());
+        out[16..].copy_from_slice(&self.by.to_le_bytes());
+
+        out
+    }
+
+    /// The record `bytes` begin with.
+    #[must_use]
+    pub fn read(bytes: &[u8]) -> Option<Self> {
+        let by = i64::from_le_bytes(bytes.get(16..24)?.try_into().ok()?);
+
+        Some(Self { blob: BlobId::new(u32_at(bytes, 0)?, u64_at(bytes, 8)?), by })
+    }
+}
+
+/// A reference in a piece of mail a call sent: the send it is in, as its [`SendRecord`] is numbered among the call's,
+/// and where its bytes begin in the mail's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefRecord {
+    pub send: u32,
+    pub at: u32,
+}
+
+impl RefRecord {
+    /// How many bytes it is.
+    pub const BYTES: usize = 8;
+
+    /// It, as the out buffer holds it.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::BYTES] {
+        let mut out = [0; Self::BYTES];
+        out[..4].copy_from_slice(&self.send.to_le_bytes());
+        out[4..].copy_from_slice(&self.at.to_le_bytes());
+
+        out
+    }
+
+    /// The record `bytes` begin with.
+    #[must_use]
+    pub fn read(bytes: &[u8]) -> Option<Self> {
+        Some(Self { send: u32_at(bytes, 0)?, at: u32_at(bytes, 4)? })
+    }
+}
+
+/// The blob a reference written at [`Actors`](crate::Actors) or [`Within`](crate::Within) names, at the front of
+/// `bytes`: its engine's number and its bits, as a reference is written (ADR-0014).
+#[must_use]
+pub fn blob_at(bytes: &[u8]) -> Option<BlobId> {
+    Some(BlobId::new(u32_at(bytes, 0)?, u64_at(bytes, 4)?))
+}
+
+/// The bytes of an actor's state taken out of a guest, and the blob of each reference in it, as the guest writes them:
+/// the state's length, the state, and then each blob's engine and bits (ADR-0014, ADR-0015).
+#[must_use]
+pub fn carried(bytes: &[u8]) -> Option<(&[u8], Vec<BlobId>)> {
+    let len = usize::try_from(u32_at(bytes, 0)?).ok()?;
+    let state = bytes.get(4..4 + len)?;
+    let blobs = bytes.get(4 + len..)?.chunks(12).map(blob_at).collect::<Option<Vec<_>>>()?;
+
+    Some((state, blobs))
 }
 
 /// An actor a turn watched: by whom, the actor whose turn it was or a child it spawned, in its `begin`, and which.

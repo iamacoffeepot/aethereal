@@ -1,8 +1,8 @@
 //! A guest that answers each ping it is sent with a pong, to its sender (ADR-0015).
 
 use aethereal_actor::{
-    Actor, Beginning, BlobRef, Ended, Ending, ErasedActorRef, Fault, Handles, How, Level, Refused, To, ToAny, ToSender,
-    ToType, ToWithoutMail, Turn, Watches,
+    Actor, Beginning, BlobId, BlobRef, Ended, Ending, ErasedActorRef, Fault, Handles, How, Level, Refused, To, ToAny,
+    ToSender, ToType, ToWithoutMail, Turn, Watches,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindName, Plain};
 
@@ -764,4 +764,132 @@ impl Handles<Ping> for Boomerang {
     }
 }
 
-aethereal_actor::guest!(Echo, Mirror, Responder, Doomed, Brood, Adder, Seeker, Watcher, Reporter, Hatcher, Boomerang);
+/// What a librarian is made from: the book it keeps, and the path of the actor it tells how long the book is.
+#[derive(Bound)]
+pub struct Shelf {
+    pub book: BlobRef,
+    pub tell: ActorPath,
+}
+
+impl Kind for Shelf {
+    const NAME: KindName = KindName::new("aether.guest.shelf");
+}
+
+/// A reference to a blob, sent as mail.
+#[derive(Bound)]
+pub struct Book {
+    pub blob: BlobRef,
+}
+
+impl Kind for Book {
+    const NAME: KindName = KindName::new("aether.guest.book");
+}
+
+/// An actor that keeps a blob and reads it as it begins, telling another a pong of its length; answers a ping of `n`
+/// with a reference to a blob of `n` sevens, which it puts; answers a book it is sent with a pong of a hundred and its
+/// length; and closes on a word to shut.
+#[derive(Bound)]
+pub struct Librarian {
+    book: BlobRef,
+}
+
+impl Kind for Librarian {
+    const NAME: KindName = KindName::new("aether.guest.librarian");
+}
+
+impl Actor for Librarian {
+    type Config = Shelf;
+    type Key = ();
+    type Handles = (Ping, Book, Shut);
+    type BeginSends = (ToAny<(Pong,), Pong>,);
+    type EndSends = ();
+
+    fn begin(shelf: Shelf, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let n = turn.read(&shelf.book).len() as u64;
+        if let Some(tell) = turn.resolve(&shelf.tell) {
+            turn.to_any::<(Pong,)>(ToWithoutMail::Held(tell)).send(&Pong { n })?;
+        }
+
+        Ok(Self { book: shelf.book })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Librarian {
+    type Sends = (ToSender<Book>,);
+
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let len = usize::try_from(ping.n).unwrap_or(0);
+        let blob = turn.put(vec![7; len]).map_err(|why| unhatched(&why))?;
+        turn.reply(&Book { blob })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Book> for Librarian {
+    type Sends = (ToSender<Pong>,);
+
+    fn handle(&mut self, book: Book, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let n = 100 + turn.read(&book.blob).len() as u64;
+        turn.reply(&Pong { n })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Shut> for Librarian {
+    type Sends = ();
+
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.close();
+
+        Ok(())
+    }
+}
+
+/// What a forger is made from: the engine's number and the bits of a blob's id, as plain numbers, not a reference.
+#[derive(Plain)]
+pub struct Forge {
+    pub engine: u32,
+    pub bits: u64,
+}
+
+impl Kind for Forge {
+    const NAME: KindName = KindName::new("aether.guest.forge");
+}
+
+/// An actor that makes a reference to a blob out of an id it was told as numbers, and reads it as it begins: its host
+/// refuses the read, as the guest was never given the blob.
+#[derive(Bound)]
+pub struct Forger;
+
+impl Kind for Forger {
+    const NAME: KindName = KindName::new("aether.guest.forger");
+}
+
+impl Actor for Forger {
+    type Config = Forge;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(forge: Forge, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let forged = BlobRef::pin(BlobId::new(forge.engine, forge.bits));
+        let _ = turn.read(&forged).len();
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+aethereal_actor::guest!(
+    Echo, Mirror, Responder, Doomed, Brood, Adder, Seeker, Watcher, Reporter, Hatcher, Boomerang, Librarian, Forger
+);
