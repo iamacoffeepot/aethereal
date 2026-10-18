@@ -7,11 +7,13 @@
 
 use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, ToAny, ToSender, ToWithoutMail, Turn};
 use aethereal_chassis_headless::Monotonic;
-use aethereal_chassis_headless::guest::{Guests, add_root};
+use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
+use aethereal_guest_echo as guest;
 use aethereal_substrate::{Clock, Engine};
 use std::env;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 const ECHO: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO"));
 
@@ -150,10 +152,7 @@ impl Handles<Increment> for Echo {
 
 fn main() {
     let native = env::args().any(|arg| arg == "native");
-    let guests = Guests::default();
-    let Ok(code) = guests.code(ECHO) else {
-        panic!("the echo guest is fit to run");
-    };
+    let runtime = Arc::new(Runtime::default());
     let Some(parts) = NonZeroUsize::new(1) else {
         panic!("one is not zero");
     };
@@ -166,13 +165,16 @@ fn main() {
     let rounds: u64 =
         env::args().find_map(|arg| arg.strip_prefix("rounds=").and_then(|count| count.parse().ok())).unwrap_or(5);
     for round in 0..rounds {
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 64);
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 64).with_guests(runtime.clone());
+        let Ok(code) = engine.put_code(ECHO.to_vec()) else {
+            panic!("the echo guest is fit to run");
+        };
         if native {
             let Ok(_) = engine.add_root::<Echo>(&(), EchoConfig) else {
                 panic!("the echo begins");
             };
         } else {
-            let Ok(_) = add_root(&mut engine, &code, 0, &(), &[]) else {
+            let Ok(_) = engine.add_root_from::<guest::Echo>(&code, &(), &guest::EchoConfig) else {
                 panic!("the echo begins");
             };
         }

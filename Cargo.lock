@@ -25,6 +25,7 @@ version = "0.1.0"
 dependencies = [
  "aethereal-actor",
  "aethereal-data",
+ "aethereal-guest-echo",
  "aethereal-substrate",
  "core_affinity",
  "libc",
@@ -46,6 +47,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "aethereal-guest-echo"
+version = "0.0.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
 ]
 
 [[package]]

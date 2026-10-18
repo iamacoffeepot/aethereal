@@ -10,6 +10,8 @@ use std::collections::HashMap;
 /// done, it takes in the blobs each writer put, sums the changes to their pins,
 /// and frees each blob left with none.
 pub struct Blobs {
+    /// Which engine of the process holds them, in the id of each.
+    engine: u32,
     held: HashMap<u64, Held>,
     /// The bytes the host lets all blobs hold.
     budget: usize,
@@ -36,8 +38,8 @@ enum Content {
 impl Blobs {
     /// No blobs, with `budget` bytes for them.
     #[must_use]
-    pub fn new(budget: usize) -> Self {
-        Self { held: HashMap::new(), budget, in_use: 0, touched: Vec::new() }
+    pub fn new(engine: u32, budget: usize) -> Self {
+        Self { engine, held: HashMap::new(), budget, in_use: 0, touched: Vec::new() }
     }
 
     /// The bytes of the blob `id` names, when it is held.
@@ -123,13 +125,14 @@ impl Blobs {
     }
 
     /// Frees every blob taken in or changed since the last sweep that has no pin left, once every change to the
-    /// pins of the step has been summed.
-    pub fn sweep(&mut self) {
+    /// pins of the step has been summed, and tells `freed` of each.
+    pub fn sweep(&mut self, mut freed: impl FnMut(BlobId)) {
         for bits in self.touched.drain(..) {
             let is_unpinned = self.held.get(&bits).is_some_and(|held| held.pins <= 0);
             if is_unpinned && let Some(held) = self.held.remove(&bits) {
                 debug_assert_eq!(held.pins, 0, "blob store: a blob lost more pins than it had");
                 self.in_use -= held.bytes.len();
+                freed(BlobId::new(self.engine, bits));
             }
         }
     }

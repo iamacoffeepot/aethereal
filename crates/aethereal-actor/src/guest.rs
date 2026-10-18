@@ -14,8 +14,8 @@
 //! host to take into that part's instance.
 
 use crate::records::{
-    Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, OutHead, SendRecord, Span, SpawnRecord, StoodRecord,
-    Stopped, TurnEnds, WatchRecord,
+    Born, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, OutHead, Parent, SendRecord, Span, SpawnRecord,
+    StoodRecord, Stopped, TurnEnds, WatchRecord,
 };
 use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Ended, Fault, How, Item};
 use crate::{Beginning, Instances, Mail, Peeked, Runs, SeatNumber, Seated, Seats};
@@ -29,18 +29,50 @@ use core::any::Any;
 use core::cell::RefCell;
 use core::mem;
 
-/// Begins an actor of one type as it is seated, at its path, from its config's bytes.
-type Begin = fn(&[u8], Seated, &ActorPath, &Host, &mut Asked) -> Result<Box<dyn Runs>, Fault>;
+/// Begins an actor of one type as it is seated, where it stands, from its config's bytes.
+type Begin = fn(&[u8], Seated, &Standing, &Host, &mut Asked, &mut Instances) -> Result<Box<dyn Runs>, Fault>;
 
-/// Takes an actor of one type in from its path and state, as [`take_out`] wrote them.
-type TakeIn = fn(&[u8]) -> Option<(Box<dyn Runs>, ActorPath)>;
+/// Takes an actor of one type in from where it stands and its state, as [`take_out`] wrote them.
+type TakeIn = fn(&[u8]) -> Option<(Box<dyn Runs>, Standing)>;
+
+/// Where an actor of the guest stands: its path, and what is above it.
+struct Standing {
+    path: ActorPath,
+    above: Above,
+}
+
+impl Standing {
+    /// Where `born` says an actor stands.
+    fn of(born: Born) -> Self {
+        let above = match born.parent {
+            Parent::Chassis => Above::Chassis,
+            Parent::Beneath { id, seat } => {
+                Above::Elsewhere(Seated { id: ActorId::new(id), seat: SeatNumber::new(seat) })
+            }
+        };
+
+        Self { path: born.path, above }
+    }
+
+    /// Where it stands, as it is written.
+    fn born(&self) -> Born {
+        let parent = match self.above {
+            Above::Chassis => Parent::Chassis,
+            Above::Actor(above, _) | Above::Elsewhere(above) => {
+                Parent::Beneath { id: above.id.bits(), seat: above.seat.number() }
+            }
+        };
+
+        Born { path: self.path.clone(), parent }
+    }
+}
 
 /// What the guest's code does for one actor type it makes: begin one, take one in, and take one out.
 pub struct Type {
     declared: &'static Declared,
     begin: Begin,
     take_in: TakeIn,
-    take_out: fn(&dyn Runs, &ActorPath, &mut Vec<u8>) -> Option<()>,
+    take_out: fn(&dyn Runs, &Standing, &mut Vec<u8>) -> Option<()>,
 }
 
 impl Type {
@@ -91,7 +123,13 @@ struct Guest {
 
 /// One actor of the guest, by the handle its host knows it by.
 enum Slot {
-    Live { runs: Box<dyn Runs>, me: Seated, path: ActorPath },
+    Live {
+        runs: Box<dyn Runs>,
+        me: Seated,
+        standing: Standing,
+    },
+    /// Taken out of the instance, for its host to keep or take into another: its handle is not used again.
+    Out,
 }
 
 std::thread_local! {
@@ -109,39 +147,41 @@ const NO_HANDLE: u32 = u32::MAX;
 /// The top bit of a seat the host gives, set when the seat is in another part.
 const ELSEWHERE_BIT: u64 = 1 << 63;
 
-/// Begins an actor of type `A` as `me`, at `path`, from its config's bytes.
+/// Begins an actor of type `A` as `me`, where it stands, from its config's bytes.
 fn begin<A: Actor>(
     config: &[u8],
     me: Seated,
-    path: &ActorPath,
+    standing: &Standing,
     host: &Host,
     asked: &mut Asked,
+    instances: &mut Instances,
 ) -> Result<Box<dyn Runs>, Fault> {
     let mut budget = Budget::new(READ_LIMIT);
     let mut reader = Reader::<Actors>::new(config, &mut budget, ActorsReader::new());
     let config = A::Config::decode(&mut reader)?;
-    let actor = A::begin(config, &mut Beginning::new::<A>(me, path, host, asked))?;
+    let Standing { path, above } = standing;
+    let actor = A::begin(config, &mut Beginning::beneath::<A>(me, path, *above, host, asked, instances))?;
 
     Ok(Box::new(actor))
 }
 
 /// An actor of type `A` taken in from `bytes`, its path and state as [`take_out`] wrote them: nothing when they do not
 /// read back.
-fn take_in<A: Actor>(bytes: &[u8]) -> Option<(Box<dyn Runs>, ActorPath)> {
+fn take_in<A: Actor>(bytes: &[u8]) -> Option<(Box<dyn Runs>, Standing)> {
     let mut budget = Budget::new(READ_LIMIT);
     let mut reader = Reader::<Within>::new(bytes, &mut budget, WithinReader::new());
-    let path = ActorPath::decode(&mut reader).ok()?;
+    let born = Born::decode(&mut reader).ok()?;
     let actor = A::decode(&mut reader).ok()?;
 
-    Some((Box::new(actor), path))
+    Some((Box::new(actor), Standing::of(born)))
 }
 
-/// Writes `runs`, an actor of type `A` at `path`, after `out`: its path and then its state, at [`Within`]. Nothing when
-/// it is not of type `A`, or does not encode.
-fn take_out<A: Actor>(runs: &dyn Runs, path: &ActorPath, out: &mut Vec<u8>) -> Option<()> {
+/// Writes `runs`, an actor of type `A` that stands where `standing` says, after `out`: where it stands and then its
+/// state, at [`Within`]. Nothing when it is not of type `A`, or does not encode.
+fn take_out<A: Actor>(runs: &dyn Runs, standing: &Standing, out: &mut Vec<u8>) -> Option<()> {
     let actor = (runs as &dyn Any).downcast_ref::<A>()?;
     let mut writer = Writer::<Within>::new(WithinWriter::new());
-    path.encode(&mut writer).ok()?;
+    standing.born().encode(&mut writer).ok()?;
     actor.encode(&mut writer).ok()?;
     out.extend_from_slice(&writer.into_bytes());
 
@@ -168,9 +208,9 @@ pub fn out() -> u64 {
     GUEST.with_borrow(Guest::out_at)
 }
 
-/// Begins a root of the `of`th type in `types`, as `me` and `seat` name it, from the first `len` bytes of the inbox:
-/// the [`Naming`] of its segment, its length first, and then its config. Its handle, or `u32::MAX` when its `begin`
-/// failed.
+/// Begins an actor of the `of`th type in `types`, as `me` and `seat` name it, from the first `len` bytes of the inbox:
+/// a [`Born`] saying where it stands, its length first, and then its config. Its handle, or `u32::MAX` when its
+/// `begin` failed.
 #[must_use]
 pub fn begin_at(types: &[Type], calls: &'static Calls, of: u32, me: u64, seat: u64, len: u32) -> u32 {
     GUEST.with_borrow_mut(|guest| {
@@ -182,13 +222,14 @@ pub fn begin_at(types: &[Type], calls: &'static Calls, of: u32, me: u64, seat: u
         guest.open(calls);
         let inbox = mem::take(&mut guest.inbox);
         let len = (len as usize).min(inbox.len());
-        let began = root_path(&inbox[..len]).map_err(Fault::from).and_then(|(path, config)| {
-            let runs = (made.begin)(config, me, &path, &Host { calls }, &mut guest.asked)?;
-            Ok((runs, path))
+        let began = standing(&inbox[..len]).map_err(Fault::from).and_then(|(standing, config)| {
+            let Guest { asked, instances, .. } = &mut *guest;
+            let runs = (made.begin)(config, me, &standing, &Host { calls }, asked, instances)?;
+            Ok((runs, standing))
         });
         guest.inbox = inbox;
         let (handle, last) = match began {
-            Ok((runs, path)) => (guest.seat(runs, me, path), Last::Ran),
+            Ok((runs, standing)) => (guest.seat(runs, me, standing), Last::Ran),
             Err(fault) => (NO_HANDLE, Last::Failed(fault)),
         };
         guest.out.clear();
@@ -200,15 +241,15 @@ pub fn begin_at(types: &[Type], calls: &'static Calls, of: u32, me: u64, seat: u
     })
 }
 
-/// The path of a root, and its config, from what its host handed in: the [`Naming`] of its segment, its length first,
-/// and then the config's bytes.
-fn root_path(handed: &[u8]) -> Result<(ActorPath, &[u8]), DecodeError> {
+/// Where an actor to begin stands, and its config, from what its host handed in: a [`Born`], its length first, and then
+/// the config's bytes.
+fn standing(handed: &[u8]) -> Result<(Standing, &[u8]), DecodeError> {
     let (len, rest) = handed.split_at_checked(4).ok_or(DecodeError::UnexpectedEnd)?;
     let len = len.try_into().map_or(0, u32::from_le_bytes) as usize;
-    let (naming, config) = rest.split_at_checked(len).ok_or(DecodeError::UnexpectedEnd)?;
-    let naming = from_bytes::<Naming>(naming, &mut Budget::new(READ_LIMIT))?;
+    let (born, config) = rest.split_at_checked(len).ok_or(DecodeError::UnexpectedEnd)?;
+    let born = from_bytes::<Born>(born, &mut Budget::new(READ_LIMIT))?;
 
-    Ok((ActorPath::from_root(&naming.segment()), config))
+    Ok((Standing::of(born), config))
 }
 
 /// Takes in an actor of the `of`th type in `types`, as `me` and `seat` name it, from the first `len` bytes of the
@@ -222,11 +263,35 @@ pub fn take_in_at(types: &[Type], of: u32, me: u64, seat: u64, len: u32) -> u32 
             return NO_HANDLE;
         };
         let len = (len as usize).min(guest.inbox.len());
-        let Some((runs, path)) = (made.take_in)(&guest.inbox[..len]) else {
+        let Some((runs, standing)) = (made.take_in)(&guest.inbox[..len]) else {
             return NO_HANDLE;
         };
 
-        guest.seat(runs, me, path)
+        guest.seat(runs, me, standing)
+    })
+}
+
+/// Takes the actor `handle` names out of the instance: writes where it stands and its state, at [`Within`], as a child
+/// taken out is written, and answers where they lie, as [`out`] does. Nothing, `0`, when it holds no such actor or
+/// its state does not encode.
+#[must_use]
+pub fn take_out_at(types: &[Type], handle: u32) -> u64 {
+    GUEST.with_borrow_mut(|guest| {
+        let Some(slot) = guest.actors.get_mut(handle as usize) else {
+            return 0;
+        };
+        let Slot::Live { runs, standing, .. } = mem::replace(slot, Slot::Out) else {
+            return 0;
+        };
+        let id = runs.declared().id();
+        let made = types.iter().find(|made| made.declared.id() == id);
+        guest.held.clear();
+        let wrote = made.and_then(|made| (made.take_out)(&*runs, &standing, &mut guest.held));
+        if wrote.is_none() {
+            return 0;
+        }
+
+        (u64::from(address(guest.held.as_ptr())) << 32) | guest.held.len() as u64
     })
 }
 
@@ -243,7 +308,7 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         guest.out.resize(OutHead::BYTES, 0);
         let host = Host { calls };
         let Guest { actors, inbox, asked, out, instances, .. } = &mut *guest;
-        let Some(Slot::Live { runs, me, path }) = actors.get_mut(handle as usize) else {
+        let Some(Slot::Live { runs, me, standing }) = actors.get_mut(handle as usize) else {
             return 0;
         };
         // Every actor a guest holds is an `Actor`, which computes each turn when it is asked for and has nothing to
@@ -259,7 +324,8 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
             };
             rest = after;
             stood_before = asked.stood_count();
-            let turning = Turning::new(*me, path, Above::Chassis, &host, &host, asked, instances, 0, source, chain);
+            let Standing { path, above } = &*standing;
+            let turning = Turning::new(*me, path, *above, &host, &host, asked, instances, 0, source, chain);
             let result = runs.turn(item, turning);
             write_ends(out, asked);
             ran += 1;
@@ -336,9 +402,9 @@ impl Guest {
     }
 
     /// Keeps `runs`, the actor `me` names at `path`, under a new handle.
-    fn seat(&mut self, runs: Box<dyn Runs>, me: Seated, path: ActorPath) -> u32 {
+    fn seat(&mut self, runs: Box<dyn Runs>, me: Seated, standing: Standing) -> u32 {
         let handle = count(self.actors.len());
-        self.actors.push(Slot::Live { runs, me, path });
+        self.actors.push(Slot::Live { runs, me, standing });
 
         handle
     }
@@ -356,9 +422,10 @@ impl Guest {
         let mut kept = Vec::with_capacity(stood.len());
         for (index, child) in stood.into_iter().enumerate() {
             let (me, path, above, runs) = child.into_parts();
-            let Above::Actor(above, _) = above else {
+            let Above::Actor(parent, _) = above else {
                 continue;
             };
+            let standing = Standing { path, above };
             let is_dropped = is_failed && index >= stood_before;
             let is_elsewhere = ELSEWHERE.with_borrow(|elsewhere| elsewhere.contains(&me.seat));
             let held = if is_dropped {
@@ -367,15 +434,15 @@ impl Guest {
                 let at = self.held.len();
                 let id = runs.declared().id();
                 let made = types.iter().find(|made| made.declared.id() == id);
-                let wrote = made.and_then(|made| (made.take_out)(&*runs, &path, &mut self.held));
+                let wrote = made.and_then(|made| (made.take_out)(&*runs, &standing, &mut self.held));
                 match wrote {
                     Some(()) => Held::Out(at, self.held.len() - at),
                     None => Held::Here(NO_HANDLE),
                 }
             } else {
-                Held::Here(self.seat(runs, me, path))
+                Held::Here(self.seat(runs, me, standing))
             };
-            kept.push((me, above, held));
+            kept.push((me, parent, held));
         }
 
         kept
@@ -608,10 +675,13 @@ impl Children for Host {
 }
 
 /// Exports the calls a guest's host makes, for the actor types listed, imports the calls out it makes of its host,
-/// and writes the section that declares them (ADR-0015). A guest's crate calls it once, at its root.
+/// and writes the section that declares them (ADR-0015). A guest's crate calls it once, at its root. Built for
+/// anything but WebAssembly, it emits nothing, so a native program can name the guest's types and spawn them from
+/// its blob.
 #[macro_export]
 macro_rules! guest {
     ($($actor:ty),+ $(,)?) => {
+        #[cfg(target_family = "wasm")]
         const _: () = {
             const TYPES: &[&$crate::Declared] = &[$($crate::Declared::of::<$actor>()),+];
             const LEN: usize = $crate::section::len(TYPES);
@@ -669,6 +739,11 @@ macro_rules! guest {
             #[unsafe(no_mangle)]
             extern "C" fn aethereal_take_in(of: u32, me: u64, seat: u64, len: u32) -> u32 {
                 $crate::guest::take_in_at(MADE, of, me, seat, len)
+            }
+
+            #[unsafe(no_mangle)]
+            extern "C" fn aethereal_take_out(handle: u32) -> u64 {
+                $crate::guest::take_out_at(MADE, handle)
             }
 
             #[unsafe(no_mangle)]

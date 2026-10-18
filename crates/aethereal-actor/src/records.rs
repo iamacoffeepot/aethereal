@@ -18,7 +18,7 @@
 //! 32-bit memory.
 
 use crate::{Chain, Level, MailId, SeatNumber, Seated};
-use aethereal_data::{ActorId, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
+use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
 
 /// The head of an item in the inbox: what it is, its source's id and seat, its chain's root, sender and count, its
 /// depth, and the length of the bytes after it.
@@ -294,6 +294,21 @@ impl Naming {
             Self::Keyed { kind, key } => PathSegment::instanced(kind.clone(), key.clone()),
         }
     }
+}
+
+/// Where an actor a guest is handed stands, as its host writes it before the actor's config to begin it, or as the
+/// guest writes it before the actor's state to take it out: its path, and what is above it.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+pub struct Born {
+    pub path: ActorPath,
+    pub parent: Parent,
+}
+
+/// What is above an actor a guest is handed: nothing for a root, or the actor that spawned it, by its id and seat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Parent {
+    Chassis,
+    Beneath { id: u64, seat: u64 },
 }
 
 /// A child a turn spawned, as the spawn is asked for: by whom, of what type, under what key, and in what seat. A

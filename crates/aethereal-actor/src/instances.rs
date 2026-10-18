@@ -1,7 +1,9 @@
 //! The instances a part's actors run their code in, which the engine carries with the part and never looks into
 //! (ADR-0015).
 
+use crate::{Guests, NoGuests};
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::{Any, TypeId};
 
@@ -13,9 +15,19 @@ use core::any::{Any, TypeId};
 /// that worker runs one of its actors at a time, so what is lent is lent whole, and nothing in it is locked.
 ///
 /// A host keys what it loads by a number of its own, under the type it loads, so no host reaches another's.
-#[derive(Default)]
+///
+/// It also carries the engine's [`Guests`], the code it loads from, so a turn
+/// that spawns a child from a blob reaches it through what it is lent.
 pub struct Instances {
+    guests: Arc<dyn Guests>,
     loaded: Vec<Loaded>,
+}
+
+impl Default for Instances {
+    /// No instances, for an engine that runs no guests.
+    fn default() -> Self {
+        Self::new(Arc::new(NoGuests))
+    }
 }
 
 /// One instance a host loaded: its type, the key the host gave it, and the instance.
@@ -26,6 +38,18 @@ struct Loaded {
 }
 
 impl Instances {
+    /// No instances yet, of the code `guests` holds.
+    #[must_use]
+    pub fn new(guests: Arc<dyn Guests>) -> Self {
+        Self { guests, loaded: Vec::new() }
+    }
+
+    /// The guests' code the instances are loaded from.
+    #[must_use]
+    pub fn guests(&self) -> Arc<dyn Guests> {
+        Arc::clone(&self.guests)
+    }
+
     /// The instance of type `I` kept under `key`, loaded with `load` when there is none yet.
     ///
     /// # Panics

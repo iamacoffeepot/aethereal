@@ -8,19 +8,19 @@
 #![allow(clippy::print_stdout)] // A measure prints its rounds.
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
+use aethereal_actor::BlobRef;
 use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, ToAny, ToSender, ToWithoutMail, Turn};
-use aethereal_chassis_headless::guest::{Code, Guests, add_root};
+use aethereal_chassis_headless::guest::Runtime;
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
+use aethereal_guest_echo as guest;
 use aethereal_substrate::{Clock, Engine};
 use std::env;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
+use std::sync::Arc;
 
 const ECHO: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO"));
-
-/// Which of the blob's types the responder is.
-const RESPONDER: usize = 2;
 
 /// The pieces of mail every round sends, shared among its pairs.
 const PIECES: u64 = 400_000;
@@ -163,11 +163,11 @@ enum Responding {
 /// One round's pairs, keyed from `first`: every responder, then every pinger, so each pinger finds its responder as it
 /// begins. A root sits in the part with fewest actors, so with no more pairs than parts the `k`th pinger sits beside
 /// the `k`th responder, and their volley fuses.
-fn start(engine: &mut Engine, code: &Code, responding: Responding, first: u64, pairs: u64) {
+fn start(engine: &mut Engine, code: &BlobRef, responding: Responding, first: u64, pairs: u64) {
     let pings = PIECES / 2 / pairs;
     for key in first..first + pairs {
         let began = match responding {
-            Responding::Guest => add_root(engine, code, RESPONDER, &key, &[]),
+            Responding::Guest => engine.add_root_from::<guest::Responder>(code, &key, &guest::EchoConfig),
             Responding::Native => engine.add_root::<NativeResponder>(&key, Volley { with: key, pings }),
         };
         let Ok(_) = began else {
@@ -186,9 +186,7 @@ fn arg<T: FromStr>(name: &str) -> Option<T> {
 }
 
 fn main() {
-    let Ok(code) = Guests::default().code(ECHO) else {
-        panic!("the echo guest is fit to run");
-    };
+    let runtime = Arc::new(Runtime::default());
     let pairs: u64 = arg("pairs=").unwrap_or(16);
     let is_native = env::args().any(|arg| arg == "native");
     let responding = if is_native {
@@ -207,7 +205,11 @@ fn main() {
     for count in workers {
         let workers = NonZeroUsize::MIN.saturating_add(count.max(1) - 1);
         let parts = NonZeroUsize::MIN.saturating_add(15);
-        let mut headless = Headless::new(Engine::new(parts, 1024, 1 << 30, 1 << 30, hops), workers);
+        let mut engine = Engine::new(parts, 1024, 1 << 30, 1 << 30, hops).with_guests(runtime.clone());
+        let Ok(code) = engine.put_code(ECHO.to_vec()) else {
+            panic!("the echo guest is fit to run");
+        };
+        let mut headless = Headless::new(engine, workers);
         let mut took: Vec<u64> = (0..rounds)
             .map(|round| {
                 let clock = Monotonic::new();

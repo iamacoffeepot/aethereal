@@ -11,53 +11,60 @@
 //! parent's instance, and into its own part's on its first batch (ADR-0015).
 
 use aethereal_actor::records::{
-    Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, OutHead, SendRecord, Span, SpawnRecord, StoodRecord,
-    Stopped, TurnEnds, WatchRecord,
+    Born, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, OutHead, Parent, SendRecord, Span, SpawnRecord,
+    StoodRecord, Stopped, TurnEnds, WatchRecord,
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Batch, Children, Declared, FalseSend, FalseWatch, Fault, Hosted, How, Instances, Item, Preparing, Reads, Refused,
-    Role, Runs, SeatNumber, Seated, Seats, Table, Trapped, Turning,
+    Above, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Children, Declared, FalseSend, FalseWatch, Fault, Guests,
+    Hosted, How, Instances, Item, Preparing, Reads, Refused, Role, Runs, SeatNumber, Seated, Seats, Table, Trapped,
+    Turning, Unfit,
 };
-use aethereal_data::{ActorId, ActorKey, ActorPath, Budget, KeyName, PathSegment, from_bytes, to_bytes};
-use aethereal_substrate::Engine;
+use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindName, from_bytes, to_bytes};
+use std::collections::HashMap;
 use std::ptr::NonNull;
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use wasmtime::{Caller, Extern, InstancePre, Linker, Memory, Module, Store, TypedFunc};
 
-/// What runs guests' code: one compiler, for every blob.
+/// What runs guests' code with wasmtime: one compiler, for every blob, and the blobs it has compiled, by their ids,
+/// as the engine's [`Guests`] (ADR-0015).
 #[derive(Default)]
-pub struct Guests {
+pub struct Runtime {
     engine: wasmtime::Engine,
+    codes: RwLock<HashMap<BlobId, Code>>,
+    /// Each code compiled, by its bytes' hash, so the same code put again, into this engine or another, is compiled
+    /// once.
+    compiled: RwLock<HashMap<BlobHash, Compiled>>,
+}
+
+/// Code as it is compiled, shared by every blob of the same bytes.
+#[derive(Clone)]
+struct Compiled {
+    key: u64,
+    module: InstancePre<Lending>,
+    made: Arc<[&'static Declared]>,
 }
 
 /// A blob of guest code, compiled, and what each actor type it makes declares: what every part makes its instance
 /// of the blob from. Cloning it shares the compiled code.
 #[derive(Clone)]
-pub struct Code {
+struct Code {
+    /// The blob it was compiled from, which each of its actors pins while it runs (ADR-0009).
+    blob: BlobId,
+    /// Each type it makes, of its blob, as the engine names it in a spawn, in the order the section lists them: kept
+    /// for as long as the process runs, as what they declare is.
+    types: Arc<[&'static BlobType]>,
     /// What its instances are kept under in a part's [`Instances`]: a number no other code compiled in the process
     /// has.
     key: u64,
     /// The module, with the calls out it imports linked in.
     module: InstancePre<Lending>,
-    made: Vec<&'static Declared>,
+    made: Arc<[&'static Declared]>,
 }
 
 /// The key the next code compiled takes.
 static CODES: AtomicU64 = AtomicU64::new(0);
-
-/// Why a blob of code was refused as it entered.
-#[derive(Debug)]
-pub enum Unfit {
-    /// It is not a module the runtime compiles.
-    Uncompiled(String),
-    /// Its section of what it makes is missing, or does not read back.
-    Undeclared,
-    /// It lacks an export a guest must have, or has it with the wrong signature.
-    Unexported(&'static str),
-    /// It imports what its host does not offer.
-    Unlinked(String),
-}
 
 /// One instance of a blob, a part's, and the calls its host makes of it.
 struct Instance {
@@ -67,6 +74,7 @@ struct Instance {
     out: TypedFunc<(), u64>,
     begin: TypedFunc<(u32, u64, u64, u32), u32>,
     take_in: TypedFunc<(u32, u64, u64, u32), u32>,
+    take_out: TypedFunc<u32, u64>,
     turns: TypedFunc<(u32, u32, u32), u64>,
     /// Where the guest's inbox is, and how many bytes it has room for: asked for again only when it must grow.
     inbox_at: usize,
@@ -100,6 +108,9 @@ struct Answering<'a> {
 /// takes from what its part lends each batch and turn.
 struct Guest {
     code: Code,
+    /// The pin on its code's blob, which the engine keeps while the actor runs on it (ADR-0009).
+    #[expect(dead_code, reason = "a pin is held for as long as it lives, and never read")]
+    pin: BlobRef,
     me: Seated,
     lives: Lives,
     declared: &'static Declared,
@@ -136,7 +147,7 @@ const ELSEWHERE_BIT: u64 = 1 << 63;
 /// The handle a guest writes for a child it did not keep.
 const NO_HANDLE: u32 = u32::MAX;
 
-impl Guests {
+impl Runtime {
     /// A host whose guests' compiled code is named to a profiler through a perf map: a spike's measure.
     ///
     /// # Panics
@@ -150,21 +161,37 @@ impl Guests {
             panic!("a runtime that names its code to a profiler is made");
         };
 
-        Self { engine }
+        Self { engine, codes: RwLock::default(), compiled: RwLock::default() }
+    }
+
+    /// The code of the blob `blob`, of `bytes`: compiled, and what it makes read, unless the same bytes were before.
+    /// Refused when it is not fit to run.
+    fn code(&self, blob: BlobId, bytes: &[u8]) -> Result<Code, Unfit> {
+        let hash = BlobHash::of(bytes);
+        let known = self.compiled.read().ok().and_then(|compiled| compiled.get(&hash).cloned());
+        let Compiled { key, module, made } = if let Some(compiled) = known {
+            compiled
+        } else {
+            let compiled = self.compile(bytes)?;
+            if let Ok(mut known) = self.compiled.write() {
+                known.insert(hash, compiled.clone());
+            }
+            compiled
+        };
+
+        let types = made.iter().map(|&declared| &*Box::leak(Box::new(BlobType { blob, declared }))).collect();
+
+        Ok(Code { blob, types, key, module, made })
     }
 
     /// Compiles `bytes` as guest code, and reads what it makes: refused when it is not fit to run.
-    ///
-    /// # Errors
-    ///
-    /// Why it is not fit.
-    pub fn code(&self, bytes: &[u8]) -> Result<Code, Unfit> {
+    fn compile(&self, bytes: &[u8]) -> Result<Compiled, Unfit> {
         let module = Module::new(&self.engine, bytes).map_err(|error| Unfit::Uncompiled(error.to_string()))?;
         let section = declared_section(bytes).ok_or(Unfit::Undeclared)?;
         let mut budget = Budget::new(1 << 20);
         let made = from_bytes::<Vec<Made>>(section, &mut budget).map_err(|_| Unfit::Undeclared)?;
         let exports = ["memory", "aethereal_inbox", "aethereal_out", "aethereal_begin", "aethereal_take_in"];
-        for export in exports.into_iter().chain(["aethereal_turns"]) {
+        for export in exports.into_iter().chain(["aethereal_take_out", "aethereal_turns"]) {
             let has = module.get_export(export).is_some();
             if !has {
                 return Err(Unfit::Unexported(export));
@@ -176,7 +203,7 @@ impl Guests {
 
         let key = CODES.fetch_add(1, Ordering::Relaxed);
 
-        Ok(Code { key, module, made: made.iter().map(Made::leak).collect() })
+        Ok(Compiled { key, module, made: made.iter().map(Made::leak).collect() })
     }
 }
 
@@ -290,12 +317,6 @@ impl<'a> Answering<'a> {
 }
 
 impl Code {
-    /// What the `of`th type it makes declares.
-    #[must_use]
-    pub fn declared(&self, of: usize) -> Option<&'static Declared> {
-        self.made.get(of).copied()
-    }
-
     /// Which of the types it makes is the one of id `kind`, and what it declares.
     fn made_of(&self, kind: aethereal_data::KindId) -> Option<(u32, &'static Declared)> {
         let of = self.made.iter().position(|declared| declared.id() == kind)?;
@@ -325,14 +346,27 @@ impl Instance {
         let out = instance.get_typed_func(&mut store, "aethereal_out");
         let begin = instance.get_typed_func(&mut store, "aethereal_begin");
         let take_in = instance.get_typed_func(&mut store, "aethereal_take_in");
+        let take_out = instance.get_typed_func(&mut store, "aethereal_take_out");
         let turns = instance.get_typed_func(&mut store, "aethereal_turns");
-        let (Some(memory), Ok(inbox), Ok(out), Ok(begin), Ok(take_in), Ok(turns)) =
-            (memory, inbox, out, begin, take_in, turns)
+        let (Some(memory), Ok(inbox), Ok(out), Ok(begin), Ok(take_in), Ok(take_out), Ok(turns)) =
+            (memory, inbox, out, begin, take_in, take_out, turns)
         else {
             panic!("guest code that entered has its exports");
         };
 
-        Self { store, memory, inbox, out, begin, take_in, turns, inbox_at: 0, inbox_room: 0, actors: Vec::new() }
+        Self {
+            store,
+            memory,
+            inbox,
+            out,
+            begin,
+            take_in,
+            take_out,
+            turns,
+            inbox_at: 0,
+            inbox_room: 0,
+            actors: Vec::new(),
+        }
     }
 }
 
@@ -349,45 +383,53 @@ fn lending<R>(
     called
 }
 
-/// Makes a root of the `of`th type `code` makes, under `key`, from the bytes of its config, in its part's instance
-/// of `code`: `()` for a singleton type, as a native root is keyed.
-///
-/// # Errors
-///
-/// Refused as [`Engine::add_root_made`] refuses.
-///
-/// # Panics
-///
-/// Panics when `code` makes no `of`th type, or when the type is keyed otherwise than `key` is.
-pub fn add_root<K: ActorKey>(
-    engine: &mut Engine,
-    code: &Code,
-    of: usize,
-    key: &K,
-    config: &[u8],
-) -> Result<ActorId, Refused> {
-    let Some(declared) = code.declared(of) else {
-        panic!("the code makes no type {of}");
-    };
-    let is_keyed_so = declared.keyed() == K::KEYED;
-    assert!(is_keyed_so, "the code's type {of} is keyed as {:?}", declared.keyed());
-    let segment = PathSegment::new(declared.name().clone(), key);
-    let Ok(naming) = to_bytes(&Naming::of(&segment)) else {
-        panic!("a segment's naming is written");
-    };
-    let handed: Vec<u8> = count(naming.len()).to_le_bytes().into_iter().chain(naming).chain(config.to_vec()).collect();
+impl Guests for Runtime {
+    fn load(&self, code: BlobId, bytes: &[u8]) -> Result<(), Unfit> {
+        let compiled = self.code(code, bytes)?;
+        if let Ok(mut codes) = self.codes.write() {
+            codes.insert(code, compiled);
+        }
 
-    engine.add_root_made(&segment, declared, |me, path, table, asked, instances| {
+        Ok(())
+    }
+
+    fn unload(&self, code: BlobId) {
+        if let Ok(mut codes) = self.codes.write() {
+            codes.remove(&code);
+        }
+    }
+
+    fn made(&self, code: BlobId, kind: &KindName) -> Option<&'static BlobType> {
+        let codes = self.codes.read().ok()?;
+
+        codes.get(&code)?.types.iter().copied().find(|made| made.declared.name() == kind)
+    }
+
+    /// Begins the child in its part's instance of the blob: its `begin` runs there, handed where it stands and its
+    /// config, and what it asked for is read back as a root's or a child's `begin` is (ADR-0015).
+    fn begin(&self, made: &'static BlobType, config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Runs>, Refused> {
+        let BlobType { blob, declared } = *made;
+        let code = self.codes.read().ok().and_then(|codes| codes.get(&blob).cloned()).ok_or(Refused::NotMade)?;
+        let (of, _) = code.made_of(declared.id()).ok_or(Refused::NotMade)?;
+        let Birth { me, path, above, table, asked, instances } = birth;
+        let parent = match above {
+            Above::Chassis => Parent::Chassis,
+            Above::Actor(above, _) | Above::Elsewhere(above) => {
+                Parent::Beneath { id: above.id.bits(), seat: above.seat.number() }
+            }
+        };
+        let born = to_bytes(&Born { path: path.clone(), parent }).map_err(|_| Refused::NotMade)?;
+        let handed: Vec<u8> = count(born.len()).to_le_bytes().into_iter().chain(born).chain(config.to_vec()).collect();
+
         let held = code.instance(instances);
-        let of = u32::try_from(of).unwrap_or(u32::MAX);
         let mut answering = Answering { table, made: &(), seats: asked.seats_mut(), handed: Vec::new() };
         let began = held.begin(of, me, &handed, &mut answering);
         let mut handing = answering.handed;
-        let mut hosted = Hosted::beginning(me, path, table, asked, declared);
+        let mut hosted = Hosted::beginning(me, path, above, table, asked, declared);
         let replayed = began.and_then(|(handle, wrote)| {
             let Instance { store, memory, actors, .. } = &mut *held;
             let data = memory.data(&*store);
-            let replayed = replay(data, code, &wrote, 0, TurnEnds::default(), &mut handing, actors, &mut hosted)?;
+            let replayed = replay(data, &code, &wrote, 0, TurnEnds::default(), &mut handing, actors, &mut hosted)?;
             Some((handle, replayed))
         });
         for seat in handing {
@@ -397,14 +439,23 @@ pub fn add_root<K: ActorKey>(
             // A trap in a `begin` ends every actor in the instance, as one in a turn does (ADR-0015).
             hosted.trapped(held.actors.iter().copied());
             instances.drop_instance::<Instance>(code.key);
-            return Err(trapped());
+            return Err(Refused::Began(trapped()));
         };
-        began?;
-        held.actors.push(me);
+        began.map_err(Refused::Began)?;
+        // A child seated in another part than the one it began in is taken out, to be taken into its own part's
+        // instance on its first batch, as a child its guest spawned is.
+        let is_here = asked.seats_mut().is_own(me.seat);
+        let lives = if is_here {
+            held.actors.push(me);
+            Lives::In { handle }
+        } else {
+            let state = held.take_out(handle).ok_or_else(|| Refused::Began(trapped()))?;
+            Lives::Out { state }
+        };
 
-        let lives = Lives::In { handle };
-        Ok(Box::new(Guest { code: code.clone(), me, lives, declared, ran: Ran::Nothing, handed: Vec::new() }))
-    })
+        let pin = BlobRef::pin(code.blob);
+        Ok(Box::new(Guest { code, pin, me, lives, declared, ran: Ran::Nothing, handed: Vec::new() }))
+    }
 }
 
 impl Runs for Guest {
@@ -521,6 +572,17 @@ impl Instance {
         let wrote = self.out_head(out).filter(|wrote| wrote.ran == 1)?;
 
         Some((handle, wrote))
+    }
+
+    /// Takes the actor the guest keeps under `handle` out of the instance: where it stands and its state, as the guest
+    /// wrote them. Nothing when the call trapped, or wrote what does not read back.
+    fn take_out(&mut self, handle: u32) -> Option<Vec<u8>> {
+        let out = self.take_out.call(&mut self.store, handle).ok()?;
+        let at = usize::try_from(out >> 32).ok()?;
+        let len = usize::try_from(out & u64::from(u32::MAX)).ok()?;
+        let is_written = len > 0;
+
+        is_written.then(|| self.memory.data(&self.store).get(at..at + len).map(<[u8]>::to_vec))?
     }
 
     /// Takes `me`, an actor of the `of`th type the code makes, into the instance from `state`, its path and state as
@@ -740,7 +802,15 @@ fn stand(
             }
             Kept::Out { state } => Lives::Out { state: lying(data, state)?.to_vec() },
         };
-        let runs = Guest { code: code.clone(), me, lives, declared, ran: Ran::Nothing, handed: Vec::new() };
+        let runs = Guest {
+            code: code.clone(),
+            pin: BlobRef::pin(code.blob),
+            me,
+            lives,
+            declared,
+            ran: Ran::Nothing,
+            handed: Vec::new(),
+        };
         hosted.stand(me, Box::new(runs))?;
     }
 
@@ -792,14 +862,28 @@ fn declared_section(bytes: &[u8]) -> Option<&[u8]> {
 mod tests {
     use super::*;
     use crate::Monotonic;
-    use aethereal_actor::{Actor, Beginning, Ending, Handles, Seated, ToAny, ToSender, ToWithoutMail, Turn};
+    use aethereal_actor::{
+        Actor, ActorRef, Beginning, Ending, Handles, Seated, To, ToAny, ToSender, ToType, ToWithoutMail, Turn,
+    };
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
+    use aethereal_guest_echo as echo;
+    use aethereal_substrate::Engine;
     use std::num::NonZeroUsize;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// The echo guest the build script built.
     const ECHO: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO"));
+
+    /// `engine`, running guests with wasmtime, and the echo guest put into it as code.
+    fn with_echo(engine: Engine) -> (Engine, BlobRef) {
+        let mut engine = engine.with_guests(Arc::new(Runtime::default()));
+        let Ok(code) = engine.put_code(ECHO.to_vec()) else {
+            panic!("the echo guest is fit to run");
+        };
+
+        (engine, code)
+    }
 
     /// A ping, as the echo guest declares it: the same name and layout, so the same kind.
     #[derive(Plain)]
@@ -879,15 +963,11 @@ mod tests {
     fn a_native_actor_and_a_guest_answer_each_other() {
         // Catches mail lost on its way into a guest or out of it, a guest's reply that does not reach its sender, and
         // a section that does not declare the guest's handler, which its host would refuse the mail for.
-        let guests = Guests::default();
-        let Ok(code) = guests.code(ECHO) else {
-            panic!("the echo guest is fit to run");
-        };
         let Some(parts) = NonZeroUsize::new(4) else {
             panic!("four is not zero");
         };
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 64);
-        let Ok(_) = add_root(&mut engine, &code, 0, &(), &[]) else {
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 64));
+        let Ok(_) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
             panic!("the echo begins");
         };
         let Ok(_) = engine.add_root::<Pinger>(&(), Volley { pings: 9 }) else {
@@ -957,15 +1037,11 @@ mod tests {
     fn a_guest_that_closes_answers_nothing_after() {
         // Catches a guest's close lost on its way out of the guest: the echo would then be asked for the turn of the
         // ping after it, which the guest did not run, and fail.
-        let guests = Guests::default();
-        let Ok(code) = guests.code(ECHO) else {
-            panic!("the echo guest is fit to run");
-        };
         let Some(parts) = NonZeroUsize::new(1) else {
             panic!("one is not zero");
         };
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
-        let Ok(echo) = add_root(&mut engine, &code, 0, &(), &[]) else {
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(echo) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
             panic!("the echo begins");
         };
         let Ok(_) = engine.add_root::<Closer>(&(), Volley { pings: 0 }) else {
@@ -1038,15 +1114,11 @@ mod tests {
     fn each_of_a_batch_of_callers_is_answered_once() {
         // Catches a turn handed back what another turn of its batch sent, a send handed back twice or not at all, and
         // an item written over another as the inbox grows while a batch is written into it.
-        let guests = Guests::default();
-        let Ok(code) = guests.code(ECHO) else {
-            panic!("the echo guest is fit to run");
-        };
         let Some(parts) = NonZeroUsize::new(1) else {
             panic!("one is not zero");
         };
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
-        let Ok(_) = add_root(&mut engine, &code, 0, &(), &[]) else {
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(_) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
             panic!("the echo begins");
         };
         let callers = 50;
@@ -1118,18 +1190,14 @@ mod tests {
         // Catches two actors of one blob in one part each loading an instance of their own, and an instance dropped
         // when an actor in it ends while another still runs in it: the echo, asked for its turns from an instance that
         // does not hold it, would fail.
-        let guests = Guests::default();
-        let Ok(code) = guests.code(ECHO) else {
-            panic!("the echo guest is fit to run");
-        };
         let Some(parts) = NonZeroUsize::new(1) else {
             panic!("one is not zero");
         };
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
-        let Ok(echo) = add_root(&mut engine, &code, 0, &(), &[]) else {
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(echo) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
             panic!("the echo begins");
         };
-        let Ok(_) = add_root(&mut engine, &code, 1, &(), &[]) else {
+        let Ok(_) = engine.add_root_from::<echo::Mirror>(&code, &(), &echo::EchoConfig) else {
             panic!("the mirror begins");
         };
         let Ok(_) = engine.add_root::<Volleyer>(&(), Volley { pings: 3 }) else {
@@ -1198,18 +1266,14 @@ mod tests {
     fn a_trap_ends_every_actor_in_its_instance() {
         // Catches a trap that ends only the actor whose turn trapped, leaving an actor that lives in the same memory
         // looking live, and the ending a host reports for it dropped with the rest of the failed turn.
-        let guests = Guests::default();
-        let Ok(code) = guests.code(ECHO) else {
-            panic!("the echo guest is fit to run");
-        };
         let Some(parts) = NonZeroUsize::new(1) else {
             panic!("one is not zero");
         };
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
-        let Ok(echo) = add_root(&mut engine, &code, 0, &(), &[]) else {
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(echo) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
             panic!("the echo begins");
         };
-        let Ok(mirror) = add_root(&mut engine, &code, 1, &(), &[]) else {
+        let Ok(mirror) = engine.add_root_from::<echo::Mirror>(&code, &(), &echo::EchoConfig) else {
             panic!("the mirror begins");
         };
         let Ok(_) = engine.add_root::<Crasher>(&(), Volley { pings: 0 }) else {
@@ -1241,15 +1305,11 @@ mod tests {
     fn a_trap_in_a_begin_ends_every_actor_in_its_instance() {
         // Catches a `begin` that traps leaving the actors already in its instance looking live, whether its host
         // reports no ending for them or the engine drops what it reported with the rest of the failed `begin`.
-        let guests = Guests::default();
-        let Ok(code) = guests.code(ECHO) else {
-            panic!("the echo guest is fit to run");
-        };
         let Some(parts) = NonZeroUsize::new(1) else {
             panic!("one is not zero");
         };
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
-        let Ok(echo) = add_root(&mut engine, &code, 0, &(), &[]) else {
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(echo) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
             panic!("the echo begins");
         };
         let Some(seat) = engine.table().seat(echo) else {
@@ -1257,7 +1317,7 @@ mod tests {
         };
         let echo = Seated { id: echo, seat };
 
-        let doomed = add_root(&mut engine, &code, 3, &(), &[]);
+        let doomed = engine.add_root_from::<echo::Doomed>(&code, &(), &echo::EchoConfig);
         let clock = Monotonic::new();
         while !engine.is_idle() {
             engine.step(&clock);
@@ -1272,19 +1332,6 @@ mod tests {
         assert!(refused_trapped, "the doomed root is refused with its trap");
         assert!(engine.log(echo).any(is_trap), "the echo, in the same instance, ended with it");
         assert!(!engine.table().is_live(echo.id));
-    }
-
-    /// Which of the echo guest's types a brood is.
-    const BROOD: usize = 4;
-
-    /// What a brood is made from, as the echo guest declares it.
-    #[derive(Plain)]
-    struct BroodConfig {
-        children: u64,
-    }
-
-    impl Kind for BroodConfig {
-        const NAME: KindName = KindName::new("aether.guest.brood_config");
     }
 
     /// The word to a brood to spawn one more child, as the echo guest declares it.
@@ -1307,7 +1354,7 @@ mod tests {
     }
 
     /// The answers each test's askers were given, by the tally the test keeps them in.
-    static ANSWERS: [Mutex<Vec<u64>>; 4] = [const { Mutex::new(Vec::new()) }; 4];
+    static ANSWERS: [Mutex<Vec<u64>>; 5] = [const { Mutex::new(Vec::new()) }; 5];
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
@@ -1396,15 +1443,12 @@ mod tests {
     }
 
     /// An engine of `parts` parts with a brood of `children` adders begun in it.
-    fn brood(code: &Code, parts: usize, children: u64) -> Engine {
+    fn brood(parts: usize, children: u64) -> Engine {
         let Some(parts) = NonZeroUsize::new(parts) else {
             panic!("a brood's engine has parts");
         };
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
-        let Ok(config) = to_bytes(&BroodConfig { children }) else {
-            panic!("a brood's config is written");
-        };
-        let Ok(_) = add_root(&mut engine, code, BROOD, &(), &config) else {
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(_) = engine.add_root_from::<echo::Brood>(&code, &(), &echo::BroodConfig { children }) else {
             panic!("the brood begins");
         };
 
@@ -1434,10 +1478,7 @@ mod tests {
     fn a_guest_spawns_children_that_answer_from_their_own_state() {
         // Catches a spawn in a guest's `begin`, one beneath a child in the child's `begin`, or one in a turn, that
         // the engine never stands up or stands at the wrong path; and a child whose state is not its own.
-        let Ok(code) = Guests::default().code(ECHO) else {
-            panic!("the echo guest is fit to run");
-        };
-        let mut engine = brood(&code, 1, 3);
+        let mut engine = brood(1, 3);
         let Ok(_) = engine.add_root::<Grower>(&(), Volley { pings: 0 }) else {
             panic!("the grower begins");
         };
@@ -1458,11 +1499,8 @@ mod tests {
     fn a_child_seated_in_another_part_is_taken_into_that_parts_instance() {
         // Catches a child seated in another part than its parent's that runs in no instance, in its parent's, or with
         // state that did not survive being taken out and in.
-        let Ok(code) = Guests::default().code(ECHO) else {
-            panic!("the echo guest is fit to run");
-        };
         let parts = 2;
-        let mut engine = brood(&code, parts, 8);
+        let mut engine = brood(parts, 8);
         settle(&mut engine);
 
         let part_of = |path: &ActorPath| {
@@ -1485,19 +1523,6 @@ mod tests {
         settle(&mut engine);
 
         assert_eq!(answers(1), [1, 11, 21, 31, 41, 51, 61, 71, 1001]);
-    }
-
-    /// Which of the blob's types the seeker is.
-    const SEEKER: usize = 6;
-
-    /// What a seeker is made from, as the echo guest declares it.
-    #[derive(Plain)]
-    struct Seek {
-        paths: Vec<ActorPath>,
-    }
-
-    impl Kind for Seek {
-        const NAME: KindName = KindName::new("aether.guest.seek");
     }
 
     /// What a keeper is made from: its key, and which of [`ANSWERS`] it keeps the pings it is sent in.
@@ -1554,42 +1579,23 @@ mod tests {
     fn a_guest_resolves_a_path_to_the_actor_it_names() {
         // Catches a guest's resolve that finds nothing, finds an actor that is not live, or hands back an id or seat
         // its mail does not reach the actor by.
-        let Ok(code) = Guests::default().code(ECHO) else {
-            panic!("the echo guest is fit to run");
-        };
         let Some(parts) = NonZeroUsize::new(2) else {
             panic!("two is not zero");
         };
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
         for key in [0, 1] {
             let Ok(_) = engine.add_root::<Keeper>(&key, Keeps { key, tally: 2 }) else {
                 panic!("a keeper begins");
             };
         }
         let keeper = |key: u64| ActorPath::from_root(&PathSegment::new(Keeper::NAME, &key));
-        let Ok(config) = to_bytes(&Seek { paths: vec![keeper(0), keeper(9), keeper(1)] }) else {
-            panic!("a seeker's config is written");
-        };
-        let Ok(_) = add_root(&mut engine, &code, SEEKER, &(), &config) else {
+        let seek = echo::Seek { paths: vec![keeper(0), keeper(9), keeper(1)] };
+        let Ok(_) = engine.add_root_from::<echo::Seeker>(&code, &(), &seek) else {
             panic!("the seeker begins");
         };
         settle(&mut engine);
 
         assert_eq!(answers(2), [0, 102]);
-    }
-
-    /// Which of the blob's types the watcher is.
-    const WATCHER: usize = 7;
-
-    /// What a watcher is made from, as the echo guest declares it.
-    #[derive(Plain)]
-    struct Watching {
-        paths: Vec<ActorPath>,
-        tell: ActorPath,
-    }
-
-    impl Kind for Watching {
-        const NAME: KindName = KindName::new("aether.guest.watching");
     }
 
     /// The reason a mortal fails.
@@ -1643,13 +1649,10 @@ mod tests {
     fn a_guest_is_handed_the_endings_of_the_actors_it_watches() {
         // Catches a guest's watch its host never hands the engine, an ending never handed into the guest or handed in
         // as mail, and one whose source or how it ended is lost on the way in.
-        let Ok(code) = Guests::default().code(ECHO) else {
-            panic!("the echo guest is fit to run");
-        };
         let Some(parts) = NonZeroUsize::new(2) else {
             panic!("two is not zero");
         };
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
         let Ok(_) = engine.add_root::<Keeper>(&0, Keeps { key: 0, tally: 3 }) else {
             panic!("the keeper begins");
         };
@@ -1660,10 +1663,8 @@ mod tests {
         }
         let mortal = |key: u64| ActorPath::from_root(&PathSegment::new(Mortal::NAME, &key));
         let tell = ActorPath::from_root(&PathSegment::new(Keeper::NAME, &0u64));
-        let Ok(config) = to_bytes(&Watching { paths: vec![mortal(0), mortal(1)], tell }) else {
-            panic!("a watcher's config is written");
-        };
-        let Ok(_) = add_root(&mut engine, &code, WATCHER, &(), &config) else {
+        let watching = echo::Watching { paths: vec![mortal(0), mortal(1)], tell };
+        let Ok(_) = engine.add_root_from::<echo::Watcher>(&code, &(), &watching) else {
             panic!("the watcher begins");
         };
         settle(&mut engine);
@@ -1674,5 +1675,190 @@ mod tests {
         settle(&mut engine);
 
         assert_eq!(answers(3), [1, 12]);
+    }
+
+    /// What a nest is made from: the blob its reporters are spawned from, and how many.
+    #[derive(aethereal_data::Bound)]
+    struct Nesting {
+        code: BlobRef,
+        reporters: u64,
+    }
+
+    impl Kind for Nesting {
+        const NAME: KindName = KindName::new("aether.test.nesting");
+    }
+
+    /// A word to a nest to ping each of its reporters.
+    #[derive(Plain)]
+    struct Poke;
+
+    impl Kind for Poke {
+        const NAME: KindName = KindName::new("aether.test.poke");
+    }
+
+    /// A native actor that spawns reporters of the echo guest's blob as it begins, pings each when poked, and keeps
+    /// what each tells it in the fifth of [`ANSWERS`].
+    #[derive(aethereal_data::Bound)]
+    struct Nest {
+        reporters: Vec<ActorRef<echo::Reporter>>,
+    }
+
+    impl Kind for Nest {
+        const NAME: KindName = KindName::new("aether.test.nest");
+    }
+
+    impl Actor for Nest {
+        type Config = Nesting;
+        type Key = ();
+        type Handles = (Poke, Pong);
+        type BeginSends = ();
+        type EndSends = ();
+
+        fn begin(nesting: Nesting, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let mut reporters = Vec::new();
+            for key in 0..nesting.reporters {
+                let config = echo::AddBy { by: 10 * key, deeper: 0 };
+                let Ok(reporter) = turn.spawn_from::<echo::Reporter>(&nesting.code, &key, &config) else {
+                    return Err(Fault::new(&Doom)?);
+                };
+                reporters.push(reporter);
+            }
+            let unmade = turn.spawn_from::<Keeper>(&nesting.code, &0, &Keeps { key: 0, tally: 4 }).err();
+            let impostor = turn.spawn_from::<Impostor>(&nesting.code, &9, &echo::AddBy { by: 0, deeper: 0 }).err();
+            let both_refused = unmade == Some(Refused::NotMade) && impostor == Some(Refused::NotMade);
+            if !both_refused {
+                return Err(Fault::new(&Doom)?);
+            }
+
+            Ok(Self { reporters })
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Poke> for Nest {
+        type Sends = (ToType<echo::Reporter, echo::Ping>,);
+
+        fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            for reporter in &self.reporters {
+                turn.to::<echo::Reporter>(To::Held(reporter.erase())).send(&echo::Ping { n: 1 })?;
+            }
+
+            Ok(())
+        }
+    }
+
+    impl Handles<Pong> for Nest {
+        type Sends = ();
+
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            if let Ok(mut answers) = ANSWERS[4].lock() {
+                answers.push(pong.n);
+            }
+
+            Ok(())
+        }
+    }
+
+    /// A native type named as the echo guest's reporter is, which declares other handlers: a blob that makes a reporter
+    /// does not make this.
+    #[derive(aethereal_data::Bound)]
+    struct Impostor;
+
+    impl Kind for Impostor {
+        const NAME: KindName = KindName::new("aether.guest.reporter");
+    }
+
+    impl Actor for Impostor {
+        type Config = echo::AddBy;
+        type Key = u64;
+        type Handles = (Poke,);
+        type BeginSends = ();
+        type EndSends = ();
+
+        fn begin(_: echo::AddBy, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Poke> for Impostor {
+        type Sends = ();
+
+        fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    /// A native actor that pokes the nest as it begins.
+    #[derive(aethereal_data::Bound)]
+    struct Poker;
+
+    impl Kind for Poker {
+        const NAME: KindName = KindName::new("aether.test.poker");
+    }
+
+    impl Actor for Poker {
+        type Config = Volley;
+        type Key = ();
+        type Handles = ();
+        type BeginSends = (ToAny<(Poke,), Poke>,);
+        type EndSends = ();
+
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let nest = ActorPath::from_root(&PathSegment::new(Nest::NAME, &()));
+            if let Some(nest) = turn.resolve(&nest) {
+                turn.to_any::<(Poke,)>(ToWithoutMail::Held(nest)).send(&Poke)?;
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_native_actor_spawns_guests_from_a_blob_that_tell_it_in_later_turns() {
+        // Catches a spawn from a blob that never stands its child up, stands it where its parent cannot reach, or
+        // begins it of the wrong type; a guest child that loses its parent once its `begin` is done; and a spawn of
+        // a type the blob does not make that is not refused.
+        let Some(parts) = NonZeroUsize::new(2) else {
+            panic!("two is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(_) = engine.add_root::<Nest>(&(), Nesting { code, reporters: 4 }) else {
+            panic!("the nest begins, with its reporters, and is refused the keeper");
+        };
+        settle(&mut engine);
+        let Ok(_) = engine.add_root::<Poker>(&(), Volley { pings: 0 }) else {
+            panic!("the poker begins");
+        };
+        settle(&mut engine);
+
+        assert_eq!(answers(4), [1, 11, 21, 31]);
+    }
+
+    #[test]
+    fn code_whose_blob_is_freed_makes_nothing() {
+        // Catches code kept once the engine has let go of its blob, which would run actors from bytes no longer held.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let id = code.id();
+        drop(code);
+        engine.step(&Monotonic::new());
+
+        let code = BlobRef::pin(id);
+        let refused = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig);
+
+        assert_eq!(refused.err(), Some(Refused::NotMade));
     }
 }

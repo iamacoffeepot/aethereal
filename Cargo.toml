@@ -8,6 +8,9 @@ members = [
     "crates/aethereal-math",
     "crates/aethereal-substrate",
 ]
+# The guest the headless chassis's tests run: built for wasm32 apart from the workspace by the chassis's build script,
+# and a path dependency of its tests, for its types.
+exclude = ["crates/aethereal-chassis-headless/guests/echo"]
 
 [workspace.package]
 version = "0.1.0"

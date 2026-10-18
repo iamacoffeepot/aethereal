@@ -83,12 +83,13 @@ impl<'a> Turning<'a> {
 }
 
 impl<'a> Hosted<'a> {
-    /// The `begin` of the root `me` names, at `path`, whose type declares `declared`, reading `table` and adding to
-    /// `asked`: for the engine, which makes a root of a guest for the chassis.
+    /// The `begin` of the actor `me` names, at `path`, beneath `above`, whose type declares `declared`, reading
+    /// `table` and adding to `asked`: for a host, which begins a root or a child of its guest's code.
     #[must_use]
     pub fn beginning(
         me: Seated,
         path: &'a ActorPath,
+        above: Above,
         table: &'a dyn Table,
         asked: &'a mut Asked,
         declared: &'static Declared,
@@ -96,7 +97,7 @@ impl<'a> Hosted<'a> {
         let seat = Seat {
             me,
             path,
-            above: Above::Chassis,
+            above,
             table,
             made: &(),
             asked,

@@ -23,6 +23,7 @@ mod ended;
 mod fault;
 #[cfg(feature = "guest")]
 pub mod guest;
+mod guests;
 mod instances;
 mod item;
 mod mail;
@@ -42,9 +43,12 @@ pub use declared::{
     Allows, At, Declared, Handled, HandledList, Handler, Handles, Kinds, Marker, Others, Role, Sending, Sends, Target,
     ToAny, ToSender, ToType,
 };
-pub use effect::{Code, Effect, Level, Line, Mailed, Seen, To, ToWithoutMail, What};
+pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
+#[cfg(feature = "std")]
+pub use guests::config_bytes;
+pub use guests::{Birth, Guests, NoGuests, Unfit};
 pub use instances::Instances;
 pub use item::Item;
 pub use mail::{Mail, MailId};

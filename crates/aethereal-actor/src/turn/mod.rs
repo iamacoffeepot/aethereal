@@ -14,7 +14,7 @@ use crate::{
     Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, What,
 };
 #[cfg(feature = "std")]
-use crate::{BlobHash, BlobRef};
+use crate::{Birth, BlobHash, BlobRef, config_bytes};
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -230,6 +230,9 @@ pub enum Above {
     /// The actor that spawned it, its seat, and what its type declares, which a child's `begin` cannot read from the
     /// table while its parent is still being stood up.
     Actor(Seated, &'static Declared),
+    /// The actor that spawned it, and its seat, of a type the code running this one does not hold: a parent of other
+    /// code, as a guest sees it. Its sends to it are checked by its host (ADR-0015).
+    Elsewhere(Seated),
 }
 
 impl Stood {
@@ -551,8 +554,9 @@ impl Seat<'_> {
 
     /// The actor directly above this one, and its seat, when it is live.
     fn parent(&self) -> Option<Seated> {
-        let Above::Actor(parent, _) = self.above else {
-            return None;
+        let parent = match self.above {
+            Above::Chassis => return None,
+            Above::Actor(parent, _) | Above::Elsewhere(parent) => parent,
         };
         let is_live = self.table.is_live(parent.id);
 
@@ -568,33 +572,18 @@ impl Seat<'_> {
         Some(Seated { id, seat })
     }
 
-    /// Stands up a child of type `C` under `key`: adds its spawn effect, then runs its `begin` here.
-    ///
-    /// A key is free when this actor has made no child there: none its seat keeps from earlier steps, none live,
-    /// and none stood up earlier in the step or in this turn (ADR-0008).
-    fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused> {
+    /// Stands up a child of type `C` under `key`: adds its spawn effect, then runs its `begin` here, lent `instances`.
+    fn spawn<C: Actor>(
+        &mut self,
+        instances: &mut Instances,
+        key: &C::Key,
+        config: C::Config,
+    ) -> Result<ActorRef<C>, Refused> {
         let segment = PathSegment::new(C::NAME, key);
-        let path = self.path.child(&segment).map_err(|PathTooDeep| Refused::TooDeep)?;
-        let id = self.table.child(self.me.id, &segment);
-        let is_made = self.made.has_made(id);
-        let is_live = self.table.child_seat(id).is_some();
-        let is_stood = self.asked.stood_seat(id).is_some();
-        let is_taken = is_made || is_live || is_stood;
-        if is_taken {
-            return Err(Refused::KeyTaken);
-        }
-
+        let (path, id) = self.free_child(&segment)?;
         let declared = Declared::of::<C>();
-        let from = Code::Linked(declared);
-        let seat = self.asked.seats.take();
-        let before = self.asked.buffers.marks();
-        let spawn = match segment.key() {
-            None => What::Spawn { from, seat },
-            Some(key) => What::SpawnInstanced { from, key: key.clone(), seat },
-        };
-        self.ask(spawn);
+        let (me, before) = self.ask_spawn(id, &segment, Code::Linked(declared));
 
-        let me = Seated { id, seat };
         let stood_before = self.asked.stood.len();
         let above = Above::Actor(self.me, self.declared);
         let table = self.table;
@@ -611,27 +600,109 @@ impl Seat<'_> {
             during: During::Begin,
             checked: Checked::Nothing,
         };
-        match C::begin(config, &mut Beginning { seat: child, sends: PhantomData }) {
+        match C::begin(config, &mut Beginning { seat: child, instances, sends: PhantomData }) {
             Ok(actor) => {
-                self.asked.stood_seats.insert(id.bits(), (seat, declared));
-                self.asked.stood.push(Stood { me, path, above, actor: Box::new(actor) });
+                self.stand(me, path, above, declared, Box::new(actor));
 
                 Ok(ActorRef::new(me))
             }
             Err(fault) => {
-                // The child and every child it stood up never began, so their seats are given back, and what they
-                // asked for, the spawn of the child among it, is taken back but for the lines they logged.
-                self.asked.buffers.mailed.truncate(before.mailed);
-                self.asked.buffers.effects.truncate(before.effects);
-                for below in self.asked.stood.drain(stood_before..) {
-                    self.asked.stood_seats.remove(&below.me.id.bits());
-                    self.asked.seats.give_back(below.me.seat);
-                }
-                self.asked.seats.give_back(seat);
+                self.take_back(before, stood_before, me.seat);
 
                 Err(Refused::Began(fault))
             }
         }
+    }
+
+    /// Stands up a child of type `C` under `key` whose code is the blob `code` pins: adds its spawn effect, then has
+    /// the blob's host run its `begin` here, in its part's instance of the blob, lent `instances` (ADR-0009,
+    /// ADR-0015). Refused when the blob makes no actor of `C`'s type, as `C` declares it.
+    #[cfg(feature = "std")]
+    fn spawn_from<C: Actor>(
+        &mut self,
+        instances: &mut Instances,
+        code: &BlobRef,
+        key: &C::Key,
+        config: &C::Config,
+    ) -> Result<ActorRef<C>, Refused> {
+        let segment = PathSegment::new(C::NAME, key);
+        let (path, id) = self.free_child(&segment)?;
+        let guests = instances.guests();
+        let made = guests.made(code.id(), &C::NAME).ok_or(Refused::NotMade)?;
+        let declared = made.declared;
+        let is_same = *declared == *Declared::of::<C>();
+        if !is_same {
+            return Err(Refused::NotMade);
+        }
+        let config = config_bytes(config).map_err(|_| Refused::NotMade)?;
+        let (me, before) = self.ask_spawn(id, &segment, Code::Blob(made));
+
+        let stood_before = self.asked.stood.len();
+        let above = Above::Actor(self.me, self.declared);
+        let birth = Birth { me, path: &path, above, table: self.table, asked: &mut *self.asked, instances };
+        match guests.begin(made, &config, birth) {
+            Ok(actor) => {
+                self.stand(me, path, above, declared, actor);
+
+                Ok(ActorRef::new(me))
+            }
+            Err(refused) => {
+                self.take_back(before, stood_before, me.seat);
+
+                Err(refused)
+            }
+        }
+    }
+
+    /// The path and id of the child `segment` names beneath this actor, when its key is free: when this actor has
+    /// made no child there, none its seat keeps from earlier steps, none live, and none stood up earlier in the step
+    /// or in this turn (ADR-0008).
+    fn free_child(&self, segment: &PathSegment) -> Result<(ActorPath, ActorId), Refused> {
+        let path = self.path.child(segment).map_err(|PathTooDeep| Refused::TooDeep)?;
+        let id = self.table.child(self.me.id, segment);
+        let is_made = self.made.has_made(id);
+        let is_live = self.table.child_seat(id).is_some();
+        let is_stood = self.asked.stood_seat(id).is_some();
+        let is_taken = is_made || is_live || is_stood;
+        if is_taken {
+            return Err(Refused::KeyTaken);
+        }
+
+        Ok((path, id))
+    }
+
+    /// Asks for the spawn of the child `id`, which `segment` names beneath this actor, from `from`, in a seat taken
+    /// for it: answers with the child, and where the buffers stood before.
+    fn ask_spawn(&mut self, id: ActorId, segment: &PathSegment, from: Code) -> (Seated, Marks) {
+        let seat = self.asked.seats.take();
+        let before = self.asked.buffers.marks();
+        let spawn = match segment.key() {
+            None => What::Spawn { from, seat },
+            Some(key) => What::SpawnInstanced { from, key: key.clone(), seat },
+        };
+        self.ask(spawn);
+
+        (Seated { id, seat }, before)
+    }
+
+    /// Stands up the child `me`, at `path`, beneath `above`, of the type `declared`, run by `actor`, once its `begin`
+    /// succeeded.
+    fn stand(&mut self, me: Seated, path: ActorPath, above: Above, declared: &'static Declared, actor: Box<dyn Runs>) {
+        self.asked.stood_seats.insert(me.id.bits(), (me.seat, declared));
+        self.asked.stood.push(Stood { me, path, above, actor });
+    }
+
+    /// Takes back a child that never began, in `seat`, and every child it stood up from the `stood_before`th: their
+    /// seats are given back, and what they asked for since `before`, the spawn of the child among it, is taken back
+    /// but for the lines they logged.
+    fn take_back(&mut self, before: Marks, stood_before: usize, seat: SeatNumber) {
+        self.asked.buffers.mailed.truncate(before.mailed);
+        self.asked.buffers.effects.truncate(before.effects);
+        for below in self.asked.stood.drain(stood_before..) {
+            self.asked.stood_seats.remove(&below.me.id.bits());
+            self.asked.seats.give_back(below.me.seat);
+        }
+        self.asked.seats.give_back(seat);
     }
 }
 
@@ -774,7 +845,7 @@ impl<'a> Turning<'a> {
 
     /// The turn of the handler of `A` for `role`, which may send `S`.
     pub(crate) fn declaring<A: Actor, S: Sends>(self, role: Role) -> Turn<'a, S> {
-        let Self { me, path, above, table, made, asked, sent, source, chain, .. } = self;
+        let Self { me, path, above, table, made, asked, instances, sent, source, chain } = self;
         let declared = Declared::of::<A>();
         let seat = Seat {
             me,
@@ -789,7 +860,7 @@ impl<'a> Turning<'a> {
             checked: Checked::Nothing,
         };
 
-        Turn { seat, source, chain, sends: PhantomData }
+        Turn { seat, instances, source, chain, sends: PhantomData }
     }
 }
 
@@ -801,6 +872,8 @@ impl<'a> Turning<'a> {
 /// actors as it stood when the turn's step began.
 pub struct Turn<'a, S> {
     seat: Seat<'a>,
+    /// The instances of the actor's part, which a child spawned from a blob begins in (ADR-0015).
+    instances: &'a mut Instances,
     /// The actor the item being handled comes from: who [`To::Sender`] names.
     source: Seated,
     chain: Chain,
@@ -858,7 +931,19 @@ impl<'a, S> Turn<'a, S> {
     ///
     /// The child takes its own mail. It is live once the engine applies this turn's effects.
     pub fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused> {
-        self.seat.spawn::<C>(key, config)
+        self.seat.spawn::<C>(self.instances, key, config)
+    }
+
+    /// Stands up a child of type `C` under `key` whose code is the blob `code` pins, running its `begin` here in the
+    /// blob, and answers with a reference to it (ADR-0009). Refused when the blob makes no actor of `C`'s type.
+    #[cfg(feature = "std")]
+    pub fn spawn_from<C: Actor>(
+        &mut self,
+        code: &BlobRef,
+        key: &C::Key,
+        config: &C::Config,
+    ) -> Result<ActorRef<C>, Refused> {
+        self.seat.spawn_from::<C>(self.instances, code, key, config)
     }
 
     /// Closes this actor. Its closing turn runs in the next step.
@@ -932,19 +1017,24 @@ impl<'a, S> Turn<'a, S> {
 /// sender to send to.
 pub struct Beginning<'a, S> {
     seat: Seat<'a>,
+    /// The instances of the actor's part, which a child spawned from a blob begins in (ADR-0015).
+    instances: &'a mut Instances,
     sends: PhantomData<fn() -> S>,
 }
 
 impl<'a, S: Sends> Beginning<'a, S> {
-    /// The `begin` of the root of type `A` that `me` names, at `path`, reading `table` and adding to `asked`.
+    /// The `begin` of the root of type `A` that `me` names, at `path`, reading `table`, adding to `asked`, and lent
+    /// its part's `instances`.
     ///
-    /// For the engine, which makes a root for the chassis. A child's is made by the turn that spawns it.
+    /// For the engine, which makes a root for the chassis. A child's is made by the turn that spawns it, but for a
+    /// guest's, which [`Self::beneath`] makes.
     #[must_use]
     pub fn new<A: Actor<BeginSends = S>>(
         me: Seated,
         path: &'a ActorPath,
         table: &'a dyn Table,
         asked: &'a mut Asked,
+        instances: &'a mut Instances,
     ) -> Self {
         let declared = Declared::of::<A>();
         let during = During::Begin;
@@ -961,7 +1051,26 @@ impl<'a, S: Sends> Beginning<'a, S> {
             checked: Checked::Nothing,
         };
 
-        Self { seat, sends: PhantomData }
+        Self { seat, instances, sends: PhantomData }
+    }
+
+    /// The `begin` of an actor of type `A` that `me` names, at `path`, beneath `above`, reading `table`, adding to
+    /// `asked`, and lent `instances`: for a guest's library, which begins an actor its host stood up from the guest's
+    /// blob, beneath a parent of any code or none (ADR-0015).
+    #[cfg(feature = "guest")]
+    #[must_use]
+    pub fn beneath<A: Actor<BeginSends = S>>(
+        me: Seated,
+        path: &'a ActorPath,
+        above: Above,
+        table: &'a dyn Table,
+        asked: &'a mut Asked,
+        instances: &'a mut Instances,
+    ) -> Self {
+        let mut beginning = Self::new::<A>(me, path, table, asked, instances);
+        beginning.seat.above = above;
+
+        beginning
     }
 }
 
@@ -984,7 +1093,19 @@ impl<'a, S> Beginning<'a, S> {
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
     pub fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused> {
-        self.seat.spawn::<C>(key, config)
+        self.seat.spawn::<C>(self.instances, key, config)
+    }
+
+    /// Stands up a child of type `C` under `key` whose code is the blob `code` pins, running its `begin` here in the
+    /// blob, and answers with a reference to it (ADR-0009). Refused when the blob makes no actor of `C`'s type.
+    #[cfg(feature = "std")]
+    pub fn spawn_from<C: Actor>(
+        &mut self,
+        code: &BlobRef,
+        key: &C::Key,
+        config: &C::Config,
+    ) -> Result<ActorRef<C>, Refused> {
+        self.seat.spawn_from::<C>(self.instances, code, key, config)
     }
 
     /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.

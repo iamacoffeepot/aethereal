@@ -21,6 +21,8 @@ wasmtime = { version = "=44.0.3", default-features = false, features = ["craneli
 libc = "0.2.190"
 
 [dev-dependencies]
+# The guest the tests run, for its types: its blob is built for wasm32 by the build script.
+aethereal-guest-echo = { path = "guests/echo" }
 
 [lints]
 workspace = true

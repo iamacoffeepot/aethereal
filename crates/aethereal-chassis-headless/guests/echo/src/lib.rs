@@ -482,4 +482,41 @@ impl Handles<Ended> for Watcher {
     }
 }
 
-aethereal_actor::guest!(Echo, Mirror, Responder, Doomed, Brood, Adder, Seeker, Watcher);
+/// An actor that answers each ping by telling its parent, with a pong of the ping's number and its own key, so a turn
+/// long after its `begin` still reaches whatever spawned it.
+#[derive(Bound)]
+pub struct Reporter {
+    key: u64,
+}
+
+impl Kind for Reporter {
+    const NAME: KindName = KindName::new("aether.guest.reporter");
+}
+
+impl Actor for Reporter {
+    type Config = AddBy;
+    type Key = u64;
+    type Handles = (Ping,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(config: AddBy, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self { key: config.by })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Reporter {
+    type Sends = (ToAny<(Pong,), Pong>,);
+
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.to_any::<(Pong,)>(To::Parent).send(&Pong { n: ping.n + self.key })?;
+
+        Ok(())
+    }
+}
+
+aethereal_actor::guest!(Echo, Mirror, Responder, Doomed, Brood, Adder, Seeker, Watcher, Reporter);

@@ -28,9 +28,9 @@ use crate::{
 };
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
-    Above, Actor, Arena, Asked, Beginning, BlobHash, BlobRef, Buffers, Chain, Closing, Code, Declared, Effect, Fault,
-    How, Instances, Item, Mail, MailId, Mailed, Preparing, Puts, Reads, Refused, Runs, SeatNumber, Seated, Seats,
-    Stood, Turning, What, Why,
+    Above, Actor, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Chain, Closing, Code, Declared, Effect,
+    Fault, Guests, How, Instances, Item, Mail, MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused, Runs,
+    SeatNumber, Seated, Seats, Stood, Turning, Unfit, What, Why, config_bytes,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use birth::Births;
@@ -42,6 +42,7 @@ use since::{Sees, Since};
 use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The engine: its actors, the views of them, and the steps their turns run in (ADR-0011).
@@ -82,6 +83,9 @@ pub struct Engine {
     /// The instances each part's actors run their code in, which the engine carries with the part and never looks
     /// into (ADR-0015).
     instances: Vec<Instances>,
+    /// The guests' code the engine runs, which each part's instances carry (ADR-0015): none for an engine made
+    /// without it.
+    guests: Arc<dyn Guests>,
     /// The seats each part gives the children its turns spawn: its own free seats and new numbers, and those set
     /// aside for it in other parts (ADR-0013).
     seats: Vec<Seats>,
@@ -129,6 +133,15 @@ pub struct Engine {
     /// Which engine of the process this is, in the id of each blob it holds. Last, so what the engine's actors held
     /// is let go of before the engine is forgotten.
     number: Number,
+}
+
+/// Why code put between steps was refused (ADR-0015).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodeRefused {
+    /// Its bytes would take the blobs past the host's budget.
+    NoRoom,
+    /// Its guests cannot run it.
+    Unfit(Unfit),
 }
 
 /// Which engine of the process an engine is: the engines a process makes are numbered in turn.
@@ -314,6 +327,7 @@ impl Engine {
     #[must_use]
     pub fn new(parts: NonZeroUsize, read_limit: usize, mail_bytes: usize, blob_bytes: usize, hops: usize) -> Self {
         let parts = rounded(parts);
+        let number = Number::next();
 
         Self {
             table: ActorTable::new(parts),
@@ -325,6 +339,7 @@ impl Engine {
             actors: (0..parts.get()).map(|_| BySeat::empty(parts)).collect(),
             waiting: Vec::new(),
             instances: (0..parts.get()).map(|_| Instances::default()).collect(),
+            guests: Arc::new(NoGuests),
             seats: (0..parts.get()).map(|part| Seats::of_part(new_seat(part), new_seat(parts.get()))).collect(),
             seated: vec![0; parts.get()],
             actors_seated: 0,
@@ -342,11 +357,22 @@ impl Engine {
             slice: u64::MAX,
             hopped: Hops::default(),
             mail_bytes,
-            blobs: Blobs::new(blob_bytes),
+            blobs: Blobs::new(number.0, blob_bytes),
             puts: Vec::new(),
             unbuffered: Vec::new(),
-            number: Number::next(),
+            number,
         }
+    }
+
+    /// The engine, running the guests' code `guests` holds (ADR-0015): set as the engine is made, before any actor.
+    #[must_use]
+    pub fn with_guests(mut self, guests: Arc<dyn Guests>) -> Self {
+        for instances in &mut self.instances {
+            *instances = Instances::new(Arc::clone(&guests));
+        }
+        self.guests = guests;
+
+        self
     }
 
     /// The table of actors, as of the last step.
@@ -395,6 +421,21 @@ impl Engine {
         put
     }
 
+    /// Puts `bytes` as a blob that is code, for the chassis, between steps, and answers with the first reference to it
+    /// (ADR-0014, ADR-0015): refused when they would take the blobs past the host's budget, or are not code its guests
+    /// can run, and then the blob goes at the next step's fold.
+    ///
+    /// # Errors
+    ///
+    /// Why the code was refused.
+    pub fn put_code(&mut self, bytes: Vec<u8>) -> Result<BlobRef, CodeRefused> {
+        let unchecked = bytes.clone();
+        let code = self.put_blob(bytes).map_err(|_| CodeRefused::NoRoom)?;
+        self.guests.load(code.id(), &unchecked).map_err(CodeRefused::Unfit)?;
+
+        Ok(code)
+    }
+
     /// The bytes of the blob `blob` refers to, as the store holds them between steps.
     #[must_use]
     pub fn blob(&self, blob: &BlobRef) -> Option<&[u8]> {
@@ -424,35 +465,61 @@ impl Engine {
     pub fn add_root<A: Actor>(&mut self, key: &A::Key, config: A::Config) -> Result<ActorId, Refused> {
         let segment = PathSegment::new(A::NAME, key);
 
-        self.add_root_made(&segment, Declared::of::<A>(), |me, path, table, asked, _| {
-            let root = A::begin(config, &mut Beginning::new::<A>(me, path, table, asked))?;
+        let declared = Declared::of::<A>();
+        self.add_root_made(&segment, Code::Linked(declared), |me, path, table, asked, instances| {
+            let root = A::begin(config, &mut Beginning::new::<A>(me, path, table, asked, instances))
+                .map_err(Refused::Began)?;
 
             Ok(Box::new(root))
         })
     }
 
-    /// Makes a root at `segment`, of a type that declares `declared`, which `begin` makes as it is seated as `me`, at
-    /// its path, reading the table and adding to what is asked: [`Self::add_root`] for a type the engine does not
-    /// name, such as a guest's (ADR-0015).
+    /// Makes a root of type `C` under `key` whose code is the blob `code` pins, for the chassis, and answers with its
+    /// id (ADR-0009, ADR-0015): [`Self::add_root`] for a root a guest runs. Its `begin` runs in the instance of the
+    /// blob of the part it is seated in.
     ///
     /// # Errors
     ///
-    /// Refused when the key is taken, or when `begin` fails.
+    /// Refused when the key is taken, the blob makes no actor of `C`'s type, or `begin` fails.
     ///
     /// # Panics
     ///
     /// Panics when an actor is made under an id the table already holds for another path (ADR-0008).
-    pub fn add_root_made(
+    pub fn add_root_from<C: Actor>(
+        &mut self,
+        code: &BlobRef,
+        key: &C::Key,
+        config: &C::Config,
+    ) -> Result<ActorId, Refused> {
+        let segment = PathSegment::new(C::NAME, key);
+        let made = self.guests.made(code.id(), &C::NAME).ok_or(Refused::NotMade)?;
+        let is_same = *made.declared == *Declared::of::<C>();
+        if !is_same {
+            return Err(Refused::NotMade);
+        }
+        let config = config_bytes(config).map_err(|_| Refused::NotMade)?;
+        let guests = Arc::clone(&self.guests);
+
+        self.add_root_made(&segment, Code::Blob(made), |me, path, table, asked, instances| {
+            let birth = Birth { me, path, above: Above::Chassis, table, asked, instances };
+
+            guests.begin(made, &config, birth)
+        })
+    }
+
+    /// Makes a root at `segment`, from `from`, which `begin` makes as it is seated as `me`, at its path, reading the
+    /// table, adding to what is asked, and lent its part's instances.
+    fn add_root_made(
         &mut self,
         segment: &PathSegment,
-        declared: &'static Declared,
+        from: Code,
         begin: impl FnOnce(
             Seated,
             &ActorPath,
             &dyn aethereal_actor::Table,
             &mut Asked,
             &mut Instances,
-        ) -> Result<Box<dyn Runs>, Fault>,
+        ) -> Result<Box<dyn Runs>, Refused>,
     ) -> Result<ActorId, Refused> {
         let id = root_id(segment);
         let path = ActorPath::from_root(segment);
@@ -482,7 +549,7 @@ impl Engine {
         let context = Context { root: MailId { sender: id, count: 0 }, depth: 1 };
         let root = match made {
             Ok(root) => root,
-            Err(fault) => {
+            Err(refused) => {
                 seats.give_back(me.seat);
                 for child in stood {
                     seats.give_back(child.seated().seat);
@@ -494,11 +561,10 @@ impl Engine {
                 buffers.lines.clear();
                 self.fold_began(buffers, Vec::new(), context, parity);
 
-                return Err(Refused::Began(fault));
+                return Err(refused);
             }
         };
         self.take_back_lent(home, seats);
-        let from = Code::Linked(declared);
         let made = match segment.key() {
             None => What::Root { from },
             Some(key) => What::RootInstanced { from, key: key.clone() },
@@ -1000,7 +1066,8 @@ impl Engine {
     fn sweep_blobs(&mut self) {
         pins::take_shared(self.number.0, &mut self.unbuffered);
         self.blobs.change(&mut self.unbuffered);
-        self.blobs.sweep();
+        let guests = &*self.guests;
+        self.blobs.sweep(|freed| guests.unload(freed));
     }
 
     /// The arena of the writer numbered `slot` for steps of `parity`, taken out to write to; made when it is the
