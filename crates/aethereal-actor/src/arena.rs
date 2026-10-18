@@ -250,6 +250,14 @@ impl Arena {
         !self.held.is_empty() || !self.held_spilled.is_empty()
     }
 
+    /// Lets go of the pins its mail holds, keeping the mail: for a guest, whose host keeps pins of its own on what the
+    /// mail refers to once it has read the guest's records of it (ADR-0014, ADR-0015).
+    #[cfg(feature = "guest")]
+    pub(crate) fn let_go(&mut self) {
+        self.held.clear();
+        self.held_spilled.clear();
+    }
+
     /// Where the references in the bytes of `payload` lie, and the pins on their blobs, when they are in this arena:
     /// for a host, which hands the bytes to code that takes pins of its own (ADR-0014).
     #[must_use]

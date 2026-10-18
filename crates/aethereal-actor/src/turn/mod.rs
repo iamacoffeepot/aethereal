@@ -117,6 +117,32 @@ impl Asked {
         }
     }
 
+    /// Empties everything asked for, the arena's bytes among it, keeping the room of each: for a guest, whose host has
+    /// read what it asked for after each call (ADR-0015).
+    #[cfg(feature = "guest")]
+    pub(crate) fn empty(&mut self) {
+        self.buffers.mailed.clear();
+        self.buffers.lines.clear();
+        self.buffers.effects.clear();
+        self.stood.clear();
+        self.stood_seats.clear();
+        self.arena.clear(0);
+    }
+
+    /// Lets go of the pins the mail written holds, keeping the mail: for a guest, whose host pins what its mail refers
+    /// to itself (ADR-0015).
+    #[cfg(feature = "guest")]
+    pub(crate) fn let_go_of_pins(&mut self) {
+        self.arena.let_go();
+    }
+
+    /// How many children have been stood up since the buffers were last emptied: for a guest, whose turns of a batch
+    /// all add to them (ADR-0015).
+    #[cfg(feature = "guest")]
+    pub(crate) fn stood_count(&self) -> usize {
+        self.stood.len()
+    }
+
     /// Whether this turn has asked for nothing in any buffer.
     #[must_use]
     pub fn asked_nothing(&self) -> bool {
