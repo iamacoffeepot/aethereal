@@ -1,6 +1,9 @@
 //! A guest that answers each ping it is sent with a pong, to its sender (ADR-0015).
 
-use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Level, ToAny, ToSender, ToWithoutMail, Turn};
+use aethereal_actor::{
+    Actor, Beginning, Ended, Ending, ErasedActorRef, Fault, Handles, How, Level, To, ToAny, ToSender, ToWithoutMail,
+    Turn,
+};
 use aethereal_data::{ActorPath, Bound, Kind, KindName, Plain};
 
 /// A ping, which an echo answers with a pong of the same number.
@@ -402,4 +405,81 @@ impl Actor for Seeker {
     }
 }
 
-aethereal_actor::guest!(Echo, Mirror, Responder, Doomed, Brood, Adder, Seeker);
+/// What a watcher is made from: the paths of the actors it watches, and of the one it tells of their endings.
+#[derive(Plain)]
+pub struct Watching {
+    pub paths: Vec<ActorPath>,
+    pub tell: ActorPath,
+}
+
+impl Kind for Watching {
+    const NAME: KindName = KindName::new("aether.guest.watching");
+}
+
+/// Why a watcher did not begin: the actor it tells was not found.
+#[derive(Plain)]
+pub struct Untold;
+
+impl Kind for Untold {
+    const NAME: KindName = KindName::new("aether.guest.untold");
+}
+
+/// An actor that watches each actor at the paths it is made with, and tells the actor at the last of how each ended:
+/// a ping of ten for its place in the list, and one for a close, two for a fault, or three for an ending before the
+/// watch.
+#[derive(Bound)]
+pub struct Watcher {
+    watched: Vec<ErasedActorRef>,
+    tell: ErasedActorRef,
+}
+
+impl Kind for Watcher {
+    const NAME: KindName = KindName::new("aether.guest.watcher");
+}
+
+impl Actor for Watcher {
+    type Config = Watching;
+    type Key = ();
+    type Handles = (Ended,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(watching: Watching, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let Some(tell) = turn.resolve(&watching.tell) else {
+            return Err(Fault::new(&Untold)?);
+        };
+        let mut watched = Vec::new();
+        for path in &watching.paths {
+            if let Some(found) = turn.resolve(path) {
+                turn.watch(found);
+                watched.push(found);
+            }
+        }
+
+        Ok(Self { watched, tell })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ended> for Watcher {
+    type Sends = (ToAny<(Ping,), Ping>,);
+
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let place = (0..).zip(&self.watched).find_map(|(place, watched)| (*watched == ended.actor()).then_some(place));
+        let how = match ended.how() {
+            How::Closed => 1,
+            How::Failed(_) => 2,
+            How::Earlier => 3,
+        };
+        if let Some(place) = place {
+            turn.to_any::<(Ping,)>(To::Held(self.tell)).send(&Ping { n: 10 * place + how })?;
+        }
+
+        Ok(())
+    }
+}
+
+aethereal_actor::guest!(Echo, Mirror, Responder, Doomed, Brood, Adder, Seeker, Watcher);

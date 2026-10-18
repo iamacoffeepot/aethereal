@@ -2,14 +2,17 @@
 //! (ADR-0015).
 //!
 //! The host writes a batch's items into the guest's inbox, each an [`ItemHead`]
-//! and then its bytes. After the call the guest's out buffer holds an
+//! and then its bytes: a piece of mail's, or the fault of a watched actor that
+//! failed. After the call the guest's out buffer holds an
 //! [`OutHead`], a [`TurnEnds`] for each turn it ran, then a [`SendRecord`] for
 //! each piece of mail its turns sent, a [`LineRecord`] for each line they
-//! logged, a [`SpawnRecord`] for each child they spawned, and a [`StoodRecord`]
-//! for each child that began. A send's bytes, a line's text, a key and a moved
+//! logged, a [`SpawnRecord`] for each child they spawned, a [`StoodRecord`]
+//! for each child that began, and a [`WatchRecord`] for each actor they
+//! watched. A send's bytes, a line's text, a key and a moved
 //! child's state are not copied out: each record says where they lie in the
 //! guest's memory, and the host reads them there. Sends and lines say who made
-//! them: the actor whose turn it was, or a child it spawned, in its `begin`.
+//! them, as watches do: the actor whose turn it was, or a child it spawned, in
+//! its `begin`.
 //!
 //! Every number is little-endian, and every address is one in the guest's
 //! 32-bit memory.
@@ -17,25 +20,57 @@
 use crate::{Chain, Level, MailId, SeatNumber, Seated};
 use aethereal_data::{ActorId, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
 
-/// The head of an item in the inbox: its kind's id, its source's id and seat, its chain's root, sender and count, its
+/// The head of an item in the inbox: what it is, its source's id and seat, its chain's root, sender and count, its
 /// depth, and the length of the bytes after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemHead {
-    pub kind: KindId,
+    pub handed: Handed,
     pub source: Seated,
     pub chain: Chain,
     pub len: u32,
 }
 
+/// What an item in the inbox is: a piece of mail, or the ending of an actor its receiver watches, which is its source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Handed {
+    /// Mail of `kind`, its bytes after the head.
+    Mail { kind: KindId },
+    /// The watched actor ended so.
+    Ended(Gone),
+}
+
+/// How a watched actor ended, as its ending is handed into the inbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gone {
+    /// It asked to close.
+    Closed,
+    /// A turn of its own failed with the fault whose reason is of `kind`, its bytes after the head.
+    Failed { kind: KindId },
+    /// It had ended before the step the watch was asked in.
+    Earlier,
+}
+
 impl ItemHead {
     /// How many bytes it is.
-    pub const BYTES: usize = 48;
+    pub const BYTES: usize = 52;
 
     /// It, as the inbox holds it.
     #[must_use]
     pub fn to_bytes(&self) -> [u8; Self::BYTES] {
         let mut out = [0; Self::BYTES];
-        out[..8].copy_from_slice(&self.kind.plain_bytes());
+        let handed: u32 = match self.handed {
+            Handed::Mail { kind } => {
+                out[..8].copy_from_slice(&kind.plain_bytes());
+                0
+            }
+            Handed::Ended(Gone::Closed) => 1,
+            Handed::Ended(Gone::Failed { kind }) => {
+                out[..8].copy_from_slice(&kind.plain_bytes());
+                2
+            }
+            Handed::Ended(Gone::Earlier) => 3,
+        };
+        out[48..52].copy_from_slice(&handed.to_le_bytes());
         out[8..16].copy_from_slice(&self.source.id.bits().to_le_bytes());
         out[16..24].copy_from_slice(&self.source.seat.number().to_le_bytes());
         out[24..32].copy_from_slice(&self.chain.root.sender.bits().to_le_bytes());
@@ -50,12 +85,18 @@ impl ItemHead {
     #[must_use]
     pub fn read(bytes: &[u8]) -> Option<Self> {
         let head = bytes.get(..Self::BYTES)?;
-        let kind = kind_at(head, 0)?;
+        let handed = match u32_at(head, 48)? {
+            0 => Handed::Mail { kind: kind_at(head, 0)? },
+            1 => Handed::Ended(Gone::Closed),
+            2 => Handed::Ended(Gone::Failed { kind: kind_at(head, 0)? }),
+            3 => Handed::Ended(Gone::Earlier),
+            _ => return None,
+        };
         let source = Seated { id: ActorId::new(u64_at(head, 8)?), seat: SeatNumber::new(u64_at(head, 16)?) };
         let root = MailId { sender: ActorId::new(u64_at(head, 24)?), count: u64_at(head, 32)? };
         let chain = Chain { root, depth: u32_at(head, 40)? };
 
-        Some(Self { kind, source, chain, len: u32_at(head, 44)? })
+        Some(Self { handed, source, chain, len: u32_at(head, 44)? })
     }
 }
 
@@ -76,12 +117,14 @@ pub enum Stopped {
 pub struct OutHead {
     pub ran: u32,
     pub stopped: Stopped,
-    /// Where the turns' [`TurnEnds`], [`SendRecord`]s, [`LineRecord`]s, [`SpawnRecord`]s and [`StoodRecord`]s begin.
+    /// Where the turns' [`TurnEnds`], [`SendRecord`]s, [`LineRecord`]s, [`SpawnRecord`]s, [`StoodRecord`]s and
+    /// [`WatchRecord`]s begin.
     pub turns_at: u32,
     pub sends_at: u32,
     pub lines_at: u32,
     pub spawns_at: u32,
     pub stood_at: u32,
+    pub watches_at: u32,
 }
 
 /// Where some bytes lie in a guest's memory: their address, and how many there are.
@@ -116,6 +159,7 @@ impl OutHead {
         out[32..36].copy_from_slice(&self.lines_at.to_le_bytes());
         out[36..40].copy_from_slice(&self.spawns_at.to_le_bytes());
         out[40..44].copy_from_slice(&self.stood_at.to_le_bytes());
+        out[44..48].copy_from_slice(&self.watches_at.to_le_bytes());
 
         out
     }
@@ -142,23 +186,25 @@ impl OutHead {
             lines_at: u32_at(head, 32)?,
             spawns_at: u32_at(head, 36)?,
             stood_at: u32_at(head, 40)?,
+            watches_at: u32_at(head, 44)?,
         })
     }
 }
 
-/// Where one turn's records end: how many sends, lines, spawns and children stood up the turns up to and including it
-/// asked for.
+/// Where one turn's records end: how many sends, lines, spawns, children stood up and watches the turns up to and
+/// including it asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TurnEnds {
     pub sends: u32,
     pub lines: u32,
     pub spawns: u32,
     pub stood: u32,
+    pub watches: u32,
 }
 
 impl TurnEnds {
     /// How many bytes it is.
-    pub const BYTES: usize = 16;
+    pub const BYTES: usize = 20;
 
     /// It, as the out buffer holds it.
     #[must_use]
@@ -167,7 +213,8 @@ impl TurnEnds {
         out[..4].copy_from_slice(&self.sends.to_le_bytes());
         out[4..8].copy_from_slice(&self.lines.to_le_bytes());
         out[8..12].copy_from_slice(&self.spawns.to_le_bytes());
-        out[12..].copy_from_slice(&self.stood.to_le_bytes());
+        out[12..16].copy_from_slice(&self.stood.to_le_bytes());
+        out[16..].copy_from_slice(&self.watches.to_le_bytes());
 
         out
     }
@@ -180,6 +227,7 @@ impl TurnEnds {
             lines: u32_at(bytes, 4)?,
             spawns: u32_at(bytes, 8)?,
             stood: u32_at(bytes, 12)?,
+            watches: u32_at(bytes, 16)?,
         })
     }
 }
@@ -304,6 +352,34 @@ impl SpawnRecord {
             key,
             seat: SeatNumber::new(u64_at(bytes, 24)?),
         })
+    }
+}
+
+/// An actor a turn watched: by whom, the actor whose turn it was or a child it spawned, in its `begin`, and which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatchRecord {
+    pub by: Seated,
+    pub of: Seated,
+}
+
+impl WatchRecord {
+    /// How many bytes it is.
+    pub const BYTES: usize = 32;
+
+    /// It, as the out buffer holds it.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::BYTES] {
+        let mut out = [0; Self::BYTES];
+        out[..16].copy_from_slice(&seated_bytes(self.by));
+        out[16..].copy_from_slice(&seated_bytes(self.of));
+
+        out
+    }
+
+    /// The record `bytes` begin with: nothing when they are too few.
+    #[must_use]
+    pub fn read(bytes: &[u8]) -> Option<Self> {
+        Some(Self { by: seated_at(bytes, 0)?, of: seated_at(bytes, 16)? })
     }
 }
 

@@ -5,7 +5,7 @@ mod refused;
 #[cfg(test)]
 mod tests;
 
-pub use hosted::{FalseSend, Hosted, Trapped};
+pub use hosted::{FalseSend, FalseWatch, Hosted, Trapped};
 pub use refused::Refused;
 
 use crate::{

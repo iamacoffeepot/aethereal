@@ -2,8 +2,8 @@
 
 use super::{Checked, During, Seat, Stood, Turning};
 use crate::{
-    Above, Asked, Chain, Code, Declared, Effect, Fault, Instances, Level, Line, MailId, Mailed, Role, Runs, SeatNumber,
-    Seated, Sending, Table, Target, What,
+    Above, Asked, Chain, Code, Declared, Effect, ErasedActorRef, Fault, Instances, Level, Line, MailId, Mailed, Role,
+    Runs, SeatNumber, Seated, Seen, Sending, Table, Target, What,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, KindName, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -48,6 +48,15 @@ pub struct FalseSend;
 
 impl aethereal_data::Kind for FalseSend {
     const NAME: KindName = KindName::new("aether.actor.false_send");
+}
+
+/// The reason of a guest's turn that watched an actor though the watcher's type does not handle endings (ADR-0013,
+/// ADR-0015).
+#[derive(Debug, PartialEq, Eq, Plain)]
+pub struct FalseWatch;
+
+impl aethereal_data::Kind for FalseWatch {
+    const NAME: KindName = KindName::new("aether.actor.false_watch");
 }
 
 /// The reason of a guest's turn that trapped: every actor of its instance ends with it (ADR-0015).
@@ -231,6 +240,35 @@ impl<'a> Hosted<'a> {
         let child = self.spawned.iter().find(|child| child.me == me)?;
 
         Some((child.by, child.declared))
+    }
+
+    /// Watches the actor `of` names, by `by`: the actor whose turn this is, or a child it spawned, in its `begin`, as
+    /// [`Turn::watch`](crate::Turn::watch) does. Whether `of` was live is read from the table and the children stood
+    /// up in the step, as a native watch reads it, not taken from the guest.
+    ///
+    /// # Errors
+    ///
+    /// [`FalseWatch`] when the watcher's type does not handle endings, or the turn spawned no such child.
+    pub fn watch(&mut self, by: Seated, of: Seated) -> Result<(), FalseWatch> {
+        let declared = if by == self.seat.me {
+            self.seat.declared
+        } else {
+            self.spawned.iter().find(|child| child.me == by).ok_or(FalseWatch)?.declared
+        };
+        if !declared.handles_endings() {
+            return Err(FalseWatch);
+        }
+        let was_held = self.seat.table.held(of.id);
+        let is_stood = self.seat.asked.stood_seat(of.id).is_some();
+        let seen = if was_held || is_stood {
+            Seen::Live
+        } else {
+            Seen::Ended
+        };
+        let watch = What::Watch { of: ErasedActorRef::new(of), seen };
+        self.seat.asked.buffers.effects.push(Effect::new(by, watch));
+
+        Ok(())
     }
 
     /// Gives back `seat`, one the turn's host took for a child that was never stood up.

@@ -14,11 +14,12 @@
 //! host to take into that part's instance.
 
 use crate::records::{
-    ItemHead, Kept, Keying, LineRecord, Naming, OutHead, SendRecord, Span, SpawnRecord, StoodRecord, Stopped, TurnEnds,
+    Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, OutHead, SendRecord, Span, SpawnRecord, StoodRecord,
+    Stopped, TurnEnds, WatchRecord,
 };
-use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Fault, Item, Within};
+use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Ended, Fault, How, Item};
 use crate::{Beginning, Instances, Mail, Peeked, Runs, SeatNumber, Seated, Seats};
-use crate::{Table, Turning, What, WithinReader, WithinWriter};
+use crate::{Table, Turning, What, Within, WithinReader, WithinWriter};
 use aethereal_data::{
     ActorId, ActorPath, Budget, Decode, DecodeError, Encode, PathSegment, Reader, Writer, from_bytes, to_bytes,
 };
@@ -291,10 +292,27 @@ fn read_item(items: &[u8]) -> Option<(Peeked<'_>, &[u8])> {
     let head = ItemHead::read(items)?;
     let rest = items.get(ItemHead::BYTES..)?;
     let (bytes, rest) = rest.split_at_checked(head.len as usize)?;
-    let ItemHead { kind, source, chain, .. } = head;
-    let mail = Mail::new(kind, bytes, source, chain.root, chain.depth, READ_LIMIT);
+    let ItemHead { handed, source, chain, .. } = head;
+    let item = match handed {
+        Handed::Mail { kind } => Item::Mail(Mail::new(kind, bytes, source, chain.root, chain.depth, READ_LIMIT)),
+        Handed::Ended(gone) => Item::Ended(ended(gone, source, bytes)),
+    };
 
-    Some((Peeked { item: Item::Mail(mail), source, chain }, rest))
+    Some((Peeked { item, source, chain }, rest))
+}
+
+/// The ending of `source`, which ended as `gone` says, a fault's bytes in `bytes`. Kept out of line: built in the
+/// reading of mail, which most items are, it costs each piece of mail about a hundred instructions.
+#[cold]
+#[inline(never)]
+fn ended(gone: Gone, source: Seated, bytes: &[u8]) -> Ended {
+    let how = match gone {
+        Gone::Closed => How::Closed,
+        Gone::Failed { kind } => How::Failed(Fault::of_parts(kind, bytes.to_vec())),
+        Gone::Earlier => How::Earlier,
+    };
+
+    Ended::new(source, how)
 }
 
 /// Where a child's state is, as its stood record is written: under a handle in this instance, or taken out, at an
@@ -417,6 +435,14 @@ impl Guest {
             };
             out.extend_from_slice(&StoodRecord { me, above, held }.to_bytes());
         }
+        let watches_at = out.len();
+        let watches = asked.effects().iter().filter_map(|effect| match effect.what() {
+            What::Watch { of, .. } => Some(WatchRecord { by: effect.seated(), of: of.seated() }),
+            _ => None,
+        });
+        for watch in watches {
+            out.extend_from_slice(&watch.to_bytes());
+        }
         let fault_at = out.len();
         if let Last::Failed(fault) = &last {
             out.extend_from_slice(fault.bytes());
@@ -440,6 +466,7 @@ impl Guest {
             lines_at: at(lines_at),
             spawns_at: at(spawns_at),
             stood_at: at(stood_at),
+            watches_at: at(watches_at),
         };
         out[..OutHead::BYTES].copy_from_slice(&head.to_bytes());
     }
@@ -457,17 +484,21 @@ const fn is_spawn(what: &What) -> bool {
 
 /// Writes where the turn just run ends in `asked`'s buffers, after the ends of the turns before it.
 fn write_ends(out: &mut Vec<u8>, asked: &Asked) {
-    let asks_more = !asked.effects().is_empty();
-    let spawns = if asks_more {
-        asked.effects().iter().filter(|effect| is_spawn(effect.what())).count()
-    } else {
-        0
-    };
+    let mut spawns = 0;
+    let mut watches = 0;
+    for effect in asked.effects() {
+        match effect.what() {
+            What::Spawn { .. } | What::SpawnInstanced { .. } => spawns += 1,
+            What::Watch { .. } => watches += 1,
+            _ => {}
+        }
+    }
     let ends = TurnEnds {
         sends: count(asked.mailed().len()),
         lines: count(asked.lines().len()),
-        spawns: count(spawns),
+        spawns,
         stood: count(asked.stood_count()),
+        watches,
     };
     out.extend_from_slice(&ends.to_bytes());
 }

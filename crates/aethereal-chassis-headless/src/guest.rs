@@ -11,12 +11,13 @@
 //! parent's instance, and into its own part's on its first batch (ADR-0015).
 
 use aethereal_actor::records::{
-    ItemHead, Kept, Keying, LineRecord, Naming, OutHead, SendRecord, Span, SpawnRecord, StoodRecord, Stopped, TurnEnds,
+    Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, OutHead, SendRecord, Span, SpawnRecord, StoodRecord,
+    Stopped, TurnEnds, WatchRecord,
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Batch, Children, Declared, FalseSend, Fault, Hosted, Instances, Item, Preparing, Reads, Refused, Role, Runs,
-    SeatNumber, Seated, Seats, Table, Trapped, Turning,
+    Batch, Children, Declared, FalseSend, FalseWatch, Fault, Hosted, How, Instances, Item, Preparing, Reads, Refused,
+    Role, Runs, SeatNumber, Seated, Seats, Table, Trapped, Turning,
 };
 use aethereal_data::{ActorId, ActorKey, ActorPath, Budget, KeyName, PathSegment, from_bytes, to_bytes};
 use aethereal_substrate::Engine;
@@ -532,24 +533,21 @@ impl Instance {
 
         is_taken.then_some(handle)
     }
-    /// Writes the mail of `batch` straight into the guest's inbox, each item an [`ItemHead`] and then its bytes, and
-    /// answers with how many items and how many bytes: as far as its first item that is not mail, which a guest does
-    /// not handle yet.
+    /// Writes the items of `batch` straight into the guest's inbox, each an [`ItemHead`] and then its bytes, and
+    /// answers with how many items and how many bytes.
     fn hand_in(&mut self, batch: &dyn Batch) -> (u32, u32) {
         let mut items = 0;
         let mut len = 0;
-        let mut is_mail = true;
         batch.each(&mut |peeked| {
-            let Item::Mail(mail) = peeked.item else {
-                is_mail = false;
-                return;
+            let (handed, bytes) = match &peeked.item {
+                Item::Mail(mail) => (Handed::Mail { kind: mail.kind() }, mail.bytes()),
+                Item::Ended(ended) => match ended.how() {
+                    How::Closed => (Handed::Ended(Gone::Closed), &[][..]),
+                    How::Failed(fault) => (Handed::Ended(Gone::Failed { kind: fault.kind() }), fault.bytes()),
+                    How::Earlier => (Handed::Ended(Gone::Earlier), &[][..]),
+                },
             };
-            if !is_mail {
-                return;
-            }
-            let bytes = mail.bytes();
-            let head =
-                ItemHead { kind: mail.kind(), source: peeked.source, chain: peeked.chain, len: count(bytes.len()) };
+            let head = ItemHead { handed, source: peeked.source, chain: peeked.chain, len: count(bytes.len()) };
             let at = len;
             len += ItemHead::BYTES + bytes.len();
             self.make_room(len);
@@ -659,6 +657,13 @@ fn replay_records(
     let stands = ends.stood > before.stood;
     if stands {
         stand(data, code, head, before, ends, handed, actors, hosted)?;
+    }
+    for index in before.watches..ends.watches {
+        let watch = WatchRecord::read(record(data, head.watches_at, index, WatchRecord::BYTES)?)?;
+        let is_false = hosted.watch(watch.by, watch.of).is_err();
+        if is_false {
+            return Some((Err(Fault::new(&FalseWatch).unwrap_or_else(|_| trapped())), ends));
+        }
     }
     let is_last = next + 1 == head.ran;
     let ended = match head.stopped {
@@ -1302,7 +1307,7 @@ mod tests {
     }
 
     /// The answers each test's askers were given, by the tally the test keeps them in.
-    static ANSWERS: [Mutex<Vec<u64>>; 3] = [Mutex::new(Vec::new()), Mutex::new(Vec::new()), Mutex::new(Vec::new())];
+    static ANSWERS: [Mutex<Vec<u64>>; 4] = [const { Mutex::new(Vec::new()) }; 4];
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
@@ -1495,10 +1500,22 @@ mod tests {
         const NAME: KindName = KindName::new("aether.guest.seek");
     }
 
-    /// A native actor that keeps each ping it is sent in the third of [`ANSWERS`], with a hundred for each of its key.
+    /// What a keeper is made from: its key, and which of [`ANSWERS`] it keeps the pings it is sent in.
+    #[derive(Plain)]
+    struct Keeps {
+        key: u64,
+        tally: u64,
+    }
+
+    impl Kind for Keeps {
+        const NAME: KindName = KindName::new("aether.test.keeps");
+    }
+
+    /// A native actor that keeps each ping it is sent in its tally, with a hundred for each of its key.
     #[derive(aethereal_data::Bound)]
     struct Keeper {
         key: u64,
+        tally: u64,
     }
 
     impl Kind for Keeper {
@@ -1506,14 +1523,14 @@ mod tests {
     }
 
     impl Actor for Keeper {
-        type Config = Volley;
+        type Config = Keeps;
         type Key = u64;
         type Handles = (Ping,);
         type BeginSends = ();
         type EndSends = ();
 
-        fn begin(volley: Volley, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-            Ok(Self { key: volley.pings })
+        fn begin(keeps: Keeps, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            Ok(Self { key: keeps.key, tally: keeps.tally })
         }
 
         fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
@@ -1525,7 +1542,7 @@ mod tests {
         type Sends = ();
 
         fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-            if let Ok(mut answers) = ANSWERS[2].lock() {
+            if let Ok(mut answers) = ANSWERS[usize::try_from(self.tally).unwrap_or_default()].lock() {
                 answers.push(100 * self.key + ping.n);
             }
 
@@ -1545,7 +1562,7 @@ mod tests {
         };
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
         for key in [0, 1] {
-            let Ok(_) = engine.add_root::<Keeper>(&key, Volley { pings: key }) else {
+            let Ok(_) = engine.add_root::<Keeper>(&key, Keeps { key, tally: 2 }) else {
                 panic!("a keeper begins");
             };
         }
@@ -1559,5 +1576,103 @@ mod tests {
         settle(&mut engine);
 
         assert_eq!(answers(2), [0, 102]);
+    }
+
+    /// Which of the blob's types the watcher is.
+    const WATCHER: usize = 7;
+
+    /// What a watcher is made from, as the echo guest declares it.
+    #[derive(Plain)]
+    struct Watching {
+        paths: Vec<ActorPath>,
+        tell: ActorPath,
+    }
+
+    impl Kind for Watching {
+        const NAME: KindName = KindName::new("aether.guest.watching");
+    }
+
+    /// The reason a mortal fails.
+    #[derive(Plain)]
+    struct Doom;
+
+    impl Kind for Doom {
+        const NAME: KindName = KindName::new("aether.test.doom");
+    }
+
+    /// A native actor that ends on its first ping: the one keyed zero closes, and any other fails.
+    #[derive(aethereal_data::Bound)]
+    struct Mortal {
+        key: u64,
+    }
+
+    impl Kind for Mortal {
+        const NAME: KindName = KindName::new("aether.test.mortal");
+    }
+
+    impl Actor for Mortal {
+        type Config = Volley;
+        type Key = u64;
+        type Handles = (Ping,);
+        type BeginSends = ();
+        type EndSends = ();
+
+        fn begin(volley: Volley, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            Ok(Self { key: volley.pings })
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Ping> for Mortal {
+        type Sends = ();
+
+        fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            if self.key > 0 {
+                return Err(Fault::new(&Doom)?);
+            }
+            turn.close();
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_guest_is_handed_the_endings_of_the_actors_it_watches() {
+        // Catches a guest's watch its host never hands the engine, an ending never handed into the guest or handed in
+        // as mail, and one whose source or how it ended is lost on the way in.
+        let Ok(code) = Guests::default().code(ECHO) else {
+            panic!("the echo guest is fit to run");
+        };
+        let Some(parts) = NonZeroUsize::new(2) else {
+            panic!("two is not zero");
+        };
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+        let Ok(_) = engine.add_root::<Keeper>(&0, Keeps { key: 0, tally: 3 }) else {
+            panic!("the keeper begins");
+        };
+        for key in [0, 1] {
+            let Ok(_) = engine.add_root::<Mortal>(&key, Volley { pings: key }) else {
+                panic!("a mortal begins");
+            };
+        }
+        let mortal = |key: u64| ActorPath::from_root(&PathSegment::new(Mortal::NAME, &key));
+        let tell = ActorPath::from_root(&PathSegment::new(Keeper::NAME, &0u64));
+        let Ok(config) = to_bytes(&Watching { paths: vec![mortal(0), mortal(1)], tell }) else {
+            panic!("a watcher's config is written");
+        };
+        let Ok(_) = add_root(&mut engine, &code, WATCHER, &(), &config) else {
+            panic!("the watcher begins");
+        };
+        settle(&mut engine);
+
+        let Ok(_) = engine.add_root::<Asker>(&2, Asks { paths: vec![mortal(0), mortal(1)], tally: 0 }) else {
+            panic!("the asker begins");
+        };
+        settle(&mut engine);
+
+        assert_eq!(answers(3), [1, 12]);
     }
 }
