@@ -532,6 +532,7 @@ impl Shard {
 }
 
 /// The items of a range of a part's stream, a run of mail one piece after another.
+#[derive(Clone)]
 pub struct Pieces<'a> {
     entries: &'a [(u64, Entry)],
     endings: &'a [(Ended, Context)],
@@ -573,6 +574,7 @@ impl Pieces<'_> {
 impl<'a> Iterator for Pieces<'a> {
     type Item = Handed<'a>;
 
+    #[inline]
     fn next(&mut self) -> Option<Handed<'a>> {
         let (_, entry) = loop {
             match self.entries.get(self.at) {

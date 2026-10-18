@@ -87,6 +87,11 @@ impl Costs {
         self.expected.get(key).copied().unwrap_or(UNKNOWN)
     }
 
+    /// How long a turn under `key` has been measured to take, in nanoseconds: nothing when it never was.
+    pub(super) fn measured(&self, key: &CostKey) -> Option<u64> {
+        self.expected.get(key).copied()
+    }
+
     /// Takes a worker's tally into the averages, one move for each key it measured by the mean of its turns, and
     /// empties it.
     pub(super) fn merge(&mut self, tally: &mut Tally) {

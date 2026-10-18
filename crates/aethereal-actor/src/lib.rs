@@ -30,7 +30,7 @@ mod seat;
 pub mod section;
 mod turn;
 
-pub use actor::{Actor, Runs};
+pub use actor::{Actor, Batch, Peeked, Runs};
 pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};
 pub use blob::{BlobHash, BlobId, Puts};
 #[cfg(feature = "std")]

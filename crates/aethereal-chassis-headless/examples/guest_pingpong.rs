@@ -47,7 +47,7 @@ impl Kind for Pinger {
 
 impl Actor for Pinger {
     type Config = Volley;
-    type Key = ();
+    type Key = u64;
     type Handles = (Pong,);
     type BeginSends = (ToAny<(Ping,), Ping>,);
     type EndSends = ();
@@ -92,22 +92,28 @@ fn main() {
         panic!("one is not zero");
     };
     let clock = Monotonic::new();
-    let pings = 200_000;
+    // `pingers=N`: N pingers volley with the one echo at once, so the echo is handed many items in each step.
+    let pingers: u64 =
+        std::env::args().find_map(|arg| arg.strip_prefix("pingers=").and_then(|count| count.parse().ok())).unwrap_or(1);
+    let pings = 200_000 / pingers;
     for round in 0..5 {
         let instance = guests.instance(&code);
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 64);
-        let (Ok(_), Ok(_)) =
-            (add_root(&mut engine, &code, &instance, 0, &[]), engine.add_root::<Pinger>(&(), Volley { pings }))
-        else {
-            panic!("the roots begin");
+        let Ok(_) = add_root(&mut engine, &code, &instance, 0, &[]) else {
+            panic!("the echo begins");
         };
+        for key in 0..pingers {
+            let Ok(_) = engine.add_root::<Pinger>(&key, Volley { pings }) else {
+                panic!("a pinger begins");
+            };
+        }
         let started = Instant::now();
         let mut steps = 0;
         while !engine.is_idle() {
             engine.step(&clock);
             steps += 1;
         }
-        let pieces = 2 * (pings + 1);
+        let pieces = 2 * (pings + 1) * pingers;
         let nanos = started.elapsed().as_nanos() as f64 / pieces as f64;
         println!("round {round}: {nanos:.0} ns a piece over {pieces} pieces, {steps} steps");
     }

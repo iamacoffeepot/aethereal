@@ -749,6 +749,18 @@ impl<'a> Turning<'a> {
         Self { me, path, above, table, made, asked, sent, source, chain }
     }
 
+    /// The source of the item the turn handles.
+    #[must_use]
+    pub const fn source(&self) -> Seated {
+        self.source
+    }
+
+    /// Where the item the turn handles stands in its chain.
+    #[must_use]
+    pub const fn chain(&self) -> Chain {
+        self.chain
+    }
+
     /// The turn of the handler of `A` for `role`, which may send `S`.
     pub(crate) fn declaring<A: Actor, S: Sends>(self, role: Role) -> Turn<'a, S> {
         let Self { me, path, above, table, made, asked, sent, source, chain } = self;

@@ -8,7 +8,7 @@
 //! reads where it lies.
 
 use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Chain, Children, Declared, Fault, Item};
-use crate::{Beginning, Level, Mail, MailId, Runs, SeatNumber, Seated, Table, Turning};
+use crate::{Batch, Beginning, Level, Mail, MailId, Peeked, Runs, SeatNumber, Seated, Table, Turning};
 use aethereal_data::{ActorId, ActorPath, Budget, Decode, KindId, PathSegment, Reader, from_bytes};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -100,32 +100,83 @@ pub fn begin_at(begins: &[Begin], of: u32, me: u64, seat: u64, len: u32) -> u32 
     })
 }
 
-/// Hands the actor `handle` names the `len` bytes of mail in the inbox: its kind's id, then its bytes, from the actor
-/// `source` and `source_seat` name, at `depth` in the chain from the mail `root` sent as its `count`th. Answers where
-/// what the turn asked for lies, as [`out`] does: it says whether the turn failed.
+/// How many bytes each item in the inbox begins with: its kind's id, its source's id and seat, its chain's root,
+/// sender and count, its depth, and the length of its bytes.
+pub const ITEM_HEAD: usize = 8 + 8 + 8 + 8 + 8 + 4 + 4;
+
+/// Runs the actor `handle` names on the `items` items written into the first `len` bytes of the inbox, each a head of
+/// [`ITEM_HEAD`] bytes and then its bytes, one turn for each until one fails. Answers where what the turns asked for
+/// lies, as [`out`] does: how many turns ran, then for each whether it failed, and with what, its mail, and its lines.
 #[must_use]
-pub fn turn(handle: u32, len: u32, source: u64, source_seat: u64, root: u64, count: u64, depth: u32) -> u64 {
+pub fn turns(handle: u32, items: u32, len: u32) -> u64 {
     GUEST.with_borrow_mut(|guest| {
-        let Guest { actors, inbox, asked, .. } = &mut *guest;
+        let Guest { actors, inbox, asked, out } = &mut *guest;
+        out.clear();
+        out.extend_from_slice(&0_u32.to_le_bytes());
         let Some(Slot::Live { runs, me, path }) = actors.get_mut(handle as usize) else {
             return 0;
         };
-        let mut budget = Budget::new(8);
         let inbox = &inbox[..(len as usize).min(inbox.len())];
-        let (kind_bytes, bytes) = inbox.split_at(inbox.len().min(8));
-        let Ok(kind) = from_bytes::<KindId>(kind_bytes, &mut budget) else {
-            return 0;
-        };
-        let source = Seated { id: ActorId::new(source), seat: SeatNumber::new(source_seat) };
-        let chain = Chain { root: MailId { sender: ActorId::new(root), count }, depth };
-        let mail = Mail::new(kind, bytes, source, chain.root, depth, READ_LIMIT);
-        let turning = Turning::new(*me, path, Above::Chassis, &Host, &(), asked, 0, source, chain);
-        let handled = runs.handle(Item::Mail(mail), turning);
-        let fault = handled.err();
-        guest.write_out(fault.as_ref());
+        runs.open(&Inboxed { items: inbox, fits: items as usize });
+        let mut rest = inbox;
+        let mut ran: u32 = 0;
+        for _ in 0..items {
+            let Some((Peeked { item, source, chain }, after)) = read_item(rest) else {
+                break;
+            };
+            rest = after;
+            let turning = Turning::new(*me, path, Above::Chassis, &Host, &(), asked, 0, source, chain);
+            let result = runs.handle(item, turning);
+            let failed = result.is_err();
+            write_turn(out, asked, result.err().as_ref());
+            ran += 1;
+            if failed {
+                break;
+            }
+        }
+        out[..4].copy_from_slice(&ran.to_le_bytes());
 
         guest.out_at()
     })
+}
+
+/// The batch a guest's host wrote into its inbox.
+struct Inboxed<'a> {
+    items: &'a [u8],
+    fits: usize,
+}
+
+/// One item read from the inbox, and what follows it.
+fn read_item(items: &[u8]) -> Option<(Peeked<'_>, &[u8])> {
+    let (head, rest) = items.split_at_checked(ITEM_HEAD)?;
+    let mut budget = Budget::new(8);
+    let kind = from_bytes::<KindId>(&head[..8], &mut budget).ok()?;
+    let number = |at: usize| u64::from_le_bytes(head[at..at + 8].try_into().unwrap_or_default());
+    let source = Seated { id: ActorId::new(number(8)), seat: SeatNumber::new(number(16)) };
+    let root = MailId { sender: ActorId::new(number(24)), count: number(32) };
+    let depth = u32::from_le_bytes(head[40..44].try_into().unwrap_or_default());
+    let len = u32::from_le_bytes(head[44..48].try_into().unwrap_or_default()) as usize;
+    let (bytes, rest) = rest.split_at_checked(len)?;
+    let mail = Mail::new(kind, bytes, source, root, depth, READ_LIMIT);
+
+    Some((Peeked { item: Item::Mail(mail), source, chain: Chain { root, depth } }, rest))
+}
+
+impl Batch for Inboxed<'_> {
+    fn fits(&self) -> usize {
+        self.fits
+    }
+
+    fn each(&self, visit: &mut dyn FnMut(Peeked<'_>)) {
+        let mut items = self.items;
+        for _ in 0..self.fits {
+            let Some((peeked, rest)) = read_item(items) else {
+                return;
+            };
+            visit(peeked);
+            items = rest;
+        }
+    }
 }
 
 impl Guest {
@@ -134,42 +185,48 @@ impl Guest {
         (u64::from(address(self.out.as_ptr())) << 32) | self.out.len() as u64
     }
 
-    /// Writes what the last call asked for into `out`, and empties the buffers it was asked into: whether it failed,
-    /// and with what fault; the mail it sent; and the lines it logged.
+    /// Writes what the last call, a `begin`, asked for into `out`, as one turn, as [`turns`] writes its turns.
     fn write_out(&mut self, fault: Option<&Fault>) {
         let Self { out, asked, .. } = self;
         out.clear();
-        match fault {
-            None => out.extend_from_slice(&0_u32.to_le_bytes()),
-            Some(fault) => {
-                out.extend_from_slice(&1_u32.to_le_bytes());
-                out.extend_from_slice(&fault.kind().plain_bytes());
-                write_bytes(out, fault.bytes());
-            }
-        }
-        let mailed = asked.mailed();
-        out.extend_from_slice(&count(mailed.len()).to_le_bytes());
-        for piece in mailed {
-            out.extend_from_slice(&piece.to.id.bits().to_le_bytes());
-            out.extend_from_slice(&piece.to.seat.number().to_le_bytes());
-            out.extend_from_slice(&piece.kind.plain_bytes());
-            write_bytes(out, asked.arena().read(piece.bytes).unwrap_or_default());
-        }
-        let lines = asked.lines();
-        out.extend_from_slice(&count(lines.len()).to_le_bytes());
-        for line in lines {
-            let level: u32 = match line.level {
-                Level::Debug => 0,
-                Level::Info => 1,
-                Level::Warn => 2,
-                Level::Error => 3,
-            };
-            out.extend_from_slice(&level.to_le_bytes());
-            write_bytes(out, asked.text(line).as_bytes());
-        }
-
-        asked.empty();
+        out.extend_from_slice(&1_u32.to_le_bytes());
+        write_turn(out, asked, fault);
     }
+}
+
+/// Writes what one turn asked for after what `out` holds, and empties the buffers it was asked into: whether it
+/// failed, and with what fault; the mail it sent; and the lines it logged.
+fn write_turn(out: &mut Vec<u8>, asked: &mut Asked, fault: Option<&Fault>) {
+    match fault {
+        None => out.extend_from_slice(&0_u32.to_le_bytes()),
+        Some(fault) => {
+            out.extend_from_slice(&1_u32.to_le_bytes());
+            out.extend_from_slice(&fault.kind().plain_bytes());
+            write_bytes(out, fault.bytes());
+        }
+    }
+    let mailed = asked.mailed();
+    out.extend_from_slice(&count(mailed.len()).to_le_bytes());
+    for piece in mailed {
+        out.extend_from_slice(&piece.to.id.bits().to_le_bytes());
+        out.extend_from_slice(&piece.to.seat.number().to_le_bytes());
+        out.extend_from_slice(&piece.kind.plain_bytes());
+        write_bytes(out, asked.arena().read(piece.bytes).unwrap_or_default());
+    }
+    let lines = asked.lines();
+    out.extend_from_slice(&count(lines.len()).to_le_bytes());
+    for line in lines {
+        let level: u32 = match line.level {
+            Level::Debug => 0,
+            Level::Info => 1,
+            Level::Warn => 2,
+            Level::Error => 3,
+        };
+        out.extend_from_slice(&level.to_le_bytes());
+        write_bytes(out, asked.text(line).as_bytes());
+    }
+
+    asked.empty();
 }
 
 /// Writes `bytes` after their count.
@@ -261,8 +318,8 @@ macro_rules! guest {
             }
 
             #[unsafe(no_mangle)]
-            extern "C" fn aethereal_turn(handle: u32, len: u32, source: u64, source_seat: u64, root: u64, count: u64, depth: u32) -> u64 {
-                $crate::guest::turn(handle, len, source, source_seat, root, count, depth)
+            extern "C" fn aethereal_turns(handle: u32, items: u32, len: u32) -> u64 {
+                $crate::guest::turns(handle, items, len)
             }
         };
     };

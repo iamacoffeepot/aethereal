@@ -5,7 +5,7 @@
 
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Declared, FalseSend, Fault, Hosted, Item, Level, Refused, Role, Runs, SeatNumber, Seated, Trapped, Turning,
+    Batch, Declared, FalseSend, Fault, Hosted, Item, Level, Refused, Role, Runs, SeatNumber, Seated, Trapped, Turning,
 };
 use aethereal_data::{ActorId, Budget, KindId, PathSegment, from_bytes};
 use aethereal_substrate::Engine;
@@ -41,7 +41,9 @@ pub struct Instance {
     inbox: TypedFunc<u32, u32>,
     out: TypedFunc<(), u64>,
     begin: TypedFunc<(u32, u64, u64, u32), u32>,
-    turn: TypedFunc<(u32, u32, u64, u64, u64, u64, u32), u64>,
+    turns: TypedFunc<(u32, u32, u32), u64>,
+    /// Where a batch's items are written before they are copied into the guest's inbox, kept for its room.
+    staged: Vec<u8>,
     /// Where the guest's inbox is, and how many bytes it has room for: asked for again only when it must grow.
     inbox_at: usize,
     inbox_room: usize,
@@ -55,6 +57,19 @@ struct Guest {
     instance: Shared,
     handle: u32,
     declared: &'static Declared,
+    /// What the guest's turns of the batch it was last shown asked for, and how far its host has read.
+    ran: Ran,
+}
+
+/// What a guest's batch left to read.
+#[derive(Clone, Copy)]
+enum Ran {
+    /// No batch yet, or one whose turns are all read.
+    Nothing,
+    /// Its turns lie where `out` says in the guest's memory, read up to `read` bytes in.
+    At { out: u64, read: usize },
+    /// The call that ran them trapped: every turn of the batch fails.
+    Trapped,
 }
 
 impl Default for Guests {
@@ -90,7 +105,7 @@ impl Guests {
         let section = declared_section(bytes).ok_or(Unfit::Undeclared)?;
         let mut budget = Budget::new(1 << 20);
         let made = from_bytes::<Vec<Made>>(section, &mut budget).map_err(|_| Unfit::Undeclared)?;
-        for export in ["memory", "aethereal_inbox", "aethereal_out", "aethereal_begin", "aethereal_turn"] {
+        for export in ["memory", "aethereal_inbox", "aethereal_out", "aethereal_begin", "aethereal_turns"] {
             let has = module.get_export(export).is_some();
             if !has {
                 return Err(Unfit::Unexported(export));
@@ -115,12 +130,22 @@ impl Guests {
         let inbox = instance.get_typed_func(&mut store, "aethereal_inbox");
         let out = instance.get_typed_func(&mut store, "aethereal_out");
         let begin = instance.get_typed_func(&mut store, "aethereal_begin");
-        let turn = instance.get_typed_func(&mut store, "aethereal_turn");
-        let (Some(memory), Ok(inbox), Ok(out), Ok(begin), Ok(turn)) = (memory, inbox, out, begin, turn) else {
+        let turns = instance.get_typed_func(&mut store, "aethereal_turns");
+        let (Some(memory), Ok(inbox), Ok(out), Ok(begin), Ok(turns)) = (memory, inbox, out, begin, turns) else {
             panic!("guest code that entered has its exports");
         };
 
-        Arc::new(Mutex::new(Instance { store, memory, inbox, out, begin, turn, inbox_at: 0, inbox_room: 0 }))
+        Arc::new(Mutex::new(Instance {
+            store,
+            memory,
+            inbox,
+            out,
+            begin,
+            turns,
+            staged: Vec::new(),
+            inbox_at: 0,
+            inbox_room: 0,
+        }))
     }
 }
 
@@ -166,10 +191,12 @@ pub fn add_root(
         let Ok(out) = held.out.call(&mut held.store, ()) else {
             return Err(trapped());
         };
-        held.replay(out, &mut hosted)?;
+        let mut out = held.out_bytes(out).ok_or_else(trapped)?;
+        let one = take_u32(&mut out);
+        read_turn(&mut out, &mut hosted).filter(|_| one == Some(1)).unwrap_or_else(|| Err(trapped()))?;
         drop(guard);
 
-        Ok(Box::new(Guest { instance: Arc::clone(instance), handle, declared }))
+        Ok(Box::new(Guest { instance: Arc::clone(instance), handle, declared, ran: Ran::Nothing }))
     })
 }
 
@@ -178,41 +205,75 @@ impl Runs for Guest {
         self.declared
     }
 
-    fn handle(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
-        let Item::Mail(mail) = item else {
-            return Ok(());
-        };
-        let kind = mail.kind();
-        let role = if self.declared.lists(kind) {
-            Role::Kind(kind)
-        } else {
-            Role::Others
-        };
-        let mut hosted = turning.hosted(self.declared, role);
-        let source = mail.sender_seated();
-        let chain = hosted.chain();
+    fn open(&mut self, batch: &dyn Batch) {
         let mut guard = lock(&self.instance);
         let held = &mut *guard;
-        let len = held.write_inbox(&[&kind.plain_bytes(), mail.bytes()]);
-        let args = (
-            self.handle,
-            len,
-            source.id.bits(),
-            source.seat.number(),
-            chain.root.sender.bits(),
-            chain.root.count,
-            chain.depth,
-        );
-        let Ok(out) = held.turn.call(&mut held.store, args) else {
+        let mut staged = std::mem::take(&mut held.staged);
+        let items = stage(batch, &mut staged);
+        let len = held.write_inbox(&[&staged]);
+        held.staged = staged;
+        let called = held.turns.call(&mut held.store, (self.handle, items, len));
+        self.ran = match called {
+            Ok(out) => Ran::At { out, read: 4 },
+            Err(_) => Ran::Trapped,
+        };
+    }
+
+    fn handle(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
+        let Ran::At { out, read } = self.ran else {
             return Err(trapped());
         };
+        let role = match &item {
+            Item::Mail(mail) if self.declared.lists(mail.kind()) => Role::Kind(mail.kind()),
+            Item::Mail(_) => Role::Others,
+            Item::Ended(_) => Role::Ended,
+        };
+        let mut hosted = turning.hosted(self.declared, role);
+        let guard = lock(&self.instance);
+        let Some(all) = guard.out_bytes(out) else {
+            return Err(trapped());
+        };
+        let mut rest = all.get(read..).unwrap_or_default();
+        let replayed = read_turn(&mut rest, &mut hosted).unwrap_or_else(|| Err(trapped()));
+        let read = all.len() - rest.len();
+        drop(guard);
+        self.ran = Ran::At { out, read };
 
-        held.replay(out, &mut hosted)
+        replayed
     }
 
     fn end(self: Box<Self>, _: aethereal_actor::Closing<'_>) -> Result<(), Fault> {
         Ok(())
     }
+}
+
+/// Writes the mail `batch` fits into `staged`, each as the guest reads an item, and answers with how many there are: as
+/// far as its first item that is not mail, which a guest does not handle yet.
+fn stage(batch: &dyn Batch, staged: &mut Vec<u8>) -> u32 {
+    staged.clear();
+    let mut count = 0;
+    let mut is_mail = true;
+    batch.each(&mut |peeked| {
+        let Item::Mail(mail) = peeked.item else {
+            is_mail = false;
+            return;
+        };
+        if !is_mail {
+            return;
+        }
+        staged.extend_from_slice(&mail.kind().plain_bytes());
+        staged.extend_from_slice(&peeked.source.id.bits().to_le_bytes());
+        staged.extend_from_slice(&peeked.source.seat.number().to_le_bytes());
+        staged.extend_from_slice(&peeked.chain.root.sender.bits().to_le_bytes());
+        staged.extend_from_slice(&peeked.chain.root.count.to_le_bytes());
+        staged.extend_from_slice(&peeked.chain.depth.to_le_bytes());
+        let bytes = mail.bytes();
+        staged.extend_from_slice(&u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_le_bytes());
+        staged.extend_from_slice(bytes);
+        count += 1;
+    });
+
+    count
 }
 
 impl Instance {
@@ -238,24 +299,18 @@ impl Instance {
         u32::try_from(len).unwrap_or(u32::MAX)
     }
 
-    /// Hands what the guest's last call asked for, which lies at `out`, to `hosted`, reading it where it lies in the
-    /// guest's memory: its
-    /// mail, each send checked, and its lines; and answers with its fault when it failed.
-    fn replay(&self, out: u64, hosted: &mut Hosted<'_>) -> Result<(), Fault> {
+    /// What the guest's last call asked for, where it lies in the guest's memory, which `out` says.
+    fn out_bytes(&self, out: u64) -> Option<&[u8]> {
         let at = (out >> 32) as usize;
         let len = (out & u64::from(u32::MAX)) as usize;
-        let data = self.memory.data(&self.store);
-        let Some(mut out) = data.get(at..at + len) else {
-            return Err(trapped());
-        };
-        let reading = read_out(&mut out, hosted);
 
-        reading.unwrap_or_else(|| Err(trapped()))
+        self.memory.data(&self.store).get(at..at + len)
     }
 }
 
-/// Reads what a guest's call asked for out of `out` into `hosted`: nothing when `out` does not read back.
-fn read_out(out: &mut &[u8], hosted: &mut Hosted<'_>) -> Option<Result<(), Fault>> {
+/// Reads what one of a guest's turns asked for out of `out` into `hosted`, and moves `out` past it: nothing when `out`
+/// does not read back.
+fn read_turn(out: &mut &[u8], hosted: &mut Hosted<'_>) -> Option<Result<(), Fault>> {
     let failed = take_u32(out)? == 1;
     let fault = if failed {
         let kind = take_kind(out)?;
