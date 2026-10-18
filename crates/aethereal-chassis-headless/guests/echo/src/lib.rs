@@ -216,4 +216,28 @@ impl Handles<Shut> for Responder {
     }
 }
 
-aethereal_actor::guest!(Echo, Mirror, Responder);
+/// An actor whose `begin` panics, which traps, as a guest's panic does.
+#[derive(Bound)]
+pub struct Doomed;
+
+impl Kind for Doomed {
+    const NAME: KindName = KindName::new("aether.guest.doomed");
+}
+
+impl Actor for Doomed {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        panic!("a doomed actor crashes as it begins");
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+aethereal_actor::guest!(Echo, Mirror, Responder, Doomed);

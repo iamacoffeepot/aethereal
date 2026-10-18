@@ -39,7 +39,6 @@ use fuse::{Fusing, Hand, Hop, Stepped};
 use made::Made;
 use plan::Packing;
 use since::{Sees, Since};
-use std::iter;
 use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::Range;
@@ -475,11 +474,12 @@ impl Engine {
         let table = Since { table: &self.table, stood: &stood_before, sees: Sees::Step, blobs: &self.blobs };
         // The root begins in the part it is seated in, lent that part's instances.
         let made = begin(me, &path, &table, &mut asked, &mut self.instances[home]);
-        let (buffers, stood, arena, mut seats, mut puts) = asked.into_parts();
+        let (mut buffers, stood, arena, mut seats, mut puts) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
         // A root is made between steps, when nothing reads the store, so what its `begin` put is taken in at once.
         self.blobs.take_in(&mut puts);
         self.puts[ROOTS] = puts;
+        let context = Context { root: MailId { sender: id, count: 0 }, depth: 1 };
         let root = match made {
             Ok(root) => root,
             Err(fault) => {
@@ -488,6 +488,11 @@ impl Engine {
                     seats.give_back(child.seated().seat);
                 }
                 self.take_back_lent(home, seats);
+                // A `begin` that fails asks for nothing, as a failed turn does, but for the endings its host reported
+                // of other actors, which are folded as a root's effects are; its lines are dropped (ADR-0009).
+                keep_lines(&mut buffers, me);
+                buffers.lines.clear();
+                self.fold_began(buffers, Vec::new(), context, parity);
 
                 return Err(Refused::Began(fault));
             }
@@ -498,12 +503,19 @@ impl Engine {
             None => What::Root { from },
             Some(key) => What::RootInstanced { from, key: key.clone() },
         };
-        let Buffers { mailed, lines, effects } = buffers;
-        let effects: Vec<Effect> = iter::once(Effect::new(me, made)).chain(effects).collect();
-        let context = Context { root: MailId { sender: id, count: 0 }, depth: 1 };
+        buffers.effects.insert(0, Effect::new(me, made));
 
         self.table.made_root(id);
         self.seat(me, path, Above::Chassis, root);
+        self.fold_began(buffers, stood, context, parity);
+
+        Ok(id)
+    }
+
+    /// Folds what a root's `begin` asked for, in `context`, between steps: its lines, its effects with the children
+    /// it stood up, and its mail, into every view, and marks every part waiting for what they hand on.
+    fn fold_began(&mut self, buffers: Buffers, stood: Vec<Stood>, context: Context, parity: usize) {
+        let Buffers { mailed, lines, effects } = buffers;
         let written = &self.arenas[parity];
         self.log.fold_records(lines.into_iter().map(log::line), written);
         self.fold_turn(&effects, stood, context);
@@ -521,8 +533,6 @@ impl Engine {
             self.expected[part] = self.expect(part);
         }
         self.waiting.extend(0..self.seating.len());
-
-        Ok(id)
     }
 
     /// Runs one step on the thread that calls it: plans it for one worker, runs it where its parts lie, and applies

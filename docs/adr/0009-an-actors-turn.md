@@ -194,7 +194,7 @@ pub enum To {
 
 **A turn that fails changes nothing outside its actor.** When `begin` or `handle` returns a `Fault`, or a guest traps, the engine closes the actor, and the actors that watch it are shown its ending. The actor handles no more mail. Its state is not rolled back, so its `end` sees that state as the failed turn left it.
 
-- On a `Fault` the engine applies the lines the turn logged, in order, and drops every other effect but one kind: the `Failed` of another actor, which only a guest's host writes, for the other actors of an instance that trapped in the turn (ADR-0015). A failed turn is the one whose lines are most wanted.
+- On a `Fault` the engine applies the lines the turn logged, in order, and drops every other effect but one kind: the `Failed` of another actor, which only a guest's host writes, for the other actors of an instance that trapped in the turn (ADR-0015). A failed turn is the one whose lines are most wanted. A root's `begin` that fails is applied the same way but for its lines, which are dropped with the rest: the root was never live, and only the endings its host reported of others are kept.
 - **The engine then adds `Failed`, by the actor whose turn failed, holding the fault.** The actor returned a `Fault` and so asked for no `Close`, and a view sees only effects (ADR-0011). `Failed` is the entry that says the actor ended, written by the engine because the actor's code could not, and the table marks the actor from it as it does from `Close`.
 - A guest that traps returns no list, so the lines of that turn are lost with its other effects. The engine logs the trap itself.
 

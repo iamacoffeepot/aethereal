@@ -193,18 +193,13 @@ pub fn add_root<K: ActorKey>(
     engine.add_root_made(&segment, declared, |me, path, table, asked, instances| {
         let mut hosted = Hosted::beginning(me, path, table, asked, declared);
         let held = code.instance(instances);
-        let len = held.write_inbox(config);
         let of = u32::try_from(of).unwrap_or(u32::MAX);
-        let handle = held.begin.call(&mut held.store, (of, me.id.bits(), me.seat.number(), len));
-        let Ok(handle) = handle else {
+        let Some((handle, began)) = held.begin(of, me, config, &mut hosted) else {
+            // A trap in a `begin` ends every actor in the instance, as one in a turn does (ADR-0015).
+            hosted.trapped(held.actors.iter().copied());
+            instances.drop_instance::<Instance>(code.key);
             return Err(trapped());
         };
-        let Ok(out) = held.out.call(&mut held.store, ()) else {
-            return Err(trapped());
-        };
-        let wrote = held.out_head(out).filter(|wrote| wrote.ran == 1).ok_or_else(trapped)?;
-        let data = held.memory.data(&held.store);
-        let (began, _) = replay(data, &wrote, 0, TurnEnds { sends: 0, lines: 0 }, &mut hosted).ok_or_else(trapped)?;
         began?;
         held.actors.push(me);
 
@@ -279,6 +274,25 @@ impl Runs for Guest {
 }
 
 impl Instance {
+    /// Runs the `begin` of the `of`th type the code makes, for `me`, from the bytes of its config, and hands what it
+    /// asked for to `hosted`: the handle the guest keeps the actor under, and whether it began. Nothing when the call
+    /// trapped, or wrote what does not read back.
+    fn begin(
+        &mut self,
+        of: u32,
+        me: Seated,
+        config: &[u8],
+        hosted: &mut Hosted<'_>,
+    ) -> Option<(u32, Result<(), Fault>)> {
+        let len = self.write_inbox(config);
+        let handle = self.begin.call(&mut self.store, (of, me.id.bits(), me.seat.number(), len)).ok()?;
+        let out = self.out.call(&mut self.store, ()).ok()?;
+        let wrote = self.out_head(out).filter(|wrote| wrote.ran == 1)?;
+        let (began, _) = replay(self.memory.data(&self.store), &wrote, 0, TurnEnds { sends: 0, lines: 0 }, hosted)?;
+
+        Some((handle, began))
+    }
+
     /// Writes the mail of `batch` straight into the guest's inbox, each item an [`ItemHead`] and then its bytes, and
     /// answers with how many items and how many bytes: as far as its first item that is not mail, which a guest does
     /// not handle yet.
@@ -871,6 +885,43 @@ mod tests {
         };
         assert!(trapped(mirror), "the mirror's turn trapped");
         assert!(trapped(echo), "the echo, in the same instance, ended with it");
+        assert!(!engine.table().is_live(echo.id));
+    }
+
+    #[test]
+    fn a_trap_in_a_begin_ends_every_actor_in_its_instance() {
+        // Catches a `begin` that traps leaving the actors already in its instance looking live, whether its host
+        // reports no ending for them or the engine drops what it reported with the rest of the failed `begin`.
+        let guests = Guests::default();
+        let Ok(code) = guests.code(ECHO) else {
+            panic!("the echo guest is fit to run");
+        };
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+        let Ok(echo) = add_root(&mut engine, &code, 0, &(), &[]) else {
+            panic!("the echo begins");
+        };
+        let Some(seat) = engine.table().seat(echo) else {
+            panic!("the echo is seated");
+        };
+        let echo = Seated { id: echo, seat };
+
+        let doomed = add_root(&mut engine, &code, 3, &(), &[]);
+        let clock = Monotonic::new();
+        while !engine.is_idle() {
+            engine.step(&clock);
+        }
+
+        let is_trap = |entry: &aethereal_substrate::Entry| match entry {
+            aethereal_substrate::Entry::Failed(fault) => fault.kind() == aethereal_data::KindId::of::<Trapped>(),
+            _ => false,
+        };
+        let refused_trapped =
+            matches!(&doomed, Err(Refused::Began(fault)) if fault.kind() == aethereal_data::KindId::of::<Trapped>());
+        assert!(refused_trapped, "the doomed root is refused with its trap");
+        assert!(engine.log(echo).any(is_trap), "the echo, in the same instance, ended with it");
         assert!(!engine.table().is_live(echo.id));
     }
 }
