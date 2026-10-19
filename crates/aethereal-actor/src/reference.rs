@@ -1,6 +1,6 @@
 //! A reference to an actor the engine has established exists (ADR-0008).
 
-use crate::{Actor, Conforms, Covers, Declared, Handled, Handles, Listed, Refers, SeatNumber, Seated, ToAny, ToType};
+use crate::{Actor, Conforms, Covers, Handled, Handles, Listed, Refers, SeatNumber, Seated, ToAny, ToType};
 use aethereal_data::{
     ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Field, Kind, Reader, Schema, Shape, Writer,
 };
@@ -147,6 +147,17 @@ impl<T> ActorRef<T> {
     pub const fn erase(self) -> ErasedActorRef {
         ErasedActorRef::new(self.seated)
     }
+
+    /// The same reference, to the protocol `P`, which its type [`Conforms`] to, each of what that asks found at its
+    /// place in `Is`, which the compiler infers: `reference.protocol()` where the protocol is named by the type it is
+    /// given to (ADR-0016). The compiler checks it, and nothing is read when it runs.
+    #[must_use]
+    pub const fn protocol<P, Is>(self) -> ProtocolRef<P>
+    where
+        T: Conforms<P, Is>,
+    {
+        ProtocolRef::new(self.seated)
+    }
 }
 
 impl<T> Clone for ActorRef<T> {
@@ -210,13 +221,13 @@ where
 /// of listeners of many types holds (ADR-0016).
 ///
 /// It is proven when it is made, as an [`ActorRef`] is, and nothing checks it
-/// again. It is made from an `ActorRef<T>` whose `T` [`Conforms`] to `P`,
-/// which the compiler checks; from an [`ErasedActorRef`] by a turn's `cast`,
+/// again. It is made from an `ActorRef<T>` whose `T` [`Conforms`] to `P`, by
+/// its `protocol`, which the compiler checks; from an [`ErasedActorRef`] by a turn's `cast`,
 /// which reads the declaration of the actor's type once; or by narrowing one
 /// to a protocol it [`Covers`]. It crosses what an `ActorRef` crosses, the same
 /// way.
 ///
-/// It converts only from a type that handles every kind:
+/// It is made only from a type that handles every kind:
 ///
 /// ```compile_fail
 /// use aethereal_actor::{Actor, ActorRef, ProtocolRef};
@@ -230,7 +241,7 @@ where
 /// }
 ///
 /// fn listen<T: Actor>(reference: ActorRef<T>) -> ProtocolRef<(Poke,)> {
-///     reference.into()
+///     reference.protocol()
 /// }
 /// ```
 pub struct ProtocolRef<P> {
@@ -312,26 +323,6 @@ impl<P> Hash for ProtocolRef<P> {
 impl<P> fmt::Debug for ProtocolRef<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("ProtocolRef").field(&self.seated).finish()
-    }
-}
-
-/// A reference to an actor of a type that conforms to `P` is one to an actor that takes `P`, proven when it is built.
-///
-/// # Panics
-///
-/// Panics as the program is built, stopping the build, when `P` is a named protocol and `T`'s handler of one of its
-/// kinds does not declare a reply of a kind the protocol answers it with (ADR-0016).
-impl<T: Actor + Conforms<P>, P: Listed> From<ActorRef<T>> for ProtocolRef<P> {
-    fn from(reference: ActorRef<T>) -> Self {
-        const {
-            let answers = Declared::of::<T>().answers(P::ANSWERS);
-            assert!(
-                answers,
-                "false conformance: a type does not reply with what a protocol answers one of its kinds with"
-            );
-        };
-
-        Self::new(reference.seated)
     }
 }
 

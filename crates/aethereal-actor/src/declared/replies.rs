@@ -1,7 +1,7 @@
 //! What comes back from what an actor sends, which its type must handle: the reply a receiver sends to whoever sent
 //! to it, checked against the sender where the sender declares the send (ADR-0016).
 
-use super::{Carries, Handled, Handles, Protocol, ToAny, ToSender, ToType, Watches};
+use super::{Allows, Carries, Handled, Handles, Protocol, ToAny, ToSender, ToType, Watches};
 use crate::Actor;
 use aethereal_data::Kind;
 
@@ -383,6 +383,24 @@ impl<A, P, K> RepliesTo<A> for ToAny<P, K> {}
 
 impl<A> RepliesTo<A> for Watches {}
 
+/// This send, of a receiver's handler, replies only with a kind of the tuple `Answers`, found at its place in `I`:
+/// what a type that conforms to a named protocol replies with (ADR-0016).
+pub trait ReplyWithin<Answers, I> {}
+
+/// The replies among these sends, a tuple of markers, are each of a kind of the tuple `Answers`, found at its place in
+/// `Is`.
+pub trait RepliesWithin<Answers, Is> {}
+
+impl<Answers: Allows<R, I>, R, I> ReplyWithin<Answers, I> for ToSender<R> {}
+
+impl<Answers, T, K> ReplyWithin<Answers, ()> for ToType<T, K> {}
+
+impl<Answers, P, K> ReplyWithin<Answers, ()> for ToAny<P, K> {}
+
+impl<Answers> ReplyWithin<Answers, ()> for Watches {}
+
+impl<Answers> RepliesWithin<Answers, ()> for () {}
+
 impl<A> BackTo<A> for () {}
 
 impl<A> RepliesTo<A> for () {}
@@ -399,6 +417,27 @@ macro_rules! tuples {
 
         impl<A, $($name),*, K> BackTo<A> for ToAny<($($name,)*), K> {}
     )*};
+}
+
+macro_rules! within {
+    ($( [$($name:ident $is:ident)*] )*) => {$(
+        impl<Answers, $($name: ReplyWithin<Answers, $is>, $is),*> RepliesWithin<Answers, ($($is,)*)> for ($($name,)*) {}
+    )*};
+}
+
+within! {
+    [B IB]
+    [B IB C IC]
+    [B IB C IC D ID]
+    [B IB C IC D ID E IE]
+    [B IB C IC D ID E IE F IF]
+    [B IB C IC D ID E IE F IF G IG]
+    [B IB C IC D ID E IE F IF G IG H IH]
+    [B IB C IC D ID E IE F IF G IG H IH I II]
+    [B IB C IC D ID E IE F IF G IG H IH I II J IJ]
+    [B IB C IC D ID E IE F IF G IG H IH I II J IJ L IL]
+    [B IB C IC D ID E IE F IF G IG H IH I II J IJ L IL M IM]
+    [B IB C IC D ID E IE F IF G IG H IH I II J IJ L IL M IM N IN]
 }
 
 tuples! {
