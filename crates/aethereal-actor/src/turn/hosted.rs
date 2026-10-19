@@ -402,14 +402,15 @@ impl<'a> Hosted<'a> {
     }
 
     /// What the piece of mail `by` sends to `to`, of `kind`, carries as the answer to the request of the count
-    /// `request` that `to` asked and the actor held: refused unless it is the actor's own turn that handles an item, as
-    /// only such a turn answers. The engine checks that the actor holds the debt once the turn has run (ADR-0017).
+    /// `request` that `to` asked and the actor held: refused unless it is the actor's own turn that handles an item or
+    /// its closing turn, as only such a turn answers. The engine checks that the actor holds the debt once the turn
+    /// has run (ADR-0017).
     /// Kept out of line, as most mail answers nothing held.
     #[cold]
     #[inline(never)]
     fn answer(&mut self, by: Seated, to: Seated, kind: KindId, request: u64) -> Result<Tie, FalseSend> {
         let is_mine = by == self.seat.me;
-        let is_handling = matches!(self.source, Source::Item(_));
+        let is_handling = matches!(self.source, Source::Item(_) | Source::End);
         let answers = is_mine && is_handling;
         if !answers {
             return Err(FalseSend);

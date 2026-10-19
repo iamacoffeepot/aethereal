@@ -1547,12 +1547,13 @@ impl Kind for Kept {
 /// An actor that holds each ping it is asked, to answer it in a later turn as a [`Release`] says: with a pong of a
 /// hundred and its number, or, through a request of its own to an echo it spawns as it begins, of two hundred and it.
 /// It holds each weighing too, answered with a weight of a hundred and its number, or of three hundred and it, with
-/// no request of its own.
+/// no request of its own. Closed on a release past three, its closing turn answers each with four hundred and it.
 #[derive(Bound)]
 pub struct Steward {
     held: Vec<(u64, Held<Pong>)>,
     weighing: Vec<(u64, Held<Weight>)>,
     echo: ActorRef<Echo>,
+    closed_on: u64,
 }
 
 impl Kind for Steward {
@@ -1569,10 +1570,21 @@ impl Actor for Steward {
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
 
-        Ok(Self { held: Vec::new(), weighing: Vec::new(), echo })
+        Ok(Self { held: Vec::new(), weighing: Vec::new(), echo, closed_on: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        let answers = self.closed_on > 3;
+        if !answers {
+            return Ok(());
+        }
+        for (n, held) in self.held {
+            turn.answer(held, &Pong { n: 400 + n })?;
+        }
+        for (n, held) in self.weighing {
+            turn.answer(held, &Weight { n: 400 + n })?;
+        }
+
         Ok(())
     }
 }
@@ -1621,9 +1633,10 @@ impl Handles<Release> for Steward {
                     turn.answer(held, &Weight { n: 300 + n })?;
                 }
             }
-            _ => {
+            how => {
                 self.held = held;
                 self.weighing = weighing;
+                self.closed_on = how;
                 turn.close();
             }
         }

@@ -1417,7 +1417,20 @@ impl Reading<'_> {
 
         match (work, life.state()) {
             (Work::Closing, State::Ending(ending)) => {
-                self.closing(actor, me, seat, life.sent(), ending, clock, tally, asked, instances, keeping, lists);
+                self.closing(
+                    actor,
+                    me,
+                    seat,
+                    life.sent(),
+                    ending,
+                    clock,
+                    tally,
+                    asked,
+                    instances,
+                    keeping,
+                    debts,
+                    lists,
+                );
                 lists.lose_arriving(keeping);
                 // What it held and never answered is answered for it: it has ended.
                 for debt in debts.take_all() {
@@ -1548,7 +1561,7 @@ impl Reading<'_> {
 
     /// The closing turn of the actor `me` names, sitting as `sitting` says, which has sent `sent` pieces of mail and
     /// whose life ended as `ending` says: measured into `tally`, what it asks for added to `asked` and routed into
-    /// `lists`.
+    /// `lists`, and the debts it answered taken out of `debts`.
     #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
     fn closing(
         &self,
@@ -1562,6 +1575,7 @@ impl Reading<'_> {
         asked: &mut Asked,
         instances: &mut Instances,
         keeping: &mut Keeping,
+        debts: &mut Debts,
         lists: &mut Lists,
     ) {
         let (how, context) = ending;
@@ -1571,7 +1585,11 @@ impl Reading<'_> {
             let why = why(how);
             let (path, above, keeps) = (&sitting.path, sitting.above, Keeps::Here(keeping));
             let closing = Closing::new(me, path, above, self.table, asked, instances, keeps, sent, why);
-            let ended = actor.end(closing);
+            let mut ended = actor.end(closing);
+            // Most closing turns answer nothing they held.
+            if asked.has_owes() {
+                debts.settle_closing(me, *context, asked, &mut ended);
+            }
             let buffers = asked.buffers_mut();
             // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds
             // its fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after

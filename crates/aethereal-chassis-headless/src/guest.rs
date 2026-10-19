@@ -2331,8 +2331,9 @@ mod tests {
     fn a_guest_holds_a_request_and_its_asker_hears_what_became_of_it() {
         // Catches a guest's hold its host does not file, or files as the hold of another turn of the call, an answer to a held request its host sends as plain mail or
         // as a reply to the item, a held request dropped in the guest that its asker never hears of, one the guest
-        // closed on that is never said to have ended, and one written into a request's context and read back that is
-        // let go of as its first value is dropped.
+        // closed on that is never said to have ended, one written into a request's context and read back that is
+        // let go of as its first value is dropped, and an answer from the guest's closing turn its host refuses or
+        // the engine sends as well as saying the guest ended.
         for (parts, hops) in [(1, 0), (1, 64), (4, 0), (4, 64)] {
             let Some(parts) = NonZeroUsize::new(parts) else {
                 panic!("no engine has no parts");
@@ -2341,7 +2342,7 @@ mod tests {
                 petitioned.clear();
             }
             let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, hops));
-            for how in 0..4 {
+            for how in 0..5 {
                 let Ok(_) = engine.add_root::<Petitioner>(&how, Petitioning { code: code.clone(), how }) else {
                     panic!("the petitioner begins");
                 };
@@ -2367,6 +2368,9 @@ mod tests {
                 (3, 0, Ok(200)),
                 (3, 1, Ok(305)),
                 (3, 2, Ok(220)),
+                (4, 0, Ok(400)),
+                (4, 1, Ok(405)),
+                (4, 2, Ok(420)),
             ];
             assert_eq!(petitioned, expected, "{parts} parts, {hops} hops");
         }
