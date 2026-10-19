@@ -2174,7 +2174,7 @@ mod tests {
                 return Ok(());
             };
             for at in 0..volley.pings {
-                turn.ask_to(echo.protocol::<Pings, _>(), &echo::Ping { n: at * 10 }, &Which { at })?;
+                turn.ask_to(echo.protocol(), &echo::Ping { n: at * 10 }, &Which { at })?;
             }
 
             Ok(())
@@ -2277,9 +2277,9 @@ mod tests {
                 return Err(Fault::new(&Doom)?);
             };
             // Held in one call into the guest, each answered with its own kind.
-            turn.ask_to(steward.protocol::<echo::Pings, _>(), &echo::Ping { n: 0 }, &Which { at: 0 })?;
-            turn.ask_to(steward.protocol::<echo::Weighs, _>(), &echo::Weigh { n: 5 }, &Which { at: 1 })?;
-            turn.ask_to(steward.protocol::<echo::Pings, _>(), &echo::Ping { n: 20 }, &Which { at: 2 })?;
+            turn.ask_to(steward.protocol(), &echo::Ping { n: 0 }, &Which { at: 0 })?;
+            turn.ask_to(steward.protocol(), &echo::Weigh { n: 5 }, &Which { at: 1 })?;
+            turn.ask_to(steward.protocol(), &echo::Ping { n: 20 }, &Which { at: 2 })?;
             turn.send(To::Held(steward.erase()), &echo::Release { how: *how })?;
 
             Ok(())

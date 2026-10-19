@@ -1425,9 +1425,9 @@ impl Handles<Query> for Querent {
     fn handle(&mut self, query: Query, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let last = query.first + query.pings;
         for at in query.first..last {
-            turn.ask_to(self.echo.protocol::<Pings, _>(), &Ping { n: at * 10 }, &Which { at })?;
+            turn.ask_to(self.echo.protocol(), &Ping { n: at * 10 }, &Which { at })?;
         }
-        turn.ask_to(self.echo.protocol::<Counts, _>(), &Increment, &Which { at: last })?;
+        turn.ask_to(self.echo.protocol(), &Increment, &Which { at: last })?;
 
         Ok(())
     }
@@ -1615,7 +1615,7 @@ impl Handles<Release> for Steward {
             1 => drop((held, weighing)),
             3 => {
                 for (n, held) in held {
-                    turn.ask_to(self.echo.protocol::<Counts, _>(), &Increment, &Kept { n, held })?;
+                    turn.ask_to(self.echo.protocol(), &Increment, &Kept { n, held })?;
                 }
                 for (n, held) in weighing {
                     turn.answer(held, &Weight { n: 300 + n })?;
@@ -1697,7 +1697,7 @@ impl Handles<Stash> for Stasher {
     fn handle(&mut self, stash: Stash, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let len = usize::try_from(stash.len).unwrap_or_default();
         let blob = turn.put(vec![7; len]).map_err(|why| unhatched(&why))?;
-        turn.ask_to(self.echo.protocol::<Pings, _>(), &Ping { n: 0 }, &Stashed { blob })?;
+        turn.ask_to(self.echo.protocol(), &Ping { n: 0 }, &Stashed { blob })?;
 
         Ok(())
     }

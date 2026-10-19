@@ -646,8 +646,8 @@ impl Actor for FibRoot {
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let first = spawned::<Fib, _>(turn, 0);
-        ready::<Fib, _, _>(turn, &[first])?;
+        let first: ActorRef<Fib> = spawned(turn, 0);
+        ready(turn, &[first])?;
 
         Ok(Self)
     }
@@ -936,7 +936,7 @@ impl Actor for Churn {
 
     /// A root configured with `number` shares the program among that many roots, none and one alike being the whole.
     fn begin(config: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let first = spawned::<Mortal, _>(turn, 0);
+        let first: ActorRef<Mortal> = spawned(turn, 0);
         ready(turn, &[first])?;
 
         Ok(Self { spawned: 1, spawners: config.number.max(1) })
