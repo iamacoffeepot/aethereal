@@ -488,7 +488,7 @@ fn a_reference_casts_to_a_protocol_only_when_its_type_lists_every_kind() {
     let held = ErasedActorRef::new(leaf);
 
     let cast = turn.cast::<(Shut, Poke)>(held);
-    let converted = ProtocolRef::<(Poke, Shut)>::from(ActorRef::<Leaf>::new(leaf)).narrow();
+    let converted = ActorRef::<Leaf>::new(leaf).protocol::<(Poke, Shut), _>().narrow();
     assert_eq!(cast, Some(converted));
     assert_eq!(turn.cast::<(Poke, ToldToFail)>(held), None);
     assert_eq!(turn.cast::<(Poke,)>(ErasedActorRef::new(seated(8, 4))), None);
@@ -524,7 +524,7 @@ fn mail_sent_through_a_protocol_reference_reaches_the_actor_it_refers_to() {
     let table = Listed(Vec::new());
     let mut asked = Asked::new();
     let mut turn = opened::<(ToAny<(Poke,), Poke>,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
-    let references = receivers.map(|receiver| ProtocolRef::<(Poke,)>::from(ActorRef::<Leaf>::new(receiver)));
+    let references = receivers.map(|receiver| ActorRef::<Leaf>::new(receiver).protocol::<(Poke,), _>());
 
     assert_eq!(turn.send_to(references[0], &Poke), Ok(()));
     assert_eq!(turn.send_to_all(&references[1..], &Poke), Ok(()));
@@ -535,11 +535,12 @@ fn mail_sent_through_a_protocol_reference_reaches_the_actor_it_refers_to() {
     assert_eq!(seen, [(receivers[0], poke), (receivers[1], poke), (receivers[2], poke)]);
 }
 
-/// What a leaf is poked and shut by, as a named protocol: a poke is answered, and a shut is not.
+/// What a leaf is poked, shut, and introduced by, as a named protocol: a poke is answered, a shut is not, and nor is
+/// a meeting, though a leaf sends a poke on to the actor it meets, which is no reply.
 struct Poking;
 
 impl Protocol for Poking {
-    type Kinds = (Poke, Shut);
+    type Kinds = (Poke, Shut, Meet);
 }
 
 impl Carries<Poke> for Poking {
@@ -550,38 +551,8 @@ impl Carries<Shut> for Poking {
     type Answers = ();
 }
 
-/// A protocol that answers a shut, which a leaf does not.
-struct Answered;
-
-impl Protocol for Answered {
-    type Kinds = (Shut,);
-}
-
-impl Carries<Shut> for Answered {
-    type Answers = (Poked,);
-}
-
-/// A protocol that answers a meeting with a poke, which a leaf sends on, to the actor it meets, and not back.
-struct Met;
-
-impl Protocol for Met {
-    type Kinds = (Meet,);
-}
-
-impl Carries<Meet> for Met {
-    type Answers = (Poke,);
-}
-
-#[test]
-fn a_type_answers_a_named_protocol_only_when_each_handler_declares_its_replies() {
-    // Catches answers read from the wrong handler, a reply to someone other than the sender counted, and a protocol
-    // whose answers are not read at all.
-    let leaf = Declared::of::<Leaf>();
-
-    assert!(leaf.answers(<Poking as crate::Listed>::ANSWERS));
-    assert!(!leaf.answers(<Answered as crate::Listed>::ANSWERS));
-    assert!(!leaf.answers(<Met as crate::Listed>::ANSWERS));
-    assert!(!Declared::of::<Branch>().answers(<Poking as crate::Listed>::ANSWERS));
+impl Carries<Meet> for Poking {
+    type Answers = ();
 }
 
 #[test]
@@ -593,7 +564,7 @@ fn mail_sent_through_a_named_protocol_reaches_the_actor_it_refers_to() {
     let mut asked = Asked::new();
     let mut turn =
         opened::<(ToAny<Poking, Poke>, ToAny<(Shut,), Shut>)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
-    let references = receivers.map(|receiver| ProtocolRef::<Poking>::from(ActorRef::<Leaf>::new(receiver)));
+    let references = receivers.map(|receiver| ActorRef::<Leaf>::new(receiver).protocol::<Poking, _>());
 
     assert_eq!(turn.send_to(references[0], &Poke), Ok(()));
     assert_eq!(turn.send_to(references[1].narrow::<(Shut,), _>(), &Shut), Ok(()));
@@ -611,7 +582,7 @@ fn subscribers_are_held_once_watched_once_and_leave_by_ending_or_unsubscribing()
     let table = Listed(Vec::new());
     let mut asked = Asked::new();
     let mut turn = opened::<(Watches,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
-    let listener = |at: Seated| ProtocolRef::<(Poke,)>::from(ActorRef::<Leaf>::new(at));
+    let listener = |at: Seated| ActorRef::<Leaf>::new(at).protocol::<(Poke,), _>();
     let mut subscribers = Subscribers::new();
 
     let added = [first, second, third, second].map(|at| subscribers.subscribe(&mut turn, listener(at)));

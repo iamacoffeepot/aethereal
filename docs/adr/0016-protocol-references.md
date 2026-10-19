@@ -43,11 +43,11 @@ pub struct ProtocolRef<P> { .. }    // an ActorId and a seat, as every reference
 
 It has the shape of an `ActorRef`: sixteen bytes, `Copy`, crossing what a reference crosses (in mail and in an actor's own state, never between engines). It erases to an `ErasedActorRef`. Like an `ActorRef`, it is proven when it is made, and nothing checks it again. There are three ways to make one:
 
-1. **From a typed reference, at build time.** `ActorRef<T>` converts into `ProtocolRef<P>` when `T` conforms to `P`:
+1. **From a typed reference, at build time.** `reference.protocol()` turns an `ActorRef<T>` into a `ProtocolRef<P>` when `T` conforms to `P`:
    - `T` handles every kind of `P`;
-   - for a named `P`, `T`'s handler for each kind `K` declares a `ToSender` for every kind of `Carries<K>::Answers`.
+   - for a named `P`, each reply `T`'s handler for a kind `K` declares, each `ToSender`, is of a kind of `Carries<K>::Answers`.
 
-   The compiler checks this, and nothing is read at runtime. The second half is checked when the conversion is built, as a declaration is (ADR-0013): a conversion that nothing builds is not checked, and a check of types alone does not run it.
+   The compiler checks this, as a trait bound, and nothing is read at runtime. Each reply's place among the answers is inferred, as a narrowing's places are, which a `From` impl cannot do, so the conversion is a method, the one way to make a protocol reference from a typed one, for a tuple as for a named protocol. A handler need not send every answer: what a sender through the protocol must handle is the answers, and what keeps a reply from reaching a sender that does not take it is that the receiver sends nothing else.
 2. **From an erased reference, at runtime, once.** `turn.cast::<P>(reference)` answers with a `ProtocolRef<P>` when the declaration of the actor's type lists every kind of `P`, and with nothing otherwise. It is a lookup in the table, as a send's check is today. Answers are not read, because the engine's declaration holds what a handler may send but not what a protocol promises. So a cast is to a tuple, a protocol of tells; a named protocol is reached by conversion.
 3. **By narrowing.** `reference.narrow::<Q>()` turns a `ProtocolRef<P>` into a `ProtocolRef<Q>` when every kind of `Q` is one of `P`'s, in any order, each found as a declared send's place is found (`Allows`). Narrowing a named protocol to a tuple drops what it answers.
 
