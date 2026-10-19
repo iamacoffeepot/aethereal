@@ -496,8 +496,6 @@ impl Seat<'_> {
         is_mine.then_some((last.to, last.kind))
     }
 
-    /// Encodes `mail` and adds the effect that sends it to the actor `to`, which this actor reaches as it is: one a
-    /// typed reference proves, or the sender.
     /// Sends `mail` to the actor `to` names, which is checked to be of type `T` (ADR-0013).
     fn send_typed<T: Actor + Handles<K>, K: Kind + Encode<Actors> + Handled>(
         &mut self,
@@ -512,6 +510,8 @@ impl Seat<'_> {
         self.send(to, <ToAny<P, K> as Marker>::SENDING.to(), mail)
     }
 
+    /// Encodes `mail` and adds the effect that sends it to the actor `to`, which this actor reaches as it is: one a
+    /// typed reference proves, or the sender.
     fn write<K: Kind + Encode<Actors>>(&mut self, to: Seated, mail: &K) -> Result<(), EncodeError> {
         // A reply goes on its own: a turn rarely answers one sender back to back.
         self.write_after(to, mail, false)
