@@ -10,8 +10,8 @@ pub use refused::Refused;
 
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
-    Handles, Instances, Kinds, Level, Line, MailId, Mailed, Marker, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen,
-    Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
+    Handles, Instances, Kinds, Level, Line, MailId, Mailed, Marker, Payload, Puts, Role, Runs, SeatNumber, Seated,
+    Seats, Seen, Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -524,20 +524,7 @@ impl Seat<'_> {
         mail: &K,
         is_like_last: bool,
     ) -> Result<(), EncodeError> {
-        #[cfg(feature = "std")]
-        let bytes = self.asked.arena.write_holding(|bytes, held| {
-            let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::new(held));
-            let written = mail.encode(&mut out);
-
-            (out.into_bytes(), written)
-        })?;
-        #[cfg(not(feature = "std"))]
-        let bytes = self.asked.arena.write(|bytes| {
-            let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::new());
-            let written = mail.encode(&mut out);
-
-            (out.into_bytes(), written)
-        })?;
+        let bytes = self.encode(mail)?;
         self.sent += 1;
         let kind = KindId::of::<K>();
         // Mail of one kind to one receiver, sent back to back by sends the turn named, is one run: one effect, one item
@@ -553,6 +540,48 @@ impl Seat<'_> {
         self.asked.buffers.mailed.push(Mailed { by: self.me, to, count: self.sent, kind, bytes });
 
         Ok(())
+    }
+
+    /// Encodes `mail` once and sends it to each of `to`, which this actor reaches as each is: one a typed reference
+    /// proves. Each is its own piece of mail, with its own count, in the order `to` gives, as if each were sent alone;
+    /// all of them read the one copy of its bytes, and of the pins it holds.
+    fn write_to_all<K: Kind + Encode<Actors>>(
+        &mut self,
+        to: impl ExactSizeIterator<Item = Seated>,
+        mail: &K,
+    ) -> Result<(), EncodeError> {
+        // Nothing is written for no one.
+        if to.len() == 0 {
+            return Ok(());
+        }
+        let bytes = self.encode(mail)?;
+        let kind = KindId::of::<K>();
+        for to in to {
+            self.sent += 1;
+            self.asked.buffers.mailed.push(Mailed { by: self.me, to, count: self.sent, kind, bytes });
+        }
+
+        Ok(())
+    }
+
+    /// Writes `mail` into the worker's arena, with the pins on the blobs it refers to, and answers where it lies.
+    fn encode<K: Kind + Encode<Actors>>(&mut self, mail: &K) -> Result<Payload, EncodeError> {
+        #[cfg(feature = "std")]
+        let bytes = self.asked.arena.write_holding(|bytes, held| {
+            let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::new(held));
+            let written = mail.encode(&mut out);
+
+            (out.into_bytes(), written)
+        });
+        #[cfg(not(feature = "std"))]
+        let bytes = self.asked.arena.write(|bytes| {
+            let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::new());
+            let written = mail.encode(&mut out);
+
+            (out.into_bytes(), written)
+        });
+
+        bytes
     }
 
     /// Stops the engine when the actor `to` names is not one `target` reaches: the send breaks this actor's
@@ -997,6 +1026,20 @@ impl<S> Turn<'_, S> {
         self.seat.write(reference.seated(), mail)
     }
 
+    /// Sends `mail` to each actor `references` refer to, in their order: each its own piece of mail, as if each
+    /// were sent alone, and the bytes written once for all of them. Their types are proven, so nothing is checked when
+    /// it is sent.
+    ///
+    /// It builds only when the turn's sends list [`ToType<T, K>`].
+    pub fn send_to_all<T, K, I>(&mut self, references: &[ActorRef<T>], mail: &K) -> Result<(), EncodeError>
+    where
+        T: Actor + Handles<K>,
+        K: Kind + Encode<Actors> + Handled,
+        S: Allows<ToType<T, K>, I>,
+    {
+        self.seat.write_to_all(references.iter().map(|reference| reference.seated()), mail)
+    }
+
     /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`.
     ///
     /// It builds only when the turn's sends list a [`ToAny<P, K>`], and `P` is found from them when one names `K`.
@@ -1209,6 +1252,20 @@ impl<S> Beginning<'_, S> {
         S: Allows<ToType<T, K>, I>,
     {
         self.seat.write(reference.seated(), mail)
+    }
+
+    /// Sends `mail` to each actor `references` refer to, in their order, with the mail of the turn this `begin` runs
+    /// in: each its own piece of mail, as if each were sent alone, and the bytes written once for all of them. Their
+    /// types are proven, so nothing is checked when it is sent.
+    ///
+    /// It builds only when the turn's sends list [`ToType<T, K>`].
+    pub fn send_to_all<T, K, I>(&mut self, references: &[ActorRef<T>], mail: &K) -> Result<(), EncodeError>
+    where
+        T: Actor + Handles<K>,
+        K: Kind + Encode<Actors> + Handled,
+        S: Allows<ToType<T, K>, I>,
+    {
+        self.seat.write_to_all(references.iter().map(|reference| reference.seated()), mail)
     }
 
     /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`, with the mail
@@ -1451,6 +1508,20 @@ impl<S> Ending<'_, S> {
         S: Allows<ToType<T, K>, I>,
     {
         self.seat.write(reference.seated(), mail)
+    }
+
+    /// Sends `mail` to each actor `references` refer to, in their order, as the actor's last mail: each its own piece
+    /// of mail, as if each were sent alone, and the bytes written once for all of them. Their types are proven, so
+    /// nothing is checked when it is sent.
+    ///
+    /// It builds only when the turn's sends list [`ToType<T, K>`].
+    pub fn send_to_all<T, K, I>(&mut self, references: &[ActorRef<T>], mail: &K) -> Result<(), EncodeError>
+    where
+        T: Actor + Handles<K>,
+        K: Kind + Encode<Actors> + Handled,
+        S: Allows<ToType<T, K>, I>,
+    {
+        self.seat.write_to_all(references.iter().map(|reference| reference.seated()), mail)
     }
 
     /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`, as the
