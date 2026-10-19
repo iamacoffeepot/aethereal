@@ -54,7 +54,7 @@ pub use guests::{Config, config_bytes};
 pub use instances::{Instances, Lent};
 pub use item::Item;
 pub use mail::{Mail, MailId};
-pub use reference::{ActorRef, ErasedActorRef, ProtocolRef};
+pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Reaches};
 pub use seat::{SeatNumber, Seated, Seats};
 pub use turn::{
     Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseWatch, Forged, Garbled, Hosted,

@@ -1,8 +1,8 @@
 //! A reference to an actor the engine has established exists (ADR-0008).
 
-use crate::{Conforms, Covers, Refers, SeatNumber, Seated};
+use crate::{Actor, Conforms, Covers, Handled, Handles, Kinds, Refers, SeatNumber, Seated, ToAny, ToType};
 use aethereal_data::{
-    ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Field, Reader, Schema, Shape, Writer,
+    ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Field, Kind, Reader, Schema, Shape, Writer,
 };
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -347,6 +347,51 @@ where
 {
     fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         ErasedActorRef::decode(input).map(|reference| Self::new(reference.seated()))
+    }
+}
+
+/// A proven reference to an actor that takes mail of kind `K`, and the send a turn declares to reach it: what the
+/// send verbs take, so one verb sends through either reference (ADR-0016).
+///
+/// A send through a protocol reference builds only when the turn's sends list it:
+///
+/// ```compile_fail
+/// use aethereal_actor::{ProtocolRef, Turn};
+/// use aethereal_data::{Kind, KindName, Plain};
+///
+/// #[derive(Plain)]
+/// struct Poke;
+///
+/// impl Kind for Poke {
+///     const NAME: KindName = KindName::new("aether.example.poke");
+/// }
+///
+/// fn poke(turn: &mut Turn<'_, ()>, listener: ProtocolRef<(Poke,)>) {
+///     let sent = turn.send_to(listener, &Poke);
+/// }
+/// ```
+pub trait Reaches<K>: Copy {
+    /// What a turn's sends list for it: [`ToType<T, K>`] for an `ActorRef<T>`, and [`ToAny<P, K>`] for a
+    /// `ProtocolRef<P>`.
+    type Marker;
+
+    /// The actor referred to, and its seat.
+    fn seated(self) -> Seated;
+}
+
+impl<T: Actor + Handles<K>, K: Kind + Handled> Reaches<K> for ActorRef<T> {
+    type Marker = ToType<T, K>;
+
+    fn seated(self) -> Seated {
+        self.seated
+    }
+}
+
+impl<P: Kinds, K: Kind> Reaches<K> for ProtocolRef<P> {
+    type Marker = ToAny<P, K>;
+
+    fn seated(self) -> Seated {
+        self.seated
     }
 }
 

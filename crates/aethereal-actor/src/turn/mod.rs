@@ -10,8 +10,8 @@ pub use refused::Refused;
 
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
-    Handles, Instances, Kinds, Level, Line, MailId, Mailed, Marker, Payload, ProtocolRef, Puts, Role, Runs, SeatNumber,
-    Seated, Seats, Seen, Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
+    Handles, Instances, Kinds, Level, Line, MailId, Mailed, Marker, Payload, ProtocolRef, Puts, Reaches, Role, Runs,
+    SeatNumber, Seated, Seats, Seen, Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -1025,29 +1025,29 @@ impl<S> Turn<'_, S> {
         self.seat.send_typed::<T, K>(&to, mail)
     }
 
-    /// Sends `mail` to the actor `reference` refers to. Its type is proven, so nothing is checked when it is
-    /// sent.
+    /// Sends `mail` to the actor `reference` refers to. What it reaches is proven, so nothing is checked when it
+    /// is sent.
     ///
-    /// It builds only when the turn's sends list [`ToType<T, K>`].
-    pub fn send_to<T, K, I>(&mut self, reference: ActorRef<T>, mail: &K) -> Result<(), EncodeError>
+    /// It builds only when the turn's sends list what the reference [`Reaches`] by: [`ToType<T, K>`] for an
+    /// [`ActorRef<T>`], and [`ToAny<P, K>`] for a [`ProtocolRef<P>`].
+    pub fn send_to<R, K, I>(&mut self, reference: R, mail: &K) -> Result<(), EncodeError>
     where
-        T: Actor + Handles<K>,
-        K: Kind + Encode<Actors> + Handled,
-        S: Allows<ToType<T, K>, I>,
+        R: Reaches<K>,
+        K: Kind + Encode<Actors>,
+        S: Allows<R::Marker, I>,
     {
         self.seat.write(reference.seated(), mail)
     }
 
-    /// Sends `mail` to each actor `references` refer to, in their order: each its own piece of mail, as if each
-    /// were sent alone, and the bytes written once for all of them. Their types are proven, so nothing is checked when
-    /// it is sent.
+    /// Sends `mail` to each actor `references` refer to, in their order: each its own piece of mail, as if each were sent alone,
+    /// and the bytes written once for all of them. What they reach is proven, so nothing is checked when it is sent.
     ///
-    /// It builds only when the turn's sends list [`ToType<T, K>`].
-    pub fn send_to_all<T, K, I>(&mut self, references: &[ActorRef<T>], mail: &K) -> Result<(), EncodeError>
+    /// It builds only when the turn's sends list what the references [`Reaches`] by, as `send_to` does.
+    pub fn send_to_all<R, K, I>(&mut self, references: &[R], mail: &K) -> Result<(), EncodeError>
     where
-        T: Actor + Handles<K>,
-        K: Kind + Encode<Actors> + Handled,
-        S: Allows<ToType<T, K>, I>,
+        R: Reaches<K>,
+        K: Kind + Encode<Actors>,
+        S: Allows<R::Marker, I>,
     {
         self.seat.write_to_all(references.iter().map(|reference| reference.seated()), mail)
     }
@@ -1261,29 +1261,29 @@ impl<S> Beginning<'_, S> {
         self.seat.send_typed::<T, K>(&to, mail)
     }
 
-    /// Sends `mail` to the actor `reference` refers to, with the mail of the turn this `begin` runs in. Its type is
-    /// proven, so nothing is checked when it is sent.
+    /// Sends `mail` to the actor `reference` refers to, with the mail of the turn this `begin` runs in. What it reaches is proven, so nothing is checked when it
+    /// is sent.
     ///
-    /// It builds only when the turn's sends list [`ToType<T, K>`].
-    pub fn send_to<T, K, I>(&mut self, reference: ActorRef<T>, mail: &K) -> Result<(), EncodeError>
+    /// It builds only when the turn's sends list what the reference [`Reaches`] by: [`ToType<T, K>`] for an
+    /// [`ActorRef<T>`], and [`ToAny<P, K>`] for a [`ProtocolRef<P>`].
+    pub fn send_to<R, K, I>(&mut self, reference: R, mail: &K) -> Result<(), EncodeError>
     where
-        T: Actor + Handles<K>,
-        K: Kind + Encode<Actors> + Handled,
-        S: Allows<ToType<T, K>, I>,
+        R: Reaches<K>,
+        K: Kind + Encode<Actors>,
+        S: Allows<R::Marker, I>,
     {
         self.seat.write(reference.seated(), mail)
     }
 
-    /// Sends `mail` to each actor `references` refer to, in their order, with the mail of the turn this `begin` runs
-    /// in: each its own piece of mail, as if each were sent alone, and the bytes written once for all of them. Their
-    /// types are proven, so nothing is checked when it is sent.
+    /// Sends `mail` to each actor `references` refer to, in their order, with the mail of the turn this `begin` runs in: each its own piece of mail, as if each were sent alone,
+    /// and the bytes written once for all of them. What they reach is proven, so nothing is checked when it is sent.
     ///
-    /// It builds only when the turn's sends list [`ToType<T, K>`].
-    pub fn send_to_all<T, K, I>(&mut self, references: &[ActorRef<T>], mail: &K) -> Result<(), EncodeError>
+    /// It builds only when the turn's sends list what the references [`Reaches`] by, as `send_to` does.
+    pub fn send_to_all<R, K, I>(&mut self, references: &[R], mail: &K) -> Result<(), EncodeError>
     where
-        T: Actor + Handles<K>,
-        K: Kind + Encode<Actors> + Handled,
-        S: Allows<ToType<T, K>, I>,
+        R: Reaches<K>,
+        K: Kind + Encode<Actors>,
+        S: Allows<R::Marker, I>,
     {
         self.seat.write_to_all(references.iter().map(|reference| reference.seated()), mail)
     }
@@ -1525,29 +1525,29 @@ impl<S> Ending<'_, S> {
         self.seat.send_typed::<T, K>(&to, mail)
     }
 
-    /// Sends `mail` to the actor `reference` refers to, as the actor's last mail. Its type is proven, so nothing is
-    /// checked when it is sent.
+    /// Sends `mail` to the actor `reference` refers to, as the actor's last mail. What it reaches is proven, so nothing is checked when it
+    /// is sent.
     ///
-    /// It builds only when the turn's sends list [`ToType<T, K>`].
-    pub fn send_to<T, K, I>(&mut self, reference: ActorRef<T>, mail: &K) -> Result<(), EncodeError>
+    /// It builds only when the turn's sends list what the reference [`Reaches`] by: [`ToType<T, K>`] for an
+    /// [`ActorRef<T>`], and [`ToAny<P, K>`] for a [`ProtocolRef<P>`].
+    pub fn send_to<R, K, I>(&mut self, reference: R, mail: &K) -> Result<(), EncodeError>
     where
-        T: Actor + Handles<K>,
-        K: Kind + Encode<Actors> + Handled,
-        S: Allows<ToType<T, K>, I>,
+        R: Reaches<K>,
+        K: Kind + Encode<Actors>,
+        S: Allows<R::Marker, I>,
     {
         self.seat.write(reference.seated(), mail)
     }
 
-    /// Sends `mail` to each actor `references` refer to, in their order, as the actor's last mail: each its own piece
-    /// of mail, as if each were sent alone, and the bytes written once for all of them. Their types are proven, so
-    /// nothing is checked when it is sent.
+    /// Sends `mail` to each actor `references` refer to, in their order, as the actor's last mail: each its own piece of mail, as if each were sent alone,
+    /// and the bytes written once for all of them. What they reach is proven, so nothing is checked when it is sent.
     ///
-    /// It builds only when the turn's sends list [`ToType<T, K>`].
-    pub fn send_to_all<T, K, I>(&mut self, references: &[ActorRef<T>], mail: &K) -> Result<(), EncodeError>
+    /// It builds only when the turn's sends list what the references [`Reaches`] by, as `send_to` does.
+    pub fn send_to_all<R, K, I>(&mut self, references: &[R], mail: &K) -> Result<(), EncodeError>
     where
-        T: Actor + Handles<K>,
-        K: Kind + Encode<Actors> + Handled,
-        S: Allows<ToType<T, K>, I>,
+        R: Reaches<K>,
+        K: Kind + Encode<Actors>,
+        S: Allows<R::Marker, I>,
     {
         self.seat.write_to_all(references.iter().map(|reference| reference.seated()), mail)
     }
