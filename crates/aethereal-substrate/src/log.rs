@@ -29,6 +29,9 @@ pub enum Entry {
     /// A resource of this name, given by the actor or given to it, was dropped on its way: no mail carried it, its
     /// mail did not arrive, or the actor did not take it in the turn of the mail it came with (ADR-0010).
     Dropped(&'static str),
+    /// What a source brought the actor, of the kind this names, could not be written as mail, and was dropped
+    /// (ADR-0010).
+    Unbrought(&'static str),
 }
 
 /// What the view keeps of a line or a fault before it is folded: a line's text is still where its turn wrote it.
@@ -41,6 +44,8 @@ pub enum Logged {
     EndFailed(Fault),
     /// A resource of this name was dropped on its way.
     Dropped(&'static str),
+    /// What a source brought, of the kind this names, could not be written as mail.
+    Unbrought(&'static str),
 }
 
 impl View for Log {
@@ -78,6 +83,7 @@ impl View for Log {
             Logged::Failed(fault) => Entry::Failed(fault),
             Logged::EndFailed(fault) => Entry::EndFailed(fault),
             Logged::Dropped(name) => Entry::Dropped(name),
+            Logged::Unbrought(name) => Entry::Unbrought(name),
         };
         recent.push_back(entry);
     }
@@ -96,6 +102,13 @@ pub fn line(line: Line) -> (u64, (ActorId, Logged)) {
 #[must_use]
 pub const fn dropped(by: Seated, name: &'static str) -> (u64, (ActorId, Logged)) {
     (by.seat.number(), (by.id, Logged::Dropped(name)))
+}
+
+/// The key and record the view keeps of what a source brought, of the kind `name` names, that could not be written as
+/// mail, under the actor `by` that owns the source (ADR-0010).
+#[must_use]
+pub const fn unbrought(by: Seated, name: &'static str) -> (u64, (ActorId, Logged)) {
+    (by.seat.number(), (by.id, Logged::Unbrought(name)))
 }
 
 /// The key and record the view keeps of `effect`, a fault, or none for an effect it does not keep.

@@ -32,6 +32,7 @@ mod reference;
 mod resource;
 mod seat;
 pub mod section;
+mod source;
 mod subscribers;
 mod turn;
 
@@ -63,6 +64,7 @@ pub use resource::{
     Was, carry, is_loose_claim, take_claimed, take_loose_ticket,
 };
 pub use seat::{SeatNumber, Seated, Seats};
+pub use source::Source;
 pub use subscribers::Subscribers;
 pub use turn::{
     Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseWatch, Forged, Garbled, Hosted,
