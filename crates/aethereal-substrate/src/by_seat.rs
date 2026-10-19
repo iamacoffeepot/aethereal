@@ -1,7 +1,7 @@
 //! A part of a view kept under actors' seats (ADR-0011).
 
 use crate::{Part, rounded};
-use aethereal_actor::Seated;
+use aethereal_actor::{SeatNumber, Seated};
 use aethereal_data::ActorId;
 use std::num::NonZeroUsize;
 
@@ -83,6 +83,20 @@ impl<V> BySeat<V> {
         if is_kept {
             self.seats[place] = Slot::Empty;
         }
+    }
+
+    /// Each actor kept in this part, the part numbered `part`, with what is kept for it, front to back.
+    pub fn seated(&self, part: usize) -> impl Iterator<Item = (Seated, &V)> {
+        let shift = self.parts.get().trailing_zeros();
+
+        self.seats.iter().enumerate().filter_map(move |(place, slot)| match slot {
+            Slot::Taken { id, value } => {
+                let seat = SeatNumber::new(((place << shift) | part) as u64);
+
+                Some((Seated { id: *id, seat }, value))
+            }
+            Slot::Empty => None,
+        })
     }
 
     /// Where `actor`'s seat lies in this part's list.

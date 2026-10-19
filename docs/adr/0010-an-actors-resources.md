@@ -50,7 +50,26 @@ impl Turn<'_> {
 
 **A resource ends with its owner or with its mail.** When an actor closes, the engine drops its resources after its closing turn. When mail that carries a `Given` is not delivered, the engine drops the resource with the mail and records it: in the log of the actor that gave it when no mail carried it, when its turn failed, or when its receiver had gone or ended before handling the mail, and in the receiver's log when the receiver handled the mail and did not take it. What a `begin` that fails took or gave is dropped with its actor, which was never live.
 
-**What a resource brings in from outside the engine reaches its owner as mail, and its owner is the sender.** A key press, bytes on a socket, a read that finished: the host hands each to the engine between two steps, naming the resource. The engine delivers it to the actor that owns that resource, as mail from that same actor which says which handle it is for, and the owner handles it in the next step (ADR-0011). Mail from outside the engine therefore has an actor as its sender, as all mail does (ADR-0009), and what one resource brings in keeps its order. Whoever else should hear of it is mailed by the owner.
+**What a resource brings in from outside the engine reaches its owner as mail, and its owner is the sender.** A key press, bytes on a socket, a read that finished: the host hands each to the engine between two steps, naming the resource. The engine delivers it to the actor that owns that resource, as mail from that same actor, and the owner handles it in the next step (ADR-0011). Mail from outside the engine therefore has an actor as its sender, as all mail does (ADR-0009), and what one resource brings in keeps its order. Whoever else should hear of it is mailed by the owner, as a window tells its subscribers of the pointer.
+
+```rust
+pub struct Source<K> { .. }                        // a resource that brings mail of kind K
+pub struct Feed<K> { .. }                          // the host's end of it
+
+impl Engine {
+    pub fn source<K>(&mut self) -> (Given<Source<K>>, Feed<K>);   // for a root's config, and the host
+    pub fn bring(&mut self);                                       // between steps
+}
+impl<K> Feed<K> {
+    pub fn push(&self, event: K) -> Result<(), Closed>;           // whenever it happens
+}
+```
+
+- The resource that brings things in is a `Source<K>`. It holds nothing to open: what it brings is the mail. The chassis makes one with `engine.source()`, which keeps it as `hand` keeps a value and answers with the `Given` for a root's config and with the feed. A source is then given and taken as any resource is.
+- The host pushes onto the feed whenever it hears of something, outside any step: a browser's event callbacks and a native host's other threads run when they run. Nothing reaches the engine until the host calls `engine.bring()` between two steps.
+- `bring` takes what each feed holds, finds the actor that holds its source then, as its own or arriving for it with mail it has not handled, and writes each event as mail of kind `K` from that actor to itself. Mail a source brought before it was given away stays with the actor that held it when it was brought. An actor that holds two sources of one kind tells what each brought apart by what the host wrote in it, as a window's pointer says which window it moved over.
+- What is pushed for a source still held for a root that is not made yet waits in its feed. Once a source has been dropped, its feed is closed at the next bring, what it held is dropped with it, and a push to it is refused, so the host knows to stop what fed it.
+- An event that cannot be written as mail, one that holds a resource on its way, is dropped, and recorded in the owner's log.
 
 **The chassis hands a root its resources the same way.** It puts them in the root's config as `Given` values, so a root is born as any actor is. The chassis has no turn, so it hands each value to the engine as it builds it, with `engine.hand(value)`, and the engine keeps the value and returns the `Given` that names it. The engine gives the root's `begin` the ones its config holds, and what that `begin` does not take is dropped and recorded in the root's log.
 
@@ -68,7 +87,9 @@ impl Turn<'_> {
 - Mail that carries a resource is never fused (ADR-0013): the resource reaches its receiver as the receiver's part is folded, after the mail's step, so a turn that gives sends all its mail as mail.
 - An actor that has never kept a resource holds no more for it than a pointer's width, beside it in its seat.
 - A turn that makes or uses a resource acts on the world outside its effects. A failed turn does not undo that, and such a turn cannot be run again from its record: a turn repeats only as far as its actor's own code does (ADR-0009).
-- **Not decided here:** what kind of mail each type of resource brings its owner, and how an actor asks a resource for work that takes time. A turn does not block, and a browser host cannot.
+- An actor beneath a root can receive from outside the engine only when a source is given to it. A capability's root holds the source, and the actors that want what it brings subscribe to that root.
+- Finding a source's owner reads the seat it was found in at the last bring, and every seat in the engine only once it has moved since.
+- **Not decided here:** how an actor asks a resource for work that takes time, such as a fetch, and how that work is cancelled. A turn does not block, and a browser host cannot.
 - Two kinds that differ only in what their handles hold have the same layout (ADR-0006), since each handle is one integer. The engine's check of the ticket is what tells them apart.
 
 ## Alternatives considered

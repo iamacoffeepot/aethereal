@@ -1,5 +1,9 @@
 //! Where the bytes of the mail a turn sends are written: an arena of the worker that ran it (ADR-0011).
 
+#[cfg(feature = "std")]
+use crate::{Actors, ActorsWriter};
+#[cfg(feature = "std")]
+use aethereal_data::{Encode, EncodeError, Writer};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt;
@@ -210,6 +214,21 @@ impl Arena {
         }
 
         written
+    }
+
+    /// Writes `mail` as one piece of mail, as [`Self::write`] does, with the pins on the blobs it refers to, and
+    /// answers with where it is: for mail no turn sends, which carries no resource (ADR-0010).
+    ///
+    /// # Errors
+    ///
+    /// Why `mail` could not be written, as [`EncodeError::NotCarried`] when it holds a resource on its way.
+    pub fn write_mail<K: Encode<Actors>>(&mut self, mail: &K) -> Result<Payload, EncodeError> {
+        self.write_holding(|bytes, held| {
+            let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::new(held));
+            let written = mail.encode(&mut out);
+
+            (out.into_bytes(), written)
+        })
     }
 
     /// Files the pins a write kept from `mark` on in [`Self::held`] by what became of the piece: kept where they are

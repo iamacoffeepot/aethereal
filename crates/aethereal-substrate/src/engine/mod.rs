@@ -2,6 +2,7 @@
 
 mod batch;
 mod birth;
+mod bring;
 mod costs;
 mod fold;
 mod fuse;
@@ -13,6 +14,7 @@ mod since;
 #[cfg(test)]
 mod tests;
 
+pub use bring::{Closed, Feed};
 pub use costs::Tally;
 pub use fold::{Fold, Folding};
 pub use fuse::Hops;
@@ -138,6 +140,8 @@ pub struct Engine {
     unbuffered: Vec<Change>,
     /// The resources the chassis has handed in for the configs of roots it has not made yet (ADR-0010).
     handed: Vec<Gift>,
+    /// The sources the chassis has made, to bring what it pushes onto their feeds in (ADR-0010).
+    sources: Vec<bring::Bringing>,
     /// Which engine of the process this is, in the id of each blob it holds. Last, so what the engine's actors held
     /// is let go of before the engine is forgotten.
     number: Number,
@@ -381,6 +385,7 @@ impl Engine {
             puts: Vec::new(),
             unbuffered: Vec::new(),
             handed: Vec::new(),
+            sources: Vec::new(),
             number,
         }
     }
@@ -515,14 +520,21 @@ impl Engine {
     /// it is for (ADR-0010). The engine holds it until [`Self::add_root`] is given that config, which hands it to the
     /// root's `begin` to take: what the `begin` does not take is dropped, and recorded in the root's log.
     pub fn hand<R: Resource>(&mut self, value: R) -> Given<R> {
-        // Its ticket is from the writer of what is sent between steps, which no other resource has had.
-        let mut puts = self.puts(ROOTS, 0);
-        let ticket = puts.ticket();
-        self.puts[ROOTS] = puts;
+        let ticket = self.ticket();
         let (gift, given) = Gift::handed(ticket, value);
         self.handed.push(gift);
 
         given
+    }
+
+    /// A ticket for a resource the chassis hands in: from the writer of what is sent between steps, which no other
+    /// resource has had.
+    fn ticket(&mut self) -> u64 {
+        let mut puts = self.puts(ROOTS, 0);
+        let ticket = puts.ticket();
+        self.puts[ROOTS] = puts;
+
+        ticket
     }
 
     /// Takes out the resources the chassis handed in that `config` holds, for the root it is the config of.

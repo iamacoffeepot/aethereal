@@ -203,6 +203,15 @@ enum Keep {
     Arriving { by: Seated, mail: MailId, kept: Kept },
 }
 
+impl Keep {
+    /// The ticket of the resource kept.
+    const fn ticket(&self) -> u64 {
+        match self {
+            Self::Mine(kept) | Self::Arriving { kept, .. } => kept.ticket,
+        }
+    }
+}
+
 impl Keeping {
     /// What it holds, holding nothing yet when it never has.
     fn holdings(&mut self) -> &mut Vec<Keep> {
@@ -311,6 +320,15 @@ impl Keeping {
     /// as the mail's step folds.
     pub fn arrive(&mut self, by: Seated, mail: MailId, kept: Kept) {
         self.holdings().push(Keep::Arriving { by, mail, kept });
+    }
+
+    /// Whether it holds the resource `ticket` names, its own or arriving for it.
+    #[must_use]
+    pub fn holds(&self, ticket: u64) -> bool {
+        match &self.holding {
+            Holding::Never => false,
+            Holding::Holds(holdings) => holdings.held.iter().any(|keep| keep.ticket() == ticket),
+        }
     }
 
     /// Whether it keeps nothing at all.
