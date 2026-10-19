@@ -14,7 +14,7 @@ use crate::{
     Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Instances, Keeping, Keeps,
     Kinds, Level, Line, Listed, MailId, Mailed, Marker, Payload, Protocol, ProtocolRef, Puts, Reaches, Resource, Role,
     Runs, SeatNumber, Seated, Seats, Seen, Sends, Table, Target, Tie, Tied, To, ToAny, ToSender, ToType, ToWithoutMail,
-    Watches, What, Within, WithinWriter,
+    Unanswered, Watches, What, Within, WithinWriter,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -178,6 +178,35 @@ impl Asked {
     /// files them beside the asker once its turn has run, and drops them when it failed (ADR-0017).
     pub fn take_asks(&mut self) -> impl Iterator<Item = Asking> + '_ {
         self.asks.drain(..)
+    }
+
+    /// What the engine says to `to` of its request of the count `request`, which `by` did not answer, as `why`: mail of
+    /// kind [`Unanswered`], the `count`th `by` is counted as sending, written to this arena and not yet sent
+    /// (ADR-0017).
+    #[must_use]
+    pub fn unanswered(&mut self, by: Seated, to: Seated, count: u64, request: u64, why: Unanswered) -> Mailed {
+        let Ok(bytes) = self.arena.write_mail(&why) else {
+            unreachable!("a reason why a request was not answered is a byte, and refers to nothing");
+        };
+        let (kind, tie) = (KindId::of::<Unanswered>(), Tie::unanswered(request));
+
+        Mailed { by, to, count, kind, bytes, tie }
+    }
+
+    /// Whether `by` has answered its request of the count `request` in the turn running (ADR-0017).
+    #[must_use]
+    pub fn has_answered(&self, by: Seated, request: u64) -> bool {
+        let answer = Tie::answers(request);
+
+        self.buffers.mailed.iter().any(|mailed| mailed.by.id == by.id && mailed.tie == answer)
+    }
+
+    /// The count of the last piece of mail `by` sent in the turn running, when it sent any.
+    #[must_use]
+    pub fn last_sent(&self, by: Seated) -> Option<u64> {
+        let sent = self.buffers.mailed.iter().filter(|mailed| mailed.by.id == by.id);
+
+        sent.map(|mailed| mailed.count + u64::from(mailed.bytes.pieces()) - 1).max()
     }
 
     /// Takes the children this turn stood up, each in the order its `begin` finished.
@@ -437,7 +466,7 @@ impl Owing {
         };
         let replied = match tie.read() {
             Tied::Asks(count) => (Tie::answers(count), Self::Answered),
-            Tied::Tell | Tied::Answers(_) => (Tie::TELL, self),
+            Tied::Tell | Tied::Answers(_) | Tied::Unanswered(_) => (Tie::TELL, self),
         };
 
         Ok(replied)
@@ -621,12 +650,13 @@ impl Seat<'_> {
         Ok(())
     }
 
-    /// Asks `mail` of `to`, keeping `context` until it is answered: a request, filed by the engine once the turn has
-    /// run (ADR-0017).
+    /// Asks `mail` of `to`, keeping `context` until it is answered with a kind `answer` names: a request, filed by
+    /// the engine once the turn has run (ADR-0017).
     fn request<K: Kind + Encode<Actors>, C: Encode<Within>>(
         &mut self,
         to: Seated,
         mail: &K,
+        answer: KindId,
         context: &C,
     ) -> Result<(), EncodeError> {
         let mut out = Writer::<Within>::new(WithinWriter::new());
@@ -634,7 +664,7 @@ impl Seat<'_> {
         let context = out.into_bytes();
         let count = self.sent + 1;
         self.write_after(to, mail, false, Tie::asks(count))?;
-        self.asked.asks.push(Asking { count, context });
+        self.asked.asks.push(Asking { count, answer, context });
 
         Ok(())
     }
@@ -1364,14 +1394,15 @@ impl<S> Turn<'_, S> {
     ///
     /// It builds only when the turn's sends list [`Asks<P, K, C>`]: `P` answers `K` with one kind, and the actor
     /// handles that answer with `C`. What the reference reaches is proven, so nothing is checked when it is sent.
-    pub fn ask_to<P, K, C, I>(&mut self, reference: ProtocolRef<P>, mail: &K, context: &C) -> Result<(), EncodeError>
+    pub fn ask_to<P, K, A, C, I>(&mut self, reference: ProtocolRef<P>, mail: &K, context: &C) -> Result<(), EncodeError>
     where
-        P: Protocol + Carries<K>,
+        P: Protocol + Carries<K, Answers = (A,)>,
         K: Kind + Encode<Actors>,
+        A: Kind,
         C: Kind + Encode<Within>,
         S: Allows<Asks<P, K, C>, I>,
     {
-        self.seat.request(reference.seated(), mail, context)
+        self.seat.request(reference.seated(), mail, KindId::of::<A>(), context)
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.

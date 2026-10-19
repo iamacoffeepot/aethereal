@@ -90,6 +90,7 @@ fn role(item: &Item<'_>) -> Role {
         Item::Mail(mail) => Role::Kind(mail.kind()),
         Item::Ended(_) => Role::Ended,
         Item::Answer { mail, .. } => Role::Answer(mail.kind()),
+        Item::Unanswered { asking, .. } => Role::Answer(asking.answer),
     }
 }
 

@@ -23,7 +23,7 @@ pub use plan::{Plan, Share, Split, SplitCost, Whole, Workers};
 
 use crate::id::root_id;
 use crate::log;
-use crate::stream::{self, Handed, Streams};
+use crate::stream::{self, Handed, Pieces, Streams};
 use crate::table::Actors;
 use crate::watch::{Notice, Watches};
 use crate::{
@@ -34,8 +34,8 @@ use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, Actor, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Carried, Chain, Closing,
     Code, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, Keeping, Keeps, Links, Mail,
-    MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated, Seats, Stood,
-    Turning, Unfit, What, Why, config_bytes,
+    MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated, Seats, Stood, Tie,
+    Tied, Turning, Unanswered, Unfit, What, Why, config_bytes,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -1332,6 +1332,8 @@ impl Reading<'_> {
             let is_live = room.lives.life(me).is_some_and(lives::Life::is_live);
             if is_live {
                 self.turns(&mut room, me, Work::Items(*run), clock, tally, asked, lists);
+            } else {
+                lists.unhanded_all(asked, me, room.streams.items(run));
             }
         }
         runs.clear();
@@ -1478,6 +1480,10 @@ impl Reading<'_> {
                             tie,
                         );
                         let outcome = actor.turn(item, turning);
+                        // Most mail is no request.
+                        if !tie.is_tell() {
+                            ask::owed(me, source, tie, &outcome, stepped.sent, asked);
+                        }
                         waiting.settle(tie, asked, &outcome);
                         lists.drop_untaken(me, keeping, handed);
                         let ran = Ran::of(me, outcome, asked, context);
@@ -1492,6 +1498,10 @@ impl Reading<'_> {
                     if is_spent {
                         break;
                     }
+                }
+                // What it was handed behind the turn that ended it is never handed to it.
+                if stepped.ended {
+                    lists.unhanded_all(asked, me, pieces);
                 }
                 if is_spent && !stepped.ended {
                     streams.carry(&run, slice.taken, self.mail);
@@ -1574,12 +1584,15 @@ impl Reading<'_> {
     ) {
         let Room { lives, seating, actors, instances, .. } = room;
         let me = hop.to;
+        let unhanded = Context { root: hop.root, depth: hop.depth + 1 };
         let (Some(seat), Some(life), Some(held)) = (seating.seated.get(me), lives.life(me), actors.get_mut(me)) else {
+            lists.ended_before(asked, me, hop.from, hop.tie, unhanded);
             return;
         };
         let mut stepped = lists.fusing.stepped(me, life.sent());
         let is_live = life.is_live() && !stepped.ended;
         if !is_live {
+            lists.ended_before(asked, me, hop.from, hop.tie, unhanded);
             return;
         }
         let Holding::Here(mut actor) = mem::replace(&mut held.actor, Holding::Away) else {
@@ -1637,6 +1650,9 @@ impl Reading<'_> {
                 );
 
                 let outcome = actor.turn(item, turning);
+                if !hop.tie.is_tell() {
+                    ask::owed(me, hop.from, hop.tie, &outcome, sent_before, asked);
+                }
                 waiting.settle(hop.tie, asked, &outcome);
 
                 outcome
@@ -1916,6 +1932,31 @@ impl Lists {
         }
     }
 
+    /// Says to the asker of each of `items` that is a request that `to` had ended or was gone when it was to be handed
+    /// to it (ADR-0017). Out of the loop that hands items, which it would cost to read them here as well.
+    #[cold]
+    #[inline(never)]
+    fn unhanded_all(&mut self, asked: &mut Asked, to: Seated, items: Pieces<'_>) {
+        for handed in items {
+            if let Handed::Mail { envelope, .. } = handed {
+                let context = Context { root: envelope.root, depth: envelope.depth + 1 };
+                self.ended_before(asked, to, handed.source(), envelope.tie, context);
+            }
+        }
+    }
+
+    /// Says to `from`, when mail tied as `tie` is its request, that `to` had ended or was gone when it was to be
+    /// handed to it: in `context`, the request's chain, as a reply would be (ADR-0017).
+    #[cold]
+    fn ended_before(&mut self, asked: &mut Asked, to: Seated, from: Seated, tie: Tie, context: Context) {
+        let Tied::Asks(request) = tie.read() else {
+            return;
+        };
+        let mailed = asked.unanswered(to, from, ask::ended_order(request), request, Unanswered::Ended);
+        let (key, entry) = stream::entry(mailed, &context);
+        self.routes.streams.put(key, entry);
+    }
+
     /// Drops what arrived for an actor that keeps `keeping` with mail it never handled, as it leaves its seat: that
     /// mail was not delivered, which each giver's log records. What it owned is dropped with it (ADR-0010).
     fn lose_arriving(&mut self, keeping: &mut Keeping) {
@@ -1949,7 +1990,8 @@ impl Ran {
     /// in `context`.
     ///
     /// A turn that fails changes nothing outside its actor: what it asked for is dropped but for its log lines,
-    /// and the engine writes the one effect that says the actor ended (ADR-0009). The seats of the children it
+    /// and the engine writes the one effect that says the actor ended (ADR-0009), and says to the asker of the request
+    /// it handled, if it was one, that it failed (ADR-0017). The seats of the children it
     /// stood up are given back.
     #[allow(clippy::inline_always, reason = "once for every turn: a call here costs a tenth of a turn, measured")]
     #[inline(always)]
@@ -2014,7 +2056,8 @@ impl Seen {
 /// (ADR-0009, ADR-0015). What it gave goes with no mail, so it is dropped as its log records, and what the children
 /// it stood up gave is dropped with them, since they were never live (ADR-0010).
 fn keep_lines(buffers: &mut Buffers, me: Seated) {
-    buffers.mailed.clear();
+    // What the engine says of the request the turn handled is the engine's, and is sent (ADR-0017).
+    buffers.mailed.retain(|mailed| matches!(mailed.tie.read(), Tied::Unanswered(_)));
     buffers.effects.retain(|effect| is_reported_failure(effect, me));
     buffers.gifts.retain(|gift| gift.by == Giver::Actor(me));
     for gift in &mut buffers.gifts {

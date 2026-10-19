@@ -3,7 +3,7 @@
 use crate::declared::{BackTo, Carries, Handled, Handles, Kinds, Listed, Marker, RepliesTo, ReplyWithin, Role};
 use crate::declared::{Sending, Target};
 use crate::{Actors, Item, Within, WithinReader};
-use aethereal_data::{Budget, Decode, DecodeError, Kind, KindId, Reader};
+use aethereal_data::{Budget, Decode, DecodeError, Kind, KindId, KindName, Plain, Reader};
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
@@ -184,7 +184,11 @@ pub enum Answered<A> {
 }
 
 /// Why a request was not answered (ADR-0017).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// What the engine says of such a request is mail of this kind, from the actor asked, to the asker, tied to the request
+/// as only the engine ties mail ([`Tie::unanswered`](crate::Tie::unanswered)), so no actor can say it in the engine's
+/// place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Unanswered {
     /// The receiver had ended, or was gone, when the request was to be handed to it, or it ended owing the answer.
     Ended,
@@ -194,12 +198,18 @@ pub enum Unanswered {
     Unreplied,
 }
 
+impl Kind for Unanswered {
+    const NAME: KindName = KindName::new("aether.actor.unanswered");
+}
+
 /// A request a turn asked, and the context its asker keeps until it is answered, as the engine files it: under the
 /// request's count, in bytes that cross [`Within`] (ADR-0017).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asking {
     /// The asker's count of the request, which with the asker is its id.
     pub count: u64,
+    /// The kind the request is answered with, whose handler is handed what became of it.
+    pub answer: KindId,
     /// The context, encoded.
     pub context: Vec<u8>,
 }
@@ -228,13 +238,14 @@ impl<A: Kind + Decode<Actors> + 'static, C: Kind + Decode<Within> + 'static> Han
     type Item<'a> = (Answered<A>, C);
 
     fn take(item: Item<'_>) -> Result<(Answered<A>, C), crate::Fault> {
-        let Item::Answer { mail, context } = item else {
-            unreachable!("only an answer is handed to the handler of answers");
+        let (answered, mail, asking) = match item {
+            Item::Answer { mail, asking } => (Answered::Yes(mail.contents()?), mail, asking),
+            Item::Unanswered { mail, asking } => (Answered::No(mail.contents()?), mail, asking),
+            Item::Mail(_) | Item::Ended(_) => unreachable!("only what became of a request is handed to its handler"),
         };
-        let answer = mail.contents()?;
-        let context = within(context, mail.limit())?;
+        let context = within(&asking.context, mail.limit())?;
 
-        Ok((Answered::Yes(answer), context))
+        Ok((answered, context))
     }
 }
 
