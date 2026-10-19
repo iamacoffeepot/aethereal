@@ -25,7 +25,7 @@ use aethereal_actor::{
     FalseWatch, Fault, Guests, Held as Pinning, Hosted, How, Instances, Item, Preparing, Puts, Reads, Refused, Role,
     Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, Why,
 };
-use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindName, from_bytes, to_bytes};
+use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, from_bytes, to_bytes};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::mem;
 use std::ptr::NonNull;
@@ -333,6 +333,21 @@ fn reads_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
     linker.func_wrap("aethereal", "aethereal_held", |mut caller: Caller<'_, Lending>, id: u64| {
         answer(&mut caller, |answering| u32::from(answering.table.held(ActorId::new(id))))
     })?;
+    linker.func_wrap(
+        "aethereal",
+        "aethereal_lists",
+        |mut caller: Caller<'_, Lending>, id: u64, at: u32, len: u32| {
+            let kinds = guest_bytes(&mut caller, Span { at, len });
+            let kinds = kinds.and_then(|kinds| from_bytes::<Vec<KindId>>(&kinds, &mut Budget::new(1 << 10)).ok());
+            answer(&mut caller, |answering| {
+                // Ids the guest wrote that do not read back are listed by no type.
+                let Some(kinds) = kinds else {
+                    return 0;
+                };
+                u32::from(answering.table.lists(ActorId::new(id), &kinds))
+            })
+        },
+    )?;
 
     Ok(())
 }
@@ -740,7 +755,7 @@ impl Code {
     }
 
     /// Which of the types it makes is the one of id `kind`, and what it declares.
-    fn made_of(&self, kind: aethereal_data::KindId) -> Option<(u32, &'static Declared)> {
+    fn made_of(&self, kind: KindId) -> Option<(u32, &'static Declared)> {
         let of = self.made.iter().position(|declared| declared.id() == kind)?;
 
         Some((u32::try_from(of).ok()?, self.made[of]))
@@ -2145,7 +2160,7 @@ mod tests {
 
         let trapped = |actor| {
             let is_trap = |entry: &aethereal_substrate::Entry| match entry {
-                aethereal_substrate::Entry::Failed(fault) => fault.kind() == aethereal_data::KindId::of::<Trapped>(),
+                aethereal_substrate::Entry::Failed(fault) => fault.kind() == KindId::of::<Trapped>(),
                 _ => false,
             };
             engine.log(actor).any(is_trap)
@@ -2178,11 +2193,10 @@ mod tests {
         }
 
         let is_trap = |entry: &aethereal_substrate::Entry| match entry {
-            aethereal_substrate::Entry::Failed(fault) => fault.kind() == aethereal_data::KindId::of::<Trapped>(),
+            aethereal_substrate::Entry::Failed(fault) => fault.kind() == KindId::of::<Trapped>(),
             _ => false,
         };
-        let refused_trapped =
-            matches!(&doomed, Err(Refused::Began(fault)) if fault.kind() == aethereal_data::KindId::of::<Trapped>());
+        let refused_trapped = matches!(&doomed, Err(Refused::Began(fault)) if fault.kind() == KindId::of::<Trapped>());
         assert!(refused_trapped, "the doomed root is refused with its trap");
         assert!(engine.log(echo).any(is_trap), "the echo, in the same instance, ended with it");
         assert!(!engine.table().is_live(echo.id));
@@ -2208,7 +2222,7 @@ mod tests {
     }
 
     /// The answers each test's askers were given, by the tally the test keeps them in.
-    static ANSWERS: [Mutex<Vec<u64>>; 9] = [const { Mutex::new(Vec::new()) }; 9];
+    static ANSWERS: [Mutex<Vec<u64>>; 10] = [const { Mutex::new(Vec::new()) }; 10];
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
@@ -2450,6 +2464,29 @@ mod tests {
         settle(&mut engine);
 
         assert_eq!(answers(2), [0, 102]);
+    }
+
+    #[test]
+    fn a_guest_casts_a_reference_to_a_protocol_by_what_its_host_reads_of_the_type() {
+        // Catches a guest's cast that answers by its own table, which holds no other code's types, one its host
+        // answers for a type that lists only some of the protocol's kinds, and ids that do not cross intact.
+        let Some(parts) = NonZeroUsize::new(2) else {
+            panic!("two is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        for key in [0, 1] {
+            let Ok(_) = engine.add_root::<Keeper>(&key, Keeps { key, tally: 9 }) else {
+                panic!("a keeper begins");
+            };
+        }
+        let keeper = |key: u64| ActorPath::from_root(&PathSegment::new(Keeper::NAME, &key));
+        let seek = echo::Seek { paths: vec![keeper(0), keeper(1)] };
+        let Ok(_) = engine.add_root_from::<echo::Caster>(&code, &(), &seek) else {
+            panic!("the caster begins");
+        };
+        settle(&mut engine);
+
+        assert_eq!(answers(9), [0, 101]);
     }
 
     /// The reason a mortal fails.
@@ -3022,7 +3059,7 @@ mod tests {
         let forged = engine.add_root_from::<echo::Hoarder>(&code, &(), &forge);
         settle(&mut engine);
 
-        let is_forged = |fault: &Fault| fault.kind() == aethereal_data::KindId::of::<Forged>();
+        let is_forged = |fault: &Fault| fault.kind() == KindId::of::<Forged>();
         let refused_forged = matches!(&forged, Err(Refused::Began(fault)) if is_forged(fault));
         let ended_forged = |entry: &aethereal_substrate::Entry| match entry {
             aethereal_substrate::Entry::Failed(fault) => is_forged(fault),

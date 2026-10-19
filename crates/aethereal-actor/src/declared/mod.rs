@@ -102,6 +102,12 @@ impl Declared {
         self.handles(Role::Kind(kind))
     }
 
+    /// Whether the type lists every one of `kinds`: the kinds of a protocol it takes (ADR-0016).
+    #[must_use]
+    pub fn lists_all(&self, kinds: &[KindId]) -> bool {
+        kinds.iter().all(|kind| self.lists(*kind))
+    }
+
     /// Whether the type takes mail of `kind`: it lists the kind, or it falls back.
     #[must_use]
     pub fn takes(&self, kind: KindId) -> bool {

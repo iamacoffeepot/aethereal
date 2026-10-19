@@ -405,6 +405,44 @@ impl Actor for Seeker {
     }
 }
 
+/// An actor that resolves each path it is made with as it begins, casts each actor one names to a protocol, and
+/// pings each that casts with its place in the list: to `(Ping,)` as it is, and to `(Ping, Shut)` past fifty, so what
+/// is pinged says which casts answered.
+#[derive(Bound)]
+pub struct Caster;
+
+impl Kind for Caster {
+    const NAME: KindName = KindName::new("aether.guest.caster");
+}
+
+impl Actor for Caster {
+    type Config = Seek;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = (ToAny<(Ping,), Ping>,);
+    type EndSends = ();
+
+    fn begin(seek: Seek, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        for (n, path) in (0..).zip(&seek.paths) {
+            let Some(found) = turn.resolve(path) else {
+                continue;
+            };
+            if let Some(pinged) = turn.cast::<(Ping,)>(found) {
+                turn.send_to_any(ToWithoutMail::Held(pinged.erase()), &Ping { n })?;
+            }
+            if let Some(shut) = turn.cast::<(Ping, Shut)>(found) {
+                turn.send_to_any(ToWithoutMail::Held(shut.erase()), &Ping { n: n + 50 })?;
+            }
+        }
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
 /// What a watcher is made from: the paths of the actors it watches, and of the one it tells of their endings.
 #[derive(Plain)]
 pub struct Watching {
@@ -1127,5 +1165,6 @@ aethereal_actor::guest!(
     Spendthrift,
     Parting,
     Archive,
-    Reader
+    Reader,
+    Caster
 );
