@@ -410,10 +410,13 @@ impl Seat<'_> {
     }
 
     /// The reference, to the tuple of kinds `P`, when the declaration of its actor's type lists every kind of `P`:
-    /// none when one is missing, or the type is not one this turn can read (ADR-0016).
+    /// none when one is missing, or the table holds no such actor (ADR-0016). A type this turn cannot read itself is
+    /// read by the table.
     fn cast<P: Kinds>(&self, reference: ErasedActorRef) -> Option<ProtocolRef<P>> {
-        let declared = self.declared_at(reference.id())?;
-        let lists = P::KINDS.iter().all(|kind| declared.lists(*kind));
+        let id = reference.id();
+        let lists = self
+            .declared_at(id)
+            .map_or_else(|| self.table.lists(id, P::KINDS), |declared| declared.lists_all(P::KINDS));
 
         lists.then(|| ProtocolRef::new(reference.seated()))
     }
@@ -612,7 +615,7 @@ impl Seat<'_> {
         let reaches = match target {
             Target::Sender => true,
             Target::Type(_, id) => receiver.id() == id,
-            Target::Handling(kinds) => kinds.iter().all(|kind| receiver.lists(*kind)),
+            Target::Handling(kinds) => receiver.lists_all(kinds),
             Target::Watched => false,
         };
         let receiver = receiver.name();

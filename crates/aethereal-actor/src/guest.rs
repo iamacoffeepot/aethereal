@@ -110,6 +110,9 @@ pub struct Calls {
     pub resolve: extern "C" fn(u32, u32, u32) -> u32,
     /// Whether the actor of the id is live: one when it is.
     pub is_live: extern "C" fn(u64) -> u32,
+    /// Whether the type of the actor of the id lists every kind of the ids written at the address, of the length:
+    /// one when it does.
+    pub lists: extern "C" fn(u64, u32, u32) -> u32,
     /// Whether the table held the actor of the id as the step began, or it was stood up since in the part: one when
     /// it was.
     pub held: extern "C" fn(u64) -> u32,
@@ -1042,6 +1045,15 @@ impl Table for Host {
         (self.calls.is_live)(id.bits()) == 1
     }
 
+    /// Whether the type of the actor `id` stands for lists every one of `kinds`, asked of the host, which holds it.
+    fn lists(&self, id: ActorId, kinds: &[KindId]) -> bool {
+        let Ok(kinds) = to_bytes(&kinds.to_vec()) else {
+            return false;
+        };
+
+        (self.calls.lists)(id.bits(), address(kinds.as_ptr()), count(kinds.len())) == 1
+    }
+
     /// Nothing: the guest holds no other actor's type, and leaves every check of a send to its host, which fails the
     /// turn of a send its declaration does not reach where a native one stops the engine (ADR-0013, ADR-0015).
     fn declared(&self, _: ActorId) -> Option<&'static Declared> {
@@ -1106,6 +1118,7 @@ macro_rules! guest {
                 safe fn aethereal_has_made(id: u64) -> u32;
                 safe fn aethereal_resolve(path: u32, len: u32, seated: u32) -> u32;
                 safe fn aethereal_is_live(id: u64) -> u32;
+                safe fn aethereal_lists(id: u64, kinds: u32, len: u32) -> u32;
                 safe fn aethereal_held(id: u64) -> u32;
                 safe fn aethereal_take_seat() -> u64;
                 safe fn aethereal_give_back_seat(seat: u64);
@@ -1135,6 +1148,7 @@ macro_rules! guest {
                 has_made: aethereal_has_made,
                 resolve: aethereal_resolve,
                 is_live: aethereal_is_live,
+                lists: aethereal_lists,
                 held: aethereal_held,
                 take,
                 give_back,

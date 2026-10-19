@@ -1,7 +1,7 @@
 //! The boundaries an actor's values cross: `Within` and `Actors` (ADR-0004).
 
 use crate::{BlobHash, BlobId, Declared, SeatNumber, Seated};
-use aethereal_data::{ActorId, ActorPath, Boundary, PathSegment};
+use aethereal_data::{ActorId, ActorPath, Boundary, KindId, PathSegment};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -23,6 +23,12 @@ pub trait Table {
     /// What the type of the actor `id` stands for declares (ADR-0013), when it has been made, live or ended, or this
     /// actor stood it up in an earlier turn of the step.
     fn declared(&self, id: ActorId) -> Option<&'static Declared>;
+
+    /// Whether the type of the actor `id` stands for lists every one of `kinds`, as [`Self::declared`] finds it: what
+    /// a turn's cast to a protocol reads (ADR-0016). A table that holds no other actor's type asks whoever does.
+    fn lists(&self, id: ActorId, kinds: &[KindId]) -> bool {
+        self.declared(id).is_some_and(|declared| declared.lists_all(kinds))
+    }
 
     /// Whether the table held the actor `id` stands for as the step began, or it was stood up since in this part of
     /// the engine: whether, for whoever holds a reference to it, its ending is still to come (ADR-0008).
