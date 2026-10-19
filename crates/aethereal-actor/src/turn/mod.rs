@@ -1180,7 +1180,8 @@ impl<'a, S: Sends> Beginning<'a, S> {
 }
 
 impl<S> Beginning<'_, S> {
-    /// Sends `mail` to the actor `to` names, with the mail of the turn this `begin` runs in. It is delivered after the turn, in a later step.
+    /// Sends `mail` to the actor `to` names, with the mail of the turn this `begin` runs in. It is delivered after the
+    /// turn, in a later step.
     ///
     /// It builds only when the turn's sends list a [`ToType<T, K>`], and `T` is found from them when one names `K`.
     ///
@@ -1197,8 +1198,8 @@ impl<S> Beginning<'_, S> {
         self.seat.send_typed::<T, K>(&to, mail)
     }
 
-    /// Sends `mail` to the actor `reference` refers to, with the mail of the turn this `begin` runs in. Its type is proven, so nothing is checked when it is
-    /// sent.
+    /// Sends `mail` to the actor `reference` refers to, with the mail of the turn this `begin` runs in. Its type is
+    /// proven, so nothing is checked when it is sent.
     ///
     /// It builds only when the turn's sends list [`ToType<T, K>`].
     pub fn send_to<T, K, I>(&mut self, reference: ActorRef<T>, mail: &K) -> Result<(), EncodeError>
@@ -1439,8 +1440,8 @@ impl<S> Ending<'_, S> {
         self.seat.send_typed::<T, K>(&to, mail)
     }
 
-    /// Sends `mail` to the actor `reference` refers to, as the actor's last mail. Its type is proven, so nothing is checked when it is
-    /// sent.
+    /// Sends `mail` to the actor `reference` refers to, as the actor's last mail. Its type is proven, so nothing is
+    /// checked when it is sent.
     ///
     /// It builds only when the turn's sends list [`ToType<T, K>`].
     pub fn send_to<T, K, I>(&mut self, reference: ActorRef<T>, mail: &K) -> Result<(), EncodeError>
