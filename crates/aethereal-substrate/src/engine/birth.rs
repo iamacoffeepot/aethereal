@@ -1,6 +1,7 @@
 //! The children a step's turns stood up, seated where their seats lie when the part is folded (ADR-0011).
 
 use super::ask::Waiting;
+use super::debts::Debts;
 use super::made::Made;
 use super::{Held, Holding, Seating, Sitting, part};
 use crate::BySeat;
@@ -97,7 +98,10 @@ pub(super) fn sit(
     let kind = actor.declared().id();
     let prepares = actor.prepares();
     seating.seated.insert(me, Sitting { path, above, kind, made: Made::none(), prepares });
-    actors.insert(me, Held { actor: Holding::Here(actor), keeping, waiting: Waiting::default() });
+    actors.insert(
+        me,
+        Held { actor: Holding::Here(actor), keeping, waiting: Waiting::default(), debts: Debts::default() },
+    );
 }
 
 /// Notes in the seat of `parent`, in its part's `seating`, that it made the child `child`. A parent that has left

@@ -88,7 +88,7 @@ pub struct Birth<'a> {
     pub asked: &'a mut Asked,
     pub instances: &'a mut Instances,
     #[cfg(feature = "std")]
-    pub refers: &'a [crate::Held],
+    pub refers: &'a [crate::Pinning],
     pub keeping: &'a mut Keeping,
     pub carried: &'a [u64],
 }
@@ -144,7 +144,7 @@ fn begin_linked<A: Actor>(config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Run
 #[cfg(feature = "std")]
 pub struct Config {
     pub bytes: Vec<u8>,
-    pub held: Vec<crate::Held>,
+    pub held: Vec<crate::Pinning>,
     pub carried: Vec<u64>,
 }
 

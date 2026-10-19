@@ -30,11 +30,11 @@ pub struct Arena {
     /// The pins the mail in the slab holds, each at where its reference begins in the slab, in that order: dropped
     /// when the arena is emptied (ADR-0014).
     #[cfg(feature = "std")]
-    held: Vec<crate::Held>,
+    held: Vec<crate::Pinning>,
     /// The pins the spilled mail holds, each with the index of its piece and where in that piece its reference
     /// begins, in that order.
     #[cfg(feature = "std")]
-    held_spilled: Vec<(u32, crate::Held)>,
+    held_spilled: Vec<(u32, crate::Pinning)>,
 }
 
 /// The pieces of mail an arena holds, apart from the pins they hold, so that a write keeps pins while it writes them.
@@ -199,7 +199,7 @@ impl Arena {
     /// piece, and drops them when the piece is not written.
     pub(crate) fn write_holding<E>(
         &mut self,
-        write: impl FnOnce(Vec<u8>, &mut Vec<crate::Held>) -> (Vec<u8>, Result<(), E>),
+        write: impl FnOnce(Vec<u8>, &mut Vec<crate::Pinning>) -> (Vec<u8>, Result<(), E>),
     ) -> Result<Payload, E> {
         let Self { pieces, held, .. } = self;
         let mark = held.len();
@@ -249,7 +249,7 @@ impl Arena {
     /// Adds to `into` a pin of its own on each blob the bytes of `payload` refer to, when they are in this arena, each
     /// at `base` more than where its reference begins in them: for bytes copied out to `base`.
     #[inline]
-    pub fn pin_copied(&self, payload: Payload, base: u32, into: &mut Vec<crate::Held>) {
+    pub fn pin_copied(&self, payload: Payload, base: u32, into: &mut Vec<crate::Pinning>) {
         let is_own = payload.slot() == self.slot();
         let holds = !self.held.is_empty() || !self.held_spilled.is_empty();
         if is_own && holds {
@@ -259,7 +259,7 @@ impl Arena {
 
     /// [`Self::pin_copied`], for an arena whose mail holds pins: most holds none.
     #[inline(never)]
-    fn pin_held(&self, payload: Payload, base: u32, into: &mut Vec<crate::Held>) {
+    fn pin_held(&self, payload: Payload, base: u32, into: &mut Vec<crate::Pinning>) {
         self.held_by(payload).each(|at, pin| into.push((base + at, pin.clone())));
     }
 
@@ -312,9 +312,9 @@ pub enum Pinned<'a> {
     /// The bytes refer to no blob.
     Nothing,
     /// The pins among `held`, each at where its reference begins, counted from `start`.
-    Lying { held: &'a [crate::Held], start: u32 },
+    Lying { held: &'a [crate::Pinning], start: u32 },
     /// The pins of a spilled piece, each at where its reference begins in it.
-    Spilled { held: &'a [(u32, crate::Held)] },
+    Spilled { held: &'a [(u32, crate::Pinning)] },
 }
 
 #[cfg(feature = "std")]

@@ -253,7 +253,7 @@ impl<'a> Hosted<'a> {
         to: Seated,
         kind: KindId,
         bytes: &[u8],
-        #[cfg(feature = "std")] held: &[crate::Held],
+        #[cfg(feature = "std")] held: &[crate::Pinning],
     ) -> Result<(), FalseSend> {
         let (sends, source) = if by == self.seat.me {
             (self.sends, self.source)
@@ -405,7 +405,7 @@ impl<'a> Hosted<'a> {
     /// Writes `bytes`, a piece of mail its guest wrote, into the turn's arena, kept with `held`, a pin on each blob
     /// they refer to, each at where its reference begins in them.
     #[cfg(feature = "std")]
-    fn write_holding(&mut self, bytes: &[u8], held: &[crate::Held]) -> Payload {
+    fn write_holding(&mut self, bytes: &[u8], held: &[crate::Pinning]) -> Payload {
         let written = self.seat.asked.arena.write_holding(|mut out, pins| {
             let base = u32::try_from(out.len()).unwrap_or(u32::MAX);
             out.extend_from_slice(bytes);
