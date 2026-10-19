@@ -247,7 +247,7 @@ impl Handles<Order> for Pointer {
         match verb {
             "again" => {
                 let x = xs.first().copied().unwrap_or_default();
-                turn.ask_to(board.protocol::<Tiles, _>(), &WhichTile { x }, &Looking { at: 9 })?;
+                turn.ask_to(board.protocol(), &WhichTile { x }, &Looking { at: 9 })?;
             }
             "release" => {
                 let how = xs.first().copied().unwrap_or_default();
@@ -259,7 +259,7 @@ impl Handles<Order> for Pointer {
             }
             "ask" => {
                 for (at, x) in (0..).zip(xs) {
-                    turn.ask_to(board.protocol::<Tiles, _>(), &WhichTile { x }, &Looking { at })?;
+                    turn.ask_to(board.protocol(), &WhichTile { x }, &Looking { at })?;
                 }
             }
             "tell" => {
@@ -269,8 +269,8 @@ impl Handles<Order> for Pointer {
             }
             "both" => {
                 let (asked, told) = (xs.first().copied().unwrap_or_default(), xs.last().copied().unwrap_or_default());
-                turn.ask_to(board.protocol::<Tiles, _>(), &WhichTile { x: asked }, &Looking { at: 0 })?;
-                turn.send::<Board, _, _>(To::ChildInstanced(Board::NAME, 1_u64.to_name()), &WhichTile { x: told })?;
+                turn.ask_to(board.protocol(), &WhichTile { x: asked }, &Looking { at: 0 })?;
+                turn.send(To::ChildInstanced(Board::NAME, 1_u64.to_name()), &WhichTile { x: told })?;
             }
             _ => {}
         }
@@ -353,7 +353,7 @@ impl Handles<Order> for Keeper {
             return Err(Fault::new(&Order { text: String::from("no room") })?);
         };
         let board = self.board;
-        turn.ask_to(board.protocol::<Tiles, _>(), &WhichTile { x: 3 }, &Kept { blob })?;
+        turn.ask_to(board.protocol(), &WhichTile { x: 3 }, &Kept { blob })?;
 
         Ok(())
     }

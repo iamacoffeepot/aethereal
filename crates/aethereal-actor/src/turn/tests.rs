@@ -506,8 +506,8 @@ fn a_reference_casts_to_a_protocol_only_when_its_type_lists_every_kind() {
     let held = ErasedActorRef::new(leaf);
 
     let cast = turn.cast::<(Shut, Poke)>(held);
-    let converted = ActorRef::<Leaf>::new(leaf).protocol::<(Poke, Shut), _>().narrow();
-    assert_eq!(cast, Some(converted));
+    let converted: ProtocolRef<(Poke, Shut)> = ActorRef::<Leaf>::new(leaf).protocol();
+    assert_eq!(cast, Some(converted.narrow()));
     assert_eq!(turn.cast::<(Poke, ToldToFail)>(held), None);
     assert_eq!(turn.cast::<(Poke,)>(ErasedActorRef::new(seated(8, 4))), None);
 }
@@ -542,7 +542,7 @@ fn mail_sent_through_a_protocol_reference_reaches_the_actor_it_refers_to() {
     let table = Listed(Vec::new());
     let mut asked = Asked::new();
     let mut turn = opened::<(ToAny<(Poke,), Poke>,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
-    let references = receivers.map(|receiver| ActorRef::<Leaf>::new(receiver).protocol::<(Poke,), _>());
+    let references: [ProtocolRef<(Poke,)>; 3] = receivers.map(|receiver| ActorRef::<Leaf>::new(receiver).protocol());
 
     assert_eq!(turn.send_to(references[0], &Poke), Ok(()));
     assert_eq!(turn.send_to_all(&references[1..], &Poke), Ok(()));
@@ -582,10 +582,10 @@ fn mail_sent_through_a_named_protocol_reaches_the_actor_it_refers_to() {
     let mut asked = Asked::new();
     let mut turn =
         opened::<(ToAny<Poking, Poke>, ToAny<(Shut,), Shut>)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
-    let references = receivers.map(|receiver| ActorRef::<Leaf>::new(receiver).protocol::<Poking, _>());
+    let references: [ProtocolRef<Poking>; 2] = receivers.map(|receiver| ActorRef::<Leaf>::new(receiver).protocol());
 
     assert_eq!(turn.send_to(references[0], &Poke), Ok(()));
-    assert_eq!(turn.send_to(references[1].narrow::<(Shut,), _>(), &Shut), Ok(()));
+    assert_eq!(turn.send_to(references[1].narrow(), &Shut), Ok(()));
 
     let (buffers, _, _, _, _) = asked.into_parts();
     let seen: Vec<(Seated, KindId)> = buffers.mailed.iter().map(|mailed| (mailed.to, mailed.kind)).collect();
@@ -600,7 +600,7 @@ fn subscribers_are_held_once_watched_once_and_leave_by_ending_or_unsubscribing()
     let table = Listed(Vec::new());
     let mut asked = Asked::new();
     let mut turn = opened::<(Watches,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
-    let listener = |at: Seated| ActorRef::<Leaf>::new(at).protocol::<(Poke,), _>();
+    let listener = |at: Seated| -> ProtocolRef<(Poke,)> { ActorRef::<Leaf>::new(at).protocol() };
     let mut subscribers = Subscribers::new();
 
     let added = [first, second, third, second].map(|at| subscribers.subscribe(&mut turn, listener(at)));
