@@ -89,7 +89,7 @@ impl<K> Feed<K> {
 - A turn that makes or uses a resource acts on the world outside its effects. A failed turn does not undo that, and such a turn cannot be run again from its record: a turn repeats only as far as its actor's own code does (ADR-0009).
 - An actor beneath a root can receive from outside the engine only when a source is given to it. A capability's root holds the source, and the actors that want what it brings subscribe to that root.
 - Finding a source's owner reads the seat it was found in at the last bring, and every seat in the engine only once it has moved since.
-- **Not decided here:** how an actor asks a resource for work that takes time, such as a fetch, and how that work is cancelled. A turn does not block, and a browser host cannot.
+- Work that takes time, such as a fetch, is not a resource's: it is a job, run outside the steps and answered in a later one, and cancelled by the actor that ran it (ADR-0018: `turn.run`, `turn.cancel`). A turn does not block, and a browser host cannot.
 - Two kinds that differ only in what their handles hold have the same layout (ADR-0006), since each handle is one integer. The engine's check of the ticket is what tells them apart.
 
 ## Alternatives considered
