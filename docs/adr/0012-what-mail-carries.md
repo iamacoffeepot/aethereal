@@ -52,7 +52,7 @@ The engine keeps a piece of mail under the actor it is for, with its id beside i
 
 **A root's `begin` starts a chain of its own.** Nothing caused it and it is handling no mail. The mail it sends has no cause, and its root is the id made of that root actor and a count of zero, which no piece of sent mail has.
 
-**What an actor keeps about the mail it sent is its own, kept under a chain's root and a depth.** An actor that sends mail and wants to know later what it sent it for keeps that in a field of its own, under the root of the chain and the depth of the mail it sent. A handler reads both from its mail: `mail.root()` and `mail.depth()`.
+**What an actor keeps about the mail it sent is its own, kept under a chain's root and a depth.** An actor that sends mail and wants to know later what it sent it for keeps that in a field of its own, under the root of the chain and the depth of the mail it sent. A request is the exception: the engine keeps what its asker hands it, and gives it back with the answer (ADR-0017). A handler reads both from its mail: `mail.root()` and `mail.depth()`.
 
 - Mail that comes back further down that chain has the same root and a greater depth. The actor finds what it kept under that root at a lesser depth, and the difference is how far back it was kept: one for mail sent in direct reply, more for mail that came by way of other actors.
 - An actor that keeps a second thing further down the same chain finds both, the nearer first.
@@ -70,7 +70,7 @@ The engine keeps a piece of mail under the actor it is for, with its id beside i
 - What happened is followed back by causes in a record of the run, to the resource that began it. A piece of mail alone names only its chain's root.
 - Every piece of mail carries two ids, of sixteen bytes each, its own and its root's, and its depth.
 - Every chain but a root's first begins at a resource, so the engine can say for any piece of mail what from outside set it off.
-- **Not decided here:** how a request and its answer are written over mail; how a `begin` and a closing turn, which handle no mail, read the chain and depth they send at; the chain of an ending that nothing inside the engine brought about, such as the host shutting down; large payloads; and how a record of the run keeps causes.
+- **Not decided here:** how a `begin` and a closing turn, which handle no mail, read the chain and depth they send at; the chain of an ending that nothing inside the engine brought about, such as the host shutting down; large payloads; and how a record of the run keeps causes.
 
 ## Alternatives considered
 
