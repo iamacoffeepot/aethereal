@@ -181,7 +181,7 @@ impl Kind for BranchConfig {
     const NAME: KindName = KindName::new("aether.test.branch_config");
 }
 
-/// A singleton that spawns leaves in its `begin`.
+/// A singleton that spawns leaves in its `begin`, and takes their answers to its pokes.
 #[derive(Plain)]
 struct Branch;
 
@@ -192,7 +192,7 @@ impl Kind for Branch {
 impl Actor for Branch {
     type Config = BranchConfig;
     type Key = ();
-    type Handles = ();
+    type Handles = (Poked,);
     type BeginSends = (ToType<Leaf, Poke>,);
     type EndSends = ();
 
@@ -212,6 +212,15 @@ impl Actor for Branch {
     }
 
     fn end(self, _turn: &mut Ending<'_, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// A branch takes the answer to a poke, and does nothing with it.
+impl Handles<Poked> for Branch {
+    type Sends = ();
+
+    fn handle(&mut self, _: Poked, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }

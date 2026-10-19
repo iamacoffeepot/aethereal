@@ -10,12 +10,14 @@
 
 mod handles;
 mod protocols;
+mod replies;
 mod sends;
 #[cfg(test)]
 mod tests;
 
 pub use handles::{Handled, HandledList, Handles, Others};
 pub use protocols::{Answering, CarriedBy, Carries, Conforms, Covers, Listed, Protocol};
+pub use replies::{BackTo, HandledBy, RepliesTo};
 pub use sends::{Allows, At, Kinds, Marker, Sends, ToAny, ToSender, ToType, Watches};
 
 use crate::Actor;
