@@ -30,8 +30,8 @@ use crate::{
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, Actor, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Carried, Chain, Closing,
-    Code, Declared, Effect, Fault, Gift, Given, Giver, Guests, How, Instances, Item, Keeping, Keeps, Links, Mail,
-    MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated, Seats, Stood,
+    Code, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, Item, Keeping, Keeps, Links,
+    Mail, MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated, Seats, Stood,
     Turning, Unfit, What, Why, config_bytes,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
@@ -138,8 +138,6 @@ pub struct Engine {
     unbuffered: Vec<Change>,
     /// The resources the chassis has handed in for the configs of roots it has not made yet (ADR-0010).
     handed: Vec<Gift>,
-    /// How many resources the chassis has handed in: the ticket of the last.
-    handed_count: u64,
     /// Which engine of the process this is, in the id of each blob it holds. Last, so what the engine's actors held
     /// is let go of before the engine is forgotten.
     number: Number,
@@ -383,7 +381,6 @@ impl Engine {
             puts: Vec::new(),
             unbuffered: Vec::new(),
             handed: Vec::new(),
-            handed_count: 0,
             number,
         }
     }
@@ -518,8 +515,11 @@ impl Engine {
     /// it is for (ADR-0010). The engine holds it until [`Self::add_root`] is given that config, which hands it to the
     /// root's `begin` to take: what the `begin` does not take is dropped, and recorded in the root's log.
     pub fn hand<R: Resource>(&mut self, value: R) -> Given<R> {
-        self.handed_count += 1;
-        let (gift, given) = Gift::handed(self.handed_count, value);
+        // Its ticket is from the writer of what is sent between steps, which no other resource has had.
+        let mut puts = self.puts(ROOTS, 0);
+        let ticket = puts.ticket();
+        self.puts[ROOTS] = puts;
+        let (gift, given) = Gift::handed(ticket, value);
         self.handed.push(gift);
 
         given
@@ -533,10 +533,15 @@ impl Engine {
         config.encode(&mut out).map_err(|_| Refused::NotMade)?;
         drop(out);
 
+        Ok(self.take_handed(&tickets))
+    }
+
+    /// Takes out the resources the chassis handed in that `tickets` name.
+    fn take_handed(&mut self, tickets: &[u64]) -> Vec<Gift> {
         let (gifts, rest) = mem::take(&mut self.handed).into_iter().partition(|gift| tickets.contains(&gift.ticket()));
         self.handed = rest;
 
-        Ok(gifts)
+        gifts
     }
 
     /// Makes a root of type `C` under `key` whose code is the blob `code` pins, for the chassis, and answers with its
@@ -559,11 +564,12 @@ impl Engine {
         let segment = PathSegment::new(C::NAME, key);
         let made = self.guests.made(code.id(), Declared::of::<C>()).ok_or(Refused::NotMade)?;
         let config = config_bytes(config).map_err(|_| Refused::NotMade)?;
+        let gifts = self.take_handed(&config.carried);
         let guests = Arc::clone(&self.guests);
 
-        // A guest's config carries no resource: it does not encode one (ADR-0015).
-        self.add_root_made(&segment, Code::Blob(made), Vec::new(), |me, path, table, asked, instances, _| {
-            let birth = Birth { me, path, above: Above::Chassis, table, asked, instances, refers: &config.held };
+        self.add_root_made(&segment, Code::Blob(made), gifts, |me, path, table, asked, instances, keeping| {
+            let (above, refers, carried) = (Above::Chassis, &config.held, &config.carried);
+            let birth = Birth { me, path, above, table, asked, instances, refers, keeping, carried };
 
             guests.begin(made, &config.bytes, birth)
         })
@@ -1412,8 +1418,9 @@ impl Reading<'_> {
                             sees: Sees::Step,
                             blobs: self.blobs,
                         };
-                        let (seats, puts, _) = asked.lent();
-                        let reads = Reads { table: &table, made: &seat.made, seats, puts };
+                        let (seats, puts, _, gifts) = asked.lent_gifts();
+                        let holds = Holds { keeping: &mut *keeping, gifts };
+                        let reads = Reads { table: &table, made: &seat.made, seats, puts, holds };
                         actor.prepare(Preparing::new(&batch, instances, reads));
                     }
                     // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
@@ -1559,8 +1566,9 @@ impl Reading<'_> {
             blobs: self.blobs,
         };
         if seat.prepares {
-            let (seats, puts, arena) = asked.lent();
-            let reads = Reads { table: &table, made: &seat.made, seats, puts };
+            let (seats, puts, arena, gifts) = asked.lent_gifts();
+            let holds = Holds { keeping: &mut *keeping, gifts };
+            let reads = Reads { table: &table, made: &seat.made, seats, puts, holds };
             let batch = batch::OneHop { reading: self, hop: &hop, lists, arena };
             actor.prepare(Preparing::new(&batch, instances, reads));
         }

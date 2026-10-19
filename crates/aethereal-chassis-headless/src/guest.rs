@@ -16,14 +16,16 @@
 //! back to it is refused.
 
 use aethereal_actor::records::{
-    self, Born, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, Other, OutHead, Parent, PinRecord, RefRecord,
-    SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds, WatchRecord, blob_at, refusal,
+    self, Born, ClaimRecord, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, Other, OutHead, Parent,
+    PinRecord, RefRecord, SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds, WatchRecord,
+    blob_at, refusal,
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Broke, Children, Declared, FalseSend,
-    FalseWatch, Fault, Guests, Held as Pinning, Hosted, How, Instances, Item, Preparing, Puts, Reads, Refused, Role,
-    Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, Why,
+    Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Broke, Children, Claimed, Declared,
+    FalseSend, FalseWatch, Fault, Gift, Guests, Held as Pinning, Holds, Hosted, How, Instances, Item, Keeping, NotHeld,
+    Preparing, Puts, Reads, Refused, Role, Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, Was, Why,
+    take_loose_ticket,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, from_bytes, to_bytes};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -140,6 +142,9 @@ struct Answering<'a> {
     given: &'a mut Given,
     /// The pins the call's instance holds, as the call began.
     holdings: &'a Holdings,
+    /// What the actor whose turns or `begin` the call runs holds of resources, which a child of other code it spawns
+    /// may be handed in its config (ADR-0010).
+    holds: Holds<'a>,
 }
 
 /// What the host gave a call into a guest that is still to be handed to the engine: the seats it gave the guest's
@@ -152,13 +157,16 @@ struct Given {
     /// The pins on the blobs offered to the call's instance, which it may take references to though it holds none:
     /// what the items handed in, a config, a state taken in, or a put refer to (ADR-0014).
     offered: Vec<BlobRef>,
+    /// The tickets of the resources the host handed to children of other code in their configs as it began them,
+    /// before the call's claims of them are held to: what the guest claims of them is already done (ADR-0010).
+    handed: Vec<u64>,
 }
 
 /// A child of other code its host was asked to begin for a guest, apart from the guest's turn, which takes in what
 /// its `begin` asked for when it is handed back (ADR-0015).
 enum Foreign {
-    /// It began, from `from`, run by `runs`, and its `begin` asked for what is in `asked`.
-    Began { me: Seated, from: aethereal_actor::Code, runs: Box<dyn Runs>, asked: Asked },
+    /// It began, from `from`, run by `runs`, keeping `keeping`, and its `begin` asked for what is in `asked`.
+    Began { me: Seated, from: aethereal_actor::Code, runs: Box<dyn Runs>, asked: Asked, keeping: Keeping },
     /// It was refused so: of what its `begin` asked for, only the lines in `asked` are kept.
     Refused { asked: Asked, refused: Refused },
     /// It began, and the guest took it back, as the `begin` that spawned it was refused: only the lines in `asked`
@@ -494,13 +502,13 @@ impl<'a> Answering<'a> {
     /// What answers a call's calls out, from what its batch was lent, the instances of its part, and the code its
     /// runtime holds.
     fn of(
-        Reads { table, made, seats, puts }: Reads<'a>,
+        Reads { table, made, seats, puts, holds }: Reads<'a>,
         instances: &'a mut Instances,
         codes: &'a Weak<Codes>,
         given: &'a mut Given,
         holdings: &'a Holdings,
     ) -> Self {
-        Self { table, made, seats, puts, instances, codes, given, holdings }
+        Self { table, made, seats, puts, instances, codes, given, holdings, holds }
     }
 
     /// A pin on the blob `blob`, when the call's instance holds one or one was offered to the call: what lets its guest
@@ -558,12 +566,30 @@ impl<'a> Answering<'a> {
             refers.push((at, pin));
         }
         let mut asked = Asked::writing(Arena::default(), Seats::default(), Puts::new(0, 0, 0));
+        // Each resource the config holds is handed to the child as it begins, from what its spawner holds: given by
+        // it, as natively.
+        let mut handed = Vec::with_capacity(spawning.carried.len());
+        for &ticket in &spawning.carried {
+            let Some((kept, was)) = self.holds.hand(ticket) else {
+                self.put_back(&mut asked, &mut Keeping::default(), handed);
+                return refusal(&Refused::NotMade);
+            };
+            asked.buffers_mut().gifts.push(Gift::loose(spawning.by(), kept));
+            handed.push((ticket, was));
+        }
         self.lend(&mut asked);
-        let began = self.begin(spawning, &refers, &mut asked);
+        let mut keeping = Keeping::default();
+        let began = self.begin(spawning, &refers, &mut asked, &mut keeping);
         self.lend(&mut asked);
         let (birth, answer) = match began {
-            Ok((from, runs)) => (Foreign::Began { me, from, runs, asked }, 0),
+            Ok((from, runs)) => {
+                self.given.handed.extend(handed.iter().map(|(ticket, _)| *ticket));
+                (Foreign::Began { me, from, runs, asked, keeping }, 0)
+            }
             Err(refused) => {
+                // A child that never began took nothing, so what it was handed goes back where it was, as natively
+                // it never left its spawner's gifts.
+                self.put_back(&mut asked, &mut keeping, handed);
                 // The child never began, so neither did any it stood up: their seats go back, and the guest gives
                 // back the child's own as it takes the spawn back.
                 for below in asked.take_stood() {
@@ -576,6 +602,18 @@ impl<'a> Answering<'a> {
         self.given.births.push_back((spawning.turn, birth));
 
         answer
+    }
+
+    /// Puts back each resource in `handed` where it was, with the ticket it was handed under, out of what a refused
+    /// child begun apart was handed, `asked`, and kept as it began, `keeping`.
+    fn put_back(&mut self, asked: &mut Asked, keeping: &mut Keeping, handed: Vec<(u64, Was)>) {
+        for (ticket, was) in handed {
+            let left = take_loose_ticket(&mut asked.buffers_mut().gifts, ticket);
+            let kept = left.or_else(|| keeping.give_up_any(ticket).map(|(kept, _)| kept));
+            if let Some(kept) = kept {
+                self.holds.put_back(kept, was);
+            }
+        }
     }
 
     /// Swaps the call's seats and puts with `asked`'s: lends them to a child begun apart, and takes them back.
@@ -592,7 +630,9 @@ impl<'a> Answering<'a> {
         spawning: &Spawning,
         refers: &[Pinning],
         asked: &mut Asked,
+        keeping: &mut Keeping,
     ) -> Result<(aethereal_actor::Code, Box<dyn Runs>), Refused> {
+        let carried = &spawning.carried;
         let me = spawning.me();
         let path = &spawning.path;
         let above = Above::Elsewhere(spawning.by());
@@ -604,7 +644,8 @@ impl<'a> Answering<'a> {
                 if !is_same {
                     return Err(Refused::NotMade);
                 }
-                let birth = Birth { me, path, above, table, asked, instances: self.instances, refers };
+                let instances = &mut *self.instances;
+                let birth = Birth { me, path, above, table, asked, instances, refers, keeping, carried };
 
                 Ok((aethereal_actor::Code::Linked(link.declared), (link.begin)(&spawning.config, birth)?))
             }
@@ -618,7 +659,8 @@ impl<'a> Answering<'a> {
                     return Err(Refused::NotMade);
                 }
                 let guests = self.instances.guests();
-                let birth = Birth { me, path, above, table, asked, instances: self.instances, refers };
+                let instances = &mut *self.instances;
+                let birth = Birth { me, path, above, table, asked, instances, refers, keeping, carried };
 
                 Ok((aethereal_actor::Code::Blob(made), guests.begin(made, &spawning.config, birth)?))
             }
@@ -632,8 +674,9 @@ impl Given {
         let no_seats = self.seats.is_empty();
         let no_births = self.births.is_empty();
         let no_offers = self.offered.is_empty();
+        let none_handed = self.handed.is_empty();
 
-        no_seats && no_births && no_offers
+        no_seats && no_births && no_offers && none_handed
     }
 
     /// A pin on the blob `blob`, when one was offered to the call.
@@ -668,6 +711,7 @@ impl Given {
             }
         }
         self.offered.clear();
+        self.handed.clear();
     }
 }
 
@@ -739,7 +783,7 @@ impl Foreign {
     /// the lines it logged otherwise. Nothing when the turn spawned no such child.
     fn hand(self, hosted: &mut Hosted<'_>) -> Option<()> {
         match self {
-            Self::Began { me, runs, asked, .. } => hosted.take_in(me, asked, runs),
+            Self::Began { me, runs, asked, keeping, .. } => hosted.take_in(me, asked, runs, keeping),
             Self::Refused { asked, .. } | Self::TakenBack { asked } => {
                 hosted.take_lines(&asked);
                 Some(())
@@ -880,7 +924,7 @@ impl Guests for Runtime {
         let BlobType { blob, declared } = *made;
         let code = self.codes.read().ok().and_then(|codes| codes.get(&blob).cloned()).ok_or(Refused::NotMade)?;
         let (of, _) = code.made_of(declared.id()).ok_or(Refused::NotMade)?;
-        let Birth { me, path, above, table, asked, instances, refers } = birth;
+        let Birth { me, path, above, table, asked, instances, refers, keeping, .. } = birth;
         let parent = match above {
             Above::Chassis => Parent::Chassis,
             Above::Actor(above, _) | Above::Elsewhere(above) => {
@@ -892,8 +936,9 @@ impl Guests for Runtime {
 
         let read_limit = instances.read_limit();
         let mut held = instances.lend(code.key, || Instance::load(&code, read_limit))?;
-        let (seats, puts, _) = asked.lent();
-        let reads = Reads { table, made: &(), seats, puts };
+        let (seats, puts, _, gifts) = asked.lent_gifts();
+        let holds = Holds { keeping: &mut *keeping, gifts };
+        let reads = Reads { table, made: &(), seats, puts, holds };
         // What the config refers to is offered to the call, as the child takes references of its own to it.
         let offered = refers.iter().map(|(_, pin)| pin.clone()).collect();
         let mut given = Given { offered, ..Given::default() };
@@ -905,7 +950,7 @@ impl Guests for Runtime {
         // A child seated in another part than the one it began in is taken out, to be taken into its own part's
         // instance on its first batch, as a child its guest spawned is.
         let is_here = asked.seats_mut().is_own(me.seat);
-        let mut hosted = Hosted::beginning(me, path, above, table, asked, declared);
+        let mut hosted = Hosted::beginning(me, path, above, table, asked, declared, keeping);
         let replayed = began.and_then(|(handle, wrote)| {
             let Instance { store, memory, actors, holdings, .. } = &mut *held;
             let data = memory.data(&*store);
@@ -1030,8 +1075,8 @@ impl Runs for Guest {
         };
         let (items, len) = held.hand_in(batch, &mut self.given.offered);
         let mut holdings = mem::take(&mut held.holdings);
-        let Reads { table, made, seats, puts } = reads;
-        let lent = Reads { table, made, seats: &mut *seats, puts };
+        let Reads { table, made, seats, puts, holds } = reads;
+        let lent = Reads { table, made, seats: &mut *seats, puts, holds };
         let mut answering = Answering::of(lent, &mut *instances, &self.code.codes, &mut self.given, &holdings);
         let Instance { store, turns, .. } = &mut *held;
         let called = lending(store, &mut answering, |store| turns.call(store, (handle, items, len)));
@@ -1135,7 +1180,10 @@ impl Runs for Guest {
         let mut given = Given::default();
         let mut holdings = mem::take(&mut held.holdings);
         let (table, seats, puts) = hosted.lent();
-        let reads = Reads { table, made: &(), seats, puts };
+        // A closing turn spawns nothing, so no resource is handed on in a call out of it.
+        let (mut keeping, mut gifts) = (Keeping::default(), Vec::new());
+        let holds = Holds { keeping: &mut keeping, gifts: &mut gifts };
+        let reads = Reads { table, made: &(), seats, puts, holds };
         let mut answering = Answering::of(reads, instances, &self.code.codes, &mut given, &holdings);
         let wrote = held.end(handle, why, &mut answering);
         let wrote = wrote.and_then(|wrote| held.take_pins(&wrote, &mut holdings, &given).map(|()| wrote));
@@ -1498,6 +1546,14 @@ fn replay_records(
             return Ok((Err(Fault::new(&FalseWatch).unwrap_or_else(|_| Broke::Garbled.fault())), ends));
         }
     }
+    // Most turns claim nothing of a resource.
+    let claims = ends.claims > before.claims;
+    if claims {
+        let honest = hold_to_claims(data, head, before, ends, given, hosted)?;
+        if let Err(fault) = honest {
+            return Ok((Err(fault), ends));
+        }
+    }
     let is_last = next + 1 == head.ran;
     let ended = match head.stopped {
         _ if !is_last => Ok(()),
@@ -1513,6 +1569,51 @@ fn replay_records(
         }
     };
     Ok((ended, ends))
+}
+
+/// Holds the guest to what a turn claimed of its resources, from the first claim after those `before` ends at to the
+/// last `ends` does, in the order claimed, each sent piece of mail it names counted from the turn's first (ADR-0010).
+/// What the host handed a child of other code as it began it, which `given` notes, was done already: the claims of it
+/// are passed over, and the claim that it went in the config must be of one handed so. Answers with the fault the turn
+/// fails with when a claim is false.
+///
+/// # Errors
+///
+/// [`Broke::Garbled`] when a record does not read back.
+#[cold]
+#[inline(never)]
+fn hold_to_claims(
+    data: &[u8],
+    head: &OutHead,
+    before: TurnEnds,
+    ends: TurnEnds,
+    given: &Given,
+    hosted: &mut Hosted<'_>,
+) -> Result<Result<(), Fault>, Broke> {
+    let false_claim = || Err(Fault::new(&NotHeld).unwrap_or_else(|_| Broke::Garbled.fault()));
+    let last = head.ran.checked_sub(1).ok_or(Broke::Garbled)?;
+    let all = record(data, head.turns_at, last, TurnEnds::BYTES).and_then(TurnEnds::read).ok_or(Broke::Garbled)?;
+    let claims_at = head.claims_at(all.watches).ok_or(Broke::Garbled)?;
+    for index in before.claims..ends.claims {
+        let ClaimRecord(mut claim) =
+            record(data, claims_at, index, ClaimRecord::BYTES).and_then(ClaimRecord::read).ok_or(Broke::Garbled)?;
+        let was_handed = given.handed.contains(&claim.ticket);
+        if was_handed {
+            continue;
+        }
+        if let Claimed::Carried { send } = claim.what {
+            let Some(send) = send.checked_sub(before.sends) else {
+                return Ok(false_claim());
+            };
+            claim.what = Claimed::Carried { send };
+        }
+        let is_false = hosted.claim(claim).is_err();
+        if is_false {
+            return Ok(false_claim());
+        }
+    }
+
+    Ok(Ok(()))
 }
 
 /// Hands `hosted` the children of other code `given` holds that the call's `turn`th turn spawned, the first it holds:
@@ -2222,7 +2323,7 @@ mod tests {
     }
 
     /// The answers each test's askers were given, by the tally the test keeps them in.
-    static ANSWERS: [Mutex<Vec<u64>>; 10] = [const { Mutex::new(Vec::new()) }; 10];
+    static ANSWERS: [Mutex<Vec<u64>>; 12] = [const { Mutex::new(Vec::new()) }; 12];
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
@@ -2487,6 +2588,157 @@ mod tests {
         settle(&mut engine);
 
         assert_eq!(answers(9), [0, 101]);
+    }
+
+    /// What a shiner is made from: the tally it keeps the light of each lamp it is handed in.
+    #[derive(Plain)]
+    struct Shining {
+        tally: u64,
+    }
+
+    impl Kind for Shining {
+        const NAME: KindName = KindName::new("aether.test.shining");
+    }
+
+    /// A native actor that takes each lamp it is handed and keeps its light in its tally: what reads that a lamp came
+    /// through a guest whole, as only native code opens one.
+    #[derive(aethereal_data::Bound)]
+    struct Shiner {
+        tally: u64,
+    }
+
+    impl Kind for Shiner {
+        const NAME: KindName = KindName::new("aether.test.shiner");
+    }
+
+    impl Actor for Shiner {
+        type Config = Shining;
+        type Key = ();
+        type Handles = (echo::Hand,);
+        type BeginSends = ();
+        type EndSends = ();
+
+        fn begin(shining: Shining, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            Ok(Self { tally: shining.tally })
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<echo::Hand> for Shiner {
+        type Sends = ();
+
+        fn handle(&mut self, hand: echo::Hand, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            for lamp in hand.lamps {
+                let mut lamp = turn.take(lamp)?;
+                let light = turn.open(&mut lamp)?.light;
+                if let Ok(mut answers) = ANSWERS[usize::try_from(self.tally).unwrap_or_default()].lock() {
+                    answers.push(light);
+                }
+            }
+
+            Ok(())
+        }
+    }
+
+    /// What a lighter is made from: the actor it hands its lamps to, and the light of each.
+    #[derive(Plain)]
+    struct Lighting {
+        to: ActorPath,
+        lights: Vec<u64>,
+    }
+
+    impl Kind for Lighting {
+        const NAME: KindName = KindName::new("aether.test.lighting");
+    }
+
+    /// A native actor that makes a lamp of each light it is made with as it begins, keeps it, and hands each in a hand
+    /// of its own to the actor `to` names, so they arrive as turns of one batch.
+    #[derive(aethereal_data::Bound)]
+    struct Lighter;
+
+    impl Kind for Lighter {
+        const NAME: KindName = KindName::new("aether.test.lighter");
+    }
+
+    impl Actor for Lighter {
+        type Config = Lighting;
+        type Key = ();
+        type Handles = ();
+        type BeginSends = (ToAny<(echo::Hand,), echo::Hand>,);
+        type EndSends = ();
+
+        fn begin(lighting: Lighting, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let Lighting { to, lights } = lighting;
+            let to = turn.resolve(&to).and_then(|found| turn.cast::<(echo::Hand,)>(found));
+            let Some(to) = to else {
+                return Err(Fault::new(&Doom)?);
+            };
+            for light in lights {
+                let lamp = turn.keep(echo::Lamp { light })?;
+                let lamps = vec![turn.give(lamp)?];
+                turn.send_to_any(ToWithoutMail::Held(to.erase()), &echo::Hand { lamps })?;
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    /// An engine running the echo blob, keeping the bearer for it, with a shiner keeping its lights in tally `tally`.
+    fn lit(tally: u64) -> (Engine, BlobRef, ActorPath) {
+        let Some(parts) = NonZeroUsize::new(2) else {
+            panic!("two is not zero");
+        };
+        let engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_links(Links::default().with::<echo::Bearer>());
+        let (mut engine, code) = with_echo(engine);
+        let Ok(_) = engine.add_root::<Shiner>(&(), Shining { tally }) else {
+            panic!("the shiner begins");
+        };
+
+        (engine, code, ActorPath::from_root(&PathSegment::new(Shiner::NAME, &())))
+    }
+
+    #[test]
+    fn a_guest_takes_resources_in_mail_and_passes_them_on_to_native_code() {
+        // Catches a guest's take, give, or send of a resource its host does not carry out, one carried with the wrong
+        // piece of mail of a batch of several, and a resource a guest's mail does not carry to its receiver.
+        let (mut engine, code, shiner) = lit(10);
+        let porting = echo::Porting { to: shiner, lamps: Vec::new(), how: 0 };
+        let Ok(_) = engine.add_root_from::<echo::Porter>(&code, &0, &porting) else {
+            panic!("the porter begins");
+        };
+        let porter = ActorPath::from_root(&PathSegment::new(echo::Porter::NAME, &0));
+        let Ok(_) = engine.add_root::<Lighter>(&(), Lighting { to: porter, lights: vec![3, 4] }) else {
+            panic!("the lighter begins");
+        };
+        settle(&mut engine);
+
+        assert_eq!(answers(10), [3, 4]);
+    }
+
+    #[test]
+    fn a_guest_takes_resources_from_its_config_and_hands_them_to_children_of_its_own_and_other_code() {
+        // Catches a guest root that cannot take what the chassis handed in for it, a guest's child of its own code
+        // that cannot take what its parent gave it, and a native child its host begins for a guest that is not handed
+        // what its config holds, or does not keep what it took once it is seated.
+        let (mut engine, code, shiner) = lit(11);
+        for how in [0, 1, 2] {
+            let lamps = vec![engine.hand(echo::Lamp { light: 10 + how })];
+            let porting = echo::Porting { to: shiner.clone(), lamps, how };
+            let began = engine.add_root_from::<echo::Porter>(&code, &(10 + how), &porting);
+            let Ok(_) = began else {
+                panic!("the porter begins: {began:?}");
+            };
+        }
+        settle(&mut engine);
+
+        assert_eq!(answers(11), [10, 11, 12]);
     }
 
     /// The reason a mortal fails.

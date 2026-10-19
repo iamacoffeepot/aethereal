@@ -2,8 +2,9 @@
 
 use super::{Checked, Closing, During, Seat, Stood, Turning, Why};
 use crate::{
-    Above, Asked, Chain, Code, Declared, Effect, ErasedActorRef, Fault, Instances, Keeping, Keeps, Level, Line, MailId,
-    Mailed, Payload, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen, Sending, Table, Target, What,
+    Above, Asked, Chain, Claim, Claimed, Code, Declared, Effect, ErasedActorRef, Fault, Gift, Giver, Instances,
+    Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, Payload, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen,
+    Sending, Table, Target, What, carry, take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, KindName, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -21,6 +22,19 @@ pub struct Hosted<'a> {
     chain: Chain,
     /// The children the turn spawned, in the order it spawned them, whose `begin`s send and log as themselves.
     spawned: Vec<Spawned>,
+    /// Where the pieces of mail handed in lie among what the turn asked for, for what the guest claims goes with one
+    /// (ADR-0010).
+    sent: Sent,
+}
+
+/// Where a hosted turn's pieces of mail lie in its mail buffer: one after another, from the first handed in, as
+/// nothing else is added between them.
+#[derive(Clone, Copy)]
+enum Sent {
+    /// None has been handed in.
+    Nothing,
+    /// The first lies at `from`, and `pieces` have been.
+    From { from: usize, pieces: usize },
 }
 
 /// A child a hosted turn spawned: who it is, where it stands, what its type declares, who spawned it, and how many
@@ -132,7 +146,10 @@ impl<'a> Turning<'a> {
         let checked = Checked::Nothing;
         let seat = Seat { me, path, above, table, made, asked, keeps, sent, declared, during, checked };
 
-        (Hosted { seat, sends, source: Source::Item(source), chain, spawned: Vec::new() }, instances)
+        (
+            Hosted { seat, sends, source: Source::Item(source), chain, spawned: Vec::new(), sent: Sent::Nothing },
+            instances,
+        )
     }
 }
 
@@ -147,7 +164,14 @@ impl<'a> Closing<'a> {
         let checked = Checked::Nothing;
         let seat = Seat { me, path, above, table, made: &(), asked, keeps, sent, declared, during, checked };
         let chain = Chain { root: MailId { sender: me.id, count: sent }, depth: 0 };
-        let hosted = Hosted { seat, sends: declared.ends(), source: Source::End, chain, spawned: Vec::new() };
+        let hosted = Hosted {
+            seat,
+            sends: declared.ends(),
+            source: Source::End,
+            chain,
+            spawned: Vec::new(),
+            sent: Sent::Nothing,
+        };
 
         (hosted, why, instances)
     }
@@ -155,7 +179,8 @@ impl<'a> Closing<'a> {
 
 impl<'a> Hosted<'a> {
     /// The `begin` of the actor `me` names, at `path`, beneath `above`, whose type declares `declared`, reading
-    /// `table` and adding to `asked`: for a host, which begins a root or a child of its guest's code.
+    /// `table`, adding to `asked`, and keeping what it takes in `keeping`: for a host, which begins a root or a child of
+    /// its guest's code.
     #[must_use]
     pub fn beginning(
         me: Seated,
@@ -164,6 +189,7 @@ impl<'a> Hosted<'a> {
         table: &'a dyn Table,
         asked: &'a mut Asked,
         declared: &'static Declared,
+        keeping: &'a mut Keeping,
     ) -> Self {
         let seat = Seat {
             me,
@@ -172,8 +198,7 @@ impl<'a> Hosted<'a> {
             table,
             made: &(),
             asked,
-            // A guest's code keeps nothing, so neither does its host for it yet (ADR-0015).
-            keeps: Keeps::Nothing,
+            keeps: Keeps::Here(keeping),
             sent: 0,
             declared,
             during: During::Begin,
@@ -181,7 +206,7 @@ impl<'a> Hosted<'a> {
         };
         let chain = Chain { root: MailId { sender: me.id, count: 0 }, depth: 0 };
 
-        Self { seat, sends: declared.begins(), source: Source::Begin, chain, spawned: Vec::new() }
+        Self { seat, sends: declared.begins(), source: Source::Begin, chain, spawned: Vec::new(), sent: Sent::Nothing }
     }
 
     /// The actor whose turn this is.
@@ -255,9 +280,93 @@ impl<'a> Hosted<'a> {
             child.sent
         };
         let mailed = Mailed { by, to, count, kind, bytes };
+        let pieces = self.seat.asked.buffers.mailed.len();
         self.seat.asked.buffers.mailed.push(mailed);
+        self.sent = match self.sent {
+            Sent::Nothing => Sent::From { from: pieces, pieces: 1 },
+            Sent::From { from, pieces } => Sent::From { from, pieces: pieces + 1 },
+        };
 
         Ok(())
+    }
+
+    /// Holds the guest to `claim`, what its code claims it did with a resource in this turn, or in the `begin` of a
+    /// child it spawned in it: moves the resource as a native turn's call would have, the claims in the order made,
+    /// after every send of the turn has been handed in, so a claim that a resource goes with a piece of mail names
+    /// the `send`th of them (ADR-0010, ADR-0015).
+    ///
+    /// # Errors
+    ///
+    /// [`NotHeld`] when the claim is false: the claimant holds no such resource, none came to it so, or the mail it
+    /// names was not sent by it.
+    pub fn claim(&mut self, claim: Claim) -> Result<(), NotHeld> {
+        let Claim { by, ticket, what } = claim;
+        match what {
+            Claimed::Took => {
+                let Source::Item(source) = self.source else {
+                    return Err(NotHeld);
+                };
+                let is_mine = by == self.seat.me;
+                let took = is_mine && self.keeping_of(by).ok_or(NotHeld)?.take_claimed(ticket, source);
+                if !took {
+                    return Err(NotHeld);
+                }
+            }
+            Claimed::TookConfig => {
+                let giver = Giver::above(self.above_of(by).ok_or(NotHeld)?);
+                let kept = take_claimed(&mut self.seat.asked.buffers.gifts, giver, ticket).ok_or(NotHeld)?;
+                self.keeping_of(by).ok_or(NotHeld)?.adopt(kept);
+            }
+            Claimed::Gave => {
+                let kept = self.keeping_of(by).ok_or(NotHeld)?.give_up_claimed(ticket).ok_or(NotHeld)?;
+                self.seat.asked.buffers.gifts.push(Gift::loose(by, kept));
+            }
+            Claimed::Carried { send } => {
+                let mailed = self.sent_piece(send).ok_or(NotHeld)?;
+                let (to, mail) = (mailed.to, MailId { sender: mailed.by.id, count: mailed.count });
+                let is_theirs = mail.sender == by.id;
+                if !is_theirs {
+                    return Err(NotHeld);
+                }
+                carry(&mut self.seat.asked.buffers.gifts, &[ticket], by, to, mail).map_err(|_| NotHeld)?;
+            }
+            // Its host handed the resource to the child as it began it, before any claim was held to.
+            Claimed::Configured => return Err(NotHeld),
+        }
+
+        Ok(())
+    }
+
+    /// The `send`th piece of mail handed in, counting from nought.
+    fn sent_piece(&self, send: u32) -> Option<&Mailed> {
+        let Sent::From { from, pieces } = self.sent else {
+            return None;
+        };
+        let send = usize::try_from(send).ok()?;
+        let is_sent = send < pieces;
+
+        is_sent.then(|| &self.seat.asked.buffers.mailed[from + send])
+    }
+
+    /// What `by` keeps: the actor whose turn this is, or a child its guest's code stood up in it.
+    fn keeping_of(&mut self, by: Seated) -> Option<&mut Keeping> {
+        if by == self.seat.me {
+            return match &mut self.seat.keeps {
+                Keeps::Here(keeping) => Some(&mut **keeping),
+                Keeps::Claimed => None,
+            };
+        }
+
+        self.seat.asked.stood.iter_mut().find(|child| child.me == by).map(|child| &mut child.keeping)
+    }
+
+    /// What stands above `by`: the actor whose turn this is, or a child its guest's code stood up in it.
+    fn above_of(&self, by: Seated) -> Option<Above> {
+        if by == self.seat.me {
+            return Some(self.seat.above);
+        }
+
+        self.seat.asked.stood.iter().find(|child| child.me == by).map(|child| child.above)
     }
 
     /// Writes `bytes`, a piece of mail its guest wrote, into the turn's arena.
@@ -326,6 +435,11 @@ impl<'a> Hosted<'a> {
     /// Stands up `me`, a child [`Self::spawn`] spawned whose `begin` succeeded, run by `runs`: the engine seats it
     /// with the turn's other children. Nothing when the turn spawned no such child.
     pub fn stand(&mut self, me: Seated, runs: Box<dyn Runs>) -> Option<()> {
+        self.stand_keeping(me, runs, Keeping::default())
+    }
+
+    /// Stands up `me` as [`Self::stand`] does, keeping `keeping`, what its `begin` kept and took.
+    fn stand_keeping(&mut self, me: Seated, runs: Box<dyn Runs>, keeping: Keeping) -> Option<()> {
         let child = self.spawned.iter().find(|child| child.me == me)?;
         let above_declared = if child.by == self.seat.me {
             self.seat.declared
@@ -334,26 +448,21 @@ impl<'a> Hosted<'a> {
         };
         let above = Above::Actor(child.by, above_declared);
         self.seat.asked.stood_seats.insert(me.id.bits(), (me.seat, child.declared));
-        self.seat.asked.stood.push(Stood {
-            me,
-            path: child.path.clone(),
-            above,
-            actor: runs,
-            keeping: Keeping::default(),
-        });
+        self.seat.asked.stood.push(Stood { me, path: child.path.clone(), above, actor: runs, keeping });
 
         Some(())
     }
 
-    /// Stands up `me`, a child [`Self::spawn`] spawned that is of other code than the turn's, run by `runs`: its host
-    /// began it apart while the turn's code waited on a call out, into `asked`, and what that `begin` asked for is
-    /// taken into this turn's, ahead of the child (ADR-0015). Nothing when the turn spawned no such child.
+    /// Stands up `me`, a child [`Self::spawn`] spawned that is of other code than the turn's, run by `runs` and keeping
+    /// `keeping`: its host began it apart while the turn's code waited on a call out, into `asked`, and what that
+    /// `begin` asked for is taken into this turn's, ahead of the child (ADR-0015). Nothing when the turn spawned no such
+    /// child.
     #[cfg(feature = "std")]
-    pub fn take_in(&mut self, me: Seated, asked: Asked, runs: Box<dyn Runs>) -> Option<()> {
+    pub fn take_in(&mut self, me: Seated, asked: Asked, runs: Box<dyn Runs>, keeping: Keeping) -> Option<()> {
         self.spawned.iter().find(|child| child.me == me)?;
         self.seat.asked.take_in(asked);
 
-        self.stand(me, runs)
+        self.stand_keeping(me, runs, keeping)
     }
 
     /// Keeps the lines a child's `begin` logged into `asked`, one its host ran apart that was refused or taken back:

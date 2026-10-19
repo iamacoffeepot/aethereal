@@ -67,10 +67,11 @@ impl BlobHash {
 const PUT_BITS: u32 = 48;
 
 /// The blobs one writer has put in a step, held until the step folds, the hashes its turns computed in the step, and
-/// the room it has left in the step's share of the budget for blobs (ADR-0014).
+/// the room it has left in the step's share of the budget for blobs (ADR-0014); and how many resources its turns have
+/// kept (ADR-0010).
 ///
 /// The engine keeps one for each writer from step to step, so the puts it counts give each blob an id no other blob
-/// has had.
+/// has had, and the resources it counts each a ticket no other resource of the engine has had.
 #[derive(Debug)]
 #[cfg_attr(not(feature = "std"), expect(dead_code, reason = "blobs are put only where their pins can be noted"))]
 pub struct Puts {
@@ -80,6 +81,8 @@ pub struct Puts {
     writer: u64,
     /// How many blobs the writer has put, ever.
     made: u64,
+    /// How many resources the writer's turns have kept, ever.
+    kept: u64,
     /// The bytes the writer may still put in this step.
     room: usize,
     /// What it has put in this step, under its ids' bits.
@@ -104,7 +107,9 @@ impl Puts {
         };
         assert!(writer < 1 << (u64::BITS - PUT_BITS), "no engine has more writers than an id's high bits number");
 
-        Self { engine, writer, made: 0, room, held: BTreeMap::new(), hashed: Vec::new(), putter: Putter::Writer }
+        let held = BTreeMap::new();
+
+        Self { engine, writer, made: 0, kept: 0, room, held, hashed: Vec::new(), putter: Putter::Writer }
     }
 
     /// Puts a guest's host takes in, in a call out, for a guest whose turns cannot reach the engine's store (ADR-0015).
@@ -117,6 +122,19 @@ impl Puts {
     #[must_use]
     pub const fn is_of_host(&self) -> bool {
         matches!(self.putter, Putter::Host(_))
+    }
+
+    /// A ticket for a resource kept, which no other resource of the engine has had: the writer in its high bits, and
+    /// its count of what it has kept below (ADR-0010).
+    ///
+    /// # Panics
+    ///
+    /// Panics past `2^48` resources kept by one writer, which no engine lives to keep.
+    pub fn ticket(&mut self) -> u64 {
+        assert!(self.kept + 1 < 1 << PUT_BITS, "no writer keeps 2^48 resources");
+        self.kept += 1;
+
+        self.writer << PUT_BITS | self.kept
     }
 
     /// Gives the writer `room` bytes to put in the coming step.

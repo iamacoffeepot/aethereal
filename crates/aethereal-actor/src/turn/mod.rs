@@ -10,10 +10,10 @@ pub use refused::Refused;
 
 use crate::resource;
 use crate::{
-    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Fault,
-    Gift, Given, Giver, Handle, Handled, Handles, Instances, Keeping, Keeps, Kinds, Level, Line, Listed, MailId,
-    Mailed, Marker, Payload, ProtocolRef, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends,
-    Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
+    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Claim, Claimed, Code, Declared, Effect,
+    ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Instances, Keeping, Keeps, Kinds, Level, Line,
+    Listed, MailId, Mailed, Marker, Payload, ProtocolRef, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated,
+    Seats, Seen, Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -47,6 +47,9 @@ pub struct Asked {
     puts: Puts,
     /// The tickets of the resources the mail being written holds, noted as it is written: empty between sends.
     carrying: Vec<u64>,
+    /// What a guest's code claimed of its resources, in the order it claimed it, for its host to hold it to: always
+    /// empty in native code, whose resources move as it asks (ADR-0015).
+    claims: Vec<Claim>,
 }
 
 /// The buffers of what turns ask for: kept by a worker over its share of a step, and filled by each turn in turn.
@@ -108,7 +111,9 @@ impl Asked {
     pub fn continuing(buffers: Buffers, arena: Arena, seats: Seats, puts: Puts) -> Self {
         debug_assert!(buffers.is_empty(), "a turn begins with its buffers emptied");
 
-        Self { buffers, stood: Vec::new(), stood_seats: BTreeMap::new(), arena, seats, puts, carrying: Vec::new() }
+        let (carrying, claims) = (Vec::new(), Vec::new());
+
+        Self { buffers, stood: Vec::new(), stood_seats: BTreeMap::new(), arena, seats, puts, carrying, claims }
     }
 
     /// Begins the next turn, once what the last asked for has been taken out of the buffers. The children the last
@@ -132,6 +137,7 @@ impl Asked {
         self.buffers.lines.clear();
         self.buffers.effects.clear();
         self.buffers.gifts.clear();
+        self.claims.clear();
         self.stood.clear();
         self.stood_seats.clear();
         self.arena.clear(0);
@@ -177,6 +183,20 @@ impl Asked {
     /// the arena (ADR-0015), and to a child its host begins apart.
     pub fn lent(&mut self) -> (&mut Seats, &mut Puts, &Arena) {
         (&mut self.seats, &mut self.puts, &self.arena)
+    }
+
+    /// The seats children are given, the blobs' puts, and the resources the turn has given, lent together: to a batch
+    /// prepared ahead, or a child begun apart, whose host may hand one of those resources to a child of other code
+    /// (ADR-0010, ADR-0015).
+    pub fn lent_gifts(&mut self) -> (&mut Seats, &mut Puts, &Arena, &mut Vec<Gift>) {
+        (&mut self.seats, &mut self.puts, &self.arena, &mut self.buffers.gifts)
+    }
+
+    /// What a guest's code claimed of its resources since what it asked for was last emptied, in the order claimed:
+    /// for its library, which writes them for its host (ADR-0015).
+    #[must_use]
+    pub fn claims(&self) -> &[Claim] {
+        &self.claims
     }
 
     /// Takes in what `other` asked for: a child's `begin` its host ran apart from the turn that spawned it, while the
@@ -630,16 +650,73 @@ impl Seat<'_> {
         if self.asked.carrying.is_empty() {
             return Ok(());
         }
-        let mail = MailId { sender: self.me.id, count: self.sent + 1 };
-        let carried = resource::carry(&mut self.asked.buffers.gifts, &self.asked.carrying, self.me, to, mail);
+        let carried = match self.keeps {
+            Keeps::Here(_) => {
+                let mail = MailId { sender: self.me.id, count: self.sent + 1 };
+                resource::carry(&mut self.asked.buffers.gifts, &self.asked.carrying, self.me, to, mail)
+            }
+            // A guest's sends are counted by its host, so what it claims names the send by its place in the call.
+            Keeps::Claimed => {
+                let send = self.asked.buffers.mailed.iter().map(|mailed| mailed.bytes.pieces()).sum();
+                self.claim_carried(Claimed::Carried { send })
+            }
+        };
         self.asked.carrying.clear();
 
         carried
     }
 
-    /// Keeps `value` as this actor's own, and answers with the handle to it (ADR-0010).
+    /// Claims each resource the bytes just written hold as gone with `what`: refused, claiming none, when one is not a
+    /// resource this guest's turn claimed as given and nothing has carried or taken since (ADR-0015).
+    fn claim_carried(&mut self, what: Claimed) -> Result<(), EncodeError> {
+        let claims = &self.asked.claims;
+        let every = self.asked.carrying.iter().all(|ticket| resource::is_loose_claim(claims, self.me, *ticket));
+        if !every {
+            return Err(EncodeError::NotCarried { name: "Given" });
+        }
+        let me = self.me;
+        self.asked.claims.extend(self.asked.carrying.iter().map(|&ticket| Claim { by: me, ticket, what }));
+
+        Ok(())
+    }
+
+    /// Hands the resources `carried` names to the config of a child of other code: each must be one this turn gave and
+    /// nothing carries. Natively they stay this actor's gifts for the child to take; a guest claims them as given in
+    /// the config, and its host hands them to the child as it begins it (ADR-0015).
+    #[cfg(feature = "std")]
+    fn hand_config(&mut self, carried: &[u64]) -> Result<(), EncodeError> {
+        // Most configs hold no resource.
+        if carried.is_empty() {
+            return Ok(());
+        }
+        match self.keeps {
+            Keeps::Here(_) => {
+                let by = Giver::Actor(self.me);
+                let gifts = &self.asked.buffers.gifts;
+                let every = carried.iter().all(|ticket| gifts.iter().any(|gift| gift.is_loose(by, *ticket)));
+                if every {
+                    Ok(())
+                } else {
+                    Err(EncodeError::NotCarried { name: "Given" })
+                }
+            }
+            Keeps::Claimed => {
+                self.asked.carrying.clear();
+                self.asked.carrying.extend_from_slice(carried);
+                let claimed = self.claim_carried(Claimed::Configured);
+                self.asked.carrying.clear();
+
+                claimed
+            }
+        }
+    }
+
+    /// Keeps `value` as this actor's own, under a ticket no other resource has had, and answers with the handle to it
+    /// (ADR-0010).
     fn keep<R: Resource>(&mut self, value: R) -> Result<Handle<R>, Fault> {
-        self.keeps.keep(value)
+        let ticket = self.asked.puts.ticket();
+
+        self.keeps.keep(ticket, value)
     }
 
     /// The resource `handle` names, this actor's own.
@@ -650,26 +727,20 @@ impl Seat<'_> {
     /// Gives up the resource `handle` names, and answers with what names it on its way: dropped at the end of the
     /// turn unless mail carries it, or a child this turn stands up takes it from its config.
     fn give<R: Resource>(&mut self, handle: Handle<R>) -> Result<Given<R>, Fault> {
-        let (gift, given) = self.keeps.give(self.me, handle)?;
-        self.asked.buffers.gifts.push(gift);
-
-        Ok(given)
+        self.keeps.give(self.me, handle, &mut self.asked.buffers.gifts, &mut self.asked.claims)
     }
 
     /// Takes the resource `given` names, which came with the mail being handled, from `source`, as this actor's own.
     fn take_arrived<R: Resource>(&mut self, given: Given<R>, source: Seated) -> Result<Handle<R>, Fault> {
-        self.keeps.take_arrived(given, source)
+        self.keeps.take_arrived(self.me, given, source, &mut self.asked.claims)
     }
 
     /// Takes the resource `given` names, which this actor's config holds, as its own: given by the actor above it, or
     /// by the chassis to a root.
     fn take_config<R: Resource>(&mut self, given: Given<R>) -> Result<Handle<R>, Fault> {
-        let by = match self.above {
-            Above::Chassis => Giver::Chassis,
-            Above::Actor(parent, _) | Above::Elsewhere(parent) => Giver::Actor(parent),
-        };
+        let by = Giver::above(self.above);
 
-        self.keeps.take_given(given, by, &mut self.asked.buffers.gifts)
+        self.keeps.take_config(self.me, given, by, &mut self.asked.buffers.gifts, &mut self.asked.claims)
     }
 
     /// Stops the engine when the actor `to` names is not one `target` reaches: the send breaks this actor's
@@ -783,6 +854,11 @@ impl Seat<'_> {
         let table = self.table;
         let asked = &mut *self.asked;
         let mut keeping = Keeping::default();
+        // A child begun in a guest's code claims what it keeps, as its parent does (ADR-0015).
+        let keeps = match self.keeps {
+            Keeps::Here(_) => Keeps::Here(&mut keeping),
+            Keeps::Claimed => Keeps::Claimed,
+        };
         let child = Seat {
             me,
             path: &path,
@@ -790,7 +866,7 @@ impl Seat<'_> {
             table,
             made: &(),
             asked,
-            keeps: Keeps::Here(&mut keeping),
+            keeps,
             sent: 0,
             declared,
             during: During::Begin,
@@ -849,22 +925,35 @@ impl Seat<'_> {
         begin: impl FnOnce(&[u8], Birth<'_>) -> Result<Box<dyn Runs>, Refused>,
     ) -> Result<ActorRef<C>, Refused> {
         let declared = from.declared();
+        let claims_before = self.asked.claims.len();
+        self.hand_config(&config.carried).map_err(|_| Refused::NotMade)?;
         let (me, before) = self.ask_spawn(id, segment, from);
 
         let stood_before = self.asked.stood.len();
         let above = Above::Actor(self.me, self.declared);
-        let refers = &config.held;
-        let birth = Birth { me, path: &path, above, table: self.table, asked: &mut *self.asked, instances, refers };
+        let (refers, carried) = (&config.held, &config.carried);
+        let mut keeping = Keeping::default();
+        let birth = Birth {
+            me,
+            path: &path,
+            above,
+            table: self.table,
+            asked: &mut *self.asked,
+            instances,
+            refers,
+            keeping: &mut keeping,
+            carried,
+        };
         match begin(&config.bytes, birth) {
             Ok(actor) => {
-                // Code begun elsewhere keeps nothing here: a guest keeps nothing, and a native child its host begins
-                // keeps nothing yet (ADR-0015).
-                self.stand(me, path, above, declared, actor, Keeping::default());
+                self.stand(me, path, above, declared, actor, keeping);
 
                 Ok(ActorRef::new(me))
             }
             Err(refused) => {
                 self.take_back(before, stood_before, me.seat);
+                // A child refused took nothing, so what a guest claimed went in its config is its own to give again.
+                self.asked.claims.truncate(claims_before);
 
                 Err(refused)
             }
@@ -934,6 +1023,7 @@ impl Seat<'_> {
             Giver::Actor(by) => !gone.contains(&by.seat),
             Giver::Chassis => true,
         });
+        self.asked.claims.retain(|claim| !gone.contains(&claim.by.seat));
         self.asked.seats.give_back(seat);
     }
 }
@@ -1209,7 +1299,7 @@ impl<S> Turn<'_, S> {
     ///
     /// # Errors
     ///
-    /// [`KeepsNothing`](crate::KeepsNothing) in a guest's code, which keeps nothing.
+    /// [`KeepsNothing`](crate::KeepsNothing) in a guest's code, which keeps nothing it makes.
     pub fn keep<R: Resource>(&mut self, value: R) -> Result<Handle<R>, Fault> {
         self.seat.keep(value)
     }
@@ -1230,7 +1320,9 @@ impl<S> Turn<'_, S> {
     ///
     /// # Errors
     ///
-    /// As [`Self::open`].
+    /// [`NotHeld`](crate::NotHeld) when this actor holds no resource of type `R` under the handle's ticket. A guest's
+    /// code holds no values, so its give is a claim its host holds it to when it hands the turn back, and a false one
+    /// fails the turn there with the same fault (ADR-0015).
     pub fn give<R: Resource>(&mut self, handle: Handle<R>) -> Result<Given<R>, Fault> {
         self.seat.give(handle)
     }
@@ -1241,7 +1333,7 @@ impl<S> Turn<'_, S> {
     /// # Errors
     ///
     /// [`NotHeld`](crate::NotHeld) when no resource of type `R` came under that ticket with the mail being handled,
-    /// or it was taken already, and [`KeepsNothing`](crate::KeepsNothing) in a guest's code.
+    /// or it was taken already. In a guest's code the take is a claim its host holds it to, as a give is.
     pub fn take<R: Resource>(&mut self, given: Given<R>) -> Result<Handle<R>, Fault> {
         self.seat.take_arrived(given, self.source)
     }
@@ -1454,7 +1546,7 @@ impl<S> Beginning<'_, S> {
     ///
     /// # Errors
     ///
-    /// [`KeepsNothing`](crate::KeepsNothing) in a guest's code, which keeps nothing.
+    /// [`KeepsNothing`](crate::KeepsNothing) in a guest's code, which keeps nothing it makes.
     pub fn keep<R: Resource>(&mut self, value: R) -> Result<Handle<R>, Fault> {
         self.seat.keep(value)
     }
@@ -1474,7 +1566,9 @@ impl<S> Beginning<'_, S> {
     ///
     /// # Errors
     ///
-    /// As [`Self::open`].
+    /// [`NotHeld`](crate::NotHeld) when this actor holds no resource of type `R` under the handle's ticket. A guest's
+    /// code holds no values, so its give is a claim its host holds it to when it hands the turn back, and a false one
+    /// fails the turn there with the same fault (ADR-0015).
     pub fn give<R: Resource>(&mut self, handle: Handle<R>) -> Result<Given<R>, Fault> {
         self.seat.give(handle)
     }
@@ -1485,8 +1579,8 @@ impl<S> Beginning<'_, S> {
     /// # Errors
     ///
     /// [`NotHeld`](crate::NotHeld) when the actor above this one, or the chassis for a root, gave no resource of type
-    /// `R` under that ticket in this turn, or it was taken already, and [`KeepsNothing`](crate::KeepsNothing) in a
-    /// guest's code.
+    /// `R` under that ticket in this turn, or it was taken already. In a guest's code the take is a claim its host
+    /// holds it to, as a give is.
     pub fn take<R: Resource>(&mut self, given: Given<R>) -> Result<Handle<R>, Fault> {
         self.seat.take_config(given)
     }
@@ -1773,7 +1867,9 @@ impl<S> Ending<'_, S> {
     ///
     /// # Errors
     ///
-    /// As [`Self::open`].
+    /// [`NotHeld`](crate::NotHeld) when this actor holds no resource of type `R` under the handle's ticket. A guest's
+    /// code holds no values, so its give is a claim its host holds it to when it hands the turn back, and a false one
+    /// fails the turn there with the same fault (ADR-0015).
     pub fn give<R: Resource>(&mut self, handle: Handle<R>) -> Result<Given<R>, Fault> {
         self.seat.give(handle)
     }
