@@ -467,6 +467,28 @@ fn mail_to_a_parent_goes_only_while_it_is_live() {
 }
 
 #[test]
+fn mail_sent_to_all_is_a_piece_for_each_receiver_with_its_bytes_written_once() {
+    // Catches a send to all that writes its bytes again for each receiver, sends one of them nothing or two pieces,
+    // gives two pieces one count, or sends them out of the order given.
+    let receivers = [seated(9, 5), seated(8, 6), seated(7, 7)];
+    let table = Listed(Vec::new());
+    let mut asked = Asked::new();
+    let mut turn = opened::<(ToType<Leaf, Meet>,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let references = receivers.map(ActorRef::<Leaf>::new);
+    let meeting = Meet { other: ErasedActorRef::new(receivers[0]) };
+
+    assert_eq!(turn.send_to_all(&references, &meeting), Ok(()));
+    assert_eq!(turn.send_to_all(&[], &meeting), Ok(()));
+
+    let (buffers, _, _, _, _) = asked.into_parts();
+    let seen: Vec<(Seated, u64)> = buffers.mailed.iter().map(|mailed| (mailed.to, mailed.count)).collect();
+    assert_eq!(seen, [(receivers[0], 1), (receivers[1], 2), (receivers[2], 3)]);
+    let first = buffers.mailed[0].bytes;
+    let is_shared = buffers.mailed.iter().all(|mailed| mailed.bytes == first);
+    assert!(is_shared, "every piece reads the one copy of the bytes");
+}
+
+#[test]
 fn back_to_back_mail_of_one_kind_to_one_receiver_is_one_run() {
     // Catches a run joining mail to another receiver or of another kind, one counted from the wrong piece, and a
     // piece of a run read from the bytes of another.

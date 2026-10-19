@@ -4,7 +4,7 @@ use super::*;
 use crate::watch::Notice;
 use crate::{ByActor, Entry, child_id};
 use aethereal_actor::{
-    Ended, Ending, Fault, Handles, How, Level, Table, To, ToSender, ToType, ToWithoutMail, Turn, Watches,
+    ActorRef, Ended, Ending, Fault, Handles, How, Level, Table, To, ToSender, ToType, ToWithoutMail, Turn, Watches,
 };
 use aethereal_data::{Bound, Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
@@ -65,7 +65,8 @@ impl Kind for NodeConfig {
 /// - `bye N`, which a child sends as it ends, has it send that child `late`;
 /// - `bounce N` answers the sender `bounce N-1` until `N` is zero, and `pair` answers it `bounce 2`, then `last`;
 /// - `keep` sends the sender `late` through the reference to it, as an actor of its own type;
-/// - `many N text` sends itself `textI` for each `I` below `N`, a single digit: notes of one length, back to back.
+/// - `many N text` sends itself `textI` for each `I` below `N`, a single digit: notes of one length, back to back;
+/// - `fan N,M,.. text` spawns each node `N`, `M` and so on beneath it, and sends them all `text` in one send.
 #[derive(Plain)]
 struct Node {
     number: u64,
@@ -186,6 +187,16 @@ impl Handles<Note> for Node {
                 for index in 0..count.parse().unwrap_or(0u64) {
                     turn.send(To::Held(me), &Note { text: format!("{text}{index}") })?;
                 }
+            }
+            ["fan", numbers, text] => {
+                let children: Vec<ActorRef<Self>> = numbers
+                    .split(',')
+                    .filter_map(|number| {
+                        let number = number.parse().unwrap_or_default();
+                        turn.spawn::<Self>(&number, NodeConfig { number, to_self: Vec::new(), spawns: Vec::new() }).ok()
+                    })
+                    .collect();
+                turn.send_to_all(&children, &Note { text: String::from(text) })?;
             }
             ["where", ..] => say(format!("{} at depth {}", self.number, turn.chain().depth)),
             ["bye", number] => {
@@ -1228,6 +1239,27 @@ fn mail_that_is_never_delivered_lets_go_of_its_blob() {
     }
 
     assert_eq!(engine.blobs_held(), (0, 0));
+}
+
+#[test]
+fn mail_sent_to_all_reaches_each_receiver_once_wherever_it_is_seated() {
+    // Catches a send to all that leaves a receiver out, hands one of them the piece twice, or reads the shared bytes
+    // wrong for a receiver in another part than its sender's, fused or not.
+    for hops in [0, 64] {
+        let (mut engine, root) = fusing(hops, &["fan 2,3,4,5,6,7,8,9 hello"]);
+        let mut heard = Vec::new();
+        while !engine.is_idle() {
+            heard.extend(step(&mut engine));
+        }
+        heard.sort();
+        let part = |id: ActorId| seated(&engine, id).seat.index() % 4;
+        let elsewhere = (2..=9).filter(|number| part(node(root, *number)) != part(root)).count();
+        assert!(elsewhere > 0, "some receiver is seated in another part than its sender, hops={hops}");
+
+        let expected: Vec<String> = (2..=9).map(|number| format!("{number} got hello")).collect();
+        let got: Vec<String> = heard.into_iter().filter(|line| line.ends_with("got hello")).collect();
+        assert_eq!(got, expected, "hops={hops}");
+    }
 }
 
 #[test]
