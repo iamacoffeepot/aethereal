@@ -14,7 +14,7 @@ ADR-0012 tells an actor to keep what it sent mail for under the chain's root and
 
 Writing a number into every question kind and keeping a table of them is the other way: the asker makes the number, writes it in, files it, and checks it when an answer comes. Every step is the author's to forget, and a number made and not filed makes a true answer look stale. An earlier engine started there and moved the number into the engine, where no author handles it.
 
-What comes back is already typed. A named protocol says what each kind is answered with (ADR-0016: `Carries<K>::Answers`), and a sender through it handles those kinds, checked as a bound (`BackTo`). What is not decided is how often an answer comes, and what comes when none can.
+What comes back is already typed. A named protocol says what each kind is answered with (ADR-0016: `Carries<K>::Answers`), and a sender through it handles those kinds, checked as a bound (`BackTo`). What is not decided is how often an answer comes, and what the asker is told when none can.
 
 ## Decision
 
@@ -32,12 +32,23 @@ turn.ask_to(tiles, &WhichTile { x, y }, Looking { at: x })?;          // the req
 
 **An answer is the receiver's reply to a request.** The receiver replies as it replies to any mail, `turn.reply(&answer)`, and when the mail it handles is a request, the reply answers it: the engine writes in the reply which request it answers. A request is answered once. A second reply to it in the same turn is refused, as a send its declaration does not allow is.
 
-**The asker handles an answer with its context.** An answer is handed to the handler of `Answer<A, C>`, with the answer and the context the engine kept, which leaves the engine with it:
+**The asker handles what became of its request, with its context.** It is handed to the handler of `Answer<A, C>`: whether the request was answered, and the context the engine kept, which leaves the engine with it:
 
 ```rust
+pub enum Answered<A> {
+    Yes(A),                     // the receiver's answer
+    No(Unanswered),             // why none came
+}
+pub enum Unanswered { Ended, Failed, Unreplied }
+
 impl Handles<Answer<TileIs, Looking>> for Pointer {
     type Sends = ();
-    fn handle(&mut self, (tile, looking): (TileIs, Looking), turn: &mut Turn<'_, ()>) -> Result<(), Fault> { .. }
+    fn handle(&mut self, (answered, looking): (Answered<TileIs>, Looking), turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        match answered {
+            Answered::Yes(tile) => { .. }
+            Answered::No(why) => { .. }
+        }
+    }
 }
 ```
 
@@ -45,21 +56,13 @@ impl Handles<Answer<TileIs, Looking>> for Pointer {
 - An answer is told apart from other mail of its kind by what the engine wrote in it, so an actor may also handle `TileIs` as plain mail, and each goes to its own handler.
 - A context that does not decode as the handler's kind fails the turn, as mail that does not decode as its kind does.
 
-**Every request is answered exactly once.** When the receiver does not answer, the engine answers for it, with the answer kind's own word for that:
+**Every request is answered exactly once.** When the receiver does not answer, the engine tells the asker why, as `Answered::No`:
 
-```rust
-pub trait Unanswered: Kind { fn unanswered() -> Self; }               // what an asker is told when no answer came
-impl Unanswered for TileIs { fn unanswered() -> Self { TileIs::Unknown } }
-```
+- `Ended`: the receiver had ended, or was gone, when the request was to be handed to it, or it held the request and ended before answering it;
+- `Failed`: the turn that handled the request failed;
+- `Unreplied`: the turn handled the request and neither replied nor held it.
 
-The engine answers with `unanswered()` when:
-
-- the receiver had ended, or was gone, when the request was to be handed to it;
-- the turn that handled the request failed;
-- the turn handled the request and neither replied nor held it;
-- the receiver held the request and ended before answering it.
-
-The asker encodes `unanswered()` as it asks, and the engine keeps those bytes with the context, so the engine answers without running the asker's code, and the same for a guest. The engine's answer comes from the receiver, the actor the request was sent to, which existed when it was sent (ADR-0009), and it belongs to the request's chain. A caller's handler therefore always runs, and what it kept always comes back to it.
+An answer kind is a kind like any other, with nothing to implement for the case where no answer comes. The engine keeps only the request's count and the context, and needs nothing of the asker's code to say a request went unanswered, so it does the same for a guest. What it hands the asker comes from the receiver, the actor the request was sent to, which existed when it was sent (ADR-0009), and belongs to the request's chain. A caller's handler therefore always runs, and what it kept always comes back to it.
 
 **An answer that comes later is held.** A receiver that cannot answer in the turn of the request holds it, and answers from any later turn:
 
@@ -71,18 +74,18 @@ turn.answer(held, &Fetched::Got(blob))?;          // in a later turn
 
 - `Held<A>` names one request this actor owes an answer of kind `A`. It crosses `Within` and no other boundary, so it is kept in the actor's state, and cannot be in mail. It is neither `Clone` nor `Copy`, and `answer` takes it by value, so it answers once, which the build checks.
 - The engine keeps the debt beside the receiver, in its seat. `answer` confirms the ticket names a debt this actor owes, of kind `A`, as `open` confirms a handle (ADR-0010), and fails the turn when it does not.
-- When the receiver ends, the engine answers every debt it still owes with `unanswered()`, after its closing turn. A `Held` dropped from the actor's state without an answer is answered when the actor ends.
+- When the receiver ends, the engine tells the asker of every debt it still owes `Answered::No(Ended)`, after its closing turn. A `Held` dropped from the actor's state without an answer is answered when the actor ends.
 - **Not decided here:** giving a `Held` to another actor, so a child answers what its parent was asked.
 
-**An answer belongs to the chain of the turn that sends it.** A reply in the turn of the request is on the request's chain. A held answer is on the chain of the later turn that gives it. The engine's `unanswered()` is on the request's chain. Requests and answers are mail, so they fuse as mail does (ADR-0013).
+**An answer belongs to the chain of the turn that sends it.** A reply in the turn of the request is on the request's chain. A held answer is on the chain of the later turn that gives it. What the engine says of an unanswered request is on the request's chain. Requests and answers are mail, so they fuse as mail does (ADR-0013).
 
 **What an asker keeps for an answer is kept by the engine; what it keeps for other mail stays its own.** ADR-0012's root and depth still name a piece of mail's chain, for tracing and for mail that is not a request.
 
 ## Consequences
 
 - A request and its answer cost the asker no number to make or check, and an answer cannot be lost: the caller's handler runs once for each ask, with what it kept.
+- Every answer handler handles both cases. A request to an actor that can end can always go unanswered, so that is the handler's to say, and it is told why.
 - Asking needs a named protocol. An actor asked through a typed reference is asked through a protocol it conforms to (ADR-0016: `ActorRef::protocol`).
-- An answer kind has an `unanswered()` case. A kind with no natural one gets an enum with one, such as `Fetched::Unanswered`.
 - An asker's seat holds what it is waiting for, and an answerer's what it owes. Both are dropped with the actor: an asker that ends drops its contexts, and the answers to it are dropped as mail to an ended actor is.
 - Mail says whether it asks, and which request it answers. That is carried with every piece of mail, and what it costs is measured where it is built.
 - A guest asks, replies, holds, and answers in records its host reads, and its host holds it to what it claims, as it does for resources (ADR-0015).
@@ -96,3 +99,4 @@ turn.answer(held, &Fetched::Got(blob))?;          // in a later turn
 - **The context kept in the asker's own state, keyed by the request's id.** No engine table. The asker files and finds it by hand, and the engine cannot answer for a receiver that ended without running the asker's code.
 - **An answer of any kind the protocol lists.** Requests answered by a status and then a result. The engine could not say which answer ends the request, nor which kind to answer with when none comes.
 - **Answers only when the receiver gives one.** Less engine work. A caller whose answerer ended or failed waits forever, and what it kept is never freed.
+- **An answer kind's own `unanswered()`, encoded by the asker as it asks.** The handler sees only answers. Every answer kind needs a case and an implementation for it, every ask encodes it ahead, and the asker cannot tell an answerer that ended from one that failed or forgot.
