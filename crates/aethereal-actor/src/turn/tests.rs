@@ -495,7 +495,7 @@ fn mail_sent_to_all_is_a_piece_for_each_receiver_with_its_bytes_written_once() {
     let meeting = Meet { other: ErasedActorRef::new(receivers[0]) };
 
     assert_eq!(turn.send_to_all(&references, &meeting), Ok(()));
-    assert_eq!(turn.send_to_all(&[], &meeting), Ok(()));
+    assert_eq!(turn.send_to_all(&references[..0], &meeting), Ok(()));
 
     let (buffers, _, _, _, _) = asked.into_parts();
     let seen: Vec<(Seated, u64)> = buffers.mailed.iter().map(|mailed| (mailed.to, mailed.count)).collect();
@@ -503,6 +503,25 @@ fn mail_sent_to_all_is_a_piece_for_each_receiver_with_its_bytes_written_once() {
     let first = buffers.mailed[0].bytes;
     let is_shared = buffers.mailed.iter().all(|mailed| mailed.bytes == first);
     assert!(is_shared, "every piece reads the one copy of the bytes");
+}
+
+#[test]
+fn mail_sent_through_a_protocol_reference_reaches_the_actor_it_refers_to() {
+    // Catches a protocol reference that sends to another seat than the one it was made with, alone or in a send to
+    // all.
+    let receivers = [seated(9, 5), seated(8, 6), seated(7, 7)];
+    let table = Listed(Vec::new());
+    let mut asked = Asked::new();
+    let mut turn = opened::<(ToAny<(Poke,), Poke>,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let references = receivers.map(|receiver| ProtocolRef::<(Poke,)>::from(ActorRef::<Leaf>::new(receiver)));
+
+    assert_eq!(turn.send_to(references[0], &Poke), Ok(()));
+    assert_eq!(turn.send_to_all(&references[1..], &Poke), Ok(()));
+
+    let (buffers, _, _, _, _) = asked.into_parts();
+    let seen: Vec<(Seated, KindId)> = buffers.mailed.iter().map(|mailed| (mailed.to, mailed.kind)).collect();
+    let poke = KindId::of::<Poke>();
+    assert_eq!(seen, [(receivers[0], poke), (receivers[1], poke), (receivers[2], poke)]);
 }
 
 #[test]
