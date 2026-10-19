@@ -1,6 +1,6 @@
 //! What a handler may send, and whether it may watch, written as a tuple of markers (ADR-0013).
 
-use super::{Back, Handled, Handles, Listed, Sending, Target};
+use super::{Back, Handled, HandledList, Handles, Listed, Sending, Target, takes_back};
 use crate::Actor;
 use aethereal_data::{Kind, KindId, KindName, Plain};
 use core::marker::PhantomData;
@@ -66,8 +66,17 @@ impl<T: Kind> Name<T> {
 pub trait Sends {
     /// The sends, as the engine reads them.
     const SENDINGS: &'static [Sending];
-    /// What may come back from each send, in the same order.
-    const BACKS: &'static [Back];
+}
+
+/// An actor of type `A` takes whatever may come back from each of these sends: what makes a declaration that would
+/// be sent mail it cannot handle fail to build (ADR-0016).
+pub trait TakenBy<A> {
+    /// Whether it does.
+    const TAKEN: bool;
+}
+
+impl<A> TakenBy<A> for () {
+    const TAKEN: bool = true;
 }
 
 /// A tuple of kinds: what [`ToAny`] names a protocol by.
@@ -86,7 +95,6 @@ pub struct At<const PLACE: usize>;
 
 impl Sends for () {
     const SENDINGS: &'static [Sending] = &[];
-    const BACKS: &'static [Back] = &[];
 }
 
 impl Kinds for () {
@@ -97,7 +105,11 @@ macro_rules! tuples {
     ($( [$($name:ident $place:literal)*] )*) => {$(
         impl<$($name: Marker),*> Sends for ($($name,)*) {
             const SENDINGS: &'static [Sending] = &[$($name::SENDING),*];
-            const BACKS: &'static [Back] = &[$($name::BACK),*];
+        }
+
+        impl<Taker: Actor, $($name: Marker),*> TakenBy<Taker> for ($($name,)*) {
+            const TAKEN: bool =
+                $(takes_back(<Taker::Handles as HandledList<Taker>>::HANDLERS, $name::BACK))&&*;
         }
 
         impl<$($name: Kind),*> Kinds for ($($name,)*) {

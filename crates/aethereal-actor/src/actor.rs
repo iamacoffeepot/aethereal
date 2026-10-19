@@ -2,7 +2,7 @@
 
 use crate::{
     Actors, Beginning, Chain, Children, Closing, Declared, Ending, Fault, HandledList, Instances, Item, Puts, Seated,
-    Seats, Sends, Table, Turning, Within,
+    Seats, Sends, Table, TakenBy, Turning, Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
 use alloc::boxed::Box;
@@ -28,9 +28,9 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized + 'static
     /// them, so an actor handles what another sent it before it is shown that the other has ended.
     type Handles: HandledList<Self>;
     /// What its `begin` may send.
-    type BeginSends: Sends;
+    type BeginSends: Sends + TakenBy<Self>;
     /// What its closing turn may send.
-    type EndSends: Sends;
+    type EndSends: Sends + TakenBy<Self>;
 
     /// Makes the actor from `config`. It runs inside the turn of the parent that spawns it.
     fn begin(config: Self::Config, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault>;
