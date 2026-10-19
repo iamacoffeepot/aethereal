@@ -58,7 +58,7 @@ The engine keeps a piece of mail under the actor it is for, with its id beside i
 - An actor that keeps a second thing further down the same chain finds both, the nearer first.
 - Two pieces of mail sent from one turn are in the same chain at the same depth. What was kept for each is found by mail that follows from either, and the actor tells them apart by what the mail is and who sent it.
 - This is not an effect, and the engine keeps nothing for it. What an actor keeps is its own, it is not sent, and no other actor sees it. The engine adds the one number to the mail.
-- What an actor kept stays until the actor takes it out. Nothing tells an actor that a chain has finished.
+- What an actor kept stays until the actor takes it out. An actor may ask to be told when the chain its turn is handling has finished (ADR-0020: `turn.watch_chain`).
 
 **Asking and answering are not the engine's.** Mail is sent, untyped, and nothing is owed for it. A request and its answer, a promise to answer, and a stream are a layer written over mail and over what an actor keeps, and that layer is a later ADR's. The engine holds none of it.
 
