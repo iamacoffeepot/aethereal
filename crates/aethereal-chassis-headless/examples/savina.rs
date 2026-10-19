@@ -192,7 +192,7 @@ impl Actor for Pinger {
         let Ok(ponger) = turn.spawn::<Ponger>(&0, Number { number: 0 }) else {
             panic!("the pong side begins");
         };
-        turn.to_actor(ponger).send(&Ready)?;
+        turn.send_to(ponger, &Ready)?;
 
         Ok(Self)
     }
@@ -206,7 +206,7 @@ impl Handles<Ready> for Pinger {
     type Sends = (ToType<Ponger, Ping>,);
 
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        turn.to::<Ponger>(To::Sender).send(&Ping { left: PINGS - 1 })?;
+        turn.send(To::Sender, &Ping { left: PINGS - 1 })?;
 
         Ok(())
     }
@@ -217,7 +217,7 @@ impl Handles<Pong> for Pinger {
 
     fn handle(&mut self, Pong { left }: Pong, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         if left > 0 {
-            turn.to::<Ponger>(To::Sender).send(&Ping { left: left - 1 })?;
+            turn.send(To::Sender, &Ping { left: left - 1 })?;
         }
 
         Ok(())
@@ -278,7 +278,7 @@ impl Actor for Producer {
         let Ok(counter) = turn.spawn::<Counter>(&0, Number { number: 0 }) else {
             panic!("the counter begins");
         };
-        turn.to_actor(counter).send(&Ready)?;
+        turn.send_to(counter, &Ready)?;
 
         Ok(Self)
     }
@@ -293,9 +293,9 @@ impl Handles<Ready> for Producer {
 
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         for _ in 0..COUNTS {
-            turn.to::<Counter>(To::Sender).send(&Increment)?;
+            turn.send(To::Sender, &Increment)?;
         }
-        turn.to::<Counter>(To::Sender).send(&Retrieve)?;
+        turn.send(To::Sender, &Retrieve)?;
 
         Ok(())
     }
@@ -332,9 +332,9 @@ impl Actor for BeginProducer {
             panic!("the counter begins");
         };
         for _ in 0..COUNTS {
-            turn.to_actor(counter).send(&Increment)?;
+            turn.send_to(counter, &Increment)?;
         }
-        turn.to_actor(counter).send(&Retrieve)?;
+        turn.send_to(counter, &Retrieve)?;
 
         Ok(Self)
     }
@@ -436,7 +436,7 @@ impl Handles<Ready> for Forker {
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         for _ in 0..FORKED {
             for worker in &self.workers {
-                turn.to_actor(*worker).send(&Work)?;
+                turn.send_to(*worker, &Work)?;
             }
         }
 
@@ -515,9 +515,9 @@ impl Handles<Ready> for Crowd {
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         for actor in &self.actors {
             for other in self.actors.iter().filter(|other| *other != actor) {
-                turn.to_actor(*actor).send(&Neighbour { other: *other })?;
+                turn.send_to(*actor, &Neighbour { other: *other })?;
             }
-            turn.to_actor(*actor).send(&Start)?;
+            turn.send_to(*actor, &Start)?;
         }
 
         Ok(())
@@ -548,7 +548,7 @@ impl Pinging {
         self.random ^= self.random << 17;
         let count = u64::try_from(self.neighbours.len()).unwrap_or(1).max(1);
         let picked = usize::try_from(self.random % count).unwrap_or(0);
-        turn.to_actor(self.neighbours[picked]).send(&Ping { left })?;
+        turn.send_to(self.neighbours[picked], &Ping { left })?;
 
         Ok(())
     }
@@ -661,7 +661,7 @@ impl Handles<Ready> for FibRoot {
     type Sends = (ToType<Fib, Request>,);
 
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        turn.to::<Fib>(To::Sender).send(&Request { number: FIB })?;
+        turn.send(To::Sender, &Request { number: FIB })?;
 
         Ok(())
     }
@@ -713,14 +713,14 @@ impl Handles<Request> for Fib {
 
     fn handle(&mut self, Request { number }: Request, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         if number <= 2 {
-            turn.to_any::<(Response,)>(To::Parent).send(&Response { value: 1 })?;
+            turn.send_to_any(To::Parent, &Response { value: 1 })?;
             turn.close();
         } else {
             for (key, before) in [(0, number - 1), (1, number - 2)] {
                 let Ok(child) = turn.spawn::<Self>(&key, Number { number: key }) else {
                     panic!("a child begins");
                 };
-                turn.to_actor(child).send(&Request { number: before })?;
+                turn.send_to(child, &Request { number: before })?;
             }
         }
 
@@ -735,7 +735,7 @@ impl Handles<Response> for Fib {
         self.sum += value;
         self.answers += 1;
         if self.answers == 2 {
-            turn.to_any::<(Response,)>(To::Parent).send(&Response { value: self.sum })?;
+            turn.send_to_any(To::Parent, &Response { value: self.sum })?;
             turn.close();
         }
 
@@ -796,9 +796,9 @@ impl Handles<Ready> for Sieve {
 
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         for number in (3..=SIEVE_LIMIT).step_by(2) {
-            turn.to::<Filter>(To::Sender).send(&Candidate { number })?;
+            turn.send(To::Sender, &Candidate { number })?;
         }
-        turn.to::<Filter>(To::Sender).send(&Exit)?;
+        turn.send(To::Sender, &Exit)?;
 
         Ok(())
     }
@@ -853,7 +853,7 @@ impl Handles<Candidate> for Filter {
             return Ok(());
         }
         match self.next {
-            Next::Filter(next) => turn.to_actor(next).send(&Candidate { number })?,
+            Next::Filter(next) => turn.send_to(next, &Candidate { number })?,
             Next::Last if self.primes.len() < SIEVE_KEPT => self.primes.push(number),
             Next::Last => {
                 let Ok(next) = turn.spawn::<Self>(&0, Number { number }) else {
@@ -872,7 +872,7 @@ impl Handles<Exit> for Filter {
 
     fn handle(&mut self, _: Exit, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         if let Next::Filter(next) = self.next {
-            turn.to_actor(next).send(&Exit)?;
+            turn.send_to(next, &Exit)?;
         }
         turn.close();
 
@@ -921,7 +921,7 @@ impl Churn {
             panic!("a churn actor begins");
         };
         self.spawned += 1;
-        turn.to_actor(child).send(&Live { left: CHURN_LIFE })?;
+        turn.send_to(child, &Live { left: CHURN_LIFE })?;
 
         Ok(())
     }
@@ -951,7 +951,7 @@ impl Handles<Ready> for Churn {
     type Sends = (ToType<Mortal, Live>,);
 
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        turn.to::<Mortal>(To::Sender).send(&Live { left: CHURN_LIFE })?;
+        turn.send(To::Sender, &Live { left: CHURN_LIFE })?;
         while self.spawned < CHURN_ALIVE / self.spawners {
             self.spawn_next(turn)?;
         }
@@ -1002,9 +1002,9 @@ impl Handles<Live> for Mortal {
     fn handle(&mut self, Live { left }: Live, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         if left > 0 {
             let me = turn.me();
-            turn.to::<Self>(To::Held(me)).send(&Live { left: left - 1 })?;
+            turn.send(To::Held(me), &Live { left: left - 1 })?;
         } else {
-            turn.to::<Churn>(To::Parent).send(&Died)?;
+            turn.send(To::Parent, &Died)?;
             turn.close();
         }
 
@@ -1083,7 +1083,7 @@ impl Region {
         self.answered = 0;
         if self.frame == WORLD_FRAMES {
             for body in &self.places {
-                turn.to_actor(*body).send(&Over)?;
+                turn.send_to(*body, &Over)?;
             }
             turn.close();
             WORLD_OVER.fetch_add(1, Ordering::Relaxed);
@@ -1095,7 +1095,7 @@ impl Region {
         for (place, body) in self.places.iter().enumerate() {
             let left = self.places[(place + count - 1) % count];
             let right = self.places[(place + 1) % count];
-            turn.to_actor(*body).send(&Frame { left, right })?;
+            turn.send_to(*body, &Frame { left, right })?;
         }
         self.frame += 1;
 
@@ -1224,15 +1224,15 @@ impl Handles<Frame> for Body {
             self.velocity = -self.velocity;
         }
         self.pushed = 0.0;
-        turn.to_actor(left).send(&Nudge { push: -0.01 * self.velocity })?;
-        turn.to_actor(right).send(&Nudge { push: 0.01 * self.velocity })?;
+        turn.send_to(left, &Nudge { push: -0.01 * self.velocity })?;
+        turn.send_to(right, &Nudge { push: 0.01 * self.velocity })?;
 
         self.left -= 1;
         if self.left == 0 {
-            turn.to::<Region>(To::Parent).send(&Expired { place: self.place })?;
+            turn.send(To::Parent, &Expired { place: self.place })?;
             turn.close();
         } else {
-            turn.to::<Region>(To::Parent).send(&Moved)?;
+            turn.send(To::Parent, &Moved)?;
         }
 
         Ok(())
@@ -1318,7 +1318,7 @@ where
     S: Allows<ToType<T, Ready>, I>,
 {
     if let Some(last) = children.last() {
-        turn.to_actor(*last).send(&Ready)?;
+        turn.send_to(*last, &Ready)?;
     }
 
     Ok(())

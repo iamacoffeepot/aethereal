@@ -101,8 +101,7 @@ impl Actor for Counter {
             let is_busy = number <= config.children;
             let spawned = turn.spawn::<Self>(&number, child).is_ok();
             if spawned && is_busy {
-                turn.to::<Self>(ToWithoutMail::ChildInstanced(Self::NAME, number.to_name()))
-                    .send(&Count { left: TURNS })?;
+                turn.send(ToWithoutMail::ChildInstanced(Self::NAME, number.to_name()), &Count { left: TURNS })?;
             }
         }
 
@@ -124,7 +123,7 @@ impl Handles<Count> for Counter {
             turn.close();
         } else {
             let me = turn.me();
-            turn.to::<Self>(To::Held(me)).send(&Count { left: left - 1 })?;
+            turn.send(To::Held(me), &Count { left: left - 1 })?;
         }
 
         Ok(())

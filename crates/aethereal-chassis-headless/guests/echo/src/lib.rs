@@ -393,7 +393,7 @@ impl Actor for Seeker {
     fn begin(seek: Seek, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         for (n, path) in (0..).zip(&seek.paths) {
             if let Some(found) = turn.resolve(path) {
-                turn.to_any::<(Ping,)>(ToWithoutMail::Held(found)).send(&Ping { n })?;
+                turn.send_to_any(ToWithoutMail::Held(found), &Ping { n })?;
             }
         }
 
@@ -475,7 +475,7 @@ impl Handles<Ended> for Watcher {
             How::Earlier => 3,
         };
         if let Some(place) = place {
-            turn.to_any::<(Ping,)>(To::Held(self.tell)).send(&Ping { n: 10 * place + how })?;
+            turn.send_to_any(To::Held(self.tell), &Ping { n: 10 * place + how })?;
         }
 
         Ok(())
@@ -513,7 +513,7 @@ impl Handles<Ping> for Reporter {
     type Sends = (ToAny<(Pong,), Pong>,);
 
     fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        turn.to_any::<(Pong,)>(To::Parent).send(&Pong { n: ping.n + self.key })?;
+        turn.send_to_any(To::Parent, &Pong { n: ping.n + self.key })?;
 
         Ok(())
     }
@@ -548,7 +548,7 @@ impl Actor for Chick {
     type EndSends = ();
 
     fn begin(config: AddBy, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.to_any::<(Pong,)>(ToWithoutMail::Parent).send(&Pong { n: 100 + config.by })?;
+        turn.send_to_any(ToWithoutMail::Parent, &Pong { n: 100 + config.by })?;
         turn.log(Level::Info, "a chick began");
 
         Ok(Self)
@@ -666,7 +666,7 @@ impl Actor for Hatcher {
 
     fn begin(hatch: Hatch, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         let reporter = turn.spawn_from::<Reporter>(&hatch.other, &7, &AddBy { by: 20, deeper: 0 });
-        turn.to_actor(reporter.map_err(|why| unhatched(&why))?).send(&Ping { n: 0 })?;
+        turn.send_to(reporter.map_err(|why| unhatched(&why))?, &Ping { n: 0 })?;
 
         Ok(Self { other: hatch.other, home: hatch.home, grown: 0 })
     }
@@ -680,7 +680,7 @@ impl Handles<Pong> for Hatcher {
     type Sends = (ToAny<(Pong,), Pong>,);
 
     fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        turn.to_any::<(Pong,)>(To::Parent).send(&pong)?;
+        turn.send_to_any(To::Parent, &pong)?;
 
         Ok(())
     }
@@ -693,16 +693,16 @@ impl Handles<Grow> for Hatcher {
         let chick = AddBy { by: 10 * self.grown + 2, deeper: 0 };
         turn.spawn::<Chick>(&self.grown, chick).map_err(|why| unhatched(&why))?;
         if let Err(why) = turn.spawn::<Stray>(&(), EchoConfig) {
-            turn.to_any::<(Pong,)>(To::Parent).send(&Pong { n: 500 + refused(&why) })?;
+            turn.send_to_any(To::Parent, &Pong { n: 500 + refused(&why) })?;
         }
         if let Err(why) = turn.spawn::<FakeChick>(&(100 + self.grown), AddBy { by: 0, deeper: 0 }) {
-            turn.to_any::<(Pong,)>(To::Parent).send(&Pong { n: 600 + refused(&why) })?;
+            turn.send_to_any(To::Parent, &Pong { n: 600 + refused(&why) })?;
         }
         let is_first = self.grown == 0;
         if is_first {
             let home = Home { home: self.home.clone() };
             let boomerang = turn.spawn_from::<Boomerang>(&self.other, &(), &home).map_err(|why| unhatched(&why))?;
-            turn.to_actor(boomerang).send(&Ping { n: 0 })?;
+            turn.send_to(boomerang, &Ping { n: 0 })?;
         }
         self.grown += 1;
 
@@ -742,7 +742,7 @@ impl Actor for Boomerang {
     fn begin(home: Home, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         let spawned = turn.spawn_from::<Reporter>(&home.home, &0, &AddBy { by: 0, deeper: 0 });
         let n = spawned.err().map_or(300, |why| 300 + refused(&why));
-        turn.to_any::<(Pong,)>(ToWithoutMail::Parent).send(&Pong { n })?;
+        turn.send_to_any(ToWithoutMail::Parent, &Pong { n })?;
 
         Ok(Self { home: home.home })
     }
@@ -758,7 +758,7 @@ impl Handles<Ping> for Boomerang {
     fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let spawned = turn.spawn_from::<Reporter>(&self.home, &1, &AddBy { by: 0, deeper: 0 });
         let n = spawned.err().map_or(400, |why| 400 + refused(&why));
-        turn.to_any::<(Pong,)>(To::Parent).send(&Pong { n })?;
+        turn.send_to_any(To::Parent, &Pong { n })?;
 
         Ok(())
     }
@@ -807,7 +807,7 @@ impl Actor for Librarian {
     fn begin(shelf: Shelf, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         let n = turn.read(&shelf.book).len() as u64;
         if let Some(tell) = turn.resolve(&shelf.tell) {
-            turn.to_any::<(Pong,)>(ToWithoutMail::Held(tell)).send(&Pong { n })?;
+            turn.send_to_any(ToWithoutMail::Held(tell), &Pong { n })?;
         }
 
         Ok(Self { book: shelf.book })
@@ -999,7 +999,7 @@ impl Actor for Parting {
     fn end(self, turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
         let is_faulted = turn.why() == aethereal_actor::Why::Faulted;
         let n = 600 + 10 * self.pings + u64::from(is_faulted);
-        turn.to_any::<(Pong,)>(ToWithoutMail::Held(self.tell)).send(&Pong { n })?;
+        turn.send_to_any(ToWithoutMail::Held(self.tell), &Pong { n })?;
 
         Ok(())
     }

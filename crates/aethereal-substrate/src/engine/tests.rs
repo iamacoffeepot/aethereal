@@ -96,7 +96,7 @@ impl Actor for Node {
         }
         for text in config.to_self {
             let me = turn.me();
-            turn.to::<Self>(ToWithoutMail::Held(me)).send(&Note { text })?;
+            turn.send(ToWithoutMail::Held(me), &Note { text })?;
         }
 
         Ok(Self { number: config.number })
@@ -104,7 +104,7 @@ impl Actor for Node {
 
     fn end(self, turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
         say(format!("{} ended {:?}", self.number, turn.why()));
-        turn.to::<Self>(ToWithoutMail::Parent).send(&Note { text: format!("bye {}", self.number) })?;
+        turn.send(ToWithoutMail::Parent, &Note { text: format!("bye {}", self.number) })?;
         let fails = self.number == 13;
         if fails {
             return Err(Fault::new(&Note { text: String::from("unlucky") })?);
@@ -127,7 +127,7 @@ impl Handles<Note> for Node {
             ["fail"] => return Err(Fault::new(&Note { text })?),
             ["fail", line] => {
                 turn.log(Level::Warn, line);
-                turn.to::<Self>(To::Parent).send(&Note { text: String::from("never") })?;
+                turn.send(To::Parent, &Note { text: String::from("never") })?;
 
                 return Err(Fault::new(&Note { text: String::from(line) })?);
             }
@@ -142,7 +142,7 @@ impl Handles<Note> for Node {
                     turn.reply(&Note { text: format!("bounce {}", left - 1) })?;
                 }
             }
-            ["up", said] => turn.to::<Self>(To::Parent).send(&Note { text: format!("{said} from {}", self.number) })?,
+            ["up", said] => turn.send(To::Parent, &Note { text: format!("{said} from {}", self.number) })?,
             ["spawn" | "watch", number, text] => {
                 let number = number.parse().unwrap_or_default();
                 let config = NodeConfig { number, to_self: Vec::new(), spawns: Vec::new() };
@@ -151,7 +151,7 @@ impl Handles<Note> for Node {
                     if watches {
                         turn.watch(child);
                     }
-                    turn.to::<Self>(Self::child(number)).send(&Note { text: String::from(text) })?;
+                    turn.send(Self::child(number), &Note { text: String::from(text) })?;
                 }
             }
             ["nest", number, beneath] => {
@@ -161,12 +161,12 @@ impl Handles<Note> for Node {
             }
             ["tell", number, text] => {
                 let child = Self::child(number.parse().unwrap_or_default());
-                turn.to::<Self>(child).send(&Note { text: String::from(text) })?;
+                turn.send(child, &Note { text: String::from(text) })?;
             }
             ["both"] => {
-                turn.to::<Self>(To::Parent).send(&Note { text: String::from("watchme") })?;
+                turn.send(To::Parent, &Note { text: String::from("watchme") })?;
                 let me = turn.me();
-                turn.to::<Self>(To::Held(me)).send(&Note { text: String::from("close") })?;
+                turn.send(To::Held(me), &Note { text: String::from("close") })?;
             }
             ["watchme", ..] => {
                 let sender = turn.sender();
@@ -175,16 +175,16 @@ impl Handles<Note> for Node {
             ["self", ..] => {
                 let (_, rest) = text.split_once(' ').unwrap_or_default();
                 let me = turn.me();
-                turn.to::<Self>(To::Held(me)).send(&Note { text: String::from(rest) })?;
+                turn.send(To::Held(me), &Note { text: String::from(rest) })?;
             }
             ["keep", ..] => {
                 let sender = turn.sender();
-                turn.to::<Self>(To::Held(sender)).send(&Note { text: String::from("late") })?;
+                turn.send(To::Held(sender), &Note { text: String::from("late") })?;
             }
             ["many", count, text] => {
                 let me = turn.me();
                 for index in 0..count.parse().unwrap_or(0u64) {
-                    turn.to::<Self>(To::Held(me)).send(&Note { text: format!("{text}{index}") })?;
+                    turn.send(To::Held(me), &Note { text: format!("{text}{index}") })?;
                 }
             }
             ["where", ..] => say(format!("{} at depth {}", self.number, turn.chain().depth)),
@@ -195,7 +195,7 @@ impl Handles<Note> for Node {
                     turn.watch(sender);
                 }
                 let child = Self::child(number.parse().unwrap_or_default());
-                turn.to::<Self>(child).send(&Note { text: String::from("late") })?;
+                turn.send(child, &Note { text: String::from("late") })?;
             }
             _ => {}
         }
@@ -972,7 +972,7 @@ impl Actor for Holder {
     fn begin(config: HolderConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         for text in config.to_self {
             let me = turn.me();
-            turn.to::<Self>(ToWithoutMail::Held(me)).send(&Note { text })?;
+            turn.send(ToWithoutMail::Held(me), &Note { text })?;
         }
         // Each blob it gives is one only that mail refers to, so mail that loses its pin loses its blob.
         for _ in 0..config.gives {
@@ -981,8 +981,8 @@ impl Actor for Holder {
             };
             // A note between each two keeps them from joining into one run, so the part carries many items.
             let me = turn.me();
-            turn.to::<Self>(ToWithoutMail::Held(me)).send(&Given { blob, left: 1 })?;
-            turn.to::<Self>(ToWithoutMail::Held(me)).send(&Note { text: String::from("between") })?;
+            turn.send(ToWithoutMail::Held(me), &Given { blob, left: 1 })?;
+            turn.send(ToWithoutMail::Held(me), &Note { text: String::from("between") })?;
         }
 
         Ok(Self { held: Vec::new(), gave: config.gives > 0 })
@@ -1019,7 +1019,7 @@ impl Handles<Note> for Holder {
             ["send", ..] => {
                 if let Some(blob) = self.held.pop() {
                     let me = turn.me();
-                    turn.to::<Self>(To::Held(me)).send(&Given { blob, left: 0 })?;
+                    turn.send(To::Held(me), &Given { blob, left: 0 })?;
                 }
                 if words.get(1) == Some(&"close") {
                     turn.close();
@@ -1027,7 +1027,7 @@ impl Handles<Note> for Holder {
             }
             ["later", rest] => {
                 let me = turn.me();
-                turn.to::<Self>(To::Held(me)).send(&Note { text: String::from(rest) })?;
+                turn.send(To::Held(me), &Note { text: String::from(rest) })?;
             }
             _ => {}
         }
@@ -1045,7 +1045,7 @@ impl Handles<Given> for Holder {
             let Given { blob, left } = given;
             if left > 0 {
                 let me = turn.me();
-                turn.to::<Self>(To::Held(me)).send(&Given { blob, left: left - 1 })?;
+                turn.send(To::Held(me), &Given { blob, left: left - 1 })?;
             }
         } else {
             say(format!("given {held}"));

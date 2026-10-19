@@ -71,7 +71,7 @@ impl Actor for Counter {
     fn begin(bursts: Bursts, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
         if let Some(echo) = turn.resolve(&echo) {
-            turn.to_any::<(Ping,)>(ToWithoutMail::Held(echo)).send(&Ping { n: bursts.bursts })?;
+            turn.send_to_any(ToWithoutMail::Held(echo), &Ping { n: bursts.bursts })?;
         }
 
         Ok(Self { each: bursts.each })
