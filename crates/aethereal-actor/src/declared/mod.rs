@@ -143,23 +143,30 @@ impl<A: Actor> Of<A> {
 
 impl Declared {
     /// It, when what it declares holds together: a type that declares a watch handles endings, as the ending of what
-    /// it watches is handed to it.
+    /// it watches is handed to it, and each send it declares to a protocol is of one of the protocol's kinds, as
+    /// nothing that takes the protocol need take another (ADR-0016).
     ///
     /// # Panics
     ///
     /// Panics, as the type's declaration is made when the program is built, stopping the build, when it does not.
     const fn checked(self) -> Self {
         let mut watches = declares_watch(self.begins) || declares_watch(self.ends);
+        let mut sends_in_protocols = in_protocols(self.begins) && in_protocols(self.ends);
         let mut handles_endings = false;
         let mut index = 0;
         while index < self.handlers.len() {
             let handler = &self.handlers[index];
             watches = watches || declares_watch(handler.sends);
+            sends_in_protocols = sends_in_protocols && in_protocols(handler.sends);
             handles_endings = handles_endings || matches!(handler.role, Role::Ended);
             index += 1;
         }
         let holds = !watches || handles_endings;
         assert!(holds, "false declaration: a type declares a watch, and does not handle endings");
+        assert!(
+            sends_in_protocols,
+            "false declaration: a type declares a send to a protocol of a kind the protocol does not hold"
+        );
 
         self
     }
@@ -170,6 +177,35 @@ const fn declares_watch(sendings: &[Sending]) -> bool {
     let mut index = 0;
     while index < sendings.len() {
         if matches!(sendings[index].to, Target::Watched) {
+            return true;
+        }
+        index += 1;
+    }
+
+    false
+}
+
+/// Whether each of `sendings` to a protocol is of one of its kinds.
+const fn in_protocols(sendings: &[Sending]) -> bool {
+    let mut index = 0;
+    while index < sendings.len() {
+        let sending = &sendings[index];
+        if let Target::Handling(kinds) = sending.to
+            && !holds_kind(kinds, sending.kind)
+        {
+            return false;
+        }
+        index += 1;
+    }
+
+    true
+}
+
+/// Whether `kinds` holds `kind`.
+const fn holds_kind(kinds: &[KindId], kind: KindId) -> bool {
+    let mut index = 0;
+    while index < kinds.len() {
+        if kinds[index].same(kind) {
             return true;
         }
         index += 1;

@@ -301,6 +301,37 @@ fn a_declaration_that_watches_holds_when_it_handles_endings() {
     assert_eq!(watching.checked().handlers().len(), 2);
 }
 
+/// A send of a stray to any actor that takes kept mail: of a kind its protocol does not hold.
+const STRAY_TO_KEEPERS: &[Sending] = &[<ToAny<(Kept,), Stray> as Marker>::SENDING];
+
+#[test]
+#[should_panic(expected = "the protocol does not hold")]
+fn a_declaration_whose_handler_sends_a_protocol_a_kind_outside_it_does_not_hold() {
+    // Catches a type built that declares, in a handler, a send of a kind to actors that need not take it.
+    const HANDLERS: &[Handler] = &[Handler::new(Role::Kind(KindId::of::<Kept>()), STRAY_TO_KEEPERS)];
+    let sending = Declared::new(Keeper::NAME, KindId::of::<Keeper>(), Keyed::Singleton, &[], HANDLERS, &[]);
+
+    let _ = sending.checked();
+}
+
+#[test]
+#[should_panic(expected = "the protocol does not hold")]
+fn a_declaration_whose_begin_sends_a_protocol_a_kind_outside_it_does_not_hold() {
+    // Catches the check of a protocol's kinds left out of a type's `begin`.
+    let beginning = Declared::new(Keeper::NAME, KindId::of::<Keeper>(), Keyed::Singleton, STRAY_TO_KEEPERS, &[], &[]);
+
+    let _ = beginning.checked();
+}
+
+#[test]
+#[should_panic(expected = "the protocol does not hold")]
+fn a_declaration_whose_closing_turn_sends_a_protocol_a_kind_outside_it_does_not_hold() {
+    // Catches the check of a protocol's kinds left out of a type's closing turn.
+    let ending = Declared::new(Keeper::NAME, KindId::of::<Keeper>(), Keyed::Singleton, &[], &[], STRAY_TO_KEEPERS);
+
+    let _ = ending.checked();
+}
+
 #[test]
 fn declaration_lists_each_handler_with_the_sends_its_impl_names() {
     // Catches a handler's sends listed under another handler, or one dropped from the tuple the engine reads.
