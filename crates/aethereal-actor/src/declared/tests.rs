@@ -369,37 +369,3 @@ fn a_section_written_in_a_constant_reads_back_as_what_its_types_declare() {
     let leaked: Vec<&Declared> = made.iter().map(section::Made::leak).collect();
     assert_eq!(leaked, TYPES);
 }
-
-/// A keeper's name, held by reference.
-const KEEPER_NAME: &KindName = &Keeper::NAME;
-/// A reply of kept mail, among a handler's sends that also send it on to a keeper.
-const KEPT_BACK: &[Sending] = &[
-    Sending::new(KindId::of::<Kept>(), Target::Type(KEEPER_NAME, KindId::of::<Keeper>())),
-    Sending::new(KindId::of::<Kept>(), Target::Sender),
-];
-/// Kept mail, which a protocol answers with a stray, and a stray, which it answers with kept mail.
-const STRAY_ANSWERS: &[Answering] = &[
-    Answering { kind: KindId::of::<Kept>(), answers: &[KindId::of::<Stray>()] },
-    Answering { kind: KindId::of::<Stray>(), answers: &[KindId::of::<Kept>()] },
-];
-/// A handler of kept mail, and of nothing else.
-const KEEPS: &[Handler] = &[Handler::new(Role::Kind(KindId::of::<Kept>()), &[])];
-/// A fallback, and nothing else.
-const FALLS_BACK: &[Handler] = &[Handler::new(Role::Others, &[])];
-
-#[test]
-fn what_comes_back_is_taken_only_by_a_type_that_lists_it_or_falls_back() {
-    // Catches a reply its asker does not list read as taken, a send on to another actor read as a reply, the answer
-    // to another kind of a protocol read as this one's, and a fallback that does not count as taking it.
-    let taken = [
-        takes_back(&[], Back::Replies(KEPT_BACK)),
-        takes_back(KEEPS, Back::Replies(KEPT_BACK)),
-        takes_back(&[], Back::Replies(&KEPT_BACK[..1])),
-        takes_back(KEEPS, Back::Answers(KindId::of::<Kept>(), STRAY_ANSWERS)),
-        takes_back(KEEPS, Back::Answers(KindId::of::<Stray>(), STRAY_ANSWERS)),
-        takes_back(FALLS_BACK, Back::Answers(KindId::of::<Kept>(), STRAY_ANSWERS)),
-        takes_back(&[], Back::Nothing),
-    ];
-
-    assert_eq!(taken, [false, true, true, false, true, true, true]);
-}

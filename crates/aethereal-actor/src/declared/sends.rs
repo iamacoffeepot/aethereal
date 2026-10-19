@@ -1,6 +1,6 @@
 //! What a handler may send, and whether it may watch, written as a tuple of markers (ADR-0013).
 
-use super::{Back, Handled, HandledList, Handles, Listed, Sending, Target, takes_back};
+use super::{Handled, Handles, Listed, Sending, Target};
 use crate::Actor;
 use aethereal_data::{Kind, KindId, KindName, Plain};
 use core::marker::PhantomData;
@@ -33,8 +33,6 @@ impl Kind for Watch {
 pub trait Marker {
     /// What it declares, as the engine reads it.
     const SENDING: Sending;
-    /// What its receiver may send back to the sender, which the sender's type must take (ADR-0016).
-    const BACK: Back = Back::Nothing;
 }
 
 impl Marker for Watches {
@@ -43,7 +41,6 @@ impl Marker for Watches {
 
 impl<T: Actor + Handles<K>, K: Kind + Handled> Marker for ToType<T, K> {
     const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Type(Name::<T>::NAME, KindId::of::<T>()));
-    const BACK: Back = Back::Replies(<<T as Handles<K>>::Sends as Sends>::SENDINGS);
 }
 
 impl<K: Kind> Marker for ToSender<K> {
@@ -52,7 +49,6 @@ impl<K: Kind> Marker for ToSender<K> {
 
 impl<P: Listed, K: Kind> Marker for ToAny<P, K> {
     const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Handling(<P::Kinds as Kinds>::KINDS));
-    const BACK: Back = Back::Answers(KindId::of::<K>(), P::ANSWERS);
 }
 
 /// `T`'s name held by reference, so a constant can read it without dropping it.
@@ -66,17 +62,6 @@ impl<T: Kind> Name<T> {
 pub trait Sends {
     /// The sends, as the engine reads them.
     const SENDINGS: &'static [Sending];
-}
-
-/// An actor of type `A` takes whatever may come back from each of these sends: what makes a declaration that would
-/// be sent mail it cannot handle fail to build (ADR-0016).
-pub trait TakenBy<A> {
-    /// Whether it does.
-    const TAKEN: bool;
-}
-
-impl<A> TakenBy<A> for () {
-    const TAKEN: bool = true;
 }
 
 /// A tuple of kinds: what [`ToAny`] names a protocol by.
@@ -105,11 +90,6 @@ macro_rules! tuples {
     ($( [$($name:ident $place:literal)*] )*) => {$(
         impl<$($name: Marker),*> Sends for ($($name,)*) {
             const SENDINGS: &'static [Sending] = &[$($name::SENDING),*];
-        }
-
-        impl<Taker: Actor, $($name: Marker),*> TakenBy<Taker> for ($($name,)*) {
-            const TAKEN: bool =
-                $(takes_back(<Taker::Handles as HandledList<Taker>>::HANDLERS, $name::BACK))&&*;
         }
 
         impl<$($name: Kind),*> Kinds for ($($name,)*) {

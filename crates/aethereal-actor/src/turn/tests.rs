@@ -1,8 +1,7 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's effect buffers.
 
 use super::*;
-use crate::declared::takes_back_of;
-use crate::{Beginning, Carries, Ending, Fault, Item, Mail, MailId, Payload, Protocol, TakenBy, Within};
+use crate::{Beginning, Carries, Ending, Fault, Item, Mail, MailId, Payload, Protocol, Within};
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
 use alloc::vec;
@@ -581,118 +580,6 @@ fn a_type_answers_a_named_protocol_only_when_each_handler_declares_its_replies()
     assert!(!leaf.answers(<Answered as crate::Listed>::ANSWERS));
     assert!(!leaf.answers(<Met as crate::Listed>::ANSWERS));
     assert!(!Declared::of::<Branch>().answers(<Poking as crate::Listed>::ANSWERS));
-}
-
-/// Asks a leaf for a poke's answer as it begins, and takes no answer.
-#[derive(Plain)]
-struct AsksInBegin;
-
-impl Kind for AsksInBegin {
-    const NAME: KindName = KindName::new("aether.test.asksinbegin");
-}
-
-impl Actor for AsksInBegin {
-    type Config = Self;
-    type Key = ();
-    type Handles = (Shut,);
-    type BeginSends = (ToType<Leaf, Poke>,);
-    type EndSends = ();
-
-    fn begin(asker: Self, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        Ok(asker)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Shut> for AsksInBegin {
-    type Sends = ();
-
-    fn handle(&mut self, _: Shut, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// Asks a leaf for a poke's answer when it is shut, and takes no answer.
-#[derive(Plain)]
-struct AsksInHandler;
-
-impl Kind for AsksInHandler {
-    const NAME: KindName = KindName::new("aether.test.asksinhandler");
-}
-
-impl Actor for AsksInHandler {
-    type Config = Self;
-    type Key = ();
-    type Handles = (Shut,);
-    type BeginSends = ();
-    type EndSends = ();
-
-    fn begin(asker: Self, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        Ok(asker)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Shut> for AsksInHandler {
-    type Sends = (ToType<Leaf, Poke>,);
-
-    fn handle(&mut self, _: Shut, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// Asks a leaf for a poke's answer as it ends, and takes no answer.
-#[derive(Plain)]
-struct AsksInEnd;
-
-impl Kind for AsksInEnd {
-    const NAME: KindName = KindName::new("aether.test.asksinend");
-}
-
-impl Actor for AsksInEnd {
-    type Config = Self;
-    type Key = ();
-    type Handles = (Shut,);
-    type BeginSends = ();
-    type EndSends = (ToType<Leaf, Poke>,);
-
-    fn begin(asker: Self, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        Ok(asker)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Shut> for AsksInEnd {
-    type Sends = ();
-
-    fn handle(&mut self, _: Shut, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-#[test]
-fn a_sender_takes_back_what_its_receivers_reply_or_its_protocols_answer() {
-    // Catches what comes back left unread from the sends of a `begin`, a handler, or a closing turn, from a send to
-    // an actor of a type, and from a send through a named protocol.
-    let taken = [
-        takes_back_of::<AsksInBegin>(),
-        takes_back_of::<AsksInHandler>(),
-        takes_back_of::<AsksInEnd>(),
-        takes_back_of::<Branch>(),
-        <(ToAny<Poking, Poke>,) as TakenBy<Herald>>::TAKEN,
-        <(ToAny<(Poke,), Poke>,) as TakenBy<Herald>>::TAKEN,
-    ];
-
-    assert_eq!(taken, [false, false, false, true, false, true]);
 }
 
 #[test]

@@ -59,9 +59,9 @@ It has the shape of an `ActorRef`: sixteen bytes, `Copy`, crossing what a refere
 
 Neither is checked when it is sent: the reference is the proof. **`ToAny<P, K>` builds only when `K` is one of `P`'s kinds**, which it does not require today.
 
-**A sender handles what its protocol sends back.** A type whose sends list `ToAny<P, K>`, for a named `P`, must handle every kind of `Carries<K>::Answers`. Its declaration is checked for that when the program is built, as a type that declares a watch and does not handle endings is (ADR-0013). For a send through a named protocol, a reply therefore always reaches a type that takes it.
+**A sender handles what its protocol sends back.** A type whose sends list `ToAny<P, K>`, for a named `P`, must handle every kind of `Carries<K>::Answers`. That is a bound on its sends, `BackTo<Self>`, on `Actor::BeginSends`, `Actor::EndSends` and `Handles::Sends`, so a type that does not handle them does not compile, and a check of types alone finds it. For a send through a named protocol, a reply therefore always reaches a type that takes it.
 
-**A send to an actor of a type gets the same check from its receiver's handler.** A type whose sends list `ToType<T, K>` must handle every kind that `T`'s handler for `K` declares in a `ToSender`. That is read from the handler's own `Sends`, at build time. A send through a typed reference and one by a `To` name both declare `ToType`, so a reply to a sender that reached its receiver either way reaches a type that takes it too. A fallback takes any kind.
+**A send to an actor of a type gets the same check from its receiver's handler.** A type whose sends list `ToType<T, K>` must handle every kind that `T`'s handler for `K` declares in a `ToSender`. That is read from the handler's own `Sends`, through the same bound. A send through a typed reference and one by a `To` name both declare `ToType`, so a reply to a sender that reached its receiver either way reaches a type that takes it too. A fallback does not count: a bound cannot say "handles this kind, or falls back", so a type that takes a reply lists its kind.
 
 ## Consequences
 

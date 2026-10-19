@@ -1,6 +1,6 @@
 //! What an actor handles: one handler for each thing it lists, and the engine's call to the right one (ADR-0013).
 
-use super::{Handler, Role, Sends, TakenBy};
+use super::{BackTo, Handler, Role, Sends};
 use crate::{Actor, Actors, Ended, Fault, Item, Mail, Turn, Turning};
 use aethereal_data::{Decode, Kind, KindId};
 
@@ -10,8 +10,8 @@ use aethereal_data::{Decode, Kind, KindId};
 /// `Sends` lists what the handler may send, and the turn it is given offers
 /// those sends and no other, so what it declares is what it can do.
 pub trait Handles<H: Handled>: Actor {
-    /// What the handler may send: a tuple of markers.
-    type Sends: Sends + TakenBy<Self>;
+    /// What the handler may send: a tuple of markers, whatever comes back from which the actor handles.
+    type Sends: Sends + BackTo<Self>;
 
     /// Handles one item: a turn of its own.
     fn handle(&mut self, item: H::Item<'_>, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault>;
@@ -75,8 +75,6 @@ impl Handled for Others {
 pub trait HandledList<A: Actor>: 'static {
     /// Each thing handled, and what its handler may send, as the engine reads them.
     const HANDLERS: &'static [Handler];
-    /// Whether `A` takes whatever may come back from each handler's sends.
-    const TAKES_BACK: bool;
 
     /// Hands `item` to the handler for it: the one for its kind or for endings, else the fallback for mail.
     ///
@@ -104,7 +102,6 @@ macro_rules! tuples {
         impl<A: Actor $(+ Handles<$name>)*, $($name: Handled),*> HandledList<A> for ($($name,)*) {
             const HANDLERS: &'static [Handler] =
                 &[$(Handler::new($name::ROLE, <<A as Handles<$name>>::Sends as Sends>::SENDINGS)),*];
-            const TAKES_BACK: bool = $(<<A as Handles<$name>>::Sends as TakenBy<A>>::TAKEN)&&*;
 
             fn dispatch(actor: &mut A, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
                 let role = role(&item);
@@ -146,7 +143,6 @@ tuples! {
 
 impl<A: Actor> HandledList<A> for () {
     const HANDLERS: &'static [Handler] = &[];
-    const TAKES_BACK: bool = true;
 
     fn dispatch(_: &mut A, item: Item<'_>, _: Turning<'_>) -> Result<(), Fault> {
         unhandled::<A>(role(&item))

@@ -42,9 +42,9 @@ pub use blob::{BlobHash, BlobId, Puts};
 pub use blob::{BlobRef, Held, pins, within};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, Within, WithinReader, WithinWriter};
 pub use declared::{
-    Allows, Answering, At, Back, CarriedBy, Carries, Conforms, Covers, Declared, Handled, HandledList, Handler,
-    Handles, Kinds, Listed, Marker, Others, Protocol, Role, Sending, Sends, TakenBy, Target, ToAny, ToSender, ToType,
-    Watches,
+    Allows, Answering, At, BackTo, CarriedBy, Carries, Conforms, Covers, Declared, Handled, HandledBy, HandledList,
+    Handler, Handles, Kinds, Listed, Marker, Others, Protocol, RepliesTo, Role, Sending, Sends, Target, ToAny,
+    ToSender, ToType, Watches,
 };
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
