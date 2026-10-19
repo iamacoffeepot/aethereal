@@ -22,10 +22,10 @@ use aethereal_actor::records::{
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Above, Arena, Asked, Asking, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Broke, Children, Claimed, Declared,
+    Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Broke, Children, Claimed, Declared,
     FalseSend, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, NotHeld, NotOwed, Peeked,
     Pinning, Preparing, Puts, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats, Table, Tie, Tied,
-    Turning, Unfit, Was, Why, holders, take_loose_ticket,
+    Turning, Unfit, Was, Why, Written, holders, take_loose_ticket,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, from_bytes, to_bytes};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -1468,7 +1468,7 @@ impl Instance {
                     How::Earlier => (Handed::Ended(Gone::Earlier), &[][..]),
                 },
                 Item::Answer { .. } | Item::Unanswered { .. } => {
-                    len = self.hand_in_filed(&peeked, len);
+                    len = self.hand_in_filed(&peeked, len, offered);
                     return;
                 }
             };
@@ -1485,22 +1485,27 @@ impl Instance {
     }
 
     /// Writes `peeked`, what became of a request, into the guest's inbox at `at`, its [`ItemHead`], its mail's bytes
-    /// and then the context its asker kept for it, and answers with where it ends (ADR-0017). Kept out of line, as most
-    /// items are mail.
+    /// and then the context its asker kept for it, adds to `offered` a pin on each blob the context refers to, and
+    /// answers with where it ends (ADR-0014, ADR-0017). Kept out of line, as most items are mail.
     #[cold]
     #[inline(never)]
-    fn hand_in_filed(&mut self, peeked: &Peeked<'_>, at: usize) -> usize {
-        let (handed, bytes, context) = match &peeked.item {
-            Item::Answer { mail, asking: Asking { count: request, context, .. } } => {
-                let handed = Handed::Answer { kind: mail.kind(), request: *request, context: count(context.len()) };
-                (handed, mail.bytes(), context)
-            }
-            Item::Unanswered { mail, asking: Asking { count: request, answer, context } } => {
-                let handed = Handed::Unanswered { answer: *answer, request: *request, context: count(context.len()) };
-                (handed, mail.bytes(), context)
-            }
+    fn hand_in_filed(&mut self, peeked: &Peeked<'_>, at: usize, offered: &mut Vec<BlobRef>) -> usize {
+        let (mail, asking) = match &peeked.item {
+            Item::Answer { mail, asking } | Item::Unanswered { mail, asking } => (mail, asking),
             Item::Mail(_) | Item::Ended(_) => return at,
         };
+        // The context goes in with the blob of each reference it holds, as a state taken in does, and the call is
+        // offered their pins, as the guest takes references of its own to them.
+        let mut context = Vec::new();
+        let pins = asking.context.pins();
+        records::write_carried(&mut context, asking.context.bytes(), pins.iter().map(BlobRef::id));
+        offered.extend(pins.iter().cloned());
+        let (request, len) = (asking.count, count(context.len()));
+        let handed = match &peeked.item {
+            Item::Answer { .. } => Handed::Answer { kind: mail.kind(), request, context: len },
+            _ => Handed::Unanswered { answer: asking.answer, request, context: len },
+        };
+        let bytes = mail.bytes();
         let item_len = bytes.len() + context.len();
         let head = ItemHead { handed, source: peeked.source, chain: peeked.chain, len: count(item_len) };
         let (bytes_at, context_at, len) =
@@ -1509,7 +1514,7 @@ impl Instance {
         let inbox = &mut self.memory.data_mut(&mut self.store)[self.inbox_at..];
         inbox[at..bytes_at].copy_from_slice(&head.to_bytes());
         inbox[bytes_at..context_at].copy_from_slice(bytes);
-        inbox[context_at..len].copy_from_slice(context);
+        inbox[context_at..len].copy_from_slice(&context);
 
         len
     }
@@ -1620,7 +1625,7 @@ fn replay_records(
         let bytes = lying(data, send.bytes).ok_or(Broke::Garbled)?;
         let request = match send.request {
             Requesting::Not => Request::Not,
-            Requesting::Asks { answer, context } => asks(data, answer, context)?,
+            Requesting::Asks { answer, context } => asks(data, answer, context, holdings, given)?,
             Requesting::Answers { request } => Request::Answers { request },
         }; // Most mail refers to no blob, and a call whose mail refers to none wrote no reference.
         let pins = if head.refs == 0 {
@@ -1944,13 +1949,20 @@ fn handed_mail(kind: KindId, tie: Tie) -> Handed {
 }
 
 /// What a guest's send that asks a request is to it, the context it keeps for the request where `context` says in
-/// `data`. Kept out of line, as most mail asks nothing.
+/// `data`, as [`records::carried`] reads it, with a pin on each blob it refers to: each a blob `holdings` hold a
+/// reference to, or `given` offered. Kept out of line, as most mail asks nothing.
+///
+/// # Errors
+///
+/// [`Broke::Forged`] when it refers to a blob that is neither, and [`Broke::Garbled`] when it does not read back.
 #[cold]
 #[inline(never)]
-fn asks(data: &[u8], answer: KindId, context: Span) -> Result<Request<'_>, Broke> {
-    let context = lying(data, context).ok_or(Broke::Garbled)?;
+fn asks(data: &[u8], answer: KindId, context: Span, holdings: &Holdings, given: &Given) -> Result<Request, Broke> {
+    let carried = lying(data, context).ok_or(Broke::Garbled)?;
+    let pins = carried_pins(carried, holdings, &given.offered)?;
+    let (context, _) = records::carried(carried).ok_or(Broke::Garbled)?;
 
-    Ok(Request::Asks { answer, context })
+    Ok(Request::Asks { answer, context: Written::new(context.to_vec(), pins) })
 }
 
 /// A count the guest's 32-bit memory holds.
@@ -2522,6 +2534,82 @@ mod tests {
             let unreplied = Err(Unanswered::Unreplied);
             let expected = [(0, Ok(0)), (1, Ok(10)), (2, unreplied), (3, Ok(30)), (4, unreplied)];
             assert_eq!(heard, expected, "{parts} parts, {hops} hops");
+        }
+    }
+
+    /// What the stasher guest heard, as its stashing parent keeps it: how many bytes the blob it kept held, and its
+    /// pong's number.
+    static STASHED: Mutex<Vec<(u64, Result<u64, Unanswered>)>> = Mutex::new(Vec::new());
+
+    /// A native actor that spawns the stasher guest from its code and has it stash a blob of three bytes, keeping what
+    /// it hears.
+    #[derive(aethereal_data::Bound)]
+    struct Stashing;
+
+    impl Kind for Stashing {
+        const NAME: KindName = KindName::new("aether.test.stashing");
+    }
+
+    impl Actor for Stashing {
+        type Config = Inquiring;
+        type Key = ();
+        type Handles = (echo::Heard,);
+        type BeginSends = (ToType<echo::Stasher, echo::Stash>,);
+        type EndSends = ();
+
+        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let Ok(stasher) = turn.spawn_from::<echo::Stasher>(&inquiring.code, &(), &echo::EchoConfig) else {
+                return Err(Fault::new(&Doom)?);
+            };
+            turn.send(ToWithoutMail::Held(stasher.erase()), &echo::Stash { len: 3 })?;
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<echo::Heard> for Stashing {
+        type Sends = ();
+
+        fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            let heard = match heard {
+                echo::Heard::Pong { at, n } => (at, Ok(n)),
+                echo::Heard::No { at, why } => (at, Err(why)),
+            };
+            if let Ok(mut all) = STASHED.lock() {
+                all.push(heard);
+            }
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_blob_a_guest_s_context_refers_to_is_kept_and_offered_back_with_its_answer() {
+        // Catches a guest's context whose blobs its host pins nothing for, freed once the guest lets go of its own
+        // reference, and a context handed back without offering them, which takes its reference read back for one
+        // the guest's code forged.
+        for (parts, hops) in [(1, 0), (1, 64), (4, 0), (4, 64)] {
+            let Some(parts) = NonZeroUsize::new(parts) else {
+                panic!("no engine has no parts");
+            };
+            if let Ok(mut stashed) = STASHED.lock() {
+                stashed.clear();
+            }
+            let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, hops));
+            let Ok(_) = engine.add_root::<Stashing>(&(), Inquiring { code }) else {
+                panic!("the stashing begins");
+            };
+            let clock = Monotonic::new();
+            while !engine.is_idle() {
+                engine.step(&clock);
+            }
+
+            let stashed = STASHED.lock().map(|stashed| stashed.clone()).unwrap_or_default();
+            assert_eq!(stashed, [(3, Ok(0))], "{parts} parts, {hops} hops");
         }
     }
 

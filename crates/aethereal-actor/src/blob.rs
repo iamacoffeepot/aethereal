@@ -247,11 +247,12 @@ mod pinned {
         };
     }
 
-    /// An actor's state holds its references as their ids. One read back out of that state is a pin of its own, as
-    /// the state it was written from still holds its own.
+    /// An actor's state holds its references as their ids, and the bytes keep a pin on each one's blob beside them
+    /// (ADR-0014). One read back out of them is a copy of the pin they keep, so it is a pin of its own on a blob that
+    /// was kept; a reference to a blob they keep no pin on is refused.
     impl Encode<Within> for BlobRef {
         fn encode(&self, out: &mut Writer<'_, Within>) -> Result<(), EncodeError> {
-            out.offers().note(self.id);
+            out.offers().hold(self.clone());
             self.id.engine().encode(out)?;
             self.id.bits().encode(out)
         }
@@ -262,7 +263,7 @@ mod pinned {
             let engine = u32::decode(input)?;
             let id = BlobId::new(engine, u64::decode(input)?);
 
-            Ok(Self::pin(id))
+            input.offers().pin(id).ok_or(DecodeError::Unheld)
         }
     }
 
@@ -432,25 +433,42 @@ mod pinned {
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
-    use crate::{Within, WithinReader, WithinWriter};
-    use aethereal_data::{Budget, Decode, Encode, Reader, Writer};
+    use crate::Written;
+    use aethereal_data::DecodeError;
 
     #[test]
-    fn a_reference_read_out_of_an_actors_state_is_a_pin_of_its_own() {
-        // Catches a reference read back with no pin of its own, so the blob is freed once the one it was written
-        // from is dropped, while the one read back still names it.
+    fn bytes_written_keep_their_blobs_and_each_reference_read_back_is_a_pin_of_its_own() {
+        // Catches bytes that keep no pin of their own, so the blob is freed once the reference they were written from
+        // is dropped; and a reference read back with no pin of its own, freed once the bytes go.
         let id = BlobId::new(7, 3);
         pins::open(7, Vec::new());
-        let written = BlobRef::pin(id);
-        let mut out = Writer::<Within>::new(WithinWriter::new());
-        assert_eq!(written.encode(&mut out), Ok(()));
-        let bytes = out.into_bytes();
-        let mut budget = Budget::new(64);
-        let read = BlobRef::decode(&mut Reader::<Within>::new(&bytes, &mut budget, WithinReader::new()));
+        let blob = BlobRef::pin(id);
+        let Ok(written) = Written::of(&blob) else {
+            panic!("a reference is written");
+        };
+        drop(blob);
+        let while_kept: i64 = pins::close().iter().map(|(_, by)| by).sum();
+        pins::open(7, Vec::new());
+        let read = written.read::<BlobRef>(64);
         drop(written);
         let changes = pins::close();
 
+        assert_eq!(while_kept, 1, "the bytes keep the blob");
         assert_eq!(read.as_ref().map(BlobRef::id), Ok(id));
-        assert_eq!(changes.iter().map(|(_, by)| by).sum::<i64>(), 1, "the reference read back keeps its pin");
+        assert_eq!(changes.iter().map(|(_, by)| by).sum::<i64>(), 0, "the reference read back keeps its pin");
+    }
+
+    #[test]
+    fn a_reference_in_bytes_that_keep_no_pin_on_its_blob_is_refused() {
+        // Catches a reference read back from bytes that do not keep its blob, which would pin a blob that may have
+        // been freed.
+        pins::open(8, Vec::new());
+        let blob = BlobRef::pin(BlobId::new(8, 3));
+        let bytes = Written::of(&blob).map(|written| written.bytes().to_vec()).unwrap_or_default();
+        let read = Written::new(bytes, Vec::new()).read::<BlobRef>(64);
+        drop(blob);
+        let _ = pins::close();
+
+        assert_eq!(read, Err(DecodeError::Unheld));
     }
 }

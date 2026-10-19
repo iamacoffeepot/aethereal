@@ -80,6 +80,8 @@ pub enum DecodeError {
         /// Why the node is refused.
         fault: SchemaFault,
     },
+    /// A reference named something the bytes it was read from hold none of.
+    Unheld,
     /// A decode would allocate past its budget.
     BudgetExceeded {
         /// The bytes the decode asked to allocate.
@@ -110,6 +112,7 @@ impl fmt::Display for DecodeError {
             Self::InvalidSchema { node, fault } => {
                 write!(f, "plain data: invalid schema at node {node}: {fault}")
             }
+            Self::Unheld => f.write_str("plain data: a reference names what its bytes hold none of"),
             Self::BudgetExceeded { requested, remaining } => {
                 write!(f, "plain data: budget exceeded: requested {requested}, remaining {remaining}")
             }

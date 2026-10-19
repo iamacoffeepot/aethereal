@@ -27,7 +27,7 @@ turn.ask_to(tiles, &WhichTile { x, y }, &Looking { at: x })?;         // the req
 ```
 
 - **The request's id is its mail's id,** its sender and that sender's count (ADR-0012: `MailId`). No other number is made, and the asker writes none.
-- **The engine keeps the context beside the asker,** in its seat, as it keeps what the asker owns (ADR-0010: `Keeping`), under the request's count. The context is a kind that crosses `Within`, so it is kept as bytes, the same for native code and a guest's. An actor that has never asked holds no more for it than a pointer's width.
+- **The engine keeps the context beside the asker,** in its seat, as it keeps what the asker owns (ADR-0010: `Keeping`), under the request's count. The context is a kind that crosses `Within`, so it is kept as a `Written`, the same for native code and a guest's: its bytes, and a pin on each blob they refer to, which go when the context does (ADR-0014). An actor that has never asked holds no more for it than a pointer's width.
 - **`ask_to` builds only for a protocol that answers the kind with one kind, and only when the asker handles that answer.** Its turn's sends list the ask, `Asks<P, K>`, as they list any send, and the bound that checks a protocol's answers (`BackTo`) checks this one. A tuple of kinds answers nothing, so nothing can be asked through one.
 
 **An answer is the receiver's reply to a request.** The receiver replies as it replies to any mail, `turn.reply(&answer)`, and when the mail it handles is a request, the reply answers it: the engine writes in the reply which request it answers. A request is answered once. A second reply to it in the same turn is refused, as a send its declaration does not allow is.
