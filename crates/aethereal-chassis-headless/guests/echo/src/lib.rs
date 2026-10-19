@@ -1630,6 +1630,86 @@ impl Handles<Answer<Pong, Kept>> for Steward {
     }
 }
 
+/// A word to a stasher to put a blob of `len` bytes and ask its echo a ping, keeping the blob until it is answered.
+#[derive(Plain)]
+pub struct Stash {
+    pub len: u64,
+}
+
+impl Kind for Stash {
+    const NAME: KindName = KindName::new("aether.guest.stash");
+}
+
+/// What a stasher keeps until its request is answered: a blob it refers to nowhere else.
+#[derive(Bound)]
+pub struct Stashed {
+    pub blob: BlobRef,
+}
+
+impl Kind for Stashed {
+    const NAME: KindName = KindName::new("aether.guest.stashed");
+}
+
+/// An actor that asks an echo it spawns as it begins, keeping only in its context a blob it puts, and tells its parent
+/// how many bytes the blob holds once it is answered, as a pong heard at that many.
+#[derive(Bound)]
+pub struct Stasher {
+    echo: ActorRef<Echo>,
+}
+
+impl Kind for Stasher {
+    const NAME: KindName = KindName::new("aether.guest.stasher");
+}
+
+impl Actor for Stasher {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Stash, Answer<Pong, Stashed>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
+
+        Ok(Self { echo })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Stash> for Stasher {
+    type Sends = (Asks<Pings, Ping, Stashed>,);
+
+    fn handle(&mut self, stash: Stash, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let len = usize::try_from(stash.len).unwrap_or_default();
+        let blob = turn.put(vec![7; len]).map_err(|why| unhatched(&why))?;
+        turn.ask_to(self.echo.protocol::<Pings, _>(), &Ping { n: 0 }, &Stashed { blob })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Pong, Stashed>> for Stasher {
+    type Sends = (ToAny<(Heard,), Heard>,);
+
+    fn handle(
+        &mut self,
+        (pong, stashed): (Answered<Pong>, Stashed),
+        turn: &mut Turn<'_, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let at = turn.read(&stashed.blob).len() as u64;
+        let heard = match pong {
+            Answered::Yes(pong) => Heard::Pong { at, n: pong.n },
+            Answered::No(why) => Heard::No { at, why },
+        };
+        turn.send_to_any(To::Parent, &heard)?;
+
+        Ok(())
+    }
+}
+
 aethereal_actor::guest!(
     Echo,
     Mirror,
@@ -1653,5 +1733,6 @@ aethereal_actor::guest!(
     Porter,
     Querent,
     Shelver,
-    Steward
+    Steward,
+    Stasher
 );

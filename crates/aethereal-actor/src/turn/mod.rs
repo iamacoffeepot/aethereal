@@ -14,7 +14,7 @@ use crate::{
     Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances, Keeping,
     Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Payload, Protocol, ProtocolRef,
     Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Table, Target, Tie, Tied, To, ToAny,
-    ToSender, ToType, ToWithoutMail, Unanswered, Watches, What, Within, WithinWriter,
+    ToSender, ToType, ToWithoutMail, Unanswered, Watches, What, Within, Written,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -707,7 +707,7 @@ impl Seat<'_> {
     }
 
     /// Asks `mail` of `to`, keeping `context` until it is answered with a kind `answer` names: a request, filed by
-    /// the engine once the turn has run (ADR-0017).
+    /// the engine once the turn has run, with a pin on each blob the context refers to (ADR-0014, ADR-0017).
     fn request<K: Kind + Encode<Actors>, C: Encode<Within>>(
         &mut self,
         to: Seated,
@@ -715,9 +715,7 @@ impl Seat<'_> {
         answer: KindId,
         context: &C,
     ) -> Result<(), EncodeError> {
-        let mut out = Writer::<Within>::new(WithinWriter::new());
-        context.encode(&mut out)?;
-        let context = out.into_bytes();
+        let context = Written::of(context)?;
         let count = self.sent + 1;
         self.write_after(to, mail, false, Tie::asks(count))?;
         self.asked.asks.push(Asking { count, answer, context });

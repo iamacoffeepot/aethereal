@@ -2,9 +2,8 @@
 
 use crate::declared::{BackTo, Carries, Handled, Handles, Kinds, Listed, Marker, RepliesTo, ReplyWithin, Role};
 use crate::declared::{Sending, Target};
-use crate::{Actors, Item, Within, WithinReader};
-use aethereal_data::{Budget, Decode, DecodeError, Kind, KindId, KindName, Plain, Reader};
-use alloc::vec::Vec;
+use crate::{Actors, Item, Within, Written};
+use aethereal_data::{Decode, Kind, KindId, KindName, Plain};
 use core::marker::PhantomData;
 
 /// A handler may ask an actor that takes the named protocol `P` a request of kind `K`, keeping a context of kind `C`
@@ -204,15 +203,15 @@ impl Kind for Unanswered {
 }
 
 /// A request a turn asked, and the context its asker keeps until it is answered, as the engine files it: under the
-/// request's count, in bytes that cross [`Within`] (ADR-0017).
+/// request's count, written at [`Within`] with a pin on each blob it refers to (ADR-0014, ADR-0017).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asking {
     /// The asker's count of the request, which with the asker is its id.
     pub count: u64,
     /// The kind the request is answered with, whose handler is handed what became of it.
     pub answer: KindId,
-    /// The context, encoded.
-    pub context: Vec<u8>,
+    /// The context.
+    pub context: Written,
 }
 
 impl<P: Listed, K: Kind, C> Marker for Asks<P, K, C> {
@@ -244,22 +243,8 @@ impl<A: Kind + Decode<Actors> + 'static, C: Kind + Decode<Within> + 'static> Han
             Item::Unanswered { mail, asking } => (Answered::No(mail.contents()?), mail, asking),
             Item::Mail(_) | Item::Ended(_) => unreachable!("only what became of a request is handed to its handler"),
         };
-        let context = within(&asking.context, mail.limit())?;
+        let context = asking.context.read(mail.limit())?;
 
         Ok((answered, context))
-    }
-}
-
-/// `bytes`, a context its asker encoded, read as `C`, allocating at most `limit` bytes.
-fn within<C: Decode<Within>>(bytes: &[u8], limit: usize) -> Result<C, DecodeError> {
-    let mut budget = Budget::new(limit);
-    let mut reader = Reader::<Within>::new(bytes, &mut budget, WithinReader::new());
-    let context = C::decode(&mut reader)?;
-    let trailing = reader.input().len();
-    let is_whole = trailing == 0;
-    if is_whole {
-        Ok(context)
-    } else {
-        Err(DecodeError::TrailingBytes { count: trailing })
     }
 }

@@ -1,8 +1,8 @@
 //! The debts the engine keeps beside an actor, as values hold them and turns answer them (ADR-0017).
 
 use super::*;
-use aethereal_actor::{Held, MailId, SeatNumber, Unanswered, Within, WithinReader, WithinWriter};
-use aethereal_data::{ActorId, Budget, Decode, Encode, Reader, Writer};
+use aethereal_actor::{Held, MailId, SeatNumber, Unanswered, Written};
+use aethereal_data::{ActorId, to_bytes};
 
 /// The actor numbered `n`, in the seat of the same number.
 const fn actor(n: u64) -> Seated {
@@ -26,37 +26,29 @@ fn owing() -> Debts {
     Debts { held: Holds::Owes(Box::new(Owing { debts: vec![debt] })) }
 }
 
-/// A held request read back from `bytes`, as its holder reads one out of what it kept.
-fn read(bytes: &[u8]) -> Held<Unanswered> {
-    let mut budget = Budget::new(64);
-    let mut reader = Reader::<Within>::new(bytes, &mut budget, WithinReader::new());
-    let Ok(held) = Held::decode(&mut reader) else {
+/// A held request read back from `written`, as its holder reads one out of what it kept.
+fn read(written: &Written) -> Held<Unanswered> {
+    let Ok(held) = written.read(64) else {
         panic!("a held request reads back");
     };
 
     held
 }
 
-/// `held` written into bytes, as its holder keeps it for a request of its own.
-fn written(held: &Held<Unanswered>) -> Vec<u8> {
-    let mut out = Writer::<Within>::new(WithinWriter::new());
-    let Ok(()) = held.encode(&mut out) else {
+/// `held` written, as its holder keeps it for a request of its own.
+fn written(held: &Held<Unanswered>) -> Written {
+    let Ok(written) = Written::of(held) else {
         panic!("a held request is written");
     };
 
-    out.into_bytes()
+    written
 }
 
 /// [`OWED`] in bytes, as a held request writes it.
-fn written_owed() -> Vec<u8> {
-    let mut out = Writer::<Within>::new(WithinWriter::new());
-    for word in [1_u64, 1, 2, 2, 3] {
-        let Ok(()) = word.encode(&mut out) else {
-            panic!("a word is written");
-        };
-    }
+fn written_owed() -> Written {
+    let words = [1_u64, 1, 2, 2, 3].iter().flat_map(|word| to_bytes(word).unwrap_or_default());
 
-    out.into_bytes()
+    Written::new(words.collect(), Vec::new())
 }
 
 /// The changes noted since the last time, settled against `debts`: each debt let go of.

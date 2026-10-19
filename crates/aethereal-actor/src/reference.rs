@@ -403,7 +403,7 @@ impl<P: Listed, K: Kind> Reaches<K> for ProtocolRef<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Actors, ActorsReader, ActorsWriter, Within, WithinReader, WithinWriter};
+    use crate::{Actors, ActorsReader, ActorsWriter, Written};
     use aethereal_data::{Bound, Budget};
     use alloc::vec::Vec;
 
@@ -440,11 +440,7 @@ mod tests {
         let mut reader = Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::new());
         assert_eq!(Subscribe::decode(&mut reader).as_ref(), Ok(&sent));
 
-        let mut out = Writer::<Within>::new(WithinWriter::new());
-        assert_eq!(sent.encode(&mut out), Ok(()));
-        let bytes = out.into_bytes();
-        let mut budget = Budget::new(64);
-        let mut reader = Reader::<Within>::new(&bytes, &mut budget, WithinReader::new());
-        assert_eq!(Subscribe::decode(&mut reader), Ok(sent));
+        let read = Written::of(&sent).map(|written| written.read::<Subscribe>(64));
+        assert_eq!(read, Ok(Ok(sent)));
     }
 }

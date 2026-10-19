@@ -3,12 +3,12 @@
 
 use super::super::*;
 use super::{Answering, Waiting, owed};
+use aethereal_actor::Written;
 use aethereal_actor::{
-    ActorRef, Answer, Answered, Asking, Asks, Carries, Ending, Fault, Handles, Held, Protocol, Tie, To, ToSender,
-    ToType, ToWithoutMail, Turn, Unanswered,
+    ActorRef, Answer, Answered, Asking, Asks, BlobRef, Carries, Ending, Fault, Handles, Held, Protocol, Tie, To,
+    ToSender, ToType, ToWithoutMail, Turn, Unanswered,
 };
-use aethereal_actor::{Within, WithinReader, WithinWriter};
-use aethereal_data::{Bound, Budget, Decode, Encode, EncodeError, Kind, KindName, Plain, Reader, TypedKey, Writer};
+use aethereal_data::{Bound, EncodeError, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
 use std::iter;
 use std::mem;
@@ -163,11 +163,7 @@ impl Handles<Release> for Board {
             1 => drop(held),
             3 => {
                 for held in held {
-                    let mut out = Writer::<Within>::new(WithinWriter::new());
-                    held.encode(&mut out)?;
-                    let bytes = out.into_bytes();
-                    let mut budget = Budget::new(64);
-                    let copy = Held::decode(&mut Reader::<Within>::new(&bytes, &mut budget, WithinReader::new()))?;
+                    let copy = Written::of(&held)?.read(64)?;
                     turn.answer(held, &TileIs { tile: 50 })?;
                     turn.answer(copy, &TileIs { tile: 51 })?;
                 }
@@ -306,6 +302,73 @@ impl Handles<TileIs> for Pointer {
     }
 }
 
+/// What a keeper keeps until its question is answered: a blob nothing else refers to.
+#[derive(Bound)]
+struct Kept {
+    blob: BlobRef,
+}
+
+impl Kind for Kept {
+    const NAME: KindName = KindName::new("aether.test.kept");
+}
+
+/// An actor that asks a board it spawns as it begins, keeping a blob of three bytes it puts and refers to nowhere
+/// else, and says how many bytes the blob holds once it is answered.
+#[derive(Bound)]
+struct Keeper {
+    board: ActorRef<Board>,
+}
+
+impl Kind for Keeper {
+    const NAME: KindName = KindName::new("aether.test.keeper");
+}
+
+impl Actor for Keeper {
+    type Config = Blank;
+    type Key = ();
+    type Handles = (Order, Answer<TileIs, Kept>);
+    type BeginSends = (ToType<Self, Order>,);
+    type EndSends = ();
+
+    fn begin(_: Blank, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let Ok(board) = turn.spawn::<Board>(&1, Blank) else {
+            return Err(Fault::new(&Order { text: String::from("no board") })?);
+        };
+        let me = turn.me();
+        turn.send(ToWithoutMail::Held(me), &Order { text: String::from("ask") })?;
+
+        Ok(Self { board })
+    }
+
+    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Order> for Keeper {
+    type Sends = (Asks<Tiles, WhichTile, Kept>,);
+
+    fn handle(&mut self, _: Order, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let Ok(blob) = turn.put(vec![9; 3]) else {
+            return Err(Fault::new(&Order { text: String::from("no room") })?);
+        };
+        let board = self.board;
+        turn.ask_to(board.protocol::<Tiles, _>(), &WhichTile { x: 3 }, &Kept { blob })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<TileIs, Kept>> for Keeper {
+    type Sends = ();
+
+    fn handle(&mut self, (_, kept): (Answered<TileIs>, Kept), turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        say(format!("kept {}", turn.read(&kept.blob).len()));
+
+        Ok(())
+    }
+}
+
 /// A clock that never moves.
 struct Stopped;
 
@@ -380,16 +443,21 @@ fn plain_mail_sent_straight_after_a_request_stays_apart_from_it() {
     }
 }
 
+/// A context of one byte, `9`.
+fn nine() -> Written {
+    Written::new(vec![9], Vec::new())
+}
+
 #[test]
 fn a_context_is_let_go_of_once_its_answer_has_been_handled() {
     // Catches a context kept after its answer's turn, which would stay beside the asker for as long as it lives.
     let mut waiting = Waiting::default();
     let mut asked = Asked::new();
     for answer in [Tie::answers(3), Tie::unanswered(3)] {
-        waiting.file(iter::once(Asking { count: 3, answer: KindId::of::<TileIs>(), context: vec![9] }));
+        waiting.file(iter::once(Asking { count: 3, answer: KindId::of::<TileIs>(), context: nine() }));
         let answering = waiting.answering(answer);
         let kept =
-            matches!(answering, Answering::Kept(asking) | Answering::Unanswered(asking) if asking.context == [9]);
+            matches!(answering, Answering::Kept(asking) | Answering::Unanswered(asking) if asking.context == nine());
 
         waiting.settle(answer, &mut asked, &Ok(()));
 
@@ -403,7 +471,7 @@ fn what_the_engine_says_of_an_unanswered_request_is_handed_to_the_handler_of_its
     // Catches an unanswered request handed to no handler, or to one that is not its answer's: the engine's mail is of
     // its own kind, and the asker kept which kind it waits for.
     let mut waiting = Waiting::default();
-    waiting.file(iter::once(Asking { count: 3, answer: KindId::of::<TileIs>(), context: vec![9] }));
+    waiting.file(iter::once(Asking { count: 3, answer: KindId::of::<TileIs>(), context: nine() }));
 
     let answering = waiting.answering(Tie::unanswered(3));
 
@@ -541,5 +609,25 @@ fn a_turn_that_answers_a_request_it_does_not_hold_fails() {
         let heard = heard(engine, &["ask 6", "later release 3"]);
 
         assert_eq!(heard, ["held true".to_owned(), format!("{:?} for 0", Unanswered::Ended)], "{engine:?}");
+    }
+}
+
+#[test]
+fn a_blob_a_context_refers_to_is_kept_until_its_answer_is_handled() {
+    // Catches a context that holds no pin of its own, whose blob is freed once the asker lets go of its reference, so
+    // the answer's handler reads a blob no longer kept.
+    for (parts, hops) in ENGINES {
+        let Some(parts) = NonZeroUsize::new(parts) else {
+            panic!("an engine has parts");
+        };
+        let mut engine = Engine::new(parts, 1024, 1 << 20, 1 << 20, hops);
+        let made = engine.add_root::<Keeper>(&(), Blank);
+        assert!(made.is_ok(), "the keeper begins");
+        said();
+        for _ in 0..16 {
+            engine.step(&Stopped);
+        }
+
+        assert_eq!(said(), ["kept 3"], "{:?}", (parts, hops));
     }
 }

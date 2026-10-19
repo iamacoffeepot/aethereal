@@ -4,7 +4,7 @@ use super::{Checked, Closing, During, Owing, Seat, Stood, Turning, Why};
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Effect, ErasedActorRef, Fault, Gift, Giver, Instances,
     Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Role, Runs, SeatNumber,
-    Seated, Seats, Seen, Sending, Table, Target, Tie, What, carry, take_claimed,
+    Seated, Seats, Seen, Sending, Table, Target, Tie, What, Written, carry, take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, KindName, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -59,12 +59,13 @@ enum Source {
 }
 
 /// What a piece of mail a guest's code sent is to a request, as its code says: its host checks it (ADR-0017).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Request<'a> {
+#[derive(Debug, PartialEq, Eq)]
+pub enum Request {
     /// Nothing the code says: whether it replies to the item handled is told from what its handler declares.
     Not,
-    /// It asks a request, to be answered with a kind `answer` names, keeping `context`, its context's bytes.
-    Asks { answer: KindId, context: &'a [u8] },
+    /// It asks a request, to be answered with a kind `answer` names, keeping `context`, with the pins its host made
+    /// for it (ADR-0014).
+    Asks { answer: KindId, context: Written },
     /// It answers the request of the count `request` its receiver asked, which the actor held.
     Answers { request: u64 },
 }
@@ -267,7 +268,7 @@ impl<'a> Hosted<'a> {
         to: Seated,
         kind: KindId,
         bytes: &[u8],
-        request: Request<'_>,
+        request: Request,
         #[cfg(feature = "std")] held: &[crate::Pinning],
     ) -> Result<(), FalseSend> {
         let (sends, source) = if by == self.seat.me {
@@ -387,7 +388,7 @@ impl<'a> Hosted<'a> {
     /// keeps the send from being inlined where each is read.
     #[cold]
     #[inline(never)]
-    fn ask(&mut self, by: Seated, count: u64, answer: KindId, context: &[u8]) -> Result<Tie, FalseSend> {
+    fn ask(&mut self, by: Seated, count: u64, answer: KindId, context: Written) -> Result<Tie, FalseSend> {
         let is_mine = by == self.seat.me;
         let is_handling = matches!(self.source, Source::Item(_));
         let handles = self.seat.declared.handles_answer(answer);
@@ -395,7 +396,7 @@ impl<'a> Hosted<'a> {
         if !asks {
             return Err(FalseSend);
         }
-        self.seat.asked.asks.push(Asking { count, answer, context: context.to_vec() });
+        self.seat.asked.asks.push(Asking { count, answer, context });
 
         Ok(Tie::asks(count))
     }

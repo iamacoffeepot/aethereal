@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     Beginning, Carries, Claim, Claimed, Ended, Ending, Fault, How, Item, Kept, Mail, MailId, NotHeld, Payload,
-    Protocol, Resource, Subscribers, Within,
+    Protocol, Resource, Subscribers,
 };
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
@@ -464,9 +464,10 @@ fn handler_asks_by_the_kind_of_its_mail() {
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Shut>(), &[]), (Ok(()), Vec::new(), closed));
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Poked>(), &[]), (Ok(()), Vec::new(), Vec::new()));
 
-    let mut out = Writer::<Within>::new(WithinWriter::new());
-    assert_eq!(ErasedActorRef::new(other).encode(&mut out), Ok(()));
-    let meet = out.into_bytes();
+    let meet = Written::of(&ErasedActorRef::new(other)).map(|written| written.bytes().to_vec());
+    let Ok(meet) = meet else {
+        panic!("a reference is written");
+    };
     let poke = Mailed { by: ME, to: other, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING, tie: Tie::TELL };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Meet>(), &meet), (Ok(()), vec![poke], Vec::new()));
 }

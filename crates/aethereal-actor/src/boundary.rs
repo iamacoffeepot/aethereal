@@ -176,66 +176,68 @@ impl ActorsReader<'_> {
 
 impl Refers for ActorsReader<'_> {}
 
-/// What a writer at [`Within`] holds beside the bytes written so far: where it notes the blobs written, when it is
-/// asked to.
-#[derive(Default)]
+/// What a writer at [`Within`] holds beside the bytes written so far: a pin on the blob of each reference written, for
+/// the bytes to keep (ADR-0014). Only [`Written`](crate::Written) makes one, so no bytes that refer to a blob are
+/// written without their pins.
 pub struct WithinWriter<'a> {
-    #[cfg_attr(not(feature = "std"), expect(dead_code, reason = "no blob is referred to without std"))]
-    noting: Noting<'a>,
-}
-
-/// Whether a writer at [`Within`] notes the blobs it writes references to.
-#[derive(Default)]
-enum Noting<'a> {
-    #[default]
-    No,
-    /// Into this list, each once for each reference.
     #[cfg(feature = "std")]
-    Into(&'a mut Vec<BlobId>),
-    /// Nothing is noted without std, where no blob is referred to; the lifetime is kept for the list it would hold.
+    pins: &'a mut Vec<crate::BlobRef>,
+    /// Nothing is pinned without std, where no blob is referred to; the lifetime is kept for the list it would hold.
     #[cfg(not(feature = "std"))]
-    #[expect(dead_code, reason = "no blob is referred to without std")]
-    Into(PhantomData<&'a ()>),
+    pins: PhantomData<&'a ()>,
 }
 
 impl<'a> WithinWriter<'a> {
-    /// What a writer at [`Within`] holds.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { noting: Noting::No }
+    /// A writer at [`Within`] that keeps in `pins` a pin on the blob of each reference it writes.
+    #[cfg(feature = "std")]
+    pub(crate) const fn holding(pins: &'a mut Vec<crate::BlobRef>) -> Self {
+        Self { pins }
     }
 
-    /// A writer at [`Within`] that notes in `blobs` the blob of each reference it writes: for a guest's library, which
-    /// tells its host what an actor's state taken out refers to (ADR-0014, ADR-0015).
-    #[cfg(feature = "std")]
-    #[must_use]
-    pub const fn noting(blobs: &'a mut Vec<BlobId>) -> Self {
-        Self { noting: Noting::Into(blobs) }
+    /// A writer at [`Within`], where no blob is referred to.
+    #[cfg(not(feature = "std"))]
+    pub(crate) const fn holding() -> Self {
+        Self { pins: PhantomData }
     }
 
-    /// Notes that a reference to the blob `blob` is written, when it is asked to.
+    /// Keeps `pin`, on the blob of a reference written.
     #[cfg(feature = "std")]
-    pub(crate) fn note(&mut self, blob: BlobId) {
-        if let Noting::Into(blobs) = &mut self.noting {
-            blobs.push(blob);
-        }
+    pub(crate) fn hold(&mut self, pin: crate::BlobRef) {
+        self.pins.push(pin);
     }
 }
 
 impl Refers for WithinWriter<'_> {}
 
-/// What a reader at [`Within`] holds beside the bytes still to read and the budget.
-#[derive(Default)]
+/// What a reader at [`Within`] holds beside the bytes still to read and the budget: the pins the bytes keep, of which
+/// each reference read back takes a copy (ADR-0014). Only [`Written`](crate::Written) makes one, so a reference is read
+/// back only from bytes that keep its blob.
 pub struct WithinReader<'a> {
-    /// Nothing is held yet. The lifetime is kept for what a later bound value needs held.
-    held: PhantomData<&'a ()>,
+    #[cfg(feature = "std")]
+    pins: &'a [crate::BlobRef],
+    /// Nothing is pinned without std, where no blob is referred to; the lifetime is kept for the pins it would hold.
+    #[cfg(not(feature = "std"))]
+    pins: PhantomData<&'a ()>,
 }
 
-impl WithinReader<'_> {
-    /// What a reader at [`Within`] holds.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { held: PhantomData }
+impl<'a> WithinReader<'a> {
+    /// A reader at [`Within`] of bytes that keep `pins`.
+    #[cfg(feature = "std")]
+    pub(crate) const fn of(pins: &'a [crate::BlobRef]) -> Self {
+        Self { pins }
+    }
+
+    /// A reader at [`Within`], where no blob is referred to.
+    #[cfg(not(feature = "std"))]
+    pub(crate) const fn of() -> Self {
+        Self { pins: PhantomData }
+    }
+
+    /// A copy of the pin the bytes keep on the blob `blob`: none when they keep none, as the reference does not belong
+    /// to them.
+    #[cfg(feature = "std")]
+    pub(crate) fn pin(&self, blob: BlobId) -> Option<crate::BlobRef> {
+        self.pins.iter().find(|pin| pin.id() == blob).cloned()
     }
 }
 

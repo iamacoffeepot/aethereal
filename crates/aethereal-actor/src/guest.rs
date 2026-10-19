@@ -28,16 +28,14 @@ use crate::records::{
 };
 use crate::section;
 use crate::{
-    Above, Actor, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, Children, Declared, Ended, Fault, How, Item,
-    Tie, Tied, Unanswered,
+    Above, Actor, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, BlobRef, Children, Declared, Ended, Fault,
+    How, Item, Tie, Tied, Unanswered,
 };
 use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, Pinned, Preparing, Puts, Refused};
-use crate::{
-    Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, What, Within, WithinReader, WithinWriter,
-};
+use crate::{Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, What, Written};
 use crate::{holders, pins};
 use aethereal_data::{
-    ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, PathSegment, Reader, Writer, from_bytes, to_bytes,
+    ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, PathSegment, Reader, from_bytes, to_bytes,
 };
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -228,13 +226,18 @@ fn begin<A: Actor>(
 /// An actor of type `A` taken in from `bytes`, its path and state as [`take_out`] wrote them, read within `read_limit`
 /// bytes: nothing when they do not read back.
 fn take_in<A: Actor>(bytes: &[u8], read_limit: usize) -> Option<(Box<dyn Runs>, Standing)> {
-    let (state, _) = records::carried(bytes)?;
-    let mut budget = Budget::new(read_limit);
-    let mut reader = Reader::<Within>::new(state, &mut budget, WithinReader::new());
-    let born = Born::decode(&mut reader).ok()?;
-    let actor = A::decode(&mut reader).ok()?;
+    let (born, actor) =
+        carried_in(bytes)?.reading(read_limit, |reader| Ok((Born::decode(reader)?, A::decode(reader)?))).ok()?;
 
     Some((Box::new(actor), Standing::of(born)))
+}
+
+/// `bytes`, which its host handed in as [`records::carried`] reads them, as written: with a pin on each blob they
+/// refer to, which the host offered to the call and checks the pins taken against (ADR-0014, ADR-0015).
+fn carried_in(bytes: &[u8]) -> Option<Written> {
+    let (written, blobs) = records::carried(bytes)?;
+
+    Some(Written::new(written.to_vec(), blobs.into_iter().map(BlobRef::pin).collect()))
 }
 
 /// Writes `runs`, an actor of type `A` that stands where `standing` says, after `out`, as
@@ -242,17 +245,12 @@ fn take_in<A: Actor>(bytes: &[u8], read_limit: usize) -> Option<(Box<dyn Runs>, 
 /// then the blob of each reference in them. Nothing when it is not of type `A`, or does not encode.
 fn take_out<A: Actor>(runs: &dyn Runs, standing: &Standing, out: &mut Vec<u8>) -> Option<()> {
     let actor = (runs as &dyn Any).downcast_ref::<A>()?;
-    let mut blobs = Vec::new();
-    let mut writer = Writer::<Within>::new(WithinWriter::noting(&mut blobs));
-    standing.born().encode(&mut writer).ok()?;
-    actor.encode(&mut writer).ok()?;
-    let state = writer.into_bytes();
-    out.extend_from_slice(&count(state.len()).to_le_bytes());
-    out.extend_from_slice(&state);
-    for blob in blobs {
-        out.extend_from_slice(&blob.engine().to_le_bytes());
-        out.extend_from_slice(&blob.bits().to_le_bytes());
-    }
+    let written = Written::writing(|writer| {
+        standing.born().encode(writer)?;
+        actor.encode(writer)
+    })
+    .ok()?;
+    records::write_carried(out, written.bytes(), written.pins().iter().map(BlobRef::id));
 
     Some(())
 }
@@ -476,14 +474,14 @@ fn read_item(items: &[u8], read_limit: usize) -> Option<(Inboxed<'_>, ItemHead, 
 }
 
 /// The bytes of what became of the request of the count `request`, answered with a kind `answer` names, and the
-/// request as its host filed it: the last `context` of `bytes` are its context. Kept out of line, as most items are
-/// mail.
+/// request as its host filed it: the last `context` of `bytes` are its context, as [`records::carried`] reads it. Kept
+/// out of line, as most items are mail.
 #[cold]
 #[inline(never)]
 fn filed(bytes: &[u8], request: u64, answer: KindId, context: u32) -> Option<(&[u8], Asking)> {
     let (bytes, context) = bytes.split_at_checked(bytes.len().checked_sub(context as usize)?)?;
 
-    Some((bytes, Asking { count: request, answer, context: context.to_vec() }))
+    Some((bytes, Asking { count: request, answer, context: carried_in(context)? }))
 }
 
 /// The ending of `source`, which ended as `gone` says, a fault's bytes in `bytes`. Kept out of line: built in the
@@ -616,12 +614,13 @@ impl Guest {
                 self.held.extend_from_slice(&key);
             }
         }
+        let asks = contexts(&mut self.held, &self.asked);
 
         let Self { out, asked, held, changes, holder_changes, .. } = self;
         let held_at = address(held.as_ptr());
         let in_held = |(at, len): (usize, usize)| Span { at: held_at + count(at), len: count(len) };
         let sends_at = out.len();
-        let (refs, refers) = write_sends(out, asked, sends_at);
+        let (refs, refers) = write_sends(out, asked, &asks, sends_at);
         let lines_at = out.len();
         for line in asked.lines() {
             let text = span(asked.text(line).as_bytes());
@@ -715,20 +714,50 @@ fn room_for_head(out: &mut Vec<u8>) {
     }
 }
 
+/// As [`write_contexts`], for a call that may ask nothing.
+#[inline]
+fn contexts(held: &mut Vec<u8>, asked: &Asked) -> Vec<(KindId, Span)> {
+    // Most calls ask nothing.
+    if !asked.has_asked() {
+        return Vec::new();
+    }
+    write_contexts(held, asked)
+}
+
+/// Writes the context of each request in `asked` after `held`, with the blob of each reference it holds, as a state
+/// taken out is, for its host to pin them itself; and answers with the answer each waits for and where its context
+/// lies, in the order asked. Kept out of line, as most calls ask nothing.
+#[cold]
+#[inline(never)]
+fn write_contexts(held: &mut Vec<u8>, asked: &Asked) -> Vec<(KindId, Span)> {
+    let mut lying = Vec::new();
+    for asking in asked.asks() {
+        let at = held.len();
+        records::write_carried(held, asking.context.bytes(), asking.context.pins().iter().map(BlobRef::id));
+        lying.push((asking.answer, at, held.len() - at));
+    }
+    // Every address is taken once the buffer is written, as it moves when it grows.
+    let base = address(held.as_ptr());
+    let asks = lying.into_iter().map(|(answer, at, len)| (answer, Span { at: base + count(at), len: count(len) }));
+
+    asks.collect()
+}
+
 /// Whether `what` is the spawn of a child.
 const fn is_spawn(what: &What) -> bool {
     matches!(what, What::Spawn { .. } | What::SpawnInstanced { .. })
 }
 
-/// Writes a [`SendRecord`] after `out` for each piece of mail in `asked`, from `sends_at`, and answers with where each
-/// reference in them lies, and whether any piece holds a pin.
-fn write_sends(out: &mut Vec<u8>, asked: &Asked, sends_at: usize) -> (Vec<RefRecord>, bool) {
+/// Writes a [`SendRecord`] after `out` for each piece of mail in `asked`, from `sends_at`, each that asks a request
+/// with the next of `asks`, the answer it waits for and where its context lies, and answers with where each reference
+/// in them lies, and whether any piece holds a pin.
+fn write_sends(out: &mut Vec<u8>, asked: &Asked, asks: &[(KindId, Span)], sends_at: usize) -> (Vec<RefRecord>, bool) {
     let mut refs = Vec::new();
     // Most calls send no reference to a blob, and their mail holds no pin.
     let refers = asked.arena().holds_pins();
     // Each request is filed as the mail that asks it is written, so the requests are in the order of that mail; and so
     // is each answer to a held request.
-    let mut asks = asked.asks().iter();
+    let mut asks = asks.iter();
     let mut answers = asked.owes().iter().filter_map(Owes::answered).peekable();
     for mailed in asked.mailed() {
         let is_run = mailed.bytes.pieces() > 1;
@@ -753,14 +782,11 @@ fn write_sends(out: &mut Vec<u8>, asked: &Asked, sends_at: usize) -> (Vec<RefRec
 /// no such answer: its host tells it from what the turn's handler declares.
 fn requesting(
     mailed: &crate::Mailed,
-    asks: &mut slice::Iter<'_, Asking>,
+    asks: &mut slice::Iter<'_, (KindId, Span)>,
     answers: &mut Peekable<impl Iterator<Item = Owed>>,
 ) -> Requesting {
     match mailed.tie.read() {
-        Tied::Asks(_) => asks.next().map_or(Requesting::Not, |asking| Requesting::Asks {
-            answer: asking.answer,
-            context: span(&asking.context),
-        }),
+        Tied::Asks(_) => asks.next().map_or(Requesting::Not, |&(answer, context)| Requesting::Asks { answer, context }),
         Tied::Answers(request) => {
             let is_held = answers.next_if(|owed| owed.asker == mailed.to && owed.request == request).is_some();
             if is_held {

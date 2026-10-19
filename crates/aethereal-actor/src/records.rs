@@ -717,6 +717,17 @@ pub fn carried(bytes: &[u8]) -> Option<(&[u8], Vec<BlobId>)> {
     Some((state, blobs))
 }
 
+/// Writes `bytes`, which refer to each of `blobs`, after `out`, as [`carried`] reads them: their length, the bytes, and
+/// then each blob's engine and bits.
+pub fn write_carried(out: &mut Vec<u8>, bytes: &[u8], blobs: impl IntoIterator<Item = BlobId>) {
+    out.extend_from_slice(&u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_le_bytes());
+    out.extend_from_slice(bytes);
+    for blob in blobs {
+        out.extend_from_slice(&blob.engine().to_le_bytes());
+        out.extend_from_slice(&blob.bits().to_le_bytes());
+    }
+}
+
 /// An actor a turn watched: by whom, the actor whose turn it was or a child it spawned, in its `begin`, and which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WatchRecord {

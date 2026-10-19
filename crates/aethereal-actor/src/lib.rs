@@ -37,6 +37,7 @@ pub mod section;
 mod source;
 mod subscribers;
 mod turn;
+mod written;
 
 pub use actor::{Actor, Batch, Peeked, Preparing, Reads, Runs};
 #[cfg(feature = "std")]
@@ -76,3 +77,4 @@ pub use turn::{
     Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseWatch, Forged, Garbled, Hosted,
     Logger, Refused, Request, Stood, Trapped, Turn, Turning, Why,
 };
+pub use written::Written;
