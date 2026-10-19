@@ -10,8 +10,8 @@ pub use refused::Refused;
 
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
-    Handles, Instances, Kinds, Level, Line, MailId, Mailed, Marker, Payload, Puts, Role, Runs, SeatNumber, Seated,
-    Seats, Seen, Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
+    Handles, Instances, Kinds, Level, Line, MailId, Mailed, Marker, Payload, ProtocolRef, Puts, Role, Runs, SeatNumber,
+    Seated, Seats, Seen, Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -407,6 +407,15 @@ impl Seat<'_> {
     /// A reference to the live actor `path` names.
     fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.table.resolve(path).map(ErasedActorRef::new)
+    }
+
+    /// The reference, to the tuple of kinds `P`, when the declaration of its actor's type lists every kind of `P`:
+    /// none when one is missing, or the type is not one this turn can read (ADR-0016).
+    fn cast<P: Kinds>(&self, reference: ErasedActorRef) -> Option<ProtocolRef<P>> {
+        let declared = self.declared_at(reference.id())?;
+        let lists = P::KINDS.iter().all(|kind| declared.lists(*kind));
+
+        lists.then(|| ProtocolRef::new(reference.seated()))
     }
 
     /// A handle that logs as this actor and does nothing else.
@@ -1156,6 +1165,14 @@ impl<S> Turn<'_, S> {
     pub fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.seat.resolve(path)
     }
+
+    /// The actor `reference` refers to, as a reference to the tuple of kinds `P`, when its type lists every kind of
+    /// `P`: none when one is missing (ADR-0016). It is read once, here, and the reference it answers with is not
+    /// checked again.
+    #[must_use]
+    pub fn cast<P: Kinds>(&self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
+        self.seat.cast(reference.into())
+    }
 }
 
 /// What an actor asks of the engine in its `begin`, which may send `S`: a first turn, which offers less than a turn
@@ -1399,6 +1416,14 @@ impl<S> Beginning<'_, S> {
     pub fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.seat.resolve(path)
     }
+
+    /// The actor `reference` refers to, as a reference to the tuple of kinds `P`, when its type lists every kind of
+    /// `P`: none when one is missing (ADR-0016). It is read once, here, and the reference it answers with is not
+    /// checked again.
+    #[must_use]
+    pub fn cast<P: Kinds>(&self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
+        self.seat.cast(reference.into())
+    }
 }
 
 /// Why an actor's closing turn runs (ADR-0009).
@@ -1586,5 +1611,13 @@ impl<S> Ending<'_, S> {
     #[must_use]
     pub fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.seat.resolve(path)
+    }
+
+    /// The actor `reference` refers to, as a reference to the tuple of kinds `P`, when its type lists every kind of
+    /// `P`: none when one is missing (ADR-0016). It is read once, here, and the reference it answers with is not
+    /// checked again.
+    #[must_use]
+    pub fn cast<P: Kinds>(&self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
+        self.seat.cast(reference.into())
     }
 }
