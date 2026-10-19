@@ -902,6 +902,18 @@ impl Kind for Forge {
     const NAME: KindName = KindName::new("aether.guest.forge");
 }
 
+/// A reference to the blob `id` names, which no one gave: what code that keeps no rules makes, as a guest's code
+/// written by hand may. Its pin is noted, as a clone's is, so its host sees the guest take a reference.
+fn forged(id: BlobId) -> BlobRef {
+    // SAFETY: a `BlobRef` is laid out as its id. The one made holds no pin, and is let go of without its drop,
+    // which would note one dropped; its clone notes the pin the guest claims.
+    let unpinned = unsafe { core::mem::transmute::<BlobId, BlobRef>(id) };
+    let forged = unpinned.clone();
+    core::mem::forget(unpinned);
+
+    forged
+}
+
 /// An actor that makes a reference to a blob out of an id it was told as numbers, and reads it as it begins: its host
 /// refuses the read, as the guest was never given the blob.
 #[derive(Bound)]
@@ -919,7 +931,7 @@ impl Actor for Forger {
     type EndSends = ();
 
     fn begin(forge: Forge, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let forged = BlobRef::pin(BlobId::new(forge.engine, forge.bits));
+        let forged = forged(BlobId::new(forge.engine, forge.bits));
         let _ = turn.read(&forged).len();
 
         Ok(Self)
@@ -949,7 +961,7 @@ impl Actor for Hoarder {
     type EndSends = ();
 
     fn begin(forge: Forge, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        Ok(Self { forged: BlobRef::pin(BlobId::new(forge.engine, forge.bits)) })
+        Ok(Self { forged: forged(BlobId::new(forge.engine, forge.bits)) })
     }
 
     fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
@@ -992,7 +1004,7 @@ impl Handles<Ping> for Spendthrift {
         let tell = ActorPath::from_root(&aethereal_data::PathSegment::new(KindName::new("aether.guest.no_one"), &()));
         let engine = book.id().engine();
         turn.spawn::<Librarian>(&(), Shelf { book, tell }).map_err(|why| unhatched(&why))?;
-        turn.reply(&Book { blob: BlobRef::pin(BlobId::new(engine, u64::MAX)) })?;
+        turn.reply(&Book { blob: forged(BlobId::new(engine, u64::MAX)) })?;
 
         Ok(())
     }

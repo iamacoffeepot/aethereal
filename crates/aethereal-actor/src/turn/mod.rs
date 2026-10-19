@@ -1089,7 +1089,7 @@ impl Seat<'_> {
         let config = config_bytes(config).map_err(|_| Refused::NotMade)?;
 
         self.spawn_other(instances, id, &segment, path, Code::Blob(made), &config, |config, birth| {
-            guests.begin(made, config, birth)
+            guests.begin(code, made, config, birth)
         })
     }
 

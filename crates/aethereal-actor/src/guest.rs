@@ -1114,7 +1114,13 @@ impl Guests for Calling {
         })
     }
 
-    fn begin(&self, made: &'static BlobType, config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Runs>, Refused> {
+    fn begin(
+        &self,
+        _: &BlobRef,
+        made: &'static BlobType,
+        config: &[u8],
+        birth: Birth<'_>,
+    ) -> Result<Box<dyn Runs>, Refused> {
         let from = Other::Blob { engine: made.blob.engine(), bits: made.blob.bits() };
 
         self.spawn(from, made.declared, config, &birth)

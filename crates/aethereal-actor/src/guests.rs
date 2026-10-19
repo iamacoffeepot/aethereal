@@ -35,13 +35,20 @@ pub trait Guests: Send + Sync {
     fn made(&self, code: BlobId, declared: &'static Declared) -> Option<&'static BlobType>;
 
     /// Begins `birth`'s child, of the type `made`, from its config's bytes `config`, in its part's instance of the
-    /// blob, and answers with the child as the engine runs it.
+    /// blob `code` pins, which `made` is of, and answers with the child as the engine runs it: the child keeps a
+    /// clone of `code` while it runs (ADR-0009).
     ///
     /// # Errors
     ///
     /// [`Refused::Began`] when its `begin` failed, and [`Refused::Waiting`] when the instance it would begin in is
     /// waiting on a call out of its own (ADR-0015).
-    fn begin(&self, made: &'static BlobType, config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Runs>, Refused>;
+    fn begin(
+        &self,
+        #[cfg(feature = "std")] code: &crate::BlobRef,
+        made: &'static BlobType,
+        config: &[u8],
+        birth: Birth<'_>,
+    ) -> Result<Box<dyn Runs>, Refused>;
 
     /// Begins `birth`'s child, of the native type `declared`, which the code that spawns it does not hold, from its
     /// config's bytes `config`: for a guest, whose host begins it from the types its program keeps by name
@@ -70,7 +77,13 @@ impl Guests for NoGuests {
         None
     }
 
-    fn begin(&self, _: &'static BlobType, _: &[u8], _: Birth<'_>) -> Result<Box<dyn Runs>, Refused> {
+    fn begin(
+        &self,
+        #[cfg(feature = "std")] _: &crate::BlobRef,
+        _: &'static BlobType,
+        _: &[u8],
+        _: Birth<'_>,
+    ) -> Result<Box<dyn Runs>, Refused> {
         Err(Refused::NotMade)
     }
 }

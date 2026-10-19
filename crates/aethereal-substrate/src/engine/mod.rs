@@ -594,7 +594,7 @@ impl Engine {
             let (above, refers, carried) = (Above::Chassis, &config.held, &config.carried);
             let birth = Birth { me, path, above, table, asked, instances, refers, keeping, carried };
 
-            guests.begin(made, &config.bytes, birth)
+            guests.begin(code, made, &config.bytes, birth)
         })
     }
 
