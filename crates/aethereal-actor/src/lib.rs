@@ -31,6 +31,7 @@ pub mod records;
 mod reference;
 mod seat;
 pub mod section;
+mod subscribers;
 mod turn;
 
 pub use actor::{Actor, Batch, Peeked, Preparing, Reads, Runs};
@@ -57,6 +58,7 @@ pub use item::Item;
 pub use mail::{Mail, MailId};
 pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Reaches};
 pub use seat::{SeatNumber, Seated, Seats};
+pub use subscribers::Subscribers;
 pub use turn::{
     Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseWatch, Forged, Garbled, Hosted,
     Logger, Refused, Stood, Trapped, Turn, Turning, Why,

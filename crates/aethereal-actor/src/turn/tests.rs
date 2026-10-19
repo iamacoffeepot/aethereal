@@ -1,7 +1,9 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's effect buffers.
 
 use super::*;
-use crate::{Beginning, Carries, Ending, Fault, Item, Mail, MailId, Payload, Protocol, Within};
+use crate::{
+    Beginning, Carries, Ended, Ending, Fault, How, Item, Mail, MailId, Payload, Protocol, Subscribers, Within,
+};
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
 use alloc::vec;
@@ -599,6 +601,37 @@ fn mail_sent_through_a_named_protocol_reaches_the_actor_it_refers_to() {
     let (buffers, _, _, _, _) = asked.into_parts();
     let seen: Vec<(Seated, KindId)> = buffers.mailed.iter().map(|mailed| (mailed.to, mailed.kind)).collect();
     assert_eq!(seen, [(receivers[0], KindId::of::<Poke>()), (receivers[1], KindId::of::<Shut>())]);
+}
+
+#[test]
+fn subscribers_are_held_once_watched_once_and_leave_by_ending_or_unsubscribing() {
+    // Catches a subscriber held or watched twice, one that does not leave when it ends or unsubscribes, and the
+    // last subscriber moved into a leaver's place but still found at its old one.
+    let [first, second, third] = [seated(9, 5), seated(8, 6), seated(7, 7)];
+    let table = Listed(Vec::new());
+    let mut asked = Asked::new();
+    let mut turn = opened::<(Watches,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let listener = |at: Seated| ProtocolRef::<(Poke,)>::from(ActorRef::<Leaf>::new(at));
+    let mut subscribers = Subscribers::new();
+
+    let added = [first, second, third, second].map(|at| subscribers.subscribe(&mut turn, listener(at)));
+    assert_eq!(added, [true, true, true, false]);
+    assert!(subscribers.unsubscribe(listener(first)));
+    assert_eq!(subscribers.references(), [listener(third), listener(second)]);
+    assert!(subscribers.ended(&Ended::new(third, How::Closed)));
+    assert!(!subscribers.ended(&Ended::new(first, How::Closed)));
+    assert!(!subscribers.unsubscribe(listener(third)));
+    assert_eq!(subscribers.references(), [listener(second)]);
+
+    let watched: Vec<Seated> = asked
+        .effects()
+        .iter()
+        .filter_map(|effect| match effect.what() {
+            What::Watch { of, .. } => Some(of.seated()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(watched, [first, second, third]);
 }
 
 #[test]
