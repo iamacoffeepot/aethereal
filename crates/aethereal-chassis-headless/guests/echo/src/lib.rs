@@ -2,10 +2,11 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Asks, Beginning, BlobId, BlobRef, Carries, Ended, Ending, ErasedActorRef, Fault,
-    Given, Handle, Handles, How, Level, Protocol, Refused, Resource, To, ToAny, ToSender, ToType, ToWithoutMail, Turn,
-    Unanswered, Watches,
+    Given, Handle, Handles, Held, How, Level, Protocol, Refused, Resource, To, ToAny, ToSender, ToType, ToWithoutMail,
+    Turn, Unanswered, Watches,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindName, Plain};
+use core::mem;
 
 /// A ping, which an echo answers with a pong of the same number.
 #[derive(Plain)]
@@ -1478,6 +1479,157 @@ impl Handles<Ping> for Shelver {
     }
 }
 
+/// A request to weigh `n`, which a steward holds.
+#[derive(Plain)]
+pub struct Weigh {
+    pub n: u64,
+}
+
+impl Kind for Weigh {
+    const NAME: KindName = KindName::new("aether.guest.weigh");
+}
+
+/// What something weighs: the answer to a [`Weigh`].
+#[derive(Plain)]
+pub struct Weight {
+    pub n: u64,
+}
+
+impl Kind for Weight {
+    const NAME: KindName = KindName::new("aether.guest.weight");
+}
+
+/// The protocol a steward is asked to weigh through.
+pub struct Weighs;
+
+impl Protocol for Weighs {
+    type Kinds = (Weigh,);
+}
+
+impl Carries<Weigh> for Weighs {
+    type Answers = (Weight,);
+}
+
+/// What a steward does with the pings it holds: `0` answers each, `1` lets go of each, `2` closes on them, and `3`
+/// keeps each in what it keeps for a request of its own, and answers it as what became of that request is handed back.
+#[derive(Plain)]
+pub struct Release {
+    pub how: u64,
+}
+
+impl Kind for Release {
+    const NAME: KindName = KindName::new("aether.guest.release");
+}
+
+/// What a steward keeps for a request of its own: a ping it holds, and the ping's number.
+#[derive(Bound)]
+pub struct Kept {
+    n: u64,
+    held: Held<Pong>,
+}
+
+impl Kind for Kept {
+    const NAME: KindName = KindName::new("aether.guest.kept");
+}
+
+/// An actor that holds each ping it is asked, to answer it in a later turn as a [`Release`] says: with a pong of a
+/// hundred and its number, or, through a request of its own to an echo it spawns as it begins, of two hundred and it.
+/// It holds each weighing too, answered with a weight of a hundred and its number, or of three hundred and it, with
+/// no request of its own.
+#[derive(Bound)]
+pub struct Steward {
+    held: Vec<(u64, Held<Pong>)>,
+    weighing: Vec<(u64, Held<Weight>)>,
+    echo: ActorRef<Echo>,
+}
+
+impl Kind for Steward {
+    const NAME: KindName = KindName::new("aether.guest.steward");
+}
+
+impl Actor for Steward {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Ping, Weigh, Release, Answer<Pong, Kept>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
+
+        Ok(Self { held: Vec::new(), weighing: Vec::new(), echo })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Steward {
+    type Sends = (ToSender<Pong>,);
+
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        self.held.push((ping.n, turn.hold()?));
+
+        Ok(())
+    }
+}
+
+impl Handles<Weigh> for Steward {
+    type Sends = (ToSender<Weight>,);
+
+    fn handle(&mut self, weigh: Weigh, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        self.weighing.push((weigh.n, turn.hold()?));
+
+        Ok(())
+    }
+}
+
+impl Handles<Release> for Steward {
+    type Sends = (Asks<Counts, Increment, Kept>,);
+
+    fn handle(&mut self, release: Release, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let held = mem::take(&mut self.held);
+        let weighing = mem::take(&mut self.weighing);
+        match release.how {
+            0 => {
+                for (n, held) in held {
+                    turn.answer(held, &Pong { n: 100 + n })?;
+                }
+                for (n, held) in weighing {
+                    turn.answer(held, &Weight { n: 100 + n })?;
+                }
+            }
+            1 => drop((held, weighing)),
+            3 => {
+                for (n, held) in held {
+                    turn.ask_to(self.echo.protocol::<Counts, _>(), &Increment, &Kept { n, held })?;
+                }
+                for (n, held) in weighing {
+                    turn.answer(held, &Weight { n: 300 + n })?;
+                }
+            }
+            _ => {
+                self.held = held;
+                self.weighing = weighing;
+                turn.close();
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Pong, Kept>> for Steward {
+    type Sends = ();
+
+    fn handle(&mut self, (_, kept): (Answered<Pong>, Kept), turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        turn.answer(kept.held, &Pong { n: 200 + kept.n })?;
+
+        Ok(())
+    }
+}
+
 aethereal_actor::guest!(
     Echo,
     Mirror,
@@ -1500,5 +1652,6 @@ aethereal_actor::guest!(
     Caster,
     Porter,
     Querent,
-    Shelver
+    Shelver,
+    Steward
 );

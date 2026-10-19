@@ -149,6 +149,7 @@ impl Asked {
         self.stood.clear();
         self.stood_seats.clear();
         self.asks.clear();
+        self.owes.clear();
         self.arena.clear(0);
     }
 
@@ -725,11 +726,8 @@ impl Seat<'_> {
     }
 
     /// Holds the request the turn handles, from `source`, to be answered with a kind `answer` names in a later turn
-    /// (ADR-0017). Refused in a guest's code, which holds nothing yet.
+    /// (ADR-0017).
     fn hold(&mut self, source: Seated, answer: KindId) -> Result<Owed, Fault> {
-        if matches!(self.keeps, Keeps::Claimed) {
-            return Err(Fault::bare::<NotOwed>());
-        }
         let (request, owing) = self.owing.hold()?;
         self.owing = owing;
         let owed = Owed { holder: self.me, asker: source, request };
@@ -1490,8 +1488,7 @@ impl<S> Turn<'_, S> {
     ///
     /// # Errors
     ///
-    /// [`NotOwed`] when the mail this turn handles is no request, or this turn has answered or held it already; and
-    /// in a guest's code, which holds nothing yet.
+    /// [`NotOwed`] when the mail this turn handles is no request, or this turn has answered or held it already.
     pub fn hold<A: Kind, I>(&mut self) -> Result<Held<A>, Fault>
     where
         S: Allows<ToSender<A>, I>,

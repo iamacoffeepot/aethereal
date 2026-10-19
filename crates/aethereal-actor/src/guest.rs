@@ -22,9 +22,9 @@
 //! blob, its hash, and a put are calls out.
 
 use crate::records::{
-    self, Born, ClaimRecord, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, Other, OutHead, Parent,
-    PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds,
-    WatchRecord,
+    self, Born, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, Kept, Keying, LineRecord, Naming, Other,
+    OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped,
+    TurnEnds, WatchRecord,
 };
 use crate::section;
 use crate::{
@@ -32,7 +32,10 @@ use crate::{
     Tie, Tied, Unanswered,
 };
 use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, Pinned, Preparing, Puts, Refused};
-use crate::{Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, What, Within, WithinReader, WithinWriter, pins};
+use crate::{
+    Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, What, Within, WithinReader, WithinWriter,
+};
+use crate::{holders, pins};
 use aethereal_data::{
     ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, PathSegment, Reader, Writer, from_bytes, to_bytes,
 };
@@ -43,6 +46,7 @@ use alloc::vec::Vec;
 use core::any::Any;
 use core::cell::OnceCell;
 use core::cell::{Cell, RefCell};
+use core::iter::Peekable;
 use core::mem;
 use core::slice;
 
@@ -163,6 +167,10 @@ struct Guest {
     pinned: Vec<u8>,
     /// The pin changes taken from the guest's buffer, emptied and kept for its room.
     changes: Vec<pins::Change>,
+    /// The holder records of a call that writes no other records, as its host asks for them after it.
+    let_go: Vec<u8>,
+    /// The changes to how many values hold each debt, taken from the guest's buffer, emptied and kept for its room.
+    holder_changes: Vec<holders::Change>,
     asked: Asked,
     /// What its actors' turns are lent: a guest's actors are its own code, run in no instance, so it holds no
     /// instance, and it carries the calls out to its host that begin a child of any other code.
@@ -293,8 +301,7 @@ pub fn begin_at(types: &[Type], calls: &'static Calls, of: u32, me: u64, seat: u
             Ok((runs, standing)) => (guest.seat(runs, me, standing), Last::Ran),
             Err(fault) => (NO_HANDLE, Last::Failed(fault)),
         };
-        guest.out.clear();
-        guest.out.resize(OutHead::BYTES, 0);
+        room_for_head(&mut guest.out);
         write_ends(&mut guest.out, &guest.asked, &mut Counted::default());
         guest.write_records(types, 1, 0, last);
 
@@ -366,8 +373,7 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         // What the last call asked for has been read by now, so its buffers are emptied for this batch, whose turns
         // all add to them.
         guest.open(calls);
-        guest.out.clear();
-        guest.out.resize(OutHead::BYTES, 0);
+        room_for_head(&mut guest.out);
         let host = Host::new(calls);
         let Guest { actors, inbox, asked, out, instances, read_limit, .. } = &mut *guest;
         let read_limit = *read_limit;
@@ -383,12 +389,17 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         let mut stood_before = 0;
         let mut counted = Counted::default();
         for _ in 0..items {
-            let Some((read, ItemHead { source, chain, .. }, after)) = read_item(rest, read_limit) else {
+            let Some((read, ItemHead { source, chain, handed, .. }, after)) = read_item(rest, read_limit) else {
                 break;
             };
             rest = after;
             // What became of a request is handed to its handler with the request as it was filed, which the turn
             // reads.
+            // What the item is to a request: one the turn may reply to, or hold (ADR-0017).
+            let tie = match handed {
+                Handed::Asks { request, .. } => Tie::asks(request),
+                _ => Tie::TELL,
+            };
             let filed;
             let item = match read {
                 Inboxed::Item(item) => item,
@@ -405,8 +416,6 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
             stood_before = asked.stood_count();
             let Standing { path, above } = &*standing;
             let keeps = Keeps::Claimed;
-            // A guest's host answers for it what it owes, so the guest's own turn owes nothing (ADR-0017).
-            let tie = Tie::TELL;
             let turning = Turning::new(*me, path, *above, &host, &host, asked, instances, keeps, 0, source, chain, tie);
             let result = runs.turn(item, turning);
             write_ends(out, asked, &mut counted);
@@ -451,7 +460,7 @@ fn read_item(items: &[u8], read_limit: usize) -> Option<(Inboxed<'_>, ItemHead, 
     let ItemHead { handed, source, chain, .. } = head;
     let mail = |kind, bytes| Mail::new(kind, bytes, source, chain.root, chain.depth, read_limit);
     let read = match handed {
-        Handed::Mail { kind } => Inboxed::Item(Item::Mail(mail(kind, bytes))),
+        Handed::Mail { kind } | Handed::Asks { kind, .. } => Inboxed::Item(Item::Mail(mail(kind, bytes))),
         Handed::Ended(gone) => Inboxed::Item(Item::Ended(ended(gone, source, bytes))),
         Handed::Answer { kind, request, context } => {
             let (bytes, asking) = filed(bytes, request, kind, context)?;
@@ -525,6 +534,7 @@ impl Guest {
     /// A guest that holds nothing yet, whose pin changes go to a buffer of its own from then on.
     fn new() -> Self {
         pins::take_own(&mut Vec::new());
+        holders::open(Vec::new());
 
         Self::default()
     }
@@ -607,7 +617,7 @@ impl Guest {
             }
         }
 
-        let Self { out, asked, held, changes, .. } = self;
+        let Self { out, asked, held, changes, holder_changes, .. } = self;
         let held_at = address(held.as_ptr());
         let in_held = |(at, len): (usize, usize)| Span { at: held_at + count(at), len: count(len) };
         let sends_at = out.len();
@@ -644,10 +654,7 @@ impl Guest {
         for watch in watches {
             out.extend_from_slice(&watch.to_bytes());
         }
-        // Right after the last watch, where its host finds them (ADR-0015).
-        for claim in asked.claims() {
-            out.extend_from_slice(&ClaimRecord(*claim).to_bytes());
-        }
+        write_claims(out, asked);
         // Where its mail's references lie is written, and its host pins them itself, so the guest's own pins go now and
         // count among the call's changes.
         if refers {
@@ -659,6 +666,8 @@ impl Guest {
         for reference in &refs {
             out.extend_from_slice(&reference.to_bytes());
         }
+        let holders_at = out.len();
+        let holders = write_holders(out, holder_changes);
         let fault_at = out.len();
         if let Last::Failed(fault) = &last {
             out.extend_from_slice(fault.bytes());
@@ -687,8 +696,22 @@ impl Guest {
             pins,
             refs_at: at(refs_at),
             refs: count(refs.len()),
+            holders_at: at(holders_at),
+            holders,
         };
-        out[..OutHead::BYTES].copy_from_slice(&head.to_bytes());
+        head.write_over(out);
+    }
+}
+
+/// Empties `out` but for room for its [`OutHead`], which is written over once the rest is: room the last call's head
+/// already holds, so it is not written twice. Zeroing the room each call costs more than all else the head does, as a
+/// zeroing that long is a call out of the instance in wasmtime.
+fn room_for_head(out: &mut Vec<u8>) {
+    out.truncate(OutHead::BYTES);
+    // Only the first call has no head to write over.
+    let has_room = out.len() == OutHead::BYTES;
+    if !has_room {
+        out.resize(OutHead::BYTES, 0);
     }
 }
 
@@ -703,8 +726,10 @@ fn write_sends(out: &mut Vec<u8>, asked: &Asked, sends_at: usize) -> (Vec<RefRec
     let mut refs = Vec::new();
     // Most calls send no reference to a blob, and their mail holds no pin.
     let refers = asked.arena().holds_pins();
-    // Each request is filed as the mail that asks it is written, so the requests are in the order of that mail.
+    // Each request is filed as the mail that asks it is written, so the requests are in the order of that mail; and so
+    // is each answer to a held request.
     let mut asks = asked.asks().iter();
+    let mut answers = asked.owes().iter().filter_map(Owes::answered).peekable();
     for mailed in asked.mailed() {
         let is_run = mailed.bytes.pieces() > 1;
         if is_run {
@@ -715,7 +740,7 @@ fn write_sends(out: &mut Vec<u8>, asked: &Asked, sends_at: usize) -> (Vec<RefRec
         if refers {
             note_refs(asked, mailed.bytes, sends_at, out.len(), &mut refs);
         }
-        let request = requesting(mailed, &mut asks);
+        let request = requesting(mailed, &mut asks, &mut answers);
         let record = SendRecord { by: mailed.by, to: mailed.to, kind: mailed.kind, bytes: span(bytes), request };
         out.extend_from_slice(&record.to_bytes());
     }
@@ -723,16 +748,29 @@ fn write_sends(out: &mut Vec<u8>, asked: &Asked, sends_at: usize) -> (Vec<RefRec
     (refs, refers)
 }
 
-/// What the piece of mail `mailed` is to a request, as its host is told: the next of `asks` when it asks one.
-fn requesting(mailed: &crate::Mailed, asks: &mut slice::Iter<'_, Asking>) -> Requesting {
-    let Tied::Asks(_) = mailed.tie.read() else {
-        return Requesting::Not;
-    };
-    let Some(asking) = asks.next() else {
-        return Requesting::Not;
-    };
-
-    Requesting::Asks { answer: asking.answer, context: span(&asking.context) }
+/// What the piece of mail `mailed` is to a request, as its host is told: the next of `asks` when it asks one, and the
+/// next of `answers`, the debts the turns answered, when it answers that one. A reply to the request a turn handles is
+/// no such answer: its host tells it from what the turn's handler declares.
+fn requesting(
+    mailed: &crate::Mailed,
+    asks: &mut slice::Iter<'_, Asking>,
+    answers: &mut Peekable<impl Iterator<Item = Owed>>,
+) -> Requesting {
+    match mailed.tie.read() {
+        Tied::Asks(_) => asks.next().map_or(Requesting::Not, |asking| Requesting::Asks {
+            answer: asking.answer,
+            context: span(&asking.context),
+        }),
+        Tied::Answers(request) => {
+            let is_held = answers.next_if(|owed| owed.asker == mailed.to && owed.request == request).is_some();
+            if is_held {
+                Requesting::Answers { request }
+            } else {
+                Requesting::Not
+            }
+        }
+        Tied::Tell | Tied::Unanswered(_) => Requesting::Not,
+    }
 }
 
 /// Writes a record for each piece of `mailed`, a run of mail in `asked`, after `out`, whose records begin at
@@ -798,6 +836,77 @@ pub fn pins_out() -> u64 {
     })
 }
 
+/// Writes after `out` a [`ClaimRecord`] for each claim the turns of `asked` made, right after the last watch, where
+/// its host finds them (ADR-0015); and then the requests they held (ADR-0017).
+fn write_claims(out: &mut Vec<u8>, asked: &Asked) {
+    for claim in asked.claims() {
+        out.extend_from_slice(&ClaimRecord(*claim).to_bytes());
+    }
+    let has_owes = !asked.owes().is_empty();
+    if has_owes {
+        write_holds(out, asked);
+    }
+}
+
+/// Writes after `out` a [`HoldRecord`] for each request the turns of `asked` held. Kept out of line, as most turns hold
+/// none.
+#[cold]
+#[inline(never)]
+fn write_holds(out: &mut Vec<u8>, asked: &Asked) {
+    for answer in asked.owes().iter().filter_map(Owes::held) {
+        out.extend_from_slice(&HoldRecord { answer }.to_bytes());
+    }
+}
+
+/// Writes after `out` a [`HolderRecord`] for each debt whose holders the guest's held requests have changed since this
+/// was last done, with what the changes came to, and answers with how many: taken through `changes`, emptied and kept
+/// for its room (ADR-0017).
+fn write_holders(out: &mut Vec<u8>, changes: &mut Vec<holders::Change>) -> u32 {
+    holders::take(changes);
+    // Most calls make, write and drop no held request.
+    if changes.is_empty() {
+        return 0;
+    }
+    write_summed(out, changes)
+}
+
+/// Writes after `out` a [`HolderRecord`] for each debt `changes` change, with what they came to, emptying them, and
+/// answers with how many. Kept out of line, as most calls change no debt's holders.
+#[cold]
+#[inline(never)]
+fn write_summed(out: &mut Vec<u8>, changes: &mut Vec<holders::Change>) -> u32 {
+    let mut summed: Vec<holders::Change> = Vec::new();
+    for (owed, by) in changes.drain(..) {
+        match summed.iter_mut().find(|(seen, _)| *seen == owed) {
+            Some((_, total)) => *total += by,
+            None => summed.push((owed, by)),
+        }
+    }
+    let mut written = 0;
+    for (owed, by) in summed {
+        let is_changed = by != 0;
+        if is_changed {
+            out.extend_from_slice(&HolderRecord { owed, by }.to_bytes());
+            written += 1;
+        }
+    }
+
+    written
+}
+
+/// Writes the [`HolderRecord`]s of what the call that just returned changed, for a call that writes no other records:
+/// answers where they lie, as [`out`] does.
+#[must_use]
+pub fn holders_out() -> u64 {
+    GUEST.with_borrow_mut(|guest| {
+        let Guest { let_go, holder_changes, .. } = &mut *guest;
+        let_go.clear();
+        write_holders(let_go, holder_changes);
+
+        (u64::from(address(guest.let_go.as_ptr())) << 32) | guest.let_go.len() as u64
+    })
+}
+
 /// Runs the closing turn of the actor `handle` names, which runs as the number `why` says (ADR-0009): the actor ends
 /// with it, and its state and the references it holds are dropped. Answers where what the turn asked for lies, as
 /// [`out`] does: nothing, `0`, when it holds no such actor, or `why` names no reason.
@@ -816,8 +925,7 @@ pub fn end_at(types: &[Type], calls: &'static Calls, handle: u32, why: u32) -> u
         guest.free.push(handle);
         // What the last call asked for has been read by now, so its buffers are emptied for this one.
         guest.open(calls);
-        guest.out.clear();
-        guest.out.resize(OutHead::BYTES, 0);
+        room_for_head(&mut guest.out);
         let host = Host::new(calls);
         let Guest { asked, instances, out, .. } = &mut *guest;
         let Standing { path, above } = &standing;
@@ -872,6 +980,7 @@ pub fn put_with(put: extern "C" fn(u32, u32, u32) -> u64, bytes: &[u8]) -> Resul
 struct Counted {
     mailed: usize,
     effects: usize,
+    owes: usize,
     ends: TurnEnds,
     /// Whether the turn counted last asked to close its actor.
     closes: bool,
@@ -880,7 +989,7 @@ struct Counted {
 /// Writes where the turn just run ends in `asked`'s buffers, after the ends of the turns before it, which `counted`
 /// says, counting what it added: a send for each piece of mail, as a run's pieces are each a send.
 fn write_ends(out: &mut Vec<u8>, asked: &Asked, counted: &mut Counted) {
-    let Counted { mailed, effects, ends, closes } = counted;
+    let Counted { mailed, effects, owes, ends, closes } = counted;
     for added in &asked.mailed()[*mailed..] {
         ends.sends += added.bytes.pieces();
     }
@@ -892,12 +1001,27 @@ fn write_ends(out: &mut Vec<u8>, asked: &Asked, counted: &mut Counted) {
             _ => {}
         }
     }
+    // A turn holds the one request it handles, or none.
+    // A turn holds the one request it handles, or none.
+    let owed = &asked.owes()[*owes..];
+    if !owed.is_empty() {
+        ends.holds += held(owed);
+    }
     *mailed = asked.mailed().len();
     *effects = asked.effects().len();
+    *owes = asked.owes().len();
     ends.lines = count(asked.lines().len());
     ends.stood = count(asked.stood_count());
     ends.claims = count(asked.claims().len());
     out.extend_from_slice(&ends.to_bytes());
+}
+
+/// How many requests `owed`, what turns did to their actor's debts, held. Kept out of line, as most turns do nothing
+/// to them.
+#[cold]
+#[inline(never)]
+fn held(owed: &[Owes]) -> u32 {
+    count(owed.iter().filter_map(Owes::held).count())
 }
 
 /// Where `bytes` lie in the guest's memory.
@@ -1243,6 +1367,11 @@ macro_rules! guest {
             #[unsafe(no_mangle)]
             extern "C" fn aethereal_pins() -> u64 {
                 $crate::guest::pins_out()
+            }
+
+            #[unsafe(no_mangle)]
+            extern "C" fn aethereal_holders() -> u64 {
+                $crate::guest::holders_out()
             }
 
             #[unsafe(no_mangle)]
