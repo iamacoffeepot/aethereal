@@ -4,6 +4,7 @@ use crate::{BlobHash, BlobId, Declared, SeatNumber, Seated};
 use aethereal_data::{ActorId, ActorPath, Boundary, EncodeError, KindId, PathSegment};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
 use core::marker::PhantomData;
 
 /// The table of actors as a turn reads it: as it stood when the turn's step began (ADR-0008, ADR-0011).
@@ -159,18 +160,35 @@ impl ActorsWriter<'_> {
 
 impl Refers for ActorsWriter<'_> {}
 
-/// What a reader at [`Actors`] holds beside the bytes still to read and the budget.
-#[derive(Default)]
+/// What a reader at [`Actors`] holds beside the bytes still to read and the budget: where the pins the bytes hold are
+/// found, of which each reference read back takes a copy (ADR-0014). Only mail and a config with their pins make one,
+/// so a reference is read back only from bytes that hold its blob.
 pub struct ActorsReader<'a> {
-    /// Nothing is held yet. The lifetime is kept for what a later bound value needs held.
-    held: PhantomData<&'a ()>,
+    #[cfg(feature = "std")]
+    pins: &'a crate::PinSource<'a>,
+    /// Nothing is pinned without std, where no blob is referred to; the lifetime is kept for the pins it would hold.
+    #[cfg(not(feature = "std"))]
+    pins: PhantomData<&'a ()>,
 }
 
-impl ActorsReader<'_> {
-    /// What a reader at [`Actors`] holds.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { held: PhantomData }
+impl<'a> ActorsReader<'a> {
+    /// A reader at [`Actors`] of bytes whose pins `pins` finds.
+    #[cfg(feature = "std")]
+    pub(crate) const fn of(pins: &'a crate::PinSource<'a>) -> Self {
+        Self { pins }
+    }
+
+    /// A reader at [`Actors`], where no blob is referred to.
+    #[cfg(not(feature = "std"))]
+    pub(crate) const fn of() -> Self {
+        Self { pins: PhantomData }
+    }
+
+    /// A copy of the pin on `blob` the bytes hold for the reference whose bytes begin at the address `at`: none when
+    /// they hold none there, as the reference does not belong to them.
+    #[cfg(feature = "std")]
+    pub(crate) fn pin(&self, at: usize, blob: BlobId) -> Option<crate::BlobRef> {
+        self.pins.pin(at, blob)
     }
 }
 

@@ -40,9 +40,9 @@ mod turn;
 mod written;
 
 pub use actor::{Actor, Batch, Peeked, Preparing, Reads, Runs};
-#[cfg(feature = "std")]
-pub use arena::Pinned;
 pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};
+#[cfg(feature = "std")]
+pub use arena::{PinSource, Pinned};
 pub use ask::{Answer, Answered, Asking, Asks, Unanswered};
 pub use blob::{BlobHash, BlobId, Puts};
 #[cfg(feature = "std")]

@@ -35,8 +35,8 @@ use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, Actor, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Carried, Chain, Closing,
     Code, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, Keeping, Keeps, Links, Mail,
-    MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated, Seats, Stood, Tie,
-    Tied, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    MailId, Mailed, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated, Seats,
+    Stood, Tie, Tied, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -1443,7 +1443,7 @@ impl Reading<'_> {
                 let mut slice = Slice::new(self.slice);
                 let mut pieces = streams.items(&run);
                 let carried = streams.carried();
-                let carried_pins = streams.carried_pins();
+                let pins = PinSource::step(self.mail, carried, streams.carried_pins());
                 let mut is_spent = false;
                 while let Some(handed) = pieces.next() {
                     // A batch is prepared once its first item is in hand, so it holds at least one.
@@ -1456,7 +1456,7 @@ impl Reading<'_> {
                             first: handed,
                             rest: &pieces,
                             carried,
-                            carried_pins,
+                            pins: &pins,
                         };
                         let table = Since {
                             table: self.table,
@@ -1486,7 +1486,7 @@ impl Reading<'_> {
                         if matches!(answering, Answering::Stray) {
                             return;
                         }
-                        let (item, context) = batch::read(handed, self, carried, answering);
+                        let (item, context) = batch::read(handed, self, carried, &pins, answering);
                         // The item sits one above what the turn sends in its chain.
                         let chain = Chain { root: context.root, depth: context.depth - 1 };
                         let turning = Turning::new(
@@ -1655,7 +1655,11 @@ impl Reading<'_> {
                 if matches!(answering, Answering::Stray) {
                     return;
                 }
-                let mail = Mail::new(hop.kind, bytes, hop.from, hop.root, hop.depth, self.read_limit);
+                // The hop's pins lie in the arena the turn writes into, so those it holds are copied out first.
+                let mut held = Vec::new();
+                asked.arena().pin_copied(hop.sent, 0, &mut held);
+                let pins = PinSource::lying(bytes, &held);
+                let mail = Mail::new(hop.kind, bytes, &pins, hop.from, hop.root, hop.depth, self.read_limit);
                 let item = ask::item(mail, answering);
                 let chain = Chain { root: hop.root, depth: hop.depth };
                 let turning = Turning::new(

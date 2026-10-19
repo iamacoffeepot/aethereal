@@ -450,7 +450,8 @@ fn handler_asks_by_the_kind_of_its_mail() {
             CHAIN,
             Tie::TELL,
         );
-        let mail = Mail::new(kind, bytes, other, MailId { sender: other.id, count: 1 }, 1, 64);
+        let mail =
+            Mail::new(kind, bytes, &crate::PinSource::NOTHING, other, MailId { sender: other.id, count: 1 }, 1, 64);
         let handled = leaf.turn(Item::Mail(mail), turning);
 
         let Buffers { mailed, effects, .. } = asked.into_parts().0;

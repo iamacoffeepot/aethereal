@@ -7,7 +7,7 @@ use super::ask::{self, Answering};
 use super::fuse::Hop;
 use crate::stream::{self, Handed, Pieces};
 use crate::{Context, Envelope};
-use aethereal_actor::{Arena, Batch, Chain, Item, Mail, Peeked, Pinned, Pinning};
+use aethereal_actor::{Arena, Batch, Chain, Item, Mail, Peeked, PinSource};
 use std::iter;
 
 /// A batch of one actor's waiting items: `first`, and after it as many of `rest` as make
@@ -18,9 +18,10 @@ pub(super) struct Waiting<'w, 'r, 'p> {
     pub(super) waits: &'w ask::Waiting,
     pub(super) first: Handed<'p>,
     pub(super) rest: &'w Pieces<'p>,
-    /// The bytes of the mail its part carried over, and the pins of the blobs they refer to.
+    /// The bytes of the mail its part carried over.
     pub(super) carried: &'p [u8],
-    pub(super) carried_pins: &'p [Pinning],
+    /// Where the pins of the mail are found: the step's arenas and the part's carried bytes.
+    pub(super) pins: &'w PinSource<'p>,
 }
 
 /// A batch of one hop, a piece of mail handed straight to its receiver in the step (ADR-0013): an answer when it
@@ -36,20 +37,21 @@ pub(super) struct OneHop<'w, 'r> {
 }
 
 /// The item `handed` is, as a turn reads it, handed to an actor that is `answering` it, and the context of what its
-/// turn asks for: bytes read from `reading`'s arenas, or from `carried`.
+/// turn asks for: bytes read from `reading`'s arenas, or from `carried`, whose pins `pins` finds.
 #[allow(clippy::inline_always, reason = "once for every item, read inline in the loop that hands it")]
 #[inline(always)]
 pub(super) fn read<'a>(
     handed: Handed<'a>,
     reading: &Reading<'a>,
     carried: &'a [u8],
+    pins: &'a PinSource<'a>,
     answering: Answering<'a>,
 ) -> (Item<'a>, Context) {
     let source = handed.source();
     match handed {
         Handed::Mail { envelope: &Envelope { kind, root, depth, .. }, bytes, .. } => {
             let bytes = stream::read(bytes, reading.mail, carried);
-            let mail = Mail::new(kind, bytes, source, root, depth, reading.read_limit);
+            let mail = Mail::new(kind, bytes, pins, source, root, depth, reading.read_limit);
 
             (ask::item(mail, answering), Context { root, depth: depth + 1 })
         }
@@ -62,17 +64,13 @@ impl Batch for Waiting<'_, '_, '_> {
         let rest = self.rest.clone().take(super::SLICE_EVERY as usize - 1);
         for handed in iter::once(self.first).chain(rest) {
             let source = handed.source();
-            let pinned = match handed {
-                Handed::Mail { bytes, .. } => stream::pinned(bytes, self.reading.mail, self.carried_pins),
-                Handed::Ended { .. } => Pinned::Nothing,
-            };
             let answering = self.waits.answering(handed.tie());
             if matches!(answering, Answering::Stray) {
                 continue;
             }
-            let (item, context) = read(handed, self.reading, self.carried, answering);
+            let (item, context) = read(handed, self.reading, self.carried, self.pins, answering);
             let chain = Chain { root: context.root, depth: context.depth - 1 };
-            visit(Peeked { item, source, chain, tie: handed.tie(), pinned });
+            visit(Peeked { item, source, chain, tie: handed.tie() });
         }
     }
 }
@@ -85,9 +83,9 @@ impl Batch for OneHop<'_, '_> {
             return;
         }
         let bytes = self.lists.fusing.bytes(hop);
-        let mail = Mail::new(hop.kind, bytes, hop.from, hop.root, hop.depth, self.reading.read_limit);
+        let pins = PinSource::copied(bytes, self.arena.pinned(hop.sent));
+        let mail = Mail::new(hop.kind, bytes, &pins, hop.from, hop.root, hop.depth, self.reading.read_limit);
         let chain = Chain { root: hop.root, depth: hop.depth };
-        let pinned = self.arena.pinned(hop.sent);
-        visit(Peeked { item: ask::item(mail, answering), source: hop.from, chain, tie: hop.tie, pinned });
+        visit(Peeked { item: ask::item(mail, answering), source: hop.from, chain, tie: hop.tie });
     }
 }

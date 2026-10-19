@@ -1122,6 +1122,29 @@ fn the_engine_keeps_a_hash_it_is_asked_for_between_steps() {
 }
 
 #[test]
+fn a_blob_mailed_and_kept_by_no_one_else_reaches_its_receiver_as_a_hop_or_as_it_waited() {
+    // Catches mail read with no pins where it was fused into a hop, whose pins lie in the arena its receiver's turn
+    // writes into, or where it waited: its reference is refused, and its turn fails.
+    for (parts, hops) in [(1, 0), (1, 64), (4, 0), (4, 64)] {
+        let Some(parts) = NonZeroUsize::new(parts) else {
+            panic!("an engine has parts");
+        };
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops);
+        let to_self = ["put 3", "send"].map(String::from).to_vec();
+        let Ok(_) = engine.add_root::<Holder>(&(), HolderConfig { to_self, gives: 0 }) else {
+            panic!("the holder begins");
+        };
+        said();
+        let mut heard = Vec::new();
+        while !engine.is_idle() {
+            heard.extend(step(&mut engine));
+        }
+
+        assert_eq!(heard, ["given 3"], "{parts} parts, {hops} hops");
+    }
+}
+
+#[test]
 fn a_blob_put_in_a_turn_is_read_in_that_step_and_the_ones_after() {
     // Catches a read that looks only in the store and misses what its worker put in the step, and a store that never
     // takes in what was put.
