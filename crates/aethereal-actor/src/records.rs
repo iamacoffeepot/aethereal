@@ -9,7 +9,7 @@
 //! logged, a [`SpawnRecord`] for each child they spawned, a [`StoodRecord`]
 //! for each child that began, a [`WatchRecord`] for each actor they
 //! watched, and a [`ClaimRecord`] for each claim they made of a resource; and, for the call as a whole, a [`PinRecord`] for each blob whose
-//! pins it changed, and a [`RefRecord`] for each reference in what it sent. A send's bytes, a line's text, a key and a moved
+//! pins it changed, a [`RefRecord`] for each reference in what it sent, and a [`HolderRecord`] for each debt whose holders it changed. A send's bytes, a line's text, a key and a moved
 //! child's state are not copied out: each record says where they lie in the
 //! guest's memory, and the host reads them there. Sends and lines say who made
 //! them, as watches do: the actor whose turn it was, or a child it spawned, in
@@ -22,7 +22,7 @@
 //! Every number is little-endian, and every address is one in the guest's
 //! 32-bit memory.
 
-use crate::{BlobId, Chain, Claim, Claimed, Fault, Level, MailId, Refused, SeatNumber, Seated, Why};
+use crate::{BlobId, Chain, Claim, Claimed, Fault, Level, MailId, Owed, Refused, SeatNumber, Seated, Why};
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
 use alloc::vec::Vec;
 
@@ -41,6 +41,9 @@ pub struct ItemHead {
 pub enum Handed {
     /// Mail of `kind`, its bytes after the head.
     Mail { kind: KindId },
+    /// Mail of `kind` that asks the receiver a request, the sender's count of it `request`: its bytes after the head
+    /// (ADR-0017).
+    Asks { kind: KindId, request: u64 },
     /// The answer, of `kind`, to the receiver's request of the count `request`: its bytes after the head, and then the
     /// last `context` of them the context the receiver kept for it (ADR-0017).
     Answer { kind: KindId, request: u64, context: u32 },
@@ -82,6 +85,11 @@ impl ItemHead {
                 2
             }
             Handed::Ended(Gone::Earlier) => 3,
+            Handed::Asks { kind, request } => {
+                out[..8].copy_from_slice(&kind.plain_bytes());
+                out[52..60].copy_from_slice(&request.to_le_bytes());
+                6
+            }
             Handed::Answer { kind, request, context } => {
                 out[..8].copy_from_slice(&kind.plain_bytes());
                 out[52..60].copy_from_slice(&request.to_le_bytes());
@@ -119,6 +127,7 @@ impl ItemHead {
             5 => {
                 Handed::Unanswered { answer: kind_at(head, 0)?, request: u64_at(head, 52)?, context: u32_at(head, 60)? }
             }
+            6 => Handed::Asks { kind: kind_at(head, 0)?, request: u64_at(head, 52)? },
             _ => return None,
         };
         let source = Seated { id: ActorId::new(u64_at(head, 8)?), seat: SeatNumber::new(u64_at(head, 16)?) };
@@ -160,6 +169,9 @@ pub struct OutHead {
     /// Where the call's [`RefRecord`]s begin, and how many there are.
     pub refs_at: u32,
     pub refs: u32,
+    /// Where the call's [`HolderRecord`]s begin, and how many there are.
+    pub holders_at: u32,
+    pub holders: u32,
 }
 
 /// Where some bytes lie in a guest's memory: their address, and how many there are.
@@ -171,24 +183,25 @@ pub struct Span {
 
 impl OutHead {
     /// How many bytes it is.
-    pub const BYTES: usize = 64;
+    pub const BYTES: usize = 72;
 
-    /// It, as the out buffer holds it.
-    #[must_use]
-    pub fn to_bytes(&self) -> [u8; Self::BYTES] {
-        let mut out = [0; Self::BYTES];
-        let stopped: u32 = match self.stopped {
-            Stopped::No => 0,
-            Stopped::Failed { kind, bytes } => {
-                out[8..16].copy_from_slice(&kind.plain_bytes());
-                out[16..20].copy_from_slice(&bytes.at.to_le_bytes());
-                out[20..24].copy_from_slice(&bytes.len.to_le_bytes());
-                1
-            }
-            Stopped::Closed => 2,
+    /// Writes it over the first [`Self::BYTES`] of `out`, every byte of them: nothing when `out` is shorter. Written in
+    /// place, and over nothing zeroed first, as a guest writes one each call and zeroing this many bytes is a call out
+    /// of its instance in wasmtime.
+    pub fn write_over(&self, out: &mut [u8]) {
+        let Some(out) = out.get_mut(..Self::BYTES) else {
+            return;
+        };
+        let (stopped, kind, at, len) = match self.stopped {
+            Stopped::No => (0_u32, [0; 8], 0, 0),
+            Stopped::Failed { kind, bytes } => (1, kind.plain_bytes(), bytes.at, bytes.len),
+            Stopped::Closed => (2, [0; 8], 0, 0),
         };
         out[..4].copy_from_slice(&self.ran.to_le_bytes());
         out[4..8].copy_from_slice(&stopped.to_le_bytes());
+        out[8..16].copy_from_slice(&kind);
+        out[16..20].copy_from_slice(&at.to_le_bytes());
+        out[20..24].copy_from_slice(&len.to_le_bytes());
         out[24..28].copy_from_slice(&self.turns_at.to_le_bytes());
         out[28..32].copy_from_slice(&self.sends_at.to_le_bytes());
         out[32..36].copy_from_slice(&self.lines_at.to_le_bytes());
@@ -199,8 +212,8 @@ impl OutHead {
         out[52..56].copy_from_slice(&self.pins.to_le_bytes());
         out[56..60].copy_from_slice(&self.refs_at.to_le_bytes());
         out[60..64].copy_from_slice(&self.refs.to_le_bytes());
-
-        out
+        out[64..68].copy_from_slice(&self.holders_at.to_le_bytes());
+        out[68..72].copy_from_slice(&self.holders.to_le_bytes());
     }
 
     /// The head `bytes` begin with: nothing when they are too few, or do not read as one.
@@ -230,6 +243,8 @@ impl OutHead {
             pins: u32_at(head, 52)?,
             refs_at: u32_at(head, 56)?,
             refs: u32_at(head, 60)?,
+            holders_at: u32_at(head, 64)?,
+            holders: u32_at(head, 68)?,
         })
     }
 
@@ -241,10 +256,20 @@ impl OutHead {
 
         self.watches_at.checked_add(span)
     }
+
+    /// Where the call's [`HoldRecord`]s begin, right after its `claims` claims, which begin after its `watches`
+    /// watches: how many its last turn's [`TurnEnds`] count. Requests are seldom held, so the head keeps no room for
+    /// where they lie (ADR-0017).
+    #[must_use]
+    pub fn holds_at(&self, watches: u32, claims: u32) -> Option<u32> {
+        let span = claims.checked_mul(u32::try_from(ClaimRecord::BYTES).ok()?)?;
+
+        self.claims_at(watches)?.checked_add(span)
+    }
 }
 
-/// Where one turn's records end: how many sends, lines, spawns, children stood up, watches and claims the turns up to
-/// and including it asked for.
+/// Where one turn's records end: how many sends, lines, spawns, children stood up, watches, claims and holds the turns
+/// up to and including it asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TurnEnds {
     pub sends: u32,
@@ -253,11 +278,12 @@ pub struct TurnEnds {
     pub stood: u32,
     pub watches: u32,
     pub claims: u32,
+    pub holds: u32,
 }
 
 impl TurnEnds {
     /// How many bytes it is.
-    pub const BYTES: usize = 24;
+    pub const BYTES: usize = 28;
 
     /// It, as the out buffer holds it.
     #[must_use]
@@ -268,7 +294,8 @@ impl TurnEnds {
         out[8..12].copy_from_slice(&self.spawns.to_le_bytes());
         out[12..16].copy_from_slice(&self.stood.to_le_bytes());
         out[16..20].copy_from_slice(&self.watches.to_le_bytes());
-        out[20..].copy_from_slice(&self.claims.to_le_bytes());
+        out[20..24].copy_from_slice(&self.claims.to_le_bytes());
+        out[24..].copy_from_slice(&self.holds.to_le_bytes());
 
         out
     }
@@ -283,6 +310,7 @@ impl TurnEnds {
             stood: u32_at(bytes, 12)?,
             watches: u32_at(bytes, 16)?,
             claims: u32_at(bytes, 20)?,
+            holds: u32_at(bytes, 24)?,
         })
     }
 }
@@ -306,6 +334,8 @@ pub enum Requesting {
     /// It asks a request, to be answered with a kind `answer` names, the context the guest keeps for it where `context`
     /// says.
     Asks { answer: KindId, context: Span },
+    /// It answers the request of the count `request` its receiver asked, which the guest's actor held (ADR-0017).
+    Answers { request: u64 },
 }
 
 impl SendRecord {
@@ -329,6 +359,10 @@ impl SendRecord {
                 out[64..68].copy_from_slice(&context.len.to_le_bytes());
                 1
             }
+            Requesting::Answers { request } => {
+                out[52..60].copy_from_slice(&request.to_le_bytes());
+                2
+            }
         };
         out[48..52].copy_from_slice(&requesting.to_le_bytes());
 
@@ -345,6 +379,7 @@ impl SendRecord {
                 answer: kind_at(bytes, 52)?,
                 context: Span { at: u32_at(bytes, 60)?, len: u32_at(bytes, 64)? },
             },
+            2 => Requesting::Answers { request: u64_at(bytes, 52)? },
             _ => return None,
         };
 
@@ -602,6 +637,65 @@ impl RefRecord {
     #[must_use]
     pub fn read(bytes: &[u8]) -> Option<Self> {
         Some(Self { send: u32_at(bytes, 0)?, at: u32_at(bytes, 4)? })
+    }
+}
+
+/// A request a guest's turn held, the one it handled, to be answered with a kind `answer` names in a later turn
+/// (ADR-0017).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HoldRecord {
+    pub answer: KindId,
+}
+
+impl HoldRecord {
+    /// How many bytes it is.
+    pub const BYTES: usize = 8;
+
+    /// It, as the out buffer holds it.
+    #[must_use]
+    pub const fn to_bytes(&self) -> [u8; Self::BYTES] {
+        self.answer.plain_bytes()
+    }
+
+    /// The record `bytes` begin with: nothing when they are too few, or name no kind.
+    #[must_use]
+    pub fn read(bytes: &[u8]) -> Option<Self> {
+        Some(Self { answer: kind_at(bytes, 0)? })
+    }
+}
+
+/// How a call changed how many values hold one debt of an actor of the guest, summed over its turns: what its held
+/// requests, written into bytes and dropped, came to (ADR-0017).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HolderRecord {
+    pub owed: Owed,
+    pub by: i64,
+}
+
+impl HolderRecord {
+    /// How many bytes it is.
+    pub const BYTES: usize = 48;
+
+    /// It, as the out buffer holds it.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::BYTES] {
+        let Owed { holder, asker, request } = self.owed;
+        let mut out = [0; Self::BYTES];
+        out[..16].copy_from_slice(&seated_bytes(holder));
+        out[16..32].copy_from_slice(&seated_bytes(asker));
+        out[32..40].copy_from_slice(&request.to_le_bytes());
+        out[40..].copy_from_slice(&self.by.to_le_bytes());
+
+        out
+    }
+
+    /// The record `bytes` begin with.
+    #[must_use]
+    pub fn read(bytes: &[u8]) -> Option<Self> {
+        let owed = Owed { holder: seated_at(bytes, 0)?, asker: seated_at(bytes, 16)?, request: u64_at(bytes, 32)? };
+        let by = i64::from_le_bytes(bytes.get(40..48)?.try_into().ok()?);
+
+        Some(Self { owed, by })
     }
 }
 

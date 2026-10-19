@@ -2,7 +2,7 @@
 
 use crate::{
     Actors, BackTo, Beginning, Chain, Children, Closing, Declared, Ending, Fault, HandledList, Holds, Instances, Item,
-    Puts, Seated, Seats, Sends, Table, Turning, Within,
+    Puts, Seated, Seats, Sends, Table, Tie, Turning, Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
 use alloc::boxed::Box;
@@ -156,12 +156,14 @@ impl<'a> Preparing<'a> {
     }
 }
 
-/// An item of a batch, looked at before its turn: what it is, who it comes from, where it stands in its chain, and
-/// where the references in its bytes lie, for a host that hands them to code that takes pins of its own (ADR-0014).
+/// An item of a batch, looked at before its turn: what it is, who it comes from, where it stands in its chain, what it
+/// is to a request, and where the references in its bytes lie, for a host that hands them to code that takes pins of its own (ADR-0014).
 pub struct Peeked<'a> {
     pub item: Item<'a>,
     pub source: Seated,
     pub chain: Chain,
+    /// What the item is to a request: one its turn may reply to, or hold (ADR-0017).
+    pub tie: Tie,
     #[cfg(feature = "std")]
     pub pinned: crate::Pinned<'a>,
 }

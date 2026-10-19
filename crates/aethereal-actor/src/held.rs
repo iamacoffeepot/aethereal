@@ -41,6 +41,26 @@ pub enum Owes {
     Answers { owed: Owed, answer: KindId },
 }
 
+impl Owes {
+    /// The debt it answers, when it answers one.
+    #[must_use]
+    pub const fn answered(&self) -> Option<Owed> {
+        match self {
+            Self::Answers { owed, .. } => Some(*owed),
+            Self::Holds { .. } => None,
+        }
+    }
+
+    /// The kind the request it holds is to be answered with, when it holds one.
+    #[must_use]
+    pub const fn held(&self) -> Option<KindId> {
+        match self {
+            Self::Holds { answer, .. } => Some(*answer),
+            Self::Answers { .. } => None,
+        }
+    }
+}
+
 impl<A> Held<A> {
     /// The debt `owed` names, held by one more value.
     pub(crate) const fn new(owed: Owed) -> Self {
@@ -122,8 +142,7 @@ fn seated(input: &mut Reader<'_, Within>) -> Result<Seated, DecodeError> {
 }
 
 /// The reason of a turn that held a request where none is owed, the mail it handles being no request or one already
-/// answered, or that answered a debt its actor does not hold of that kind; and of one that holds in a guest's code,
-/// which holds nothing yet (ADR-0015, ADR-0017).
+/// answered, or that answered a debt its actor does not hold of that kind (ADR-0017).
 #[derive(Debug, PartialEq, Eq, Plain)]
 pub struct NotOwed;
 
@@ -160,9 +179,10 @@ pub mod holders {
         static OWN: RefCell<Buffer> = const { RefCell::new(Buffer::Closed) };
     }
 
-    /// Notes that the debt `owed` names is held by `by` more values. Nothing is noted where no engine runs: a debt
-    /// dropped there is dropped with its engine.
-    pub(crate) fn change(owed: Owed, by: i64) {
+    /// Notes that the debt `owed` names is held by `by` more values: by values made here, or, for a guest's host, by
+    /// those its guest says its call made (ADR-0015). Nothing is noted where no engine runs: a debt dropped there is
+    /// dropped with its engine.
+    pub fn change(owed: Owed, by: i64) {
         // A thread being torn down has nothing left to note into.
         let _ = OWN.try_with(|own| {
             if let Buffer::Open(changes) = &mut *own.borrow_mut() {
@@ -180,7 +200,10 @@ pub mod holders {
     /// Adds the changes noted since they were last taken to `into`, and goes on noting.
     pub fn take(into: &mut Vec<Change>) {
         OWN.with(|own| {
-            if let Buffer::Open(changes) = &mut *own.borrow_mut() {
+            // Most of the time nothing has changed since they were last taken.
+            if let Buffer::Open(changes) = &mut *own.borrow_mut()
+                && !changes.is_empty()
+            {
                 into.append(changes);
             }
         });

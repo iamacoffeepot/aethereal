@@ -16,16 +16,16 @@
 //! back to it is refused.
 
 use aethereal_actor::records::{
-    self, Born, ClaimRecord, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, Other, OutHead, Parent,
-    PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds,
-    WatchRecord, blob_at, refusal,
+    self, Born, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, Kept, Keying, LineRecord, Naming, Other,
+    OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped,
+    TurnEnds, WatchRecord, blob_at, refusal,
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
     Above, Arena, Asked, Asking, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Broke, Children, Claimed, Declared,
-    FalseSend, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, NotHeld, Peeked, Pinning,
-    Preparing, Puts, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, Was, Why,
-    take_loose_ticket,
+    FalseSend, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, NotHeld, NotOwed, Peeked,
+    Pinning, Preparing, Puts, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats, Table, Tie, Tied,
+    Turning, Unfit, Was, Why, holders, take_loose_ticket,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, from_bytes, to_bytes};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -93,6 +93,7 @@ struct Instance {
     take_out: TypedFunc<u32, u64>,
     turns: TypedFunc<(u32, u32, u32), u64>,
     pins: TypedFunc<(), u64>,
+    holders: TypedFunc<(), u64>,
     end: TypedFunc<(u32, u32), u64>,
     drop: TypedFunc<u32, ()>,
     /// Where the guest's inbox is, and how many bytes it has room for: asked for again only when it must grow.
@@ -262,7 +263,7 @@ impl Runtime {
         let made = from_bytes::<Vec<Made>>(section, &mut budget).map_err(|_| Unfit::Undeclared)?;
         let exports = ["memory", "aethereal_inbox", "aethereal_out", "aethereal_begin", "aethereal_take_in"];
         let more = ["aethereal_take_out", "aethereal_turns", "aethereal_pins", "aethereal_end", "aethereal_drop"];
-        let more = more.into_iter().chain(["aethereal_read_limit"]);
+        let more = more.into_iter().chain(["aethereal_read_limit", "aethereal_holders"]);
         for export in exports.into_iter().chain(more) {
             let has = module.get_export(export).is_some();
             if !has {
@@ -841,7 +842,7 @@ impl Instance {
         else {
             panic!("guest code that entered has its exports");
         };
-        let Ok(drop) = drop else {
+        let (Ok(drop), Ok(holders)) = (drop, instance.get_typed_func(&mut store, "aethereal_holders")) else {
             panic!("guest code that entered has its exports");
         };
         // A limit past what a guest's memory can address holds it to that memory.
@@ -860,6 +861,7 @@ impl Instance {
             take_out,
             turns,
             pins,
+            holders,
             end,
             drop,
             inbox_at: 0,
@@ -946,6 +948,7 @@ impl Guests for Runtime {
         let mut answering = Answering::of(reads, instances, &code.codes, &mut given, &holdings);
         let began = held.begin(of, me, &handed, &mut answering);
         let began = began.and_then(|began| held.take_pins(&began.1, &mut holdings, &given).map(|()| began));
+        let began = began.and_then(|began| held.take_holders(&began.1, &[me]).map(|()| began));
         held.holdings = holdings;
         // A child seated in another part than the one it began in is taken out, to be taken into its own part's
         // instance on its first batch, as a child its guest spawned is.
@@ -1086,6 +1089,7 @@ impl Runs for Guest {
         let given = &mut self.given;
         let wrote = wrote.and_then(|wrote| held.offer_taken_out(&wrote, &holdings, given).map(|()| wrote));
         let wrote = wrote.and_then(|wrote| held.take_pins(&wrote, &mut holdings, given).map(|()| wrote));
+        let wrote = wrote.and_then(|wrote| held.take_holders(&wrote, &[]).map(|()| wrote));
         held.holdings = holdings;
         instances.put_back(self.code.key, held);
         self.ran = match wrote {
@@ -1189,6 +1193,7 @@ impl Runs for Guest {
         let mut answering = Answering::of(reads, instances, &self.code.codes, &mut given, &holdings);
         let wrote = held.end(handle, why, &mut answering);
         let wrote = wrote.and_then(|wrote| held.take_pins(&wrote, &mut holdings, &given).map(|()| wrote));
+        let wrote = wrote.and_then(|wrote| held.take_holders(&wrote, &[]).map(|()| wrote));
         held.holdings = holdings;
         held.actors.retain(|actor| *actor != self.me);
         let replayed = wrote.and_then(|wrote| {
@@ -1258,6 +1263,7 @@ impl Instance {
         }
         let state = state.to_vec();
         let carried = carried_pins(&state, &self.holdings, &[])?;
+        self.holders(&[])?;
         let pins = self.pins()?;
         let is_honest = self.holdings.change(pins, &[]);
         if !is_honest {
@@ -1279,6 +1285,7 @@ impl Instance {
         let len = self.write_inbox(state);
         let handle = self.take_in.call(&mut self.store, (of, me.id.bits(), me.seat.number(), len));
         let handle = handle.map_err(|_| Broke::Trapped)?;
+        self.holders(&[me])?;
         let pins = self.pins()?;
         let is_honest = self.holdings.change(pins, carried);
         if !is_honest {
@@ -1309,7 +1316,7 @@ impl Instance {
     /// and takes in what that changed of the instance's pins.
     fn drop_actor(&mut self, handle: u32) {
         let dropped = self.drop.call(&mut self.store, handle);
-        let pins = dropped.map_err(|_| Broke::Trapped).and_then(|()| self.pins());
+        let pins = dropped.map_err(|_| Broke::Trapped).and_then(|()| self.holders(&[])).and_then(|()| self.pins());
         if let Ok(pins) = pins {
             self.holdings.change(pins, &[]);
         }
@@ -1365,6 +1372,60 @@ impl Instance {
         Ok(())
     }
 
+    /// Takes in what the call that wrote `wrote` changed of how many values hold its actors' debts (ADR-0017).
+    ///
+    /// # Errors
+    ///
+    /// [`Broke::Garbled`] when the records do not read back.
+    #[inline]
+    fn take_holders(&self, wrote: &OutHead, also: &[Seated]) -> Result<(), Broke> {
+        // Most calls make, write and drop no held request.
+        if wrote.holders == 0 {
+            return Ok(());
+        }
+        self.take_written_holders(wrote, also)
+    }
+
+    /// As [`Self::take_holders`], for a call that wrote some. Kept out of line, as most write none.
+    #[cold]
+    #[inline(never)]
+    fn take_written_holders(&self, wrote: &OutHead, also: &[Seated]) -> Result<(), Broke> {
+        let data = self.memory.data(&self.store);
+        let records = (0..wrote.holders)
+            .map(|index| HolderRecord::read(record(data, wrote.holders_at, index, HolderRecord::BYTES)?));
+        let records: Vec<HolderRecord> = records.collect::<Option<_>>().ok_or(Broke::Garbled)?;
+        self.let_go(records, also);
+
+        Ok(())
+    }
+
+    /// Takes in what the guest's last call changed of how many values hold its actors' debts, asked of it after a call
+    /// that writes no other records (ADR-0017).
+    ///
+    /// # Errors
+    ///
+    /// Why the call broke.
+    fn holders(&mut self, also: &[Seated]) -> Result<(), Broke> {
+        let out = self.holders.call(&mut self.store, ()).map_err(|_| Broke::Trapped)?;
+        let records = self.written(out)?.chunks(HolderRecord::BYTES).map(HolderRecord::read);
+        let records: Vec<HolderRecord> = records.collect::<Option<_>>().ok_or(Broke::Garbled)?;
+        self.let_go(records, also);
+
+        Ok(())
+    }
+
+    /// Notes each of `records` whose debt is one of the instance's actors', or of `also`, as a native held request's
+    /// changes are noted. A guest's code says nothing of another code's debts, so the rest are passed over, as natively
+    /// a change to a debt of an actor in another part is (ADR-0017).
+    fn let_go(&self, records: Vec<HolderRecord>, also: &[Seated]) {
+        for HolderRecord { owed, by } in records {
+            let is_ours = self.actors.contains(&owed.holder) || also.contains(&owed.holder);
+            if is_ours {
+                holders::change(owed, by);
+            }
+        }
+    }
+
     /// Offers to the batch's turns a pin on each blob each child the call that wrote `wrote` took out of the instance
     /// refers to, from `holdings`, the instance's as the call began, or `given`'s offers.
     ///
@@ -1400,7 +1461,7 @@ impl Instance {
             peeked.pinned.each(|_, pin| offered.push(pin.clone()));
             items += 1;
             let (handed, bytes) = match &peeked.item {
-                Item::Mail(mail) => (Handed::Mail { kind: mail.kind() }, mail.bytes()),
+                Item::Mail(mail) => (handed_mail(mail.kind(), peeked.tie), mail.bytes()),
                 Item::Ended(ended) => match ended.how() {
                     How::Closed => (Handed::Ended(Gone::Closed), &[][..]),
                     How::Failed(fault) => (Handed::Ended(Gone::Failed { kind: fault.kind() }), fault.bytes()),
@@ -1548,6 +1609,11 @@ fn replay_records(
     if has_births {
         hand_births(given, next, hosted)?;
     }
+    // A request held is held before the turn's sends are checked, so a reply to it among them is refused (ADR-0017).
+    let holds = ends.holds > before.holds;
+    if holds && !held(data, head, before, hosted)? {
+        return Ok((Err(NotOwed.into()), ends));
+    }
     for index in before.sends..ends.sends {
         let send =
             record(data, head.sends_at, index, SendRecord::BYTES).and_then(SendRecord::read).ok_or(Broke::Garbled)?;
@@ -1555,6 +1621,7 @@ fn replay_records(
         let request = match send.request {
             Requesting::Not => Request::Not,
             Requesting::Asks { answer, context } => asks(data, answer, context)?,
+            Requesting::Answers { request } => Request::Answers { request },
         }; // Most mail refers to no blob, and a call whose mail refers to none wrote no reference.
         let pins = if head.refs == 0 {
             Some(Vec::new())
@@ -1849,6 +1916,33 @@ fn lying(data: &[u8], span: Span) -> Option<&[u8]> {
     data.get(start..start + usize::try_from(span.len).ok()?)
 }
 
+/// Whether `hosted` holds the request its turn handles, as its guest's code held it, the turn's after `before` among
+/// the call's that `head` heads in `data` (ADR-0017). Kept out of line, as most turns hold nothing.
+///
+/// # Errors
+///
+/// [`Broke::Garbled`] when the record does not read back.
+#[cold]
+#[inline(never)]
+fn held(data: &[u8], head: &OutHead, before: TurnEnds, hosted: &mut Hosted<'_>) -> Result<bool, Broke> {
+    let last = head.ran.checked_sub(1).ok_or(Broke::Garbled)?;
+    let all = record(data, head.turns_at, last, TurnEnds::BYTES).and_then(TurnEnds::read).ok_or(Broke::Garbled)?;
+    let holds_at = head.holds_at(all.watches, all.claims).ok_or(Broke::Garbled)?;
+    let hold = record(data, holds_at, before.holds, HoldRecord::BYTES).and_then(HoldRecord::read);
+    let HoldRecord { answer } = hold.ok_or(Broke::Garbled)?;
+
+    Ok(hosted.hold(answer).is_ok())
+}
+
+/// What mail of `kind` tied as `tie` is handed into a guest as: mail that asks a request, which its turn may reply
+/// to or hold, or mail as it came (ADR-0017).
+fn handed_mail(kind: KindId, tie: Tie) -> Handed {
+    match tie.read() {
+        Tied::Asks(request) => Handed::Asks { kind, request },
+        Tied::Tell | Tied::Answers(_) | Tied::Unanswered(_) => Handed::Mail { kind },
+    }
+}
+
 /// What a guest's send that asks a request is to it, the context it keeps for the request where `context` says in
 /// `data`. Kept out of line, as most mail asks nothing.
 #[cold]
@@ -2102,6 +2196,162 @@ mod tests {
 
         let questioned = QUESTIONED.lock().map(|questioned| questioned.clone()).unwrap_or_default();
         assert_eq!(questioned, [(0, 0), (10, 1)]);
+    }
+
+    /// What a petitioner was answered: how its steward released what it held, which ping it was, and its pong's number
+    /// or why it had none.
+    type Petitioned = (u64, u64, Result<u64, Unanswered>);
+
+    /// What each petitioner was answered.
+    static PETITIONED: Mutex<Vec<Petitioned>> = Mutex::new(Vec::new());
+
+    /// What a petitioner is made from: the steward guest's code, and how the steward is to release what it holds.
+    #[derive(aethereal_data::Bound)]
+    struct Petitioning {
+        code: BlobRef,
+        how: u64,
+    }
+
+    impl Kind for Petitioning {
+        const NAME: KindName = KindName::new("aether.test.petitioning");
+    }
+
+    /// A native actor that spawns the steward guest from its code, asks it a ping, a weighing and a ping, one after
+    /// another, and tells it how to release them.
+    #[derive(aethereal_data::Bound)]
+    struct Petitioner {
+        petitioning: Petitioning,
+    }
+
+    impl Kind for Petitioner {
+        const NAME: KindName = KindName::new("aether.test.petitioner");
+    }
+
+    impl Actor for Petitioner {
+        type Config = Petitioning;
+        type Key = u64;
+        type Handles = (Volley, Answer<echo::Pong, Which>, Answer<echo::Weight, Which>);
+        type BeginSends = (ToType<Self, Volley>,);
+        type EndSends = ();
+
+        fn begin(petitioning: Petitioning, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let me = turn.me();
+            turn.send(ToWithoutMail::Held(me), &Volley { pings: 2 })?;
+
+            Ok(Self { petitioning })
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Volley> for Petitioner {
+        type Sends = (
+            aethereal_actor::Asks<echo::Pings, echo::Ping, Which>,
+            aethereal_actor::Asks<echo::Weighs, echo::Weigh, Which>,
+            ToType<echo::Steward, echo::Release>,
+        );
+
+        fn handle(&mut self, _: Volley, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            let Petitioning { code, how } = &self.petitioning;
+            let Ok(steward) = turn.spawn_from::<echo::Steward>(code, &(), &echo::EchoConfig) else {
+                return Err(Fault::new(&Doom)?);
+            };
+            // Held in one call into the guest, each answered with its own kind.
+            turn.ask_to(steward.protocol::<echo::Pings, _>(), &echo::Ping { n: 0 }, &Which { at: 0 })?;
+            turn.ask_to(steward.protocol::<echo::Weighs, _>(), &echo::Weigh { n: 5 }, &Which { at: 1 })?;
+            turn.ask_to(steward.protocol::<echo::Pings, _>(), &echo::Ping { n: 20 }, &Which { at: 2 })?;
+            turn.send(To::Held(steward.erase()), &echo::Release { how: *how })?;
+
+            Ok(())
+        }
+    }
+
+    impl Handles<Answer<echo::Pong, Which>> for Petitioner {
+        type Sends = ();
+
+        fn handle(&mut self, (pong, which): (Answered<echo::Pong>, Which), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+            let answered = match pong {
+                Answered::Yes(pong) => Ok(pong.n),
+                Answered::No(why) => Err(why),
+            };
+            self.petitioned(which.at, answered);
+
+            Ok(())
+        }
+    }
+
+    impl Handles<Answer<echo::Weight, Which>> for Petitioner {
+        type Sends = ();
+
+        fn handle(
+            &mut self,
+            (weight, which): (Answered<echo::Weight>, Which),
+            _: &mut Turn<'_, ()>,
+        ) -> Result<(), Fault> {
+            let answered = match weight {
+                Answered::Yes(weight) => Ok(weight.n),
+                Answered::No(why) => Err(why),
+            };
+            self.petitioned(which.at, answered);
+
+            Ok(())
+        }
+    }
+
+    impl Petitioner {
+        /// Keeps what became of the request it asked `at`th.
+        fn petitioned(&self, at: u64, answered: Result<u64, Unanswered>) {
+            if let Ok(mut petitioned) = PETITIONED.lock() {
+                petitioned.push((self.petitioning.how, at, answered));
+            }
+        }
+    }
+
+    #[test]
+    fn a_guest_holds_a_request_and_its_asker_hears_what_became_of_it() {
+        // Catches a guest's hold its host does not file, or files as the hold of another turn of the call, an answer to a held request its host sends as plain mail or
+        // as a reply to the item, a held request dropped in the guest that its asker never hears of, one the guest
+        // closed on that is never said to have ended, and one written into a request's context and read back that is
+        // let go of as its first value is dropped.
+        for (parts, hops) in [(1, 0), (1, 64), (4, 0), (4, 64)] {
+            let Some(parts) = NonZeroUsize::new(parts) else {
+                panic!("no engine has no parts");
+            };
+            if let Ok(mut petitioned) = PETITIONED.lock() {
+                petitioned.clear();
+            }
+            let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, hops));
+            for how in 0..4 {
+                let Ok(_) = engine.add_root::<Petitioner>(&how, Petitioning { code: code.clone(), how }) else {
+                    panic!("the petitioner begins");
+                };
+            }
+            let clock = Monotonic::new();
+            while !engine.is_idle() {
+                engine.step(&clock);
+            }
+
+            let mut petitioned = PETITIONED.lock().map(|petitioned| petitioned.clone()).unwrap_or_default();
+            petitioned.sort_by_key(|(how, at, _)| (*how, *at));
+            let (unreplied, ended) = (Err(Unanswered::Unreplied), Err(Unanswered::Ended));
+            let expected = [
+                (0, 0, Ok(100)),
+                (0, 1, Ok(105)),
+                (0, 2, Ok(120)),
+                (1, 0, unreplied),
+                (1, 1, unreplied),
+                (1, 2, unreplied),
+                (2, 0, ended),
+                (2, 1, ended),
+                (2, 2, ended),
+                (3, 0, Ok(200)),
+                (3, 1, Ok(305)),
+                (3, 2, Ok(220)),
+            ];
+            assert_eq!(petitioned, expected, "{parts} parts, {hops} hops");
+        }
     }
 
     /// What the shelver guest's parent was told: each pong's number, and a hundred and each book's length.

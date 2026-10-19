@@ -72,7 +72,7 @@ impl Batch for Waiting<'_, '_, '_> {
             }
             let (item, context) = read(handed, self.reading, self.carried, answering);
             let chain = Chain { root: context.root, depth: context.depth - 1 };
-            visit(Peeked { item, source, chain, pinned });
+            visit(Peeked { item, source, chain, tie: handed.tie(), pinned });
         }
     }
 }
@@ -88,6 +88,6 @@ impl Batch for OneHop<'_, '_> {
         let mail = Mail::new(hop.kind, bytes, hop.from, hop.root, hop.depth, self.reading.read_limit);
         let chain = Chain { root: hop.root, depth: hop.depth };
         let pinned = self.arena.pinned(hop.sent);
-        visit(Peeked { item: ask::item(mail, answering), source: hop.from, chain, pinned });
+        visit(Peeked { item: ask::item(mail, answering), source: hop.from, chain, tie: hop.tie, pinned });
     }
 }

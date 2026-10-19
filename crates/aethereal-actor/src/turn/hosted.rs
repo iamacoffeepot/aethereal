@@ -3,8 +3,8 @@
 use super::{Checked, Closing, During, Owing, Seat, Stood, Turning, Why};
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Effect, ErasedActorRef, Fault, Gift, Giver, Instances,
-    Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, Payload, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen,
-    Sending, Table, Target, Tie, What, carry, take_claimed,
+    Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Role, Runs, SeatNumber,
+    Seated, Seats, Seen, Sending, Table, Target, Tie, What, carry, take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, KindName, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -65,6 +65,8 @@ pub enum Request<'a> {
     Not,
     /// It asks a request, to be answered with a kind `answer` names, keeping `context`, its context's bytes.
     Asks { answer: KindId, context: &'a [u8] },
+    /// It answers the request of the count `request` its receiver asked, which the actor held.
+    Answers { request: u64 },
 }
 
 /// The reason of a guest's turn that sent what its declaration does not allow (ADR-0013, ADR-0015).
@@ -256,8 +258,8 @@ impl<'a> Hosted<'a> {
     ///
     /// # Errors
     ///
-    /// [`FalseSend`] when the sender's declaration does not allow it, the turn spawned no such child, or it asks a
-    /// request where the actor's turn does not, or whose answer its type does not handle.
+    /// [`FalseSend`] when the sender's declaration does not allow it, the turn spawned no such child, or it asks or
+    /// answers a request where the actor's turn does not, or asks one whose answer its type does not handle.
     #[inline]
     pub fn send(
         &mut self,
@@ -274,7 +276,10 @@ impl<'a> Hosted<'a> {
             let child = self.spawned.iter().find(|child| child.me == by).ok_or(FalseSend)?;
             (child.declared.begins(), Source::Begin)
         };
-        let allowed = sends.iter().any(|sending| self.allows(*sending, source, to, kind));
+        // An answer to a held request goes to its asker, who held it to be answered so: the engine checks it is a debt
+        // the actor holds once the turn has run, and nothing is checked against the turn's sends (ADR-0017).
+        let is_held_answer = matches!(request, Request::Answers { .. });
+        let allowed = is_held_answer || sends.iter().any(|sending| self.allows(*sending, source, to, kind));
         if !allowed {
             return Err(FalseSend);
         }
@@ -299,6 +304,7 @@ impl<'a> Hosted<'a> {
         let tie = match request {
             Request::Not => self.tie(by, to, kind)?,
             Request::Asks { answer, context } => self.ask(by, count, answer, context)?,
+            Request::Answers { request } => self.answer(by, to, kind, request)?,
         };
         let mailed = Mailed { by, to, count, kind, bytes, tie };
         let pieces = self.seat.asked.buffers.mailed.len();
@@ -392,6 +398,40 @@ impl<'a> Hosted<'a> {
         self.seat.asked.asks.push(Asking { count, answer, context: context.to_vec() });
 
         Ok(Tie::asks(count))
+    }
+
+    /// What the piece of mail `by` sends to `to`, of `kind`, carries as the answer to the request of the count
+    /// `request` that `to` asked and the actor held: refused unless it is the actor's own turn that handles an item, as
+    /// only such a turn answers. The engine checks that the actor holds the debt once the turn has run (ADR-0017).
+    /// Kept out of line, as most mail answers nothing held.
+    #[cold]
+    #[inline(never)]
+    fn answer(&mut self, by: Seated, to: Seated, kind: KindId, request: u64) -> Result<Tie, FalseSend> {
+        let is_mine = by == self.seat.me;
+        let is_handling = matches!(self.source, Source::Item(_));
+        let answers = is_mine && is_handling;
+        if !answers {
+            return Err(FalseSend);
+        }
+        let owed = Owed { holder: by, asker: to, request };
+        self.seat.asked.owes.push(Owes::Answers { owed, answer: kind });
+
+        Ok(Tie::answers(request))
+    }
+
+    /// Holds the request the turn handles, as its guest's code held it, to be answered with a kind `answer` names in a
+    /// later turn: before its sends are handed in, so a reply to it among them is refused (ADR-0017).
+    ///
+    /// # Errors
+    ///
+    /// [`NotOwed`] when the item is no request, or the turn is no turn of an item.
+    pub fn hold(&mut self, answer: KindId) -> Result<(), NotOwed> {
+        let Source::Item(source) = self.source else {
+            return Err(NotOwed);
+        };
+        self.seat.hold(source, answer).map_err(|_| NotOwed)?;
+
+        Ok(())
     }
 
     /// The `send`th piece of mail handed in, counting from nought.
