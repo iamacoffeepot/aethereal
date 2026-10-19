@@ -17,14 +17,14 @@
 
 use aethereal_actor::records::{
     self, Born, ClaimRecord, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, Other, OutHead, Parent,
-    PinRecord, RefRecord, SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds, WatchRecord,
-    blob_at, refusal,
+    PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds,
+    WatchRecord, blob_at, refusal,
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Broke, Children, Claimed, Declared,
-    FalseSend, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, NotHeld, Pinning,
-    Preparing, Puts, Reads, Refused, Role, Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, Was, Why,
+    Above, Arena, Asked, Asking, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Broke, Children, Claimed, Declared,
+    FalseSend, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, NotHeld, Peeked, Pinning,
+    Preparing, Puts, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, Was, Why,
     take_loose_ticket,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, from_bytes, to_bytes};
@@ -1398,17 +1398,18 @@ impl Instance {
         let mut len = 0;
         batch.each(&mut |peeked| {
             peeked.pinned.each(|_, pin| offered.push(pin.clone()));
+            items += 1;
             let (handed, bytes) = match &peeked.item {
-                // A batch is read before its turns run, which is where an answer is told from its mail, so an answer is
-                // handed in as the mail it is (ADR-0017).
-                Item::Mail(mail) | Item::Answer { mail, .. } | Item::Unanswered { mail, .. } => {
-                    (Handed::Mail { kind: mail.kind() }, mail.bytes())
-                }
+                Item::Mail(mail) => (Handed::Mail { kind: mail.kind() }, mail.bytes()),
                 Item::Ended(ended) => match ended.how() {
                     How::Closed => (Handed::Ended(Gone::Closed), &[][..]),
                     How::Failed(fault) => (Handed::Ended(Gone::Failed { kind: fault.kind() }), fault.bytes()),
                     How::Earlier => (Handed::Ended(Gone::Earlier), &[][..]),
                 },
+                Item::Answer { .. } | Item::Unanswered { .. } => {
+                    len = self.hand_in_filed(&peeked, len);
+                    return;
+                }
             };
             let head = ItemHead { handed, source: peeked.source, chain: peeked.chain, len: count(bytes.len()) };
             let at = len;
@@ -1417,10 +1418,39 @@ impl Instance {
             let inbox = &mut self.memory.data_mut(&mut self.store)[self.inbox_at..];
             inbox[at..at + ItemHead::BYTES].copy_from_slice(&head.to_bytes());
             inbox[at + ItemHead::BYTES..len].copy_from_slice(bytes);
-            items += 1;
         });
 
         (items, count(len))
+    }
+
+    /// Writes `peeked`, what became of a request, into the guest's inbox at `at`, its [`ItemHead`], its mail's bytes
+    /// and then the context its asker kept for it, and answers with where it ends (ADR-0017). Kept out of line, as most
+    /// items are mail.
+    #[cold]
+    #[inline(never)]
+    fn hand_in_filed(&mut self, peeked: &Peeked<'_>, at: usize) -> usize {
+        let (handed, bytes, context) = match &peeked.item {
+            Item::Answer { mail, asking: Asking { count: request, context, .. } } => {
+                let handed = Handed::Answer { kind: mail.kind(), request: *request, context: count(context.len()) };
+                (handed, mail.bytes(), context)
+            }
+            Item::Unanswered { mail, asking: Asking { count: request, answer, context } } => {
+                let handed = Handed::Unanswered { answer: *answer, request: *request, context: count(context.len()) };
+                (handed, mail.bytes(), context)
+            }
+            Item::Mail(_) | Item::Ended(_) => return at,
+        };
+        let item_len = bytes.len() + context.len();
+        let head = ItemHead { handed, source: peeked.source, chain: peeked.chain, len: count(item_len) };
+        let (bytes_at, context_at, len) =
+            (at + ItemHead::BYTES, at + ItemHead::BYTES + bytes.len(), at + ItemHead::BYTES + item_len);
+        self.make_room(len);
+        let inbox = &mut self.memory.data_mut(&mut self.store)[self.inbox_at..];
+        inbox[at..bytes_at].copy_from_slice(&head.to_bytes());
+        inbox[bytes_at..context_at].copy_from_slice(bytes);
+        inbox[context_at..len].copy_from_slice(context);
+
+        len
     }
 
     /// Copies `bytes` into the guest's inbox, and answers with how many there are.
@@ -1522,13 +1552,17 @@ fn replay_records(
         let send =
             record(data, head.sends_at, index, SendRecord::BYTES).and_then(SendRecord::read).ok_or(Broke::Garbled)?;
         let bytes = lying(data, send.bytes).ok_or(Broke::Garbled)?;
-        // Most mail refers to no blob, and a call whose mail refers to none wrote no reference.
+        let request = match send.request {
+            Requesting::Not => Request::Not,
+            Requesting::Asks { answer, context } => asks(data, answer, context)?,
+        }; // Most mail refers to no blob, and a call whose mail refers to none wrote no reference.
         let pins = if head.refs == 0 {
             Some(Vec::new())
         } else {
             send_pins(data, head, index, bytes, holdings, given)
         };
-        let is_refused = pins.is_none_or(|pins| hosted.send(send.by, send.to, send.kind, bytes, &pins).is_err());
+        let is_refused =
+            pins.is_none_or(|pins| hosted.send(send.by, send.to, send.kind, bytes, request, &pins).is_err());
         if is_refused {
             return Ok((Err(Fault::new(&FalseSend).unwrap_or_else(|_| Broke::Garbled.fault())), ends));
         }
@@ -1815,6 +1849,16 @@ fn lying(data: &[u8], span: Span) -> Option<&[u8]> {
     data.get(start..start + usize::try_from(span.len).ok()?)
 }
 
+/// What a guest's send that asks a request is to it, the context it keeps for the request where `context` says in
+/// `data`. Kept out of line, as most mail asks nothing.
+#[cold]
+#[inline(never)]
+fn asks(data: &[u8], answer: KindId, context: Span) -> Result<Request<'_>, Broke> {
+    let context = lying(data, context).ok_or(Broke::Garbled)?;
+
+    Ok(Request::Asks { answer, context })
+}
+
 /// A count the guest's 32-bit memory holds.
 fn count(count: usize) -> u32 {
     u32::try_from(count).unwrap_or(u32::MAX)
@@ -1839,7 +1883,7 @@ mod tests {
     use crate::Monotonic;
     use aethereal_actor::{
         Actor, ActorRef, Answer, Answered, Beginning, BlobRef, Carries, Ending, Forged, Handles, Links, Protocol,
-        Seated, To, ToAny, ToSender, ToType, ToWithoutMail, Trapped, Turn,
+        Seated, To, ToAny, ToSender, ToType, ToWithoutMail, Trapped, Turn, Unanswered,
     };
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
     use aethereal_guest_echo as echo;
@@ -2058,6 +2102,177 @@ mod tests {
 
         let questioned = QUESTIONED.lock().map(|questioned| questioned.clone()).unwrap_or_default();
         assert_eq!(questioned, [(0, 0), (10, 1)]);
+    }
+
+    /// What the shelver guest's parent was told: each pong's number, and a hundred and each book's length.
+    static SHELVED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+    /// A native actor that spawns the shelver guest from its code and pings it, keeping what it is told.
+    #[derive(aethereal_data::Bound)]
+    struct Shelving;
+
+    impl Kind for Shelving {
+        const NAME: KindName = KindName::new("aether.test.shelving");
+    }
+
+    impl Actor for Shelving {
+        type Config = Inquiring;
+        type Key = ();
+        type Handles = (echo::Pong, echo::Book);
+        type BeginSends = (ToType<echo::Shelver, echo::Ping>,);
+        type EndSends = ();
+
+        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let Ok(shelver) = turn.spawn_from::<echo::Shelver>(&inquiring.code, &(), &echo::EchoConfig) else {
+                return Err(Fault::new(&Doom)?);
+            };
+            turn.send(ToWithoutMail::Held(shelver.erase()), &echo::Ping { n: 3 })?;
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<echo::Pong> for Shelving {
+        type Sends = ();
+
+        fn handle(&mut self, pong: echo::Pong, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+            if let Ok(mut shelved) = SHELVED.lock() {
+                shelved.push(pong.n);
+            }
+
+            Ok(())
+        }
+    }
+
+    impl Handles<echo::Book> for Shelving {
+        type Sends = ();
+
+        fn handle(&mut self, book: echo::Book, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+            let len = 100 + turn.read(&book.blob).len() as u64;
+            if let Ok(mut shelved) = SHELVED.lock() {
+                shelved.push(len);
+            }
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_guest_s_run_of_mail_after_other_mail_holds_its_own_references() {
+        // Catches the references in a guest's run of mail placed among the call's sends from the run's own first,
+        // which pins the blobs of a run that does not come first on other mail.
+        let (mut engine, code) = with_echo(Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0));
+        let Ok(_) = engine.add_root::<Shelving>(&(), Inquiring { code }) else {
+            panic!("the shelving begins");
+        };
+        let clock = Monotonic::new();
+        while !engine.is_idle() {
+            engine.step(&clock);
+        }
+
+        let shelved = SHELVED.lock().map(|shelved| shelved.clone()).unwrap_or_default();
+        assert_eq!(shelved, [3, 103, 104]);
+    }
+
+    /// What the querent guest heard of each request it asked, by which it was: its pong's number, or why it had none.
+    static HEARD: Mutex<Vec<(u64, Result<u64, Unanswered>)>> = Mutex::new(Vec::new());
+
+    /// A native actor that spawns the querent guest from its code and has it ask, keeping what it hears: once more
+    /// when it hears its first query's last request went unanswered.
+    #[derive(aethereal_data::Bound)]
+    struct Inquirer {
+        querent: ActorRef<echo::Querent>,
+    }
+
+    /// What an inquirer is made from: the querent guest's code.
+    #[derive(aethereal_data::Bound)]
+    struct Inquiring {
+        code: BlobRef,
+    }
+
+    impl Kind for Inquiring {
+        const NAME: KindName = KindName::new("aether.test.inquiring");
+    }
+
+    impl Kind for Inquirer {
+        const NAME: KindName = KindName::new("aether.test.inquirer");
+    }
+
+    impl Actor for Inquirer {
+        type Config = Inquiring;
+        type Key = ();
+        type Handles = (echo::Heard,);
+        type BeginSends = (ToType<echo::Querent, echo::Query>,);
+        type EndSends = ();
+
+        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let Ok(querent) = turn.spawn_from::<echo::Querent>(&inquiring.code, &(), &echo::EchoConfig) else {
+                return Err(Fault::new(&Doom)?);
+            };
+            turn.send(ToWithoutMail::Held(querent.erase()), &echo::Query { first: 0, pings: 2 })?;
+
+            Ok(Self { querent })
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<echo::Heard> for Inquirer {
+        type Sends = (ToType<echo::Querent, echo::Query>,);
+
+        fn handle(&mut self, heard: echo::Heard, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            // A second query, asked in a later call into the guest than the first.
+            let is_first_done = matches!(heard, echo::Heard::No { at: 2, .. });
+            if is_first_done {
+                turn.send(To::Held(self.querent.erase()), &echo::Query { first: 3, pings: 1 })?;
+            }
+            let heard = match heard {
+                echo::Heard::Pong { at, n } => (at, Ok(n)),
+                echo::Heard::No { at, why } => (at, Err(why)),
+            };
+            if let Ok(mut all) = HEARD.lock() {
+                all.push(heard);
+            }
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_guest_asks_and_is_handed_what_became_of_each_request_with_what_it_kept() {
+        // Catches a guest's request its host sends on as a tell, an answer handed into a guest as plain mail, which
+        // its answer handler never sees, a context lost or tied to the wrong request on the way back in, a call's
+        // requests filed with the contexts of an earlier call's, and an unanswered request whose word never reaches
+        // the guest's handler.
+        // In one part and in several, each piece of mail waiting its turn and handed on as it is sent.
+        for (parts, hops) in [(1, 0), (1, 64), (4, 0), (4, 64)] {
+            let Some(parts) = NonZeroUsize::new(parts) else {
+                panic!("no engine has no parts");
+            };
+            if let Ok(mut heard) = HEARD.lock() {
+                heard.clear();
+            }
+            let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, hops));
+            let Ok(_) = engine.add_root::<Inquirer>(&(), Inquiring { code }) else {
+                panic!("the inquirer begins");
+            };
+            let clock = Monotonic::new();
+            while !engine.is_idle() {
+                engine.step(&clock);
+            }
+
+            let mut heard = HEARD.lock().map(|heard| heard.clone()).unwrap_or_default();
+            heard.sort_by_key(|(at, _)| *at);
+            let unreplied = Err(Unanswered::Unreplied);
+            let expected = [(0, Ok(0)), (1, Ok(10)), (2, unreplied), (3, Ok(30)), (4, unreplied)];
+            assert_eq!(heard, expected, "{parts} parts, {hops} hops");
+        }
     }
 
     /// The word to close, as the echo guest declares it.

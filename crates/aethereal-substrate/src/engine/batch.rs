@@ -11,9 +11,11 @@ use aethereal_actor::{Arena, Batch, Chain, Item, Mail, Peeked, Pinned, Pinning};
 use std::iter;
 
 /// A batch of one actor's waiting items: `first`, and after it as many of `rest` as make
-/// [`SLICE_EVERY`](super::SLICE_EVERY), or as are left.
+/// [`SLICE_EVERY`](super::SLICE_EVERY), or as are left, each an answer when it answers a request of those the actor
+/// `waits` on. An answer to none of them is left out, as it runs no turn (ADR-0017).
 pub(super) struct Waiting<'w, 'r, 'p> {
     pub(super) reading: &'w Reading<'r>,
+    pub(super) waits: &'w ask::Waiting,
     pub(super) first: Handed<'p>,
     pub(super) rest: &'w Pieces<'p>,
     /// The bytes of the mail its part carried over, and the pins of the blobs they refer to.
@@ -21,9 +23,12 @@ pub(super) struct Waiting<'w, 'r, 'p> {
     pub(super) carried_pins: &'p [Pinning],
 }
 
-/// A batch of one hop, a piece of mail handed straight to its receiver in the step (ADR-0013).
+/// A batch of one hop, a piece of mail handed straight to its receiver in the step (ADR-0013): an answer when it
+/// answers a request of those the receiver `waits` on, and nothing when it answers none of them, as it runs no turn
+/// (ADR-0017).
 pub(super) struct OneHop<'w, 'r> {
     pub(super) reading: &'w Reading<'r>,
+    pub(super) waits: &'w ask::Waiting,
     pub(super) hop: &'w Hop,
     pub(super) lists: &'w Lists,
     /// The arena the hop's bytes were written in, which holds the pins of the blobs they refer to.
@@ -61,7 +66,11 @@ impl Batch for Waiting<'_, '_, '_> {
                 Handed::Mail { bytes, .. } => stream::pinned(bytes, self.reading.mail, self.carried_pins),
                 Handed::Ended { .. } => Pinned::Nothing,
             };
-            let (item, context) = read(handed, self.reading, self.carried, Answering::Not);
+            let answering = self.waits.answering(handed.tie());
+            if matches!(answering, Answering::Stray) {
+                continue;
+            }
+            let (item, context) = read(handed, self.reading, self.carried, answering);
             let chain = Chain { root: context.root, depth: context.depth - 1 };
             visit(Peeked { item, source, chain, pinned });
         }
@@ -71,10 +80,14 @@ impl Batch for Waiting<'_, '_, '_> {
 impl Batch for OneHop<'_, '_> {
     fn each(&self, visit: &mut dyn FnMut(Peeked<'_>)) {
         let hop = self.hop;
+        let answering = self.waits.answering(hop.tie);
+        if matches!(answering, Answering::Stray) {
+            return;
+        }
         let bytes = self.lists.fusing.bytes(hop);
         let mail = Mail::new(hop.kind, bytes, hop.from, hop.root, hop.depth, self.reading.read_limit);
         let chain = Chain { root: hop.root, depth: hop.depth };
         let pinned = self.arena.pinned(hop.sent);
-        visit(Peeked { item: Item::Mail(mail), source: hop.from, chain, pinned });
+        visit(Peeked { item: ask::item(mail, answering), source: hop.from, chain, pinned });
     }
 }

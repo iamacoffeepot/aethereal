@@ -23,15 +23,15 @@
 
 use crate::records::{
     self, Born, ClaimRecord, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, Other, OutHead, Parent,
-    PinRecord, RefRecord, SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds, WatchRecord,
+    PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds,
+    WatchRecord,
 };
 use crate::section;
 use crate::{
-    Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Ended, Fault, How, Item, Tie,
+    Above, Actor, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, Children, Declared, Ended, Fault, How, Item,
+    Tie, Tied, Unanswered,
 };
-use crate::{
-    Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, Peeked, Pinned, Preparing, Puts, Refused,
-};
+use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, Pinned, Preparing, Puts, Refused};
 use crate::{Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, What, Within, WithinReader, WithinWriter, pins};
 use aethereal_data::{
     ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, PathSegment, Reader, Writer, from_bytes, to_bytes,
@@ -44,6 +44,7 @@ use core::any::Any;
 use core::cell::OnceCell;
 use core::cell::{Cell, RefCell};
 use core::mem;
+use core::slice;
 
 /// Begins an actor of one type as it is seated, where it stands, from its config's bytes.
 type Begin = fn(&[u8], Seated, &Standing, &Host, &mut Asked, &mut Instances) -> Result<Box<dyn Runs>, Fault>;
@@ -382,10 +383,24 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         let mut stood_before = 0;
         let mut counted = Counted::default();
         for _ in 0..items {
-            let Some((Peeked { item, source, chain, .. }, after)) = read_item(rest, read_limit) else {
+            let Some((read, ItemHead { source, chain, .. }, after)) = read_item(rest, read_limit) else {
                 break;
             };
             rest = after;
+            // What became of a request is handed to its handler with the request as it was filed, which the turn
+            // reads.
+            let filed;
+            let item = match read {
+                Inboxed::Item(item) => item,
+                Inboxed::Answer { mail, asking } => {
+                    filed = asking;
+                    Item::Answer { mail, asking: &filed }
+                }
+                Inboxed::Unanswered { mail, asking } => {
+                    filed = asking;
+                    Item::Unanswered { mail, asking: &filed }
+                }
+            };
             TURN.set(ran);
             stood_before = asked.stood_count();
             let Standing { path, above } = &*standing;
@@ -420,18 +435,46 @@ enum Last {
     Closed,
 }
 
-/// One item read from the inbox, and what follows it, its mail read within `read_limit` bytes.
-fn read_item(items: &[u8], read_limit: usize) -> Option<(Peeked<'_>, &[u8])> {
+/// An item read from the inbox: one whole, or what became of a request with the request as its host filed it, which
+/// the item refers to.
+enum Inboxed<'a> {
+    Item(Item<'a>),
+    Answer { mail: Mail<'a>, asking: Asking },
+    Unanswered { mail: Mail<'a>, asking: Asking },
+}
+
+/// One item read from the inbox, its head, and what follows it, its mail read within `read_limit` bytes.
+fn read_item(items: &[u8], read_limit: usize) -> Option<(Inboxed<'_>, ItemHead, &[u8])> {
     let head = ItemHead::read(items)?;
     let rest = items.get(ItemHead::BYTES..)?;
     let (bytes, rest) = rest.split_at_checked(head.len as usize)?;
     let ItemHead { handed, source, chain, .. } = head;
-    let item = match handed {
-        Handed::Mail { kind } => Item::Mail(Mail::new(kind, bytes, source, chain.root, chain.depth, read_limit)),
-        Handed::Ended(gone) => Item::Ended(ended(gone, source, bytes)),
+    let mail = |kind, bytes| Mail::new(kind, bytes, source, chain.root, chain.depth, read_limit);
+    let read = match handed {
+        Handed::Mail { kind } => Inboxed::Item(Item::Mail(mail(kind, bytes))),
+        Handed::Ended(gone) => Inboxed::Item(Item::Ended(ended(gone, source, bytes))),
+        Handed::Answer { kind, request, context } => {
+            let (bytes, asking) = filed(bytes, request, kind, context)?;
+            Inboxed::Answer { mail: mail(kind, bytes), asking }
+        }
+        Handed::Unanswered { answer, request, context } => {
+            let (bytes, asking) = filed(bytes, request, answer, context)?;
+            Inboxed::Unanswered { mail: mail(KindId::of::<Unanswered>(), bytes), asking }
+        }
     };
 
-    Some((Peeked { item, source, chain, pinned: Pinned::Nothing }, rest))
+    Some((read, head, rest))
+}
+
+/// The bytes of what became of the request of the count `request`, answered with a kind `answer` names, and the
+/// request as its host filed it: the last `context` of `bytes` are its context. Kept out of line, as most items are
+/// mail.
+#[cold]
+#[inline(never)]
+fn filed(bytes: &[u8], request: u64, answer: KindId, context: u32) -> Option<(&[u8], Asking)> {
+    let (bytes, context) = bytes.split_at_checked(bytes.len().checked_sub(context as usize)?)?;
+
+    Some((bytes, Asking { count: request, answer, context: context.to_vec() }))
 }
 
 /// The ending of `source`, which ended as `gone` says, a fault's bytes in `bytes`. Kept out of line: built in the
@@ -660,33 +703,49 @@ fn write_sends(out: &mut Vec<u8>, asked: &Asked, sends_at: usize) -> (Vec<RefRec
     let mut refs = Vec::new();
     // Most calls send no reference to a blob, and their mail holds no pin.
     let refers = asked.arena().holds_pins();
+    // Each request is filed as the mail that asks it is written, so the requests are in the order of that mail.
+    let mut asks = asked.asks().iter();
     for mailed in asked.mailed() {
         let is_run = mailed.bytes.pieces() > 1;
         if is_run {
-            write_run(out, asked, mailed, &mut refs);
+            write_run(out, asked, mailed, sends_at, &mut refs);
             continue;
         }
         let bytes = asked.arena().read(mailed.bytes).unwrap_or_default();
         if refers {
             note_refs(asked, mailed.bytes, sends_at, out.len(), &mut refs);
         }
-        let record = SendRecord { by: mailed.by, to: mailed.to, kind: mailed.kind, bytes: span(bytes) };
+        let request = requesting(mailed, &mut asks);
+        let record = SendRecord { by: mailed.by, to: mailed.to, kind: mailed.kind, bytes: span(bytes), request };
         out.extend_from_slice(&record.to_bytes());
     }
 
     (refs, refers)
 }
 
-/// Writes a record for each piece of `mailed`, a run of mail in `asked`, after `out`: each is a send its host checks
-/// and hands over. Kept out of line, as a turn seldom sends a run.
+/// What the piece of mail `mailed` is to a request, as its host is told: the next of `asks` when it asks one.
+fn requesting(mailed: &crate::Mailed, asks: &mut slice::Iter<'_, Asking>) -> Requesting {
+    let Tied::Asks(_) = mailed.tie.read() else {
+        return Requesting::Not;
+    };
+    let Some(asking) = asks.next() else {
+        return Requesting::Not;
+    };
+
+    Requesting::Asks { answer: asking.answer, context: span(&asking.context) }
+}
+
+/// Writes a record for each piece of `mailed`, a run of mail in `asked`, after `out`, whose records begin at
+/// `sends_at`: each is a send its host checks and hands over. Kept out of line, as a turn seldom sends a run, which is
+/// of mail that asks nothing.
 #[cold]
 #[inline(never)]
-fn write_run(out: &mut Vec<u8>, asked: &Asked, mailed: &crate::Mailed, refs: &mut Vec<RefRecord>) {
-    let sends_at = out.len() - out.len() % SendRecord::BYTES;
+fn write_run(out: &mut Vec<u8>, asked: &Asked, mailed: &crate::Mailed, sends_at: usize, refs: &mut Vec<RefRecord>) {
     for piece in mailed.bytes.each_piece() {
         let bytes = asked.arena().read(piece).unwrap_or_default();
         note_refs(asked, piece, sends_at, out.len(), refs);
-        let record = SendRecord { by: mailed.by, to: mailed.to, kind: mailed.kind, bytes: span(bytes) };
+        let request = Requesting::Not;
+        let record = SendRecord { by: mailed.by, to: mailed.to, kind: mailed.kind, bytes: span(bytes), request };
         out.extend_from_slice(&record.to_bytes());
     }
 }

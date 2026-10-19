@@ -1450,8 +1450,14 @@ impl Reading<'_> {
                     let begins_batch = slice.taken.is_multiple_of(SLICE_EVERY);
                     let is_prepared = begins_batch && seat.prepares;
                     if is_prepared {
-                        let batch =
-                            batch::Waiting { reading: self, first: handed, rest: &pieces, carried, carried_pins };
+                        let batch = batch::Waiting {
+                            reading: self,
+                            waits: waiting,
+                            first: handed,
+                            rest: &pieces,
+                            carried,
+                            carried_pins,
+                        };
                         let table = Since {
                             table: self.table,
                             stood: &lists.fusing.stood,
@@ -1628,7 +1634,7 @@ impl Reading<'_> {
             let (seats, puts, arena, gifts) = asked.lent_gifts();
             let holds = Holds { keeping: &mut *keeping, gifts };
             let reads = Reads { table: &table, made: &seat.made, seats, puts, holds };
-            let batch = batch::OneHop { reading: self, hop: &hop, lists, arena };
+            let batch = batch::OneHop { reading: self, waits: waiting, hop: &hop, lists, arena };
             actor.prepare(Preparing::new(&batch, instances, reads));
         }
         let sent_before = stepped.sent;

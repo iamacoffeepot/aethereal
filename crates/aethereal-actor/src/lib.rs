@@ -74,5 +74,5 @@ pub use source::Source;
 pub use subscribers::Subscribers;
 pub use turn::{
     Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseWatch, Forged, Garbled, Hosted,
-    Logger, Refused, Stood, Trapped, Turn, Turning, Why,
+    Logger, Refused, Request, Stood, Trapped, Turn, Turning, Why,
 };

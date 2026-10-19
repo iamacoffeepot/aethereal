@@ -1,8 +1,9 @@
 //! A guest that answers each ping it is sent with a pong, to its sender (ADR-0015).
 
 use aethereal_actor::{
-    Actor, Beginning, BlobId, BlobRef, Ended, Ending, ErasedActorRef, Fault, Given, Handle, Handles, How, Level,
-    Refused, Resource, To, ToAny, ToSender, ToType, ToWithoutMail, Turn, Watches,
+    Actor, ActorRef, Answer, Answered, Asks, Beginning, BlobId, BlobRef, Carries, Ended, Ending, ErasedActorRef, Fault,
+    Given, Handle, Handles, How, Level, Protocol, Refused, Resource, To, ToAny, ToSender, ToType, ToWithoutMail, Turn,
+    Unanswered, Watches,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindName, Plain};
 
@@ -1319,6 +1320,164 @@ impl Handles<Ping> for Bearer {
     }
 }
 
+/// The protocol an echo is asked pings through: each answered with a pong.
+pub struct Pings;
+
+impl Protocol for Pings {
+    type Kinds = (Ping,);
+}
+
+impl Carries<Ping> for Pings {
+    type Answers = (Pong,);
+}
+
+/// The protocol an echo is asked to count through, as if each were answered with a pong: an echo counts and does not
+/// answer, so the engine says it went unanswered.
+pub struct Counts;
+
+impl Protocol for Counts {
+    type Kinds = (Increment,);
+}
+
+impl Carries<Increment> for Counts {
+    type Answers = (Pong,);
+}
+
+/// A word to a querent to ask its echo `pings` pings and then to count once, each kept with which it was, counting
+/// from `first`.
+#[derive(Plain)]
+pub struct Query {
+    pub first: u64,
+    pub pings: u64,
+}
+
+impl Kind for Query {
+    const NAME: KindName = KindName::new("aether.guest.query");
+}
+
+/// What a querent keeps until a request it asked is answered: which it was.
+#[derive(Plain)]
+pub struct Which {
+    pub at: u64,
+}
+
+impl Kind for Which {
+    const NAME: KindName = KindName::new("aether.guest.which");
+}
+
+/// What became of a querent's request, as it tells its parent: the pong it was answered with, or why it was not, with
+/// which request it was.
+#[derive(Plain)]
+pub enum Heard {
+    Pong { at: u64, n: u64 },
+    No { at: u64, why: Unanswered },
+}
+
+impl Kind for Heard {
+    const NAME: KindName = KindName::new("aether.guest.heard");
+}
+
+/// An actor that asks an echo it spawns as it begins, and tells its parent what became of each request, with what it
+/// kept for it.
+#[derive(Bound)]
+pub struct Querent {
+    echo: ActorRef<Echo>,
+}
+
+impl Kind for Querent {
+    const NAME: KindName = KindName::new("aether.guest.querent");
+}
+
+impl Actor for Querent {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Query, Answer<Pong, Which>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
+
+        Ok(Self { echo })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Query> for Querent {
+    type Sends = (Asks<Pings, Ping, Which>, Asks<Counts, Increment, Which>);
+
+    fn handle(&mut self, query: Query, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let last = query.first + query.pings;
+        for at in query.first..last {
+            turn.ask_to(self.echo.protocol::<Pings, _>(), &Ping { n: at * 10 }, &Which { at })?;
+        }
+        turn.ask_to(self.echo.protocol::<Counts, _>(), &Increment, &Which { at: last })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Pong, Which>> for Querent {
+    type Sends = (ToAny<(Heard,), Heard>,);
+
+    fn handle(
+        &mut self,
+        (pong, which): (Answered<Pong>, Which),
+        turn: &mut Turn<'_, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let heard = match pong {
+            Answered::Yes(pong) => Heard::Pong { at: which.at, n: pong.n },
+            Answered::No(why) => Heard::No { at: which.at, why },
+        };
+        turn.send_to_any(To::Parent, &heard)?;
+
+        Ok(())
+    }
+}
+
+/// An actor that answers a ping of `n` by telling its parent a pong of `n`, and then two books, of `n` sevens and of one
+/// more, sent back to back: a run of mail, after other mail, whose references its host must place.
+#[derive(Bound)]
+pub struct Shelver;
+
+impl Kind for Shelver {
+    const NAME: KindName = KindName::new("aether.guest.shelver");
+}
+
+impl Actor for Shelver {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Ping,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Shelver {
+    type Sends = (ToAny<(Pong,), Pong>, ToAny<(Book,), Book>);
+
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let len = usize::try_from(ping.n).unwrap_or(0);
+        turn.send_to_any(To::Parent, &Pong { n: ping.n })?;
+        for more in 0..2 {
+            let blob = turn.put(vec![7; len + more]).map_err(|why| unhatched(&why))?;
+            turn.send_to_any(To::Parent, &Book { blob })?;
+        }
+
+        Ok(())
+    }
+}
+
 aethereal_actor::guest!(
     Echo,
     Mirror,
@@ -1339,5 +1498,7 @@ aethereal_actor::guest!(
     Archive,
     Reader,
     Caster,
-    Porter
+    Porter,
+    Querent,
+    Shelver
 );
