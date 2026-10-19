@@ -27,7 +27,7 @@ use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, Path
 use alloc::vec::Vec;
 
 /// The head of an item in the inbox: what it is, its source's id and seat, its chain's root, sender and count, its
-/// depth, and the length of the bytes after it.
+/// depth, and the length of the bytes after it, a context's included.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemHead {
     pub handed: Handed,
@@ -41,6 +41,13 @@ pub struct ItemHead {
 pub enum Handed {
     /// Mail of `kind`, its bytes after the head.
     Mail { kind: KindId },
+    /// The answer, of `kind`, to the receiver's request of the count `request`: its bytes after the head, and then the
+    /// last `context` of them the context the receiver kept for it (ADR-0017).
+    Answer { kind: KindId, request: u64, context: u32 },
+    /// What the engine says of the receiver's request of the count `request`, answered with a kind `answer` names,
+    /// which went unanswered: an [`Unanswered`](crate::Unanswered)'s bytes after the head, and then the last `context`
+    /// of them the context the receiver kept for it (ADR-0017).
+    Unanswered { answer: KindId, request: u64, context: u32 },
     /// The watched actor ended so.
     Ended(Gone),
 }
@@ -58,7 +65,7 @@ pub enum Gone {
 
 impl ItemHead {
     /// How many bytes it is.
-    pub const BYTES: usize = 52;
+    pub const BYTES: usize = 64;
 
     /// It, as the inbox holds it.
     #[must_use]
@@ -75,6 +82,18 @@ impl ItemHead {
                 2
             }
             Handed::Ended(Gone::Earlier) => 3,
+            Handed::Answer { kind, request, context } => {
+                out[..8].copy_from_slice(&kind.plain_bytes());
+                out[52..60].copy_from_slice(&request.to_le_bytes());
+                out[60..64].copy_from_slice(&context.to_le_bytes());
+                4
+            }
+            Handed::Unanswered { answer, request, context } => {
+                out[..8].copy_from_slice(&answer.plain_bytes());
+                out[52..60].copy_from_slice(&request.to_le_bytes());
+                out[60..64].copy_from_slice(&context.to_le_bytes());
+                5
+            }
         };
         out[48..52].copy_from_slice(&handed.to_le_bytes());
         out[8..16].copy_from_slice(&self.source.id.bits().to_le_bytes());
@@ -96,6 +115,10 @@ impl ItemHead {
             1 => Handed::Ended(Gone::Closed),
             2 => Handed::Ended(Gone::Failed { kind: kind_at(head, 0)? }),
             3 => Handed::Ended(Gone::Earlier),
+            4 => Handed::Answer { kind: kind_at(head, 0)?, request: u64_at(head, 52)?, context: u32_at(head, 60)? },
+            5 => {
+                Handed::Unanswered { answer: kind_at(head, 0)?, request: u64_at(head, 52)?, context: u32_at(head, 60)? }
+            }
             _ => return None,
         };
         let source = Seated { id: ActorId::new(u64_at(head, 8)?), seat: SeatNumber::new(u64_at(head, 16)?) };
@@ -264,18 +287,30 @@ impl TurnEnds {
     }
 }
 
-/// A piece of mail a turn sent: by whom, to whom, of what kind, and where its bytes lie.
+/// A piece of mail a turn sent: by whom, to whom, of what kind, where its bytes lie, and what it is to a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SendRecord {
     pub by: Seated,
     pub to: Seated,
     pub kind: KindId,
     pub bytes: Span,
+    pub request: Requesting,
+}
+
+/// What a piece of mail a guest sent is to a request, as its code says (ADR-0017). Its host checks it, and counts the
+/// request itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Requesting {
+    /// Nothing the guest says: its host tells whether it is a reply from what its handler declares.
+    Not,
+    /// It asks a request, to be answered with a kind `answer` names, the context the guest keeps for it where `context`
+    /// says.
+    Asks { answer: KindId, context: Span },
 }
 
 impl SendRecord {
     /// How many bytes it is.
-    pub const BYTES: usize = 48;
+    pub const BYTES: usize = 68;
 
     /// It, as the out buffer holds it.
     #[must_use]
@@ -286,6 +321,16 @@ impl SendRecord {
         out[32..40].copy_from_slice(&self.kind.plain_bytes());
         out[40..44].copy_from_slice(&self.bytes.at.to_le_bytes());
         out[44..48].copy_from_slice(&self.bytes.len.to_le_bytes());
+        let requesting: u32 = match self.request {
+            Requesting::Not => 0,
+            Requesting::Asks { answer, context } => {
+                out[52..60].copy_from_slice(&answer.plain_bytes());
+                out[60..64].copy_from_slice(&context.at.to_le_bytes());
+                out[64..68].copy_from_slice(&context.len.to_le_bytes());
+                1
+            }
+        };
+        out[48..52].copy_from_slice(&requesting.to_le_bytes());
 
         out
     }
@@ -294,8 +339,22 @@ impl SendRecord {
     #[must_use]
     pub fn read(bytes: &[u8]) -> Option<Self> {
         let span = Span { at: u32_at(bytes, 40)?, len: u32_at(bytes, 44)? };
+        let request = match u32_at(bytes, 48)? {
+            0 => Requesting::Not,
+            1 => Requesting::Asks {
+                answer: kind_at(bytes, 52)?,
+                context: Span { at: u32_at(bytes, 60)?, len: u32_at(bytes, 64)? },
+            },
+            _ => return None,
+        };
 
-        Some(Self { by: seated_at(bytes, 0)?, to: seated_at(bytes, 16)?, kind: kind_at(bytes, 32)?, bytes: span })
+        Some(Self {
+            by: seated_at(bytes, 0)?,
+            to: seated_at(bytes, 16)?,
+            kind: kind_at(bytes, 32)?,
+            bytes: span,
+            request,
+        })
     }
 }
 

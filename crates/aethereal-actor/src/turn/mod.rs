@@ -5,7 +5,7 @@ mod refused;
 #[cfg(test)]
 mod tests;
 
-pub use hosted::{Broke, FalseSend, FalseWatch, Forged, Garbled, Hosted, Trapped};
+pub use hosted::{Broke, FalseSend, FalseWatch, Forged, Garbled, Hosted, Request, Trapped};
 pub use refused::Refused;
 
 use crate::resource;
@@ -148,6 +148,7 @@ impl Asked {
         self.claims.clear();
         self.stood.clear();
         self.stood_seats.clear();
+        self.asks.clear();
         self.arena.clear(0);
     }
 
@@ -202,6 +203,13 @@ impl Asked {
     /// files it once the turn has run, and drops it when the turn failed (ADR-0017).
     pub fn take_owes(&mut self) -> impl Iterator<Item = Owes> + '_ {
         self.owes.drain(..)
+    }
+
+    /// The requests the turns of a guest's call asked, each with its context, in the order asked: for its host to file
+    /// beside the mail that asks each (ADR-0015, ADR-0017).
+    #[cfg(feature = "guest")]
+    pub(crate) fn asks(&self) -> &[Asking] {
+        &self.asks
     }
 
     /// Takes the requests the turn running asked, each with its context, in the order asked: for the engine, which

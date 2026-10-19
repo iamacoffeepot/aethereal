@@ -122,6 +122,13 @@ impl Declared {
         self.handles(Role::Ended)
     }
 
+    /// Whether the type handles what became of a request it asks that is answered with a kind `answer` names
+    /// (ADR-0017).
+    #[must_use]
+    pub fn handles_answer(&self, answer: KindId) -> bool {
+        self.handles(Role::Answer(answer))
+    }
+
     /// Whether one of the type's handlers is for `role`.
     fn handles(&self, role: Role) -> bool {
         self.handlers.iter().any(|handler| handler.role == role)

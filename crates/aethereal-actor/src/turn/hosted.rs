@@ -2,7 +2,7 @@
 
 use super::{Checked, Closing, During, Owing, Seat, Stood, Turning, Why};
 use crate::{
-    Above, Asked, Chain, Claim, Claimed, Code, Declared, Effect, ErasedActorRef, Fault, Gift, Giver, Instances,
+    Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Effect, ErasedActorRef, Fault, Gift, Giver, Instances,
     Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, Payload, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen,
     Sending, Table, Target, Tie, What, carry, take_claimed,
 };
@@ -56,6 +56,15 @@ enum Source {
     Item(Seated),
     /// The actor's closing turn, which handles nothing.
     End,
+}
+
+/// What a piece of mail a guest's code sent is to a request, as its code says: its host checks it (ADR-0017).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Request<'a> {
+    /// Nothing the code says: whether it replies to the item handled is told from what its handler declares.
+    Not,
+    /// It asks a request, to be answered with a kind `answer` names, keeping `context`, its context's bytes.
+    Asks { answer: KindId, context: &'a [u8] },
 }
 
 /// The reason of a guest's turn that sent what its declaration does not allow (ADR-0013, ADR-0015).
@@ -241,18 +250,22 @@ impl<'a> Hosted<'a> {
 
     /// Sends `bytes`, mail of `kind`, to the actor `to` names, by `by`: the actor whose turn this is, or a child it
     /// spawned, in its `begin`. The mail holds `held`, a pin on each blob its bytes refer to, each at where its
-    /// reference begins in them, as a native send's does (ADR-0014). Refused when no send the sender declares there
+    /// reference begins in them, as a native send's does (ADR-0014). It is to a request what `request` says: one it
+    /// asks is filed for the engine as a native turn's is (ADR-0017). Refused when no send the sender declares there
     /// reaches it.
     ///
     /// # Errors
     ///
-    /// [`FalseSend`] when the sender's declaration does not allow it, or the turn spawned no such child.
+    /// [`FalseSend`] when the sender's declaration does not allow it, the turn spawned no such child, or it asks a
+    /// request where the actor's turn does not, or whose answer its type does not handle.
+    #[inline]
     pub fn send(
         &mut self,
         by: Seated,
         to: Seated,
         kind: KindId,
         bytes: &[u8],
+        request: Request<'_>,
         #[cfg(feature = "std")] held: &[crate::Pinning],
     ) -> Result<(), FalseSend> {
         let (sends, source) = if by == self.seat.me {
@@ -265,7 +278,6 @@ impl<'a> Hosted<'a> {
         if !allowed {
             return Err(FalseSend);
         }
-        let tie = self.tie(by, to, kind)?;
         // Most mail refers to no blob, and is written with nothing kept beside it.
         #[cfg(feature = "std")]
         let bytes = if held.is_empty() {
@@ -282,6 +294,11 @@ impl<'a> Hosted<'a> {
             let child = self.spawned.iter_mut().find(|child| child.me == by).ok_or(FalseSend)?;
             child.sent += 1;
             child.sent
+        };
+        // A request is the mail that asks it, so it is counted as that mail is.
+        let tie = match request {
+            Request::Not => self.tie(by, to, kind)?,
+            Request::Asks { answer, context } => self.ask(by, count, answer, context)?,
         };
         let mailed = Mailed { by, to, count, kind, bytes, tie };
         let pieces = self.seat.asked.buffers.mailed.len();
@@ -356,6 +373,25 @@ impl<'a> Hosted<'a> {
         self.seat.owing = owing;
 
         Ok(tie)
+    }
+
+    /// What the `count`th piece of mail `by` sends carries as the request it asks, to be answered with a kind `answer`
+    /// names, filed with `context`: refused unless it is the actor's own turn that handles an item, as only such a turn
+    /// asks, and its type handles the answer (ADR-0017). Kept out of line: most mail asks nothing, and inlined it
+    /// keeps the send from being inlined where each is read.
+    #[cold]
+    #[inline(never)]
+    fn ask(&mut self, by: Seated, count: u64, answer: KindId, context: &[u8]) -> Result<Tie, FalseSend> {
+        let is_mine = by == self.seat.me;
+        let is_handling = matches!(self.source, Source::Item(_));
+        let handles = self.seat.declared.handles_answer(answer);
+        let asks = is_mine && is_handling && handles;
+        if !asks {
+            return Err(FalseSend);
+        }
+        self.seat.asked.asks.push(Asking { count, answer, context: context.to_vec() });
+
+        Ok(Tie::asks(count))
     }
 
     /// The `send`th piece of mail handed in, counting from nought.
