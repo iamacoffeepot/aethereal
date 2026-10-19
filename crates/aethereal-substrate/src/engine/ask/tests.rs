@@ -219,8 +219,9 @@ impl Kind for PointerConfig {
 /// An actor that asks a board it spawns as it begins, so its requests may be fused to it, as its orders say: `ask X…`
 /// asks which tile is at each `X`, keeping its place among them, `tell X…` sends the question as plain mail, `both X
 /// Y` asks at `X` and then names the board to send it the question at `Y` as plain mail, `again X` asks at `X`
-/// keeping `9`, and `later ORDER` sends itself `ORDER`. It says each answer with what it kept, and each tile it was
-/// told.
+/// keeping `9`, `seek X` and `fail X` spawn a seeker that asks at `X`, and `later ORDER` sends itself `ORDER`. Its
+/// `begin` asks at `X` itself for `first X`, keeping `100`, and spawns the seeker for `begin seek X`. It says each
+/// answer with what it kept, each tile it was told, and each seeker refused.
 #[derive(Bound)]
 struct Pointer {
     board: ActorRef<Board>,
@@ -234,7 +235,7 @@ impl Actor for Pointer {
     type Config = PointerConfig;
     type Key = ();
     type Handles = (Order, Answer<TileIs, Looking>, TileIs);
-    type BeginSends = (ToType<Self, Order>,);
+    type BeginSends = (ToType<Self, Order>, Asks<Tiles, WhichTile, Looking>);
     type EndSends = ();
 
     fn begin(config: PointerConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
@@ -242,8 +243,17 @@ impl Actor for Pointer {
             return Err(Fault::new(&Order { text: String::from("no board") })?);
         };
         for text in config.orders {
-            let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Order { text })?;
+            if let Some(x) = text.strip_prefix("first ") {
+                let x = x.parse().unwrap_or_default();
+                turn.ask_to(board.protocol(), &WhichTile { x }, &Looking { at: 100 })?;
+            } else if let Some(x) = text.strip_prefix("begin seek ") {
+                let x = x.parse().unwrap_or_default();
+                let spawned = turn.spawn::<Seeker>(&x, Seeking { x, fails: 0 });
+                say(format!("seeker {}", spawned.is_ok()));
+            } else {
+                let me = turn.me();
+                turn.send(ToWithoutMail::Held(me), &Order { text })?;
+            }
         }
 
         Ok(Self { board })
@@ -285,6 +295,12 @@ impl Handles<Order> for Pointer {
                     turn.send_to(board, &WhichTile { x })?;
                 }
             }
+            "seek" | "fail" => {
+                let x = xs.first().copied().unwrap_or_default();
+                let fails = u64::from(verb == "fail");
+                let spawned = turn.spawn::<Seeker>(&x, Seeking { x, fails });
+                say(format!("seeker {}", spawned.is_ok()));
+            }
             "both" => {
                 let (asked, told) = (xs.first().copied().unwrap_or_default(), xs.last().copied().unwrap_or_default());
                 turn.ask_to(board.protocol(), &WhichTile { x: asked }, &Looking { at: 0 })?;
@@ -315,6 +331,64 @@ impl Handles<TileIs> for Pointer {
 
     fn handle(&mut self, tile: TileIs, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
         say(format!("told {}", tile.tile));
+
+        Ok(())
+    }
+}
+
+/// Where a seeker asks, and whether its `begin` fails once it has asked.
+#[derive(Plain)]
+struct Seeking {
+    x: u64,
+    fails: u64,
+}
+
+impl Kind for Seeking {
+    const NAME: KindName = KindName::new("aether.test.seeking");
+}
+
+/// A child whose `begin` spawns a board of its own and asks it which tile is at `x`, keeping `200`, and then fails if
+/// it was told to: it says each answer with what it kept.
+#[derive(Bound)]
+struct Seeker;
+
+impl Kind for Seeker {
+    const NAME: KindName = KindName::new("aether.test.seeker");
+}
+
+impl Actor for Seeker {
+    type Config = Seeking;
+    type Key = u64;
+    type Handles = (Answer<TileIs, Looking>,);
+    type BeginSends = (Asks<Tiles, WhichTile, Looking>,);
+    type EndSends = ();
+
+    fn begin(seeking: Seeking, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let Ok(board) = turn.spawn::<Board>(&2, Blank) else {
+            return Err(Fault::new(&seeking)?);
+        };
+        turn.ask_to(board.protocol(), &WhichTile { x: seeking.x }, &Looking { at: 200 })?;
+        let fails = seeking.fails != 0;
+        if fails {
+            return Err(Fault::new(&seeking)?);
+        }
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Answer<TileIs, Looking>> for Seeker {
+    type Sends = ();
+
+    fn handle(&mut self, (answered, looking): (Answered<TileIs>, Looking), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        match answered {
+            Answered::Yes(tile) => say(format!("seeker heard {} for {}", tile.tile, looking.at)),
+            Answered::No(why) => say(format!("seeker heard {why:?} for {}", looking.at)),
+        }
 
         Ok(())
     }
@@ -477,7 +551,8 @@ fn a_context_is_let_go_of_once_its_answer_has_been_handled() {
         let kept =
             matches!(answering, Answering::Kept(asking) | Answering::Unanswered(asking) if asking.context == nine());
 
-        waiting.settle(answer, &mut asked, &Ok(()));
+        let me = Seated { id: ActorId::new(1), seat: SeatNumber::new(0) };
+        waiting.settle(me, answer, &mut asked, &Ok(()));
 
         assert!(kept, "{answer:?}");
         assert!(matches!(waiting.answering(answer), Answering::Stray), "{answer:?}");
@@ -583,6 +658,31 @@ fn what_the_engine_says_of_a_request_to_an_ended_actor_comes_after_all_that_acto
         expected.extend(vec![told.clone(); 10]);
         expected.extend(["20 for 9".to_owned(), format!("{:?} for 9", Unanswered::Ended)]);
         assert_eq!(heard, expected, "{engine:?}");
+    }
+}
+
+#[test]
+fn a_request_asked_in_a_begin_is_answered_to_the_actor_that_asked_it() {
+    // Catches a request a `begin` asked filed beside no one, or beside the actor whose turn stood the asker up, which
+    // would hand the answer to an actor that never asked or to none: for a root's own `begin`, a child its `begin`
+    // stood up, and a child a later turn stood up. What the root's `begin` says is said before the pointer listens.
+    for engine in ENGINES {
+        let mut heard = heard(engine, &["first 3", "begin seek 4", "seek 5"]);
+        heard.sort();
+
+        let expected = ["30 for 100", "seeker heard 40 for 200", "seeker heard 50 for 200", "seeker true"];
+        assert_eq!(heard, expected, "{engine:?}");
+    }
+}
+
+#[test]
+fn a_request_asked_in_a_begin_that_fails_is_never_asked() {
+    // Catches the request of a `begin` that failed kept once its mail is dropped: filed beside the actor whose turn
+    // stood it up, or left over for the next turn, which the engine checks it never is.
+    for engine in ENGINES {
+        let heard = heard(engine, &["fail 4", "later ask 3"]);
+
+        assert_eq!(heard, ["seeker false", "30 for 0"], "{engine:?}");
     }
 }
 

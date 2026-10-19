@@ -637,7 +637,9 @@ impl Engine {
         let mut keeping = Keeping::default();
         // The root begins in the part it is seated in, lent that part's instances.
         let made = begin(me, &path, &table, &mut asked, &mut self.instances[home], &mut keeping);
-        let (mut buffers, stood, arena, mut seats, mut puts) = asked.into_parts();
+        let stood = birth::waiting(asked.take_stood(), &mut asked);
+        let waiting = Waiting::of_begin(asked.take_asks_by(me));
+        let (mut buffers, _, arena, mut seats, mut puts) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
         // A root is made between steps, when nothing reads the store, so what its `begin` put is taken in at once.
         self.blobs.take_in(&mut puts);
@@ -647,7 +649,7 @@ impl Engine {
             Ok(root) => root,
             Err(refused) => {
                 seats.give_back(me.seat);
-                for child in stood {
+                for (child, _) in stood {
                     seats.give_back(child.seated().seat);
                 }
                 self.take_back_lent(home, seats);
@@ -667,7 +669,7 @@ impl Engine {
         buffers.effects.insert(0, Effect::new(me, made));
 
         self.table.made_root(id);
-        self.seat(me, path, Above::Chassis, root, keeping);
+        self.seat(me, path, Above::Chassis, root, keeping, waiting);
         self.fold_began(buffers, stood, context, parity, me);
 
         Ok(id)
@@ -676,7 +678,14 @@ impl Engine {
     /// Folds what the `begin` of the root `root` asked for, in `context`, between steps: its lines, its effects with
     /// the children it stood up, its mail, and the resources it gave, into every view, and marks every part waiting
     /// for what they hand on.
-    fn fold_began(&mut self, buffers: Buffers, stood: Vec<Stood>, context: Context, parity: usize, root: Seated) {
+    fn fold_began(
+        &mut self,
+        buffers: Buffers,
+        stood: Vec<(Stood, Waiting)>,
+        context: Context,
+        parity: usize,
+        root: Seated,
+    ) {
         let Buffers { mailed, lines, effects, gifts } = buffers;
         let written = &self.arenas[parity];
         self.log.fold_records(lines.into_iter().map(log::line), written);
@@ -1153,16 +1162,16 @@ impl Engine {
 
     /// Folds one turn's effects, emitted in `context`, into every view but the streams, and seats the children
     /// it stood up.
-    fn fold_turn(&mut self, effects: &[Effect], stood: Vec<Stood>, context: Context) {
+    fn fold_turn(&mut self, effects: &[Effect], stood: Vec<(Stood, Waiting)>, context: Context) {
         let written = &self.arenas[parity(self.step)];
         self.table.fold(effects, &context);
         self.log.fold(effects, &context, written);
         self.lives.fold(effects, &context, written);
 
         // A child is stood up after the children its `begin` stood up, so it is seated first, from the back.
-        for child in stood.into_iter().rev() {
+        for (child, waiting) in stood.into_iter().rev() {
             let (me, path, above, actor, keeping) = child.into_parts();
-            self.seat(me, path, above, actor, keeping);
+            self.seat(me, path, above, actor, keeping, waiting);
         }
     }
 
@@ -1217,11 +1226,19 @@ impl Engine {
 
     /// Seats the actor `me` names, at `path`, in the seat it was given, and notes it in its parent's seat. It is run
     /// from the next step. A parent is seated before the children it stood up, so its seat is there to note them in.
-    fn seat(&mut self, me: Seated, path: ActorPath, above: Above, actor: Box<dyn Runs>, keeping: Keeping) {
+    fn seat(
+        &mut self,
+        me: Seated,
+        path: ActorPath,
+        above: Above,
+        actor: Box<dyn Runs>,
+        keeping: Keeping,
+        waiting: Waiting,
+    ) {
         let part = self.part(me.seat);
         self.seated[part] += 1;
         self.actors_seated += 1;
-        birth::sit(&mut self.seating[part], &mut self.actors[part], me, path, above, actor, keeping);
+        birth::sit(&mut self.seating[part], &mut self.actors[part], me, path, above, actor, keeping, waiting);
         if let Above::Actor(parent, _) = above {
             let parent_part = self.part(parent.seat);
             birth::note(&mut self.seating[parent_part], parent, me.id);
@@ -1901,7 +1918,7 @@ fn tied(
     } else if !tie.is_tell() {
         ask::owed(me, source, tie, outcome, sent, asked);
     }
-    waiting.settle(tie, asked, outcome);
+    waiting.settle(me, tie, asked, outcome);
 }
 
 /// Whether `mailed` is mail the actor `me` sent.
@@ -1978,7 +1995,7 @@ impl Lists {
 
         // Most turns stand up no child.
         if !stood.is_empty() {
-            self.routes.births.stand(stood);
+            self.routes.births.stand(birth::waiting(stood, asked));
         }
         seen
     }

@@ -47,10 +47,11 @@ pub(super) enum Answering<'w> {
 }
 
 impl Waiting {
-    /// Settles what the turn of an item tied as `tie`, which returned `outcome`, leaves: the context its answer was
-    /// handed with is let go of, and the requests it asked are filed from `asked`, none of a turn that failed, whose
-    /// mail was never sent.
-    pub(super) fn settle(&mut self, tie: Tie, asked: &mut Asked, outcome: &Result<(), Fault>) {
+    /// Settles what the turn of the actor `me` of an item tied as `tie`, which returned `outcome`, leaves: the context
+    /// its answer was handed with is let go of, and the requests it asked are filed from `asked`, none of a turn that
+    /// failed, whose mail was never sent. What the `begin`s of the children it stood up asked is left in `asked`, to
+    /// be filed beside each as it is seated.
+    pub(super) fn settle(&mut self, me: Seated, tie: Tie, asked: &mut Asked, outcome: &Result<(), Fault>) {
         // Most mail is no answer.
         if !tie.is_tell() {
             self.forget(tie);
@@ -59,10 +60,19 @@ impl Waiting {
         if !asked.has_asked() {
             return;
         }
-        let asks = asked.take_asks();
         if outcome.is_ok() {
-            self.file(asks);
+            self.file(asked.take_asks_by(me));
+        } else {
+            asked.take_asks().for_each(drop);
         }
+    }
+
+    /// What a new actor waits on: the requests its `begin` asked.
+    pub(super) fn of_begin(asks: impl Iterator<Item = Asking>) -> Self {
+        let mut waiting = Self::default();
+        waiting.file(asks);
+
+        waiting
     }
 
     /// Lets go of the context the request mail tied as `tie` answers kept, once its answer has been handled.
