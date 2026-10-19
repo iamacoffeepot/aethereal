@@ -1210,7 +1210,8 @@ impl<S> Beginning<'_, S> {
         self.seat.write(reference.seated(), mail)
     }
 
-    /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`, with the mail of the turn this `begin` runs in.
+    /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`, with the mail
+    /// of the turn this `begin` runs in.
     ///
     /// It builds only when the turn's sends list a [`ToAny<P, K>`], and `P` is found from them when one names `K`.
     ///
@@ -1451,7 +1452,8 @@ impl<S> Ending<'_, S> {
         self.seat.write(reference.seated(), mail)
     }
 
-    /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`, as the actor's last mail.
+    /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`, as the
+    /// actor's last mail.
     ///
     /// It builds only when the turn's sends list a [`ToAny<P, K>`], and `P` is found from them when one names `K`.
     ///
