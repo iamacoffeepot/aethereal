@@ -1,7 +1,7 @@
 //! The boundaries an actor's values cross: `Within` and `Actors` (ADR-0004).
 
 use crate::{BlobHash, BlobId, Declared, SeatNumber, Seated};
-use aethereal_data::{ActorId, ActorPath, Boundary, KindId, PathSegment};
+use aethereal_data::{ActorId, ActorPath, Boundary, EncodeError, KindId, PathSegment};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -85,23 +85,52 @@ impl Boundary for Within {
 }
 
 /// What a writer at [`Actors`] holds beside the bytes written so far: the pins of the blobs it refers to, each at
-/// where its reference begins (ADR-0014).
+/// where its reference begins (ADR-0014), and where it notes the resources written, when they are carried on
+/// (ADR-0010).
 #[cfg(feature = "std")]
 pub struct ActorsWriter<'a> {
     held: &'a mut Vec<crate::Held>,
+    carrying: Carrying<'a>,
+}
+
+/// Whether a writer at [`Actors`] carries on the resources it writes.
+#[cfg(feature = "std")]
+enum Carrying<'a> {
+    /// It does not: a resource written there is refused.
+    Nothing,
+    /// It notes the ticket of each into this list, for the turn that writes to carry it with the mail.
+    Into(&'a mut Vec<u64>),
 }
 
 #[cfg(feature = "std")]
 impl<'a> ActorsWriter<'a> {
-    /// A writer at [`Actors`] that keeps the pins of what it writes in `held`.
+    /// A writer at [`Actors`] that keeps the pins of what it writes in `held`, and carries no resource.
     #[must_use]
     pub const fn new(held: &'a mut Vec<crate::Held>) -> Self {
-        Self { held }
+        Self { held, carrying: Carrying::Nothing }
+    }
+
+    /// A writer at [`Actors`] that keeps the pins of what it writes in `held`, and notes in `tickets` the ticket of
+    /// each resource it writes, to carry on (ADR-0010).
+    #[must_use]
+    pub const fn carrying(held: &'a mut Vec<crate::Held>, tickets: &'a mut Vec<u64>) -> Self {
+        Self { held, carrying: Carrying::Into(tickets) }
     }
 
     /// Keeps `pin`, for a reference whose bytes begin at `at`.
     pub(crate) fn hold(&mut self, at: u32, pin: crate::BlobRef) {
         self.held.push((at, pin));
+    }
+
+    /// Notes that the resource `ticket` names is written, to carry on: refused by a writer that carries nothing.
+    pub(crate) fn carry(&mut self, ticket: u64) -> Result<(), EncodeError> {
+        match &mut self.carrying {
+            Carrying::Into(tickets) => {
+                tickets.push(ticket);
+                Ok(())
+            }
+            Carrying::Nothing => Err(EncodeError::NotCarried { name: "Given" }),
+        }
     }
 }
 
@@ -119,6 +148,12 @@ impl ActorsWriter<'_> {
     #[must_use]
     pub const fn new() -> Self {
         Self { held: PhantomData }
+    }
+
+    /// Refuses the resource `ticket` names: without `std` nothing carries one.
+    #[expect(clippy::unused_self, reason = "the same call as the writer that carries resources")]
+    pub(crate) const fn carry(&mut self, _: u64) -> Result<(), EncodeError> {
+        Err(EncodeError::NotCarried { name: "Given" })
     }
 }
 

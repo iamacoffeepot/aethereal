@@ -8,11 +8,12 @@ mod tests;
 pub use hosted::{Broke, FalseSend, FalseWatch, Forged, Garbled, Hosted, Trapped};
 pub use refused::Refused;
 
+use crate::resource;
 use crate::{
-    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
-    Handles, Instances, Kinds, Level, Line, Listed, MailId, Mailed, Marker, Payload, ProtocolRef, Puts, Reaches, Role,
-    Runs, SeatNumber, Seated, Seats, Seen, Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches,
-    What,
+    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Fault,
+    Gift, Given, Giver, Handle, Handled, Handles, Instances, Keeping, Keeps, Kinds, Level, Line, Listed, MailId,
+    Mailed, Marker, Payload, ProtocolRef, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends,
+    Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -27,8 +28,8 @@ use core::marker::PhantomData;
 use core::mem;
 use core::str;
 
-/// What one turn has asked for, in three lists it fills as it runs: the mail it sent, the lines it logged, and its
-/// effects, in the order it asked for each; and the children it stood up (ADR-0009).
+/// What one turn has asked for, in the lists it fills as it runs: the mail it sent, the lines it logged, its effects,
+/// and the resources it gave, in the order it asked for each; and the children it stood up (ADR-0009, ADR-0010).
 ///
 /// The engine makes one for a turn and takes it back when the turn returns.
 /// Nothing in it has happened yet: the engine alone applies what is asked.
@@ -44,10 +45,12 @@ pub struct Asked {
     seats: Seats,
     /// The blobs its worker has put in the step, and the room it has left to put more (ADR-0014).
     puts: Puts,
+    /// The tickets of the resources the mail being written holds, noted as it is written: empty between sends.
+    carrying: Vec<u64>,
 }
 
-/// The three buffers of what turns ask for: kept by a worker over its share of a step, and filled by each turn in turn.
-#[derive(Debug, Default)]
+/// The buffers of what turns ask for: kept by a worker over its share of a step, and filled by each turn in turn.
+#[derive(Default)]
 pub struct Buffers {
     /// The mail sent, in the order sent.
     pub mailed: Vec<Mailed>,
@@ -55,6 +58,8 @@ pub struct Buffers {
     pub lines: Vec<Line>,
     /// Everything else asked for: the effects on the lives of actors, in the order asked for.
     pub effects: Vec<Effect>,
+    /// The resources given, each with where it is carried, in the order given (ADR-0010).
+    pub gifts: Vec<Gift>,
 }
 
 /// How long each of the buffers was at some moment: where what was asked after it begins.
@@ -76,8 +81,9 @@ impl Buffers {
         let no_mail = self.mailed.is_empty();
         let no_lines = self.lines.is_empty();
         let no_effects = self.effects.is_empty();
+        let no_gifts = self.gifts.is_empty();
 
-        no_mail && no_lines && no_effects
+        no_mail && no_lines && no_effects && no_gifts
     }
 }
 
@@ -102,7 +108,7 @@ impl Asked {
     pub fn continuing(buffers: Buffers, arena: Arena, seats: Seats, puts: Puts) -> Self {
         debug_assert!(buffers.is_empty(), "a turn begins with its buffers emptied");
 
-        Self { buffers, stood: Vec::new(), stood_seats: BTreeMap::new(), arena, seats, puts }
+        Self { buffers, stood: Vec::new(), stood_seats: BTreeMap::new(), arena, seats, puts, carrying: Vec::new() }
     }
 
     /// Begins the next turn, once what the last asked for has been taken out of the buffers. The children the last
@@ -125,6 +131,7 @@ impl Asked {
         self.buffers.mailed.clear();
         self.buffers.lines.clear();
         self.buffers.effects.clear();
+        self.buffers.gifts.clear();
         self.stood.clear();
         self.stood_seats.clear();
         self.arena.clear(0);
@@ -183,6 +190,7 @@ impl Asked {
             self.copy_mail(&arena, mailed);
         }
         self.buffers.effects.extend(buffers.effects);
+        self.buffers.gifts.extend(buffers.gifts);
         self.stood.extend(stood);
         self.stood_seats.extend(stood_seats);
     }
@@ -283,6 +291,8 @@ pub struct Stood {
     path: ActorPath,
     above: Above,
     actor: Box<dyn Runs>,
+    /// What its `begin` kept and took (ADR-0010).
+    keeping: Keeping,
 }
 
 /// What stands directly above an actor: the actor [`To::Parent`] names.
@@ -336,10 +346,10 @@ impl Stood {
     }
 
     /// The child taken apart, for the engine to seat it: who it is and where it sits, its path, what stands above
-    /// it, and the child itself.
+    /// it, the child itself, and what it keeps.
     #[must_use]
-    pub fn into_parts(self) -> (Seated, ActorPath, Above, Box<dyn Runs>) {
-        (self.me, self.path, self.above, self.actor)
+    pub fn into_parts(self) -> (Seated, ActorPath, Above, Box<dyn Runs>, Keeping) {
+        (self.me, self.path, self.above, self.actor, self.keeping)
     }
 }
 
@@ -354,6 +364,8 @@ struct Seat<'a> {
     /// The children the actor made before this turn's step, whose keys it may not use again.
     made: &'a dyn Children,
     asked: &'a mut Asked,
+    /// What the actor keeps, which its resource calls reach (ADR-0010).
+    keeps: Keeps<'a>,
     /// How many pieces of mail this actor has sent, this turn's included.
     sent: u64,
     /// What the actor's type declares (ADR-0013).
@@ -538,6 +550,7 @@ impl Seat<'_> {
         is_like_last: bool,
     ) -> Result<(), EncodeError> {
         let bytes = self.encode(mail)?;
+        self.carry(to)?;
         self.sent += 1;
         let kind = KindId::of::<K>();
         // Mail of one kind to one receiver, sent back to back by sends the turn named, is one run: one effect, one item
@@ -568,6 +581,11 @@ impl Seat<'_> {
             return Ok(());
         }
         let bytes = self.encode(mail)?;
+        // One resource has one owner, so it goes to no more than one receiver (ADR-0010).
+        if !self.asked.carrying.is_empty() {
+            self.asked.carrying.clear();
+            return Err(EncodeError::NotCarried { name: "Given" });
+        }
         let kind = KindId::of::<K>();
         for to in to {
             self.sent += 1;
@@ -577,11 +595,14 @@ impl Seat<'_> {
         Ok(())
     }
 
-    /// Writes `mail` into the worker's arena, with the pins on the blobs it refers to, and answers where it lies.
+    /// Writes `mail` into the worker's arena, with the pins on the blobs it refers to, and answers where it lies. The
+    /// tickets of the resources it holds are noted, for [`Self::carry`].
     fn encode<K: Kind + Encode<Actors>>(&mut self, mail: &K) -> Result<Payload, EncodeError> {
         #[cfg(feature = "std")]
+        let carrying = &mut self.asked.carrying;
+        #[cfg(feature = "std")]
         let bytes = self.asked.arena.write_holding(|bytes, held| {
-            let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::new(held));
+            let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::carrying(held, carrying));
             let written = mail.encode(&mut out);
 
             (out.into_bytes(), written)
@@ -593,8 +614,62 @@ impl Seat<'_> {
 
             (out.into_bytes(), written)
         });
+        // Mail that did not write carries nothing it began to write.
+        if bytes.is_err() {
+            self.asked.carrying.clear();
+        }
 
         bytes
+    }
+
+    /// Carries each resource the mail just written holds to `to`, with that mail, the next this actor sends: refused
+    /// when one is not a resource this turn gave and no other mail carries (ADR-0010).
+    #[inline]
+    fn carry(&mut self, to: Seated) -> Result<(), EncodeError> {
+        // Most mail carries no resource.
+        if self.asked.carrying.is_empty() {
+            return Ok(());
+        }
+        let mail = MailId { sender: self.me.id, count: self.sent + 1 };
+        let carried = resource::carry(&mut self.asked.buffers.gifts, &self.asked.carrying, self.me, to, mail);
+        self.asked.carrying.clear();
+
+        carried
+    }
+
+    /// Keeps `value` as this actor's own, and answers with the handle to it (ADR-0010).
+    fn keep<R: Resource>(&mut self, value: R) -> Result<Handle<R>, Fault> {
+        self.keeps.keep(value)
+    }
+
+    /// The resource `handle` names, this actor's own.
+    fn open<R: Resource>(&mut self, handle: &Handle<R>) -> Result<&mut R, Fault> {
+        self.keeps.open(handle)
+    }
+
+    /// Gives up the resource `handle` names, and answers with what names it on its way: dropped at the end of the
+    /// turn unless mail carries it, or a child this turn stands up takes it from its config.
+    fn give<R: Resource>(&mut self, handle: Handle<R>) -> Result<Given<R>, Fault> {
+        let (gift, given) = self.keeps.give(self.me, handle)?;
+        self.asked.buffers.gifts.push(gift);
+
+        Ok(given)
+    }
+
+    /// Takes the resource `given` names, which came with the mail being handled, from `source`, as this actor's own.
+    fn take_arrived<R: Resource>(&mut self, given: Given<R>, source: Seated) -> Result<Handle<R>, Fault> {
+        self.keeps.take_arrived(given, source)
+    }
+
+    /// Takes the resource `given` names, which this actor's config holds, as its own: given by the actor above it, or
+    /// by the chassis to a root.
+    fn take_config<R: Resource>(&mut self, given: Given<R>) -> Result<Handle<R>, Fault> {
+        let by = match self.above {
+            Above::Chassis => Giver::Chassis,
+            Above::Actor(parent, _) | Above::Elsewhere(parent) => Giver::Actor(parent),
+        };
+
+        self.keeps.take_given(given, by, &mut self.asked.buffers.gifts)
     }
 
     /// Stops the engine when the actor `to` names is not one `target` reaches: the send breaks this actor's
@@ -707,6 +782,7 @@ impl Seat<'_> {
         let above = Above::Actor(self.me, self.declared);
         let table = self.table;
         let asked = &mut *self.asked;
+        let mut keeping = Keeping::default();
         let child = Seat {
             me,
             path: &path,
@@ -714,14 +790,16 @@ impl Seat<'_> {
             table,
             made: &(),
             asked,
+            keeps: Keeps::Here(&mut keeping),
             sent: 0,
             declared,
             during: During::Begin,
             checked: Checked::Nothing,
         };
-        match C::begin(config, &mut Beginning { seat: child, instances, sends: PhantomData }) {
+        let began = C::begin(config, &mut Beginning { seat: child, instances, sends: PhantomData });
+        match began {
             Ok(actor) => {
-                self.stand(me, path, above, declared, Box::new(actor));
+                self.stand(me, path, above, declared, Box::new(actor), keeping);
 
                 Ok(ActorRef::new(me))
             }
@@ -779,7 +857,9 @@ impl Seat<'_> {
         let birth = Birth { me, path: &path, above, table: self.table, asked: &mut *self.asked, instances, refers };
         match begin(&config.bytes, birth) {
             Ok(actor) => {
-                self.stand(me, path, above, declared, actor);
+                // Code begun elsewhere keeps nothing here: a guest keeps nothing, and a native child its host begins
+                // keeps nothing yet (ADR-0015).
+                self.stand(me, path, above, declared, actor, Keeping::default());
 
                 Ok(ActorRef::new(me))
             }
@@ -823,23 +903,37 @@ impl Seat<'_> {
         (Seated { id, seat }, before)
     }
 
-    /// Stands up the child `me`, at `path`, beneath `above`, of the type `declared`, run by `actor`, once its `begin`
-    /// succeeded.
-    fn stand(&mut self, me: Seated, path: ActorPath, above: Above, declared: &'static Declared, actor: Box<dyn Runs>) {
+    /// Stands up the child `me`, at `path`, beneath `above`, of the type `declared`, run by `actor` and keeping
+    /// `keeping`, once its `begin` succeeded.
+    fn stand(
+        &mut self,
+        me: Seated,
+        path: ActorPath,
+        above: Above,
+        declared: &'static Declared,
+        actor: Box<dyn Runs>,
+        keeping: Keeping,
+    ) {
         self.asked.stood_seats.insert(me.id.bits(), (me.seat, declared));
-        self.asked.stood.push(Stood { me, path, above, actor });
+        self.asked.stood.push(Stood { me, path, above, actor, keeping });
     }
 
     /// Takes back a child that never began, in `seat`, and every child it stood up from the `stood_before`th: their
     /// seats are given back, and what they asked for since `before`, the spawn of the child among it, is taken back
-    /// but for the lines they logged.
+    /// but for the lines they logged. What they gave is dropped with them, as what they kept and took is (ADR-0010).
     fn take_back(&mut self, before: Marks, stood_before: usize, seat: SeatNumber) {
         self.asked.buffers.mailed.truncate(before.mailed);
         self.asked.buffers.effects.truncate(before.effects);
+        let mut gone = Vec::from([seat]);
         for below in self.asked.stood.drain(stood_before..) {
             self.asked.stood_seats.remove(&below.me.id.bits());
             self.asked.seats.give_back(below.me.seat);
+            gone.push(below.me.seat);
         }
+        self.asked.buffers.gifts.retain(|gift| match gift.by {
+            Giver::Actor(by) => !gone.contains(&by.seat),
+            Giver::Chassis => true,
+        });
         self.asked.seats.give_back(seat);
     }
 }
@@ -880,15 +974,16 @@ pub struct Turning<'a> {
     asked: &'a mut Asked,
     /// The instances of the actor's part, lent for the turn (ADR-0015).
     instances: &'a mut Instances,
+    keeps: Keeps<'a>,
     sent: u64,
     source: Seated,
     chain: Chain,
 }
 
 impl<'a> Turning<'a> {
-    /// The turn of the actor `me` names, at `path`, reading `table`, adding to `asked` and lent its part's
-    /// `instances`, which handles an item from the actor `source` names, at `chain`, and has sent `sent` pieces of mail
-    /// before it.
+    /// The turn of the actor `me` names, at `path`, reading `table`, adding to `asked`, lent its part's `instances`
+    /// and reaching what it keeps through `keeps`, which handles an item from the actor `source` names, at `chain`,
+    /// and has sent `sent` pieces of mail before it.
     ///
     /// For the engine. `table` answers for the step's start and for what this actor has spawned since.
     #[allow(clippy::too_many_arguments, reason = "what a turn is opened with, each fixed by the engine")]
@@ -901,11 +996,12 @@ impl<'a> Turning<'a> {
         made: &'a dyn Children,
         asked: &'a mut Asked,
         instances: &'a mut Instances,
+        keeps: Keeps<'a>,
         sent: u64,
         source: Seated,
         chain: Chain,
     ) -> Self {
-        Self { me, path, above, table, made, asked, instances, sent, source, chain }
+        Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain }
     }
 
     /// The source of the item the turn handles.
@@ -922,7 +1018,7 @@ impl<'a> Turning<'a> {
 
     /// The turn of the handler of `A` for `role`, which may send `S`.
     pub(crate) fn declaring<A: Actor, S: Sends>(self, role: Role) -> Turn<'a, S> {
-        let Self { me, path, above, table, made, asked, instances, sent, source, chain } = self;
+        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain } = self;
         let declared = Declared::of::<A>();
         let seat = Seat {
             me,
@@ -931,6 +1027,7 @@ impl<'a> Turning<'a> {
             table,
             made,
             asked,
+            keeps,
             sent,
             declared,
             during: During::Handling(role),
@@ -1107,6 +1204,48 @@ impl<S> Turn<'_, S> {
         self.seat.spawn_from::<C>(self.instances, code, key, config)
     }
 
+    /// Keeps `value`, a resource this actor made, as its own, and answers with the handle to it (ADR-0010). Keeping
+    /// is not an effect: it holds whether or not the turn goes on to fail.
+    ///
+    /// # Errors
+    ///
+    /// [`KeepsNothing`](crate::KeepsNothing) in a guest's code, which keeps nothing.
+    pub fn keep<R: Resource>(&mut self, value: R) -> Result<Handle<R>, Fault> {
+        self.seat.keep(value)
+    }
+
+    /// The resource `handle` names, for this turn to use directly: only this actor holds the handle.
+    ///
+    /// # Errors
+    ///
+    /// [`NotHeld`](crate::NotHeld) when this actor holds no resource of type `R` under the handle's ticket, and
+    /// [`KeepsNothing`](crate::KeepsNothing) in a guest's code.
+    pub fn open<R: Resource>(&mut self, handle: &mut Handle<R>) -> Result<&mut R, Fault> {
+        self.seat.open(handle)
+    }
+
+    /// Gives up the resource `handle` names, and answers with what names it on its way to a new owner, to send in
+    /// mail. The resource goes with the one piece of mail that holds it, and when none does by the end of the turn,
+    /// or the turn fails, it is dropped.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub fn give<R: Resource>(&mut self, handle: Handle<R>) -> Result<Given<R>, Fault> {
+        self.seat.give(handle)
+    }
+
+    /// Takes the resource `given` names as this actor's own, and answers with the handle to it. It is taken in the
+    /// turn of the mail it came with; what that turn does not take is dropped, and recorded in this actor's log.
+    ///
+    /// # Errors
+    ///
+    /// [`NotHeld`](crate::NotHeld) when no resource of type `R` came under that ticket with the mail being handled,
+    /// or it was taken already, and [`KeepsNothing`](crate::KeepsNothing) in a guest's code.
+    pub fn take<R: Resource>(&mut self, given: Given<R>) -> Result<Handle<R>, Fault> {
+        self.seat.take_arrived(given, self.source)
+    }
+
     /// Closes this actor. Its closing turn runs in the next step.
     pub fn close(&mut self) {
         self.seat.ask(What::Close);
@@ -1192,8 +1331,8 @@ pub struct Beginning<'a, S> {
 }
 
 impl<'a, S: Sends> Beginning<'a, S> {
-    /// The `begin` of the root of type `A` that `me` names, at `path`, reading `table`, adding to `asked`, and lent
-    /// its part's `instances`.
+    /// The `begin` of the root of type `A` that `me` names, at `path`, reading `table`, adding to `asked`, lent its
+    /// part's `instances`, and keeping what it keeps in `keeps`.
     ///
     /// For the engine, which makes a root for the chassis. A child's is made by the turn that spawns it, but for a
     /// guest's, which [`Self::beneath`] makes.
@@ -1204,6 +1343,7 @@ impl<'a, S: Sends> Beginning<'a, S> {
         table: &'a dyn Table,
         asked: &'a mut Asked,
         instances: &'a mut Instances,
+        keeps: Keeps<'a>,
     ) -> Self {
         let declared = Declared::of::<A>();
         let during = During::Begin;
@@ -1214,6 +1354,7 @@ impl<'a, S: Sends> Beginning<'a, S> {
             table,
             made: &(),
             asked,
+            keeps,
             sent: 0,
             declared,
             during,
@@ -1224,9 +1365,9 @@ impl<'a, S: Sends> Beginning<'a, S> {
     }
 
     /// The `begin` of an actor of type `A` that `me` names, at `path`, beneath `above`, reading `table`, adding to
-    /// `asked`, and lent `instances`: for a guest's library, which begins an actor its host stood up from the guest's
-    /// blob, beneath a parent of any code or none, and for a guest's host, which begins a native child of a guest
-    /// (ADR-0015).
+    /// `asked`, lent `instances`, and keeping what it keeps in `keeps`: for a guest's library, which begins an actor
+    /// its host stood up from the guest's blob, beneath a parent of any code or none, and for a guest's host, which
+    /// begins a native child of a guest (ADR-0015).
     #[must_use]
     pub fn beneath<A: Actor<BeginSends = S>>(
         me: Seated,
@@ -1235,8 +1376,9 @@ impl<'a, S: Sends> Beginning<'a, S> {
         table: &'a dyn Table,
         asked: &'a mut Asked,
         instances: &'a mut Instances,
+        keeps: Keeps<'a>,
     ) -> Self {
-        let mut beginning = Self::new::<A>(me, path, table, asked, instances);
+        let mut beginning = Self::new::<A>(me, path, table, asked, instances, keeps);
         beginning.seat.above = above;
 
         beginning
@@ -1305,6 +1447,48 @@ impl<S> Beginning<'_, S> {
     {
         let to = To::from(to);
         self.seat.send_any::<P, K>(&to, mail)
+    }
+
+    /// Keeps `value`, a resource this actor made, as its own, and answers with the handle to it (ADR-0010). If this
+    /// `begin` then fails, the actor was never live, and what it kept is dropped with it.
+    ///
+    /// # Errors
+    ///
+    /// [`KeepsNothing`](crate::KeepsNothing) in a guest's code, which keeps nothing.
+    pub fn keep<R: Resource>(&mut self, value: R) -> Result<Handle<R>, Fault> {
+        self.seat.keep(value)
+    }
+
+    /// The resource `handle` names, for this turn to use directly.
+    ///
+    /// # Errors
+    ///
+    /// [`NotHeld`](crate::NotHeld) when this actor holds no resource of type `R` under the handle's ticket, and
+    /// [`KeepsNothing`](crate::KeepsNothing) in a guest's code.
+    pub fn open<R: Resource>(&mut self, handle: &mut Handle<R>) -> Result<&mut R, Fault> {
+        self.seat.open(handle)
+    }
+
+    /// Gives up the resource `handle` names, and answers with what names it on its way: to send in mail, or to put
+    /// in the config of a child this `begin` stands up. Dropped when neither has it by the end of the turn.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub fn give<R: Resource>(&mut self, handle: Handle<R>) -> Result<Given<R>, Fault> {
+        self.seat.give(handle)
+    }
+
+    /// Takes the resource `given` names, from this actor's config, as its own, and answers with the handle to it.
+    /// What the config holds and this `begin` does not take is dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`NotHeld`](crate::NotHeld) when the actor above this one, or the chassis for a root, gave no resource of type
+    /// `R` under that ticket in this turn, or it was taken already, and [`KeepsNothing`](crate::KeepsNothing) in a
+    /// guest's code.
+    pub fn take<R: Resource>(&mut self, given: Given<R>) -> Result<Handle<R>, Fault> {
+        self.seat.take_config(given)
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
@@ -1448,13 +1632,14 @@ pub struct Closing<'a> {
     asked: &'a mut Asked,
     /// The instances of the actor's part, lent for the turn (ADR-0015).
     instances: &'a mut Instances,
+    keeps: Keeps<'a>,
     sent: u64,
     why: Why,
 }
 
 impl<'a> Closing<'a> {
-    /// The closing turn of the actor `me` names, at `path`, lent its part's `instances`, which runs because of `why`,
-    /// after the actor has sent `sent` pieces of mail.
+    /// The closing turn of the actor `me` names, at `path`, lent its part's `instances` and reaching what it keeps
+    /// through `keeps`, which runs because of `why`, after the actor has sent `sent` pieces of mail.
     ///
     /// For the engine.
     #[allow(clippy::too_many_arguments, reason = "what a closing turn is opened with, each fixed by the engine")]
@@ -1466,15 +1651,16 @@ impl<'a> Closing<'a> {
         table: &'a dyn Table,
         asked: &'a mut Asked,
         instances: &'a mut Instances,
+        keeps: Keeps<'a>,
         sent: u64,
         why: Why,
     ) -> Self {
-        Self { me, path, above, table, asked, instances, sent, why }
+        Self { me, path, above, table, asked, instances, keeps, sent, why }
     }
 
     /// The closing turn of an actor of type `A`.
     pub(crate) fn declaring<A: Actor>(self) -> Ending<'a, A::EndSends> {
-        let Self { me, path, above, table, asked, sent, why, .. } = self;
+        let Self { me, path, above, table, asked, keeps, sent, why, .. } = self;
         let declared = Declared::of::<A>();
         let seat = Seat {
             me,
@@ -1483,6 +1669,7 @@ impl<'a> Closing<'a> {
             table,
             made: &(),
             asked,
+            keeps,
             sent,
             declared,
             during: During::End,
@@ -1569,6 +1756,26 @@ impl<S> Ending<'_, S> {
     {
         let to = To::from(to);
         self.seat.send_any::<P, K>(&to, mail)
+    }
+
+    /// The resource `handle` names, for a last use before it is dropped with this actor.
+    ///
+    /// # Errors
+    ///
+    /// [`NotHeld`](crate::NotHeld) when this actor holds no resource of type `R` under the handle's ticket, and
+    /// [`KeepsNothing`](crate::KeepsNothing) in a guest's code.
+    pub fn open<R: Resource>(&mut self, handle: &mut Handle<R>) -> Result<&mut R, Fault> {
+        self.seat.open(handle)
+    }
+
+    /// Gives up the resource `handle` names, to send in this actor's last mail, so it outlives the actor. Dropped when
+    /// no mail has it by the end of the turn.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub fn give<R: Resource>(&mut self, handle: Handle<R>) -> Result<Given<R>, Fault> {
+        self.seat.give(handle)
     }
 
     /// Logs `text` at `level`. The line is kept when this turn fails.

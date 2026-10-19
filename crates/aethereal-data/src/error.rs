@@ -6,7 +6,8 @@ use core::fmt;
 
 /// A plain-data encode failure (ADR-0004).
 ///
-/// Encoding fails only when a collection holds more elements than a count can state.
+/// Encoding fails when a collection holds more elements than a count can state, or a value that moves with its bytes
+/// is written where nothing carries it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncodeError {
     /// A collection holds more elements than a count can state.
@@ -14,12 +15,18 @@ pub enum EncodeError {
         /// The element count that did not fit in a `u32` count.
         count: usize,
     },
+    /// A value that moves with the bytes it is written into was written where nothing carries it on.
+    NotCarried {
+        /// What the value is, for error messages.
+        name: &'static str,
+    },
 }
 
 impl fmt::Display for EncodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CountOverflow { count } => write!(f, "plain data: collection of {count} exceeds the count ceiling"),
+            Self::NotCarried { name } => write!(f, "plain data: a {name} is written where nothing carries it on"),
         }
     }
 }

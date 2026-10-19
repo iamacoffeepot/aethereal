@@ -36,7 +36,7 @@ impl Fault {
     }
 
     /// The fault whose reason is the kind `K`, which holds nothing and so has no bytes.
-    fn bare<K: Kind + Plain>() -> Self {
+    pub(crate) fn bare<K: Kind + Plain>() -> Self {
         Self { kind: KindId::of::<K>(), bytes: Vec::new() }
     }
 
