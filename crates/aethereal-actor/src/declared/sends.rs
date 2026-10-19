@@ -1,6 +1,6 @@
 //! What a handler may send, and whether it may watch, written as a tuple of markers (ADR-0013).
 
-use super::{Handled, Handles, Sending, Target};
+use super::{Handled, Handles, Listed, Sending, Target};
 use crate::Actor;
 use aethereal_data::{Kind, KindId, KindName, Plain};
 use core::marker::PhantomData;
@@ -11,8 +11,8 @@ pub struct ToType<T, K>(PhantomData<fn() -> (T, K)>);
 /// A handler may send mail of kind `K` to the source of the item it handles.
 pub struct ToSender<K>(PhantomData<fn() -> K>);
 
-/// A handler may send mail of kind `K` to any actor whose type lists every kind of `P`, a tuple of kinds: the
-/// actors a reference that names a protocol, and not a type, reaches.
+/// A handler may send mail of kind `K` to any actor whose type lists every kind of `P`, a tuple of kinds or a named
+/// [`Protocol`](super::Protocol): the actors a reference that names a protocol, and not a type, reaches.
 ///
 /// `K` is one of `P`'s kinds: a type whose declaration names another does not build (ADR-0016).
 pub struct ToAny<P, K>(PhantomData<fn() -> (P, K)>);
@@ -47,8 +47,8 @@ impl<K: Kind> Marker for ToSender<K> {
     const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Sender);
 }
 
-impl<P: Kinds, K: Kind> Marker for ToAny<P, K> {
-    const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Handling(P::KINDS));
+impl<P: Listed, K: Kind> Marker for ToAny<P, K> {
+    const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Handling(<P::Kinds as Kinds>::KINDS));
 }
 
 /// `T`'s name held by reference, so a constant can read it without dropping it.

@@ -1,6 +1,6 @@
 //! A reference to an actor the engine has established exists (ADR-0008).
 
-use crate::{Actor, Conforms, Covers, Handled, Handles, Kinds, Refers, SeatNumber, Seated, ToAny, ToType};
+use crate::{Actor, Conforms, Covers, Declared, Handled, Handles, Listed, Refers, SeatNumber, Seated, ToAny, ToType};
 use aethereal_data::{
     ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Field, Kind, Reader, Schema, Shape, Writer,
 };
@@ -280,7 +280,8 @@ impl<P> ProtocolRef<P> {
     #[must_use]
     pub const fn narrow<Q, Is>(self) -> ProtocolRef<Q>
     where
-        P: Covers<Q, Is>,
+        P: Listed,
+        P::Kinds: Covers<Q, Is>,
     {
         ProtocolRef::new(self.seated)
     }
@@ -315,8 +316,21 @@ impl<P> fmt::Debug for ProtocolRef<P> {
 }
 
 /// A reference to an actor of a type that conforms to `P` is one to an actor that takes `P`, proven when it is built.
-impl<T: Conforms<P>, P> From<ActorRef<T>> for ProtocolRef<P> {
+///
+/// # Panics
+///
+/// Panics as the program is built, stopping the build, when `P` is a named protocol and `T`'s handler of one of its
+/// kinds does not declare a reply of a kind the protocol answers it with (ADR-0016).
+impl<T: Actor + Conforms<P>, P: Listed> From<ActorRef<T>> for ProtocolRef<P> {
     fn from(reference: ActorRef<T>) -> Self {
+        const {
+            let answers = Declared::of::<T>().answers(P::ANSWERS);
+            assert!(
+                answers,
+                "false conformance: a type does not reply with what a protocol answers one of its kinds with"
+            );
+        };
+
         Self::new(reference.seated)
     }
 }
@@ -387,7 +401,7 @@ impl<T: Actor + Handles<K>, K: Kind + Handled> Reaches<K> for ActorRef<T> {
     }
 }
 
-impl<P: Kinds, K: Kind> Reaches<K> for ProtocolRef<P> {
+impl<P: Listed, K: Kind> Reaches<K> for ProtocolRef<P> {
     type Marker = ToAny<P, K>;
 
     fn seated(self) -> Seated {

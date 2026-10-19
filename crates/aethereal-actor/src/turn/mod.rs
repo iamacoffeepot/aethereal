@@ -10,8 +10,9 @@ pub use refused::Refused;
 
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Code, Declared, Effect, ErasedActorRef, Handled,
-    Handles, Instances, Kinds, Level, Line, MailId, Mailed, Marker, Payload, ProtocolRef, Puts, Reaches, Role, Runs,
-    SeatNumber, Seated, Seats, Seen, Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
+    Handles, Instances, Kinds, Level, Line, Listed, MailId, Mailed, Marker, Payload, ProtocolRef, Puts, Reaches, Role,
+    Runs, SeatNumber, Seated, Seats, Seen, Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches,
+    What,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -518,7 +519,7 @@ impl Seat<'_> {
     }
 
     /// Sends `mail` to the actor `to` names, which is checked to list every kind of `P` (ADR-0013).
-    fn send_any<P: Kinds, K: Kind + Encode<Actors>>(&mut self, to: &To, mail: &K) -> Result<(), EncodeError> {
+    fn send_any<P: Listed, K: Kind + Encode<Actors>>(&mut self, to: &To, mail: &K) -> Result<(), EncodeError> {
         self.send(to, <ToAny<P, K> as Marker>::SENDING.to(), mail)
     }
 
@@ -1061,7 +1062,7 @@ impl<S> Turn<'_, S> {
     /// Panics when the actor named does not list every kind of `P` (ADR-0013).
     pub fn send_to_any<P, K, I>(&mut self, to: To, mail: &K) -> Result<(), EncodeError>
     where
-        P: Kinds,
+        P: Listed,
         K: Kind + Encode<Actors>,
         S: Allows<ToAny<P, K>, I>,
     {
@@ -1298,7 +1299,7 @@ impl<S> Beginning<'_, S> {
     /// Panics when the actor named does not list every kind of `P` (ADR-0013).
     pub fn send_to_any<P, K, I>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError>
     where
-        P: Kinds,
+        P: Listed,
         K: Kind + Encode<Actors>,
         S: Allows<ToAny<P, K>, I>,
     {
@@ -1562,7 +1563,7 @@ impl<S> Ending<'_, S> {
     /// Panics when the actor named does not list every kind of `P` (ADR-0013).
     pub fn send_to_any<P, K, I>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError>
     where
-        P: Kinds,
+        P: Listed,
         K: Kind + Encode<Actors>,
         S: Allows<ToAny<P, K>, I>,
     {
