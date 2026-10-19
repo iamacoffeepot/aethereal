@@ -1,7 +1,7 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's effect buffers.
 
 use super::*;
-use crate::{Beginning, Ending, Fault, Item, Mail, MailId, Payload, Within};
+use crate::{Beginning, Carries, Ending, Fault, Item, Mail, MailId, Payload, Protocol, Within};
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
 use alloc::vec;
@@ -522,6 +522,74 @@ fn mail_sent_through_a_protocol_reference_reaches_the_actor_it_refers_to() {
     let seen: Vec<(Seated, KindId)> = buffers.mailed.iter().map(|mailed| (mailed.to, mailed.kind)).collect();
     let poke = KindId::of::<Poke>();
     assert_eq!(seen, [(receivers[0], poke), (receivers[1], poke), (receivers[2], poke)]);
+}
+
+/// What a leaf is poked and shut by, as a named protocol: a poke is answered, and a shut is not.
+struct Poking;
+
+impl Protocol for Poking {
+    type Kinds = (Poke, Shut);
+}
+
+impl Carries<Poke> for Poking {
+    type Answers = (Poked,);
+}
+
+impl Carries<Shut> for Poking {
+    type Answers = ();
+}
+
+/// A protocol that answers a shut, which a leaf does not.
+struct Answered;
+
+impl Protocol for Answered {
+    type Kinds = (Shut,);
+}
+
+impl Carries<Shut> for Answered {
+    type Answers = (Poked,);
+}
+
+/// A protocol that answers a meeting with a poke, which a leaf sends on, to the actor it meets, and not back.
+struct Met;
+
+impl Protocol for Met {
+    type Kinds = (Meet,);
+}
+
+impl Carries<Meet> for Met {
+    type Answers = (Poke,);
+}
+
+#[test]
+fn a_type_answers_a_named_protocol_only_when_each_handler_declares_its_replies() {
+    // Catches answers read from the wrong handler, a reply to someone other than the sender counted, and a protocol
+    // whose answers are not read at all.
+    let leaf = Declared::of::<Leaf>();
+
+    assert!(leaf.answers(<Poking as crate::Listed>::ANSWERS));
+    assert!(!leaf.answers(<Answered as crate::Listed>::ANSWERS));
+    assert!(!leaf.answers(<Met as crate::Listed>::ANSWERS));
+    assert!(!Declared::of::<Branch>().answers(<Poking as crate::Listed>::ANSWERS));
+}
+
+#[test]
+fn mail_sent_through_a_named_protocol_reaches_the_actor_it_refers_to() {
+    // Catches a reference to a named protocol that sends to another seat than the one it was made with, and one that
+    // does not narrow to the tuple of a kind it takes.
+    let receivers = [seated(9, 5), seated(8, 6)];
+    let table = Listed(Vec::new());
+    let mut asked = Asked::new();
+    let mut turn =
+        opened::<(ToAny<Poking, Poke>, ToAny<(Shut,), Shut>)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let references = receivers.map(|receiver| ProtocolRef::<Poking>::from(ActorRef::<Leaf>::new(receiver)));
+
+    assert_eq!(turn.send_to(references[0], &Poke), Ok(()));
+    assert_eq!(turn.send_to(references[1].narrow::<(Shut,), _>(), &Shut), Ok(()));
+
+    let (buffers, _, _, _, _) = asked.into_parts();
+    let seen: Vec<(Seated, KindId)> = buffers.mailed.iter().map(|mailed| (mailed.to, mailed.kind)).collect();
+    assert_eq!(seen, [(receivers[0], KindId::of::<Poke>()), (receivers[1], KindId::of::<Shut>())]);
 }
 
 #[test]

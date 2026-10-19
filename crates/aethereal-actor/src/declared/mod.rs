@@ -15,7 +15,7 @@ mod sends;
 mod tests;
 
 pub use handles::{Handled, HandledList, Handles, Others};
-pub use protocols::{Conforms, Covers};
+pub use protocols::{Answering, CarriedBy, Carries, Conforms, Covers, Listed, Protocol};
 pub use sends::{Allows, At, Kinds, Marker, Sends, ToAny, ToSender, ToType, Watches};
 
 use crate::Actor;
@@ -124,6 +124,56 @@ impl Declared {
     fn handles(&self, role: Role) -> bool {
         self.handlers.iter().any(|handler| handler.role == role)
     }
+
+    /// Whether the type's handler of each kind `answering` names declares a reply of each kind it is answered with:
+    /// what conforming to a named protocol asks of it (ADR-0016).
+    #[must_use]
+    pub const fn answers(&self, answering: &[Answering]) -> bool {
+        let mut index = 0;
+        while index < answering.len() {
+            let answered = &answering[index];
+            let mut reply = 0;
+            while reply < answered.answers.len() {
+                if !self.replies(answered.kind, answered.answers[reply]) {
+                    return false;
+                }
+                reply += 1;
+            }
+            index += 1;
+        }
+
+        true
+    }
+
+    /// Whether the type's handler of `kind` declares a reply of kind `reply`.
+    const fn replies(&self, kind: KindId, reply: KindId) -> bool {
+        let mut index = 0;
+        while index < self.handlers.len() {
+            let handler = &self.handlers[index];
+            if let Role::Kind(handled) = handler.role
+                && handled.same(kind)
+            {
+                return replies_in(handler.sends, reply);
+            }
+            index += 1;
+        }
+
+        false
+    }
+}
+
+/// Whether `sendings` declare a reply of kind `reply`.
+const fn replies_in(sendings: &[Sending], reply: KindId) -> bool {
+    let mut index = 0;
+    while index < sendings.len() {
+        let sending = &sendings[index];
+        if matches!(sending.to, Target::Sender) && sending.kind.same(reply) {
+            return true;
+        }
+        index += 1;
+    }
+
+    false
 }
 
 /// The declaration of `A`, as a constant.
