@@ -4,10 +4,11 @@
 use super::super::*;
 use super::{Answering, Waiting, owed};
 use aethereal_actor::{
-    ActorRef, Answer, Answered, Asking, Asks, Carries, Ending, Fault, Handles, Protocol, Tie, To, ToSender, ToType,
-    ToWithoutMail, Turn, Unanswered,
+    ActorRef, Answer, Answered, Asking, Asks, Carries, Ending, Fault, Handles, Held, Protocol, Tie, To, ToSender,
+    ToType, ToWithoutMail, Turn, Unanswered,
 };
-use aethereal_data::{Bound, EncodeError, Kind, KindName, Plain, TypedKey};
+use aethereal_actor::{Within, WithinReader, WithinWriter};
+use aethereal_data::{Bound, Budget, Decode, Encode, EncodeError, Kind, KindName, Plain, Reader, TypedKey, Writer};
 use std::cell::RefCell;
 use std::iter;
 use std::mem;
@@ -69,23 +70,45 @@ impl Carries<WhichTile> for Tiles {
 }
 
 /// A board: it answers which tile is at `x` with ten times `x`, but at `0` fails, at `1` answers nothing, at `2`
-/// answers and closes, at `7` answers twice, and from `100` replies `x - 100` times with `x` itself.
+/// answers and closes, at `6` holds the request, at `7` answers twice, and from `100` replies `x - 100` times with `x`
+/// itself. What it holds it answers with `50`, lets go of, or closes on, as a [`Release`] says.
 #[derive(Bound)]
-struct Board;
+struct Board {
+    held: Vec<Held<TileIs>>,
+}
 
 impl Kind for Board {
     const NAME: KindName = KindName::new("aether.test.board");
 }
 
+/// What a board is made from: nothing.
+#[derive(Plain)]
+struct Blank;
+
+impl Kind for Blank {
+    const NAME: KindName = KindName::new("aether.test.blank");
+}
+
+/// What a board does with what it holds: `0` answers it, `1` lets go of it, `2` closes on it, and `3` answers it
+/// twice, through a copy read back from bytes it was written into.
+#[derive(Plain)]
+struct Release {
+    how: u64,
+}
+
+impl Kind for Release {
+    const NAME: KindName = KindName::new("aether.test.release");
+}
+
 impl Actor for Board {
-    type Config = Self;
+    type Config = Blank;
     type Key = u64;
-    type Handles = (WhichTile,);
+    type Handles = (WhichTile, Release);
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(board: Self, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
-        Ok(board)
+    fn begin(_: Blank, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+        Ok(Self { held: Vec::new() })
     }
 
     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
@@ -101,6 +124,12 @@ impl Handles<WhichTile> for Board {
             0 => return Err(Fault::new(&which)?),
             1 => return Ok(()),
             2 => turn.close(),
+            6 => {
+                self.held.push(turn.hold()?);
+                let again = turn.reply(&TileIs { tile: 0 });
+                say(format!("held {}", again == Err(EncodeError::Answered)));
+                return Ok(());
+            }
             100.. => {
                 for _ in 100..which.x {
                     turn.reply(&TileIs { tile: which.x })?;
@@ -114,6 +143,39 @@ impl Handles<WhichTile> for Board {
         if twice {
             let again = turn.reply(&TileIs { tile: 0 });
             say(format!("again {}", again == Err(EncodeError::Answered)));
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<Release> for Board {
+    type Sends = ();
+
+    fn handle(&mut self, release: Release, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        let held = mem::take(&mut self.held);
+        match release.how {
+            0 => {
+                for held in held {
+                    turn.answer(held, &TileIs { tile: 50 })?;
+                }
+            }
+            1 => drop(held),
+            3 => {
+                for held in held {
+                    let mut out = Writer::<Within>::new(WithinWriter::new());
+                    held.encode(&mut out)?;
+                    let bytes = out.into_bytes();
+                    let mut budget = Budget::new(64);
+                    let copy = Held::decode(&mut Reader::<Within>::new(&bytes, &mut budget, WithinReader::new()))?;
+                    turn.answer(held, &TileIs { tile: 50 })?;
+                    turn.answer(copy, &TileIs { tile: 51 })?;
+                }
+            }
+            _ => {
+                self.held = held;
+                turn.close();
+            }
         }
 
         Ok(())
@@ -162,7 +224,7 @@ impl Actor for Pointer {
     type EndSends = ();
 
     fn begin(config: PointerConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let Ok(board) = turn.spawn::<Board>(&1, Board) else {
+        let Ok(board) = turn.spawn::<Board>(&1, Blank) else {
             return Err(Fault::new(&Order { text: String::from("no board") })?);
         };
         for text in config.orders {
@@ -179,7 +241,8 @@ impl Actor for Pointer {
 }
 
 impl Handles<Order> for Pointer {
-    type Sends = (Asks<Tiles, WhichTile, Looking>, ToType<Board, WhichTile>, ToType<Self, Order>);
+    type Sends =
+        (Asks<Tiles, WhichTile, Looking>, ToType<Board, WhichTile>, ToType<Board, Release>, ToType<Self, Order>);
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let (verb, rest) = order.text.split_once(' ').unwrap_or((&order.text, ""));
@@ -189,6 +252,10 @@ impl Handles<Order> for Pointer {
             "again" => {
                 let x = xs.first().copied().unwrap_or_default();
                 turn.ask_to(board.protocol::<Tiles, _>(), &WhichTile { x }, &Looking { at: 9 })?;
+            }
+            "release" => {
+                let how = xs.first().copied().unwrap_or_default();
+                turn.send_to(board, &Release { how })?;
             }
             "later" => {
                 let me = turn.me();
@@ -430,5 +497,49 @@ fn what_the_engine_says_of_a_request_to_an_ended_actor_comes_after_all_that_acto
         expected.extend(vec![told.clone(); 10]);
         expected.extend(["20 for 9".to_owned(), format!("{:?} for 9", Unanswered::Ended)]);
         assert_eq!(heard, expected, "{engine:?}");
+    }
+}
+
+#[test]
+fn a_held_request_is_answered_in_a_later_turn() {
+    // Catches a held request answered as if it were not, or not at all: the reply in the turn that held it refused,
+    // and the answer from a later turn handed to the asker with what it kept.
+    for engine in ENGINES {
+        let heard = heard(engine, &["ask 6", "later release 0"]);
+
+        assert_eq!(heard, ["held true", "50 for 0"], "{engine:?}");
+    }
+}
+
+#[test]
+fn a_held_request_let_go_of_is_answered_that_it_was_not() {
+    // Catches a dropped held request left unanswered until its holder ends, which would keep its asker waiting for as
+    // long as the holder lives.
+    for engine in ENGINES {
+        let heard = heard(engine, &["ask 6", "later release 1"]);
+
+        assert_eq!(heard, ["held true".to_owned(), format!("{:?} for 0", Unanswered::Unreplied)], "{engine:?}");
+    }
+}
+
+#[test]
+fn a_held_request_whose_holder_ends_is_answered_that_it_ended() {
+    // Catches a request its holder still held as it ended left unanswered, or answered twice: once that it ended and
+    // once more as its held request is dropped with the holder.
+    for engine in ENGINES {
+        let heard = heard(engine, &["ask 6", "later release 2"]);
+
+        assert_eq!(heard, ["held true".to_owned(), format!("{:?} for 0", Unanswered::Ended)], "{engine:?}");
+    }
+}
+
+#[test]
+fn a_turn_that_answers_a_request_it_does_not_hold_fails() {
+    // Catches a second answer, through a copy of a held request read back from bytes, sent as if it were owed: the
+    // turn fails instead, what it sent is dropped, and the asker is told the holder ended still owing it.
+    for engine in ENGINES {
+        let heard = heard(engine, &["ask 6", "later release 3"]);
+
+        assert_eq!(heard, ["held true".to_owned(), format!("{:?} for 0", Unanswered::Ended)], "{engine:?}");
     }
 }

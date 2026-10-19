@@ -23,7 +23,7 @@ use aethereal_actor::records::{
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
     Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Broke, Children, Claimed, Declared,
-    FalseSend, FalseWatch, Fault, Gift, Guests, Held as Pinning, Holds, Hosted, How, Instances, Item, Keeping, NotHeld,
+    FalseSend, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, NotHeld, Pinning,
     Preparing, Puts, Reads, Refused, Role, Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, Was, Why,
     take_loose_ticket,
 };

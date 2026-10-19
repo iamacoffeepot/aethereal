@@ -25,6 +25,7 @@ mod fault;
 #[cfg(feature = "guest")]
 pub mod guest;
 mod guests;
+mod held;
 mod instances;
 mod item;
 mod mail;
@@ -44,7 +45,7 @@ pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};
 pub use ask::{Answer, Answered, Asking, Asks, Unanswered};
 pub use blob::{BlobHash, BlobId, Puts};
 #[cfg(feature = "std")]
-pub use blob::{BlobRef, Held, pins, within};
+pub use blob::{BlobRef, Pinning, pins, within};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, Within, WithinReader, WithinWriter};
 pub use declared::{
     Allows, AnsweredBy, At, BackTo, CarriedBy, Carries, Conforms, Covers, Declared, Handled, HandledBy, HandledList,
@@ -57,6 +58,9 @@ pub use fault::{Fault, Unreadable, Unwritable};
 pub use guests::{Birth, Guests, Link, Links, NoGuests, Unfit};
 #[cfg(feature = "std")]
 pub use guests::{Config, config_bytes};
+#[cfg(feature = "std")]
+pub use held::holders;
+pub use held::{Held, NotOwed, Owed, Owes};
 pub use instances::{Instances, Lent};
 pub use item::Item;
 pub use mail::{Mail, MailId};

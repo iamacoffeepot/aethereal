@@ -3,7 +3,7 @@
 use crate::watch::Notice;
 use crate::{Context, Envelope, View};
 use aethereal_actor::{
-    Arena, CARRIED, Effect, Ended, Held, MailId, Mailed, Payload, Pinned, SeatNumber, Seated, Tie, within,
+    Arena, CARRIED, Effect, Ended, MailId, Mailed, Payload, Pinned, Pinning, SeatNumber, Seated, Tie, within,
 };
 use aethereal_data::ActorId;
 use std::iter;
@@ -58,7 +58,7 @@ pub struct Shard {
     backlog_bytes: Vec<u8>,
     /// The pins of the blobs the carried mail refers to, each at where its reference begins in `backlog_bytes`, in
     /// that order: the backlog keeps a blob for as long as it keeps the mail that refers to it (ADR-0014).
-    backlog_pins: Vec<Held>,
+    backlog_pins: Vec<Pinning>,
     /// The runs of the backlog to hand out at the next step, by seat and actor, each actor's in the order carried.
     segments: Vec<Segment>,
     /// The runs of the backlog handed out at the start of this step.
@@ -118,7 +118,7 @@ pub fn read<'a>(payload: Payload, mail: &'a [Arena], carried: &'a [u8]) -> &'a [
 /// Where the references in the bytes of `payload` lie, and the pins on their blobs: among `mail`, the writers' arenas,
 /// or `carried_pins`, those of its part's carried bytes, when it was carried (ADR-0014).
 #[must_use]
-pub fn pinned<'a>(payload: Payload, mail: &'a [Arena], carried_pins: &'a [Held]) -> Pinned<'a> {
+pub fn pinned<'a>(payload: Payload, mail: &'a [Arena], carried_pins: &'a [Pinning]) -> Pinned<'a> {
     match (mail.get(payload.slot()), payload) {
         (Some(arena), _) => arena.pinned(payload),
         (None, Payload::InArena { slot: CARRIED, start, len, .. }) if !carried_pins.is_empty() => {
@@ -359,7 +359,7 @@ impl Shard {
 
     /// The pins of the blobs the carried mail refers to, each at where its reference begins in [`Self::carried`].
     #[must_use]
-    pub fn carried_pins(&self) -> &[Held] {
+    pub fn carried_pins(&self) -> &[Pinning] {
         &self.backlog_pins
     }
 

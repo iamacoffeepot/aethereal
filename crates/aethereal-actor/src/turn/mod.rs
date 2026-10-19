@@ -11,10 +11,10 @@ pub use refused::Refused;
 use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Asking, Asks, Carries, Children, Claim, Claimed, Code,
-    Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Instances, Keeping, Keeps,
-    Kinds, Level, Line, Listed, MailId, Mailed, Marker, Payload, Protocol, ProtocolRef, Puts, Reaches, Resource, Role,
-    Runs, SeatNumber, Seated, Seats, Seen, Sends, Table, Target, Tie, Tied, To, ToAny, ToSender, ToType, ToWithoutMail,
-    Unanswered, Watches, What, Within, WithinWriter,
+    Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances, Keeping,
+    Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Payload, Protocol, ProtocolRef,
+    Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Table, Target, Tie, Tied, To, ToAny,
+    ToSender, ToType, ToWithoutMail, Unanswered, Watches, What, Within, WithinWriter,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -54,6 +54,9 @@ pub struct Asked {
     /// The requests the turn running asked, with the context each keeps, for the engine to file once the turn has
     /// run (ADR-0017): empty between turns.
     asks: Vec<Asking>,
+    /// What the turn running did to the debts its actor holds, in the order it did it, for the engine to file once the
+    /// turn has run (ADR-0017): empty between turns.
+    owes: Vec<Owes>,
 }
 
 /// The buffers of what turns ask for: kept by a worker over its share of a step, and filled by each turn in turn.
@@ -115,10 +118,10 @@ impl Asked {
     pub fn continuing(buffers: Buffers, arena: Arena, seats: Seats, puts: Puts) -> Self {
         debug_assert!(buffers.is_empty(), "a turn begins with its buffers emptied");
 
-        let (carrying, claims, asks) = (Vec::new(), Vec::new(), Vec::new());
+        let (carrying, claims, asks, owes) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let stood = Vec::new();
 
-        Self { buffers, stood, stood_seats: BTreeMap::new(), arena, seats, puts, carrying, claims, asks }
+        Self { buffers, stood, stood_seats: BTreeMap::new(), arena, seats, puts, carrying, claims, asks, owes }
     }
 
     /// Begins the next turn, once what the last asked for has been taken out of the buffers. The children the last
@@ -174,6 +177,33 @@ impl Asked {
         !self.asks.is_empty()
     }
 
+    /// Whether the turn running asked a request, held one, or answered a held one (ADR-0017).
+    #[must_use]
+    pub fn is_tied(&self) -> bool {
+        let has_asked = !self.asks.is_empty();
+        let has_owes = !self.owes.is_empty();
+
+        has_asked || has_owes
+    }
+
+    /// Whether the turn running held a request or answered a held one (ADR-0017).
+    #[must_use]
+    pub fn has_owes(&self) -> bool {
+        !self.owes.is_empty()
+    }
+
+    /// What the turn running did to the debts its actor holds, in the order it did it (ADR-0017).
+    #[must_use]
+    pub fn owes(&self) -> &[Owes] {
+        &self.owes
+    }
+
+    /// Takes what the turn running did to the debts its actor holds, in the order it did it: for the engine, which
+    /// files it once the turn has run, and drops it when the turn failed (ADR-0017).
+    pub fn take_owes(&mut self) -> impl Iterator<Item = Owes> + '_ {
+        self.owes.drain(..)
+    }
+
     /// Takes the requests the turn running asked, each with its context, in the order asked: for the engine, which
     /// files them beside the asker once its turn has run, and drops them when it failed (ADR-0017).
     pub fn take_asks(&mut self) -> impl Iterator<Item = Asking> + '_ {
@@ -193,12 +223,16 @@ impl Asked {
         Mailed { by, to, count, kind, bytes, tie }
     }
 
-    /// Whether `by` has answered its request of the count `request` in the turn running (ADR-0017).
+    /// Whether `by` has answered the request of the count `request` of the actor `asker` in the turn running, or held
+    /// it (ADR-0017).
     #[must_use]
-    pub fn has_answered(&self, by: Seated, request: u64) -> bool {
+    pub fn has_answered(&self, by: Seated, asker: Seated, request: u64) -> bool {
         let answer = Tie::answers(request);
+        let replied = self.buffers.mailed.iter().any(|mailed| mailed.by.id == by.id && mailed.tie == answer);
+        let owed = Owed { holder: by, asker, request };
+        let held = self.owes.iter().any(|owes| matches!(owes, Owes::Holds { owed: held, .. } if *held == owed));
 
-        self.buffers.mailed.iter().any(|mailed| mailed.by.id == by.id && mailed.tie == answer)
+        replied || held
     }
 
     /// The count of the last piece of mail `by` sent in the turn running, when it sent any.
@@ -459,6 +493,19 @@ impl Owing {
     /// What a turn that owes nothing owes.
     pub const NOTHING: Self = Self::Item(Tie::TELL);
 
+    /// The count of the request the turn holds, and what it owes after it: nothing, for a later turn answers it.
+    /// Refused when the item is no request, or it is answered.
+    fn hold(self) -> Result<(u64, Self), Fault> {
+        let Self::Item(tie) = self else {
+            return Err(Fault::bare::<NotOwed>());
+        };
+        let Tied::Asks(request) = tie.read() else {
+            return Err(Fault::bare::<NotOwed>());
+        };
+
+        Ok((request, Self::Answered))
+    }
+
     /// What a reply to the source carries, and what the turn owes after it: refused once the request is answered.
     fn reply(self) -> Result<(Tie, Self), EncodeError> {
         let Self::Item(tie) = self else {
@@ -665,6 +712,29 @@ impl Seat<'_> {
         let count = self.sent + 1;
         self.write_after(to, mail, false, Tie::asks(count))?;
         self.asked.asks.push(Asking { count, answer, context });
+
+        Ok(())
+    }
+
+    /// Holds the request the turn handles, from `source`, to be answered with a kind `answer` names in a later turn
+    /// (ADR-0017). Refused in a guest's code, which holds nothing yet.
+    fn hold(&mut self, source: Seated, answer: KindId) -> Result<Owed, Fault> {
+        if matches!(self.keeps, Keeps::Claimed) {
+            return Err(Fault::bare::<NotOwed>());
+        }
+        let (request, owing) = self.owing.hold()?;
+        self.owing = owing;
+        let owed = Owed { holder: self.me, asker: source, request };
+        self.asked.owes.push(Owes::Holds { owed, answer });
+
+        Ok(owed)
+    }
+
+    /// Answers the debt `owed` with `mail`: on the chain of this turn, checked by the engine once the turn has run to
+    /// be one its actor holds, of the kind of `mail` (ADR-0017).
+    fn answer<K: Kind + Encode<Actors>>(&mut self, owed: Owed, mail: &K) -> Result<(), EncodeError> {
+        self.write_after(owed.asker, mail, false, Tie::answers(owed.request))?;
+        self.asked.owes.push(Owes::Answers { owed, answer: KindId::of::<K>() });
 
         Ok(())
     }
@@ -1403,6 +1473,42 @@ impl<S> Turn<'_, S> {
         S: Allows<Asks<P, K, C>, I>,
     {
         self.seat.request(reference.seated(), mail, KindId::of::<A>(), context)
+    }
+
+    /// Holds the request this turn handles, to answer with an `A` in a later turn, through
+    /// [`answer`](Self::answer) (ADR-0017). The turn then owes the request nothing, and a reply to it is refused.
+    ///
+    /// It builds only when the turn's sends list [`ToSender<A>`], as a reply in this turn would.
+    ///
+    /// # Errors
+    ///
+    /// [`NotOwed`] when the mail this turn handles is no request, or this turn has answered or held it already; and
+    /// in a guest's code, which holds nothing yet.
+    pub fn hold<A: Kind, I>(&mut self) -> Result<Held<A>, Fault>
+    where
+        S: Allows<ToSender<A>, I>,
+    {
+        let owed = self.seat.hold(self.source, KindId::of::<A>())?;
+
+        Ok(Held::new(owed))
+    }
+
+    /// Answers the request `held` holds with `mail`, on this turn's chain (ADR-0017). Its asker held it to be answered
+    /// with an `A`, so nothing is checked against this turn's sends.
+    ///
+    /// The turn fails, with [`NotOwed`], when this actor holds no such debt: a held request read back from bytes that
+    /// name another's, or one already answered.
+    ///
+    /// # Errors
+    ///
+    /// Why `mail` could not be written. The request is then still unanswered, and its asker is told so, as of a held
+    /// request dropped.
+    pub fn answer<A: Kind + Encode<Actors>>(&mut self, held: Held<A>, mail: &A) -> Result<(), EncodeError> {
+        let owed = held.owed();
+        self.seat.answer(owed, mail)?;
+        let _ = held.into_owed();
+
+        Ok(())
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.

@@ -60,9 +60,9 @@ impl Handles<Answer<TileIs, Looking>> for Pointer {
 
 - `Ended`: the receiver had ended, or was gone, when the request was to be handed to it, or it held the request and ended before answering it;
 - `Failed`: the turn that handled the request failed;
-- `Unreplied`: the turn handled the request and neither replied nor held it.
+- `Unreplied`: the turn handled the request and neither replied nor held it, or the receiver held it and let it go without answering it.
 
-What the engine says is mail too, of the engine's kind `Unanswered`, from the receiver to the asker. It is tied to the request as only the engine ties mail, so no actor can say it in the engine's place, and it is handed to the handler of the answer the asker asked for, whose kind the engine keeps with the context. `Failed` and `Unreplied` come after what the turn sent, as the receiver's next piece of mail. `Ended` comes after all the receiver sent, from where the engine would have handed the request over.
+What the engine says is mail too, of the engine's kind `Unanswered`, from the receiver to the asker. It is tied to the request as only the engine ties mail, so no actor can say it in the engine's place, and it is handed to the handler of the answer the asker asked for, whose kind the engine keeps with the context. `Failed` and `Unreplied` come after what the turn sent, as the receiver's next piece of mail. `Ended`, and `Unreplied` for a held request let go of, come after all the receiver sent.
 
 An answer kind is a kind like any other, with nothing to implement for the case where no answer comes. The engine keeps only the request's count and the context, and needs nothing of the asker's code to say a request went unanswered, so it does the same for a guest. What it hands the asker comes from the receiver, the actor the request was sent to, which existed when it was sent (ADR-0009), and belongs to the request's chain. A caller's handler therefore always runs, and what it kept always comes back to it.
 
@@ -76,7 +76,8 @@ turn.answer(held, &Fetched::Got(blob))?;          // in a later turn
 
 - `Held<A>` names one request this actor owes an answer of kind `A`. It crosses `Within` and no other boundary, so it is kept in the actor's state, and cannot be in mail. It is neither `Clone` nor `Copy`, and `answer` takes it by value, so it answers once, which the build checks.
 - The engine keeps the debt beside the receiver, in its seat. `answer` confirms the ticket names a debt this actor owes, of kind `A`, as `open` confirms a handle (ADR-0010), and fails the turn when it does not.
-- When the receiver ends, the engine tells the asker of every debt it still owes `Answered::No(Ended)`, after its closing turn. A `Held` dropped from the actor's state without an answer is answered when the actor ends.
+- When the receiver ends, the engine tells the asker of every debt it still owes `Answered::No(Ended)`, after its closing turn.
+- A `Held` dropped without an answer is answered `Unreplied` in the step that dropped it, once the turns of its part have run. The engine counts the values that hold each debt, as it counts the pins on a blob (ADR-0014): a `Held` noted as it is made and dropped, and bytes it is written into, such as what the actor keeps for a request of its own, counted until they are read back into a `Held`, which takes the debt over. So a debt handed through such bytes is not taken for one let go of. Bytes written and never read back hold their debt until the actor ends.
 - **Not decided here:** giving a `Held` to another actor, so a child answers what its parent was asked.
 
 **An answer belongs to the chain of the turn that sends it.** A reply in the turn of the request is on the request's chain. A held answer is on the chain of the later turn that gives it. What the engine says of an unanswered request is on the request's chain. Requests and answers are mail, so they fuse as mail does (ADR-0013).

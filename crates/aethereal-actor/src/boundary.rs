@@ -89,7 +89,7 @@ impl Boundary for Within {
 /// (ADR-0010).
 #[cfg(feature = "std")]
 pub struct ActorsWriter<'a> {
-    held: &'a mut Vec<crate::Held>,
+    held: &'a mut Vec<crate::Pinning>,
     carrying: Carrying<'a>,
 }
 
@@ -106,14 +106,14 @@ enum Carrying<'a> {
 impl<'a> ActorsWriter<'a> {
     /// A writer at [`Actors`] that keeps the pins of what it writes in `held`, and carries no resource.
     #[must_use]
-    pub const fn new(held: &'a mut Vec<crate::Held>) -> Self {
+    pub const fn new(held: &'a mut Vec<crate::Pinning>) -> Self {
         Self { held, carrying: Carrying::Nothing }
     }
 
     /// A writer at [`Actors`] that keeps the pins of what it writes in `held`, and notes in `tickets` the ticket of
     /// each resource it writes, to carry on (ADR-0010).
     #[must_use]
-    pub const fn carrying(held: &'a mut Vec<crate::Held>, tickets: &'a mut Vec<u64>) -> Self {
+    pub const fn carrying(held: &'a mut Vec<crate::Pinning>, tickets: &'a mut Vec<u64>) -> Self {
         Self { held, carrying: Carrying::Into(tickets) }
     }
 

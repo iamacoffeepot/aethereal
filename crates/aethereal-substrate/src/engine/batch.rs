@@ -7,7 +7,7 @@ use super::ask::{self, Answering};
 use super::fuse::Hop;
 use crate::stream::{self, Handed, Pieces};
 use crate::{Context, Envelope};
-use aethereal_actor::{Arena, Batch, Chain, Held, Item, Mail, Peeked, Pinned};
+use aethereal_actor::{Arena, Batch, Chain, Item, Mail, Peeked, Pinned, Pinning};
 use std::iter;
 
 /// A batch of one actor's waiting items: `first`, and after it as many of `rest` as make
@@ -18,7 +18,7 @@ pub(super) struct Waiting<'w, 'r, 'p> {
     pub(super) rest: &'w Pieces<'p>,
     /// The bytes of the mail its part carried over, and the pins of the blobs they refer to.
     pub(super) carried: &'p [u8],
-    pub(super) carried_pins: &'p [Held],
+    pub(super) carried_pins: &'p [Pinning],
 }
 
 /// A batch of one hop, a piece of mail handed straight to its receiver in the step (ADR-0013).

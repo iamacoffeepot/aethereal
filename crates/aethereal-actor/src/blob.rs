@@ -201,7 +201,7 @@ enum Putter {
 }
 
 #[cfg(feature = "std")]
-pub use pinned::{BlobRef, Held, pins, within};
+pub use pinned::{BlobRef, Pinning, pins, within};
 
 #[cfg(feature = "std")]
 mod pinned {
@@ -288,11 +288,11 @@ mod pinned {
     }
 
     /// A pin some bytes hold, and where in them the reference it is for begins.
-    pub type Held = (u32, BlobRef);
+    pub type Pinning = (u32, BlobRef);
 
     /// The pins among `held`, kept in the order of where they lie, that lie within the `len` bytes from `start`.
     #[must_use]
-    pub fn within(held: &[Held], start: u32, len: u32) -> &[Held] {
+    pub fn within(held: &[Pinning], start: u32, len: u32) -> &[Pinning] {
         let end = start.saturating_add(len);
         let first = held.partition_point(|(at, _)| *at < start);
         let past = held.partition_point(|(at, _)| *at < end);

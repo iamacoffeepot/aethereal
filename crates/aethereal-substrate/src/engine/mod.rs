@@ -5,6 +5,7 @@ mod batch;
 mod birth;
 mod bring;
 mod costs;
+mod debts;
 mod fold;
 mod fuse;
 mod gift;
@@ -35,12 +36,13 @@ use aethereal_actor::{
     Above, Actor, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Carried, Chain, Closing,
     Code, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, Keeping, Keeps, Links, Mail,
     MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated, Seats, Stood, Tie,
-    Tied, Turning, Unanswered, Unfit, What, Why, config_bytes,
+    Tied, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
 use ask::{Answering, Waiting};
 use birth::Births;
 use costs::{CostKey, Costs, ItemKind, toward};
+use debts::Debts;
 use fuse::{Fusing, Hand, Hop, Stepped};
 use gift::{Arrival, Gifts};
 use made::Made;
@@ -212,6 +214,8 @@ struct Held {
     keeping: Keeping,
     /// The contexts of the requests it asked, waiting for their answers (ADR-0017).
     waiting: Waiting,
+    /// The requests it held, until it answers them or lets them go (ADR-0017).
+    debts: Debts,
 }
 
 /// Whether the engine holds the actor of a seat.
@@ -314,6 +318,9 @@ pub struct Lists {
     fusing: Fusing,
     /// The changes to blobs' pins its turns made, noted on the worker's thread as they ran (ADR-0014).
     pins: Vec<Change>,
+    /// The changes to how many values hold each debt the part running's turns made, noted on the worker's thread as
+    /// they ran, and settled once the part has run (ADR-0017).
+    holders: Vec<holders::Change>,
 }
 
 /// One writer's row of buckets for each view, and for the children its turns stood up, to seat.
@@ -1324,6 +1331,7 @@ impl Reading<'_> {
         lists: &mut Lists,
     ) {
         lists.fusing.begin(self.hops);
+        holders::open(mem::take(&mut lists.holders));
         mem::swap(asked.seats_mut(), room.seats);
         let mut runs = mem::take(&mut lists.runs);
         room.streams.hand(&mut runs);
@@ -1371,6 +1379,12 @@ impl Reading<'_> {
             }
         }
         mem::swap(asked.seats_mut(), room.seats);
+        let mut changes = holders::close();
+        // Most parts hold nothing.
+        if !changes.is_empty() {
+            lists.let_go(asked, room.actors, &mut changes);
+        }
+        lists.holders = changes;
     }
 
     /// The turns of the actor `me` names in `parcel` that `work` asks for, each measured into `tally`, what they
@@ -1398,13 +1412,17 @@ impl Reading<'_> {
         let Holding::Here(mut actor) = mem::replace(&mut held.actor, Holding::Away) else {
             return;
         };
-        let (keeping, waiting) = (&mut held.keeping, &mut held.waiting);
+        let (keeping, waiting, debts) = (&mut held.keeping, &mut held.waiting, &mut held.debts);
         let key = |item| CostKey { actor: seat.kind, item };
 
         match (work, life.state()) {
             (Work::Closing, State::Ending(ending)) => {
                 self.closing(actor, me, seat, life.sent(), ending, clock, tally, asked, instances, keeping, lists);
                 lists.lose_arriving(keeping);
+                // What it held and never answered is answered for it: it has ended.
+                for debt in debts.take_all() {
+                    lists.unanswered(asked, me, debt.asker, debt.request, Unanswered::Ended, debt.chain);
+                }
                 // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
                 seating.seated.remove(me);
                 lists.freed.push(me.seat);
@@ -1479,12 +1497,12 @@ impl Reading<'_> {
                             chain,
                             tie,
                         );
-                        let outcome = actor.turn(item, turning);
-                        // Most mail is no request.
-                        if !tie.is_tell() {
-                            ask::owed(me, source, tie, &outcome, stepped.sent, asked);
+                        let mut outcome = actor.turn(item, turning);
+                        // Most turns are of plain mail, and ask and hold nothing.
+                        let is_tied = !tie.is_tell() || asked.is_tied();
+                        if is_tied {
+                            tied(me, (source, tie, context, stepped.sent), (waiting, debts), asked, &mut outcome);
                         }
-                        waiting.settle(tie, asked, &outcome);
                         lists.drop_untaken(me, keeping, handed);
                         let ran = Ran::of(me, outcome, asked, context);
 
@@ -1598,7 +1616,7 @@ impl Reading<'_> {
         let Holding::Here(mut actor) = mem::replace(&mut held.actor, Holding::Away) else {
             return;
         };
-        let (keeping, waiting) = (&mut held.keeping, &mut held.waiting);
+        let (keeping, waiting, debts) = (&mut held.keeping, &mut held.waiting, &mut held.debts);
 
         let table = Since {
             table: self.table,
@@ -1649,11 +1667,12 @@ impl Reading<'_> {
                     hop.tie,
                 );
 
-                let outcome = actor.turn(item, turning);
-                if !hop.tie.is_tell() {
-                    ask::owed(me, hop.from, hop.tie, &outcome, sent_before, asked);
+                let mut outcome = actor.turn(item, turning);
+                let is_tied = !hop.tie.is_tell() || asked.is_tied();
+                if is_tied {
+                    let chain = Context { root: hop.root, depth: hop.depth + 1 };
+                    tied(me, (hop.from, hop.tie, chain, sent_before), (waiting, debts), asked, &mut outcome);
                 }
-                waiting.settle(hop.tie, asked, &outcome);
 
                 outcome
             };
@@ -1835,6 +1854,28 @@ fn hand(to: Seated, stepped: Stepped, seating: &Seating, lives: &lives::Shard, f
     }
 }
 
+/// Settles what the turn of the actor `me` leaves of requests: it handled mail tied as `tie` from `source`, at
+/// `chain`, having sent `sent` pieces of mail before it, and ended as `outcome` says. What it held and answered is
+/// filed in `debts`, the request it handled is answered for it when it did not answer it, the context of the answer
+/// it handled is let go of from `waiting`, and what it asked is filed there (ADR-0017). Out of the loop of turns,
+/// which most turns leave nothing of requests to.
+#[cold]
+#[inline(never)]
+fn tied(
+    me: Seated,
+    (source, tie, chain, sent): (Seated, Tie, Context, u64),
+    (waiting, debts): (&mut Waiting, &mut Debts),
+    asked: &mut Asked,
+    outcome: &mut Result<(), Fault>,
+) {
+    if asked.has_owes() {
+        debts.settle(me, (source, tie, chain, sent), asked, outcome);
+    } else if !tie.is_tell() {
+        ask::owed(me, source, tie, outcome, sent, asked);
+    }
+    waiting.settle(tie, asked, outcome);
+}
+
 /// Whether `mailed` is mail the actor `me` sent.
 fn is_send_by(mailed: &Mailed, me: Seated) -> bool {
     mailed.by.id == me.id
@@ -1952,9 +1993,38 @@ impl Lists {
         let Tied::Asks(request) = tie.read() else {
             return;
         };
-        let mailed = asked.unanswered(to, from, ask::ended_order(request), request, Unanswered::Ended);
+        self.unanswered(asked, to, from, request, Unanswered::Ended, context);
+    }
+
+    /// Says to `to`, from `by`, that its request of the count `request` went unanswered, as `why`: in `context`, the
+    /// request's chain, after all `by` sent (ADR-0017).
+    fn unanswered(
+        &mut self,
+        asked: &mut Asked,
+        by: Seated,
+        to: Seated,
+        request: u64,
+        why: Unanswered,
+        context: Context,
+    ) {
+        let mailed = asked.unanswered(by, to, ask::ended_order(request), request, why);
         let (key, entry) = stream::entry(mailed, &context);
         self.routes.streams.put(key, entry);
+    }
+
+    /// Settles `changes`, the changes to how many values hold each debt the turns of a part made, against the debts
+    /// of `actors`, the part's: each asker of a debt no value holds any longer is told it went unanswered (ADR-0017).
+    #[cold]
+    #[inline(never)]
+    fn let_go(&mut self, asked: &mut Asked, actors: &mut BySeat<Held>, changes: &mut Vec<holders::Change>) {
+        for (owed, by) in debts::summed(changes) {
+            let Some(held) = actors.get_mut(owed.holder) else {
+                continue;
+            };
+            if let Some(debt) = held.debts.change(owed, by) {
+                self.unanswered(asked, owed.holder, debt.asker, debt.request, Unanswered::Unreplied, debt.chain);
+            }
+        }
     }
 
     /// Drops what arrived for an actor that keeps `keeping` with mail it never handled, as it leaves its seat: that

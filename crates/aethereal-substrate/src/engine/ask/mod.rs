@@ -50,11 +50,6 @@ impl Waiting {
     /// Settles what the turn of an item tied as `tie`, which returned `outcome`, leaves: the context its answer was
     /// handed with is let go of, and the requests it asked are filed from `asked`, none of a turn that failed, whose
     /// mail was never sent.
-    #[allow(
-        clippy::inline_always,
-        reason = "once for every turn: not inlined, it cost a piece of mail 2 percent, measured"
-    )]
-    #[inline(always)]
     pub(super) fn settle(&mut self, tie: Tie, asked: &mut Asked, outcome: &Result<(), Fault>) {
         // Most mail is no answer.
         if !tie.is_tell() {
@@ -157,7 +152,7 @@ pub(super) fn owed(me: Seated, source: Seated, tie: Tie, outcome: &Result<(), Fa
     let (why, count) = if outcome.is_err() {
         // What a failed turn sent is dropped, its counts with it.
         (Unanswered::Failed, sent + 1)
-    } else if asked.has_answered(me, request) {
+    } else if asked.has_answered(me, source, request) {
         return;
     } else {
         (Unanswered::Unreplied, asked.last_sent(me).unwrap_or(sent) + 1)

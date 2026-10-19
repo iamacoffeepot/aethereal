@@ -194,7 +194,8 @@ pub enum Unanswered {
     Ended,
     /// The turn that handled the request failed.
     Failed,
-    /// The turn that handled the request neither answered it nor held it.
+    /// The turn that handled the request neither answered it nor held it, or the receiver held it and let it go
+    /// without answering it.
     Unreplied,
 }
 
