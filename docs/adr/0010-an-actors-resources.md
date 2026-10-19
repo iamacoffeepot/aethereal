@@ -16,12 +16,12 @@ Letting two actors hold the same socket does not help. One mail at a time protec
 **A resource is a value that is not data, and it has exactly one owner.** The owner is an actor. The engine keeps each actor's resources beside that actor, and the actor holds a handle to each.
 
 ```rust
-pub trait Resource: Any + Send { const NAME: &'static str; }   // a value that is not data
+pub trait Resource: Any + Send {}          // a value that is not data
 pub struct Handle<R: Resource> { .. }                           // mine
 pub struct Given<R: Resource> { .. }                            // on its way to a new owner
 ```
 
-**A type is a resource because its author says so.** `Resource` has no methods, and one constant: the name the engine records it by, as when one is dropped on its way. Implementing it for a type states that the type's values are not data: nothing a kind's fields can spell holds what the value is. A socket, an open file, and a GPU object are resources. An actor's own working state is not, and where it is a tree it is an arena with indices (ADR-0009). A resource is `Send`: a native host runs its owner on any of its workers, and the resource goes with it.
+**A type is a resource because its author says so.** `Resource` has no methods. Implementing it for a type states that the type's values are not data: nothing a kind's fields can spell holds what the value is. A socket, an open file, and a GPU object are resources. An actor's own working state is not, and where it is a tree it is an arena with indices (ADR-0009). A resource is `Send`: a native host runs its owner on any of its workers, and the resource goes with it. The engine tells resource types apart by Rust's own type id, and records one dropped on its way by its type's name.
 
 **A `Handle<R>` is the owner's own.**
 

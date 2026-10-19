@@ -4,6 +4,7 @@ use super::super::*;
 use crate::Entry;
 use aethereal_actor::{Ending, Fault, Handle, Handles, To, ToType, ToWithoutMail, Turn};
 use aethereal_data::{Bound, Kind, KindName, Plain, TypedKey};
+use std::any;
 use std::cell::{Cell, RefCell};
 use std::mem;
 
@@ -34,8 +35,11 @@ struct Lamp {
     light: u64,
 }
 
-impl Resource for Lamp {
-    const NAME: &'static str = "lamp";
+impl Resource for Lamp {}
+
+/// What the log records a dropped lamp as.
+fn lamp() -> &'static str {
+    any::type_name::<Lamp>()
 }
 
 impl Drop for Lamp {
@@ -332,7 +336,7 @@ fn a_child_takes_from_its_config_what_its_parent_gave_it_and_what_it_leaves_is_d
 
     assert_eq!(heard, ["2 began with 1", "99 began with 0", "2 shines 3"]);
     assert_eq!(out(), 1, "the lamp the keeper 99 left is dropped");
-    assert_eq!(dropped(&engine, parent), ["lamp"]);
+    assert_eq!(dropped(&engine, parent), [lamp()]);
 }
 
 #[test]
@@ -350,7 +354,7 @@ fn a_resource_its_receiver_does_not_take_is_dropped_as_its_log_records() {
     let Some(seat) = engine.table().seat(id) else {
         panic!("the keeper 99 is live");
     };
-    assert_eq!(dropped(&engine, Seated { id, seat }), ["lamp"]);
+    assert_eq!(dropped(&engine, Seated { id, seat }), [lamp()]);
 }
 
 #[test]
@@ -365,7 +369,7 @@ fn a_resource_no_mail_carries_or_whose_receiver_has_gone_is_dropped_as_its_giver
     settle(&mut engine);
 
     assert_eq!(out(), 2);
-    assert_eq!(dropped(&engine, giver), ["lamp", "lamp"]);
+    assert_eq!(dropped(&engine, giver), [lamp(), lamp()]);
 }
 
 #[test]
@@ -397,5 +401,5 @@ fn a_resource_given_in_a_turn_that_fails_is_dropped_as_its_givers_log_records() 
 
     assert_eq!(heard, [""; 0]);
     assert_eq!(out(), 1);
-    assert_eq!(dropped(&engine, giver), ["lamp"]);
+    assert_eq!(dropped(&engine, giver), [lamp()]);
 }

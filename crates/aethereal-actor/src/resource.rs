@@ -6,19 +6,18 @@ use aethereal_data::{
 };
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::any::Any;
+use core::any::{self, Any};
 use core::fmt;
 use core::marker::PhantomData;
 
 /// A value that is not data, which one actor owns (ADR-0010).
 ///
 /// A type is a resource because its author says so: nothing a kind's fields
-/// can spell holds what the value is. It is `Send`, since a native host runs
-/// its owner on any of its workers, with what its owner keeps (ADR-0011).
-pub trait Resource: Any + Send {
-    /// What the resource is called where the engine records it, as when it is dropped with mail that did not arrive.
-    const NAME: &'static str;
-}
+/// can spell holds what the value is. It has no methods. It is `Send`, since a
+/// native host runs its owner on any of its workers, with what its owner
+/// keeps (ADR-0011). Its type is told apart by Rust's own type id, where it is
+/// opened, given, or taken.
+pub trait Resource: Any + Send {}
 
 /// An actor's own resource of type `R`: its ticket, which crosses [`Within`] and no other boundary (ADR-0010).
 ///
@@ -65,13 +64,13 @@ impl<R: Resource> Handle<R> {
 
 impl<R: Resource> fmt::Debug for Handle<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Handle<{}>({})", R::NAME, self.ticket)
+        write!(f, "Handle<{}>({})", any::type_name::<R>(), self.ticket)
     }
 }
 
 impl<R: Resource> fmt::Debug for Given<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Given<{}>({})", R::NAME, self.ticket)
+        write!(f, "Given<{}>({})", any::type_name::<R>(), self.ticket)
     }
 }
 
@@ -142,7 +141,7 @@ pub struct Kept {
 impl Kept {
     /// `value`, under the ticket `ticket`.
     fn new<R: Resource>(ticket: u64, value: R) -> Self {
-        Self { ticket, name: R::NAME, value: Box::new(value) }
+        Self { ticket, name: any::type_name::<R>(), value: Box::new(value) }
     }
 
     /// Whether it is the resource of type `R` under the ticket `ticket`.
