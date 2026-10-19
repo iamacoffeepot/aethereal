@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::{
-    Beginning, Carries, Ended, Ending, Fault, How, Item, Mail, MailId, Payload, Protocol, Subscribers, Within,
+    Beginning, Carries, Claim, Claimed, Ended, Ending, Fault, How, Item, Kept, Mail, MailId, NotHeld, Payload,
+    Protocol, Resource, Subscribers, Within,
 };
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
@@ -282,7 +283,7 @@ fn opened<'a, S: Sends>(
     // as the turn lives.
     let instances = Box::leak(Box::default());
 
-    Turning::new(me, path, above, table, &(), asked, instances, Keeps::Nothing, 0, source, CHAIN)
+    Turning::new(me, path, above, table, &(), asked, instances, Keeps::Claimed, 0, source, CHAIN)
         .declaring::<Leaf, S>(poke)
 }
 
@@ -400,7 +401,7 @@ fn begin_and_end_send_as_their_own_actor() {
         let above = Above::Actor(ME, Declared::of::<Leaf>());
         let mut instances = Instances::default();
         let closing =
-            Closing::new(herald.seated(), &path, above, &table, &mut asked, &mut instances, Keeps::Nothing, 0, why);
+            Closing::new(herald.seated(), &path, above, &table, &mut asked, &mut instances, Keeps::Claimed, 0, why);
         let ended = Runs::end(Box::new(Herald), closing);
 
         (ended, asked.into_parts().0.mailed)
@@ -443,7 +444,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
             &(),
             &mut asked,
             &mut instances,
-            Keeps::Nothing,
+            Keeps::Claimed,
             0,
             other,
             CHAIN,
@@ -650,4 +651,34 @@ fn back_to_back_mail_of_one_kind_to_one_receiver_is_one_run() {
     let run = buffers.mailed[0].bytes;
     let alone = buffers.mailed[2].bytes;
     assert_eq!(arena.read(run.piece(2, run.each())), arena.read(alone), "each piece holds a meeting with the third");
+}
+
+/// A resource, which a guest's host holds a guest to the claims of.
+struct Lamp;
+
+impl Resource for Lamp {}
+
+#[test]
+fn a_host_holds_a_guest_to_what_it_claims_of_resources() {
+    // Catches a host that takes a guest's word for what it took, gave, or carried: a resource taken twice, one taken
+    // that came from another sender, one given that it never held, and one carried by mail it did not send.
+    let (other, stranger) = (seated(9, 5), seated(8, 4));
+    let table = Listed::default();
+    let mut asked = Asked::new();
+    let mut instances = Instances::default();
+    let mut keeping = Keeping::default();
+    keeping.arrive(other, MailId { sender: other.id, count: 1 }, Kept::new(7, Lamp));
+    keeping.arrive(stranger, MailId { sender: stranger.id, count: 1 }, Kept::new(8, Lamp));
+    let keeps = Keeps::Here(&mut keeping);
+    let turning =
+        Turning::new(ME, &ROOT, Above::Chassis, &table, &(), &mut asked, &mut instances, keeps, 0, other, CHAIN);
+    let (mut hosted, _) = turning.hosted(Declared::of::<Leaf>(), Role::Others);
+    let claim = |ticket, what| Claim { by: ME, ticket, what };
+
+    assert_eq!(hosted.claim(claim(7, Claimed::Took)), Ok(()));
+    assert_eq!(hosted.claim(claim(7, Claimed::Took)), Err(NotHeld), "a resource is taken once");
+    assert_eq!(hosted.claim(claim(8, Claimed::Took)), Err(NotHeld), "it came from another sender");
+    assert_eq!(hosted.claim(claim(9, Claimed::Gave)), Err(NotHeld), "it was never held");
+    assert_eq!(hosted.claim(claim(7, Claimed::Gave)), Ok(()));
+    assert_eq!(hosted.claim(claim(7, Claimed::Carried { send: 0 })), Err(NotHeld), "no mail was sent");
 }

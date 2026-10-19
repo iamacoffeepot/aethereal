@@ -58,7 +58,10 @@ pub use instances::{Instances, Lent};
 pub use item::Item;
 pub use mail::{Mail, MailId};
 pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Reaches};
-pub use resource::{Carried, Gift, Given, Giver, Handle, Keeping, Keeps, KeepsNothing, Kept, NotHeld, Resource};
+pub use resource::{
+    Carried, Claim, Claimed, Gift, Given, Giver, Handle, Holds, Keeping, Keeps, KeepsNothing, Kept, NotHeld, Resource,
+    Was, carry, is_loose_claim, take_claimed, take_loose_ticket,
+};
 pub use seat::{SeatNumber, Seated, Seats};
 pub use subscribers::Subscribers;
 pub use turn::{

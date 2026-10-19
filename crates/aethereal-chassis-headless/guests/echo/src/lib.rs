@@ -1,8 +1,8 @@
 //! A guest that answers each ping it is sent with a pong, to its sender (ADR-0015).
 
 use aethereal_actor::{
-    Actor, Beginning, BlobId, BlobRef, Ended, Ending, ErasedActorRef, Fault, Handles, How, Level, Refused, To, ToAny,
-    ToSender, ToType, ToWithoutMail, Turn, Watches,
+    Actor, Beginning, BlobId, BlobRef, Ended, Ending, ErasedActorRef, Fault, Given, Handle, Handles, How, Level,
+    Refused, Resource, To, ToAny, ToSender, ToType, ToWithoutMail, Turn, Watches,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindName, Plain};
 
@@ -1147,6 +1147,178 @@ impl Handles<Ping> for Reader {
     }
 }
 
+/// A resource its host makes and a guest passes on: a guest holds only its ticket, and native code reads its light
+/// (ADR-0010).
+pub struct Lamp {
+    pub light: u64,
+}
+
+impl Resource for Lamp {}
+
+/// Lamps handed from one actor to another in mail.
+#[derive(Bound)]
+pub struct Hand {
+    pub lamps: Vec<Given<Lamp>>,
+}
+
+impl Kind for Hand {
+    const NAME: KindName = KindName::new("aether.guest.hand");
+}
+
+/// What a porter is made from: who it passes lamps on to, the lamps it begins with, and how it passes those on.
+#[derive(Bound)]
+pub struct Porting {
+    pub to: ActorPath,
+    pub lamps: Vec<Given<Lamp>>,
+    pub how: u64,
+}
+
+impl Kind for Porting {
+    const NAME: KindName = KindName::new("aether.guest.porting");
+}
+
+/// A guest that passes on every lamp it is given to the actor `to` names, which handles hands of lamps: what comes in
+/// mail it sends on, and what its config holds as `how` says, sending it on for nought, handing it in its config to a
+/// porter it spawns of its own code, which sends it on, for one, and to a bearer, of native code, which it pings to
+/// send it on, for two.
+#[derive(Bound)]
+pub struct Porter {
+    to: ActorPath,
+}
+
+impl Kind for Porter {
+    const NAME: KindName = KindName::new("aether.guest.porter");
+}
+
+impl Porter {
+    /// The actor it passes lamps on to, as one that handles hands of them.
+    fn to(&self, turn: &impl Resolves) -> Result<ErasedActorRef, Fault> {
+        let to = turn.resolve_cast(&self.to);
+
+        to.ok_or_else(|| Fault::new(&Shut).unwrap_or_else(|why| why.into()))
+    }
+}
+
+/// What a porter's turns read to find who they pass lamps on to.
+trait Resolves {
+    /// The actor `path` names, when it is live and handles hands of lamps.
+    fn resolve_cast(&self, path: &ActorPath) -> Option<ErasedActorRef>;
+}
+
+impl<S> Resolves for Beginning<'_, S> {
+    fn resolve_cast(&self, path: &ActorPath) -> Option<ErasedActorRef> {
+        let found = self.resolve(path)?;
+
+        self.cast::<(Hand,)>(found).map(|to| to.erase())
+    }
+}
+
+impl<S> Resolves for Turn<'_, S> {
+    fn resolve_cast(&self, path: &ActorPath) -> Option<ErasedActorRef> {
+        let found = self.resolve(path)?;
+
+        self.cast::<(Hand,)>(found).map(|to| to.erase())
+    }
+}
+
+impl Actor for Porter {
+    type Config = Porting;
+    type Key = u64;
+    type Handles = (Hand,);
+    type BeginSends = (ToAny<(Hand,), Hand>, ToType<Bearer, Ping>);
+    type EndSends = ();
+
+    fn begin(config: Porting, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let Porting { to, lamps, how } = config;
+        let held: Vec<Handle<Lamp>> = lamps.into_iter().map(|lamp| turn.take(lamp)).collect::<Result<_, _>>()?;
+        let porter = Self { to: to.clone() };
+        let has_lamps = !held.is_empty();
+        if !has_lamps {
+            return Ok(porter);
+        }
+        let lamps = held.into_iter().map(|lamp| turn.give(lamp)).collect::<Result<Vec<_>, _>>()?;
+        match how {
+            0 => {
+                let to = porter.to(turn)?;
+                turn.send_to_any(ToWithoutMail::Held(to), &Hand { lamps })?;
+            }
+            1 => {
+                let spawned = turn.spawn::<Self>(&1, Porting { to, lamps, how: 0 });
+                spawned.map_err(|why| unhatched(&why))?;
+            }
+            _ => {
+                let spawned = turn.spawn::<Bearer>(&0, Porting { to, lamps, how: 0 });
+                let bearer = spawned.map_err(|why| unhatched(&why))?;
+                turn.send_to(bearer, &Ping { n: 0 })?;
+            }
+        }
+
+        Ok(porter)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Hand> for Porter {
+    type Sends = (ToAny<(Hand,), Hand>,);
+
+    fn handle(&mut self, hand: Hand, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let held: Vec<Handle<Lamp>> = hand.lamps.into_iter().map(|lamp| turn.take(lamp)).collect::<Result<_, _>>()?;
+        let lamps = held.into_iter().map(|lamp| turn.give(lamp)).collect::<Result<Vec<_>, _>>()?;
+        let to = self.to(turn)?;
+        turn.send_to_any(To::Held(to), &Hand { lamps })?;
+
+        Ok(())
+    }
+}
+
+/// A native actor the guest's crate holds but its blob does not make, which a porter spawns: it takes the lamps its
+/// config holds as its host begins it, and keeps them until it is pinged, when it sends them on to the actor `to`
+/// names.
+#[derive(Bound)]
+pub struct Bearer {
+    to: ActorPath,
+    lamps: Vec<Handle<Lamp>>,
+}
+
+impl Kind for Bearer {
+    const NAME: KindName = KindName::new("aether.guest.bearer");
+}
+
+impl Actor for Bearer {
+    type Config = Porting;
+    type Key = u64;
+    type Handles = (Ping,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(config: Porting, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let Porting { to, lamps, .. } = config;
+        let lamps = lamps.into_iter().map(|lamp| turn.take(lamp)).collect::<Result<_, _>>()?;
+
+        Ok(Self { to, lamps })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Bearer {
+    type Sends = (ToAny<(Hand,), Hand>,);
+
+    fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let held = core::mem::take(&mut self.lamps);
+        let lamps = held.into_iter().map(|lamp| turn.give(lamp)).collect::<Result<Vec<_>, _>>()?;
+        let to = turn.resolve_cast(&self.to).ok_or_else(|| Fault::new(&Shut).unwrap_or_else(|why| why.into()))?;
+        turn.send_to_any(To::Held(to), &Hand { lamps })?;
+
+        Ok(())
+    }
+}
+
 aethereal_actor::guest!(
     Echo,
     Mirror,
@@ -1166,5 +1338,6 @@ aethereal_actor::guest!(
     Parting,
     Archive,
     Reader,
-    Caster
+    Caster,
+    Porter
 );

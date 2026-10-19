@@ -7,8 +7,8 @@
 //! [`OutHead`], a [`TurnEnds`] for each turn it ran, then a [`SendRecord`] for
 //! each piece of mail its turns sent, a [`LineRecord`] for each line they
 //! logged, a [`SpawnRecord`] for each child they spawned, a [`StoodRecord`]
-//! for each child that began, and a [`WatchRecord`] for each actor they
-//! watched; and, for the call as a whole, a [`PinRecord`] for each blob whose
+//! for each child that began, a [`WatchRecord`] for each actor they
+//! watched, and a [`ClaimRecord`] for each claim they made of a resource; and, for the call as a whole, a [`PinRecord`] for each blob whose
 //! pins it changed, and a [`RefRecord`] for each reference in what it sent. A send's bytes, a line's text, a key and a moved
 //! child's state are not copied out: each record says where they lie in the
 //! guest's memory, and the host reads them there. Sends and lines say who made
@@ -22,7 +22,7 @@
 //! Every number is little-endian, and every address is one in the guest's
 //! 32-bit memory.
 
-use crate::{BlobId, Chain, Fault, Level, MailId, Refused, SeatNumber, Seated, Why};
+use crate::{BlobId, Chain, Claim, Claimed, Fault, Level, MailId, Refused, SeatNumber, Seated, Why};
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
 use alloc::vec::Vec;
 
@@ -124,7 +124,7 @@ pub struct OutHead {
     pub ran: u32,
     pub stopped: Stopped,
     /// Where the turns' [`TurnEnds`], [`SendRecord`]s, [`LineRecord`]s, [`SpawnRecord`]s, [`StoodRecord`]s and
-    /// [`WatchRecord`]s begin.
+    /// [`WatchRecord`]s begin. The [`ClaimRecord`]s follow the last watch: [`Self::claims_at`] says where.
     pub turns_at: u32,
     pub sends_at: u32,
     pub lines_at: u32,
@@ -209,10 +209,19 @@ impl OutHead {
             refs: u32_at(head, 60)?,
         })
     }
+
+    /// Where the call's [`ClaimRecord`]s begin, right after its `watches` watches: how many its last turn's
+    /// [`TurnEnds`] count. Claims are seldom made, so the head keeps no room for where they lie (ADR-0010).
+    #[must_use]
+    pub fn claims_at(&self, watches: u32) -> Option<u32> {
+        let span = watches.checked_mul(u32::try_from(WatchRecord::BYTES).ok()?)?;
+
+        self.watches_at.checked_add(span)
+    }
 }
 
-/// Where one turn's records end: how many sends, lines, spawns, children stood up and watches the turns up to and
-/// including it asked for.
+/// Where one turn's records end: how many sends, lines, spawns, children stood up, watches and claims the turns up to
+/// and including it asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TurnEnds {
     pub sends: u32,
@@ -220,11 +229,12 @@ pub struct TurnEnds {
     pub spawns: u32,
     pub stood: u32,
     pub watches: u32,
+    pub claims: u32,
 }
 
 impl TurnEnds {
     /// How many bytes it is.
-    pub const BYTES: usize = 20;
+    pub const BYTES: usize = 24;
 
     /// It, as the out buffer holds it.
     #[must_use]
@@ -234,7 +244,8 @@ impl TurnEnds {
         out[4..8].copy_from_slice(&self.lines.to_le_bytes());
         out[8..12].copy_from_slice(&self.spawns.to_le_bytes());
         out[12..16].copy_from_slice(&self.stood.to_le_bytes());
-        out[16..].copy_from_slice(&self.watches.to_le_bytes());
+        out[16..20].copy_from_slice(&self.watches.to_le_bytes());
+        out[20..].copy_from_slice(&self.claims.to_le_bytes());
 
         out
     }
@@ -248,6 +259,7 @@ impl TurnEnds {
             spawns: u32_at(bytes, 8)?,
             stood: u32_at(bytes, 12)?,
             watches: u32_at(bytes, 16)?,
+            claims: u32_at(bytes, 20)?,
         })
     }
 }
@@ -348,6 +360,8 @@ pub struct Spawning {
     pub config: Vec<u8>,
     /// Where each reference in the config begins.
     pub refs: Vec<u32>,
+    /// The tickets of the resources the config holds, which the host hands the child as it begins it (ADR-0010).
+    pub carried: Vec<u64>,
 }
 
 /// The code of a child a guest asks its host to begin: a native kind the program keeps by name, or a blob's.
@@ -575,6 +589,50 @@ impl WatchRecord {
     #[must_use]
     pub fn read(bytes: &[u8]) -> Option<Self> {
         Some(Self { by: seated_at(bytes, 0)?, of: seated_at(bytes, 16)? })
+    }
+}
+
+/// A claim a turn made of a resource, or the `begin` of a child it spawned, as [`Claim`] says (ADR-0010).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClaimRecord(pub Claim);
+
+impl ClaimRecord {
+    /// How many bytes it is.
+    pub const BYTES: usize = 32;
+
+    /// It, as the out buffer holds it.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::BYTES] {
+        let Claim { by, ticket, what } = self.0;
+        let (what, send) = match what {
+            Claimed::Took => (0_u32, 0),
+            Claimed::TookConfig => (1, 0),
+            Claimed::Gave => (2, 0),
+            Claimed::Carried { send } => (3, send),
+            Claimed::Configured => (4, 0),
+        };
+        let mut out = [0; Self::BYTES];
+        out[..16].copy_from_slice(&seated_bytes(by));
+        out[16..24].copy_from_slice(&ticket.to_le_bytes());
+        out[24..28].copy_from_slice(&what.to_le_bytes());
+        out[28..].copy_from_slice(&send.to_le_bytes());
+
+        out
+    }
+
+    /// The record `bytes` begin with: nothing when they are too few, or name no claim.
+    #[must_use]
+    pub fn read(bytes: &[u8]) -> Option<Self> {
+        let what = match u32_at(bytes, 24)? {
+            0 => Claimed::Took,
+            1 => Claimed::TookConfig,
+            2 => Claimed::Gave,
+            3 => Claimed::Carried { send: u32_at(bytes, 28)? },
+            4 => Claimed::Configured,
+            _ => return None,
+        };
+
+        Some(Self(Claim { by: seated_at(bytes, 0)?, ticket: u64_at(bytes, 16)?, what }))
     }
 }
 

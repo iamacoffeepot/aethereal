@@ -403,3 +403,17 @@ fn a_resource_given_in_a_turn_that_fails_is_dropped_as_its_givers_log_records() 
     assert_eq!(out(), 1);
     assert_eq!(dropped(&engine, giver), [lamp()]);
 }
+
+#[test]
+fn every_resource_has_a_ticket_no_other_resource_of_the_engine_has() {
+    // Catches tickets each writer counts alike, so a resource the chassis handed in and one kept in a turn share a
+    // ticket, and the owner of both opens one through the handle to the other.
+    let mut engine = engine(0);
+    let lamp = engine.hand(Lamp { light: 8 });
+    add(&mut engine, 1, vec![lamp], &["make 5", "shine"]);
+    said();
+
+    let heard = settle(&mut engine);
+
+    assert_eq!(heard, ["1 shines 8", "1 shines 5"]);
+}

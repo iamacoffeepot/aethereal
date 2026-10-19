@@ -3,8 +3,8 @@
 #[cfg(feature = "std")]
 use crate::ActorsWriter;
 use crate::{
-    Above, Actor, Actors, ActorsReader, Asked, Beginning, BlobId, BlobType, Declared, Fault, Instances, Keeps, Refused,
-    Runs, Seated, Table,
+    Above, Actor, Actors, ActorsReader, Asked, Beginning, BlobId, BlobType, Declared, Fault, Instances, Keeping, Keeps,
+    Refused, Runs, Seated, Table,
 };
 use aethereal_data::{ActorPath, Budget, Decode, KindName, Reader};
 #[cfg(feature = "std")]
@@ -77,8 +77,9 @@ impl Guests for NoGuests {
 
 /// What a child begun from a blob is lent as it begins, in the turn that spawns it or as a root between steps: who
 /// it is, where it stands and what is above it, the table, what the turn has asked for so far, its part's
-/// instances, and the pins on the blobs its config refers to, each at where its reference begins, for code that
-/// takes pins of its own as it reads them (ADR-0014).
+/// instances, the pins on the blobs its config refers to, each at where its reference begins, for code that
+/// takes pins of its own as it reads them (ADR-0014), where what it keeps is kept, and the tickets of the resources
+/// its config holds (ADR-0010).
 pub struct Birth<'a> {
     pub me: Seated,
     pub path: &'a ActorPath,
@@ -88,6 +89,8 @@ pub struct Birth<'a> {
     pub instances: &'a mut Instances,
     #[cfg(feature = "std")]
     pub refers: &'a [crate::Held],
+    pub keeping: &'a mut Keeping,
+    pub carried: &'a [u64],
 }
 
 /// The native actor types a program keeps by name, which a guest spawns by naming its kind, and its host begins
@@ -128,20 +131,21 @@ fn begin_linked<A: Actor>(config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Run
     let mut budget = Budget::new(birth.instances.read_limit());
     let mut reader = Reader::<Actors>::new(config, &mut budget, ActorsReader::new());
     let config = A::Config::decode(&mut reader).map_err(|error| Refused::Began(Fault::from(error)))?;
-    let Birth { me, path, above, table, asked, instances, .. } = birth;
-    // A native child its host begins for a guest keeps nothing yet: what it kept could not reach its seat.
-    let mut beginning = Beginning::beneath::<A>(me, path, above, table, asked, instances, Keeps::Nothing);
+    let Birth { me, path, above, table, asked, instances, keeping, .. } = birth;
+    let mut beginning = Beginning::beneath::<A>(me, path, above, table, asked, instances, Keeps::Here(keeping));
     let actor = A::begin(config, &mut beginning);
 
     Ok(Box::new(actor.map_err(Refused::Began)?))
 }
 
-/// A config for a child begun in other code, as it crosses to that code at [`Actors`]: its bytes, and the pins on the
-/// blobs it refers to, each at where its reference begins, kept until the child's code has taken its own (ADR-0014).
+/// A config for a child begun in other code, as it crosses to that code at [`Actors`]: its bytes, the pins on the
+/// blobs it refers to, each at where its reference begins, kept until the child's code has taken its own (ADR-0014),
+/// and the tickets of the resources it holds (ADR-0010).
 #[cfg(feature = "std")]
 pub struct Config {
     pub bytes: Vec<u8>,
     pub held: Vec<crate::Held>,
+    pub carried: Vec<u64>,
 }
 
 /// `config`, a config for a child begun in other code, as it crosses to that code.
@@ -152,11 +156,12 @@ pub struct Config {
 #[cfg(feature = "std")]
 pub fn config_bytes<C: Encode<Actors>>(config: &C) -> Result<Config, EncodeError> {
     let mut held = Vec::new();
-    let mut out = Writer::<Actors>::new(ActorsWriter::new(&mut held));
+    let mut carried = Vec::new();
+    let mut out = Writer::<Actors>::new(ActorsWriter::carrying(&mut held, &mut carried));
     config.encode(&mut out)?;
     let bytes = out.into_bytes();
 
-    Ok(Config { bytes, held })
+    Ok(Config { bytes, held, carried })
 }
 
 /// Why a blob was not taken in as code.

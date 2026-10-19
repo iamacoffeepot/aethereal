@@ -22,8 +22,8 @@
 //! blob, its hash, and a put are calls out.
 
 use crate::records::{
-    self, Born, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, Other, OutHead, Parent, PinRecord, RefRecord,
-    SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds, WatchRecord,
+    self, Born, ClaimRecord, Gone, Handed, ItemHead, Kept, Keying, LineRecord, Naming, Other, OutHead, Parent,
+    PinRecord, RefRecord, SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds, WatchRecord,
 };
 use crate::section;
 use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Ended, Fault, How, Item};
@@ -208,7 +208,7 @@ fn begin<A: Actor>(
     let config = A::Config::decode(&mut reader)?;
     let Standing { path, above } = standing;
     // A guest's code keeps nothing (ADR-0010, ADR-0015).
-    let mut beginning = Beginning::beneath::<A>(me, path, *above, host, asked, instances, Keeps::Nothing);
+    let mut beginning = Beginning::beneath::<A>(me, path, *above, host, asked, instances, Keeps::Claimed);
     let actor = A::begin(config, &mut beginning)?;
 
     Ok(Box::new(actor))
@@ -387,7 +387,7 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
             TURN.set(ran);
             stood_before = asked.stood_count();
             let Standing { path, above } = &*standing;
-            let keeps = Keeps::Nothing;
+            let keeps = Keeps::Claimed;
             let turning = Turning::new(*me, path, *above, &host, &host, asked, instances, keeps, 0, source, chain);
             let result = runs.turn(item, turning);
             write_ends(out, asked, &mut counted);
@@ -597,6 +597,10 @@ impl Guest {
         for watch in watches {
             out.extend_from_slice(&watch.to_bytes());
         }
+        // Right after the last watch, where its host finds them (ADR-0015).
+        for claim in asked.claims() {
+            out.extend_from_slice(&ClaimRecord(*claim).to_bytes());
+        }
         // Where its mail's references lie is written, and its host pins them itself, so the guest's own pins go now and
         // count among the call's changes.
         if refers {
@@ -754,7 +758,7 @@ pub fn end_at(types: &[Type], calls: &'static Calls, handle: u32, why: u32) -> u
         let host = Host::new(calls);
         let Guest { asked, instances, out, .. } = &mut *guest;
         let Standing { path, above } = &standing;
-        let ended = runs.end(Closing::new(me, path, *above, &host, asked, instances, Keeps::Nothing, 0, why));
+        let ended = runs.end(Closing::new(me, path, *above, &host, asked, instances, Keeps::Claimed, 0, why));
         write_ends(out, asked, &mut Counted::default());
         let last = match ended {
             Ok(()) => Last::Ran,
@@ -829,6 +833,7 @@ fn write_ends(out: &mut Vec<u8>, asked: &Asked, counted: &mut Counted) {
     *effects = asked.effects().len();
     ends.lines = count(asked.lines().len());
     ends.stood = count(asked.stood_count());
+    ends.claims = count(asked.claims().len());
     out.extend_from_slice(&ends.to_bytes());
 }
 
@@ -936,6 +941,7 @@ impl Calling {
             declared: section::of(declared),
             config: config.to_vec(),
             refs: birth.refers.iter().map(|(at, _)| *at).collect(),
+            carried: birth.carried.to_vec(),
         };
         let bytes = to_bytes(&spawning).map_err(|_| Refused::NotMade)?;
         let answer = (self.calls.spawn)(address(bytes.as_ptr()), count(bytes.len()));
