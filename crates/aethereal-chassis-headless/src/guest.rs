@@ -63,8 +63,6 @@ struct Compiled {
 /// of the blob from. Cloning it shares the compiled code.
 #[derive(Clone)]
 struct Code {
-    /// The blob it was compiled from, which each of its actors pins while it runs (ADR-0009).
-    blob: BlobId,
     /// Each type it makes, of its blob, as the engine names it in a spawn, in the order the section lists them: kept
     /// for as long as the process runs, as what they declare is.
     types: Arc<[&'static BlobType]>,
@@ -76,6 +74,15 @@ struct Code {
     /// The module, with the calls out it imports linked in.
     module: InstancePre<Lending>,
     made: Arc<[&'static Declared]>,
+}
+
+/// Code an actor runs on, and the pin on its blob that keeps the blob while the actor runs (ADR-0009): a clone of
+/// the one the engine handed as the actor began, or of its spawner's, as its blob is the same.
+#[derive(Clone)]
+struct Running {
+    code: Code,
+    #[expect(dead_code, reason = "a pin is held for as long as it lives, and never read")]
+    pin: BlobRef,
 }
 
 /// The key the next code compiled takes. Atomic, as runtimes serving any engine compile at once, and each code's key
@@ -178,10 +185,7 @@ enum Foreign {
 /// An actor whose code runs in a guest's instance, as the engine holds it: the instance is its part's, which it
 /// takes from what its part lends each batch and turn.
 struct Guest {
-    code: Code,
-    /// The pin on its code's blob, which the engine keeps while the actor runs on it (ADR-0009).
-    #[expect(dead_code, reason = "a pin is held for as long as it lives, and never read")]
-    pin: BlobRef,
+    running: Running,
     me: Seated,
     lives: Lives,
     declared: &'static Declared,
@@ -252,7 +256,7 @@ impl Runtime {
 
         let types = made.iter().map(|&declared| &*Box::leak(Box::new(BlobType { blob, declared }))).collect();
 
-        Ok(Code { blob, types, codes: Arc::downgrade(&self.codes), key, module, made })
+        Ok(Code { types, codes: Arc::downgrade(&self.codes), key, module, made })
     }
 
     /// Compiles `bytes` as guest code, and reads what it makes: refused when it is not fit to run.
@@ -651,7 +655,9 @@ impl<'a> Answering<'a> {
                 Ok((aethereal_actor::Code::Linked(link.declared), (link.begin)(&spawning.config, birth)?))
             }
             Other::Blob { engine, bits } => {
-                let blob = BlobId::new(engine, bits);
+                // The guest spawns only from code it holds a reference to, as a native turn does.
+                let pin = self.knows(BlobId::new(engine, bits)).ok_or(Refused::NotMade)?;
+                let blob = pin.id();
                 let codes = self.codes.upgrade().ok_or(Refused::NotMade)?;
                 let made = codes.read().ok().and_then(|codes| codes.get(&blob)?.of_kind(&spawning.kind));
                 let made = made.ok_or(Refused::NotMade)?;
@@ -663,7 +669,7 @@ impl<'a> Answering<'a> {
                 let instances = &mut *self.instances;
                 let birth = Birth { me, path, above, table, asked, instances, refers, keeping, carried };
 
-                Ok((aethereal_actor::Code::Blob(made), guests.begin(made, &spawning.config, birth)?))
+                Ok((aethereal_actor::Code::Blob(made), guests.begin(&pin, made, &spawning.config, birth)?))
             }
         }
     }
@@ -922,9 +928,17 @@ impl Guests for Runtime {
     /// Begins the child in its part's instance of the blob: its `begin` runs there, handed where it stands and its
     /// config, and what it asked for is read back as a root's or a child's `begin` is (ADR-0015). Refused while that
     /// instance is lent to a call into it that is under way.
-    fn begin(&self, made: &'static BlobType, config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Runs>, Refused> {
-        let BlobType { blob, declared } = *made;
+    fn begin(
+        &self,
+        pin: &BlobRef,
+        made: &'static BlobType,
+        config: &[u8],
+        birth: Birth<'_>,
+    ) -> Result<Box<dyn Runs>, Refused> {
+        let (blob, declared) = (pin.id(), made.declared);
         let code = self.codes.read().ok().and_then(|codes| codes.get(&blob).cloned()).ok_or(Refused::NotMade)?;
+        let running = Running { code, pin: pin.clone() };
+        let code = &running.code;
         let (of, _) = code.made_of(declared.id()).ok_or(Refused::NotMade)?;
         let Birth { me, path, above, table, asked, instances, refers, keeping, .. } = birth;
         let parent = match above {
@@ -937,7 +951,7 @@ impl Guests for Runtime {
         let handed: Vec<u8> = count(born.len()).to_le_bytes().into_iter().chain(born).chain(config.to_vec()).collect();
 
         let read_limit = instances.read_limit();
-        let mut held = instances.lend(code.key, || Instance::load(&code, read_limit))?;
+        let mut held = instances.lend(code.key, || Instance::load(code, read_limit))?;
         let (seats, puts, _, gifts) = asked.lent_gifts();
         let holds = Holds { keeping: &mut *keeping, gifts };
         let reads = Reads { table, made: &(), seats, puts, holds };
@@ -958,7 +972,7 @@ impl Guests for Runtime {
             let Instance { store, memory, actors, holdings, .. } = &mut *held;
             let data = memory.data(&*store);
             let ends = TurnEnds::default();
-            let replayed = replay(data, &code, &wrote, 0, ends, &mut given, holdings, actors, &mut hosted)?;
+            let replayed = replay(data, &running, &wrote, 0, ends, &mut given, holdings, actors, &mut hosted)?;
             Ok((handle, replayed))
         });
         given.give_back(|seat| hosted.give_back(seat));
@@ -992,8 +1006,7 @@ impl Guests for Runtime {
         };
         instances.put_back(code.key, held);
 
-        let pin = BlobRef::pin(code.blob);
-        Ok(Box::new(Guest { code, pin, me, lives, declared, ran: Ran::Nothing, given: Given::default() }))
+        Ok(Box::new(Guest { running, me, lives, declared, ran: Ran::Nothing, given: Given::default() }))
     }
 }
 
@@ -1009,7 +1022,7 @@ impl Guest {
             Lives::In { handle } => *handle,
             Lives::Out { state, carried } => {
                 // The actor's type is one its code makes, as it began from that code.
-                let (of, _) = self.code.made_of(self.declared.id()).ok_or(Broke::Garbled)?;
+                let (of, _) = self.running.code.made_of(self.declared.id()).ok_or(Broke::Garbled)?;
                 let handle = held.take_in(of, self.me, state, carried)?;
                 held.actors.push(self.me);
                 self.lives = Lives::In { handle };
@@ -1029,7 +1042,7 @@ impl Guest {
         let (Ran::At { head, before, .. }, Ran::At { before: ends, .. }) = (was, ran) else {
             return;
         };
-        let Some(held) = instances.get::<Instance>(self.code.key) else {
+        let Some(held) = instances.get::<Instance>(self.running.code.key) else {
             return;
         };
         let data = held.memory.data(&held.store);
@@ -1064,14 +1077,15 @@ impl Runs for Guest {
         let (batch, instances, reads) = preparing.hosted();
         // The engine prepares no batch while a call into a guest is under way, so the instance is never lent out here.
         let read_limit = instances.read_limit();
-        let Ok(mut held) = instances.lend(self.code.key, || Instance::load(&self.code, read_limit)) else {
+        let Ok(mut held) = instances.lend(self.running.code.key, || Instance::load(&self.running.code, read_limit))
+        else {
             self.ran = Ran::Broke(Broke::Trapped);
             return;
         };
         let handle = match self.handle_in(&mut held) {
             Ok(handle) => handle,
             Err(broke) => {
-                instances.put_back(self.code.key, held);
+                instances.put_back(self.running.code.key, held);
                 self.ran = Ran::Broke(broke);
                 return;
             }
@@ -1080,7 +1094,7 @@ impl Runs for Guest {
         let mut holdings = mem::take(&mut held.holdings);
         let Reads { table, made, seats, puts, holds } = reads;
         let lent = Reads { table, made, seats: &mut *seats, puts, holds };
-        let mut answering = Answering::of(lent, &mut *instances, &self.code.codes, &mut self.given, &holdings);
+        let mut answering = Answering::of(lent, &mut *instances, &self.running.code.codes, &mut self.given, &holdings);
         let Instance { store, turns, .. } = &mut *held;
         let called = lending(store, &mut answering, |store| turns.call(store, (handle, items, len)));
         let wrote = called.map_err(|_| Broke::Trapped).and_then(|out| held.out_head(out));
@@ -1091,7 +1105,7 @@ impl Runs for Guest {
         let wrote = wrote.and_then(|wrote| held.take_pins(&wrote, &mut holdings, given).map(|()| wrote));
         let wrote = wrote.and_then(|wrote| held.take_holders(&wrote, &[]).map(|()| wrote));
         held.holdings = holdings;
-        instances.put_back(self.code.key, held);
+        instances.put_back(self.running.code.key, held);
         self.ran = match wrote {
             Ok(wrote) => Ran::At { head: wrote, next: 0, before: TurnEnds::default() },
             Err(broke) => {
@@ -1117,9 +1131,9 @@ impl Runs for Guest {
         let (mut hosted, instances) = turning.hosted(self.declared, role);
         let replayed = match self.ran {
             Ran::At { head, next, before } => {
-                let Instance { store, memory, actors, holdings, .. } = self.code.instance(instances);
+                let Instance { store, memory, actors, holdings, .. } = self.running.code.instance(instances);
                 let data = memory.data(&*store);
-                replay(data, &self.code, &head, next, before, &mut self.given, holdings, actors, &mut hosted)
+                replay(data, &self.running, &head, next, before, &mut self.given, holdings, actors, &mut hosted)
                     .map(|(replayed, ends)| (replayed, Ran::At { head, next: next + 1, before: ends }))
             }
             // The engine hands back no turn of a batch it did not prepare: were it to, no record of the turn would be
@@ -1133,10 +1147,10 @@ impl Runs for Guest {
                 self.ran = Ran::Broke(broke);
                 self.given.give_back(|seat| hosted.give_back(seat));
                 // What the broken call left in the instance's memory cannot be trusted, so nothing runs in it again.
-                if let Some(held) = instances.get::<Instance>(self.code.key) {
+                if let Some(held) = instances.get::<Instance>(self.running.code.key) {
                     hosted.broken(broke, held.actors.iter().copied());
                 }
-                instances.drop_instance::<Instance>(self.code.key);
+                instances.drop_instance::<Instance>(self.running.code.key);
                 return Err(broke.fault());
             }
         };
@@ -1160,7 +1174,7 @@ impl Runs for Guest {
     /// closing turn: the trap left its state half changed (ADR-0015).
     fn end(mut self: Box<Self>, closing: aethereal_actor::Closing<'_>) -> Result<(), Fault> {
         let (mut hosted, why, instances) = closing.hosted(self.declared);
-        let key = self.code.key;
+        let key = self.running.code.key;
         let is_in = matches!(self.lives, Lives::In { .. });
         let has_instance = instances.get::<Instance>(key).is_some();
         let was_trapped = is_in && !has_instance;
@@ -1170,7 +1184,7 @@ impl Runs for Guest {
         // The engine runs no closing turn while a call into a guest is under way, so the instance is never lent out
         // here.
         let read_limit = instances.read_limit();
-        let Ok(mut held) = instances.lend(key, || Instance::load(&self.code, read_limit)) else {
+        let Ok(mut held) = instances.lend(key, || Instance::load(&self.running.code, read_limit)) else {
             return Ok(());
         };
         let handle = match self.handle_in(&mut held) {
@@ -1190,7 +1204,7 @@ impl Runs for Guest {
         let (mut keeping, mut gifts) = (Keeping::default(), Vec::new());
         let holds = Holds { keeping: &mut keeping, gifts: &mut gifts };
         let reads = Reads { table, made: &(), seats, puts, holds };
-        let mut answering = Answering::of(reads, instances, &self.code.codes, &mut given, &holdings);
+        let mut answering = Answering::of(reads, instances, &self.running.code.codes, &mut given, &holdings);
         let wrote = held.end(handle, why, &mut answering);
         let wrote = wrote.and_then(|wrote| held.take_pins(&wrote, &mut holdings, &given).map(|()| wrote));
         let wrote = wrote.and_then(|wrote| held.take_holders(&wrote, &[]).map(|()| wrote));
@@ -1199,7 +1213,7 @@ impl Runs for Guest {
         let replayed = wrote.and_then(|wrote| {
             let Instance { store, memory, actors, holdings, .. } = &mut *held;
             let data = memory.data(&*store);
-            replay(data, &self.code, &wrote, 0, TurnEnds::default(), &mut given, holdings, actors, &mut hosted)
+            replay(data, &self.running, &wrote, 0, TurnEnds::default(), &mut given, holdings, actors, &mut hosted)
         });
         let (ended, _) = match replayed {
             Ok(replayed) => replayed,
@@ -1565,7 +1579,7 @@ impl Instance {
 #[allow(clippy::too_many_arguments, reason = "what a replay reads and what it hands back to, each its own")]
 fn replay(
     data: &[u8],
-    code: &Code,
+    running: &Running,
     head: &OutHead,
     next: u32,
     before: TurnEnds,
@@ -1575,7 +1589,7 @@ fn replay(
     hosted: &mut Hosted<'_>,
 ) -> Result<(Result<(), Fault>, TurnEnds), Broke> {
     let actors_before = actors.len();
-    let replayed = replay_records(data, code, head, next, before, given, holdings, actors, hosted);
+    let replayed = replay_records(data, running, head, next, before, given, holdings, actors, hosted);
     // A failed turn's children are dropped by the engine, and never live in the instance; nor do those of a turn whose
     // records do not read back.
     let has_more = actors.len() > actors_before;
@@ -1591,7 +1605,7 @@ fn replay(
 #[allow(clippy::too_many_arguments, reason = "what a replay reads and what it hands back to, each its own")]
 fn replay_records(
     data: &[u8],
-    code: &Code,
+    running: &Running,
     head: &OutHead,
     next: u32,
     before: TurnEnds,
@@ -1607,7 +1621,7 @@ fn replay_records(
     let ends = record(data, head.turns_at, next, TurnEnds::BYTES).and_then(TurnEnds::read).ok_or(Broke::Garbled)?;
     let spawns = ends.spawns > before.spawns;
     if spawns {
-        spawn(data, code, head, before, ends, given, hosted)?;
+        spawn(data, &running.code, head, before, ends, given, hosted)?;
     }
     // Each child of other code is handed over before the turn's sends are checked, which may be to it.
     let has_births = !given.births.is_empty();
@@ -1647,7 +1661,7 @@ fn replay_records(
     }
     let stands = ends.stood > before.stood;
     if stands {
-        stand(data, code, head, before, ends, given, holdings, actors, hosted)?;
+        stand(data, running, head, before, ends, given, holdings, actors, hosted)?;
     }
     for index in before.watches..ends.watches {
         let watch = record(data, head.watches_at, index, WatchRecord::BYTES)
@@ -1801,7 +1815,7 @@ fn spawn(
 #[allow(clippy::too_many_arguments, reason = "what a replay reads and what it hands back to, each its own")]
 fn stand(
     data: &[u8],
-    code: &Code,
+    running: &Running,
     head: &OutHead,
     before: TurnEnds,
     ends: TurnEnds,
@@ -1838,15 +1852,7 @@ fn stand(
                 Lives::Out { state: state.to_vec(), carried }
             }
         };
-        let runs = Guest {
-            code: code.clone(),
-            pin: BlobRef::pin(code.blob),
-            me,
-            lives,
-            declared,
-            ran: Ran::Nothing,
-            given: Given::default(),
-        };
+        let runs = Guest { running: running.clone(), me, lives, declared, ran: Ran::Nothing, given: Given::default() };
         hosted.stand(me, Box::new(runs)).ok_or(Broke::Garbled)?;
     }
 
@@ -4358,14 +4364,17 @@ mod tests {
         let Some(parts) = NonZeroUsize::new(1) else {
             panic!("one is not zero");
         };
-        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let runtime = Arc::new(Runtime::default());
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_guests(Arc::clone(&runtime) as Arc<dyn Guests>);
+        let Ok(code) = engine.put_code(ECHO.to_vec()) else {
+            panic!("the echo guest is fit to run");
+        };
         let id = code.id();
+        let echo = Declared::of::<echo::Echo>();
+        let was_made = runtime.made(id, echo).is_some();
         drop(code);
         engine.step(&Monotonic::new());
 
-        let code = BlobRef::pin(id);
-        let refused = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig);
-
-        assert_eq!(refused.err(), Some(Refused::NotMade));
+        assert_eq!((was_made, runtime.made(id, echo).is_some()), (true, false));
     }
 }

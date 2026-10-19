@@ -216,7 +216,13 @@ mod pinned {
     /// A clone is one more pin, and a drop takes one away. Neither changes a
     /// count other threads read: each is noted in a buffer its thread keeps, and
     /// the engine sums the notes when its step folds.
+    ///
+    /// Only this crate makes one from an id: a put, a clone, and a read out of
+    /// bytes that hold its pin are the only ways one comes to be (ADR-0014). It
+    /// is laid out as its id, so code that must stand in for a guest that
+    /// does not keep the rules, as a test's does, forges one only by `unsafe`.
     #[derive(Debug, PartialEq, Eq)]
+    #[repr(transparent)]
     pub struct BlobRef {
         id: BlobId,
     }
@@ -224,9 +230,10 @@ mod pinned {
     impl BlobRef {
         /// A new pin on the blob `id` names.
         ///
-        /// For the engine, which pins a blob as it is put and as a reference to it is read out of bytes.
+        /// For the engine, which pins a blob as it is put and as a reference to it is read out of bytes that hold
+        /// its pin: no code outside it names a blob it was not given.
         #[must_use]
-        pub fn pin(id: BlobId) -> Self {
+        pub(crate) fn pin(id: BlobId) -> Self {
             pins::change(id, 1);
 
             Self { id }
