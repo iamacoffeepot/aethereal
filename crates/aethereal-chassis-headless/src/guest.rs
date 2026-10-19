@@ -1108,6 +1108,7 @@ impl Runs for Guest {
             Item::Mail(_) => Role::Others,
             Item::Ended(_) => Role::Ended,
             Item::Answer { mail, .. } => Role::Answer(mail.kind()),
+            Item::Unanswered { asking, .. } => Role::Answer(asking.answer),
         };
         let (mut hosted, instances) = turning.hosted(self.declared, role);
         let replayed = match self.ran {
@@ -1400,7 +1401,9 @@ impl Instance {
             let (handed, bytes) = match &peeked.item {
                 // A batch is read before its turns run, which is where an answer is told from its mail, so an answer is
                 // handed in as the mail it is (ADR-0017).
-                Item::Mail(mail) | Item::Answer { mail, .. } => (Handed::Mail { kind: mail.kind() }, mail.bytes()),
+                Item::Mail(mail) | Item::Answer { mail, .. } | Item::Unanswered { mail, .. } => {
+                    (Handed::Mail { kind: mail.kind() }, mail.bytes())
+                }
                 Item::Ended(ended) => match ended.how() {
                     How::Closed => (Handed::Ended(Gone::Closed), &[][..]),
                     How::Failed(fault) => (Handed::Ended(Gone::Failed { kind: fault.kind() }), fault.bytes()),

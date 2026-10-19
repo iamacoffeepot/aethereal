@@ -2,10 +2,10 @@
 //! (ADR-0017).
 
 use super::super::*;
-use super::{Answering, Waiting};
+use super::{Answering, Waiting, owed};
 use aethereal_actor::{
-    Answer, Answered, Asking, Asks, Carries, Ending, Fault, Handles, Protocol, Tie, To, ToSender, ToType,
-    ToWithoutMail, Turn,
+    ActorRef, Answer, Answered, Asking, Asks, Carries, Ending, Fault, Handles, Protocol, Tie, To, ToSender, ToType,
+    ToWithoutMail, Turn, Unanswered,
 };
 use aethereal_data::{Bound, EncodeError, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
@@ -68,7 +68,8 @@ impl Carries<WhichTile> for Tiles {
     type Answers = (TileIs,);
 }
 
-/// A board: it answers which tile is at `x` with ten times `x`, and at `7` answers twice.
+/// A board: it answers which tile is at `x` with ten times `x`, but at `0` fails, at `1` answers nothing, at `2`
+/// answers and closes, at `7` answers twice, and from `100` replies `x - 100` times with `x` itself.
 #[derive(Bound)]
 struct Board;
 
@@ -96,6 +97,18 @@ impl Handles<WhichTile> for Board {
     type Sends = (ToSender<TileIs>,);
 
     fn handle(&mut self, which: WhichTile, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        match which.x {
+            0 => return Err(Fault::new(&which)?),
+            1 => return Ok(()),
+            2 => turn.close(),
+            100.. => {
+                for _ in 100..which.x {
+                    turn.reply(&TileIs { tile: which.x })?;
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
         turn.reply(&TileIs { tile: which.x * 10 })?;
         let twice = which.x == 7;
         if twice {
@@ -127,12 +140,15 @@ impl Kind for PointerConfig {
     const NAME: KindName = KindName::new("aether.test.pointer_config");
 }
 
-/// An actor that asks a board it spawns, as its orders say: `ask X…` asks which tile is at each `X`, keeping its place
-/// among them, `tell X` sends the question as plain mail, and `both X Y` asks at `X` and then names the board to send
-/// it the question at `Y` as plain mail. It says each answer with what it kept, and each tile it
-/// was told.
+/// An actor that asks a board it spawns as it begins, so its requests may be fused to it, as its orders say: `ask X…`
+/// asks which tile is at each `X`, keeping its place among them, `tell X…` sends the question as plain mail, `both X
+/// Y` asks at `X` and then names the board to send it the question at `Y` as plain mail, `again X` asks at `X`
+/// keeping `9`, and `later ORDER` sends itself `ORDER`. It says each answer with what it kept, and each tile it was
+/// told.
 #[derive(Bound)]
-struct Pointer;
+struct Pointer {
+    board: ActorRef<Board>,
+}
 
 impl Kind for Pointer {
     const NAME: KindName = KindName::new("aether.test.pointer");
@@ -146,12 +162,15 @@ impl Actor for Pointer {
     type EndSends = ();
 
     fn begin(config: PointerConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let Ok(board) = turn.spawn::<Board>(&1, Board) else {
+            return Err(Fault::new(&Order { text: String::from("no board") })?);
+        };
         for text in config.orders {
             let me = turn.me();
             turn.send(ToWithoutMail::Held(me), &Order { text })?;
         }
 
-        Ok(Self)
+        Ok(Self { board })
     }
 
     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
@@ -160,16 +179,21 @@ impl Actor for Pointer {
 }
 
 impl Handles<Order> for Pointer {
-    type Sends = (Asks<Tiles, WhichTile, Looking>, ToType<Board, WhichTile>);
+    type Sends = (Asks<Tiles, WhichTile, Looking>, ToType<Board, WhichTile>, ToType<Self, Order>);
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        let mut words = order.text.split(' ');
-        let verb = words.next().unwrap_or_default();
-        let xs: Vec<u64> = words.map(|word| word.parse().unwrap_or_default()).collect();
-        let Ok(board) = turn.spawn::<Board>(&1, Board) else {
-            return Ok(());
-        };
+        let (verb, rest) = order.text.split_once(' ').unwrap_or((&order.text, ""));
+        let xs: Vec<u64> = rest.split(' ').map(|word| word.parse().unwrap_or_default()).collect();
+        let board = self.board;
         match verb {
+            "again" => {
+                let x = xs.first().copied().unwrap_or_default();
+                turn.ask_to(board.protocol::<Tiles, _>(), &WhichTile { x }, &Looking { at: 9 })?;
+            }
+            "later" => {
+                let me = turn.me();
+                turn.send(To::Held(me), &Order { text: String::from(rest) })?;
+            }
             "ask" => {
                 for (at, x) in (0..).zip(xs) {
                     turn.ask_to(board.protocol::<Tiles, _>(), &WhichTile { x }, &Looking { at })?;
@@ -224,11 +248,15 @@ impl Clock for Stopped {
     }
 }
 
-/// What a pointer that follows `orders` hears, in an engine in four parts whose parts each run at most `hops` fused
-/// hops a step.
-fn heard(hops: usize, orders: &[&str]) -> Vec<String> {
-    let Some(parts) = NonZeroUsize::new(4) else {
-        panic!("four is not zero");
+/// Each engine the tests run in: how many parts, and how many fused hops each part runs at most in a step. In one part
+/// the pointer and its board fuse.
+const ENGINES: [(usize, usize); 4] = [(1, 0), (1, 64), (4, 0), (4, 64)];
+
+/// What a pointer that follows `orders` hears, in an engine in `parts` parts that each run at most `hops` fused hops a
+/// step.
+fn heard((parts, hops): (usize, usize), orders: &[&str]) -> Vec<String> {
+    let Some(parts) = NonZeroUsize::new(parts) else {
+        panic!("an engine has parts");
     };
     let mut engine = Engine::new(parts, 1024, 1 << 20, 1 << 20, hops);
     let orders = orders.iter().map(|text| String::from(*text)).collect();
@@ -246,20 +274,20 @@ fn heard(hops: usize, orders: &[&str]) -> Vec<String> {
 fn each_answer_reaches_its_asker_with_what_it_kept_for_that_request() {
     // Catches answers matched to the wrong request where two asks of one turn are alike, as root and depth would
     // leave them; a context lost or handed back twice; and an answer fused back within the step that finds nothing kept.
-    for hops in [0, 64] {
-        let heard = heard(hops, &["ask 3 3 5"]);
+    for engine in ENGINES {
+        let heard = heard(engine, &["ask 3 3 5"]);
 
-        assert_eq!(heard, ["30 for 0", "30 for 1", "50 for 2"], "hops={hops}");
+        assert_eq!(heard, ["30 for 0", "30 for 1", "50 for 2"], "{engine:?}");
     }
 }
 
 #[test]
 fn a_request_is_answered_once() {
     // Catches a second reply to a request taken as a second answer, or sent on as mail the asker cannot place.
-    for hops in [0, 64] {
-        let heard = heard(hops, &["ask 7"]);
+    for engine in ENGINES {
+        let heard = heard(engine, &["ask 7"]);
 
-        assert_eq!(heard, ["again true", "70 for 0"], "hops={hops}");
+        assert_eq!(heard, ["again true", "70 for 0"], "{engine:?}");
     }
 }
 
@@ -267,10 +295,10 @@ fn a_request_is_answered_once() {
 fn a_reply_to_plain_mail_stays_plain_mail() {
     // Catches a reply to mail that asked nothing tied as an answer, which its sender would drop as answering nothing
     // it asked.
-    for hops in [0, 64] {
-        let heard = heard(hops, &["tell 4"]);
+    for engine in ENGINES {
+        let heard = heard(engine, &["tell 4"]);
 
-        assert_eq!(heard, ["told 40"], "hops={hops}");
+        assert_eq!(heard, ["told 40"], "{engine:?}");
     }
 }
 
@@ -278,10 +306,10 @@ fn a_reply_to_plain_mail_stays_plain_mail() {
 fn plain_mail_sent_straight_after_a_request_stays_apart_from_it() {
     // Catches plain mail of the request's kind to the same receiver joined into the request's run, which would make it
     // a second request tied to the first's count.
-    for hops in [0, 64] {
-        let heard = heard(hops, &["both 4 5"]);
+    for engine in ENGINES {
+        let heard = heard(engine, &["both 4 5"]);
 
-        assert_eq!(heard, ["40 for 0", "told 50"], "hops={hops}");
+        assert_eq!(heard, ["40 for 0", "told 50"], "{engine:?}");
     }
 }
 
@@ -290,12 +318,117 @@ fn a_context_is_let_go_of_once_its_answer_has_been_handled() {
     // Catches a context kept after its answer's turn, which would stay beside the asker for as long as it lives.
     let mut waiting = Waiting::default();
     let mut asked = Asked::new();
-    waiting.file(iter::once(Asking { count: 3, context: vec![9] }));
-    let answer = Tie::answers(3);
-    let kept = matches!(waiting.answering(answer), Answering::Kept([9]));
+    for answer in [Tie::answers(3), Tie::unanswered(3)] {
+        waiting.file(iter::once(Asking { count: 3, answer: KindId::of::<TileIs>(), context: vec![9] }));
+        let answering = waiting.answering(answer);
+        let kept =
+            matches!(answering, Answering::Kept(asking) | Answering::Unanswered(asking) if asking.context == [9]);
 
-    waiting.settle(answer, &mut asked, &Ok(()));
+        waiting.settle(answer, &mut asked, &Ok(()));
 
-    assert!(kept);
-    assert!(matches!(waiting.answering(answer), Answering::Stray));
+        assert!(kept, "{answer:?}");
+        assert!(matches!(waiting.answering(answer), Answering::Stray), "{answer:?}");
+    }
+}
+
+#[test]
+fn what_the_engine_says_of_an_unanswered_request_is_handed_to_the_handler_of_its_answer() {
+    // Catches an unanswered request handed to no handler, or to one that is not its answer's: the engine's mail is of
+    // its own kind, and the asker kept which kind it waits for.
+    let mut waiting = Waiting::default();
+    waiting.file(iter::once(Asking { count: 3, answer: KindId::of::<TileIs>(), context: vec![9] }));
+
+    let answering = waiting.answering(Tie::unanswered(3));
+
+    let Answering::Unanswered(asking) = answering else {
+        panic!("what the engine says is handed with what the asker kept");
+    };
+    assert_eq!(asking.answer, KindId::of::<TileIs>());
+}
+
+#[test]
+fn a_request_whose_turn_fails_is_answered_that_it_failed() {
+    // Catches a failed turn's request left unanswered, its asker's context kept for as long as it lives; and the
+    // engine's answer dropped with the failed turn's mail.
+    for engine in ENGINES {
+        let heard = heard(engine, &["ask 0"]);
+
+        assert_eq!(heard, [format!("{:?} for 0", Unanswered::Failed)], "{engine:?}");
+    }
+}
+
+#[test]
+fn a_request_whose_turn_does_not_reply_is_answered_that_it_was_not() {
+    // As a hop as well, where the pointer and its board fuse.
+    for engine in ENGINES {
+        let failed = heard(engine, &["ask 4", "later again 0"]);
+        assert_eq!(failed, ["40 for 0".to_owned(), format!("{:?} for 9", Unanswered::Failed)], "{engine:?}");
+        let unreplied = heard(engine, &["ask 4", "later again 1"]);
+        assert_eq!(unreplied, ["40 for 0".to_owned(), format!("{:?} for 9", Unanswered::Unreplied)], "{engine:?}");
+    }
+    // Catches a turn that replies nothing leaving its request unanswered; and the engine's answer counted out of
+    // order with what the receiver sends next, which would hand the asker the later answer first.
+    for engine in ENGINES {
+        let heard = heard(engine, &["ask 1 4"]);
+
+        assert_eq!(heard, [format!("{:?} for 0", Unanswered::Unreplied), String::from("40 for 1")], "{engine:?}");
+    }
+}
+
+#[test]
+fn a_request_to_an_actor_that_ends_before_it_is_handed_is_answered_that_it_ended() {
+    // Catches a request dropped unanswered where it was not handed to its receiver: behind the turn that ended it in
+    // the same step, as a hop or mail to an actor that is ending, or as mail to one that has gone.
+    let ended = format!("{:?}", Unanswered::Ended);
+    for engine in ENGINES {
+        assert_eq!(heard(engine, &["ask 2 3"]), ["20 for 0".to_owned(), format!("{ended} for 1")], "{engine:?}");
+        let failed = heard(engine, &["ask 0 3"]);
+        assert_eq!(failed, [format!("{:?} for 0", Unanswered::Failed), format!("{ended} for 1")], "{engine:?}");
+        let hopped = heard(engine, &["ask 2", "again 3"]);
+        assert_eq!(hopped, ["20 for 0".to_owned(), format!("{ended} for 9")], "{engine:?}");
+        let ending = heard(engine, &["ask 2", "later again 3"]);
+        assert_eq!(ending, ["20 for 0".to_owned(), format!("{ended} for 9")], "{engine:?}");
+        let gone = heard(engine, &["ask 2", "later later later again 3"]);
+        assert_eq!(gone, ["20 for 0".to_owned(), format!("{ended} for 9")], "{engine:?}");
+    }
+}
+
+#[test]
+fn the_engine_answers_after_what_the_turn_sent_and_only_a_request_the_turn_left_unanswered() {
+    // Catches a request the turn answered answered again, which its asker would drop unseen as answering nothing it
+    // waits on; and the engine's answer counted as one the turn already sent, which would order the two by chance.
+    let (me, pointer) = (
+        Seated { id: ActorId::new(1), seat: SeatNumber::new(0) },
+        Seated { id: ActorId::new(2), seat: SeatNumber::new(1) },
+    );
+    let mut asked = Asked::new();
+    let mut told = asked.unanswered(me, pointer, 5, 3, Unanswered::Unreplied);
+    told.tie = Tie::TELL;
+    asked.buffers_mut().mailed.push(told);
+
+    owed(me, pointer, Tie::asks(3), &Ok(()), 2, &mut asked);
+
+    let mailed = asked.mailed();
+    assert_eq!(mailed.len(), 2, "the engine says the request was not answered");
+    assert_eq!((mailed[1].count, mailed[1].tie), (6, Tie::unanswered(3)), "after what the turn sent");
+
+    asked.buffers_mut().mailed[1].tie = Tie::answers(3);
+    owed(me, pointer, Tie::asks(3), &Ok(()), 2, &mut asked);
+
+    assert_eq!(asked.mailed().len(), 2, "a request the turn answered is not answered again");
+}
+
+#[test]
+fn what_the_engine_says_of_a_request_to_an_ended_actor_comes_after_all_that_actor_sent() {
+    // Catches the engine's answer ordered by the asker's count among the receiver's own mail, which would hand it
+    // before what the receiver sent first, or drop that mail as the same item where the two counts meet.
+    let told = String::from("told 110");
+    for engine in ENGINES {
+        let heard = heard(engine, &["ask 4", "later tell 110", "later again 2", "later again 3"]);
+
+        let mut expected = vec!["40 for 0".to_owned()];
+        expected.extend(vec![told.clone(); 10]);
+        expected.extend(["20 for 9".to_owned(), format!("{:?} for 9", Unanswered::Ended)]);
+        assert_eq!(heard, expected, "{engine:?}");
+    }
 }

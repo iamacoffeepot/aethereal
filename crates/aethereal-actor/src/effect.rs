@@ -96,8 +96,9 @@ pub struct Mailed {
 /// What a piece of mail is to a request, in the eight bytes every piece carries (ADR-0017).
 ///
 /// A request names itself by its count, and an answer the request it answers by that request's count: its
-/// receiver sent the request, so the count is enough to name it. Counts start at one and stay below the top bit,
-/// which marks a request.
+/// receiver sent the request, so the count is enough to name it. Counts start at one and stay below the top two
+/// bits: the top marks a request, and the next what the engine says of a request that was not answered, which only
+/// the engine writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tie(u64);
 
@@ -110,10 +111,16 @@ pub enum Tied {
     Asks(u64),
     /// The mail answers its receiver's request of this count.
     Answers(u64),
+    /// The mail is what the engine says of its receiver's request of this count, which was not answered: an
+    /// [`Unanswered`](crate::Unanswered).
+    Unanswered(u64),
 }
 
 /// The bit that marks a request.
 const ASKS: u64 = 1 << 63;
+
+/// The bit that marks what the engine says of a request that was not answered.
+const UNANSWERED: u64 = 1 << 62;
 
 impl Tie {
     /// Mail that is no request, nor an answer to one.
@@ -131,12 +138,19 @@ impl Tie {
         Self(count)
     }
 
+    /// What the engine says of its receiver's request of the count `count`, which was not answered.
+    #[must_use]
+    pub const fn unanswered(count: u64) -> Self {
+        Self(count | UNANSWERED)
+    }
+
     /// What it says.
     #[must_use]
     pub const fn read(self) -> Tied {
         match self.0 {
             0 => Tied::Tell,
             asks if asks & ASKS != 0 => Tied::Asks(asks & !ASKS),
+            unanswered if unanswered & UNANSWERED != 0 => Tied::Unanswered(unanswered & !UNANSWERED),
             count => Tied::Answers(count),
         }
     }
