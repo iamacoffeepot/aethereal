@@ -23,7 +23,7 @@ What comes back is already typed. A named protocol says what each kind is answer
 ```rust
 impl Carries<WhichTile> for Tiles { type Answers = (TileIs,); }      // one answer: a kind that can be asked
 
-turn.ask_to(tiles, &WhichTile { x, y }, Looking { at: x })?;          // the request, and what to keep until it is answered
+turn.ask_to(tiles, &WhichTile { x, y }, &Looking { at: x })?;         // the request, and what to keep until it is answered
 ```
 
 - **The request's id is its mail's id,** its sender and that sender's count (ADR-0012: `MailId`). No other number is made, and the asker writes none.
@@ -87,7 +87,7 @@ turn.answer(held, &Fetched::Got(blob))?;          // in a later turn
 - Every answer handler handles both cases. A request to an actor that can end can always go unanswered, so that is the handler's to say, and it is told why.
 - Asking needs a named protocol. An actor asked through a typed reference is asked through a protocol it conforms to (ADR-0016: `ActorRef::protocol`).
 - An asker's seat holds what it is waiting for, and an answerer's what it owes. Both are dropped with the actor: an asker that ends drops its contexts, and the answers to it are dropped as mail to an ended actor is.
-- Mail says whether it asks, and which request it answers. That is carried with every piece of mail, and what it costs is measured where it is built.
+- Mail says whether it asks, and which request it answers, in a tie of eight bytes that every piece carries (`Tie`): a request is marked, and an answer names its request by the count, which its receiver sent. Every turn reads it, to find an answer's context and what it owes its source. Measured in steady state with fused hops, against the engine without it, a piece of mail cost about 10 percent more in `count`, 6 to 8 percent in `pingpong`, 4 percent in `big`, and 1 to 3 percent in `world`, `churn-wide`, and `fib`. About 4 points of `count` are the envelope's eight bytes, and the rest the reads each turn makes. Carrying the tie in the mail's payload, so mail that is no request stores nothing more, would take back most of the first; it is left until a load is bound by how fast mail goes.
 - A guest asks, replies, holds, and answers in records its host reads, and its host holds it to what it claims, as it does for resources (ADR-0015).
 - The reply through a tuple of kinds that nothing checks (ADR-0016) is unchanged for plain replies. A request cannot be sent through a tuple, so it cannot reach an asker that does not handle its answer.
 - **Not decided here:** a request that times out, which needs time in a turn; giving a held request to another actor; and a request answered more than once, such as a status and then a result, which stays plain mail through a protocol that answers with more than one kind.

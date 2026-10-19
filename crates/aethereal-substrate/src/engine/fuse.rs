@@ -1,7 +1,7 @@
 //! Chains of mail run within a step: what one part keeps while it fuses (ADR-0013).
 
 use crate::ByActor;
-use aethereal_actor::{Declared, MailId, Payload, SeatNumber, Seated};
+use aethereal_actor::{Declared, MailId, Payload, SeatNumber, Seated, Tie};
 use aethereal_data::{ActorId, ActorPath, KindId};
 use std::collections::VecDeque;
 
@@ -112,6 +112,8 @@ pub(super) struct Hop {
     /// How far down its chain it is.
     pub(super) depth: u32,
     pub(super) kind: KindId,
+    /// What it is to a request (ADR-0017).
+    pub(super) tie: Tie,
     /// The run it belongs to, by the order its part began it in the step.
     pub(super) run: usize,
     /// Where its bytes start in the part's bytes waiting, and how many there are.

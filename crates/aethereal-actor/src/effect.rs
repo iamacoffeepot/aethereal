@@ -89,6 +89,63 @@ pub struct Mailed {
     pub count: u64,
     pub kind: KindId,
     pub bytes: Payload,
+    /// What it is to a request: none of one, one, or an answer to one (ADR-0017).
+    pub tie: Tie,
+}
+
+/// What a piece of mail is to a request, in the eight bytes every piece carries (ADR-0017).
+///
+/// A request names itself by its count, and an answer the request it answers by that request's count: its
+/// receiver sent the request, so the count is enough to name it. Counts start at one and stay below the top bit,
+/// which marks a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tie(u64);
+
+/// What a [`Tie`] says, read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tied {
+    /// The mail is no request, nor an answer to one.
+    Tell,
+    /// The mail is the request of this count of its sender's.
+    Asks(u64),
+    /// The mail answers its receiver's request of this count.
+    Answers(u64),
+}
+
+/// The bit that marks a request.
+const ASKS: u64 = 1 << 63;
+
+impl Tie {
+    /// Mail that is no request, nor an answer to one.
+    pub const TELL: Self = Self(0);
+
+    /// The request that is its sender's `count`th piece of mail.
+    #[must_use]
+    pub const fn asks(count: u64) -> Self {
+        Self(count | ASKS)
+    }
+
+    /// The answer to its receiver's request of the count `count`.
+    #[must_use]
+    pub const fn answers(count: u64) -> Self {
+        Self(count)
+    }
+
+    /// What it says.
+    #[must_use]
+    pub const fn read(self) -> Tied {
+        match self.0 {
+            0 => Tied::Tell,
+            asks if asks & ASKS != 0 => Tied::Asks(asks & !ASKS),
+            count => Tied::Answers(count),
+        }
+    }
+
+    /// Whether the mail is no request, nor an answer to one.
+    #[must_use]
+    pub const fn is_tell(self) -> bool {
+        self.0 == 0
+    }
 }
 
 /// A line a turn logs (ADR-0009): by the actor `by` names, at `level`, its text at `text` in the arena of the worker

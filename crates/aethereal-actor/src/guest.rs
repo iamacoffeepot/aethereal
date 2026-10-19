@@ -26,7 +26,9 @@ use crate::records::{
     PinRecord, RefRecord, SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped, TurnEnds, WatchRecord,
 };
 use crate::section;
-use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Ended, Fault, How, Item};
+use crate::{
+    Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Ended, Fault, How, Item, Tie,
+};
 use crate::{
     Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, Peeked, Pinned, Preparing, Puts, Refused,
 };
@@ -388,7 +390,9 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
             stood_before = asked.stood_count();
             let Standing { path, above } = &*standing;
             let keeps = Keeps::Claimed;
-            let turning = Turning::new(*me, path, *above, &host, &host, asked, instances, keeps, 0, source, chain);
+            // A guest's host answers for it what it owes, so the guest's own turn owes nothing (ADR-0017).
+            let tie = Tie::TELL;
+            let turning = Turning::new(*me, path, *above, &host, &host, asked, instances, keeps, 0, source, chain, tie);
             let result = runs.turn(item, turning);
             write_ends(out, asked, &mut counted);
             ran += 1;

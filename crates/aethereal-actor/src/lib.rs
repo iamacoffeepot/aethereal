@@ -15,6 +15,7 @@ extern crate std;
 
 mod actor;
 mod arena;
+mod ask;
 mod blob;
 mod boundary;
 mod declared;
@@ -40,6 +41,7 @@ pub use actor::{Actor, Batch, Peeked, Preparing, Reads, Runs};
 #[cfg(feature = "std")]
 pub use arena::Pinned;
 pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};
+pub use ask::{Answer, Answered, Asking, Asks, Unanswered};
 pub use blob::{BlobHash, BlobId, Puts};
 #[cfg(feature = "std")]
 pub use blob::{BlobRef, Held, pins, within};
@@ -49,7 +51,7 @@ pub use declared::{
     Handler, Handles, Kinds, Listed, Marker, Others, Protocol, RepliesTo, RepliesWithin, ReplyWithin, Role, Sending,
     Sends, Target, ToAny, ToSender, ToType, Watches,
 };
-pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, To, ToWithoutMail, What};
+pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
 pub use guests::{Birth, Guests, Link, Links, NoGuests, Unfit};

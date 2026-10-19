@@ -1,10 +1,10 @@
 //! A turn a host runs for an actor whose code runs where the engine cannot see it: a guest (ADR-0015).
 
-use super::{Checked, Closing, During, Seat, Stood, Turning, Why};
+use super::{Checked, Closing, During, Owing, Seat, Stood, Turning, Why};
 use crate::{
     Above, Asked, Chain, Claim, Claimed, Code, Declared, Effect, ErasedActorRef, Fault, Gift, Giver, Instances,
     Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, Payload, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen,
-    Sending, Table, Target, What, carry, take_claimed,
+    Sending, Table, Target, Tie, What, carry, take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, KindName, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -139,12 +139,13 @@ impl<'a> Turning<'a> {
     /// instances of its part it was lent, for the host to take the instance its code runs in from.
     #[must_use]
     pub fn hosted(self, declared: &'static Declared, role: Role) -> (Hosted<'a>, &'a mut Instances) {
-        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain } = self;
+        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie } = self;
         let handler = declared.handlers().iter().find(|handler| handler.role() == role);
         let sends = handler.map_or(&[][..], |handler| handler.sends());
         let during = During::Handling(role);
         let checked = Checked::Nothing;
-        let seat = Seat { me, path, above, table, made, asked, keeps, sent, declared, during, checked };
+        let owing = Owing::Item(tie);
+        let seat = Seat { me, path, above, table, made, asked, keeps, sent, declared, during, checked, owing };
 
         (
             Hosted { seat, sends, source: Source::Item(source), chain, spawned: Vec::new(), sent: Sent::Nothing },
@@ -162,7 +163,8 @@ impl<'a> Closing<'a> {
         let Self { me, path, above, table, asked, instances, keeps, sent, why } = self;
         let during = During::End;
         let checked = Checked::Nothing;
-        let seat = Seat { me, path, above, table, made: &(), asked, keeps, sent, declared, during, checked };
+        let owing = Owing::NOTHING;
+        let seat = Seat { me, path, above, table, made: &(), asked, keeps, sent, declared, during, checked, owing };
         let chain = Chain { root: MailId { sender: me.id, count: sent }, depth: 0 };
         let hosted = Hosted {
             seat,
@@ -203,6 +205,7 @@ impl<'a> Hosted<'a> {
             declared,
             during: During::Begin,
             checked: Checked::Nothing,
+            owing: Owing::NOTHING,
         };
         let chain = Chain { root: MailId { sender: me.id, count: 0 }, depth: 0 };
 
@@ -262,6 +265,7 @@ impl<'a> Hosted<'a> {
         if !allowed {
             return Err(FalseSend);
         }
+        let tie = self.tie(by, to, kind)?;
         // Most mail refers to no blob, and is written with nothing kept beside it.
         #[cfg(feature = "std")]
         let bytes = if held.is_empty() {
@@ -279,7 +283,7 @@ impl<'a> Hosted<'a> {
             child.sent += 1;
             child.sent
         };
-        let mailed = Mailed { by, to, count, kind, bytes };
+        let mailed = Mailed { by, to, count, kind, bytes, tie };
         let pieces = self.seat.asked.buffers.mailed.len();
         self.seat.asked.buffers.mailed.push(mailed);
         self.sent = match self.sent {
@@ -335,6 +339,23 @@ impl<'a> Hosted<'a> {
         }
 
         Ok(())
+    }
+
+    /// What a send by `by` to `to` of mail of `kind` is to a request: the answer to the item handled, when that is a
+    /// request this turn has not answered and the send is a reply its handler declares (ADR-0017). A second answer is
+    /// a false send.
+    fn tie(&mut self, by: Seated, to: Seated, kind: KindId) -> Result<Tie, FalseSend> {
+        let is_mine = by == self.seat.me;
+        let is_to_source = matches!(self.source, Source::Item(source) if source == to);
+        let replies = self.sends.iter().any(|sending| sending.to() == Target::Sender && sending.kind() == kind);
+        let is_reply = is_mine && is_to_source && replies;
+        if !is_reply {
+            return Ok(Tie::TELL);
+        }
+        let (tie, owing) = self.seat.owing.reply().map_err(|_| FalseSend)?;
+        self.seat.owing = owing;
+
+        Ok(tie)
     }
 
     /// The `send`th piece of mail handed in, counting from nought.

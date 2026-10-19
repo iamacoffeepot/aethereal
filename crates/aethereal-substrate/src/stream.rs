@@ -3,7 +3,7 @@
 use crate::watch::Notice;
 use crate::{Context, Envelope, View};
 use aethereal_actor::{
-    Arena, CARRIED, Effect, Ended, Held, MailId, Mailed, Payload, Pinned, SeatNumber, Seated, within,
+    Arena, CARRIED, Effect, Ended, Held, MailId, Mailed, Payload, Pinned, SeatNumber, Seated, Tie, within,
 };
 use aethereal_data::ActorId;
 use std::iter;
@@ -651,6 +651,15 @@ impl Entry {
 }
 
 impl Handed<'_> {
+    /// What it is to a request: nothing, for an ending (ADR-0017).
+    #[must_use]
+    pub const fn tie(self) -> Tie {
+        match self {
+            Self::Mail { envelope, .. } => envelope.tie,
+            Self::Ended { .. } => Tie::TELL,
+        }
+    }
+
     /// The piece numbered `index` of a run this is the first piece of, each of its pieces `each` bytes.
     #[must_use]
     pub fn piece(self, index: u32, each: u32) -> Self {
@@ -716,8 +725,8 @@ impl View for Streams {
 /// envelope.
 #[must_use]
 pub fn entry(mailed: Mailed, context: &Context) -> (u64, Entry) {
-    let Mailed { by, to, count, kind, bytes } = mailed;
-    let envelope = Envelope { sender_seat: by.seat, root: context.root, depth: context.depth, kind, bytes };
+    let Mailed { by, to, count, kind, bytes, tie } = mailed;
+    let envelope = Envelope { sender_seat: by.seat, root: context.root, depth: context.depth, kind, bytes, tie };
     let entry = Entry { to: to.id.bits(), order: (by.id.bits(), count), item: Stored::Mail(envelope) };
 
     (to.seat.number(), entry)
