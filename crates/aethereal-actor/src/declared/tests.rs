@@ -369,3 +369,59 @@ fn a_section_written_in_a_constant_reads_back_as_what_its_types_declare() {
     let leaked: Vec<&Declared> = made.iter().map(section::Made::leak).collect();
     assert_eq!(leaked, TYPES);
 }
+
+/// A keeper's name, held by reference.
+const KEEPER_NAME: &KindName = &Keeper::NAME;
+/// A reply of kept mail, among a handler's sends that also send it on to a keeper.
+const KEPT_BACK: &[Sending] = &[
+    Sending::new(KindId::of::<Kept>(), Target::Type(KEEPER_NAME, KindId::of::<Keeper>())),
+    Sending::new(KindId::of::<Kept>(), Target::Sender),
+];
+/// Kept mail, which a protocol answers with a stray, and a stray, which it answers with kept mail.
+const STRAY_ANSWERS: &[Answering] = &[
+    Answering { kind: KindId::of::<Kept>(), answers: &[KindId::of::<Stray>()] },
+    Answering { kind: KindId::of::<Stray>(), answers: &[KindId::of::<Kept>()] },
+];
+/// A handler of kept mail, and of nothing else.
+const KEEPS: &[Handler] = &[Handler::new(Role::Kind(KindId::of::<Kept>()), &[])];
+
+/// A singleton that handles `handlers`.
+const fn handling(handlers: &'static [Handler]) -> Declared {
+    Declared::new(Keeper::NAME, KindId::of::<Keeper>(), Keyed::Singleton, &[], handlers, &[])
+}
+
+#[test]
+#[should_panic(expected = "whose answer it does not take")]
+fn a_declaration_whose_begin_sends_to_a_type_that_replies_what_it_does_not_take_does_not_hold() {
+    // Catches a reply of a kind its asker does not handle, from a send its `begin` declares, built though nothing
+    // could handle it.
+    let _ = handling(&[]).taking_back(&[Back::Replies(KEPT_BACK)], &[], &[]);
+}
+
+#[test]
+#[should_panic(expected = "whose answer it does not take")]
+fn a_declaration_whose_handler_sends_to_a_protocol_whose_answer_it_does_not_take_does_not_hold() {
+    // Catches a named protocol's answer to a handler's send left unread.
+    let _ = handling(KEEPS).taking_back(&[], &[&[Back::Answers(KindId::of::<Kept>(), STRAY_ANSWERS)]], &[]);
+}
+
+#[test]
+#[should_panic(expected = "whose answer it does not take")]
+fn a_declaration_whose_closing_turn_sends_to_a_type_that_replies_what_it_does_not_take_does_not_hold() {
+    // Catches what comes back from a closing turn's sends left unread.
+    let _ = handling(&[]).taking_back(&[], &[], &[Back::Replies(KEPT_BACK)]);
+}
+
+#[test]
+fn a_declaration_holds_when_it_takes_whatever_comes_back() {
+    // Catches a send on to another actor read as a reply, the answer to another kind of a protocol read as this one's,
+    // and a fallback that does not count as taking a reply.
+    const FALLBACK: &[Handler] = &[Handler::new(Role::Others, &[])];
+    let keeps = handling(KEEPS);
+    let falls_back = handling(FALLBACK);
+
+    let _ = keeps.taking_back(&[Back::Replies(KEPT_BACK)], &[&[Back::Nothing]], &[]);
+    let _ = handling(KEEPS).taking_back(&[Back::Answers(KindId::of::<Stray>(), STRAY_ANSWERS)], &[], &[]);
+    let _ = falls_back.taking_back(&[Back::Answers(KindId::of::<Kept>(), STRAY_ANSWERS)], &[], &[]);
+    let _ = handling(&[]).taking_back(&[Back::Replies(&KEPT_BACK[..1])], &[], &[]);
+}

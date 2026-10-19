@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{Beginning, Carries, Ending, Fault, Item, Mail, MailId, Payload, Protocol, Within};
-use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
+use aethereal_data::{Bound, Budget, Fnv, KeyName, Keyed, KindName, Plain};
 use alloc::string::ToString;
 use alloc::vec;
 
@@ -181,7 +181,7 @@ impl Kind for BranchConfig {
     const NAME: KindName = KindName::new("aether.test.branch_config");
 }
 
-/// A singleton that spawns leaves in its `begin`.
+/// A singleton that spawns leaves in its `begin`, and takes their answers to its pokes.
 #[derive(Plain)]
 struct Branch;
 
@@ -192,7 +192,7 @@ impl Kind for Branch {
 impl Actor for Branch {
     type Config = BranchConfig;
     type Key = ();
-    type Handles = ();
+    type Handles = (Poked,);
     type BeginSends = (ToType<Leaf, Poke>,);
     type EndSends = ();
 
@@ -212,6 +212,15 @@ impl Actor for Branch {
     }
 
     fn end(self, _turn: &mut Ending<'_, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// A branch takes the answer to a poke, and does nothing with it.
+impl Handles<Poked> for Branch {
+    type Sends = ();
+
+    fn handle(&mut self, _: Poked, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -571,6 +580,15 @@ fn a_type_answers_a_named_protocol_only_when_each_handler_declares_its_replies()
     assert!(!leaf.answers(<Answered as crate::Listed>::ANSWERS));
     assert!(!leaf.answers(<Met as crate::Listed>::ANSWERS));
     assert!(!Declared::of::<Branch>().answers(<Poking as crate::Listed>::ANSWERS));
+}
+
+#[test]
+#[should_panic(expected = "whose answer it does not take")]
+fn a_sender_through_a_named_protocol_that_takes_no_answer_does_not_hold() {
+    // Catches a send through a named protocol that says nothing of what comes back.
+    let takes_nothing = Declared::new(Herald::NAME, KindId::of::<Herald>(), Keyed::Singleton, &[], &[], &[]);
+
+    let _ = takes_nothing.taking_back(<(ToAny<Poking, Poke>,) as Sends>::BACKS, &[], &[]);
 }
 
 #[test]

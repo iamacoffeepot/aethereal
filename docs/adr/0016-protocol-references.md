@@ -61,13 +61,13 @@ Neither is checked when it is sent: the reference is the proof. **`ToAny<P, K>` 
 
 **A sender handles what its protocol sends back.** A type whose sends list `ToAny<P, K>`, for a named `P`, must handle every kind of `Carries<K>::Answers`. Its declaration is checked for that when the program is built, as a type that declares a watch and does not handle endings is (ADR-0013). For a send through a named protocol, a reply therefore always reaches a type that takes it.
 
-**A send to a typed reference gets the same check from its receiver's handler.** A type whose sends list `ToType<T, K>` must handle every kind that `T`'s handler for `K` declares in a `ToSender`. That is read from the handler's own `Sends`, at build time. A reply to a sender that reached its receiver through a typed reference then reaches a type that takes it too.
+**A send to an actor of a type gets the same check from its receiver's handler.** A type whose sends list `ToType<T, K>` must handle every kind that `T`'s handler for `K` declares in a `ToSender`. That is read from the handler's own `Sends`, at build time. A send through a typed reference and one by a `To` name both declare `ToType`, so a reply to a sender that reached its receiver either way reaches a type that takes it too. A fallback takes any kind.
 
 ## Consequences
 
 - One list can hold listeners of many types: `&[ProtocolRef<P>]`, sent to with `send_to_all`.
 - A send through a protocol reference is checked once, when the reference is made, and never at the send. Today a send through `ToAny` and a named `To` is checked every time.
-- The reply that panics is closed for sends through named protocols and typed references. It stays open for a reply to a sender that reached its receiver by a `To` name, or through a tuple protocol: neither says what the receiver answers. That reply is still checked only where it is handed over. Either it is checked when it is written, against the sender's declaration, or its delivery fails the replying turn instead of stopping the engine. That is a later change.
+- The reply that panics is closed for sends through named protocols and for sends to an actor of a type, by reference or by a `To` name. It stays open for a reply to a sender that reached its receiver through a tuple protocol, which does not say what the receiver answers. That reply is still checked only where it is handed over. Either it is checked when it is written, against the sender's declaration, or its delivery fails the replying turn instead of stopping the engine. That is a later change.
 - `ToAny<P, K>` with a `K` outside `P` stops building. Every such declaration in the code today names a `K` inside its `P`.
 - A named protocol gives a set of kinds an identity of its own: a guest's section, or a wire, could later name it. Nothing here gives it one beyond its kind ids.
 - Domains are unchanged. A reference that names a protocol reaches every type that handles its kinds (ADR-0013).

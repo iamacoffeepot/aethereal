@@ -188,7 +188,205 @@ impl<A: Actor> Of<A> {
         <A::Handles as HandledList<A>>::HANDLERS,
         <A::EndSends as Sends>::SENDINGS,
     )
-    .checked();
+    .checked()
+    .taking_back(
+        <A::BeginSends as Sends>::BACKS,
+        <A::Handles as HandledList<A>>::BACKS,
+        <A::EndSends as Sends>::BACKS,
+    );
+}
+
+/// What may come back to a sender from one send it declares (ADR-0016).
+///
+/// A type takes whatever may come back from each of its sends, or its
+/// declaration does not build: an asker that takes no answer, asking an actor
+/// that replies, does not.
+///
+/// ```compile_fail
+/// use aethereal_actor::{Actor, Beginning, Declared, Ending, Fault, Handles, ToSender, ToType, Turn};
+/// use aethereal_data::{Kind, KindName, Plain};
+///
+/// #[derive(Plain)]
+/// struct Ask;
+///
+/// impl Kind for Ask {
+///     const NAME: KindName = KindName::new("aether.example.ask");
+/// }
+///
+/// #[derive(Plain)]
+/// struct Answer;
+///
+/// impl Kind for Answer {
+///     const NAME: KindName = KindName::new("aether.example.answer");
+/// }
+///
+/// /// An actor that answers each question it is asked.
+/// #[derive(Plain)]
+/// struct Answerer;
+///
+/// impl Kind for Answerer {
+///     const NAME: KindName = KindName::new("aether.example.answerer");
+/// }
+///
+/// impl Actor for Answerer {
+///     type Config = Answerer;
+///     type Key = ();
+///     type Handles = (Ask,);
+///     type BeginSends = ();
+///     type EndSends = ();
+///
+///     fn begin(answerer: Answerer, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+///         Ok(answerer)
+///     }
+///
+///     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+///         Ok(())
+///     }
+/// }
+///
+/// impl Handles<Ask> for Answerer {
+///     type Sends = (ToSender<Answer>,);
+///
+///     fn handle(&mut self, _: Ask, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+///         Ok(turn.reply(&Answer)?)
+///     }
+/// }
+///
+/// /// An actor that asks, and takes no answer.
+/// #[derive(Plain)]
+/// struct Asker;
+///
+/// impl Kind for Asker {
+///     const NAME: KindName = KindName::new("aether.example.asker");
+/// }
+///
+/// impl Actor for Asker {
+///     type Config = Asker;
+///     type Key = ();
+///     type Handles = ();
+///     type BeginSends = (ToType<Answerer, Ask>,);
+///     type EndSends = ();
+///
+///     fn begin(asker: Asker, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+///         Ok(asker)
+///     }
+///
+///     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+///         Ok(())
+///     }
+/// }
+///
+/// fn main() {
+///     let _ = Declared::of::<Asker>();
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Back {
+    /// Nothing: a reply, a watch, or a send to a protocol of tells.
+    Nothing,
+    /// The replies among these, the sends of the receiver's handler of the kind sent: a send to an actor of a type.
+    Replies(&'static [Sending]),
+    /// What the kind sent is answered with, among a named protocol's answers.
+    Answers(KindId, &'static [Answering]),
+}
+
+impl Declared {
+    /// It, when it takes whatever may come back from each of its sends: `begins`, `handlers` and `ends`, what may come
+    /// back from the sends of its `begin`, each handler, and its closing turn (ADR-0016). Mail of a kind it does not
+    /// take would reach it, and nothing could handle it.
+    ///
+    /// # Panics
+    ///
+    /// Panics, as the type's declaration is made when the program is built, stopping the build, when it does not.
+    pub(crate) const fn taking_back(self, begins: &[Back], handlers: &[&[Back]], ends: &[Back]) -> Self {
+        let mut takes = self.takes_back(begins) && self.takes_back(ends);
+        let mut index = 0;
+        while index < handlers.len() {
+            takes = takes && self.takes_back(handlers[index]);
+            index += 1;
+        }
+        assert!(takes, "false declaration: a type sends mail whose answer it does not take");
+
+        self
+    }
+
+    /// Whether it takes whatever may come back from each of `backs`.
+    const fn takes_back(&self, backs: &[Back]) -> bool {
+        let mut index = 0;
+        while index < backs.len() {
+            let taken = match backs[index] {
+                Back::Nothing => true,
+                Back::Replies(sendings) => self.takes_replies(sendings),
+                Back::Answers(kind, answering) => self.takes_answers(kind, answering),
+            };
+            if !taken {
+                return false;
+            }
+            index += 1;
+        }
+
+        true
+    }
+
+    /// Whether it takes each reply among `sendings`.
+    const fn takes_replies(&self, sendings: &[Sending]) -> bool {
+        let mut index = 0;
+        while index < sendings.len() {
+            let sending = &sendings[index];
+            let is_reply = matches!(sending.to, Target::Sender);
+            if is_reply && !self.takes_kind(sending.kind) {
+                return false;
+            }
+            index += 1;
+        }
+
+        true
+    }
+
+    /// Whether it takes each kind `kind` is answered with, as `answering` lists them.
+    const fn takes_answers(&self, kind: KindId, answering: &[Answering]) -> bool {
+        let mut index = 0;
+        while index < answering.len() {
+            let answered = &answering[index];
+            if answered.kind.same(kind) {
+                return self.takes_all(answered.answers);
+            }
+            index += 1;
+        }
+
+        true
+    }
+
+    /// Whether it takes mail of each of `kinds`.
+    const fn takes_all(&self, kinds: &[KindId]) -> bool {
+        let mut index = 0;
+        while index < kinds.len() {
+            if !self.takes_kind(kinds[index]) {
+                return false;
+            }
+            index += 1;
+        }
+
+        true
+    }
+
+    /// Whether it takes mail of `kind`: it lists the kind, or it falls back.
+    const fn takes_kind(&self, kind: KindId) -> bool {
+        let mut index = 0;
+        while index < self.handlers.len() {
+            let taken = match self.handlers[index].role {
+                Role::Kind(handled) => handled.same(kind),
+                Role::Others => true,
+                Role::Ended => false,
+            };
+            if taken {
+                return true;
+            }
+            index += 1;
+        }
+
+        false
+    }
 }
 
 impl Declared {

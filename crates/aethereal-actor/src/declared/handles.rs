@@ -1,6 +1,6 @@
 //! What an actor handles: one handler for each thing it lists, and the engine's call to the right one (ADR-0013).
 
-use super::{Handler, Role, Sends};
+use super::{Back, Handler, Role, Sends};
 use crate::{Actor, Actors, Ended, Fault, Item, Mail, Turn, Turning};
 use aethereal_data::{Decode, Kind, KindId};
 
@@ -75,6 +75,8 @@ impl Handled for Others {
 pub trait HandledList<A: Actor>: 'static {
     /// Each thing handled, and what its handler may send, as the engine reads them.
     const HANDLERS: &'static [Handler];
+    /// What may come back from each handler's sends, in the same order.
+    const BACKS: &'static [&'static [Back]];
 
     /// Hands `item` to the handler for it: the one for its kind or for endings, else the fallback for mail.
     ///
@@ -102,6 +104,7 @@ macro_rules! tuples {
         impl<A: Actor $(+ Handles<$name>)*, $($name: Handled),*> HandledList<A> for ($($name,)*) {
             const HANDLERS: &'static [Handler] =
                 &[$(Handler::new($name::ROLE, <<A as Handles<$name>>::Sends as Sends>::SENDINGS)),*];
+            const BACKS: &'static [&'static [Back]] = &[$(<<A as Handles<$name>>::Sends as Sends>::BACKS),*];
 
             fn dispatch(actor: &mut A, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
                 let role = role(&item);
@@ -143,6 +146,7 @@ tuples! {
 
 impl<A: Actor> HandledList<A> for () {
     const HANDLERS: &'static [Handler] = &[];
+    const BACKS: &'static [&'static [Back]] = &[];
 
     fn dispatch(_: &mut A, item: Item<'_>, _: Turning<'_>) -> Result<(), Fault> {
         unhandled::<A>(role(&item))
