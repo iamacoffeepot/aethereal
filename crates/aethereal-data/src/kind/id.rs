@@ -45,6 +45,12 @@ impl KindId {
         self.0.to_le_bytes()
     }
 
+    /// Whether it is `other`, compared where a constant is made: a declaration checked as the program is built.
+    #[must_use]
+    pub const fn same(self, other: Self) -> bool {
+        self.0 == other.0
+    }
+
     /// The id of a name and the layout hash of its schema; the only place an id is made.
     const fn from_layout(name: &KindName, layout: u64) -> Self {
         Self(Fnv::new().bytes(name.bytes()).hash(layout).finish())

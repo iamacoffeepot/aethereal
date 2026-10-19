@@ -13,6 +13,8 @@ pub struct ToSender<K>(PhantomData<fn() -> K>);
 
 /// A handler may send mail of kind `K` to any actor whose type lists every kind of `P`, a tuple of kinds: the
 /// actors a reference that names a protocol, and not a type, reaches.
+///
+/// `K` is one of `P`'s kinds: a type whose declaration names another does not build (ADR-0016).
 pub struct ToAny<P, K>(PhantomData<fn() -> (P, K)>);
 
 /// A handler may watch an actor, to be handed its ending: only an actor whose type handles
