@@ -57,6 +57,6 @@ pub use mail::{Mail, MailId};
 pub use reference::{ActorRef, ErasedActorRef};
 pub use seat::{SeatNumber, Seated, Seats};
 pub use turn::{
-    Above, Address, AnyAddress, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseWatch,
-    Forged, Garbled, Hosted, Logger, Refused, Stood, Trapped, Turn, Turning, Why,
+    Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseWatch, Forged, Garbled, Hosted,
+    Logger, Refused, Stood, Trapped, Turn, Turning, Why,
 };

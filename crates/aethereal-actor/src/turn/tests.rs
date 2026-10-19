@@ -166,7 +166,7 @@ impl Handles<Meet> for Leaf {
     type Sends = (ToType<Self, Poke>,);
 
     fn handle(&mut self, Meet { other }: Meet, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        Ok(turn.to::<Self>(To::Held(other)).send(&Poke)?)
+        Ok(turn.send(To::Held(other), &Poke)?)
     }
 }
 
@@ -202,7 +202,7 @@ impl Actor for Branch {
             let is_last = key + 1 == config.leaves;
             let fails = is_last && config.last_fails;
             match turn.spawn::<Leaf>(&key, LeafConfig { fails }) {
-                Ok(leaf) => turn.to_actor(leaf).send(&Poke)?,
+                Ok(leaf) => turn.send_to(leaf, &Poke)?,
                 Err(Refused::Began(fault)) => return Err(fault),
                 Err(_) => {}
             }
@@ -233,14 +233,14 @@ impl Actor for Herald {
     type EndSends = (ToType<Leaf, Shut>,);
 
     fn begin(_config: Poke, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.to::<Leaf>(ToWithoutMail::Parent).send(&Poked)?;
+        turn.send(ToWithoutMail::Parent, &Poked)?;
 
         Ok(Self)
     }
 
     fn end(self, turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
         if turn.why() == Why::Closed {
-            turn.to::<Leaf>(ToWithoutMail::Parent).send(&Shut)?;
+            turn.send(ToWithoutMail::Parent, &Shut)?;
         }
 
         Ok(())
@@ -455,7 +455,7 @@ fn mail_to_a_parent_goes_only_while_it_is_live() {
         let mut asked = Asked::new();
         let above = Above::Actor(parent, Declared::of::<Leaf>());
         let mut turn = opened::<<Leaf as Handles<Meet>>::Sends>(ME, &path, above, table, &mut asked, ME);
-        let sent = turn.to::<Leaf>(To::Parent).send(&Poke);
+        let sent = turn.send(To::Parent, &Poke);
 
         (sent.is_ok(), asked.into_parts().0.mailed)
     };
@@ -479,11 +479,11 @@ fn back_to_back_mail_of_one_kind_to_one_receiver_is_one_run() {
     let meet = |to: Seated| Meet { other: ErasedActorRef::new(to) };
     let sends = [(other, true), (other, true), (other, true), (other, false), (third, true), (other, true)];
     for (to, meets) in sends {
-        let target = turn.to::<Leaf>(To::Held(ErasedActorRef::new(to)));
+        let target = To::Held(ErasedActorRef::new(to));
         let sent = if meets {
-            target.send(&meet(third))
+            turn.send(target, &meet(third))
         } else {
-            target.send(&Poke)
+            turn.send(target, &Poke)
         };
         assert_eq!(sent, Ok(()));
     }

@@ -230,7 +230,7 @@ fn send_to_a_type_reaches_an_actor_of_that_type() {
     // Catches a send to the type its handler declares refused, or its effect lost.
     let table = Typed(vec![(OTHER, Declared::of::<Keeper>())]);
     let asked = keeping(&table, |turn| {
-        assert!(turn.to::<Keeper>(To::Held(ErasedActorRef::new(OTHER))).send(&Kept).is_ok());
+        assert!(turn.send(To::Held(ErasedActorRef::new(OTHER)), &Kept).is_ok());
     });
 
     assert!(matches!(asked[..], [Mailed { to: OTHER, .. }]));
@@ -242,7 +242,7 @@ fn send_to_an_actor_of_another_type_stops_the_engine() {
     // Catches a reference to an actor of one type sent mail its declaration gives to another.
     let table = Typed(vec![(OTHER, Declared::of::<Strict>())]);
     keeping(&table, |turn| {
-        let _ = turn.to::<Keeper>(To::Held(ErasedActorRef::new(OTHER))).send(&Kept);
+        let _ = turn.send(To::Held(ErasedActorRef::new(OTHER)), &Kept);
     });
 }
 
@@ -254,7 +254,7 @@ fn send_like_a_reply_before_it_is_checked_all_the_same() {
     let table = Typed(vec![(OTHER, Declared::of::<Strict>())]);
     keeping(&table, |turn| {
         assert!(turn.reply(&Kept).is_ok());
-        let _ = turn.to::<Keeper>(To::Held(ErasedActorRef::new(OTHER))).send(&Kept);
+        let _ = turn.send(To::Held(ErasedActorRef::new(OTHER)), &Kept);
     });
 }
 
@@ -263,7 +263,7 @@ fn send_to_any_reaches_a_type_that_lists_every_kind() {
     // Catches a protocol send refused to a type that lists its kinds.
     let table = Typed(vec![(OTHER, Declared::of::<Strict>())]);
     let asked = keeping(&table, |turn| {
-        assert!(turn.to_any::<(Kept,)>(To::Held(ErasedActorRef::new(OTHER))).send(&Kept).is_ok());
+        assert!(turn.send_to_any(To::Held(ErasedActorRef::new(OTHER)), &Kept).is_ok());
     });
 
     assert!(matches!(asked[..], [Mailed { to: OTHER, .. }]));
@@ -275,7 +275,7 @@ fn send_to_any_by_a_type_that_only_falls_back_stops_the_engine() {
     // Catches a fallback counted as handling a protocol's kinds.
     let table = Typed(vec![(OTHER, Declared::of::<Sink>())]);
     keeping(&table, |turn| {
-        let _ = turn.to_any::<(Kept,)>(To::Held(ErasedActorRef::new(OTHER))).send(&Kept);
+        let _ = turn.send_to_any(To::Held(ErasedActorRef::new(OTHER)), &Kept);
     });
 }
 

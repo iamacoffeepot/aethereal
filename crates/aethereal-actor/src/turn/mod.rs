@@ -496,6 +496,20 @@ impl Seat<'_> {
         is_mine.then_some((last.to, last.kind))
     }
 
+    /// Sends `mail` to the actor `to` names, which is checked to be of type `T` (ADR-0013).
+    fn send_typed<T: Actor + Handles<K>, K: Kind + Encode<Actors> + Handled>(
+        &mut self,
+        to: &To,
+        mail: &K,
+    ) -> Result<(), EncodeError> {
+        self.send(to, <ToType<T, K> as Marker>::SENDING.to(), mail)
+    }
+
+    /// Sends `mail` to the actor `to` names, which is checked to list every kind of `P` (ADR-0013).
+    fn send_any<P: Kinds, K: Kind + Encode<Actors>>(&mut self, to: &To, mail: &K) -> Result<(), EncodeError> {
+        self.send(to, <ToAny<P, K> as Marker>::SENDING.to(), mail)
+    }
+
     /// Encodes `mail` and adds the effect that sends it to the actor `to`, which this actor reaches as it is: one a
     /// typed reference proves, or the sender.
     fn write<K: Kind + Encode<Actors>>(&mut self, to: Seated, mail: &K) -> Result<(), EncodeError> {
@@ -804,67 +818,6 @@ impl Logger<'_> {
     }
 }
 
-/// Where the mail a turn sends to an actor of type `T` goes: an actor its turn may send to, as [`ToType`] declares
-/// (ADR-0013).
-pub struct Address<'t, 'a, T, S> {
-    seat: &'t mut Seat<'a>,
-    to: Receiver,
-    declared: PhantomData<fn() -> (T, S)>,
-}
-
-/// Who an [`Address`] sends to.
-enum Receiver {
-    /// The actor a [`To`] names, whose type is checked when it is sent to.
-    Named(To),
-    /// The actor a typed reference refers to, whose type the reference proves.
-    Proven(Seated),
-}
-
-impl<T: Actor, S> Address<'_, '_, T, S> {
-    /// Sends `mail` to the actor. It is delivered after the turn, in a later step.
-    ///
-    /// It builds only when the turn's sends list [`ToType<T, K>`].
-    ///
-    /// # Panics
-    ///
-    /// Panics when the actor a [`To`] named is not of type `T` (ADR-0013). An actor a typed reference refers to is.
-    pub fn send<K, I>(self, mail: &K) -> Result<(), EncodeError>
-    where
-        K: Kind + Encode<Actors> + Handled,
-        T: Handles<K>,
-        S: Allows<ToType<T, K>, I>,
-    {
-        match &self.to {
-            Receiver::Named(to) => self.seat.send(to, <ToType<T, K> as Marker>::SENDING.to(), mail),
-            Receiver::Proven(to) => self.seat.write(*to, mail),
-        }
-    }
-}
-
-/// Where the mail a turn sends to any actor that handles the kinds of `P` goes, as [`ToAny`] declares (ADR-0013).
-pub struct AnyAddress<'t, 'a, P, S> {
-    seat: &'t mut Seat<'a>,
-    to: To,
-    declared: PhantomData<fn() -> (P, S)>,
-}
-
-impl<P: Kinds, S> AnyAddress<'_, '_, P, S> {
-    /// Sends `mail` to the actor. It is delivered after the turn, in a later step.
-    ///
-    /// It builds only when the turn's sends list [`ToAny<P, K>`].
-    ///
-    /// # Panics
-    ///
-    /// Panics when the actor named does not list every kind of `P` (ADR-0013).
-    pub fn send<K, I>(self, mail: &K) -> Result<(), EncodeError>
-    where
-        K: Kind + Encode<Actors>,
-        S: Allows<ToAny<P, K>, I>,
-    {
-        self.seat.send(&self.to, <ToAny<P, K> as Marker>::SENDING.to(), mail)
-    }
-}
-
 /// Where in its chain the item a turn handles came: the chain's first mail, and how far down it the item is
 /// (ADR-0012).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -962,7 +915,7 @@ pub struct Turn<'a, S> {
     sends: PhantomData<fn() -> S>,
 }
 
-impl<'a, S> Turn<'a, S> {
+impl<S> Turn<'_, S> {
     /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.
     ///
     /// Watching an actor already watched changes nothing.
@@ -1014,29 +967,59 @@ impl<'a, S> Turn<'a, S> {
         self.seat.watch(of.into());
     }
 
-    /// Where mail to the actor `to` names goes, when it is of type `T`.
-    pub fn to<T: Actor>(&mut self, to: To) -> Address<'_, 'a, T, S> {
-        let to = match to {
-            To::Sender => To::Held(ErasedActorRef::new(self.source)),
-            named => named,
-        };
-
-        Address { seat: &mut self.seat, to: Receiver::Named(to), declared: PhantomData }
+    /// Sends `mail` to the actor `to` names. It is delivered after the turn, in a later step.
+    ///
+    /// It builds only when the turn's sends list a [`ToType<T, K>`], and `T` is found from them when one names `K`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the actor named is not of type `T` (ADR-0013).
+    pub fn send<T, K, I>(&mut self, to: To, mail: &K) -> Result<(), EncodeError>
+    where
+        T: Actor + Handles<K>,
+        K: Kind + Encode<Actors> + Handled,
+        S: Allows<ToType<T, K>, I>,
+    {
+        let to = self.named(to);
+        self.seat.send_typed::<T, K>(&to, mail)
     }
 
-    /// Where mail to the actor `reference` refers to goes. Its type is proven, so nothing is checked when it is sent.
-    pub fn to_actor<T: Actor>(&mut self, reference: ActorRef<T>) -> Address<'_, 'a, T, S> {
-        Address { seat: &mut self.seat, to: Receiver::Proven(reference.seated()), declared: PhantomData }
+    /// Sends `mail` to the actor `reference` refers to. Its type is proven, so nothing is checked when it is
+    /// sent.
+    ///
+    /// It builds only when the turn's sends list [`ToType<T, K>`].
+    pub fn send_to<T, K, I>(&mut self, reference: ActorRef<T>, mail: &K) -> Result<(), EncodeError>
+    where
+        T: Actor + Handles<K>,
+        K: Kind + Encode<Actors> + Handled,
+        S: Allows<ToType<T, K>, I>,
+    {
+        self.seat.write(reference.seated(), mail)
     }
 
-    /// Where mail to the actor `to` names goes, when its type lists every kind of `P`.
-    pub fn to_any<P: Kinds>(&mut self, to: To) -> AnyAddress<'_, 'a, P, S> {
-        let to = match to {
+    /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`.
+    ///
+    /// It builds only when the turn's sends list a [`ToAny<P, K>`], and `P` is found from them when one names `K`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the actor named does not list every kind of `P` (ADR-0013).
+    pub fn send_to_any<P, K, I>(&mut self, to: To, mail: &K) -> Result<(), EncodeError>
+    where
+        P: Kinds,
+        K: Kind + Encode<Actors>,
+        S: Allows<ToAny<P, K>, I>,
+    {
+        let to = self.named(to);
+        self.seat.send_any::<P, K>(&to, mail)
+    }
+
+    /// The actor `to` names, with the source of the item being handled named by its reference.
+    fn named(&self, to: To) -> To {
+        match to {
             To::Sender => To::Held(ErasedActorRef::new(self.source)),
             named => named,
-        };
-
-        AnyAddress { seat: &mut self.seat, to, declared: PhantomData }
+        }
     }
 
     /// Sends `mail` to the source of the item being handled. It is delivered after the turn, in a later step.
@@ -1196,21 +1179,54 @@ impl<'a, S: Sends> Beginning<'a, S> {
     }
 }
 
-impl<'a, S> Beginning<'a, S> {
-    /// Where mail to the actor `to` names goes, when it is of type `T`. It goes out with the mail of the turn this
-    /// `begin` runs in.
-    pub fn to<T: Actor>(&mut self, to: ToWithoutMail) -> Address<'_, 'a, T, S> {
-        Address { seat: &mut self.seat, to: Receiver::Named(to.into()), declared: PhantomData }
+impl<S> Beginning<'_, S> {
+    /// Sends `mail` to the actor `to` names, with the mail of the turn this `begin` runs in. It is delivered after the
+    /// turn, in a later step.
+    ///
+    /// It builds only when the turn's sends list a [`ToType<T, K>`], and `T` is found from them when one names `K`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the actor named is not of type `T` (ADR-0013).
+    pub fn send<T, K, I>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError>
+    where
+        T: Actor + Handles<K>,
+        K: Kind + Encode<Actors> + Handled,
+        S: Allows<ToType<T, K>, I>,
+    {
+        let to = To::from(to);
+        self.seat.send_typed::<T, K>(&to, mail)
     }
 
-    /// Where mail to the actor `reference` refers to goes. Its type is proven, so nothing is checked when it is sent.
-    pub fn to_actor<T: Actor>(&mut self, reference: ActorRef<T>) -> Address<'_, 'a, T, S> {
-        Address { seat: &mut self.seat, to: Receiver::Proven(reference.seated()), declared: PhantomData }
+    /// Sends `mail` to the actor `reference` refers to, with the mail of the turn this `begin` runs in. Its type is
+    /// proven, so nothing is checked when it is sent.
+    ///
+    /// It builds only when the turn's sends list [`ToType<T, K>`].
+    pub fn send_to<T, K, I>(&mut self, reference: ActorRef<T>, mail: &K) -> Result<(), EncodeError>
+    where
+        T: Actor + Handles<K>,
+        K: Kind + Encode<Actors> + Handled,
+        S: Allows<ToType<T, K>, I>,
+    {
+        self.seat.write(reference.seated(), mail)
     }
 
-    /// Where mail to the actor `to` names goes, when its type lists every kind of `P`.
-    pub fn to_any<P: Kinds>(&mut self, to: ToWithoutMail) -> AnyAddress<'_, 'a, P, S> {
-        AnyAddress { seat: &mut self.seat, to: to.into(), declared: PhantomData }
+    /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`, with the mail
+    /// of the turn this `begin` runs in.
+    ///
+    /// It builds only when the turn's sends list a [`ToAny<P, K>`], and `P` is found from them when one names `K`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the actor named does not list every kind of `P` (ADR-0013).
+    pub fn send_to_any<P, K, I>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError>
+    where
+        P: Kinds,
+        K: Kind + Encode<Actors>,
+        S: Allows<ToAny<P, K>, I>,
+    {
+        let to = To::from(to);
+        self.seat.send_any::<P, K>(&to, mail)
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
@@ -1400,27 +1416,59 @@ pub struct Ending<'a, S> {
     sends: PhantomData<fn() -> S>,
 }
 
-impl<'a, S> Ending<'a, S> {
+impl<S> Ending<'_, S> {
     /// Why this closing turn runs.
     #[must_use]
     pub const fn why(&self) -> Why {
         self.why
     }
 
-    /// Where mail to the actor `to` names goes, when it is of type `T`: the actor's last mail.
-    pub fn to<T: Actor>(&mut self, to: ToWithoutMail) -> Address<'_, 'a, T, S> {
-        Address { seat: &mut self.seat, to: Receiver::Named(to.into()), declared: PhantomData }
+    /// Sends `mail` to the actor `to` names, as the actor's last mail. It is delivered after the turn, in a later step.
+    ///
+    /// It builds only when the turn's sends list a [`ToType<T, K>`], and `T` is found from them when one names `K`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the actor named is not of type `T` (ADR-0013).
+    pub fn send<T, K, I>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError>
+    where
+        T: Actor + Handles<K>,
+        K: Kind + Encode<Actors> + Handled,
+        S: Allows<ToType<T, K>, I>,
+    {
+        let to = To::from(to);
+        self.seat.send_typed::<T, K>(&to, mail)
     }
 
-    /// Where mail to the actor `reference` refers to goes: the actor's last mail. Its type is proven, so nothing is
+    /// Sends `mail` to the actor `reference` refers to, as the actor's last mail. Its type is proven, so nothing is
     /// checked when it is sent.
-    pub fn to_actor<T: Actor>(&mut self, reference: ActorRef<T>) -> Address<'_, 'a, T, S> {
-        Address { seat: &mut self.seat, to: Receiver::Proven(reference.seated()), declared: PhantomData }
+    ///
+    /// It builds only when the turn's sends list [`ToType<T, K>`].
+    pub fn send_to<T, K, I>(&mut self, reference: ActorRef<T>, mail: &K) -> Result<(), EncodeError>
+    where
+        T: Actor + Handles<K>,
+        K: Kind + Encode<Actors> + Handled,
+        S: Allows<ToType<T, K>, I>,
+    {
+        self.seat.write(reference.seated(), mail)
     }
 
-    /// Where mail to the actor `to` names goes, when its type lists every kind of `P`.
-    pub fn to_any<P: Kinds>(&mut self, to: ToWithoutMail) -> AnyAddress<'_, 'a, P, S> {
-        AnyAddress { seat: &mut self.seat, to: to.into(), declared: PhantomData }
+    /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`, as the
+    /// actor's last mail.
+    ///
+    /// It builds only when the turn's sends list a [`ToAny<P, K>`], and `P` is found from them when one names `K`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the actor named does not list every kind of `P` (ADR-0013).
+    pub fn send_to_any<P, K, I>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError>
+    where
+        P: Kinds,
+        K: Kind + Encode<Actors>,
+        S: Allows<ToAny<P, K>, I>,
+    {
+        let to = To::from(to);
+        self.seat.send_any::<P, K>(&to, mail)
     }
 
     /// Logs `text` at `level`. The line is kept when this turn fails.

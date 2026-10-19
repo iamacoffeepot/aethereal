@@ -54,8 +54,7 @@ impl Actor for Fan {
             for number in 1..=config.children {
                 let config = FanConfig { number, children: 0 };
                 if turn.spawn::<Self>(&number, config).is_ok() {
-                    turn.to::<Self>(ToWithoutMail::ChildInstanced(Self::NAME, number.to_name()))
-                        .send(&Count { left: TURNS })?;
+                    turn.send(ToWithoutMail::ChildInstanced(Self::NAME, number.to_name()), &Count { left: TURNS })?;
                 }
             }
         }
@@ -81,12 +80,12 @@ impl Handles<Count> for Fan {
 
         let worked = (0..self.number * 1_000).fold(self.number, |sum, step| sum.wrapping_mul(31).wrapping_add(step));
         turn.log(Level::Info, format!("{} at {left} worked {worked}", self.number));
-        turn.to::<Self>(To::Parent).send(&Count { left })?;
+        turn.send(To::Parent, &Count { left })?;
         if left == 0 {
             turn.close();
         } else {
             let me = turn.me();
-            turn.to::<Self>(To::Held(me)).send(&Count { left: left - 1 })?;
+            turn.send(To::Held(me), &Count { left: left - 1 })?;
         }
 
         Ok(())

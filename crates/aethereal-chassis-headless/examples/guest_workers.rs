@@ -79,7 +79,7 @@ impl Actor for Pinger {
     fn begin(volley: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         let responder = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.responder"), &volley.with));
         if let Some(responder) = turn.resolve(&responder) {
-            turn.to_any::<(Ping,)>(ToWithoutMail::Held(responder)).send(&Ping { n: volley.pings })?;
+            turn.send_to_any(ToWithoutMail::Held(responder), &Ping { n: volley.pings })?;
         }
 
         Ok(Self)
