@@ -1458,7 +1458,7 @@ impl Instance {
         let mut items = 0;
         let mut len = 0;
         batch.each(&mut |peeked| {
-            peeked.pinned.each(|_, pin| offered.push(pin.clone()));
+            peeked.item.pinned().each(|_, pin| offered.push(pin.clone()));
             items += 1;
             let (handed, bytes) = match &peeked.item {
                 Item::Mail(mail) => (handed_mail(mail.kind(), peeked.tie), mail.bytes()),
@@ -2610,6 +2610,103 @@ mod tests {
 
             let stashed = STASHED.lock().map(|stashed| stashed.clone()).unwrap_or_default();
             assert_eq!(stashed, [(3, Ok(0))], "{parts} parts, {hops} hops");
+        }
+    }
+
+    /// The pongs the lender has been told.
+    static LENT: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+    /// The word to a lender to lend its nester a book.
+    #[derive(Plain)]
+    struct Lend;
+
+    impl Kind for Lend {
+        const NAME: KindName = KindName::new("aether.test.lend");
+    }
+
+    /// A native actor that spawns the nester guest from its code, then puts a blob of three bytes and mails it to the
+    /// nester in a turn of its own, keeping none of it, and keeps each pong it is told.
+    #[derive(aethereal_data::Bound)]
+    struct Lender {
+        nester: ActorRef<echo::Nester>,
+    }
+
+    impl Kind for Lender {
+        const NAME: KindName = KindName::new("aether.test.lender");
+    }
+
+    impl Actor for Lender {
+        type Config = Inquiring;
+        type Key = ();
+        type Handles = (Lend, Pong);
+        type BeginSends = (ToType<Self, Lend>,);
+        type EndSends = ();
+
+        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let Ok(nester) = turn.spawn_from::<echo::Nester>(&inquiring.code, &(), &echo::EchoConfig) else {
+                return Err(Fault::new(&Doom)?);
+            };
+            let me = turn.me();
+            turn.send(ToWithoutMail::Held(me), &Lend)?;
+
+            Ok(Self { nester })
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Lend> for Lender {
+        type Sends = (ToType<echo::Nester, echo::Book>,);
+
+        fn handle(&mut self, _: Lend, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            let Ok(blob) = turn.put(vec![7; 3]) else {
+                return Err(Fault::new(&Doom)?);
+            };
+            turn.send_to(self.nester, &echo::Book { blob })?;
+
+            Ok(())
+        }
+    }
+
+    impl Handles<Pong> for Lender {
+        type Sends = ();
+
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            if let Ok(mut lent) = LENT.lock() {
+                lent.push(pong.n);
+            }
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_blob_mailed_to_a_guest_and_handed_on_in_a_native_child_s_config_is_kept_and_offered() {
+        // Catches mail a guest is handed, as a hop or as it waited, whose blobs its host does not offer the call, which
+        // takes the reference the guest reads for one it forged; and a config a guest hands a native child read
+        // without the pins its birth carries, so the child takes no reference to the blob it was made from.
+        for (parts, hops) in [(1, 0), (1, 64), (4, 0), (4, 64)] {
+            let Some(parts) = NonZeroUsize::new(parts) else {
+                panic!("no engine has no parts");
+            };
+            if let Ok(mut lent) = LENT.lock() {
+                lent.clear();
+            }
+            let engine =
+                Engine::new(parts, 1024, 0, 1 << 20, hops).with_links(Links::default().with::<echo::Nestling>());
+            let (mut engine, code) = with_echo(engine);
+            let Ok(_) = engine.add_root::<Lender>(&(), Inquiring { code }) else {
+                panic!("the lender begins");
+            };
+            let clock = Monotonic::new();
+            while !engine.is_idle() {
+                engine.step(&clock);
+            }
+
+            let lent = LENT.lock().map(|lent| lent.clone()).unwrap_or_default();
+            assert_eq!(lent, [203], "{parts} parts, {hops} hops");
         }
     }
 

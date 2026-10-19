@@ -437,7 +437,8 @@ mod tests {
         assert_eq!(sent.encode(&mut out), Ok(()));
         let bytes = out.into_bytes();
         let mut budget = Budget::new(64);
-        let mut reader = Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::new());
+        let pins = crate::PinSource::lying(&bytes, &held);
+        let mut reader = Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::of(&pins));
         assert_eq!(Subscribe::decode(&mut reader).as_ref(), Ok(&sent));
 
         let read = Written::of(&sent).map(|written| written.read::<Subscribe>(64));

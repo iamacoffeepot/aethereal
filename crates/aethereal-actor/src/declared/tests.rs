@@ -206,7 +206,7 @@ fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<String> {
         CHAIN,
         Tie::TELL,
     );
-    let mail = Mail::new(kind, &[], OTHER, CHAIN.root, 1, 0);
+    let mail = Mail::new(kind, &[], &crate::PinSource::NOTHING, OTHER, CHAIN.root, 1, 0);
     let handled = actor.turn(Item::Mail(mail), turning);
     assert!(handled.is_ok());
 

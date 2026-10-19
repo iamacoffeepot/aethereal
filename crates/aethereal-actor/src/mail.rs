@@ -20,6 +20,9 @@ pub struct MailId {
 pub struct Mail<'a> {
     kind: KindId,
     bytes: &'a [u8],
+    /// Where the pins the bytes hold are found (ADR-0014).
+    #[cfg(feature = "std")]
+    pins: &'a crate::PinSource<'a>,
     sender: Seated,
     root: MailId,
     depth: u32,
@@ -27,13 +30,39 @@ pub struct Mail<'a> {
 }
 
 impl<'a> Mail<'a> {
-    /// The mail of kind `kind` whose bytes are `bytes`, sent by the actor `sender` names, at `depth` in the
-    /// chain that began at `root`.
+    /// The mail of kind `kind` whose bytes are `bytes`, whose pins `pins` finds, sent by the actor `sender` names, at
+    /// `depth` in the chain that began at `root`.
     ///
-    /// For the engine, which has established that the sender exists. A read allocates no more than `limit` bytes.
+    /// For the engine, which has established that the sender exists. A read allocates no more than `limit` bytes, and
+    /// takes each reference as a copy of a pin `pins` finds, so a pin it lacks is a reference refused.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub const fn new(
+        kind: KindId,
+        bytes: &'a [u8],
+        pins: &'a crate::PinSource<'a>,
+        sender: Seated,
+        root: MailId,
+        depth: u32,
+        limit: usize,
+    ) -> Self {
+        Self { kind, bytes, pins, sender, root, depth, limit }
+    }
+
+    /// The mail of kind `kind` whose bytes are `bytes`, sent by the actor `sender` names, at `depth` in the chain
+    /// that began at `root`, where no blob is referred to.
+    #[cfg(not(feature = "std"))]
     #[must_use]
     pub const fn new(kind: KindId, bytes: &'a [u8], sender: Seated, root: MailId, depth: u32, limit: usize) -> Self {
         Self { kind, bytes, sender, root, depth, limit }
+    }
+
+    /// The pins the mail's bytes hold, each at where its reference begins: for a host, which offers them to the code
+    /// it hands the bytes to (ADR-0014).
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn pinned(&self) -> crate::Pinned<'a> {
+        self.pins.pinned(self.bytes)
     }
 
     /// The most bytes a read of it allocates.
@@ -95,7 +124,11 @@ impl<'a> Mail<'a> {
     /// The mail's contents, read as `K`, whose handler it was handed to: the kind is already known to match.
     pub(crate) fn contents<K: Decode<Actors>>(&self) -> Result<K, DecodeError> {
         let mut budget = Budget::new(self.limit);
-        let mut reader = Reader::<Actors>::new(self.bytes, &mut budget, ActorsReader::new());
+        #[cfg(feature = "std")]
+        let offers = ActorsReader::of(self.pins);
+        #[cfg(not(feature = "std"))]
+        let offers = ActorsReader::of();
+        let mut reader = Reader::<Actors>::new(self.bytes, &mut budget, offers);
         let contents = K::decode(&mut reader)?;
         let trailing = reader.input().len();
         let is_whole = trailing == 0;

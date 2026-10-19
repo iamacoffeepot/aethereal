@@ -21,3 +21,16 @@ pub enum Item<'a> {
     /// with, whose handler it is handed to, and the context it kept for it (ADR-0017). Its source is the actor asked.
     Unanswered { mail: Mail<'a>, asking: &'a Asking },
 }
+
+#[cfg(feature = "std")]
+impl<'a> Item<'a> {
+    /// The pins the item's bytes hold, each at where its reference begins: none for an ending, whose bytes refer to no
+    /// blob (ADR-0014).
+    #[must_use]
+    pub fn pinned(&self) -> crate::Pinned<'a> {
+        match self {
+            Self::Mail(mail) | Self::Answer { mail, .. } | Self::Unanswered { mail, .. } => mail.pinned(),
+            Self::Ended(_) => crate::Pinned::nothing(),
+        }
+    }
+}

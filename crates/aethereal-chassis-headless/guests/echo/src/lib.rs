@@ -1710,6 +1710,79 @@ impl Handles<Answer<Pong, Stashed>> for Stasher {
     }
 }
 
+/// A native actor the guest's crate holds but its blob does not make, begun by its host from a config that refers to a
+/// blob: it tells its parent, as it begins, a pong of two hundred and the blob's length.
+#[derive(Bound)]
+pub struct Nestling;
+
+impl Kind for Nestling {
+    const NAME: KindName = KindName::new("aether.guest.nestling");
+}
+
+impl Actor for Nestling {
+    type Config = Book;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = (ToAny<(Pong,), Pong>,);
+    type EndSends = ();
+
+    fn begin(book: Book, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let n = 200 + turn.read(&book.blob).len() as u64;
+        turn.send_to_any(ToWithoutMail::Parent, &Pong { n })?;
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// An actor that answers a book it is mailed by spawning a nestling made from it, keeping none of it, and tells its
+/// parent each pong it is told.
+#[derive(Bound)]
+pub struct Nester;
+
+impl Kind for Nester {
+    const NAME: KindName = KindName::new("aether.guest.nester");
+}
+
+impl Actor for Nester {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Book, Pong);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Book> for Nester {
+    type Sends = ();
+
+    fn handle(&mut self, book: Book, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.spawn::<Nestling>(&(), book).map_err(|why| unhatched(&why))?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Pong> for Nester {
+    type Sends = (ToAny<(Pong,), Pong>,);
+
+    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.send_to_any(To::Parent, &pong)?;
+
+        Ok(())
+    }
+}
+
 aethereal_actor::guest!(
     Echo,
     Mirror,
@@ -1734,5 +1807,6 @@ aethereal_actor::guest!(
     Querent,
     Shelver,
     Steward,
-    Stasher
+    Stasher,
+    Nester
 );

@@ -31,7 +31,7 @@ use crate::{
     Above, Actor, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, BlobRef, Children, Declared, Ended, Fault,
     How, Item, Tie, Tied, Unanswered,
 };
-use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, Pinned, Preparing, Puts, Refused};
+use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, PinSource, Preparing, Puts, Refused};
 use crate::{Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, What, Written};
 use crate::{holders, pins};
 use aethereal_data::{
@@ -213,7 +213,8 @@ fn begin<A: Actor>(
     instances: &mut Instances,
 ) -> Result<Box<dyn Runs>, Fault> {
     let mut budget = Budget::new(instances.read_limit());
-    let mut reader = Reader::<Actors>::new(config, &mut budget, ActorsReader::new());
+    // Its host offered the call the pins the config holds (ADR-0014).
+    let mut reader = Reader::<Actors>::new(config, &mut budget, ActorsReader::of(&PinSource::OFFERED));
     let config = A::Config::decode(&mut reader)?;
     let Standing { path, above } = standing;
     // A guest's code keeps nothing (ADR-0010, ADR-0015).
@@ -456,7 +457,8 @@ fn read_item(items: &[u8], read_limit: usize) -> Option<(Inboxed<'_>, ItemHead, 
     let rest = items.get(ItemHead::BYTES..)?;
     let (bytes, rest) = rest.split_at_checked(head.len as usize)?;
     let ItemHead { handed, source, chain, .. } = head;
-    let mail = |kind, bytes| Mail::new(kind, bytes, source, chain.root, chain.depth, read_limit);
+    // Its host offered the call the pins the item holds (ADR-0014).
+    let mail = |kind, bytes| Mail::new(kind, bytes, &PinSource::OFFERED, source, chain.root, chain.depth, read_limit);
     let read = match handed {
         Handed::Mail { kind } | Handed::Asks { kind, .. } => Inboxed::Item(Item::Mail(mail(kind, bytes))),
         Handed::Ended(gone) => Inboxed::Item(Item::Ended(ended(gone, source, bytes))),
@@ -818,7 +820,7 @@ fn write_run(out: &mut Vec<u8>, asked: &Asked, mailed: &crate::Mailed, sends_at:
 /// `written`, of those written from `sends_at` in the out buffer, sends.
 fn note_refs(asked: &Asked, piece: crate::Payload, sends_at: usize, written: usize, refs: &mut Vec<RefRecord>) {
     let pinned = asked.arena().pinned(piece);
-    if matches!(pinned, Pinned::Nothing) {
+    if pinned.is_nothing() {
         return;
     }
     let send = count((written - sends_at) / SendRecord::BYTES);

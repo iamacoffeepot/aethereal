@@ -279,12 +279,15 @@ mod pinned {
         }
     }
 
+    /// The receiver's reference is a copy of the pin the mail holds at where the reference begins; one with no pin
+    /// there is refused.
     impl Decode<Actors> for BlobRef {
         fn decode(input: &mut Reader<'_, Actors>) -> Result<Self, DecodeError> {
+            let at = input.input().as_ptr().addr();
             let engine = u32::decode(input)?;
             let id = BlobId::new(engine, u64::decode(input)?);
 
-            Ok(Self::pin(id))
+            input.offers().pin(at, id).ok_or(DecodeError::Unheld)
         }
     }
 
@@ -433,8 +436,10 @@ mod pinned {
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
-    use crate::Written;
-    use aethereal_data::DecodeError;
+    use crate::{
+        Actors, ActorsWriter, Mail, MailId, PinSource, Pinned, Pinning, SeatNumber, Seated, Unanswered, Written,
+    };
+    use aethereal_data::{ActorId, DecodeError, Encode, KindId, Writer};
 
     #[test]
     fn bytes_written_keep_their_blobs_and_each_reference_read_back_is_a_pin_of_its_own() {
@@ -470,5 +475,57 @@ mod tests {
         let _ = pins::close();
 
         assert_eq!(read, Err(DecodeError::Unheld));
+    }
+
+    /// `blob` written as mail, and the pins its writer kept beside the bytes, each at where its reference begins.
+    fn mailed(blob: &BlobRef) -> (Vec<u8>, Vec<Pinning>) {
+        let mut held = Vec::new();
+        let mut out = Writer::<Actors>::new(ActorsWriter::new(&mut held));
+        assert_eq!(blob.encode(&mut out), Ok(()));
+
+        (out.into_bytes(), held)
+    }
+
+    /// The reference read out of mail of `bytes` that hold the pins `held` says: as they lie where they were
+    /// written, and as a hop's, copied out of the arena they were written in.
+    fn read_mailed(bytes: &[u8], held: &[Pinning]) -> [Result<BlobRef, DecodeError>; 2] {
+        let sender = Seated { id: ActorId::new(1), seat: SeatNumber::new(0) };
+        let root = MailId { sender: sender.id, count: 1 };
+        let sources = [PinSource::lying(bytes, held), PinSource::copied(bytes, Pinned::lying(held, 0))];
+
+        sources.map(|pins| Mail::new(KindId::of::<Unanswered>(), bytes, &pins, sender, root, 1, 64).contents())
+    }
+
+    #[test]
+    fn a_reference_read_out_of_mail_is_a_copy_of_the_pin_the_mail_holds() {
+        // Catches a receiver's reference taken with no pin of its own, freed once the mail's arena is emptied.
+        let id = BlobId::new(9, 3);
+        pins::open(9, Vec::new());
+        let blob = BlobRef::pin(id);
+        let (bytes, held) = mailed(&blob);
+        drop(blob);
+        let read = read_mailed(&bytes, &held);
+        drop(held);
+        let changes = pins::close();
+
+        assert_eq!(read.each_ref().map(|read| read.as_ref().map(BlobRef::id)), [Ok(id); 2]);
+        assert_eq!(changes.iter().map(|(_, by)| by).sum::<i64>(), 2, "each reference read back keeps its pin");
+    }
+
+    #[test]
+    fn a_reference_in_mail_with_no_pin_where_it_begins_is_refused() {
+        // Catches a reference read out of mail on its bytes alone: mail that holds no pin, one at another place in
+        // the bytes, or one on another blob, would each have it pin a blob that may have been freed.
+        pins::open(10, Vec::new());
+        let (blob, other) = (BlobRef::pin(BlobId::new(10, 3)), BlobRef::pin(BlobId::new(10, 4)));
+        let (bytes, held) = mailed(&blob);
+        let elsewhere = [(4, blob.clone())];
+        let another = [(0, other.clone())];
+
+        let refused = [read_mailed(&bytes, &[]), read_mailed(&bytes, &elsewhere), read_mailed(&bytes, &another)];
+
+        drop((blob, other, held, elsewhere, another));
+        let _ = pins::close();
+        assert_eq!(refused.map(|read| read.map(Result::err)), [[Some(DecodeError::Unheld); 2]; 3]);
     }
 }

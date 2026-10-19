@@ -284,7 +284,7 @@ impl Arena {
         let is_own = payload.slot() == self.slot();
         let holds = !self.held.is_empty() || !self.held_spilled.is_empty();
         if !is_own || !holds {
-            return Pinned::Nothing;
+            return Pinned::nothing();
         }
 
         self.held_by(payload)
@@ -293,22 +293,30 @@ impl Arena {
     /// [`Self::pinned`], for an arena whose mail holds pins.
     fn held_by(&self, payload: Payload) -> Pinned<'_> {
         match payload {
-            Payload::InArena { start, len, .. } => Pinned::Lying { held: crate::within(&self.held, start, len), start },
+            Payload::InArena { start, len, .. } => Pinned::lying(crate::within(&self.held, start, len), start),
             Payload::Spilled { index, .. } => {
                 let first = self.held_spilled.partition_point(|(piece, _)| *piece < index);
                 let past = self.held_spilled.partition_point(|(piece, _)| *piece <= index);
 
-                Pinned::Spilled { held: &self.held_spilled[first..past] }
+                Pinned { lies: Lies::Spilled { held: &self.held_spilled[first..past] } }
             }
         }
     }
 }
 
 /// Where the references in some bytes of mail lie, and the pins on their blobs: what an arena, a part's carried bytes,
-/// or a hop keeps beside them, shown to a host that hands the bytes to code that takes pins of its own (ADR-0014).
+/// or a hop keeps beside them (ADR-0014). A reference read out of the bytes is a copy of the pin at where it begins, and
+/// one with no pin there is refused, so it is made only of pins held.
 #[cfg(feature = "std")]
 #[derive(Clone, Copy)]
-pub enum Pinned<'a> {
+pub struct Pinned<'a> {
+    lies: Lies<'a>,
+}
+
+/// Where a [`Pinned`]'s pins lie.
+#[cfg(feature = "std")]
+#[derive(Clone, Copy)]
+enum Lies<'a> {
     /// The bytes refer to no blob.
     Nothing,
     /// The pins among `held`, each at where its reference begins, counted from `start`.
@@ -318,22 +326,207 @@ pub enum Pinned<'a> {
 }
 
 #[cfg(feature = "std")]
-impl Pinned<'_> {
+impl<'a> Pinned<'a> {
+    /// Bytes that refer to no blob.
+    #[must_use]
+    pub const fn nothing() -> Self {
+        Self { lies: Lies::Nothing }
+    }
+
+    /// The pins among `held`, kept in the order of where they lie, each at where its reference begins, counted from
+    /// `start`: what a part keeps beside the bytes it carried over.
+    #[must_use]
+    pub const fn lying(held: &'a [crate::Pinning], start: u32) -> Self {
+        Self { lies: Lies::Lying { held, start } }
+    }
+
+    /// Whether the bytes refer to no blob.
+    #[must_use]
+    pub const fn is_nothing(&self) -> bool {
+        matches!(self.lies, Lies::Nothing)
+    }
+
     /// Shows `visit` each reference: where it begins in the bytes, and the pin on its blob.
     pub fn each(self, mut visit: impl FnMut(u32, &crate::BlobRef)) {
-        match self {
-            Self::Nothing => {}
-            Self::Lying { held, start } => {
+        match self.lies {
+            Lies::Nothing => {}
+            Lies::Lying { held, start } => {
                 for (at, pin) in held {
                     visit(at - start, pin);
                 }
             }
-            Self::Spilled { held } => {
+            Lies::Spilled { held } => {
                 for (_, (at, pin)) in held {
                     visit(*at, pin);
                 }
             }
         }
+    }
+
+    /// A copy of the pin on `blob` at `at` in the bytes, where a reference to it begins: none when no pin on it lies
+    /// there.
+    pub(crate) fn pin(self, at: u32, blob: crate::BlobId) -> Option<crate::BlobRef> {
+        let mut found = None;
+        let mut visit = |lies: u32, pin: &crate::BlobRef| {
+            let is_this = lies == at && pin.id() == blob;
+            if is_this {
+                found = Some(pin.clone());
+            }
+        };
+        self.each(&mut visit);
+
+        found
+    }
+}
+
+/// Where the pins of some mail's bytes are found: what a reader at [`Actors`] looks a reference up in, by where its
+/// bytes lie in memory, only once a reference is read (ADR-0014). Mail holds it by one pointer, the same for every
+/// piece a part reads in a step, so mail that refers to no blob pays nothing more to be read.
+#[cfg(feature = "std")]
+pub struct PinSource<'a> {
+    from: From<'a>,
+}
+
+/// What a [`PinSource`] finds pins in.
+#[cfg(feature = "std")]
+enum From<'a> {
+    /// Bytes that refer to no blob.
+    Nothing,
+    /// The arenas a step's mail was written to, and the bytes a part carried over with the pins they hold, each at
+    /// where its reference begins in them.
+    Step { arenas: &'a [Arena], carried: &'a [u8], carried_pins: &'a [crate::Pinning] },
+    /// `bytes`, and the pins `held` among them, each at where its reference begins in them.
+    Lying { bytes: &'a [u8], held: &'a [crate::Pinning] },
+    /// `bytes`, copied out of the arena they were written in, and the pins they hold there, as `pinned` says.
+    Copied { bytes: &'a [u8], pinned: Pinned<'a> },
+    /// In a guest, whose host offered the call a pin on each blob the bytes refer to and holds the instance to them, as
+    /// the guest cannot see where they lie (ADR-0014, ADR-0015).
+    #[cfg(feature = "guest")]
+    Offered,
+}
+
+#[cfg(feature = "std")]
+impl<'a> PinSource<'a> {
+    /// Bytes that refer to no blob.
+    pub const NOTHING: PinSource<'static> = PinSource { from: From::Nothing };
+
+    /// The mail a step reads: what `arenas` were written, and `carried`, the bytes a part carried over, which hold
+    /// `carried_pins`.
+    #[must_use]
+    pub const fn step(arenas: &'a [Arena], carried: &'a [u8], carried_pins: &'a [crate::Pinning]) -> Self {
+        Self { from: From::Step { arenas, carried, carried_pins } }
+    }
+
+    /// `bytes`, which hold the pins `held`, kept in the order of where they lie, each at where its reference begins
+    /// in them: bytes copied out of the arena they were written in, or a config.
+    #[must_use]
+    pub const fn lying(bytes: &'a [u8], held: &'a [crate::Pinning]) -> Self {
+        Self { from: From::Lying { bytes, held } }
+    }
+
+    /// `bytes`, copied out of the arena they were written in, which hold the pins `pinned` says there: a hop's.
+    #[must_use]
+    pub const fn copied(bytes: &'a [u8], pinned: Pinned<'a>) -> Self {
+        Self { from: From::Copied { bytes, pinned } }
+    }
+
+    /// Bytes a guest's host handed in, whose pins it offered the call (ADR-0015).
+    #[cfg(feature = "guest")]
+    pub(crate) const OFFERED: PinSource<'static> = PinSource { from: From::Offered };
+
+    /// A copy of the pin on `blob` held for the reference whose bytes begin at the address `at`: none when no pin on
+    /// it lies there.
+    pub(crate) fn pin(&self, at: usize, blob: crate::BlobId) -> Option<crate::BlobRef> {
+        match &self.from {
+            From::Nothing => None,
+            From::Step { arenas, carried, carried_pins } => {
+                let in_carried = offset_in(carried, at).and_then(|offset| found(carried_pins, offset, blob));
+                in_carried.or_else(|| arenas.iter().find_map(|arena| arena.pin_at(at, blob)))
+            }
+            From::Lying { bytes, held } => offset_in(bytes, at).and_then(|offset| found(held, offset, blob)),
+            From::Copied { bytes, pinned } => offset_in(bytes, at).and_then(|offset| pinned.pin(offset, blob)),
+            #[cfg(feature = "guest")]
+            From::Offered => Some(crate::BlobRef::pin(blob)),
+        }
+    }
+
+    /// Where the references in `bytes`, mail it is the source of, lie, and the pins on their blobs: for a host, which
+    /// offers them to the code it hands the bytes to.
+    #[must_use]
+    pub fn pinned(&self, bytes: &'a [u8]) -> Pinned<'a> {
+        let at = bytes.as_ptr().addr();
+        let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+        match &self.from {
+            From::Step { arenas, carried, carried_pins } => {
+                let in_carried =
+                    offset_in(carried, at).map(|start| Pinned::lying(crate::within(carried_pins, start, len), start));
+                in_carried
+                    .or_else(|| arenas.iter().find_map(|arena| arena.pinned_at(at, len)))
+                    .unwrap_or_else(Pinned::nothing)
+            }
+            From::Lying { bytes: source, held } => offset_in(source, at)
+                .map_or_else(Pinned::nothing, |start| Pinned::lying(crate::within(held, start, len), start)),
+            From::Copied { pinned, .. } => *pinned,
+            _ => Pinned::nothing(),
+        }
+    }
+}
+
+/// Where the address `at` lies in `bytes`: none when it lies outside them.
+#[cfg(feature = "std")]
+fn offset_in(bytes: &[u8], at: usize) -> Option<u32> {
+    let offset = at.checked_sub(bytes.as_ptr().addr())?;
+    let is_inside = offset < bytes.len();
+
+    is_inside.then(|| u32::try_from(offset).ok()).flatten()
+}
+
+/// A copy of the pin on `blob` among `held`, kept in the order of where they lie, at `offset`: none when none lies
+/// there.
+#[cfg(feature = "std")]
+fn found(held: &[crate::Pinning], offset: u32, blob: crate::BlobId) -> Option<crate::BlobRef> {
+    let first = held.partition_point(|(at, _)| *at < offset);
+    let (at, pin) = held.get(first)?;
+    let is_this = *at == offset && pin.id() == blob;
+
+    is_this.then(|| pin.clone())
+}
+
+#[cfg(feature = "std")]
+impl Arena {
+    /// A copy of the pin on `blob` its mail holds for the reference whose bytes begin at the address `at`: none when
+    /// they do not lie in it, or no pin on it lies there.
+    fn pin_at(&self, at: usize, blob: crate::BlobId) -> Option<crate::BlobRef> {
+        if let Some(offset) = offset_in(&self.pieces.slab, at) {
+            return found(&self.held, offset, blob);
+        }
+        let (index, offset) = self.spilled_at(at)?;
+        let first = self.held_spilled.partition_point(|(piece, _)| *piece < index);
+        let past = self.held_spilled.partition_point(|(piece, _)| *piece <= index);
+        self.held_spilled[first..past]
+            .iter()
+            .find(|(_, (lies, pin))| *lies == offset && pin.id() == blob)
+            .map(|(_, (_, pin))| pin.clone())
+    }
+
+    /// Where the `len` bytes of mail that begin at the address `at` hold their pins, when they lie in it.
+    fn pinned_at(&self, at: usize, len: u32) -> Option<Pinned<'_>> {
+        if let Some(start) = offset_in(&self.pieces.slab, at) {
+            return Some(Pinned::lying(crate::within(&self.held, start, len), start));
+        }
+        let (index, _) = self.spilled_at(at)?;
+        let first = self.held_spilled.partition_point(|(piece, _)| *piece < index);
+        let past = self.held_spilled.partition_point(|(piece, _)| *piece <= index);
+
+        Some(Pinned { lies: Lies::Spilled { held: &self.held_spilled[first..past] } })
+    }
+
+    /// Which spilled piece the address `at` lies in, and where in it.
+    fn spilled_at(&self, at: usize) -> Option<(u32, u32)> {
+        let mut spilled = self.pieces.spilled.iter().enumerate();
+        let (index, offset) = spilled.find_map(|(index, piece)| Some((index, offset_in(piece, at)?)))?;
+
+        Some((u32::try_from(index).ok()?, offset))
     }
 }
 
@@ -516,5 +709,39 @@ mod tests {
 
         arena.clear(0);
         assert_eq!(arena.read(full), None);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn a_reference_in_spilled_mail_is_read_with_the_pin_spilled_with_it() {
+        // Catches a spilled piece's pins not handed to its reader, so a reference in mail that ran past the slab is
+        // refused, or pinned where it begins in the slab rather than in the piece; and not shown to a host, which would
+        // offer a guest none of them.
+        use crate::{BlobId, BlobRef, Mail, MailId, SeatNumber, Seated, pins};
+        use aethereal_data::{ActorId, KindId};
+        use core::slice;
+
+        pins::open(11, Vec::new());
+        let blob = BlobRef::pin(BlobId::new(11, 3));
+        let mut arena = Arena::new(3);
+        put(&mut arena, &vec![1; ARENA_BYTES - 8]);
+        let spilled = arena.write_mail(&blob);
+        let sender = Seated { id: ActorId::new(1), seat: SeatNumber::new(0) };
+        let root = MailId { sender: sender.id, count: 1 };
+
+        let read = spilled.map(|payload| {
+            let bytes = arena.read(payload).unwrap_or_default();
+            let pins = PinSource::step(slice::from_ref(&arena), &[], &[]);
+            let mail = Mail::new(KindId::of::<crate::Unanswered>(), bytes, &pins, sender, root, 1, 64);
+            let mut shown = Vec::new();
+            mail.pinned().each(|at, pin| shown.push((at, pin.id())));
+            let is_spilled = matches!(payload, Payload::Spilled { .. });
+            (is_spilled, mail.contents::<BlobRef>().map(|read| read.id()), shown)
+        });
+        drop((blob, arena));
+        let _ = pins::close();
+
+        let id = BlobId::new(11, 3);
+        assert_eq!(read, Ok((true, Ok(id), vec![(0, id)])));
     }
 }
