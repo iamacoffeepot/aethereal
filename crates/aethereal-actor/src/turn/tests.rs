@@ -467,6 +467,23 @@ fn mail_to_a_parent_goes_only_while_it_is_live() {
 }
 
 #[test]
+fn a_reference_casts_to_a_protocol_only_when_its_type_lists_every_kind() {
+    // Catches a cast that answers when its actor's type lists some kinds of the protocol and not all, one that answers
+    // for an actor the table does not hold, and one that loses the seat it was handed.
+    let leaf = seated(7, 3);
+    let table = Listed(vec![(leaf, ROOT.clone())]);
+    let mut asked = Asked::new();
+    let turn = opened::<()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let held = ErasedActorRef::new(leaf);
+
+    let cast = turn.cast::<(Shut, Poke)>(held);
+    let converted = ProtocolRef::<(Poke, Shut)>::from(ActorRef::<Leaf>::new(leaf)).narrow();
+    assert_eq!(cast, Some(converted));
+    assert_eq!(turn.cast::<(Poke, ToldToFail)>(held), None);
+    assert_eq!(turn.cast::<(Poke,)>(ErasedActorRef::new(seated(8, 4))), None);
+}
+
+#[test]
 fn mail_sent_to_all_is_a_piece_for_each_receiver_with_its_bytes_written_once() {
     // Catches a send to all that writes its bytes again for each receiver, sends one of them nothing or two pieces,
     // gives two pieces one count, or sends them out of the order given.

@@ -42,8 +42,8 @@ pub use blob::{BlobHash, BlobId, Puts};
 pub use blob::{BlobRef, Held, pins, within};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, Within, WithinReader, WithinWriter};
 pub use declared::{
-    Allows, At, Declared, Handled, HandledList, Handler, Handles, Kinds, Marker, Others, Role, Sending, Sends, Target,
-    ToAny, ToSender, ToType, Watches,
+    Allows, At, Conforms, Covers, Declared, Handled, HandledList, Handler, Handles, Kinds, Marker, Others, Role,
+    Sending, Sends, Target, ToAny, ToSender, ToType, Watches,
 };
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
@@ -54,7 +54,7 @@ pub use guests::{Config, config_bytes};
 pub use instances::{Instances, Lent};
 pub use item::Item;
 pub use mail::{Mail, MailId};
-pub use reference::{ActorRef, ErasedActorRef};
+pub use reference::{ActorRef, ErasedActorRef, ProtocolRef};
 pub use seat::{SeatNumber, Seated, Seats};
 pub use turn::{
     Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseWatch, Forged, Garbled, Hosted,

@@ -9,11 +9,13 @@
 //! data here, made from those types when the program is built.
 
 mod handles;
+mod protocols;
 mod sends;
 #[cfg(test)]
 mod tests;
 
 pub use handles::{Handled, HandledList, Handles, Others};
+pub use protocols::{Conforms, Covers};
 pub use sends::{Allows, At, Kinds, Marker, Sends, ToAny, ToSender, ToType, Watches};
 
 use crate::Actor;
