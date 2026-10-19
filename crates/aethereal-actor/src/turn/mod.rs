@@ -2017,7 +2017,8 @@ impl<'a> Closing<'a> {
 
 /// What an actor asks of the engine in its closing turn, which may send `S` (ADR-0009, ADR-0013).
 ///
-/// It offers no spawn and no close. It is handling no mail, so it has no sender to send to.
+/// It offers no spawn and no close. It is handling no mail, so it has no sender to send to. It answers what the actor
+/// held, and asks nothing: the actor is gone by the time an answer could come.
 pub struct Ending<'a, S> {
     seat: Seat<'a>,
     why: Why,
@@ -2101,6 +2102,22 @@ impl<S> Ending<'_, S> {
     /// [`KeepsNothing`](crate::KeepsNothing) in a guest's code.
     pub fn open<R: Resource>(&mut self, handle: &mut Handle<R>) -> Result<&mut R, Fault> {
         self.seat.open(handle)
+    }
+
+    /// Answers the request `held` holds with `mail`, as the actor's last mail: checked by the engine once the turn has
+    /// run, as a later turn's answer is (ADR-0017). A request the actor still holds as it ends, and one this turn
+    /// answers but fails after, is answered that the actor ended.
+    ///
+    /// # Errors
+    ///
+    /// Why `mail` could not be written. The request is then still unanswered, and its asker is told so, as of a held
+    /// request dropped.
+    pub fn answer<A: Kind + Encode<Actors>>(&mut self, held: Held<A>, mail: &A) -> Result<(), EncodeError> {
+        let owed = held.owed();
+        self.seat.answer(owed, mail)?;
+        let _ = held.into_owed();
+
+        Ok(())
     }
 
     /// Gives up the resource `handle` names, to send in this actor's last mail, so it outlives the actor. Dropped when

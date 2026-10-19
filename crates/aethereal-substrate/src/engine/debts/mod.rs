@@ -56,6 +56,27 @@ pub(super) struct Debt {
 }
 
 impl Debts {
+    /// Files what the closing turn of the actor `me`, at `chain`, did to its debts, taken out of `asked`: a debt it
+    /// answered is not owed, and the rest are left for the engine to say the actor ended owing. A closing turn that
+    /// answered a debt its actor does not hold fails with [`NotOwed`], and one that failed files nothing (ADR-0017).
+    #[cold]
+    #[inline(never)]
+    pub(super) fn settle_closing(
+        &mut self,
+        me: Seated,
+        chain: Context,
+        asked: &mut Asked,
+        outcome: &mut Result<(), Fault>,
+    ) {
+        if outcome.is_ok() {
+            match self.filed(me, asked.owes(), chain) {
+                Filed::Owes(debts) => self.held = Holds::Owes(Box::new(Owing { debts })),
+                Filed::NotOwed => *outcome = Err(NotOwed.into()),
+            }
+        }
+        asked.take_owes().for_each(drop);
+    }
+
     /// Files what the turn of the actor `me` did to its debts, taken out of `asked`: a request it held is owed, and a
     /// debt it answered is not. The turn handled mail tied as `tie` from `source`, at `chain`, having sent `sent`
     /// pieces of mail before it, and ended as `outcome` says. A turn that answered a debt it does not hold, of the

@@ -71,10 +71,12 @@ impl Carries<WhichTile> for Tiles {
 
 /// A board: it answers which tile is at `x` with ten times `x`, but at `0` fails, at `1` answers nothing, at `2`
 /// answers and closes, at `6` holds the request, at `7` answers twice, and from `100` replies `x - 100` times with `x`
-/// itself. What it holds it answers with `50`, lets go of, or closes on, as a [`Release`] says.
+/// itself. What it holds it answers with `50`, lets go of, or closes on, as a [`Release`] says, and its closing turn
+/// does with what it still holds what the release it closed on says.
 #[derive(Bound)]
 struct Board {
     held: Vec<Held<TileIs>>,
+    closed_on: u64,
 }
 
 impl Kind for Board {
@@ -90,7 +92,8 @@ impl Kind for Blank {
 }
 
 /// What a board does with what it holds: `0` answers it, `1` lets go of it, `2` closes on it, and `3` answers it
-/// twice, through a copy read back from bytes it was written into.
+/// twice, through a copy read back from bytes it was written into. From `4` it closes on it, and its closing turn
+/// answers it with `60`: and at `5` answers it again through a copy, and at `6` fails after answering.
 #[derive(Plain)]
 struct Release {
     how: u64,
@@ -108,10 +111,24 @@ impl Actor for Board {
     type EndSends = ();
 
     fn begin(_: Blank, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
-        Ok(Self { held: Vec::new() })
+        Ok(Self { held: Vec::new(), closed_on: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    fn end(self, turn: &mut Ending<'_, ()>) -> Result<(), Fault> {
+        let answers = self.closed_on >= 4;
+        if !answers {
+            return Ok(());
+        }
+        for held in self.held {
+            let copy = Written::of(&held)?.read(64)?;
+            turn.answer(held, &TileIs { tile: 60 })?;
+            match self.closed_on {
+                5 => turn.answer(copy, &TileIs { tile: 61 })?,
+                6 => return Err(Fault::new(&Release { how: 6 })?),
+                _ => drop(copy),
+            }
+        }
+
         Ok(())
     }
 }
@@ -168,8 +185,9 @@ impl Handles<Release> for Board {
                     turn.answer(copy, &TileIs { tile: 51 })?;
                 }
             }
-            _ => {
+            how => {
                 self.held = held;
+                self.closed_on = how;
                 turn.close();
             }
         }
@@ -598,6 +616,34 @@ fn a_held_request_whose_holder_ends_is_answered_that_it_ended() {
         let heard = heard(engine, &["ask 6", "later release 2"]);
 
         assert_eq!(heard, ["held true".to_owned(), format!("{:?} for 0", Unanswered::Ended)], "{engine:?}");
+    }
+}
+
+#[test]
+fn a_held_request_is_answered_in_its_holder_s_closing_turn() {
+    // Catches a closing turn's answer dropped or never filed: the asker would be told the holder ended owing it, after
+    // or instead of the answer it was given.
+    for engine in ENGINES {
+        let heard = heard(engine, &["ask 6", "later release 4"]);
+
+        assert_eq!(heard, ["held true", "60 for 0"], "{engine:?}");
+    }
+}
+
+#[test]
+fn a_closing_turn_that_answers_what_it_does_not_hold_or_fails_after_answering_is_answered_that_it_ended() {
+    // Catches a closing turn's answer to a debt not held sent as if it were owed, and the answers of a closing turn
+    // that failed sent or filed: the asker is told only that its holder ended owing it.
+    for engine in ENGINES {
+        for release in ["later release 5", "later release 6"] {
+            let heard = heard(engine, &["ask 6", release]);
+
+            assert_eq!(
+                heard,
+                ["held true".to_owned(), format!("{:?} for 0", Unanswered::Ended)],
+                "{engine:?} {release}"
+            );
+        }
     }
 }
 
