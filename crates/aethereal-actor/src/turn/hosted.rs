@@ -383,20 +383,26 @@ impl<'a> Hosted<'a> {
     }
 
     /// What the `count`th piece of mail `by` sends carries as the request it asks, to be answered with a kind `answer`
-    /// names, filed with `context`: refused unless it is the actor's own turn that handles an item, as only such a turn
-    /// asks, and its type handles the answer (ADR-0017). Kept out of line: most mail asks nothing, and inlined it
-    /// keeps the send from being inlined where each is read.
+    /// names, filed with `context` beside `by`: refused unless it is the actor's own turn that handles an item, its
+    /// `begin`, or the `begin` of a child the turn spawned, as only those ask, and the asker's type handles the answer
+    /// (ADR-0017). Kept out of line: most mail asks nothing, and inlined it keeps the send from being inlined where
+    /// each is read.
     #[cold]
     #[inline(never)]
     fn ask(&mut self, by: Seated, count: u64, answer: KindId, context: Written) -> Result<Tie, FalseSend> {
         let is_mine = by == self.seat.me;
-        let is_handling = matches!(self.source, Source::Item(_));
-        let handles = self.seat.declared.handles_answer(answer);
-        let asks = is_mine && is_handling && handles;
+        let declared = if is_mine {
+            self.seat.declared
+        } else {
+            self.spawned.iter().find(|child| child.me == by).ok_or(FalseSend)?.declared
+        };
+        let is_asking = !is_mine || matches!(self.source, Source::Item(_) | Source::Begin);
+        let handles = declared.handles_answer(answer);
+        let asks = is_asking && handles;
         if !asks {
             return Err(FalseSend);
         }
-        self.seat.asked.asks.push(Asking { count, answer, context });
+        self.seat.asked.asks.push((by, Asking { count, answer, context }));
 
         Ok(Tie::asks(count))
     }

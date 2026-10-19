@@ -2547,6 +2547,84 @@ mod tests {
         }
     }
 
+    /// What the opener guests heard of the request each asked as it began, by which it was.
+    static OPENED: Mutex<Vec<(u64, Result<u64, Unanswered>)>> = Mutex::new(Vec::new());
+
+    /// A native actor that spawns the opener guest from its code, which stands up one more beneath it, and that one a
+    /// native inlet, keeping what they hear.
+    #[derive(aethereal_data::Bound)]
+    struct Opening;
+
+    impl Kind for Opening {
+        const NAME: KindName = KindName::new("aether.test.opening");
+    }
+
+    impl Actor for Opening {
+        type Config = Inquiring;
+        type Key = ();
+        type Handles = (echo::Heard,);
+        type BeginSends = ();
+        type EndSends = ();
+
+        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let opening = echo::Opening { n: 3, below: 1 };
+            let Ok(_) = turn.spawn_from::<echo::Opener>(&inquiring.code, &3, &opening) else {
+                return Err(Fault::new(&Doom)?);
+            };
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<echo::Heard> for Opening {
+        type Sends = ();
+
+        fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+            let heard = match heard {
+                echo::Heard::Pong { at, n } => (at, Ok(n)),
+                echo::Heard::No { at, why } => (at, Err(why)),
+            };
+            if let Ok(mut all) = OPENED.lock() {
+                all.push(heard);
+            }
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_guest_asks_in_its_begin_and_so_does_a_child_its_begin_stands_up() {
+        // Catches a request a guest's `begin` asked that its host refuses, as only a turn that handles an item asked
+        // before, one asked by a child the guest stood up in its own code taken for its parent's, one asked by a native
+        // child its host began apart lost as that `begin` is taken in, and any filed beside an actor that never asked
+        // it.
+        for (parts, hops) in [(1, 0), (1, 64), (4, 0), (4, 64)] {
+            let Some(parts) = NonZeroUsize::new(parts) else {
+                panic!("no engine has no parts");
+            };
+            if let Ok(mut opened) = OPENED.lock() {
+                opened.clear();
+            }
+            let engine = Engine::new(parts, 1024, 0, 1 << 20, hops).with_links(Links::default().with::<echo::Inlet>());
+            let (mut engine, code) = with_echo(engine);
+            let Ok(_) = engine.add_root::<Opening>(&(), Inquiring { code }) else {
+                panic!("the opening begins");
+            };
+            let clock = Monotonic::new();
+            while !engine.is_idle() {
+                engine.step(&clock);
+            }
+
+            let mut opened = OPENED.lock().map(|opened| opened.clone()).unwrap_or_default();
+            opened.sort_by_key(|(at, _)| *at);
+            assert_eq!(opened, [(3, Ok(3)), (4, Ok(4)), (5, Ok(5))], "{parts} parts, {hops} hops");
+        }
+    }
+
     /// What the stasher guest heard, as its stashing parent keeps it: how many bytes the blob it kept held, and its
     /// pong's number.
     static STASHED: Mutex<Vec<(u64, Result<u64, Unanswered>)>> = Mutex::new(Vec::new());

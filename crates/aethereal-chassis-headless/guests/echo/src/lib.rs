@@ -1451,6 +1451,127 @@ impl Handles<Answer<Pong, Which>> for Querent {
     }
 }
 
+/// What an opener is made from: the ping it asks as it begins, and how many more openers to stand up beneath it.
+#[derive(Plain)]
+pub struct Opening {
+    pub n: u64,
+    pub below: u64,
+}
+
+impl Kind for Opening {
+    const NAME: KindName = KindName::new("aether.guest.opening");
+}
+
+/// An actor whose `begin` spawns an echo and asks it a ping of `n`, and, while `below` is more than none, stands up an
+/// opener of its own code beneath it that asks a ping of one more; the last stands up an inlet that does. It tells
+/// its parent what became of its request, and passes on what each actor below tells it.
+#[derive(Bound)]
+pub struct Opener;
+
+impl Kind for Opener {
+    const NAME: KindName = KindName::new("aether.guest.opener");
+}
+
+impl Actor for Opener {
+    type Config = Opening;
+    type Key = u64;
+    type Handles = (Answer<Pong, Which>, Heard);
+    type BeginSends = (Asks<Pings, Ping, Which>,);
+    type EndSends = ();
+
+    fn begin(opening: Opening, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|why| unhatched(&why))?;
+        turn.ask_to(echo.protocol(), &Ping { n: opening.n }, &Which { at: opening.n })?;
+        let n = opening.n + 1;
+        let is_deeper = opening.below > 0;
+        if is_deeper {
+            turn.spawn::<Self>(&n, Opening { n, below: opening.below - 1 }).map_err(|why| unhatched(&why))?;
+        } else {
+            turn.spawn::<Inlet>(&(), Ping { n }).map_err(|why| unhatched(&why))?;
+        }
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Pong, Which>> for Opener {
+    type Sends = (ToAny<(Heard,), Heard>,);
+
+    fn handle(
+        &mut self,
+        (pong, which): (Answered<Pong>, Which),
+        turn: &mut Turn<'_, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let heard = match pong {
+            Answered::Yes(pong) => Heard::Pong { at: which.at, n: pong.n },
+            Answered::No(why) => Heard::No { at: which.at, why },
+        };
+        turn.send_to_any(To::Parent, &heard)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Heard> for Opener {
+    type Sends = (ToAny<(Heard,), Heard>,);
+
+    fn handle(&mut self, heard: Heard, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.send_to_any(To::Parent, &heard)?;
+
+        Ok(())
+    }
+}
+
+/// A native actor the guest's crate holds but its blob does not make, begun by its host apart from the guest's call:
+/// its `begin` spawns an echo and asks it the ping it was made from, and it tells its parent what became of it.
+#[derive(Bound)]
+pub struct Inlet;
+
+impl Kind for Inlet {
+    const NAME: KindName = KindName::new("aether.guest.inlet");
+}
+
+impl Actor for Inlet {
+    type Config = Ping;
+    type Key = ();
+    type Handles = (Answer<Pong, Which>,);
+    type BeginSends = (Asks<Pings, Ping, Which>,);
+    type EndSends = ();
+
+    fn begin(ping: Ping, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|why| unhatched(&why))?;
+        turn.ask_to(echo.protocol(), &Ping { n: ping.n }, &Which { at: ping.n })?;
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Pong, Which>> for Inlet {
+    type Sends = (ToAny<(Heard,), Heard>,);
+
+    fn handle(
+        &mut self,
+        (pong, which): (Answered<Pong>, Which),
+        turn: &mut Turn<'_, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let heard = match pong {
+            Answered::Yes(pong) => Heard::Pong { at: which.at, n: pong.n },
+            Answered::No(why) => Heard::No { at: which.at, why },
+        };
+        turn.send_to_any(To::Parent, &heard)?;
+
+        Ok(())
+    }
+}
+
 /// An actor that answers a ping of `n` by telling its parent a pong of `n`, and then two books, of `n` sevens and of one
 /// more, sent back to back: a run of mail, after other mail, whose references its host must place.
 #[derive(Bound)]
@@ -1833,5 +1954,6 @@ aethereal_actor::guest!(
     Shelver,
     Steward,
     Stasher,
-    Nester
+    Nester,
+    Opener
 );

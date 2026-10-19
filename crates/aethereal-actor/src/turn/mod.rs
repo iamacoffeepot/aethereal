@@ -51,9 +51,10 @@ pub struct Asked {
     /// What a guest's code claimed of its resources, in the order it claimed it, for its host to hold it to: always
     /// empty in native code, whose resources move as it asks (ADR-0015).
     claims: Vec<Claim>,
-    /// The requests the turn running asked, with the context each keeps, for the engine to file once the turn has
-    /// run (ADR-0017): empty between turns.
-    asks: Vec<Asking>,
+    /// The requests the turn running asked, each by the actor that asked it, the turn's own or a child's `begin`, with
+    /// the context each keeps, for the engine to file beside its asker once the turn has run (ADR-0017): empty between
+    /// turns.
+    asks: Vec<(Seated, Asking)>,
     /// What the turn running did to the debts its actor holds, in the order it did it, for the engine to file once the
     /// turn has run (ADR-0017): empty between turns.
     owes: Vec<Owes>,
@@ -131,6 +132,7 @@ impl Asked {
     /// moves nothing in or out, and every buffer holds only what the turn running asked for.
     pub fn next_turn(&mut self) {
         debug_assert!(self.buffers.is_empty(), "a turn begins with its buffers emptied");
+        debug_assert!(self.asks.is_empty(), "a turn begins with every request asked before it filed or dropped");
         // Most turns stand up no child, and clearing even an empty map walks it.
         if !self.stood_seats.is_empty() {
             self.stood_seats.clear();
@@ -206,17 +208,24 @@ impl Asked {
         self.owes.drain(..)
     }
 
-    /// The requests the turns of a guest's call asked, each with its context, in the order asked: for its host to file
-    /// beside the mail that asks each (ADR-0015, ADR-0017).
+    /// The requests the turns of a guest's call asked, and the `begin`s of the children they stood up, each with its
+    /// context, in the order asked: for its host to file beside the mail that asks each (ADR-0015, ADR-0017).
     #[cfg(feature = "guest")]
-    pub(crate) fn asks(&self) -> &[Asking] {
-        &self.asks
+    pub(crate) fn asks(&self) -> impl Iterator<Item = &Asking> {
+        self.asks.iter().map(|(_, asking)| asking)
     }
 
-    /// Takes the requests the turn running asked, each with its context, in the order asked: for the engine, which
-    /// files them beside the asker once its turn has run, and drops them when it failed (ADR-0017).
+    /// Takes every request the turn running asked, and the `begin`s of the children it stood up asked, each with its
+    /// context: for the engine, which drops them when the turn failed (ADR-0017).
     pub fn take_asks(&mut self) -> impl Iterator<Item = Asking> + '_ {
-        self.asks.drain(..)
+        self.asks.drain(..).map(|(_, asking)| asking)
+    }
+
+    /// Takes the requests the actor `by` asked, each with its context, in the order asked: for the engine, which files
+    /// them beside `by` once the turn has run, the turn's own actor's and each child's it stood up, whose `begin` asked
+    /// them (ADR-0017).
+    pub fn take_asks_by(&mut self, by: Seated) -> impl Iterator<Item = Asking> + '_ {
+        self.asks.extract_if(.., move |(asker, _)| *asker == by).map(|(_, asking)| asking)
     }
 
     /// What the engine says to `to` of its request of the count `request`, which `by` did not answer, as `why`: mail of
@@ -294,10 +303,11 @@ impl Asked {
     #[cfg(feature = "std")]
     pub fn take_in(&mut self, other: Self) {
         self.take_lines(&other);
-        let Self { buffers, stood, stood_seats, arena, .. } = other;
+        let Self { buffers, stood, stood_seats, arena, asks, .. } = other;
         for mailed in buffers.mailed {
             self.copy_mail(&arena, mailed);
         }
+        self.asks.extend(asks);
         self.buffers.effects.extend(buffers.effects);
         self.buffers.gifts.extend(buffers.gifts);
         self.stood.extend(stood);
@@ -718,7 +728,7 @@ impl Seat<'_> {
         let context = Written::of(context)?;
         let count = self.sent + 1;
         self.write_after(to, mail, false, Tie::asks(count))?;
-        self.asked.asks.push(Asking { count, answer, context });
+        self.asked.asks.push((self.me, Asking { count, answer, context }));
 
         Ok(())
     }
@@ -1208,6 +1218,7 @@ impl Seat<'_> {
             Giver::Chassis => true,
         });
         self.asked.claims.retain(|claim| !gone.contains(&claim.by.seat));
+        self.asked.asks.retain(|(by, _)| !gone.contains(&by.seat));
         self.asked.seats.give_back(seat);
     }
 }
@@ -1734,6 +1745,23 @@ impl<S> Beginning<'_, S> {
     {
         let to = To::from(to);
         self.seat.send_typed::<T, K>(&to, mail)
+    }
+
+    /// Asks `mail` of the actor `reference` refers to, keeping `context` until the request is answered, when the
+    /// actor is handed what became of it with the context, as [`Answer<A, C>`](crate::Answer), in a turn after this
+    /// `begin`, as a turn's ask is (ADR-0017). A `begin` that fails asks nothing.
+    ///
+    /// It builds only when the `begin`'s sends list [`Asks<P, K, C>`]: `P` answers `K` with one kind, and the actor
+    /// handles that answer with `C`.
+    pub fn ask_to<P, K, A, C, I>(&mut self, reference: ProtocolRef<P>, mail: &K, context: &C) -> Result<(), EncodeError>
+    where
+        P: Protocol + Carries<K, Answers = (A,)>,
+        K: Kind + Encode<Actors>,
+        A: Kind,
+        C: Kind + Encode<Within>,
+        S: Allows<Asks<P, K, C>, I>,
+    {
+        self.seat.request(reference.seated(), mail, KindId::of::<A>(), context)
     }
 
     /// Sends `mail` to the actor `reference` refers to, with the mail of the turn this `begin` runs in. What it reaches is proven, so nothing is checked when it
