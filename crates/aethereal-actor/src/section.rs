@@ -60,6 +60,7 @@ pub enum Handled {
     Kind { kind: KindId },
     Ended,
     Others,
+    Answer { kind: KindId },
 }
 
 /// How many bytes the section of `types` takes.
@@ -192,6 +193,11 @@ const fn handlers(out: &mut [u8], at: usize, handlers: &[Handler]) -> usize {
             }
             Role::Ended => count(out, at, 1),
             Role::Others => count(out, at, 2),
+            Role::Answer(kind) => {
+                let at = count(out, at, 3);
+
+                id(out, at, kind)
+            }
         };
         at = sendings(out, at, handler.sends());
         index += 1;
@@ -211,6 +217,7 @@ impl Made {
                 Handled::Kind { kind } => Role::Kind(kind),
                 Handled::Ended => Role::Ended,
                 Handled::Others => Role::Others,
+                Handled::Answer { kind } => Role::Answer(kind),
             };
 
             Handler::new(role, leak_sends(&handles.sends))

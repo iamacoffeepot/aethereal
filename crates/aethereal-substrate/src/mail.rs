@@ -1,6 +1,6 @@
 //! A piece of mail as the engine carries it (ADR-0012).
 
-use aethereal_actor::{MailId, Payload, SeatNumber};
+use aethereal_actor::{MailId, Payload, SeatNumber, Tie};
 use aethereal_data::KindId;
 
 /// A piece of mail as the engine carries it: what it is, the seat it comes from, and the chain it belongs to
@@ -21,4 +21,6 @@ pub struct Envelope {
     pub kind: KindId,
     /// Where its contents, the bytes of that kind, are: in the arena of the worker that sent it, or their own.
     pub bytes: Payload,
+    /// What it is to a request: none of one, one, or an answer to one (ADR-0017).
+    pub tie: Tie,
 }

@@ -1,5 +1,6 @@
 //! The engine: it runs turns in steps, and applies what they asked for (ADR-0009, ADR-0011).
 
+mod ask;
 mod batch;
 mod birth;
 mod bring;
@@ -32,11 +33,12 @@ use crate::{
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, Actor, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Carried, Chain, Closing,
-    Code, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, Item, Keeping, Keeps, Links,
-    Mail, MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated, Seats, Stood,
+    Code, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, Keeping, Keeps, Links, Mail,
+    MailId, Mailed, NoGuests, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated, Seats, Stood,
     Turning, Unfit, What, Why, config_bytes,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
+use ask::{Answering, Waiting};
 use birth::Births;
 use costs::{CostKey, Costs, ItemKind, toward};
 use fuse::{Fusing, Hand, Hop, Stepped};
@@ -208,6 +210,8 @@ struct Sitting {
 struct Held {
     actor: Holding,
     keeping: Keeping,
+    /// The contexts of the requests it asked, waiting for their answers (ADR-0017).
+    waiting: Waiting,
 }
 
 /// Whether the engine holds the actor of a seat.
@@ -1343,8 +1347,8 @@ impl Reading<'_> {
             // A hop to an actor that was cut off in the step would overtake what it carries, so it is carried
             // after that.
             if lists.fusing.carries(hop.to.id) {
-                let Hop { to, from, count, root, depth, kind, .. } = hop;
-                let envelope = |bytes| Envelope { sender_seat: from.seat, root, depth, kind, bytes };
+                let Hop { to, from, count, root, depth, kind, tie, .. } = hop;
+                let envelope = |bytes| Envelope { sender_seat: from.seat, root, depth, kind, bytes, tie };
                 room.streams.carry_hop(
                     to,
                     (from.id.bits(), count),
@@ -1371,6 +1375,10 @@ impl Reading<'_> {
     /// ask for added to `asked` and routed into `lists`. The actor is taken out of its seat while its turns
     /// run, and put back, or its seat freed once its closing turn has run. Nothing when another actor sits there.
     #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one actor's turns in a step, each sharing the run's locals with the next"
+    )]
     fn turns(
         &self,
         room: &mut Room<'_>,
@@ -1388,7 +1396,7 @@ impl Reading<'_> {
         let Holding::Here(mut actor) = mem::replace(&mut held.actor, Holding::Away) else {
             return;
         };
-        let keeping = &mut held.keeping;
+        let (keeping, waiting) = (&mut held.keeping, &mut held.waiting);
         let key = |item| CostKey { actor: seat.kind, item };
 
         match (work, life.state()) {
@@ -1446,7 +1454,13 @@ impl Reading<'_> {
                         };
                         asked.next_turn();
                         let source = handed.source();
-                        let (item, context) = batch::read(handed, self, carried);
+                        let tie = handed.tie();
+                        let answering = waiting.answering(tie);
+                        // An answer to nothing it waits on runs no turn.
+                        if matches!(answering, Answering::Stray) {
+                            return;
+                        }
+                        let (item, context) = batch::read(handed, self, carried, answering);
                         // The item sits one above what the turn sends in its chain.
                         let chain = Chain { root: context.root, depth: context.depth - 1 };
                         let turning = Turning::new(
@@ -1461,8 +1475,10 @@ impl Reading<'_> {
                             stepped.sent,
                             source,
                             chain,
+                            tie,
                         );
                         let outcome = actor.turn(item, turning);
+                        waiting.settle(tie, asked, &outcome);
                         lists.drop_untaken(me, keeping, handed);
                         let ran = Ran::of(me, outcome, asked, context);
 
@@ -1569,7 +1585,7 @@ impl Reading<'_> {
         let Holding::Here(mut actor) = mem::replace(&mut held.actor, Holding::Away) else {
             return;
         };
-        let keeping = &mut held.keeping;
+        let (keeping, waiting) = (&mut held.keeping, &mut held.waiting);
 
         let table = Since {
             table: self.table,
@@ -1597,7 +1613,13 @@ impl Reading<'_> {
                     blobs: self.blobs,
                 };
                 let bytes = lists.fusing.bytes(&hop);
+                let answering = waiting.answering(hop.tie);
+                // An answer to nothing it waits on runs no turn.
+                if matches!(answering, Answering::Stray) {
+                    return;
+                }
                 let mail = Mail::new(hop.kind, bytes, hop.from, hop.root, hop.depth, self.read_limit);
+                let item = ask::item(mail, answering);
                 let chain = Chain { root: hop.root, depth: hop.depth };
                 let turning = Turning::new(
                     me,
@@ -1611,9 +1633,13 @@ impl Reading<'_> {
                     sent_before,
                     hop.from,
                     chain,
+                    hop.tie,
                 );
 
-                actor.turn(Item::Mail(mail), turning)
+                let outcome = actor.turn(item, turning);
+                waiting.settle(hop.tie, asked, &outcome);
+
+                outcome
             };
             let context = Context { root: hop.root, depth: hop.depth + 1 };
             let ran = Ran::of(me, handled, asked, context);
@@ -1679,7 +1705,7 @@ impl Reading<'_> {
             };
             let burst = sends.count();
             if let Some(index) = first {
-                let Mailed { to, count, kind, bytes, .. } = mailed[index];
+                let Mailed { to, count, kind, bytes, tie, .. } = mailed[index];
                 let hand = hand(to, *stepped, seating, lives, &lists.fusing);
                 lists.fusing.hops.count(hand);
                 let pieces = bytes.pieces();
@@ -1710,6 +1736,7 @@ impl Reading<'_> {
                         to,
                         from: me,
                         count,
+                        tie,
                         root: context.root,
                         depth: context.depth,
                         kind,

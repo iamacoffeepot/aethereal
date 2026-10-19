@@ -11,7 +11,7 @@ mod tests;
 
 use super::{Engine, ROOTS, parity};
 use crate::{Context, lives, log, stream};
-use aethereal_actor::{Actors, Arena, Gift, Given, MailId, Mailed, Seated, Source};
+use aethereal_actor::{Actors, Arena, Gift, Given, MailId, Mailed, Seated, Source, Tie};
 use aethereal_data::{ActorId, Encode, Kind, KindId};
 use std::any;
 use std::mem;
@@ -103,7 +103,7 @@ impl<K: Kind + Encode<Actors> + Send + 'static> Brings for Mutex<Fed<K>> {
                 continue;
             };
             sent += 1;
-            mailed.push(Mailed { by: owner, to: owner, count: sent, kind: KindId::of::<K>(), bytes });
+            mailed.push(Mailed { by: owner, to: owner, count: sent, kind: KindId::of::<K>(), bytes, tie: Tie::TELL });
         }
         drop(fed);
 

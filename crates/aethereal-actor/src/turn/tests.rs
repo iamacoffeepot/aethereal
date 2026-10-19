@@ -283,7 +283,7 @@ fn opened<'a, S: Sends>(
     // as the turn lives.
     let instances = Box::leak(Box::default());
 
-    Turning::new(me, path, above, table, &(), asked, instances, Keeps::Claimed, 0, source, CHAIN)
+    Turning::new(me, path, above, table, &(), asked, instances, Keeps::Claimed, 0, source, CHAIN, Tie::TELL)
         .declaring::<Leaf, S>(poke)
 }
 
@@ -388,7 +388,7 @@ fn begin_and_end_send_as_their_own_actor() {
     let Ok(herald) = turn.spawn::<Herald>(&(), Poke) else {
         panic!("the herald begins");
     };
-    let to_parent = |kind| Mailed { by: herald.seated(), to: ME, count: 1, kind, bytes: NOTHING };
+    let to_parent = |kind| Mailed { by: herald.seated(), to: ME, count: 1, kind, bytes: NOTHING, tie: Tie::TELL };
     let spawn = Effect::new(ME, What::Spawn { from: Code::Linked(Declared::of::<Herald>()), seat: SeatNumber::new(0) });
     assert_eq!(asked.effects(), [spawn]);
     assert_eq!(asked.mailed(), [to_parent(KindId::of::<Poked>())]);
@@ -448,6 +448,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
             0,
             other,
             CHAIN,
+            Tie::TELL,
         );
         let mail = Mail::new(kind, bytes, other, MailId { sender: other.id, count: 1 }, 1, 64);
         let handled = leaf.turn(Item::Mail(mail), turning);
@@ -457,16 +458,16 @@ fn handler_asks_by_the_kind_of_its_mail() {
         (handled, mailed, effects)
     };
 
-    let poked = Mailed { by: ME, to: other, count: 1, kind: KindId::of::<Poked>(), bytes: NOTHING };
+    let poked = Mailed { by: ME, to: other, count: 1, kind: KindId::of::<Poked>(), bytes: NOTHING, tie: Tie::TELL };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Poke>(), &[]), (Ok(()), vec![poked], Vec::new()));
     let closed = vec![Effect::new(ME, What::Close)];
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Shut>(), &[]), (Ok(()), Vec::new(), closed));
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Poked>(), &[]), (Ok(()), Vec::new(), Vec::new()));
 
-    let mut out = Writer::<Within>::new(crate::WithinWriter::new());
+    let mut out = Writer::<Within>::new(WithinWriter::new());
     assert_eq!(ErasedActorRef::new(other).encode(&mut out), Ok(()));
     let meet = out.into_bytes();
-    let poke = Mailed { by: ME, to: other, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING };
+    let poke = Mailed { by: ME, to: other, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING, tie: Tie::TELL };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Meet>(), &meet), (Ok(()), vec![poke], Vec::new()));
 }
 
@@ -487,7 +488,7 @@ fn mail_to_a_parent_goes_only_while_it_is_live() {
     };
 
     let live = Listed(vec![(parent, ROOT.clone())]);
-    let to_parent = Mailed { by: ME, to: parent, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING };
+    let to_parent = Mailed { by: ME, to: parent, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING, tie: Tie::TELL };
     assert_eq!(send(&live), (true, vec![to_parent]));
     assert_eq!(send(&Listed::default()), (true, Vec::new()));
 }
@@ -670,8 +671,20 @@ fn a_host_holds_a_guest_to_what_it_claims_of_resources() {
     keeping.arrive(other, MailId { sender: other.id, count: 1 }, Kept::new(7, Lamp));
     keeping.arrive(stranger, MailId { sender: stranger.id, count: 1 }, Kept::new(8, Lamp));
     let keeps = Keeps::Here(&mut keeping);
-    let turning =
-        Turning::new(ME, &ROOT, Above::Chassis, &table, &(), &mut asked, &mut instances, keeps, 0, other, CHAIN);
+    let turning = Turning::new(
+        ME,
+        &ROOT,
+        Above::Chassis,
+        &table,
+        &(),
+        &mut asked,
+        &mut instances,
+        keeps,
+        0,
+        other,
+        CHAIN,
+        Tie::TELL,
+    );
     let (mut hosted, _) = turning.hosted(Declared::of::<Leaf>(), Role::Others);
     let claim = |ticket, what| Claim { by: ME, ticket, what };
 

@@ -20,6 +20,8 @@ pub enum EncodeError {
         /// What the value is, for error messages.
         name: &'static str,
     },
+    /// A request already answered was answered again (ADR-0017).
+    Answered,
 }
 
 impl fmt::Display for EncodeError {
@@ -27,6 +29,7 @@ impl fmt::Display for EncodeError {
         match self {
             Self::CountOverflow { count } => write!(f, "plain data: collection of {count} exceeds the count ceiling"),
             Self::NotCarried { name } => write!(f, "plain data: a {name} is written where nothing carries it on"),
+            Self::Answered => write!(f, "a request already answered is answered again"),
         }
     }
 }

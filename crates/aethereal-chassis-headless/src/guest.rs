@@ -1107,6 +1107,7 @@ impl Runs for Guest {
             Item::Mail(mail) if self.declared.lists(mail.kind()) => Role::Kind(mail.kind()),
             Item::Mail(_) => Role::Others,
             Item::Ended(_) => Role::Ended,
+            Item::Answer { mail, .. } => Role::Answer(mail.kind()),
         };
         let (mut hosted, instances) = turning.hosted(self.declared, role);
         let replayed = match self.ran {
@@ -1397,7 +1398,9 @@ impl Instance {
         batch.each(&mut |peeked| {
             peeked.pinned.each(|_, pin| offered.push(pin.clone()));
             let (handed, bytes) = match &peeked.item {
-                Item::Mail(mail) => (Handed::Mail { kind: mail.kind() }, mail.bytes()),
+                // A batch is read before its turns run, which is where an answer is told from its mail, so an answer is
+                // handed in as the mail it is (ADR-0017).
+                Item::Mail(mail) | Item::Answer { mail, .. } => (Handed::Mail { kind: mail.kind() }, mail.bytes()),
                 Item::Ended(ended) => match ended.how() {
                     How::Closed => (Handed::Ended(Gone::Closed), &[][..]),
                     How::Failed(fault) => (Handed::Ended(Gone::Failed { kind: fault.kind() }), fault.bytes()),
@@ -1832,8 +1835,8 @@ mod tests {
     use super::*;
     use crate::Monotonic;
     use aethereal_actor::{
-        Actor, ActorRef, Beginning, Ending, Forged, Handles, Links, Seated, To, ToAny, ToSender, ToType, ToWithoutMail,
-        Trapped, Turn,
+        Actor, ActorRef, Answer, Answered, Beginning, BlobRef, Carries, Ending, Forged, Handles, Links, Protocol,
+        Seated, To, ToAny, ToSender, ToType, ToWithoutMail, Trapped, Turn,
     };
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
     use aethereal_guest_echo as echo;
@@ -1949,6 +1952,109 @@ mod tests {
         }
 
         assert_eq!(PONGS.load(Ordering::Relaxed), 10);
+    }
+
+    /// The protocol the echo guest is asked through: a ping, answered with a pong.
+    struct Pings;
+
+    impl Protocol for Pings {
+        type Kinds = (echo::Ping,);
+    }
+
+    impl Carries<echo::Ping> for Pings {
+        type Answers = (echo::Pong,);
+    }
+
+    /// What a questioner keeps until its ping is answered: which ping it was.
+    #[derive(Plain)]
+    struct Which {
+        at: u64,
+    }
+
+    impl Kind for Which {
+        const NAME: KindName = KindName::new("aether.test.which");
+    }
+
+    /// What the questioner was answered, each pong with what it kept for its ping.
+    static QUESTIONED: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+
+    /// A native actor that spawns the echo guest from its code and asks it two pings, keeping which each was.
+    #[derive(aethereal_data::Bound)]
+    struct Questioner {
+        code: BlobRef,
+    }
+
+    impl Kind for Questioner {
+        const NAME: KindName = KindName::new("aether.test.questioner");
+    }
+
+    impl Actor for Questioner {
+        type Config = Self;
+        type Key = ();
+        type Handles = (Volley, Answer<echo::Pong, Which>);
+        type BeginSends = (ToType<Self, Volley>,);
+        type EndSends = ();
+
+        fn begin(questioner: Self, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let me = turn.me();
+            turn.send(ToWithoutMail::Held(me), &Volley { pings: 2 })?;
+
+            Ok(questioner)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Volley> for Questioner {
+        type Sends = (aethereal_actor::Asks<Pings, echo::Ping, Which>,);
+
+        fn handle(&mut self, volley: Volley, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            let Ok(echo) = turn.spawn_from::<echo::Echo>(&self.code, &(), &echo::EchoConfig) else {
+                return Ok(());
+            };
+            for at in 0..volley.pings {
+                turn.ask_to(echo.protocol::<Pings, _>(), &echo::Ping { n: at * 10 }, &Which { at })?;
+            }
+
+            Ok(())
+        }
+    }
+
+    impl Handles<Answer<echo::Pong, Which>> for Questioner {
+        type Sends = ();
+
+        fn handle(&mut self, (pong, which): (Answered<echo::Pong>, Which), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+            let Answered::Yes(pong) = pong else {
+                return Ok(());
+            };
+            if let Ok(mut questioned) = QUESTIONED.lock() {
+                questioned.push((pong.n, which.at));
+            }
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_guest_answers_a_native_actors_request() {
+        // Catches a guest's reply to a request that its host sends on as plain mail, which the asker cannot place,
+        // and an answer tied to the wrong one of two requests.
+        let Some(parts) = NonZeroUsize::new(4) else {
+            panic!("four is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 64));
+        let Ok(_) = engine.add_root::<Questioner>(&(), Questioner { code }) else {
+            panic!("the questioner begins");
+        };
+        let clock = Monotonic::new();
+        while !engine.is_idle() {
+            engine.step(&clock);
+        }
+
+        let questioned = QUESTIONED.lock().map(|questioned| questioned.clone()).unwrap_or_default();
+        assert_eq!(questioned, [(0, 0), (10, 1)]);
     }
 
     /// The word to close, as the echo guest declares it.

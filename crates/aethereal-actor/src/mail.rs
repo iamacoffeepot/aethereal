@@ -36,6 +36,11 @@ impl<'a> Mail<'a> {
         Self { kind, bytes, sender, root, depth, limit }
     }
 
+    /// The most bytes a read of it allocates.
+    pub(crate) const fn limit(&self) -> usize {
+        self.limit
+    }
+
     /// The id of the mail's kind.
     #[must_use]
     pub const fn kind(&self) -> KindId {

@@ -13,4 +13,7 @@ pub enum Item<'a> {
     Mail(Mail<'a>),
     /// An actor this one watches has ended. Its source is that actor, so a send to it is not delivered.
     Ended(Ended),
+    /// The answer to a request this actor asked, and the context it kept for it, encoded (ADR-0017). Its source is
+    /// the actor asked.
+    Answer { mail: Mail<'a>, context: &'a [u8] },
 }

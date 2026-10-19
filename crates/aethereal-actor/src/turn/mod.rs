@@ -10,10 +10,11 @@ pub use refused::Refused;
 
 use crate::resource;
 use crate::{
-    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Children, Claim, Claimed, Code, Declared, Effect,
-    ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Instances, Keeping, Keeps, Kinds, Level, Line,
-    Listed, MailId, Mailed, Marker, Payload, ProtocolRef, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated,
-    Seats, Seen, Sends, Table, Target, To, ToAny, ToSender, ToType, ToWithoutMail, Watches, What,
+    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Asking, Asks, Carries, Children, Claim, Claimed, Code,
+    Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Instances, Keeping, Keeps,
+    Kinds, Level, Line, Listed, MailId, Mailed, Marker, Payload, Protocol, ProtocolRef, Puts, Reaches, Resource, Role,
+    Runs, SeatNumber, Seated, Seats, Seen, Sends, Table, Target, Tie, Tied, To, ToAny, ToSender, ToType, ToWithoutMail,
+    Watches, What, Within, WithinWriter,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -50,6 +51,9 @@ pub struct Asked {
     /// What a guest's code claimed of its resources, in the order it claimed it, for its host to hold it to: always
     /// empty in native code, whose resources move as it asks (ADR-0015).
     claims: Vec<Claim>,
+    /// The requests the turn running asked, with the context each keeps, for the engine to file once the turn has
+    /// run (ADR-0017): empty between turns.
+    asks: Vec<Asking>,
 }
 
 /// The buffers of what turns ask for: kept by a worker over its share of a step, and filled by each turn in turn.
@@ -111,9 +115,10 @@ impl Asked {
     pub fn continuing(buffers: Buffers, arena: Arena, seats: Seats, puts: Puts) -> Self {
         debug_assert!(buffers.is_empty(), "a turn begins with its buffers emptied");
 
-        let (carrying, claims) = (Vec::new(), Vec::new());
+        let (carrying, claims, asks) = (Vec::new(), Vec::new(), Vec::new());
+        let stood = Vec::new();
 
-        Self { buffers, stood: Vec::new(), stood_seats: BTreeMap::new(), arena, seats, puts, carrying, claims }
+        Self { buffers, stood, stood_seats: BTreeMap::new(), arena, seats, puts, carrying, claims, asks }
     }
 
     /// Begins the next turn, once what the last asked for has been taken out of the buffers. The children the last
@@ -161,6 +166,18 @@ impl Asked {
     #[must_use]
     pub fn asked_nothing(&self) -> bool {
         self.buffers.is_empty()
+    }
+
+    /// Whether the turn running has asked anything (ADR-0017).
+    #[must_use]
+    pub fn has_asked(&self) -> bool {
+        !self.asks.is_empty()
+    }
+
+    /// Takes the requests the turn running asked, each with its context, in the order asked: for the engine, which
+    /// files them beside the asker once its turn has run, and drops them when it failed (ADR-0017).
+    pub fn take_asks(&mut self) -> impl Iterator<Item = Asking> + '_ {
+        self.asks.drain(..)
     }
 
     /// Takes the children this turn stood up, each in the order its `begin` finished.
@@ -394,6 +411,37 @@ struct Seat<'a> {
     during: During,
     /// The last send of the turn that was checked against the declaration, if it is still the turn's last effect.
     checked: Checked,
+    /// What the turn owes the source of the item it handles (ADR-0017).
+    owing: Owing,
+}
+
+/// What a turn owes the source of the item it handles (ADR-0017).
+///
+/// It is read only when the turn replies, so a turn that does not reply reads nothing of it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Owing {
+    /// What the item is to a request, as its mail says: an answer when it asks one.
+    Item(Tie),
+    /// Nothing more: it has answered the request.
+    Answered,
+}
+
+impl Owing {
+    /// What a turn that owes nothing owes.
+    pub const NOTHING: Self = Self::Item(Tie::TELL);
+
+    /// What a reply to the source carries, and what the turn owes after it: refused once the request is answered.
+    fn reply(self) -> Result<(Tie, Self), EncodeError> {
+        let Self::Item(tie) = self else {
+            return Err(EncodeError::Answered);
+        };
+        let replied = match tie.read() {
+            Tied::Asks(count) => (Tie::answers(count), Self::Answered),
+            Tied::Tell | Tied::Answers(_) => (Tie::TELL, self),
+        };
+
+        Ok(replied)
+    }
 }
 
 /// Which send of a turn was last checked against the actor's declaration (ADR-0013): a send like it that follows it
@@ -421,6 +469,7 @@ impl fmt::Display for During {
             Self::Handling(Role::Kind(kind)) => write!(f, "its handler of {kind:?}"),
             Self::Handling(Role::Ended) => write!(f, "its handler of endings"),
             Self::Handling(Role::Others) => write!(f, "its fallback"),
+            Self::Handling(Role::Answer(kind)) => write!(f, "its handler of answers of {kind:?}"),
             Self::End => write!(f, "its closing turn"),
         }
     }
@@ -527,7 +576,7 @@ impl Seat<'_> {
         if !is_checked {
             self.check(to, target, KindId::of::<K>());
         }
-        self.write_after(to, mail, is_like_last)?;
+        self.write_after(to, mail, is_like_last, Tie::TELL)?;
         self.checked = Checked::Last { mailed: self.asked.buffers.mailed.len(), target };
 
         Ok(())
@@ -559,7 +608,35 @@ impl Seat<'_> {
     /// typed reference proves, or the sender.
     fn write<K: Kind + Encode<Actors>>(&mut self, to: Seated, mail: &K) -> Result<(), EncodeError> {
         // A reply goes on its own: a turn rarely answers one sender back to back.
-        self.write_after(to, mail, false)
+        self.write_after(to, mail, false, Tie::TELL)
+    }
+
+    /// Replies `mail` to `to`, the source of the item handled: the answer to it, when it is a request this turn has
+    /// not answered yet, and refused when it has (ADR-0017).
+    fn reply<K: Kind + Encode<Actors>>(&mut self, to: Seated, mail: &K) -> Result<(), EncodeError> {
+        let (tie, owing) = self.owing.reply()?;
+        self.write_after(to, mail, false, tie)?;
+        self.owing = owing;
+
+        Ok(())
+    }
+
+    /// Asks `mail` of `to`, keeping `context` until it is answered: a request, filed by the engine once the turn has
+    /// run (ADR-0017).
+    fn request<K: Kind + Encode<Actors>, C: Encode<Within>>(
+        &mut self,
+        to: Seated,
+        mail: &K,
+        context: &C,
+    ) -> Result<(), EncodeError> {
+        let mut out = Writer::<Within>::new(WithinWriter::new());
+        context.encode(&mut out)?;
+        let context = out.into_bytes();
+        let count = self.sent + 1;
+        self.write_after(to, mail, false, Tie::asks(count))?;
+        self.asked.asks.push(Asking { count, context });
+
+        Ok(())
     }
 
     /// As [`Self::write`], knowing whether `to` and the kind are those of the turn's last send.
@@ -568,6 +645,7 @@ impl Seat<'_> {
         to: Seated,
         mail: &K,
         is_like_last: bool,
+        tie: Tie,
     ) -> Result<(), EncodeError> {
         let bytes = self.encode(mail)?;
         self.carry(to)?;
@@ -578,12 +656,13 @@ impl Seat<'_> {
         if is_like_last
             && let Some(last) = self.asked.buffers.mailed.last_mut()
             && last.count + u64::from(last.bytes.pieces()) == self.sent
+            && last.tie.is_tell()
             && let Some(joined) = last.bytes.joined(bytes)
         {
             last.bytes = joined;
             return Ok(());
         }
-        self.asked.buffers.mailed.push(Mailed { by: self.me, to, count: self.sent, kind, bytes });
+        self.asked.buffers.mailed.push(Mailed { by: self.me, to, count: self.sent, kind, bytes, tie });
 
         Ok(())
     }
@@ -609,7 +688,7 @@ impl Seat<'_> {
         let kind = KindId::of::<K>();
         for to in to {
             self.sent += 1;
-            self.asked.buffers.mailed.push(Mailed { by: self.me, to, count: self.sent, kind, bytes });
+            self.asked.buffers.mailed.push(Mailed { by: self.me, to, count: self.sent, kind, bytes, tie: Tie::TELL });
         }
 
         Ok(())
@@ -871,6 +950,7 @@ impl Seat<'_> {
             declared,
             during: During::Begin,
             checked: Checked::Nothing,
+            owing: Owing::NOTHING,
         };
         let began = C::begin(config, &mut Beginning { seat: child, instances, sends: PhantomData });
         match began {
@@ -1068,12 +1148,14 @@ pub struct Turning<'a> {
     sent: u64,
     source: Seated,
     chain: Chain,
+    /// What the item is to a request (ADR-0017).
+    tie: Tie,
 }
 
 impl<'a> Turning<'a> {
     /// The turn of the actor `me` names, at `path`, reading `table`, adding to `asked`, lent its part's `instances`
     /// and reaching what it keeps through `keeps`, which handles an item from the actor `source` names, at `chain`,
-    /// and has sent `sent` pieces of mail before it.
+    /// and has sent `sent` pieces of mail before it, the item being to a request what `tie` says.
     ///
     /// For the engine. `table` answers for the step's start and for what this actor has spawned since.
     #[allow(clippy::too_many_arguments, reason = "what a turn is opened with, each fixed by the engine")]
@@ -1090,8 +1172,9 @@ impl<'a> Turning<'a> {
         sent: u64,
         source: Seated,
         chain: Chain,
+        tie: Tie,
     ) -> Self {
-        Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain }
+        Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie }
     }
 
     /// The source of the item the turn handles.
@@ -1108,7 +1191,7 @@ impl<'a> Turning<'a> {
 
     /// The turn of the handler of `A` for `role`, which may send `S`.
     pub(crate) fn declaring<A: Actor, S: Sends>(self, role: Role) -> Turn<'a, S> {
-        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain } = self;
+        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie } = self;
         let declared = Declared::of::<A>();
         let seat = Seat {
             me,
@@ -1122,6 +1205,7 @@ impl<'a> Turning<'a> {
             declared,
             during: During::Handling(role),
             checked: Checked::Nothing,
+            owing: Owing::Item(tie),
         };
 
         Turn { seat, instances, source, chain, sends: PhantomData }
@@ -1272,7 +1356,22 @@ impl<S> Turn<'_, S> {
     where
         S: Allows<ToSender<K>, I>,
     {
-        self.seat.write(self.source, mail)
+        self.seat.reply(self.source, mail)
+    }
+
+    /// Asks `mail` of the actor `reference` refers to, keeping `context` until the request is answered, when the
+    /// asker is handed what became of it with the context, as [`Answer<A, C>`](crate::Answer) (ADR-0017).
+    ///
+    /// It builds only when the turn's sends list [`Asks<P, K, C>`]: `P` answers `K` with one kind, and the actor
+    /// handles that answer with `C`. What the reference reaches is proven, so nothing is checked when it is sent.
+    pub fn ask_to<P, K, C, I>(&mut self, reference: ProtocolRef<P>, mail: &K, context: &C) -> Result<(), EncodeError>
+    where
+        P: Protocol + Carries<K>,
+        K: Kind + Encode<Actors>,
+        C: Kind + Encode<Within>,
+        S: Allows<Asks<P, K, C>, I>,
+    {
+        self.seat.request(reference.seated(), mail, context)
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
@@ -1451,6 +1550,7 @@ impl<'a, S: Sends> Beginning<'a, S> {
             declared,
             during,
             checked: Checked::Nothing,
+            owing: Owing::NOTHING,
         };
 
         Self { seat, instances, sends: PhantomData }
@@ -1768,6 +1868,7 @@ impl<'a> Closing<'a> {
             declared,
             during: During::End,
             checked: Checked::Nothing,
+            owing: Owing::NOTHING,
         };
 
         Ending { seat, why, sends: PhantomData }

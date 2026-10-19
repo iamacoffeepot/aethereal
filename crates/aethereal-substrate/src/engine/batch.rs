@@ -3,6 +3,7 @@
 
 use super::Lists;
 use super::Reading;
+use super::ask::{self, Answering};
 use super::fuse::Hop;
 use crate::stream::{self, Handed, Pieces};
 use crate::{Context, Envelope};
@@ -29,18 +30,23 @@ pub(super) struct OneHop<'w, 'r> {
     pub(super) arena: &'w Arena,
 }
 
-/// The item `handed` is, as a turn reads it, and the context of what its turn asks for: bytes read from `reading`'s
-/// arenas, or from `carried`.
+/// The item `handed` is, as a turn reads it, handed to an actor that is `answering` it, and the context of what its
+/// turn asks for: bytes read from `reading`'s arenas, or from `carried`.
 #[allow(clippy::inline_always, reason = "once for every item, read inline in the loop that hands it")]
 #[inline(always)]
-pub(super) fn read<'a>(handed: Handed<'a>, reading: &Reading<'a>, carried: &'a [u8]) -> (Item<'a>, Context) {
+pub(super) fn read<'a>(
+    handed: Handed<'a>,
+    reading: &Reading<'a>,
+    carried: &'a [u8],
+    answering: Answering<'a>,
+) -> (Item<'a>, Context) {
     let source = handed.source();
     match handed {
         Handed::Mail { envelope: &Envelope { kind, root, depth, .. }, bytes, .. } => {
             let bytes = stream::read(bytes, reading.mail, carried);
             let mail = Mail::new(kind, bytes, source, root, depth, reading.read_limit);
 
-            (Item::Mail(mail), Context { root, depth: depth + 1 })
+            (ask::item(mail, answering), Context { root, depth: depth + 1 })
         }
         Handed::Ended { ended, context } => (Item::Ended(ended.clone()), *context),
     }
@@ -55,7 +61,7 @@ impl Batch for Waiting<'_, '_, '_> {
                 Handed::Mail { bytes, .. } => stream::pinned(bytes, self.reading.mail, self.carried_pins),
                 Handed::Ended { .. } => Pinned::Nothing,
             };
-            let (item, context) = read(handed, self.reading, self.carried);
+            let (item, context) = read(handed, self.reading, self.carried, Answering::Not);
             let chain = Chain { root: context.root, depth: context.depth - 1 };
             visit(Peeked { item, source, chain, pinned });
         }

@@ -155,16 +155,19 @@ impl Declared {
         let mut watches = declares_watch(self.begins) || declares_watch(self.ends);
         let mut sends_in_protocols = in_protocols(self.begins) && in_protocols(self.ends);
         let mut handles_endings = false;
+        let mut answers_once = true;
         let mut index = 0;
         while index < self.handlers.len() {
             let handler = &self.handlers[index];
             watches = watches || declares_watch(handler.sends);
             sends_in_protocols = sends_in_protocols && in_protocols(handler.sends);
             handles_endings = handles_endings || matches!(handler.role, Role::Ended);
+            answers_once = answers_once && !answered_after(self.handlers, index);
             index += 1;
         }
         let holds = !watches || handles_endings;
         assert!(holds, "false declaration: a type declares a watch, and does not handle endings");
+        assert!(answers_once, "false declaration: a type handles one kind of answer with two kinds of context");
         assert!(
             sends_in_protocols,
             "false declaration: a type declares a send to a protocol of a kind the protocol does not hold"
@@ -172,6 +175,25 @@ impl Declared {
 
         self
     }
+}
+
+/// Whether the handler at `index` of `handlers` is of an answer a later one handles too: the same answer with two
+/// kinds of context, which an actor may not handle (ADR-0017).
+const fn answered_after(handlers: &[Handler], index: usize) -> bool {
+    let Role::Answer(kind) = handlers[index].role else {
+        return false;
+    };
+    let mut later = index + 1;
+    while later < handlers.len() {
+        if let Role::Answer(other) = handlers[later].role
+            && other.same(kind)
+        {
+            return true;
+        }
+        later += 1;
+    }
+
+    false
 }
 
 /// Whether `sendings` declare a watch.
@@ -252,6 +274,8 @@ pub enum Role {
     Ended,
     /// Mail of any kind it does not list: its fallback.
     Others,
+    /// What became of a request it asked whose answer is of this kind (ADR-0017).
+    Answer(KindId),
 }
 
 /// One send a handler may make: mail of a kind, to a target (ADR-0013).
