@@ -16,43 +16,43 @@ Letting two actors hold the same socket does not help. One mail at a time protec
 **A resource is a value that is not data, and it has exactly one owner.** The owner is an actor. The engine keeps each actor's resources beside that actor, and the actor holds a handle to each.
 
 ```rust
-pub trait Resource {}                      // a value that is not data
-pub struct Handle<R: Resource> { .. }      // mine
-pub struct Given<R: Resource> { .. }       // on its way to a new owner
+pub trait Resource: Any + Send { const NAME: &'static str; }   // a value that is not data
+pub struct Handle<R: Resource> { .. }                           // mine
+pub struct Given<R: Resource> { .. }                            // on its way to a new owner
 ```
 
-**A type is a resource because its author says so.** `Resource` has no methods. Implementing it for a type states that the type's values are not data: nothing a kind's fields can spell holds what the value is. A socket, an open file, and a GPU object are resources. An actor's own working state is not, and where it is a tree it is an arena with indices (ADR-0009).
+**A type is a resource because its author says so.** `Resource` has no methods, and one constant: the name the engine records it by, as when one is dropped on its way. Implementing it for a type states that the type's values are not data: nothing a kind's fields can spell holds what the value is. A socket, an open file, and a GPU object are resources. An actor's own working state is not, and where it is a tree it is an arena with indices (ADR-0009). A resource is `Send`: a native host runs its owner on any of its workers, and the resource goes with it.
 
 **A `Handle<R>` is the owner's own.**
 
-- Its shape is one unsigned 64-bit integer, the resource's ticket. A kind may hold one, so an actor may.
+- Its shape is one unsigned 64-bit integer, the resource's ticket: the owner's own count of the resources it has come to own, so two owners' tickets may be the same number. A kind may hold one, so an actor may.
 - It crosses `Within` and no other boundary (ADR-0004). It cannot be in mail or a config: a kind that holds one has no codec for `Actors`, and the send does not compile.
 - It is neither `Clone` nor `Copy`. There is one handle to a resource.
-- Native code opens it, in the owner's turn: `turn.open(&mut handle)` gives the `R`. Access is direct, because nobody else can hold the handle. A guest may hold a handle and cannot open one.
-- A native actor takes a value it made into its keeping with `turn.keep(value)`, which returns the handle. `keep` takes a `Resource` and nothing else. The actor makes the value with its own code and `keep` moves its ownership to the actor: there is no factory the engine runs. Making, keeping, and opening change only what the actor owns, so none is an effect (ADR-0009).
+- Native code opens it, in the owner's turn: `turn.open(&mut handle)?` gives the `R`. Access is direct, because nobody else can hold the handle. A guest may hold a handle and cannot open one. A closing turn may open what its actor keeps, for a last use.
+- A native actor takes a value it made into its keeping with `turn.keep(value)?`, which returns the handle. `keep` takes a `Resource` and nothing else. The actor makes the value with its own code and `keep` moves its ownership to the actor: there is no factory the engine runs. Making, keeping, and opening change only what the actor owns, so none is an effect (ADR-0009).
 - A `begin` may take what its config gives it and keep what it makes. If it then fails, the child was never live and what it held is dropped with it.
 
 **Giving is its own act, with its own type.**
 
 ```rust
 impl Turn<'_> {
-    pub fn give<R>(&mut self, handle: Handle<R>) -> Given<R>;      // I no longer have it
-    pub fn take<R>(&mut self, given: Given<R>) -> Handle<R>;       // now it is mine
+    pub fn give<R>(&mut self, handle: Handle<R>) -> Result<Given<R>, Fault>;   // I no longer have it
+    pub fn take<R>(&mut self, given: Given<R>) -> Result<Handle<R>, Fault>;    // now it is mine
 }
 ```
 
-- `give` takes the handle by value, so the giver no longer holds it once it has given. That is checked when the program is built.
-- A `Given<R>` has the same shape as a handle. It crosses `Actors` and no other boundary: it may be in mail and in a config, and it cannot be a field of an actor.
-- The engine moves the resource to its new owner when it applies the effect that carries the `Given`. The receiver calls `take` in the turn that handles the mail, or in its first turn for a config.
+- `give` takes the handle by value, so the giver no longer holds it once it has given. That is checked when the program is built. A closing turn may give, so a resource outlives its owner in the owner's last mail.
+- A `Given<R>` has the same shape as a handle, and its ticket is its giver's. It crosses `Actors` and no other boundary: it may be in mail and in a config, and it cannot be a field of an actor.
+- The engine moves the resource to its new owner when it applies the effect that carries the `Given`. The receiver calls `take` in the turn that handles the mail, or in its `begin` for a config, and the resource is the receiver's under a ticket of its own count. One `Given` goes with one piece of mail: a send that writes it into a second, or into a send to many, is refused.
 - A `Given` that no effect carries by the end of its turn, or that its receiver does not take in the turn it arrives, is dropped, and its resource with it.
 
-**The engine checks every ticket.** At a boundary the reader confirms that the ticket names a resource of type `R` that the actor owns, or that was given to it. When it applies an effect it confirms the sender owned what it gave. A ticket that fails either check fails the turn (ADR-0009). So bytes a guest makes up are refused, though Rust did not check that guest.
+**The engine checks every ticket where it is used.** `open`, `give`, and `take` each confirm that the ticket names a resource of type `R` that the actor owns, or that came to it from the sender of the mail it handles, or from the actor above it for a config; each answers a `Fault` when it does not, which `?` makes the turn's (ADR-0009). The writer at `Actors` confirms that a `Given` it writes is one the turn gave and no other mail carries, and refuses the send otherwise. So bytes a guest makes up are refused, though Rust did not check that guest. The bytes themselves are not checked where they are read: mail can be read more than once, and only `take` can say that a resource is taken once.
 
-**A resource ends with its owner or with its mail.** When an actor closes, the engine drops its resources after its closing turn. When mail that carries a `Given` is not delivered, the engine drops the resource with the mail and records it.
+**A resource ends with its owner or with its mail.** When an actor closes, the engine drops its resources after its closing turn. When mail that carries a `Given` is not delivered, the engine drops the resource with the mail and records it: in the log of the actor that gave it when no mail carried it, when its turn failed, or when its receiver had gone or ended before handling the mail, and in the receiver's log when the receiver handled the mail and did not take it. What a `begin` that fails took or gave is dropped with its actor, which was never live.
 
 **What a resource brings in from outside the engine reaches its owner as mail, and its owner is the sender.** A key press, bytes on a socket, a read that finished: the host hands each to the engine between two steps, naming the resource. The engine delivers it to the actor that owns that resource, as mail from that same actor which says which handle it is for, and the owner handles it in the next step (ADR-0011). Mail from outside the engine therefore has an actor as its sender, as all mail does (ADR-0009), and what one resource brings in keeps its order. Whoever else should hear of it is mailed by the owner.
 
-**The chassis hands a root its resources the same way.** It puts them in the root's config as `Given` values, so a root is born as any actor is. The chassis has no turn, so it hands each value to the engine as it builds it, and the engine keeps the value and returns the `Given` that names it.
+**The chassis hands a root its resources the same way.** It puts them in the root's config as `Given` values, so a root is born as any actor is. The chassis has no turn, so it hands each value to the engine as it builds it, with `engine.hand(value)`, and the engine keeps the value and returns the `Given` that names it. The engine gives the root's `begin` the ones its config holds, and what that `begin` does not take is dropped and recorded in the root's log.
 
 **A resource is always somewhere.** It is in its owner's keeping, or in the engine's while a `Given` carries it to its new owner. The engine makes a `Given` and moves it, and it never holds one that is going nowhere.
 
@@ -65,6 +65,8 @@ impl Turn<'_> {
 - Nothing an actor owns is left open when it ends, whether or not its author wrote a close for it.
 - An actor that holds a handle cannot be written to a file or sent to another engine: a handle does not cross `Bare` or `Engines`. Replacing an actor's code keeps its resources, because its state crosses `Within`.
 - `Within` offers the owner's resources and `Actors` offers the ones in transit. These are the first offers either boundary makes (ADR-0004).
+- Mail that carries a resource is never fused (ADR-0013): the resource reaches its receiver as the receiver's part is folded, after the mail's step, so a turn that gives sends all its mail as mail.
+- An actor that has never kept a resource holds no more for it than a pointer's width, beside it in its seat.
 - A turn that makes or uses a resource acts on the world outside its effects. A failed turn does not undo that, and such a turn cannot be run again from its record: a turn repeats only as far as its actor's own code does (ADR-0009).
 - **Not decided here:** what kind of mail each type of resource brings its owner, and how an actor asks a resource for work that takes time. A turn does not block, and a browser host cannot.
 - Two kinds that differ only in what their handles hold have the same layout (ADR-0006), since each handle is one integer. The engine's check of the ticket is what tells them apart.

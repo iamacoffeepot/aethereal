@@ -2,8 +2,8 @@
 
 use super::{Checked, Closing, During, Seat, Stood, Turning, Why};
 use crate::{
-    Above, Asked, Chain, Code, Declared, Effect, ErasedActorRef, Fault, Instances, Level, Line, MailId, Mailed,
-    Payload, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen, Sending, Table, Target, What,
+    Above, Asked, Chain, Code, Declared, Effect, ErasedActorRef, Fault, Instances, Keeping, Keeps, Level, Line, MailId,
+    Mailed, Payload, Puts, Role, Runs, SeatNumber, Seated, Seats, Seen, Sending, Table, Target, What,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, KindName, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -125,11 +125,12 @@ impl<'a> Turning<'a> {
     /// instances of its part it was lent, for the host to take the instance its code runs in from.
     #[must_use]
     pub fn hosted(self, declared: &'static Declared, role: Role) -> (Hosted<'a>, &'a mut Instances) {
-        let Self { me, path, above, table, made, asked, instances, sent, source, chain } = self;
+        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain } = self;
         let handler = declared.handlers().iter().find(|handler| handler.role() == role);
         let sends = handler.map_or(&[][..], |handler| handler.sends());
         let during = During::Handling(role);
-        let seat = Seat { me, path, above, table, made, asked, sent, declared, during, checked: Checked::Nothing };
+        let checked = Checked::Nothing;
+        let seat = Seat { me, path, above, table, made, asked, keeps, sent, declared, during, checked };
 
         (Hosted { seat, sends, source: Source::Item(source), chain, spawned: Vec::new() }, instances)
     }
@@ -141,9 +142,10 @@ impl<'a> Closing<'a> {
     /// code runs in from (ADR-0009, ADR-0015).
     #[must_use]
     pub fn hosted(self, declared: &'static Declared) -> (Hosted<'a>, Why, &'a mut Instances) {
-        let Self { me, path, above, table, asked, instances, sent, why } = self;
+        let Self { me, path, above, table, asked, instances, keeps, sent, why } = self;
         let during = During::End;
-        let seat = Seat { me, path, above, table, made: &(), asked, sent, declared, during, checked: Checked::Nothing };
+        let checked = Checked::Nothing;
+        let seat = Seat { me, path, above, table, made: &(), asked, keeps, sent, declared, during, checked };
         let chain = Chain { root: MailId { sender: me.id, count: sent }, depth: 0 };
         let hosted = Hosted { seat, sends: declared.ends(), source: Source::End, chain, spawned: Vec::new() };
 
@@ -170,6 +172,8 @@ impl<'a> Hosted<'a> {
             table,
             made: &(),
             asked,
+            // A guest's code keeps nothing, so neither does its host for it yet (ADR-0015).
+            keeps: Keeps::Nothing,
             sent: 0,
             declared,
             during: During::Begin,
@@ -330,7 +334,13 @@ impl<'a> Hosted<'a> {
         };
         let above = Above::Actor(child.by, above_declared);
         self.seat.asked.stood_seats.insert(me.id.bits(), (me.seat, child.declared));
-        self.seat.asked.stood.push(Stood { me, path: child.path.clone(), above, actor: runs });
+        self.seat.asked.stood.push(Stood {
+            me,
+            path: child.path.clone(),
+            above,
+            actor: runs,
+            keeping: Keeping::default(),
+        });
 
         Some(())
     }

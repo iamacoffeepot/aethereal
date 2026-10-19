@@ -27,7 +27,9 @@ use crate::records::{
 };
 use crate::section;
 use crate::{Above, Actor, Actors, ActorsReader, Asked, BlobHash, BlobId, Children, Declared, Ended, Fault, How, Item};
-use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Mail, Peeked, Pinned, Preparing, Puts, Refused};
+use crate::{
+    Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, Peeked, Pinned, Preparing, Puts, Refused,
+};
 use crate::{Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, What, Within, WithinReader, WithinWriter, pins};
 use aethereal_data::{
     ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, PathSegment, Reader, Writer, from_bytes, to_bytes,
@@ -205,7 +207,9 @@ fn begin<A: Actor>(
     let mut reader = Reader::<Actors>::new(config, &mut budget, ActorsReader::new());
     let config = A::Config::decode(&mut reader)?;
     let Standing { path, above } = standing;
-    let actor = A::begin(config, &mut Beginning::beneath::<A>(me, path, *above, host, asked, instances))?;
+    // A guest's code keeps nothing (ADR-0010, ADR-0015).
+    let mut beginning = Beginning::beneath::<A>(me, path, *above, host, asked, instances, Keeps::Nothing);
+    let actor = A::begin(config, &mut beginning)?;
 
     Ok(Box::new(actor))
 }
@@ -383,7 +387,8 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
             TURN.set(ran);
             stood_before = asked.stood_count();
             let Standing { path, above } = &*standing;
-            let turning = Turning::new(*me, path, *above, &host, &host, asked, instances, 0, source, chain);
+            let keeps = Keeps::Nothing;
+            let turning = Turning::new(*me, path, *above, &host, &host, asked, instances, keeps, 0, source, chain);
             let result = runs.turn(item, turning);
             write_ends(out, asked, &mut counted);
             ran += 1;
@@ -501,7 +506,7 @@ impl Guest {
         let stood = self.asked.take_stood();
         let mut kept = Vec::with_capacity(stood.len());
         for (index, child) in stood.into_iter().enumerate() {
-            let (me, path, above, runs) = child.into_parts();
+            let (me, path, above, runs, _) = child.into_parts();
             let Above::Actor(parent, _) = above else {
                 continue;
             };
@@ -749,7 +754,7 @@ pub fn end_at(types: &[Type], calls: &'static Calls, handle: u32, why: u32) -> u
         let host = Host::new(calls);
         let Guest { asked, instances, out, .. } = &mut *guest;
         let Standing { path, above } = &standing;
-        let ended = runs.end(Closing::new(me, path, *above, &host, asked, instances, 0, why));
+        let ended = runs.end(Closing::new(me, path, *above, &host, asked, instances, Keeps::Nothing, 0, why));
         write_ends(out, asked, &mut Counted::default());
         let last = match ended {
             Ok(()) => Last::Ran,

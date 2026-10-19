@@ -3,8 +3,8 @@
 #[cfg(feature = "std")]
 use crate::ActorsWriter;
 use crate::{
-    Above, Actor, Actors, ActorsReader, Asked, Beginning, BlobId, BlobType, Declared, Fault, Instances, Refused, Runs,
-    Seated, Table,
+    Above, Actor, Actors, ActorsReader, Asked, Beginning, BlobId, BlobType, Declared, Fault, Instances, Keeps, Refused,
+    Runs, Seated, Table,
 };
 use aethereal_data::{ActorPath, Budget, Decode, KindName, Reader};
 #[cfg(feature = "std")]
@@ -129,7 +129,9 @@ fn begin_linked<A: Actor>(config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Run
     let mut reader = Reader::<Actors>::new(config, &mut budget, ActorsReader::new());
     let config = A::Config::decode(&mut reader).map_err(|error| Refused::Began(Fault::from(error)))?;
     let Birth { me, path, above, table, asked, instances, .. } = birth;
-    let actor = A::begin(config, &mut Beginning::beneath::<A>(me, path, above, table, asked, instances));
+    // A native child its host begins for a guest keeps nothing yet: what it kept could not reach its seat.
+    let mut beginning = Beginning::beneath::<A>(me, path, above, table, asked, instances, Keeps::Nothing);
+    let actor = A::begin(config, &mut beginning);
 
     Ok(Box::new(actor.map_err(Refused::Began)?))
 }

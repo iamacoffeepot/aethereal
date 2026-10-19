@@ -29,6 +29,7 @@ mod item;
 mod mail;
 pub mod records;
 mod reference;
+mod resource;
 mod seat;
 pub mod section;
 mod subscribers;
@@ -57,6 +58,7 @@ pub use instances::{Instances, Lent};
 pub use item::Item;
 pub use mail::{Mail, MailId};
 pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Reaches};
+pub use resource::{Carried, Gift, Given, Giver, Handle, Keeping, Keeps, KeepsNothing, Kept, NotHeld, Resource};
 pub use seat::{SeatNumber, Seated, Seats};
 pub use subscribers::Subscribers;
 pub use turn::{

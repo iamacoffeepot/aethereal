@@ -26,6 +26,9 @@ pub enum Entry {
     Failed(Fault),
     /// The actor's closing turn returned this fault.
     EndFailed(Fault),
+    /// A resource of this name, given by the actor or given to it, was dropped on its way: no mail carried it, its
+    /// mail did not arrive, or the actor did not take it in the turn of the mail it came with (ADR-0010).
+    Dropped(&'static str),
 }
 
 /// What the view keeps of a line or a fault before it is folded: a line's text is still where its turn wrote it.
@@ -36,6 +39,8 @@ pub enum Logged {
     Failed(Fault),
     /// The actor's closing turn returned this fault.
     EndFailed(Fault),
+    /// A resource of this name was dropped on its way.
+    Dropped(&'static str),
 }
 
 impl View for Log {
@@ -72,6 +77,7 @@ impl View for Log {
             }
             Logged::Failed(fault) => Entry::Failed(fault),
             Logged::EndFailed(fault) => Entry::EndFailed(fault),
+            Logged::Dropped(name) => Entry::Dropped(name),
         };
         recent.push_back(entry);
     }
@@ -83,6 +89,13 @@ pub fn line(line: Line) -> (u64, (ActorId, Logged)) {
     let Line { by, level, text } = line;
 
     (by.seat.number(), (by.id, Logged::Line { level, text }))
+}
+
+/// The key and record the view keeps of a resource of the name `name` dropped on its way, under the actor `by`, which
+/// gave it or was given it (ADR-0010).
+#[must_use]
+pub const fn dropped(by: Seated, name: &'static str) -> (u64, (ActorId, Logged)) {
+    (by.seat.number(), (by.id, Logged::Dropped(name)))
 }
 
 /// The key and record the view keeps of `effect`, a fault, or none for an effect it does not keep.

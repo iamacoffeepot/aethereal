@@ -2,6 +2,7 @@
 
 use super::birth::{self, Birth};
 use super::costs::{CostKey, Costs, ItemKind};
+use super::gift::{self, Arrival};
 use super::{Held, Seating, Sitting, item_kind};
 use crate::stream::{self, Streams};
 use crate::table::Actors;
@@ -32,6 +33,12 @@ pub(super) struct Pile {
     pub(super) births: Vec<Vec<Birth>>,
     /// How many children were seated in the part when it was folded.
     pub(super) born: usize,
+    /// Each writer's resources on their way to the part's actors, in the writers' order: emptied as they are handed
+    /// over, and handed back to their rows for their room (ADR-0010).
+    pub(super) gifts: Vec<Vec<Arrival>>,
+    /// The givers and names of the resources whose receivers had gone, for the givers' logs, which may lie in any
+    /// part.
+    pub(super) lost: Vec<(Seated, &'static str)>,
     /// What the part's watches hand on once it settles: endings, for the streams of the actors that watch.
     pub(super) forward: Vec<Notice>,
     /// What the turns waiting in the part are expected to cost, in nanoseconds, once it is folded.
@@ -52,6 +59,8 @@ impl Pile {
             actors: BySeat::empty(parts),
             births: Vec::new(),
             born: 0,
+            gifts: Vec::new(),
+            lost: Vec::new(),
             forward: Vec::new(),
             expected: 0,
         }
@@ -68,14 +77,17 @@ pub struct Folding<'a> {
 }
 
 impl Folding<'_> {
-    /// Folds each part of `fold`: the children every worker stood up in it are seated, every worker's records for it
-    /// are folded, view by view, then the part's watches settle, and what its next turns are expected to cost is
+    /// Folds each part of `fold`: the children every worker stood up in it are seated, the resources given to its
+    /// actors are handed to them, every worker's records for it are folded, view by view, then the part's watches settle, and what its next turns are expected to cost is
     /// summed.
     #[must_use]
     pub fn fold(&self, mut fold: Fold) -> Fold {
         for pile in &mut fold.parts {
             for bucket in &mut pile.births {
                 pile.born += birth::seat_all(&mut pile.seating, &mut pile.actors, bucket);
+            }
+            for bucket in &mut pile.gifts {
+                gift::arrive_all(&mut pile.actors, bucket, &mut pile.lost);
             }
             pile.table.fold(self.written);
             pile.log.fold(self.written);

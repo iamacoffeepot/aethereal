@@ -282,7 +282,8 @@ fn opened<'a, S: Sends>(
     // as the turn lives.
     let instances = Box::leak(Box::default());
 
-    Turning::new(me, path, above, table, &(), asked, instances, 0, source, CHAIN).declaring::<Leaf, S>(poke)
+    Turning::new(me, path, above, table, &(), asked, instances, Keeps::Nothing, 0, source, CHAIN)
+        .declaring::<Leaf, S>(poke)
 }
 
 /// The actor `bits` names, in the seat numbered `seat`.
@@ -398,7 +399,8 @@ fn begin_and_end_send_as_their_own_actor() {
         let mut asked = Asked::new();
         let above = Above::Actor(ME, Declared::of::<Leaf>());
         let mut instances = Instances::default();
-        let closing = Closing::new(herald.seated(), &path, above, &table, &mut asked, &mut instances, 0, why);
+        let closing =
+            Closing::new(herald.seated(), &path, above, &table, &mut asked, &mut instances, Keeps::Nothing, 0, why);
         let ended = Runs::end(Box::new(Herald), closing);
 
         (ended, asked.into_parts().0.mailed)
@@ -433,7 +435,19 @@ fn handler_asks_by_the_kind_of_its_mail() {
     let handle = |leaf: &mut Box<dyn Runs>, table: &Listed, kind, bytes: &[u8]| {
         let mut asked = Asked::new();
         let mut instances = Instances::default();
-        let turning = Turning::new(ME, &ROOT, Above::Chassis, table, &(), &mut asked, &mut instances, 0, other, CHAIN);
+        let turning = Turning::new(
+            ME,
+            &ROOT,
+            Above::Chassis,
+            table,
+            &(),
+            &mut asked,
+            &mut instances,
+            Keeps::Nothing,
+            0,
+            other,
+            CHAIN,
+        );
         let mail = Mail::new(kind, bytes, other, MailId { sender: other.id, count: 1 }, 1, 64);
         let handled = leaf.turn(Item::Mail(mail), turning);
 
