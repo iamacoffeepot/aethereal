@@ -22,7 +22,10 @@ Start → ( a cycle of stages )* → Stop
 ```
 
 ```rust
-pub trait Stage: Kind {}                      // a stage: Start and Stop and the shared stages are the engine's
+pub trait Stage: Kind + Encode<Actors> + Default {   // the engine makes each stage's value itself
+    const PLACE: Place = Place::Own;                 // End (Start, Stop), Shared(rank), or a chassis's own
+    fn made(time: Cycled) -> Self { Self::default() }   // Tick takes the cycle's time; the rest hold nothing
+}
 
 pub struct Start;
 pub struct Tick { pub delta_nanos: u64, pub elapsed_nanos: u64 }
@@ -89,7 +92,7 @@ impl Engine {
 
 - **Start is sent when the host calls `engine.start()`**, to every subscriber folded by then, whether or not its cycle holds any stage. A root's `begin` is folded as `add_root` makes it, so a chassis that makes its roots before it starts has every root, and every child their `begin`s stood up, subscribed. An actor made after `Start` was sent is not sent it: its `begin` is its start. The first `cycle` after `Start` has finished sends the cycle's first stage.
 - **A `cycle` while a cycle is under way is not queued.** The next `Tick` covers the time since the last one, however many cycles were due between. A cycle that runs long makes the cycles fewer, never late in a queue.
-- `Tick`'s delta is measured on the steps' time (ADR-0018: the time the host passes in with each step), so a run replays with the same deltas. The engine limits each delta to a most the host gives, so a long stall slows the program's time and skips none of it.
+- `Tick`'s delta is measured on the steps' time (ADR-0018: the time the host passes in with each step): the time of the last step planned when its cycle begins, less that when the cycle before began, or `Start` was sent before the first. It is counted once a cycle, wherever `Tick` stands in it, so a run replays with the same deltas. The engine limits each delta to a most the host gives (`Engine::with_delta_limit`, a quarter of a second unless set), so a long stall slows the program's time and skips none of it.
 - **An actor may ask to stop**, with `turn.quit()`, an effect, as the host does with `engine.quit()`. The engine lets a cycle under way finish, sends `Stop`, and once it has finished, its lifecycle is `Stopped`, and the host drops the engine. Cycles due after a quit are not run.
 - **`Stop` is the one stage a subscriber may hold open.** It is sent as a request, answered with `Drained`, and a subscriber that has work in flight to finish holds it (ADR-0017: `turn.hold`) and answers once it has: a server closes its listener, answers the requests it holds, and then answers its `Stop`. `Stop` has finished when its chain has, and every subscriber has answered its `Stop` or let it go. The engine is the asker, and keeps nothing for the answer but that it came. This is the one place a held request holds back a stage, and it is named here: a program that is stopping has no frame to keep moving, and what it owes others is what it most needs to finish. A host gives a stop the time it will wait, and drops the engine when that has passed, so a subscriber that never answers cannot keep a program from ending.
 

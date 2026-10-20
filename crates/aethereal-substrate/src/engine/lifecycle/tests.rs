@@ -3,8 +3,12 @@
 
 use super::super::*;
 use crate::stages::key;
-use aethereal_actor::{Ending, Fault, Handles, Start, Stop, Subscribes, Time, To, ToType, ToWithoutMail, Turn};
+use aethereal_actor::{
+    Cycle, Ending, Fault, Handles, Present, Render, Stage, Start, Stop, Subscribes, Tick, Time, To, ToType,
+    ToWithoutMail, Turn, Unordered,
+};
 use aethereal_data::{Bound, Kind, KindName, Plain};
+use core::time::Duration;
 use std::cell::RefCell;
 use std::mem;
 
@@ -260,4 +264,184 @@ fn no_root_is_made_at_the_lifecycle_s_name() {
 
     let made = engine.add_root::<Impostor>(&(), Note { text: String::new() });
     assert!(matches!(made, Err(Refused::KeyTaken)));
+}
+
+/// A stage of a chassis's own, which a cycle may hold anywhere.
+#[derive(Plain, Default)]
+struct Receive;
+
+impl Kind for Receive {
+    const NAME: KindName = KindName::new("aether.test.receive");
+}
+
+impl Stage for Receive {}
+
+/// An actor that subscribes to every stage of a cycle and to `Stop` as it begins, and says each it is sent, `Tick`
+/// with its delta and the time elapsed. On `Tick` it sends itself `pass 1`, so the stage's chain runs a step longer.
+#[derive(Bound)]
+struct Cycler;
+
+impl Kind for Cycler {
+    const NAME: KindName = KindName::new("aether.test.cycler");
+}
+
+impl Actor for Cycler {
+    type Config = Note;
+    type Key = ();
+    type Handles = (Receive, Tick, Render, Present, Stop, Note);
+    type BeginSends =
+        (Subscribes<Receive>, Subscribes<Tick>, Subscribes<Render>, Subscribes<Present>, Subscribes<Stop>);
+    type EndSends = ();
+
+    fn begin(_: Note, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.subscribe::<Receive, _>();
+        turn.subscribe::<Tick, _>();
+        turn.subscribe::<Render, _>();
+        turn.subscribe::<Present, _>();
+        turn.subscribe::<Stop, _>();
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Tick> for Cycler {
+    type Sends = (ToType<Self, Note>,);
+
+    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        say(format!("tick {} {}", tick.delta_nanos, tick.elapsed_nanos));
+        let me = turn.me();
+        turn.send(To::Held(me), &Note { text: String::from("pass 1") })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Note> for Cycler {
+    type Sends = ();
+
+    fn handle(&mut self, note: Note, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        say(note.text);
+
+        Ok(())
+    }
+}
+
+/// Says the stage it is sent, by name.
+macro_rules! says {
+    ($($stage:ident => $said:literal),+) => {
+        $(
+            impl Handles<$stage> for Cycler {
+                type Sends = ();
+
+                fn handle(&mut self, _: $stage, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+                    say(String::from($said));
+
+                    Ok(())
+                }
+            }
+        )+
+    };
+}
+
+says!(Receive => "receive", Render => "render", Present => "present", Stop => "stopping");
+
+/// An engine running the cycle `C`, with a cycler, started at the host's first moment, its `Start` finished.
+fn cycling<C: Cycle>(limit: Duration) -> Engine {
+    let Some(parts) = NonZeroUsize::new(4) else {
+        panic!("four is not zero");
+    };
+    let Ok(engine) = Engine::new(parts, 1024, 0, 1 << 20, 0).with_cycle::<C>() else {
+        panic!("the cycle is in order");
+    };
+    let mut engine = engine.with_delta_limit(limit);
+    let Ok(_) = engine.add_root::<Cycler>(&(), Note { text: String::new() }) else {
+        panic!("the cycler begins");
+    };
+    engine.start();
+
+    engine
+}
+
+/// Runs one step at `nanos` and answers with what its turns said.
+fn step_at(engine: &mut Engine, nanos: u64) -> Vec<String> {
+    engine.step(Time::from_nanos(nanos), &Stopped);
+
+    said()
+}
+
+#[test]
+fn a_cycle_runs_its_stages_in_order_each_once_the_last_has_finished() {
+    // Catches a stage of a cycle sent before every turn of the one before it has run, a cycle that does not end
+    // with its last stage, cycles said to be due while one runs queued up, and a `Tick` whose delta is not the time
+    // since the cycle before.
+    let mut engine = cycling::<(Tick, Render, Present)>(Duration::from_secs(1));
+    engine.cycle();
+    assert_eq!(step_at(&mut engine, 10), ["tick 0 0"]);
+    engine.cycle();
+    engine.cycle();
+    assert_eq!(step_at(&mut engine, 20), ["pass 1"]);
+    assert_eq!(step_at(&mut engine, 30), ["render"]);
+    assert_eq!(step_at(&mut engine, 40), ["present"]);
+    assert_eq!(step_at(&mut engine, 50), ["tick 40 40"], "the cycles due while one ran are one cycle");
+    assert_eq!(step_at(&mut engine, 60), ["pass 1"]);
+    assert_eq!(step_at(&mut engine, 70), ["render"]);
+    assert_eq!(step_at(&mut engine, 80), ["present"]);
+    assert!(engine.is_idle(), "no cycle is due");
+}
+
+#[test]
+fn a_tick_s_delta_is_limited_and_its_stage_of_a_chassis_s_own_comes_first() {
+    // Catches a delta past the host's limit, a time elapsed that is not the sum of the deltas, and a `Tick` that is
+    // not its cycle's first stage given no time at all.
+    let mut engine = cycling::<(Receive, Tick)>(Duration::from_nanos(25));
+    engine.cycle();
+    assert_eq!(step_at(&mut engine, 10), ["receive"]);
+    assert_eq!(step_at(&mut engine, 20), ["tick 0 0"]);
+    assert_eq!(step_at(&mut engine, 30), ["pass 1"]);
+
+    // 30 since the last cycle began, limited to 25.
+    engine.cycle();
+    assert_eq!(step_at(&mut engine, 40), ["receive"]);
+    assert_eq!(step_at(&mut engine, 50), ["tick 25 25"]);
+    assert_eq!(step_at(&mut engine, 60), ["pass 1"]);
+    engine.cycle();
+    assert_eq!(step_at(&mut engine, 70), ["receive"]);
+    assert_eq!(step_at(&mut engine, 80), ["tick 25 50"]);
+}
+
+#[test]
+fn a_program_asked_to_stop_mid_cycle_finishes_the_cycle_first() {
+    // Catches `Stop` sent in the middle of a cycle, so an actor stops between drawing and showing.
+    let mut engine = cycling::<(Tick, Render, Present)>(Duration::from_secs(1));
+    engine.cycle();
+    assert_eq!(step_at(&mut engine, 10), ["tick 0 0"]);
+    engine.quit();
+    engine.cycle();
+    assert_eq!(step_at(&mut engine, 20), ["pass 1"]);
+    assert_eq!(step_at(&mut engine, 30), ["render"]);
+    assert_eq!(step_at(&mut engine, 40), ["present"]);
+    assert_eq!(step_at(&mut engine, 50), ["stopping"], "no cycle begins once asked to stop");
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
+}
+
+#[test]
+fn a_cycle_out_of_order_or_holding_an_end_or_a_stage_twice_is_refused() {
+    // Catches a cycle that turns the shared stages round, holds `Start`, or holds a stage twice made into an engine,
+    // and a chassis's own stage refused anywhere.
+    let Some(parts) = NonZeroUsize::new(1) else {
+        panic!("one is not zero");
+    };
+    let made = |cycle: fn(Engine) -> Result<Engine, Unordered>| cycle(Engine::new(parts, 1024, 0, 1 << 20, 0)).err();
+
+    assert_eq!(made(Engine::with_cycle::<(Render, Tick)>), Some(Unordered::OutOfOrder));
+    assert_eq!(made(Engine::with_cycle::<(Tick, Present, Render)>), Some(Unordered::OutOfOrder));
+    assert_eq!(made(Engine::with_cycle::<(Start, Tick)>), Some(Unordered::HoldsAnEnd));
+    assert_eq!(made(Engine::with_cycle::<(Tick, Tick)>), Some(Unordered::Twice));
+    assert_eq!(made(Engine::with_cycle::<(Receive, Tick, Receive)>), Some(Unordered::Twice));
+    assert_eq!(made(Engine::with_cycle::<(Tick, Receive, Present)>), None);
+    assert_eq!(made(Engine::with_cycle::<(Receive, Render)>), None);
 }
