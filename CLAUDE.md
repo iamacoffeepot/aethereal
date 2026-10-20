@@ -31,7 +31,7 @@ Every commit is public. No personal names, no absolute home paths, no host, moun
 ## Commands
 
 - Build: `cargo build`
-- Test: `cargo test` (single test: `cargo test <name>`)
+- Test: `cargo nextest run --workspace --all-features` (single test: `cargo nextest run <name>`), then `cargo test --workspace --all-features --doc` for the doctests, which nextest does not run
 - Lint: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - Browser-host lint: `cargo clippy --workspace --all-features --target wasm32-unknown-unknown -- -D warnings`
 - Format: `cargo fmt` (check-only: `cargo fmt -- --check`)
