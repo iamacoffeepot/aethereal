@@ -101,6 +101,8 @@ jobs:
         with:
           key: wasm32
       - run: cargo clippy --workspace --all-features --target wasm32-unknown-unknown -- -D warnings
+      # The browser chassis's example is the page itself, which a native build compiles empty.
+      - run: cargo clippy -p aethereal-chassis-browser --all-targets --target wasm32-unknown-unknown -- -D warnings
 
   # The one verdict to wait on.
   ci-pass:
