@@ -2043,7 +2043,7 @@ mod tests {
         Actor, ActorRef, Answer, Answered, Beginning, BlobRef, Carries, Ending, Forged, Handles, Links, Protocol,
         Seated, To, ToAny, ToSender, ToType, ToWithoutMail, Trapped, Turn, Unanswered,
     };
-    use aethereal_actor::{ChildOf, Level, Tick, Time, Top};
+    use aethereal_actor::{Anywhere, ChildOf, Level, Spawns, Tick, Time, Top};
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
     use aethereal_guest_echo as echo;
     use aethereal_substrate::Engine;
@@ -2222,10 +2222,10 @@ mod tests {
     }
 
     impl Handles<Volley> for Questioner {
-        type Sends = (aethereal_actor::Asks<Pings, echo::Ping, Which>,);
+        type Sends = (aethereal_actor::Asks<Pings, echo::Ping, Which>, Spawns<echo::Echo>);
 
         fn handle(&mut self, volley: Volley, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-            let Ok(echo) = turn.spawn_from::<echo::Echo>(&self.code, &(), &echo::EchoConfig) else {
+            let Ok(echo) = turn.spawn_from(&self.code, &(), &echo::EchoConfig) else {
                 return Ok(());
             };
             for at in 0..volley.pings {
@@ -2328,11 +2328,12 @@ mod tests {
             aethereal_actor::Asks<echo::Pings, echo::Ping, Which>,
             aethereal_actor::Asks<echo::Weighs, echo::Weigh, Which>,
             ToType<echo::Steward, echo::Release>,
+            Spawns<echo::Steward>,
         );
 
         fn handle(&mut self, _: Volley, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
             let Petitioning { code, how } = &self.petitioning;
-            let Ok(steward) = turn.spawn_from::<echo::Steward>(code, &(), &echo::EchoConfig) else {
+            let Ok(steward) = turn.spawn_from(code, &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
             // Held in one call into the guest, each answered with its own kind.
@@ -2454,11 +2455,11 @@ mod tests {
         type Config = Inquiring;
         type Key = ();
         type Handles = (echo::Pong, echo::Book);
-        type BeginSends = (ToType<echo::Shelver, echo::Ping>,);
+        type BeginSends = (ToType<echo::Shelver, echo::Ping>, Spawns<echo::Shelver>);
         type EndSends = ();
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-            let Ok(shelver) = turn.spawn_from::<echo::Shelver>(&inquiring.code, &(), &echo::EchoConfig) else {
+            let Ok(shelver) = turn.spawn_from(&inquiring.code, &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
             turn.send(ToWithoutMail::Held(shelver.erase()), &echo::Ping { n: 3 })?;
@@ -2545,11 +2546,11 @@ mod tests {
         type Config = Inquiring;
         type Key = ();
         type Handles = (echo::Heard,);
-        type BeginSends = (ToType<echo::Querent, echo::Query>,);
+        type BeginSends = (ToType<echo::Querent, echo::Query>, Spawns<echo::Querent>);
         type EndSends = ();
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-            let Ok(querent) = turn.spawn_from::<echo::Querent>(&inquiring.code, &(), &echo::EchoConfig) else {
+            let Ok(querent) = turn.spawn_from(&inquiring.code, &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
             turn.send(ToWithoutMail::Held(querent.erase()), &echo::Query { first: 0, pings: 2 })?;
@@ -2634,12 +2635,12 @@ mod tests {
         type Config = Inquiring;
         type Key = ();
         type Handles = (echo::Heard,);
-        type BeginSends = ();
+        type BeginSends = (Spawns<echo::Opener>,);
         type EndSends = ();
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
             let opening = echo::Opening { n: 3, below: 1 };
-            let Ok(_) = turn.spawn_from::<echo::Opener>(&inquiring.code, &3, &opening) else {
+            let Ok(_) = turn.spawn_from(&inquiring.code, &3, &opening) else {
                 return Err(Fault::new(&Doom)?);
             };
 
@@ -2717,11 +2718,11 @@ mod tests {
         type Config = Inquiring;
         type Key = ();
         type Handles = (echo::Heard,);
-        type BeginSends = (ToType<echo::Stasher, echo::Stash>,);
+        type BeginSends = (ToType<echo::Stasher, echo::Stash>, Spawns<echo::Stasher>);
         type EndSends = ();
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-            let Ok(stasher) = turn.spawn_from::<echo::Stasher>(&inquiring.code, &(), &echo::EchoConfig) else {
+            let Ok(stasher) = turn.spawn_from(&inquiring.code, &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
             turn.send(ToWithoutMail::Held(stasher.erase()), &echo::Stash { len: 3 })?;
@@ -2806,11 +2807,11 @@ mod tests {
         type Config = Inquiring;
         type Key = ();
         type Handles = (Lend, Pong);
-        type BeginSends = (ToType<Self, Lend>,);
+        type BeginSends = (ToType<Self, Lend>, Spawns<echo::Nester>);
         type EndSends = ();
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-            let Ok(nester) = turn.spawn_from::<echo::Nester>(&inquiring.code, &(), &echo::EchoConfig) else {
+            let Ok(nester) = turn.spawn_from(&inquiring.code, &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
             let me = turn.me();
@@ -3209,11 +3210,11 @@ mod tests {
         type Config = Self;
         type Key = ();
         type Handles = ();
-        type BeginSends = ();
+        type BeginSends = (Spawns<echo::Ticker>,);
         type EndSends = ();
 
         fn begin(breeder: Self, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-            let spawned = turn.spawn_from::<echo::Ticker>(&breeder.code, &(), &echo::EchoConfig);
+            let spawned = turn.spawn_from(&breeder.code, &(), &echo::EchoConfig);
             let said = match spawned {
                 Ok(_) => "ticker made",
                 Err(Refused::Unstaged(stage)) if stage.same(KindId::of::<Tick>()) => "ticker refused for tick",
@@ -3659,7 +3660,7 @@ mod tests {
     }
 
     impl ChildOf for Keeper {
-        type Parent = Top;
+        type Parent = Anywhere;
     }
 
     impl Actor for Keeper {
@@ -4016,20 +4017,22 @@ mod tests {
         type Config = Nesting;
         type Key = ();
         type Handles = (Poke, Pong);
-        type BeginSends = ();
+        type BeginSends = (Spawns<echo::Reporter>, Spawns<Keeper>, Spawns<Impostor>);
         type EndSends = ();
 
         fn begin(nesting: Nesting, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
             let mut reporters = Vec::new();
             for key in 0..nesting.reporters {
                 let config = echo::AddBy { by: 10 * key, deeper: 0 };
-                let Ok(reporter) = turn.spawn_from::<echo::Reporter>(&nesting.code, &key, &config) else {
+                let Ok(reporter) = turn.spawn_from(&nesting.code, &key, &config) else {
                     return Err(Fault::new(&Doom)?);
                 };
                 reporters.push(reporter);
             }
-            let unmade = turn.spawn_from::<Keeper>(&nesting.code, &0, &Keeps { key: 0, tally: 4 }).err();
-            let impostor = turn.spawn_from::<Impostor>(&nesting.code, &9, &echo::AddBy { by: 0, deeper: 0 }).err();
+            let unmade: Result<ActorRef<Keeper>, _> = turn.spawn_from(&nesting.code, &0, &Keeps { key: 0, tally: 4 });
+            let impostor: Result<ActorRef<Impostor>, _> =
+                turn.spawn_from(&nesting.code, &9, &echo::AddBy { by: 0, deeper: 0 });
+            let (unmade, impostor) = (unmade.err(), impostor.err());
             let both_refused = unmade == Some(Refused::NotMade) && impostor == Some(Refused::NotMade);
             if !both_refused {
                 return Err(Fault::new(&Doom)?);
@@ -4074,6 +4077,10 @@ mod tests {
 
     impl Kind for Impostor {
         const NAME: KindName = KindName::new("aether.guest.reporter");
+    }
+
+    impl ChildOf for Impostor {
+        type Parent = Nest;
     }
 
     impl Actor for Impostor {
@@ -4191,12 +4198,12 @@ mod tests {
         type Config = Henning;
         type Key = ();
         type Handles = (Pong,);
-        type BeginSends = ();
+        type BeginSends = (Spawns<echo::Hatcher>,);
         type EndSends = ();
 
         fn begin(henning: Henning, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
             let hatch = echo::Hatch { other: henning.other, home: henning.home.clone() };
-            let Ok(_) = turn.spawn_from::<echo::Hatcher>(&henning.home, &(), &hatch) else {
+            let Ok(_) = turn.spawn_from(&henning.home, &(), &hatch) else {
                 return Err(Fault::new(&Doom)?);
             };
 

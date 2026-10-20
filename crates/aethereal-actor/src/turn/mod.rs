@@ -14,11 +14,12 @@ use crate::Submitted;
 use crate::job::lending;
 use crate::resource;
 use crate::{
-    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Asking, Asks, Carries, Children, Claim, Claimed, Code,
-    Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances, Keeping,
-    Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Payload, Protocol, ProtocolRef,
-    Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage, Subscribes, Table, Target, Tie,
-    Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watches, What, Within, Written,
+    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Asking, Asks, Carries, ChildOf, Children, Claim, Claimed,
+    Code, Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances,
+    Keeping, Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Payload, Protocol,
+    ProtocolRef, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Spawns, Stage,
+    Subscribes, Table, Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watches, What,
+    Within, Written,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -1019,7 +1020,7 @@ impl Seat<'_> {
             Target::Sender => true,
             Target::Type(_, id) => receiver.id() == id,
             Target::Handling(kinds) => receiver.lists_all(kinds),
-            Target::Watched | Target::Subscribed | Target::Job => false,
+            Target::Watched | Target::Subscribed | Target::Job | Target::Spawned => false,
         };
         let receiver = receiver.name();
         assert!(
@@ -1649,22 +1650,27 @@ impl<S> Turn<'_, S> {
         Ok(())
     }
 
-    /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
+    /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it. It
+    /// builds only when the turn's sends list [`Spawns<C>`](crate::Spawns), and `C` is inferred from where the reference
+    /// goes (ADR-0022).
     ///
     /// The child takes its own mail. It is live once the engine applies this turn's effects.
-    pub fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused> {
+    pub fn spawn<C, I>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused>
+    where
+        C: ChildOf,
+        S: Allows<Spawns<C>, I>,
+    {
         self.seat.spawn::<C>(self.instances, key, config)
     }
 
     /// Stands up a child of type `C` under `key` whose code is the blob `code` pins, running its `begin` here in the
     /// blob, and answers with a reference to it (ADR-0009). Refused when the blob makes no actor of `C`'s type.
     #[cfg(feature = "std")]
-    pub fn spawn_from<C: Actor>(
-        &mut self,
-        code: &BlobRef,
-        key: &C::Key,
-        config: &C::Config,
-    ) -> Result<ActorRef<C>, Refused> {
+    pub fn spawn_from<C, I>(&mut self, code: &BlobRef, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
+    where
+        C: ChildOf,
+        S: Allows<Spawns<C>, I>,
+    {
         self.seat.spawn_from::<C>(self.instances, code, key, config)
     }
 
@@ -2008,20 +2014,25 @@ impl<S> Beginning<'_, S> {
         self.seat.take_config(given)
     }
 
-    /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it.
-    pub fn spawn<C: Actor>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused> {
+    /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it. It
+    /// builds only when the turn's sends list [`Spawns<C>`](crate::Spawns), and `C` is inferred from where the reference
+    /// goes (ADR-0022).
+    pub fn spawn<C, I>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused>
+    where
+        C: ChildOf,
+        S: Allows<Spawns<C>, I>,
+    {
         self.seat.spawn::<C>(self.instances, key, config)
     }
 
     /// Stands up a child of type `C` under `key` whose code is the blob `code` pins, running its `begin` here in the
     /// blob, and answers with a reference to it (ADR-0009). Refused when the blob makes no actor of `C`'s type.
     #[cfg(feature = "std")]
-    pub fn spawn_from<C: Actor>(
-        &mut self,
-        code: &BlobRef,
-        key: &C::Key,
-        config: &C::Config,
-    ) -> Result<ActorRef<C>, Refused> {
+    pub fn spawn_from<C, I>(&mut self, code: &BlobRef, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
+    where
+        C: ChildOf,
+        S: Allows<Spawns<C>, I>,
+    {
         self.seat.spawn_from::<C>(self.instances, code, key, config)
     }
 

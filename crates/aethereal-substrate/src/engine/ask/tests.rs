@@ -6,8 +6,8 @@ use super::{Answering, Waiting, owed};
 use aethereal_actor::Time;
 use aethereal_actor::Written;
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Asking, Asks, BlobRef, Carries, ChildOf, Ending, Fault, Handles, Held, Protocol,
-    Tie, To, ToSender, ToType, ToWithoutMail, Top, Turn, Unanswered,
+    Actor, ActorRef, Answer, Answered, Anywhere, Asking, Asks, BlobRef, Carries, ChildOf, Ending, Fault, Handles, Held,
+    Protocol, Spawns, Tie, To, ToSender, ToType, ToWithoutMail, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, EncodeError, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
@@ -102,6 +102,10 @@ struct Release {
 
 impl Kind for Release {
     const NAME: KindName = KindName::new("aether.test.release");
+}
+
+impl ChildOf for Board {
+    type Parent = Anywhere;
 }
 
 impl Actor for Board {
@@ -240,11 +244,11 @@ impl Actor for Pointer {
     type Config = PointerConfig;
     type Key = ();
     type Handles = (Order, Answer<TileIs, Looking>, TileIs);
-    type BeginSends = (ToType<Self, Order>, Asks<Tiles, WhichTile, Looking>);
+    type BeginSends = (ToType<Self, Order>, Asks<Tiles, WhichTile, Looking>, Spawns<Board>, Spawns<Seeker>);
     type EndSends = ();
 
     fn begin(config: PointerConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let Ok(board) = turn.spawn::<Board>(&1, Blank) else {
+        let Ok(board) = turn.spawn(&1, Blank) else {
             return Err(Fault::new(&Order { text: String::from("no board") })?);
         };
         for text in config.orders {
@@ -253,7 +257,7 @@ impl Actor for Pointer {
                 turn.ask_to(board.protocol(), &WhichTile { x }, &Looking { at: 100 })?;
             } else if let Some(x) = text.strip_prefix("begin seek ") {
                 let x = x.parse().unwrap_or_default();
-                let spawned = turn.spawn::<Seeker>(&x, Seeking { x, fails: 0 });
+                let spawned: Result<ActorRef<Seeker>, _> = turn.spawn(&x, Seeking { x, fails: 0 });
                 say(format!("seeker {}", spawned.is_ok()));
             } else {
                 let me = turn.me();
@@ -270,8 +274,13 @@ impl Actor for Pointer {
 }
 
 impl Handles<Order> for Pointer {
-    type Sends =
-        (Asks<Tiles, WhichTile, Looking>, ToType<Board, WhichTile>, ToType<Board, Release>, ToType<Self, Order>);
+    type Sends = (
+        Asks<Tiles, WhichTile, Looking>,
+        ToType<Board, WhichTile>,
+        ToType<Board, Release>,
+        ToType<Self, Order>,
+        Spawns<Seeker>,
+    );
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let (verb, rest) = order.text.split_once(' ').unwrap_or((&order.text, ""));
@@ -303,7 +312,7 @@ impl Handles<Order> for Pointer {
             "seek" | "fail" => {
                 let x = xs.first().copied().unwrap_or_default();
                 let fails = u64::from(verb == "fail");
-                let spawned = turn.spawn::<Seeker>(&x, Seeking { x, fails });
+                let spawned = turn.spawn(&x, Seeking { x, fails });
                 say(format!("seeker {}", spawned.is_ok()));
             }
             "both" => {
@@ -361,15 +370,19 @@ impl Kind for Seeker {
     const NAME: KindName = KindName::new("aether.test.seeker");
 }
 
+impl ChildOf for Seeker {
+    type Parent = Pointer;
+}
+
 impl Actor for Seeker {
     type Config = Seeking;
     type Key = u64;
     type Handles = (Answer<TileIs, Looking>,);
-    type BeginSends = (Asks<Tiles, WhichTile, Looking>,);
+    type BeginSends = (Asks<Tiles, WhichTile, Looking>, Spawns<Board>);
     type EndSends = ();
 
     fn begin(seeking: Seeking, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let Ok(board) = turn.spawn::<Board>(&2, Blank) else {
+        let Ok(board) = turn.spawn(&2, Blank) else {
             return Err(Fault::new(&seeking)?);
         };
         turn.ask_to(board.protocol(), &WhichTile { x: seeking.x }, &Looking { at: 200 })?;
@@ -428,11 +441,11 @@ impl Actor for Keeper {
     type Config = Blank;
     type Key = ();
     type Handles = (Order, Answer<TileIs, Kept>);
-    type BeginSends = (ToType<Self, Order>,);
+    type BeginSends = (ToType<Self, Order>, Spawns<Board>);
     type EndSends = ();
 
     fn begin(_: Blank, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let Ok(board) = turn.spawn::<Board>(&1, Blank) else {
+        let Ok(board) = turn.spawn(&1, Blank) else {
             return Err(Fault::new(&Order { text: String::from("no board") })?);
         };
         let me = turn.me();

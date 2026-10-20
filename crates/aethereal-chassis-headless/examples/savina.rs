@@ -45,7 +45,8 @@
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Beginning, ChildOf, Ending, Fault, Handles, Root, To, ToAny, ToSender, ToType, Top, Turn,
+    Actor, ActorRef, Allows, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Root, Spawns, To, ToAny, ToSender,
+    ToType, Top, Turn,
 };
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{Bound, Kind, KindName, Plain};
@@ -191,11 +192,11 @@ impl Actor for Pinger {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready, Pong);
-    type BeginSends = (ToType<Ponger, Ready>,);
+    type BeginSends = (ToType<Ponger, Ready>, Spawns<Ponger>);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let Ok(ponger) = turn.spawn::<Ponger>(&0, Number { number: 0 }) else {
+        let Ok(ponger) = turn.spawn(&0, Number { number: 0 }) else {
             panic!("the pong side begins");
         };
         turn.send_to(ponger, &Ready)?;
@@ -236,6 +237,10 @@ struct Ponger;
 
 impl Kind for Ponger {
     const NAME: KindName = KindName::new("aether.savina.ponger");
+}
+
+impl ChildOf for Ponger {
+    type Parent = Pinger;
 }
 
 impl Actor for Ponger {
@@ -281,11 +286,11 @@ impl Actor for Producer {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready, Total);
-    type BeginSends = (ToType<Counter, Ready>,);
+    type BeginSends = (ToType<Counter, Ready>, Spawns<Counter>);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let Ok(counter) = turn.spawn::<Counter>(&0, Number { number: 0 }) else {
+        let Ok(counter) = turn.spawn(&0, Number { number: 0 }) else {
             panic!("the counter begins");
         };
         turn.send_to(counter, &Ready)?;
@@ -338,11 +343,11 @@ impl Actor for BeginProducer {
     type Config = Number;
     type Key = u64;
     type Handles = (Total,);
-    type BeginSends = (ToType<Counter, Increment>, ToType<Counter, Retrieve>);
+    type BeginSends = (ToType<Counter, Increment>, ToType<Counter, Retrieve>, Spawns<Counter>);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let Ok(counter) = turn.spawn::<Counter>(&0, Number { number: 0 }) else {
+        let Ok(counter) = turn.spawn(&0, Number { number: 0 }) else {
             panic!("the counter begins");
         };
         for _ in 0..COUNTS {
@@ -376,6 +381,10 @@ struct Counter {
 
 impl Kind for Counter {
     const NAME: KindName = KindName::new("aether.savina.counter");
+}
+
+impl ChildOf for Counter {
+    type Parent = Anywhere;
 }
 
 impl Actor for Counter {
@@ -433,7 +442,7 @@ impl Actor for Forker {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready,);
-    type BeginSends = (ToType<Forked, Ready>,);
+    type BeginSends = (ToType<Forked, Ready>, Spawns<Forked>);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
@@ -468,6 +477,10 @@ struct Forked;
 
 impl Kind for Forked {
     const NAME: KindName = KindName::new("aether.savina.forked");
+}
+
+impl ChildOf for Forked {
+    type Parent = Forker;
 }
 
 impl Actor for Forked {
@@ -516,7 +529,7 @@ impl Actor for Crowd {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready,);
-    type BeginSends = (ToType<Pinging, Ready>,);
+    type BeginSends = (ToType<Pinging, Ready>, Spawns<Pinging>);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
@@ -574,6 +587,10 @@ impl Pinging {
 
         Ok(())
     }
+}
+
+impl ChildOf for Pinging {
+    type Parent = Crowd;
 }
 
 impl Actor for Pinging {
@@ -668,7 +685,7 @@ impl Actor for FibRoot {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready, Response);
-    type BeginSends = (ToType<Fib, Ready>,);
+    type BeginSends = (ToType<Fib, Ready>, Spawns<Fib>);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
@@ -718,6 +735,10 @@ impl Kind for Fib {
 /// [`Response`].
 type Answer = ToAny<(Response,), Response>;
 
+impl ChildOf for Fib {
+    type Parent = Anywhere;
+}
+
 impl Actor for Fib {
     type Config = Number;
     type Key = u64;
@@ -735,7 +756,7 @@ impl Actor for Fib {
 }
 
 impl Handles<Request> for Fib {
-    type Sends = (ToType<Self, Request>, Answer);
+    type Sends = (ToType<Self, Request>, Answer, Spawns<Self>);
 
     fn handle(&mut self, Request { number }: Request, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         if number <= 2 {
@@ -743,7 +764,7 @@ impl Handles<Request> for Fib {
             turn.close();
         } else {
             for (key, before) in [(0, number - 1), (1, number - 2)] {
-                let Ok(child) = turn.spawn::<Self>(&key, Number { number: key }) else {
+                let Ok(child) = turn.spawn(&key, Number { number: key }) else {
                     panic!("a child begins");
                 };
                 turn.send_to(child, &Request { number: before })?;
@@ -804,11 +825,11 @@ impl Actor for Sieve {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready,);
-    type BeginSends = (ToType<Filter, Ready>,);
+    type BeginSends = (ToType<Filter, Ready>, Spawns<Filter>);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let Ok(first) = turn.spawn::<Filter>(&0, Number { number: 2 }) else {
+        let Ok(first) = turn.spawn(&0, Number { number: 2 }) else {
             panic!("the first filter begins");
         };
         ready(turn, &[first])?;
@@ -858,6 +879,10 @@ impl Kind for Filter {
     const NAME: KindName = KindName::new("aether.savina.filter");
 }
 
+impl ChildOf for Filter {
+    type Parent = Anywhere;
+}
+
 impl Actor for Filter {
     type Config = Number;
     type Key = u64;
@@ -875,7 +900,7 @@ impl Actor for Filter {
 }
 
 impl Handles<Candidate> for Filter {
-    type Sends = (ToType<Self, Candidate>,);
+    type Sends = (ToType<Self, Candidate>, Spawns<Self>);
 
     fn handle(&mut self, Candidate { number }: Candidate, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let divided = self.primes.iter().any(|prime| number % prime == 0);
@@ -886,7 +911,7 @@ impl Handles<Candidate> for Filter {
             Next::Filter(next) => turn.send_to(next, &Candidate { number })?,
             Next::Last if self.primes.len() < SIEVE_KEPT => self.primes.push(number),
             Next::Last => {
-                let Ok(next) = turn.spawn::<Self>(&0, Number { number }) else {
+                let Ok(next) = turn.spawn(&0, Number { number }) else {
                     panic!("a filter begins");
                 };
                 self.next = Next::Filter(next);
@@ -943,11 +968,11 @@ impl Kind for Churn {
 
 impl Churn {
     /// Spawns the next actor and starts its life.
-    fn spawn_next<S, I>(&mut self, turn: &mut Turn<'_, S>) -> Result<(), Fault>
+    fn spawn_next<S, I, J>(&mut self, turn: &mut Turn<'_, S>) -> Result<(), Fault>
     where
-        S: Allows<ToType<Mortal, Live>, I>,
+        S: Allows<ToType<Mortal, Live>, I> + Allows<Spawns<Mortal>, J>,
     {
-        let Ok(child) = turn.spawn::<Mortal>(&self.spawned, Number { number: self.spawned }) else {
+        let Ok(child) = turn.spawn(&self.spawned, Number { number: self.spawned }) else {
             panic!("a churn actor begins");
         };
         self.spawned += 1;
@@ -965,7 +990,7 @@ impl Actor for Churn {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready, Died);
-    type BeginSends = (ToType<Mortal, Ready>,);
+    type BeginSends = (ToType<Mortal, Ready>, Spawns<Mortal>);
     type EndSends = ();
 
     /// A root configured with `number` shares the program among that many roots, none and one alike being the whole.
@@ -982,7 +1007,7 @@ impl Actor for Churn {
 }
 
 impl Handles<Ready> for Churn {
-    type Sends = (ToType<Mortal, Live>,);
+    type Sends = (ToType<Mortal, Live>, Spawns<Mortal>);
 
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         turn.send(To::Sender, &Live { left: CHURN_LIFE })?;
@@ -995,7 +1020,7 @@ impl Handles<Ready> for Churn {
 }
 
 impl Handles<Died> for Churn {
-    type Sends = (ToType<Mortal, Live>,);
+    type Sends = (ToType<Mortal, Live>, Spawns<Mortal>);
 
     fn handle(&mut self, _: Died, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         if self.spawned < CHURN_TOTAL / self.spawners {
@@ -1012,6 +1037,10 @@ struct Mortal;
 
 impl Kind for Mortal {
     const NAME: KindName = KindName::new("aether.savina.mortal");
+}
+
+impl ChildOf for Mortal {
+    type Parent = Churn;
 }
 
 impl Actor for Mortal {
@@ -1159,7 +1188,7 @@ impl Actor for Region {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready, Moved, Expired);
-    type BeginSends = (ToType<Body, Ready>,);
+    type BeginSends = (ToType<Body, Ready>, Spawns<Body>);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
@@ -1191,12 +1220,12 @@ impl Handles<Moved> for Region {
 }
 
 impl Handles<Expired> for Region {
-    type Sends = (ToType<Body, Frame>, ToType<Body, Over>);
+    type Sends = (ToType<Body, Frame>, ToType<Body, Over>, Spawns<Body>);
 
     /// Puts a new body, with a whole life, in the expired one's place, unless the world is over after this frame.
     fn handle(&mut self, Expired { place }: Expired, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         if self.frame < WORLD_FRAMES {
-            let Ok(body) = turn.spawn::<Body>(&self.spawned, Number { number: (WORLD_LIFE << 32) | place }) else {
+            let Ok(body) = turn.spawn(&self.spawned, Number { number: (WORLD_LIFE << 32) | place }) else {
                 panic!("a body begins");
             };
             self.spawned += 1;
@@ -1223,6 +1252,10 @@ struct Body {
 
 impl Kind for Body {
     const NAME: KindName = KindName::new("aether.savina.body");
+}
+
+impl ChildOf for Body {
+    type Parent = Region;
 }
 
 impl Actor for Body {
@@ -1380,8 +1413,12 @@ macro_rules! answers_ready {
 answers_ready!(Ponger, Counter, Forked, Pinging, Fib, Filter, Mortal, Body);
 
 /// A child of type `A` numbered `number`, spawned by `turn`.
-fn spawned<A: Actor<Config = Number, Key = u64>, S>(turn: &mut Beginning<'_, S>, number: u64) -> ActorRef<A> {
-    let Ok(child) = turn.spawn::<A>(&number, Number { number }) else {
+fn spawned<A, S, I>(turn: &mut Beginning<'_, S>, number: u64) -> ActorRef<A>
+where
+    A: ChildOf + Actor<Config = Number, Key = u64>,
+    S: Allows<Spawns<A>, I>,
+{
+    let Ok(child) = turn.spawn(&number, Number { number }) else {
         panic!("a child begins");
     };
 

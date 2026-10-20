@@ -1,10 +1,10 @@
 //! A guest that answers each ping it is sent with a pong, to its sender (ADR-0015).
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Asks, Beginning, BlobId, BlobRef, Carries, ChildOf, Ended, Ending,
-    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, Protocol, Refused, Resource, Runner, Running,
-    RunsJob, Start, Stop, Subscribes, Tick, To, ToAny, ToSender, ToType, ToWithoutMail, Top, Turn, Unanswered, Unrun,
-    Watches,
+    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, BlobRef, Carries, ChildOf, Ended, Ending,
+    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, Protocol, Recursive, Refused, Resource,
+    Runner, Running, RunsJob, Spawns, Start, Stop, Subscribes, Tick, To, ToAny, ToSender, ToType, ToWithoutMail, Top,
+    Turn, Unanswered, Unrun, Watches,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, Plain};
 use core::mem;
@@ -73,7 +73,7 @@ impl Kind for Echo {
 }
 
 impl ChildOf for Echo {
-    type Parent = Top;
+    type Parent = Anywhere;
 }
 
 impl Actor for Echo {
@@ -243,6 +243,10 @@ impl Kind for Ticker {
     const NAME: KindName = KindName::new("aether.guest.ticker");
 }
 
+impl ChildOf for Ticker {
+    type Parent = Anywhere;
+}
+
 impl Actor for Ticker {
     type Config = EchoConfig;
     type Key = ();
@@ -286,11 +290,11 @@ impl Actor for Metronome {
     type Config = EchoConfig;
     type Key = ();
     type Handles = ();
-    type BeginSends = ();
+    type BeginSends = (Spawns<Ticker>,);
     type EndSends = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let spawned = turn.spawn::<Ticker>(&(), EchoConfig);
+        let spawned = turn.spawn(&(), EchoConfig);
         let said = match spawned {
             Ok(_) => "ticker made",
             Err(Refused::Unstaged(stage)) if stage.same(KindId::of::<Tick>()) => "ticker refused for tick",
@@ -522,13 +526,13 @@ impl Actor for Brood {
     type Config = BroodConfig;
     type Key = ();
     type Handles = (Grow,);
-    type BeginSends = ();
+    type BeginSends = (Spawns<Adder>,);
     type EndSends = ();
 
     fn begin(config: BroodConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         for key in 0..config.children {
             let config = AddBy { by: 10 * key + 1, deeper: u64::from(key == 0) };
-            if turn.spawn::<Adder>(&key, config).is_err() {
+            if turn.spawn(&key, config).is_err() {
                 turn.log(Level::Error, "an adder was refused");
             }
         }
@@ -542,11 +546,11 @@ impl Actor for Brood {
 }
 
 impl Handles<Grow> for Brood {
-    type Sends = ();
+    type Sends = (Spawns<Adder>,);
 
     fn handle(&mut self, _: Grow, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let key = self.next;
-        if turn.spawn::<Adder>(&key, AddBy { by: 10 * key + 1, deeper: 0 }).is_err() {
+        if turn.spawn(&key, AddBy { by: 10 * key + 1, deeper: 0 }).is_err() {
             turn.log(Level::Error, "an adder was refused");
         }
         self.next += 1;
@@ -577,17 +581,21 @@ impl Kind for Adder {
     const NAME: KindName = KindName::new("aether.guest.adder");
 }
 
+impl ChildOf for Adder {
+    type Parent = Anywhere;
+}
+
 impl Actor for Adder {
     type Config = AddBy;
     type Key = u64;
     type Handles = (Ping,);
-    type BeginSends = ();
+    type BeginSends = (Spawns<Self>,);
     type EndSends = ();
 
     fn begin(config: AddBy, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         if config.deeper > 0 {
             let below = AddBy { by: config.by + 1000, deeper: config.deeper - 1 };
-            if turn.spawn::<Self>(&0, below).is_err() {
+            if turn.spawn(&0, below).is_err() {
                 turn.log(Level::Error, "an adder below was refused");
             }
         }
@@ -789,6 +797,10 @@ impl Kind for Reporter {
     const NAME: KindName = KindName::new("aether.guest.reporter");
 }
 
+impl ChildOf for Reporter {
+    type Parent = Anywhere;
+}
+
 impl Actor for Reporter {
     type Config = AddBy;
     type Key = u64;
@@ -837,6 +849,10 @@ impl Kind for Chick {
     const NAME: KindName = KindName::new("aether.guest.chick");
 }
 
+impl ChildOf for Chick {
+    type Parent = Hatcher;
+}
+
 impl Actor for Chick {
     type Config = AddBy;
     type Key = u64;
@@ -863,6 +879,10 @@ pub struct FakeChick;
 
 impl Kind for FakeChick {
     const NAME: KindName = KindName::new("aether.guest.chick");
+}
+
+impl ChildOf for FakeChick {
+    type Parent = Hatcher;
 }
 
 impl Actor for FakeChick {
@@ -895,6 +915,10 @@ pub struct Stray;
 
 impl Kind for Stray {
     const NAME: KindName = KindName::new("aether.guest.stray");
+}
+
+impl ChildOf for Stray {
+    type Parent = Hatcher;
 }
 
 impl Actor for Stray {
@@ -954,15 +978,19 @@ impl Kind for Hatcher {
     const NAME: KindName = KindName::new("aether.guest.hatcher");
 }
 
+impl ChildOf for Hatcher {
+    type Parent = Anywhere;
+}
+
 impl Actor for Hatcher {
     type Config = Hatch;
     type Key = ();
     type Handles = (Pong, Grow);
-    type BeginSends = (ToType<Reporter, Ping>,);
+    type BeginSends = (ToType<Reporter, Ping>, Spawns<Reporter>);
     type EndSends = ();
 
     fn begin(hatch: Hatch, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let reporter = turn.spawn_from::<Reporter>(&hatch.other, &7, &AddBy { by: 20, deeper: 0 });
+        let reporter = turn.spawn_from(&hatch.other, &7, &AddBy { by: 20, deeper: 0 });
         turn.send_to(reporter.map_err(|why| unhatched(&why))?, &Ping { n: 0 })?;
 
         Ok(Self { other: hatch.other, home: hatch.home, grown: 0 })
@@ -984,21 +1012,30 @@ impl Handles<Pong> for Hatcher {
 }
 
 impl Handles<Grow> for Hatcher {
-    type Sends = (ToType<Boomerang, Ping>, ToAny<(Pong,), Pong>);
+    type Sends = (
+        ToType<Boomerang, Ping>,
+        ToAny<(Pong,), Pong>,
+        Spawns<Chick>,
+        Spawns<Stray>,
+        Spawns<FakeChick>,
+        Spawns<Boomerang>,
+    );
 
     fn handle(&mut self, _: Grow, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let chick = AddBy { by: 10 * self.grown + 2, deeper: 0 };
-        turn.spawn::<Chick>(&self.grown, chick).map_err(|why| unhatched(&why))?;
-        if let Err(why) = turn.spawn::<Stray>(&(), EchoConfig) {
+        let _: ActorRef<Chick> = turn.spawn(&self.grown, chick).map_err(|why| unhatched(&why))?;
+        let stray: Result<ActorRef<Stray>, _> = turn.spawn(&(), EchoConfig);
+        if let Err(why) = stray {
             turn.send_to_any(To::Parent, &Pong { n: 500 + refused(&why) })?;
         }
-        if let Err(why) = turn.spawn::<FakeChick>(&(100 + self.grown), AddBy { by: 0, deeper: 0 }) {
+        let fake: Result<ActorRef<FakeChick>, _> = turn.spawn(&(100 + self.grown), AddBy { by: 0, deeper: 0 });
+        if let Err(why) = fake {
             turn.send_to_any(To::Parent, &Pong { n: 600 + refused(&why) })?;
         }
         let is_first = self.grown == 0;
         if is_first {
             let home = Home { home: self.home.clone() };
-            let boomerang = turn.spawn_from::<Boomerang>(&self.other, &(), &home).map_err(|why| unhatched(&why))?;
+            let boomerang = turn.spawn_from(&self.other, &(), &home).map_err(|why| unhatched(&why))?;
             turn.send_to(boomerang, &Ping { n: 0 })?;
         }
         self.grown += 1;
@@ -1029,15 +1066,19 @@ impl Kind for Boomerang {
     const NAME: KindName = KindName::new("aether.guest.boomerang");
 }
 
+impl ChildOf for Boomerang {
+    type Parent = Hatcher;
+}
+
 impl Actor for Boomerang {
     type Config = Home;
     type Key = ();
     type Handles = (Ping,);
-    type BeginSends = (ToAny<(Pong,), Pong>,);
+    type BeginSends = (ToAny<(Pong,), Pong>, Spawns<Reporter>);
     type EndSends = ();
 
     fn begin(home: Home, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let spawned = turn.spawn_from::<Reporter>(&home.home, &0, &AddBy { by: 0, deeper: 0 });
+        let spawned = turn.spawn_from(&home.home, &0, &AddBy { by: 0, deeper: 0 });
         let n = spawned.err().map_or(300, |why| 300 + refused(&why));
         turn.send_to_any(ToWithoutMail::Parent, &Pong { n })?;
 
@@ -1050,10 +1091,10 @@ impl Actor for Boomerang {
 }
 
 impl Handles<Ping> for Boomerang {
-    type Sends = (ToAny<(Pong,), Pong>,);
+    type Sends = (ToAny<(Pong,), Pong>, Spawns<Reporter>);
 
     fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        let spawned = turn.spawn_from::<Reporter>(&self.home, &1, &AddBy { by: 0, deeper: 0 });
+        let spawned = turn.spawn_from(&self.home, &1, &AddBy { by: 0, deeper: 0 });
         let n = spawned.err().map_or(400, |why| 400 + refused(&why));
         turn.send_to_any(To::Parent, &Pong { n })?;
 
@@ -1095,7 +1136,7 @@ impl Kind for Librarian {
 }
 
 impl ChildOf for Librarian {
-    type Parent = Top;
+    type Parent = Anywhere;
 }
 
 impl Actor for Librarian {
@@ -1269,14 +1310,14 @@ impl Actor for Spendthrift {
 }
 
 impl Handles<Ping> for Spendthrift {
-    type Sends = (ToSender<Book>,);
+    type Sends = (ToSender<Book>, Spawns<Librarian>);
 
     fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let len = usize::try_from(ping.n).unwrap_or(0);
         let book = turn.put(vec![7; len]).map_err(|why| unhatched(&why))?;
         let tell = ActorPath::from_root(&aethereal_data::PathSegment::new(KindName::new("aether.guest.no_one"), &()));
         let engine = book.id().engine();
-        turn.spawn::<Librarian>(&(), Shelf { book, tell }).map_err(|why| unhatched(&why))?;
+        turn.spawn(&(), Shelf { book, tell }).map_err(|why| unhatched(&why))?;
         turn.reply(&Book { blob: forged(BlobId::new(engine, u64::MAX)) })?;
 
         Ok(())
@@ -1385,12 +1426,12 @@ impl Actor for Archive {
     type Config = Stacks;
     type Key = ();
     type Handles = ();
-    type BeginSends = ();
+    type BeginSends = (Spawns<Reader>,);
     type EndSends = ();
 
     fn begin(stacks: Stacks, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         for key in 0..stacks.readers {
-            if turn.spawn::<Reader>(&key, Book { blob: stacks.book.clone() }).is_err() {
+            if turn.spawn(&key, Book { blob: stacks.book.clone() }).is_err() {
                 turn.log(Level::Error, "a reader was refused");
             }
         }
@@ -1412,6 +1453,10 @@ pub struct Reader {
 
 impl Kind for Reader {
     const NAME: KindName = KindName::new("aether.guest.reader");
+}
+
+impl ChildOf for Reader {
+    type Parent = Archive;
 }
 
 impl Actor for Reader {
@@ -1517,14 +1562,14 @@ impl<S> Resolves for Turn<'_, S> {
 }
 
 impl ChildOf for Porter {
-    type Parent = Top;
+    type Parent = Recursive;
 }
 
 impl Actor for Porter {
     type Config = Porting;
     type Key = u64;
     type Handles = (Hand,);
-    type BeginSends = (ToAny<(Hand,), Hand>, ToType<Bearer, Ping>);
+    type BeginSends = (ToAny<(Hand,), Hand>, ToType<Bearer, Ping>, Spawns<Self>, Spawns<Bearer>);
     type EndSends = ();
 
     fn begin(config: Porting, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
@@ -1542,11 +1587,11 @@ impl Actor for Porter {
                 turn.send_to_any(ToWithoutMail::Held(to), &Hand { lamps })?;
             }
             1 => {
-                let spawned = turn.spawn::<Self>(&1, Porting { to, lamps, how: 0 });
+                let spawned: Result<ActorRef<Self>, _> = turn.spawn(&1, Porting { to, lamps, how: 0 });
                 spawned.map_err(|why| unhatched(&why))?;
             }
             _ => {
-                let spawned = turn.spawn::<Bearer>(&0, Porting { to, lamps, how: 0 });
+                let spawned: Result<ActorRef<Bearer>, _> = turn.spawn(&0, Porting { to, lamps, how: 0 });
                 let bearer = spawned.map_err(|why| unhatched(&why))?;
                 turn.send_to(bearer, &Ping { n: 0 })?;
             }
@@ -1584,6 +1629,10 @@ pub struct Bearer {
 
 impl Kind for Bearer {
     const NAME: KindName = KindName::new("aether.guest.bearer");
+}
+
+impl ChildOf for Bearer {
+    type Parent = Porter;
 }
 
 impl Actor for Bearer {
@@ -1686,15 +1735,19 @@ impl Kind for Querent {
     const NAME: KindName = KindName::new("aether.guest.querent");
 }
 
+impl ChildOf for Querent {
+    type Parent = Anywhere;
+}
+
 impl Actor for Querent {
     type Config = EchoConfig;
     type Key = ();
     type Handles = (Query, Answer<Pong, Which>);
-    type BeginSends = ();
+    type BeginSends = (Spawns<Echo>,);
     type EndSends = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
+        let echo = turn.spawn(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
 
         Ok(Self { echo })
     }
@@ -1757,22 +1810,27 @@ impl Kind for Opener {
     const NAME: KindName = KindName::new("aether.guest.opener");
 }
 
+impl ChildOf for Opener {
+    type Parent = Anywhere;
+}
+
 impl Actor for Opener {
     type Config = Opening;
     type Key = u64;
     type Handles = (Answer<Pong, Which>, Heard);
-    type BeginSends = (Asks<Pings, Ping, Which>,);
+    type BeginSends = (Asks<Pings, Ping, Which>, Spawns<Echo>, Spawns<Self>, Spawns<Inlet>);
     type EndSends = ();
 
     fn begin(opening: Opening, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|why| unhatched(&why))?;
+        let echo: ActorRef<Echo> = turn.spawn(&(), EchoConfig).map_err(|why| unhatched(&why))?;
         turn.ask_to(echo.protocol(), &Ping { n: opening.n }, &Which { at: opening.n })?;
         let n = opening.n + 1;
         let is_deeper = opening.below > 0;
         if is_deeper {
-            turn.spawn::<Self>(&n, Opening { n, below: opening.below - 1 }).map_err(|why| unhatched(&why))?;
+            let _: ActorRef<Self> =
+                turn.spawn(&n, Opening { n, below: opening.below - 1 }).map_err(|why| unhatched(&why))?;
         } else {
-            turn.spawn::<Inlet>(&(), Ping { n }).map_err(|why| unhatched(&why))?;
+            let _: ActorRef<Inlet> = turn.spawn(&(), Ping { n }).map_err(|why| unhatched(&why))?;
         }
 
         Ok(Self)
@@ -1820,15 +1878,19 @@ impl Kind for Inlet {
     const NAME: KindName = KindName::new("aether.guest.inlet");
 }
 
+impl ChildOf for Inlet {
+    type Parent = Opener;
+}
+
 impl Actor for Inlet {
     type Config = Ping;
     type Key = ();
     type Handles = (Answer<Pong, Which>,);
-    type BeginSends = (Asks<Pings, Ping, Which>,);
+    type BeginSends = (Asks<Pings, Ping, Which>, Spawns<Echo>);
     type EndSends = ();
 
     fn begin(ping: Ping, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|why| unhatched(&why))?;
+        let echo = turn.spawn(&(), EchoConfig).map_err(|why| unhatched(&why))?;
         turn.ask_to(echo.protocol(), &Ping { n: ping.n }, &Which { at: ping.n })?;
 
         Ok(Self)
@@ -1864,6 +1926,10 @@ pub struct Shelver;
 
 impl Kind for Shelver {
     const NAME: KindName = KindName::new("aether.guest.shelver");
+}
+
+impl ChildOf for Shelver {
+    type Parent = Anywhere;
 }
 
 impl Actor for Shelver {
@@ -1966,15 +2032,19 @@ impl Kind for Steward {
     const NAME: KindName = KindName::new("aether.guest.steward");
 }
 
+impl ChildOf for Steward {
+    type Parent = Anywhere;
+}
+
 impl Actor for Steward {
     type Config = EchoConfig;
     type Key = ();
     type Handles = (Ping, Weigh, Release, Answer<Pong, Kept>);
-    type BeginSends = ();
+    type BeginSends = (Spawns<Echo>,);
     type EndSends = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
+        let echo = turn.spawn(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
 
         Ok(Self { held: Vec::new(), weighing: Vec::new(), echo, closed_on: 0 })
     }
@@ -2092,15 +2162,19 @@ impl Kind for Stasher {
     const NAME: KindName = KindName::new("aether.guest.stasher");
 }
 
+impl ChildOf for Stasher {
+    type Parent = Anywhere;
+}
+
 impl Actor for Stasher {
     type Config = EchoConfig;
     type Key = ();
     type Handles = (Stash, Answer<Pong, Stashed>);
-    type BeginSends = ();
+    type BeginSends = (Spawns<Echo>,);
     type EndSends = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
+        let echo = turn.spawn(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
 
         Ok(Self { echo })
     }
@@ -2150,6 +2224,10 @@ impl Kind for Nestling {
     const NAME: KindName = KindName::new("aether.guest.nestling");
 }
 
+impl ChildOf for Nestling {
+    type Parent = Nester;
+}
+
 impl Actor for Nestling {
     type Config = Book;
     type Key = ();
@@ -2178,6 +2256,10 @@ impl Kind for Nester {
     const NAME: KindName = KindName::new("aether.guest.nester");
 }
 
+impl ChildOf for Nester {
+    type Parent = Anywhere;
+}
+
 impl Actor for Nester {
     type Config = EchoConfig;
     type Key = ();
@@ -2195,10 +2277,10 @@ impl Actor for Nester {
 }
 
 impl Handles<Book> for Nester {
-    type Sends = ();
+    type Sends = (Spawns<Nestling>,);
 
     fn handle(&mut self, book: Book, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        turn.spawn::<Nestling>(&(), book).map_err(|why| unhatched(&why))?;
+        turn.spawn(&(), book).map_err(|why| unhatched(&why))?;
 
         Ok(())
     }

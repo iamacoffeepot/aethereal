@@ -4,8 +4,8 @@
 use super::super::*;
 use crate::stages::key;
 use aethereal_actor::{
-    Actor, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, Present, Render, Stage, Start, Stop, Subscribes,
-    Tick, Time, To, ToSender, ToType, ToWithoutMail, Top, Turn, Unordered,
+    Actor, Anywhere, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, Present, Render, Spawns, Stage, Start,
+    Stop, Subscribes, Tick, Time, To, ToSender, ToType, ToWithoutMail, Top, Turn, Unordered,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, PathSegment, Plain};
 use core::time::Duration;
@@ -297,7 +297,7 @@ impl Kind for Cycler {
 }
 
 impl ChildOf for Cycler {
-    type Parent = Top;
+    type Parent = Anywhere;
 }
 
 impl Actor for Cycler {
@@ -491,11 +491,11 @@ impl Actor for Nest {
     type Config = Note;
     type Key = ();
     type Handles = (Note,);
-    type BeginSends = (ToType<Self, Note>,);
+    type BeginSends = (ToType<Self, Note>, Spawns<Cycler>);
     type EndSends = ();
 
     fn begin(_: Note, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        let spawned = turn.spawn::<Cycler>(&(), Note { text: String::new() });
+        let spawned = turn.spawn(&(), Note { text: String::new() });
         say(format!("{:?}", spawned.err()));
         let me = turn.me();
         turn.send(ToWithoutMail::Held(me), &Note { text: String::new() })?;
@@ -509,10 +509,10 @@ impl Actor for Nest {
 }
 
 impl Handles<Note> for Nest {
-    type Sends = ();
+    type Sends = (Spawns<Latecomer>,);
 
-    fn handle(&mut self, _: Note, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
-        let spawned = turn.spawn::<Latecomer>(&(), Note { text: String::new() });
+    fn handle(&mut self, _: Note, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        let spawned = turn.spawn(&(), Note { text: String::new() });
         say(format!("{:?}", spawned.err()));
 
         Ok(())
@@ -562,7 +562,7 @@ impl Kind for Latecomer {
 }
 
 impl ChildOf for Latecomer {
-    type Parent = Top;
+    type Parent = Anywhere;
 }
 
 impl Actor for Latecomer {
