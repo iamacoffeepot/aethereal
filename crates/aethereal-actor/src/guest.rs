@@ -147,6 +147,9 @@ pub struct Calls {
     pub put: fn(Vec<u8>) -> Result<BlobId, Refused>,
     /// The time the step carries, in nanoseconds on the host's clock (ADR-0018).
     pub now: extern "C" fn() -> u64,
+    /// Whether the engine's lifecycle runs the stage of the kind of these bits, its plain bytes read as little-endian:
+    /// one when it does (ADR-0020).
+    pub runs_stage: extern "C" fn(u64) -> u32,
 }
 
 /// What the guest holds: its actors, where its host writes what it hands in, and where it writes what it asked for.
@@ -1337,6 +1340,11 @@ impl Table for Host {
     fn now(&self) -> Time {
         Time::from_nanos((self.calls.now)())
     }
+
+    /// Whether the stage is run, asked of the host, which holds the engine's cycle.
+    fn runs_stage(&self, stage: KindId) -> bool {
+        (self.calls.runs_stage)(u64::from_le_bytes(stage.plain_bytes())) == 1
+    }
 }
 
 impl Children for Host {
@@ -1379,6 +1387,7 @@ macro_rules! guest {
                 safe fn aethereal_blob_hash(engine: u32, bits: u64, at: u32) -> u32;
                 safe fn aethereal_put(at: u32, len: u32, id: u32) -> u64;
                 safe fn aethereal_now() -> u64;
+                safe fn aethereal_runs_stage(stage: u64) -> u32;
             }
 
             fn put(bytes: Vec<u8>) -> Result<$crate::BlobId, $crate::Refused> {
@@ -1411,6 +1420,7 @@ macro_rules! guest {
                 blob_hash: aethereal_blob_hash,
                 put,
                 now: aethereal_now,
+                runs_stage: aethereal_runs_stage,
             };
 
             #[unsafe(no_mangle)]

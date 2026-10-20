@@ -14,8 +14,10 @@ use super::{Engine, ROOTS, parity};
 use crate::id::root_id;
 use crate::lives;
 use crate::stages::{self, key};
-use aethereal_actor::{Cycle, Cycled, Cycling, MailId, Mailed, Start, Stop, Tie, Time, Unordered, ordered};
-use aethereal_data::{ActorId, KindName, PathSegment};
+use aethereal_actor::{
+    Cycle, Cycled, Cycling, Declared, MailId, Mailed, Refused, Start, Stop, Tie, Time, Unordered, ordered,
+};
+use aethereal_data::{ActorId, KindId, KindName, PathSegment};
 use core::time::Duration;
 
 /// Where the program's lifecycle stands (ADR-0020).
@@ -86,6 +88,23 @@ impl Staging {
             time: Cycled { delta_nanos: 0, elapsed_nanos: 0 },
             delta_limit_nanos: nanos(DELTA_LIMIT),
         }
+    }
+}
+
+/// Whether a lifecycle whose chassis's cycle is `cycle` runs the stage of kind `stage`: `Start`, `Stop`, or a stage of
+/// the cycle (ADR-0020).
+pub(super) fn runs(cycle: &[Cycling], stage: KindId) -> bool {
+    let is_start = stage.same(KindId::of::<Start>());
+    let is_stop = stage.same(KindId::of::<Stop>());
+    let is_cycled = cycle.iter().any(|cycling| cycling.kind.same(stage));
+
+    is_start || is_stop || is_cycled
+}
+
+impl Staging {
+    /// The stages of the chassis's cycle, in the order they run.
+    pub(super) fn cycle(&self) -> &[Cycling] {
+        &self.cycle
     }
 }
 
@@ -161,6 +180,14 @@ impl Engine {
     #[must_use]
     pub const fn lifecycle(&self) -> Lifecycle {
         self.staging.lifecycle
+    }
+
+    /// Refuses a root of the type `declared` when it subscribes to a stage the lifecycle does not run, before any of
+    /// its code runs (ADR-0020).
+    pub(super) fn staged(&self, declared: &Declared) -> Result<(), Refused> {
+        let unstaged = declared.unstaged(|stage| runs(&self.staging.cycle, stage));
+
+        unstaged.map_or(Ok(()), |stage| Err(Refused::Unstaged(stage)))
     }
 
     /// Moves the lifecycle on between steps: past a stage whose chain has finished, to the next stage of a cycle under

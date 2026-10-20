@@ -1030,6 +1030,7 @@ impl Seat<'_> {
         let segment = PathSegment::new(C::NAME, key);
         let (path, id) = self.free_child(&segment)?;
         let declared = Declared::of::<C>();
+        self.staged(declared)?;
         #[cfg(feature = "std")]
         if !instances.is_own(declared) {
             let guests = instances.guests();
@@ -1094,8 +1095,10 @@ impl Seat<'_> {
     ) -> Result<ActorRef<C>, Refused> {
         let segment = PathSegment::new(C::NAME, key);
         let (path, id) = self.free_child(&segment)?;
+        let declared = Declared::of::<C>();
+        self.staged(declared)?;
         let guests = instances.guests();
-        let made = guests.made(code.id(), Declared::of::<C>()).ok_or(Refused::NotMade)?;
+        let made = guests.made(code.id(), declared).ok_or(Refused::NotMade)?;
         let config = config_bytes(config).map_err(|_| Refused::NotMade)?;
 
         self.spawn_other(instances, id, &segment, path, Code::Blob(made), &config, |config, birth| {
@@ -1152,6 +1155,14 @@ impl Seat<'_> {
                 Err(refused)
             }
         }
+    }
+
+    /// Refuses a child of the type `declared` when it subscribes to a stage the engine's lifecycle does not run, before
+    /// any of its code runs (ADR-0020).
+    fn staged(&self, declared: &Declared) -> Result<(), Refused> {
+        let unstaged = declared.unstaged(|stage| self.table.runs_stage(stage));
+
+        unstaged.map_or(Ok(()), |stage| Err(Refused::Unstaged(stage)))
     }
 
     /// The path and id of the child `segment` names beneath this actor, when its key is free: when this actor has

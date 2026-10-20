@@ -53,6 +53,10 @@ impl Table for Listed {
         Time::ZERO
     }
 
+    fn runs_stage(&self, _: KindId) -> bool {
+        true
+    }
+
     /// Every actor listed is a leaf.
     fn declared(&self, id: ActorId) -> Option<&'static Declared> {
         let is_listed = self.is_live(id);

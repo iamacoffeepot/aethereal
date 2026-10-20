@@ -10,7 +10,7 @@ use crate::{Column, Context, Folded, Routed};
 pub use actors::Actors;
 use actors::Entry;
 use aethereal_actor::{BlobHash, BlobId, Declared, Effect, SeatNumber, Seated, Table, Time};
-use aethereal_data::{ActorId, ActorPath, PathSegment};
+use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 use std::collections::HashSet;
 use std::hash::BuildHasherDefault;
 use std::num::NonZeroUsize;
@@ -55,6 +55,11 @@ impl Table for ActorTable {
     /// The table holds no time: a turn reads its step's through what the engine opens it with, beside the table.
     fn now(&self) -> Time {
         Time::ZERO
+    }
+
+    /// The table holds no cycle: a turn reads its engine's through what the engine opens it with, beside the table.
+    fn runs_stage(&self, _: KindId) -> bool {
+        false
     }
 }
 

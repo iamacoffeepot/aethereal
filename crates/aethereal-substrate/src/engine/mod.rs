@@ -36,9 +36,9 @@ use crate::{
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, Actor, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Carried, Chain, Closing,
-    Code, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, Keeping, Keeps, Links, Mail,
-    MailId, Mailed, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated, Seats,
-    Stood, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    Code, Cycling, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, Keeping, Keeps, Links,
+    Mail, MailId, Mailed, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated,
+    Seats, Stood, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -256,6 +256,8 @@ pub struct Reading<'a> {
     slice: u64,
     /// The time the step carries (ADR-0018).
     now: Time,
+    /// The stages of the chassis's cycle (ADR-0020).
+    cycle: &'a [Cycling],
 }
 
 /// What a step hands out and takes back, kept empty between steps for its room.
@@ -544,6 +546,10 @@ impl Engine {
     /// The root's `begin` runs here, and what it asked for is applied before this returns, as a step's effects
     /// are. A root is made between steps.
     ///
+    /// # Errors
+    ///
+    /// Refused when the key is taken, `A` subscribes to a stage the lifecycle does not run, or `begin` fails.
+    ///
     /// # Panics
     ///
     /// Panics when an actor is made under an id the table already holds for another path (ADR-0008).
@@ -606,7 +612,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Refused when the key is taken, the blob makes no actor of `C`'s type, or `begin` fails.
+    /// Refused when the key is taken, the blob makes no actor of `C`'s type, `C` subscribes to a stage the lifecycle
+    /// does not run, or `begin` fails.
     ///
     /// # Panics
     ///
@@ -656,6 +663,7 @@ impl Engine {
         if is_taken {
             return Err(Refused::KeyTaken);
         }
+        self.staged(from.declared())?;
 
         // Mail sent between steps is read in the next step, with the mail the last step's turns sent. The root sits in
         // the part with fewest actors, and the children its `begin` stands up beside it while the part has room, then
@@ -668,8 +676,14 @@ impl Engine {
         let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats, self.puts(ROOTS, blob_room));
         asked.buffers_mut().gifts = gifts;
         let stood_before = ByActor::default();
-        let table =
-            Since { table: &self.table, stood: &stood_before, sees: Sees::Step, blobs: &self.blobs, now: self.now };
+        let table = Since {
+            table: &self.table,
+            stood: &stood_before,
+            sees: Sees::Step,
+            blobs: &self.blobs,
+            now: self.now,
+            cycle: self.staging.cycle(),
+        };
         let mut keeping = Keeping::default();
         // The root begins in the part it is seated in, lent that part's instances.
         let made = begin(me, &path, &table, &mut asked, &mut self.instances[home], &mut keeping);
@@ -803,6 +817,7 @@ impl Engine {
             hops: self.hops,
             slice: self.slice,
             now: self.now,
+            cycle: self.staging.cycle(),
         };
         for (part, _) in &self.packing.parts {
             let room = Room {
@@ -999,6 +1014,7 @@ impl Engine {
             hops: self.hops,
             slice: self.slice,
             now: self.now,
+            cycle: self.staging.cycle(),
         }
     }
 
@@ -1540,6 +1556,7 @@ impl Reading<'_> {
                             sees: Sees::Step,
                             blobs: self.blobs,
                             now: self.now,
+                            cycle: self.cycle,
                         };
                         let (seats, puts, _, gifts) = asked.lent_gifts();
                         let holds = Holds { keeping: &mut *keeping, gifts };
@@ -1555,6 +1572,7 @@ impl Reading<'_> {
                             sees: Sees::Step,
                             blobs: self.blobs,
                             now: self.now,
+                            cycle: self.cycle,
                         };
                         asked.next_turn();
                         let source = handed.source();
@@ -1656,6 +1674,7 @@ impl Reading<'_> {
                 sees: Sees::Step,
                 blobs: self.blobs,
                 now: self.now,
+                cycle: self.cycle,
             };
             let closing = Closing::new(me, path, above, &table, asked, instances, keeps, sent, why);
             let mut ended = actor.end(closing);
@@ -1721,6 +1740,7 @@ impl Reading<'_> {
             sees: Sees::Run(lists.fusing.run(hop.run)),
             blobs: self.blobs,
             now: self.now,
+            cycle: self.cycle,
         };
         if seat.prepares {
             let (seats, puts, arena, gifts) = asked.lent_gifts();
@@ -1741,6 +1761,7 @@ impl Reading<'_> {
                     sees: Sees::Run(lists.fusing.run(hop.run)),
                     blobs: self.blobs,
                     now: self.now,
+                    cycle: self.cycle,
                 };
                 let bytes = lists.fusing.bytes(&hop);
                 let answering = waiting.answering(hop.tie);

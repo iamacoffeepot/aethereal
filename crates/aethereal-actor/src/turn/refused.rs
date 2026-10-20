@@ -1,7 +1,7 @@
 //! Why a spawn gave no child (ADR-0009).
 
 use crate::Fault;
-use aethereal_data::ActorPath;
+use aethereal_data::{ActorPath, KindId};
 use core::error::Error;
 use core::fmt;
 
@@ -21,6 +21,8 @@ pub enum Refused {
     /// The child would begin in an instance that is waiting on a call out of its own: a chain of `begin`s left its
     /// blob and came back to it within one turn (ADR-0015).
     Waiting,
+    /// The child's type subscribes to the stage of this kind, which the engine's lifecycle does not run (ADR-0020).
+    Unstaged(KindId),
 }
 
 impl fmt::Display for Refused {
@@ -32,6 +34,9 @@ impl fmt::Display for Refused {
             Self::NoRoom => write!(f, "put: the blob would take its worker past its share of the budget for blobs"),
             Self::NotMade => write!(f, "spawn: the blob makes no actor of the child's type"),
             Self::Waiting => write!(f, "spawn: the child's instance is waiting on a call out of its own"),
+            Self::Unstaged(stage) => {
+                write!(f, "spawn: the child's type subscribes to {stage:?}, a stage the engine does not run")
+            }
         }
     }
 }

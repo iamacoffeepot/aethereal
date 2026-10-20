@@ -505,6 +505,9 @@ pub fn refusal(refused: &Refused) -> u64 {
         Refused::NoRoom => 4,
         Refused::NotMade => 5,
         Refused::Waiting => 6,
+        // A guest's turn checks a child's stages before it asks its host to begin the child, so no host refuses a
+        // spawn for them, and its stage is not written (ADR-0020).
+        Refused::Unstaged(_) => 7,
     }
 }
 

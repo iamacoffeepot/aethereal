@@ -55,6 +55,10 @@ impl Table for Typed {
         crate::Time::ZERO
     }
 
+    fn runs_stage(&self, _: KindId) -> bool {
+        true
+    }
+
     fn declared(&self, id: ActorId) -> Option<&'static Declared> {
         self.0.iter().find(|(made, _)| made.id == id).map(|(_, declared)| *declared)
     }

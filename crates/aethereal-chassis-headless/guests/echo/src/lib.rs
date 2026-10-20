@@ -2,10 +2,10 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Asks, Beginning, BlobId, BlobRef, Carries, Ended, Ending, ErasedActorRef, Fault,
-    Given, Handle, Handles, Held, How, Level, Protocol, Refused, Resource, Start, Stop, Subscribes, To, ToAny,
+    Given, Handle, Handles, Held, How, Level, Protocol, Refused, Resource, Start, Stop, Subscribes, Tick, To, ToAny,
     ToSender, ToType, ToWithoutMail, Turn, Unanswered, Watches,
 };
-use aethereal_data::{ActorPath, Bound, Kind, KindName, Plain};
+use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, Plain};
 use core::mem;
 
 /// A ping, which an echo answers with a pong of the same number.
@@ -218,6 +218,73 @@ impl Handles<Stop> for Starter {
     fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         turn.log(Level::Info, "stopping");
 
+        Ok(())
+    }
+}
+
+/// An actor that subscribes to `Tick` as it begins: one an engine whose cycle runs no `Tick` does not make (ADR-0020).
+#[derive(Bound)]
+pub struct Ticker;
+
+impl Kind for Ticker {
+    const NAME: KindName = KindName::new("aether.guest.ticker");
+}
+
+impl Actor for Ticker {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Tick,);
+    type BeginSends = (Subscribes<Tick>,);
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.subscribe::<Tick, _>();
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Tick> for Ticker {
+    type Sends = ();
+
+    fn handle(&mut self, _: Tick, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// An actor that spawns a ticker of its own blob as it begins, and logs whether its engine made it: refused for
+/// `Tick`, by the stage's kind, when its cycle runs none (ADR-0020).
+#[derive(Bound)]
+pub struct Metronome;
+
+impl Kind for Metronome {
+    const NAME: KindName = KindName::new("aether.guest.metronome");
+}
+
+impl Actor for Metronome {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let spawned = turn.spawn::<Ticker>(&(), EchoConfig);
+        let said = match spawned {
+            Ok(_) => "ticker made",
+            Err(Refused::Unstaged(stage)) if stage.same(KindId::of::<Tick>()) => "ticker refused for tick",
+            Err(_) => "ticker refused",
+        };
+        turn.log(Level::Info, said);
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -651,6 +718,7 @@ const fn refused(refused: &Refused) -> u64 {
         Refused::NoRoom => 4,
         Refused::NotMade => 5,
         Refused::Waiting => 6,
+        Refused::Unstaged(_) => 7,
     }
 }
 
@@ -2040,5 +2108,7 @@ aethereal_actor::guest!(
     Nester,
     Opener,
     Timekeeper,
-    Starter
+    Starter,
+    Ticker,
+    Metronome
 );

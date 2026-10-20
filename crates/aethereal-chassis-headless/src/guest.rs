@@ -395,6 +395,10 @@ fn spawns_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
     linker.func_wrap("aethereal", "aethereal_now", |mut caller: Caller<'_, Lending>| {
         answer(&mut caller, |answering| answering.table.now().nanos())
     })?;
+    linker.func_wrap("aethereal", "aethereal_runs_stage", |mut caller: Caller<'_, Lending>, stage: u64| {
+        let stage = from_bytes::<KindId>(&stage.to_le_bytes(), &mut Budget::new(8));
+        answer(&mut caller, |answering| u32::from(stage.is_ok_and(|stage| answering.table.runs_stage(stage))))
+    })?;
     linker.func_wrap("aethereal", "aethereal_spawn", |mut caller: Caller<'_, Lending>, at: u32, len: u32| {
         let spawning = guest_bytes(&mut caller, Span { at, len });
         answer(&mut caller, |answering| {
@@ -2035,11 +2039,11 @@ fn declared_section(bytes: &[u8]) -> Option<&[u8]> {
 mod tests {
     use super::*;
     use crate::Monotonic;
-    use aethereal_actor::Time;
     use aethereal_actor::{
         Actor, ActorRef, Answer, Answered, Beginning, BlobRef, Carries, Ending, Forged, Handles, Links, Protocol,
         Seated, To, ToAny, ToSender, ToType, ToWithoutMail, Trapped, Turn, Unanswered,
     };
+    use aethereal_actor::{Level, Tick, Time};
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
     use aethereal_guest_echo as echo;
     use aethereal_substrate::Engine;
@@ -3137,6 +3141,81 @@ mod tests {
             })
             .collect();
         assert_eq!(said, ["started", "stopping"]);
+    }
+
+    /// A native actor that spawns a ticker from the echo's blob as it begins, and logs whether its engine made it.
+    #[derive(aethereal_data::Bound)]
+    struct Breeder {
+        code: BlobRef,
+    }
+
+    impl Kind for Breeder {
+        const NAME: KindName = KindName::new("aether.test.breeder");
+    }
+
+    impl Actor for Breeder {
+        type Config = Self;
+        type Key = ();
+        type Handles = ();
+        type BeginSends = ();
+        type EndSends = ();
+
+        fn begin(breeder: Self, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let spawned = turn.spawn_from::<echo::Ticker>(&breeder.code, &(), &echo::EchoConfig);
+            let said = match spawned {
+                Ok(_) => "ticker made",
+                Err(Refused::Unstaged(stage)) if stage.same(KindId::of::<Tick>()) => "ticker refused for tick",
+                Err(_) => "ticker refused",
+            };
+            turn.log(Level::Info, said);
+
+            Ok(breeder)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    /// The lines `id` has logged on `engine`.
+    fn lines(engine: &Engine, id: ActorId) -> Vec<String> {
+        let Some(seat) = engine.table().seat(id) else {
+            panic!("the actor is seated");
+        };
+        let lines = engine.log(Seated { id, seat }).filter_map(|entry| match entry {
+            aethereal_substrate::Entry::Line { text, .. } => Some(text.clone()),
+            _ => None,
+        });
+
+        lines.collect()
+    }
+
+    #[test]
+    fn a_child_of_a_guest_s_blob_that_subscribes_to_a_stage_its_engine_does_not_run_is_refused() {
+        // Catches a guest's host answering its call out for whether a stage is run with anything but its engine's
+        // cycle, and a native turn's spawn from a blob that checks no stage: a child would be made on an engine that
+        // never sends it its stage, or refused on one that does.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let said = |engine: Engine| {
+            let (mut engine, code) = with_echo(engine);
+            let Ok(metronome) = engine.add_root_from::<echo::Metronome>(&code, &(), &echo::EchoConfig) else {
+                panic!("the metronome begins");
+            };
+            let Ok(breeder) = engine.add_root::<Breeder>(&(), Breeder { code }) else {
+                panic!("the breeder begins");
+            };
+
+            [lines(&engine, metronome), lines(&engine, breeder)]
+        };
+        let Ok(ticking) = Engine::new(parts, 1024, 0, 1 << 20, 0).with_cycle::<(Tick,)>() else {
+            panic!("the cycle is in order");
+        };
+
+        assert_eq!(said(ticking), [["ticker made"], ["ticker made"]]);
+        let refused = [["ticker refused for tick"], ["ticker refused for tick"]];
+        assert_eq!(said(Engine::new(parts, 1024, 0, 1 << 20, 0)), refused);
     }
 
     #[test]
