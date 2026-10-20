@@ -63,7 +63,7 @@ aether.window/aether.window.surface:left
 pub struct ErasedActorRef { .. }
 ```
 
-- Only the engine makes a reference. An actor comes to hold one in three ways: it is handed one in mail, it receives mail and is told the sender, or it asks the engine to resolve a path and the engine finds the actor.
+- Only the engine makes a reference. An actor comes to hold one in three ways: it is handed one in mail, it receives mail and is told the sender, or it asks the engine to resolve a path and the engine finds the actor. **A fourth way to send, added by ADR-0022, is a departure:** an actor names a capability, a protocol one singleton root answers, and the engine finds that root at each send, so the actor holds no reference to it and was handed nothing. It reaches the same actor a resolve of the root's path would, through a named protocol.
 - There is no presumptive reference: none is built from a path without the engine. An actor that knows only a path asks.
 - A reference is a bound value (ADR-0004). It crosses between actors in one engine and may be kept in an actor's state. It does not cross between engines: there a path crosses, and the receiver asks its own engine to resolve it.
 - **A reference is proven once, when it is made, and valid for as long as it exists.** In bytes it is its actor's id and seat, written only by a reference, so the reader at `Actors` and at `Within` reads them back as they were written and asks the table nothing. A type that holds a reference derives `Bound`, which writes the codec `Plain` writes and does not state `Plain` (ADR-0004).
