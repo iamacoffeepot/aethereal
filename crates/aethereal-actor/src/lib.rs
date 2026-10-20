@@ -35,6 +35,7 @@ mod resource;
 mod seat;
 pub mod section;
 mod source;
+mod stage;
 mod subscribers;
 mod time;
 mod turn;
@@ -52,7 +53,7 @@ pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, 
 pub use declared::{
     Allows, AnsweredBy, At, BackTo, CarriedBy, Carries, Conforms, Covers, Declared, Handled, HandledBy, HandledList,
     Handler, Handles, Kinds, Listed, Marker, Others, Protocol, RepliesTo, RepliesWithin, ReplyWithin, Role, Sending,
-    Sends, Target, ToAny, ToSender, ToType, Watches,
+    Sends, Subscribes, Target, ToAny, ToSender, ToType, Watches,
 };
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
@@ -73,6 +74,7 @@ pub use resource::{
 };
 pub use seat::{SeatNumber, Seated, Seats};
 pub use source::Source;
+pub use stage::{Stage, Start, Stop};
 pub use subscribers::Subscribers;
 pub use time::Time;
 pub use turn::{

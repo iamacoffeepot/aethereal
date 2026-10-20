@@ -9,6 +9,7 @@ mod debts;
 mod fold;
 mod fuse;
 mod gift;
+mod lifecycle;
 mod made;
 mod plan;
 mod rehearsal;
@@ -24,6 +25,7 @@ pub use plan::{Plan, Share, Split, SplitCost, Whole, Workers};
 
 use crate::id::root_id;
 use crate::log;
+use crate::stages::Stages;
 use crate::stream::{self, Handed, Pieces, Streams};
 use crate::table::Actors;
 use crate::watch::{Notice, Watches};
@@ -45,6 +47,8 @@ use costs::{CostKey, Costs, ItemKind, toward};
 use debts::Debts;
 use fuse::{Fusing, Hand, Hop, Stepped};
 use gift::{Arrival, Gifts};
+pub use lifecycle::Lifecycle;
+use lifecycle::{LIFECYCLE, Staging};
 use made::Made;
 use plan::Packing;
 use since::{Sees, Since};
@@ -76,6 +80,10 @@ pub struct Engine {
     streams: Folded<Streams>,
     /// Who watches each actor, and which have ended.
     watches: Folded<Watches>,
+    /// Who subscribes to each stage of the lifecycle, and whether an actor asked the program to stop (ADR-0020).
+    stages: Folded<Stages>,
+    /// Where the program's lifecycle stands, and the stage whose chain it waits on (ADR-0020).
+    staging: Staging,
     /// What each actor logged most recently.
     log: Folded<Log>,
     /// How far each actor's life has gone: the mail it has sent, and whether it has ended.
@@ -336,6 +344,7 @@ struct Routes {
     lives: Routed<Lives>,
     streams: Routed<Streams>,
     watches: Routed<Watches>,
+    stages: Routed<Stages>,
     births: Births,
     /// The resources given with the mail its turns sent, to hand to their receivers (ADR-0010).
     gifts: Gifts,
@@ -372,6 +381,8 @@ impl Engine {
             table: ActorTable::new(parts),
             streams: Folded::new(parts),
             watches: Folded::new(parts),
+            stages: Folded::new(parts),
+            staging: Staging::new(),
             log: Folded::new(parts),
             lives: Folded::new(parts),
             seating: (0..parts.get()).map(|_| Seating { seated: BySeat::empty(parts) }).collect(),
@@ -476,7 +487,6 @@ impl Engine {
     /// good: what is held is all a step leaves of a chain. It is for the engine's own lifecycle alone, which no actor
     /// reads (ADR-0020).
     #[must_use]
-    #[cfg_attr(not(test), expect(dead_code, reason = "the engine's lifecycle reads it, in the piece after this one"))]
     pub(crate) fn has_finished(&self, root: MailId) -> bool {
         let is_held = self.streams.shards().any(|part| part.holds_chain(root));
         let is_ending = self.lives.shards().any(|part| part.ends_in_chain(root));
@@ -640,7 +650,9 @@ impl Engine {
     ) -> Result<ActorId, Refused> {
         let id = root_id(segment);
         let path = ActorPath::from_root(segment);
-        let is_taken = self.table.holds_root(id);
+        // The lifecycle's name is the engine's: its stages' chains begin at its id (ADR-0020).
+        let is_lifecycle = segment.kind() == &LIFECYCLE;
+        let is_taken = self.table.holds_root(id) || is_lifecycle;
         if is_taken {
             return Err(Refused::KeyTaken);
         }
@@ -718,6 +730,7 @@ impl Engine {
         let sent = senders(&mailed).into_iter().map(|(actor, count)| lives::sent(actor, count));
         self.lives.fold_records(sent, written);
         self.watches.fold(&effects, &context, written);
+        self.stages.fold(&effects, &context, written);
         self.streams.fold_records(mailed.into_iter().map(|mailed| stream::entry(mailed, &context)), written);
         self.give_between(gifts, root);
         let mut forward = mem::take(&mut self.spare.forward);
@@ -844,6 +857,7 @@ impl Engine {
             self.lives.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.lives), written);
             self.streams.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.streams), written);
             self.watches.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.watches), written);
+            self.stages.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.stages), written);
             self.watches.at_mut(part).settle(&mut forward);
             self.expected[part] = self.expect(part);
             self.waiting.push(part);
@@ -851,6 +865,7 @@ impl Engine {
         touched.clear();
         self.spare.touched = touched;
         self.hand_on(forward);
+        self.advance();
     }
 
     /// Begins a step on `workers`: takes each part of the engine with something to run out of it, with the actors in
@@ -1075,6 +1090,7 @@ impl Engine {
         }
 
         self.hand_on(forward);
+        self.advance();
     }
 
     /// The parts some writer routed a record to since the last fold, each once and in the order of their numbers: the
@@ -1127,6 +1143,7 @@ impl Engine {
         self.lives.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.lives), &mut pile.lives);
         self.streams.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.streams), &mut pile.streams);
         self.watches.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.watches), &mut pile.watches);
+        self.stages.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.stages), &mut pile.stages);
         pile.births.extend(rows.iter_mut().map(|lists| lists.routes.births.take(part)));
         pile.gifts.extend(rows.iter_mut().map(|lists| lists.routes.gifts.take(part)));
         pile.seating = mem::replace(&mut self.seating[part], empty);
@@ -1148,6 +1165,7 @@ impl Engine {
         self.lives.empty(part, &mut pile.lives, rows.iter_mut().map(|lists| &mut lists.routes.lives));
         self.streams.empty(part, &mut pile.streams, rows.iter_mut().map(|lists| &mut lists.routes.streams));
         self.watches.empty(part, &mut pile.watches, rows.iter_mut().map(|lists| &mut lists.routes.watches));
+        self.stages.empty(part, &mut pile.stages, rows.iter_mut().map(|lists| &mut lists.routes.stages));
         for (row, bucket) in rows.iter_mut().zip(pile.births.drain(..)) {
             row.routes.births.give_back(part, bucket);
         }
@@ -1210,6 +1228,7 @@ impl Engine {
             lives: self.lives.routed(),
             streams: self.streams.routed(),
             watches: self.watches.routed(),
+            stages: self.stages.routed(),
             births: Births::of_parts(self.seating.len()),
             gifts: Gifts::of_parts(self.seating.len()),
         };
@@ -2127,7 +2146,9 @@ impl Routes {
         let views = self.table.records(part) + self.log.records(part) + self.lives.records(part);
         let gives = self.births.records(part) + self.gifts.records(part);
 
-        views + self.streams.records(part) + self.watches.records(part) + gives
+        let lifecycle = self.watches.records(part) + self.stages.records(part);
+
+        views + self.streams.records(part) + lifecycle + gives
     }
 
     /// Routes one effect, emitted in `context`, into every view's bucket but the streams'.
@@ -2136,6 +2157,7 @@ impl Routes {
         self.log.route(effect, context);
         self.lives.route(effect, context);
         self.watches.route(effect, context);
+        self.stages.route(effect, context);
     }
 }
 

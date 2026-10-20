@@ -4,6 +4,7 @@ use super::birth::{self, Birth};
 use super::costs::{CostKey, Costs, ItemKind};
 use super::gift::{self, Arrival};
 use super::{Held, Seating, Sitting, item_kind};
+use crate::stages::Stages;
 use crate::stream::{self, Streams};
 use crate::table::Actors;
 use crate::watch::{Notice, Watches};
@@ -25,6 +26,7 @@ pub(super) struct Pile {
     pub(super) lives: Column<Lives>,
     pub(super) streams: Column<Streams>,
     pub(super) watches: Column<Watches>,
+    pub(super) stages: Column<Stages>,
     pub(super) seating: Seating,
     /// The part's actors, which the children routed to it join.
     pub(super) actors: BySeat<Held>,
@@ -55,6 +57,7 @@ impl Pile {
             lives: Column::empty(parts),
             streams: Column::empty(parts),
             watches: Column::empty(parts),
+            stages: Column::empty(parts),
             seating: Seating { seated: BySeat::empty(parts) },
             actors: BySeat::empty(parts),
             births: Vec::new(),
@@ -94,6 +97,7 @@ impl Folding<'_> {
             pile.lives.fold(self.written);
             pile.streams.fold(self.written);
             pile.watches.fold(self.written);
+            pile.stages.fold(self.written);
             pile.watches.shard_mut().settle(&mut pile.forward);
             pile.expected =
                 expected(pile.streams.shard(), pile.lives.shard(), &pile.seating.seated, self.costs, self.slice);

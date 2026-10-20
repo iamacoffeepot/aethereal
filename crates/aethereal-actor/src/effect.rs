@@ -75,6 +75,13 @@ pub enum What {
     Watch { of: ErasedActorRef, seen: Seen },
     /// The asking actor closes.
     Close,
+    /// The asking actor is sent the stage of the program's lifecycle of this kind, each time it runs (ADR-0020).
+    Subscribe(KindId),
+    /// The asking actor is no longer sent the stage of this kind.
+    Unsubscribe(KindId),
+    /// The asking actor asks the program to stop: the engine lets a cycle under way finish, and runs the last stage
+    /// (ADR-0020).
+    Quit,
 }
 
 /// A piece of mail a turn sends, or a run of them (ADR-0009, ADR-0011).
