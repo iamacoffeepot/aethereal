@@ -2,9 +2,9 @@
 
 #[cfg(feature = "std")]
 use crate::BlobRef;
-use crate::declared::{Carries, DeclaredBy, Handled, Handles, Kinds, Listed, Marker, RepliesTo, ReplyWithin, Role};
-use crate::declared::{Sending, Target};
-use crate::{Actors, Item, Within, Written};
+use crate::declared::{Carries, DeclaredBy, Handled, Handles, Kinds, Last, Listed, Marker, Protocol, RepliesTo};
+use crate::declared::{RepliesWith, ReplyWithin, Role, Sending, Target};
+use crate::{Actors, ChildOf, Item, Path, PathTo, ProtocolRef, Seated, Table, Within, Written};
 use aethereal_data::{Decode, Kind, KindId, KindName, Plain};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
@@ -224,14 +224,318 @@ pub struct Asking {
     pub lent: Vec<BlobRef>,
 }
 
+/// What a turn asks a request of kind `K` of, keeping a context of kind `C`: a reference to a named protocol, or a
+/// typed path, whose type says what it answers (ADR-0017, ADR-0022).
+///
+/// A type asked at a typed path says what it answers each kind it can be asked with [`Carries`], beside its handler:
+///
+/// ```
+/// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path};
+/// # use aethereal_actor::{ToSender, Top, Turn, path};
+/// # use aethereal_data::{Kind, KindName, Plain};
+/// #
+/// # macro_rules! kind {
+/// #     ($name:ident, $named:literal) => {
+/// #         #[derive(Plain)]
+/// #         struct $name;
+/// #
+/// #         impl Kind for $name {
+/// #             const NAME: KindName = KindName::new($named);
+/// #         }
+/// #     };
+/// # }
+/// # kind!(Hello, "aether.example.hello");
+/// # kind!(Hi, "aether.example.hi");
+/// # kind!(Bye, "aether.example.bye");
+/// # kind!(Waiting, "aether.example.waiting");
+/// # kind!(Greeter, "aether.example.greeter");
+/// # kind!(Visitor, "aether.example.visitor");
+/// #
+/// # impl ChildOf for Greeter {
+/// #     type Parent = Top;
+/// # }
+/// #
+/// # impl ChildOf for Visitor {
+/// #     type Parent = Top;
+/// # }
+/// #
+/// # impl Actor for Greeter {
+/// #     type Config = Greeter;
+/// #     type Key = ();
+/// #     type Handles = (Hello,);
+/// #     type BeginSends = ();
+/// #     type EndSends = ();
+/// #
+/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+/// #         Ok(greeter)
+/// #     }
+/// #
+/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #         Ok(())
+/// #     }
+/// # }
+/// #
+/// # impl Actor for Visitor {
+/// #     type Config = Visitor;
+/// #     type Key = ();
+/// #     type Handles = (Answer<Hi, Waiting>,);
+/// #     type BeginSends = (Asks<Path<Greeter>, Hello, Waiting>,);
+/// #     type EndSends = ();
+/// #
+/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+/// #         turn.ask_to(path::<Greeter>(()), &Hello, &Waiting)?;
+/// #
+/// #         Ok(visitor)
+/// #     }
+/// #
+/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #         Ok(())
+/// #     }
+/// # }
+/// #
+/// # impl Handles<Answer<Hi, Waiting>> for Visitor {
+/// #     type Sends = ();
+/// #
+/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+/// #         Ok(())
+/// #     }
+/// # }
+/// #
+/// impl Carries<Hello> for Greeter {
+///     type Answers = (Hi,);
+/// }
+///
+/// impl Handles<Hello> for Greeter {
+///     type Sends = (ToSender<Hi>,);
+///
+///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+///         Ok(turn.reply(&Hi)?)
+///     }
+/// }
+/// ```
+///
+/// A type that does not say what it answers the kind is not asked it at a typed path:
+///
+/// ```compile_fail
+/// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path};
+/// # use aethereal_actor::{ToSender, Top, Turn, path};
+/// # use aethereal_data::{Kind, KindName, Plain};
+/// #
+/// # macro_rules! kind {
+/// #     ($name:ident, $named:literal) => {
+/// #         #[derive(Plain)]
+/// #         struct $name;
+/// #
+/// #         impl Kind for $name {
+/// #             const NAME: KindName = KindName::new($named);
+/// #         }
+/// #     };
+/// # }
+/// # kind!(Hello, "aether.example.hello");
+/// # kind!(Hi, "aether.example.hi");
+/// # kind!(Bye, "aether.example.bye");
+/// # kind!(Waiting, "aether.example.waiting");
+/// # kind!(Greeter, "aether.example.greeter");
+/// # kind!(Visitor, "aether.example.visitor");
+/// #
+/// # impl ChildOf for Greeter {
+/// #     type Parent = Top;
+/// # }
+/// #
+/// # impl ChildOf for Visitor {
+/// #     type Parent = Top;
+/// # }
+/// #
+/// # impl Actor for Greeter {
+/// #     type Config = Greeter;
+/// #     type Key = ();
+/// #     type Handles = (Hello,);
+/// #     type BeginSends = ();
+/// #     type EndSends = ();
+/// #
+/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+/// #         Ok(greeter)
+/// #     }
+/// #
+/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #         Ok(())
+/// #     }
+/// # }
+/// #
+/// # impl Actor for Visitor {
+/// #     type Config = Visitor;
+/// #     type Key = ();
+/// #     type Handles = (Answer<Hi, Waiting>,);
+/// #     type BeginSends = (Asks<Path<Greeter>, Hello, Waiting>,);
+/// #     type EndSends = ();
+/// #
+/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+/// #         turn.ask_to(path::<Greeter>(()), &Hello, &Waiting)?;
+/// #
+/// #         Ok(visitor)
+/// #     }
+/// #
+/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #         Ok(())
+/// #     }
+/// # }
+/// #
+/// # impl Handles<Answer<Hi, Waiting>> for Visitor {
+/// #     type Sends = ();
+/// #
+/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+/// #         Ok(())
+/// #     }
+/// # }
+/// #
+/// // No `Carries<Hello>` for `Greeter`.
+///
+/// impl Handles<Hello> for Greeter {
+///     type Sends = (ToSender<Hi>,);
+///
+///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+///         Ok(turn.reply(&Hi)?)
+///     }
+/// }
+/// ```
+///
+/// Nor is one whose handler replies with a kind it does not say it answers with:
+///
+/// ```compile_fail
+/// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path};
+/// # use aethereal_actor::{ToSender, Top, Turn, path};
+/// # use aethereal_data::{Kind, KindName, Plain};
+/// #
+/// # macro_rules! kind {
+/// #     ($name:ident, $named:literal) => {
+/// #         #[derive(Plain)]
+/// #         struct $name;
+/// #
+/// #         impl Kind for $name {
+/// #             const NAME: KindName = KindName::new($named);
+/// #         }
+/// #     };
+/// # }
+/// # kind!(Hello, "aether.example.hello");
+/// # kind!(Hi, "aether.example.hi");
+/// # kind!(Bye, "aether.example.bye");
+/// # kind!(Waiting, "aether.example.waiting");
+/// # kind!(Greeter, "aether.example.greeter");
+/// # kind!(Visitor, "aether.example.visitor");
+/// #
+/// # impl ChildOf for Greeter {
+/// #     type Parent = Top;
+/// # }
+/// #
+/// # impl ChildOf for Visitor {
+/// #     type Parent = Top;
+/// # }
+/// #
+/// # impl Actor for Greeter {
+/// #     type Config = Greeter;
+/// #     type Key = ();
+/// #     type Handles = (Hello,);
+/// #     type BeginSends = ();
+/// #     type EndSends = ();
+/// #
+/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+/// #         Ok(greeter)
+/// #     }
+/// #
+/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #         Ok(())
+/// #     }
+/// # }
+/// #
+/// # impl Actor for Visitor {
+/// #     type Config = Visitor;
+/// #     type Key = ();
+/// #     type Handles = (Answer<Hi, Waiting>,);
+/// #     type BeginSends = (Asks<Path<Greeter>, Hello, Waiting>,);
+/// #     type EndSends = ();
+/// #
+/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+/// #         turn.ask_to(path::<Greeter>(()), &Hello, &Waiting)?;
+/// #
+/// #         Ok(visitor)
+/// #     }
+/// #
+/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #         Ok(())
+/// #     }
+/// # }
+/// #
+/// # impl Handles<Answer<Hi, Waiting>> for Visitor {
+/// #     type Sends = ();
+/// #
+/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+/// #         Ok(())
+/// #     }
+/// # }
+/// #
+/// impl Carries<Hello> for Greeter {
+///     type Answers = (Hi,);
+/// }
+///
+/// impl Handles<Hello> for Greeter {
+///     type Sends = (ToSender<Bye>,);
+///
+///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+///         Ok(turn.reply(&Bye)?)
+///     }
+/// }
+/// ```
+pub trait Askable<K, C> {
+    /// What a turn's sends list for it: [`Asks<P, K, C>`] for a [`ProtocolRef<P>`], and `Asks<Path<L>, K, C>` for a
+    /// [`Path<L>`].
+    type Marker;
+
+    /// The one kind the request is answered with.
+    type Answer: Kind;
+
+    /// The actor asked as the request is sent, and its seat, read from `table` when it is a path: the place in
+    /// [`SeatNumber::NOWHERE`](crate::SeatNumber::NOWHERE) when it holds no live actor of its type, where the request
+    /// is answered [`Unanswered::Ended`].
+    fn asked(self, table: &dyn Table) -> Seated;
+}
+
+impl<P: Protocol + Carries<K, Answers = (A,)>, K: Kind, A: Kind, C> Askable<K, C> for ProtocolRef<P> {
+    type Marker = Asks<P, K, C>;
+    type Answer = A;
+
+    fn asked(self, _: &dyn Table) -> Seated {
+        self.seated()
+    }
+}
+
+/// A type asked at a typed path says what it answers each kind it can be asked with its own [`Carries`], beside its
+/// handler, as a named protocol does (ADR-0022).
+impl<L, K, A, C> Askable<K, C> for Path<L>
+where
+    L: ChildOf + PathTo + Handles<K> + Carries<K, Answers = (A,)>,
+    K: Kind + Handled,
+    A: Kind,
+{
+    type Marker = Asks<Self, K, C>;
+    type Answer = A;
+
+    fn asked(self, table: &dyn Table) -> Seated {
+        table.reach(self.names(), KindId::of::<L>())
+    }
+}
+
 impl<P: Listed, K: Kind, C> Marker for Asks<P, K, C> {
     const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Handling(<P::Kinds as Kinds>::KINDS));
+}
+
+impl<L: ChildOf + PathTo + Handles<K>, K: Kind + Handled, C> Marker for Asks<Path<L>, K, C> {
+    const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Path(Last::<L>::SEGMENT));
 }
 
 /// An asker handles the one kind its request is answered with, with its context.
 impl<T, P, K, A, C> DeclaredBy<T> for Asks<P, K, C>
 where
-    P: Carries<K, Answers = (A,)>,
+    P: Protocol + Carries<K, Answers = (A,)>,
     K: Kind,
     A: Kind + Decode<Actors> + 'static,
     C: Kind + Decode<Within> + 'static,
@@ -239,9 +543,24 @@ where
 {
 }
 
+/// An asker at a typed path handles the one kind the path's type answers with, with its context, and that type's
+/// handler replies with that kind alone: checked here, where the ask is declared, and not at the call (ADR-0022).
+impl<T, L, K, A, C> DeclaredBy<T> for Asks<Path<L>, K, C>
+where
+    L: ChildOf + PathTo + Handles<K> + Carries<K, Answers = (A,)>,
+    K: Kind + Handled,
+    A: Kind + Decode<Actors> + 'static,
+    C: Kind + Decode<Within> + 'static,
+    T: Handles<Answer<A, C>>,
+    <L as Handles<K>>::Sends: RepliesWith<A>,
+{
+}
+
 impl<T, P, K, C> RepliesTo<T> for Asks<P, K, C> {}
 
 impl<Answers, P, K, C> ReplyWithin<Answers, ()> for Asks<P, K, C> {}
+
+impl<A, P, K, C> RepliesWith<A> for Asks<P, K, C> {}
 
 impl<A: Kind + Decode<Actors> + 'static, C: Kind + Decode<Within> + 'static> Handled for Answer<A, C> {
     const ROLE: Role = Role::Answer(KindId::of::<A>());

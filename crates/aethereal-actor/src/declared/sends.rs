@@ -64,10 +64,10 @@ impl<L: ChildOf + PathTo + Handles<K>, K: Kind + Handled> Marker for Tells<Path<
 }
 
 /// The last segment of the typed path to `L`, which every path to a type that declares where it stands has.
-struct Last<L>(PhantomData<L>);
+pub struct Last<L>(PhantomData<L>);
 
 impl<L: ChildOf + PathTo> Last<L> {
-    const SEGMENT: &'static crate::TypeSegment = match L::BENEATH {
+    pub const SEGMENT: &'static crate::TypeSegment = match L::BENEATH {
         Beneath::Type(segment) => segment,
         Beneath::Top => panic!("a type that declares where it stands is a segment of its path"),
     };

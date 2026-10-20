@@ -115,6 +115,9 @@ pub struct Calls {
     /// Whether the path written at the address, of the length, names a live actor: one when it does, and then its
     /// id and seat are written at the third address, as 16 bytes.
     pub resolve: extern "C" fn(u32, u32, u32) -> u32,
+    /// The actor the path written at the address, of the length, names, when one of the kind of the id is live there,
+    /// or the place's id in no seat: its id and seat written at the fourth address, as 16 bytes.
+    pub reach: extern "C" fn(u32, u32, u64, u32),
     /// Whether the actor of the id is live: one when it is.
     pub is_live: extern "C" fn(u64) -> u32,
     /// Whether the type of the actor of the id lists every kind of the ids written at the address, of the length:
@@ -1282,6 +1285,27 @@ impl Table for Host {
         Some(Seated { id: ActorId::new(u64_of(id)?), seat: SeatNumber::new(u64_of(seat)?) })
     }
 
+    /// The place `path` names, asked of the host, which holds every actor's type and alone computes an id.
+    fn reach(&self, path: &ActorPath, kind: KindId) -> Seated {
+        let nowhere = Seated { id: ActorId::new(0), seat: SeatNumber::NOWHERE };
+        let Ok(path) = to_bytes(path) else {
+            return nowhere;
+        };
+        let mut seated = [0u8; 16];
+        (self.calls.reach)(
+            address(path.as_ptr()),
+            count(path.len()),
+            u64::from_le_bytes(kind.plain_bytes()),
+            address(seated.as_mut_ptr()),
+        );
+        let (id, seat) = seated.split_at(8);
+        let (Some(id), Some(seat)) = (u64_of(id), u64_of(seat)) else {
+            return nowhere;
+        };
+
+        Seated { id: ActorId::new(id), seat: SeatNumber::new(seat) }
+    }
+
     /// The child's id, asked of the host, which alone computes one.
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
         let naming = to_bytes(&Naming::of(segment)).unwrap_or_default();
@@ -1375,6 +1399,7 @@ macro_rules! guest {
                 safe fn aethereal_child_seat(id: u64) -> u64;
                 safe fn aethereal_has_made(id: u64) -> u32;
                 safe fn aethereal_resolve(path: u32, len: u32, seated: u32) -> u32;
+                safe fn aethereal_reach(path: u32, len: u32, kind: u64, seated: u32);
                 safe fn aethereal_is_live(id: u64) -> u32;
                 safe fn aethereal_lists(id: u64, kinds: u32, len: u32) -> u32;
                 safe fn aethereal_held(id: u64) -> u32;
@@ -1407,6 +1432,7 @@ macro_rules! guest {
                 child_seat: aethereal_child_seat,
                 has_made: aethereal_has_made,
                 resolve: aethereal_resolve,
+                reach: aethereal_reach,
                 is_live: aethereal_is_live,
                 lists: aethereal_lists,
                 held: aethereal_held,

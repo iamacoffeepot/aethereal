@@ -6,7 +6,7 @@
 //! is handed to its handler of [`Answer<J::Done, C>`](crate::Answer) with
 //! the context.
 
-use crate::declared::{DeclaredBy, Handles, Marker, RepliesTo, ReplyWithin, Sending, Target};
+use crate::declared::{DeclaredBy, Handles, Marker, RepliesTo, RepliesWith, ReplyWithin, Sending, Target};
 #[cfg(feature = "std")]
 use crate::pins;
 use crate::{
@@ -238,6 +238,8 @@ where
 impl<T, J, C> RepliesTo<T> for RunsJob<J, C> {}
 
 impl<Answers, J, C> ReplyWithin<Answers, ()> for RunsJob<J, C> {}
+
+impl<A, J, C> RepliesWith<A> for RunsJob<J, C> {}
 
 /// Why a turn ran no job (ADR-0018).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

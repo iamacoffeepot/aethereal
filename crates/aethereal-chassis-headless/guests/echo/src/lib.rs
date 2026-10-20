@@ -2,9 +2,9 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, BlobRef, Carries, ChildOf, Ended, Ending,
-    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, Protocol, Recursive, Refused, Resource,
+    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, Path, Protocol, Recursive, Refused, Resource,
     Runner, Running, RunsJob, Spawns, Start, Stop, Subscribes, Tick, To, ToAny, ToSender, ToType, ToWithoutMail, Top,
-    Turn, Unanswered, Unrun, Watches,
+    Turn, Unanswered, Unrun, Watches, path,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, Plain};
 use core::mem;
@@ -2296,6 +2296,117 @@ impl Handles<Pong> for Nester {
     }
 }
 
+/// What a ringer keeps while it waits on the bell.
+#[derive(Plain)]
+pub struct Ringing;
+
+impl Kind for Ringing {
+    const NAME: KindName = KindName::new("aether.guest.ringing");
+}
+
+/// What a ringer is made from: the path of the actor it tells what it heard.
+#[derive(Plain)]
+pub struct Ring {
+    pub keeper: ActorPath,
+}
+
+impl Kind for Ring {
+    const NAME: KindName = KindName::new("aether.guest.ring");
+}
+
+/// A root that answers each ping with a pong of one more, which an actor reaches by its type alone.
+#[derive(Bound)]
+pub struct Bell;
+
+impl Kind for Bell {
+    const NAME: KindName = KindName::new("aether.guest.bell");
+}
+
+impl ChildOf for Bell {
+    type Parent = Top;
+}
+
+impl Actor for Bell {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Ping,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Carries<Ping> for Bell {
+    type Answers = (Pong,);
+}
+
+impl Handles<Ping> for Bell {
+    type Sends = (ToSender<Pong>,);
+
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        Ok(turn.reply(&Pong { n: ping.n + 1 })?)
+    }
+}
+
+/// A root that, as it begins, asks the bell at its typed path a ping of four, and pings the actor at its keeper's
+/// path with what it hears: the bell's pong, or ninety when the ask went unanswered.
+#[derive(Bound)]
+pub struct Ringer {
+    keeper: ActorPath,
+}
+
+impl Kind for Ringer {
+    const NAME: KindName = KindName::new("aether.guest.ringer");
+}
+
+impl ChildOf for Ringer {
+    type Parent = Top;
+}
+
+impl Actor for Ringer {
+    type Config = Ring;
+    type Key = ();
+    type Handles = (Answer<Pong, Ringing>,);
+    type BeginSends = (Asks<Path<Bell>, Ping, Ringing>,);
+    type EndSends = ();
+
+    fn begin(ring: Ring, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.ask_to(path::<Bell>(()), &Ping { n: 4 }, &Ringing)?;
+
+        Ok(Self { keeper: ring.keeper })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Pong, Ringing>> for Ringer {
+    type Sends = (ToAny<(Ping,), Ping>,);
+
+    fn handle(
+        &mut self,
+        (answered, _): (Answered<Pong>, Ringing),
+        turn: &mut Turn<'_, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let n = match answered {
+            Answered::Yes(pong) => pong.n,
+            Answered::No(_) => 90,
+        };
+        if let Some(keeper) = turn.resolve(&self.keeper) {
+            turn.send_to_any(To::Held(keeper), &Ping { n })?;
+        }
+
+        Ok(())
+    }
+}
+
 aethereal_actor::guest!(
     Echo,
     Mirror,
@@ -2327,5 +2438,7 @@ aethereal_actor::guest!(
     Starter,
     Ticker,
     Metronome,
-    Errand
+    Errand,
+    Bell,
+    Ringer
 );

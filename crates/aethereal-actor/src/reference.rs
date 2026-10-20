@@ -5,7 +5,7 @@ use crate::{
     ToAny, ToType,
 };
 use aethereal_data::{
-    ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Field, Kind, Reader, Schema, Shape, Writer,
+    ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, Reader, Schema, Shape, Writer,
 };
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -383,25 +383,25 @@ pub trait Reaches<K> {
     /// `ProtocolRef<P>`, and [`Tells<Path<L>, K>`] for a [`Path<L>`].
     type Marker;
 
-    /// The actor it reaches as it is sent, and its seat, read from `table` when it is a path: none when the place
-    /// holds no live actor of its type, and the mail is dropped (ADR-0022). A reference reaches its actor without
-    /// reading the table.
-    fn reached(self, table: &dyn Table) -> Option<Seated>;
+    /// The actor it reaches as it is sent, and its seat, read from `table` when it is a path: the place in
+    /// [`SeatNumber::NOWHERE`] when it holds no live actor of its type, where the mail is dropped (ADR-0022). A
+    /// reference reaches its actor without reading the table.
+    fn reached(self, table: &dyn Table) -> Seated;
 }
 
 impl<T: Actor + Handles<K>, K: Kind + Handled> Reaches<K> for ActorRef<T> {
     type Marker = ToType<T, K>;
 
-    fn reached(self, _: &dyn Table) -> Option<Seated> {
-        Some(self.seated)
+    fn reached(self, _: &dyn Table) -> Seated {
+        self.seated
     }
 }
 
 impl<P: Listed, K: Kind> Reaches<K> for ProtocolRef<P> {
     type Marker = ToAny<P, K>;
 
-    fn reached(self, _: &dyn Table) -> Option<Seated> {
-        Some(self.seated)
+    fn reached(self, _: &dyn Table) -> Seated {
+        self.seated
     }
 }
 
@@ -424,16 +424,45 @@ impl<P> Proven for ProtocolRef<P> {
 }
 
 /// A path is checked at each send, as it proves nothing: the actor found there must be of `L`'s type, and a place
-/// that holds another is as one that holds none, as two types of one name share an id (ADR-0022).
+/// that holds another is as one that holds none, as two types of one name share an id (ADR-0022). Mail to a place
+/// that holds none is mailed to no seat, where the engine drops it as it drops mail to an actor that has gone.
 impl<L: ChildOf + PathTo + Handles<K>, K: Kind + Handled> Reaches<K> for Path<L> {
     type Marker = Tells<Self, K>;
 
-    fn reached(self, table: &dyn Table) -> Option<Seated> {
-        let seated = table.resolve(self.names())?;
-        let is_kind =
-            table.declared(seated.id).is_some_and(|declared| declared.id() == aethereal_data::KindId::of::<L>());
+    fn reached(self, table: &dyn Table) -> Seated {
+        table.reach(self.names(), KindId::of::<L>())
+    }
+}
 
-        is_kind.then_some(seated)
+/// What a turn watches: the actor a reference refers to, or the one at a typed path as it is watched, checked as a
+/// send at it is (ADR-0022).
+pub trait Watchable {
+    /// The actor watched, read from `table` when it is a path: the place in [`SeatNumber::NOWHERE`] when it holds no
+    /// live actor of its type, which is shown as ended.
+    fn watched(self, table: &dyn Table) -> ErasedActorRef;
+}
+
+impl Watchable for ErasedActorRef {
+    fn watched(self, _: &dyn Table) -> ErasedActorRef {
+        self
+    }
+}
+
+impl<T> Watchable for ActorRef<T> {
+    fn watched(self, _: &dyn Table) -> ErasedActorRef {
+        self.into()
+    }
+}
+
+impl<P> Watchable for ProtocolRef<P> {
+    fn watched(self, _: &dyn Table) -> ErasedActorRef {
+        self.into()
+    }
+}
+
+impl<L: ChildOf + PathTo> Watchable for Path<L> {
+    fn watched(self, table: &dyn Table) -> ErasedActorRef {
+        ErasedActorRef::new(table.reach(self.names(), KindId::of::<L>()))
     }
 }
 

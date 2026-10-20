@@ -15,6 +15,11 @@ pub trait Table {
     /// The actor `path` names, and its seat, when that actor is live.
     fn resolve(&self, path: &ActorPath) -> Option<Seated>;
 
+    /// The actor `path` names, and its seat, when one of kind `kind` is live there; otherwise the place's id in
+    /// [`SeatNumber::NOWHERE`], where mail is dropped and a request answered `Ended` (ADR-0022). What a typed path
+    /// reaches at each send.
+    fn reach(&self, path: &ActorPath, kind: KindId) -> Seated;
+
     /// The id of the child `segment` names beneath the actor `parent` stands for. Only the engine computes an id.
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId;
 

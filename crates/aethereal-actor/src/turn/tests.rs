@@ -25,6 +25,10 @@ impl Table for Listed {
         self.0.iter().find(|(_, held)| held == path).map(|(made, _)| *made)
     }
 
+    fn reach(&self, path: &ActorPath, _: KindId) -> Seated {
+        self.resolve(path).unwrap_or(Seated { id: ActorId::new(0), seat: SeatNumber::NOWHERE })
+    }
+
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
         ActorId::new(Fnv::resume(parent.bits()).bytes(segment.to_string().as_bytes()).finish())
     }
