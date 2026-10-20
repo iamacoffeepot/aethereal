@@ -709,3 +709,18 @@ fn a_subscriber_that_holds_stop_keeps_the_program_from_stopping_until_it_answers
     assert_eq!(drained("close"), (Lifecycle::Stopping, Lifecycle::Stopped));
     assert_eq!(drained("nothing"), (Lifecycle::Stopping, Lifecycle::Stopping));
 }
+
+#[test]
+fn a_stage_nothing_subscribes_to_is_passed_at_once() {
+    // Catches a stage sent to no subscriber left under way until a step's fold looks again: an engine with nothing to
+    // run never stops, as no step will run to move it on.
+    let Some(parts) = NonZeroUsize::new(1) else {
+        panic!("one is not zero");
+    };
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    engine.start();
+    engine.quit();
+
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
+    assert_eq!(engine.step_number(), 0);
+}

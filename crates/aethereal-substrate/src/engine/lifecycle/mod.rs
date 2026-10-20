@@ -197,7 +197,15 @@ impl Engine {
     /// Moves the lifecycle on between steps: past a stage whose chain has finished, to the next stage of a cycle under
     /// way, to `Stop` once it is asked for and no cycle is under way, and to a new cycle once one is due. Run after
     /// each step's fold.
+    ///
+    /// A stage sent that has finished already, as one nothing subscribes to has, is moved past at once: it costs no
+    /// step (ADR-0020).
     pub(super) fn advance(&mut self) {
+        while self.move_on() {}
+    }
+
+    /// Moves the lifecycle on one stage, as [`Self::advance`] says, and answers whether it sent one.
+    fn move_on(&mut self) -> bool {
         // A part's request left untaken here is taken at the next look, and asking twice changes nothing.
         let asked_to_stop = self.stages.shards_mut().any(stages::Shard::take_quit);
         if asked_to_stop {
@@ -207,40 +215,45 @@ impl Engine {
             let is_stop = matches!(at, At::Stop);
             let is_draining = is_stop && self.is_draining();
             if is_draining || !self.has_finished(root) {
-                return;
+                return false;
             }
             self.staging.under_way = UnderWay::Nothing;
             match at {
                 At::Stop => {
                     self.staging.lifecycle = Lifecycle::Stopped;
-                    return;
+                    return false;
                 }
                 At::Cycle(place) => {
                     let next = place + 1;
                     if let Some(stage) = self.staging.cycle.get(next).copied() {
                         self.send_stage(stage, At::Cycle(next));
-                        return;
+                        return true;
                     }
                 }
                 At::Start => {}
             }
         }
         match self.staging.lifecycle {
-            Lifecycle::Stopping => self.send_stage(Cycling::of::<Stop>(), At::Stop),
+            Lifecycle::Stopping => {
+                self.send_stage(Cycling::of::<Stop>(), At::Stop);
+                true
+            }
             Lifecycle::Running => self.begin_cycle(),
-            Lifecycle::Waiting | Lifecycle::Stopped => {}
+            Lifecycle::Waiting | Lifecycle::Stopped => false,
         }
     }
 
-    /// Sends the cycle's first stage, when one is due and the cycle holds any.
-    fn begin_cycle(&mut self) {
+    /// Sends the cycle's first stage, when one is due and the cycle holds any, and answers whether it did.
+    fn begin_cycle(&mut self) -> bool {
         let first = self.staging.cycle.first().copied();
         let Some(first) = first.filter(|_| self.staging.due) else {
-            return;
+            return false;
         };
         self.staging.due = false;
         self.staging.time = self.cycled();
         self.send_stage(first, At::Cycle(0));
+
+        true
     }
 
     /// Whether a subscriber `Stop` was asked of still holds it: it has not answered, nor let it go, nor ended.
