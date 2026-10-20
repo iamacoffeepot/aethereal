@@ -233,6 +233,26 @@ impl Arena {
         })
     }
 
+    /// Writes `mail` as one piece of mail, as [`Self::write`] does, with the pins on the blobs it refers to, noting in
+    /// `tickets` the ticket of each resource it holds, and answers with where it is: for what a feed brings, which may
+    /// carry a resource the host handed in (ADR-0019).
+    ///
+    /// # Errors
+    ///
+    /// Why `mail` could not be written.
+    pub fn write_carrying<K: Encode<Actors>>(
+        &mut self,
+        mail: &K,
+        tickets: &mut Vec<u64>,
+    ) -> Result<Payload, EncodeError> {
+        self.write_holding(|bytes, held| {
+            let mut out = Writer::<Actors>::appending(bytes, ActorsWriter::carrying(held, tickets));
+            let written = mail.encode(&mut out);
+
+            (out.into_bytes(), written)
+        })
+    }
+
     /// Writes `mail` as one piece of mail, as [`Self::write`] does, with the pins on the blobs it refers to, and
     /// answers with where it is: for mail no turn sends, which carries no resource (ADR-0010).
     ///

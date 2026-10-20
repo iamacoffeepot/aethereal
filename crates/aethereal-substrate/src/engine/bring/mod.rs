@@ -9,6 +9,7 @@
 #[cfg(test)]
 mod tests;
 
+use super::gift::{self, Arrival};
 use super::{Engine, ROOTS, parity};
 use crate::{Context, lives, log, stream};
 use aethereal_actor::{Actors, Arena, Controller, Gift, Given, MailId, Mailed, Requests, Seated, Source, Tie};
@@ -75,8 +76,10 @@ impl<K> Clone for Feed<K> {
 /// A feed as the engine brings from it, whatever its kind.
 trait Brings: Send + Sync {
     /// Writes each event pushed before this bring began into `arena`, as mail from `owner` to itself, counting on from
-    /// `sent`, the mail `owner` has sent, into `mailed`.
-    fn bring(&self, owner: Seated, sent: u64, arena: &mut Arena, mailed: &mut Vec<Mailed>) -> Brought;
+    /// `sent`, the mail `owner` has sent, into `mailed`. An event that holds resources is kept only once `claim` has
+    /// claimed every one of them for the mail of the count it is written as (ADR-0019).
+    fn bring(&self, owner: Seated, sent: u64, arena: &mut Arena, mailed: &mut Vec<Mailed>, claim: Claim<'_>)
+    -> Brought;
 
     /// What the kind of its events is called, where the engine records one it could not write.
     fn name(&self) -> &'static str;
@@ -86,16 +89,31 @@ trait Brings: Send + Sync {
 }
 
 impl<K: Kind + Encode<Actors> + Send + 'static> Brings for Fed<K> {
-    fn bring(&self, owner: Seated, mut sent: u64, arena: &mut Arena, mailed: &mut Vec<Mailed>) -> Brought {
+    fn bring(
+        &self,
+        owner: Seated,
+        mut sent: u64,
+        arena: &mut Arena,
+        mailed: &mut Vec<Mailed>,
+        claim: Claim<'_>,
+    ) -> Brought {
         let mut unwritten = 0;
+        let mut tickets = Vec::new();
         // What is pushed while it brings waits for the next bring, so a bring is bounded however fast the chassis
         // pushes.
         let ready = self.events.len();
         for event in (0..ready).map_while(|_| self.events.pop()) {
-            let Ok(bytes) = arena.write_mail(&event) else {
+            tickets.clear();
+            let Ok(bytes) = arena.write_carrying(&event, &mut tickets) else {
                 unwritten += 1;
                 continue;
             };
+            // Most events hold no resource.
+            let is_claimed = tickets.is_empty() || claim(sent + 1, &tickets);
+            if !is_claimed {
+                unwritten += 1;
+                continue;
+            }
             sent += 1;
             mailed.push(Mailed { by: owner, to: owner, count: sent, kind: KindId::of::<K>(), bytes, tie: Tie::TELL });
         }
@@ -111,6 +129,17 @@ impl<K: Kind + Encode<Actors> + Send + 'static> Brings for Fed<K> {
         self.closed.store(true, Ordering::Release);
         while self.events.pop().is_some() {}
     }
+}
+
+/// What an event's resources are claimed through as it is brought: the count of the mail it is written as, and the
+/// tickets it holds, answered with whether every one was claimed for it.
+type Claim<'a> = &'a mut dyn FnMut(u64, &[u64]) -> bool;
+
+/// A resource an event brought carries: its ticket, and the mail, of `owner` and `count`, it arrives with.
+struct Claimed {
+    ticket: u64,
+    owner: Seated,
+    count: u64,
 }
 
 /// What one bring from a feed came to.
@@ -180,8 +209,12 @@ impl Engine {
     /// is the root of a chain of its own (ADR-0012), and what one source brings keeps the order it was pushed in.
     ///
     /// What is pushed for a source still on its way to the root it was handed for waits in its feed. A feed whose
-    /// source has been dropped is closed, and what was pushed onto it is dropped. An event that cannot be written as
-    /// mail, one that holds a resource on its way, is dropped and recorded in the owner's log.
+    /// source has been dropped is closed, and what was pushed onto it is dropped.
+    ///
+    /// An event may hold a resource the chassis handed in with [`Self::hand`], which no config or other event holds:
+    /// it goes with the event to the source's owner, which takes it in the turn that handles it, or it is dropped and
+    /// recorded in the owner's log, as a resource in any mail is (ADR-0019). An event that holds any other resource,
+    /// or that cannot be written as mail, is dropped and recorded in the owner's log.
     pub fn bring(&mut self) {
         self.bring_jobs();
         // The jobs that finished since the last bring left room for those waiting.
@@ -194,6 +227,7 @@ impl Engine {
         let mut arena = self.arena(parity, ROOTS, 0);
         let mut mailed = Vec::new();
         let mut unbrought = Vec::new();
+        let mut claimed = Vec::new();
         let mut sources = mem::take(&mut self.sources);
         sources.retain_mut(|source| match self.find(source.ticket, source.seen) {
             Found::With(owner) => {
@@ -201,7 +235,10 @@ impl Engine {
                 // An actor whose closing turn has run keeps nothing, so its sources are found nowhere at the next bring.
                 if let Some(life) = self.lives.shard(owner.seat.number()).life(owner) {
                     let before = life.sent();
-                    let Brought { sent, unwritten } = source.feed.bring(owner, before, &mut arena, &mut mailed);
+                    let handed = &self.handed;
+                    let mut claim = |count, tickets: &[u64]| claim(handed, &mut claimed, owner, count, tickets);
+                    let Brought { sent, unwritten } =
+                        source.feed.bring(owner, before, &mut arena, &mut mailed, &mut claim);
                     unbrought.extend((0..unwritten).map(|_| log::unbrought(owner, source.feed.name())));
                     // A second source of the same owner counts on from the first.
                     let has_sent = sent > before;
@@ -220,6 +257,10 @@ impl Engine {
         });
         self.sources = sources;
         self.arenas[parity][ROOTS] = arena;
+        // Most brings carry no resource.
+        if !claimed.is_empty() {
+            self.carry_claimed(claimed);
+        }
         // Each piece is the first of its chain: nothing in the engine caused it (ADR-0012).
         self.fold_brought(mailed, unbrought, parity, |mailed| MailId { sender: mailed.by.id, count: mailed.count });
     }
@@ -250,6 +291,24 @@ impl Engine {
         }
     }
 
+    /// Takes each resource the events brought carry out of the engine's keeping, and puts it on its way to the owner of
+    /// the source that brought it, with the mail it holds (ADR-0019).
+    #[cold]
+    fn carry_claimed(&mut self, claimed: Vec<Claimed>) {
+        let mut lost = Vec::new();
+        for Claimed { ticket, owner, count } in claimed {
+            let Some(at) = self.handed.iter().position(|gift| gift.ticket() == ticket) else {
+                continue;
+            };
+            let Gift { kept, .. } = self.handed.swap_remove(at);
+            let mail = MailId { sender: owner.id, count };
+            let part = self.part(owner.seat);
+            let mut bucket = vec![Arrival { to: owner, by: owner, mail, kept }];
+            gift::arrive_all(&mut self.actors[part], &mut bucket, &mut lost);
+        }
+        self.log.fold_records(lost.into_iter().map(|(by, name)| log::dropped(by, name)), &[]);
+    }
+
     /// Where the source `ticket` names is now, looked for first where it was last `seen`.
     fn find(&self, ticket: u64, seen: Seen) -> Found {
         if let Seen::With(owner) = seen {
@@ -269,4 +328,22 @@ impl Engine {
 
         owner.map_or(Found::Gone, |(owner, _)| Found::With(owner))
     }
+}
+
+/// Claims, for the mail of `owner` and `count`, each of `tickets`: answered with whether every one is a resource the
+/// chassis handed in, among `handed`, that no event brought before it claimed, noted in `claimed`. None is claimed
+/// unless every one can be.
+fn claim(handed: &[Gift], claimed: &mut Vec<Claimed>, owner: Seated, count: u64, tickets: &[u64]) -> bool {
+    let is_free = |ticket: &u64| {
+        let is_handed = handed.iter().any(|gift| gift.ticket() == *ticket);
+        let is_taken = claimed.iter().any(|claim| claim.ticket == *ticket);
+
+        is_handed && !is_taken
+    };
+    let can_claim = tickets.iter().all(is_free);
+    if can_claim {
+        claimed.extend(tickets.iter().map(|&ticket| Claimed { ticket, owner, count }));
+    }
+
+    can_claim
 }

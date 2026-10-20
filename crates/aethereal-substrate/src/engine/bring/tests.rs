@@ -5,7 +5,6 @@ use crate::{Closed, Entry, Feed};
 use aethereal_actor::Time;
 use aethereal_actor::{Controller, Ending, Fault, Handle, Handles, Source, ToType, ToWithoutMail, Turn};
 use aethereal_data::{Bound, Kind, KindName, Plain};
-use std::any;
 use std::cell::RefCell;
 use std::mem;
 
@@ -34,15 +33,16 @@ impl Kind for Moved {
     const NAME: KindName = KindName::new("aether.test.moved");
 }
 
-/// A resource, which an event cannot carry: no turn sent the mail an event is.
+/// A resource the chassis hands in, which an event carries to a window (ADR-0019).
 struct Lamp;
 
 impl Resource for Lamp {}
 
-/// What the chassis brings that holds a resource, which cannot be written as mail.
+/// What the chassis brings that holds a resource it handed in, and whether its window takes it.
 #[derive(Bound)]
 struct Lit {
     lamp: Given<Lamp>,
+    take: bool,
 }
 
 impl Kind for Lit {
@@ -146,8 +146,9 @@ impl Handles<Order> for Window {
 impl Handles<Lit> for Window {
     type Sends = ();
 
-    fn handle(&mut self, _: Lit, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
-        say(format!("{} lit", self.number));
+    fn handle(&mut self, lit: Lit, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        let took = lit.take && turn.take(lit.lamp).is_ok();
+        say(format!("{} lit, and took the lamp: {took}", self.number));
 
         Ok(())
     }
@@ -284,23 +285,32 @@ fn a_feed_closes_once_its_source_is_dropped_with_its_owner() {
 }
 
 #[test]
-fn an_event_that_holds_a_resource_is_dropped_and_recorded_in_the_owners_log() {
-    // Catches an event delivered with a resource no mail carries, which its owner could never take, and one dropped
-    // with no record of it.
+fn an_event_carries_a_resource_the_chassis_handed_in_to_the_sources_owner() {
+    // Catches an event that holds a resource the chassis handed in dropped, as one that holds any resource was; one
+    // delivered with the resource left in the engine's keeping, so its owner cannot take it; and a resource its owner
+    // did not take kept past the turn that handled the event, or dropped with no record; and a resource put on its way
+    // with another event's mail, dropped when that one is handled (ADR-0019). The first event's window does not take
+    // its lamp, and the second's does.
     let mut engine = engine(0);
     let (light, feed) = engine.source::<Lit>();
-    let lamp = engine.hand(Lamp);
-    let window = add(&mut engine, 1, Vec::new(), vec![light], &[]);
-    let Ok(()) = feed.push(Lit { lamp }) else {
-        panic!("the feed is open");
-    };
+    let (pointer, moves) = engine.source::<Moved>();
+    let window = add(&mut engine, 1, vec![pointer], vec![light], &[]);
+    push(&moves, &[7]);
+    for take in [false, true] {
+        let lamp = engine.hand(Lamp);
+        let Ok(()) = feed.push(Lit { lamp, take }) else {
+            panic!("the feed is open");
+        };
+    }
 
     engine.bring();
     let heard = settle(&mut engine);
 
-    let unbrought: Vec<&Entry> = engine.log(window).filter(|entry| matches!(entry, Entry::Unbrought(_))).collect();
-    assert_eq!(heard, Vec::<String>::new());
-    assert_eq!(unbrought, [&Entry::Unbrought(any::type_name::<Lit>())]);
+    let logged = |is: fn(&Entry) -> bool| engine.log(window).filter(|entry| is(entry)).count();
+    let unbrought = logged(|entry| matches!(entry, Entry::Unbrought(_)));
+    let dropped = logged(|entry| matches!(entry, Entry::Dropped(_)));
+    assert_eq!(heard[..2], ["1 lit, and took the lamp: false", "1 lit, and took the lamp: true"]);
+    assert_eq!((unbrought, dropped), (0, 1), "the lamp not taken is dropped and recorded");
 }
 
 /// What a capability asks its host for.
