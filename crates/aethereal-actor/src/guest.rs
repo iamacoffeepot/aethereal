@@ -488,7 +488,7 @@ fn read_item(items: &[u8], read_limit: usize) -> Option<(Inboxed<'_>, ItemHead, 
 fn filed(bytes: &[u8], request: u64, answer: KindId, context: u32) -> Option<(&[u8], Asking)> {
     let (bytes, context) = bytes.split_at_checked(bytes.len().checked_sub(context as usize)?)?;
 
-    Some((bytes, Asking { count: request, answer, context: carried_in(context)? }))
+    Some((bytes, Asking { count: request, answer, context: carried_in(context)?, lent: Vec::new() }))
 }
 
 /// The ending of `source`, which ended as `gone` says, a fault's bytes in `bytes`. Kept out of line: built in the

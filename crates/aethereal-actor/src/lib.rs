@@ -67,7 +67,7 @@ pub use held::holders;
 pub use held::{Held, NotOwed, Owed, Owes};
 pub use instances::{Instances, Lent};
 pub use item::Item;
-pub use job::{Driven, Job, JobId, NotRun, Outcome, Runner, Running, RunsJob, Submitted, Unrun};
+pub use job::{Copied, Driven, Job, JobId, NotRun, Outcome, Runner, Running, RunsJob, Submitted, Unrun};
 #[cfg(feature = "std")]
 pub use job::{JobType, written};
 pub use mail::{Mail, MailId};

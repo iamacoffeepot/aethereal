@@ -1,9 +1,13 @@
 //! Requests and their answers: what an asker declares, what it is handed back, and how it handles it (ADR-0017).
 
+#[cfg(feature = "std")]
+use crate::BlobRef;
 use crate::declared::{BackTo, Carries, Handled, Handles, Kinds, Listed, Marker, RepliesTo, ReplyWithin, Role};
 use crate::declared::{Sending, Target};
 use crate::{Actors, Item, Within, Written};
 use aethereal_data::{Decode, Kind, KindId, KindName, Plain};
+#[cfg(feature = "std")]
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 /// A handler may ask an actor that takes the named protocol `P` a request of kind `K`, keeping a context of kind `C`
@@ -204,8 +208,8 @@ impl Kind for Unanswered {
     const NAME: KindName = KindName::new("aether.actor.unanswered");
 }
 
-/// A request a turn asked, and the context its asker keeps until it is answered, as the engine files it: under the
-/// request's count, written at [`Within`] with a pin on each blob it refers to (ADR-0014, ADR-0017).
+/// A request a turn asked, or a job it ran, and the context its asker keeps until it is answered, as the engine files
+/// it: under the request's count, written at [`Within`] with a pin on each blob it refers to (ADR-0014, ADR-0017).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asking {
     /// The asker's count of the request, which with the asker is its id.
@@ -214,6 +218,10 @@ pub struct Asking {
     pub answer: KindId,
     /// The context.
     pub context: Written,
+    /// A pin on each blob a job refers to, so each is kept until the job is answered or cancelled, or its actor ends,
+    /// whenever the job runs: none for a request, whose mail holds its own (ADR-0018).
+    #[cfg(feature = "std")]
+    pub lent: Vec<BlobRef>,
 }
 
 impl<P: Listed, K: Kind, C> Marker for Asks<P, K, C> {

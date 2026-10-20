@@ -5,7 +5,8 @@ use super::super::*;
 use super::*;
 use crate::Entry;
 use aethereal_actor::{
-    Answer, Answered, Ending, Handles, Job, JobType, Runner, Running, RunsJob, Time, ToType, ToWithoutMail, Turn,
+    Answer, Answered, BlobRef, Ending, Handles, Job, JobType, Runner, Running, RunsJob, Time, ToType, ToWithoutMail,
+    Turn,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
 use std::cell::RefCell;
@@ -135,6 +136,29 @@ impl Job for Ring {
     }
 }
 
+/// A job that sums the bytes of the blobs it refers to: one twice, and another.
+#[derive(Bound)]
+struct Measure {
+    blob: BlobRef,
+    again: BlobRef,
+    other: BlobRef,
+}
+
+impl Kind for Measure {
+    const NAME: KindName = KindName::new("aether.test.measure");
+}
+
+impl Job for Measure {
+    type Done = Doubled;
+    const RUNNER: Runner = Runner::Compute;
+
+    async fn run(self, job: &mut Running) -> Result<Doubled, Fault> {
+        let sum = |blob: &BlobRef| job.read(blob).iter().map(|&byte| u64::from(byte)).sum::<u64>();
+
+        Ok(Doubled { n: sum(&self.blob) + sum(&self.again) + sum(&self.other) })
+    }
+}
+
 /// A job no runner is handed.
 #[derive(Plain)]
 struct Unlinked;
@@ -221,6 +245,7 @@ impl Handles<Go> for Worker {
         RunsJob<Sleeps, Which>,
         RunsJob<Unlinked, Which>,
         RunsJob<Ring, GiveUp>,
+        RunsJob<Measure, Which>,
     );
 
     fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
@@ -246,6 +271,18 @@ impl Handles<Go> for Worker {
                 let id = turn.run(&Sleeps, &which)?;
                 self.kept.push(id);
                 id
+            }
+            "measure" => {
+                let (Ok(blob), Ok(other)) = (turn.put(vec![1, 2, 3, 4]), turn.put(vec![100])) else {
+                    return Err(Fault::of_parts(KindId::of::<Measure>(), Vec::new()));
+                };
+                let id = turn.run(&Measure { again: blob.clone(), blob, other }, &which)?;
+                self.kept.push(id);
+                id
+            }
+            "close" => {
+                turn.close();
+                return Ok(());
             }
             "let go" => {
                 for id in self.kept.drain(..) {
@@ -399,31 +436,36 @@ impl Jobs for Noting {
     fn stop(&self, _: JobId) {}
 }
 
-/// Runs jobs inline, as [`Inline`] does, but holds each [`Sleeps`] until it is let go of, and notes each job it is
-/// asked to stop.
+/// Runs jobs inline, as [`Inline`] does, but holds each [`Sleeps`] and [`Measure`] until it is let go of, and notes
+/// each job it is asked to stop.
 struct Holding {
     inline: Inline,
-    held: Mutex<Vec<Finish>>,
+    held: Mutex<Vec<(JobId, KindId, Taken)>>,
     stopped: Mutex<Vec<JobId>>,
 }
 
 impl Holding {
-    /// Runs [`Double`]s and [`Ring`]s, and holds [`Sleeps`].
+    /// Runs [`Double`]s and [`Ring`]s, and holds [`Sleeps`] and [`Measure`]s.
     fn new() -> Self {
         Self {
-            inline: Inline::new(vec![JobType::of::<Double>(), JobType::of::<Ring>()]),
+            inline: Inline::new(vec![JobType::of::<Double>(), JobType::of::<Ring>(), JobType::of::<Measure>()]),
             held: Mutex::default(),
             stopped: Mutex::default(),
         }
     }
 
-    /// Finishes each job it holds, as doubling to seven.
+    /// Finishes each job it holds: a sleep as doubling to seven, and a measure by running it.
     fn let_go(&self) {
         let Ok(mut held) = self.held.lock() else {
             panic!("the list is not poisoned");
         };
-        for finish in held.drain(..) {
-            finish.done(aethereal_actor::written(&Doubled { n: 7 }).map_err(|_| fault::<Waits>()));
+        for (id, kind, job) in held.drain(..) {
+            let sleeps = kind == KindId::of::<Sleeps>();
+            if sleeps {
+                job.finish.done(aethereal_actor::written(&Doubled { n: 7 }).map_err(|_| fault::<Waits>()));
+            } else {
+                self.inline.start(id, kind, job);
+            }
         }
     }
 
@@ -439,13 +481,15 @@ impl Holding {
 
 impl Jobs for Holding {
     fn start(&self, id: JobId, kind: KindId, job: Taken) {
-        let is_held = kind == KindId::of::<Sleeps>();
+        let sleeps = kind == KindId::of::<Sleeps>();
+        let measures = kind == KindId::of::<Measure>();
+        let is_held = sleeps || measures;
         if !is_held {
             self.inline.start(id, kind, job);
             return;
         }
         if let Ok(mut held) = self.held.lock() {
-            held.push(job.finish);
+            held.push((id, kind, job));
         }
     }
 
@@ -579,4 +623,43 @@ fn a_turn_that_fails_cancels_nothing() {
 
     assert_eq!(said(), ["ran 0 as 1", "ran 1 as 2"]);
     assert_eq!(holding.stopped(), Vec::<u64>::new());
+}
+
+#[test]
+fn a_job_reads_a_copy_of_each_blob_it_refers_to() {
+    // Catches a blob a job refers to not handed out with it, so it reads no bytes, and a reference read out of the
+    // job refused for holding no pin, so the job faults, and a reference read as another blob's bytes. It refers to one
+    // blob twice, and another once.
+    let types = vec![JobType::of::<Double>(), JobType::of::<Measure>()];
+    let (mut engine, _) = engine(Arc::new(Inline::new(types)));
+    poke(&mut engine, 1, "measure");
+    engine.bring();
+    settle(&mut engine);
+
+    assert_eq!(said(), ["0 doubled 2", "1 doubled 120", "ran 0 as 1", "ran 1 as 2"]);
+}
+
+#[test]
+fn a_job_keeps_the_blobs_it_refers_to_until_it_is_answered_cancelled_or_its_actor_ends() {
+    // Catches a blob freed while a job that refers to it is in flight, once the turn that ran it let go of its own
+    // reference, and one kept once the job is answered, cancelled, or its actor has ended. Each of three workers runs a
+    // job of two blobs, held by its host: the first's is answered, the second's cancelled, and the third worker closes.
+    let mut held = Vec::new();
+    for (key, end) in [(1, "answered"), (2, "let go"), (3, "close")] {
+        let holding = Arc::new(Holding::new());
+        let (mut engine, _) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
+        poke(&mut engine, key, "measure");
+        let in_flight = engine.blobs.held().0;
+        if end == "answered" {
+            holding.let_go();
+            engine.bring();
+            settle(&mut engine);
+        } else {
+            poke(&mut engine, key + 10, end);
+        }
+        held.push((in_flight, engine.blobs.held().0));
+    }
+    said();
+
+    assert_eq!(held, [(2, 0), (2, 0), (2, 0)]);
 }

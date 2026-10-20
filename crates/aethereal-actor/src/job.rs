@@ -7,7 +7,7 @@
 //! the context.
 
 use crate::declared::{BackTo, Handles, Marker, RepliesTo, ReplyWithin, Sending, Target};
-use crate::{Actors, ActorsReader, ActorsWriter, Answer, Fault, MailId, Seated, Unwritable, Within};
+use crate::{Actors, ActorsReader, ActorsWriter, Answer, BlobId, Fault, MailId, Seated, Unwritable, Within};
 use aethereal_data::{
     ActorId, Budget, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, KindName, Plain, Reader, Schema,
     Shape, Writer,
@@ -46,10 +46,32 @@ pub enum Runner {
     Io,
 }
 
-/// What a running job reads and makes beside its own bytes: the blobs it refers to, and those it puts (ADR-0018).
-/// Blobs do not cross yet, so it holds nothing.
+/// What a running job reads beside its own bytes: a copy of each blob it refers to (ADR-0018).
 pub struct Running {
-    _blobs: (),
+    blobs: Vec<Copied>,
+}
+
+#[cfg(feature = "std")]
+impl Running {
+    /// The bytes of the blob `blob` refers to: a copy made as the job was handed out. Every reference a job holds was
+    /// read out of its bytes, and refers to one of the blobs copied out with it, so a reference to any other, which no
+    /// job can come to hold, reads as no bytes.
+    #[must_use]
+    pub fn read(&self, blob: &crate::BlobRef) -> &[u8] {
+        let copied = self.blobs.iter().find(|copied| copied.id == blob.id());
+
+        copied.map_or(&[], |copied| &copied.bytes)
+    }
+}
+
+/// A blob a job refers to, as its host is handed it: which it is, and a copy of its bytes, made as the job is handed
+/// out (ADR-0018).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Copied {
+    /// The blob.
+    pub id: BlobId,
+    /// A copy of its bytes.
+    pub bytes: Vec<u8>,
 }
 
 /// A job a turn ran: its mail's id, the actor that ran it and the count it took among what it sends (ADR-0018).
@@ -168,6 +190,8 @@ pub struct Submitted {
     pub answer: KindId,
     /// Its bytes, written at [`Actors`].
     pub bytes: Vec<u8>,
+    /// Each blob it refers to, as often as it refers to it: kept by the context the actor keeps until it is answered.
+    pub refers: Vec<BlobId>,
 }
 
 /// What a job a host runs comes to: its result's bytes, written at [`Actors`], or its fault.
@@ -183,7 +207,7 @@ pub type Driven = Pin<Box<dyn Future<Output = Outcome>>>;
 pub struct JobType {
     kind: KindId,
     runner: Runner,
-    drive: fn(Vec<u8>, usize) -> Driven,
+    drive: fn(Vec<u8>, Vec<Copied>, usize) -> Driven,
 }
 
 #[cfg(feature = "std")]
@@ -206,22 +230,24 @@ impl JobType {
         self.runner
     }
 
-    /// The future that runs the job of `bytes`, read within `limit` bytes, where it is driven: so the job's value is
-    /// read on the thread or worker that runs it, and never moves (ADR-0018).
+    /// The future that runs the job of `bytes`, which refers to the blobs `blobs`, read within `limit` bytes, where it
+    /// is driven: so the job's value is read on the thread or worker that runs it, and never moves (ADR-0018).
     #[must_use]
-    pub fn drive(&self, bytes: Vec<u8>, limit: usize) -> Driven {
-        (self.drive)(bytes, limit)
+    pub fn drive(&self, bytes: Vec<u8>, blobs: Vec<Copied>, limit: usize) -> Driven {
+        (self.drive)(bytes, blobs, limit)
     }
 }
 
-/// The future that reads the job `J` of `bytes`, within `limit` bytes, runs it, and writes what it answers with.
+/// The future that reads the job `J` of `bytes`, which refers to the blobs `blobs`, within `limit` bytes, runs it, and
+/// writes what it answers with. Each reference read out of the job is a pin of its own, noted where pins changed off
+/// the engine's threads are (ADR-0014).
 #[cfg(feature = "std")]
-fn drive<J: Job>(bytes: Vec<u8>, limit: usize) -> Driven {
+fn drive<J: Job>(bytes: Vec<u8>, blobs: Vec<Copied>, limit: usize) -> Driven {
     Box::pin(async move {
         let mut budget = Budget::new(limit);
-        let mut reader = Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::of(&crate::PinSource::NOTHING));
-        let job = J::decode(&mut reader)?;
-        let mut running = Running { _blobs: () };
+        let pins = crate::PinSource::job(&blobs);
+        let job = J::decode(&mut Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::of(&pins)))?;
+        let mut running = Running { blobs };
         let done = job.run(&mut running).await?;
 
         Ok(written(&done)?)
@@ -229,20 +255,33 @@ fn drive<J: Job>(bytes: Vec<u8>, limit: usize) -> Driven {
 }
 
 /// `value`, written at [`Actors`] into bytes of its own: refused when it holds a resource, or refers to a blob, which
-/// nothing carries into or out of a job yet (ADR-0018).
+/// nothing carries out of a job yet (ADR-0018).
 ///
 /// # Errors
 ///
 /// Why it could not be written.
 #[cfg(feature = "std")]
 pub fn written<K: Encode<Actors>>(value: &K) -> Result<Vec<u8>, EncodeError> {
-    let mut held = Vec::new();
-    let mut out = Writer::<Actors>::appending(Vec::new(), ActorsWriter::new(&mut held));
-    value.encode(&mut out)?;
-    let bytes = out.into_bytes();
-    if !held.is_empty() {
+    let (bytes, lent) = lending(value)?;
+    if !lent.is_empty() {
         return Err(EncodeError::NotCarried { name: "BlobRef" });
     }
 
     Ok(bytes)
+}
+
+/// `value`, written at [`Actors`] into bytes of its own, and a pin on each blob it refers to, as often as it refers to
+/// it: refused when it holds a resource.
+///
+/// # Errors
+///
+/// Why it could not be written.
+#[cfg(feature = "std")]
+pub fn lending<K: Encode<Actors>>(value: &K) -> Result<(Vec<u8>, Vec<crate::BlobRef>), EncodeError> {
+    let mut held = Vec::new();
+    let mut out = Writer::<Actors>::appending(Vec::new(), ActorsWriter::new(&mut held));
+    value.encode(&mut out)?;
+    let bytes = out.into_bytes();
+
+    Ok((bytes, held.into_iter().map(|(_, pin)| pin).collect()))
 }

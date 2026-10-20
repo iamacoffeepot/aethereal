@@ -9,6 +9,9 @@ pub use hosted::{Broke, FalseSend, FalseStage, FalseWatch, Forged, Garbled, Host
 pub use refused::Refused;
 
 use crate::Submitted;
+#[cfg(feature = "std")]
+#[cfg(feature = "std")]
+use crate::job::lending;
 use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Asking, Asks, Carries, Children, Claim, Claimed, Code,
@@ -19,7 +22,6 @@ use crate::{
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
-#[cfg(feature = "std")]
 use crate::{Job, JobId, RunsJob, Unrun};
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
@@ -758,7 +760,7 @@ impl Seat<'_> {
         let context = Written::of(context)?;
         let count = self.sent + 1;
         self.write_after(to, mail, false, Tie::asks(count))?;
-        self.asked.asks.push((self.me, Asking { count, answer, context }));
+        self.asked.asks.push((self.me, Asking { count, answer, context, lent: Vec::new() }));
 
         Ok(())
     }
@@ -771,14 +773,16 @@ impl Seat<'_> {
         if matches!(self.keeps, Keeps::Claimed) {
             return Err(Unrun::InGuest);
         }
-        let bytes = crate::written(job).map_err(Unrun::Unwritten)?;
+        let (bytes, lent) = lending(job).map_err(Unrun::Unwritten)?;
         let context = Written::of(context).map_err(Unrun::Unwritten)?;
         self.sent += 1;
         let count = self.sent;
         let id = JobId::new(MailId { sender: self.me.id, count });
         let answer = KindId::of::<J::Done>();
-        self.asked.buffers.jobs.push(Submitted { by: self.me, count, kind: KindId::of::<J>(), answer, bytes });
-        self.asked.asks.push((self.me, Asking { count, answer, context }));
+        let refers = lent.iter().map(BlobRef::id).collect();
+        let submitted = Submitted { by: self.me, count, kind: KindId::of::<J>(), answer, bytes, refers };
+        self.asked.buffers.jobs.push(submitted);
+        self.asked.asks.push((self.me, Asking { count, answer, context, lent }));
 
         Ok(id)
     }

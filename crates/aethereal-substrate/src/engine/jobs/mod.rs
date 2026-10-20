@@ -6,7 +6,9 @@ mod tests;
 
 use super::{Engine, ROOTS, parity};
 use crate::{lives, log};
-use aethereal_actor::{Fault, JobId, JobType, MailId, Mailed, Outcome, Seated, Submitted, Tie, Unanswered};
+use aethereal_actor::{
+    BlobId, Copied, Fault, JobId, JobType, MailId, Mailed, Outcome, Seated, Submitted, Tie, Unanswered,
+};
 use aethereal_data::{Kind, KindId, KindName, Plain};
 use crossbeam_queue::SegQueue;
 use std::panic::{self, AssertUnwindSafe};
@@ -26,10 +28,13 @@ pub trait Jobs: Send + Sync {
     fn stop(&self, id: JobId);
 }
 
-/// A job as the engine hands it to its host: its bytes, the most of them it may read, and where its outcome goes.
+/// A job as the engine hands it to its host: its bytes, the blobs it refers to, the most of its bytes it may read, and
+/// where its outcome goes.
 pub struct Taken {
     /// The job's bytes, written at `Actors`.
     pub bytes: Vec<u8>,
+    /// A copy of each blob it refers to.
+    pub blobs: Vec<Copied>,
     /// The most bytes it may read, as mail may.
     pub limit: usize,
     /// Where its outcome goes.
@@ -83,12 +88,12 @@ impl Inline {
 
 impl Jobs for Inline {
     fn start(&self, _: JobId, kind: KindId, job: Taken) {
-        let Taken { bytes, limit, finish } = job;
+        let Taken { bytes, blobs, limit, finish } = job;
         let Some(of) = self.types.iter().find(|of| of.kind() == kind) else {
             finish.done(Err(fault::<NoRunner>()));
             return;
         };
-        let mut future = of.drive(bytes, limit);
+        let mut future = of.drive(bytes, blobs, limit);
         let mut context = Context::from_waker(Waker::noop());
         let polled = panic::catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(&mut context)));
         let outcome = match polled {
@@ -141,14 +146,32 @@ impl Engine {
         self
     }
 
-    /// Hands each of `submitted` to the host to run, once the turns that ran them have.
+    /// Hands each of `submitted` to the host to run, once the turns that ran them have, with a copy of each blob it
+    /// refers to, once for each blob. Each is held: the context the job's actor keeps pins it, and the blobs a step
+    /// put are taken in before its jobs are handed out.
     pub(super) fn start_jobs(&self, submitted: impl Iterator<Item = Submitted>) {
         for job in submitted {
             let id = job.id();
-            let Submitted { by, count, kind, answer, bytes } = job;
+            let Submitted { by, count, kind, answer, bytes, refers } = job;
+            let blobs = self.copied(refers);
             let finish = Finish { by, count, answer, feed: Arc::clone(&self.finished) };
-            self.jobs.start(id, kind, Taken { bytes, limit: self.read_limit, finish });
+            self.jobs.start(id, kind, Taken { bytes, blobs, limit: self.read_limit, finish });
         }
+    }
+
+    /// A copy of each blob among `refers`, once each.
+    fn copied(&self, mut refers: Vec<BlobId>) -> Vec<Copied> {
+        // Most jobs refer to no blob.
+        if refers.is_empty() {
+            return Vec::new();
+        }
+        refers.sort_unstable();
+        refers.dedup();
+
+        refers
+            .into_iter()
+            .filter_map(|id| self.blobs.read(id).map(|bytes| Copied { id, bytes: bytes.to_vec() }))
+            .collect()
     }
 
     /// Brings in each job finished before this bring began, between steps: its outcome as mail from the actor that ran it

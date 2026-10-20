@@ -547,7 +547,12 @@ fn a_context_is_let_go_of_once_its_answer_has_been_handled() {
     let mut waiting = Waiting::default();
     let mut asked = Asked::new();
     for answer in [Tie::answers(3), Tie::unanswered(3)] {
-        waiting.file(iter::once(Asking { count: 3, answer: KindId::of::<TileIs>(), context: nine() }));
+        waiting.file(iter::once(Asking {
+            count: 3,
+            answer: KindId::of::<TileIs>(),
+            context: nine(),
+            lent: Vec::new(),
+        }));
         let answering = waiting.answering(answer);
         let kept =
             matches!(answering, Answering::Kept(asking) | Answering::Unanswered(asking) if asking.context == nine());
@@ -565,7 +570,7 @@ fn what_the_engine_says_of_an_unanswered_request_is_handed_to_the_handler_of_its
     // Catches an unanswered request handed to no handler, or to one that is not its answer's: the engine's mail is of
     // its own kind, and the asker kept which kind it waits for.
     let mut waiting = Waiting::default();
-    waiting.file(iter::once(Asking { count: 3, answer: KindId::of::<TileIs>(), context: nine() }));
+    waiting.file(iter::once(Asking { count: 3, answer: KindId::of::<TileIs>(), context: nine(), lent: Vec::new() }));
 
     let answering = waiting.answering(Tie::unanswered(3));
 
