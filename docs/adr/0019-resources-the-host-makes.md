@@ -38,6 +38,7 @@ impl<K> Controller<K> {
 }
 impl<K> Requests<K> {
     pub fn take(&self) -> Vec<K>;                   // between steps, on the host's thread
+    pub fn is_dropped(&self) -> bool;               // once the capability has dropped it: stop what was made
 }
 ```
 

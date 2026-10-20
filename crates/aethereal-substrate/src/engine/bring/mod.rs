@@ -11,7 +11,7 @@ mod tests;
 
 use super::{Engine, ROOTS, parity};
 use crate::{Context, lives, log, stream};
-use aethereal_actor::{Actors, Arena, Gift, Given, MailId, Mailed, Seated, Source, Tie};
+use aethereal_actor::{Actors, Arena, Controller, Gift, Given, MailId, Mailed, Requests, Seated, Source, Tie};
 use aethereal_data::{ActorId, Encode, Kind, KindId};
 use crossbeam_queue::SegQueue;
 use std::any;
@@ -150,6 +150,18 @@ enum Found {
 }
 
 impl Engine {
+    /// Makes a controller of requests `K`, for the chassis, and answers with what names it, to put in the config of
+    /// the capability it is for, and the end the host takes its requests from (ADR-0019). The engine holds the
+    /// controller until [`Self::add_root`] is given that config, as [`Self::hand`] does.
+    pub fn controller<K: Send + 'static>(&mut self) -> (Given<Controller<K>>, Requests<K>) {
+        let ticket = self.ticket();
+        let (controller, requests) = Controller::new();
+        let (gift, given) = Gift::handed(ticket, controller);
+        self.handed.push(gift);
+
+        (given, requests)
+    }
+
     /// Makes a source of `K`, for the chassis, and answers with what names it, to put in the config of the root it is
     /// for, and the feed the chassis pushes what it brings onto (ADR-0010). The engine holds the source until
     /// [`Self::add_root`] is given that config, as [`Self::hand`] does.

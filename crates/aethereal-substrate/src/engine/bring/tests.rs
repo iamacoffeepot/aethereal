@@ -3,7 +3,7 @@
 use super::super::*;
 use crate::{Closed, Entry, Feed};
 use aethereal_actor::Time;
-use aethereal_actor::{Ending, Fault, Handle, Handles, Source, ToType, ToWithoutMail, Turn};
+use aethereal_actor::{Controller, Ending, Fault, Handle, Handles, Source, ToType, ToWithoutMail, Turn};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use std::any;
 use std::cell::RefCell;
@@ -301,4 +301,92 @@ fn an_event_that_holds_a_resource_is_dropped_and_recorded_in_the_owners_log() {
     let unbrought: Vec<&Entry> = engine.log(window).filter(|entry| matches!(entry, Entry::Unbrought(_))).collect();
     assert_eq!(heard, Vec::<String>::new());
     assert_eq!(unbrought, [&Entry::Unbrought(any::type_name::<Lit>())]);
+}
+
+/// What a capability asks its host for.
+#[derive(Debug, PartialEq, Eq)]
+enum Make {
+    Window(String),
+}
+
+/// What a windows capability is made from: its controller, and the orders it sends itself as it begins.
+#[derive(Bound)]
+struct WindowsConfig {
+    control: Given<Controller<Make>>,
+    orders: Vec<String>,
+}
+
+impl Kind for WindowsConfig {
+    const NAME: KindName = KindName::new("aether.test.windows_config");
+}
+
+/// A capability that asks its host for the windows `a` and `b` as it begins, and for one more on each order it sends
+/// itself, but `close`, which closes it.
+#[derive(Bound)]
+struct Windows {
+    control: Handle<Controller<Make>>,
+}
+
+impl Kind for Windows {
+    const NAME: KindName = KindName::new("aether.test.windows");
+}
+
+impl Actor for Windows {
+    type Config = WindowsConfig;
+    type Key = ();
+    type Handles = (Order,);
+    type BeginSends = (ToType<Self, Order>,);
+    type EndSends = ();
+
+    fn begin(config: WindowsConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let WindowsConfig { control, orders } = config;
+        let mut control = turn.take(control)?;
+        let controller = turn.open(&mut control)?;
+        controller.push(Make::Window(String::from("a")));
+        controller.push(Make::Window(String::from("b")));
+        for text in orders {
+            let me = turn.me();
+            turn.send(ToWithoutMail::Held(me), &Order { text })?;
+        }
+
+        Ok(Self { control })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Order> for Windows {
+    type Sends = ();
+
+    fn handle(&mut self, order: Order, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        if order.text == "close" {
+            turn.close();
+            return Ok(());
+        }
+        turn.open(&mut self.control)?.push(Make::Window(order.text));
+
+        Ok(())
+    }
+}
+
+#[test]
+fn the_host_takes_what_a_capability_asks_through_its_controller_in_the_order_asked() {
+    // Catches requests lost on their way to the host, taken out of the order pushed, or taken before the turn that
+    // pushed them ran; and a host never told the controller is gone once its capability has ended.
+    let mut engine = engine(0);
+    let (control, requests) = engine.controller::<Make>();
+    let orders = vec![String::from("c"), String::from("close")];
+    let Ok(_) = engine.add_root::<Windows>(&(), WindowsConfig { control, orders }) else {
+        panic!("the capability begins");
+    };
+    let window = |title: &str| Make::Window(String::from(title));
+
+    let as_it_began = (requests.take(), requests.is_dropped());
+    settle(&mut engine);
+    let once_it_ended = (requests.take(), requests.is_dropped());
+
+    assert_eq!(as_it_began, (vec![window("a"), window("b")], false));
+    assert_eq!(once_it_ended, (vec![window("c")], true));
 }
