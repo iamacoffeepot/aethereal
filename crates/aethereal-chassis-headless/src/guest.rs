@@ -25,7 +25,7 @@ use aethereal_actor::{
     Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Broke, Children, Claimed, Declared,
     FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, NotHeld,
     NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats, Table,
-    Tie, Tied, Turning, Unfit, Was, Why, Written, holders, take_loose_ticket,
+    Tie, Tied, Turning, Unfit, Unspawned, Was, Why, Written, holders, take_loose_ticket,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, from_bytes, to_bytes};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -1627,8 +1627,8 @@ fn replay_records(
     }
     let ends = record(data, head.turns_at, next, TurnEnds::BYTES).and_then(TurnEnds::read).ok_or(Broke::Garbled)?;
     let spawns = ends.spawns > before.spawns;
-    if spawns {
-        spawn(data, &running.code, head, before, ends, given, hosted)?;
+    if spawns && !spawn(data, &running.code, head, before, ends, given, hosted)? {
+        return Ok((Err(Fault::new(&FalseSend).unwrap_or_else(|_| Broke::Garbled.fault())), ends));
     }
     // Each child of other code is handed over before the turn's sends are checked, which may be to it.
     let has_births = !given.births.is_empty();
@@ -1777,7 +1777,9 @@ fn hand_births(given: &mut Given, turn: u32, hosted: &mut Hosted<'_>) -> Result<
 }
 
 /// Hands `hosted` the spawns a turn recorded, from the first after those `before` ends at to the last `ends` does, each
-/// seat taken from those `given` holds: of the guest's own code, or of other code the host began for it.
+/// seat taken from those `given` holds: of the guest's own code, or of other code the host began for it. Answers
+/// whether each was declared: a spawn the spawner's declaration does not list stops the rest, and fails the turn
+/// (ADR-0022).
 ///
 /// # Errors
 ///
@@ -1790,7 +1792,7 @@ fn spawn(
     ends: TurnEnds,
     given: &mut Given,
     hosted: &mut Hosted<'_>,
-) -> Result<(), Broke> {
+) -> Result<bool, Broke> {
     for index in before.spawns..ends.spawns {
         let spawn = record(data, head.spawns_at, index, SpawnRecord::BYTES)
             .and_then(SpawnRecord::read)
@@ -1813,10 +1815,14 @@ fn spawn(
         };
         let seat = given.seats.iter().position(|seat| *seat == spawn.seat).ok_or(Broke::Garbled)?;
         given.seats.remove(seat);
-        hosted.spawn(spawn.by, from, key, spawn.seat).ok_or(Broke::Garbled)?;
+        match hosted.spawn(spawn.by, from, key, spawn.seat) {
+            Ok(_) => {}
+            Err(Unspawned::Undeclared) => return Ok(false),
+            Err(Unspawned::Garbled) => return Err(Broke::Garbled),
+        }
     }
 
-    Ok(())
+    Ok(true)
 }
 
 /// Stands up, in `hosted`, the children that began in a turn, from the first after those `before` ends at to the
