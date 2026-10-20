@@ -1,7 +1,7 @@
 //! Why a spawn gave no child (ADR-0009).
 
 use crate::Fault;
-use aethereal_data::{ActorPath, KindId};
+use aethereal_data::{ActorPath, KindId, KindName};
 use core::error::Error;
 use core::fmt;
 
@@ -23,6 +23,9 @@ pub enum Refused {
     Waiting,
     /// The child's type subscribes to the stage of this kind, which the engine's lifecycle does not run (ADR-0020).
     Unstaged(KindId),
+    /// The child's type sends at a typed path of singletons that holds no live actor of the path's type, of this
+    /// name (ADR-0022).
+    Missing(KindName),
 }
 
 impl fmt::Display for Refused {
@@ -36,6 +39,13 @@ impl fmt::Display for Refused {
             Self::Waiting => write!(f, "spawn: the child's instance is waiting on a call out of its own"),
             Self::Unstaged(stage) => {
                 write!(f, "spawn: the child's type subscribes to {stage:?}, a stage the engine does not run")
+            }
+            Self::Missing(name) => {
+                write!(
+                    f,
+                    "spawn: the child's type reaches {}, which no live actor of that type stands for",
+                    name.as_str()
+                )
             }
         }
     }

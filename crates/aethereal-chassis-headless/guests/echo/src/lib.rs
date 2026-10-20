@@ -3,8 +3,8 @@
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, BlobRef, Carries, ChildOf, Ended, Ending,
     ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, Path, Protocol, Recursive, Refused, Resource,
-    Runner, Running, RunsJob, Spawns, Start, Stop, Subscribes, Tick, To, ToAny, ToSender, ToType, ToWithoutMail, Top,
-    Turn, Unanswered, Unrun, Watches, path,
+    Runner, Running, RunsJob, Spawns, Start, Stop, Subscribes, Tells, Tick, To, ToAny, ToSender, ToType, ToWithoutMail,
+    Top, Turn, Unanswered, Unrun, Watches, path,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, Plain};
 use core::mem;
@@ -837,6 +837,7 @@ const fn refused(refused: &Refused) -> u64 {
         Refused::NotMade => 5,
         Refused::Waiting => 6,
         Refused::Unstaged(_) => 7,
+        Refused::Missing(_) => 8,
     }
 }
 
@@ -2328,7 +2329,7 @@ impl ChildOf for Bell {
 
 impl Actor for Bell {
     type Config = EchoConfig;
-    type Key = ();
+    type Key = u64;
     type Handles = (Ping,);
     type BeginSends = ();
     type EndSends = ();
@@ -2354,7 +2355,7 @@ impl Handles<Ping> for Bell {
     }
 }
 
-/// A root that, as it begins, asks the bell at its typed path a ping of four, and pings the actor at its keeper's
+/// A root that, as it begins, asks the bell of key zero at its typed path, which its spawn does not check, a ping of four, and pings the actor at its keeper's
 /// path with what it hears: the bell's pong, or ninety when the ask went unanswered.
 #[derive(Bound)]
 pub struct Ringer {
@@ -2377,7 +2378,7 @@ impl Actor for Ringer {
     type EndSends = ();
 
     fn begin(ring: Ring, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.ask_to(path::<Bell>(()), &Ping { n: 4 }, &Ringing)?;
+        turn.ask_to(path::<Bell>(0), &Ping { n: 4 }, &Ringing)?;
 
         Ok(Self { keeper: ring.keeper })
     }
@@ -2403,6 +2404,71 @@ impl Handles<Answer<Pong, Ringing>> for Ringer {
             turn.send_to_any(To::Held(keeper), &Ping { n })?;
         }
 
+        Ok(())
+    }
+}
+
+/// A root, a singleton, that a sexton reaches at its typed path.
+#[derive(Bound)]
+pub struct Steeple;
+
+impl Kind for Steeple {
+    const NAME: KindName = KindName::new("aether.guest.steeple");
+}
+
+impl ChildOf for Steeple {
+    type Parent = Top;
+}
+
+impl Actor for Steeple {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Ping,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Steeple {
+    type Sends = ();
+
+    fn handle(&mut self, _: Ping, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// An actor, a root or beneath any other, that declares a send at the steeple's typed path as it begins, and sends nothing: its spawn is checked by
+/// what its section says of the path.
+#[derive(Bound)]
+pub struct Sexton;
+
+impl Kind for Sexton {
+    const NAME: KindName = KindName::new("aether.guest.sexton");
+}
+
+impl ChildOf for Sexton {
+    type Parent = Anywhere;
+}
+
+impl Actor for Sexton {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = (Tells<Path<Steeple>, Ping>,);
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -2440,5 +2506,7 @@ aethereal_actor::guest!(
     Metronome,
     Errand,
     Bell,
-    Ringer
+    Ringer,
+    Steeple,
+    Sexton
 );

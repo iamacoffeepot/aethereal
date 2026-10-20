@@ -3485,7 +3485,7 @@ mod tests {
     }
 
     /// The answers each test's askers were given, by the tally the test keeps them in.
-    static ANSWERS: [Mutex<Vec<u64>>; 13] = [const { Mutex::new(Vec::new()) }; 13];
+    static ANSWERS: [Mutex<Vec<u64>>; 14] = [const { Mutex::new(Vec::new()) }; 14];
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
@@ -3751,7 +3751,7 @@ mod tests {
                 panic!("the keeper begins");
             };
             if has_bell {
-                let Ok(_) = engine.add_root_from::<echo::Bell>(&code, &(), &echo::EchoConfig) else {
+                let Ok(_) = engine.add_root_from::<echo::Bell>(&code, &0, &echo::EchoConfig) else {
                     panic!("the bell begins");
                 };
             }
@@ -3763,6 +3763,87 @@ mod tests {
         }
 
         assert_eq!(answers(12), [5, 90], "the bell's pong of one more than four, and the ask at no bell unanswered");
+    }
+
+    #[test]
+    fn a_guest_root_that_reaches_a_typed_path_of_singletons_is_refused_while_no_actor_of_its_type_is_live_there() {
+        // Catches a guest's section that loses the kind of a path it reaches, so the place reads as empty though its
+        // actor is live, and a guest root made though the place it reaches is empty (ADR-0022).
+        let (mut engine, code) = with_echo(Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0));
+        let refused = engine.add_root_from::<echo::Sexton>(&code, &(), &echo::EchoConfig).map(|_| ());
+        let Ok(_) = engine.add_root_from::<echo::Steeple>(&code, &(), &echo::EchoConfig) else {
+            panic!("the steeple begins");
+        };
+        let made = engine.add_root_from::<echo::Sexton>(&code, &(), &echo::EchoConfig).map(|_| ());
+
+        assert_eq!(refused, Err(Refused::Missing(echo::Steeple::NAME)));
+        assert_eq!(made, Ok(()));
+    }
+
+    /// What a vestry is made from: the blob it spawns its sexton from.
+    #[derive(aethereal_data::Bound)]
+    struct Vestment {
+        code: BlobRef,
+    }
+
+    impl Kind for Vestment {
+        const NAME: KindName = KindName::new("aether.test.vestment");
+    }
+
+    /// A native actor that spawns a sexton of the echo guest's blob as it begins, and keeps in the fourteenth of
+    /// [`ANSWERS`] one when it was refused for the steeple it reaches, and zero when it was made.
+    #[derive(aethereal_data::Bound)]
+    struct Vestry;
+
+    impl Kind for Vestry {
+        const NAME: KindName = KindName::new("aether.test.vestry");
+    }
+
+    impl ChildOf for Vestry {
+        type Parent = Top;
+    }
+
+    impl Actor for Vestry {
+        type Config = Vestment;
+        type Key = u64;
+        type Handles = ();
+        type BeginSends = (Spawns<echo::Sexton>,);
+        type EndSends = ();
+
+        fn begin(vestment: Vestment, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let sexton: Result<ActorRef<echo::Sexton>, _> = turn.spawn_from(&vestment.code, &(), &echo::EchoConfig);
+            let answer = match sexton {
+                Ok(_) => 0,
+                Err(Refused::Missing(name)) if name == echo::Steeple::NAME => 1,
+                Err(_) => 2,
+            };
+            if let Ok(mut answers) = ANSWERS[13].lock() {
+                answers.push(answer);
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_native_turn_that_spawns_from_a_guest_s_blob_a_child_that_reaches_an_empty_typed_path_is_refused() {
+        // Catches a spawn from a blob that does not check the paths its child's section says it reaches (ADR-0022).
+        let (mut engine, code) = with_echo(Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0));
+        let Ok(_) = engine.add_root::<Vestry>(&0, Vestment { code: code.clone() }) else {
+            panic!("the first vestry begins");
+        };
+        let Ok(_) = engine.add_root_from::<echo::Steeple>(&code, &(), &echo::EchoConfig) else {
+            panic!("the steeple begins");
+        };
+        let Ok(_) = engine.add_root::<Vestry>(&1, Vestment { code }) else {
+            panic!("the second vestry begins");
+        };
+
+        assert_eq!(answers(13), [0, 1]);
     }
 
     #[test]

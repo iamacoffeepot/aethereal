@@ -508,6 +508,9 @@ pub fn refusal(refused: &Refused) -> u64 {
         // A guest's turn checks a child's stages before it asks its host to begin the child, so no host refuses a
         // spawn for them, and its stage is not written (ADR-0020).
         Refused::Unstaged(_) => 7,
+        // A guest's turn checks the paths a child reaches before it asks its host to begin the child, as it checks its
+        // stages, so no host refuses a spawn for them, and the name is not written (ADR-0022).
+        Refused::Missing(_) => 8,
     }
 }
 

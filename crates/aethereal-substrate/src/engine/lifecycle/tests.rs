@@ -4,8 +4,8 @@
 use super::super::*;
 use crate::stages::key;
 use aethereal_actor::{
-    Actor, Anywhere, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, Present, Render, Spawns, Stage, Start,
-    Stop, Subscribes, Tick, Time, To, ToSender, ToType, ToWithoutMail, Top, Turn, Unordered,
+    Actor, Anywhere, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, Path, Present, Render, Spawns, Stage,
+    Start, Stop, Subscribes, Tells, Tick, Time, To, ToSender, ToType, ToWithoutMail, Top, Turn, Unordered,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, PathSegment, Plain};
 use core::time::Duration;
@@ -751,4 +751,90 @@ fn a_stage_nothing_subscribes_to_is_passed_at_once() {
 
     assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
     assert_eq!(engine.step_number(), 0);
+}
+
+/// A root, a singleton, that a castaway reaches at its typed path and is never made.
+#[derive(Bound)]
+struct Shore;
+
+impl Kind for Shore {
+    const NAME: KindName = KindName::new("aether.test.shore");
+}
+
+impl ChildOf for Shore {
+    type Parent = Top;
+}
+
+impl Actor for Shore {
+    type Config = Note;
+    type Key = ();
+    type Handles = (Note,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: Note, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Note> for Shore {
+    type Sends = ();
+
+    fn handle(&mut self, _: Note, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// A root that subscribes to `Receive` as it begins and reaches the shore at its typed path: refused for both.
+#[derive(Bound)]
+struct Castaway;
+
+impl Kind for Castaway {
+    const NAME: KindName = KindName::new("aether.test.castaway");
+}
+
+impl ChildOf for Castaway {
+    type Parent = Top;
+}
+
+impl Actor for Castaway {
+    type Config = Note;
+    type Key = ();
+    type Handles = (Receive,);
+    type BeginSends = (Subscribes<Receive>, Tells<Path<Shore>, Note>);
+    type EndSends = ();
+
+    fn begin(_: Note, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Receive> for Castaway {
+    type Sends = ();
+
+    fn handle(&mut self, _: Receive, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_root_refused_both_for_a_stage_and_for_a_typed_path_is_refused_for_the_stage() {
+    // Catches the check of typed paths run before the check of stages, where the stage is the refusal (ADR-0022).
+    let mut drawing = running::<(Tick, Render, Present)>();
+    let mut full = running::<Full>();
+
+    let unstaged = Err(Refused::Unstaged(KindId::of::<Receive>()));
+    assert_eq!(drawing.add_root::<Castaway>(&(), Note { text: String::new() }).map(|_| ()), unstaged);
+    assert_eq!(
+        full.add_root::<Castaway>(&(), Note { text: String::new() }).map(|_| ()),
+        Err(Refused::Missing(Shore::NAME))
+    );
 }
