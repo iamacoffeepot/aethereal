@@ -23,8 +23,8 @@
 
 use crate::records::{
     self, Born, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, Kept, Keying, LineRecord, Naming, Other,
-    OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped,
-    TurnEnds, WatchRecord,
+    OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord, Spawning, StageRecord, Staging,
+    StoodRecord, Stopped, TurnEnds, WatchRecord,
 };
 use crate::section;
 use crate::{
@@ -867,7 +867,8 @@ pub fn pins_out() -> u64 {
 }
 
 /// Writes after `out` a [`ClaimRecord`] for each claim the turns of `asked` made, right after the last watch, where
-/// its host finds them (ADR-0015); and then the requests they held (ADR-0017).
+/// its host finds them (ADR-0015); then the requests they held (ADR-0017); then what they asked of the program's
+/// lifecycle (ADR-0020).
 fn write_claims(out: &mut Vec<u8>, asked: &Asked) {
     for claim in asked.claims() {
         out.extend_from_slice(&ClaimRecord(*claim).to_bytes());
@@ -875,6 +876,15 @@ fn write_claims(out: &mut Vec<u8>, asked: &Asked) {
     let has_owes = !asked.owes().is_empty();
     if has_owes {
         write_holds(out, asked);
+    }
+    for effect in asked.effects() {
+        let staging = match effect.what() {
+            What::Subscribe(kind) => Staging::Subscribe(*kind),
+            What::Unsubscribe(kind) => Staging::Unsubscribe(*kind),
+            What::Quit => Staging::Quit,
+            _ => continue,
+        };
+        out.extend_from_slice(&StageRecord { by: effect.seated(), asked: staging }.to_bytes());
     }
 }
 
@@ -1028,6 +1038,7 @@ fn write_ends(out: &mut Vec<u8>, asked: &Asked, counted: &mut Counted) {
             What::Spawn { .. } | What::SpawnInstanced { .. } => ends.spawns += 1,
             What::Watch { .. } => ends.watches += 1,
             What::Close => *closes = true,
+            What::Subscribe(_) | What::Unsubscribe(_) | What::Quit => ends.stages += 1,
             _ => {}
         }
     }
