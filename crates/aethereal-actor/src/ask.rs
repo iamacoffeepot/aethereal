@@ -196,6 +196,8 @@ pub enum Unanswered {
     /// The turn that handled the request neither answered it nor held it, or the receiver held it and let it go
     /// without answering it.
     Unreplied,
+    /// The job returned a fault, which is in the asker's log, or its host lost it to a panic (ADR-0018).
+    Faulted,
 }
 
 impl Kind for Unanswered {

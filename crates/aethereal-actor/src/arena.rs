@@ -216,6 +216,20 @@ impl Arena {
         written
     }
 
+    /// Writes `bytes`, written elsewhere, as one piece of mail, as [`Self::write`] does, and answers with where it is:
+    /// for a job's result, which refers to no blob (ADR-0018).
+    ///
+    /// # Errors
+    ///
+    /// None: the result's type is that of [`Self::write_mail`], which mail written beside it is.
+    pub fn write_bytes(&mut self, bytes: &[u8]) -> Result<Payload, EncodeError> {
+        self.write(|mut out| {
+            out.extend_from_slice(bytes);
+
+            (out, Ok(()))
+        })
+    }
+
     /// Writes `mail` as one piece of mail, as [`Self::write`] does, with the pins on the blobs it refers to, and
     /// answers with where it is: for mail no turn sends, which carries no resource (ADR-0010).
     ///

@@ -33,8 +33,8 @@ pub use by_seat::BySeat;
 pub use clock::Clock;
 pub use context::Context;
 pub use engine::{
-    Closed, CodeRefused, Done, Engine, Feed, Fold, Folding, Hops, Lifecycle, Plan, Reading, Share, Split, SplitCost,
-    Tally, Whole, Workers,
+    Closed, CodeRefused, Done, Engine, Feed, Finish, Fold, Folding, Hops, Inline, Jobs, Lifecycle, NoRunner, Panicked,
+    Plan, Reading, Share, Split, SplitCost, Taken, Tally, Waits, Whole, Workers,
 };
 pub use id::{child_id, path_id, root_id};
 pub use lives::{Life, Lives, State};

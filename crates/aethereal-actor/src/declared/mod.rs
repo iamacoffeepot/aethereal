@@ -336,4 +336,6 @@ pub enum Target {
     Watched,
     /// No actor: the handler may subscribe its actor to the stage of the sending's kind, which is no send (ADR-0020).
     Subscribed,
+    /// No actor: the handler may run a job of the sending's kind, which its host runs (ADR-0018).
+    Job,
 }

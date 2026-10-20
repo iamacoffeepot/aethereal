@@ -3219,6 +3219,21 @@ mod tests {
     }
 
     #[test]
+    fn a_guest_s_turn_refuses_a_job_its_host_would_not_read() {
+        // Catches a job a guest's turn runs and its host never reads: the guest would wait for good on an answer that
+        // never comes.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(errand) = engine.add_root_from::<echo::Errand>(&code, &(), &echo::EchoConfig) else {
+            panic!("the errand begins");
+        };
+
+        assert_eq!(lines(&engine, errand), ["chore refused in a guest"]);
+    }
+
+    #[test]
     fn a_guest_answers_from_its_instance_after_another_in_it_has_ended() {
         // Catches two actors of one blob in one part each loading an instance of their own, and an instance dropped
         // when an actor in it ends while another still runs in it: the echo, asked for its turns from an instance that

@@ -179,6 +179,7 @@ impl Engine {
     /// source has been dropped is closed, and what was pushed onto it is dropped. An event that cannot be written as
     /// mail, one that holds a resource on its way, is dropped and recorded in the owner's log.
     pub fn bring(&mut self) {
+        self.bring_jobs();
         // Most engines have no source.
         if self.sources.is_empty() {
             return;

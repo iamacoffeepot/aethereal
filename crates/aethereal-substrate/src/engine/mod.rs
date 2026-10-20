@@ -9,6 +9,8 @@ mod debts;
 mod fold;
 mod fuse;
 mod gift;
+mod jobs;
+pub use jobs::{Finish, Inline, Jobs, NoRunner, Panicked, Taken, Waits};
 mod lifecycle;
 mod made;
 mod plan;
@@ -38,12 +40,13 @@ use aethereal_actor::{
     Above, Actor, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Carried, Chain, Closing,
     Code, Cycling, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, Keeping, Keeps, Links,
     Mail, MailId, Mailed, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated,
-    Seats, Stood, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    Seats, Stood, Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
 use ask::{Answering, Waiting};
 use birth::Births;
 use costs::{CostKey, Costs, ItemKind, toward};
+use crossbeam_queue::SegQueue;
 use debts::Debts;
 use fuse::{Fusing, Hand, Hop, Stepped};
 use gift::{Arrival, Gifts};
@@ -157,6 +160,10 @@ pub struct Engine {
     handed: Vec<Gift>,
     /// The sources the chassis has made, to bring what it pushes onto their feeds in (ADR-0010).
     sources: Vec<bring::Bringing>,
+    /// What runs the jobs turns run (ADR-0018).
+    jobs: Arc<dyn Jobs>,
+    /// The jobs that have run, pushed by whatever ran them, to bring in at the next bring.
+    finished: Arc<SegQueue<jobs::Finished>>,
     /// Which engine of the process this is, in the id of each blob it holds. Last, so what the engine's actors held
     /// is let go of before the engine is forgotten.
     number: Number,
@@ -331,6 +338,8 @@ pub struct Lists {
     runs: Vec<stream::Run>,
     /// What the part running keeps of its step while it fuses chains of mail.
     fusing: Fusing,
+    /// The jobs the worker's turns ran, handed to the host once the step's turns are taken in (ADR-0018).
+    jobs: Vec<Submitted>,
     /// The changes to blobs' pins its turns made, noted on the worker's thread as they ran (ADR-0014).
     pins: Vec<Change>,
     /// The changes to how many values hold each debt the part running's turns made, noted on the worker's thread as
@@ -416,6 +425,8 @@ impl Engine {
             unbuffered: Vec::new(),
             handed: Vec::new(),
             sources: Vec::new(),
+            jobs: Arc::new(Inline::new(Vec::new())),
+            finished: Arc::new(SegQueue::new()),
             number,
         }
     }
@@ -736,17 +747,21 @@ impl Engine {
         parity: usize,
         root: Seated,
     ) {
-        let Buffers { mailed, lines, effects, gifts } = buffers;
+        let Buffers { mailed, lines, effects, gifts, jobs } = buffers;
         let written = &self.arenas[parity];
         self.log.fold_records(lines.into_iter().map(log::line), written);
         self.fold_turn(&effects, stood, context);
         let written = &self.arenas[parity];
-        let sent = senders(&mailed).into_iter().map(|(actor, count)| lives::sent(actor, count));
+        let sent = senders(&mailed, &jobs).into_iter().map(|(actor, count)| lives::sent(actor, count));
         self.lives.fold_records(sent, written);
         self.watches.fold(&effects, &context, written);
         self.stages.fold(&effects, &context, written);
         self.streams.fold_records(mailed.into_iter().map(|mailed| stream::entry(mailed, &context)), written);
         self.give_between(gifts, root);
+        // Most `begin`s run no job.
+        if !jobs.is_empty() {
+            self.start_jobs(jobs.into_iter());
+        }
         let mut forward = mem::take(&mut self.spare.forward);
         for shard in self.watches.shards_mut() {
             shard.settle(&mut forward);
@@ -984,6 +999,10 @@ impl Engine {
             self.seated[part] -= 1;
             self.actors_seated -= 1;
             self.seats[part].free(seat);
+        }
+        // Most steps run no job.
+        if !lists.jobs.is_empty() {
+            self.start_jobs(lists.jobs.drain(..));
         }
         self.lists[slot] = lists;
     }
@@ -1833,9 +1852,9 @@ impl Reading<'_> {
         let begun_sent = if ran.stood.is_empty() {
             Vec::new()
         } else {
-            let mailed = &asked.buffers_mut().mailed;
+            let buffers = asked.buffers_mut();
 
-            senders(mailed).into_iter().filter(|(actor, _)| actor.id != me.id).collect()
+            senders(&buffers.mailed, &buffers.jobs).into_iter().filter(|(actor, _)| actor.id != me.id).collect()
         };
         if !ran.stood.is_empty() {
             let stood = ran
@@ -2056,6 +2075,10 @@ impl Lists {
             let (key, entry) = stream::entry(mailed, &context);
             routes.streams.put(key, entry);
         }
+        // Most turns run no job.
+        if !buffers.jobs.is_empty() {
+            take_jobs(&mut buffers.jobs, &mut self.jobs, &mut seen, me);
+        }
         // Most turns give nothing, and draining nothing still costs a turn. What one gave goes with its mail, or is
         // dropped as its giver's log records.
         if !buffers.gifts.is_empty() {
@@ -2206,18 +2229,39 @@ impl Ran {
     }
 }
 
-/// Each actor that sent mail among `mailed`, with the count of the last piece it sent.
-fn senders(mailed: &[Mailed]) -> Vec<(Seated, u64)> {
+/// Moves the jobs a turn ran, `ran`, into `jobs`, to hand to the host once the step's turns are taken in, noting in
+/// `seen` the count each of the actor `me`'s took among what it sends (ADR-0018). Out of the loop of turns, which most
+/// turns run no job in.
+#[cold]
+#[inline(never)]
+fn take_jobs(ran: &mut Vec<Submitted>, jobs: &mut Vec<Submitted>, seen: &mut Seen, me: ActorId) {
+    for job in ran.drain(..) {
+        seen.ran(&job, me);
+        jobs.push(job);
+    }
+}
+
+/// Each actor that sent mail among `mailed` or ran a job among `jobs`, which takes a count among what it sends
+/// (ADR-0018), with the count of the last.
+fn senders(mailed: &[Mailed], jobs: &[Submitted]) -> Vec<(Seated, u64)> {
     let mut senders: Vec<(Seated, u64)> = Vec::new();
     for &Mailed { by, count, bytes, .. } in mailed {
-        let count = &(count + u64::from(bytes.pieces()) - 1);
-        match senders.iter_mut().find(|(actor, _)| *actor == by) {
-            Some((_, last)) => *last = (*last).max(*count),
-            None => senders.push((by, *count)),
-        }
+        sent(&mut senders, by, count + u64::from(bytes.pieces()) - 1);
+    }
+    // Most `begin`s run no job.
+    for job in jobs {
+        sent(&mut senders, job.by, job.count);
     }
 
     senders
+}
+
+/// Notes in `senders` that `by` sent as far as `count`.
+fn sent(senders: &mut Vec<(Seated, u64)>, by: Seated, count: u64) {
+    match senders.iter_mut().find(|(actor, _)| *actor == by) {
+        Some((_, last)) => *last = (*last).max(count),
+        None => senders.push((by, count)),
+    }
 }
 
 /// What routing a turn's effects saw of the actor whose turn it was.
@@ -2235,6 +2279,14 @@ impl Seen {
         let is_own = effect.by() == me;
         if is_own {
             self.ends |= ending(effect, me).is_some();
+        }
+    }
+
+    /// Notes `job`, when the actor `me` ran it: it takes a count among what `me` sends (ADR-0018).
+    fn ran(&mut self, job: &Submitted, me: ActorId) {
+        let is_own = job.by.id == me;
+        if is_own {
+            self.sent = Some(self.sent.map_or(job.count, |sent| sent.max(job.count)));
         }
     }
 
@@ -2257,6 +2309,8 @@ fn keep_lines(buffers: &mut Buffers, me: Seated) {
     buffers.mailed.retain(|mailed| matches!(mailed.tie.read(), Tied::Unanswered(_)));
     buffers.effects.retain(|effect| is_reported_failure(effect, me));
     buffers.gifts.retain(|gift| gift.by == Giver::Actor(me));
+    // A turn that fails runs no job (ADR-0018).
+    buffers.jobs.clear();
     for gift in &mut buffers.gifts {
         gift.on = Carried::Nowhere;
     }
