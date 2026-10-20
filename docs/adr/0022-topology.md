@@ -55,14 +55,14 @@ path::<(Army, Unit)>(&7)                // an instanced last segment: its key is
 ```rust
 impl Asked for Renderer { type Protocol = Rendering; }       // the protocol a Renderer is asked through at a typed path
 
-type Sends = (Asks<Path<(Renderer,)>, CreateMesh, Made>, ToPath<(Renderer,), Release>);
+type Sends = (Asks<Path<(Renderer,)>, CreateMesh, Made>, Tells<Path<(Renderer,)>, Release>);
 
 turn.ask_to(path::<(Renderer,)>(), &CreateMesh { .. }, &Made::Ground)?;
 turn.send_to(path::<(Renderer,)>(), &Release::Mesh(mesh))?;
 ```
 
 - **An ask at a typed path is declared with the path**, `Asks<Path<P>, K, C>`. The path's last type says what it is asked through, `Asked::Protocol`, which builds only when that type conforms to the protocol (ADR-0016), and the answer is read from it (ADR-0017: `Carries`). A type that declares no `Asked` cannot be asked at a typed path; it is asked through a reference, as today.
-- **A send at a typed path is declared with the path**, `ToPath<P, K>`, and builds only when the path's last type handles `K`.
+- **A send at a typed path is declared with the path**, `Tells<Path<P>, K>`, the counterpart of `Asks`, and builds only when the path's last type handles `K`.
 - Both are checked at build time as every send is (`Allows`), and an ask only when the asker handles the answer (`BackTo<Self>`).
 - **Their `Sending` targets the path, `Target::Path(segments)`, so a type's declaration holds every path it reaches.** No dependency is declared beside the sends: a declared send at a typed path is one.
 
@@ -103,7 +103,7 @@ turn.send_to(path::<(Renderer,)>(), &Release::Mesh(mesh))?;
   - every type spawned declares `ChildOf` its parent's type, and every spawning turn lists `Spawns<C>`: the 81 spawn sites, with each child's type named where its reference goes in place of a turbofish.
   
   The change is mechanical, and a site that is missed does not build.
-- A turn's sends are a tuple of at most 12 markers (`Allows`), and `Spawns`, `Asks`, and `ToPath` count toward it. A handler that would declare more is split, or the tuples grow, when one does.
+- A turn's sends are a tuple of at most 12 markers (`Allows`), and `Spawns`, `Asks`, and `Tells` count toward it. A handler that would declare more is split, or the tuples grow, when one does.
 - A type a guest reaches at a typed path must build in the guest: its name, its declaration of where it stands, and the protocol it is asked through. A root whose host state lives in resources (ADR-0010) builds there. Whether a root whose handlers' code cannot build in a guest is reachable from one is left until a guest needs one.
 - Sends to a child by name, `To::Child(KindName)` and `To::ChildInstanced`, are unchanged.
 - A send at a typed path costs computing its id and a table read for its seat; a spawn's check is one pass over a declaration it already reads for stages; `turn.child` and `turn.parent` are one table read.
