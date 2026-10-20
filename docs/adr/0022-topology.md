@@ -39,15 +39,17 @@ impl ChildOf<Camera> for Lens {}
 ### A typed path: the actor named by the types of its segments
 
 ```rust
-path::<(Host,)>()                       // the root Host
-path::<(Host, Camera, Lens)>()          // the Lens beneath the Camera beneath the Host
-path::<(Army, Unit)>(&7)                // an instanced last segment: its key is the one value
+path::<(Host,)>()                                   // the root Host
+path::<(Host, Camera, Lens)>()                      // the Lens beneath the Camera beneath the Host
+path_at::<(World, Army, Unit)>((3, Name("scout")))  // Army 3, and the Unit "scout" beneath it
+path_at::<(World, Hud, Unit)>(Name("scout"))        // one keyed segment: its key alone
 ```
 
-- **`path::<P>()` answers with a `Path<P>`, a value of no size whose type is the path.** It holds nothing at runtime, and nothing is looked up when it is made.
-- **The path is checked at build time, segment by segment:** its first type is `Root`, each next is `ChildOf` the one before, and every segment but the last is a singleton. `path::<(Host, Lens)>()` does not build when a `Lens` may stand only beneath a `Camera`. A path is a tuple of up to eight types; a deeper actor is reached from a reference held (below).
-- **The last segment's key is the one value.** It is `path::<P>()` for a singleton and `path::<P>(&key)` for an instanced type, as the type says. A keyed segment anywhere else has no typed path; it is reached by `turn.child` from a reference to it.
-- **`send_to`, `ask_to`, and `watch` take a typed path wherever they take a reference.** At the send, the engine makes the id from the path's names, as it does when it seats each actor (ADR-0008: `root_id`, `child_id`), and reads the actor's seat from the table. Only the engine computes the id; the actor never handles a name, an id, or a seat.
+- **The path is checked at build time, segment by segment:** its first type is `Root`, and each next is `ChildOf` the one before. `path::<(Host, Lens)>()` does not build when a `Lens` may stand only beneath a `Camera`. A path is a tuple of up to eight types; a deeper actor is reached from a reference held (below).
+- **A path's keys are its keyed segments' keys, in order, and nothing for a singleton.** One key is passed alone, and several as a tuple, so `path_at::<(World, Army, Unit)>` takes an `(u32, Name)` and `path_at::<(World, Hud, Unit)>` takes a `Name`. The path's type says what its keys are: a key missing, extra, of the wrong type, or in the wrong place does not build.
+- **`path` is for a path of singletons, and `path_at` for a path with a key, and neither builds for the other.** `path::<(World, Hud, Unit)>()` does not build, as it names no `Unit`, and `path_at::<(Host, Camera, Lens)>(..)` does not build, as it has no key to take.
+- **`path` answers with a `Path<P>`, a value of no size whose type is the path.** It holds nothing at runtime, and nothing is looked up when it is made. **`path_at` answers a `Path<P>` holding the id** the engine makes from the path's names and keys as it is made: a `Copy` value of eight bytes.
+- **`send_to`, `ask_to`, and `watch` take a typed path wherever they take a reference.** At the send, the engine makes a path of singletons' id from its names, as it does when it seats each actor (ADR-0008: `root_id`, `child_id`), and reads the actor's seat from the table. Only the engine computes the id; the actor never handles a name, an id, or a seat.
 - A typed path names a place, not an actor that is live. Mail sent to one that holds no live actor is dropped, and an ask is answered `Unanswered::Ended`, as for a reference to an actor that has ended (ADR-0008, ADR-0017).
 
 ### What a turn may say at a typed path is declared, and the declaration is the dependency
@@ -96,7 +98,7 @@ turn.send_to(path::<(Renderer,)>(), &Release::Mesh(mesh))?;
 
 ## Consequences
 
-- An actor reaches a root, or any singleton beneath singletons, by its types, at any depth, with nothing handed down through configs, and asks it through the protocol it declares.
+- An actor reaches a root, or any actor beneath it whose place its types and keys name, by its types, up to eight segments deep, with nothing handed down through configs, and asks it through the protocol it declares.
 - A spawn that cannot reach what it declares is refused where it is asked, before any of the child's code runs, and names what is missing.
 - A type's declaration holds where it may stand, the children it may spawn, and the paths it reaches: the tree's shape, as types. What lists every declaration, so a tool can walk them, is left until a tool needs it: native declarations are constants of their types today, and a guest's are its section.
 - **What it costs the code today:**
@@ -107,7 +109,7 @@ turn.send_to(path::<(Renderer,)>(), &Release::Mesh(mesh))?;
 - A turn's sends are a tuple of at most 12 markers (`Allows`), and `Spawns`, `Asks`, and `Tells` count toward it. A handler that would declare more is split, or the tuples grow, when one does.
 - A type a guest reaches at a typed path must build in the guest: its name, its declaration of where it stands, and the protocol it is asked through. A root whose host state lives in resources (ADR-0010) builds there. Whether a root whose handlers' code cannot build in a guest is reachable from one is left until a guest needs one.
 - Sends to a child by name, `To::Child(KindName)` and `To::ChildInstanced`, are unchanged.
-- A send at a typed path costs computing its id and a table read for its seat; a spawn's check is one pass over a declaration it already reads for stages; `turn.child` and `turn.parent` are one table read.
+- A send at a path of singletons costs computing its id and a table read for its seat, and at a path with a key, the table read, its id made once by `path_at`; a spawn's check is one pass over a declaration it already reads for stages; `turn.child` and `turn.parent` are one table read.
 
 ## Alternatives considered
 
@@ -115,6 +117,8 @@ turn.send_to(path::<(Renderer,)>(), &Release::Mesh(mesh))?;
 - **A marker of its own for a dependency, `Needs<R>`.** A declared ask to the root already says the actor depends on it; a second marker would say it twice.
 - **A protocol named for each actor asked at a typed path, `impl Asked for Renderer { type Protocol = Rendering; }`.** A type made only to say what the actor answers, which `Carries` on the actor's own type says beside its handler.
 - **A capability: a protocol named with the name of the root that answers it.** Gave a guest something to name that holds no host state. A root is the one actor of its type at its name, so its type is what to name, and `Root` checks at build time what a capability's name could not.
+- **One `path` that takes the keys, `path::<(Renderer,)>(())`.** Rust does not choose a function by how many arguments it is given, so one function would take `()` for a path of singletons, which most paths are. Two keep the common case bare, and each refuses the other's paths.
+- **A key only on the last segment, with a keyed segment above it reached by `turn.child`.** An actor beneath an instanced one would need a reference to its parent held first, though its place is named by types and keys alone.
 - **Paths by chaining, `root::<Host>().child::<Camera>()`.** One call per segment. A tuple names the whole path in one type parameter.
 - **The receiver named by a turbofish on the send, `ask_to::<Renderer>(..)`.** Rust has every type parameter named once one is, and the index a send's declaration is found at is inferred, so the call would be `ask_to::<Renderer, _, _, _, _>`. A typed path is the receiver as a value.
 - **Placement left undeclared, with the table's check of a child's kind alone.** Sound at runtime, but nothing at build time would say where an actor may stand, and no path could be checked or reached from types.
