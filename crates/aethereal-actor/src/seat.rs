@@ -14,6 +14,11 @@ use alloc::vec::Vec;
 pub struct SeatNumber(u64);
 
 impl SeatNumber {
+    /// The seat no actor sits in: an actor named in it is gone, so mail to it is dropped and a request answered
+    /// [`Ended`](crate::Unanswered::Ended), as for any actor that has gone (ADR-0022). The engine numbers seats by
+    /// their place in a list, which never reaches it.
+    pub const NOWHERE: Self = Self(u64::MAX);
+
     /// The seat numbered `number`.
     #[must_use]
     pub const fn new(number: u64) -> Self {

@@ -17,7 +17,8 @@ mod tests;
 
 pub use handles::{Handled, HandledList, Handles, Others};
 pub use protocols::{AnsweredBy, CarriedBy, Carries, Conforms, Covers, Listed, Protocol};
-pub use replies::{DeclaredBy, HandledBy, RepliesTo, RepliesWithin, ReplyWithin};
+pub use replies::{DeclaredBy, HandledBy, RepliesTo, RepliesWith, RepliesWithin, ReplyWithin};
+pub use sends::Last;
 pub use sends::{Allows, At, Kinds, Marker, Sends, Spawns, Subscribes, Tells, ToAny, ToSender, ToType, Watches};
 
 use crate::Actor;

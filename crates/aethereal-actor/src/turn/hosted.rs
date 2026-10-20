@@ -5,7 +5,7 @@ use crate::records::Staging;
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Effect, ErasedActorRef, Fault, Gift, Giver, Instances,
     Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Role, Runs, SeatNumber,
-    Seated, Seats, Seen, Sending, Table, Target, Tie, What, Written, carry, take_claimed,
+    Seated, Seats, Sending, Table, Target, Tie, What, Written, carry, take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, KindName, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -642,13 +642,7 @@ impl<'a> Hosted<'a> {
         if !holds {
             return Err(FalseWatch);
         }
-        let was_held = self.seat.table.held(of.id);
-        let is_stood = self.seat.asked.stood_seat(of.id).is_some();
-        let seen = if was_held || is_stood {
-            Seen::Live
-        } else {
-            Seen::Ended
-        };
+        let seen = self.seat.seen(of);
         let watch = What::Watch { of: ErasedActorRef::new(of), seen };
         self.seat.asked.buffers.effects.push(Effect::new(by, watch));
 

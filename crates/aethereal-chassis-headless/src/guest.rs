@@ -328,16 +328,28 @@ fn reads_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
             let Some(resolved) = resolved else {
                 return Ok(0);
             };
-            let mut bytes = [0u8; 16];
-            bytes[..8].copy_from_slice(&resolved.id.bits().to_le_bytes());
-            bytes[8..].copy_from_slice(&resolved.seat.number().to_le_bytes());
-            let memory = caller.get_export("memory").and_then(Extern::into_memory);
-            let Some(memory) = memory else {
-                return Err(wasmtime::Error::msg("a guest that resolves a path has no memory"));
-            };
-            memory.write(&mut caller, usize::try_from(seated).unwrap_or(usize::MAX), &bytes)?;
+            write_seated(&mut caller, resolved, seated)?;
 
             Ok(1)
+        },
+    )?;
+    linker.func_wrap(
+        "aethereal",
+        "aethereal_reach",
+        |mut caller: Caller<'_, Lending>, at: u32, len: u32, kind: u64, seated: u32| {
+            let path = guest_bytes(&mut caller, Span { at, len });
+            let path = path.and_then(|path| from_bytes::<ActorPath>(&path, &mut Budget::new(1 << 16)).ok());
+            let kind = from_bytes::<KindId>(&kind.to_le_bytes(), &mut Budget::new(8)).ok();
+            // A path or kind the guest wrote that does not read back reaches no actor.
+            let reached = answer(&mut caller, |answering| {
+                let nowhere = Seated { id: ActorId::new(0), seat: SeatNumber::NOWHERE };
+                let (Some(path), Some(kind)) = (path, kind) else {
+                    return nowhere;
+                };
+                answering.table.reach(&path, kind)
+            })?;
+
+            write_seated(&mut caller, reached, seated)
         },
     )?;
     linker.func_wrap("aethereal", "aethereal_is_live", |mut caller: Caller<'_, Lending>, id: u64| {
@@ -363,6 +375,15 @@ fn reads_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
     )?;
 
     Ok(())
+}
+
+/// Writes `seated`, its id and seat, as 16 bytes into the guest's memory at `at`.
+fn write_seated(caller: &mut Caller<'_, Lending>, seated: Seated, at: u32) -> wasmtime::Result<()> {
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&seated.id.bits().to_le_bytes());
+    bytes[8..].copy_from_slice(&seated.seat.number().to_le_bytes());
+
+    write_guest(caller, at, &bytes)
 }
 
 /// Links the calls out that seat and spawn children into `linker`.
@@ -3464,7 +3485,7 @@ mod tests {
     }
 
     /// The answers each test's askers were given, by the tally the test keeps them in.
-    static ANSWERS: [Mutex<Vec<u64>>; 12] = [const { Mutex::new(Vec::new()) }; 12];
+    static ANSWERS: [Mutex<Vec<u64>>; 13] = [const { Mutex::new(Vec::new()) }; 13];
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
@@ -3718,6 +3739,30 @@ mod tests {
         settle(&mut engine);
 
         assert_eq!(answers(2), [0, 102]);
+    }
+
+    #[test]
+    fn a_guest_asks_the_actor_at_a_typed_path_through_its_host() {
+        // Catches a guest's ask at a path that its own table, which holds no other actor's type, never finds, and one
+        // at a place that holds no actor that its host never answers, rather than answering it `Ended` (ADR-0022).
+        for has_bell in [true, false] {
+            let (mut engine, code) = with_echo(Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0));
+            let Ok(_) = engine.add_root::<Keeper>(&0, Keeps { key: 0, tally: 12 }) else {
+                panic!("the keeper begins");
+            };
+            if has_bell {
+                let Ok(_) = engine.add_root_from::<echo::Bell>(&code, &(), &echo::EchoConfig) else {
+                    panic!("the bell begins");
+                };
+            }
+            let keeper = ActorPath::from_root(&PathSegment::new(Keeper::NAME, &0u64));
+            let Ok(_) = engine.add_root_from::<echo::Ringer>(&code, &(), &echo::Ring { keeper }) else {
+                panic!("the ringer begins");
+            };
+            settle(&mut engine);
+        }
+
+        assert_eq!(answers(12), [5, 90], "the bell's pong of one more than four, and the ask at no bell unanswered");
     }
 
     #[test]

@@ -15,12 +15,25 @@ use std::collections::HashSet;
 use std::hash::BuildHasherDefault;
 use std::num::NonZeroUsize;
 
+/// The actor `path` names in `table`, and its seat, when one of kind `kind` is live there; otherwise the place, the id
+/// the engine computes for it, in no seat (ADR-0022).
+pub fn reach(table: &impl Table, path: &ActorPath, kind: KindId) -> Seated {
+    let is_kind = |seated: &Seated| table.declared(seated.id).is_some_and(|declared| declared.id() == kind);
+    let reached = table.resolve(path).filter(is_kind);
+
+    reached.unwrap_or_else(|| Seated { id: path_id(path), seat: SeatNumber::NOWHERE })
+}
+
 /// The table as a turn reads it. The id of a child is computed here, by the engine, and nowhere else.
 impl Table for ActorTable {
     fn resolve(&self, path: &ActorPath) -> Option<Seated> {
         let id = Self::resolve(self, path)?;
 
         Some(Seated { id, seat: Self::seat(self, id)? })
+    }
+
+    fn reach(&self, path: &ActorPath, kind: KindId) -> Seated {
+        reach(self, path, kind)
     }
 
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {

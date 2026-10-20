@@ -3,6 +3,7 @@
 
 use super::fuse::Run;
 use super::lifecycle::runs;
+use crate::table::reach;
 use crate::{ActorTable, Blobs, ByActor};
 use aethereal_actor::{BlobHash, BlobId, Cycling, Declared, SeatNumber, Seated, Table, Time};
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
@@ -58,6 +59,10 @@ impl Table for Since<'_> {
         let has_ended = run.has_ended(resolved.id);
 
         (!has_ended).then_some(resolved)
+    }
+
+    fn reach(&self, path: &ActorPath, kind: KindId) -> Seated {
+        reach(self, path, kind)
     }
 
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {

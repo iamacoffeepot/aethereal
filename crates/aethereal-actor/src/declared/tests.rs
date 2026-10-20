@@ -27,6 +27,10 @@ impl Table for Typed {
         None
     }
 
+    fn reach(&self, _: &ActorPath, _: KindId) -> Seated {
+        Seated { id: ActorId::new(0), seat: SeatNumber::NOWHERE }
+    }
+
     fn child(&self, parent: ActorId, _: &PathSegment) -> ActorId {
         parent
     }

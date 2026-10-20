@@ -51,7 +51,7 @@ pub use actor::{Actor, Batch, Peeked, Preparing, Reads, Runs};
 pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};
 #[cfg(feature = "std")]
 pub use arena::{PinSource, Pinned};
-pub use ask::{Answer, Answered, Asking, Asks, Unanswered};
+pub use ask::{Answer, Answered, Askable, Asking, Asks, Unanswered};
 pub use blob::{BlobHash, BlobId, Puts};
 #[cfg(feature = "std")]
 pub use blob::{BlobRef, Pinning, pins, within};
@@ -60,8 +60,8 @@ pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, 
 pub use controller::{Controller, Requests};
 pub use declared::{
     Allows, AnsweredBy, At, CarriedBy, Carries, Conforms, Covers, Declared, DeclaredBy, Handled, HandledBy,
-    HandledList, Handler, Handles, Kinds, Listed, Marker, Others, Protocol, RepliesTo, RepliesWithin, ReplyWithin,
-    Role, Sending, Sends, Spawns, Subscribes, Target, Tells, ToAny, ToSender, ToType, Watches,
+    HandledList, Handler, Handles, Kinds, Listed, Marker, Others, Protocol, RepliesTo, RepliesWith, RepliesWithin,
+    ReplyWithin, Role, Sending, Sends, Spawns, Subscribes, Target, Tells, ToAny, ToSender, ToType, Watches,
 };
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
@@ -80,7 +80,7 @@ pub use job::{JobType, Lending, Outcome, Produced};
 pub use mail::{Mail, MailId};
 pub use path::{Beneath, Path, PathTo, TypeSegment, path};
 pub use placement::{Admits, Anywhere, AtTop, ChildOf, Placement, Recursive, Root, Top};
-pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Proven, Reaches};
+pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Proven, Reaches, Watchable};
 pub use resource::{
     Carried, Claim, Claimed, Gift, Given, Giver, Handle, Holds, Keeping, Keeps, KeepsNothing, Kept, NotHeld, Resource,
     Was, carry, is_loose_claim, take_claimed, take_loose_ticket,

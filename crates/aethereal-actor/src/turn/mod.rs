@@ -14,12 +14,11 @@ use crate::Submitted;
 use crate::job::lending;
 use crate::resource;
 use crate::{
-    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Asking, Asks, Carries, ChildOf, Children, Claim, Claimed,
-    Code, Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances,
-    Keeping, Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Payload, Protocol,
-    ProtocolRef, Proven, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Spawns, Stage,
-    Subscribes, Table, Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watches, What,
-    Within, Written,
+    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Askable, Asking, ChildOf, Children, Claim, Claimed, Code,
+    Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances, Keeping,
+    Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Payload, ProtocolRef, Proven, Puts,
+    Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Spawns, Stage, Subscribes, Table, Target,
+    Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable, Watches, What, Within, Written,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -676,15 +675,23 @@ impl Seat<'_> {
     /// it as the step began or it was stood up since, and ended otherwise, since a reference's actor existed
     /// (ADR-0008). The turn's declaration lists the watch, and its type handles endings, as it built (ADR-0013).
     fn watch(&mut self, of: ErasedActorRef) {
-        let id = of.seated().id;
-        let was_held = self.table.held(id);
-        let is_stood = self.asked.stood_seat(id).is_some();
-        let seen = if was_held || is_stood {
+        let seen = self.seen(of.seated());
+        self.ask(What::Watch { of, seen });
+    }
+
+    /// How this turn sees `of`, an actor it watches: live when the table held it as the step began or a turn of the
+    /// step stood it up, and ended otherwise, as an actor in no seat always is (ADR-0008, ADR-0022).
+    fn seen(&self, of: Seated) -> Seen {
+        let was_held = self.table.held(of.id);
+        let is_stood = self.asked.stood_seat(of.id).is_some();
+        let is_seated = of.seat != SeatNumber::NOWHERE;
+        let is_live = (was_held || is_stood) && is_seated;
+
+        if is_live {
             Seen::Live
         } else {
             Seen::Ended
-        };
-        self.ask(What::Watch { of, seen });
+        }
     }
 
     /// Encodes `mail` and adds the effect that sends it to the actor `to` names, which `target` says it may reach.
@@ -1421,9 +1428,11 @@ pub struct Turn<'a, S> {
 }
 
 impl<S> Turn<'_, S> {
-    /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.
+    /// Watches the actor `of` refers to, or the one at the typed path it is: when it ends, this actor is handed its
+    /// ending, once, as an item.
     ///
-    /// Watching an actor already watched changes nothing.
+    /// Watching an actor already watched changes nothing. A path is resolved as it is watched, and a place that holds
+    /// no live actor of its type is watched as an actor that has ended, whose ending is handed on at once (ADR-0022).
     ///
     /// It builds only when the turn's sends list [`Watches`](crate::Watches), which only a type that handles
     /// [`Ended`](crate::Ended) may (ADR-0013):
@@ -1465,11 +1474,12 @@ impl<S> Turn<'_, S> {
     ///     }
     /// }
     /// ```
-    pub fn watch<I>(&mut self, of: impl Into<ErasedActorRef>)
+    pub fn watch<W: Watchable, I>(&mut self, of: W)
     where
         S: Allows<Watches, I>,
     {
-        self.seat.watch(of.into());
+        let of = of.watched(self.seat.table);
+        self.seat.watch(of);
     }
 
     /// Subscribes this actor to the stage `K` of the program's lifecycle: the engine sends it `K` each time that stage
@@ -1521,10 +1531,8 @@ impl<S> Turn<'_, S> {
         K: Kind + Encode<Actors>,
         S: Allows<R::Marker, I>,
     {
-        match reference.reached(self.seat.table) {
-            Some(to) => self.seat.write(to, mail),
-            None => Ok(()),
-        }
+        let to = reference.reached(self.seat.table);
+        self.seat.write(to, mail)
     }
 
     /// Sends `mail` to each actor `references` refer to, in their order: each its own piece of mail, as if each were sent alone,
@@ -1575,20 +1583,24 @@ impl<S> Turn<'_, S> {
         self.seat.reply(self.source, mail)
     }
 
-    /// Asks `mail` of the actor `reference` refers to, keeping `context` until the request is answered, when the
-    /// asker is handed what became of it with the context, as [`Answer<A, C>`](crate::Answer) (ADR-0017).
+    /// Asks `mail` of the actor `reference` refers to, or the one at the typed path it is, keeping `context` until the
+    /// request is answered, when the asker is handed what became of it with the context, as
+    /// [`Answer<A, C>`](crate::Answer) (ADR-0017, ADR-0022).
     ///
-    /// It builds only when the turn's sends list [`Asks<P, K, C>`]: `P` answers `K` with one kind, and the actor
-    /// handles that answer with `C`. What the reference reaches is proven, so nothing is checked when it is sent.
-    pub fn ask_to<P, K, A, C, I>(&mut self, reference: ProtocolRef<P>, mail: &K, context: &C) -> Result<(), EncodeError>
+    /// It builds only when the turn's sends list what the reference is [`Askable`] by: [`Asks<P, K, C>`](crate::Asks) for a
+    /// [`ProtocolRef<P>`], where `P` answers `K` with one kind, and `Asks<Path<L>, K, C>` for a [`Path<L>`](crate::Path),
+    /// where `L` does; and the actor handles that answer with `C`. What a reference reaches is proven, so nothing is
+    /// checked when it is sent. A path is resolved as it is sent, and a place that holds no live actor of its type is
+    /// asked as an actor that has gone: the request is answered [`Unanswered::Ended`].
+    pub fn ask_to<R, K, C, I>(&mut self, reference: R, mail: &K, context: &C) -> Result<(), EncodeError>
     where
-        P: Protocol + Carries<K, Answers = (A,)>,
+        R: Askable<K, C>,
         K: Kind + Encode<Actors>,
-        A: Kind,
         C: Kind + Encode<Within>,
-        S: Allows<Asks<P, K, C>, I>,
+        S: Allows<R::Marker, I>,
     {
-        self.seat.request(reference.seated(), mail, KindId::of::<A>(), context)
+        let to = reference.asked(self.seat.table);
+        self.seat.request(to, mail, KindId::of::<R::Answer>(), context)
     }
 
     /// Runs `job` outside the steps, on its host, keeping `context` until it is answered: the actor is handed what
@@ -1916,17 +1928,16 @@ impl<S> Beginning<'_, S> {
     /// actor is handed what became of it with the context, as [`Answer<A, C>`](crate::Answer), in a turn after this
     /// `begin`, as a turn's ask is (ADR-0017). A `begin` that fails asks nothing.
     ///
-    /// It builds only when the `begin`'s sends list [`Asks<P, K, C>`]: `P` answers `K` with one kind, and the actor
-    /// handles that answer with `C`.
-    pub fn ask_to<P, K, A, C, I>(&mut self, reference: ProtocolRef<P>, mail: &K, context: &C) -> Result<(), EncodeError>
+    /// It builds only when the `begin`'s sends list what the reference is [`Askable`] by, as a turn's `ask_to` does.
+    pub fn ask_to<R, K, C, I>(&mut self, reference: R, mail: &K, context: &C) -> Result<(), EncodeError>
     where
-        P: Protocol + Carries<K, Answers = (A,)>,
+        R: Askable<K, C>,
         K: Kind + Encode<Actors>,
-        A: Kind,
         C: Kind + Encode<Within>,
-        S: Allows<Asks<P, K, C>, I>,
+        S: Allows<R::Marker, I>,
     {
-        self.seat.request(reference.seated(), mail, KindId::of::<A>(), context)
+        let to = reference.asked(self.seat.table);
+        self.seat.request(to, mail, KindId::of::<R::Answer>(), context)
     }
 
     /// Sends `mail` to the actor `reference` refers to, with the mail of the turn this `begin` runs in. What it reaches is proven, so nothing is checked when it
@@ -1940,10 +1951,8 @@ impl<S> Beginning<'_, S> {
         K: Kind + Encode<Actors>,
         S: Allows<R::Marker, I>,
     {
-        match reference.reached(self.seat.table) {
-            Some(to) => self.seat.write(to, mail),
-            None => Ok(()),
-        }
+        let to = reference.reached(self.seat.table);
+        self.seat.write(to, mail)
     }
 
     /// Sends `mail` to each actor `references` refer to, in their order, with the mail of the turn this `begin` runs in: each its own piece of mail, as if each were sent alone,
@@ -2043,7 +2052,8 @@ impl<S> Beginning<'_, S> {
         self.seat.spawn_from::<C>(self.instances, code, key, config)
     }
 
-    /// Watches the actor `of` refers to: when it ends, this actor is handed its ending, once, as an item.
+    /// Watches the actor `of` refers to, or the one at the typed path it is, as a turn's `watch` does: when it ends,
+    /// this actor is handed its ending, once, as an item.
     ///
     /// It builds only when the `begin`'s sends list [`Watches`](crate::Watches), which only a type that handles
     /// [`Ended`](crate::Ended) may (ADR-0013):
@@ -2087,11 +2097,12 @@ impl<S> Beginning<'_, S> {
     ///
     /// let declared = aethereal_actor::Declared::of::<Watcher>();
     /// ```
-    pub fn watch<I>(&mut self, of: impl Into<ErasedActorRef>)
+    pub fn watch<W: Watchable, I>(&mut self, of: W)
     where
         S: Allows<Watches, I>,
     {
-        self.seat.watch(of.into());
+        let of = of.watched(self.seat.table);
+        self.seat.watch(of);
     }
 
     /// Subscribes this actor to the stage `K` of the program's lifecycle: the engine sends it `K` each time that stage
@@ -2289,10 +2300,8 @@ impl<S> Ending<'_, S> {
         K: Kind + Encode<Actors>,
         S: Allows<R::Marker, I>,
     {
-        match reference.reached(self.seat.table) {
-            Some(to) => self.seat.write(to, mail),
-            None => Ok(()),
-        }
+        let to = reference.reached(self.seat.table);
+        self.seat.write(to, mail)
     }
 
     /// Sends `mail` to each actor `references` refer to, in their order, as the actor's last mail: each its own piece of mail, as if each were sent alone,

@@ -2,11 +2,11 @@
 
 use super::*;
 use crate::watch::Notice;
-use crate::{ByActor, Entry, child_id};
+use crate::{ByActor, Entry, child_id, path_id};
 use aethereal_actor::Time;
 use aethereal_actor::{
-    Actor, ActorRef, ChildOf, Ended, Ending, Fault, Handles, How, Level, Path, Recursive, Spawns, Table, Tells, To,
-    ToSender, ToType, ToWithoutMail, Top, Turn, Watches, path,
+    Actor, ActorRef, Answer, Answered, Asks, Carries, ChildOf, Ended, Ending, Fault, Handles, How, Level, Path,
+    Recursive, Spawns, Table, Tells, To, ToSender, ToType, ToWithoutMail, Top, Turn, Watches, path,
 };
 use aethereal_data::{Bound, Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
@@ -803,7 +803,8 @@ fn each_send_a_part_could_fuse_is_counted_once_by_what_became_of_it() {
 #[test]
 fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
     // Catches a child a run stood up left unresolved to the run's later turns, an actor that ended in the run still
-    // found by them, and either seen by a turn outside the run before the step is folded.
+    // found by them, and either seen by a turn outside the run before the step is folded; by a resolve, and by a
+    // typed path's reach, which also reads the child's kind.
     let (engine, root) = fusing(8, &[]);
     let Some(root_path) = engine.table().path(root) else {
         panic!("the root is in the table");
@@ -816,7 +817,10 @@ fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
     let mut run = fuse::Run::default();
     run.stand([(child, child_path.clone())]);
     run.end(root);
-    let stood = ByActor::default();
+    let mut stood = ByActor::default();
+    stood.insert(child.id.bits(), (child_path.clone(), child.seat, Declared::of::<Node>()));
+    let node = KindId::of::<Node>();
+    let nowhere = |path: &ActorPath| Seated { id: path_id(path), seat: SeatNumber::NOWHERE };
 
     let in_run = Since {
         table: engine.table(),
@@ -830,6 +834,9 @@ fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
     assert!(Table::is_live(&in_run, child.id));
     assert_eq!(Table::resolve(&in_run, &root_path), None);
     assert!(!Table::is_live(&in_run, root));
+    assert_eq!(Table::reach(&in_run, &child_path, node), child);
+    assert_eq!(Table::reach(&in_run, &child_path, KindId::of::<Note>()), nowhere(&child_path));
+    assert_eq!(Table::reach(&in_run, &root_path, node), nowhere(&root_path));
 
     let outside = Since {
         table: engine.table(),
@@ -842,6 +849,8 @@ fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
     assert_eq!(Table::resolve(&outside, &child_path), None);
     assert!(!Table::is_live(&outside, child.id));
     assert!(Table::is_live(&outside, root));
+    assert_eq!(Table::reach(&outside, &child_path, node), nowhere(&child_path));
+    assert_eq!(Table::reach(&outside, &root_path, node), seated(&engine, root));
 }
 
 #[test]
@@ -1660,4 +1669,174 @@ fn a_send_at_a_typed_path_reaches_only_a_live_actor_of_the_paths_type() {
     assert_eq!(listener, ["the listener got hello"]);
     assert_eq!(impostor, Vec::<String>::new(), "an actor of another kind at the path is not reached");
     assert_eq!(nobody, Vec::<String>::new());
+}
+
+/// A question an oracle answers.
+#[derive(Plain)]
+struct Question;
+
+impl Kind for Question {
+    const NAME: KindName = KindName::new("aether.test.question");
+}
+
+/// An oracle's answer to a question.
+#[derive(Plain)]
+struct Reply {
+    text: String,
+}
+
+impl Kind for Reply {
+    const NAME: KindName = KindName::new("aether.test.reply");
+}
+
+/// What a seer keeps while its question is out.
+#[derive(Plain)]
+struct Wondering;
+
+impl Kind for Wondering {
+    const NAME: KindName = KindName::new("aether.test.wondering");
+}
+
+/// A root that answers each question, at the oracle's name.
+#[derive(Plain)]
+struct Oracle;
+
+/// A root at the oracle's name of another layout, so another kind.
+#[derive(Plain)]
+struct FalseOracle {
+    at: u64,
+}
+
+/// What a root at the oracle's name is: one that answers each question with `$answers`.
+macro_rules! answering {
+    ($name:ident, $answers:literal) => {
+        impl Kind for $name {
+            const NAME: KindName = KindName::new("aether.test.oracle");
+        }
+
+        impl ChildOf for $name {
+            type Parent = Top;
+        }
+
+        impl Actor for $name {
+            type Config = Self;
+            type Key = ();
+            type Handles = (Question,);
+            type BeginSends = ();
+            type EndSends = ();
+
+            fn begin(oracle: Self, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+                Ok(oracle)
+            }
+
+            fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+                Ok(())
+            }
+        }
+
+        impl Carries<Question> for $name {
+            type Answers = (Reply,);
+        }
+
+        impl Handles<Question> for $name {
+            type Sends = (ToSender<Reply>,);
+
+            fn handle(&mut self, _: Question, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+                Ok(turn.reply(&Reply { text: String::from($answers) })?)
+            }
+        }
+    };
+}
+
+answering!(Oracle, "the truth");
+answering!(FalseOracle, "a lie");
+
+/// A root that, as it begins, asks the oracle at its typed path a question and watches it, and says what it hears.
+#[derive(Plain)]
+struct Seer;
+
+impl Kind for Seer {
+    const NAME: KindName = KindName::new("aether.test.seer");
+}
+
+impl ChildOf for Seer {
+    type Parent = Top;
+}
+
+impl Actor for Seer {
+    type Config = Self;
+    type Key = ();
+    type Handles = (Answer<Reply, Wondering>, Ended);
+    type BeginSends = (Asks<Path<Oracle>, Question, Wondering>, Watches);
+    type EndSends = ();
+
+    fn begin(seer: Self, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.ask_to(path::<Oracle>(()), &Question, &Wondering)?;
+        turn.watch(path::<Oracle>(()));
+
+        Ok(seer)
+    }
+
+    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Reply, Wondering>> for Seer {
+    type Sends = ();
+
+    fn handle(&mut self, (answered, _): (Answered<Reply>, Wondering), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        match answered {
+            Answered::Yes(reply) => say(format!("the seer was told {}", reply.text)),
+            Answered::No(why) => say(format!("the seer went unanswered, {why:?}")),
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<Ended> for Seer {
+    type Sends = ();
+
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        say(format!("the seer saw the oracle end {}", how(ended.how())));
+
+        Ok(())
+    }
+}
+
+/// What a seer says over a few steps, beside whichever root `oracle` makes at the oracle's name, in order.
+fn seeing(oracle: impl FnOnce(&mut Engine)) -> Vec<String> {
+    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0);
+    oracle(&mut engine);
+    let Ok(_) = engine.add_root::<Seer>(&(), Seer) else {
+        panic!("the seer begins");
+    };
+    let mut said: Vec<String> = (0..3).flat_map(|_| step(&mut engine)).collect();
+    said.sort();
+
+    said
+}
+
+#[test]
+fn an_ask_and_a_watch_at_a_typed_path_reach_only_a_live_actor_of_the_paths_type() {
+    // Catches an ask at a path whose answer never comes, one handed to an actor of another kind that shares its name
+    // and so its id, and one at a place that holds no actor that goes unanswered forever, rather than `Ended`; and a
+    // watch at such a place that waits for an ending that will never come (ADR-0022).
+    let oracle = seeing(|engine| {
+        let Ok(_) = engine.add_root::<Oracle>(&(), Oracle) else {
+            panic!("the oracle begins");
+        };
+    });
+    let false_oracle = seeing(|engine| {
+        let Ok(_) = engine.add_root::<FalseOracle>(&(), FalseOracle { at: 0 }) else {
+            panic!("the false oracle begins");
+        };
+    });
+    let nobody = seeing(|_| {});
+
+    let gone = ["the seer saw the oracle end earlier", "the seer went unanswered, Ended"];
+    assert_eq!(oracle, ["the seer was told the truth"], "a live oracle is not shown as ended");
+    assert_eq!(false_oracle, gone, "an actor of another kind at the path is not reached");
+    assert_eq!(nobody, gone);
 }

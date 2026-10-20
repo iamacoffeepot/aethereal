@@ -412,6 +412,16 @@ pub trait ReplyWithin<Answers, I> {}
 /// `Is`.
 pub trait RepliesWithin<Answers, Is> {}
 
+/// The replies among these sends, a marker or a tuple of them, are each of the kind `A`: what a type asked at a typed
+/// path replies with, when it says it answers the kind asked with `A` alone (ADR-0022).
+#[diagnostic::on_unimplemented(
+    message = "a handler asked at a typed path replies with a kind its type does not say it answers with",
+    label = "replies with something other than `{A}`",
+    note = "an actor's type says what it answers each kind it can be asked with `Carries<K>`, and its handler of `K` \
+            replies only with that"
+)]
+pub trait RepliesWith<A> {}
+
 impl<Answers: Allows<R, I>, R, I> ReplyWithin<Answers, I> for ToSender<R> {}
 
 impl<Answers, T, K> ReplyWithin<Answers, ()> for ToType<T, K> {}
@@ -428,6 +438,22 @@ impl<Answers, K> ReplyWithin<Answers, ()> for Subscribes<K> {}
 
 impl<Answers> RepliesWithin<Answers, ()> for () {}
 
+impl<A> RepliesWith<A> for ToSender<A> {}
+
+impl<A, T, K> RepliesWith<A> for ToType<T, K> {}
+
+impl<A, P, K> RepliesWith<A> for ToAny<P, K> {}
+
+impl<A> RepliesWith<A> for Watches {}
+
+impl<A, C> RepliesWith<A> for Spawns<C> {}
+
+impl<A, T, K> RepliesWith<A> for Tells<T, K> {}
+
+impl<A, K> RepliesWith<A> for Subscribes<K> {}
+
+impl<A> RepliesWith<A> for () {}
+
 impl<A> DeclaredBy<A> for () {}
 
 impl<A> RepliesTo<A> for () {}
@@ -439,6 +465,8 @@ macro_rules! tuples {
         impl<A, $($name: DeclaredBy<A>),*> DeclaredBy<A> for ($($name,)*) {}
 
         impl<A, $($name: RepliesTo<A>),*> RepliesTo<A> for ($($name,)*) {}
+
+        impl<A, $($name: RepliesWith<A>),*> RepliesWith<A> for ($($name,)*) {}
 
         impl<A: $(Handles<$name> +)*, $($name: Kind + Handled),*> HandledBy<A> for ($($name,)*) {}
 
