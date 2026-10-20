@@ -8,7 +8,10 @@
 
 use crate::declared::{BackTo, Handles, Marker, RepliesTo, ReplyWithin, Sending, Target};
 use crate::{Actors, ActorsReader, ActorsWriter, Answer, Fault, MailId, Seated, Unwritable, Within};
-use aethereal_data::{Budget, Decode, Encode, EncodeError, Kind, KindId, KindName, Plain, Reader, Writer};
+use aethereal_data::{
+    ActorId, Budget, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, KindName, Plain, Reader, Schema,
+    Shape, Writer,
+};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::Future;
@@ -51,7 +54,8 @@ pub struct Running {
 
 /// A job a turn ran: its mail's id, the actor that ran it and the count it took among what it sends (ADR-0018).
 ///
-/// It means something only to the actor that ran it, as a watch's id does.
+/// It means something only to the actor that ran it, as a watch's id does. It crosses [`Within`] and no other boundary,
+/// so it is kept in the actor's state and its contexts, and never in mail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JobId(MailId);
 
@@ -74,6 +78,31 @@ impl JobId {
     #[must_use]
     pub const fn mail(self) -> MailId {
         self.0
+    }
+}
+
+/// A job's id is its mail's id in bytes.
+impl Schema for JobId {
+    const SHAPE: Shape = Shape::Struct {
+        name: "JobId",
+        fields: &[Field { name: "sender", shape: u64::SHAPE }, Field { name: "count", shape: u64::SHAPE }],
+    };
+}
+
+impl Encode<Within> for JobId {
+    fn encode(&self, out: &mut Writer<'_, Within>) -> Result<(), EncodeError> {
+        let MailId { sender, count } = self.0;
+        sender.bits().encode(out)?;
+        count.encode(out)
+    }
+}
+
+impl Decode<Within> for JobId {
+    fn decode(input: &mut Reader<'_, Within>) -> Result<Self, DecodeError> {
+        let sender = ActorId::new(u64::decode(input)?);
+        let count = u64::decode(input)?;
+
+        Ok(Self(MailId { sender, count }))
     }
 }
 

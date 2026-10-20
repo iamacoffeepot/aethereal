@@ -38,9 +38,9 @@ use crate::{
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, Actor, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Carried, Chain, Closing,
-    Code, Cycling, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, Keeping, Keeps, Links,
-    Mail, MailId, Mailed, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated,
-    Seats, Stood, Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    Code, Cycling, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, JobId, Keeping, Keeps,
+    Links, Mail, MailId, Mailed, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber,
+    Seated, Seats, Stood, Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -340,6 +340,9 @@ pub struct Lists {
     fusing: Fusing,
     /// The jobs the worker's turns ran, handed to the host once the step's turns are taken in (ADR-0018).
     jobs: Vec<Submitted>,
+    /// The jobs the worker's turns cancelled, which the host is asked to stop once the step's turns are taken in, after
+    /// those it is handed (ADR-0018).
+    cancelled: Vec<JobId>,
     /// The changes to blobs' pins its turns made, noted on the worker's thread as they ran (ADR-0014).
     pins: Vec<Change>,
     /// The changes to how many values hold each debt the part running's turns made, noted on the worker's thread as
@@ -747,7 +750,8 @@ impl Engine {
         parity: usize,
         root: Seated,
     ) {
-        let Buffers { mailed, lines, effects, gifts, jobs } = buffers;
+        // A `begin` cancels nothing: it has run no job before it.
+        let Buffers { mailed, lines, effects, gifts, jobs, cancelled: _ } = buffers;
         let written = &self.arenas[parity];
         self.log.fold_records(lines.into_iter().map(log::line), written);
         self.fold_turn(&effects, stood, context);
@@ -1003,6 +1007,10 @@ impl Engine {
         // Most steps run no job.
         if !lists.jobs.is_empty() {
             self.start_jobs(lists.jobs.drain(..));
+        }
+        // Most steps cancel none.
+        for job in lists.cancelled.drain(..) {
+            self.jobs.stop(job);
         }
         self.lists[slot] = lists;
     }
@@ -2075,9 +2083,12 @@ impl Lists {
             let (key, entry) = stream::entry(mailed, &context);
             routes.streams.put(key, entry);
         }
-        // Most turns run no job.
+        // Most turns run no job, and cancel none.
         if !buffers.jobs.is_empty() {
             take_jobs(&mut buffers.jobs, &mut self.jobs, &mut seen, me);
+        }
+        if !buffers.cancelled.is_empty() {
+            self.cancelled.append(&mut buffers.cancelled);
         }
         // Most turns give nothing, and draining nothing still costs a turn. What one gave goes with its mail, or is
         // dropped as its giver's log records.
@@ -2309,8 +2320,9 @@ fn keep_lines(buffers: &mut Buffers, me: Seated) {
     buffers.mailed.retain(|mailed| matches!(mailed.tie.read(), Tied::Unanswered(_)));
     buffers.effects.retain(|effect| is_reported_failure(effect, me));
     buffers.gifts.retain(|gift| gift.by == Giver::Actor(me));
-    // A turn that fails runs no job (ADR-0018).
+    // A turn that fails runs no job, and cancels none (ADR-0018).
     buffers.jobs.clear();
+    buffers.cancelled.clear();
     for gift in &mut buffers.gifts {
         gift.on = Carried::Nowhere;
     }

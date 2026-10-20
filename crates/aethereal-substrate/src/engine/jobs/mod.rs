@@ -19,6 +19,11 @@ pub trait Jobs: Send + Sync {
     /// Runs the job `id`, of the kind `kind`, as `job` holds it: its bytes, and where its outcome goes once it has
     /// run.
     fn start(&self, id: JobId, kind: KindId, job: Taken);
+
+    /// Stops the job `id`, if it can, once the actor that ran it has cancelled it: best effort, as a job may have
+    /// finished, or be past where it can be stopped. Whatever it pushes of the job after is dropped. A job it has
+    /// finished, or never started, it does nothing for.
+    fn stop(&self, id: JobId);
 }
 
 /// A job as the engine hands it to its host: its bytes, the most of them it may read, and where its outcome goes.
@@ -93,6 +98,9 @@ impl Jobs for Inline {
         };
         finish.done(outcome);
     }
+
+    /// Every job has run by the time it is handed out, so none is left to stop.
+    fn stop(&self, _: JobId) {}
 }
 
 /// The fault whose reason is `K`, which holds nothing.

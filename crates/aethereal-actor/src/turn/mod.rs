@@ -76,6 +76,8 @@ pub struct Buffers {
     pub gifts: Vec<Gift>,
     /// The jobs run, in the order run, for the engine to take out to its host (ADR-0018).
     pub jobs: Vec<Submitted>,
+    /// The jobs cancelled, in the order cancelled, for the engine to ask its host to stop (ADR-0018).
+    pub cancelled: Vec<JobId>,
 }
 
 /// How long each of the buffers was at some moment: where what was asked after it begins.
@@ -111,8 +113,9 @@ impl Buffers {
         let no_effects = self.effects.is_empty();
         let no_gifts = self.gifts.is_empty();
         let no_jobs = self.jobs.is_empty();
+        let no_cancels = self.cancelled.is_empty();
 
-        no_mail && no_lines && no_effects && no_gifts && no_jobs
+        no_mail && no_lines && no_effects && no_gifts && no_jobs && no_cancels
     }
 }
 
@@ -166,6 +169,7 @@ impl Asked {
         self.buffers.effects.clear();
         self.buffers.gifts.clear();
         self.buffers.jobs.clear();
+        self.buffers.cancelled.clear();
         self.claims.clear();
         self.stood.clear();
         self.stood_seats.clear();
@@ -200,13 +204,15 @@ impl Asked {
         !self.asks.is_empty()
     }
 
-    /// Whether the turn running asked a request, held one, or answered a held one (ADR-0017).
+    /// Whether the turn running asked a request, held one, answered a held one (ADR-0017), or cancelled a job
+    /// (ADR-0018).
     #[must_use]
     pub fn is_tied(&self) -> bool {
         let has_asked = !self.asks.is_empty();
         let has_owes = !self.owes.is_empty();
+        let has_cancelled = !self.buffers.cancelled.is_empty();
 
-        has_asked || has_owes
+        has_asked || has_owes || has_cancelled
     }
 
     /// Whether the turn running held a request or answered a held one (ADR-0017).
@@ -282,6 +288,12 @@ impl Asked {
     /// Takes the children this turn stood up, each in the order its `begin` finished.
     pub fn take_stood(&mut self) -> Vec<Stood> {
         mem::take(&mut self.stood)
+    }
+
+    /// Every list, earlier turns' entries first.
+    #[must_use]
+    pub const fn buffers(&self) -> &Buffers {
+        &self.buffers
     }
 
     /// Every list, earlier turns' entries first, for the engine to add its own to, route, and empty.
@@ -769,6 +781,15 @@ impl Seat<'_> {
         self.asked.asks.push((self.me, Asking { count, answer, context }));
 
         Ok(id)
+    }
+
+    /// Cancels the job `job`, when this actor ran it (ADR-0018). Nothing in a guest's code, which runs no job.
+    fn cancel(&mut self, job: JobId) {
+        let is_own = job.mail().sender == self.me.id;
+        let is_native = !matches!(self.keeps, Keeps::Claimed);
+        if is_own && is_native {
+            self.asked.buffers.cancelled.push(job);
+        }
     }
 
     /// Holds the request the turn handles, from `source`, to be answered with a kind `answer` names in a later turn
@@ -1579,6 +1600,14 @@ impl<S> Turn<'_, S> {
         S: Allows<RunsJob<J, C>, I>,
     {
         self.seat.run(job, context)
+    }
+
+    /// Cancels the job `job` this actor ran: once the turn has run, the context it kept is let go of, so no turn is
+    /// handed the job's answer, whether or not it has finished, and the engine asks the host to stop it, which it does
+    /// if it can (ADR-0018). Cancelling a job that is no longer in flight, or that another actor ran, does nothing. A
+    /// turn that fails cancels nothing.
+    pub fn cancel(&mut self, job: JobId) {
+        self.seat.cancel(job);
     }
 
     /// Holds the request this turn handles, to answer with an `A` in a later turn, through

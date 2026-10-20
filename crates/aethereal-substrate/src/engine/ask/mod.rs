@@ -48,8 +48,9 @@ pub(super) enum Answering<'w> {
 
 impl Waiting {
     /// Settles what the turn of the actor `me` of an item tied as `tie`, which returned `outcome`, leaves: the context
-    /// its answer was handed with is let go of, and the requests it asked are filed from `asked`, none of a turn that
-    /// failed, whose mail was never sent. What the `begin`s of the children it stood up asked is left in `asked`, to
+    /// its answer was handed with is let go of, the requests it asked are filed from `asked`, and the contexts of the
+    /// jobs it cancelled are let go of, so no turn is handed their answers (ADR-0018); none of a turn that failed, whose
+    /// mail was never sent. What the `begin`s of the children it stood up asked is left in `asked`, to
     /// be filed beside each as it is seated.
     pub(super) fn settle(&mut self, me: Seated, tie: Tie, asked: &mut Asked, outcome: &Result<(), Fault>) {
         // Most mail is no answer.
@@ -57,13 +58,18 @@ impl Waiting {
             self.forget(tie);
         }
         // Most turns ask nothing.
-        if !asked.has_asked() {
-            return;
+        if asked.has_asked() {
+            if outcome.is_ok() {
+                self.file(asked.take_asks_by(me));
+            } else {
+                asked.take_asks().for_each(drop);
+            }
         }
+        // Most turns cancel nothing. A job may be cancelled in the turn that ran it, so it is filed first.
         if outcome.is_ok() {
-            self.file(asked.take_asks_by(me));
-        } else {
-            asked.take_asks().for_each(drop);
+            for job in &asked.buffers().cancelled {
+                self.forget_count(job.mail().count);
+            }
         }
     }
 
@@ -81,6 +87,11 @@ impl Waiting {
         let (Tied::Answers(count) | Tied::Unanswered(count)) = tie.read() else {
             return;
         };
+        self.forget_count(count);
+    }
+
+    /// Lets go of the context the request of the count `count` kept, when it still waits on it.
+    fn forget_count(&mut self, count: u64) {
         if let Asks::Waits(filed) = &mut self.asks
             && let Some(index) = filed.asks.iter().position(|asking| asking.count == count)
         {
