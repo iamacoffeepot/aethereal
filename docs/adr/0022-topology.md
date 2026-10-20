@@ -53,7 +53,7 @@ path::<(Army, Unit)>(&7)                // an instanced last segment: its key is
 ### What a turn may say at a typed path is declared, and the declaration is the dependency
 
 ```rust
-impl Asked for Renderer { type Protocol = Rendering; }       // the protocol a Renderer is asked through at a typed path
+impl Carries<CreateMesh> for Renderer { type Answers = (Meshed,); }   // what asking a Renderer for a mesh gets
 
 type Sends = (Asks<Path<(Renderer,)>, CreateMesh, Made>, Tells<Path<(Renderer,)>, Release>);
 
@@ -61,7 +61,8 @@ turn.ask_to(path::<(Renderer,)>(), &CreateMesh { .. }, &Made::Ground)?;
 turn.send_to(path::<(Renderer,)>(), &Release::Mesh(mesh))?;
 ```
 
-- **An ask at a typed path is declared with the path**, `Asks<Path<P>, K, C>`. The path's last type says what it is asked through, `Asked::Protocol`, which builds only when that type conforms to the protocol (ADR-0016), and the answer is read from it (ADR-0017: `Carries`). A type that declares no `Asked` cannot be asked at a typed path; it is asked through a reference, as today.
+- **An ask at a typed path is declared with the path**, `Asks<Path<P>, K, C>`, and **the answer is read from the path's last type**: it says what it answers each kind it can be asked with `Carries<K>`, as a named protocol does (ADR-0016), beside its handler. Its handler's declared replies must be the answers it carries, checked as a protocol's are (`AnsweredBy`), in the marker and not at the call. A type carries only the kinds it can be asked, one by one, so no list of its kinds is kept beside `Handles`. A kind a type does not carry cannot be asked of it at a typed path.
+- **This departs from ADR-0016**, where only a named protocol carries kinds: an actor's type may carry them too, for the asks made of it by its type. Named protocols stay for asking any actor that handles a set of kinds, through a `ProtocolRef`.
 - **A send at a typed path is declared with the path**, `Tells<Path<P>, K>`, the counterpart of `Asks`, and builds only when the path's last type handles `K`.
 - Both are checked at build time as every send is (`Allows`), and an ask only when the asker handles the answer (`BackTo<Self>`).
 - **Their `Sending` targets the path, `Target::Path(segments)`, so a type's declaration holds every path it reaches.** No dependency is declared beside the sends: a declared send at a typed path is one.
@@ -112,6 +113,7 @@ turn.send_to(path::<(Renderer,)>(), &Release::Mesh(mesh))?;
 
 - **`add_root` answers an `ActorRef<A>`, and the chassis hands it to the roots that use it, in their configs.** Explicit, and needs nothing new. Every actor beneath a root that reaches it would be handed the reference through each config on the way down, and nothing would refuse a spawn whose root is missing.
 - **A marker of its own for a dependency, `Needs<R>`.** A declared ask to the root already says the actor depends on it; a second marker would say it twice.
+- **A protocol named for each actor asked at a typed path, `impl Asked for Renderer { type Protocol = Rendering; }`.** A type made only to say what the actor answers, which `Carries` on the actor's own type says beside its handler.
 - **A capability: a protocol named with the name of the root that answers it.** Gave a guest something to name that holds no host state. A root is the one actor of its type at its name, so its type is what to name, and `Root` checks at build time what a capability's name could not.
 - **Paths by chaining, `root::<Host>().child::<Camera>()`.** One call per segment. A tuple names the whole path in one type parameter.
 - **The receiver named by a turbofish on the send, `ask_to::<Renderer>(..)`.** Rust has every type parameter named once one is, and the index a send's declaration is found at is inferred, so the call would be `ask_to::<Renderer, _, _, _, _>`. A typed path is the receiver as a value.
