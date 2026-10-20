@@ -2,11 +2,13 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Beginning, Drained, Ending, Fault, Handles, Held, Start, Stop, Subscribes, Tick, ToSender, Turn,
+    Actor, Answer, Answered, Beginning, Drained, Ending, Fault, Handles, Held, RunsJob, Sleep, Slept, Start, Stop,
+    Subscribes, Tick, ToSender, Turn,
 };
 use aethereal_data::{Bound, Kind, KindName, Plain};
-use aethereal_substrate::Engine;
+use aethereal_substrate::{Engine, Jobs};
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -221,4 +223,100 @@ fn a_stop_held_past_the_time_the_host_gives_it_ends_the_program_out_of_time() {
     assert_eq!(exit, Exit::OutOfTime);
     assert!(took >= Duration::from_millis(50), "took {took:?}");
     assert!(took < Duration::from_secs(10), "took {took:?}");
+}
+
+/// What a napper said became of its nap.
+static NAPPED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+/// An actor that sleeps for twenty milliseconds on `Start`, and asks the program to stop once it has slept; or, if
+/// fifty ticks go by first, gives up and asks it to stop.
+#[derive(Bound)]
+struct Napper {
+    ticks: u64,
+}
+
+impl Kind for Napper {
+    const NAME: KindName = KindName::new("aether.test.napper");
+}
+
+impl Actor for Napper {
+    type Config = Nothing;
+    type Key = ();
+    type Handles = (Start, Tick, Answer<Slept, Nothing>);
+    type BeginSends = (Subscribes<Start>, Subscribes<Tick>);
+    type EndSends = ();
+
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.subscribe::<Start, _>();
+        turn.subscribe::<Tick, _>();
+
+        Ok(Self { ticks: 0 })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Start> for Napper {
+    type Sends = (RunsJob<Sleep, Nothing>,);
+
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.run(&Sleep { until: turn.now() + Duration::from_millis(20) }, &Nothing)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Tick> for Napper {
+    type Sends = ();
+
+    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        self.ticks += 1;
+        let is_long = self.ticks == 50;
+        if is_long {
+            NAPPED.lock().map(|mut napped| napped.push("gave up")).ok();
+            turn.quit();
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Slept, Nothing>> for Napper {
+    type Sends = ();
+
+    fn handle(&mut self, (done, _): (Answered<Slept>, Nothing), turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        let said = match done {
+            Answered::Yes(Slept) => "slept",
+            Answered::No(_) => "not answered",
+        };
+        NAPPED.lock().map(|mut napped| napped.push(said)).ok();
+        turn.quit();
+
+        Ok(())
+    }
+}
+
+#[test]
+fn a_program_is_answered_for_its_jobs_while_it_runs() {
+    // Catches a host that never brings in what its jobs finished as it runs: the napper is never answered, and gives
+    // up once fifty ticks of five milliseconds have gone by.
+    let one = NonZeroUsize::MIN;
+    let runners: Arc<dyn Jobs> = Arc::new(crate::Runners::new(Vec::new(), one));
+    let Ok(engine) = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(runners).with_cycle::<(Tick,)>() else {
+        panic!("the cycle is in order");
+    };
+    let mut headless = Headless::new(engine, one);
+    let Ok(_) = headless.engine_mut().add_root::<Napper>(&(), Nothing) else {
+        panic!("the napper begins");
+    };
+    let (took, exit) = timed(headless, Duration::from_millis(5), Duration::from_secs(30));
+
+    assert_eq!(exit, Exit::Stopped);
+    let Ok(napped) = NAPPED.lock() else {
+        panic!("what was said is not poisoned");
+    };
+    assert_eq!(*napped, ["slept"]);
+    assert!(took >= Duration::from_millis(20), "it slept for its time: {took:?}");
 }
