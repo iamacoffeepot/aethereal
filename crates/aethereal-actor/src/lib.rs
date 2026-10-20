@@ -18,6 +18,8 @@ mod arena;
 mod ask;
 mod blob;
 mod boundary;
+#[cfg(feature = "std")]
+mod controller;
 mod declared;
 mod effect;
 mod ended;
@@ -52,6 +54,8 @@ pub use blob::{BlobHash, BlobId, Puts};
 #[cfg(feature = "std")]
 pub use blob::{BlobRef, Pinning, pins, within};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, Within, WithinReader, WithinWriter};
+#[cfg(feature = "std")]
+pub use controller::{Controller, Requests};
 pub use declared::{
     Allows, AnsweredBy, At, BackTo, CarriedBy, Carries, Conforms, Covers, Declared, Handled, HandledBy, HandledList,
     Handler, Handles, Kinds, Listed, Marker, Others, Protocol, RepliesTo, RepliesWithin, ReplyWithin, Role, Sending,
