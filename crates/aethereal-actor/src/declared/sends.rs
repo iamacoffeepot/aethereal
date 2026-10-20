@@ -2,7 +2,7 @@
 
 use super::{Handled, Handles, Listed, Sending, Target};
 use crate::{Actor, Beneath, ChildOf, Path, PathTo, Stage};
-use aethereal_data::{Kind, KindId, KindName, Plain};
+use aethereal_data::{Kind, KindId, KindName};
 use core::marker::PhantomData;
 
 /// A handler may send mail of kind `K` to an actor of type `T`, which handles it.
@@ -17,10 +17,6 @@ pub struct ToSender<K>(PhantomData<fn() -> K>);
 /// `K` is one of `P`'s kinds: a type whose declaration names another does not build (ADR-0016).
 pub struct ToAny<P, K>(PhantomData<fn() -> (P, K)>);
 
-/// A handler may watch an actor, to be handed its ending: only an actor whose type handles
-/// [`Ended`](crate::Ended) may declare it, as its build fails otherwise (ADR-0013).
-pub struct Watches;
-
 /// A handler may subscribe its actor to the stage `K` of the program's lifecycle, and unsubscribe it: only an actor
 /// whose type handles `K` may declare it, as its build fails otherwise (ADR-0020).
 pub struct Subscribes<K>(PhantomData<fn() -> K>);
@@ -33,22 +29,10 @@ pub struct Spawns<C>(PhantomData<fn() -> C>);
 /// as its build fails otherwise (ADR-0022).
 pub struct Tells<T, K>(PhantomData<fn() -> (T, K)>);
 
-/// What a watch is declared under: a kind of its own, which no mail is.
-#[derive(Plain)]
-struct Watch;
-
-impl Kind for Watch {
-    const NAME: KindName = KindName::new("aether.actor.watches");
-}
-
-/// One thing a handler declares it may do: a send, the kind it sends and where to, or a watch (ADR-0013).
+/// One thing a handler declares it may do: a send, the kind it sends and where to (ADR-0013).
 pub trait Marker {
     /// What it declares, as the engine reads it.
     const SENDING: Sending;
-}
-
-impl Marker for Watches {
-    const SENDING: Sending = Sending::new(KindId::of::<Watch>(), Target::Watched);
 }
 
 impl<K: Stage> Marker for Subscribes<K> {

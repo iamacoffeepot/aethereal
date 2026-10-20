@@ -15,11 +15,11 @@ use crate::job::lending;
 use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Askable, Asking, ChildOf, Children, Claim, Claimed, Code,
-    Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances, Keeping,
-    Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Parented, Payload, ProtocolRef,
-    Proven, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Spawns, Stage, Subscribes,
-    Table, Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable, Watches, What,
-    Within, Written,
+    Declared, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances,
+    Keeping, Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Parented, Payload,
+    ProtocolRef, Proven, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Spawns, Stage,
+    Subscribes, Table, Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable,
+    What, Within, Written,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -1029,7 +1029,7 @@ impl Seat<'_> {
             Target::Type(_, id) => receiver.id() == id,
             Target::Handling(kinds) => receiver.lists_all(kinds),
             Target::Path(segment) => receiver.id() == segment.kind,
-            Target::Watched | Target::Subscribed | Target::Job | Target::Spawned => false,
+            Target::Subscribed | Target::Job | Target::Spawned => false,
         };
         let receiver = receiver.name();
         assert!(
@@ -1471,21 +1471,21 @@ impl<Me, S> Turn<'_, Me, S> {
     /// Watching an actor already watched changes nothing. A path is resolved as it is watched, and a place that holds
     /// no live actor of its type is watched as an actor that has ended, whose ending is handed on at once (ADR-0022).
     ///
-    /// It builds only when the turn's sends list [`Watches`](crate::Watches), which only a type that handles
-    /// [`Ended`](crate::Ended) may (ADR-0013):
+    /// It builds only when the actor's type handles [`Ended`](crate::Ended), as the ending is handed to its handler
+    /// (ADR-0013):
     ///
     /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Beginning, Ending, Fault};
-    /// use aethereal_data::{Bound, Kind, KindName, Plain};
+    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Turn};
+    /// use aethereal_data::{Kind, KindName, Plain};
     ///
     /// #[derive(Plain)]
-    /// struct Nothing;
+    /// struct Look;
     ///
-    /// impl Kind for Nothing {
-    ///     const NAME: KindName = KindName::new("aether.doc.nothing");
+    /// impl Kind for Look {
+    ///     const NAME: KindName = KindName::new("aether.doc.look");
     /// }
     ///
-    /// #[derive(Bound)]
+    /// #[derive(Plain)]
     /// struct Watcher;
     ///
     /// impl Kind for Watcher {
@@ -1493,27 +1493,35 @@ impl<Me, S> Turn<'_, Me, S> {
     /// }
     ///
     /// impl Actor for Watcher {
-    ///     type Config = Nothing;
+    ///     type Config = Watcher;
     ///     type Key = ();
-    ///     type Handles = ();
+    ///     type Handles = (Look,);
     ///     type BeginSends = ();
     ///     type EndSends = ();
     ///
-    ///     fn begin(_: Nothing, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-    ///         let me = turn.me();
-    ///         turn.watch(me);
-    ///
-    ///         Ok(Self)
+    ///     fn begin(watcher: Watcher, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///         Ok(watcher)
     ///     }
     ///
     ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
+    ///
+    /// impl Handles<Look> for Watcher {
+    ///     type Sends = ();
+    ///
+    ///     fn handle(&mut self, _: Look, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    ///         let me = turn.me();
+    ///         turn.watch(me);
+    ///
+    ///         Ok(())
+    ///     }
+    /// }
     /// ```
-    pub fn watch<W: Watchable, I>(&mut self, of: W)
+    pub fn watch<W: Watchable>(&mut self, of: W)
     where
-        S: Allows<Watches, I>,
+        Me: Handles<Ended>,
     {
         let of = of.watched(self.seat.table);
         self.seat.watch(of);
@@ -2137,13 +2145,11 @@ impl<Me, S> Beginning<'_, Me, S> {
     }
 
     /// Watches the actor `of` refers to, or the one at the typed path it is, as a turn's `watch` does: when it ends,
-    /// this actor is handed its ending, once, as an item.
+    /// this actor is handed its ending, once, as an item. It builds only when the actor's type handles
+    /// [`Ended`](crate::Ended):
     ///
-    /// It builds only when the `begin`'s sends list [`Watches`](crate::Watches), which only a type that handles
-    /// [`Ended`](crate::Ended) may (ADR-0013):
-    ///
-    /// ```compile_fail,E0080
-    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Watches};
+    /// ```compile_fail,E0277
+    /// use aethereal_actor::{Actor, Beginning, Ending, Fault};
     /// use aethereal_data::{Bound, Kind, KindName, Plain};
     ///
     /// #[derive(Plain)]
@@ -2164,10 +2170,10 @@ impl<Me, S> Beginning<'_, Me, S> {
     ///     type Config = Nothing;
     ///     type Key = ();
     ///     type Handles = ();
-    ///     type BeginSends = (Watches,);
+    ///     type BeginSends = ();
     ///     type EndSends = ();
     ///
-    ///     fn begin(_: Nothing, turn: &mut Beginning<'_, Self, (Watches,)>) -> Result<Self, Fault> {
+    ///     fn begin(_: Nothing, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
     ///         let me = turn.me();
     ///         turn.watch(me);
     ///
@@ -2178,12 +2184,10 @@ impl<Me, S> Beginning<'_, Me, S> {
     ///         Ok(())
     ///     }
     /// }
-    ///
-    /// let declared = aethereal_actor::Declared::of::<Watcher>();
     /// ```
-    pub fn watch<W: Watchable, I>(&mut self, of: W)
+    pub fn watch<W: Watchable>(&mut self, of: W)
     where
-        S: Allows<Watches, I>,
+        Me: Handles<Ended>,
     {
         let of = of.watched(self.seat.table);
         self.seat.watch(of);

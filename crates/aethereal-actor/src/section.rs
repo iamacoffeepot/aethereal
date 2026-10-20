@@ -44,7 +44,6 @@ pub enum To {
     Type { name: KindName, id: KindId },
     Sender,
     Handling { kinds: Vec<KindId> },
-    Watched,
     Subscribed,
     Job,
     Spawned,
@@ -184,12 +183,11 @@ const fn sendings(out: &mut [u8], at: usize, sendings: &[Sending]) -> usize {
 
                 at
             }
-            Target::Watched => count(out, at, 3),
-            Target::Subscribed => count(out, at, 4),
-            Target::Job => count(out, at, 5),
-            Target::Spawned => count(out, at, 6),
+            Target::Subscribed => count(out, at, 3),
+            Target::Job => count(out, at, 4),
+            Target::Spawned => count(out, at, 5),
             Target::Path(last) => {
-                let mut at = count(out, at, 7);
+                let mut at = count(out, at, 6);
                 at = segment(out, at, last);
                 at = count(out, at, depth(last) - 1);
                 let mut below = last;
@@ -292,7 +290,6 @@ fn leak_sends(sends: &[Send]) -> &'static [Sending] {
             To::Type { name, id } => Target::Type(Box::leak(Box::new(name.clone())), *id),
             To::Sender => Target::Sender,
             To::Handling { kinds } => Target::Handling(Box::leak(kinds.clone().into_boxed_slice())),
-            To::Watched => Target::Watched,
             To::Subscribed => Target::Subscribed,
             To::Job => Target::Job,
             To::Spawned => Target::Spawned,

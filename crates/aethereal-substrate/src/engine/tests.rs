@@ -6,7 +6,7 @@ use crate::{ByActor, Entry, child_id, path_id};
 use aethereal_actor::Time;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Carries, ChildOf, Ended, Ending, Fault, Handles, How, Level,
-    Path, Recursive, Spawns, Table, Tells, To, ToAny, ToSender, ToType, ToWithoutMail, Top, Turn, Watches, path,
+    Path, Recursive, Spawns, Table, Tells, To, ToAny, ToSender, ToType, ToWithoutMail, Top, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
@@ -122,7 +122,7 @@ impl Actor for Node {
 }
 
 impl Handles<Note> for Node {
-    type Sends = (ToType<Self, Note>, ToSender<Note>, Watches, Spawns<Self>);
+    type Sends = (ToType<Self, Note>, ToSender<Note>, Spawns<Self>);
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Note { text } = note;
@@ -1769,7 +1769,7 @@ impl Actor for Seer {
     type Config = Self;
     type Key = ();
     type Handles = (Answer<Reply, Wondering>, Ended);
-    type BeginSends = (Asks<Path<Oracle>, Question, Wondering>, Watches);
+    type BeginSends = (Asks<Path<Oracle>, Question, Wondering>,);
     type EndSends = ();
 
     fn begin(seer: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
