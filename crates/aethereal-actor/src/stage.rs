@@ -55,8 +55,12 @@ impl Stage for Start {
     const PLACE: Place = Place::End;
 }
 
-/// The last stage, sent once, when the program is to stop: once every turn it set off has run, the host drops the
-/// engine.
+/// The last stage, sent once, when the program is to stop: once every turn it set off has run, and every subscriber
+/// has answered it or let it go, the host drops the engine.
+///
+/// It is the one stage sent as a request, answered with [`Drained`]. A subscriber with work in flight to finish holds
+/// it ([`Turn::hold`](crate::Turn::hold)) and answers once that work is done, and the program stops only after
+/// (ADR-0020).
 #[derive(Plain, Default)]
 pub struct Stop;
 
@@ -66,6 +70,14 @@ impl Kind for Stop {
 
 impl Stage for Stop {
     const PLACE: Place = Place::End;
+}
+
+/// What a subscriber answers [`Stop`] with: it has finished the work it had in flight (ADR-0020).
+#[derive(Plain, Default)]
+pub struct Drained;
+
+impl Kind for Drained {
+    const NAME: KindName = KindName::new("aether.lifecycle.drained");
 }
 
 /// The stage in which actors update what they hold, first of the shared stages: how long since the last `Tick`, and

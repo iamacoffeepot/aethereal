@@ -4,10 +4,10 @@
 use super::super::*;
 use crate::stages::key;
 use aethereal_actor::{
-    Cycle, Ending, Fault, Handles, Present, Render, Stage, Start, Stop, Subscribes, Tick, Time, To, ToType,
-    ToWithoutMail, Turn, Unordered,
+    Cycle, Drained, Ending, Fault, Handles, Held, Present, Render, Stage, Start, Stop, Subscribes, Tick, Time, To,
+    ToSender, ToType, ToWithoutMail, Turn, Unordered,
 };
-use aethereal_data::{Bound, Kind, KindId, KindName, Plain};
+use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, PathSegment, Plain};
 use core::time::Duration;
 use std::cell::RefCell;
 use std::mem;
@@ -187,6 +187,8 @@ fn stop_is_sent_only_once_every_turn_start_set_off_has_run() {
     assert_eq!(step(&mut engine), ["1 got pass 0"]);
     assert_eq!(engine.lifecycle(), Lifecycle::Stopping);
     assert_eq!(step(&mut engine), ["1 stopping"]);
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopping, "what the engine says of `Stop` left unanswered is to come");
+    assert!(step(&mut engine).is_empty());
     assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
     assert!(engine.is_idle());
 }
@@ -208,6 +210,7 @@ fn an_actor_that_asks_to_stop_stops_the_program_once_its_stage_has_finished() {
     assert_eq!(step(&mut engine), ["1 got pass 1", "2 got pass 1"]);
     assert_eq!(step(&mut engine), ["1 got pass 0", "2 got pass 0"]);
     assert_eq!(step(&mut engine), ["1 stopping", "2 stopping"]);
+    assert!(step(&mut engine).is_empty());
     assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
 }
 
@@ -435,6 +438,9 @@ fn a_program_asked_to_stop_mid_cycle_finishes_the_cycle_first() {
     assert_eq!(step_at(&mut engine, 40), ["render"]);
     assert_eq!(step_at(&mut engine, 50), ["present"]);
     assert_eq!(step_at(&mut engine, 60), ["stopping"], "no cycle begins once asked to stop");
+    // The cycler neither answered `Stop` nor held it, and what the engine says of that comes back to it, and is
+    // dropped, in the next step.
+    assert!(step_at(&mut engine, 70).is_empty());
     assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
 }
 
@@ -571,4 +577,135 @@ impl Handles<Note> for Latecomer {
 
         Ok(())
     }
+}
+
+/// An actor that subscribes to `Stop` as it begins, holds it when it is sent, and acts on the notes it is sent: `answer`
+/// answers it, `let go` drops it unanswered, and `close` closes the actor holding it.
+#[derive(Bound)]
+struct Drainer {
+    /// The `Stop` it holds: none until it is sent, and none once answered or let go.
+    held: Vec<Held<Drained>>,
+}
+
+impl Kind for Drainer {
+    const NAME: KindName = KindName::new("aether.test.drainer");
+}
+
+impl Actor for Drainer {
+    type Config = Note;
+    type Key = ();
+    type Handles = (Stop, Note);
+    type BeginSends = (Subscribes<Stop>,);
+    type EndSends = ();
+
+    fn begin(_: Note, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.subscribe::<Stop, _>();
+
+        Ok(Self { held: Vec::new() })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Stop> for Drainer {
+    type Sends = (ToSender<Drained>,);
+
+    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        say(String::from("holding"));
+        self.held.push(turn.hold()?);
+
+        Ok(())
+    }
+}
+
+impl Handles<Note> for Drainer {
+    type Sends = ();
+
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        say(note.text.clone());
+        match note.text.as_str() {
+            "answer" => {
+                for held in self.held.drain(..) {
+                    turn.answer(held, &Drained)?;
+                }
+            }
+            "let go" => self.held.clear(),
+            "close" => turn.close(),
+            _ => {}
+        }
+
+        Ok(())
+    }
+}
+
+/// An actor that, as it begins, sends the drainer the note it is made with: from a chain of its own, not `Stop`'s.
+#[derive(Bound)]
+struct Waker;
+
+impl Kind for Waker {
+    const NAME: KindName = KindName::new("aether.test.waker");
+}
+
+impl Actor for Waker {
+    type Config = Note;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = (ToType<Drainer, Note>,);
+    type EndSends = ();
+
+    fn begin(note: Note, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let path = ActorPath::from_root(&PathSegment::new(Drainer::NAME, &()));
+        let Some(drainer) = turn.resolve(&path) else {
+            return Ok(Self);
+        };
+        turn.send(ToWithoutMail::Held(drainer), &note)?;
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// Stops an engine whose drainer holds `Stop`, then has a waker send it `told`, and answers with whether the program
+/// had stopped after five steps of holding, and after five more once the drainer was told.
+fn drained(told: &str) -> (Lifecycle, Lifecycle) {
+    let Some(parts) = NonZeroUsize::new(4) else {
+        panic!("four is not zero");
+    };
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let Ok(_) = engine.add_root::<Drainer>(&(), Note { text: String::new() }) else {
+        panic!("the drainer begins");
+    };
+    engine.start();
+    engine.quit();
+    assert_eq!(step(&mut engine), ["holding"]);
+    for _ in 0..4 {
+        step(&mut engine);
+    }
+    let held = engine.lifecycle();
+
+    let Ok(_) = engine.add_root::<Waker>(&(), Note { text: String::from(told) }) else {
+        panic!("the waker begins");
+    };
+    assert_eq!(step(&mut engine), [told]);
+    for _ in 0..4 {
+        step(&mut engine);
+    }
+
+    (held, engine.lifecycle())
+}
+
+#[test]
+fn a_subscriber_that_holds_stop_keeps_the_program_from_stopping_until_it_answers_or_lets_it_go() {
+    // Catches `Stop` sent as no request, so it cannot be held, `Stop` finished once its chain has though a subscriber
+    // still holds it, and a held `Stop` that keeps the program from stopping once it was answered, let go, or its
+    // holder closed.
+    assert_eq!(drained("answer"), (Lifecycle::Stopping, Lifecycle::Stopped));
+    assert_eq!(drained("let go"), (Lifecycle::Stopping, Lifecycle::Stopped));
+    assert_eq!(drained("close"), (Lifecycle::Stopping, Lifecycle::Stopped));
+    assert_eq!(drained("nothing"), (Lifecycle::Stopping, Lifecycle::Stopping));
 }

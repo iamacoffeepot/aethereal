@@ -15,7 +15,7 @@ use crate::id::root_id;
 use crate::lives;
 use crate::stages::{self, key};
 use aethereal_actor::{
-    Cycle, Cycled, Cycling, Declared, MailId, Mailed, Refused, Start, Stop, Tie, Time, Unordered, ordered,
+    Cycle, Cycled, Cycling, Declared, MailId, Mailed, Refused, Seated, Start, Stop, Tie, Time, Unordered, ordered,
 };
 use aethereal_data::{ActorId, KindId, KindName, PathSegment};
 use core::time::Duration;
@@ -51,6 +51,9 @@ pub(super) struct Staging {
     time: Cycled,
     /// The most one `Tick`'s delta may be, in nanoseconds: a longer stall slows the program's time.
     delta_limit_nanos: u64,
+    /// The subscribers `Stop` was asked of, each by its own count of the request: none before it is sent. `Stop` has
+    /// finished only once none of them owes it.
+    draining: Vec<(Seated, u64)>,
 }
 
 /// The stage whose chain the engine waits on, if any.
@@ -87,6 +90,7 @@ impl Staging {
             elapsed_nanos: 0,
             time: Cycled { delta_nanos: 0, elapsed_nanos: 0 },
             delta_limit_nanos: nanos(DELTA_LIMIT),
+            draining: Vec::new(),
         }
     }
 }
@@ -200,7 +204,9 @@ impl Engine {
             self.stopping();
         }
         if let UnderWay::Stage { root, at } = self.staging.under_way {
-            if !self.has_finished(root) {
+            let is_stop = matches!(at, At::Stop);
+            let is_draining = is_stop && self.is_draining();
+            if is_draining || !self.has_finished(root) {
                 return;
             }
             self.staging.under_way = UnderWay::Nothing;
@@ -237,6 +243,15 @@ impl Engine {
         self.send_stage(first, At::Cycle(0));
     }
 
+    /// Whether a subscriber `Stop` was asked of still holds it: it has not answered, nor let it go, nor ended.
+    fn is_draining(&self) -> bool {
+        self.staging.draining.iter().any(|&(subscriber, request)| {
+            let held = self.actors[self.part(subscriber.seat)].get(subscriber);
+
+            held.is_some_and(|held| held.debts.owes(subscriber, request))
+        })
+    }
+
     /// Marks the lifecycle as asked to stop, unless it has stopped already.
     fn stopping(&mut self) {
         let is_live = matches!(self.staging.lifecycle, Lifecycle::Waiting | Lifecycle::Running);
@@ -256,7 +271,9 @@ impl Engine {
     }
 
     /// Sends `stage`, standing `at`, to every actor subscribed to it, as mail from each to itself, in the order of
-    /// their ids, all of one chain, and waits on that chain. An actor that has gone is passed over and taken out of
+    /// their ids, all of one chain, and waits on that chain. `Stop` is sent as a request each subscriber asks of
+    /// itself, under its own count, so its answer comes back to it as an answer to nothing it waits on, and is
+    /// dropped: the engine reads only whether the request is still held. An actor that has gone is passed over and taken out of
     /// the subscribers; one that has ended and is still to run its closing turn is sent the stage, which is dropped
     /// where it would be handed to it, as all mail to an actor that has ended is.
     fn send_stage(&mut self, stage: Cycling, at: At) {
@@ -281,7 +298,14 @@ impl Engine {
             };
             let count = sent + 1;
             self.lives.fold_records([lives::sent(subscriber, count)], &[]);
-            mailed.push(Mailed { by: subscriber, to: subscriber, count, kind, bytes, tie: Tie::TELL });
+            let tied = match at {
+                At::Stop => {
+                    self.staging.draining.push((subscriber, count));
+                    Tie::asks(count)
+                }
+                At::Start | At::Cycle(_) => Tie::TELL,
+            };
+            mailed.push(Mailed { by: subscriber, to: subscriber, count, kind, bytes, tie: tied });
         }
         self.arenas[parity][ROOTS] = arena;
         self.fold_brought(mailed, Vec::new(), parity, |_| root);

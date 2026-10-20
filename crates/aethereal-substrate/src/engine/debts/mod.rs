@@ -137,6 +137,11 @@ impl Debts {
         is_let_go.then(|| debts.swap_remove(at))
     }
 
+    /// Whether it still owes the request `asker` asked as its `request`th piece of mail.
+    pub(super) fn owes(&self, asker: Seated, request: u64) -> bool {
+        self.owed().iter().any(|debt| debt.asker == asker && debt.request == request)
+    }
+
     /// Takes every debt still owed: for an actor that has ended, whose askers are each told so.
     pub(super) fn take_all(&mut self) -> Vec<Debt> {
         match mem::take(&mut self.held) {
