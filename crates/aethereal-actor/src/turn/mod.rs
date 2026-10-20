@@ -1027,7 +1027,7 @@ impl Seat<'_> {
             Target::Sender => true,
             Target::Type(_, id) => receiver.id() == id,
             Target::Handling(kinds) => receiver.lists_all(kinds),
-            Target::Path(segment) => receiver.name() == segment.name,
+            Target::Path(segment) => receiver.id() == segment.kind,
             Target::Watched | Target::Subscribed | Target::Job | Target::Spawned => false,
         };
         let receiver = receiver.name();
@@ -1103,6 +1103,7 @@ impl Seat<'_> {
         let (path, id) = self.free_child(&segment)?;
         let declared = Declared::of::<C>();
         self.staged(declared)?;
+        self.reaching(declared)?;
         #[cfg(feature = "std")]
         if !instances.is_own(declared) {
             let guests = instances.guests();
@@ -1169,6 +1170,7 @@ impl Seat<'_> {
         let (path, id) = self.free_child(&segment)?;
         let declared = Declared::of::<C>();
         self.staged(declared)?;
+        self.reaching(declared)?;
         let guests = instances.guests();
         let made = guests.made(code.id(), declared).ok_or(Refused::NotMade)?;
         let config = config_bytes(config).map_err(|_| Refused::NotMade)?;
@@ -1235,6 +1237,19 @@ impl Seat<'_> {
         let unstaged = declared.unstaged(|stage| self.table.runs_stage(stage));
 
         unstaged.map_or(Ok(()), |stage| Err(Refused::Unstaged(stage)))
+    }
+
+    /// Refuses a child of the type `declared` when a typed path of singletons it reaches holds no live actor of the
+    /// path's type, before any of its code runs (ADR-0022). This actor counts as live to it, though the `begin` that
+    /// spawns it may still be running.
+    fn reaching(&self, declared: &Declared) -> Result<(), Refused> {
+        let live = |path: &ActorPath, kind: KindId| {
+            let is_me = path == self.path && kind == self.declared.id();
+
+            is_me || self.table.reach(path, kind).seat != SeatNumber::NOWHERE
+        };
+
+        declared.missing(live).map_or(Ok(()), |segment| Err(Refused::Missing(segment.name.clone())))
     }
 
     /// The path and id of the child `segment` names beneath this actor, when its key is free: when this actor has

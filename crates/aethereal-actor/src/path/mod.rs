@@ -4,7 +4,7 @@
 mod tests;
 
 use crate::{ChildOf, Top};
-use aethereal_data::{ActorKey, ActorPath, Keyed, KindName, PathSegment, Then};
+use aethereal_data::{ActorKey, ActorPath, Keyed, KindId, KindName, PathSegment, Then};
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
@@ -263,13 +263,41 @@ pub enum Beneath {
     Type(&'static TypeSegment),
 }
 
-/// One segment of a typed path as a declaration holds it: its type's name, whether it is keyed, and what it stands
-/// beneath. The keys are the send's, not the declaration's.
+/// One segment of a typed path as a declaration holds it: its type's name and kind, whether it is keyed, and what it
+/// stands beneath. The keys are the send's, not the declaration's.
 #[derive(Debug, PartialEq, Eq)]
 pub struct TypeSegment {
     pub name: &'static KindName,
+    /// The type's kind: what the actor at the place must be (ADR-0006).
+    pub kind: KindId,
     pub keyed: Keyed,
     pub beneath: Beneath,
+}
+
+impl TypeSegment {
+    /// The path to the place this segment names, when every segment on it is a singleton's, so its names alone
+    /// spell it: what a spawn checks is live (ADR-0022). None when one is keyed, which no declaration can name the
+    /// key of, or the path would be deeper than any path.
+    #[must_use]
+    pub fn singletons(&self) -> Option<ActorPath> {
+        let mut names = Vec::new();
+        let mut segment = self;
+        loop {
+            let is_too_deep = names.len() >= ActorPath::MAX_DEPTH;
+            if segment.keyed == Keyed::Instanced || is_too_deep {
+                return None;
+            }
+            names.push(PathSegment::new(segment.name.clone(), &()));
+            match segment.beneath {
+                Beneath::Top => break,
+                Beneath::Type(above) => segment = above,
+            }
+        }
+        let mut names = names.iter().rev();
+        let root = ActorPath::from_root(names.next()?);
+
+        names.try_fold(root, |path, name| path.child(name).ok())
+    }
 }
 
 /// The segment of `T`, held as a constant, so a declaration can refer to it for as long as the program runs.
@@ -279,8 +307,12 @@ impl<T: ChildOf> Segment<T>
 where
     T::Parent: PathTo,
 {
-    const OF: TypeSegment =
-        TypeSegment { name: &T::NAME, keyed: <T::Key as ActorKey>::KEYED, beneath: <T::Parent as PathTo>::BENEATH };
+    const OF: TypeSegment = TypeSegment {
+        name: &T::NAME,
+        kind: KindId::of::<T>(),
+        keyed: <T::Key as ActorKey>::KEYED,
+        beneath: <T::Parent as PathTo>::BENEATH,
+    };
 }
 
 /// The actor of type `L` at its typed path, under its keys: a place, not an actor that is live (ADR-0022).

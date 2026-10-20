@@ -21,8 +21,8 @@ pub use replies::{DeclaredBy, HandledBy, RepliesTo, RepliesWith, RepliesWithin, 
 pub use sends::Last;
 pub use sends::{Allows, At, Kinds, Marker, Sends, Spawns, Subscribes, Tells, ToAny, ToSender, ToType, Watches};
 
-use crate::Actor;
-use aethereal_data::{ActorKey, Keyed, KindId, KindName};
+use crate::{Actor, TypeSegment};
+use aethereal_data::{ActorKey, ActorPath, Keyed, KindId, KindName};
 use core::marker::PhantomData;
 
 /// What an actor type declares, as the engine reads it: its name, what each of its turns may send, and what it
@@ -138,6 +138,23 @@ impl Declared {
         let sendings = self.begins.iter().chain(handled);
 
         sendings.filter(|sending| sending.to == Target::Subscribed).map(Sending::kind).find(|stage| !runs(*stage))
+    }
+
+    /// The first typed path of singletons the type sends at, as it begins, in a handler, or as it ends, whose place
+    /// `live` does not hold, handed its path and the kind the actor there must be, when there is one: what an actor of
+    /// it is refused for where it is made (ADR-0022). A path with a key is a place actors fill and empty as the program
+    /// runs, and is not checked.
+    pub fn missing(&self, live: impl Fn(&ActorPath, KindId) -> bool) -> Option<&'static TypeSegment> {
+        let handled = self.handlers.iter().flat_map(Handler::sends);
+
+        self.begins.iter().chain(handled).chain(self.ends).find_map(|sending| {
+            let Target::Path(segment) = sending.to else {
+                return None;
+            };
+            let path = segment.singletons()?;
+
+            (!live(&path, segment.kind)).then_some(segment)
+        })
     }
 
     /// Whether one of the type's handlers is for `role`.
@@ -342,5 +359,5 @@ pub enum Target {
     /// No actor: the handler may spawn a child of the type of the sending's kind (ADR-0022).
     Spawned,
     /// The actor at the typed path whose last segment this is, found as each piece of mail is sent (ADR-0022).
-    Path(&'static crate::TypeSegment),
+    Path(&'static TypeSegment),
 }

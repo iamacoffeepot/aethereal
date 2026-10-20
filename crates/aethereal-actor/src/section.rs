@@ -55,6 +55,7 @@ pub enum To {
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub struct Segment {
     pub name: KindName,
+    pub kind: KindId,
     pub keyed: Key,
 }
 
@@ -218,9 +219,10 @@ const fn depth(segment: &TypeSegment) -> usize {
     depth
 }
 
-/// Writes one segment of a typed path: its type's name, and whether it is keyed, as [`Segment`] reads them.
+/// Writes one segment of a typed path: its type's name and kind, and whether it is keyed, as [`Segment`] reads them.
 const fn segment(out: &mut [u8], at: usize, segment: &TypeSegment) -> usize {
     let at = name(out, at, segment.name);
+    let at = id(out, at, segment.kind);
     let keyed = match segment.keyed {
         Keyed::Singleton => 0,
         Keyed::Instanced => 1,
@@ -320,5 +322,5 @@ fn leak_segment(segment: &Segment, beneath: Beneath) -> &'static TypeSegment {
         Key::Instanced => Keyed::Instanced,
     };
 
-    Box::leak(Box::new(TypeSegment { name, keyed, beneath }))
+    Box::leak(Box::new(TypeSegment { name, kind: segment.kind, keyed, beneath }))
 }

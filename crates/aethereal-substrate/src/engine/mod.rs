@@ -29,7 +29,7 @@ use crate::id::root_id;
 use crate::log;
 use crate::stages::Stages;
 use crate::stream::{self, Handed, Pieces, Streams};
-use crate::table::Actors;
+use crate::table::{self, Actors};
 use crate::watch::{Notice, Watches};
 use crate::{
     ActorTable, Blobs, ByActor, BySeat, Clock, Context, Entry, Envelope, Folded, Lives, Log, Part, Routed, State,
@@ -690,6 +690,10 @@ impl Engine {
             return Err(Refused::KeyTaken);
         }
         self.staged(from.declared())?;
+        let live = |path: &ActorPath, kind| table::reach(&self.table, path, kind).seat != SeatNumber::NOWHERE;
+        if let Some(segment) = from.declared().missing(live) {
+            return Err(Refused::Missing(segment.name.clone()));
+        }
 
         // Mail sent between steps is read in the next step, with the mail the last step's turns sent. The root sits in
         // the part with fewest actors, and the children its `begin` stands up beside it while the part has room, then

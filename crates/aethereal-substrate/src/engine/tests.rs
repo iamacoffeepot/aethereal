@@ -1572,7 +1572,7 @@ macro_rules! listening {
 
         impl Actor for $name {
             type Config = Self;
-            type Key = ();
+            type Key = u64;
             type Handles = (Note,);
             type BeginSends = ();
             type EndSends = ();
@@ -1601,7 +1601,8 @@ macro_rules! listening {
 listening!(Listener, "the listener");
 listening!(Impostor, "the impostor");
 
-/// A root that, as it begins, tells the listener at its typed path what it is made from.
+/// A root that, as it begins, tells the listener of key zero at its typed path what it is made from: a keyed path,
+/// which its spawn does not check, so it may hold anything as the caller sends.
 #[derive(Plain)]
 struct Caller {
     text: String,
@@ -1623,7 +1624,7 @@ impl Actor for Caller {
     type EndSends = ();
 
     fn begin(caller: Self, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.send_to(path::<Listener>(()), &Note { text: caller.text.clone() })?;
+        turn.send_to(path::<Listener>(0), &Note { text: caller.text.clone() })?;
 
         Ok(caller)
     }
@@ -1650,7 +1651,7 @@ fn a_send_at_a_typed_path_reaches_only_a_live_actor_of_the_paths_type() {
     // shares its name and so its id, and one at a place that holds no actor kept rather than dropped (ADR-0022).
     let listener = calling(
         |engine| {
-            let Ok(_) = engine.add_root::<Listener>(&(), Listener) else {
+            let Ok(_) = engine.add_root::<Listener>(&0, Listener) else {
                 panic!("the listener begins");
             };
         },
@@ -1658,7 +1659,7 @@ fn a_send_at_a_typed_path_reaches_only_a_live_actor_of_the_paths_type() {
     );
     let impostor = calling(
         |engine| {
-            let Ok(_) = engine.add_root::<Impostor>(&(), Impostor { at: 0 }) else {
+            let Ok(_) = engine.add_root::<Impostor>(&0, Impostor { at: 0 }) else {
                 panic!("the impostor begins");
             };
         },
@@ -1720,7 +1721,7 @@ macro_rules! answering {
 
         impl Actor for $name {
             type Config = Self;
-            type Key = ();
+            type Key = u64;
             type Handles = (Question,);
             type BeginSends = ();
             type EndSends = ();
@@ -1751,7 +1752,8 @@ macro_rules! answering {
 answering!(Oracle, "the truth");
 answering!(FalseOracle, "a lie");
 
-/// A root that, as it begins, asks the oracle at its typed path a question and watches it, and says what it hears.
+/// A root that, as it begins, asks the oracle of key zero at its typed path a question and watches it, and says what it
+/// hears: a keyed path, which its spawn does not check.
 #[derive(Plain)]
 struct Seer;
 
@@ -1771,8 +1773,8 @@ impl Actor for Seer {
     type EndSends = ();
 
     fn begin(seer: Self, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.ask_to(path::<Oracle>(()), &Question, &Wondering)?;
-        turn.watch(path::<Oracle>(()));
+        turn.ask_to(path::<Oracle>(0), &Question, &Wondering)?;
+        turn.watch(path::<Oracle>(0));
 
         Ok(seer)
     }
@@ -1824,12 +1826,12 @@ fn an_ask_and_a_watch_at_a_typed_path_reach_only_a_live_actor_of_the_paths_type(
     // and so its id, and one at a place that holds no actor that goes unanswered forever, rather than `Ended`; and a
     // watch at such a place that waits for an ending that will never come (ADR-0022).
     let oracle = seeing(|engine| {
-        let Ok(_) = engine.add_root::<Oracle>(&(), Oracle) else {
+        let Ok(_) = engine.add_root::<Oracle>(&0, Oracle) else {
             panic!("the oracle begins");
         };
     });
     let false_oracle = seeing(|engine| {
-        let Ok(_) = engine.add_root::<FalseOracle>(&(), FalseOracle { at: 0 }) else {
+        let Ok(_) = engine.add_root::<FalseOracle>(&0, FalseOracle { at: 0 }) else {
             panic!("the false oracle begins");
         };
     });
@@ -1839,4 +1841,229 @@ fn an_ask_and_a_watch_at_a_typed_path_reach_only_a_live_actor_of_the_paths_type(
     assert_eq!(oracle, ["the seer was told the truth"], "a live oracle is not shown as ended");
     assert_eq!(false_oracle, gone, "an actor of another kind at the path is not reached");
     assert_eq!(nobody, gone);
+}
+
+/// A root, a singleton, that other types reach at its typed path.
+#[derive(Plain)]
+struct Lighthouse;
+
+/// A root at the lighthouse's name of another layout, so another kind.
+#[derive(Plain)]
+struct FalseLighthouse {
+    at: u64,
+}
+
+/// What a root at the lighthouse's name is: one that takes notes and does nothing with them.
+macro_rules! lighthouse {
+    ($name:ident) => {
+        impl Kind for $name {
+            const NAME: KindName = KindName::new("aether.test.lighthouse");
+        }
+
+        impl ChildOf for $name {
+            type Parent = Top;
+        }
+
+        impl Actor for $name {
+            type Config = Self;
+            type Key = ();
+            type Handles = (Note,);
+            type BeginSends = ();
+            type EndSends = ();
+
+            fn begin(lighthouse: Self, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+                Ok(lighthouse)
+            }
+
+            fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+                Ok(())
+            }
+        }
+
+        impl Handles<Note> for $name {
+            type Sends = ();
+
+            fn handle(&mut self, _: Note, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+                Ok(())
+            }
+        }
+    };
+}
+
+lighthouse!(Lighthouse);
+lighthouse!(FalseLighthouse);
+
+/// A root that declares a send at the lighthouse's typed path in its `begin`, in its handler, or as it ends, whichever
+/// of `$begins`, `$handler`, and `$ends` names it, and sends nothing: a declaration is what its spawn is checked by.
+macro_rules! reaching {
+    ($name:ident, $named:literal, $begins:ty, $handler:ty, $ends:ty) => {
+        #[derive(Plain, Default)]
+        struct $name;
+
+        impl Kind for $name {
+            const NAME: KindName = KindName::new($named);
+        }
+
+        impl ChildOf for $name {
+            type Parent = Top;
+        }
+
+        impl Actor for $name {
+            type Config = Self;
+            type Key = ();
+            type Handles = (Note,);
+            type BeginSends = $begins;
+            type EndSends = $ends;
+
+            fn begin(reaching: Self, _: &mut Beginning<'_, $begins>) -> Result<Self, Fault> {
+                Ok(reaching)
+            }
+
+            fn end(self, _: &mut Ending<'_, $ends>) -> Result<(), Fault> {
+                Ok(())
+            }
+        }
+
+        impl Handles<Note> for $name {
+            type Sends = $handler;
+
+            fn handle(&mut self, _: Note, _: &mut Turn<'_, $handler>) -> Result<(), Fault> {
+                Ok(())
+            }
+        }
+    };
+}
+
+/// A send at the lighthouse's typed path.
+type ToLighthouse = (Tells<Path<Lighthouse>, Note>,);
+
+reaching!(Sailor, "aether.test.sailor", ToLighthouse, (), ());
+reaching!(Lookout, "aether.test.lookout", (), ToLighthouse, ());
+reaching!(Wrecker, "aether.test.wrecker", (), (), ToLighthouse);
+
+/// Whether a root of type `R` is made beside whichever root `lighthouse` makes at the lighthouse's name.
+fn reaches<R: Root<Config = R, Key = ()> + Default>(lighthouse: impl FnOnce(&mut Engine)) -> Result<(), Refused> {
+    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0);
+    lighthouse(&mut engine);
+
+    engine.add_root::<R>(&(), R::default()).map(|_| ())
+}
+
+#[test]
+fn a_root_that_reaches_a_typed_path_of_singletons_is_refused_while_no_actor_of_its_type_is_live_there() {
+    // Catches a check that reads only the `begin`'s sends and not a handler's or the closing turn's, one that counts
+    // an actor of another kind of the same name as live there, and one that refuses a root whose path is live, or
+    // names something other than the path's type (ADR-0022).
+    let missing = Err(Refused::Missing(Lighthouse::NAME));
+    let made = |engine: &mut Engine| {
+        let Ok(_) = engine.add_root::<Lighthouse>(&(), Lighthouse) else {
+            panic!("the lighthouse begins");
+        };
+    };
+    let impostor = |engine: &mut Engine| {
+        let Ok(_) = engine.add_root::<FalseLighthouse>(&(), FalseLighthouse { at: 0 }) else {
+            panic!("the false lighthouse begins");
+        };
+    };
+
+    assert_eq!(reaches::<Sailor>(|_| {}), missing, "a send its begin declares");
+    assert_eq!(reaches::<Lookout>(|_| {}), missing, "a send a handler declares");
+    assert_eq!(reaches::<Wrecker>(|_| {}), missing, "a send its closing turn declares");
+    assert_eq!(reaches::<Sailor>(impostor), missing, "an actor of another kind at the place");
+    assert_eq!(reaches::<Sailor>(made), Ok(()));
+    assert_eq!(reaches::<Lookout>(made), Ok(()));
+    assert_eq!(reaches::<Wrecker>(made), Ok(()));
+}
+
+/// A root that, as it begins, spawns a pilot, which reaches it back at its typed path, and a smuggler, which reaches
+/// the lighthouse, and says what became of each.
+#[derive(Plain)]
+struct Harbor;
+
+impl Kind for Harbor {
+    const NAME: KindName = KindName::new("aether.test.harbor");
+}
+
+impl ChildOf for Harbor {
+    type Parent = Top;
+}
+
+impl Actor for Harbor {
+    type Config = Self;
+    type Key = ();
+    type Handles = (Note,);
+    type BeginSends = (Spawns<Pilot>, Spawns<Smuggler>);
+    type EndSends = ();
+
+    fn begin(harbor: Self, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let pilot: Result<ActorRef<Pilot>, _> = turn.spawn(&(), Pilot);
+        let smuggler: Result<ActorRef<Smuggler>, _> = turn.spawn(&(), Smuggler);
+        say(format!("pilot {:?}, smuggler {:?}", pilot.err(), smuggler.err()));
+
+        Ok(harbor)
+    }
+
+    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Note> for Harbor {
+    type Sends = ();
+
+    fn handle(&mut self, _: Note, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// What reaches the harbor that spawns it, at its typed path.
+#[derive(Plain)]
+struct Pilot;
+
+/// What reaches the lighthouse, at its typed path.
+#[derive(Plain)]
+struct Smuggler;
+
+/// What a child of the harbor is: one that declares a send at a typed path as it begins.
+macro_rules! harbored {
+    ($name:ident, $named:literal, $reaches:ty) => {
+        impl Kind for $name {
+            const NAME: KindName = KindName::new($named);
+        }
+
+        impl ChildOf for $name {
+            type Parent = Harbor;
+        }
+
+        impl Actor for $name {
+            type Config = Self;
+            type Key = ();
+            type Handles = ();
+            type BeginSends = (Tells<Path<$reaches>, Note>,);
+            type EndSends = ();
+
+            fn begin(child: Self, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+                Ok(child)
+            }
+
+            fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+                Ok(())
+            }
+        }
+    };
+}
+
+harbored!(Pilot, "aether.test.pilot", Harbor);
+harbored!(Smuggler, "aether.test.smuggler", Lighthouse);
+
+#[test]
+fn a_child_that_reaches_a_typed_path_of_singletons_is_refused_while_no_actor_is_live_there_but_its_spawner() {
+    // Catches a turn's spawn that does not check the paths its child reaches, and one that refuses a child reaching
+    // back the actor whose `begin` spawns it, which is not yet in the table (ADR-0022).
+    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0);
+    let Ok(_) = engine.add_root::<Harbor>(&(), Harbor) else {
+        panic!("the harbor begins");
+    };
+
+    assert_eq!(said(), ["pilot None, smuggler Some(Missing(KindName(\"aether.test.lighthouse\")))"]);
 }
