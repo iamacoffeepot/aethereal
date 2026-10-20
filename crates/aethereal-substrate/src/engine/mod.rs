@@ -46,6 +46,7 @@ use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
 use ask::{Answering, Waiting};
 use birth::Births;
 use costs::{CostKey, Costs, ItemKind, toward};
+use crossbeam_queue::SegQueue;
 use debts::Debts;
 use fuse::{Fusing, Hand, Hop, Stepped};
 use gift::{Arrival, Gifts};
@@ -57,8 +58,8 @@ use since::{Sees, Since};
 use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 
 /// The engine: its actors, the views of them, and the steps their turns run in (ADR-0011).
 ///
@@ -162,7 +163,7 @@ pub struct Engine {
     /// What runs the jobs turns run (ADR-0018).
     jobs: Arc<dyn Jobs>,
     /// The jobs that have run, pushed by whatever ran them, to bring in at the next bring.
-    finished: Arc<Mutex<Vec<jobs::Finished>>>,
+    finished: Arc<SegQueue<jobs::Finished>>,
     /// Which engine of the process this is, in the id of each blob it holds. Last, so what the engine's actors held
     /// is let go of before the engine is forgotten.
     number: Number,
@@ -425,7 +426,7 @@ impl Engine {
             handed: Vec::new(),
             sources: Vec::new(),
             jobs: Arc::new(Inline::new(Vec::new())),
-            finished: Arc::new(Mutex::new(Vec::new())),
+            finished: Arc::new(SegQueue::new()),
             number,
         }
     }

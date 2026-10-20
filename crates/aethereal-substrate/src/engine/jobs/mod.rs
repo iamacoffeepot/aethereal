@@ -8,9 +8,9 @@ use super::{Engine, ROOTS, parity};
 use crate::{lives, log};
 use aethereal_actor::{Fault, JobId, JobType, MailId, Mailed, Outcome, Seated, Submitted, Tie, Unanswered};
 use aethereal_data::{Kind, KindId, KindName, Plain};
-use std::mem;
+use crossbeam_queue::SegQueue;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 /// What runs the jobs the engine hands out, which each host implements: a pool of threads natively, Web Workers in a
@@ -31,22 +31,23 @@ pub struct Taken {
     pub finish: Finish,
 }
 
-/// Where a job's outcome goes: the engine's feed of finished jobs, which it brings in at [`Engine::bring`].
+/// Where a job's outcome goes: the engine's feed of finished jobs, which it brings in at [`Engine::bring`]. The feed is
+/// a queue no one waits on: a runner pushing onto it never waits for another, nor for the engine, and the engine never
+/// waits for a runner.
 ///
 /// A host that drops it without [`Finish::done`] leaves its job unanswered.
 pub struct Finish {
     by: Seated,
     count: u64,
     answer: KindId,
-    feed: Arc<Mutex<Vec<Finished>>>,
+    feed: Arc<SegQueue<Finished>>,
 }
 
 impl Finish {
     /// Pushes the job's outcome onto the engine's feed, to answer the actor that ran it at the next bring.
     pub fn done(self, outcome: Outcome) {
         let Self { by, count, answer, feed } = self;
-        let mut finished = feed.lock().unwrap_or_else(PoisonError::into_inner);
-        finished.push(Finished { by, count, answer, outcome });
+        feed.push(Finished { by, count, answer, outcome });
     }
 }
 
@@ -142,24 +143,23 @@ impl Engine {
         }
     }
 
-    /// Brings in each job finished since the last bring, between steps: its outcome as mail from the actor that ran it
+    /// Brings in each job finished before this bring began, between steps: its outcome as mail from the actor that ran it
     /// to itself, tied to the job, the root of a chain of its own, which its handler of what the job answers with is
     /// handed with the context it kept (ADR-0018). A fault is written into the actor's log too. The outcome of a job
-    /// whose actor has ended is dropped.
+    /// whose actor has ended is dropped. What finishes while it brings waits for the next, so a bring is bounded
+    /// however fast the runners push.
     pub(super) fn bring_jobs(&mut self) {
-        let finished = {
-            let mut feed = self.finished.lock().unwrap_or_else(PoisonError::into_inner);
-            mem::take(&mut *feed)
-        };
+        let ready = self.finished.len();
         // Most brings find no job finished.
-        if finished.is_empty() {
+        if ready == 0 {
             return;
         }
+        let feed = Arc::clone(&self.finished);
         let parity = parity(self.step);
         let mut arena = self.arena(parity, ROOTS, 0);
         let mut mailed = Vec::new();
         let mut faults = Vec::new();
-        for Finished { by, count, answer, outcome } in finished {
+        for Finished { by, count, answer, outcome } in (0..ready).map_while(|_| feed.pop()) {
             let Some(life) = self.lives.shard(by.seat.number()).life(by) else {
                 continue;
             };

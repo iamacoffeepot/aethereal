@@ -10,6 +10,7 @@ use aethereal_actor::{
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
 use std::cell::RefCell;
 use std::future;
+use std::sync::Mutex;
 
 thread_local! {
     /// What this thread's actors have said they did, in order.

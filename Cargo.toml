@@ -20,6 +20,7 @@ publish = false
 
 [workspace.dependencies]
 blake3 = { version = "1.8", default-features = false }
+crossbeam-queue = "0.3"
 libm = { version = "0.2", default-features = false }
 proc-macro2 = "1"
 quote = "1"
