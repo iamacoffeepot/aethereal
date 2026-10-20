@@ -29,6 +29,7 @@ dependencies = [
  "aethereal-guest-echo",
  "aethereal-substrate",
  "core_affinity",
+ "crossbeam-queue",
  "libc",
  "wasmparser",
  "wasmtime",
