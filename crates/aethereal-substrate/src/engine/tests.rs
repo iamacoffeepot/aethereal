@@ -1444,3 +1444,73 @@ fn sorted(mut said: Vec<String>) -> Vec<String> {
 
     said
 }
+
+/// The chain the `begin` of the root `root` set off (ADR-0012).
+const fn begun(root: ActorId) -> MailId {
+    MailId { sender: root, count: 0 }
+}
+
+#[test]
+fn a_root_s_chain_finishes_once_nothing_it_set_off_is_left_to_run() {
+    // Catches a chain taken for finished while mail of it waits, while an actor it ended is still to run its closing
+    // turn, or while one watching that actor is still to be shown the ending, and a chain taken for open once all of
+    // it has run. Everything here follows from the root's `begin`, so its chain is open exactly while a step would
+    // run a turn. Node 13's closing turn fails, so what it sends is dropped and only the turn itself is left to run.
+    let scripts: [&[&str]; 5] =
+        [&["spawn 2 up hello"], &["watch 2 close"], &["spawn 13 close"], &["fan 2,3 up hi"], &["bounce 3", "pair"]];
+    for script in scripts {
+        let (mut engine, root) = engine(script);
+        let mut steps = 0;
+        loop {
+            let finished = engine.has_finished(begun(root));
+            assert_eq!(finished, engine.is_idle(), "{script:?} after {steps} steps");
+            if finished {
+                break;
+            }
+            step(&mut engine);
+            steps += 1;
+            assert!(steps < 50, "{script:?} settles");
+        }
+        assert!(steps > 1, "{script:?} runs past its first step");
+    }
+}
+
+#[test]
+fn a_chain_carried_past_its_receivers_slice_has_not_finished() {
+    // Catches the items a part carries over into its next step left out of whether their chain has finished: an
+    // actor cut off at its slice, with mail as it arrived and hops, still has turns of the chain to run.
+    let Some(parts) = NonZeroUsize::new(4) else {
+        panic!("four is not zero");
+    };
+    for hops in [0, 64] {
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops);
+        let Ok(holder) = engine.add_root::<Holder>(&(), HolderConfig { to_self: Vec::new(), gives: 3000 }) else {
+            panic!("the holder begins");
+        };
+        let clock = Ticking::default();
+        let mut steps = 0;
+        while !engine.is_idle() {
+            assert!(!engine.has_finished(begun(holder)), "hops={hops} after {steps} steps");
+            step_on(&mut engine, 2, &clock);
+            steps += 1;
+        }
+        assert!(steps > 10, "the holder is cut off at its slice and carries what it was given, hops={hops}");
+        assert!(engine.has_finished(begun(holder)), "hops={hops}");
+    }
+}
+
+#[test]
+fn one_chain_finishes_while_another_runs_on() {
+    // Catches whether a chain has finished answered for every chain at once: the second root's chain ends with its
+    // closing turn while the first's mail is still going.
+    let (mut engine, first) = engine(&["spawn 2 spawn 3 up hello"]);
+    let config = NodeConfig { number: 2, to_self: vec![String::from("close")], spawns: Vec::new() };
+    let Ok(second) = engine.add_root::<Node>(&2, config) else {
+        panic!("the second root begins");
+    };
+    step(&mut engine);
+    assert!(!engine.has_finished(begun(second)), "the second root is still to run its closing turn");
+    step(&mut engine);
+    assert!(engine.has_finished(begun(second)));
+    assert!(!engine.has_finished(begun(first)), "3 has yet to say hello");
+}

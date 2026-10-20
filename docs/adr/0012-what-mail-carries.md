@@ -66,7 +66,7 @@ The engine keeps a piece of mail under the actor it is for, with its id beside i
 
 ## Consequences
 
-- Whether a chain has finished is counted by root: mail sent, less mail handled (ADR-0011).
+- Whether a chain has finished is read by its root: whether any item of it waits to be handed, or any actor it ended is still to run its closing turn (ADR-0020).
 - What happened is followed back by causes in a record of the run, to the resource that began it. A piece of mail alone names only its chain's root.
 - Every piece of mail carries two ids, of sixteen bytes each, its own and its root's, and its depth.
 - Every chain but a root's first begins at a resource, so the engine can say for any piece of mail what from outside set it off.
