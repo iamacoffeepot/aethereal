@@ -110,6 +110,31 @@ impl Job for Sleeps {
     }
 }
 
+/// A job that rings at once: the stand-in for a timer.
+#[derive(Plain)]
+struct Ring;
+
+impl Kind for Ring {
+    const NAME: KindName = KindName::new("aether.test.ring");
+}
+
+/// What a ring answers with.
+#[derive(Plain)]
+struct Rang;
+
+impl Kind for Rang {
+    const NAME: KindName = KindName::new("aether.test.rang");
+}
+
+impl Job for Ring {
+    type Done = Rang;
+    const RUNNER: Runner = Runner::Io;
+
+    async fn run(self, _: &mut Running) -> Result<Rang, Fault> {
+        Ok(Rang)
+    }
+}
+
 /// A job no runner is handed.
 #[derive(Plain)]
 struct Unlinked;
@@ -137,6 +162,16 @@ impl Kind for Which {
     const NAME: KindName = KindName::new("aether.test.which_job");
 }
 
+/// What a job's asker keeps to give up on another job: the job it gives up on.
+#[derive(Bound)]
+struct GiveUp {
+    on: JobId,
+}
+
+impl Kind for GiveUp {
+    const NAME: KindName = KindName::new("aether.test.give_up");
+}
+
 /// What a worker is told to run: a job of `what`, numbered `at`.
 #[derive(Plain)]
 struct Go {
@@ -148,9 +183,12 @@ impl Kind for Go {
     const NAME: KindName = KindName::new("aether.test.go");
 }
 
-/// An actor that doubles one as it begins, runs the job each `Go` names, and says what became of each.
+/// An actor that doubles one as it begins, runs the job each `Go` names, and says what became of each. It keeps the
+/// jobs it was told to hold, to cancel later.
 #[derive(Bound)]
-struct Worker;
+struct Worker {
+    kept: Vec<JobId>,
+}
 
 impl Kind for Worker {
     const NAME: KindName = KindName::new("aether.test.job_worker");
@@ -159,7 +197,7 @@ impl Kind for Worker {
 impl Actor for Worker {
     type Config = Which;
     type Key = ();
-    type Handles = (Go, Answer<Doubled, Which>);
+    type Handles = (Go, Answer<Doubled, Which>, Answer<Rang, GiveUp>);
     type BeginSends = (RunsJob<Double, Which>,);
     type EndSends = ();
 
@@ -167,7 +205,7 @@ impl Actor for Worker {
         let id = turn.run(&Double { n: 1 }, &Which { at: 0 })?;
         say(format!("ran 0 as {}", id.mail().count));
 
-        Ok(Self)
+        Ok(Self { kept: Vec::new() })
     }
 
     fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
@@ -182,6 +220,7 @@ impl Handles<Go> for Worker {
         RunsJob<Panics, Which>,
         RunsJob<Sleeps, Which>,
         RunsJob<Unlinked, Which>,
+        RunsJob<Ring, GiveUp>,
     );
 
     fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
@@ -192,6 +231,33 @@ impl Handles<Go> for Worker {
                 let first = turn.run(&Double { n: 10 * go.at }, &which)?;
                 say(format!("ran {} as {}", go.at, first.mail().count));
                 turn.run(&Double { n: 10 * go.at + 1 }, &Which { at: go.at + 100 })?
+            }
+            "cancel" => {
+                let id = turn.run(&Double { n: 10 * go.at }, &which)?;
+                turn.cancel(id);
+                id
+            }
+            "give up" => {
+                let sleeping = turn.run(&Sleeps, &which)?;
+                turn.run(&Ring, &GiveUp { on: sleeping })?;
+                sleeping
+            }
+            "hold" => {
+                let id = turn.run(&Sleeps, &which)?;
+                self.kept.push(id);
+                id
+            }
+            "let go" => {
+                for id in self.kept.drain(..) {
+                    turn.cancel(id);
+                }
+                return Ok(());
+            }
+            "let go and fail" => {
+                for id in self.kept.drain(..) {
+                    turn.cancel(id);
+                }
+                return Err(Fault::of_parts(KindId::of::<Go>(), Vec::new()));
             }
             "nest" => {
                 let spawned = turn.spawn::<Failing>(&(), Which { at: go.at });
@@ -221,6 +287,17 @@ impl Handles<Answer<Doubled, Which>> for Worker {
             Answered::Yes(doubled) => say(format!("{} doubled {}", which.at, doubled.n)),
             Answered::No(why) => say(format!("{} {why:?}", which.at)),
         }
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Rang, GiveUp>> for Worker {
+    type Sends = ();
+
+    fn handle(&mut self, (_, give_up): (Answered<Rang>, GiveUp), turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        say(format!("gave up on {}", give_up.on.mail().count));
+        turn.cancel(give_up.on);
 
         Ok(())
     }
@@ -318,6 +395,65 @@ impl Jobs for Noting {
         }
         self.inline.start(id, kind, job);
     }
+
+    fn stop(&self, _: JobId) {}
+}
+
+/// Runs jobs inline, as [`Inline`] does, but holds each [`Sleeps`] until it is let go of, and notes each job it is
+/// asked to stop.
+struct Holding {
+    inline: Inline,
+    held: Mutex<Vec<Finish>>,
+    stopped: Mutex<Vec<JobId>>,
+}
+
+impl Holding {
+    /// Runs [`Double`]s and [`Ring`]s, and holds [`Sleeps`].
+    fn new() -> Self {
+        Self {
+            inline: Inline::new(vec![JobType::of::<Double>(), JobType::of::<Ring>()]),
+            held: Mutex::default(),
+            stopped: Mutex::default(),
+        }
+    }
+
+    /// Finishes each job it holds, as doubling to seven.
+    fn let_go(&self) {
+        let Ok(mut held) = self.held.lock() else {
+            panic!("the list is not poisoned");
+        };
+        for finish in held.drain(..) {
+            finish.done(aethereal_actor::written(&Doubled { n: 7 }).map_err(|_| fault::<Waits>()));
+        }
+    }
+
+    /// The jobs it was asked to stop, by their counts.
+    fn stopped(&self) -> Vec<u64> {
+        let Ok(stopped) = self.stopped.lock() else {
+            panic!("the list is not poisoned");
+        };
+
+        stopped.iter().map(|id| id.mail().count).collect()
+    }
+}
+
+impl Jobs for Holding {
+    fn start(&self, id: JobId, kind: KindId, job: Taken) {
+        let is_held = kind == KindId::of::<Sleeps>();
+        if !is_held {
+            self.inline.start(id, kind, job);
+            return;
+        }
+        if let Ok(mut held) = self.held.lock() {
+            held.push(job.finish);
+        }
+    }
+
+    fn stop(&self, id: JobId) {
+        if let Ok(mut stopped) = self.stopped.lock() {
+            stopped.push(id);
+        }
+    }
 }
 
 /// An engine of four parts whose jobs `jobs` runs, with the worker made.
@@ -404,4 +540,43 @@ fn a_turn_that_fails_runs_no_job() {
         panic!("the list is not poisoned");
     };
     assert_eq!(*started, [KindId::of::<Double>(), KindId::of::<Double>()], "the `begin`s' jobs alone");
+}
+
+#[test]
+fn a_cancelled_job_is_never_answered_and_its_host_is_asked_to_stop() {
+    // Catches a cancelled job's context kept, so its answer runs a turn, whether it finished before the cancel (one
+    // cancelled in the turn that ran it, which `Inline` finishes at once) or after (one held, given up on from the
+    // handler of another job's answer, through an id kept in that job's context, and one held and let go of from a
+    // turn of plain mail that does nothing else); and a host never asked to stop a job. A job held and not cancelled
+    // is answered when it is let go of.
+    let holding = Arc::new(Holding::new());
+    let (mut engine, _) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
+    poke(&mut engine, 1, "cancel");
+    poke(&mut engine, 2, "give up");
+    poke(&mut engine, 3, "hold");
+    poke(&mut engine, 4, "let go");
+    poke(&mut engine, 5, "sleeps");
+    engine.bring();
+    settle(&mut engine);
+    let ran = ["ran 0 as 1", "ran 1 as 2", "ran 2 as 3", "ran 3 as 5", "ran 5 as 6"];
+    assert_eq!(said(), [&["0 doubled 2", "gave up on 3"][..], &ran].concat());
+
+    holding.let_go();
+    engine.bring();
+    settle(&mut engine);
+
+    assert_eq!(said(), ["5 doubled 7"], "the jobs given up on and let go of are not answered");
+    assert_eq!(holding.stopped(), [2, 5, 3], "as they were cancelled: the job given up on after the bring");
+}
+
+#[test]
+fn a_turn_that_fails_cancels_nothing() {
+    // Catches the cancels of a failed turn sent to the host, as the mail of one is never sent.
+    let holding = Arc::new(Holding::new());
+    let (mut engine, _) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
+    poke(&mut engine, 1, "hold");
+    poke(&mut engine, 2, "let go and fail");
+
+    assert_eq!(said(), ["ran 0 as 1", "ran 1 as 2"]);
+    assert_eq!(holding.stopped(), Vec::<u64>::new());
 }
