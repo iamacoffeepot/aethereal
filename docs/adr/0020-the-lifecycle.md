@@ -54,8 +54,10 @@ pub struct Stop;
 impl Handles<Spawned> for Renderer {
     type Sends = (Subscribes<Render>, Subscribes<Present>);   // builds only when Renderer handles both
     fn handle(&mut self, _: Spawned, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
-        turn.subscribe::<Render>()?;
-        turn.subscribe::<Present>()
+        turn.subscribe::<Render, _>();
+        turn.subscribe::<Present, _>();
+
+        Ok(())
     }
 }
 ```
@@ -64,7 +66,7 @@ impl Handles<Spawned> for Renderer {
 - **An actor whose type subscribes to a stage its engine's cycle does not hold is refused where it is made**, a root by `add_root` and a child by its spawn, which is refused naming the stage: a renderer on a server's engine is never made. So native code and guests are checked in one place, before any of their code runs, and a `subscribe` in a turn never finds its stage missing. A native actor and a chassis built into one program could be matched when it is built, but a guest is put while the program runs, so the check at the spawn would be needed anyway.
 - Subscribing, and unsubscribing with `turn.unsubscribe::<K>()`, are effects, folded into a view of each stage's subscribers: many actors write one stage's set, and a set is the same in whatever order its records arrive (ADR-0011). A `begin` may subscribe. An actor that ends leaves every set.
 - A stage is sent to each subscriber as mail from that actor to itself, as what a source brings in is (ADR-0010), between steps, and handled in the next step. Subscribers are sent it in the order of their ids.
-- Every piece of one stage's mail has one root, a `MailId` the engine makes of an id of its own that no actor has, and the stage's number. So a stage is one chain, whatever its subscribers do.
+- Every piece of one stage's mail has one root, a `MailId` the engine makes of an id of its own and the stage's number. The id is that of the root at the name `aether.lifecycle`, which the engine keeps: no root is made there, so no actor has it. So a stage is one chain, whatever its subscribers do.
 - A guest subscribes in records its host reads, as it asks (ADR-0015).
 
 **A stage begins only once the one before it has finished.** After each fold, the engine reads whether the chain of the stage under way has finished, and when it has, sends the next stage before the next step.

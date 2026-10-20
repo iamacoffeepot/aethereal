@@ -18,7 +18,7 @@ mod tests;
 pub use handles::{Handled, HandledList, Handles, Others};
 pub use protocols::{AnsweredBy, CarriedBy, Carries, Conforms, Covers, Listed, Protocol};
 pub use replies::{BackTo, HandledBy, RepliesTo, RepliesWithin, ReplyWithin};
-pub use sends::{Allows, At, Kinds, Marker, Sends, ToAny, ToSender, ToType, Watches};
+pub use sends::{Allows, At, Kinds, Marker, Sends, Subscribes, ToAny, ToSender, ToType, Watches};
 
 use crate::Actor;
 use aethereal_data::{ActorKey, Keyed, KindId, KindName};
@@ -324,4 +324,6 @@ pub enum Target {
     Handling(&'static [KindId]),
     /// No actor: the handler may watch one, which is no send.
     Watched,
+    /// No actor: the handler may subscribe its actor to the stage of the sending's kind, which is no send (ADR-0020).
+    Subscribed,
 }

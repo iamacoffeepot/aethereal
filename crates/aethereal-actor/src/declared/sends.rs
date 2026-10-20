@@ -1,7 +1,7 @@
 //! What a handler may send, and whether it may watch, written as a tuple of markers (ADR-0013).
 
 use super::{Handled, Handles, Listed, Sending, Target};
-use crate::Actor;
+use crate::{Actor, Stage};
 use aethereal_data::{Kind, KindId, KindName, Plain};
 use core::marker::PhantomData;
 
@@ -21,6 +21,10 @@ pub struct ToAny<P, K>(PhantomData<fn() -> (P, K)>);
 /// [`Ended`](crate::Ended) may declare it, as its build fails otherwise (ADR-0013).
 pub struct Watches;
 
+/// A handler may subscribe its actor to the stage `K` of the program's lifecycle, and unsubscribe it: only an actor
+/// whose type handles `K` may declare it, as its build fails otherwise (ADR-0020).
+pub struct Subscribes<K>(PhantomData<fn() -> K>);
+
 /// What a watch is declared under: a kind of its own, which no mail is.
 #[derive(Plain)]
 struct Watch;
@@ -37,6 +41,10 @@ pub trait Marker {
 
 impl Marker for Watches {
     const SENDING: Sending = Sending::new(KindId::of::<Watch>(), Target::Watched);
+}
+
+impl<K: Stage> Marker for Subscribes<K> {
+    const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Subscribed);
 }
 
 impl<T: Actor + Handles<K>, K: Kind + Handled> Marker for ToType<T, K> {

@@ -13,8 +13,8 @@ use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Asking, Asks, Carries, Children, Claim, Claimed, Code,
     Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances, Keeping,
     Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Payload, Protocol, ProtocolRef,
-    Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Table, Target, Tie, Tied, Time, To,
-    ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watches, What, Within, Written,
+    Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage, Subscribes, Table, Target, Tie,
+    Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watches, What, Within, Written,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -956,7 +956,7 @@ impl Seat<'_> {
             Target::Sender => true,
             Target::Type(_, id) => receiver.id() == id,
             Target::Handling(kinds) => receiver.lists_all(kinds),
-            Target::Watched => false,
+            Target::Watched | Target::Subscribed => false,
         };
         let receiver = receiver.name();
         assert!(
@@ -1395,6 +1395,27 @@ impl<S> Turn<'_, S> {
         self.seat.watch(of.into());
     }
 
+    /// Subscribes this actor to the stage `K` of the program's lifecycle: the engine sends it `K` each time that stage
+    /// runs, from the step after this one's fold (ADR-0020). Subscribing again changes nothing.
+    ///
+    /// It builds only when the turn's sends list [`Subscribes<K>`](crate::Subscribes), which only a type that
+    /// handles `K` may.
+    pub fn subscribe<K: Stage, I>(&mut self)
+    where
+        S: Allows<Subscribes<K>, I>,
+    {
+        self.seat.ask(What::Subscribe(KindId::of::<K>()));
+    }
+
+    /// Unsubscribes this actor from the stage `K`: the engine no longer sends it `K`. Unsubscribing an actor that is
+    /// not subscribed changes nothing.
+    pub fn unsubscribe<K: Stage, I>(&mut self)
+    where
+        S: Allows<Subscribes<K>, I>,
+    {
+        self.seat.ask(What::Unsubscribe(KindId::of::<K>()));
+    }
+
     /// Sends `mail` to the actor `to` names. It is delivered after the turn, in a later step.
     ///
     /// It builds only when the turn's sends list a [`ToType<T, K>`], and `T` is found from them when one names `K`.
@@ -1591,6 +1612,12 @@ impl<S> Turn<'_, S> {
     /// Closes this actor. Its closing turn runs in the next step.
     pub fn close(&mut self) {
         self.seat.ask(What::Close);
+    }
+
+    /// Asks the program to stop: the engine lets a cycle under way finish, then runs its last stage, `Stop`
+    /// (ADR-0020). Any actor may ask, and asking again changes nothing.
+    pub fn quit(&mut self) {
+        self.seat.ask(What::Quit);
     }
 
     /// Logs `text` at `level`. The line is kept when this turn fails.
@@ -1926,6 +1953,27 @@ impl<S> Beginning<'_, S> {
         S: Allows<Watches, I>,
     {
         self.seat.watch(of.into());
+    }
+
+    /// Subscribes this actor to the stage `K` of the program's lifecycle: the engine sends it `K` each time that stage
+    /// runs, from the step after this one's fold (ADR-0020). Subscribing again changes nothing.
+    ///
+    /// It builds only when the turn's sends list [`Subscribes<K>`](crate::Subscribes), which only a type that
+    /// handles `K` may.
+    pub fn subscribe<K: Stage, I>(&mut self)
+    where
+        S: Allows<Subscribes<K>, I>,
+    {
+        self.seat.ask(What::Subscribe(KindId::of::<K>()));
+    }
+
+    /// Unsubscribes this actor from the stage `K`: the engine no longer sends it `K`. Unsubscribing an actor that is
+    /// not subscribed changes nothing.
+    pub fn unsubscribe<K: Stage, I>(&mut self)
+    where
+        S: Allows<Subscribes<K>, I>,
+    {
+        self.seat.ask(What::Unsubscribe(KindId::of::<K>()));
     }
 
     /// Logs `text` at `level`. The line is kept when this turn fails.

@@ -684,7 +684,7 @@ impl<'a> Hosted<'a> {
                 let receiver = self.seat.declared_at(to.id);
                 receiver.is_none_or(|receiver| kinds.iter().all(|kind| receiver.lists(*kind)))
             }
-            Target::Watched => false,
+            Target::Watched | Target::Subscribed => false,
         }
     }
 }

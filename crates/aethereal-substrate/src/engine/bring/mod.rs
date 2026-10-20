@@ -213,18 +213,24 @@ impl Engine {
         });
         self.sources = sources;
         self.arenas[parity][ROOTS] = arena;
-        self.fold_brought(mailed, unbrought, parity);
+        // Each piece is the first of its chain: nothing in the engine caused it (ADR-0012).
+        self.fold_brought(mailed, unbrought, parity, |mailed| MailId { sender: mailed.by.id, count: mailed.count });
     }
 
-    /// Folds the mail brought, `mailed`, and what could not be brought, `unbrought`, into the views, and marks the
-    /// parts it went to waiting.
-    fn fold_brought(&mut self, mailed: Vec<Mailed>, unbrought: Vec<(u64, (ActorId, log::Logged))>, parity: usize) {
+    /// Folds the mail brought, `mailed`, each the first of the chain `chain` names for it, and what could not be
+    /// brought, `unbrought`, into the views, and marks the parts it went to waiting.
+    pub(super) fn fold_brought(
+        &mut self,
+        mailed: Vec<Mailed>,
+        unbrought: Vec<(u64, (ActorId, log::Logged))>,
+        parity: usize,
+        chain: impl Fn(&Mailed) -> MailId,
+    ) {
         let written = &self.arenas[parity];
         self.log.fold_records(unbrought, written);
         let mut parts: Vec<usize> = mailed.iter().map(|mailed| self.part(mailed.to.seat)).collect();
-        // Each piece is the first of its chain: nothing in the engine caused it (ADR-0012).
         let entries = mailed.into_iter().map(|mailed| {
-            let context = Context { root: MailId { sender: mailed.by.id, count: mailed.count }, depth: 0 };
+            let context = Context { root: chain(&mailed), depth: 0 };
 
             stream::entry(mailed, &context)
         });
