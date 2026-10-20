@@ -32,7 +32,7 @@ use crate::{
     How, Item, Tie, Tied, Unanswered,
 };
 use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, PinSource, Preparing, Puts, Refused};
-use crate::{Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Turning, Unfit, What, Written};
+use crate::{Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Time, Turning, Unfit, What, Written};
 use crate::{holders, pins};
 use aethereal_data::{
     ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, PathSegment, Reader, from_bytes, to_bytes,
@@ -145,6 +145,8 @@ pub struct Calls {
     pub blob_hash: extern "C" fn(u32, u64, u32) -> u32,
     /// Puts the bytes as a blob, in a call out to its host, which [`put_with`] answers.
     pub put: fn(Vec<u8>) -> Result<BlobId, Refused>,
+    /// The time the step carries, in nanoseconds on the host's clock (ADR-0018).
+    pub now: extern "C" fn() -> u64,
 }
 
 /// What the guest holds: its actors, where its host writes what it hands in, and where it writes what it asked for.
@@ -1319,6 +1321,11 @@ impl Table for Host {
 
         is_hashed.then_some(BlobHash::from_bytes(hash))
     }
+
+    /// The step's time, asked of the host, which was handed it with the step.
+    fn now(&self) -> Time {
+        Time::from_nanos((self.calls.now)())
+    }
 }
 
 impl Children for Host {
@@ -1360,6 +1367,7 @@ macro_rules! guest {
                 safe fn aethereal_blob_read(engine: u32, bits: u64, at: u32);
                 safe fn aethereal_blob_hash(engine: u32, bits: u64, at: u32) -> u32;
                 safe fn aethereal_put(at: u32, len: u32, id: u32) -> u64;
+                safe fn aethereal_now() -> u64;
             }
 
             fn put(bytes: Vec<u8>) -> Result<$crate::BlobId, $crate::Refused> {
@@ -1391,6 +1399,7 @@ macro_rules! guest {
                 blob_read: aethereal_blob_read,
                 blob_hash: aethereal_blob_hash,
                 put,
+                now: aethereal_now,
             };
 
             #[unsafe(no_mangle)]

@@ -15,6 +15,7 @@ mod tests;
 
 pub use clock::Monotonic;
 
+use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Engine, Split, SplitCost, Workers};
 pub use pool::Measured;
 
@@ -95,7 +96,7 @@ struct Stepped {
 /// Runs one step of `engine` on `pool`, planned for `workers`, and how long it took, as [`Headless::step`] does.
 fn step(engine: &mut Engine, pool: &mut Pool, clock: Monotonic, workers: Workers) -> Stepped {
     let start = clock.nanos();
-    let plan = engine.plan(workers);
+    let plan = engine.plan(workers, Time::from_nanos(start));
     let (delta, expected_nanos) = (plan.delta(), plan.expected_nanos());
     let split = plan.into_split();
     let planned = clock.nanos();

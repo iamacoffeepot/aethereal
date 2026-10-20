@@ -1,6 +1,6 @@
 //! The boundaries an actor's values cross: `Within` and `Actors` (ADR-0004).
 
-use crate::{BlobHash, BlobId, Declared, SeatNumber, Seated};
+use crate::{BlobHash, BlobId, Declared, SeatNumber, Seated, Time};
 use aethereal_data::{ActorId, ActorPath, Boundary, EncodeError, KindId, PathSegment};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
@@ -44,6 +44,9 @@ pub trait Table {
 
     /// The hash the store kept for the blob `id` names as the step began, when it held one.
     fn blob_hash(&self, id: BlobId) -> Option<BlobHash>;
+
+    /// The time the turn's step carries: the host's, as it began the step (ADR-0011, ADR-0018).
+    fn now(&self) -> Time;
 }
 
 /// The children an actor has made, live or ended, whose keys it may not use again (ADR-0008).

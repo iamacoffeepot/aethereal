@@ -173,6 +173,40 @@ impl Handles<Crash> for Mirror {
     }
 }
 
+/// An actor that answers each ping with the time its turn reads, in nanoseconds (ADR-0018).
+#[derive(Bound)]
+pub struct Timekeeper;
+
+impl Kind for Timekeeper {
+    const NAME: KindName = KindName::new("aether.guest.timekeeper");
+}
+
+impl Actor for Timekeeper {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Ping,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Timekeeper {
+    type Sends = (ToSender<Pong>,);
+
+    fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.reply(&Pong { n: turn.now().nanos() })?;
+
+        Ok(())
+    }
+}
+
 /// An actor of which the blob makes many, each under its own key: it answers pings, and counts them, so each keeps
 /// state of its own in the instance it lives in, and closes on the word to.
 #[derive(Bound)]
@@ -1955,5 +1989,6 @@ aethereal_actor::guest!(
     Steward,
     Stasher,
     Nester,
-    Opener
+    Opener,
+    Timekeeper
 );

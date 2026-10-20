@@ -3,6 +3,7 @@
 use super::*;
 use crate::watch::Notice;
 use crate::{ByActor, Entry, child_id};
+use aethereal_actor::Time;
 use aethereal_actor::{
     ActorRef, Ended, Ending, Fault, Handles, How, Level, Table, To, ToSender, ToType, ToWithoutMail, Turn, Watches,
 };
@@ -268,7 +269,7 @@ fn fusing(hops: usize, to_self: &[&str]) -> (Engine, ActorId) {
 
 /// Runs one step and answers with what its turns said.
 fn step(engine: &mut Engine) -> Vec<String> {
-    engine.step(&Stopped);
+    engine.step(Time::ZERO, &Stopped);
 
     said()
 }
@@ -607,11 +608,11 @@ fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
     // free, and a child spawned in an earlier turn of the step that a send by name cannot find.
     let (mut engine, root) = engine(&["spawn 2 spawn 4 up a", "spawn 3 spawn 5 up b", "tell 3 spawn 6 up c"]);
     let clock = Ticking::default();
-    engine.step(&clock);
+    engine.step(Time::ZERO, &clock);
     said();
 
     let workers = Workers { active: 2, max: 2, wake_nanos: 0, split: SplitCost::NONE };
-    let Split::Shares(shares) = engine.plan(workers).into_split() else {
+    let Split::Shares(shares) = engine.plan(workers, Time::ZERO).into_split() else {
         panic!("two workers share the step");
     };
     assert_eq!(shares.len(), 2);
@@ -641,11 +642,11 @@ fn keys_used_on_two_workers_stay_taken_after_their_children_have_ended() {
     let notes = ["spawn 2 spawn 20 close", "spawn 3 spawn 30 close", "self self self tell 2 spawn 20 up again"];
     let (mut engine, _) = engine(&[notes[0], notes[1], notes[2], "self self self tell 3 spawn 30 up again"]);
     let clock = Ticking::default();
-    engine.step(&clock);
+    engine.step(Time::ZERO, &clock);
     said();
 
     let workers = Workers { active: 2, max: 2, wake_nanos: 0, split: SplitCost::NONE };
-    let Split::Shares(shares) = engine.plan(workers).into_split() else {
+    let Split::Shares(shares) = engine.plan(workers, Time::ZERO).into_split() else {
         panic!("two workers share the step");
     };
     let reading = engine.reading();
@@ -671,11 +672,11 @@ fn children_seated_in_a_part_another_worker_ran_are_kept() {
     let notes = ["spawn 2 spawn 20 up hi", "tell 2 spawn 21 up hi", "tell 2 spawn 22 up hi", "tell 2 spawn 23 up hi"];
     let (mut engine, root) = engine(&[notes[0], notes[1], notes[2], notes[3], "spawn 3 spawn 30 up hi"]);
     let clock = Ticking::default();
-    engine.step(&clock);
+    engine.step(Time::ZERO, &clock);
     said();
 
     let workers = Workers { active: 2, max: 2, wake_nanos: 0, split: SplitCost::NONE };
-    let Split::Shares(shares) = engine.plan(workers).into_split() else {
+    let Split::Shares(shares) = engine.plan(workers, Time::ZERO).into_split() else {
         panic!("two workers share the step");
     };
     let reading = engine.reading();
@@ -812,13 +813,15 @@ fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
     run.end(root);
     let stood = ByActor::default();
 
-    let in_run = Since { table: engine.table(), stood: &stood, sees: Sees::Run(&run), blobs: &engine.blobs };
+    let in_run =
+        Since { table: engine.table(), stood: &stood, sees: Sees::Run(&run), blobs: &engine.blobs, now: Time::ZERO };
     assert_eq!(Table::resolve(&in_run, &child_path), Some(child));
     assert!(Table::is_live(&in_run, child.id));
     assert_eq!(Table::resolve(&in_run, &root_path), None);
     assert!(!Table::is_live(&in_run, root));
 
-    let outside = Since { table: engine.table(), stood: &stood, sees: Sees::Step, blobs: &engine.blobs };
+    let outside =
+        Since { table: engine.table(), stood: &stood, sees: Sees::Step, blobs: &engine.blobs, now: Time::ZERO };
     assert_eq!(Table::resolve(&outside, &child_path), None);
     assert!(!Table::is_live(&outside, child.id));
     assert!(Table::is_live(&outside, root));
@@ -854,7 +857,7 @@ fn run_fuses_its_first_piece_and_mails_the_rest() {
 /// and answers with what its turns said.
 fn step_on(engine: &mut Engine, workers: usize, clock: &Ticking) -> Vec<String> {
     let workers = Workers { active: workers, max: workers, wake_nanos: 0, split: SplitCost::NONE };
-    match engine.plan(workers).into_split() {
+    match engine.plan(workers, Time::ZERO).into_split() {
         Split::Whole(whole) => {
             let left = engine.run_whole(whole, clock);
             engine.apply_whole(left);
@@ -1206,7 +1209,7 @@ fn references_held_or_dropped_between_steps_are_counted() {
         panic!("five bytes fit");
     };
     drop(dropped);
-    engine.step(&Stopped);
+    engine.step(Time::ZERO, &Stopped);
 
     assert_eq!(engine.blobs_held(), (1, 3));
     assert_eq!(engine.blob(&kept), Some(&[1, 2, 3][..]));
@@ -1229,8 +1232,8 @@ fn one_engine_sums_only_the_changes_to_its_own_blobs() {
     };
     assert_eq!(blob.id().bits(), other.id().bits(), "the two engines number their first blobs alike");
     drop(other);
-    kept.step(&Stopped);
-    dropping.step(&Stopped);
+    kept.step(Time::ZERO, &Stopped);
+    dropping.step(Time::ZERO, &Stopped);
 
     assert_eq!(kept.blobs_held(), (1, 3));
     assert_eq!(dropping.blobs_held(), (0, 0));
@@ -1312,4 +1315,132 @@ fn mail_carried_past_its_receivers_slice_keeps_its_blob_until_it_is_handed() {
         }
         assert_eq!(engine.blobs_held(), (0, 0), "hops={hops}");
     }
+}
+
+/// What a clocked actor is told as it begins: its number, and the note it sends itself.
+#[derive(Plain)]
+struct ClockedConfig {
+    number: u64,
+    to_self: String,
+}
+
+impl Kind for ClockedConfig {
+    const NAME: KindName = KindName::new("aether.test.clocked_config");
+}
+
+/// An actor that says the time each of its turns reads, and puts a blob of three bytes as it begins, which its
+/// closing turn reads (ADR-0014, ADR-0018): `spawn` spawns the actors `2` and `3` beneath it, which each send
+/// themselves `close`.
+#[derive(Bound)]
+struct Clocked {
+    number: u64,
+    blob: BlobRef,
+}
+
+impl Kind for Clocked {
+    const NAME: KindName = KindName::new("aether.test.clocked");
+}
+
+impl Actor for Clocked {
+    type Config = ClockedConfig;
+    type Key = u64;
+    type Handles = (Note,);
+    type BeginSends = (ToType<Self, Note>,);
+    type EndSends = ();
+
+    fn begin(config: ClockedConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let ClockedConfig { number, to_self } = config;
+        say(format!("{number} began at {}", turn.now().nanos()));
+        let Ok(blob) = turn.put(vec![7; 3]) else {
+            return Err(Fault::new(&Note { text: String::from("no room") })?);
+        };
+        let me = turn.me();
+        turn.send(ToWithoutMail::Held(me), &Note { text: to_self })?;
+
+        Ok(Self { number, blob })
+    }
+
+    fn end(self, turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        let bytes = turn.read(&self.blob).len();
+        say(format!("{} ended at {} holding {bytes}", self.number, turn.now().nanos()));
+
+        Ok(())
+    }
+}
+
+impl Handles<Note> for Clocked {
+    type Sends = ();
+
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        let Note { text } = note;
+        say(format!("{} got {text} at {}", self.number, turn.now().nanos()));
+        match text.as_str() {
+            "spawn" => {
+                for number in [2, 3] {
+                    let config = ClockedConfig { number, to_self: String::from("close") };
+                    let _ = turn.spawn::<Self>(&number, config);
+                }
+            }
+            "close" => turn.close(),
+            _ => {}
+        }
+
+        Ok(())
+    }
+}
+
+#[test]
+fn every_turn_reads_the_time_its_step_was_given_and_a_closing_turn_reads_blobs() {
+    // Catches a turn, a `begin` run inside one, or a closing turn reading a time other than its step's: one kept from
+    // an earlier step, or none, as the bare table a closing turn was handed holds, which also held no blob for it to
+    // read. A root made before any step reads the host's first moment.
+    let Some(parts) = NonZeroUsize::new(4) else {
+        panic!("four is not zero");
+    };
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let config = ClockedConfig { number: 1, to_self: String::from("spawn") };
+    let Ok(_) = engine.add_root::<Clocked>(&1, config) else {
+        panic!("the root begins");
+    };
+    assert_eq!(said(), ["1 began at 0"]);
+
+    engine.step(Time::from_nanos(5), &Stopped);
+    assert_eq!(said(), ["1 got spawn at 5", "2 began at 5", "3 began at 5"]);
+    engine.step(Time::from_nanos(9), &Stopped);
+    assert_eq!(sorted(said()), ["2 got close at 9", "3 got close at 9"]);
+    engine.step(Time::from_nanos(12), &Stopped);
+    assert_eq!(sorted(said()), ["2 ended at 12 holding 3", "3 ended at 12 holding 3"]);
+}
+
+#[test]
+fn the_workers_of_a_shared_step_read_the_time_it_was_planned_with() {
+    // Catches the workers of a step shared among them reading another time than the one the host planned it with.
+    let Some(parts) = NonZeroUsize::new(4) else {
+        panic!("four is not zero");
+    };
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    // Each root sits in the part with fewest actors, so the two are in parts of their own.
+    for number in [1, 2] {
+        let config = ClockedConfig { number, to_self: String::from("tick") };
+        let Ok(_) = engine.add_root::<Clocked>(&number, config) else {
+            panic!("the root begins");
+        };
+    }
+    said();
+
+    let workers = Workers { active: 2, max: 2, wake_nanos: 0, split: SplitCost::NONE };
+    let Split::Shares(shares) = engine.plan(workers, Time::from_nanos(7)).into_split() else {
+        panic!("two workers share the step");
+    };
+    let reading = engine.reading();
+    let done = shares.into_iter().map(|share| reading.run(share, &Stopped)).collect();
+    engine.apply(done);
+    assert_eq!(sorted(said()), ["1 got tick at 7", "2 got tick at 7"]);
+}
+
+/// `said`, in order: for turns of one step, which run in no order the tests depend on.
+fn sorted(mut said: Vec<String>) -> Vec<String> {
+    said.sort();
+
+    said
 }

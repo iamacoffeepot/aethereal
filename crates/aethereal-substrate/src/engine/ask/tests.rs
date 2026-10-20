@@ -3,6 +3,7 @@
 
 use super::super::*;
 use super::{Answering, Waiting, owed};
+use aethereal_actor::Time;
 use aethereal_actor::Written;
 use aethereal_actor::{
     ActorRef, Answer, Answered, Asking, Asks, BlobRef, Carries, Ending, Fault, Handles, Held, Protocol, Tie, To,
@@ -486,7 +487,7 @@ fn heard((parts, hops): (usize, usize), orders: &[&str]) -> Vec<String> {
     assert!(made.is_ok(), "the pointer begins");
     said();
     for _ in 0..16 {
-        engine.step(&Stopped);
+        engine.step(Time::ZERO, &Stopped);
     }
 
     said()
@@ -771,7 +772,7 @@ fn a_blob_a_context_refers_to_is_kept_until_its_answer_is_handled() {
         assert!(made.is_ok(), "the keeper begins");
         said();
         for _ in 0..16 {
-            engine.step(&Stopped);
+            engine.step(Time::ZERO, &Stopped);
         }
 
         assert_eq!(said(), ["kept 3"], "{:?}", (parts, hops));

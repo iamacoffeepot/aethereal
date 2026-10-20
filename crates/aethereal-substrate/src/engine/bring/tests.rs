@@ -2,6 +2,7 @@
 
 use super::super::*;
 use crate::{Closed, Entry, Feed};
+use aethereal_actor::Time;
 use aethereal_actor::{Ending, Fault, Handle, Handles, Source, ToType, ToWithoutMail, Turn};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use std::any;
@@ -193,7 +194,7 @@ fn add(
 fn settle(engine: &mut Engine) -> Vec<String> {
     let mut heard = Vec::new();
     for _ in 0..16 {
-        engine.step(&Stopped);
+        engine.step(Time::ZERO, &Stopped);
         heard.extend(said());
     }
 

@@ -49,6 +49,10 @@ impl Table for Listed {
         None
     }
 
+    fn now(&self) -> Time {
+        Time::ZERO
+    }
+
     /// Every actor listed is a leaf.
     fn declared(&self, id: ActorId) -> Option<&'static Declared> {
         let is_listed = self.is_live(id);

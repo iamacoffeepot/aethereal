@@ -51,6 +51,10 @@ impl Table for Typed {
         None
     }
 
+    fn now(&self) -> crate::Time {
+        crate::Time::ZERO
+    }
+
     fn declared(&self, id: ActorId) -> Option<&'static Declared> {
         self.0.iter().find(|(made, _)| made.id == id).map(|(_, declared)| *declared)
     }

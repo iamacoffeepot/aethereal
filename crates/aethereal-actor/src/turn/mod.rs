@@ -13,8 +13,8 @@ use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Asking, Asks, Carries, Children, Claim, Claimed, Code,
     Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances, Keeping,
     Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Payload, Protocol, ProtocolRef,
-    Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Table, Target, Tie, Tied, To, ToAny,
-    ToSender, ToType, ToWithoutMail, Unanswered, Watches, What, Within, Written,
+    Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Table, Target, Tie, Tied, Time, To,
+    ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watches, What, Within, Written,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -1627,6 +1627,13 @@ impl<S> Turn<'_, S> {
         self.seat.hash(blob)
     }
 
+    /// The time this turn's step carries, the host's as it began the step: the same for every turn of the step
+    /// (ADR-0011, ADR-0018).
+    #[must_use]
+    pub fn now(&self) -> Time {
+        self.seat.table.now()
+    }
+
     /// A reference to this actor.
     #[must_use]
     pub const fn me(&self) -> ErasedActorRef {
@@ -1955,6 +1962,13 @@ impl<S> Beginning<'_, S> {
         self.seat.hash(blob)
     }
 
+    /// The time this turn's step carries, the host's as it began the step: the same for every turn of the step
+    /// (ADR-0011, ADR-0018).
+    #[must_use]
+    pub fn now(&self) -> Time {
+        self.seat.table.now()
+    }
+
     /// A reference to this actor.
     #[must_use]
     pub const fn me(&self) -> ErasedActorRef {
@@ -2192,6 +2206,13 @@ impl<S> Ending<'_, S> {
     #[cfg(feature = "std")]
     pub fn hash(&mut self, blob: &BlobRef) -> BlobHash {
         self.seat.hash(blob)
+    }
+
+    /// The time this turn's step carries, the host's as it began the step: the same for every turn of the step
+    /// (ADR-0011, ADR-0018).
+    #[must_use]
+    pub fn now(&self) -> Time {
+        self.seat.table.now()
     }
 
     /// A reference to this actor.

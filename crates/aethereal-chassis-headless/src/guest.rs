@@ -392,6 +392,9 @@ fn spawns_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
             }
         })
     })?;
+    linker.func_wrap("aethereal", "aethereal_now", |mut caller: Caller<'_, Lending>| {
+        answer(&mut caller, |answering| answering.table.now().nanos())
+    })?;
     linker.func_wrap("aethereal", "aethereal_spawn", |mut caller: Caller<'_, Lending>, at: u32, len: u32| {
         let spawning = guest_bytes(&mut caller, Span { at, len });
         answer(&mut caller, |answering| {
@@ -1993,6 +1996,7 @@ fn declared_section(bytes: &[u8]) -> Option<&[u8]> {
 mod tests {
     use super::*;
     use crate::Monotonic;
+    use aethereal_actor::Time;
     use aethereal_actor::{
         Actor, ActorRef, Answer, Answered, Beginning, BlobRef, Carries, Ending, Forged, Handles, Links, Protocol,
         Seated, To, ToAny, ToSender, ToType, ToWithoutMail, Trapped, Turn, Unanswered,
@@ -2107,7 +2111,7 @@ mod tests {
         };
         let clock = Monotonic::new();
         while !engine.is_idle() {
-            engine.step(&clock);
+            engine.step(Time::ZERO, &clock);
         }
 
         assert_eq!(PONGS.load(Ordering::Relaxed), 10);
@@ -2209,7 +2213,7 @@ mod tests {
         };
         let clock = Monotonic::new();
         while !engine.is_idle() {
-            engine.step(&clock);
+            engine.step(Time::ZERO, &clock);
         }
 
         let questioned = QUESTIONED.lock().map(|questioned| questioned.clone()).unwrap_or_default();
@@ -2349,7 +2353,7 @@ mod tests {
             }
             let clock = Monotonic::new();
             while !engine.is_idle() {
-                engine.step(&clock);
+                engine.step(Time::ZERO, &clock);
             }
 
             let mut petitioned = PETITIONED.lock().map(|petitioned| petitioned.clone()).unwrap_or_default();
@@ -2443,7 +2447,7 @@ mod tests {
         };
         let clock = Monotonic::new();
         while !engine.is_idle() {
-            engine.step(&clock);
+            engine.step(Time::ZERO, &clock);
         }
 
         let shelved = SHELVED.lock().map(|shelved| shelved.clone()).unwrap_or_default();
@@ -2536,7 +2540,7 @@ mod tests {
             };
             let clock = Monotonic::new();
             while !engine.is_idle() {
-                engine.step(&clock);
+                engine.step(Time::ZERO, &clock);
             }
 
             let mut heard = HEARD.lock().map(|heard| heard.clone()).unwrap_or_default();
@@ -2616,7 +2620,7 @@ mod tests {
             };
             let clock = Monotonic::new();
             while !engine.is_idle() {
-                engine.step(&clock);
+                engine.step(Time::ZERO, &clock);
             }
 
             let mut opened = OPENED.lock().map(|opened| opened.clone()).unwrap_or_default();
@@ -2693,7 +2697,7 @@ mod tests {
             };
             let clock = Monotonic::new();
             while !engine.is_idle() {
-                engine.step(&clock);
+                engine.step(Time::ZERO, &clock);
             }
 
             let stashed = STASHED.lock().map(|stashed| stashed.clone()).unwrap_or_default();
@@ -2790,7 +2794,7 @@ mod tests {
             };
             let clock = Monotonic::new();
             while !engine.is_idle() {
-                engine.step(&clock);
+                engine.step(Time::ZERO, &clock);
             }
 
             let lent = LENT.lock().map(|lent| lent.clone()).unwrap_or_default();
@@ -2870,7 +2874,7 @@ mod tests {
         let echo = Seated { id: echo, seat };
         let clock = Monotonic::new();
         while !engine.is_idle() {
-            engine.step(&clock);
+            engine.step(Time::ZERO, &clock);
         }
 
         let failed = engine.log(echo).any(|entry| matches!(entry, aethereal_substrate::Entry::Failed(_)));
@@ -2946,7 +2950,7 @@ mod tests {
         }
         let clock = Monotonic::new();
         while !engine.is_idle() {
-            engine.step(&clock);
+            engine.step(Time::ZERO, &clock);
         }
 
         assert_eq!(CALLERS_ANSWERED.load(Ordering::Relaxed), (1 << callers) - 1);
@@ -3002,6 +3006,68 @@ mod tests {
         }
     }
 
+    /// The time the timekeeper guest last answered with.
+    static TOLD: AtomicU64 = AtomicU64::new(0);
+
+    /// A native actor that asks the timekeeper guest the time as it begins, and keeps what it is told.
+    #[derive(aethereal_data::Bound)]
+    struct TimeAsker;
+
+    impl Kind for TimeAsker {
+        const NAME: KindName = KindName::new("aether.test.time_asker");
+    }
+
+    impl Actor for TimeAsker {
+        type Config = Volley;
+        type Key = ();
+        type Handles = (Pong,);
+        type BeginSends = (ToAny<(Ping,), Ping>,);
+        type EndSends = ();
+
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+            let keeper = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.timekeeper"), &()));
+            if let Some(keeper) = turn.resolve(&keeper) {
+                turn.send_to_any(ToWithoutMail::Held(keeper), &Ping { n: 0 })?;
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Pong> for TimeAsker {
+        type Sends = ();
+
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            TOLD.store(pong.n, Ordering::Relaxed);
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_guest_s_turn_reads_the_time_its_step_was_given() {
+        // Catches a guest's host answering its call out for the time with anything but the step's.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(_) = engine.add_root_from::<echo::Timekeeper>(&code, &(), &echo::EchoConfig) else {
+            panic!("the timekeeper begins");
+        };
+        let Ok(_) = engine.add_root::<TimeAsker>(&(), Volley { pings: 0 }) else {
+            panic!("the asker begins");
+        };
+        let clock = Monotonic::new();
+        engine.step(Time::from_nanos(5), &clock);
+        engine.step(Time::from_nanos(9), &clock);
+
+        assert_eq!(TOLD.load(Ordering::Relaxed), 5);
+    }
+
     #[test]
     fn a_guest_answers_from_its_instance_after_another_in_it_has_ended() {
         // Catches two actors of one blob in one part each loading an instance of their own, and an instance dropped
@@ -3026,7 +3092,7 @@ mod tests {
         let echo = Seated { id: echo, seat };
         let clock = Monotonic::new();
         while !engine.is_idle() {
-            engine.step(&clock);
+            engine.step(Time::ZERO, &clock);
         }
 
         let failed = engine.log(echo).any(|entry| matches!(entry, aethereal_substrate::Entry::Failed(_)));
@@ -3103,7 +3169,7 @@ mod tests {
         let mirror = Seated { id: mirror, seat: mirror_seat };
         let clock = Monotonic::new();
         while !engine.is_idle() {
-            engine.step(&clock);
+            engine.step(Time::ZERO, &clock);
         }
 
         let trapped = |actor| {
@@ -3137,7 +3203,7 @@ mod tests {
         let doomed = engine.add_root_from::<echo::Doomed>(&code, &(), &echo::EchoConfig);
         let clock = Monotonic::new();
         while !engine.is_idle() {
-            engine.step(&clock);
+            engine.step(Time::ZERO, &clock);
         }
 
         let is_trap = |entry: &aethereal_substrate::Entry| match entry {
@@ -3275,7 +3341,7 @@ mod tests {
     fn settle(engine: &mut Engine) {
         let clock = Monotonic::new();
         while !engine.is_idle() {
-            engine.step(&clock);
+            engine.step(Time::ZERO, &clock);
         }
     }
 
@@ -4432,10 +4498,10 @@ mod tests {
         let clock = Monotonic::new();
 
         drop(first);
-        engine.step(&clock);
+        engine.step(Time::ZERO, &clock);
         let with_one = compiled();
         drop(second);
-        engine.step(&clock);
+        engine.step(Time::ZERO, &clock);
 
         assert_eq!((with_one, compiled()), (1, 0));
     }
@@ -4455,7 +4521,7 @@ mod tests {
         let echo = Declared::of::<echo::Echo>();
         let was_made = runtime.made(id, echo).is_some();
         drop(code);
-        engine.step(&Monotonic::new());
+        engine.step(Time::ZERO, &Monotonic::new());
 
         assert_eq!((was_made, runtime.made(id, echo).is_some()), (true, false));
     }

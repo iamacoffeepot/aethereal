@@ -1,7 +1,7 @@
 //! The chassis's tests: workers leave what one thread leaves.
 
 use super::*;
-use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Level, Seated, To, ToType, ToWithoutMail, Turn};
+use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Level, Seated, Time, To, ToType, ToWithoutMail, Turn};
 use aethereal_data::{ActorId, Kind, KindName, PathSegment, Plain, TypedKey};
 use aethereal_substrate::child_id;
 use std::iter;
@@ -133,7 +133,7 @@ fn workers_leave_what_one_thread_leaves() {
         assert_eq!(alone_fans.len(), 1 + usize::try_from(CHILDREN).unwrap_or(usize::MAX));
         let clock = Monotonic::new();
         while !alone.is_idle() {
-            alone.step(&clock);
+            alone.step(Time::ZERO, &clock);
         }
 
         let Some(four) = NonZeroUsize::new(4) else {

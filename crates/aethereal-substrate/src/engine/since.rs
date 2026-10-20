@@ -3,7 +3,7 @@
 
 use super::fuse::Run;
 use crate::{ActorTable, Blobs, ByActor};
-use aethereal_actor::{BlobHash, BlobId, Declared, SeatNumber, Seated, Table};
+use aethereal_actor::{BlobHash, BlobId, Declared, SeatNumber, Seated, Table, Time};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 
 /// The table as one actor's turn reads it (ADR-0009, ADR-0013).
@@ -23,6 +23,8 @@ pub(super) struct Since<'a> {
     pub(super) sees: Sees<'a>,
     /// The blobs the store held as the step began (ADR-0014).
     pub(super) blobs: &'a Blobs,
+    /// The time the step carries (ADR-0018).
+    pub(super) now: Time,
 }
 
 /// What a turn sees over the table as the step began and the children stood up since (ADR-0013).
@@ -95,5 +97,9 @@ impl Table for Since<'_> {
 
     fn blob_hash(&self, id: BlobId) -> Option<BlobHash> {
         self.blobs.hash(id)
+    }
+
+    fn now(&self) -> Time {
+        self.now
     }
 }
