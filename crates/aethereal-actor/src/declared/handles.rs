@@ -14,7 +14,7 @@ pub trait Handles<H: Handled>: Actor {
     type Sends: Sends + DeclaredBy<Self>;
 
     /// Handles one item: a turn of its own.
-    fn handle(&mut self, item: H::Item<'_>, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault>;
+    fn handle(&mut self, item: H::Item<'_>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault>;
 }
 
 /// Mail of any kind its receiver does not list: the receiver's fallback, which is handed the mail as it came

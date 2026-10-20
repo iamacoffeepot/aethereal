@@ -147,7 +147,7 @@ fn begin_linked<A: Actor>(config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Run
     let mut reader = Reader::<Actors>::new(config, &mut budget, ActorsReader::of(&pins));
     let config = A::Config::decode(&mut reader).map_err(|error| Refused::Began(Fault::from(error)))?;
     let Birth { me, path, above, table, asked, instances, keeping, .. } = birth;
-    let mut beginning = Beginning::beneath::<A>(me, path, above, table, asked, instances, Keeps::Here(keeping));
+    let mut beginning = Beginning::beneath(me, path, above, table, asked, instances, Keeps::Here(keeping));
     let actor = A::begin(config, &mut beginning);
 
     Ok(Box::new(actor.map_err(Refused::Began)?))

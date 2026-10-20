@@ -77,7 +77,7 @@ impl Actor for Asker {
     type BeginSends = (RunsJob<Where, Nothing>,);
     type EndSends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         for at in 0..3 {
             turn.run(&Where { at }, &Nothing)?;
         }
@@ -85,7 +85,7 @@ impl Actor for Asker {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -93,7 +93,7 @@ impl Actor for Asker {
 impl Handles<Answer<Ran, Nothing>> for Asker {
     type Sends = ();
 
-    fn handle(&mut self, (done, _): (Answered<Ran>, Nothing), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (done, _): (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let line = match done {
             Answered::Yes(Ran { at, on_a_job_thread }) => format!("{at} on a job thread: {on_a_job_thread}"),
             Answered::No(why) => format!("{why:?}"),
@@ -201,7 +201,7 @@ impl Actor for Sleeper {
     type BeginSends = (RunsJob<Forever, Nothing>, RunsJob<Sleep, Woke>);
     type EndSends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let on = turn.run(&Forever, &Nothing)?;
         for (order, millis) in [(2, 30), (1, 10)] {
             let until = turn.now() + Duration::from_millis(millis);
@@ -211,7 +211,7 @@ impl Actor for Sleeper {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -219,7 +219,7 @@ impl Actor for Sleeper {
 impl Handles<Answer<Ran, Nothing>> for Sleeper {
     type Sends = ();
 
-    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         SAID.with_borrow_mut(|said| said.push(String::from("the job that waits for good finished")));
 
         Ok(())
@@ -229,7 +229,7 @@ impl Handles<Answer<Ran, Nothing>> for Sleeper {
 impl Handles<Answer<Slept, Woke>> for Sleeper {
     type Sends = ();
 
-    fn handle(&mut self, (done, woke): (Answered<Slept>, Woke), turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (done, woke): (Answered<Slept>, Woke), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let line = match done {
             Answered::Yes(Slept) => format!("woke {} after its time: {}", woke.order, turn.now() >= woke.until),
             Answered::No(why) => format!("{why:?}"),

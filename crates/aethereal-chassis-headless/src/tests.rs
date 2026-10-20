@@ -55,7 +55,7 @@ impl Actor for Fan {
     type BeginSends = (ToType<Self, Count>, Spawns<Self>);
     type EndSends = ();
 
-    fn begin(config: FanConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: FanConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let is_root = config.number == 0;
         if is_root {
             for number in 1..=config.children {
@@ -69,7 +69,7 @@ impl Actor for Fan {
         Ok(Self { number: config.number })
     }
 
-    fn end(self, _turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -77,7 +77,7 @@ impl Actor for Fan {
 impl Handles<Count> for Fan {
     type Sends = (ToType<Self, Count>,);
 
-    fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let is_root = self.number == 0;
         if is_root {
             turn.log(Level::Info, format!("heard {left}"));

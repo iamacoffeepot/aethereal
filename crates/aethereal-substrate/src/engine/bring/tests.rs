@@ -99,7 +99,7 @@ impl Actor for Window {
     type BeginSends = (ToType<Self, Order>,);
     type EndSends = ();
 
-    fn begin(config: WindowConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: WindowConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let WindowConfig { number, pointers, lights, orders } = config;
         let pointers = pointers.into_iter().map(|pointer| turn.take(pointer)).collect::<Result<_, _>>()?;
         let lights = lights.into_iter().map(|light| turn.take(light)).collect::<Result<_, _>>()?;
@@ -111,7 +111,7 @@ impl Actor for Window {
         Ok(Self { number, pointers, lights })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -119,7 +119,7 @@ impl Actor for Window {
 impl Handles<Moved> for Window {
     type Sends = ();
 
-    fn handle(&mut self, moved: Moved, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, moved: Moved, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let is_from_me = turn.sender() == turn.me();
         let chain = turn.chain();
         let is_first = chain.depth == 0 && chain.root.sender == turn.me().id();
@@ -132,7 +132,7 @@ impl Handles<Moved> for Window {
 impl Handles<Order> for Window {
     type Sends = (Spawns<Self>,);
 
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let words: Vec<&str> = order.text.split(' ').collect();
         match words[..] {
             ["spawn", number] => {
@@ -153,7 +153,7 @@ impl Handles<Order> for Window {
 impl Handles<Lit> for Window {
     type Sends = ();
 
-    fn handle(&mut self, lit: Lit, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, lit: Lit, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let took = lit.take && turn.take(lit.lamp).is_ok();
         say(format!("{} lit, and took the lamp: {took}", self.number));
 
@@ -359,7 +359,7 @@ impl Actor for Windows {
     type BeginSends = (ToType<Self, Order>,);
     type EndSends = ();
 
-    fn begin(config: WindowsConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: WindowsConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let WindowsConfig { control, orders } = config;
         let mut control = turn.take(control)?;
         let controller = turn.open(&mut control)?;
@@ -373,7 +373,7 @@ impl Actor for Windows {
         Ok(Self { control })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -381,7 +381,7 @@ impl Actor for Windows {
 impl Handles<Order> for Windows {
     type Sends = ();
 
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         if order.text == "close" {
             turn.close();
             return Ok(());

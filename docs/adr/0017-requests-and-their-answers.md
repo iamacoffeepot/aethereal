@@ -44,7 +44,7 @@ pub enum Unanswered { Ended, Failed, Unreplied }
 
 impl Handles<Answer<TileIs, Looking>> for Pointer {
     type Sends = ();
-    fn handle(&mut self, (answered, looking): (Answered<TileIs>, Looking), turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, looking): (Answered<TileIs>, Looking), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         match answered {
             Answered::Yes(tile) => { .. }
             Answered::No(why) => { .. }

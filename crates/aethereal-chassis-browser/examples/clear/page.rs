@@ -79,7 +79,7 @@ impl Actor for Painter {
     type BeginSends = (Subscribes<Tick>, Subscribes<Render>);
     type EndSends = ();
 
-    fn begin(config: PainterConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: PainterConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let gpu = turn.take(config.gpu)?;
         turn.subscribe::<Tick, _>();
         turn.subscribe::<Render, _>();
@@ -87,7 +87,7 @@ impl Actor for Painter {
         Ok(Self { gpu, elapsed_nanos: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -95,7 +95,7 @@ impl Actor for Painter {
 impl Handles<Tick> for Painter {
     type Sends = ();
 
-    fn handle(&mut self, tick: Tick, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, tick: Tick, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.elapsed_nanos = tick.elapsed_nanos;
 
         Ok(())
@@ -105,7 +105,7 @@ impl Handles<Tick> for Painter {
 impl Handles<Render> for Painter {
     type Sends = ();
 
-    fn handle(&mut self, _: Render, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Render, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let colour = colour(self.elapsed_nanos);
         let gpu = turn.open(&mut self.gpu)?;
         // A frame the canvas has no texture for is skipped; the next asks again.

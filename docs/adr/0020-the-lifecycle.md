@@ -56,7 +56,7 @@ pub struct Stop;
 ```rust
 impl Handles<Spawned> for Renderer {
     type Sends = (Subscribes<Render>, Subscribes<Present>);   // builds only when Renderer handles both
-    fn handle(&mut self, _: Spawned, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Spawned, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.subscribe::<Render, _>();
         turn.subscribe::<Present, _>();
 

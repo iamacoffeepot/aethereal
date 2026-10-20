@@ -72,11 +72,11 @@ use core::marker::PhantomData;
 ///     type BeginSends = (Asks<Tiles, WhichTile, Looking>,);
 ///     type EndSends = ();
 ///
-///     fn begin(pointer: Pointer, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+///     fn begin(pointer: Pointer, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
 ///         Ok(pointer)
 ///     }
 ///
-///     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -148,11 +148,11 @@ type Of<P, K, C> = fn() -> (P, K, C);
 ///     type BeginSends = ();
 ///     type EndSends = ();
 ///
-///     fn begin(pointer: Pointer, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+///     fn begin(pointer: Pointer, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
 ///         Ok(pointer)
 ///     }
 ///
-///     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -160,7 +160,7 @@ type Of<P, K, C> = fn() -> (P, K, C);
 /// impl Handles<Answer<TileIs, Looking>> for Pointer {
 ///     type Sends = ();
 ///
-///     fn handle(&mut self, _: (Answered<TileIs>, Looking), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: (Answered<TileIs>, Looking), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -168,7 +168,7 @@ type Of<P, K, C> = fn() -> (P, K, C);
 /// impl Handles<Answer<TileIs, Glancing>> for Pointer {
 ///     type Sends = ();
 ///
-///     fn handle(&mut self, _: (Answered<TileIs>, Glancing), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: (Answered<TileIs>, Glancing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -266,11 +266,11 @@ pub struct Asking {
 /// #     type BeginSends = ();
 /// #     type EndSends = ();
 /// #
-/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
 /// #         Ok(greeter)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -282,13 +282,13 @@ pub struct Asking {
 /// #     type BeginSends = (Asks<Path<Greeter>, Hello, Waiting>,);
 /// #     type EndSends = ();
 /// #
-/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
 /// #         turn.ask_to(path::<Greeter>(()), &Hello, &Waiting)?;
 /// #
 /// #         Ok(visitor)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -296,7 +296,7 @@ pub struct Asking {
 /// # impl Handles<Answer<Hi, Waiting>> for Visitor {
 /// #     type Sends = ();
 /// #
-/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -308,7 +308,7 @@ pub struct Asking {
 /// impl Handles<Hello> for Greeter {
 ///     type Sends = (ToSender<Hi>,);
 ///
-///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         Ok(turn.reply(&Hi)?)
 ///     }
 /// }
@@ -353,11 +353,11 @@ pub struct Asking {
 /// #     type BeginSends = ();
 /// #     type EndSends = ();
 /// #
-/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
 /// #         Ok(greeter)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -369,13 +369,13 @@ pub struct Asking {
 /// #     type BeginSends = (Asks<Path<Greeter>, Hello, Waiting>,);
 /// #     type EndSends = ();
 /// #
-/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
 /// #         turn.ask_to(path::<Greeter>(()), &Hello, &Waiting)?;
 /// #
 /// #         Ok(visitor)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -383,7 +383,7 @@ pub struct Asking {
 /// # impl Handles<Answer<Hi, Waiting>> for Visitor {
 /// #     type Sends = ();
 /// #
-/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -393,7 +393,7 @@ pub struct Asking {
 /// impl Handles<Hello> for Greeter {
 ///     type Sends = (ToSender<Hi>,);
 ///
-///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         Ok(turn.reply(&Hi)?)
 ///     }
 /// }
@@ -438,11 +438,11 @@ pub struct Asking {
 /// #     type BeginSends = ();
 /// #     type EndSends = ();
 /// #
-/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
 /// #         Ok(greeter)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -454,13 +454,13 @@ pub struct Asking {
 /// #     type BeginSends = (Asks<Path<Greeter>, Hello, Waiting>,);
 /// #     type EndSends = ();
 /// #
-/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
 /// #         turn.ask_to(path::<Greeter>(()), &Hello, &Waiting)?;
 /// #
 /// #         Ok(visitor)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -468,7 +468,7 @@ pub struct Asking {
 /// # impl Handles<Answer<Hi, Waiting>> for Visitor {
 /// #     type Sends = ();
 /// #
-/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -480,7 +480,7 @@ pub struct Asking {
 /// impl Handles<Hello> for Greeter {
 ///     type Sends = (ToSender<Bye>,);
 ///
-///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         Ok(turn.reply(&Bye)?)
 ///     }
 /// }

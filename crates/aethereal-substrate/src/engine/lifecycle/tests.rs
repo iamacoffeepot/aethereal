@@ -73,7 +73,7 @@ impl Actor for Staged {
     type BeginSends = (Subscribes<Start>, Subscribes<Stop>, ToType<Self, Note>);
     type EndSends = ();
 
-    fn begin(config: StagedConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: StagedConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Start, _>();
         turn.subscribe::<Stop, _>();
         for text in config.to_self {
@@ -84,7 +84,7 @@ impl Actor for Staged {
         Ok(Self { number: config.number })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -92,7 +92,7 @@ impl Actor for Staged {
 impl Handles<Start> for Staged {
     type Sends = (ToType<Self, Note>,);
 
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         say(format!("{} started", self.number));
         let me = turn.me();
         turn.send(To::Held(me), &Note { text: String::from("pass 2") })?;
@@ -109,7 +109,7 @@ impl Handles<Start> for Staged {
 impl Handles<Stop> for Staged {
     type Sends = ();
 
-    fn handle(&mut self, _: Stop, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Stop, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         say(format!("{} stopping", self.number));
 
         Ok(())
@@ -119,7 +119,7 @@ impl Handles<Stop> for Staged {
 impl Handles<Note> for Staged {
     type Sends = (ToType<Self, Note>, Subscribes<Start>);
 
-    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Note { text } = note;
         say(format!("{} got {text}", self.number));
         let words: Vec<&str> = text.split(' ').collect();
@@ -259,11 +259,11 @@ impl Actor for Impostor {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Note, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+    fn begin(_: Note, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -308,7 +308,7 @@ impl Actor for Cycler {
         (Subscribes<Receive>, Subscribes<Tick>, Subscribes<Render>, Subscribes<Present>, Subscribes<Stop>);
     type EndSends = ();
 
-    fn begin(_: Note, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Note, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Receive, _>();
         turn.subscribe::<Tick, _>();
         turn.subscribe::<Render, _>();
@@ -318,7 +318,7 @@ impl Actor for Cycler {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -326,7 +326,7 @@ impl Actor for Cycler {
 impl Handles<Tick> for Cycler {
     type Sends = (ToType<Self, Note>,);
 
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         say(format!("tick {} {}", tick.delta_nanos, tick.elapsed_nanos));
         let me = turn.me();
         turn.send(To::Held(me), &Note { text: String::from("pass 1") })?;
@@ -338,7 +338,7 @@ impl Handles<Tick> for Cycler {
 impl Handles<Note> for Cycler {
     type Sends = ();
 
-    fn handle(&mut self, note: Note, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, note: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         say(note.text);
 
         Ok(())
@@ -352,7 +352,7 @@ macro_rules! says {
             impl Handles<$stage> for Cycler {
                 type Sends = ();
 
-                fn handle(&mut self, _: $stage, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+                fn handle(&mut self, _: $stage, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
                     say(String::from($said));
 
                     Ok(())
@@ -496,7 +496,7 @@ impl Actor for Nest {
     type BeginSends = (ToType<Self, Note>, Spawns<Cycler>);
     type EndSends = ();
 
-    fn begin(_: Note, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Note, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let spawned = turn.spawn(&(), Note { text: String::new() });
         say(format!("{:?}", spawned.err()));
         let me = turn.me();
@@ -505,7 +505,7 @@ impl Actor for Nest {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -513,7 +513,7 @@ impl Actor for Nest {
 impl Handles<Note> for Nest {
     type Sends = (Spawns<Latecomer>,);
 
-    fn handle(&mut self, _: Note, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let spawned = turn.spawn(&(), Note { text: String::new() });
         say(format!("{:?}", spawned.err()));
 
@@ -574,11 +574,11 @@ impl Actor for Latecomer {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Note, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Note, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -586,7 +586,7 @@ impl Actor for Latecomer {
 impl Handles<Receive> for Latecomer {
     type Sends = ();
 
-    fn handle(&mut self, _: Receive, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Receive, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -594,7 +594,7 @@ impl Handles<Receive> for Latecomer {
 impl Handles<Note> for Latecomer {
     type Sends = (Subscribes<Receive>,);
 
-    fn handle(&mut self, _: Note, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.subscribe::<Receive, _>();
 
         Ok(())
@@ -624,13 +624,13 @@ impl Actor for Drainer {
     type BeginSends = (Subscribes<Stop>,);
     type EndSends = ();
 
-    fn begin(_: Note, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Note, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Stop, _>();
 
         Ok(Self { held: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -638,7 +638,7 @@ impl Actor for Drainer {
 impl Handles<Stop> for Drainer {
     type Sends = (ToSender<Drained>,);
 
-    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         say(String::from("holding"));
         self.held.push(turn.hold()?);
 
@@ -649,7 +649,7 @@ impl Handles<Stop> for Drainer {
 impl Handles<Note> for Drainer {
     type Sends = ();
 
-    fn handle(&mut self, note: Note, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         say(note.text.clone());
         match note.text.as_str() {
             "answer" => {
@@ -685,7 +685,7 @@ impl Actor for Waker {
     type BeginSends = (ToType<Drainer, Note>,);
     type EndSends = ();
 
-    fn begin(note: Note, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(note: Note, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let path = ActorPath::from_root(&PathSegment::new(Drainer::NAME, &()));
         let Some(drainer) = turn.resolve(&path) else {
             return Ok(Self);
@@ -695,7 +695,7 @@ impl Actor for Waker {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -774,11 +774,11 @@ impl Actor for Shore {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Note, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Note, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -786,7 +786,7 @@ impl Actor for Shore {
 impl Handles<Note> for Shore {
     type Sends = ();
 
-    fn handle(&mut self, _: Note, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -810,11 +810,11 @@ impl Actor for Castaway {
     type BeginSends = (Subscribes<Receive>, Tells<Path<Shore>, Note>);
     type EndSends = ();
 
-    fn begin(_: Note, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Note, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -822,7 +822,7 @@ impl Actor for Castaway {
 impl Handles<Receive> for Castaway {
     type Sends = ();
 
-    fn handle(&mut self, _: Receive, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Receive, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }

@@ -25,13 +25,13 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> {
     type BeginSends;                        // what `begin` may send (ADR-0013)
     type EndSends;                          // what `end` may send (ADR-0013)
 
-    fn begin(config: Self::Config, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault>;
-    fn end(self, turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault>;
+    fn begin(config: Self::Config, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault>;
+    fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault>;
 }
 
 pub trait Handles<H>: Actor {
     type Sends;
-    fn handle(&mut self, item: H::Item<'_>, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault>;
+    fn handle(&mut self, item: H::Item<'_>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault>;
 }
 ```
 

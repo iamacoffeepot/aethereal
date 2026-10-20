@@ -80,7 +80,7 @@ impl Actor for Pinger {
     type BeginSends = (ToAny<(Ping,), Ping>,);
     type EndSends = ();
 
-    fn begin(volley: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(volley: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let responder = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.responder"), &volley.with));
         if let Some(responder) = turn.resolve(&responder) {
             turn.send_to_any(ToWithoutMail::Held(responder), &Ping { n: volley.pings })?;
@@ -89,7 +89,7 @@ impl Actor for Pinger {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -97,7 +97,7 @@ impl Actor for Pinger {
 impl Handles<Pong> for Pinger {
     type Sends = (ToSender<Ping>, ToSender<Shut>);
 
-    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if pong.n > 0 {
             turn.reply(&Ping { n: pong.n - 1 })?;
         } else {
@@ -131,11 +131,11 @@ impl Actor for NativeResponder {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Volley, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Volley, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self { answered: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -143,7 +143,7 @@ impl Actor for NativeResponder {
 impl Handles<Ping> for NativeResponder {
     type Sends = (ToSender<Pong>,);
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.answered += 1;
         turn.reply(&Pong { n: ping.n })?;
 
@@ -154,7 +154,7 @@ impl Handles<Ping> for NativeResponder {
 impl Handles<Shut> for NativeResponder {
     type Sends = ();
 
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())

@@ -106,7 +106,7 @@ impl Kind for Keeper {
 
 impl Keeper {
     /// Every lamp it keeps, given up.
-    fn give_all<S>(&mut self, turn: &mut Turn<'_, S>) -> Result<Vec<Given<Lamp>>, Fault> {
+    fn give_all<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<Vec<Given<Lamp>>, Fault> {
         mem::take(&mut self.lamps).into_iter().map(|lamp| turn.give(lamp)).collect()
     }
 
@@ -127,7 +127,7 @@ impl Actor for Keeper {
     type BeginSends = (ToType<Self, Order>,);
     type EndSends = ();
 
-    fn begin(config: KeeperConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: KeeperConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let KeeperConfig { number, lamps, orders } = config;
         let refuses = number == 99;
         let taken = if refuses {
@@ -144,7 +144,7 @@ impl Actor for Keeper {
         Ok(Self { number, lamps: taken })
     }
 
-    fn end(mut self, turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(mut self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         for lamp in &mut self.lamps {
             say(format!("{} last {}", self.number, turn.open(lamp)?.light));
         }
@@ -156,7 +156,7 @@ impl Actor for Keeper {
 impl Handles<Order> for Keeper {
     type Sends = (ToType<Self, Order>, ToType<Self, Pass>, Spawns<Self>);
 
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let words: Vec<&str> = order.text.split(' ').collect();
         match words[..] {
             ["make", light] => {
@@ -228,7 +228,7 @@ impl Handles<Order> for Keeper {
 impl Handles<Pass> for Keeper {
     type Sends = ();
 
-    fn handle(&mut self, pass: Pass, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, pass: Pass, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let refuses = self.number == 99;
         if refuses {
             say(format!("{} left {}", self.number, pass.lamps.len()));

@@ -294,14 +294,14 @@ impl Actor for Worker {
     type BeginSends = (RunsJob<Double, Which>,);
     type EndSends = ();
 
-    fn begin(_: Which, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Which, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let id = turn.run(&Double { n: 1 }, &Which { at: 0 })?;
         say(format!("ran 0 as {}", id.mail().count));
 
         Ok(Self { kept: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -320,7 +320,7 @@ impl Handles<Go> for Worker {
         Spawns<Failing>,
     );
 
-    fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let which = Which { at: go.at };
         let id = match go.what.as_str() {
             "double" => turn.run(&Double { n: 10 * go.at }, &which)?,
@@ -403,7 +403,7 @@ impl Handles<Go> for Worker {
 impl Handles<Answer<Doubled, Which>> for Worker {
     type Sends = ();
 
-    fn handle(&mut self, (done, which): (Answered<Doubled>, Which), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (done, which): (Answered<Doubled>, Which), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         match done {
             Answered::Yes(doubled) => say(format!("{} doubled {}", which.at, doubled.n)),
             Answered::No(why) => say(format!("{} {why:?}", which.at)),
@@ -416,7 +416,7 @@ impl Handles<Answer<Doubled, Which>> for Worker {
 impl Handles<Answer<Rang, GiveUp>> for Worker {
     type Sends = ();
 
-    fn handle(&mut self, (_, give_up): (Answered<Rang>, GiveUp), turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (_, give_up): (Answered<Rang>, GiveUp), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         say(format!("gave up on {}", give_up.on.mail().count));
         turn.cancel(give_up.on);
 
@@ -427,7 +427,7 @@ impl Handles<Answer<Rang, GiveUp>> for Worker {
 impl Handles<Answer<Shrunk, Which>> for Worker {
     type Sends = ();
 
-    fn handle(&mut self, (done, which): (Answered<Shrunk>, Which), turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (done, which): (Answered<Shrunk>, Which), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         match done {
             Answered::Yes(Shrunk { first, kept, second }) => {
                 let (first, kept, second) = (turn.read(&first), turn.read(&kept), turn.read(&second));
@@ -459,13 +459,13 @@ impl Actor for Failing {
     type BeginSends = (RunsJob<Unlinked, Which>,);
     type EndSends = ();
 
-    fn begin(which: Which, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(which: Which, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.run(&Unlinked, &which)?;
 
         Err(Fault::of_parts(KindId::of::<Self>(), Vec::new()))
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -473,7 +473,7 @@ impl Actor for Failing {
 impl Handles<Answer<Doubled, Which>> for Failing {
     type Sends = ();
 
-    fn handle(&mut self, _: (Answered<Doubled>, Which), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Doubled>, Which), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -497,7 +497,7 @@ impl Actor for Poker {
     type BeginSends = (ToType<Worker, Go>,);
     type EndSends = ();
 
-    fn begin(go: Go, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(go: Go, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let path = ActorPath::from_root(&PathSegment::new(Worker::NAME, &()));
         if let Some(worker) = turn.resolve(&path) {
             turn.send(ToWithoutMail::Held(worker), &go)?;
@@ -506,7 +506,7 @@ impl Actor for Poker {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }

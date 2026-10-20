@@ -67,7 +67,7 @@ engine.bring();
 
 ```rust
 impl Handles<OpenWindow> for Windows {
-    fn handle(&mut self, open: OpenWindow, turn: &mut Turn<'_, ..>) -> Result<(), Fault> {
+    fn handle(&mut self, open: OpenWindow, turn: &mut Turn<'_, Self, ..>) -> Result<(), Fault> {
         let id = self.next();
         self.waiting.push((id, turn.hold()?));
         turn.open(&mut self.control)?.push(Make::Window { id, title: open.title });
@@ -76,7 +76,7 @@ impl Handles<OpenWindow> for Windows {
 }
 
 impl Handles<Made> for Windows {               // brought from the source: from this actor to itself
-    fn handle(&mut self, made: Made, turn: &mut Turn<'_, ..>) -> Result<(), Fault> {
+    fn handle(&mut self, made: Made, turn: &mut Turn<'_, Self, ..>) -> Result<(), Fault> {
         let Made::Window { id, window } = made;
         let taken = turn.take(window)?;
         let window = turn.give(taken)?;

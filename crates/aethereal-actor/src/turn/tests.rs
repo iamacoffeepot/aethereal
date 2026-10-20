@@ -140,7 +140,7 @@ impl Actor for Leaf {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(config: LeafConfig, turn: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+    fn begin(config: LeafConfig, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
         if config.fails {
             turn.log(Level::Warn, "told to fail");
             return Err(Fault::new(&ToldToFail)?);
@@ -149,7 +149,7 @@ impl Actor for Leaf {
         Ok(Self)
     }
 
-    fn end(self, _turn: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    fn end(self, _turn: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -157,7 +157,7 @@ impl Actor for Leaf {
 impl Handles<Poke> for Leaf {
     type Sends = (ToSender<Poked>,);
 
-    fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         Ok(turn.reply(&Poked)?)
     }
 }
@@ -166,7 +166,7 @@ impl Handles<Poke> for Leaf {
 impl Handles<Poked> for Leaf {
     type Sends = ();
 
-    fn handle(&mut self, _: Poked, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Poked, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -174,7 +174,7 @@ impl Handles<Poked> for Leaf {
 impl Handles<Shut> for Leaf {
     type Sends = ();
 
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
@@ -184,7 +184,7 @@ impl Handles<Shut> for Leaf {
 impl Handles<Meet> for Leaf {
     type Sends = (ToType<Self, Poke>,);
 
-    fn handle(&mut self, Meet { other }: Meet, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Meet { other }: Meet, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         Ok(turn.send(To::Held(other), &Poke)?)
     }
 }
@@ -220,7 +220,7 @@ impl Actor for Branch {
     type EndSends = ();
 
     /// Spawns its leaves, poking each that begins.
-    fn begin(config: BranchConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: BranchConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         for key in 0..config.leaves {
             let is_last = key + 1 == config.leaves;
             let fails = is_last && config.last_fails;
@@ -234,7 +234,7 @@ impl Actor for Branch {
         Ok(Self)
     }
 
-    fn end(self, _turn: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    fn end(self, _turn: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -243,7 +243,7 @@ impl Actor for Branch {
 impl Handles<Poked> for Branch {
     type Sends = ();
 
-    fn handle(&mut self, _: Poked, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Poked, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -268,13 +268,13 @@ impl Actor for Herald {
     type BeginSends = (ToType<Leaf, Poked>,);
     type EndSends = (ToType<Leaf, Shut>,);
 
-    fn begin(_config: Poke, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_config: Poke, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.send(ToWithoutMail::Parent, &Poked)?;
 
         Ok(Self)
     }
 
-    fn end(self, turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         if turn.why() == Why::Closed {
             turn.send(ToWithoutMail::Parent, &Shut)?;
         }
@@ -300,7 +300,7 @@ fn opened<'a, S: Sends>(
     table: &'a dyn Table,
     asked: &'a mut Asked,
     source: Seated,
-) -> Turn<'a, S> {
+) -> Turn<'a, Leaf, S> {
     let poke = Role::Kind(KindId::of::<Poke>());
 
     // A turn built for a test lends no instance its handler reads, so it is lent a part's empty instances for as long

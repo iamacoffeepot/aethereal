@@ -74,7 +74,7 @@ impl Actor for Counter {
     type BeginSends = (ToAny<(Ping,), Ping>,);
     type EndSends = ();
 
-    fn begin(bursts: Bursts, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(bursts: Bursts, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
         if let Some(echo) = turn.resolve(&echo) {
             turn.send_to_any(ToWithoutMail::Held(echo), &Ping { n: bursts.bursts })?;
@@ -83,7 +83,7 @@ impl Actor for Counter {
         Ok(Self { each: bursts.each })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -91,7 +91,7 @@ impl Actor for Counter {
 impl Handles<Pong> for Counter {
     type Sends = (ToSender<Increment>, ToSender<Ping>);
 
-    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if pong.n > 0 {
             for _ in 0..self.each {
                 turn.reply(&Increment)?;
@@ -131,11 +131,11 @@ impl Actor for Echo {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self { counted: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -143,7 +143,7 @@ impl Actor for Echo {
 impl Handles<Ping> for Echo {
     type Sends = (ToSender<Pong>,);
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.reply(&Pong { n: ping.n })?;
 
         Ok(())
@@ -153,7 +153,7 @@ impl Handles<Ping> for Echo {
 impl Handles<Increment> for Echo {
     type Sends = ();
 
-    fn handle(&mut self, _: Increment, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Increment, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.counted += 1;
 
         Ok(())

@@ -54,14 +54,14 @@ impl Actor for Painter {
     type BeginSends = (Subscribes<Tick>, Subscribes<Render>);
     type EndSends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Tick, _>();
         turn.subscribe::<Render, _>();
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -69,7 +69,7 @@ impl Actor for Painter {
 impl Handles<Tick> for Painter {
     type Sends = (RunsJob<Sleep, Nothing>,);
 
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         note("tick");
         turn.run(&Sleep { until: turn.now() }, &Nothing)?;
 
@@ -80,7 +80,7 @@ impl Handles<Tick> for Painter {
 impl Handles<Render> for Painter {
     type Sends = ();
 
-    fn handle(&mut self, _: Render, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Render, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         note("render");
 
         Ok(())
@@ -90,7 +90,7 @@ impl Handles<Render> for Painter {
 impl Handles<Answer<Slept, Nothing>> for Painter {
     type Sends = ();
 
-    fn handle(&mut self, (done, _): (Answered<Slept>, Nothing), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (done, _): (Answered<Slept>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let said = match done {
             Answered::Yes(Slept) => "slept",
             Answered::No(_) => "not answered",
@@ -176,13 +176,13 @@ impl Actor for Pointer {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(config: PointerConfig, turn: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+    fn begin(config: PointerConfig, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
         let source = turn.take(config.source)?;
 
         Ok(Self { source })
     }
 
-    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -190,7 +190,7 @@ impl Actor for Pointer {
 impl Handles<Moved> for Pointer {
     type Sends = ();
 
-    fn handle(&mut self, moved: Moved, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, moved: Moved, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         MOVED.lock().map(|mut brought| brought.push(moved.x)).ok();
 
         Ok(())

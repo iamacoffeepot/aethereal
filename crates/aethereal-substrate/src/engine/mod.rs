@@ -591,7 +591,7 @@ impl Engine {
 
         let declared = Declared::of::<A>();
         self.add_root_made(&segment, Code::Linked(declared), gifts, |me, path, table, asked, instances, keeping| {
-            let mut beginning = Beginning::new::<A>(me, path, table, asked, instances, Keeps::Here(keeping));
+            let mut beginning = Beginning::new(me, path, table, asked, instances, Keeps::Here(keeping));
             let root = A::begin(config, &mut beginning).map_err(Refused::Began)?;
 
             Ok(Box::new(root))

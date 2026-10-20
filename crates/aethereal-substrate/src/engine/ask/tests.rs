@@ -115,11 +115,11 @@ impl Actor for Board {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Blank, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+    fn begin(_: Blank, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new(), closed_on: 0 })
     }
 
-    fn end(self, turn: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    fn end(self, turn: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
         let answers = self.closed_on >= 4;
         if !answers {
             return Ok(());
@@ -141,7 +141,7 @@ impl Actor for Board {
 impl Handles<WhichTile> for Board {
     type Sends = (ToSender<TileIs>,);
 
-    fn handle(&mut self, which: WhichTile, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, which: WhichTile, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         match which.x {
             0 => return Err(Fault::new(&which)?),
             1 => return Ok(()),
@@ -174,7 +174,7 @@ impl Handles<WhichTile> for Board {
 impl Handles<Release> for Board {
     type Sends = ();
 
-    fn handle(&mut self, release: Release, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, release: Release, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let held = mem::take(&mut self.held);
         match release.how {
             0 => {
@@ -247,7 +247,7 @@ impl Actor for Pointer {
     type BeginSends = (ToType<Self, Order>, Asks<Tiles, WhichTile, Looking>, Spawns<Board>, Spawns<Seeker>);
     type EndSends = ();
 
-    fn begin(config: PointerConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: PointerConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let Ok(board) = turn.spawn(&1, Blank) else {
             return Err(Fault::new(&Order { text: String::from("no board") })?);
         };
@@ -268,7 +268,7 @@ impl Actor for Pointer {
         Ok(Self { board })
     }
 
-    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -282,7 +282,7 @@ impl Handles<Order> for Pointer {
         Spawns<Seeker>,
     );
 
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let (verb, rest) = order.text.split_once(' ').unwrap_or((&order.text, ""));
         let xs: Vec<u64> = rest.split(' ').map(|word| word.parse().unwrap_or_default()).collect();
         let board = self.board;
@@ -330,7 +330,11 @@ impl Handles<Order> for Pointer {
 impl Handles<Answer<TileIs, Looking>> for Pointer {
     type Sends = ();
 
-    fn handle(&mut self, (answered, looking): (Answered<TileIs>, Looking), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(
+        &mut self,
+        (answered, looking): (Answered<TileIs>, Looking),
+        _: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
         match answered {
             Answered::Yes(tile) => say(format!("{} for {}", tile.tile, looking.at)),
             Answered::No(why) => say(format!("{why:?} for {}", looking.at)),
@@ -343,7 +347,7 @@ impl Handles<Answer<TileIs, Looking>> for Pointer {
 impl Handles<TileIs> for Pointer {
     type Sends = ();
 
-    fn handle(&mut self, tile: TileIs, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, tile: TileIs, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         say(format!("told {}", tile.tile));
 
         Ok(())
@@ -381,7 +385,7 @@ impl Actor for Seeker {
     type BeginSends = (Asks<Tiles, WhichTile, Looking>, Spawns<Board>);
     type EndSends = ();
 
-    fn begin(seeking: Seeking, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(seeking: Seeking, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let Ok(board) = turn.spawn(&2, Blank) else {
             return Err(Fault::new(&seeking)?);
         };
@@ -394,7 +398,7 @@ impl Actor for Seeker {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -402,7 +406,11 @@ impl Actor for Seeker {
 impl Handles<Answer<TileIs, Looking>> for Seeker {
     type Sends = ();
 
-    fn handle(&mut self, (answered, looking): (Answered<TileIs>, Looking), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(
+        &mut self,
+        (answered, looking): (Answered<TileIs>, Looking),
+        _: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
         match answered {
             Answered::Yes(tile) => say(format!("seeker heard {} for {}", tile.tile, looking.at)),
             Answered::No(why) => say(format!("seeker heard {why:?} for {}", looking.at)),
@@ -444,7 +452,7 @@ impl Actor for Keeper {
     type BeginSends = (ToType<Self, Order>, Spawns<Board>);
     type EndSends = ();
 
-    fn begin(_: Blank, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Blank, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let Ok(board) = turn.spawn(&1, Blank) else {
             return Err(Fault::new(&Order { text: String::from("no board") })?);
         };
@@ -454,7 +462,7 @@ impl Actor for Keeper {
         Ok(Self { board })
     }
 
-    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -462,7 +470,7 @@ impl Actor for Keeper {
 impl Handles<Order> for Keeper {
     type Sends = (Asks<Tiles, WhichTile, Kept>,);
 
-    fn handle(&mut self, _: Order, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Ok(blob) = turn.put(vec![9; 3]) else {
             return Err(Fault::new(&Order { text: String::from("no room") })?);
         };
@@ -476,7 +484,7 @@ impl Handles<Order> for Keeper {
 impl Handles<Answer<TileIs, Kept>> for Keeper {
     type Sends = ();
 
-    fn handle(&mut self, (_, kept): (Answered<TileIs>, Kept), turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (_, kept): (Answered<TileIs>, Kept), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         say(format!("kept {}", turn.read(&kept.blob).len()));
 
         Ok(())

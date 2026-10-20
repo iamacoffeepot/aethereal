@@ -63,7 +63,7 @@ impl Actor for Pinger {
     type BeginSends = (ToAny<(Ping,), Ping>,);
     type EndSends = ();
 
-    fn begin(volley: Volley, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(volley: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
         if let Some(echo) = turn.resolve(&echo) {
             turn.send_to_any(ToWithoutMail::Held(echo), &Ping { n: volley.pings })?;
@@ -72,7 +72,7 @@ impl Actor for Pinger {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -80,7 +80,7 @@ impl Actor for Pinger {
 impl Handles<Pong> for Pinger {
     type Sends = (ToSender<Ping>,);
 
-    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if pong.n > 0 {
             turn.reply(&Ping { n: pong.n - 1 })?;
         }
