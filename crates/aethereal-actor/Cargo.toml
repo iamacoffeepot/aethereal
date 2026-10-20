@@ -9,13 +9,14 @@ description = "What an actor's code is written against: the effects a turn asks 
 [features]
 default = ["std"]
 # References that pin blobs (ADR-0014), whose pins are noted in a buffer each thread keeps, and their content's hash.
-std = ["dep:blake3", "blake3/std"]
+std = ["dep:blake3", "blake3/std", "dep:crossbeam-queue"]
 # What a guest's code runs on inside its instance: the calls its host makes (ADR-0015).
 guest = ["std"]
 
 [dependencies]
 aethereal-data = { path = "../aethereal-data" }
 blake3 = { workspace = true, optional = true }
+crossbeam-queue = { workspace = true, optional = true }
 
 [lints]
 workspace = true

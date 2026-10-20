@@ -412,7 +412,7 @@ impl<'a> Hosted<'a> {
         if !asks {
             return Err(FalseSend);
         }
-        self.seat.asked.asks.push((by, Asking { count, answer, context }));
+        self.seat.asked.asks.push((by, Asking { count, answer, context, lent: Vec::new() }));
 
         Ok(Tie::asks(count))
     }

@@ -338,18 +338,26 @@ mod pinned {
     /// Where the changes to blobs' pins are noted until the engine sums them (ADR-0014).
     ///
     /// A thread the engine runs a step's turns on opens a buffer of its own
-    /// for them, and takes it back when they are done. A change made on any other
-    /// thread, or on one with no buffer open, goes to one buffer they share.
+    /// for them, and takes it back when they are done. A thread that runs a job
+    /// pushes them onto its engine's queue while it runs the job (ADR-0018). A
+    /// change made on any other thread, or on one with no buffer open, goes to
+    /// one buffer they share.
     pub mod pins {
         use crate::BlobId;
+        use alloc::sync::Arc;
         use alloc::vec::Vec;
         use core::cell::RefCell;
         use core::mem;
+        use crossbeam_queue::SegQueue;
         use std::collections::BTreeMap;
         use std::sync::{Mutex, PoisonError};
 
         /// One change to one blob's pins: one more, or one fewer.
         pub type Change = (BlobId, i64);
+
+        /// Where the changes to one engine's pins made while its jobs run go: a queue no one waits on, so a thread
+        /// running a job never waits for another, nor for the engine, and the engine never waits for it (ADR-0018).
+        pub type Queue = Arc<SegQueue<Change>>;
 
         /// Whether this thread has a buffer of its own open, and for which engine.
         enum Buffer {
@@ -363,6 +371,11 @@ mod pinned {
             #[cfg(feature = "guest")]
             Every {
                 changes: Vec<Change>,
+            },
+            /// Pushing the changes of one engine onto its queue, while a job of it runs.
+            Queued {
+                engine: u32,
+                queue: Queue,
             },
         }
 
@@ -386,7 +399,11 @@ mod pinned {
                     changes.push((id, by));
                     true
                 }
-                Buffer::Open { .. } | Buffer::Closed => false,
+                Buffer::Queued { engine, queue } if *engine == id.engine() => {
+                    queue.push((id, by));
+                    true
+                }
+                Buffer::Open { .. } | Buffer::Queued { .. } | Buffer::Closed => false,
             });
             let is_noted = noted.unwrap_or(false);
             if !is_noted {
@@ -409,8 +426,36 @@ mod pinned {
                 Buffer::Open { changes, .. } => changes,
                 #[cfg(feature = "guest")]
                 Buffer::Every { changes } => changes,
-                Buffer::Closed => Vec::new(),
+                Buffer::Queued { .. } | Buffer::Closed => Vec::new(),
             })
+        }
+
+        /// Runs `run` with the changes to the pins of the engine numbered `engine` made on this thread pushed onto
+        /// `queue`, then puts back the buffer this thread had, even when `run` panics.
+        pub fn queued<R>(engine: u32, queue: &Queue, run: impl FnOnce() -> R) -> R {
+            let queued = Buffer::Queued { engine, queue: Arc::clone(queue) };
+            let had = OWN.with(|own| mem::replace(&mut *own.borrow_mut(), queued));
+            let _back = PutBack(had);
+
+            run()
+        }
+
+        /// The buffer a thread had before it ran a job, put back once the job has run.
+        struct PutBack(Buffer);
+
+        impl Drop for PutBack {
+            fn drop(&mut self) {
+                let had = mem::replace(&mut self.0, Buffer::Closed);
+                // A thread being torn down has no buffer left to put back.
+                let _ = OWN.try_with(|own| *own.borrow_mut() = had);
+            }
+        }
+
+        /// Takes the changes `queue` holds as this begins, adding them to `into`: what is pushed while it takes waits
+        /// for the next, so taking is bounded however fast jobs push.
+        pub fn take_queued(queue: &Queue, into: &mut Vec<Change>) {
+            let ready = queue.len();
+            into.extend((0..ready).map_while(|_| queue.pop()));
         }
 
         /// Takes the changes this thread has made since it last did, adding them to `into`, and keeps its buffer open

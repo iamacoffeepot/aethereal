@@ -417,6 +417,9 @@ enum From<'a> {
     /// the guest cannot see where they lie (ADR-0014, ADR-0015).
     #[cfg(feature = "guest")]
     Offered,
+    /// A job, as its host runs it: the blobs it refers to, copied out with it, which the context its actor keeps pins
+    /// until it is answered (ADR-0018).
+    Job(&'a [crate::Copied]),
 }
 
 #[cfg(feature = "std")]
@@ -444,6 +447,11 @@ impl<'a> PinSource<'a> {
         Self { from: From::Copied { bytes, pinned } }
     }
 
+    /// A job's bytes, which refer to the blobs `blobs` (ADR-0018).
+    pub(crate) const fn job(blobs: &'a [crate::Copied]) -> Self {
+        Self { from: From::Job(blobs) }
+    }
+
     /// Bytes a guest's host handed in, whose pins it offered the call (ADR-0015).
     #[cfg(feature = "guest")]
     pub(crate) const OFFERED: PinSource<'static> = PinSource { from: From::Offered };
@@ -461,6 +469,7 @@ impl<'a> PinSource<'a> {
             From::Copied { bytes, pinned } => offset_in(bytes, at).and_then(|offset| pinned.pin(offset, blob)),
             #[cfg(feature = "guest")]
             From::Offered => Some(crate::BlobRef::pin(blob)),
+            From::Job(blobs) => blobs.iter().any(|copied| copied.id == blob).then(|| crate::BlobRef::pin(blob)),
         }
     }
 
