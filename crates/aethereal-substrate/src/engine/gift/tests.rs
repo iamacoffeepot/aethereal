@@ -2,6 +2,7 @@
 
 use super::super::*;
 use crate::Entry;
+use aethereal_actor::Time;
 use aethereal_actor::{Ending, Fault, Handle, Handles, To, ToType, ToWithoutMail, Turn};
 use aethereal_data::{Bound, Kind, KindName, Plain, TypedKey};
 use std::any;
@@ -271,7 +272,7 @@ fn add(engine: &mut Engine, number: u64, lamps: Vec<Given<Lamp>>, orders: &[&str
 fn settle(engine: &mut Engine) -> Vec<String> {
     let mut heard = Vec::new();
     for _ in 0..16 {
-        engine.step(&Stopped);
+        engine.step(Time::ZERO, &Stopped);
         heard.extend(said());
     }
 

@@ -9,7 +9,7 @@ use crate::id::{child_id, path_id};
 use crate::{Column, Context, Folded, Routed};
 pub use actors::Actors;
 use actors::Entry;
-use aethereal_actor::{BlobHash, BlobId, Declared, Effect, SeatNumber, Seated, Table};
+use aethereal_actor::{BlobHash, BlobId, Declared, Effect, SeatNumber, Seated, Table, Time};
 use aethereal_data::{ActorId, ActorPath, PathSegment};
 use std::collections::HashSet;
 use std::hash::BuildHasherDefault;
@@ -50,6 +50,11 @@ impl Table for ActorTable {
 
     fn blob_hash(&self, _: BlobId) -> Option<BlobHash> {
         None
+    }
+
+    /// The table holds no time: a turn reads its step's through what the engine opens it with, beside the table.
+    fn now(&self) -> Time {
+        Time::ZERO
     }
 }
 

@@ -36,6 +36,7 @@ mod seat;
 pub mod section;
 mod source;
 mod subscribers;
+mod time;
 mod turn;
 mod written;
 
@@ -73,6 +74,7 @@ pub use resource::{
 pub use seat::{SeatNumber, Seated, Seats};
 pub use source::Source;
 pub use subscribers::Subscribers;
+pub use time::Time;
 pub use turn::{
     Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseWatch, Forged, Garbled, Hosted,
     Logger, Refused, Request, Stood, Trapped, Turn, Turning, Why,

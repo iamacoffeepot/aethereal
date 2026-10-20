@@ -36,7 +36,7 @@ use aethereal_actor::{
     Above, Actor, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Carried, Chain, Closing,
     Code, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, Keeping, Keeps, Links, Mail,
     MailId, Mailed, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber, Seated, Seats,
-    Stood, Tie, Tied, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    Stood, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -125,6 +125,9 @@ pub struct Engine {
     recent: u64,
     /// The number of the last step run. No step has run at zero.
     step: u64,
+    /// The time the host passed in with the last step planned, which its turns read: [`Time::ZERO`] before the first
+    /// (ADR-0011, ADR-0018).
+    now: Time,
     /// The most bytes one read of a piece of mail may allocate.
     read_limit: usize,
     /// The most fused hops one part runs in one step (ADR-0013).
@@ -243,6 +246,8 @@ pub struct Reading<'a> {
     hops: usize,
     /// The most nanoseconds one actor's turns take in the step before the rest of its items are carried over.
     slice: u64,
+    /// The time the step carries (ADR-0018).
+    now: Time,
 }
 
 /// What a step hands out and takes back, kept empty between steps for its room.
@@ -387,6 +392,7 @@ impl Engine {
             costs: Costs::new(),
             recent: 0,
             step: 0,
+            now: Time::ZERO,
             read_limit,
             hops,
             slice: u64::MAX,
@@ -633,7 +639,8 @@ impl Engine {
         let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats, self.puts(ROOTS, blob_room));
         asked.buffers_mut().gifts = gifts;
         let stood_before = ByActor::default();
-        let table = Since { table: &self.table, stood: &stood_before, sees: Sees::Step, blobs: &self.blobs };
+        let table =
+            Since { table: &self.table, stood: &stood_before, sees: Sees::Step, blobs: &self.blobs, now: self.now };
         let mut keeping = Keeping::default();
         // The root begins in the part it is seated in, lent that part's instances.
         let made = begin(me, &path, &table, &mut asked, &mut self.instances[home], &mut keeping);
@@ -735,8 +742,8 @@ impl Engine {
     /// # Panics
     ///
     /// Panics when a turn makes an actor under an id the table already holds (ADR-0008).
-    pub fn step(&mut self, clock: &impl Clock) {
-        match self.plan(Workers::ONE).into_split() {
+    pub fn step(&mut self, now: Time, clock: &impl Clock) {
+        match self.plan(Workers::ONE, now).into_split() {
             Split::Whole(whole) => {
                 let left = self.run_whole(whole, clock);
                 self.apply_whole(left);
@@ -765,6 +772,7 @@ impl Engine {
             read_limit: self.read_limit,
             hops: self.hops,
             slice: self.slice,
+            now: self.now,
         };
         for (part, _) in &self.packing.parts {
             let room = Room {
@@ -832,8 +840,9 @@ impl Engine {
     /// the part and what they react to, and shares the parts among the workers that are to run, by what their turns
     /// are expected to cost (ADR-0011). A step for one worker takes nothing out: it is run whole, where its parts
     /// lie, by [`Engine::run_whole`].
-    pub fn plan(&mut self, workers: Workers) -> Plan {
+    pub fn plan(&mut self, workers: Workers, now: Time) -> Plan {
         self.step += 1;
+        self.now = now;
         self.rest();
         // An actor kept to a slice runs long enough for what splitting the step costs to be a small part of it, and
         // leaves what it carries for another worker, so on one worker none is kept to one.
@@ -957,6 +966,7 @@ impl Engine {
             read_limit: self.read_limit,
             hops: self.hops,
             slice: self.slice,
+            now: self.now,
         }
     }
 
@@ -1493,6 +1503,7 @@ impl Reading<'_> {
                             stood: &lists.fusing.stood,
                             sees: Sees::Step,
                             blobs: self.blobs,
+                            now: self.now,
                         };
                         let (seats, puts, _, gifts) = asked.lent_gifts();
                         let holds = Holds { keeping: &mut *keeping, gifts };
@@ -1507,6 +1518,7 @@ impl Reading<'_> {
                             stood: &lists.fusing.stood,
                             sees: Sees::Step,
                             blobs: self.blobs,
+                            now: self.now,
                         };
                         asked.next_turn();
                         let source = handed.source();
@@ -1601,7 +1613,15 @@ impl Reading<'_> {
             asked.next_turn();
             let why = why(how);
             let (path, above, keeps) = (&sitting.path, sitting.above, Keeps::Here(keeping));
-            let closing = Closing::new(me, path, above, self.table, asked, instances, keeps, sent, why);
+            // A closing turn reads the step as any turn of it does: its blobs and its time.
+            let table = Since {
+                table: self.table,
+                stood: &lists.fusing.stood,
+                sees: Sees::Step,
+                blobs: self.blobs,
+                now: self.now,
+            };
+            let closing = Closing::new(me, path, above, &table, asked, instances, keeps, sent, why);
             let mut ended = actor.end(closing);
             // Most closing turns answer nothing they held.
             if asked.has_owes() {
@@ -1664,6 +1684,7 @@ impl Reading<'_> {
             stood: &lists.fusing.stood,
             sees: Sees::Run(lists.fusing.run(hop.run)),
             blobs: self.blobs,
+            now: self.now,
         };
         if seat.prepares {
             let (seats, puts, arena, gifts) = asked.lent_gifts();
@@ -1683,6 +1704,7 @@ impl Reading<'_> {
                     stood: &lists.fusing.stood,
                     sees: Sees::Run(lists.fusing.run(hop.run)),
                     blobs: self.blobs,
+                    now: self.now,
                 };
                 let bytes = lists.fusing.bytes(&hop);
                 let answering = waiting.answering(hop.tie);

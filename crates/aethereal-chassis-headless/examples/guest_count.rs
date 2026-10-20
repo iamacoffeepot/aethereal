@@ -5,7 +5,7 @@
 #![allow(clippy::print_stdout)] // A measure prints its rounds.
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
-use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, ToAny, ToSender, ToWithoutMail, Turn};
+use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Time, ToAny, ToSender, ToWithoutMail, Turn};
 use aethereal_chassis_headless::Monotonic;
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
@@ -184,7 +184,7 @@ fn main() {
         let started = clock.nanos();
         let mut steps = 0;
         while !engine.is_idle() {
-            engine.step(&clock);
+            engine.step(Time::from_nanos(clock.nanos()), &clock);
             steps += 1;
         }
         let pieces = bursts * (each + 2);
