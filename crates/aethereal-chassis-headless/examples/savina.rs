@@ -1483,11 +1483,12 @@ fn run(program: &Program, workers: NonZeroUsize, hops: usize) -> (u64, u64, Hops
     let engine = Engine::new(parts, 1024, 1 << 30, 1 << 30, hops);
     let mut headless = Headless::new(engine, workers);
     let clock = Monotonic::new();
+    let began = clock.nanos();
     (program.start)(headless.engine_mut(), 0);
     headless.run_until_idle();
     (program.check)();
 
-    (clock.nanos(), headless.measured().steps, headless.engine().hopped())
+    (clock.nanos() - began, headless.measured().steps, headless.engine().hopped())
 }
 
 /// `rounds` runs of `program` one after another on one engine and one host, on `workers` workers, each part running
@@ -1502,11 +1503,12 @@ fn steady(program: &Program, workers: NonZeroUsize, hops: usize, rounds: u64) ->
     (0..rounds)
         .map(|round| {
             let clock = Monotonic::new();
+            let began = clock.nanos();
             (program.start)(headless.engine_mut(), round);
             headless.run_until_idle();
             (program.check)();
 
-            clock.nanos()
+            clock.nanos() - began
         })
         .collect()
 }

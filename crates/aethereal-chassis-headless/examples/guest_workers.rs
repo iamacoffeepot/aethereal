@@ -213,10 +213,11 @@ fn main() {
         let mut took: Vec<u64> = (0..rounds)
             .map(|round| {
                 let clock = Monotonic::new();
+                let began = clock.nanos();
                 start(headless.engine_mut(), &code, responding, round * pairs, pairs);
                 headless.run_until_idle();
 
-                clock.nanos()
+                clock.nanos() - began
             })
             .collect();
         let mut settled = took.split_off((took.len() / 3).max(1).min(took.len().saturating_sub(1)));

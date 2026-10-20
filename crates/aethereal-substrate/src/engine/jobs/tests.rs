@@ -814,7 +814,7 @@ fn a_job_changes_its_engines_pins_on_the_engines_queue_as_it_runs_and_as_it_is_d
         } else {
             JobType::of::<Hangs>()
         };
-        let mut running = of.drive(bytes, lent, limit);
+        let mut running = of.drive(bytes, lent, limit, Arc::new(Never));
         let polled = running.as_mut().poll(&mut context);
         assert_eq!(polled.is_ready(), measures, "the measure finishes, and the hang waits");
     }

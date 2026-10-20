@@ -35,6 +35,7 @@ mod reference;
 mod resource;
 mod seat;
 pub mod section;
+mod sleep;
 mod source;
 mod stage;
 mod subscribers;
@@ -77,6 +78,7 @@ pub use resource::{
     Was, carry, is_loose_claim, take_claimed, take_loose_ticket,
 };
 pub use seat::{SeatNumber, Seated, Seats};
+pub use sleep::{Never, Sleep, Slept, Timer, Until};
 pub use source::Source;
 pub use stage::{
     Cycle, Cycled, Cycling, Drained, Place, Present, Render, Stage, Start, Stop, Tick, Unordered, ordered,
