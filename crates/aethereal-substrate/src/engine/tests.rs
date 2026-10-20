@@ -813,15 +813,27 @@ fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
     run.end(root);
     let stood = ByActor::default();
 
-    let in_run =
-        Since { table: engine.table(), stood: &stood, sees: Sees::Run(&run), blobs: &engine.blobs, now: Time::ZERO };
+    let in_run = Since {
+        table: engine.table(),
+        stood: &stood,
+        sees: Sees::Run(&run),
+        blobs: &engine.blobs,
+        now: Time::ZERO,
+        cycle: &[],
+    };
     assert_eq!(Table::resolve(&in_run, &child_path), Some(child));
     assert!(Table::is_live(&in_run, child.id));
     assert_eq!(Table::resolve(&in_run, &root_path), None);
     assert!(!Table::is_live(&in_run, root));
 
-    let outside =
-        Since { table: engine.table(), stood: &stood, sees: Sees::Step, blobs: &engine.blobs, now: Time::ZERO };
+    let outside = Since {
+        table: engine.table(),
+        stood: &stood,
+        sees: Sees::Step,
+        blobs: &engine.blobs,
+        now: Time::ZERO,
+        cycle: &[],
+    };
     assert_eq!(Table::resolve(&outside, &child_path), None);
     assert!(!Table::is_live(&outside, child.id));
     assert!(Table::is_live(&outside, root));

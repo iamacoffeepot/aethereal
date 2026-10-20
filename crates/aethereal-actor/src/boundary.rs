@@ -47,6 +47,10 @@ pub trait Table {
 
     /// The time the turn's step carries: the host's, as it began the step (ADR-0011, ADR-0018).
     fn now(&self) -> Time;
+
+    /// Whether the engine's lifecycle runs the stage of kind `stage`: `Start`, `Stop`, or a stage of its chassis's
+    /// cycle (ADR-0020).
+    fn runs_stage(&self, stage: KindId) -> bool;
 }
 
 /// The children an actor has made, live or ended, whose keys it may not use again (ADR-0008).

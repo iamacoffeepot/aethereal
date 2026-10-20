@@ -129,6 +129,16 @@ impl Declared {
         self.handles(Role::Answer(answer))
     }
 
+    /// The first stage of the program's lifecycle that the type subscribes to, as it begins or in a handler, and
+    /// `runs` does not hold, when there is one: what an actor of it is refused for where it is made (ADR-0020). A
+    /// closing turn subscribes to nothing.
+    pub fn unstaged(&self, runs: impl Fn(KindId) -> bool) -> Option<KindId> {
+        let handled = self.handlers.iter().flat_map(Handler::sends);
+        let sendings = self.begins.iter().chain(handled);
+
+        sendings.filter(|sending| sending.to == Target::Subscribed).map(Sending::kind).find(|stage| !runs(*stage))
+    }
+
     /// Whether one of the type's handlers is for `role`.
     fn handles(&self, role: Role) -> bool {
         self.handlers.iter().any(|handler| handler.role == role)

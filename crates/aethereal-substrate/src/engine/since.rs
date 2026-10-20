@@ -2,9 +2,10 @@
 //! run has done (ADR-0009, ADR-0013).
 
 use super::fuse::Run;
+use super::lifecycle::runs;
 use crate::{ActorTable, Blobs, ByActor};
-use aethereal_actor::{BlobHash, BlobId, Declared, SeatNumber, Seated, Table, Time};
-use aethereal_data::{ActorId, ActorPath, PathSegment};
+use aethereal_actor::{BlobHash, BlobId, Cycling, Declared, SeatNumber, Seated, Table, Time};
+use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 
 /// The table as one actor's turn reads it (ADR-0009, ADR-0013).
 ///
@@ -25,6 +26,8 @@ pub(super) struct Since<'a> {
     pub(super) blobs: &'a Blobs,
     /// The time the step carries (ADR-0018).
     pub(super) now: Time,
+    /// The stages of the chassis's cycle (ADR-0020).
+    pub(super) cycle: &'a [Cycling],
 }
 
 /// What a turn sees over the table as the step began and the children stood up since (ADR-0013).
@@ -101,5 +104,9 @@ impl Table for Since<'_> {
 
     fn now(&self) -> Time {
         self.now
+    }
+
+    fn runs_stage(&self, stage: KindId) -> bool {
+        runs(self.cycle, stage)
     }
 }
