@@ -9,7 +9,7 @@ An actor's type declares what each of its handlers may do: the kinds it sends an
 
 So nothing typed reaches an actor the asker did not make or was not handed. An actor comes to hold a reference in three ways (ADR-0008): it is handed one in mail, it is told the sender of mail, or it resolves a path and is answered with an `ErasedActorRef`. An erased reference casts at runtime only to a tuple protocol, and asking needs a named protocol, which only a typed `ActorRef<R>` converts to (ADR-0016: `ActorRef::protocol`; ADR-0017). So an actor cannot ask a root it was not handed: the renderer (ADR-0021) cannot be asked for a mesh. And reaching a child of another actor means writing its path out of names and casting what it resolves to.
 
-Yet much of a program's tree is fixed by its types. A root is the one actor of its type at its name, and a singleton beneath a singleton is the one actor of its type there (ADR-0008). Its path, and so its id, follow from types alone.
+Yet much of a program's tree is fixed by its types. A singleton root is the one actor of its type at its name, and a singleton beneath it is the one actor of its type there (ADR-0008). Its path, and so its id, follow from types alone; an instanced actor's follow from its types and keys.
 
 The earlier engine declared placement on types, `Root` and `ChildOf<P>` (its ADR-0166), resolved singletons by type from a scope, `ctx.actor::<ComponentHost>().actor::<Camera>()` (its ADR-0098), declared a dependency on a root and refused a spawn before `init` when it was not live (its ADR-0230: `depends(R)`), and had a spawner declare the children it spawns (`#[actor(spawns(..))]`).
 
@@ -26,7 +26,7 @@ impl ChildOf for Timer  { type Parent = Anywhere; }       // beneath any actor: 
 ```
 
 - **`ChildOf` names the one place a type may stand, as its `Parent`:** `Top`, one type, a tuple of types any of which it may stand beneath, or `Anywhere`. A type declares it once; a second `impl ChildOf` does not build.
-- **`Root` is a type whose `Parent` is `Top` and whose key is `()`.** It is not declared: it follows from `ChildOf`. `Engine::add_root` and `add_root_from` build only for a `Root`, and a keyed type at the top is neither a root nor reachable.
+- **`Root` is a type whose `Parent` is `Top`.** It is not declared: it follows from `ChildOf`. `Engine::add_root` and `add_root_from` build only for a `Root`. A root is a singleton or instanced like any other actor (ADR-0008), so a root keyed by `round` is `path::<A>(round)`: its key is its path's first.
 - It says nothing of whether an actor is live. It is a permission, which spawning uses and reaching relies on.
 - A guest's section carries it, as it carries the rest of its type's declaration (ADR-0015).
 - **This departs from the earlier engine**, whose `ChildOf<P>` took the parent as a type parameter, so a type could declare it many times and no path could follow. Here the parent is an associated type, declared once, so a type has one path and the engine can fill it in (below).
@@ -118,7 +118,7 @@ turn.send_to(path::<Renderer>(()), &Release::Mesh(mesh))?;
 - **`add_root` answers an `ActorRef<A>`, and the chassis hands it to the roots that use it, in their configs.** Explicit, and needs nothing new. Every actor beneath a root that reaches it would be handed the reference through each config on the way down, and nothing would refuse a spawn whose root is missing.
 - **A marker of its own for a dependency, `Needs<R>`.** A declared ask to the root already says the actor depends on it; a second marker would say it twice.
 - **A protocol named for each actor asked at a typed path, `impl Asked for Renderer { type Protocol = Rendering; }`.** A type made only to say what the actor answers, which `Carries` on the actor's own type says beside its handler.
-- **A capability: a protocol named with the name of the root that answers it.** Gave a guest something to name that holds no host state. A root is the one actor of its type at its name, so its type is what to name, and `Root` checks at build time what a capability's name could not.
+- **A capability: a protocol named with the name of the root that answers it.** Gave a guest something to name that holds no host state. A root's type and key name it, so its type is what to name, and `Root` checks at build time what a capability's name could not.
 - **`ChildOf<P>` with the parent as a type parameter, declared once for each type a type may stand beneath, as the earlier engine did.** A type with several gives no path to fill in, and no typed parent; a tuple or `Anywhere` as one `Parent` says the same places, and the one declaration is what lets a path be named by its last type. It also let the parent's crate place a library's type beneath its own; here, the library says where its type may stand, `Anywhere` when any actor may hold one.
 - **A path named by every type in it, `path::<(Host, Camera, Lens)>()`.** The tuple restates what the types' `Parent`s say.
 - **Two verbs, `path` for a path of singletons and one with a suffix for a path with a key.** Rust does not choose a function by how many arguments it is given; one verb that takes `()` for no keys is the one way to name a path.
