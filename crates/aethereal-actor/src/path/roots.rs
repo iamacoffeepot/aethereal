@@ -38,11 +38,11 @@
 //! #             type BeginSends = $begins;
 //! #             type EndSends = $ends;
 //! #
-//! #             fn begin(root: $name, _: &mut Beginning<'_, $begins>) -> Result<Self, Fault> {
+//! #             fn begin(root: $name, _: &mut Beginning<'_, Self, $begins>) -> Result<Self, Fault> {
 //! #                 Ok(root)
 //! #             }
 //! #
-//! #             fn end(self, _: &mut Ending<'_, $ends>) -> Result<(), Fault> {
+//! #             fn end(self, _: &mut Ending<'_, Self, $ends>) -> Result<(), Fault> {
 //! #                 Ok(())
 //! #             }
 //! #         }
@@ -50,7 +50,7 @@
 //! #         impl Handles<Note> for $name {
 //! #             type Sends = $handler;
 //! #
-//! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, $handler>) -> Result<(), Fault> {
+//! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, $handler>) -> Result<(), Fault> {
 //! #                 Ok(())
 //! #             }
 //! #         }
@@ -104,11 +104,11 @@
 //! #             type BeginSends = $begins;
 //! #             type EndSends = $ends;
 //! #
-//! #             fn begin(root: $name, _: &mut Beginning<'_, $begins>) -> Result<Self, Fault> {
+//! #             fn begin(root: $name, _: &mut Beginning<'_, Self, $begins>) -> Result<Self, Fault> {
 //! #                 Ok(root)
 //! #             }
 //! #
-//! #             fn end(self, _: &mut Ending<'_, $ends>) -> Result<(), Fault> {
+//! #             fn end(self, _: &mut Ending<'_, Self, $ends>) -> Result<(), Fault> {
 //! #                 Ok(())
 //! #             }
 //! #         }
@@ -116,7 +116,7 @@
 //! #         impl Handles<Note> for $name {
 //! #             type Sends = $handler;
 //! #
-//! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, $handler>) -> Result<(), Fault> {
+//! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, $handler>) -> Result<(), Fault> {
 //! #                 Ok(())
 //! #             }
 //! #         }
@@ -165,11 +165,11 @@
 //! #             type BeginSends = $begins;
 //! #             type EndSends = $ends;
 //! #
-//! #             fn begin(root: $name, _: &mut Beginning<'_, $begins>) -> Result<Self, Fault> {
+//! #             fn begin(root: $name, _: &mut Beginning<'_, Self, $begins>) -> Result<Self, Fault> {
 //! #                 Ok(root)
 //! #             }
 //! #
-//! #             fn end(self, _: &mut Ending<'_, $ends>) -> Result<(), Fault> {
+//! #             fn end(self, _: &mut Ending<'_, Self, $ends>) -> Result<(), Fault> {
 //! #                 Ok(())
 //! #             }
 //! #         }
@@ -177,7 +177,7 @@
 //! #         impl Handles<Note> for $name {
 //! #             type Sends = $handler;
 //! #
-//! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, $handler>) -> Result<(), Fault> {
+//! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, $handler>) -> Result<(), Fault> {
 //! #                 Ok(())
 //! #             }
 //! #         }
@@ -227,11 +227,11 @@
 //! #             type BeginSends = $begins;
 //! #             type EndSends = $ends;
 //! #
-//! #             fn begin(root: $name, _: &mut Beginning<'_, $begins>) -> Result<Self, Fault> {
+//! #             fn begin(root: $name, _: &mut Beginning<'_, Self, $begins>) -> Result<Self, Fault> {
 //! #                 Ok(root)
 //! #             }
 //! #
-//! #             fn end(self, _: &mut Ending<'_, $ends>) -> Result<(), Fault> {
+//! #             fn end(self, _: &mut Ending<'_, Self, $ends>) -> Result<(), Fault> {
 //! #                 Ok(())
 //! #             }
 //! #         }
@@ -239,7 +239,7 @@
 //! #         impl Handles<Note> for $name {
 //! #             type Sends = $handler;
 //! #
-//! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, $handler>) -> Result<(), Fault> {
+//! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, $handler>) -> Result<(), Fault> {
 //! #                 Ok(())
 //! #             }
 //! #         }
@@ -274,11 +274,11 @@
 //! #     type BeginSends = (Asks<Path<Lighthouse>, Note, Note>,);
 //! #     type EndSends = ();
 //! #
-//! #     fn begin(querent: Querent, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+//! #     fn begin(querent: Querent, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
 //! #         Ok(querent)
 //! #     }
 //! #
-//! #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+//! #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 //! #         Ok(())
 //! #     }
 //! # }
@@ -286,7 +286,7 @@
 //! # impl Handles<Answer<Note, Note>> for Querent {
 //! #     type Sends = ();
 //! #
-//! #     fn handle(&mut self, _: (Answered<Note>, Note), _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+//! #     fn handle(&mut self, _: (Answered<Note>, Note), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 //! #         Ok(())
 //! #     }
 //! # }

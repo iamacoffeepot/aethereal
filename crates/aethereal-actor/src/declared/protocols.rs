@@ -148,11 +148,11 @@ impl<P> CarriedBy<P> for () {}
 /// #     type BeginSends = ();
 /// #     type EndSends = ();
 /// #
-/// #     fn begin(board: Board, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+/// #     fn begin(board: Board, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
 /// #         Ok(board)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -161,7 +161,7 @@ impl<P> CarriedBy<P> for () {}
 /// impl Handles<WhichTile> for Board {
 ///     type Sends = (ToSender<TileIs>, ToSender<Lost>);
 ///
-///     fn handle(&mut self, _: WhichTile, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: WhichTile, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         Ok(turn.reply(&Lost)?)
 ///     }
 /// }

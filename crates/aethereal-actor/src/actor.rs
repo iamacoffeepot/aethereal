@@ -33,10 +33,10 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized + 'static
     type EndSends: Sends + DeclaredBy<Self>;
 
     /// Makes the actor from `config`. It runs inside the turn of the parent that spawns it.
-    fn begin(config: Self::Config, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault>;
+    fn begin(config: Self::Config, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault>;
 
     /// The actor's closing turn. It runs once, and the actor ends whatever it returns.
-    fn end(self, turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault>;
+    fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault>;
 }
 
 /// An actor the engine runs without naming its type: its items prepared in batches, then taken a turn at a time

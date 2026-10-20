@@ -374,7 +374,7 @@ where
 ///     const NAME: KindName = KindName::new("aether.example.poke");
 /// }
 ///
-/// fn poke(turn: &mut Turn<'_, ()>, listener: ProtocolRef<(Poke,)>) {
+/// fn poke<A>(turn: &mut Turn<'_, A, ()>, listener: ProtocolRef<(Poke,)>) {
 ///     let sent = turn.send_to(listener, &Poke);
 /// }
 /// ```

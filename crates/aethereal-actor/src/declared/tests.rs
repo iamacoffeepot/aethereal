@@ -100,11 +100,11 @@ impl Actor for Keeper {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Kept, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+    fn begin(_: Kept, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -112,7 +112,7 @@ impl Actor for Keeper {
 impl Handles<Kept> for Keeper {
     type Sends = (ToType<Self, Kept>, ToAny<(Kept,), Kept>, ToSender<Kept>);
 
-    fn handle(&mut self, _: Kept, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Kept, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.log(Level::Info, "kept");
 
         Ok(())
@@ -122,7 +122,7 @@ impl Handles<Kept> for Keeper {
 impl Handles<Others> for Keeper {
     type Sends = ();
 
-    fn handle(&mut self, _: Mail<'_>, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Mail<'_>, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         turn.log(Level::Info, "other");
 
         Ok(())
@@ -144,11 +144,11 @@ impl Actor for Strict {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Kept, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+    fn begin(_: Kept, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -156,7 +156,7 @@ impl Actor for Strict {
 impl Handles<Kept> for Strict {
     type Sends = ();
 
-    fn handle(&mut self, _: Kept, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Kept, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -176,11 +176,11 @@ impl Actor for Sink {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Kept, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+    fn begin(_: Kept, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -188,7 +188,7 @@ impl Actor for Sink {
 impl Handles<Others> for Sink {
     type Sends = ();
 
-    fn handle(&mut self, _: Mail<'_>, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Mail<'_>, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -226,7 +226,7 @@ fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<String> {
 }
 
 /// The mail a keeper's handler of kept mail sends when it runs `then` with the actors of `table`.
-fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, <Keeper as Handles<Kept>>::Sends>)) -> Vec<Mailed> {
+fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, Keeper, <Keeper as Handles<Kept>>::Sends>)) -> Vec<Mailed> {
     let mut asked = Asked::new();
     let kept = Role::Kind(KindId::of::<Kept>());
     let mut instances = Instances::default();

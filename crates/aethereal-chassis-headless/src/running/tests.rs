@@ -61,13 +61,13 @@ impl Actor for Quitter {
     type BeginSends = (Subscribes<Start>,);
     type EndSends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Start, _>();
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -75,7 +75,7 @@ impl Actor for Quitter {
 impl Handles<Start> for Quitter {
     type Sends = ();
 
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         turn.quit();
 
         Ok(())
@@ -119,13 +119,13 @@ impl Actor for Metronome {
     type BeginSends = (Subscribes<Tick>,);
     type EndSends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Tick, _>();
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -133,7 +133,7 @@ impl Actor for Metronome {
 impl Handles<Tick> for Metronome {
     type Sends = ();
 
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let Ok(mut ticks) = TICKS.lock() else {
             return Ok(());
         };
@@ -189,14 +189,14 @@ impl Actor for Holdout {
     type BeginSends = (Subscribes<Start>, Subscribes<Stop>);
     type EndSends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Start, _>();
         turn.subscribe::<Stop, _>();
 
         Ok(Self { held: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -204,7 +204,7 @@ impl Actor for Holdout {
 impl Handles<Start> for Holdout {
     type Sends = ();
 
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         turn.quit();
 
         Ok(())
@@ -214,7 +214,7 @@ impl Handles<Start> for Holdout {
 impl Handles<Stop> for Holdout {
     type Sends = (ToSender<Drained>,);
 
-    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.held.push(turn.hold()?);
 
         Ok(())
@@ -262,14 +262,14 @@ impl Actor for Napper {
     type BeginSends = (Subscribes<Start>, Subscribes<Tick>);
     type EndSends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Start, _>();
         turn.subscribe::<Tick, _>();
 
         Ok(Self { ticks: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -277,7 +277,7 @@ impl Actor for Napper {
 impl Handles<Start> for Napper {
     type Sends = (RunsJob<Sleep, Nothing>,);
 
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.run(&Sleep { until: turn.now() + Duration::from_millis(20) }, &Nothing)?;
 
         Ok(())
@@ -287,7 +287,7 @@ impl Handles<Start> for Napper {
 impl Handles<Tick> for Napper {
     type Sends = ();
 
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.ticks += 1;
         let is_long = self.ticks == 50;
         if is_long {
@@ -302,7 +302,7 @@ impl Handles<Tick> for Napper {
 impl Handles<Answer<Slept, Nothing>> for Napper {
     type Sends = ();
 
-    fn handle(&mut self, (done, _): (Answered<Slept>, Nothing), turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (done, _): (Answered<Slept>, Nothing), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let said = match done {
             Answered::Yes(Slept) => "slept",
             Answered::No(_) => "not answered",

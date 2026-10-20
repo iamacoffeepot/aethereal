@@ -226,7 +226,7 @@ fn begin<A: Actor>(
     let config = A::Config::decode(&mut reader)?;
     let Standing { path, above } = standing;
     // A guest's code keeps nothing (ADR-0010, ADR-0015).
-    let mut beginning = Beginning::beneath::<A>(me, path, *above, host, asked, instances, Keeps::Claimed);
+    let mut beginning = Beginning::beneath(me, path, *above, host, asked, instances, Keeps::Claimed);
     let actor = A::begin(config, &mut beginning)?;
 
     Ok(Box::new(actor))

@@ -34,11 +34,11 @@ macro_rules! actor {
             type BeginSends = $sends;
             type EndSends = ();
 
-            fn begin(config: $name, _: &mut Beginning<'_, $sends>) -> Result<Self, Fault> {
+            fn begin(config: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
                 Ok(config)
             }
 
-            fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
                 Ok(())
             }
         }
@@ -46,7 +46,7 @@ macro_rules! actor {
         impl Handles<Order> for $name {
             type Sends = ();
 
-            fn handle(&mut self, _: Order, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+            fn handle(&mut self, _: Order, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
                 Ok(())
             }
         }

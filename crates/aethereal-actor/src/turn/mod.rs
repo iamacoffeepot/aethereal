@@ -16,9 +16,10 @@ use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Askable, Asking, ChildOf, Children, Claim, Claimed, Code,
     Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances, Keeping,
-    Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Payload, ProtocolRef, Proven, Puts,
-    Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Spawns, Stage, Subscribes, Table, Target,
-    Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable, Watches, What, Within, Written,
+    Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Parented, Payload, ProtocolRef,
+    Proven, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Spawns, Stage, Subscribes,
+    Table, Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable, Watches, What,
+    Within, Written,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -1072,6 +1073,14 @@ impl Seat<'_> {
     }
 
     /// The actor directly above this one, and its seat, when it is live.
+    /// The actor this one stands beneath, and its seat, live or not: none for a root.
+    const fn above(&self) -> Option<Seated> {
+        match self.above {
+            Above::Chassis => None,
+            Above::Actor(parent, _) | Above::Elsewhere(parent) => Some(parent),
+        }
+    }
+
     fn parent(&self) -> Option<Seated> {
         let parent = match self.above {
             Above::Chassis => return None,
@@ -1140,7 +1149,7 @@ impl Seat<'_> {
             checked: Checked::Nothing,
             owing: Owing::NOTHING,
         };
-        let began = C::begin(config, &mut Beginning { seat: child, instances, sends: PhantomData });
+        let began = C::begin(config, &mut Beginning { seat: child, instances, of: PhantomData });
         match began {
             Ok(actor) => {
                 self.stand(me, path, above, declared, Box::new(actor), keeping);
@@ -1404,7 +1413,7 @@ impl<'a> Turning<'a> {
     }
 
     /// The turn of the handler of `A` for `role`, which may send `S`.
-    pub(crate) fn declaring<A: Actor, S: Sends>(self, role: Role) -> Turn<'a, S> {
+    pub(crate) fn declaring<A: Actor, S: Sends>(self, role: Role) -> Turn<'a, A, S> {
         let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie } = self;
         let declared = Declared::of::<A>();
         let seat = Seat {
@@ -1422,27 +1431,40 @@ impl<'a> Turning<'a> {
             owing: Owing::Item(tie),
         };
 
-        Turn { seat, instances, source, chain, sends: PhantomData }
+        Turn { seat, instances, source, chain, of: PhantomData }
     }
 }
 
-/// What an actor asks of the engine while it handles one item, through a handler that may send `S` (ADR-0009,
-/// ADR-0013).
+/// What an actor of type `Me` asks of the engine while it handles one item, through a handler that may send `S`
+/// (ADR-0009, ADR-0013).
 ///
 /// Each ask adds an effect to the turn's buffer of its class, and nothing asked for happens
 /// until the turn has returned `Ok`. Each read answers from the table of
 /// actors as it stood when the turn's step began.
-pub struct Turn<'a, S> {
+pub struct Turn<'a, Me, S> {
     seat: Seat<'a>,
     /// The instances of the actor's part, which a child spawned from a blob begins in (ADR-0015).
     instances: &'a mut Instances,
     /// The actor the item being handled comes from: who [`To::Sender`] names.
     source: Seated,
     chain: Chain,
-    sends: PhantomData<fn() -> S>,
+    of: PhantomData<fn() -> (Me, S)>,
 }
 
-impl<S> Turn<'_, S> {
+impl<Me, S> Turn<'_, Me, S> {
+    /// The actor this one stands beneath, typed by where its type stands: an [`ActorRef<P>`] beneath the one type
+    /// `P`, an `Option<ActorRef<Self>>` beneath [`Recursive`](crate::Recursive), and an `Option<ErasedActorRef>`
+    /// beneath [`Anywhere`](crate::Anywhere), none for a root (ADR-0022). It is the actor that spawned this one, live
+    /// or not: mail to one that has ended is dropped. A root's turn has no `parent()`, as [`Beginning::parent`] shows.
+    #[must_use]
+    pub fn parent(&self) -> <Me::Parent as Parented<Me>>::Parent
+    where
+        Me: ChildOf,
+        Me::Parent: Parented<Me>,
+    {
+        <Me::Parent as Parented<Me>>::parent(self.seat.above())
+    }
+
     /// Watches the actor `of` refers to, or the one at the typed path it is: when it ends, this actor is handed its
     /// ending, once, as an item.
     ///
@@ -1477,14 +1499,14 @@ impl<S> Turn<'_, S> {
     ///     type BeginSends = ();
     ///     type EndSends = ();
     ///
-    ///     fn begin(_: Nothing, turn: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+    ///     fn begin(_: Nothing, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
     ///         let me = turn.me();
     ///         turn.watch(me);
     ///
     ///         Ok(Self)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
@@ -1839,21 +1861,21 @@ impl<S> Turn<'_, S> {
 ///
 /// It offers no close: an actor does not end in the turn that makes it. It is handling no mail, so it has no
 /// sender to send to.
-pub struct Beginning<'a, S> {
+pub struct Beginning<'a, Me, S> {
     seat: Seat<'a>,
     /// The instances of the actor's part, which a child spawned from a blob begins in (ADR-0015).
     instances: &'a mut Instances,
-    sends: PhantomData<fn() -> S>,
+    of: PhantomData<fn() -> (Me, S)>,
 }
 
-impl<'a, S: Sends> Beginning<'a, S> {
-    /// The `begin` of the root of type `A` that `me` names, at `path`, reading `table`, adding to `asked`, lent its
+impl<'a, Me: Actor> Beginning<'a, Me, Me::BeginSends> {
+    /// The `begin` of the root of type `Me` that `me` names, at `path`, reading `table`, adding to `asked`, lent its
     /// part's `instances`, and keeping what it keeps in `keeps`.
     ///
     /// For the engine, which makes a root for the chassis. A child's is made by the turn that spawns it, but for a
     /// guest's, which [`Self::beneath`] makes.
     #[must_use]
-    pub fn new<A: Actor<BeginSends = S>>(
+    pub fn new(
         me: Seated,
         path: &'a ActorPath,
         table: &'a dyn Table,
@@ -1861,7 +1883,7 @@ impl<'a, S: Sends> Beginning<'a, S> {
         instances: &'a mut Instances,
         keeps: Keeps<'a>,
     ) -> Self {
-        let declared = Declared::of::<A>();
+        let declared = Declared::of::<Me>();
         let during = During::Begin;
         let seat = Seat {
             me,
@@ -1878,15 +1900,15 @@ impl<'a, S: Sends> Beginning<'a, S> {
             owing: Owing::NOTHING,
         };
 
-        Self { seat, instances, sends: PhantomData }
+        Self { seat, instances, of: PhantomData }
     }
 
-    /// The `begin` of an actor of type `A` that `me` names, at `path`, beneath `above`, reading `table`, adding to
+    /// The `begin` of an actor of type `Me` that `me` names, at `path`, beneath `above`, reading `table`, adding to
     /// `asked`, lent `instances`, and keeping what it keeps in `keeps`: for a guest's library, which begins an actor
     /// its host stood up from the guest's blob, beneath a parent of any code or none, and for a guest's host, which
     /// begins a native child of a guest (ADR-0015).
     #[must_use]
-    pub fn beneath<A: Actor<BeginSends = S>>(
+    pub fn beneath(
         me: Seated,
         path: &'a ActorPath,
         above: Above,
@@ -1895,14 +1917,61 @@ impl<'a, S: Sends> Beginning<'a, S> {
         instances: &'a mut Instances,
         keeps: Keeps<'a>,
     ) -> Self {
-        let mut beginning = Self::new::<A>(me, path, table, asked, instances, keeps);
+        let mut beginning = Self::new(me, path, table, asked, instances, keeps);
         beginning.seat.above = above;
 
         beginning
     }
 }
 
-impl<S> Beginning<'_, S> {
+impl<Me, S> Beginning<'_, Me, S> {
+    /// The actor this one stands beneath, typed by where its type stands: an [`ActorRef<P>`] beneath the one type
+    /// `P`, an `Option<ActorRef<Self>>` beneath [`Recursive`](crate::Recursive), and an `Option<ErasedActorRef>`
+    /// beneath [`Anywhere`](crate::Anywhere), none for a root (ADR-0022). It is the actor that spawned this one, live
+    /// or not: mail to one that has ended is dropped. A root's turn has no `parent()`:
+    ///
+    /// ```compile_fail,E0599
+    /// use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top};
+    /// use aethereal_data::{Kind, KindName, Plain};
+    ///
+    /// #[derive(Plain)]
+    /// struct Fort;
+    ///
+    /// impl Kind for Fort {
+    ///     const NAME: KindName = KindName::new("aether.doc.fort");
+    /// }
+    ///
+    /// impl ChildOf for Fort {
+    ///     type Parent = Top;
+    /// }
+    ///
+    /// impl Actor for Fort {
+    ///     type Config = Fort;
+    ///     type Key = ();
+    ///     type Handles = ();
+    ///     type BeginSends = ();
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(fort: Fort, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///         let parent = turn.parent();
+    ///
+    ///         Ok(fort)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    #[must_use]
+    pub fn parent(&self) -> <Me::Parent as Parented<Me>>::Parent
+    where
+        Me: ChildOf,
+        Me::Parent: Parented<Me>,
+    {
+        <Me::Parent as Parented<Me>>::parent(self.seat.above())
+    }
+
     /// Sends `mail` to the actor `to` names, with the mail of the turn this `begin` runs in. It is delivered after the
     /// turn, in a later step.
     ///
@@ -2098,14 +2167,14 @@ impl<S> Beginning<'_, S> {
     ///     type BeginSends = (Watches,);
     ///     type EndSends = ();
     ///
-    ///     fn begin(_: Nothing, turn: &mut Beginning<'_, (Watches,)>) -> Result<Self, Fault> {
+    ///     fn begin(_: Nothing, turn: &mut Beginning<'_, Self, (Watches,)>) -> Result<Self, Fault> {
     ///         let me = turn.me();
     ///         turn.watch(me);
     ///
     ///         Ok(Self)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
@@ -2248,7 +2317,7 @@ impl<'a> Closing<'a> {
     }
 
     /// The closing turn of an actor of type `A`.
-    pub(crate) fn declaring<A: Actor>(self) -> Ending<'a, A::EndSends> {
+    pub(crate) fn declaring<A: Actor>(self) -> Ending<'a, A, A::EndSends> {
         let Self { me, path, above, table, asked, keeps, sent, why, .. } = self;
         let declared = Declared::of::<A>();
         let seat = Seat {
@@ -2266,7 +2335,7 @@ impl<'a> Closing<'a> {
             owing: Owing::NOTHING,
         };
 
-        Ending { seat, why, sends: PhantomData }
+        Ending { seat, why, of: PhantomData }
     }
 }
 
@@ -2274,13 +2343,26 @@ impl<'a> Closing<'a> {
 ///
 /// It offers no spawn and no close. It is handling no mail, so it has no sender to send to. It answers what the actor
 /// held, and asks nothing: the actor is gone by the time an answer could come.
-pub struct Ending<'a, S> {
+pub struct Ending<'a, Me, S> {
     seat: Seat<'a>,
     why: Why,
-    sends: PhantomData<fn() -> S>,
+    of: PhantomData<fn() -> (Me, S)>,
 }
 
-impl<S> Ending<'_, S> {
+impl<Me, S> Ending<'_, Me, S> {
+    /// The actor this one stands beneath, typed by where its type stands: an [`ActorRef<P>`] beneath the one type
+    /// `P`, an `Option<ActorRef<Self>>` beneath [`Recursive`](crate::Recursive), and an `Option<ErasedActorRef>`
+    /// beneath [`Anywhere`](crate::Anywhere), none for a root (ADR-0022). It is the actor that spawned this one, live
+    /// or not: mail to one that has ended is dropped. A root's turn has no `parent()`, as [`Beginning::parent`] shows.
+    #[must_use]
+    pub fn parent(&self) -> <Me::Parent as Parented<Me>>::Parent
+    where
+        Me: ChildOf,
+        Me::Parent: Parented<Me>,
+    {
+        <Me::Parent as Parented<Me>>::parent(self.seat.above())
+    }
+
     /// Why this closing turn runs.
     #[must_use]
     pub const fn why(&self) -> Why {

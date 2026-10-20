@@ -32,14 +32,14 @@ impl Actor for Echo {
     type BeginSends = (ToType<Self, Again>,);
     type EndSends = ();
 
-    fn begin(_: Again, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Again, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let me = turn.me();
         turn.send(ToWithoutMail::Held(me), &Again)?;
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -47,7 +47,7 @@ impl Actor for Echo {
 impl Handles<Again> for Echo {
     type Sends = (ToType<Self, Again>,);
 
-    fn handle(&mut self, _: Again, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Again, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let me = turn.me();
         turn.send(To::Held(me), &Again)?;
 

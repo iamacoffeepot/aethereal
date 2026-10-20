@@ -195,7 +195,7 @@ impl Actor for Pinger {
     type BeginSends = (ToType<Ponger, Ready>, Spawns<Ponger>);
     type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let Ok(ponger) = turn.spawn(&0, Number { number: 0 }) else {
             panic!("the pong side begins");
         };
@@ -204,7 +204,7 @@ impl Actor for Pinger {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -212,7 +212,7 @@ impl Actor for Pinger {
 impl Handles<Ready> for Pinger {
     type Sends = (ToType<Ponger, Ping>,);
 
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.send(To::Sender, &Ping { left: PINGS - 1 })?;
 
         Ok(())
@@ -222,7 +222,7 @@ impl Handles<Ready> for Pinger {
 impl Handles<Pong> for Pinger {
     type Sends = (ToType<Ponger, Ping>,);
 
-    fn handle(&mut self, Pong { left }: Pong, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Pong { left }: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if left > 0 {
             turn.send(To::Sender, &Ping { left: left - 1 })?;
         }
@@ -250,11 +250,11 @@ impl Actor for Ponger {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Number, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -262,7 +262,7 @@ impl Actor for Ponger {
 impl Handles<Ping> for Ponger {
     type Sends = (ToSender<Pong>,);
 
-    fn handle(&mut self, Ping { left }: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Ping { left }: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.reply(&Pong { left })?;
 
         Ok(())
@@ -289,7 +289,7 @@ impl Actor for Producer {
     type BeginSends = (ToType<Counter, Ready>, Spawns<Counter>);
     type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let Ok(counter) = turn.spawn(&0, Number { number: 0 }) else {
             panic!("the counter begins");
         };
@@ -298,7 +298,7 @@ impl Actor for Producer {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -306,7 +306,7 @@ impl Actor for Producer {
 impl Handles<Ready> for Producer {
     type Sends = (ToType<Counter, Increment>, ToType<Counter, Retrieve>);
 
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         for _ in 0..COUNTS {
             turn.send(To::Sender, &Increment)?;
         }
@@ -319,7 +319,7 @@ impl Handles<Ready> for Producer {
 impl Handles<Total> for Producer {
     type Sends = ();
 
-    fn handle(&mut self, Total { count }: Total, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Total { count }: Total, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         assert_eq!(count, COUNTS, "the counter counts every piece of mail");
 
         Ok(())
@@ -346,7 +346,7 @@ impl Actor for BeginProducer {
     type BeginSends = (ToType<Counter, Increment>, ToType<Counter, Retrieve>, Spawns<Counter>);
     type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let Ok(counter) = turn.spawn(&0, Number { number: 0 }) else {
             panic!("the counter begins");
         };
@@ -358,7 +358,7 @@ impl Actor for BeginProducer {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -366,7 +366,7 @@ impl Actor for BeginProducer {
 impl Handles<Total> for BeginProducer {
     type Sends = ();
 
-    fn handle(&mut self, Total { count }: Total, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Total { count }: Total, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         assert_eq!(count, COUNTS, "the counter counts every piece of mail");
 
         Ok(())
@@ -394,11 +394,11 @@ impl Actor for Counter {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Number, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self { count: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -406,7 +406,7 @@ impl Actor for Counter {
 impl Handles<Increment> for Counter {
     type Sends = ();
 
-    fn handle(&mut self, _: Increment, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Increment, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.count += 1;
 
         Ok(())
@@ -416,7 +416,7 @@ impl Handles<Increment> for Counter {
 impl Handles<Retrieve> for Counter {
     type Sends = (ToSender<Total>,);
 
-    fn handle(&mut self, _: Retrieve, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Retrieve, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.reply(&Total { count: self.count })?;
 
         Ok(())
@@ -445,14 +445,14 @@ impl Actor for Forker {
     type BeginSends = (ToType<Forked, Ready>, Spawns<Forked>);
     type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let workers: Vec<ActorRef<Forked>> = (0..FORKS).map(|number| spawned(turn, number)).collect();
         ready(turn, &workers)?;
 
         Ok(Self { workers })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -460,7 +460,7 @@ impl Actor for Forker {
 impl Handles<Ready> for Forker {
     type Sends = (ToType<Forked, Work>,);
 
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         for _ in 0..FORKED {
             for worker in &self.workers {
                 turn.send_to(*worker, &Work)?;
@@ -490,11 +490,11 @@ impl Actor for Forked {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Number, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -502,7 +502,7 @@ impl Actor for Forked {
 impl Handles<Work> for Forked {
     type Sends = ();
 
-    fn handle(&mut self, _: Work, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Work, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let sine = hint::black_box(37.2_f64).sin();
         hint::black_box(sine * sine);
 
@@ -532,14 +532,14 @@ impl Actor for Crowd {
     type BeginSends = (ToType<Pinging, Ready>, Spawns<Pinging>);
     type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let actors: Vec<ActorRef<Pinging>> = (0..BIG_ACTORS).map(|number| spawned(turn, number)).collect();
         ready(turn, &actors)?;
 
         Ok(Self { actors })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -547,7 +547,7 @@ impl Actor for Crowd {
 impl Handles<Ready> for Crowd {
     type Sends = (ToType<Pinging, Neighbour>, ToType<Pinging, Start>);
 
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         for actor in &self.actors {
             for other in self.actors.iter().filter(|other| *other != actor) {
                 turn.send_to(*actor, &Neighbour { other: *other })?;
@@ -574,7 +574,7 @@ impl Kind for Pinging {
 
 impl Pinging {
     /// Pings a neighbour picked at random, with `left` to go after it.
-    fn ping<S, I>(&mut self, turn: &mut Turn<'_, S>, left: u64) -> Result<(), Fault>
+    fn ping<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, left: u64) -> Result<(), Fault>
     where
         S: Allows<ToType<Self, Ping>, I>,
     {
@@ -600,11 +600,11 @@ impl Actor for Pinging {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(config: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: Number, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self { neighbours: Vec::new(), random: config.number * 0x9e37_79b9_7f4a_7c15 + 1 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -612,7 +612,7 @@ impl Actor for Pinging {
 impl Handles<Neighbour> for Pinging {
     type Sends = ();
 
-    fn handle(&mut self, Neighbour { other }: Neighbour, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Neighbour { other }: Neighbour, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.neighbours.push(other);
 
         Ok(())
@@ -622,7 +622,7 @@ impl Handles<Neighbour> for Pinging {
 impl Handles<Start> for Pinging {
     type Sends = (ToType<Self, Ping>,);
 
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.ping(turn, BIG_PINGS - 1)
     }
 }
@@ -630,7 +630,7 @@ impl Handles<Start> for Pinging {
 impl Handles<Ping> for Pinging {
     type Sends = (ToSender<Pong>,);
 
-    fn handle(&mut self, Ping { left }: Ping, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Ping { left }: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.reply(&Pong { left })?;
 
         Ok(())
@@ -640,7 +640,7 @@ impl Handles<Ping> for Pinging {
 impl Handles<Pong> for Pinging {
     type Sends = (ToType<Self, Ping>,);
 
-    fn handle(&mut self, Pong { left }: Pong, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Pong { left }: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if left > 0 {
             self.ping(turn, left - 1)?;
         }
@@ -688,14 +688,14 @@ impl Actor for FibRoot {
     type BeginSends = (ToType<Fib, Ready>, Spawns<Fib>);
     type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let first: ActorRef<Fib> = spawned(turn, 0);
         ready(turn, &[first])?;
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -703,7 +703,7 @@ impl Actor for FibRoot {
 impl Handles<Ready> for FibRoot {
     type Sends = (ToType<Fib, Request>,);
 
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.send(To::Sender, &Request { number: FIB })?;
 
         Ok(())
@@ -714,7 +714,7 @@ impl Handles<Ready> for FibRoot {
 impl Handles<Response> for FibRoot {
     type Sends = ();
 
-    fn handle(&mut self, _: Response, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Response, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -746,11 +746,11 @@ impl Actor for Fib {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Number, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self { sum: 0, answers: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -758,7 +758,7 @@ impl Actor for Fib {
 impl Handles<Request> for Fib {
     type Sends = (ToType<Self, Request>, Answer, Spawns<Self>);
 
-    fn handle(&mut self, Request { number }: Request, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Request { number }: Request, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if number <= 2 {
             turn.send_to_any(To::Parent, &Response { value: 1 })?;
             turn.close();
@@ -778,7 +778,7 @@ impl Handles<Request> for Fib {
 impl Handles<Response> for Fib {
     type Sends = (Answer,);
 
-    fn handle(&mut self, Response { value }: Response, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Response { value }: Response, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.sum += value;
         self.answers += 1;
         if self.answers == 2 {
@@ -828,7 +828,7 @@ impl Actor for Sieve {
     type BeginSends = (ToType<Filter, Ready>, Spawns<Filter>);
     type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let Ok(first) = turn.spawn(&0, Number { number: 2 }) else {
             panic!("the first filter begins");
         };
@@ -837,7 +837,7 @@ impl Actor for Sieve {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -845,7 +845,7 @@ impl Actor for Sieve {
 impl Handles<Ready> for Sieve {
     type Sends = (ToType<Filter, Candidate>, ToType<Filter, Exit>);
 
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         for number in (3..=SIEVE_LIMIT).step_by(2) {
             turn.send(To::Sender, &Candidate { number })?;
         }
@@ -890,11 +890,11 @@ impl Actor for Filter {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(first: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(first: Number, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self { primes: vec![first.number], next: Next::Last })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -902,7 +902,7 @@ impl Actor for Filter {
 impl Handles<Candidate> for Filter {
     type Sends = (ToType<Self, Candidate>, Spawns<Self>);
 
-    fn handle(&mut self, Candidate { number }: Candidate, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Candidate { number }: Candidate, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let divided = self.primes.iter().any(|prime| number % prime == 0);
         if divided {
             return Ok(());
@@ -925,7 +925,7 @@ impl Handles<Candidate> for Filter {
 impl Handles<Exit> for Filter {
     type Sends = (ToType<Self, Exit>,);
 
-    fn handle(&mut self, _: Exit, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Exit, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if let Next::Filter(next) = self.next {
             turn.send_to(next, &Exit)?;
         }
@@ -968,7 +968,7 @@ impl Kind for Churn {
 
 impl Churn {
     /// Spawns the next actor and starts its life.
-    fn spawn_next<S, I, J>(&mut self, turn: &mut Turn<'_, S>) -> Result<(), Fault>
+    fn spawn_next<S, I, J>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<ToType<Mortal, Live>, I> + Allows<Spawns<Mortal>, J>,
     {
@@ -994,14 +994,14 @@ impl Actor for Churn {
     type EndSends = ();
 
     /// A root configured with `number` shares the program among that many roots, none and one alike being the whole.
-    fn begin(config: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let first: ActorRef<Mortal> = spawned(turn, 0);
         ready(turn, &[first])?;
 
         Ok(Self { spawned: 1, spawners: config.number.max(1) })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1009,7 +1009,7 @@ impl Actor for Churn {
 impl Handles<Ready> for Churn {
     type Sends = (ToType<Mortal, Live>, Spawns<Mortal>);
 
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.send(To::Sender, &Live { left: CHURN_LIFE })?;
         while self.spawned < CHURN_ALIVE / self.spawners {
             self.spawn_next(turn)?;
@@ -1022,7 +1022,7 @@ impl Handles<Ready> for Churn {
 impl Handles<Died> for Churn {
     type Sends = (ToType<Mortal, Live>, Spawns<Mortal>);
 
-    fn handle(&mut self, _: Died, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Died, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if self.spawned < CHURN_TOTAL / self.spawners {
             self.spawn_next(turn)?;
         }
@@ -1050,11 +1050,11 @@ impl Actor for Mortal {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Number, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1062,7 +1062,7 @@ impl Actor for Mortal {
 impl Handles<Live> for Mortal {
     type Sends = (ToType<Self, Live>, ToType<Churn, Died>);
 
-    fn handle(&mut self, Live { left }: Live, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Live { left }: Live, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if left > 0 {
             let me = turn.me();
             turn.send(To::Held(me), &Live { left: left - 1 })?;
@@ -1139,7 +1139,7 @@ impl Kind for Region {
 
 impl Region {
     /// Sends every body its frame, or, once the frames are run, the word that the world is over, and closes.
-    fn next_frame<S, I, J>(&mut self, turn: &mut Turn<'_, S>) -> Result<(), Fault>
+    fn next_frame<S, I, J>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<ToType<Body, Frame>, I> + Allows<ToType<Body, Over>, J>,
     {
@@ -1166,7 +1166,7 @@ impl Region {
     }
 
     /// Counts a body's answer, and starts the next frame once every body has answered.
-    fn answer<S, I, J>(&mut self, turn: &mut Turn<'_, S>) -> Result<(), Fault>
+    fn answer<S, I, J>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<ToType<Body, Frame>, I> + Allows<ToType<Body, Over>, J>,
     {
@@ -1191,14 +1191,14 @@ impl Actor for Region {
     type BeginSends = (ToType<Body, Ready>, Spawns<Body>);
     type EndSends = ();
 
-    fn begin(_: Number, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let places: Vec<ActorRef<Body>> = (0..WORLD_BODIES).map(|place| spawned(turn, place)).collect();
         ready(turn, &places)?;
 
         Ok(Self { places, frame: 0, answered: 0, spawned: WORLD_BODIES })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1206,7 +1206,7 @@ impl Actor for Region {
 impl Handles<Ready> for Region {
     type Sends = (ToType<Body, Frame>, ToType<Body, Over>);
 
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.next_frame(turn)
     }
 }
@@ -1214,7 +1214,7 @@ impl Handles<Ready> for Region {
 impl Handles<Moved> for Region {
     type Sends = (ToType<Body, Frame>, ToType<Body, Over>);
 
-    fn handle(&mut self, _: Moved, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Moved, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.answer(turn)
     }
 }
@@ -1223,7 +1223,7 @@ impl Handles<Expired> for Region {
     type Sends = (ToType<Body, Frame>, ToType<Body, Over>, Spawns<Body>);
 
     /// Puts a new body, with a whole life, in the expired one's place, unless the world is over after this frame.
-    fn handle(&mut self, Expired { place }: Expired, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Expired { place }: Expired, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if self.frame < WORLD_FRAMES {
             let Ok(body) = turn.spawn(&self.spawned, Number { number: (WORLD_LIFE << 32) | place }) else {
                 panic!("a body begins");
@@ -1268,7 +1268,7 @@ impl Actor for Body {
     /// A body made from `number` has the frames it lives in its upper half, and its place in the lower; a body made
     /// as its region begins, numbered by its place alone, lives a share of a life, so that bodies expire a few a
     /// frame and not all at once.
-    fn begin(Number { number }: Number, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(Number { number }: Number, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let place = number & u64::from(u32::MAX);
         let left = match number >> 32 {
             0 => place % WORLD_LIFE + 1,
@@ -1279,7 +1279,7 @@ impl Actor for Body {
         Ok(Self { place, left, position: at, velocity: 1.0 - at / WORLD_BODIES as f32, pushed: 0.0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1287,7 +1287,7 @@ impl Actor for Body {
 impl Handles<Frame> for Body {
     type Sends = (ToType<Self, Nudge>, ToType<Region, Moved>, ToType<Region, Expired>);
 
-    fn handle(&mut self, Frame { left, right }: Frame, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Frame { left, right }: Frame, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.velocity = (self.velocity + self.pushed) * 0.99;
         self.position += self.velocity;
         let is_out = self.position.abs() > WORLD_BODIES as f32;
@@ -1313,7 +1313,7 @@ impl Handles<Frame> for Body {
 impl Handles<Nudge> for Body {
     type Sends = ();
 
-    fn handle(&mut self, Nudge { push }: Nudge, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Nudge { push }: Nudge, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.pushed += push;
 
         Ok(())
@@ -1323,7 +1323,7 @@ impl Handles<Nudge> for Body {
 impl Handles<Over> for Body {
     type Sends = ();
 
-    fn handle(&mut self, _: Over, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Over, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
@@ -1384,7 +1384,7 @@ fn sieve_size() -> Size {
 }
 
 /// Tells the last of `children`, each of type `T`, that the program can start, so it answers from a turn.
-fn ready<T: Handles<Ready>, S, I>(turn: &mut Beginning<'_, S>, children: &[ActorRef<T>]) -> Result<(), Fault>
+fn ready<Me, T: Handles<Ready>, S, I>(turn: &mut Beginning<'_, Me, S>, children: &[ActorRef<T>]) -> Result<(), Fault>
 where
     S: Allows<ToType<T, Ready>, I>,
 {
@@ -1401,7 +1401,7 @@ macro_rules! answers_ready {
         impl Handles<Ready> for $actor {
             type Sends = (ToSender<Ready>,);
 
-            fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+            fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
                 turn.reply(&Ready)?;
 
                 Ok(())
@@ -1413,7 +1413,7 @@ macro_rules! answers_ready {
 answers_ready!(Ponger, Counter, Forked, Pinging, Fib, Filter, Mortal, Body);
 
 /// A child of type `A` numbered `number`, spawned by `turn`.
-fn spawned<A, S, I>(turn: &mut Beginning<'_, S>, number: u64) -> ActorRef<A>
+fn spawned<Me, A, S, I>(turn: &mut Beginning<'_, Me, S>, number: u64) -> ActorRef<A>
 where
     A: ChildOf + Actor<Config = Number, Key = u64>,
     S: Allows<Spawns<A>, I>,

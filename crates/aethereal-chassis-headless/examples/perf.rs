@@ -101,7 +101,7 @@ impl Actor for Counter {
     type BeginSends = (ToType<Self, Count>, Spawns<Self>);
     type EndSends = ();
 
-    fn begin(config: CounterConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: CounterConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         for number in 1..=config.children + config.idle {
             let child = CounterConfig { number, children: 0, idle: 0, shape: config.shape };
             let is_busy = number <= config.children;
@@ -114,7 +114,7 @@ impl Actor for Counter {
         Ok(Self { number: config.number, shape: config.shape })
     }
 
-    fn end(self, _turn: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -122,7 +122,7 @@ impl Actor for Counter {
 impl Handles<Count> for Counter {
     type Sends = (ToType<Self, Count>,);
 
-    fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let worked = (0..self.units(left) * 10).fold(self.number, |sum, step| sum.wrapping_mul(31).wrapping_add(step));
         hint::black_box(worked);
         if left == 0 {

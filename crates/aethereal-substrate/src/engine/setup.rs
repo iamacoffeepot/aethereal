@@ -48,11 +48,11 @@ use std::sync::Arc;
 /// #             type BeginSends = $sends;
 /// #             type EndSends = ();
 /// #
-/// #             fn begin(root: $name, _: &mut Beginning<'_, $sends>) -> Result<Self, Fault> {
+/// #             fn begin(root: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
 /// #                 Ok(root)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -60,7 +60,7 @@ use std::sync::Arc;
 /// #         impl Handles<Note> for $name {
 /// #             type Sends = ();
 /// #
-/// #             fn handle(&mut self, _: Note, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+/// #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -114,11 +114,11 @@ use std::sync::Arc;
 /// #             type BeginSends = $sends;
 /// #             type EndSends = ();
 /// #
-/// #             fn begin(root: $name, _: &mut Beginning<'_, $sends>) -> Result<Self, Fault> {
+/// #             fn begin(root: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
 /// #                 Ok(root)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -126,7 +126,7 @@ use std::sync::Arc;
 /// #         impl Handles<Note> for $name {
 /// #             type Sends = ();
 /// #
-/// #             fn handle(&mut self, _: Note, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+/// #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }

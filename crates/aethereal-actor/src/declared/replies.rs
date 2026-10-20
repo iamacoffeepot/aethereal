@@ -49,11 +49,11 @@ use aethereal_data::Kind;
 /// #     type BeginSends = ();
 /// #     type EndSends = ();
 /// #
-/// #     fn begin(answerer: Answerer, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+/// #     fn begin(answerer: Answerer, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
 /// #         Ok(answerer)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -62,7 +62,7 @@ use aethereal_data::Kind;
 /// impl Handles<Ask> for Answerer {
 ///     type Sends = (ToSender<Answer>,);
 ///
-///     fn handle(&mut self, _: Ask, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: Ask, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         Ok(turn.reply(&Answer)?)
 ///     }
 /// }
@@ -82,11 +82,11 @@ use aethereal_data::Kind;
 ///     type BeginSends = (ToType<Answerer, Ask>,);
 ///     type EndSends = ();
 ///
-///     fn begin(asker: Asker, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+///     fn begin(asker: Asker, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
 ///         Ok(asker)
 ///     }
 ///
-///     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -126,11 +126,11 @@ use aethereal_data::Kind;
 /// #     type BeginSends = ();
 /// #     type EndSends = ();
 /// #
-/// #     fn begin(answerer: Answerer, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+/// #     fn begin(answerer: Answerer, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
 /// #         Ok(answerer)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -138,7 +138,7 @@ use aethereal_data::Kind;
 /// # impl Handles<Ask> for Answerer {
 /// #     type Sends = (ToSender<Answer>,);
 /// #
-/// #     fn handle(&mut self, _: Ask, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: Ask, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 /// #         Ok(turn.reply(&Answer)?)
 /// #     }
 /// # }
@@ -167,11 +167,11 @@ use aethereal_data::Kind;
 ///     type BeginSends = ();
 ///     type EndSends = ();
 ///
-///     fn begin(asker: Asker, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+///     fn begin(asker: Asker, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
 ///         Ok(asker)
 ///     }
 ///
-///     fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+///     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -179,7 +179,7 @@ use aethereal_data::Kind;
 /// impl Handles<Ask> for Asker {
 ///     type Sends = (ToType<Answerer, Ask>,);
 ///
-///     fn handle(&mut self, _: Ask, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: Ask, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -219,11 +219,11 @@ use aethereal_data::Kind;
 /// #     type BeginSends = ();
 /// #     type EndSends = ();
 /// #
-/// #     fn begin(answerer: Answerer, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+/// #     fn begin(answerer: Answerer, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
 /// #         Ok(answerer)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -231,7 +231,7 @@ use aethereal_data::Kind;
 /// # impl Handles<Ask> for Answerer {
 /// #     type Sends = (ToSender<Answer>,);
 /// #
-/// #     fn handle(&mut self, _: Ask, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: Ask, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 /// #         Ok(turn.reply(&Answer)?)
 /// #     }
 /// # }
@@ -260,11 +260,11 @@ use aethereal_data::Kind;
 ///     type BeginSends = ();
 ///     type EndSends = (ToType<Answerer, Ask>,);
 ///
-///     fn begin(asker: Asker, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+///     fn begin(asker: Asker, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
 ///         Ok(asker)
 ///     }
 ///
-///     fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+///     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -304,11 +304,11 @@ use aethereal_data::Kind;
 /// #     type BeginSends = ();
 /// #     type EndSends = ();
 /// #
-/// #     fn begin(answerer: Answerer, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+/// #     fn begin(answerer: Answerer, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
 /// #         Ok(answerer)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -316,7 +316,7 @@ use aethereal_data::Kind;
 /// # impl Handles<Ask> for Answerer {
 /// #     type Sends = (ToSender<Answer>,);
 /// #
-/// #     fn handle(&mut self, _: Ask, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: Ask, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 /// #         Ok(turn.reply(&Answer)?)
 /// #     }
 /// # }
@@ -345,11 +345,11 @@ use aethereal_data::Kind;
 ///     type BeginSends = (ToAny<Asking, Ask>,);
 ///     type EndSends = ();
 ///
-///     fn begin(asker: Asker, _: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+///     fn begin(asker: Asker, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
 ///         Ok(asker)
 ///     }
 ///
-///     fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+///     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }

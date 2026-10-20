@@ -1,6 +1,6 @@
 //! Where an actor may stand: the one place each type declares, beneath its parent's type or at the top (ADR-0022).
 
-use crate::Actor;
+use crate::{Actor, ActorRef, ErasedActorRef, Seated};
 
 /// Where an actor of this type may stand: beneath an actor of its [`Parent`](Self::Parent) type, or at the top of
 /// the tree as a root when its parent is [`Top`].
@@ -29,11 +29,11 @@ use crate::Actor;
 /// #             type BeginSends = ();
 /// #             type EndSends = ();
 /// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -85,6 +85,50 @@ impl Placement for Recursive {}
 
 impl<T: ChildOf> Placement for T {}
 
+/// What a turn of an actor of type `Me`, whose type stands beneath this place, is handed as its parent by
+/// [`Turn::parent`](crate::Turn::parent): an [`ActorRef<P>`] beneath the one type `P`; an `Option<ActorRef<Me>>`
+/// beneath [`Recursive`], none for a root; and an `Option<ErasedActorRef>` beneath [`Anywhere`], none for a root, as
+/// which it stands beneath is a fact of the run (ADR-0022). [`Top`] has none, so a root's turn has no parent.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no parent: an actor of a type that stands at the top is a root",
+    label = "a root's turn has no `parent()`"
+)]
+pub trait Parented<Me> {
+    /// The parent, as the turn is handed it.
+    type Parent;
+
+    /// The parent the actor stands beneath, from `above`, its seat, none for a root.
+    fn parent(above: Option<Seated>) -> Self::Parent;
+}
+
+impl<Me, P: ChildOf> Parented<Me> for P {
+    type Parent = ActorRef<P>;
+
+    fn parent(above: Option<Seated>) -> ActorRef<P> {
+        let Some(above) = above else {
+            unreachable!("a type beneath one actor type stands only beneath an actor of it, which spawned it");
+        };
+
+        ActorRef::new(above)
+    }
+}
+
+impl<Me> Parented<Me> for Recursive {
+    type Parent = Option<ActorRef<Me>>;
+
+    fn parent(above: Option<Seated>) -> Option<ActorRef<Me>> {
+        above.map(ActorRef::new)
+    }
+}
+
+impl<Me> Parented<Me> for Anywhere {
+    type Parent = Option<ErasedActorRef>;
+
+    fn parent(above: Option<Seated>) -> Option<ErasedActorRef> {
+        above.map(ErasedActorRef::new)
+    }
+}
+
 /// This place, the parent a type `C` declares, admits a child of `C` spawned by an actor of type `A`: `A` itself as
 /// the one parent, any type for [`Anywhere`], and `C`'s own for [`Recursive`]. [`Top`] admits no spawner.
 ///
@@ -111,11 +155,11 @@ impl<T: ChildOf> Placement for T {}
 /// #             type BeginSends = $sends;
 /// #             type EndSends = ();
 /// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, $sends>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -161,11 +205,11 @@ impl<T: ChildOf> Placement for T {}
 /// #             type BeginSends = $sends;
 /// #             type EndSends = ();
 /// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, $sends>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -211,11 +255,11 @@ impl<T: ChildOf> Placement for T {}
 /// #             type BeginSends = $sends;
 /// #             type EndSends = ();
 /// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, $sends>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -280,11 +324,11 @@ impl AtTop for Anywhere {}
 /// #             type BeginSends = ();
 /// #             type EndSends = ();
 /// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
