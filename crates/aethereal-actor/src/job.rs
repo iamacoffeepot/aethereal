@@ -50,21 +50,73 @@ pub enum Runner {
     Io,
 }
 
-/// What a running job reads beside its own bytes: a copy of each blob it refers to (ADR-0018).
+/// What a running job reads and makes beside its own bytes: a copy of each blob it refers to, and the blobs it puts
+/// (ADR-0018).
 pub struct Running {
     blobs: Vec<Copied>,
+    /// The engine that ran it, which the blobs it puts are numbered for.
+    engine: u32,
+    /// The bytes of each blob it has put, in the order put.
+    put: Vec<Vec<u8>>,
 }
 
 #[cfg(feature = "std")]
 impl Running {
-    /// The bytes of the blob `blob` refers to: a copy made as the job was handed out. Every reference a job holds was
-    /// read out of its bytes, and refers to one of the blobs copied out with it, so a reference to any other, which no
-    /// job can come to hold, reads as no bytes.
+    /// The bytes of the blob `blob` refers to: a copy made as the job was handed out, or one the job put. Every
+    /// reference a job holds was read out of its bytes or made by its puts, so a reference to any other, which no job
+    /// can come to hold, reads as no bytes.
     #[must_use]
     pub fn read(&self, blob: &crate::BlobRef) -> &[u8] {
-        let copied = self.blobs.iter().find(|copied| copied.id == blob.id());
+        let id = blob.id();
+        if let Some(index) = id.made_index() {
+            let put = usize::try_from(index).ok().and_then(|index| self.put.get(index));
+            return put.map_or(&[], |bytes| &bytes[..]);
+        }
+        let copied = self.blobs.iter().find(|copied| copied.id == id);
 
         copied.map_or(&[], |copied| &copied.bytes)
+    }
+
+    /// Puts `bytes` as a blob, which nobody changes from then on, and answers with a reference to it, to hold in what
+    /// the job answers with. The engine puts it in its store when the job is answered, out of its budget for blobs,
+    /// and writes the blob's own reference over this one where it lies in the answer; a blob that does not fit
+    /// answers the job [`Faulted`](crate::Unanswered::Faulted). So no reference a job made reaches an actor before its
+    /// blob is in the store.
+    pub fn put(&mut self, bytes: Vec<u8>) -> crate::BlobRef {
+        let index = u64::try_from(self.put.len()).unwrap_or(u64::MAX);
+        self.put.push(bytes);
+
+        crate::BlobRef::pin(BlobId::made(self.engine, index))
+    }
+}
+
+/// What a job a host ran made: its result's bytes, written at [`Actors`], a pin on each blob it refers to, at where
+/// its reference begins in them, and the bytes of each blob it put, which the references among them to those blobs
+/// name by the order they were put in (ADR-0018).
+#[cfg(feature = "std")]
+#[derive(Debug, PartialEq, Eq)]
+pub struct Produced {
+    /// Its result's bytes.
+    pub bytes: Vec<u8>,
+    /// A pin on each blob its result refers to, kept in the order of where they lie.
+    pub held: Vec<crate::Pinning>,
+    /// The bytes of each blob it put, in the order put.
+    pub put: Vec<Vec<u8>>,
+}
+
+#[cfg(feature = "std")]
+impl Produced {
+    /// `done`, a job's result, which put no blob: written at [`Actors`] with the pins on the blobs it refers to.
+    ///
+    /// # Errors
+    ///
+    /// Why it could not be written: it holds a resource.
+    pub fn of<K: Encode<Actors>>(done: &K) -> Result<Self, EncodeError> {
+        let mut held = Vec::new();
+        let mut out = Writer::<Actors>::appending(Vec::new(), ActorsWriter::new(&mut held));
+        done.encode(&mut out)?;
+
+        Ok(Self { bytes: out.into_bytes(), held, put: Vec::new() })
     }
 }
 
@@ -219,8 +271,9 @@ pub struct Submitted {
     pub refers: Vec<BlobId>,
 }
 
-/// What a job a host runs comes to: its result's bytes, written at [`Actors`], or its fault.
-pub type Outcome = Result<Vec<u8>, Fault>;
+/// What a job a host runs comes to: what it made, or its fault.
+#[cfg(feature = "std")]
+pub type Outcome = Result<Produced, Fault>;
 
 /// A job's future, as its host drives it.
 pub type Driven = Pin<Box<dyn Future<Output = Outcome>>>;
@@ -273,10 +326,11 @@ fn drive<J: Job>(bytes: Vec<u8>, lent: Lending, limit: usize) -> Driven {
         let mut budget = Budget::new(limit);
         let pins = crate::PinSource::job(&blobs);
         let job = J::decode(&mut Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::of(&pins)))?;
-        let mut running = Running { blobs };
+        let mut running = Running { blobs, engine, put: Vec::new() };
         let done = job.run(&mut running).await?;
+        let produced = Produced::of(&done)?;
 
-        Ok(written(&done)?)
+        Ok(Produced { put: running.put, ..produced })
     });
 
     Box::pin(Queued { running, engine, queue })
@@ -309,22 +363,6 @@ impl Drop for Queued {
         let running = mem::replace(&mut self.running, Box::pin(future::pending()));
         pins::queued(self.engine, &self.queue, || drop(running));
     }
-}
-
-/// `value`, written at [`Actors`] into bytes of its own: refused when it holds a resource, or refers to a blob, which
-/// nothing carries out of a job yet (ADR-0018).
-///
-/// # Errors
-///
-/// Why it could not be written.
-#[cfg(feature = "std")]
-pub fn written<K: Encode<Actors>>(value: &K) -> Result<Vec<u8>, EncodeError> {
-    let (bytes, lent) = lending(value)?;
-    if !lent.is_empty() {
-        return Err(EncodeError::NotCarried { name: "BlobRef" });
-    }
-
-    Ok(bytes)
 }
 
 /// `value`, written at [`Actors`] into bytes of its own, and a pin on each blob it refers to, as often as it refers to
