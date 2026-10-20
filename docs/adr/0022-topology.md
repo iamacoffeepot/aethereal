@@ -33,7 +33,7 @@ impl ChildOf for Timer  { type Parent = Anywhere; }       // beneath any actor: 
 
 ### `Spawns<C>`: a turn spawns only what it declares, and only what may stand beneath it
 
-- `turn.spawn` and `turn.spawn_from` build only when the turn's sends list `Spawns<C>`, as `subscribe` builds only when they list `Subscribes<K>`. **`Spawns<C>` builds only when `C`'s `Parent` admits the spawner's type**: the type itself, a tuple holding it, or `Anywhere`. It is checked where the sends are declared, by the bound every sends tuple meets (`BackTo<Self>`), as `Subscribes<K>` builds only when the actor handles `K`. The permission and its use are one fact.
+- `turn.spawn` and `turn.spawn_from` build only when the turn's sends list `Spawns<C>`, as `subscribe` builds only when they list `Subscribes<K>`. **`Spawns<C>` builds only when `C`'s `Parent` admits the spawner's type**: the type itself, a tuple holding it, or `Anywhere`. It is checked where the sends are declared, by the bound every sends tuple meets, as `Subscribes<K>` builds only when the actor handles `K`. That bound, `BackTo<A>` today, is renamed `DeclaredBy<A>`: it checks each marker against the actor that declares it, and a spawn sends nothing back. The permission and its use are one fact.
 - **`C` is inferred from where the child goes**: `let unit: ActorRef<Unit> = turn.spawn(&7, config)?`, or the field the reference is kept in. Nothing is written as a turbofish.
 - Its `Sending` is `C`'s kind with `Target::Spawned`, so the engine's declaration of each type holds the children it may spawn.
 - `Spawns<C>` in `EndSends` does not build: a closing turn spawns nothing.
@@ -68,7 +68,7 @@ turn.send_to(path::<Renderer>(()), &Release::Mesh(mesh))?;
 - **An ask at a typed path is declared with the path**, `Asks<Path<L>, K, C>`, and **the answer is read from the path's type `L`**: it says what it answers each kind it can be asked with `Carries<K>`, as a named protocol does (ADR-0016), beside its handler. Its handler's declared replies must be the answers it carries, checked as a protocol's are (`AnsweredBy`), in the marker and not at the call. A type carries only the kinds it can be asked, one by one, so no list of its kinds is kept beside `Handles`. A kind a type does not carry cannot be asked of it at a typed path.
 - **This departs from ADR-0016**, where only a named protocol carries kinds: an actor's type may carry them too, for the asks made of it by its type. Named protocols stay for asking any actor that handles a set of kinds, through a `ProtocolRef`.
 - **A send at a typed path is declared with the path**, `Tells<Path<L>, K>`, the counterpart of `Asks`, and builds only when `L` handles `K`.
-- Both are checked at build time as every send is (`Allows`), and an ask only when the asker handles the answer (`BackTo<Self>`).
+- Both are checked at build time as every send is (`Allows`), and an ask only when the asker handles the answer (`DeclaredBy<Self>`).
 - **Their `Sending` targets the path, `Target::Path(segments)`, so a type's declaration holds every path it reaches.** No dependency is declared beside the sends: a declared send at a typed path is one.
 
 **A spawn is refused, before the child's `begin` runs, when a typed path its type reaches holds no live actor.**
