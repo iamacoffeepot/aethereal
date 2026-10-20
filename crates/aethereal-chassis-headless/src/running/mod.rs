@@ -29,11 +29,13 @@ enum Stopping {
 
 impl Headless {
     /// Runs the program through its lifecycle, then drops it (ADR-0020): starts it, says a cycle is due every
-    /// `every`, steps while any actor has anything to run, and once it is asked to stop, by an actor's
+    /// `every`, brings in what its sources were pushed and its jobs finished before each step (ADR-0010, ADR-0018),
+    /// steps while any actor has anything to run, and once it is asked to stop, by an actor's
     /// [`quit`](aethereal_actor::Turn::quit), waits at most `stop_within` for `Stop` to finish.
     ///
     /// Between steps with nothing to run it parks its workers and sleeps until the next cycle is due, or until the
-    /// time it gives `Stop` has passed. A cycle due while one runs is not queued: the next `Tick` covers the time. An
+    /// time it gives `Stop` has passed. What is pushed, or finishes, while it sleeps is brought in when it wakes, so
+    /// it waits at most `every`. A cycle due while one runs is not queued: the next `Tick` covers the time. An
     /// engine whose cycle holds no stage still wakes every `every`, and does nothing.
     ///
     /// # Panics
@@ -59,6 +61,7 @@ impl Headless {
                 self.engine.cycle();
                 due = due.saturating_add(every).max(now);
             }
+            self.engine.bring();
             if !self.engine.is_idle() {
                 self.step();
                 continue;
