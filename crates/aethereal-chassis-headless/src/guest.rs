@@ -2073,7 +2073,7 @@ mod tests {
     use aethereal_actor::{Anywhere, ChildOf, Level, Spawns, Tick, Time, Top};
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
     use aethereal_guest_echo as echo;
-    use aethereal_substrate::Engine;
+    use aethereal_substrate::{Engine, Setup};
     use std::num::NonZeroUsize;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2082,8 +2082,8 @@ mod tests {
     const ECHO: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO"));
 
     /// `engine`, running guests with wasmtime, and the echo guest put into it as code.
-    fn with_echo(engine: Engine) -> (Engine, BlobRef) {
-        let mut engine = engine.with_guests(Arc::new(Runtime::default()));
+    fn with_echo(setup: Setup<()>) -> (Engine, BlobRef) {
+        let mut engine = setup.with_guests(Arc::new(Runtime::default())).ready();
         let Ok(code) = engine.put_code(ECHO.to_vec()) else {
             panic!("the echo guest is fit to run");
         };
@@ -3278,8 +3278,8 @@ mod tests {
         let Some(parts) = NonZeroUsize::new(1) else {
             panic!("one is not zero");
         };
-        let said = |engine: Engine| {
-            let (mut engine, code) = with_echo(engine);
+        let said = |setup: Setup<()>| {
+            let (mut engine, code) = with_echo(setup);
             let Ok(metronome) = engine.add_root_from::<echo::Metronome>(&code, &(), &echo::EchoConfig) else {
                 panic!("the metronome begins");
             };
@@ -4913,7 +4913,8 @@ mod tests {
             panic!("one is not zero");
         };
         let runtime = Arc::new(Runtime::default());
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_guests(Arc::clone(&runtime) as Arc<dyn Guests>);
+        let mut engine =
+            Engine::new(parts, 1024, 0, 1 << 20, 0).with_guests(Arc::clone(&runtime) as Arc<dyn Guests>).ready();
         let (Ok(first), Ok(second)) = (engine.put_code(ECHO.to_vec()), engine.put_code(ECHO.to_vec())) else {
             panic!("the echo guest is fit to run");
         };
@@ -4937,7 +4938,8 @@ mod tests {
             panic!("one is not zero");
         };
         let runtime = Arc::new(Runtime::default());
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_guests(Arc::clone(&runtime) as Arc<dyn Guests>);
+        let mut engine =
+            Engine::new(parts, 1024, 0, 1 << 20, 0).with_guests(Arc::clone(&runtime) as Arc<dyn Guests>).ready();
         let Ok(code) = engine.put_code(ECHO.to_vec()) else {
             panic!("the echo guest is fit to run");
         };

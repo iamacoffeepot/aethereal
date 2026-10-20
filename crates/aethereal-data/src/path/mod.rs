@@ -13,4 +13,4 @@ pub use actor::{ActorPath, PathTooDeep};
 pub use id::ActorId;
 pub use key::KeyName;
 pub use segment::PathSegment;
-pub use typed::{ActorKey, Keyed, Then, TypedKey};
+pub use typed::{ActorKey, Instanced, Keyed, Singleton, Then, TypedKey};

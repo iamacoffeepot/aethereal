@@ -155,7 +155,7 @@ fn engine(roots: &[(u64, &[&str])]) -> Engine {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
     for (number, to_self) in roots {
         let to_self = to_self.iter().map(|text| String::from(*text)).collect();
         let Ok(_) = engine.add_root::<Staged>(number, StagedConfig { number: *number, to_self }) else {
@@ -372,10 +372,11 @@ fn cycling<C: Cycle>(limit: Duration) -> Engine {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let Ok(engine) = Engine::new(parts, 1024, 0, 1 << 20, 0).with_cycle::<C>() else {
+    let Ok(mut engine) =
+        Engine::new(parts, 1024, 0, 1 << 20, 0).with_delta_limit(limit).with_cycle::<C>().map(Setup::ready)
+    else {
         panic!("the cycle is in order");
     };
-    let mut engine = engine.with_delta_limit(limit);
     let Ok(_) = engine.add_root::<Cycler>(&(), Note { text: String::new() }) else {
         panic!("the cycler begins");
     };
@@ -463,7 +464,8 @@ fn a_cycle_out_of_order_or_holding_an_end_or_a_stage_twice_is_refused() {
     let Some(parts) = NonZeroUsize::new(1) else {
         panic!("one is not zero");
     };
-    let made = |cycle: fn(Engine) -> Result<Engine, Unordered>| cycle(Engine::new(parts, 1024, 0, 1 << 20, 0)).err();
+    let made =
+        |cycle: fn(Engine) -> Result<Engine, Unordered>| cycle(Engine::new(parts, 1024, 0, 1 << 20, 0).ready()).err();
 
     assert_eq!(made(Engine::with_cycle::<(Render, Tick)>), Some(Unordered::OutOfOrder));
     assert_eq!(made(Engine::with_cycle::<(Tick, Present, Render)>), Some(Unordered::OutOfOrder));
@@ -524,7 +526,7 @@ fn running<C: Cycle>() -> Engine {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let Ok(engine) = Engine::new(parts, 1024, 0, 1 << 20, 0).with_cycle::<C>() else {
+    let Ok(engine) = Engine::new(parts, 1024, 0, 1 << 20, 0).with_cycle::<C>().map(Setup::ready) else {
         panic!("the cycle is in order");
     };
 
@@ -704,7 +706,7 @@ fn drained(told: &str) -> (Lifecycle, Lifecycle) {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
     let Ok(_) = engine.add_root::<Drainer>(&(), Note { text: String::new() }) else {
         panic!("the drainer begins");
     };
@@ -745,7 +747,7 @@ fn a_stage_nothing_subscribes_to_is_passed_at_once() {
     let Some(parts) = NonZeroUsize::new(1) else {
         panic!("one is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
     engine.start();
     engine.quit();
 

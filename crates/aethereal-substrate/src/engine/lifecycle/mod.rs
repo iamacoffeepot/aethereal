@@ -135,7 +135,7 @@ impl Engine {
     ///
     /// [`Unordered`] when the cycle holds `Start` or `Stop`, a stage twice, or the shared stages, `Tick`, `Render`,
     /// and `Present`, out of that order.
-    pub fn with_cycle<C: Cycle>(mut self) -> Result<Self, Unordered> {
+    pub(super) fn with_cycle<C: Cycle>(mut self) -> Result<Self, Unordered> {
         let stages = C::stages();
         ordered(&stages)?;
         self.staging.cycle = stages;
@@ -145,8 +145,7 @@ impl Engine {
 
     /// The engine, limiting each `Tick`'s delta to `limit`, a quarter of a second unless set: a longer stall slows the
     /// program's time, and skips none of it (ADR-0020).
-    #[must_use]
-    pub fn with_delta_limit(mut self, limit: Duration) -> Self {
+    pub(super) fn with_delta_limit(mut self, limit: Duration) -> Self {
         self.staging.delta_limit_nanos = nanos(limit);
 
         self

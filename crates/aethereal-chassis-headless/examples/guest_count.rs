@@ -175,7 +175,7 @@ fn main() {
     let rounds: u64 =
         env::args().find_map(|arg| arg.strip_prefix("rounds=").and_then(|count| count.parse().ok())).unwrap_or(5);
     for round in 0..rounds {
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 64).with_guests(runtime.clone());
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 64).with_guests(runtime.clone()).ready();
         let Ok(code) = engine.put_code(ECHO.to_vec()) else {
             panic!("the echo guest is fit to run");
         };

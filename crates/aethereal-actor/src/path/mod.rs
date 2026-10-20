@@ -1,7 +1,10 @@
 //! Typed paths: the actor named by its type, the segments above it filled in from each type's parent (ADR-0022).
 
+mod roots;
 #[cfg(test)]
 mod tests;
+
+pub use roots::{HandlersNeedIn, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Placed, There};
 
 use crate::{ChildOf, Top};
 use aethereal_data::{ActorKey, ActorPath, Keyed, KindId, KindName, PathSegment, Then};

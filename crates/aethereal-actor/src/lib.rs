@@ -78,7 +78,9 @@ pub use job::{Copied, Driven, Job, JobId, NotRun, Runner, Running, RunsJob, Subm
 #[cfg(feature = "std")]
 pub use job::{JobType, Lending, Outcome, Produced};
 pub use mail::{Mail, MailId};
-pub use path::{Beneath, Path, PathTo, TypeSegment, path};
+pub use path::{
+    Beneath, HandlersNeedIn, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Path, PathTo, Placed, There, TypeSegment, path,
+};
 pub use placement::{Admits, Anywhere, AtTop, ChildOf, Placement, Recursive, Root, Top};
 pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Proven, Reaches, Watchable};
 pub use resource::{

@@ -176,7 +176,7 @@ fn engine(hops: usize) -> Engine {
         panic!("four is not zero");
     };
 
-    Engine::new(parts, 1024, 1 << 20, 1 << 20, hops)
+    Engine::new(parts, 1024, 1 << 20, 1 << 20, hops).ready()
 }
 
 /// Adds the root window `number`, given `pointers` and `lights` by the chassis, which sends itself `orders`.

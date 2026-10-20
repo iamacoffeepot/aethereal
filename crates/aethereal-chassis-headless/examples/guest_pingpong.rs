@@ -109,18 +109,18 @@ fn main() {
     let rounds: u64 =
         env::args().find_map(|arg| arg.strip_prefix("rounds=").and_then(|count| count.parse().ok())).unwrap_or(5);
     for round in 0..rounds {
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 64).with_guests(runtime.clone());
-        let Ok(code) = engine.put_code(ECHO.to_vec()) else {
+        let mut setup = Engine::new(parts, 1024, 0, 1 << 20, 64).with_guests(runtime.clone());
+        let Ok(code) = setup.put_code(ECHO.to_vec()) else {
             panic!("the echo guest is fit to run");
         };
-        let Ok(_) = engine.add_root_from::<guest::Echo>(&code, &(), &guest::EchoConfig) else {
-            panic!("the echo begins");
+        let pingers_made = (0..pingers).map(|key| (key, Volley { pings }));
+        let made = setup
+            .add_root_from::<guest::Echo>(&code, &(), &guest::EchoConfig)
+            .and_then(|setup| setup.add_roots::<Pinger>(pingers_made));
+        let Ok(setup) = made else {
+            panic!("the echo and the pingers begin");
         };
-        for key in 0..pingers {
-            let Ok(_) = engine.add_root::<Pinger>(&key, Volley { pings }) else {
-                panic!("a pinger begins");
-            };
-        }
+        let mut engine = setup.ready();
         let started = clock.nanos();
         let mut steps = 0;
         while !engine.is_idle() {

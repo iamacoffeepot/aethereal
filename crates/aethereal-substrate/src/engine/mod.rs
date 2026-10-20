@@ -15,6 +15,7 @@ mod lifecycle;
 mod made;
 mod plan;
 mod rehearsal;
+mod setup;
 mod since;
 #[cfg(test)]
 mod tests;
@@ -24,6 +25,7 @@ pub use costs::Tally;
 pub use fold::{Fold, Folding};
 pub use fuse::Hops;
 pub use plan::{Plan, Share, Split, SplitCost, Whole, Workers};
+pub use setup::Setup;
 
 use crate::id::root_id;
 use crate::log;
@@ -393,9 +395,15 @@ impl Engine {
     /// most `read_limit` bytes into any one piece of mail, whose mail in flight is written to `mail_bytes` of
     /// arenas, shared equally among the writers, two arenas each, whose blobs hold at most `blob_bytes` (ADR-0014),
     /// and whose parts each run at most `hops` fused hops in a step (ADR-0013). With no hops, every piece of mail is
-    /// handled in a later step.
-    #[must_use]
-    pub fn new(parts: NonZeroUsize, read_limit: usize, mail_bytes: usize, blob_bytes: usize, hops: usize) -> Self {
+    /// handled in a later step. It is handed out as its [`Setup`], where its host makes the roots it starts with
+    /// (ADR-0022).
+    #[allow(clippy::new_ret_no_self, reason = "an engine is made as its setup, where its host makes its first roots")]
+    pub fn new(parts: NonZeroUsize, read_limit: usize, mail_bytes: usize, blob_bytes: usize, hops: usize) -> Setup<()> {
+        Setup::of(Self::empty(parts, read_limit, mail_bytes, blob_bytes, hops))
+    }
+
+    /// An engine with no actors, as [`new`](Self::new) makes it.
+    fn empty(parts: NonZeroUsize, read_limit: usize, mail_bytes: usize, blob_bytes: usize, hops: usize) -> Self {
         let parts = rounded(parts);
         let number = Number::next();
 
@@ -446,8 +454,7 @@ impl Engine {
     }
 
     /// The engine, running the guests' code `guests` holds (ADR-0015): set as the engine is made, before any actor.
-    #[must_use]
-    pub fn with_guests(mut self, guests: Arc<dyn Guests>) -> Self {
+    fn with_guests(mut self, guests: Arc<dyn Guests>) -> Self {
         self.guests = guests;
         self.carry();
 
@@ -456,8 +463,7 @@ impl Engine {
 
     /// The engine, keeping the native types `links` by name, for a guest to spawn (ADR-0009): set as the engine is
     /// made, before any actor.
-    #[must_use]
-    pub fn with_links(mut self, links: Links) -> Self {
+    fn with_links(mut self, links: Links) -> Self {
         self.links = Arc::new(links);
         self.carry();
 

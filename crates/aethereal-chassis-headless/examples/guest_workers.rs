@@ -213,7 +213,7 @@ fn main() {
     for count in workers {
         let workers = NonZeroUsize::MIN.saturating_add(count.max(1) - 1);
         let parts = NonZeroUsize::MIN.saturating_add(15);
-        let mut engine = Engine::new(parts, 1024, 1 << 30, 1 << 30, hops).with_guests(runtime.clone());
+        let mut engine = Engine::new(parts, 1024, 1 << 30, 1 << 30, hops).with_guests(runtime.clone()).ready();
         let Ok(code) = engine.put_code(ECHO.to_vec()) else {
             panic!("the echo guest is fit to run");
         };
