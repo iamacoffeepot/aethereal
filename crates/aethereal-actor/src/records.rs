@@ -8,7 +8,8 @@
 //! each piece of mail its turns sent, a [`LineRecord`] for each line they
 //! logged, a [`SpawnRecord`] for each child they spawned, a [`StoodRecord`]
 //! for each child that began, a [`WatchRecord`] for each actor they
-//! watched, and a [`ClaimRecord`] for each claim they made of a resource; and, for the call as a whole, a [`PinRecord`] for each blob whose
+//! watched, a [`ClaimRecord`] for each claim they made of a resource, a [`HoldRecord`] for each request they held,
+//! and a [`StageRecord`] for each thing they asked of the program's lifecycle; and, for the call as a whole, a [`PinRecord`] for each blob whose
 //! pins it changed, a [`RefRecord`] for each reference in what it sent, and a [`HolderRecord`] for each debt whose holders it changed. A send's bytes, a line's text, a key and a moved
 //! child's state are not copied out: each record says where they lie in the
 //! guest's memory, and the host reads them there. Sends and lines say who made
@@ -266,6 +267,16 @@ impl OutHead {
 
         self.claims_at(watches)?.checked_add(span)
     }
+
+    /// Where the call's [`StageRecord`]s begin, right after its `holds` held requests, which follow its `claims`
+    /// claims and `watches` watches: how many its last turn's [`TurnEnds`] count. A stage is seldom subscribed to,
+    /// so the head keeps no room for where they lie (ADR-0020).
+    #[must_use]
+    pub fn stages_at(&self, watches: u32, claims: u32, holds: u32) -> Option<u32> {
+        let span = holds.checked_mul(u32::try_from(HoldRecord::BYTES).ok()?)?;
+
+        self.holds_at(watches, claims)?.checked_add(span)
+    }
 }
 
 /// Where one turn's records end: how many sends, lines, spawns, children stood up, watches, claims and holds the turns
@@ -279,11 +290,12 @@ pub struct TurnEnds {
     pub watches: u32,
     pub claims: u32,
     pub holds: u32,
+    pub stages: u32,
 }
 
 impl TurnEnds {
     /// How many bytes it is.
-    pub const BYTES: usize = 28;
+    pub const BYTES: usize = 32;
 
     /// It, as the out buffer holds it.
     #[must_use]
@@ -295,7 +307,8 @@ impl TurnEnds {
         out[12..16].copy_from_slice(&self.stood.to_le_bytes());
         out[16..20].copy_from_slice(&self.watches.to_le_bytes());
         out[20..24].copy_from_slice(&self.claims.to_le_bytes());
-        out[24..].copy_from_slice(&self.holds.to_le_bytes());
+        out[24..28].copy_from_slice(&self.holds.to_le_bytes());
+        out[28..].copy_from_slice(&self.stages.to_le_bytes());
 
         out
     }
@@ -311,6 +324,7 @@ impl TurnEnds {
             watches: u32_at(bytes, 16)?,
             claims: u32_at(bytes, 20)?,
             holds: u32_at(bytes, 24)?,
+            stages: u32_at(bytes, 28)?,
         })
     }
 }
@@ -753,6 +767,59 @@ impl WatchRecord {
     #[must_use]
     pub fn read(bytes: &[u8]) -> Option<Self> {
         Some(Self { by: seated_at(bytes, 0)?, of: seated_at(bytes, 16)? })
+    }
+}
+
+/// What a turn asked of the program's lifecycle: by whom, the actor whose turn it was or a child it spawned, in its
+/// `begin`, and what (ADR-0020).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StageRecord {
+    pub by: Seated,
+    pub asked: Staging,
+}
+
+/// What a turn asked of the program's lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Staging {
+    /// To be sent the stage of this kind.
+    Subscribe(KindId),
+    /// No longer to be sent the stage of this kind.
+    Unsubscribe(KindId),
+    /// For the program to stop.
+    Quit,
+}
+
+impl StageRecord {
+    /// How many bytes it is.
+    pub const BYTES: usize = 28;
+
+    /// It, as the out buffer holds it.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::BYTES] {
+        let (asked, kind) = match self.asked {
+            Staging::Subscribe(kind) => (0_u32, kind.plain_bytes()),
+            Staging::Unsubscribe(kind) => (1, kind.plain_bytes()),
+            Staging::Quit => (2, [0; 8]),
+        };
+        let mut out = [0; Self::BYTES];
+        out[..16].copy_from_slice(&seated_bytes(self.by));
+        out[16..20].copy_from_slice(&asked.to_le_bytes());
+        out[20..].copy_from_slice(&kind);
+
+        out
+    }
+
+    /// The record `bytes` begin with: nothing when they are too few, or do not read as one.
+    #[must_use]
+    pub fn read(bytes: &[u8]) -> Option<Self> {
+        let asked = match u32_at(bytes, 16)? {
+            0 => Staging::Subscribe(kind_at(bytes, 20)?),
+            1 => Staging::Unsubscribe(kind_at(bytes, 20)?),
+            2 => Staging::Quit,
+            _ => return None,
+        };
+
+        Some(Self { by: seated_at(bytes, 0)?, asked })
     }
 }
 

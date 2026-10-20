@@ -17,15 +17,15 @@
 
 use aethereal_actor::records::{
     self, Born, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, Kept, Keying, LineRecord, Naming, Other,
-    OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord, Spawning, StoodRecord, Stopped,
-    TurnEnds, WatchRecord, blob_at, refusal,
+    OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord, Spawning, StageRecord,
+    StoodRecord, Stopped, TurnEnds, WatchRecord, blob_at, refusal,
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
     Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Broke, Children, Claimed, Declared,
-    FalseSend, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, NotHeld, NotOwed, Peeked,
-    Pinning, Preparing, Puts, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats, Table, Tie, Tied,
-    Turning, Unfit, Was, Why, Written, holders, take_loose_ticket,
+    FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, NotHeld,
+    NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats, Table,
+    Tie, Tied, Turning, Unfit, Was, Why, Written, holders, take_loose_ticket,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, from_bytes, to_bytes};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -1683,6 +1683,14 @@ fn replay_records(
             return Ok((Err(fault), ends));
         }
     }
+    // Most turns ask nothing of the lifecycle.
+    let stages = ends.stages > before.stages;
+    if stages {
+        let honest = hold_to_stages(data, head, before, ends, hosted)?;
+        if let Err(fault) = honest {
+            return Ok((Err(fault), ends));
+        }
+    }
     let is_last = next + 1 == head.ran;
     let ended = match head.stopped {
         _ if !is_last => Ok(()),
@@ -1946,6 +1954,37 @@ fn held(data: &[u8], head: &OutHead, before: TurnEnds, hosted: &mut Hosted<'_>) 
     let HoldRecord { answer } = hold.ok_or(Broke::Garbled)?;
 
     Ok(hosted.hold(answer).is_ok())
+}
+
+/// Holds the guest to what its turn, the one after `before` among the call's that `head` heads in `data`, asked of the
+/// program's lifecycle, up to `ends`, adding each to `hosted` (ADR-0020). Kept out of line, as most turns ask nothing
+/// of it.
+///
+/// # Errors
+///
+/// [`Broke::Garbled`] when a record does not read back. A false ask is the turn's fault, [`FalseStage`].
+#[cold]
+#[inline(never)]
+fn hold_to_stages(
+    data: &[u8],
+    head: &OutHead,
+    before: TurnEnds,
+    ends: TurnEnds,
+    hosted: &mut Hosted<'_>,
+) -> Result<Result<(), Fault>, Broke> {
+    let last = head.ran.checked_sub(1).ok_or(Broke::Garbled)?;
+    let all = record(data, head.turns_at, last, TurnEnds::BYTES).and_then(TurnEnds::read).ok_or(Broke::Garbled)?;
+    let stages_at = head.stages_at(all.watches, all.claims, all.holds).ok_or(Broke::Garbled)?;
+    for index in before.stages..ends.stages {
+        let stage = record(data, stages_at, index, StageRecord::BYTES).and_then(StageRecord::read);
+        let StageRecord { by, asked } = stage.ok_or(Broke::Garbled)?;
+        let is_false = hosted.stage(by, asked).is_err();
+        if is_false {
+            return Ok(Err(Fault::new(&FalseStage).unwrap_or_else(|_| Broke::Garbled.fault())));
+        }
+    }
+
+    Ok(Ok(()))
 }
 
 /// What mail of `kind` tied as `tie` is handed into a guest as: mail that asks a request, which its turn may reply
@@ -3066,6 +3105,38 @@ mod tests {
         engine.step(Time::from_nanos(9), &clock);
 
         assert_eq!(TOLD.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn a_guest_subscribes_to_the_lifecycle_and_asks_the_program_to_stop() {
+        // Catches a guest's subscriptions and its request to stop going unread by its host: the guest would be sent no
+        // stage, and the program would not stop.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(starter) = engine.add_root_from::<echo::Starter>(&code, &(), &echo::EchoConfig) else {
+            panic!("the starter begins");
+        };
+        let Some(seat) = engine.table().seat(starter) else {
+            panic!("the starter is seated");
+        };
+        let starter = Seated { id: starter, seat };
+        engine.start();
+        let clock = Monotonic::new();
+        for _ in 0..8 {
+            engine.step(Time::ZERO, &clock);
+        }
+
+        assert_eq!(engine.lifecycle(), aethereal_substrate::Lifecycle::Stopped);
+        let said: Vec<&str> = engine
+            .log(starter)
+            .filter_map(|entry| match entry {
+                aethereal_substrate::Entry::Line { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(said, ["started", "stopping"]);
     }
 
     #[test]

@@ -78,7 +78,7 @@ pub use stage::{Stage, Start, Stop};
 pub use subscribers::Subscribers;
 pub use time::Time;
 pub use turn::{
-    Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseWatch, Forged, Garbled, Hosted,
-    Logger, Refused, Request, Stood, Trapped, Turn, Turning, Why,
+    Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseStage, FalseWatch, Forged,
+    Garbled, Hosted, Logger, Refused, Request, Stood, Trapped, Turn, Turning, Why,
 };
 pub use written::Written;

@@ -2,8 +2,8 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Asks, Beginning, BlobId, BlobRef, Carries, Ended, Ending, ErasedActorRef, Fault,
-    Given, Handle, Handles, Held, How, Level, Protocol, Refused, Resource, To, ToAny, ToSender, ToType, ToWithoutMail,
-    Turn, Unanswered, Watches,
+    Given, Handle, Handles, Held, How, Level, Protocol, Refused, Resource, Start, Stop, Subscribes, To, ToAny,
+    ToSender, ToType, ToWithoutMail, Turn, Unanswered, Watches,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindName, Plain};
 use core::mem;
@@ -170,6 +170,55 @@ impl Handles<Crash> for Mirror {
 
     fn handle(&mut self, _: Crash, _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         panic!("a mirror crashes when it is told to");
+    }
+}
+
+/// An actor that subscribes to the lifecycle's `Start` and `Stop` as it begins, logs each it is sent, and asks the
+/// program to stop on `Start` (ADR-0020).
+#[derive(Bound)]
+pub struct Starter;
+
+impl Kind for Starter {
+    const NAME: KindName = KindName::new("aether.guest.starter");
+}
+
+impl Actor for Starter {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Start, Stop);
+    type BeginSends = (Subscribes<Start>, Subscribes<Stop>);
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.subscribe::<Start, _>();
+        turn.subscribe::<Stop, _>();
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Start> for Starter {
+    type Sends = ();
+
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.log(Level::Info, "started");
+        turn.quit();
+
+        Ok(())
+    }
+}
+
+impl Handles<Stop> for Starter {
+    type Sends = ();
+
+    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
+        turn.log(Level::Info, "stopping");
+
+        Ok(())
     }
 }
 
@@ -1990,5 +2039,6 @@ aethereal_actor::guest!(
     Stasher,
     Nester,
     Opener,
-    Timekeeper
+    Timekeeper,
+    Starter
 );

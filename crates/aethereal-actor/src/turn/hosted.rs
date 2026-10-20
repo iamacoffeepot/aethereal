@@ -1,6 +1,7 @@
 //! A turn a host runs for an actor whose code runs where the engine cannot see it: a guest (ADR-0015).
 
 use super::{Checked, Closing, During, Owing, Seat, Stood, Turning, Why};
+use crate::records::Staging;
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Effect, ErasedActorRef, Fault, Gift, Giver, Instances,
     Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Role, Runs, SeatNumber,
@@ -85,6 +86,15 @@ pub struct FalseWatch;
 
 impl aethereal_data::Kind for FalseWatch {
     const NAME: KindName = KindName::new("aether.actor.false_watch");
+}
+
+/// The reason of a guest's turn that asked of the program's lifecycle what the asker's declaration does not list: a
+/// stage it does not subscribe to, or a stop from a `begin` (ADR-0015, ADR-0020).
+#[derive(Debug, PartialEq, Eq, Plain)]
+pub struct FalseStage;
+
+impl aethereal_data::Kind for FalseStage {
+    const NAME: KindName = KindName::new("aether.actor.false_stage");
 }
 
 /// The reason of a guest's call that trapped: every actor of its instance ends with it (ADR-0015).
@@ -619,6 +629,39 @@ impl<'a> Hosted<'a> {
         Ok(())
     }
 
+    /// Asks `asked` of the program's lifecycle, by `by`: the actor whose turn this is, or a child it spawned, in its
+    /// `begin`, as [`Turn::subscribe`](crate::Turn::subscribe), [`Turn::unsubscribe`](crate::Turn::unsubscribe), and
+    /// [`Turn::quit`](crate::Turn::quit) do (ADR-0020).
+    ///
+    /// # Errors
+    ///
+    /// [`FalseStage`] when what the asker's turn may do does not list a subscription to the stage, the turn spawned
+    /// no such child, or a stop is asked by a child's `begin` or the actor's own: what a guest's library would not
+    /// have built (ADR-0013).
+    pub fn stage(&mut self, by: Seated, asked: Staging) -> Result<(), FalseStage> {
+        let sends = if by == self.seat.me {
+            self.sends
+        } else {
+            let child = self.spawned.iter().find(|child| child.me == by).ok_or(FalseStage)?;
+            child.declared.begins()
+        };
+        let what = match asked {
+            Staging::Subscribe(kind) => What::Subscribe(kind),
+            Staging::Unsubscribe(kind) => What::Unsubscribe(kind),
+            Staging::Quit => What::Quit,
+        };
+        let is_allowed = match asked {
+            Staging::Subscribe(kind) | Staging::Unsubscribe(kind) => subscribes(sends, kind),
+            Staging::Quit => by == self.seat.me && self.may_close(),
+        };
+        if !is_allowed {
+            return Err(FalseStage);
+        }
+        self.seat.asked.buffers.effects.push(Effect::new(by, what));
+
+        Ok(())
+    }
+
     /// What a call into the guest's code reads and adds to, made before the turn's records are handed in: the table,
     /// the seats its children are given, and the puts of its blobs.
     pub fn lent(&mut self) -> (&'a dyn Table, &mut Seats, &mut Puts) {
@@ -687,4 +730,9 @@ impl<'a> Hosted<'a> {
             Target::Watched | Target::Subscribed => false,
         }
     }
+}
+
+/// Whether `sends` list a subscription to the stage of `kind` (ADR-0020).
+fn subscribes(sends: &[Sending], kind: KindId) -> bool {
+    sends.iter().any(|sending| sending.to() == Target::Subscribed && sending.kind() == kind)
 }
