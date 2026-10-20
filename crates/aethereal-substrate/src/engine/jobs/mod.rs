@@ -23,6 +23,9 @@ pub trait Jobs: Send + Sync {
     /// run.
     fn start(&self, id: JobId, kind: KindId, job: Taken);
 
+    /// The most jobs it lets be in flight at once: handed out, and their [`Finish`] not yet done or dropped.
+    fn most(&self) -> usize;
+
     /// Stops the job `id`, if it can, once the actor that ran it has cancelled it: best effort, as a job may have
     /// finished, or be past where it can be stopped. Whatever it pushes of the job after is dropped. A job it has
     /// finished, or never started, it does nothing for.
@@ -52,12 +55,15 @@ pub struct Finish {
     count: u64,
     answer: KindId,
     feed: Arc<SegQueue<Finished>>,
+    /// One of the engine's tokens of a job in flight, so how many there are is how many jobs are in flight: one is let
+    /// go of once its job is done, or its `Finish` dropped.
+    _in_flight: Arc<()>,
 }
 
 impl Finish {
     /// Pushes the job's outcome onto the engine's feed, to answer the actor that ran it at the next bring.
     pub fn done(self, outcome: Outcome) {
-        let Self { by, count, answer, feed } = self;
+        let Self { by, count, answer, feed, .. } = self;
         feed.push(Finished { by, count, answer, outcome });
     }
 }
@@ -107,6 +113,20 @@ impl Jobs for Inline {
 
     /// Every job has run by the time it is handed out, so none is left to stop.
     fn stop(&self, _: JobId) {}
+
+    /// Every job has run by the time it is handed out, so none is ever in flight.
+    fn most(&self) -> usize {
+        usize::MAX
+    }
+}
+
+/// The share of `left` jobs the writer in place `place` of `running` may run: an equal share, and one more for each of
+/// the first writers until what is left over is shared, so a host that lets fewer jobs be in flight than there are
+/// writers still has each run (ADR-0018).
+pub(super) const fn job_share(left: usize, running: usize, place: usize) -> usize {
+    let is_given_one_over = place < left % running;
+
+    left / running + is_given_one_over as usize
 }
 
 /// The fault whose reason is `K`, which holds nothing.
@@ -163,9 +183,17 @@ impl Engine {
             let id = job.id();
             let Submitted { by, count, kind, answer, bytes, refers } = job;
             let lent = Lending::new(self.number.0, self.copied(refers), Arc::clone(&self.job_pins));
-            let finish = Finish { by, count, answer, feed: Arc::clone(&self.finished) };
+            let feed = Arc::clone(&self.finished);
+            let finish = Finish { by, count, answer, feed, _in_flight: Arc::clone(&self.in_flight) };
             self.jobs.start(id, kind, Taken { bytes, lent, limit: self.read_limit, finish });
         }
+    }
+
+    /// How many more jobs the host lets be in flight: as many as it lets be, less those its runners hold the finish of.
+    pub(super) fn jobs_left(&self) -> usize {
+        let in_flight = Arc::strong_count(&self.in_flight) - 1;
+
+        self.jobs.most().saturating_sub(in_flight)
     }
 
     /// A copy of each blob among `refers`, once each.

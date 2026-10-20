@@ -113,6 +113,9 @@ pub struct Puts {
     /// The hashes its turns computed in this step, of blobs it put or the store holds, for the store to keep. Two
     /// writers, or two turns, may hash one blob in a step, and the store keeps the one hash they all compute.
     hashed: Vec<(BlobId, BlobHash)>,
+    /// The jobs the writer's turns may still run in this step: its share of those its engine's host lets be in flight
+    /// that are not (ADR-0018).
+    jobs: usize,
 }
 
 impl Puts {
@@ -130,7 +133,7 @@ impl Puts {
 
         let held = BTreeMap::new();
 
-        Self { engine, writer, made: 0, kept: 0, room, held, hashed: Vec::new(), putter: Putter::Writer }
+        Self { engine, writer, made: 0, kept: 0, room, jobs: 0, held, hashed: Vec::new(), putter: Putter::Writer }
     }
 
     /// Puts a guest's host takes in, in a call out, for a guest whose turns cannot reach the engine's store (ADR-0015).
@@ -161,6 +164,21 @@ impl Puts {
     /// Gives the writer `room` bytes to put in the coming step.
     pub const fn give_room(&mut self, room: usize) {
         self.room = room;
+    }
+
+    /// Gives the writer's turns `jobs` jobs to run in the coming step (ADR-0018).
+    pub const fn give_jobs(&mut self, jobs: usize) {
+        self.jobs = jobs;
+    }
+
+    /// Takes one of the jobs the writer's turns may still run: refused when none is left (ADR-0018).
+    pub(crate) const fn take_job(&mut self) -> bool {
+        let has_room = self.jobs > 0;
+        if has_room {
+            self.jobs -= 1;
+        }
+
+        has_room
     }
 
     /// The bytes of the blob `id` names, when this writer put it in this step.

@@ -327,6 +327,7 @@ impl Actor for Errand {
             Ok(_) => "chore run",
             Err(Unrun::InGuest) => "chore refused in a guest",
             Err(Unrun::Unwritten(_)) => "chore unwritten",
+            Err(Unrun::Full) => "chore refused for a full host",
         };
         turn.log(Level::Info, said);
 

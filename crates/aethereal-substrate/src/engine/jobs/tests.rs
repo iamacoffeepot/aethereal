@@ -6,7 +6,7 @@ use super::*;
 use crate::Entry;
 use aethereal_actor::{
     Answer, Answered, BlobRef, Ending, Handles, Job, JobType, Runner, Running, RunsJob, Time, ToType, ToWithoutMail,
-    Turn,
+    Turn, Unrun,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
 use std::cell::RefCell;
@@ -335,7 +335,13 @@ impl Handles<Go> for Worker {
                 sleeping
             }
             "hold" => {
-                let id = turn.run(&Sleeps, &which)?;
+                let ran = turn.run(&Sleeps, &which);
+                let is_full = ran == Err(Unrun::Full);
+                if is_full {
+                    say(format!("{} full", go.at));
+                    return Ok(());
+                }
+                let id = ran?;
                 self.kept.push(id);
                 id
             }
@@ -529,6 +535,10 @@ impl Jobs for Noting {
     }
 
     fn stop(&self, _: JobId) {}
+
+    fn most(&self) -> usize {
+        usize::MAX
+    }
 }
 
 /// Runs jobs inline, as [`Inline`] does, but holds each [`Sleeps`] and [`Measure`] until it is let go of, and notes
@@ -537,6 +547,8 @@ struct Holding {
     inline: Inline,
     held: Mutex<Vec<(JobId, KindId, Taken)>>,
     stopped: Mutex<Vec<JobId>>,
+    /// The most jobs it lets be in flight.
+    most: usize,
 }
 
 impl Holding {
@@ -546,6 +558,7 @@ impl Holding {
             inline: Inline::new(vec![JobType::of::<Double>(), JobType::of::<Ring>(), JobType::of::<Measure>()]),
             held: Mutex::default(),
             stopped: Mutex::default(),
+            most: usize::MAX,
         }
     }
 
@@ -602,6 +615,10 @@ impl Jobs for Holding {
         if let Ok(mut stopped) = self.stopped.lock() {
             stopped.push(id);
         }
+    }
+
+    fn most(&self) -> usize {
+        self.most
     }
 }
 
@@ -846,4 +863,35 @@ fn a_job_whose_blob_does_not_fit_is_answered_faulted_and_puts_none() {
         .any(|entry| matches!(entry, Entry::JobFaulted(fault) if fault.kind() == KindId::of::<NoRoom>()));
     assert!(faulted, "the fault is the budget's");
     assert_eq!(engine.blobs.held().0, 0);
+}
+
+#[test]
+fn past_the_jobs_its_host_lets_be_in_flight_a_run_is_refused_until_one_is_answered() {
+    // Catches a run past what the host lets be in flight handed out anyway, and a job answered still counted, so the
+    // host stays full for good. The host lets two be in flight, and holds each.
+    let holding = Arc::new(Holding { most: 2, ..Holding::new() });
+    let (mut engine, _) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
+    for key in 1..=3 {
+        poke(&mut engine, key, "hold");
+    }
+    assert_eq!(said(), ["3 full", "ran 0 as 1", "ran 1 as 2", "ran 2 as 3"]);
+
+    holding.let_go();
+    engine.bring();
+    settle(&mut engine);
+    poke(&mut engine, 4, "hold");
+
+    assert_eq!(said(), ["0 doubled 2", "1 doubled 7", "2 doubled 7", "ran 4 as 7"]);
+}
+
+#[test]
+fn every_writer_shares_the_jobs_left_and_no_more() {
+    // Catches writers given more jobs between them than are left, and a host that lets fewer be in flight than there
+    // are writers leaving every writer none.
+    let shares = |left, running| (0..running).map(|place| job_share(left, running, place)).collect::<Vec<_>>();
+
+    assert_eq!(
+        [shares(1, 2), shares(5, 2), shares(6, 3), shares(0, 2)],
+        [vec![1, 0], vec![3, 2], vec![2, 2, 2], vec![0, 0]]
+    );
 }
