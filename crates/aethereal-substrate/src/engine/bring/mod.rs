@@ -172,6 +172,8 @@ impl Engine {
     /// mail, one that holds a resource on its way, is dropped and recorded in the owner's log.
     pub fn bring(&mut self) {
         self.bring_jobs();
+        // The jobs that finished since the last bring left room for those waiting.
+        self.start_waiting();
         // Most engines have no source.
         if self.sources.is_empty() {
             return;

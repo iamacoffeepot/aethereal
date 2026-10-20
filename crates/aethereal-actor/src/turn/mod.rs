@@ -775,9 +775,6 @@ impl Seat<'_> {
         }
         let (bytes, lent) = lending(job).map_err(Unrun::Unwritten)?;
         let context = Written::of(context).map_err(Unrun::Unwritten)?;
-        if !self.asked.puts.take_job() {
-            return Err(Unrun::Full);
-        }
         self.sent += 1;
         let count = self.sent;
         let id = JobId::new(MailId { sender: self.me.id, count });

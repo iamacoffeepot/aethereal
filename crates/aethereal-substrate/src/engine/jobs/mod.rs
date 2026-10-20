@@ -23,7 +23,8 @@ pub trait Jobs: Send + Sync {
     /// run.
     fn start(&self, id: JobId, kind: KindId, job: Taken);
 
-    /// The most jobs it lets be in flight at once: handed out, and their [`Finish`] not yet done or dropped.
+    /// The most jobs it lets be in flight at once: handed out, and their [`Finish`] not yet done or dropped. The engine
+    /// keeps the rest waiting, in the order they were run, and hands each out as one in flight finishes.
     fn most(&self) -> usize;
 
     /// Stops the job `id`, if it can, once the actor that ran it has cancelled it: best effort, as a job may have
@@ -120,15 +121,6 @@ impl Jobs for Inline {
     }
 }
 
-/// The share of `left` jobs the writer in place `place` of `running` may run: an equal share, and one more for each of
-/// the first writers until what is left over is shared, so a host that lets fewer jobs be in flight than there are
-/// writers still has each run (ADR-0018).
-pub(super) const fn job_share(left: usize, running: usize, place: usize) -> usize {
-    let is_given_one_over = place < left % running;
-
-    left / running + is_given_one_over as usize
-}
-
 /// The fault whose reason is `K`, which holds nothing.
 fn fault<K: Kind>() -> Fault {
     Fault::of_parts(KindId::of::<K>(), Vec::new())
@@ -175,22 +167,54 @@ impl Engine {
         self
     }
 
-    /// Hands each of `submitted` to the host to run, once the turns that ran them have, with a copy of each blob it
-    /// refers to, once for each blob. Each is held: the context the job's actor keeps pins it, and the blobs a step
-    /// put are taken in before its jobs are handed out.
-    pub(super) fn start_jobs(&self, submitted: impl Iterator<Item = Submitted>) {
-        for job in submitted {
-            let id = job.id();
-            let Submitted { by, count, kind, answer, bytes, refers } = job;
-            let lent = Lending::new(self.number.0, self.copied(refers), Arc::clone(&self.job_pins));
-            let feed = Arc::clone(&self.finished);
-            let finish = Finish { by, count, answer, feed, _in_flight: Arc::clone(&self.in_flight) };
-            self.jobs.start(id, kind, Taken { bytes, lent, limit: self.read_limit, finish });
+    /// Queues each of `submitted`, once the turns that ran them have, behind those already waiting, and hands out as
+    /// many as the host lets be in flight (ADR-0018).
+    pub(super) fn start_jobs(&mut self, submitted: impl Iterator<Item = Submitted>) {
+        self.waiting_jobs.extend(submitted);
+        self.start_waiting();
+    }
+
+    /// Hands the jobs waiting to the host in the order they were run, while it lets more be in flight. The job of an
+    /// actor that has ended is dropped: it would be answered to no one, and its blobs are no longer pinned.
+    pub(super) fn start_waiting(&mut self) {
+        loop {
+            let has_room = self.jobs_left() > 0;
+            if !has_room {
+                return;
+            }
+            let Some(job) = self.waiting_jobs.pop_front() else {
+                return;
+            };
+            let is_live = self.lives.shard(job.by.seat.number()).life(job.by).is_some();
+            if is_live {
+                self.hand_out(job);
+            }
+        }
+    }
+
+    /// Hands `job` to the host to run, with a copy of each blob it refers to, once for each blob. Each is held: the
+    /// context the job's actor keeps pins it, and the blobs a step put are taken in before its jobs are handed out.
+    fn hand_out(&self, job: Submitted) {
+        let id = job.id();
+        let Submitted { by, count, kind, answer, bytes, refers } = job;
+        let lent = Lending::new(self.number.0, self.copied(refers), Arc::clone(&self.job_pins));
+        let feed = Arc::clone(&self.finished);
+        let finish = Finish { by, count, answer, feed, _in_flight: Arc::clone(&self.in_flight) };
+        self.jobs.start(id, kind, Taken { bytes, lent, limit: self.read_limit, finish });
+    }
+
+    /// Stops the job `job` an actor cancelled: one still waiting is dropped, never handed out, and the host is asked
+    /// to stop one it was handed.
+    pub(super) fn stop_job(&mut self, job: JobId) {
+        let waiting = self.waiting_jobs.iter().position(|waiting| waiting.id() == job);
+        match waiting {
+            Some(at) => drop(self.waiting_jobs.remove(at)),
+            None => self.jobs.stop(job),
         }
     }
 
     /// How many more jobs the host lets be in flight: as many as it lets be, less those its runners hold the finish of.
-    pub(super) fn jobs_left(&self) -> usize {
+    fn jobs_left(&self) -> usize {
         let in_flight = Arc::strong_count(&self.in_flight) - 1;
 
         self.jobs.most().saturating_sub(in_flight)

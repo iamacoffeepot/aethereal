@@ -235,8 +235,6 @@ pub enum Unrun {
     Unwritten(EncodeError),
     /// The turn runs in a guest, whose host reads no job yet.
     InGuest,
-    /// The host has as many jobs in flight as it lets be: the turn may run one once one of them is answered.
-    Full,
 }
 
 /// The reason of a turn whose job its turn could not run, as `?` makes of an [`Unrun`].
@@ -252,18 +250,8 @@ impl From<Unrun> for Fault {
         match unrun {
             Unrun::Unwritten(_) => Self::bare::<Unwritable>(),
             Unrun::InGuest => Self::bare::<NotRun>(),
-            Unrun::Full => Self::bare::<Full>(),
         }
     }
-}
-
-/// The reason of a turn that ran a job while its host had as many in flight as it lets be, as `?` makes of
-/// [`Unrun::Full`].
-#[derive(Debug, PartialEq, Eq, Plain)]
-pub struct Full;
-
-impl Kind for Full {
-    const NAME: KindName = KindName::new("aether.actor.jobs_full");
 }
 
 /// A job a turn ran, as the engine takes it out to its host once the turn has run (ADR-0018).

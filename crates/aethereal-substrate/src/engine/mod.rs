@@ -55,6 +55,7 @@ use lifecycle::{LIFECYCLE, Staging};
 use made::Made;
 use plan::Packing;
 use since::{Sees, Since};
+use std::collections::VecDeque;
 use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::Range;
@@ -166,6 +167,8 @@ pub struct Engine {
     finished: Arc<SegQueue<jobs::Finished>>,
     /// The token each job in flight holds a copy of in its finish, so the copies beside this one count them.
     in_flight: Arc<()>,
+    /// The jobs run past what the host lets be in flight, in the order run, handed out as those in flight finish.
+    waiting_jobs: VecDeque<Submitted>,
     /// The changes to blobs' pins the jobs made as they ran, pushed by whatever ran them, summed with the next step's
     /// (ADR-0018).
     job_pins: pins::Queue,
@@ -436,6 +439,7 @@ impl Engine {
             jobs: Arc::new(Inline::new(Vec::new())),
             finished: Arc::new(SegQueue::new()),
             in_flight: Arc::new(()),
+            waiting_jobs: VecDeque::new(),
             job_pins: Arc::new(SegQueue::new()),
             number,
         }
@@ -521,7 +525,7 @@ impl Engine {
     /// (ADR-0014): refused when they would take the blobs past the host's budget.
     pub fn put_blob(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {
         let room = self.blobs.room();
-        let mut puts = self.puts(ROOTS, room, 0);
+        let mut puts = self.puts(ROOTS, room);
         let put = puts.pinned(bytes);
         self.blobs.take_in(&mut puts);
         self.puts[ROOTS] = puts;
@@ -601,7 +605,7 @@ impl Engine {
     /// A ticket for a resource the chassis hands in: from the writer of what is sent between steps, which no other
     /// resource has had.
     fn ticket(&mut self) -> u64 {
-        let mut puts = self.puts(ROOTS, 0, 0);
+        let mut puts = self.puts(ROOTS, 0);
         let ticket = puts.ticket();
         self.puts[ROOTS] = puts;
 
@@ -694,8 +698,7 @@ impl Engine {
         let mut seats = self.lend_seats(home);
         let me = Seated { id, seat: seats.own() };
         let blob_room = self.blobs.room();
-        let puts = self.puts(ROOTS, blob_room, self.jobs_left());
-        let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats, puts);
+        let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats, self.puts(ROOTS, blob_room));
         asked.buffers_mut().gifts = gifts;
         let stood_before = ByActor::default();
         let table = Since {
@@ -955,12 +958,10 @@ impl Engine {
         for arena in &mut self.arenas[parity] {
             arena.clear(share);
         }
-        // Each writer may put an equal share of what the budget for blobs has left (ADR-0014), and run a share of the
-        // jobs the host lets be in flight that are not (ADR-0018).
+        // Each writer may put an equal share of what the budget for blobs has left (ADR-0014).
         let blob_share = self.blobs.room() / running;
-        let jobs_left = self.jobs_left();
         if running == 1 {
-            let (arena, lists, puts) = self.writer(parity, 0, share, (blob_share, jobs_left));
+            let (arena, lists, puts) = self.writer(parity, 0, share, blob_share);
 
             return Plan { delta, split: Split::Whole(Whole { arena, puts, lists }), expected_nanos };
         }
@@ -968,8 +969,7 @@ impl Engine {
         self.packing.pack(running);
         let mut shares = Vec::with_capacity(running);
         for place in 0..running {
-            let job_share = jobs::job_share(jobs_left, running, place);
-            let (arena, lists, puts) = self.writer(parity, place, share, (blob_share, job_share));
+            let (arena, lists, puts) = self.writer(parity, place, share, blob_share);
             let mut parcels = self.spare.parcels.pop().unwrap_or_default();
             for index in 0..self.packing.shares[place].1.len() {
                 let part = self.packing.shares[place].1[index];
@@ -982,17 +982,11 @@ impl Engine {
     }
 
     /// The arena, lists, and puts of the writer in place `place`, for steps of `parity`, its arena given `share`
-    /// bytes and its puts `blob_share` bytes and `job_share` jobs: taken out to fill.
-    fn writer(
-        &mut self,
-        parity: usize,
-        place: usize,
-        share: usize,
-        (blob_share, job_share): (usize, usize),
-    ) -> (Arena, Lists, Puts) {
+    /// bytes and its puts `blob_share`: taken out to fill.
+    fn writer(&mut self, parity: usize, place: usize, share: usize, blob_share: usize) -> (Arena, Lists, Puts) {
         let slot = ROOTS + 1 + place;
         let arena = self.arena(parity, slot, share);
-        let puts = self.puts(slot, blob_share, job_share);
+        let puts = self.puts(slot, blob_share);
         while self.lists.len() <= slot {
             let lists = self.lists();
             self.lists.push(lists);
@@ -1027,7 +1021,7 @@ impl Engine {
         }
         // Most steps cancel none.
         for job in lists.cancelled.drain(..) {
-            self.jobs.stop(job);
+            self.stop_job(job);
         }
         self.lists[slot] = lists;
     }
@@ -1296,16 +1290,14 @@ impl Engine {
         Lists { routes, ..Lists::default() }
     }
 
-    /// Where the writer numbered `slot` holds the blobs it puts, given `room` bytes to put and `jobs` jobs to run,
-    /// taken out to fill.
-    fn puts(&mut self, slot: usize, room: usize, jobs: usize) -> Puts {
+    /// Where the writer numbered `slot` holds the blobs it puts, given `room` bytes to put, taken out to fill.
+    fn puts(&mut self, slot: usize, room: usize) -> Puts {
         let engine = self.number.0;
         while self.puts.len() <= slot {
             self.puts.push(Puts::new(engine, self.puts.len(), 0));
         }
         let mut puts = mem::replace(&mut self.puts[slot], Puts::new(engine, slot, 0));
         puts.give_room(room);
-        puts.give_jobs(jobs);
 
         puts
     }

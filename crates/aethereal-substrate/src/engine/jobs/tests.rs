@@ -6,7 +6,7 @@ use super::*;
 use crate::Entry;
 use aethereal_actor::{
     Answer, Answered, BlobRef, Ending, Handles, Job, JobType, Runner, Running, RunsJob, Time, ToType, ToWithoutMail,
-    Turn, Unrun,
+    Turn,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
 use std::cell::RefCell;
@@ -335,13 +335,7 @@ impl Handles<Go> for Worker {
                 sleeping
             }
             "hold" => {
-                let ran = turn.run(&Sleeps, &which);
-                let is_full = ran == Err(Unrun::Full);
-                if is_full {
-                    say(format!("{} full", go.at));
-                    return Ok(());
-                }
-                let id = ran?;
+                let id = turn.run(&Sleeps, &which)?;
                 self.kept.push(id);
                 id
             }
@@ -575,6 +569,16 @@ impl Holding {
                 self.inline.start(id, kind, job);
             }
         }
+    }
+
+    /// How many jobs it holds.
+    fn holds(&self) -> usize {
+        self.held.lock().map_or(0, |held| held.len())
+    }
+
+    /// The jobs it holds, by their counts.
+    fn holding(&self) -> Vec<u64> {
+        self.held.lock().map_or_else(|_| Vec::new(), |held| held.iter().map(|(id, ..)| id.mail().count).collect())
     }
 
     /// Takes every job it holds.
@@ -866,32 +870,49 @@ fn a_job_whose_blob_does_not_fit_is_answered_faulted_and_puts_none() {
 }
 
 #[test]
-fn past_the_jobs_its_host_lets_be_in_flight_a_run_is_refused_until_one_is_answered() {
-    // Catches a run past what the host lets be in flight handed out anyway, and a job answered still counted, so the
-    // host stays full for good. The host lets two be in flight, and holds each.
-    let holding = Arc::new(Holding { most: 2, ..Holding::new() });
+fn past_the_jobs_its_host_lets_be_in_flight_a_job_waits_in_order_until_one_finishes() {
+    // Catches a job past what the host lets be in flight handed out anyway, one that waits for good once a job in
+    // flight finishes, jobs that wait handed out in another order than they were run, and a job answered still
+    // counted in flight. The host lets one be in flight, and holds each.
+    let holding = Arc::new(Holding { most: 1, ..Holding::new() });
     let (mut engine, _) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
     for key in 1..=3 {
         poke(&mut engine, key, "hold");
     }
-    assert_eq!(said(), ["3 full", "ran 0 as 1", "ran 1 as 2", "ran 2 as 3"]);
+    let mut holds = vec![holding.holding()];
 
-    holding.let_go();
-    engine.bring();
-    settle(&mut engine);
-    poke(&mut engine, 4, "hold");
+    for _ in 0..3 {
+        holding.let_go();
+        engine.bring();
+        settle(&mut engine);
+        holds.push(holding.holding());
+    }
 
-    assert_eq!(said(), ["0 doubled 2", "1 doubled 7", "2 doubled 7", "ran 4 as 7"]);
+    assert_eq!(holds, [vec![2], vec![3], vec![4], vec![]], "each is handed out as the one before it finishes");
+    let answered = ["1 doubled 7", "2 doubled 7", "3 doubled 7"];
+    assert_eq!(
+        said(),
+        [&["0 doubled 2"][..], &answered, &["ran 0 as 1", "ran 1 as 2", "ran 2 as 3", "ran 3 as 4"]].concat()
+    );
 }
 
 #[test]
-fn every_writer_shares_the_jobs_left_and_no_more() {
-    // Catches writers given more jobs between them than are left, and a host that lets fewer be in flight than there
-    // are writers leaving every writer none.
-    let shares = |left, running| (0..running).map(|place| job_share(left, running, place)).collect::<Vec<_>>();
+fn a_waiting_job_cancelled_or_of_an_actor_that_ended_is_never_handed_out() {
+    // Catches a job cancelled while it waits handed out later, or the host asked to stop one it was never handed, and
+    // the waiting job of an actor that has ended handed out, to be answered to no one. The host lets one be in flight.
+    let mut handed = Vec::new();
+    for end in ["let go", "close"] {
+        let holding = Arc::new(Holding { most: 1, ..Holding::new() });
+        let (mut engine, _) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
+        poke(&mut engine, 1, "hold");
+        poke(&mut engine, 2, "hold");
+        poke(&mut engine, 3, end);
+        holding.let_go();
+        engine.bring();
+        settle(&mut engine);
+        handed.push((holding.holds(), holding.stopped()));
+    }
+    said();
 
-    assert_eq!(
-        [shares(1, 2), shares(5, 2), shares(6, 3), shares(0, 2)],
-        [vec![1, 0], vec![3, 2], vec![2, 2, 2], vec![0, 0]]
-    );
+    assert_eq!(handed, [(0, vec![2]), (0, Vec::new())], "the first is stopped, and the second never handed out");
 }
