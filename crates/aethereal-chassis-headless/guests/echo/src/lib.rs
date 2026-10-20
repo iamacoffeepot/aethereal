@@ -2,8 +2,8 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Asks, Beginning, BlobId, BlobRef, Carries, Ended, Ending, ErasedActorRef, Fault,
-    Given, Handle, Handles, Held, How, Level, Protocol, Refused, Resource, Start, Stop, Subscribes, Tick, To, ToAny,
-    ToSender, ToType, ToWithoutMail, Turn, Unanswered, Watches,
+    Given, Handle, Handles, Held, How, Job, Level, Protocol, Refused, Resource, Runner, Running, RunsJob, Start, Stop,
+    Subscribes, Tick, To, ToAny, ToSender, ToType, ToWithoutMail, Turn, Unanswered, Unrun, Watches,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, Plain};
 use core::mem;
@@ -285,6 +285,63 @@ impl Actor for Metronome {
     }
 
     fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// A job a guest cannot run yet: its host reads no job (ADR-0018).
+#[derive(Plain)]
+pub struct Chore;
+
+impl Kind for Chore {
+    const NAME: KindName = KindName::new("aether.guest.chore");
+}
+
+impl Job for Chore {
+    type Done = Pong;
+    const RUNNER: Runner = Runner::Compute;
+
+    async fn run(self, _: &mut Running) -> Result<Pong, Fault> {
+        Ok(Pong { n: 0 })
+    }
+}
+
+/// An actor that runs a chore as it begins, and logs that its turn refused it, as a guest's does.
+#[derive(Bound)]
+pub struct Errand;
+
+impl Kind for Errand {
+    const NAME: KindName = KindName::new("aether.guest.errand");
+}
+
+impl Actor for Errand {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Answer<Pong, EchoConfig>,);
+    type BeginSends = (RunsJob<Chore, EchoConfig>,);
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        let ran = turn.run(&Chore, &EchoConfig);
+        let said = match ran {
+            Ok(_) => "chore run",
+            Err(Unrun::InGuest) => "chore refused in a guest",
+            Err(Unrun::Unwritten(_)) => "chore unwritten",
+        };
+        turn.log(Level::Info, said);
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Pong, EchoConfig>> for Errand {
+    type Sends = ();
+
+    fn handle(&mut self, _: (Answered<Pong>, EchoConfig), _: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -2110,5 +2167,6 @@ aethereal_actor::guest!(
     Timekeeper,
     Starter,
     Ticker,
-    Metronome
+    Metronome,
+    Errand
 );

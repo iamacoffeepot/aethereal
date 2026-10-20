@@ -8,6 +8,7 @@ mod tests;
 pub use hosted::{Broke, FalseSend, FalseStage, FalseWatch, Forged, Garbled, Hosted, Request, Trapped};
 pub use refused::Refused;
 
+use crate::Submitted;
 use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Asking, Asks, Carries, Children, Claim, Claimed, Code,
@@ -18,6 +19,8 @@ use crate::{
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
+#[cfg(feature = "std")]
+use crate::{Job, JobId, RunsJob, Unrun};
 use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -71,6 +74,8 @@ pub struct Buffers {
     pub effects: Vec<Effect>,
     /// The resources given, each with where it is carried, in the order given (ADR-0010).
     pub gifts: Vec<Gift>,
+    /// The jobs run, in the order run, for the engine to take out to its host (ADR-0018).
+    pub jobs: Vec<Submitted>,
 }
 
 /// How long each of the buffers was at some moment: where what was asked after it begins.
@@ -78,12 +83,24 @@ pub struct Buffers {
 struct Marks {
     mailed: usize,
     effects: usize,
+    jobs: usize,
 }
 
 impl Buffers {
+    /// The count of the last piece of mail `by` sent, or job it ran, which takes a count among what it sends
+    /// (ADR-0018), when it sent or ran any.
+    #[must_use]
+    pub fn last_sent(&self, by: Seated) -> Option<u64> {
+        let sent = self.mailed.iter().filter(|mailed| mailed.by.id == by.id);
+        let mailed = sent.map(|mailed| mailed.count + u64::from(mailed.bytes.pieces()) - 1).max();
+        let ran = self.jobs.iter().filter(|job| job.by.id == by.id).map(|job| job.count).max();
+
+        mailed.max(ran)
+    }
+
     /// How long the buffers a failed `begin` takes back from are.
     fn marks(&self) -> Marks {
-        Marks { mailed: self.mailed.len(), effects: self.effects.len() }
+        Marks { mailed: self.mailed.len(), effects: self.effects.len(), jobs: self.jobs.len() }
     }
 
     /// Whether every buffer is empty.
@@ -93,8 +110,9 @@ impl Buffers {
         let no_lines = self.lines.is_empty();
         let no_effects = self.effects.is_empty();
         let no_gifts = self.gifts.is_empty();
+        let no_jobs = self.jobs.is_empty();
 
-        no_mail && no_lines && no_effects && no_gifts
+        no_mail && no_lines && no_effects && no_gifts && no_jobs
     }
 }
 
@@ -147,6 +165,7 @@ impl Asked {
         self.buffers.lines.clear();
         self.buffers.effects.clear();
         self.buffers.gifts.clear();
+        self.buffers.jobs.clear();
         self.claims.clear();
         self.stood.clear();
         self.stood_seats.clear();
@@ -253,12 +272,11 @@ impl Asked {
         replied || held
     }
 
-    /// The count of the last piece of mail `by` sent in the turn running, when it sent any.
+    /// The count of the last piece of mail `by` sent in the turn running, or job it ran, which takes a count among
+    /// what it sends (ADR-0018), when it sent or ran any.
     #[must_use]
     pub fn last_sent(&self, by: Seated) -> Option<u64> {
-        let sent = self.buffers.mailed.iter().filter(|mailed| mailed.by.id == by.id);
-
-        sent.map(|mailed| mailed.count + u64::from(mailed.bytes.pieces()) - 1).max()
+        self.buffers.last_sent(by)
     }
 
     /// Takes the children this turn stood up, each in the order its `begin` finished.
@@ -733,6 +751,26 @@ impl Seat<'_> {
         Ok(())
     }
 
+    /// Runs `job`, keeping `context` until it is answered with a `J::Done` (ADR-0018): it takes the next count of what
+    /// this actor sends, as a piece of mail would, which with the actor is the job's id. Refused in a guest's code,
+    /// whose host reads no job yet.
+    #[cfg(feature = "std")]
+    fn run<J: Job, C: Encode<Within>>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun> {
+        if matches!(self.keeps, Keeps::Claimed) {
+            return Err(Unrun::InGuest);
+        }
+        let bytes = crate::written(job).map_err(Unrun::Unwritten)?;
+        let context = Written::of(context).map_err(Unrun::Unwritten)?;
+        self.sent += 1;
+        let count = self.sent;
+        let id = JobId::new(MailId { sender: self.me.id, count });
+        let answer = KindId::of::<J::Done>();
+        self.asked.buffers.jobs.push(Submitted { by: self.me, count, kind: KindId::of::<J>(), answer, bytes });
+        self.asked.asks.push((self.me, Asking { count, answer, context }));
+
+        Ok(id)
+    }
+
     /// Holds the request the turn handles, from `source`, to be answered with a kind `answer` names in a later turn
     /// (ADR-0017).
     fn hold(&mut self, source: Seated, answer: KindId) -> Result<Owed, Fault> {
@@ -956,7 +994,7 @@ impl Seat<'_> {
             Target::Sender => true,
             Target::Type(_, id) => receiver.id() == id,
             Target::Handling(kinds) => receiver.lists_all(kinds),
-            Target::Watched | Target::Subscribed => false,
+            Target::Watched | Target::Subscribed | Target::Job => false,
         };
         let receiver = receiver.name();
         assert!(
@@ -1218,6 +1256,7 @@ impl Seat<'_> {
     fn take_back(&mut self, before: Marks, stood_before: usize, seat: SeatNumber) {
         self.asked.buffers.mailed.truncate(before.mailed);
         self.asked.buffers.effects.truncate(before.effects);
+        self.asked.buffers.jobs.truncate(before.jobs);
         let mut gone = Vec::from([seat]);
         for below in self.asked.stood.drain(stood_before..) {
             self.asked.stood_seats.remove(&below.me.id.bits());
@@ -1522,6 +1561,26 @@ impl<S> Turn<'_, S> {
         self.seat.request(reference.seated(), mail, KindId::of::<A>(), context)
     }
 
+    /// Runs `job` outside the steps, on its host, keeping `context` until it is answered: the actor is handed what
+    /// became of it with the context, as [`Answer<J::Done, C>`](crate::Answer), in a later step, as for a request it
+    /// asked (ADR-0018). The job's id is its mail's: it takes the next count of what this actor sends.
+    ///
+    /// It builds only when the turn's sends list [`RunsJob<J, C>`](crate::RunsJob), which only an actor that handles
+    /// the answer may.
+    ///
+    /// # Errors
+    ///
+    /// [`Unrun`] when the job or its context could not be written, or the turn runs in a guest.
+    #[cfg(feature = "std")]
+    pub fn run<J, C, I>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun>
+    where
+        J: Job,
+        C: Kind + Encode<Within>,
+        S: Allows<RunsJob<J, C>, I>,
+    {
+        self.seat.run(job, context)
+    }
+
     /// Holds the request this turn handles, to answer with an `A` in a later turn, through
     /// [`answer`](Self::answer) (ADR-0017). The turn then owes the request nothing, and a reply to it is refused.
     ///
@@ -1790,6 +1849,24 @@ impl<S> Beginning<'_, S> {
     {
         let to = To::from(to);
         self.seat.send_typed::<T, K>(&to, mail)
+    }
+
+    /// Runs `job` outside the steps, on its host, keeping `context` until it is answered, as a turn's job is: in a
+    /// turn after this `begin` (ADR-0018). A `begin` that fails runs nothing.
+    ///
+    /// It builds only when the `begin`'s sends list [`RunsJob<J, C>`](crate::RunsJob).
+    ///
+    /// # Errors
+    ///
+    /// [`Unrun`] when the job or its context could not be written, or the `begin` runs in a guest.
+    #[cfg(feature = "std")]
+    pub fn run<J, C, I>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun>
+    where
+        J: Job,
+        C: Kind + Encode<Within>,
+        S: Allows<RunsJob<J, C>, I>,
+    {
+        self.seat.run(job, context)
     }
 
     /// Asks `mail` of the actor `reference` refers to, keeping `context` until the request is answered, when the
