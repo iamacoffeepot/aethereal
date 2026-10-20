@@ -9,7 +9,7 @@
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
 use aethereal_actor::BlobRef;
-use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, ToAny, ToSender, ToWithoutMail, Turn};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToSender, ToWithoutMail, Top, Turn};
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
@@ -69,6 +69,10 @@ impl Kind for Pinger {
     const NAME: KindName = KindName::new("aether.bench.pinger");
 }
 
+impl ChildOf for Pinger {
+    type Parent = Top;
+}
+
 impl Actor for Pinger {
     type Config = Volley;
     type Key = u64;
@@ -114,6 +118,10 @@ struct NativeResponder {
 
 impl Kind for NativeResponder {
     const NAME: KindName = KindName::new("aether.guest.responder");
+}
+
+impl ChildOf for NativeResponder {
+    type Parent = Top;
 }
 
 impl Actor for NativeResponder {

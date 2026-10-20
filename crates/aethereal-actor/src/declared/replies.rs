@@ -5,8 +5,9 @@ use super::{Allows, Carries, Handled, Handles, Protocol, Subscribes, ToAny, ToSe
 use crate::Actor;
 use aethereal_data::Kind;
 
-/// An actor of type `A` handles whatever comes back from these sends, a tuple of markers: what a type's sends are
-/// bounded by, so a type that would be sent a reply it cannot handle does not build (ADR-0016).
+/// These sends, a tuple of markers, may be declared by an actor of type `A`: what a type's sends are bounded by, so
+/// each marker is checked against the type that declares it, where it declares it (ADR-0016, ADR-0022). Chiefly, `A`
+/// handles whatever comes back from them, so a type that would be sent a reply it cannot handle does not build.
 ///
 /// A send to an actor of a type brings back the replies that type's handler
 /// of the kind declares, and a send through a named protocol what the
@@ -353,7 +354,7 @@ use aethereal_data::Kind;
 ///     }
 /// }
 /// ```
-pub trait BackTo<A> {}
+pub trait DeclaredBy<A> {}
 
 /// The replies among these sends, a tuple of markers, are each of a kind an actor of type `A` handles: what a send
 /// to an actor of a type reads of its receiver's handler (ADR-0016).
@@ -362,21 +363,23 @@ pub trait RepliesTo<A> {}
 /// An actor of type `A` handles each of these kinds, a tuple of kinds: what a named protocol answers with.
 pub trait HandledBy<A> {}
 
-impl<A, T: Actor + Handles<K>, K: Kind + Handled> BackTo<A> for ToType<T, K> where <T as Handles<K>>::Sends: RepliesTo<A>
-{}
+impl<A, T: Actor + Handles<K>, K: Kind + Handled> DeclaredBy<A> for ToType<T, K> where
+    <T as Handles<K>>::Sends: RepliesTo<A>
+{
+}
 
-impl<A, K> BackTo<A> for ToSender<K> {}
+impl<A, K> DeclaredBy<A> for ToSender<K> {}
 
-impl<A> BackTo<A> for Watches {}
+impl<A> DeclaredBy<A> for Watches {}
 
 /// A subscriber handles the stage it subscribes to.
-impl<A: Handles<K>, K: Kind + Handled> BackTo<A> for Subscribes<K> {}
+impl<A: Handles<K>, K: Kind + Handled> DeclaredBy<A> for Subscribes<K> {}
 
 /// A named protocol says what each of its kinds is answered with.
-impl<A, P: Protocol + Carries<K>, K: Kind> BackTo<A> for ToAny<P, K> where <P as Carries<K>>::Answers: HandledBy<A> {}
+impl<A, P: Protocol + Carries<K>, K: Kind> DeclaredBy<A> for ToAny<P, K> where <P as Carries<K>>::Answers: HandledBy<A> {}
 
 /// A tuple of kinds answers none of them.
-impl<A, K> BackTo<A> for ToAny<(), K> {}
+impl<A, K> DeclaredBy<A> for ToAny<(), K> {}
 
 impl<A: Handles<K>, K: Kind + Handled> RepliesTo<A> for ToSender<K> {}
 
@@ -408,7 +411,7 @@ impl<Answers, K> ReplyWithin<Answers, ()> for Subscribes<K> {}
 
 impl<Answers> RepliesWithin<Answers, ()> for () {}
 
-impl<A> BackTo<A> for () {}
+impl<A> DeclaredBy<A> for () {}
 
 impl<A> RepliesTo<A> for () {}
 
@@ -416,13 +419,13 @@ impl<A> HandledBy<A> for () {}
 
 macro_rules! tuples {
     ($( [$($name:ident)*] )*) => {$(
-        impl<A, $($name: BackTo<A>),*> BackTo<A> for ($($name,)*) {}
+        impl<A, $($name: DeclaredBy<A>),*> DeclaredBy<A> for ($($name,)*) {}
 
         impl<A, $($name: RepliesTo<A>),*> RepliesTo<A> for ($($name,)*) {}
 
         impl<A: $(Handles<$name> +)*, $($name: Kind + Handled),*> HandledBy<A> for ($($name,)*) {}
 
-        impl<A, $($name),*, K> BackTo<A> for ToAny<($($name,)*), K> {}
+        impl<A, $($name),*, K> DeclaredBy<A> for ToAny<($($name,)*), K> {}
     )*};
 }
 

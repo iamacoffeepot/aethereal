@@ -10,7 +10,7 @@
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
-use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, To, ToType, ToWithoutMail, Turn};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, To, ToType, ToWithoutMail, Top, Turn};
 use aethereal_chassis_headless::{Headless, Measured};
 use aethereal_data::{Kind, KindName, Plain, TypedKey};
 use aethereal_substrate::Engine;
@@ -86,6 +86,10 @@ const fn mix(mut value: u64) -> u64 {
     value = value.wrapping_mul(0xff51_afd7_ed55_8ccd);
 
     value ^ (value >> 33)
+}
+
+impl ChildOf for Counter {
+    type Parent = Top;
 }
 
 impl Actor for Counter {

@@ -1,6 +1,6 @@
 //! What an actor handles: one handler for each thing it lists, and the engine's call to the right one (ADR-0013).
 
-use super::{BackTo, Handler, Role, Sends};
+use super::{DeclaredBy, Handler, Role, Sends};
 use crate::{Actor, Actors, Ended, Fault, Item, Mail, Turn, Turning};
 use aethereal_data::{Decode, Kind, KindId};
 
@@ -11,7 +11,7 @@ use aethereal_data::{Decode, Kind, KindId};
 /// those sends and no other, so what it declares is what it can do.
 pub trait Handles<H: Handled>: Actor {
     /// What the handler may send: a tuple of markers, whatever comes back from which the actor handles.
-    type Sends: Sends + BackTo<Self>;
+    type Sends: Sends + DeclaredBy<Self>;
 
     /// Handles one item: a turn of its own.
     fn handle(&mut self, item: H::Item<'_>, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault>;

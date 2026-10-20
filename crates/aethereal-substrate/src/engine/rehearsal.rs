@@ -1,7 +1,7 @@
 //! An engine for a host to time steps on, to measure what splitting one among workers costs (ADR-0011).
 
 use super::Engine;
-use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, To, ToType, ToWithoutMail, Turn};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, To, ToType, ToWithoutMail, Top, Turn};
 use aethereal_data::{Kind, KindName, Plain};
 use std::num::NonZeroUsize;
 
@@ -19,6 +19,10 @@ struct Echo;
 
 impl Kind for Echo {
     const NAME: KindName = KindName::new("aether.rehearsal.echo");
+}
+
+impl ChildOf for Echo {
+    type Parent = Top;
 }
 
 impl Actor for Echo {

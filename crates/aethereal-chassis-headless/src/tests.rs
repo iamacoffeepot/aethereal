@@ -1,7 +1,9 @@
 //! The chassis's tests: workers leave what one thread leaves.
 
 use super::*;
-use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Level, Seated, Time, To, ToType, ToWithoutMail, Turn};
+use aethereal_actor::{
+    Actor, Beginning, ChildOf, Ending, Fault, Handles, Level, Seated, Time, To, ToType, ToWithoutMail, Top, Turn,
+};
 use aethereal_data::{ActorId, Kind, KindName, PathSegment, Plain, TypedKey};
 use aethereal_substrate::child_id;
 use std::iter;
@@ -40,6 +42,10 @@ impl Kind for Fan {
 
 /// How many turns each child takes.
 const TURNS: u64 = 6;
+
+impl ChildOf for Fan {
+    type Parent = Top;
+}
 
 impl Actor for Fan {
     type Config = FanConfig;

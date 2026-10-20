@@ -4,8 +4,8 @@
 use super::super::*;
 use crate::stages::key;
 use aethereal_actor::{
-    Cycle, Drained, Ending, Fault, Handles, Held, Present, Render, Stage, Start, Stop, Subscribes, Tick, Time, To,
-    ToSender, ToType, ToWithoutMail, Turn, Unordered,
+    Actor, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, Present, Render, Stage, Start, Stop, Subscribes,
+    Tick, Time, To, ToSender, ToType, ToWithoutMail, Top, Turn, Unordered,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, PathSegment, Plain};
 use core::time::Duration;
@@ -60,6 +60,10 @@ struct Staged {
 
 impl Kind for Staged {
     const NAME: KindName = KindName::new("aether.test.staged");
+}
+
+impl ChildOf for Staged {
+    type Parent = Top;
 }
 
 impl Actor for Staged {
@@ -244,6 +248,10 @@ impl Kind for Impostor {
     const NAME: KindName = LIFECYCLE;
 }
 
+impl ChildOf for Impostor {
+    type Parent = Top;
+}
+
 impl Actor for Impostor {
     type Config = Note;
     type Key = ();
@@ -286,6 +294,10 @@ struct Cycler;
 
 impl Kind for Cycler {
     const NAME: KindName = KindName::new("aether.test.cycler");
+}
+
+impl ChildOf for Cycler {
+    type Parent = Top;
 }
 
 impl Actor for Cycler {
@@ -471,6 +483,10 @@ impl Kind for Nest {
     const NAME: KindName = KindName::new("aether.test.nest");
 }
 
+impl ChildOf for Nest {
+    type Parent = Top;
+}
+
 impl Actor for Nest {
     type Config = Note;
     type Key = ();
@@ -545,6 +561,10 @@ impl Kind for Latecomer {
     const NAME: KindName = KindName::new("aether.test.latecomer");
 }
 
+impl ChildOf for Latecomer {
+    type Parent = Top;
+}
+
 impl Actor for Latecomer {
     type Config = Note;
     type Key = ();
@@ -589,6 +609,10 @@ struct Drainer {
 
 impl Kind for Drainer {
     const NAME: KindName = KindName::new("aether.test.drainer");
+}
+
+impl ChildOf for Drainer {
+    type Parent = Top;
 }
 
 impl Actor for Drainer {
@@ -646,6 +670,10 @@ struct Waker;
 
 impl Kind for Waker {
     const NAME: KindName = KindName::new("aether.test.waker");
+}
+
+impl ChildOf for Waker {
+    type Parent = Top;
 }
 
 impl Actor for Waker {

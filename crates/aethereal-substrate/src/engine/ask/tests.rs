@@ -6,8 +6,8 @@ use super::{Answering, Waiting, owed};
 use aethereal_actor::Time;
 use aethereal_actor::Written;
 use aethereal_actor::{
-    ActorRef, Answer, Answered, Asking, Asks, BlobRef, Carries, Ending, Fault, Handles, Held, Protocol, Tie, To,
-    ToSender, ToType, ToWithoutMail, Turn, Unanswered,
+    Actor, ActorRef, Answer, Answered, Asking, Asks, BlobRef, Carries, ChildOf, Ending, Fault, Handles, Held, Protocol,
+    Tie, To, ToSender, ToType, ToWithoutMail, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, EncodeError, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
@@ -232,6 +232,10 @@ impl Kind for Pointer {
     const NAME: KindName = KindName::new("aether.test.pointer");
 }
 
+impl ChildOf for Pointer {
+    type Parent = Top;
+}
+
 impl Actor for Pointer {
     type Config = PointerConfig;
     type Key = ();
@@ -414,6 +418,10 @@ struct Keeper {
 
 impl Kind for Keeper {
     const NAME: KindName = KindName::new("aether.test.keeper");
+}
+
+impl ChildOf for Keeper {
+    type Parent = Top;
 }
 
 impl Actor for Keeper {

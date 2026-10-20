@@ -2,8 +2,8 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, Drained, Ending, Fault, Handles, Held, RunsJob, Sleep, Slept, Start, Stop,
-    Subscribes, Tick, ToSender, Turn,
+    Actor, Answer, Answered, Beginning, ChildOf, Drained, Ending, Fault, Handles, Held, RunsJob, Sleep, Slept, Start,
+    Stop, Subscribes, Tick, ToSender, Top, Turn,
 };
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_substrate::{Engine, Jobs};
@@ -48,6 +48,10 @@ struct Quitter;
 
 impl Kind for Quitter {
     const NAME: KindName = KindName::new("aether.test.quitter");
+}
+
+impl ChildOf for Quitter {
+    type Parent = Top;
 }
 
 impl Actor for Quitter {
@@ -102,6 +106,10 @@ struct Metronome;
 
 impl Kind for Metronome {
     const NAME: KindName = KindName::new("aether.test.metronome");
+}
+
+impl ChildOf for Metronome {
+    type Parent = Top;
 }
 
 impl Actor for Metronome {
@@ -168,6 +176,10 @@ struct Holdout {
 
 impl Kind for Holdout {
     const NAME: KindName = KindName::new("aether.test.holdout");
+}
+
+impl ChildOf for Holdout {
+    type Parent = Top;
 }
 
 impl Actor for Holdout {
@@ -237,6 +249,10 @@ struct Napper {
 
 impl Kind for Napper {
     const NAME: KindName = KindName::new("aether.test.napper");
+}
+
+impl ChildOf for Napper {
+    type Parent = Top;
 }
 
 impl Actor for Napper {

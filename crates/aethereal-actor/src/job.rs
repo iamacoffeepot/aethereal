@@ -6,7 +6,7 @@
 //! is handed to its handler of [`Answer<J::Done, C>`](crate::Answer) with
 //! the context.
 
-use crate::declared::{BackTo, Handles, Marker, RepliesTo, ReplyWithin, Sending, Target};
+use crate::declared::{DeclaredBy, Handles, Marker, RepliesTo, ReplyWithin, Sending, Target};
 #[cfg(feature = "std")]
 use crate::pins;
 use crate::{
@@ -227,7 +227,7 @@ impl<J: Job, C> Marker for RunsJob<J, C> {
 }
 
 /// An actor that runs a job handles what it answers with, with its context.
-impl<T, J, C> BackTo<T> for RunsJob<J, C>
+impl<T, J, C> DeclaredBy<T> for RunsJob<J, C>
 where
     J: Job,
     C: Kind + Decode<Within> + 'static,
