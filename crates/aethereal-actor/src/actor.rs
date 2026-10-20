@@ -1,8 +1,8 @@
 //! An actor: the calls the engine makes of it (ADR-0009, ADR-0013).
 
 use crate::{
-    Actors, BackTo, Beginning, Chain, Children, Closing, Declared, Ending, Fault, HandledList, Holds, Instances, Item,
-    Puts, Seated, Seats, Sends, Table, Tie, Turning, Within,
+    Actors, Beginning, Chain, Children, Closing, Declared, DeclaredBy, Ending, Fault, HandledList, Holds, Instances,
+    Item, Puts, Seated, Seats, Sends, Table, Tie, Turning, Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
 use alloc::boxed::Box;
@@ -28,9 +28,9 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized + 'static
     /// them, so an actor handles what another sent it before it is shown that the other has ended.
     type Handles: HandledList<Self>;
     /// What its `begin` may send.
-    type BeginSends: Sends + BackTo<Self>;
+    type BeginSends: Sends + DeclaredBy<Self>;
     /// What its closing turn may send.
-    type EndSends: Sends + BackTo<Self>;
+    type EndSends: Sends + DeclaredBy<Self>;
 
     /// Makes the actor from `config`. It runs inside the turn of the parent that spawns it.
     fn begin(config: Self::Config, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault>;

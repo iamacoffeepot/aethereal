@@ -37,9 +37,9 @@ use crate::{
 };
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
-    Above, Actor, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Carried, Chain, Closing,
-    Code, Cycling, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, JobId, Keeping, Keeps,
-    Links, Mail, MailId, Mailed, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Runs, SeatNumber,
+    Above, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Carried, Chain, Closing, Code,
+    Cycling, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, JobId, Keeping, Keeps, Links,
+    Mail, MailId, Mailed, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Root, Runs, SeatNumber,
     Seated, Seats, Stood, Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
@@ -566,7 +566,8 @@ impl Engine {
         self.blobs.held()
     }
 
-    /// Makes a root of type `A` under `key`, for the chassis, and answers with its id (ADR-0008).
+    /// Makes a root of type `A` under `key`, for the chassis, and answers with its id (ADR-0008). It builds only for
+    /// a type that stands at the top (ADR-0022).
     ///
     /// The root's `begin` runs here, and what it asked for is applied before this returns, as a step's effects
     /// are. A root is made between steps.
@@ -578,7 +579,7 @@ impl Engine {
     /// # Panics
     ///
     /// Panics when an actor is made under an id the table already holds for another path (ADR-0008).
-    pub fn add_root<A: Actor>(&mut self, key: &A::Key, config: A::Config) -> Result<ActorId, Refused> {
+    pub fn add_root<A: Root>(&mut self, key: &A::Key, config: A::Config) -> Result<ActorId, Refused> {
         let segment = PathSegment::new(A::NAME, key);
         let gifts = self.handed_in(&config)?;
 
@@ -643,7 +644,7 @@ impl Engine {
     /// # Panics
     ///
     /// Panics when an actor is made under an id the table already holds for another path (ADR-0008).
-    pub fn add_root_from<C: Actor>(
+    pub fn add_root_from<C: Root>(
         &mut self,
         code: &BlobRef,
         key: &C::Key,

@@ -2,7 +2,7 @@
 
 #[cfg(feature = "std")]
 use crate::BlobRef;
-use crate::declared::{BackTo, Carries, Handled, Handles, Kinds, Listed, Marker, RepliesTo, ReplyWithin, Role};
+use crate::declared::{Carries, DeclaredBy, Handled, Handles, Kinds, Listed, Marker, RepliesTo, ReplyWithin, Role};
 use crate::declared::{Sending, Target};
 use crate::{Actors, Item, Within, Written};
 use aethereal_data::{Decode, Kind, KindId, KindName, Plain};
@@ -229,7 +229,7 @@ impl<P: Listed, K: Kind, C> Marker for Asks<P, K, C> {
 }
 
 /// An asker handles the one kind its request is answered with, with its context.
-impl<T, P, K, A, C> BackTo<T> for Asks<P, K, C>
+impl<T, P, K, A, C> DeclaredBy<T> for Asks<P, K, C>
 where
     P: Carries<K, Answers = (A,)>,
     K: Kind,

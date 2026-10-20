@@ -44,7 +44,9 @@
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
-use aethereal_actor::{Actor, ActorRef, Allows, Beginning, Ending, Fault, Handles, To, ToAny, ToSender, ToType, Turn};
+use aethereal_actor::{
+    Actor, ActorRef, Allows, Beginning, ChildOf, Ending, Fault, Handles, Root, To, ToAny, ToSender, ToType, Top, Turn,
+};
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_substrate::{Clock, Engine, Hops};
@@ -181,6 +183,10 @@ impl Kind for Pinger {
     const NAME: KindName = KindName::new("aether.savina.pinger");
 }
 
+impl ChildOf for Pinger {
+    type Parent = Top;
+}
+
 impl Actor for Pinger {
     type Config = Number;
     type Key = u64;
@@ -267,6 +273,10 @@ impl Kind for Producer {
     const NAME: KindName = KindName::new("aether.savina.producer");
 }
 
+impl ChildOf for Producer {
+    type Parent = Top;
+}
+
 impl Actor for Producer {
     type Config = Number;
     type Key = u64;
@@ -318,6 +328,10 @@ struct BeginProducer;
 
 impl Kind for BeginProducer {
     const NAME: KindName = KindName::new("aether.savina.begin_producer");
+}
+
+impl ChildOf for BeginProducer {
+    type Parent = Top;
 }
 
 impl Actor for BeginProducer {
@@ -411,6 +425,10 @@ impl Kind for Forker {
     const NAME: KindName = KindName::new("aether.savina.forker");
 }
 
+impl ChildOf for Forker {
+    type Parent = Top;
+}
+
 impl Actor for Forker {
     type Config = Number;
     type Key = u64;
@@ -488,6 +506,10 @@ struct Crowd {
 
 impl Kind for Crowd {
     const NAME: KindName = KindName::new("aether.savina.crowd");
+}
+
+impl ChildOf for Crowd {
+    type Parent = Top;
 }
 
 impl Actor for Crowd {
@@ -638,6 +660,10 @@ impl Kind for FibRoot {
     const NAME: KindName = KindName::new("aether.savina.fib_root");
 }
 
+impl ChildOf for FibRoot {
+    type Parent = Top;
+}
+
 impl Actor for FibRoot {
     type Config = Number;
     type Key = u64;
@@ -768,6 +794,10 @@ struct Sieve;
 
 impl Kind for Sieve {
     const NAME: KindName = KindName::new("aether.savina.sieve");
+}
+
+impl ChildOf for Sieve {
+    type Parent = Top;
 }
 
 impl Actor for Sieve {
@@ -925,6 +955,10 @@ impl Churn {
 
         Ok(())
     }
+}
+
+impl ChildOf for Churn {
+    type Parent = Top;
 }
 
 impl Actor for Churn {
@@ -1115,6 +1149,10 @@ impl Region {
 
         Ok(())
     }
+}
+
+impl ChildOf for Region {
+    type Parent = Top;
 }
 
 impl Actor for Region {
@@ -1365,7 +1403,7 @@ struct Program {
 fn unchecked() {}
 
 /// Adds the root of type `A` for the run numbered `round`, which starts a program.
-fn root<A: Actor<Config = Number, Key = u64>>(engine: &mut Engine, round: u64) {
+fn root<A: Root + Actor<Config = Number, Key = u64>>(engine: &mut Engine, round: u64) {
     let Ok(_) = engine.add_root::<A>(&round, Number { number: 0 }) else {
         panic!("the root begins");
     };

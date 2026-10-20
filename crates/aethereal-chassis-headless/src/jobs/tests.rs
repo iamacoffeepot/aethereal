@@ -3,7 +3,8 @@
 use super::*;
 use crate::Monotonic;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, Ending, Fault, Handles, Job, Runner, Running, RunsJob, Sleep, Slept, Time, Turn,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Handles, Job, Runner, Running, RunsJob, Sleep, Slept,
+    Time, Top, Turn,
 };
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_substrate::{Clock, Engine};
@@ -63,6 +64,10 @@ struct Asker;
 
 impl Kind for Asker {
     const NAME: KindName = KindName::new("aether.test.asker");
+}
+
+impl ChildOf for Asker {
+    type Parent = Top;
 }
 
 impl Actor for Asker {
@@ -183,6 +188,10 @@ struct Sleeper;
 
 impl Kind for Sleeper {
     const NAME: KindName = KindName::new("aether.test.sleeper");
+}
+
+impl ChildOf for Sleeper {
+    type Parent = Top;
 }
 
 impl Actor for Sleeper {

@@ -2,8 +2,8 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, Ending, Fault, Given, Handle, Handles, Render, RunsJob, Sleep, Slept, Source,
-    Subscribes, Tick, Turn,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, Render, RunsJob, Sleep, Slept,
+    Source, Subscribes, Tick, Top, Turn,
 };
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_substrate::{Inline, Jobs};
@@ -41,6 +41,10 @@ struct Painter;
 
 impl Kind for Painter {
     const NAME: KindName = KindName::new("aether.test.painter");
+}
+
+impl ChildOf for Painter {
+    type Parent = Top;
 }
 
 impl Actor for Painter {
@@ -157,6 +161,10 @@ struct Pointer {
 
 impl Kind for Pointer {
     const NAME: KindName = KindName::new("aether.test.pointer");
+}
+
+impl ChildOf for Pointer {
+    type Parent = Top;
 }
 
 impl Actor for Pointer {

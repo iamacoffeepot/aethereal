@@ -5,7 +5,8 @@ use crate::watch::Notice;
 use crate::{ByActor, Entry, child_id};
 use aethereal_actor::Time;
 use aethereal_actor::{
-    ActorRef, Ended, Ending, Fault, Handles, How, Level, Table, To, ToSender, ToType, ToWithoutMail, Turn, Watches,
+    Actor, ActorRef, ChildOf, Ended, Ending, Fault, Handles, How, Level, Table, To, ToSender, ToType, ToWithoutMail,
+    Top, Turn, Watches,
 };
 use aethereal_data::{Bound, Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
@@ -82,6 +83,10 @@ impl Node {
     fn child(number: u64) -> To {
         To::ChildInstanced(Self::NAME, number.to_name())
     }
+}
+
+impl ChildOf for Node {
+    type Parent = Top;
 }
 
 impl Actor for Node {
@@ -988,6 +993,10 @@ impl Kind for Holder {
     const NAME: KindName = KindName::new("aether.test.holder");
 }
 
+impl ChildOf for Holder {
+    type Parent = Top;
+}
+
 impl Actor for Holder {
     type Config = HolderConfig;
     type Key = ();
@@ -1351,6 +1360,10 @@ struct Clocked {
 
 impl Kind for Clocked {
     const NAME: KindName = KindName::new("aether.test.clocked");
+}
+
+impl ChildOf for Clocked {
+    type Parent = Top;
 }
 
 impl Actor for Clocked {

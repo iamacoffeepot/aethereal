@@ -4,7 +4,9 @@
 #![allow(clippy::print_stdout)] // A measure prints its rounds.
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
-use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Time, ToAny, ToSender, ToWithoutMail, Turn};
+use aethereal_actor::{
+    Actor, Beginning, ChildOf, Ending, Fault, Handles, Time, ToAny, ToSender, ToWithoutMail, Top, Turn,
+};
 use aethereal_chassis_headless::Monotonic;
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
@@ -48,6 +50,10 @@ struct Pinger;
 
 impl Kind for Pinger {
     const NAME: KindName = KindName::new("aether.bench.pinger");
+}
+
+impl ChildOf for Pinger {
+    type Parent = Top;
 }
 
 impl Actor for Pinger {

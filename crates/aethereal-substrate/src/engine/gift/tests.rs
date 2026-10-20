@@ -3,7 +3,7 @@
 use super::super::*;
 use crate::Entry;
 use aethereal_actor::Time;
-use aethereal_actor::{Ending, Fault, Handle, Handles, To, ToType, ToWithoutMail, Turn};
+use aethereal_actor::{Actor, ChildOf, Ending, Fault, Handle, Handles, To, ToType, ToWithoutMail, Top, Turn};
 use aethereal_data::{Bound, Kind, KindName, Plain, TypedKey};
 use std::any;
 use std::cell::{Cell, RefCell};
@@ -112,6 +112,10 @@ impl Keeper {
     fn order(text: &str) -> Order {
         Order { text: String::from(text) }
     }
+}
+
+impl ChildOf for Keeper {
+    type Parent = Top;
 }
 
 impl Actor for Keeper {

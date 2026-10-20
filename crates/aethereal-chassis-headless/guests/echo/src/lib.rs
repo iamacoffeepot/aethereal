@@ -1,9 +1,10 @@
 //! A guest that answers each ping it is sent with a pong, to its sender (ADR-0015).
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Asks, Beginning, BlobId, BlobRef, Carries, Ended, Ending, ErasedActorRef, Fault,
-    Given, Handle, Handles, Held, How, Job, Level, Protocol, Refused, Resource, Runner, Running, RunsJob, Start, Stop,
-    Subscribes, Tick, To, ToAny, ToSender, ToType, ToWithoutMail, Turn, Unanswered, Unrun, Watches,
+    Actor, ActorRef, Answer, Answered, Asks, Beginning, BlobId, BlobRef, Carries, ChildOf, Ended, Ending,
+    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, Protocol, Refused, Resource, Runner, Running,
+    RunsJob, Start, Stop, Subscribes, Tick, To, ToAny, ToSender, ToType, ToWithoutMail, Top, Turn, Unanswered, Unrun,
+    Watches,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, Plain};
 use core::mem;
@@ -71,6 +72,10 @@ impl Kind for Echo {
     const NAME: KindName = KindName::new("aether.guest.echo");
 }
 
+impl ChildOf for Echo {
+    type Parent = Top;
+}
+
 impl Actor for Echo {
     type Config = EchoConfig;
     type Key = ();
@@ -129,6 +134,10 @@ impl Kind for Mirror {
     const NAME: KindName = KindName::new("aether.guest.mirror");
 }
 
+impl ChildOf for Mirror {
+    type Parent = Top;
+}
+
 impl Actor for Mirror {
     type Config = EchoConfig;
     type Key = ();
@@ -180,6 +189,10 @@ pub struct Starter;
 
 impl Kind for Starter {
     const NAME: KindName = KindName::new("aether.guest.starter");
+}
+
+impl ChildOf for Starter {
+    type Parent = Top;
 }
 
 impl Actor for Starter {
@@ -265,6 +278,10 @@ impl Kind for Metronome {
     const NAME: KindName = KindName::new("aether.guest.metronome");
 }
 
+impl ChildOf for Metronome {
+    type Parent = Top;
+}
+
 impl Actor for Metronome {
     type Config = EchoConfig;
     type Key = ();
@@ -314,6 +331,10 @@ impl Kind for Errand {
     const NAME: KindName = KindName::new("aether.guest.errand");
 }
 
+impl ChildOf for Errand {
+    type Parent = Top;
+}
+
 impl Actor for Errand {
     type Config = EchoConfig;
     type Key = ();
@@ -354,6 +375,10 @@ impl Kind for Timekeeper {
     const NAME: KindName = KindName::new("aether.guest.timekeeper");
 }
 
+impl ChildOf for Timekeeper {
+    type Parent = Top;
+}
+
 impl Actor for Timekeeper {
     type Config = EchoConfig;
     type Key = ();
@@ -389,6 +414,10 @@ pub struct Responder {
 
 impl Kind for Responder {
     const NAME: KindName = KindName::new("aether.guest.responder");
+}
+
+impl ChildOf for Responder {
+    type Parent = Top;
 }
 
 impl Actor for Responder {
@@ -436,6 +465,10 @@ impl Kind for Doomed {
     const NAME: KindName = KindName::new("aether.guest.doomed");
 }
 
+impl ChildOf for Doomed {
+    type Parent = Top;
+}
+
 impl Actor for Doomed {
     type Config = EchoConfig;
     type Key = ();
@@ -479,6 +512,10 @@ pub struct Brood {
 
 impl Kind for Brood {
     const NAME: KindName = KindName::new("aether.guest.brood");
+}
+
+impl ChildOf for Brood {
+    type Parent = Top;
 }
 
 impl Actor for Brood {
@@ -592,6 +629,10 @@ impl Kind for Seeker {
     const NAME: KindName = KindName::new("aether.guest.seeker");
 }
 
+impl ChildOf for Seeker {
+    type Parent = Top;
+}
+
 impl Actor for Seeker {
     type Config = Seek;
     type Key = ();
@@ -622,6 +663,10 @@ pub struct Caster;
 
 impl Kind for Caster {
     const NAME: KindName = KindName::new("aether.guest.caster");
+}
+
+impl ChildOf for Caster {
+    type Parent = Top;
 }
 
 impl Actor for Caster {
@@ -682,6 +727,10 @@ pub struct Watcher {
 
 impl Kind for Watcher {
     const NAME: KindName = KindName::new("aether.guest.watcher");
+}
+
+impl ChildOf for Watcher {
+    type Parent = Top;
 }
 
 impl Actor for Watcher {
@@ -1045,6 +1094,10 @@ impl Kind for Librarian {
     const NAME: KindName = KindName::new("aether.guest.librarian");
 }
 
+impl ChildOf for Librarian {
+    type Parent = Top;
+}
+
 impl Actor for Librarian {
     type Config = Shelf;
     type Key = ();
@@ -1131,6 +1184,10 @@ impl Kind for Forger {
     const NAME: KindName = KindName::new("aether.guest.forger");
 }
 
+impl ChildOf for Forger {
+    type Parent = Top;
+}
+
 impl Actor for Forger {
     type Config = Forge;
     type Key = ();
@@ -1161,6 +1218,10 @@ impl Kind for Hoarder {
     const NAME: KindName = KindName::new("aether.guest.hoarder");
 }
 
+impl ChildOf for Hoarder {
+    type Parent = Top;
+}
+
 impl Actor for Hoarder {
     type Config = Forge;
     type Key = ();
@@ -1185,6 +1246,10 @@ pub struct Spendthrift;
 
 impl Kind for Spendthrift {
     const NAME: KindName = KindName::new("aether.guest.spendthrift");
+}
+
+impl ChildOf for Spendthrift {
+    type Parent = Top;
 }
 
 impl Actor for Spendthrift {
@@ -1239,6 +1304,10 @@ pub struct Parting {
 
 impl Kind for Parting {
     const NAME: KindName = KindName::new("aether.guest.parting");
+}
+
+impl ChildOf for Parting {
+    type Parent = Top;
 }
 
 impl Actor for Parting {
@@ -1306,6 +1375,10 @@ pub struct Archive;
 
 impl Kind for Archive {
     const NAME: KindName = KindName::new("aether.guest.archive");
+}
+
+impl ChildOf for Archive {
+    type Parent = Top;
 }
 
 impl Actor for Archive {
@@ -1441,6 +1514,10 @@ impl<S> Resolves for Turn<'_, S> {
 
         self.cast::<(Hand,)>(found).map(|to| to.erase())
     }
+}
+
+impl ChildOf for Porter {
+    type Parent = Top;
 }
 
 impl Actor for Porter {

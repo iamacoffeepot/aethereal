@@ -5,8 +5,8 @@ use super::super::*;
 use super::*;
 use crate::Entry;
 use aethereal_actor::{
-    Answer, Answered, BlobRef, Ending, Handles, Job, JobType, Runner, Running, RunsJob, Time, ToType, ToWithoutMail,
-    Turn,
+    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Handles, Job, JobType, Runner, Running, RunsJob, Time, ToType,
+    ToWithoutMail, Top, Turn,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
 use std::cell::RefCell;
@@ -283,6 +283,10 @@ impl Kind for Worker {
     const NAME: KindName = KindName::new("aether.test.job_worker");
 }
 
+impl ChildOf for Worker {
+    type Parent = Top;
+}
+
 impl Actor for Worker {
     type Config = Which;
     type Key = ();
@@ -475,6 +479,10 @@ struct Poker;
 
 impl Kind for Poker {
     const NAME: KindName = KindName::new("aether.test.poker");
+}
+
+impl ChildOf for Poker {
+    type Parent = Top;
 }
 
 impl Actor for Poker {

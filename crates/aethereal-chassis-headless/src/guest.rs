@@ -2043,7 +2043,7 @@ mod tests {
         Actor, ActorRef, Answer, Answered, Beginning, BlobRef, Carries, Ending, Forged, Handles, Links, Protocol,
         Seated, To, ToAny, ToSender, ToType, ToWithoutMail, Trapped, Turn, Unanswered,
     };
-    use aethereal_actor::{Level, Tick, Time};
+    use aethereal_actor::{ChildOf, Level, Tick, Time, Top};
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
     use aethereal_guest_echo as echo;
     use aethereal_substrate::Engine;
@@ -2102,6 +2102,10 @@ mod tests {
 
     impl Kind for Pinger {
         const NAME: KindName = KindName::new("aether.test.pinger");
+    }
+
+    impl ChildOf for Pinger {
+        type Parent = Top;
     }
 
     impl Actor for Pinger {
@@ -2192,6 +2196,10 @@ mod tests {
 
     impl Kind for Questioner {
         const NAME: KindName = KindName::new("aether.test.questioner");
+    }
+
+    impl ChildOf for Questioner {
+        type Parent = Top;
     }
 
     impl Actor for Questioner {
@@ -2290,6 +2298,10 @@ mod tests {
 
     impl Kind for Petitioner {
         const NAME: KindName = KindName::new("aether.test.petitioner");
+    }
+
+    impl ChildOf for Petitioner {
+        type Parent = Top;
     }
 
     impl Actor for Petitioner {
@@ -2434,6 +2446,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.shelving");
     }
 
+    impl ChildOf for Shelving {
+        type Parent = Top;
+    }
+
     impl Actor for Shelving {
         type Config = Inquiring;
         type Key = ();
@@ -2521,6 +2537,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.inquirer");
     }
 
+    impl ChildOf for Inquirer {
+        type Parent = Top;
+    }
+
     impl Actor for Inquirer {
         type Config = Inquiring;
         type Key = ();
@@ -2606,6 +2626,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.opening");
     }
 
+    impl ChildOf for Opening {
+        type Parent = Top;
+    }
+
     impl Actor for Opening {
         type Config = Inquiring;
         type Key = ();
@@ -2683,6 +2707,10 @@ mod tests {
 
     impl Kind for Stashing {
         const NAME: KindName = KindName::new("aether.test.stashing");
+    }
+
+    impl ChildOf for Stashing {
+        type Parent = Top;
     }
 
     impl Actor for Stashing {
@@ -2768,6 +2796,10 @@ mod tests {
 
     impl Kind for Lender {
         const NAME: KindName = KindName::new("aether.test.lender");
+    }
+
+    impl ChildOf for Lender {
+        type Parent = Top;
     }
 
     impl Actor for Lender {
@@ -2864,6 +2896,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.closer");
     }
 
+    impl ChildOf for Closer {
+        type Parent = Top;
+    }
+
     impl Actor for Closer {
         type Config = Volley;
         type Key = ();
@@ -2939,6 +2975,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.caller");
     }
 
+    impl ChildOf for Caller {
+        type Parent = Top;
+    }
+
     impl Actor for Caller {
         type Config = Volley;
         type Key = u64;
@@ -3011,6 +3051,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.volleyer");
     }
 
+    impl ChildOf for Volleyer {
+        type Parent = Top;
+    }
+
     impl Actor for Volleyer {
         type Config = Volley;
         type Key = ();
@@ -3058,6 +3102,10 @@ mod tests {
 
     impl Kind for TimeAsker {
         const NAME: KindName = KindName::new("aether.test.time_asker");
+    }
+
+    impl ChildOf for TimeAsker {
+        type Parent = Top;
     }
 
     impl Actor for TimeAsker {
@@ -3151,6 +3199,10 @@ mod tests {
 
     impl Kind for Breeder {
         const NAME: KindName = KindName::new("aether.test.breeder");
+    }
+
+    impl ChildOf for Breeder {
+        type Parent = Top;
     }
 
     impl Actor for Breeder {
@@ -3279,6 +3331,10 @@ mod tests {
 
     impl Kind for Crasher {
         const NAME: KindName = KindName::new("aether.test.crasher");
+    }
+
+    impl ChildOf for Crasher {
+        type Parent = Top;
     }
 
     impl Actor for Crasher {
@@ -3413,6 +3469,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.asker");
     }
 
+    impl ChildOf for Asker {
+        type Parent = Top;
+    }
+
     impl Actor for Asker {
         type Config = Asks;
         type Key = u64;
@@ -3453,6 +3513,10 @@ mod tests {
 
     impl Kind for Grower {
         const NAME: KindName = KindName::new("aether.test.grower");
+    }
+
+    impl ChildOf for Grower {
+        type Parent = Top;
     }
 
     impl Actor for Grower {
@@ -3594,6 +3658,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.keeper");
     }
 
+    impl ChildOf for Keeper {
+        type Parent = Top;
+    }
+
     impl Actor for Keeper {
         type Config = Keeps;
         type Key = u64;
@@ -3689,6 +3757,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.shiner");
     }
 
+    impl ChildOf for Shiner {
+        type Parent = Top;
+    }
+
     impl Actor for Shiner {
         type Config = Shining;
         type Key = ();
@@ -3739,6 +3811,10 @@ mod tests {
 
     impl Kind for Lighter {
         const NAME: KindName = KindName::new("aether.test.lighter");
+    }
+
+    impl ChildOf for Lighter {
+        type Parent = Top;
     }
 
     impl Actor for Lighter {
@@ -3837,6 +3913,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.mortal");
     }
 
+    impl ChildOf for Mortal {
+        type Parent = Top;
+    }
+
     impl Actor for Mortal {
         type Config = Volley;
         type Key = u64;
@@ -3926,6 +4006,10 @@ mod tests {
 
     impl Kind for Nest {
         const NAME: KindName = KindName::new("aether.test.nest");
+    }
+
+    impl ChildOf for Nest {
+        type Parent = Top;
     }
 
     impl Actor for Nest {
@@ -4024,6 +4108,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.poker");
     }
 
+    impl ChildOf for Poker {
+        type Parent = Top;
+    }
+
     impl Actor for Poker {
         type Config = Volley;
         type Key = ();
@@ -4095,6 +4183,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.hen");
     }
 
+    impl ChildOf for Hen {
+        type Parent = Top;
+    }
+
     impl Actor for Hen {
         type Config = Henning;
         type Key = ();
@@ -4134,6 +4226,10 @@ mod tests {
 
     impl Kind for Rouser {
         const NAME: KindName = KindName::new("aether.test.rouser");
+    }
+
+    impl ChildOf for Rouser {
+        type Parent = Top;
     }
 
     impl Actor for Rouser {
@@ -4196,6 +4292,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.ledger");
     }
 
+    impl ChildOf for Ledger {
+        type Parent = Top;
+    }
+
     impl Actor for Ledger {
         type Config = Volley;
         type Key = ();
@@ -4237,6 +4337,10 @@ mod tests {
 
     impl Kind for Borrower {
         const NAME: KindName = KindName::new("aether.test.borrower");
+    }
+
+    impl ChildOf for Borrower {
+        type Parent = Top;
     }
 
     impl Actor for Borrower {
@@ -4292,6 +4396,10 @@ mod tests {
 
     impl Kind for Shutter {
         const NAME: KindName = KindName::new("aether.test.shutter");
+    }
+
+    impl ChildOf for Shutter {
+        type Parent = Top;
     }
 
     impl Actor for Shutter {
@@ -4408,6 +4516,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.dun");
     }
 
+    impl ChildOf for Dun {
+        type Parent = Top;
+    }
+
     impl Actor for Dun {
         type Config = Volley;
         type Key = ();
@@ -4502,6 +4614,10 @@ mod tests {
         const NAME: KindName = KindName::new("aether.test.mourner");
     }
 
+    impl ChildOf for Mourner {
+        type Parent = Top;
+    }
+
     impl Actor for Mourner {
         type Config = Volley;
         type Key = ();
@@ -4537,6 +4653,10 @@ mod tests {
 
     impl Kind for Dismisser {
         const NAME: KindName = KindName::new("aether.test.dismisser");
+    }
+
+    impl ChildOf for Dismisser {
+        type Parent = Top;
     }
 
     impl Actor for Dismisser {

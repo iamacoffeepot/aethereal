@@ -3,7 +3,9 @@
 use super::super::*;
 use crate::{Closed, Entry, Feed};
 use aethereal_actor::Time;
-use aethereal_actor::{Controller, Ending, Fault, Handle, Handles, Source, ToType, ToWithoutMail, Turn};
+use aethereal_actor::{
+    Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Source, ToType, ToWithoutMail, Top, Turn,
+};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use std::cell::RefCell;
 use std::mem;
@@ -83,6 +85,10 @@ struct Window {
 
 impl Kind for Window {
     const NAME: KindName = KindName::new("aether.test.window");
+}
+
+impl ChildOf for Window {
+    type Parent = Top;
 }
 
 impl Actor for Window {
@@ -339,6 +345,10 @@ struct Windows {
 
 impl Kind for Windows {
     const NAME: KindName = KindName::new("aether.test.windows");
+}
+
+impl ChildOf for Windows {
+    type Parent = Top;
 }
 
 impl Actor for Windows {

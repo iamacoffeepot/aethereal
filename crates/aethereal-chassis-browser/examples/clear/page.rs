@@ -1,6 +1,8 @@
 //! The page's entry points, and the root that draws.
 
-use aethereal_actor::{Actor, Beginning, Ending, Fault, Given, Handle, Handles, Render, Subscribes, Tick, Turn};
+use aethereal_actor::{
+    Actor, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, Render, Subscribes, Tick, Top, Turn,
+};
 use aethereal_chassis_browser::{Browser, Gpu, Performance};
 use aethereal_data::{Bound, Kind, KindName};
 use aethereal_substrate::Engine;
@@ -63,6 +65,10 @@ struct Painter {
 
 impl Kind for Painter {
     const NAME: KindName = KindName::new("aether.example.painter");
+}
+
+impl ChildOf for Painter {
+    type Parent = Top;
 }
 
 impl Actor for Painter {

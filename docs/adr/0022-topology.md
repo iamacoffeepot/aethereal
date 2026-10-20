@@ -33,7 +33,7 @@ impl ChildOf for Timer  { type Parent = Anywhere; }       // beneath any actor: 
 
 ### `Spawns<C>`: a turn spawns only what it declares, and only what may stand beneath it
 
-- `turn.spawn` and `turn.spawn_from` build only when the turn's sends list `Spawns<C>`, as `subscribe` builds only when they list `Subscribes<K>`. **`Spawns<C>` builds only when `C`'s `Parent` admits the spawner's type**: the type itself, a tuple holding it, or `Anywhere`. It is checked where the sends are declared, by the bound every sends tuple meets, as `Subscribes<K>` builds only when the actor handles `K`. That bound, `BackTo<A>` today, is renamed `DeclaredBy<A>`: it checks each marker against the actor that declares it, and a spawn sends nothing back. The permission and its use are one fact.
+- `turn.spawn` and `turn.spawn_from` build only when the turn's sends list `Spawns<C>`, as `subscribe` builds only when they list `Subscribes<K>`. **`Spawns<C>` builds only when `C`'s `Parent` admits the spawner's type**: the type itself, a tuple holding it, or `Anywhere`. It is checked where the sends are declared, by the bound every sends tuple meets, as `Subscribes<K>` builds only when the actor handles `K`. That bound, once named `BackTo<A>`, is `DeclaredBy<A>`: it checks each marker against the actor that declares it, and a spawn sends nothing back. The permission and its use are one fact.
 - **`C` is inferred from where the child goes**: `let unit: ActorRef<Unit> = turn.spawn(&7, config)?`, or the field the reference is kept in. Nothing is written as a turbofish.
 - Its `Sending` is `C`'s kind with `Target::Spawned`, so the engine's declaration of each type holds the children it may spawn.
 - `Spawns<C>` in `EndSends` does not build: a closing turn spawns nothing.
