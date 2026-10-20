@@ -1,5 +1,6 @@
 //! The time a step carries: the host's, as it began the step (ADR-0011, ADR-0018).
 
+use aethereal_data::Plain;
 use core::ops::Add;
 use core::time::Duration;
 
@@ -8,7 +9,7 @@ use core::time::Duration;
 ///
 /// The engine reads no clock (ADR-0001). The host passes a step its time as it
 /// begins it, and every turn of the step reads that one time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Plain)]
 pub struct Time {
     nanos: u64,
 }

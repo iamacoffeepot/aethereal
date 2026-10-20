@@ -1,35 +1,41 @@
 //! The native host's runners of jobs: a pool of threads beside the engine's workers, each job read and run on the
 //! thread that takes it (ADR-0018).
 
+mod io;
 #[cfg(test)]
 mod tests;
 
-use aethereal_actor::{JobId, JobType};
+use crate::Monotonic;
+use aethereal_actor::{JobId, JobType, Runner, Sleep};
 use aethereal_data::KindId;
 use aethereal_substrate::{Inline, Jobs, Taken};
 use crossbeam_queue::SegQueue;
+use io::Io;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::thread::{self, JoinHandle};
+use std::thread::{self, JoinHandle, Thread};
 
-/// The native host's runners: threads for computing, as many as it is made with, each running a job it takes by
-/// polling it once, as [`Inline`] does (ADR-0018).
+/// The native host's runners (ADR-0018): threads for computing, as many as it is made with, each running a job it
+/// takes by polling it once, as [`Inline`] does; and one thread for waiting, which runs each `Io` job, [`Sleep`] among
+/// them, polling it whenever it is woken, on a timer read from the clock the host's steps are timed by.
 ///
-/// It lets as many jobs be in flight as it has threads, so the engine keeps
-/// the rest waiting in the order they were run, and the queue its threads take
-/// from never holds more than they can start on. A thread with nothing to take
-/// parks until a job is handed out. Dropping it stops its threads once each
-/// has finished the job it holds, and drops the jobs not started: they go
-/// unanswered.
-///
-/// Until a runner for waiting is made, a job that waits, an `Io` job among
-/// them, runs here too, and is answered with `Waits` as [`Inline`] answers it.
+/// A thread with nothing to take parks until a job is handed out. It lets
+/// any number of jobs be in flight: a job that waits holds no thread, so a cap
+/// on them would only keep a computation waiting behind a sleep. Dropping it
+/// stops its threads once each has finished what it was running, and drops
+/// the jobs not finished: they go unanswered.
 pub struct Runners {
+    /// What each job type runs on, [`Sleep`] among them.
+    types: Vec<JobType>,
     shared: Arc<Shared>,
-    threads: Vec<JoinHandle<()>>,
-    /// Which thread the next job handed out wakes.
+    /// The threads for computing, which the jobs handed out wake in turn.
+    computing: Vec<Thread>,
+    /// Which of them the next job handed out wakes.
     next: AtomicUsize,
+    io: Io,
+    /// Every thread, to join once they are told to stop.
+    threads: Vec<JoinHandle<()>>,
 }
 
 /// What the threads share: how to run each job type, the jobs handed out and not yet taken, and whether to stop.
@@ -46,10 +52,11 @@ impl Runners {
     ///
     /// Panics when the host cannot make a thread.
     #[must_use]
-    pub fn new(types: Vec<JobType>, threads: NonZeroUsize) -> Self {
-        let shared =
-            Arc::new(Shared { inline: Inline::new(types), queue: SegQueue::new(), stopping: AtomicBool::new(false) });
-        let threads = (0..threads.get())
+    pub fn new(mut types: Vec<JobType>, threads: NonZeroUsize) -> Self {
+        types.push(JobType::of::<Sleep>());
+        let inline = Inline::new(types.clone());
+        let shared = Arc::new(Shared { inline, queue: SegQueue::new(), stopping: AtomicBool::new(false) });
+        let mut threads: Vec<JoinHandle<()>> = (0..threads.get())
             .map(|number| {
                 let shared = Arc::clone(&shared);
                 #[allow(clippy::disallowed_methods)] // The native host owns the real threads (ADR-0001).
@@ -61,8 +68,11 @@ impl Runners {
                 thread
             })
             .collect();
+        let computing = threads.iter().map(|thread| thread.thread().clone()).collect();
+        let (io, waiting) = Io::new(types.clone(), Monotonic::new());
+        threads.push(waiting);
 
-        Self { shared, threads, next: AtomicUsize::new(0) }
+        Self { types, shared, computing, next: AtomicUsize::new(0), io, threads }
     }
 
     /// Runners of the job types `types` on the cores an engine run on `workers` workers leaves free, one at the least.
@@ -95,26 +105,36 @@ fn run(shared: &Shared) {
 
 impl Jobs for Runners {
     fn start(&self, id: JobId, kind: KindId, job: Taken) {
+        let runner = self.types.iter().find(|of| of.kind() == kind).map(JobType::runner);
+        let waits = runner == Some(Runner::Io);
+        if waits {
+            self.io.start(id, kind, job);
+            return;
+        }
+        // A job of a type it was not handed is answered on a thread for computing, as `Inline` answers it.
         self.shared.queue.push((id, kind, job));
-        let next = self.next.fetch_add(1, Ordering::Relaxed) % self.threads.len();
-        if let Some(thread) = self.threads.get(next) {
-            thread.thread().unpark();
+        let next = self.next.fetch_add(1, Ordering::Relaxed) % self.computing.len();
+        if let Some(thread) = self.computing.get(next) {
+            thread.unpark();
         }
     }
 
-    /// A job is polled once and has finished as it is taken, so none is left to stop.
-    fn stop(&self, _: JobId) {}
+    /// A job that waits is dropped. One for computing is polled once, and has finished by the time it is taken.
+    fn stop(&self, id: JobId) {
+        self.io.stop(id);
+    }
 
     fn most(&self) -> usize {
-        self.threads.len()
+        usize::MAX
     }
 }
 
 impl Drop for Runners {
     fn drop(&mut self) {
         self.shared.stopping.store(true, Ordering::Release);
-        for thread in &self.threads {
-            thread.thread().unpark();
+        self.io.end();
+        for thread in &self.computing {
+            thread.unpark();
         }
         for thread in self.threads.drain(..) {
             // A thread that panicked has gone already, and its job with it.

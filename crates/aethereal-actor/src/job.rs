@@ -9,12 +9,15 @@
 use crate::declared::{BackTo, Handles, Marker, RepliesTo, ReplyWithin, Sending, Target};
 #[cfg(feature = "std")]
 use crate::pins;
-use crate::{Actors, ActorsReader, ActorsWriter, Answer, BlobId, Fault, MailId, Seated, Unwritable, Within};
+use crate::{
+    Actors, ActorsReader, ActorsWriter, Answer, BlobId, Fault, MailId, Seated, Time, Timer, Until, Unwritable, Within,
+};
 use aethereal_data::{
     ActorId, Budget, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, KindName, Plain, Reader, Schema,
     Shape, Writer,
 };
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::{self, Future};
 use core::marker::PhantomData;
@@ -58,6 +61,8 @@ pub struct Running {
     engine: u32,
     /// The bytes of each blob it has put, in the order put.
     put: Vec<Vec<u8>>,
+    /// Its host's timer.
+    timer: Arc<dyn Timer>,
 }
 
 #[cfg(feature = "std")]
@@ -75,6 +80,12 @@ impl Running {
         let copied = self.blobs.iter().find(|copied| copied.id == id);
 
         copied.map_or(&[], |copied| &copied.bytes)
+    }
+
+    /// Waits until `at` on the host's timer, the clock its steps' times are read from: for a job that waits for time,
+    /// as [`Sleep`](crate::Sleep) does, or backs off before it tries again.
+    pub fn until(&self, at: Time) -> Until<'_> {
+        Until::new(at, &*self.timer)
     }
 
     /// Puts `bytes` as a blob, which nobody changes from then on, and answers with a reference to it, to hold in what
@@ -285,7 +296,7 @@ pub type Driven = Pin<Box<dyn Future<Output = Outcome>>>;
 pub struct JobType {
     kind: KindId,
     runner: Runner,
-    drive: fn(Vec<u8>, Lending, usize) -> Driven,
+    drive: fn(Vec<u8>, Lending, usize, Arc<dyn Timer>) -> Driven,
 }
 
 #[cfg(feature = "std")]
@@ -308,25 +319,26 @@ impl JobType {
         self.runner
     }
 
-    /// The future that runs the job of `bytes`, which is lent `lent`, read within `limit` bytes, where it is driven: so
-    /// the job's value is read on the thread or worker that runs it, and never moves (ADR-0018).
+    /// The future that runs the job of `bytes`, which is lent `lent`, read within `limit` bytes, and waits on `timer`,
+    /// where it is driven: so the job's value is read on the thread or worker that runs it, and never moves
+    /// (ADR-0018).
     #[must_use]
-    pub fn drive(&self, bytes: Vec<u8>, lent: Lending, limit: usize) -> Driven {
-        (self.drive)(bytes, lent, limit)
+    pub fn drive(&self, bytes: Vec<u8>, lent: Lending, limit: usize, timer: Arc<dyn Timer>) -> Driven {
+        (self.drive)(bytes, lent, limit, timer)
     }
 }
 
-/// The future that reads the job `J` of `bytes`, which is lent `lent`, within `limit` bytes, runs it, and writes what it
-/// answers with. Each reference read out of the job is a pin of its own, and each change to a pin made as it is polled
+/// The future that reads the job `J` of `bytes`, which is lent `lent`, within `limit` bytes, runs it on `timer`, and
+/// writes what it answers with. Each reference read out of the job is a pin of its own, and each change to a pin made as it is polled
 /// or dropped goes onto the queue it was lent.
 #[cfg(feature = "std")]
-fn drive<J: Job>(bytes: Vec<u8>, lent: Lending, limit: usize) -> Driven {
+fn drive<J: Job>(bytes: Vec<u8>, lent: Lending, limit: usize, timer: Arc<dyn Timer>) -> Driven {
     let Lending { blobs, engine, queue } = lent;
     let running = Box::pin(async move {
         let mut budget = Budget::new(limit);
         let pins = crate::PinSource::job(&blobs);
         let job = J::decode(&mut Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::of(&pins)))?;
-        let mut running = Running { blobs, engine, put: Vec::new() };
+        let mut running = Running { blobs, engine, put: Vec::new(), timer };
         let done = job.run(&mut running).await?;
         let produced = Produced::of(&done)?;
 
