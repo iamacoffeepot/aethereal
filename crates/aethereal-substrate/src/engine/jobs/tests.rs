@@ -12,6 +12,7 @@ use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
 use std::cell::RefCell;
 use std::future;
 use std::sync::Mutex;
+use std::task::Context as Polled;
 
 thread_local! {
     /// What this thread's actors have said they did, in order.
@@ -159,6 +160,28 @@ impl Job for Measure {
     }
 }
 
+/// A job that reads the blob it refers to, then waits for good.
+#[derive(Bound)]
+struct Hangs {
+    blob: BlobRef,
+}
+
+impl Kind for Hangs {
+    const NAME: KindName = KindName::new("aether.test.hangs");
+}
+
+impl Job for Hangs {
+    type Done = Doubled;
+    const RUNNER: Runner = Runner::Io;
+
+    async fn run(self, job: &mut Running) -> Result<Doubled, Fault> {
+        let read = job.read(&self.blob).len();
+        future::pending::<()>().await;
+
+        Ok(Doubled { n: u64::try_from(read).unwrap_or(0) })
+    }
+}
+
 /// A job no runner is handed.
 #[derive(Plain)]
 struct Unlinked;
@@ -246,6 +269,7 @@ impl Handles<Go> for Worker {
         RunsJob<Unlinked, Which>,
         RunsJob<Ring, GiveUp>,
         RunsJob<Measure, Which>,
+        RunsJob<Hangs, Which>,
     );
 
     fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
@@ -279,6 +303,12 @@ impl Handles<Go> for Worker {
                 let id = turn.run(&Measure { again: blob.clone(), blob, other }, &which)?;
                 self.kept.push(id);
                 id
+            }
+            "hang" => {
+                let Ok(blob) = turn.put(vec![1]) else {
+                    return Err(Fault::of_parts(KindId::of::<Hangs>(), Vec::new()));
+                };
+                turn.run(&Hangs { blob }, &which)?
             }
             "close" => {
                 turn.close();
@@ -469,6 +499,15 @@ impl Holding {
         }
     }
 
+    /// Takes every job it holds.
+    fn take(&self) -> Vec<(JobId, KindId, Taken)> {
+        let Ok(mut held) = self.held.lock() else {
+            panic!("the list is not poisoned");
+        };
+
+        mem::take(&mut *held)
+    }
+
     /// The jobs it was asked to stop, by their counts.
     fn stopped(&self) -> Vec<u64> {
         let Ok(stopped) = self.stopped.lock() else {
@@ -483,7 +522,8 @@ impl Jobs for Holding {
     fn start(&self, id: JobId, kind: KindId, job: Taken) {
         let sleeps = kind == KindId::of::<Sleeps>();
         let measures = kind == KindId::of::<Measure>();
-        let is_held = sleeps || measures;
+        let hangs = kind == KindId::of::<Hangs>();
+        let is_held = sleeps || measures || hangs;
         if !is_held {
             self.inline.start(id, kind, job);
             return;
@@ -644,6 +684,7 @@ fn a_job_keeps_the_blobs_it_refers_to_until_it_is_answered_cancelled_or_its_acto
     // Catches a blob freed while a job that refers to it is in flight, once the turn that ran it let go of its own
     // reference, and one kept once the job is answered, cancelled, or its actor has ended. Each of three workers runs a
     // job of two blobs, held by its host: the first's is answered, the second's cancelled, and the third worker closes.
+    // Catches too the changes to pins the runner made left on the engine's queue, which would grow for good.
     let mut held = Vec::new();
     for (key, end) in [(1, "answered"), (2, "let go"), (3, "close")] {
         let holding = Arc::new(Holding::new());
@@ -657,9 +698,50 @@ fn a_job_keeps_the_blobs_it_refers_to_until_it_is_answered_cancelled_or_its_acto
         } else {
             poke(&mut engine, key + 10, end);
         }
-        held.push((in_flight, engine.blobs.held().0));
+        held.push((in_flight, engine.blobs.held().0, engine.job_pins.len()));
     }
     said();
 
-    assert_eq!(held, [(2, 0), (2, 0), (2, 0)]);
+    assert_eq!(held, [(2, 0, 0), (2, 0, 0), (2, 0, 0)], "the runner's own pins are summed, and leave nothing queued");
+}
+
+#[test]
+fn a_job_changes_its_engines_pins_on_the_engines_queue_as_it_runs_and_as_it_is_dropped() {
+    // Catches a host's thread that runs a job changing pins where unbuffered changes go, behind a lock, as the job reads
+    // its references or drops them, whether it finishes or is dropped while it waits; a change lost on the way; and a
+    // thread's own buffer not put back once a job has run on it. Both jobs run on this thread, with a buffer open.
+    let holding = Arc::new(Holding::new());
+    let (mut engine, _) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
+    poke(&mut engine, 1, "measure");
+    poke(&mut engine, 2, "hang");
+    let Ok(probe) = engine.put_blob(vec![9]) else {
+        panic!("a blob is put");
+    };
+    // The put's own pin was noted where unbuffered changes go.
+    pins::take_shared(engine.number.0, &mut Vec::new());
+    let mut context = Polled::from_waker(Waker::noop());
+    pins::open(engine.number.0, Vec::new());
+    for (_, kind, Taken { bytes, lent, limit, .. }) in holding.take() {
+        let measures = kind == KindId::of::<Measure>();
+        let of = if measures {
+            JobType::of::<Measure>()
+        } else {
+            JobType::of::<Hangs>()
+        };
+        let mut running = of.drive(bytes, lent, limit);
+        let polled = running.as_mut().poll(&mut context);
+        assert_eq!(polled.is_ready(), measures, "the measure finishes, and the hang waits");
+    }
+    let copy = probe.clone();
+    let own = pins::close();
+    said();
+
+    let mut shared = Vec::new();
+    pins::take_shared(engine.number.0, &mut shared);
+    let mut queued = Vec::new();
+    pins::take_queued(&engine.job_pins, &mut queued);
+    let net: i64 = queued.iter().map(|(_, by)| by).sum();
+    assert_eq!((shared.len(), queued.len(), net), (0, 8, 0), "three references read and dropped, and one");
+    assert_eq!(own, [(probe.id(), 1)], "a change after the jobs is in the thread's own buffer");
+    drop(copy);
 }

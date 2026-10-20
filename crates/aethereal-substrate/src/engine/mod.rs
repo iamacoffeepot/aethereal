@@ -164,6 +164,9 @@ pub struct Engine {
     jobs: Arc<dyn Jobs>,
     /// The jobs that have run, pushed by whatever ran them, to bring in at the next bring.
     finished: Arc<SegQueue<jobs::Finished>>,
+    /// The changes to blobs' pins the jobs made as they ran, pushed by whatever ran them, summed with the next step's
+    /// (ADR-0018).
+    job_pins: pins::Queue,
     /// Which engine of the process this is, in the id of each blob it holds. Last, so what the engine's actors held
     /// is let go of before the engine is forgotten.
     number: Number,
@@ -430,6 +433,7 @@ impl Engine {
             sources: Vec::new(),
             jobs: Arc::new(Inline::new(Vec::new())),
             finished: Arc::new(SegQueue::new()),
+            job_pins: Arc::new(SegQueue::new()),
             number,
         }
     }
@@ -1291,10 +1295,11 @@ impl Engine {
         puts
     }
 
-    /// Sums every change to blobs' pins the step made, those made where no worker's buffer was open among them, and
-    /// frees each blob left with no pin (ADR-0014).
+    /// Sums every change to blobs' pins the step made, those made where no worker's buffer was open and those jobs made
+    /// as they ran among them, and frees each blob left with no pin (ADR-0014, ADR-0018).
     fn sweep_blobs(&mut self) {
         pins::take_shared(self.number.0, &mut self.unbuffered);
+        pins::take_queued(&self.job_pins, &mut self.unbuffered);
         self.blobs.change(&mut self.unbuffered);
         let guests = &*self.guests;
         self.blobs.sweep(|freed| guests.unload(freed));

@@ -7,7 +7,7 @@ mod tests;
 use super::{Engine, ROOTS, parity};
 use crate::{lives, log};
 use aethereal_actor::{
-    BlobId, Copied, Fault, JobId, JobType, MailId, Mailed, Outcome, Seated, Submitted, Tie, Unanswered,
+    BlobId, Copied, Fault, JobId, JobType, Lending, MailId, Mailed, Outcome, Seated, Submitted, Tie, Unanswered,
 };
 use aethereal_data::{Kind, KindId, KindName, Plain};
 use crossbeam_queue::SegQueue;
@@ -33,8 +33,8 @@ pub trait Jobs: Send + Sync {
 pub struct Taken {
     /// The job's bytes, written at `Actors`.
     pub bytes: Vec<u8>,
-    /// A copy of each blob it refers to.
-    pub blobs: Vec<Copied>,
+    /// A copy of each blob it refers to, and where the changes to their pins go as it runs.
+    pub lent: Lending,
     /// The most bytes it may read, as mail may.
     pub limit: usize,
     /// Where its outcome goes.
@@ -88,12 +88,12 @@ impl Inline {
 
 impl Jobs for Inline {
     fn start(&self, _: JobId, kind: KindId, job: Taken) {
-        let Taken { bytes, blobs, limit, finish } = job;
+        let Taken { bytes, lent, limit, finish } = job;
         let Some(of) = self.types.iter().find(|of| of.kind() == kind) else {
             finish.done(Err(fault::<NoRunner>()));
             return;
         };
-        let mut future = of.drive(bytes, blobs, limit);
+        let mut future = of.drive(bytes, lent, limit);
         let mut context = Context::from_waker(Waker::noop());
         let polled = panic::catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(&mut context)));
         let outcome = match polled {
@@ -153,9 +153,9 @@ impl Engine {
         for job in submitted {
             let id = job.id();
             let Submitted { by, count, kind, answer, bytes, refers } = job;
-            let blobs = self.copied(refers);
+            let lent = Lending::new(self.number.0, self.copied(refers), Arc::clone(&self.job_pins));
             let finish = Finish { by, count, answer, feed: Arc::clone(&self.finished) };
-            self.jobs.start(id, kind, Taken { bytes, blobs, limit: self.read_limit, finish });
+            self.jobs.start(id, kind, Taken { bytes, lent, limit: self.read_limit, finish });
         }
     }
 

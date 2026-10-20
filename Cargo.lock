@@ -17,6 +17,7 @@ version = "0.1.0"
 dependencies = [
  "aethereal-data",
  "blake3",
+ "crossbeam-queue",
 ]
 
 [[package]]

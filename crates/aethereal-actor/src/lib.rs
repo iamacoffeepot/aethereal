@@ -69,7 +69,7 @@ pub use instances::{Instances, Lent};
 pub use item::Item;
 pub use job::{Copied, Driven, Job, JobId, NotRun, Outcome, Runner, Running, RunsJob, Submitted, Unrun};
 #[cfg(feature = "std")]
-pub use job::{JobType, written};
+pub use job::{JobType, Lending, written};
 pub use mail::{Mail, MailId};
 pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Reaches};
 pub use resource::{
