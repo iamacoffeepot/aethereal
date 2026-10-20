@@ -467,6 +467,23 @@ impl Engine {
         !self.waiting.iter().any(|part| self.has_work(*part))
     }
 
+    /// Whether the chain `root` begins has finished, between steps: no item of it waits in any actor's stream, carried
+    /// over or not, and no actor it ended is still to run its closing turn (ADR-0012, ADR-0020). A request held, and
+    /// the job an actor ran, keep it from finishing no more than they keep anything else: their answers come in
+    /// chains of their own.
+    ///
+    /// It reads what the parts hold, not a count kept as turns run, so no item it misses can leave a chain open for
+    /// good: what is held is all a step leaves of a chain. It is for the engine's own lifecycle alone, which no actor
+    /// reads (ADR-0020).
+    #[must_use]
+    #[cfg_attr(not(test), expect(dead_code, reason = "the engine's lifecycle reads it, in the piece after this one"))]
+    pub(crate) fn has_finished(&self, root: MailId) -> bool {
+        let is_held = self.streams.shards().any(|part| part.holds_chain(root));
+        let is_ending = self.lives.shards().any(|part| part.ends_in_chain(root));
+
+        !is_held && !is_ending
+    }
+
     /// Puts `bytes` as a blob, for the chassis, between steps, and answers with the first reference to it
     /// (ADR-0014): refused when they would take the blobs past the host's budget.
     pub fn put_blob(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {

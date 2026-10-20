@@ -537,6 +537,18 @@ impl Shard {
     pub fn has_items(&self) -> bool {
         !self.arrived.is_empty() || !self.segments.is_empty()
     }
+
+    /// Whether an item of the chain `root` begins waits here, between steps: arrived since the step began, or carried
+    /// over to hand out at the next (ADR-0020). What was handed out at the start of the step has been taken, and its
+    /// turns' sends have arrived.
+    #[must_use]
+    pub fn holds_chain(&self, root: MailId) -> bool {
+        let arrived = self.arrived.iter().any(|(_, entry)| entry.root(&self.arrived_endings) == root);
+        let carried = self.segments.iter().flat_map(|segment| &self.backlog[segment.range.clone()]);
+        let mut carried = carried.map(|(_, entry)| entry.root(&self.backlog_endings));
+
+        arrived || carried.any(|carried| carried == root)
+    }
 }
 
 /// The items of a range of a part's stream, a run of mail one piece after another.
@@ -612,6 +624,14 @@ impl<'a> Iterator for Pieces<'a> {
 }
 
 impl Entry {
+    /// The first mail of the chain it belongs to, with the list of endings it numbers in.
+    fn root(&self, endings: &[(Ended, Context)]) -> MailId {
+        match self.item {
+            Stored::Mail(envelope) => envelope.root,
+            Stored::Ended(at) => endings[at].1.root,
+        }
+    }
+
     /// How many items it holds: one, but for a run of mail.
     fn pieces(&self) -> u32 {
         match &self.item {
@@ -759,6 +779,30 @@ mod tests {
             assert!(!busy.rest());
         }
         assert!(busy.room() >= 10_000, "a part handed items is idle again from none");
+    }
+
+    #[test]
+    fn a_part_holds_a_chain_while_an_item_of_it_has_arrived_or_is_carried() {
+        // Catches whether a part holds a chain answered from mail alone, so an ending of it shown to a watcher is
+        // left out, or from what arrived alone, so what an actor cut off at its slice carries over is left out
+        // (ADR-0020).
+        let chain = MailId { sender: ActorId::new(7), count: 0 };
+        let other = MailId { sender: ActorId::new(8), count: 0 };
+        let ended = Ended::new(Seated { id: ActorId::new(3), seat: SeatNumber::new(0) }, aethereal_actor::How::Closed);
+        let mut part = Shard::default();
+        part.arrived_endings.push((ended, Context { root: chain, depth: 1 }));
+        part.arrived.push((0, Entry { to: 1, order: (3, u64::MAX), item: Stored::Ended(0) }));
+        assert!(part.holds_chain(chain), "an ending of the chain has arrived");
+        assert!(!part.holds_chain(other));
+
+        let mut runs = Vec::new();
+        part.hand(&mut runs);
+        assert!(!part.holds_chain(chain), "what was handed out is taken");
+        part.carry(&runs[0], 0, &[]);
+
+        assert!(part.arrived.is_empty());
+        assert!(part.holds_chain(chain), "the ending is carried over");
+        assert!(!part.holds_chain(other));
     }
 
     #[test]

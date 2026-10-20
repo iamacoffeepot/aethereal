@@ -3,7 +3,7 @@
 
 use crate::id::spawned;
 use crate::{BySeat, Context, Part, View};
-use aethereal_actor::{Arena, Effect, How, SeatNumber, Seated, What};
+use aethereal_actor::{Arena, Effect, How, MailId, SeatNumber, Seated, What};
 use aethereal_data::ActorId;
 use std::mem;
 use std::num::NonZeroUsize;
@@ -76,6 +76,16 @@ impl Shard {
     #[must_use]
     pub fn ended(&self) -> &[Seated] {
         &self.ended
+    }
+
+    /// Whether an actor that ended in the chain `root` begins is still to run its closing turn, which belongs to that
+    /// chain (ADR-0012, ADR-0020).
+    #[must_use]
+    pub fn ends_in_chain(&self, root: MailId) -> bool {
+        self.ended.iter().filter_map(|actor| self.lives.get(*actor)).any(|life| match &life.state {
+            State::Ending(ending) => ending.1.root == root,
+            State::Live => false,
+        })
     }
 
     /// Whether an actor has ended since the step began.
