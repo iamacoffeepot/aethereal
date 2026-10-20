@@ -10,6 +10,7 @@ mod clock;
 pub mod guest;
 mod pool;
 mod rehearsal;
+mod running;
 #[cfg(test)]
 mod tests;
 
@@ -18,6 +19,7 @@ pub use clock::Monotonic;
 use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Engine, Split, SplitCost, Workers};
 pub use pool::Measured;
+pub use running::Exit;
 
 use pool::Pool;
 use std::num::NonZeroUsize;
