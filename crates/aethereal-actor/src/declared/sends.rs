@@ -1,7 +1,7 @@
 //! What a handler may send, and whether it may watch, written as a tuple of markers (ADR-0013).
 
 use super::{Handled, Handles, Listed, Sending, Target};
-use crate::{Actor, Stage};
+use crate::{Actor, ChildOf, Stage};
 use aethereal_data::{Kind, KindId, KindName, Plain};
 use core::marker::PhantomData;
 
@@ -25,6 +25,10 @@ pub struct Watches;
 /// whose type handles `K` may declare it, as its build fails otherwise (ADR-0020).
 pub struct Subscribes<K>(PhantomData<fn() -> K>);
 
+/// A handler may spawn a child of type `C`: only an actor that `C`'s parent admits may declare it, as its build fails
+/// otherwise (ADR-0022).
+pub struct Spawns<C>(PhantomData<fn() -> C>);
+
 /// What a watch is declared under: a kind of its own, which no mail is.
 #[derive(Plain)]
 struct Watch;
@@ -45,6 +49,10 @@ impl Marker for Watches {
 
 impl<K: Stage> Marker for Subscribes<K> {
     const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Subscribed);
+}
+
+impl<C: ChildOf> Marker for Spawns<C> {
+    const SENDING: Sending = Sending::new(KindId::of::<C>(), Target::Spawned);
 }
 
 impl<T: Actor + Handles<K>, K: Kind + Handled> Marker for ToType<T, K> {

@@ -3,7 +3,9 @@
 use super::super::*;
 use crate::Entry;
 use aethereal_actor::Time;
-use aethereal_actor::{Actor, ChildOf, Ending, Fault, Handle, Handles, To, ToType, ToWithoutMail, Top, Turn};
+use aethereal_actor::{
+    Actor, ChildOf, Ending, Fault, Handle, Handles, Recursive, Spawns, To, ToType, ToWithoutMail, Turn,
+};
 use aethereal_data::{Bound, Kind, KindName, Plain, TypedKey};
 use std::any;
 use std::cell::{Cell, RefCell};
@@ -115,7 +117,7 @@ impl Keeper {
 }
 
 impl ChildOf for Keeper {
-    type Parent = Top;
+    type Parent = Recursive;
 }
 
 impl Actor for Keeper {
@@ -152,7 +154,7 @@ impl Actor for Keeper {
 }
 
 impl Handles<Order> for Keeper {
-    type Sends = (ToType<Self, Order>, ToType<Self, Pass>);
+    type Sends = (ToType<Self, Order>, ToType<Self, Pass>, Spawns<Self>);
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let words: Vec<&str> = order.text.split(' ').collect();
@@ -170,7 +172,7 @@ impl Handles<Order> for Keeper {
                 let number = number.parse().unwrap_or_default();
                 let lamps = self.give_all(turn)?;
                 let config = KeeperConfig { number, lamps, orders: vec![String::from("shine")] };
-                let _ = turn.spawn::<Self>(&number, config);
+                let _ = turn.spawn(&number, config);
             }
             ["pass", number] => {
                 let number: u64 = number.parse().unwrap_or_default();
@@ -209,7 +211,7 @@ impl Handles<Order> for Keeper {
             ["fan"] => {
                 let lamps = self.give_all(turn)?;
                 let config = KeeperConfig { number: 50, lamps: Vec::new(), orders: Vec::new() };
-                let Ok(child) = turn.spawn::<Self>(&50, config) else {
+                let Ok(child) = turn.spawn(&50, config) else {
                     return Err(Fault::new(&Self::order("unborn"))?);
                 };
                 let sent = turn.send_to_all(&[child, child], &Pass { lamps }).is_ok();

@@ -54,21 +54,26 @@ use crate::Actor;
     message = "`{Self}` is not one actor type that declares where it stands",
     label = "`{Self}` declares no one place",
     note = "a type declares where it stands with `impl ChildOf for {Self} {{ type Parent = .. }}`",
-    note = "a type beneath a tuple of types or `Anywhere` stands in no one place: reach it from a reference held"
+    note = "a type that is `Anywhere` or `Recursive` stands in no one place: reach it from a reference held"
 )]
 pub trait ChildOf: Actor {
-    /// What the type stands beneath: [`Top`], one actor type, a tuple of actor types any of which it may stand
-    /// beneath, or [`Anywhere`].
+    /// What the type stands beneath: [`Top`], one actor type, [`Recursive`] for the top or its own type, or
+    /// [`Anywhere`].
     type Parent: Placement;
 }
 
 /// The top of the tree: what a root stands beneath (ADR-0008).
 pub struct Top;
 
-/// Beneath any actor: the place of a type whose actors any actor may hold, such as a library's.
+/// Beneath any actor, or at the top: the place of a type whose actors any actor may hold, such as a library's, or the
+/// chassis make as a root.
 pub struct Anywhere;
 
-/// A place a type may declare as its parent: [`Top`], an actor type that declares its own, a tuple of them, or
+/// At the top, or beneath an actor of the type's own: the place of a tree of one type, such as one that computes by
+/// spawning its own kind. It names no one path, as its depth is a fact of the run.
+pub struct Recursive;
+
+/// A place a type may declare as its parent: [`Top`], an actor type that declares its own, [`Recursive`], or
 /// [`Anywhere`].
 pub trait Placement {}
 
@@ -76,10 +81,181 @@ impl Placement for Top {}
 
 impl Placement for Anywhere {}
 
+impl Placement for Recursive {}
+
 impl<T: ChildOf> Placement for T {}
 
-/// A type the chassis may make as a root: one whose parent is [`Top`]. It is never declared; it follows from
-/// [`ChildOf`]. A root is a singleton or instanced like any other actor (ADR-0008).
+/// This place, the parent a type `C` declares, admits a child of `C` spawned by an actor of type `A`: `A` itself as
+/// the one parent, any type for [`Anywhere`], and `C`'s own for [`Recursive`]. [`Top`] admits no spawner.
+///
+/// A type may spawn what stands beneath it, and a tree of one type may spawn its own:
+///
+/// ```
+/// use aethereal_actor::{ChildOf, Recursive, Top};
+/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Spawns};
+/// # use aethereal_data::{Kind, KindName, Plain};
+/// #
+/// # macro_rules! actor {
+/// #     ($name:ident, $sends:ty) => {
+/// #         #[derive(Plain)]
+/// #         struct $name;
+/// #
+/// #         impl Kind for $name {
+/// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
+/// #         }
+/// #
+/// #         impl Actor for $name {
+/// #             type Config = $name;
+/// #             type Key = ();
+/// #             type Handles = ();
+/// #             type BeginSends = $sends;
+/// #             type EndSends = ();
+/// #
+/// #             fn begin(config: $name, _: &mut Beginning<'_, $sends>) -> Result<Self, Fault> {
+/// #                 Ok(config)
+/// #             }
+/// #
+/// #             fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #                 Ok(())
+/// #             }
+/// #         }
+/// #     };
+/// # }
+/// # actor!(Host, (Spawns<Camera>,));
+/// # actor!(Camera, ());
+/// # actor!(Fib, (Spawns<Fib>,));
+///
+/// impl ChildOf for Host {
+///     type Parent = Top;
+/// }
+///
+/// impl ChildOf for Camera {
+///     type Parent = Host;
+/// }
+///
+/// impl ChildOf for Fib {
+///     type Parent = Recursive;
+/// }
+/// ```
+///
+/// A type that declares it spawns what stands beneath another does not build:
+///
+/// ```compile_fail
+/// use aethereal_actor::{ChildOf, Top};
+/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Spawns};
+/// # use aethereal_data::{Kind, KindName, Plain};
+/// #
+/// # macro_rules! actor {
+/// #     ($name:ident, $sends:ty) => {
+/// #         #[derive(Plain)]
+/// #         struct $name;
+/// #
+/// #         impl Kind for $name {
+/// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
+/// #         }
+/// #
+/// #         impl Actor for $name {
+/// #             type Config = $name;
+/// #             type Key = ();
+/// #             type Handles = ();
+/// #             type BeginSends = $sends;
+/// #             type EndSends = ();
+/// #
+/// #             fn begin(config: $name, _: &mut Beginning<'_, $sends>) -> Result<Self, Fault> {
+/// #                 Ok(config)
+/// #             }
+/// #
+/// #             fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #                 Ok(())
+/// #             }
+/// #         }
+/// #     };
+/// # }
+/// # actor!(Host, (Spawns<Lens>,));
+/// # actor!(Camera, ());
+/// # actor!(Lens, ());
+///
+/// impl ChildOf for Host {
+///     type Parent = Top;
+/// }
+///
+/// impl ChildOf for Camera {
+///     type Parent = Host;
+/// }
+///
+/// impl ChildOf for Lens {
+///     type Parent = Camera;
+/// }
+/// ```
+///
+/// Nor does one that spawns a tree of another type:
+///
+/// ```compile_fail
+/// use aethereal_actor::{ChildOf, Recursive, Top};
+/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Spawns};
+/// # use aethereal_data::{Kind, KindName, Plain};
+/// #
+/// # macro_rules! actor {
+/// #     ($name:ident, $sends:ty) => {
+/// #         #[derive(Plain)]
+/// #         struct $name;
+/// #
+/// #         impl Kind for $name {
+/// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
+/// #         }
+/// #
+/// #         impl Actor for $name {
+/// #             type Config = $name;
+/// #             type Key = ();
+/// #             type Handles = ();
+/// #             type BeginSends = $sends;
+/// #             type EndSends = ();
+/// #
+/// #             fn begin(config: $name, _: &mut Beginning<'_, $sends>) -> Result<Self, Fault> {
+/// #                 Ok(config)
+/// #             }
+/// #
+/// #             fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+/// #                 Ok(())
+/// #             }
+/// #         }
+/// #     };
+/// # }
+/// # actor!(Host, (Spawns<Fib>,));
+/// # actor!(Fib, (Spawns<Fib>,));
+///
+/// impl ChildOf for Host {
+///     type Parent = Top;
+/// }
+///
+/// impl ChildOf for Fib {
+///     type Parent = Recursive;
+/// }
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "an actor of type `{A}` may not spawn a `{C}`",
+    label = "a `{C}` stands beneath `{Self}`",
+    note = "a type spawns only what may stand beneath it: what its `ChildOf` names as its `Parent`"
+)]
+pub trait Admits<A, C> {}
+
+impl<A: ChildOf, C> Admits<A, C> for A {}
+
+impl<A, C> Admits<A, C> for Anywhere {}
+
+impl<C> Admits<C, C> for Recursive {}
+
+/// A place at the top: [`Top`], [`Recursive`], which is the top or beneath its own type, and [`Anywhere`].
+pub trait AtTop {}
+
+impl AtTop for Top {}
+
+impl AtTop for Recursive {}
+
+impl AtTop for Anywhere {}
+
+/// A type the chassis may make as a root: one whose parent is at the top, [`Top`], [`Recursive`], or [`Anywhere`]. It is never
+/// declared; it follows from [`ChildOf`]. A root is a singleton or instanced like any other actor (ADR-0008).
 ///
 /// A type that stands beneath another is not one, and the chassis cannot make it:
 ///
@@ -129,23 +305,6 @@ impl<T: ChildOf> Placement for T {}
 ///
 /// made_by_the_chassis::<Camera>();
 /// ```
-pub trait Root: ChildOf<Parent = Top> {}
+pub trait Root: ChildOf {}
 
-impl<T: ChildOf<Parent = Top>> Root for T {}
-
-/// Tuples of actor types, each a place any of whose types a type may stand beneath.
-macro_rules! tuples {
-    ($( [$($name:ident)*] )*) => {$(
-        impl<$($name: ChildOf),*> Placement for ($($name,)*) {}
-    )*};
-}
-
-tuples! {
-    [A B]
-    [A B C]
-    [A B C D]
-    [A B C D E]
-    [A B C D E F]
-    [A B C D E F G]
-    [A B C D E F G H]
-}
+impl<T: ChildOf> Root for T where T::Parent: AtTop {}

@@ -1,6 +1,7 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's effect buffers.
 
 use super::*;
+use crate::{Anywhere, ChildOf, Recursive, Spawns};
 use crate::{
     Beginning, Carries, Claim, Claimed, Ended, Ending, Fault, How, Item, Kept, Mail, MailId, NotHeld, Payload,
     Protocol, Resource, Subscribers,
@@ -125,6 +126,10 @@ impl Kind for Leaf {
     const NAME: KindName = KindName::new("aether.test.leaf");
 }
 
+impl ChildOf for Leaf {
+    type Parent = Anywhere;
+}
+
 impl Actor for Leaf {
     type Config = LeafConfig;
     type Key = u64;
@@ -200,11 +205,15 @@ impl Kind for Branch {
     const NAME: KindName = KindName::new("aether.test.branch");
 }
 
+impl ChildOf for Branch {
+    type Parent = Herald;
+}
+
 impl Actor for Branch {
     type Config = BranchConfig;
     type Key = ();
     type Handles = (Poked,);
-    type BeginSends = (ToType<Leaf, Poke>,);
+    type BeginSends = (ToType<Leaf, Poke>, Spawns<Leaf>);
     type EndSends = ();
 
     /// Spawns its leaves, poking each that begins.
@@ -212,7 +221,7 @@ impl Actor for Branch {
         for key in 0..config.leaves {
             let is_last = key + 1 == config.leaves;
             let fails = is_last && config.last_fails;
-            match turn.spawn::<Leaf>(&key, LeafConfig { fails }) {
+            match turn.spawn(&key, LeafConfig { fails }) {
                 Ok(leaf) => turn.send_to(leaf, &Poke)?,
                 Err(Refused::Began(fault)) => return Err(fault),
                 Err(_) => {}
@@ -242,6 +251,10 @@ struct Herald;
 
 impl Kind for Herald {
     const NAME: KindName = KindName::new("aether.test.herald");
+}
+
+impl ChildOf for Herald {
+    type Parent = Recursive;
 }
 
 /// A herald's parent is a leaf.
@@ -318,8 +331,8 @@ fn child_begins_inside_its_parents_turn() {
     // under the id, path, and seat its spawn gives it, and two children given one seat.
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = opened::<()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
-    let Ok(branch) = turn.spawn::<Branch>(&(), BranchConfig { leaves: 2, last_fails: false }) else {
+    let mut turn = opened::<(Spawns<Branch>,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let Ok(branch) = turn.spawn(&(), BranchConfig { leaves: 2, last_fails: false }) else {
         panic!("the branch and its leaves begin");
     };
 
@@ -352,11 +365,11 @@ fn used_key_is_refused_and_asks_for_nothing() {
     let held_id = table.child(ME.id, &held.last());
     let table = Listed(vec![(Seated { id: held_id, seat: SeatNumber::new(7) }, held)]);
     let mut asked = Asked::new();
-    let mut turn = opened::<()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<(Spawns<Leaf>,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
 
-    assert!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }).is_ok());
-    assert_eq!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }), Err(Refused::KeyTaken));
-    assert_eq!(turn.spawn::<Leaf>(&1, LeafConfig { fails: false }), Err(Refused::KeyTaken));
+    assert!(turn.spawn(&0, LeafConfig { fails: false }).is_ok());
+    assert_eq!(turn.spawn(&0, LeafConfig { fails: false }), Err(Refused::KeyTaken));
+    assert_eq!(turn.spawn(&1, LeafConfig { fails: false }), Err(Refused::KeyTaken));
     assert_eq!(asked.effects(), [Effect::new(ME, leaf_spawn(0, 0))]);
 }
 
@@ -366,8 +379,8 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     // failed begin used up, mail it or a child of it sent kept, and a line it logged lost.
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = opened::<()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
-    let refused = turn.spawn::<Branch>(&(), BranchConfig { leaves: 2, last_fails: true });
+    let mut turn = opened::<(Spawns<Branch>,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let refused = turn.spawn(&(), BranchConfig { leaves: 2, last_fails: true });
     let Err(Refused::Began(fault)) = refused else {
         panic!("the branch's last leaf fails, and the branch with it");
     };
@@ -378,8 +391,8 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     let lines: Vec<&str> = asked.lines().iter().map(|line| asked.text(line)).collect();
     assert_eq!(lines, ["told to fail"]);
 
-    let mut turn = opened::<()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
-    assert!(turn.spawn::<Branch>(&(), BranchConfig { leaves: 0, last_fails: false }).is_ok());
+    let mut turn = opened::<(Spawns<Branch>,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    assert!(turn.spawn(&(), BranchConfig { leaves: 0, last_fails: false }).is_ok());
     let (buffers, stood, _, seats, _) = asked.into_parts();
     assert_eq!(buffers.effects, [Effect::new(ME, branch_spawn(0))]);
     assert_eq!(stood.len(), 1);
@@ -392,8 +405,8 @@ fn begin_and_end_send_as_their_own_actor() {
     // closing turn that does not learn why it runs.
     let table = Listed(vec![(ME, ROOT.clone())]);
     let mut asked = Asked::new();
-    let mut turn = opened::<()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
-    let Ok(herald) = turn.spawn::<Herald>(&(), Poke) else {
+    let mut turn = opened::<(Spawns<Herald>,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let Ok(herald) = turn.spawn(&(), Poke) else {
         panic!("the herald begins");
     };
     let to_parent = |kind| Mailed { by: herald.seated(), to: ME, count: 1, kind, bytes: NOTHING, tie: Tie::TELL };
@@ -428,9 +441,9 @@ fn child_past_the_deepest_path_is_refused() {
     };
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = opened::<()>(ME, &deepest, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<(Spawns<Leaf>,)>(ME, &deepest, Above::Chassis, &table, &mut asked, ME);
 
-    assert_eq!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }), Err(Refused::TooDeep));
+    assert_eq!(turn.spawn(&0, LeafConfig { fails: false }), Err(Refused::TooDeep));
     assert!(asked.effects().is_empty());
 }
 

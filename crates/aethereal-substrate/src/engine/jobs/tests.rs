@@ -5,8 +5,8 @@ use super::super::*;
 use super::*;
 use crate::Entry;
 use aethereal_actor::{
-    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Handles, Job, JobType, Runner, Running, RunsJob, Time, ToType,
-    ToWithoutMail, Top, Turn,
+    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Handles, Job, JobType, Runner, Running, RunsJob, Spawns, Time,
+    ToType, ToWithoutMail, Top, Turn,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
 use std::cell::RefCell;
@@ -317,6 +317,7 @@ impl Handles<Go> for Worker {
         RunsJob<Measure, Which>,
         RunsJob<Hangs, Which>,
         RunsJob<Shrink, Which>,
+        Spawns<Failing>,
     );
 
     fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
@@ -380,7 +381,7 @@ impl Handles<Go> for Worker {
                 return Err(Fault::of_parts(KindId::of::<Go>(), Vec::new()));
             }
             "nest" => {
-                let spawned = turn.spawn::<Failing>(&(), Which { at: go.at });
+                let spawned = turn.spawn(&(), Which { at: go.at });
                 say(format!("nest {:?}", spawned.err().is_some()));
                 return Ok(());
             }
@@ -445,6 +446,10 @@ struct Failing;
 
 impl Kind for Failing {
     const NAME: KindName = KindName::new("aether.test.failing_child");
+}
+
+impl ChildOf for Failing {
+    type Parent = Worker;
 }
 
 impl Actor for Failing {

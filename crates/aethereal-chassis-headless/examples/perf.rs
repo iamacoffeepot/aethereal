@@ -10,7 +10,9 @@
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, To, ToType, ToWithoutMail, Top, Turn};
+use aethereal_actor::{
+    Actor, Beginning, ChildOf, Ending, Fault, Handles, Recursive, Spawns, To, ToType, ToWithoutMail, Turn,
+};
 use aethereal_chassis_headless::{Headless, Measured};
 use aethereal_data::{Kind, KindName, Plain, TypedKey};
 use aethereal_substrate::Engine;
@@ -89,21 +91,21 @@ const fn mix(mut value: u64) -> u64 {
 }
 
 impl ChildOf for Counter {
-    type Parent = Top;
+    type Parent = Recursive;
 }
 
 impl Actor for Counter {
     type Config = CounterConfig;
     type Key = u64;
     type Handles = (Count,);
-    type BeginSends = (ToType<Self, Count>,);
+    type BeginSends = (ToType<Self, Count>, Spawns<Self>);
     type EndSends = ();
 
     fn begin(config: CounterConfig, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
         for number in 1..=config.children + config.idle {
             let child = CounterConfig { number, children: 0, idle: 0, shape: config.shape };
             let is_busy = number <= config.children;
-            let spawned = turn.spawn::<Self>(&number, child).is_ok();
+            let spawned = turn.spawn(&number, child).is_ok();
             if spawned && is_busy {
                 turn.send(ToWithoutMail::ChildInstanced(Self::NAME, number.to_name()), &Count { left: TURNS })?;
             }

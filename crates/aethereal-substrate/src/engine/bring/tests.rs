@@ -4,7 +4,8 @@ use super::super::*;
 use crate::{Closed, Entry, Feed};
 use aethereal_actor::Time;
 use aethereal_actor::{
-    Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Source, ToType, ToWithoutMail, Top, Turn,
+    Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Recursive, Source, Spawns, ToType, ToWithoutMail, Top,
+    Turn,
 };
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use std::cell::RefCell;
@@ -88,7 +89,7 @@ impl Kind for Window {
 }
 
 impl ChildOf for Window {
-    type Parent = Top;
+    type Parent = Recursive;
 }
 
 impl Actor for Window {
@@ -129,9 +130,9 @@ impl Handles<Moved> for Window {
 }
 
 impl Handles<Order> for Window {
-    type Sends = ();
+    type Sends = (Spawns<Self>,);
 
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
         let words: Vec<&str> = order.text.split(' ').collect();
         match words[..] {
             ["spawn", number] => {
@@ -139,7 +140,7 @@ impl Handles<Order> for Window {
                 let given = mem::take(&mut self.pointers).into_iter().map(|pointer| turn.give(pointer));
                 let pointers = given.collect::<Result<_, _>>()?;
                 let config = WindowConfig { number, pointers, lights: Vec::new(), orders: Vec::new() };
-                let _ = turn.spawn::<Self>(&number, config);
+                let _ = turn.spawn(&number, config);
             }
             ["close"] => turn.close(),
             _ => {}
