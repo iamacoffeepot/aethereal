@@ -502,7 +502,7 @@ fn heard((parts, hops): (usize, usize), orders: &[&str]) -> Vec<String> {
     let Some(parts) = NonZeroUsize::new(parts) else {
         panic!("an engine has parts");
     };
-    let mut engine = Engine::new(parts, 1024, 1 << 20, 1 << 20, hops);
+    let mut engine = Engine::new(parts, 1024, 1 << 20, 1 << 20, hops).ready();
     let orders = orders.iter().map(|text| String::from(*text)).collect();
     let made = engine.add_root::<Pointer>(&(), PointerConfig { orders });
     assert!(made.is_ok(), "the pointer begins");
@@ -793,7 +793,7 @@ fn a_blob_a_context_refers_to_is_kept_until_its_answer_is_handled() {
         let Some(parts) = NonZeroUsize::new(parts) else {
             panic!("an engine has parts");
         };
-        let mut engine = Engine::new(parts, 1024, 1 << 20, 1 << 20, hops);
+        let mut engine = Engine::new(parts, 1024, 1 << 20, 1 << 20, hops).ready();
         let made = engine.add_root::<Keeper>(&(), Blank);
         assert!(made.is_ok(), "the keeper begins");
         said();

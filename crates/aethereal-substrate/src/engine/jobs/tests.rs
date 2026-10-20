@@ -644,7 +644,7 @@ fn engine(jobs: Arc<dyn Jobs>) -> (Engine, Seated) {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_jobs(jobs);
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_jobs(jobs).ready();
     let Ok(worker) = engine.add_root::<Worker>(&(), Which { at: 0 }) else {
         panic!("the worker begins");
     };

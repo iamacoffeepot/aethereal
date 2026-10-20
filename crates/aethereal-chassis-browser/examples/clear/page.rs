@@ -26,13 +26,14 @@ pub struct Program {
 #[wasm_bindgen]
 pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
     let gpu = Gpu::open(canvas).await?;
-    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
+    let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
-    let gpu = engine.hand(gpu);
-    engine
+    let gpu = setup.hand(gpu);
+    let engine = setup
         .add_root::<Painter>(&(), PainterConfig { gpu })
-        .map_err(|refused| JsError::new(&format!("the painter did not begin: {refused:?}")))?;
+        .map_err(|refused| JsError::new(&format!("the painter did not begin: {refused:?}")))?
+        .ready();
 
     Ok(Program { browser: Browser::new(engine, Performance) })
 }

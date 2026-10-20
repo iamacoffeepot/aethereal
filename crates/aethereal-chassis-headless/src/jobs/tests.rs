@@ -111,7 +111,7 @@ fn each_job_runs_on_a_thread_of_its_own_and_those_past_its_threads_wait_their_tu
     // thread, or this never returns.
     let one = NonZeroUsize::MIN;
     let runners = Arc::new(Runners::new(vec![JobType::of::<Where>()], one));
-    let mut engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(Arc::clone(&runners) as Arc<dyn Jobs>);
+    let mut engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(Arc::clone(&runners) as Arc<dyn Jobs>).ready();
     let Ok(_) = engine.add_root::<Asker>(&(), Nothing) else {
         panic!("the asker begins");
     };
@@ -250,7 +250,7 @@ fn a_sleep_wakes_once_its_time_has_come_and_a_job_given_up_on_is_dropped() {
     // for good is given up on once the later sleep wakes.
     let runners = Arc::new(Runners::new(vec![JobType::of::<Forever>()], NonZeroUsize::MIN));
     let one = NonZeroUsize::MIN;
-    let mut engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(Arc::clone(&runners) as Arc<dyn Jobs>);
+    let mut engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(Arc::clone(&runners) as Arc<dyn Jobs>).ready();
     let clock = Monotonic::new();
     let now = || Time::from_nanos(clock.nanos());
     // The root begins at the time of the last step.

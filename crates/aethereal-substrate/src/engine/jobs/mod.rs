@@ -166,8 +166,7 @@ impl Kind for Panicked {
 
 impl Engine {
     /// The engine, its jobs run by `jobs`, which with none set answers every job that no runner runs it (ADR-0018).
-    #[must_use]
-    pub fn with_jobs(mut self, jobs: Arc<dyn Jobs>) -> Self {
+    pub(super) fn with_jobs(mut self, jobs: Arc<dyn Jobs>) -> Self {
         self.jobs = jobs;
 
         self

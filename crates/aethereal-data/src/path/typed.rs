@@ -88,6 +88,10 @@ pub trait ActorKey: sealed::Sealed {
     /// Whether an actor of a type keyed by it is the type's one, or one of many each under its own key.
     const KEYED: Keyed;
 
+    /// [`KEYED`](Self::KEYED) as a type, [`Singleton`] or [`Instanced`], for a check the compiler makes: what an
+    /// engine's setup reads of the roots it is made with (ADR-0022).
+    type Keying;
+
     /// The key's name, or none for a singleton, which has no key.
     fn name(&self) -> Option<KeyName>;
 }
@@ -99,8 +103,15 @@ pub enum Keyed {
     Instanced,
 }
 
+/// A type whose actors are keyed by `()`: one, at its name alone, as a type says it.
+pub struct Singleton;
+
+/// A type whose actors are keyed by a [`TypedKey`]: many, each under its own key, as a type says it.
+pub struct Instanced;
+
 impl ActorKey for () {
     const KEYED: Keyed = Keyed::Singleton;
+    type Keying = Singleton;
 
     fn name(&self) -> Option<KeyName> {
         None
@@ -109,6 +120,7 @@ impl ActorKey for () {
 
 impl<K: TypedKey> ActorKey for K {
     const KEYED: Keyed = Keyed::Instanced;
+    type Keying = Instanced;
 
     fn name(&self) -> Option<KeyName> {
         Some(self.to_name())

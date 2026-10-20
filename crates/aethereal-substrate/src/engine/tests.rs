@@ -263,7 +263,7 @@ fn fusing(hops: usize, to_self: &[&str]) -> (Engine, ActorId) {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops);
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops).ready();
     let to_self = to_self.iter().map(|text| String::from(*text)).collect();
     let Ok(root) = engine.add_root::<Node>(&1, NodeConfig { number: 1, to_self, spawns: Vec::new() }) else {
         panic!("the root begins");
@@ -1105,7 +1105,7 @@ fn holding(blob_bytes: usize, to_self: &[&str]) -> Engine {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 0, blob_bytes, 0);
+    let mut engine = Engine::new(parts, 1024, 0, blob_bytes, 0).ready();
     let to_self = to_self.iter().map(|text| String::from(*text)).collect();
     let Ok(_) = engine.add_root::<Holder>(&(), HolderConfig { to_self, gives: 0 }) else {
         panic!("the holder begins");
@@ -1144,7 +1144,7 @@ fn the_engine_keeps_a_hash_it_is_asked_for_between_steps() {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
     let Ok(blob) = engine.put_blob(vec![1, 2, 3]) else {
         panic!("three bytes fit");
     };
@@ -1162,7 +1162,7 @@ fn a_blob_mailed_and_kept_by_no_one_else_reaches_its_receiver_as_a_hop_or_as_it_
         let Some(parts) = NonZeroUsize::new(parts) else {
             panic!("an engine has parts");
         };
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops);
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops).ready();
         let to_self = ["put 3", "send"].map(String::from).to_vec();
         let Ok(_) = engine.add_root::<Holder>(&(), HolderConfig { to_self, gives: 0 }) else {
             panic!("the holder begins");
@@ -1231,7 +1231,7 @@ fn references_held_or_dropped_between_steps_are_counted() {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
     let Ok(kept) = engine.put_blob(vec![1, 2, 3]) else {
         panic!("three bytes fit");
     };
@@ -1252,8 +1252,8 @@ fn one_engine_sums_only_the_changes_to_its_own_blobs() {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut kept = Engine::new(parts, 1024, 0, 1 << 20, 0);
-    let mut dropping = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let mut kept = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
+    let mut dropping = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
     let Ok(blob) = kept.put_blob(vec![1, 2, 3]) else {
         panic!("three bytes fit");
     };
@@ -1327,7 +1327,7 @@ fn mail_carried_past_its_receivers_slice_keeps_its_blob_until_it_is_handed() {
         panic!("four is not zero");
     };
     for hops in [0, 64] {
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops);
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops).ready();
         let Ok(_) = engine.add_root::<Holder>(&(), HolderConfig { to_self: Vec::new(), gives: 3000 }) else {
             panic!("the holder begins");
         };
@@ -1431,7 +1431,7 @@ fn every_turn_reads_the_time_its_step_was_given_and_a_closing_turn_reads_blobs()
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
     let config = ClockedConfig { number: 1, to_self: String::from("spawn") };
     let Ok(_) = engine.add_root::<Clocked>(&1, config) else {
         panic!("the root begins");
@@ -1452,7 +1452,7 @@ fn the_workers_of_a_shared_step_read_the_time_it_was_planned_with() {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0);
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
     // Each root sits in the part with fewest actors, so the two are in parts of their own.
     for number in [1, 2] {
         let config = ClockedConfig { number, to_self: String::from("tick") };
@@ -1517,7 +1517,7 @@ fn a_chain_carried_past_its_receivers_slice_has_not_finished() {
         panic!("four is not zero");
     };
     for hops in [0, 64] {
-        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops);
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops).ready();
         let Ok(holder) = engine.add_root::<Holder>(&(), HolderConfig { to_self: Vec::new(), gives: 3000 }) else {
             panic!("the holder begins");
         };
@@ -1636,7 +1636,7 @@ impl Actor for Caller {
 
 /// An engine with whichever root `listening` makes at the listener's name, and a caller that tells it `text`.
 fn calling(listening: impl FnOnce(&mut Engine), text: &str) -> Vec<String> {
-    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0);
+    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).ready();
     listening(&mut engine);
     let Ok(_) = engine.add_root::<Caller>(&(), Caller { text: String::from(text) }) else {
         panic!("the caller begins");
@@ -1809,7 +1809,7 @@ impl Handles<Ended> for Seer {
 
 /// What a seer says over a few steps, beside whichever root `oracle` makes at the oracle's name, in order.
 fn seeing(oracle: impl FnOnce(&mut Engine)) -> Vec<String> {
-    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0);
+    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).ready();
     oracle(&mut engine);
     let Ok(_) = engine.add_root::<Seer>(&(), Seer) else {
         panic!("the seer begins");
@@ -1943,7 +1943,7 @@ reaching!(Wrecker, "aether.test.wrecker", (), (), ToLighthouse);
 
 /// Whether a root of type `R` is made beside whichever root `lighthouse` makes at the lighthouse's name.
 fn reaches<R: Root<Config = R, Key = ()> + Default>(lighthouse: impl FnOnce(&mut Engine)) -> Result<(), Refused> {
-    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0);
+    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).ready();
     lighthouse(&mut engine);
 
     engine.add_root::<R>(&(), R::default()).map(|_| ())
@@ -2060,10 +2060,24 @@ harbored!(Smuggler, "aether.test.smuggler", Lighthouse);
 fn a_child_that_reaches_a_typed_path_of_singletons_is_refused_while_no_actor_is_live_there_but_its_spawner() {
     // Catches a turn's spawn that does not check the paths its child reaches, and one that refuses a child reaching
     // back the actor whose `begin` spawns it, which is not yet in the table (ADR-0022).
-    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0);
+    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).ready();
     let Ok(_) = engine.add_root::<Harbor>(&(), Harbor) else {
         panic!("the harbor begins");
     };
 
     assert_eq!(said(), ["pilot None, smuggler Some(Missing(KindName(\"aether.test.lighthouse\")))"]);
+}
+
+#[test]
+fn a_setup_makes_each_root_of_an_instanced_type_it_is_handed_at_once() {
+    // Catches a setup that makes only the first of the roots it is handed together, or none.
+    let made =
+        Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).add_roots::<Listener>([(0, Listener), (1, Listener)]);
+    let Ok(setup) = made else {
+        panic!("the listeners begin");
+    };
+    let mut engine = setup.ready();
+
+    assert_eq!(engine.add_root::<Listener>(&0, Listener), Err(Refused::KeyTaken));
+    assert_eq!(engine.add_root::<Listener>(&1, Listener), Err(Refused::KeyTaken));
 }

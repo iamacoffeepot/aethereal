@@ -34,7 +34,7 @@ pub use clock::Clock;
 pub use context::Context;
 pub use engine::{
     Closed, CodeRefused, Done, Engine, Feed, Finish, Fold, Folding, Hops, Inline, Jobs, Lifecycle, NoRoom, NoRunner,
-    Panicked, Plan, Reading, Share, Split, SplitCost, Taken, Tally, Waits, Whole, Workers,
+    Panicked, Plan, Reading, Setup, Share, Split, SplitCost, Taken, Tally, Waits, Whole, Workers,
 };
 pub use id::{child_id, path_id, root_id};
 pub use lives::{Life, Lives, State};
