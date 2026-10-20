@@ -79,6 +79,17 @@ impl aethereal_data::Kind for FalseSend {
     const NAME: KindName = KindName::new("aether.actor.false_send");
 }
 
+/// Why a host does not hand its guest's turn a child the turn recorded spawning.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Unspawned {
+    /// The spawner's declaration lists no spawn of the child's type: the turn broke its declaration, and fails with
+    /// [`FalseSend`], as for a send past it (ADR-0022).
+    Undeclared,
+    /// The spawner is not who it says, the key is not of the type's keying, or the key is taken: the guest's records
+    /// do not read back.
+    Garbled,
+}
+
 /// The reason of a guest's turn that watched an actor though the watcher's type does not handle endings (ADR-0013,
 /// ADR-0015).
 #[derive(Debug, PartialEq, Eq, Plain)]
@@ -515,21 +526,36 @@ impl<'a> Hosted<'a> {
     /// Spawns, by `by`, the actor whose turn this is or a child it spawned, a child of the type `from` makes, under
     /// `key`, in `seat`, as a turn spawns one: the spawn is asked for, and the child is the turn's to stand up with
     /// [`Self::stand`] once its `begin` has run, or [`Self::take_in`] when its host ran that apart. Answers with the
-    /// child: nothing when `by` is not who it says, the key is not of the type's keying, or the key is taken, so the
-    /// guest's records do not read back.
-    pub fn spawn(&mut self, by: Seated, from: Code, key: Option<KeyName>, seat: SeatNumber) -> Option<Seated> {
+    /// child.
+    ///
+    /// # Errors
+    ///
+    /// [`Unspawned::Undeclared`] when the sends of `by`'s turn list no spawn of the child's type: the turn's own, or a
+    /// child's `begin`'s. [`Unspawned::Garbled`] when `by` is not who it says, the key is not of the type's keying, or
+    /// the key is taken.
+    pub fn spawn(
+        &mut self,
+        by: Seated,
+        from: Code,
+        key: Option<KeyName>,
+        seat: SeatNumber,
+    ) -> Result<Seated, Unspawned> {
         let declared = from.declared();
-        let by_path = if by == self.seat.me {
-            self.seat.path.clone()
+        let (by_path, sends) = if by == self.seat.me {
+            (self.seat.path.clone(), self.sends)
         } else {
-            self.spawned.iter().find(|child| child.me == by)?.path.clone()
+            let child = self.spawned.iter().find(|child| child.me == by).ok_or(Unspawned::Garbled)?;
+            (child.path.clone(), child.declared.begins())
         };
+        if !spawns(sends, declared.id()) {
+            return Err(Unspawned::Undeclared);
+        }
         let segment = match (&key, declared.keyed()) {
             (None, Keyed::Singleton) => PathSegment::new(declared.name().clone(), &()),
             (Some(key), Keyed::Instanced) => PathSegment::instanced(declared.name().clone(), key.clone()),
-            _ => return None,
+            _ => return Err(Unspawned::Garbled),
         };
-        let path = by_path.child(&segment).ok()?;
+        let path = by_path.child(&segment).map_err(|_| Unspawned::Garbled)?;
         let id = self.seat.table.child(by.id, &segment);
         let is_live = self.seat.table.child_seat(id).is_some();
         let is_made = by == self.seat.me && self.seat.made.has_made(id);
@@ -537,14 +563,14 @@ impl<'a> Hosted<'a> {
         let is_spawned = self.spawned.iter().any(|child| child.me.id == id);
         let is_taken = is_live || is_made || is_stood || is_spawned;
         if is_taken {
-            return None;
+            return Err(Unspawned::Garbled);
         }
         let what = key.map_or(What::Spawn { from, seat }, |key| What::SpawnInstanced { from, key, seat });
         self.seat.asked.buffers.effects.push(Effect::new(by, what));
         let me = Seated { id, seat };
         self.spawned.push(Spawned { me, path, declared, by, sent: 0 });
 
-        Some(me)
+        Ok(me)
     }
 
     /// Stands up `me`, a child [`Self::spawn`] spawned whose `begin` succeeded, run by `runs`: the engine seats it
@@ -730,6 +756,11 @@ impl<'a> Hosted<'a> {
             Target::Watched | Target::Subscribed | Target::Job | Target::Spawned => false,
         }
     }
+}
+
+/// Whether `sends` list a spawn of a child of the type of `kind` (ADR-0022).
+fn spawns(sends: &[Sending], kind: KindId) -> bool {
+    sends.iter().any(|sending| sending.to() == Target::Spawned && sending.kind() == kind)
 }
 
 /// Whether `sends` list a subscription to the stage of `kind` (ADR-0020).

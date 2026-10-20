@@ -1,10 +1,9 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's effect buffers.
 
 use super::*;
-use crate::{Anywhere, ChildOf, Recursive, Spawns};
 use crate::{
-    Beginning, Carries, Claim, Claimed, Ended, Ending, Fault, How, Item, Kept, Mail, MailId, NotHeld, Payload,
-    Protocol, Resource, Subscribers,
+    Anywhere, Beginning, Carries, ChildOf, Claim, Claimed, Ended, Ending, Fault, Hosted, How, Item, Keeping, Kept,
+    Mail, MailId, NotHeld, Payload, Protocol, Recursive, Resource, Spawns, Subscribers, Unspawned,
 };
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
@@ -717,4 +716,29 @@ fn a_host_holds_a_guest_to_what_it_claims_of_resources() {
     assert_eq!(hosted.claim(claim(9, Claimed::Gave)), Err(NotHeld), "it was never held");
     assert_eq!(hosted.claim(claim(7, Claimed::Gave)), Ok(()));
     assert_eq!(hosted.claim(claim(7, Claimed::Carried { send: 0 })), Err(NotHeld), "no mail was sent");
+}
+
+#[test]
+fn a_hosted_spawn_its_spawners_declaration_does_not_list_fails() {
+    // Catches a guest's turn handed a child its type does not declare it spawns, and a child's own spawn in its
+    // `begin` checked against its spawner's declaration rather than its own (ADR-0022).
+    let table = Listed::default();
+    let mut asked = Asked::new();
+    let mut keeping = Keeping::default();
+    let mut hosted =
+        Hosted::beginning(ME, &ROOT, Above::Chassis, &table, &mut asked, Declared::of::<Branch>(), &mut keeping);
+    let leaf = || Code::Linked(Declared::of::<Leaf>());
+
+    let Ok(child) = hosted.spawn(ME, leaf(), Some(KeyName::new("0")), SeatNumber::new(1)) else {
+        panic!("a branch declares its leaves");
+    };
+    let by_child = hosted.spawn(child, leaf(), Some(KeyName::new("1")), SeatNumber::new(2));
+    assert_eq!(by_child, Err(Unspawned::Undeclared), "a leaf declares no spawn of its own");
+
+    let mut asked = Asked::new();
+    let mut keeping = Keeping::default();
+    let mut hosted =
+        Hosted::beginning(ME, &ROOT, Above::Chassis, &table, &mut asked, Declared::of::<Herald>(), &mut keeping);
+    let by_herald = hosted.spawn(ME, leaf(), Some(KeyName::new("0")), SeatNumber::new(1));
+    assert_eq!(by_herald, Err(Unspawned::Undeclared), "a herald declares no spawn of a leaf");
 }
