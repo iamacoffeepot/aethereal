@@ -1,8 +1,8 @@
 //! What comes back from what an actor sends, which its type must handle: the reply a receiver sends to whoever sent
 //! to it, checked against the sender where the sender declares the send (ADR-0016).
 
-use super::{Allows, Carries, Handled, Handles, Protocol, Spawns, Subscribes, ToAny, ToSender, ToType, Watches};
-use crate::{Actor, Admits, ChildOf};
+use super::{Allows, Carries, Handled, Handles, Protocol, Spawns, Subscribes, Tells, ToAny, ToSender, ToType, Watches};
+use crate::{Actor, Admits, ChildOf, Path, PathTo};
 use aethereal_data::Kind;
 
 /// These sends, a tuple of markers, may be declared by an actor of type `A`: what a type's sends are bounded by, so
@@ -372,6 +372,12 @@ impl<A, K> DeclaredBy<A> for ToSender<K> {}
 
 impl<A> DeclaredBy<A> for Watches {}
 
+/// A send at a typed path is checked as one to the path's type is.
+impl<A, L: ChildOf + PathTo + Handles<K>, K: Kind + Handled> DeclaredBy<A> for Tells<Path<L>, K> where
+    <L as Handles<K>>::Sends: RepliesTo<A>
+{
+}
+
 /// A spawner spawns only a type that may stand beneath it.
 impl<A, C: ChildOf> DeclaredBy<A> for Spawns<C> where C::Parent: Admits<A, C> {}
 
@@ -394,6 +400,8 @@ impl<A> RepliesTo<A> for Watches {}
 
 impl<A, C> RepliesTo<A> for Spawns<C> {}
 
+impl<A, T, K> RepliesTo<A> for Tells<T, K> {}
+
 impl<A, K> RepliesTo<A> for Subscribes<K> {}
 
 /// This send, of a receiver's handler, replies only with a kind of the tuple `Answers`, found at its place in `I`:
@@ -413,6 +421,8 @@ impl<Answers, P, K> ReplyWithin<Answers, ()> for ToAny<P, K> {}
 impl<Answers> ReplyWithin<Answers, ()> for Watches {}
 
 impl<Answers, C> ReplyWithin<Answers, ()> for Spawns<C> {}
+
+impl<Answers, T, K> ReplyWithin<Answers, ()> for Tells<T, K> {}
 
 impl<Answers, K> ReplyWithin<Answers, ()> for Subscribes<K> {}
 

@@ -18,7 +18,7 @@ mod tests;
 pub use handles::{Handled, HandledList, Handles, Others};
 pub use protocols::{AnsweredBy, CarriedBy, Carries, Conforms, Covers, Listed, Protocol};
 pub use replies::{DeclaredBy, HandledBy, RepliesTo, RepliesWithin, ReplyWithin};
-pub use sends::{Allows, At, Kinds, Marker, Sends, Spawns, Subscribes, ToAny, ToSender, ToType, Watches};
+pub use sends::{Allows, At, Kinds, Marker, Sends, Spawns, Subscribes, Tells, ToAny, ToSender, ToType, Watches};
 
 use crate::Actor;
 use aethereal_data::{ActorKey, Keyed, KindId, KindName};
@@ -340,4 +340,6 @@ pub enum Target {
     Job,
     /// No actor: the handler may spawn a child of the type of the sending's kind (ADR-0022).
     Spawned,
+    /// The actor at the typed path whose last segment this is, found as each piece of mail is sent (ADR-0022).
+    Path(&'static crate::TypeSegment),
 }

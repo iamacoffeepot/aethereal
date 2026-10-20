@@ -5,7 +5,7 @@
 //! program reads, by a writer that runs in a constant. A host reads it back as
 //! the plain types here, without making an instance.
 
-use crate::{Declared, Handler, Role, Sending, Target};
+use crate::{Beneath, Declared, Handler, Role, Sending, Target, TypeSegment};
 use aethereal_data::{Keyed, KindId, KindName, Plain};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -48,6 +48,14 @@ pub enum To {
     Subscribed,
     Job,
     Spawned,
+    Path { last: Segment, above: Vec<Segment> },
+}
+
+/// One segment of a typed path a send may target, as a section holds it: its last, then those above it to its root.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+pub struct Segment {
+    pub name: KindName,
+    pub keyed: Key,
 }
 
 /// One thing a type handles and what its handler may send, as a section holds it.
@@ -179,11 +187,46 @@ const fn sendings(out: &mut [u8], at: usize, sendings: &[Sending]) -> usize {
             Target::Subscribed => count(out, at, 4),
             Target::Job => count(out, at, 5),
             Target::Spawned => count(out, at, 6),
+            Target::Path(last) => {
+                let mut at = count(out, at, 7);
+                at = segment(out, at, last);
+                at = count(out, at, depth(last) - 1);
+                let mut below = last;
+                while let Beneath::Type(above) = below.beneath {
+                    at = segment(out, at, above);
+                    below = above;
+                }
+
+                at
+            }
         };
         index += 1;
     }
 
     at
+}
+
+/// How many segments the typed path whose last is `segment` has.
+const fn depth(segment: &TypeSegment) -> usize {
+    let mut depth = 1;
+    let mut segment = segment;
+    while let Beneath::Type(above) = segment.beneath {
+        depth += 1;
+        segment = above;
+    }
+
+    depth
+}
+
+/// Writes one segment of a typed path: its type's name, and whether it is keyed, as [`Segment`] reads them.
+const fn segment(out: &mut [u8], at: usize, segment: &TypeSegment) -> usize {
+    let at = name(out, at, segment.name);
+    let keyed = match segment.keyed {
+        Keyed::Singleton => 0,
+        Keyed::Instanced => 1,
+    };
+
+    count(out, at, keyed)
 }
 
 const fn handlers(out: &mut [u8], at: usize, handlers: &[Handler]) -> usize {
@@ -251,10 +294,31 @@ fn leak_sends(sends: &[Send]) -> &'static [Sending] {
             To::Subscribed => Target::Subscribed,
             To::Job => Target::Job,
             To::Spawned => Target::Spawned,
+            To::Path { last, above } => Target::Path(leak_path(last, above)),
         };
 
         Sending::new(send.kind, to)
     });
 
     Box::leak(sendings.collect::<Box<[Sending]>>())
+}
+
+/// The typed path whose last segment is `last`, with `above` from the one over it to its root, kept for as long as the
+/// process runs.
+fn leak_path(last: &Segment, above: &[Segment]) -> &'static TypeSegment {
+    let beneath =
+        above.iter().rev().fold(Beneath::Top, |beneath, segment| Beneath::Type(leak_segment(segment, beneath)));
+
+    leak_segment(last, beneath)
+}
+
+/// The segment `segment` reads as, beneath `beneath`, kept for as long as the process runs.
+fn leak_segment(segment: &Segment, beneath: Beneath) -> &'static TypeSegment {
+    let name: &'static KindName = Box::leak(Box::new(segment.name.clone()));
+    let keyed = match segment.keyed {
+        Key::Singleton => Keyed::Singleton,
+        Key::Instanced => Keyed::Instanced,
+    };
+
+    Box::leak(Box::new(TypeSegment { name, keyed, beneath }))
 }

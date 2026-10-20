@@ -32,6 +32,7 @@ mod instances;
 mod item;
 mod job;
 mod mail;
+mod path;
 mod placement;
 pub mod records;
 mod reference;
@@ -60,7 +61,7 @@ pub use controller::{Controller, Requests};
 pub use declared::{
     Allows, AnsweredBy, At, CarriedBy, Carries, Conforms, Covers, Declared, DeclaredBy, Handled, HandledBy,
     HandledList, Handler, Handles, Kinds, Listed, Marker, Others, Protocol, RepliesTo, RepliesWithin, ReplyWithin,
-    Role, Sending, Sends, Spawns, Subscribes, Target, ToAny, ToSender, ToType, Watches,
+    Role, Sending, Sends, Spawns, Subscribes, Target, Tells, ToAny, ToSender, ToType, Watches,
 };
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
@@ -77,8 +78,9 @@ pub use job::{Copied, Driven, Job, JobId, NotRun, Runner, Running, RunsJob, Subm
 #[cfg(feature = "std")]
 pub use job::{JobType, Lending, Outcome, Produced};
 pub use mail::{Mail, MailId};
+pub use path::{Beneath, Path, PathTo, TypeSegment, path};
 pub use placement::{Admits, Anywhere, AtTop, ChildOf, Placement, Recursive, Root, Top};
-pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Reaches};
+pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Proven, Reaches};
 pub use resource::{
     Carried, Claim, Claimed, Gift, Given, Giver, Handle, Holds, Keeping, Keeps, KeepsNothing, Kept, NotHeld, Resource,
     Was, carry, is_loose_claim, take_claimed, take_loose_ticket,

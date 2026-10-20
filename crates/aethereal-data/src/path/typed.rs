@@ -115,6 +115,69 @@ impl<K: TypedKey> ActorKey for K {
     }
 }
 
+/// The keys of a path, with the key of one more segment after them: what a typed path takes, its keyed segments'
+/// keys from the root, and nothing for a singleton (ADR-0022).
+///
+/// No keys are `()`, one key is the key alone, and several are a tuple, so a path whose one keyed segment is a `u64`
+/// takes `7`, not `(7,)`. A path takes at most eight keys.
+pub trait Then<K: ActorKey>: Sized {
+    /// The keys with `K`'s after them.
+    type Keys;
+
+    /// The keys before, and the last segment's key.
+    fn split(keys: Self::Keys) -> (Self, K);
+}
+
+/// A singleton's segment adds no key.
+impl<A> Then<()> for A {
+    type Keys = A;
+
+    fn split(keys: A) -> (A, ()) {
+        (keys, ())
+    }
+}
+
+/// The first key is the key alone.
+impl<K: TypedKey> Then<K> for () {
+    type Keys = K;
+
+    fn split(key: K) -> ((), K) {
+        ((), key)
+    }
+}
+
+/// A second key makes a pair.
+impl<A: TypedKey, K: TypedKey> Then<K> for A {
+    type Keys = (A, K);
+
+    fn split((a, key): (A, K)) -> (A, K) {
+        (a, key)
+    }
+}
+
+/// Each later key goes after the tuple of those before it.
+macro_rules! then {
+    ($( [$($name:ident)*] )*) => {$(
+        #[allow(non_snake_case, reason = "each key is bound under its type's name")]
+        impl<$($name: TypedKey,)* K: TypedKey> Then<K> for ($($name,)*) {
+            type Keys = ($($name,)* K,);
+
+            fn split(($($name,)* key,): Self::Keys) -> (Self, K) {
+                (($($name,)*), key)
+            }
+        }
+    )*};
+}
+
+then! {
+    [A B]
+    [A B C]
+    [A B C D]
+    [A B C D E]
+    [A B C D E F]
+    [A B C D E F G]
+}
+
 mod sealed {
     use super::TypedKey;
 

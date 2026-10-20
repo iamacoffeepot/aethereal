@@ -5,8 +5,8 @@ use crate::watch::Notice;
 use crate::{ByActor, Entry, child_id};
 use aethereal_actor::Time;
 use aethereal_actor::{
-    Actor, ActorRef, ChildOf, Ended, Ending, Fault, Handles, How, Level, Recursive, Spawns, Table, To, ToSender,
-    ToType, ToWithoutMail, Top, Turn, Watches,
+    Actor, ActorRef, ChildOf, Ended, Ending, Fault, Handles, How, Level, Path, Recursive, Spawns, Table, Tells, To,
+    ToSender, ToType, ToWithoutMail, Top, Turn, Watches, path,
 };
 use aethereal_data::{Bound, Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
@@ -1538,4 +1538,126 @@ fn one_chain_finishes_while_another_runs_on() {
     step(&mut engine);
     assert!(engine.has_finished(begun(second)));
     assert!(!engine.has_finished(begun(first)), "3 has yet to say hello");
+}
+
+/// A root that says what it is told, at the listener's name.
+#[derive(Plain)]
+struct Listener;
+
+/// A root at the listener's name of another layout, so another kind.
+#[derive(Plain)]
+struct Impostor {
+    at: u64,
+}
+
+/// What a root at the listener's name is: one that says what it is told.
+macro_rules! listening {
+    ($name:ident, $says:literal) => {
+        impl Kind for $name {
+            const NAME: KindName = KindName::new("aether.test.listener");
+        }
+
+        impl ChildOf for $name {
+            type Parent = Top;
+        }
+
+        impl Actor for $name {
+            type Config = Self;
+            type Key = ();
+            type Handles = (Note,);
+            type BeginSends = ();
+            type EndSends = ();
+
+            fn begin(listener: Self, _: &mut Beginning<'_, ()>) -> Result<Self, Fault> {
+                Ok(listener)
+            }
+
+            fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+                Ok(())
+            }
+        }
+
+        impl Handles<Note> for $name {
+            type Sends = ();
+
+            fn handle(&mut self, note: Note, _: &mut Turn<'_, ()>) -> Result<(), Fault> {
+                say(format!("{} got {}", $says, note.text));
+
+                Ok(())
+            }
+        }
+    };
+}
+
+listening!(Listener, "the listener");
+listening!(Impostor, "the impostor");
+
+/// A root that, as it begins, tells the listener at its typed path what it is made from.
+#[derive(Plain)]
+struct Caller {
+    text: String,
+}
+
+impl Kind for Caller {
+    const NAME: KindName = KindName::new("aether.test.caller");
+}
+
+impl ChildOf for Caller {
+    type Parent = Top;
+}
+
+impl Actor for Caller {
+    type Config = Self;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = (Tells<Path<Listener>, Note>,);
+    type EndSends = ();
+
+    fn begin(caller: Self, turn: &mut Beginning<'_, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.send_to(path::<Listener>(()), &Note { text: caller.text.clone() })?;
+
+        Ok(caller)
+    }
+
+    fn end(self, _: &mut Ending<'_, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// An engine with whichever root `listening` makes at the listener's name, and a caller that tells it `text`.
+fn calling(listening: impl FnOnce(&mut Engine), text: &str) -> Vec<String> {
+    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0);
+    listening(&mut engine);
+    let Ok(_) = engine.add_root::<Caller>(&(), Caller { text: String::from(text) }) else {
+        panic!("the caller begins");
+    };
+
+    step(&mut engine)
+}
+
+#[test]
+fn a_send_at_a_typed_path_reaches_only_a_live_actor_of_the_paths_type() {
+    // Catches a send at a path that does not find the actor live there, one handed to an actor of another kind that
+    // shares its name and so its id, and one at a place that holds no actor kept rather than dropped (ADR-0022).
+    let listener = calling(
+        |engine| {
+            let Ok(_) = engine.add_root::<Listener>(&(), Listener) else {
+                panic!("the listener begins");
+            };
+        },
+        "hello",
+    );
+    let impostor = calling(
+        |engine| {
+            let Ok(_) = engine.add_root::<Impostor>(&(), Impostor { at: 0 }) else {
+                panic!("the impostor begins");
+            };
+        },
+        "hello",
+    );
+    let nobody = calling(|_| {}, "hello");
+
+    assert_eq!(listener, ["the listener got hello"]);
+    assert_eq!(impostor, Vec::<String>::new(), "an actor of another kind at the path is not reached");
+    assert_eq!(nobody, Vec::<String>::new());
 }
