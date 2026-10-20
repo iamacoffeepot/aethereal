@@ -13,32 +13,29 @@ use super::{Engine, ROOTS, parity};
 use crate::{Context, lives, log, stream};
 use aethereal_actor::{Actors, Arena, Gift, Given, MailId, Mailed, Seated, Source, Tie};
 use aethereal_data::{ActorId, Encode, Kind, KindId};
+use crossbeam_queue::SegQueue;
 use std::any;
 use std::mem;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The chassis's end of a source: what it pushes events of kind `K` onto, as they happen, for the engine to bring to
 /// the source's owner at the next [`Engine::bring`] (ADR-0010).
 ///
 /// It is cloned for each place the chassis hears of such events, and every
 /// clone pushes onto the one feed. It is closed once its source is dropped.
+/// The feed is a queue no one waits on: a push never waits for another, nor
+/// for the engine, and the engine never waits for a push.
 pub struct Feed<K> {
-    fed: Arc<Mutex<Fed<K>>>,
+    fed: Arc<Fed<K>>,
 }
 
 /// What a feed holds between two brings.
 struct Fed<K> {
-    /// The events pushed since the last bring, in the order pushed.
-    events: Vec<K>,
-    flow: Flow,
-}
-
-/// Whether a feed's source is still held.
-enum Flow {
-    /// It is, or it is still on its way to the root it was handed for.
-    Open,
-    /// It has been dropped: nothing pushed now reaches an actor.
-    Closed,
+    /// The events pushed and not yet brought, in the order pushed.
+    events: SegQueue<K>,
+    /// Whether its source has been dropped: nothing pushed then reaches an actor.
+    closed: AtomicBool,
 }
 
 /// Why an event was not pushed: the source it was for has been dropped.
@@ -53,24 +50,19 @@ impl<K> Feed<K> {
     ///
     /// [`Closed`] when the source has been dropped.
     pub fn push(&self, event: K) -> Result<(), Closed> {
-        let mut fed = self.fed.lock().unwrap_or_else(PoisonError::into_inner);
-        match fed.flow {
-            Flow::Open => {
-                fed.events.push(event);
-                drop(fed);
-
-                Ok(())
-            }
-            Flow::Closed => Err(Closed),
+        if self.is_closed() {
+            return Err(Closed);
         }
+        // An event pushed as the feed closes is dropped with it, as one pushed and not yet brought is.
+        self.fed.events.push(event);
+
+        Ok(())
     }
 
     /// Whether the source has been dropped, as of the last bring: the chassis then stops what it fed it from.
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        let fed = self.fed.lock().unwrap_or_else(PoisonError::into_inner);
-
-        matches!(fed.flow, Flow::Closed)
+        self.fed.closed.load(Ordering::Acquire)
     }
 }
 
@@ -82,7 +74,7 @@ impl<K> Clone for Feed<K> {
 
 /// A feed as the engine brings from it, whatever its kind.
 trait Brings: Send + Sync {
-    /// Writes each event pushed since the last bring into `arena`, as mail from `owner` to itself, counting on from
+    /// Writes each event pushed before this bring began into `arena`, as mail from `owner` to itself, counting on from
     /// `sent`, the mail `owner` has sent, into `mailed`.
     fn bring(&self, owner: Seated, sent: u64, arena: &mut Arena, mailed: &mut Vec<Mailed>) -> Brought;
 
@@ -93,11 +85,13 @@ trait Brings: Send + Sync {
     fn close(&self);
 }
 
-impl<K: Kind + Encode<Actors> + Send + 'static> Brings for Mutex<Fed<K>> {
+impl<K: Kind + Encode<Actors> + Send + 'static> Brings for Fed<K> {
     fn bring(&self, owner: Seated, mut sent: u64, arena: &mut Arena, mailed: &mut Vec<Mailed>) -> Brought {
-        let mut fed = self.lock().unwrap_or_else(PoisonError::into_inner);
         let mut unwritten = 0;
-        for event in fed.events.drain(..) {
+        // What is pushed while it brings waits for the next bring, so a bring is bounded however fast the chassis
+        // pushes.
+        let ready = self.events.len();
+        for event in (0..ready).map_while(|_| self.events.pop()) {
             let Ok(bytes) = arena.write_mail(&event) else {
                 unwritten += 1;
                 continue;
@@ -105,7 +99,6 @@ impl<K: Kind + Encode<Actors> + Send + 'static> Brings for Mutex<Fed<K>> {
             sent += 1;
             mailed.push(Mailed { by: owner, to: owner, count: sent, kind: KindId::of::<K>(), bytes, tie: Tie::TELL });
         }
-        drop(fed);
 
         Brought { sent, unwritten }
     }
@@ -115,9 +108,8 @@ impl<K: Kind + Encode<Actors> + Send + 'static> Brings for Mutex<Fed<K>> {
     }
 
     fn close(&self) {
-        let mut fed = self.lock().unwrap_or_else(PoisonError::into_inner);
-        fed.flow = Flow::Closed;
-        fed.events = Vec::new();
+        self.closed.store(true, Ordering::Release);
+        while self.events.pop().is_some() {}
     }
 }
 
@@ -165,7 +157,7 @@ impl Engine {
         let ticket = self.ticket();
         let (gift, given) = Gift::handed(ticket, Source::<K>::default());
         self.handed.push(gift);
-        let fed = Arc::new(Mutex::new(Fed { events: Vec::new(), flow: Flow::Open }));
+        let fed = Arc::new(Fed { events: SegQueue::new(), closed: AtomicBool::new(false) });
         self.sources.push(Bringing { ticket, seen: Seen::Handed, feed: Arc::clone(&fed) as Arc<dyn Brings> });
 
         (given, Feed { fed })
