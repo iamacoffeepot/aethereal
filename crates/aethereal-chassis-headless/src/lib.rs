@@ -8,6 +8,7 @@
 mod clock;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod guest;
+mod jobs;
 mod pool;
 mod rehearsal;
 mod running;
@@ -15,6 +16,7 @@ mod running;
 mod tests;
 
 pub use clock::Monotonic;
+pub use jobs::Runners;
 
 use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Engine, Split, SplitCost, Workers};
