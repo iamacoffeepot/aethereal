@@ -74,7 +74,9 @@ pub use resource::{
 };
 pub use seat::{SeatNumber, Seated, Seats};
 pub use source::Source;
-pub use stage::{Cycle, Cycled, Cycling, Place, Present, Render, Stage, Start, Stop, Tick, Unordered, ordered};
+pub use stage::{
+    Cycle, Cycled, Cycling, Drained, Place, Present, Render, Stage, Start, Stop, Tick, Unordered, ordered,
+};
 pub use subscribers::Subscribers;
 pub use time::Time;
 pub use turn::{
