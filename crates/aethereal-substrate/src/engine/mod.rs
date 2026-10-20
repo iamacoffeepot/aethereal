@@ -10,7 +10,7 @@ mod fold;
 mod fuse;
 mod gift;
 mod jobs;
-pub use jobs::{Finish, Inline, Jobs, NoRunner, Panicked, Taken, Waits};
+pub use jobs::{Finish, Inline, Jobs, NoRoom, NoRunner, Panicked, Taken, Waits};
 mod lifecycle;
 mod made;
 mod plan;

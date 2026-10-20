@@ -182,6 +182,48 @@ impl Job for Hangs {
     }
 }
 
+/// A job that puts the bytes of the blob it refers to backwards, and then the count of what it put, read back, or past
+/// any budget when told to, and answers with references to both and to the blob it was handed.
+#[derive(Bound)]
+struct Shrink {
+    blob: BlobRef,
+    big: bool,
+}
+
+impl Kind for Shrink {
+    const NAME: KindName = KindName::new("aether.test.shrink");
+}
+
+/// What a shrink answers with.
+#[derive(Bound)]
+struct Shrunk {
+    first: BlobRef,
+    kept: BlobRef,
+    second: BlobRef,
+}
+
+impl Kind for Shrunk {
+    const NAME: KindName = KindName::new("aether.test.shrunk");
+}
+
+impl Job for Shrink {
+    type Done = Shrunk;
+    const RUNNER: Runner = Runner::Compute;
+
+    async fn run(self, job: &mut Running) -> Result<Shrunk, Fault> {
+        let read = job.read(&self.blob).to_vec();
+        let first = job.put(read.into_iter().rev().collect());
+        let count = vec![u8::try_from(job.read(&first).len()).unwrap_or(u8::MAX)];
+        let second = if self.big {
+            job.put(vec![0; 2 << 20])
+        } else {
+            job.put(count)
+        };
+
+        Ok(Shrunk { first, kept: self.blob, second })
+    }
+}
+
 /// A job no runner is handed.
 #[derive(Plain)]
 struct Unlinked;
@@ -244,7 +286,7 @@ impl Kind for Worker {
 impl Actor for Worker {
     type Config = Which;
     type Key = ();
-    type Handles = (Go, Answer<Doubled, Which>, Answer<Rang, GiveUp>);
+    type Handles = (Go, Answer<Doubled, Which>, Answer<Rang, GiveUp>, Answer<Shrunk, Which>);
     type BeginSends = (RunsJob<Double, Which>,);
     type EndSends = ();
 
@@ -270,6 +312,7 @@ impl Handles<Go> for Worker {
         RunsJob<Ring, GiveUp>,
         RunsJob<Measure, Which>,
         RunsJob<Hangs, Which>,
+        RunsJob<Shrink, Which>,
     );
 
     fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self::Sends>) -> Result<(), Fault> {
@@ -309,6 +352,12 @@ impl Handles<Go> for Worker {
                     return Err(Fault::of_parts(KindId::of::<Hangs>(), Vec::new()));
                 };
                 turn.run(&Hangs { blob }, &which)?
+            }
+            "shrink" | "shrink big" => {
+                let Ok(blob) = turn.put(vec![1, 2, 3, 4]) else {
+                    return Err(Fault::of_parts(KindId::of::<Shrink>(), Vec::new()));
+                };
+                turn.run(&Shrink { blob, big: go.what == "shrink big" }, &which)?
             }
             "close" => {
                 turn.close();
@@ -365,6 +414,22 @@ impl Handles<Answer<Rang, GiveUp>> for Worker {
     fn handle(&mut self, (_, give_up): (Answered<Rang>, GiveUp), turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
         say(format!("gave up on {}", give_up.on.mail().count));
         turn.cancel(give_up.on);
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Shrunk, Which>> for Worker {
+    type Sends = ();
+
+    fn handle(&mut self, (done, which): (Answered<Shrunk>, Which), turn: &mut Turn<'_, ()>) -> Result<(), Fault> {
+        match done {
+            Answered::Yes(Shrunk { first, kept, second }) => {
+                let (first, kept, second) = (turn.read(&first), turn.read(&kept), turn.read(&second));
+                say(format!("{} put {first:?} {second:?} kept {kept:?}", which.at));
+            }
+            Answered::No(why) => say(format!("{} {why:?}", which.at)),
+        }
 
         Ok(())
     }
@@ -492,7 +557,7 @@ impl Holding {
         for (id, kind, job) in held.drain(..) {
             let sleeps = kind == KindId::of::<Sleeps>();
             if sleeps {
-                job.finish.done(aethereal_actor::written(&Doubled { n: 7 }).map_err(|_| fault::<Waits>()));
+                job.finish.done(Produced::of(&Doubled { n: 7 }).map_err(|_| fault::<Waits>()));
             } else {
                 self.inline.start(id, kind, job);
             }
@@ -744,4 +809,41 @@ fn a_job_changes_its_engines_pins_on_the_engines_queue_as_it_runs_and_as_it_is_d
     assert_eq!((shared.len(), queued.len(), net), (0, 8, 0), "three references read and dropped, and one");
     assert_eq!(own, [(probe.id(), 1)], "a change after the jobs is in the thread's own buffer");
     drop(copy);
+}
+
+#[test]
+fn a_job_answers_with_the_blobs_it_put_once_the_engine_has_put_them() {
+    // Catches a blob a job put not put in the store, a reference to one left naming the job's own number, so it reads
+    // nothing, two puts' references swapped, a blob the job was handed and answers with read with no pin of the
+    // answer's own, and a blob kept once nothing refers to it. The job puts two, and answers with the one it was
+    // handed between them.
+    let types = vec![JobType::of::<Double>(), JobType::of::<Shrink>()];
+    let (mut engine, _) = engine(Arc::new(Inline::new(types)));
+    poke(&mut engine, 1, "shrink");
+    engine.bring();
+    settle(&mut engine);
+
+    assert_eq!(said(), ["0 doubled 2", "1 put [4, 3, 2, 1] [4] kept [1, 2, 3, 4]", "ran 0 as 1", "ran 1 as 2"]);
+    // The answer's mail keeps all three until the step after it was handled, when its arena is emptied.
+    let handled = engine.blobs.held().0;
+    engine.step(Time::ZERO, &Stopped);
+    assert_eq!((handled, engine.blobs.held().0), (3, 0), "every blob is freed once its answer has gone");
+}
+
+#[test]
+fn a_job_whose_blob_does_not_fit_is_answered_faulted_and_puts_none() {
+    // Catches a blob past the budget for blobs put anyway, or the job answered as if it fit, and the blob it put
+    // before it kept once the job is answered.
+    let types = vec![JobType::of::<Double>(), JobType::of::<Shrink>()];
+    let (mut engine, worker) = engine(Arc::new(Inline::new(types)));
+    poke(&mut engine, 1, "shrink big");
+    engine.bring();
+    settle(&mut engine);
+
+    assert_eq!(said(), ["0 doubled 2", "1 Faulted", "ran 0 as 1", "ran 1 as 2"]);
+    let faulted = engine
+        .log(worker)
+        .any(|entry| matches!(entry, Entry::JobFaulted(fault) if fault.kind() == KindId::of::<NoRoom>()));
+    assert!(faulted, "the fault is the budget's");
+    assert_eq!(engine.blobs.held().0, 0);
 }

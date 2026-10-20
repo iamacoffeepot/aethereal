@@ -7,7 +7,8 @@ mod tests;
 use super::{Engine, ROOTS, parity};
 use crate::{lives, log};
 use aethereal_actor::{
-    BlobId, Copied, Fault, JobId, JobType, Lending, MailId, Mailed, Outcome, Seated, Submitted, Tie, Unanswered,
+    BlobId, Copied, Fault, JobId, JobType, Lending, MailId, Mailed, Outcome, Pinning, Produced, Seated, Submitted, Tie,
+    Unanswered,
 };
 use aethereal_data::{Kind, KindId, KindName, Plain};
 use crossbeam_queue::SegQueue;
@@ -129,6 +130,14 @@ impl Kind for Waits {
     const NAME: KindName = KindName::new("aether.job.waits");
 }
 
+/// The reason of a job one of whose blobs did not fit the budget for blobs when it was answered.
+#[derive(Debug, PartialEq, Eq, Plain)]
+pub struct NoRoom;
+
+impl Kind for NoRoom {
+    const NAME: KindName = KindName::new("aether.job.no_room");
+}
+
 /// The reason of a job that panicked.
 #[derive(Debug, PartialEq, Eq, Plain)]
 pub struct Panicked;
@@ -195,8 +204,11 @@ impl Engine {
                 continue;
             };
             let sent = life.sent() + 1;
-            let written = match outcome {
-                Ok(bytes) => arena.write_bytes(&bytes).map(|bytes| (answer, bytes, Tie::answers(count))),
+            let written = match outcome.and_then(|produced| self.put_produced(produced)) {
+                Ok((bytes, held)) => {
+                    let written = arena.write_holding_bytes(&bytes, held);
+                    written.map(|bytes| (answer, bytes, Tie::answers(count)))
+                }
                 Err(fault) => {
                     faults.push(log::job_faulted(by, fault));
                     let bytes = arena.write_mail(&Unanswered::Faulted);
@@ -212,5 +224,40 @@ impl Engine {
         self.arenas[parity][ROOTS] = arena;
         // Each answer is the first of its chain: nothing the actor did in the step it is brought in caused it.
         self.fold_brought(mailed, faults, parity, |mailed| MailId { sender: mailed.by.id, count: mailed.count });
+    }
+
+    /// Puts each blob a job put, between steps, out of the budget for blobs, and writes over each reference to one
+    /// in its result the blob's own: the result's bytes, and the pins on the blobs it refers to (ADR-0018).
+    ///
+    /// # Errors
+    ///
+    /// A fault of [`NoRoom`] when a blob did not fit, and then none is kept.
+    fn put_produced(&mut self, produced: Produced) -> Result<(Vec<u8>, Vec<Pinning>), Fault> {
+        let Produced { mut bytes, held, put } = produced;
+        // Most jobs put no blob.
+        if put.is_empty() {
+            return Ok((bytes, held));
+        }
+        let mut blobs = Vec::with_capacity(put.len());
+        for blob in put {
+            blobs.push(self.put_blob(blob).map_err(|_| fault::<NoRoom>())?);
+        }
+        let mut written = Vec::with_capacity(held.len());
+        for (at, pin) in held {
+            let index = pin.id().made_index().and_then(|index| usize::try_from(index).ok());
+            let Some(blob) = index.and_then(|index| blobs.get(index)) else {
+                written.push((at, pin));
+                continue;
+            };
+            // A reference is its engine's number, then its own: the number is written over.
+            let begins = usize::try_from(at).unwrap_or(usize::MAX).saturating_add(4);
+            let number = bytes.get_mut(begins..begins.saturating_add(8));
+            if let Some(number) = number {
+                number.copy_from_slice(&blob.id().bits().to_le_bytes());
+            }
+            written.push((at, blob.clone()));
+        }
+
+        Ok((bytes, written))
     }
 }

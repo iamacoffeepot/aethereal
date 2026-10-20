@@ -35,6 +35,24 @@ impl BlobId {
     pub const fn bits(self) -> u64 {
         self.bits
     }
+
+    /// The id a job gives the `index`th blob it puts in the engine numbered `engine`: under a writer no engine has, so
+    /// it names no blob the engine holds, and a change to its pins changes nothing (ADR-0018).
+    #[must_use]
+    pub const fn made(engine: u32, index: u64) -> Self {
+        Self { engine, bits: MADE << PUT_BITS | index }
+    }
+
+    /// Which of the blobs a job put it names, when a job gave it.
+    #[must_use]
+    pub const fn made_index(self) -> Option<u64> {
+        let is_made = self.bits >> PUT_BITS == MADE;
+        if is_made {
+            Some(self.bits & ((1 << PUT_BITS) - 1))
+        } else {
+            None
+        }
+    }
 }
 
 /// A blob's content hash: BLAKE3 over its bytes, computed the first time something asks for it and kept with the
@@ -65,6 +83,9 @@ impl BlobHash {
 
 /// How many bits of a blob's id count the puts of its writer: the bits above them name the writer.
 const PUT_BITS: u32 = 48;
+
+/// The writer a job's own blobs are numbered under, which no engine's writers reach (ADR-0018).
+const MADE: u64 = (1 << (u64::BITS - PUT_BITS)) - 1;
 
 /// The blobs one writer has put in a step, held until the step folds, the hashes its turns computed in the step, and
 /// the room it has left in the step's share of the budget for blobs (ADR-0014); and how many resources its turns have
@@ -105,7 +126,7 @@ impl Puts {
         let Ok(writer) = u64::try_from(writer) else {
             panic!("no engine has more writers than an id's high bits number");
         };
-        assert!(writer < 1 << (u64::BITS - PUT_BITS), "no engine has more writers than an id's high bits number");
+        assert!(writer < MADE, "no engine has more writers than an id's high bits number");
 
         let held = BTreeMap::new();
 

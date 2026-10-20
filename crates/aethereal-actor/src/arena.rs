@@ -216,15 +216,18 @@ impl Arena {
         written
     }
 
-    /// Writes `bytes`, written elsewhere, as one piece of mail, as [`Self::write`] does, and answers with where it is:
-    /// for a job's result, which refers to no blob (ADR-0018).
+    /// Writes `bytes`, written elsewhere, as one piece of mail, as [`Self::write`] does, with `held`, the pins on the
+    /// blobs they refer to, each at where its reference begins in them, and answers with where it is: for a job's
+    /// result (ADR-0018).
     ///
     /// # Errors
     ///
     /// None: the result's type is that of [`Self::write_mail`], which mail written beside it is.
-    pub fn write_bytes(&mut self, bytes: &[u8]) -> Result<Payload, EncodeError> {
-        self.write(|mut out| {
+    pub fn write_holding_bytes(&mut self, bytes: &[u8], held: Vec<crate::Pinning>) -> Result<Payload, EncodeError> {
+        self.write_holding(|mut out, pins| {
+            let begins = u32::try_from(out.len()).unwrap_or(u32::MAX);
             out.extend_from_slice(bytes);
+            pins.extend(held.into_iter().map(|(at, pin)| (begins + at, pin)));
 
             (out, Ok(()))
         })
