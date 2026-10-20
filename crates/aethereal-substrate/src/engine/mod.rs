@@ -55,6 +55,7 @@ use lifecycle::{LIFECYCLE, Staging};
 use made::Made;
 use plan::Packing;
 use since::{Sees, Since};
+use std::collections::VecDeque;
 use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::Range;
@@ -164,6 +165,10 @@ pub struct Engine {
     jobs: Arc<dyn Jobs>,
     /// The jobs that have run, pushed by whatever ran them, to bring in at the next bring.
     finished: Arc<SegQueue<jobs::Finished>>,
+    /// The token each job in flight holds a copy of in its finish, so the copies beside this one count them.
+    in_flight: Arc<()>,
+    /// The jobs run past what the host lets be in flight, in the order run, handed out as those in flight finish.
+    waiting_jobs: VecDeque<Submitted>,
     /// The changes to blobs' pins the jobs made as they ran, pushed by whatever ran them, summed with the next step's
     /// (ADR-0018).
     job_pins: pins::Queue,
@@ -433,6 +438,8 @@ impl Engine {
             sources: Vec::new(),
             jobs: Arc::new(Inline::new(Vec::new())),
             finished: Arc::new(SegQueue::new()),
+            in_flight: Arc::new(()),
+            waiting_jobs: VecDeque::new(),
             job_pins: Arc::new(SegQueue::new()),
             number,
         }
@@ -1014,7 +1021,7 @@ impl Engine {
         }
         // Most steps cancel none.
         for job in lists.cancelled.drain(..) {
-            self.jobs.stop(job);
+            self.stop_job(job);
         }
         self.lists[slot] = lists;
     }

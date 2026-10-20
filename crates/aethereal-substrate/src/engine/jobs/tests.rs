@@ -529,6 +529,10 @@ impl Jobs for Noting {
     }
 
     fn stop(&self, _: JobId) {}
+
+    fn most(&self) -> usize {
+        usize::MAX
+    }
 }
 
 /// Runs jobs inline, as [`Inline`] does, but holds each [`Sleeps`] and [`Measure`] until it is let go of, and notes
@@ -537,6 +541,8 @@ struct Holding {
     inline: Inline,
     held: Mutex<Vec<(JobId, KindId, Taken)>>,
     stopped: Mutex<Vec<JobId>>,
+    /// The most jobs it lets be in flight.
+    most: usize,
 }
 
 impl Holding {
@@ -546,6 +552,7 @@ impl Holding {
             inline: Inline::new(vec![JobType::of::<Double>(), JobType::of::<Ring>(), JobType::of::<Measure>()]),
             held: Mutex::default(),
             stopped: Mutex::default(),
+            most: usize::MAX,
         }
     }
 
@@ -562,6 +569,16 @@ impl Holding {
                 self.inline.start(id, kind, job);
             }
         }
+    }
+
+    /// How many jobs it holds.
+    fn holds(&self) -> usize {
+        self.held.lock().map_or(0, |held| held.len())
+    }
+
+    /// The jobs it holds, by their counts.
+    fn holding(&self) -> Vec<u64> {
+        self.held.lock().map_or_else(|_| Vec::new(), |held| held.iter().map(|(id, ..)| id.mail().count).collect())
     }
 
     /// Takes every job it holds.
@@ -602,6 +619,10 @@ impl Jobs for Holding {
         if let Ok(mut stopped) = self.stopped.lock() {
             stopped.push(id);
         }
+    }
+
+    fn most(&self) -> usize {
+        self.most
     }
 }
 
@@ -846,4 +867,52 @@ fn a_job_whose_blob_does_not_fit_is_answered_faulted_and_puts_none() {
         .any(|entry| matches!(entry, Entry::JobFaulted(fault) if fault.kind() == KindId::of::<NoRoom>()));
     assert!(faulted, "the fault is the budget's");
     assert_eq!(engine.blobs.held().0, 0);
+}
+
+#[test]
+fn past_the_jobs_its_host_lets_be_in_flight_a_job_waits_in_order_until_one_finishes() {
+    // Catches a job past what the host lets be in flight handed out anyway, one that waits for good once a job in
+    // flight finishes, jobs that wait handed out in another order than they were run, and a job answered still
+    // counted in flight. The host lets one be in flight, and holds each.
+    let holding = Arc::new(Holding { most: 1, ..Holding::new() });
+    let (mut engine, _) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
+    for key in 1..=3 {
+        poke(&mut engine, key, "hold");
+    }
+    let mut holds = vec![holding.holding()];
+
+    for _ in 0..3 {
+        holding.let_go();
+        engine.bring();
+        settle(&mut engine);
+        holds.push(holding.holding());
+    }
+
+    assert_eq!(holds, [vec![2], vec![3], vec![4], vec![]], "each is handed out as the one before it finishes");
+    let answered = ["1 doubled 7", "2 doubled 7", "3 doubled 7"];
+    assert_eq!(
+        said(),
+        [&["0 doubled 2"][..], &answered, &["ran 0 as 1", "ran 1 as 2", "ran 2 as 3", "ran 3 as 4"]].concat()
+    );
+}
+
+#[test]
+fn a_waiting_job_cancelled_or_of_an_actor_that_ended_is_never_handed_out() {
+    // Catches a job cancelled while it waits handed out later, or the host asked to stop one it was never handed, and
+    // the waiting job of an actor that has ended handed out, to be answered to no one. The host lets one be in flight.
+    let mut handed = Vec::new();
+    for end in ["let go", "close"] {
+        let holding = Arc::new(Holding { most: 1, ..Holding::new() });
+        let (mut engine, _) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
+        poke(&mut engine, 1, "hold");
+        poke(&mut engine, 2, "hold");
+        poke(&mut engine, 3, end);
+        holding.let_go();
+        engine.bring();
+        settle(&mut engine);
+        handed.push((holding.holds(), holding.stopped()));
+    }
+    said();
+
+    assert_eq!(handed, [(0, vec![2]), (0, Vec::new())], "the first is stopped, and the second never handed out");
 }
