@@ -17,7 +17,7 @@ use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Asking, Asks, Carries, ChildOf, Children, Claim, Claimed,
     Code, Declared, Effect, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances,
     Keeping, Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Payload, Protocol,
-    ProtocolRef, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Spawns, Stage,
+    ProtocolRef, Proven, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Spawns, Stage,
     Subscribes, Table, Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watches, What,
     Within, Written,
 };
@@ -1020,6 +1020,7 @@ impl Seat<'_> {
             Target::Sender => true,
             Target::Type(_, id) => receiver.id() == id,
             Target::Handling(kinds) => receiver.lists_all(kinds),
+            Target::Path(segment) => receiver.name() == segment.name,
             Target::Watched | Target::Subscribed | Target::Job | Target::Spawned => false,
         };
         let receiver = receiver.name();
@@ -1520,7 +1521,10 @@ impl<S> Turn<'_, S> {
         K: Kind + Encode<Actors>,
         S: Allows<R::Marker, I>,
     {
-        self.seat.write(reference.seated(), mail)
+        match reference.reached(self.seat.table) {
+            Some(to) => self.seat.write(to, mail),
+            None => Ok(()),
+        }
     }
 
     /// Sends `mail` to each actor `references` refer to, in their order: each its own piece of mail, as if each were sent alone,
@@ -1529,7 +1533,7 @@ impl<S> Turn<'_, S> {
     /// It builds only when the turn's sends list what the references [`Reaches`] by, as `send_to` does.
     pub fn send_to_all<R, K, I>(&mut self, references: &[R], mail: &K) -> Result<(), EncodeError>
     where
-        R: Reaches<K>,
+        R: Reaches<K> + Proven,
         K: Kind + Encode<Actors>,
         S: Allows<R::Marker, I>,
     {
@@ -1936,7 +1940,10 @@ impl<S> Beginning<'_, S> {
         K: Kind + Encode<Actors>,
         S: Allows<R::Marker, I>,
     {
-        self.seat.write(reference.seated(), mail)
+        match reference.reached(self.seat.table) {
+            Some(to) => self.seat.write(to, mail),
+            None => Ok(()),
+        }
     }
 
     /// Sends `mail` to each actor `references` refer to, in their order, with the mail of the turn this `begin` runs in: each its own piece of mail, as if each were sent alone,
@@ -1945,7 +1952,7 @@ impl<S> Beginning<'_, S> {
     /// It builds only when the turn's sends list what the references [`Reaches`] by, as `send_to` does.
     pub fn send_to_all<R, K, I>(&mut self, references: &[R], mail: &K) -> Result<(), EncodeError>
     where
-        R: Reaches<K>,
+        R: Reaches<K> + Proven,
         K: Kind + Encode<Actors>,
         S: Allows<R::Marker, I>,
     {
@@ -2282,7 +2289,10 @@ impl<S> Ending<'_, S> {
         K: Kind + Encode<Actors>,
         S: Allows<R::Marker, I>,
     {
-        self.seat.write(reference.seated(), mail)
+        match reference.reached(self.seat.table) {
+            Some(to) => self.seat.write(to, mail),
+            None => Ok(()),
+        }
     }
 
     /// Sends `mail` to each actor `references` refer to, in their order, as the actor's last mail: each its own piece of mail, as if each were sent alone,
@@ -2291,7 +2301,7 @@ impl<S> Ending<'_, S> {
     /// It builds only when the turn's sends list what the references [`Reaches`] by, as `send_to` does.
     pub fn send_to_all<R, K, I>(&mut self, references: &[R], mail: &K) -> Result<(), EncodeError>
     where
-        R: Reaches<K>,
+        R: Reaches<K> + Proven,
         K: Kind + Encode<Actors>,
         S: Allows<R::Marker, I>,
     {

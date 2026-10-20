@@ -1,7 +1,7 @@
 //! What a handler may send, and whether it may watch, written as a tuple of markers (ADR-0013).
 
 use super::{Handled, Handles, Listed, Sending, Target};
-use crate::{Actor, ChildOf, Stage};
+use crate::{Actor, Beneath, ChildOf, Path, PathTo, Stage};
 use aethereal_data::{Kind, KindId, KindName, Plain};
 use core::marker::PhantomData;
 
@@ -29,6 +29,10 @@ pub struct Subscribes<K>(PhantomData<fn() -> K>);
 /// otherwise (ADR-0022).
 pub struct Spawns<C>(PhantomData<fn() -> C>);
 
+/// A handler may send mail of kind `K` to the actor at the typed path `T`, a [`Path<L>`]: only when `L` handles `K`,
+/// as its build fails otherwise (ADR-0022).
+pub struct Tells<T, K>(PhantomData<fn() -> (T, K)>);
+
 /// What a watch is declared under: a kind of its own, which no mail is.
 #[derive(Plain)]
 struct Watch;
@@ -53,6 +57,20 @@ impl<K: Stage> Marker for Subscribes<K> {
 
 impl<C: ChildOf> Marker for Spawns<C> {
     const SENDING: Sending = Sending::new(KindId::of::<C>(), Target::Spawned);
+}
+
+impl<L: ChildOf + PathTo + Handles<K>, K: Kind + Handled> Marker for Tells<Path<L>, K> {
+    const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Path(Last::<L>::SEGMENT));
+}
+
+/// The last segment of the typed path to `L`, which every path to a type that declares where it stands has.
+struct Last<L>(PhantomData<L>);
+
+impl<L: ChildOf + PathTo> Last<L> {
+    const SEGMENT: &'static crate::TypeSegment = match L::BENEATH {
+        Beneath::Type(segment) => segment,
+        Beneath::Top => panic!("a type that declares where it stands is a segment of its path"),
+    };
 }
 
 impl<T: Actor + Handles<K>, K: Kind + Handled> Marker for ToType<T, K> {

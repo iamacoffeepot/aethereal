@@ -1,6 +1,9 @@
 //! A reference to an actor the engine has established exists (ADR-0008).
 
-use crate::{Actor, Conforms, Covers, Handled, Handles, Listed, Refers, SeatNumber, Seated, ToAny, ToType};
+use crate::{
+    Actor, ChildOf, Conforms, Covers, Handled, Handles, Listed, Path, PathTo, Refers, SeatNumber, Seated, Table, Tells,
+    ToAny, ToType,
+};
 use aethereal_data::{
     ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Field, Kind, Reader, Schema, Shape, Writer,
 };
@@ -375,28 +378,62 @@ where
 ///     let sent = turn.send_to(listener, &Poke);
 /// }
 /// ```
-pub trait Reaches<K>: Copy {
-    /// What a turn's sends list for it: [`ToType<T, K>`] for an `ActorRef<T>`, and [`ToAny<P, K>`] for a
-    /// `ProtocolRef<P>`.
+pub trait Reaches<K> {
+    /// What a turn's sends list for it: [`ToType<T, K>`] for an `ActorRef<T>`, [`ToAny<P, K>`] for a
+    /// `ProtocolRef<P>`, and [`Tells<Path<L>, K>`] for a [`Path<L>`].
     type Marker;
 
-    /// The actor referred to, and its seat.
-    fn seated(self) -> Seated;
+    /// The actor it reaches as it is sent, and its seat, read from `table` when it is a path: none when the place
+    /// holds no live actor of its type, and the mail is dropped (ADR-0022). A reference reaches its actor without
+    /// reading the table.
+    fn reached(self, table: &dyn Table) -> Option<Seated>;
 }
 
 impl<T: Actor + Handles<K>, K: Kind + Handled> Reaches<K> for ActorRef<T> {
     type Marker = ToType<T, K>;
 
-    fn seated(self) -> Seated {
-        self.seated
+    fn reached(self, _: &dyn Table) -> Option<Seated> {
+        Some(self.seated)
     }
 }
 
 impl<P: Listed, K: Kind> Reaches<K> for ProtocolRef<P> {
     type Marker = ToAny<P, K>;
 
+    fn reached(self, _: &dyn Table) -> Option<Seated> {
+        Some(self.seated)
+    }
+}
+
+/// A reference, which reaches its actor with no lookup: what a send to many at once takes, written once for all.
+pub trait Proven: Copy {
+    /// The actor referred to, and its seat.
+    fn seated(self) -> Seated;
+}
+
+impl<T> Proven for ActorRef<T> {
     fn seated(self) -> Seated {
         self.seated
+    }
+}
+
+impl<P> Proven for ProtocolRef<P> {
+    fn seated(self) -> Seated {
+        self.seated
+    }
+}
+
+/// A path is checked at each send, as it proves nothing: the actor found there must be of `L`'s type, and a place
+/// that holds another is as one that holds none, as two types of one name share an id (ADR-0022).
+impl<L: ChildOf + PathTo + Handles<K>, K: Kind + Handled> Reaches<K> for Path<L> {
+    type Marker = Tells<Self, K>;
+
+    fn reached(self, table: &dyn Table) -> Option<Seated> {
+        let seated = table.resolve(self.names())?;
+        let is_kind =
+            table.declared(seated.id).is_some_and(|declared| declared.id() == aethereal_data::KindId::of::<L>());
+
+        is_kind.then_some(seated)
     }
 }
 

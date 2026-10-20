@@ -49,10 +49,10 @@ path::<Squad>((3, Name("scout")))     // World, then Army 3, then Hud, then the 
 path::<Banner>(3)                     // the Banner beneath Army 3: one key, alone
 ```
 
-- **A path is named by its last type alone.** The engine fills in the rest from each type's `Parent`, up to a root: `path::<Lens>` is the path `Host`, `Camera`, `Lens`. It builds only when every type on the way has one type as its `Parent`, or `Top` at the root; a type that is `Recursive` or `Anywhere` has no one path, and is reached from a reference held (below). A path is at most eight segments. **The refusal says why:** `ChildOf` carries `#[diagnostic::on_unimplemented]`, so `path::<Timer>` reads "`Anywhere` is not one actor type that declares where it stands", noting that a type that is `Recursive` or `Anywhere` has no one path and is reached from a reference held. It names the parent that is not one place, as the bound unmet is the parent's.
+- **A path is named by its last type alone.** The engine fills in the rest from each type's `Parent`, up to a root: `path::<Lens>` is the path `Host`, `Camera`, `Lens`. It builds only when every type on the way has one type as its `Parent`, or `Top` at the root; a type that is `Recursive` or `Anywhere` has no one path, and is reached from a reference held (below). A path is at most as deep as any path (ADR-0008: 32 segments), and takes at most eight keys. **The refusal says why:** `ChildOf` carries `#[diagnostic::on_unimplemented]`, so `path::<Timer>` reads "`Anywhere` is not one actor type that declares where it stands", noting that a type that is `Recursive` or `Anywhere` has no one path and is reached from a reference held. It names the parent that is not one place, as the bound unmet is the parent's.
 - **Its keys are its keyed segments' keys, root first, and nothing for a singleton.** One key is passed alone and several as a tuple; a path of singletons takes `()`. The path's type says what its keys are: a key missing, extra, of the wrong type, or in the wrong place does not build.
-- **`path::<L>(keys)` answers a `Path<L>`**, which holds the id the engine makes from the path's names and keys as it is made, as it does when it seats each actor (ADR-0008: `root_id`, `child_id`): a `Copy` value of eight bytes. Only the engine computes the id; the actor never handles a name, an id, or a seat.
-- **`send_to`, `ask_to`, and `watch` take a typed path wherever they take a reference.** At the send, the engine reads the seat at the path's id from the table, and **the actor there must be of `L`'s kind.** A reference was proven when it was made, by the spawn, cast, or resolve that saw its actor's kind; a path proves nothing, so it is checked at each send, as `turn.child` checks. A place holding an actor of another kind (two types of one name share an id) is treated as empty.
+- **`path::<L>(keys)` answers a `Path<L>`**, which holds the path its names and keys spell: no id, as only the engine computes one (ADR-0008: `root_id`, `child_id`), and `path` runs in the actor's code, a guest's among it. The actor never handles an id or a seat.
+- **`send_to`, `ask_to`, and `watch` take a typed path wherever they take a reference**, `send_to_all` excepted: a send to many writes its bytes once for references, which need no lookup. At the send, the table resolves the path, making its id as it does when it seats each actor, and **the actor there must be of `L`'s kind.** A reference was proven when it was made, by the spawn, cast, or resolve that saw its actor's kind; a path proves nothing, so it is checked at each send, as `turn.child` checks. A place holding an actor of another kind (one of the same name, so the same id, and another layout) is treated as empty. Two types of one name and one layout are one kind (ADR-0006), and are not told apart.
 - A typed path names a place, not an actor that is live. Mail sent to one that holds no live actor is dropped, and an ask is answered `Unanswered::Ended`, as for a reference to an actor that has ended (ADR-0008, ADR-0017).
 
 ### What a turn may say at a typed path is declared, and the declaration is the dependency
@@ -101,7 +101,7 @@ turn.send_to(path::<Renderer>(()), &Release::Mesh(mesh))?;
 
 ## Consequences
 
-- An actor reaches a root, or any actor beneath it whose place its types and keys name, by its type alone, up to eight segments deep, with nothing handed down through configs, and asks it through the protocol it declares.
+- An actor reaches a root, or any actor beneath it whose place its types and keys name, by its type alone, at any depth a path may have, with nothing handed down through configs, and asks it through the protocol it declares.
 - A spawn that cannot reach what it declares is refused where it is asked, before any of the child's code runs, and names what is missing.
 - A type's declaration holds where it may stand, the children it may spawn, and the paths it reaches: the tree's shape, as types. What lists every declaration, so a tool can walk them, is left until a tool needs it: native declarations are constants of their types today, and a guest's are its section.
 - **What it costs the code today:**
@@ -112,7 +112,7 @@ turn.send_to(path::<Renderer>(()), &Release::Mesh(mesh))?;
 - A turn's sends are a tuple of at most 12 markers (`Allows`), and `Spawns`, `Asks`, and `Tells` count toward it. A handler that would declare more is split, or the tuples grow, when one does.
 - A type a guest reaches at a typed path must build in the guest: its name, its declaration of where it stands, and the protocol it is asked through. A root whose host state lives in resources (ADR-0010) builds there. Whether a root whose handlers' code cannot build in a guest is reachable from one is left until a guest needs one.
 - Sends to a child by name, `To::Child(KindName)` and `To::ChildInstanced`, are unchanged.
-- A send at a typed path costs a table read for its seat and a check of its kind, its id made once by `path`; a spawn's check is one pass over a declaration it already reads for stages; `turn.child` and `turn.parent` are one table read.
+- A send at a typed path costs the table's resolve of it, which hashes each of its segments, and a read of its actor's kind; a spawn's check is one pass over a declaration it already reads for stages; `turn.child` and `turn.parent` are one table read.
 
 ## Alternatives considered
 
