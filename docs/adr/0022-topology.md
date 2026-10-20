@@ -73,7 +73,7 @@ turn.send_to(path::<Renderer>(()), &Release::Mesh(mesh))?;
 
 **A spawn is refused, before the child's `begin` runs, when a typed path its type reaches holds no live actor.**
 
-- The refusal is `Refused::Missing(KindName)`, holding the type of the path's last segment.
+- The refusal is `Refused::Missing(KindName)`, holding the name of the path's type `L`.
 - It is checked for every path of singletons. A path with a key is a place many actors fill and empty while the program runs, so it is not checked at the spawn, and a send to one that holds no live actor is dropped.
 - The check reads the child's whole declaration: its `begin`, every handler, and its `end`, which may send at a typed path as it may send to anyone.
 - **A root is checked as it is made** (`Engine::add_root`, beside its check of stages). So the chassis makes a root before any root that reaches it.
@@ -96,7 +96,7 @@ turn.send_to(path::<Renderer>(()), &Release::Mesh(mesh))?;
 
 ### References
 
-**A fourth way to reach an actor is added to the three of ADR-0008: a typed path, its segments named by types.** **This departs from ADR-0008**, which is edited to say so. It is not a reference the actor holds: the engine finds the actor there at each send, as it finds the sender's parent for `To::Parent`. It reaches the same actor a resolve of its path would, through the types that path is made of, which a resolve's cast cannot give (ADR-0016).
+**A fourth way to reach an actor is added to the three of ADR-0008: a typed path, named by the type of its last segment.** **This departs from ADR-0008**, which is edited to say so. It is not a reference the actor holds: the engine finds the actor there at each send, as it finds the sender's parent for `To::Parent`. It reaches the same actor a resolve of its path would, through the types that path is made of, which a resolve's cast cannot give (ADR-0016).
 
 ## Consequences
 
@@ -111,7 +111,7 @@ turn.send_to(path::<Renderer>(()), &Release::Mesh(mesh))?;
 - A turn's sends are a tuple of at most 12 markers (`Allows`), and `Spawns`, `Asks`, and `Tells` count toward it. A handler that would declare more is split, or the tuples grow, when one does.
 - A type a guest reaches at a typed path must build in the guest: its name, its declaration of where it stands, and the protocol it is asked through. A root whose host state lives in resources (ADR-0010) builds there. Whether a root whose handlers' code cannot build in a guest is reachable from one is left until a guest needs one.
 - Sends to a child by name, `To::Child(KindName)` and `To::ChildInstanced`, are unchanged.
-- A send at a path of singletons costs computing its id and a table read for its seat, and at a path with a key, the table read, its id made once by `path_at`; a spawn's check is one pass over a declaration it already reads for stages; `turn.child` and `turn.parent` are one table read.
+- A send at a typed path costs a table read for its seat and a check of its kind, its id made once by `path`; a spawn's check is one pass over a declaration it already reads for stages; `turn.child` and `turn.parent` are one table read.
 
 ## Alternatives considered
 
