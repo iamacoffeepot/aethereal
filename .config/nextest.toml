@@ -1,0 +1,4 @@
+# The profile CI runs: every test, so one failure does not hide the rest, and no retries, so a flaky test fails.
+[profile.ci]
+fail-fast = false
+retries = 0
