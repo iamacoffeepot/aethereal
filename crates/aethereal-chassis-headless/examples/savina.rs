@@ -1068,7 +1068,7 @@ impl Handles<Live> for Mortal {
         if left > 0 {
             turn.to(turn.me()).send(&Live { left: left - 1 })?;
         } else {
-            turn.send(To::Parent, &Died)?;
+            turn.to(turn.parent()).send(&Died)?;
             turn.close();
         }
 
@@ -1301,10 +1301,10 @@ impl Handles<Frame> for Body {
 
         self.left -= 1;
         if self.left == 0 {
-            turn.send(To::Parent, &Expired { place: self.place })?;
+            turn.to(turn.parent()).send(&Expired { place: self.place })?;
             turn.close();
         } else {
-            turn.send(To::Parent, &Moved)?;
+            turn.to(turn.parent()).send(&Moved)?;
         }
 
         Ok(())
