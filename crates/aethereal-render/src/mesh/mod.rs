@@ -112,7 +112,7 @@ impl Kind for Meshed {
 pub enum MeshRefused {
     /// The layout's stride is zero, or not a whole number of four bytes.
     Stride { stride: u32 },
-    /// An attribute lies past the end of the vertex, or not on four bytes.
+    /// An attribute lies past the end of the vertex, or not on four bytes, or at a location past the sixteenth.
     Attribute { location: u32 },
     /// Two attributes are read at one location.
     Location { location: u32 },
@@ -168,9 +168,12 @@ pub fn check(layout: &VertexLayout, vertices: &[u8], indices: &[u8]) -> Result<C
     Ok(Counted { vertices: vertex_count, indices: index_count })
 }
 
+/// The locations a vertex stage reads attributes at: as many as WebGPU lets every device read.
+const LOCATIONS: u32 = 16;
+
 /// Checks that a layout's stride is whole words, and that each attribute lies inside it, on a word, at a location of
-/// its own: what WebGPU asks of a vertex buffer's layout.
-fn check_layout(layout: &VertexLayout) -> Result<(), MeshRefused> {
+/// its own that a vertex stage can read: what WebGPU asks of a vertex buffer's layout.
+pub(crate) fn check_layout(layout: &VertexLayout) -> Result<(), MeshRefused> {
     let stride = layout.stride;
     let whole_words = stride > 0 && stride.is_multiple_of(4);
     if !whole_words {
@@ -181,7 +184,8 @@ fn check_layout(layout: &VertexLayout) -> Result<(), MeshRefused> {
         let end = attribute.offset.checked_add(attribute.format.bytes());
         let inside = end.is_some_and(|end| end <= stride);
         let aligned = attribute.offset.is_multiple_of(4);
-        let fits = inside && aligned;
+        let readable = location < LOCATIONS;
+        let fits = inside && aligned && readable;
         if !fits {
             return Err(MeshRefused::Attribute { location });
         }
