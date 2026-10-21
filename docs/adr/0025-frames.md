@@ -29,7 +29,7 @@ What engines have learned about such frames:
 CreateFrame { ends: Ends, targets: Vec<TargetSpec>, passes: Vec<Pass> }   -> Made<FrameId> | Refused
 enum Ends { Window(WindowId), Texture(Size) }   // shown on a window (ADR-0024), or drawn into a texture
 
-struct Pass { name: String, does: Does }
+struct Pass { name: PassName, does: Does }   // a type's id, as a kind's is (ADR-0006)
 enum Does {
     Draw   { into: Target, depth: DepthUse, load: Load },                    // placements that join it draw here
     Effect { program: ProgramId, reads: Vec<Target>, into: Target },        // one draw over the whole target
@@ -49,41 +49,46 @@ enum Load { Clear, Keep }
 **An actor builds the description with a typed builder,** so a frame that would be refused does not compile:
 
 ```rust
+struct Surfaces;  impl Pass for Surfaces {}   // a pass is named by a type, which the frame's maker and the
+struct Splats;    impl Pass for Splats {}     // actors that place things share
+
 let mut frame = FrameBuilder::on(Ends::Window(window));
-let (ids, depth) = frame.draw("surfaces", Colour::<Uint>, Depth::Write);    // -> (Target<Uint>, DepthTarget)
-let splats = frame.draw("splats", Colour::<Float>, Depth::Test(&depth));    // -> Target<Float>
+let (ids, depth) = frame.draw::<Surfaces>(Colour::<Uint>, Depth::Write);    // -> (Target<Uint>, DepthTarget)
+let splats = frame.draw::<Splats>(Colour::<Float>, Depth::Test(&depth));    // -> Target<Float>
 let create = frame.finish(Effect::new(glaze, (splats, ids)))?;              // -> CreateFrame, ending on the window
 ```
+
+- **A pass is named by a type, not a string.** A name mistyped, or one renamed by the frame's maker and not by those who place things, is a compile error, where a string would join nothing and be found only by what was not drawn. A guest names a pass by the type's id, as it names a kind.
 
 - A target is the output of the pass that draws it, so a pass reads only what an earlier pass returned, and never what it writes.
 - `finish` takes the pass that writes the frame's end, and is the only way to a `CreateFrame`.
 - An effect is made for what it reads and writes, `EffectId<(Float, Uint)>`, and `Effect::new` takes targets of those kinds and no others.
 - A target of whole numbers takes no blend.
-- Two passes of one name are refused by `finish`, at once and before anything is sent.
+- Two passes of one type in one frame are refused by `finish`, at once and before anything is sent.
 - Each bound reads plainly when it fails (`#[diagnostic::on_unimplemented]`): which target, what the effect reads.
 
 **The render root checks the description again, whole,** as a guest's mail does not come through the builder, and a forged one must fail as the builder would have. Whatever the builder rules out is refused here too, and so is what no type sees: a window that is not there, a program released, an effect program made for another format than the target it writes, an effect's bindings not what the pass reads, more than the device allows. A frame that is made can be drawn: nothing in it fails at `Render`.
 
 **A program is made against the shape of what it draws into: its format, its samples, and its depth.** A pass's targets have a shape, and a program fits every pass whose targets have its shape. So a frame replaced by one that keeps its passes' shapes keeps every program valid, and nothing compiles again. Samples are one and depth `Depth32Float` until a target of another shape is needed; the shape is one type from the start, so that each addition widens it rather than changing every program's.
 
-**A placement joins passes by name, each with its own program and bindings.** A depth pass and the pass that shades draw the same things, with a program that writes only depth and one that shades:
+**A placement joins passes by their type, each with its own program and bindings.** A depth pass and the pass that shades draw the same things, with a program that writes only depth and one that shades:
 
 ```rust
 Place {
     mesh: MeshId,
     instances: Drawn,
-    joins: Vec<Join>,          // Join { frame: FrameId, pass: String, program: ProgramId, bindings: Vec<Bind> }
+    joins: Vec<Join>,          // Join::to::<Splats>(frame, program, bindings): the pass by its type's id
 }                                                                    -> Made<PlacementId> | Refused
 ```
 
 - Each join is checked as ADR-0023 checks a placement: the program's shape is the pass's, and the mesh, the instances, and the bindings are what the program reads.
 - A placement is drawn in every pass it joins, once in each.
-- When a frame is replaced by one with a pass of the same name and shape, the placements that joined it draw in the new one. One whose pass the new frame has not, or has in another shape, is not drawn, and is logged, until a frame has that pass again.
+- When a frame is replaced by one with a pass of the same type and shape, the placements that joined it draw in the new one. One whose pass the new frame has not, or has in another shape, is not drawn, and is logged, until a frame has that pass again.
 
 **There are many frames, and each window shows one: its main frame.**
 
 - A frame that ends on a texture is answered with that texture's `TextureId` beside its own id. The texture is an ordinary one: an effect pass of another frame reads it, and a placement binds it. A minimap, a screen in the world, a layer of interface, a reflection, each is a frame of its own that ends on a texture.
-- A frame that ends on a window is that window's main frame, and a window has one. Until an actor makes one, a window's main frame is the render root's own: one pass onto the window, with depth, which every placement joins as `"main"`, as ADR-0023's one pass was.
+- A frame that ends on a window is that window's main frame, and a window has one. Until an actor makes one, a window's main frame is the render root's own: one pass onto the window, with depth, which every placement joins as `Main`, a pass the render root names, as ADR-0023's one pass was.
 - **The main frame of a window is owned as a resource is** (ADR-0010): the first actor to make a frame ending on a window owns that window's main frame, only it may replace it, and another actor's is refused, naming the owner. When the owner releases it, or ends, the window's main frame is the render root's own again. The render root tracks the owner as it tracks the maker of everything it holds (ADR-0021: `Made`, and its watch of each maker), and no token passes between them. **This departs from making the slot a resource the owner holds.** A resource is shown only by giving it, so each replacement would give it to the render root and back; what a held resource would add is handing the slot to another actor, and a token is added when that is needed.
 
 **Frames meet only through textures, and their order follows from what reads what.** No frame writes into another's targets: it reads another's finished texture. A frame names another's texture only once that frame is made and has answered with it, so a frame reads only frames made before it, and no two frames read each other. At each `Render` the render root runs every frame that ends on a texture before the frames that read it, then each window's main frame, and then shows each window. A frame read in the same `Render` is read as drawn in that `Render`. Two frames that do not read each other run in no order an actor may rely on, as neither touches what the other draws.
@@ -117,6 +122,7 @@ Place {
 - **A frame rebuilt every frame**, as the large render graphs are. Its shape could follow each frame's data, a pass for each of a number of views. It is a description sent each frame and checked each frame, and what it most buys, barriers, queues, and aliasing, WebGPU does itself or a fixed frame can do once.
 - **A frame edited a pass at a time.** A frame between two edits is one nobody described, and every edit is checked against every other.
 - **Passes named by their place in the list.** A pass put before another would change which pass every placement joined.
+- **Passes named by strings.** A name mistyped, or renamed on one side, joins nothing, and nothing says so but what is not drawn.
 - **Programs made against a pass.** A frame replaced would compile every program again.
 - **Anyone may replace a window's main frame.** Two actors that each set it would replace each other's, and which frame was shown would hang on whose mail came last.
 - **Placements drawn in the order of their makers' places in the tree of actors**, as the earlier engine drew. Order would hang on where and when actors were made rather than on what is described, and the renderer would read the topology.
