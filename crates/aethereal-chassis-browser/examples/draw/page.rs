@@ -49,7 +49,7 @@ pub struct Program {
 /// # Errors
 ///
 /// When WebGPU will not open on the canvas, or a root does not begin.
-#[wasm_bindgen]
+#[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
 pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
         .with_cycle::<(Tick, Render)>()

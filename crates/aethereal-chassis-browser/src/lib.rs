@@ -12,6 +12,19 @@
 //! focus, and resizes onto the window capability's, the canvas its one window
 //! ([`canvas`], ADR-0024), and the controls the page marks onto the
 //! [`controls`] root's.
+//!
+//! A page exports an async `start` that opens the GPU, and `#[wasm_bindgen]`
+//! on an async function writes code that names `wasm_bindgen_futures`. The
+//! chassis re-exports that crate, so a page points the macro at it through
+//! the chassis rather than depending on it, as the `draw` example does:
+//!
+//! ```ignore
+//! #[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
+//! pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> { /* ... */ }
+//! ```
+//!
+//! The page still depends on `wasm-bindgen` itself, for the macro, at the
+//! version the chassis pins: the `wasm-bindgen` tool's that writes its glue.
 
 pub mod canvas;
 #[cfg(target_arch = "wasm32")]
@@ -32,6 +45,9 @@ pub use gpu::open;
 #[cfg(target_arch = "wasm32")]
 pub use listening::Listening;
 pub use mappings::{Mappings, renderer};
+/// The futures crate an async `#[wasm_bindgen]` export names, for a page to point the macro at.
+#[cfg(target_arch = "wasm32")]
+pub use wasm_bindgen_futures;
 
 use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Engine};
