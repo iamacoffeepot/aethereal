@@ -2091,7 +2091,7 @@ mod tests {
     use crate::Monotonic;
     use aethereal_actor::{
         Actor, ActorRef, Answer, Answered, Beginning, BlobRef, Carries, Ending, Forged, Handles, Links, Protocol,
-        Seated, To, ToAny, ToSender, ToType, ToWithoutMail, Trapped, Turn, Unanswered,
+        Seated, ToAny, ToSender, ToType, Trapped, Turn, Unanswered,
     };
     use aethereal_actor::{Anywhere, ChildOf, Level, Tick, Time, Top};
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
@@ -2167,8 +2167,8 @@ mod tests {
 
         fn begin(volley: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-            if let Some(echo) = turn.resolve(&echo) {
-                turn.send_to_any(ToWithoutMail::Held(echo), &Ping { n: volley.pings })?;
+            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast(found)) {
+                turn.to(echo).send(&Ping { n: volley.pings })?;
             }
 
             Ok(Self)
@@ -2391,7 +2391,7 @@ mod tests {
             turn.to(steward.protocol()).ask(&echo::Ping { n: 0 }, &Which { at: 0 })?;
             turn.to(steward.protocol()).ask(&echo::Weigh { n: 5 }, &Which { at: 1 })?;
             turn.to(steward.protocol()).ask(&echo::Ping { n: 20 }, &Which { at: 2 })?;
-            turn.send(To::Held(steward.erase()), &echo::Release { how: *how })?;
+            turn.to(steward).send(&echo::Release { how: *how })?;
 
             Ok(())
         }
@@ -2517,7 +2517,7 @@ mod tests {
             let Ok(shelver) = turn.spawn_from::<echo::Shelver>(&inquiring.code, &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
-            turn.send(ToWithoutMail::Held(shelver.erase()), &echo::Ping { n: 3 })?;
+            turn.to(shelver).send(&echo::Ping { n: 3 })?;
 
             Ok(Self)
         }
@@ -2608,7 +2608,7 @@ mod tests {
             let Ok(querent) = turn.spawn_from(&inquiring.code, &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
-            turn.send(ToWithoutMail::Held(querent.erase()), &echo::Query { first: 0, pings: 2 })?;
+            turn.to(querent).send(&echo::Query { first: 0, pings: 2 })?;
 
             Ok(Self { querent })
         }
@@ -2625,7 +2625,7 @@ mod tests {
             // A second query, asked in a later call into the guest than the first.
             let is_first_done = matches!(heard, echo::Heard::No { at: 2, .. });
             if is_first_done {
-                turn.send(To::Held(self.querent.erase()), &echo::Query { first: 3, pings: 1 })?;
+                turn.to(self.querent).send(&echo::Query { first: 3, pings: 1 })?;
             }
             let heard = match heard {
                 echo::Heard::Pong { at, n } => (at, Ok(n)),
@@ -2780,7 +2780,7 @@ mod tests {
             let Ok(stasher) = turn.spawn_from::<echo::Stasher>(&inquiring.code, &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
-            turn.send(ToWithoutMail::Held(stasher.erase()), &echo::Stash { len: 3 })?;
+            turn.to(stasher).send(&echo::Stash { len: 3 })?;
 
             Ok(Self)
         }
@@ -2964,10 +2964,8 @@ mod tests {
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-            if let Some(echo) = turn.resolve(&echo) {
-                turn.send_to_any(ToWithoutMail::Held(echo), &Ping { n: 0 })?;
-                turn.send_to_any(ToWithoutMail::Held(echo), &Shut)?;
-                turn.send_to_any(ToWithoutMail::Held(echo), &Ping { n: 0 })?;
+            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast(found)) {
+                turn.to(echo).send(&Ping { n: 0 })?.send(&Shut)?.send(&Ping { n: 0 })?;
             }
 
             Ok(Self)
@@ -3043,8 +3041,8 @@ mod tests {
 
         fn begin(volley: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-            if let Some(echo) = turn.resolve(&echo) {
-                turn.send_to_any(ToWithoutMail::Held(echo), &Ping { n: volley.pings })?;
+            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast(found)) {
+                turn.to(echo).send(&Ping { n: volley.pings })?;
             }
 
             Ok(Self { key: volley.pings })
@@ -3120,11 +3118,11 @@ mod tests {
         fn begin(volley: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let mirror = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.mirror"), &()));
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-            if let Some(mirror) = turn.resolve(&mirror) {
-                turn.send_to_any(ToWithoutMail::Held(mirror), &Shut)?;
+            if let Some(mirror) = turn.resolve(&mirror).and_then(|found| turn.cast(found)) {
+                turn.to(mirror).send(&Shut)?;
             }
-            if let Some(echo) = turn.resolve(&echo) {
-                turn.send_to_any(ToWithoutMail::Held(echo), &Ping { n: volley.pings })?;
+            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast(found)) {
+                turn.to(echo).send(&Ping { n: volley.pings })?;
             }
 
             Ok(Self)
@@ -3172,8 +3170,8 @@ mod tests {
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let keeper = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.timekeeper"), &()));
-            if let Some(keeper) = turn.resolve(&keeper) {
-                turn.send_to_any(ToWithoutMail::Held(keeper), &Ping { n: 0 })?;
+            if let Some(keeper) = turn.resolve(&keeper).and_then(|found| turn.cast(found)) {
+                turn.to(keeper).send(&Ping { n: 0 })?;
             }
 
             Ok(Self)
@@ -3401,8 +3399,8 @@ mod tests {
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let mirror = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.mirror"), &()));
-            if let Some(mirror) = turn.resolve(&mirror) {
-                turn.send_to_any(ToWithoutMail::Held(mirror), &Crash)?;
+            if let Some(mirror) = turn.resolve(&mirror).and_then(|found| turn.cast(found)) {
+                turn.to(mirror).send(&Crash)?;
             }
 
             Ok(Self)
@@ -3537,8 +3535,8 @@ mod tests {
 
         fn begin(asks: Asks, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             for path in &asks.paths {
-                if let Some(asked) = turn.resolve(path) {
-                    turn.send_to_any(ToWithoutMail::Held(asked), &Ping { n: 0 })?;
+                if let Some(asked) = turn.resolve(path).and_then(|found| turn.cast(found)) {
+                    turn.to(asked).send(&Ping { n: 0 })?;
                 }
             }
 
@@ -3582,8 +3580,8 @@ mod tests {
         type EndSends = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            if let Some(brood) = turn.resolve(&brood_path()) {
-                turn.send_to_any(ToWithoutMail::Held(brood), &Grow)?;
+            if let Some(brood) = turn.resolve(&brood_path()).and_then(|found| turn.cast(found)) {
+                turn.to(brood).send(&Grow)?;
             }
 
             Ok(Self)
@@ -4030,7 +4028,7 @@ mod tests {
             for light in lights {
                 let lamp = turn.keep(echo::Lamp { light })?;
                 let lamps = vec![turn.give(lamp)?];
-                turn.send_to_any(ToWithoutMail::Held(to.erase()), &echo::Hand { lamps })?;
+                turn.to(to).send(&echo::Hand { lamps })?;
             }
 
             Ok(Self)
@@ -4246,9 +4244,7 @@ mod tests {
         type Sends = (ToType<echo::Reporter, echo::Ping>,);
 
         fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            for reporter in &self.reporters {
-                turn.send(To::Held(reporter.erase()), &echo::Ping { n: 1 })?;
-            }
+            turn.to(&self.reporters).send(&echo::Ping { n: 1 })?;
 
             Ok(())
         }
@@ -4324,8 +4320,8 @@ mod tests {
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let nest = ActorPath::from_root(&PathSegment::new(Nest::NAME, &()));
-            if let Some(nest) = turn.resolve(&nest) {
-                turn.send_to_any(ToWithoutMail::Held(nest), &Poke)?;
+            if let Some(nest) = turn.resolve(&nest).and_then(|found| turn.cast(found)) {
+                turn.to(nest).send(&Poke)?;
             }
 
             Ok(Self)
@@ -4447,9 +4443,8 @@ mod tests {
             let Ok(hatcher) = hen.child(&PathSegment::new(echo::Hatcher::NAME, &())) else {
                 return Err(Fault::new(&Doom)?);
             };
-            if let Some(hatcher) = turn.resolve(&hatcher) {
-                turn.send_to_any(ToWithoutMail::Held(hatcher), &Grow)?;
-                turn.send_to_any(ToWithoutMail::Held(hatcher), &Grow)?;
+            if let Some(hatcher) = turn.resolve(&hatcher).and_then(|found| turn.cast(found)) {
+                turn.to(hatcher).send(&Grow)?.send(&Grow)?;
             }
 
             Ok(Self)
@@ -4554,8 +4549,8 @@ mod tests {
         type EndSends = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            if let Some(librarian) = turn.resolve(&librarian()) {
-                turn.send_to_any(ToWithoutMail::Held(librarian), &Ping { n: 5 })?;
+            if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast(found)) {
+                turn.to(librarian).send(&Ping { n: 5 })?;
             }
 
             Ok(Self)
@@ -4613,8 +4608,8 @@ mod tests {
         type EndSends = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            if let Some(librarian) = turn.resolve(&librarian()) {
-                turn.send_to_any(ToWithoutMail::Held(librarian), &echo::Shut)?;
+            if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast(found)) {
+                turn.to(librarian).send(&echo::Shut)?;
             }
 
             Ok(Self)
@@ -4732,8 +4727,8 @@ mod tests {
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let spendthrift = ActorPath::from_root(&PathSegment::new(echo::Spendthrift::NAME, &()));
-            if let Some(spendthrift) = turn.resolve(&spendthrift) {
-                turn.send_to_any(ToWithoutMail::Held(spendthrift), &Ping { n: 3 })?;
+            if let Some(spendthrift) = turn.resolve(&spendthrift).and_then(|found| turn.cast(found)) {
+                turn.to(spendthrift).send(&Ping { n: 3 })?;
             }
 
             Ok(Self)
@@ -4866,19 +4861,16 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = ();
-        type BeginSends = (ToAny<(Ping,), Ping>, ToAny<(echo::Shut,), echo::Shut>);
+        type BeginSends = (ToAny<(Ping, echo::Shut), Ping>, ToAny<(Ping, echo::Shut), echo::Shut>);
         type EndSends = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let parting = |key: u64| ActorPath::from_root(&PathSegment::new(echo::Parting::NAME, &key));
-            if let Some(first) = turn.resolve(&parting(1)) {
-                turn.send_to_any(ToWithoutMail::Held(first), &Ping { n: 1 })?;
-                turn.send_to_any(ToWithoutMail::Held(first), &Ping { n: 1 })?;
-                turn.send_to_any(ToWithoutMail::Held(first), &echo::Shut)?;
+            if let Some(first) = turn.resolve(&parting(1)).and_then(|found| turn.cast(found)) {
+                turn.to(first).send(&Ping { n: 1 })?.send(&Ping { n: 1 })?.send(&echo::Shut)?;
             }
-            if let Some(second) = turn.resolve(&parting(2)) {
-                turn.send_to_any(ToWithoutMail::Held(second), &Ping { n: 1 })?;
-                turn.send_to_any(ToWithoutMail::Held(second), &Ping { n: 0 })?;
+            if let Some(second) = turn.resolve(&parting(2)).and_then(|found| turn.cast(found)) {
+                turn.to(second).send(&Ping { n: 1 })?.send(&Ping { n: 0 })?;
             }
 
             Ok(Self)

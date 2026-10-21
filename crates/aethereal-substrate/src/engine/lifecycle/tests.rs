@@ -5,9 +5,9 @@ use super::super::*;
 use crate::stages::key;
 use aethereal_actor::{
     Actor, Anywhere, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, On, Path, Present, Render, Stage, Start,
-    Stop, Tells, Tick, Time, ToSender, ToType, ToWithoutMail, Top, Turn, Unordered,
+    Stop, Tells, Tick, Time, ToSender, ToType, Top, Turn, Unordered, path,
 };
-use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, PathSegment, Plain};
+use aethereal_data::{Bound, Kind, KindId, KindName, Plain};
 use core::time::Duration;
 use std::cell::RefCell;
 use std::mem;
@@ -676,15 +676,11 @@ impl Actor for Waker {
     type Config = Note;
     type Key = ();
     type Handles = ();
-    type BeginSends = (ToType<Drainer, Note>,);
+    type BeginSends = (Tells<Path<Drainer>, Note>,);
     type EndSends = ();
 
     fn begin(note: Note, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let path = ActorPath::from_root(&PathSegment::new(Drainer::NAME, &()));
-        let Some(drainer) = turn.resolve(&path) else {
-            return Ok(Self);
-        };
-        turn.send(ToWithoutMail::Held(drainer), &note)?;
+        turn.to(path::<Drainer>(())).send(&note)?;
 
         Ok(Self)
     }

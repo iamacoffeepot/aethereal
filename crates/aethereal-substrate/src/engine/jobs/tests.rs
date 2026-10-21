@@ -5,10 +5,10 @@ use super::super::*;
 use super::*;
 use crate::Entry;
 use aethereal_actor::{
-    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Handles, Job, JobType, Runner, Running, Time, ToType,
-    ToWithoutMail, Top, Turn,
+    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Handles, Job, JobType, Path, Runner, Running, Tells, Time, Top,
+    Turn, path,
 };
-use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
+use aethereal_data::{Bound, Kind, KindName, Plain};
 use std::cell::RefCell;
 use std::future;
 use std::sync::Mutex;
@@ -483,14 +483,11 @@ impl Actor for Poker {
     type Config = Go;
     type Key = u64;
     type Handles = ();
-    type BeginSends = (ToType<Worker, Go>,);
+    type BeginSends = (Tells<Path<Worker>, Go>,);
     type EndSends = ();
 
     fn begin(go: Go, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let path = ActorPath::from_root(&PathSegment::new(Worker::NAME, &()));
-        if let Some(worker) = turn.resolve(&path) {
-            turn.send(ToWithoutMail::Held(worker), &go)?;
-        }
+        turn.to(path::<Worker>(())).send(&go)?;
 
         Ok(Self)
     }
