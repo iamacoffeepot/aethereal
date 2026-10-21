@@ -744,8 +744,10 @@ impl Seat<'_> {
     /// Encodes `mail` and adds the effect that sends it to the actor `to`, which this actor reaches as it is: one a
     /// typed reference proves, or the sender.
     fn write<K: Kind + Encode<Actors>>(&mut self, to: Seated, mail: &K) -> Result<(), EncodeError> {
-        // A reply goes on its own: a turn rarely answers one sender back to back.
-        self.write_after(to, mail, false, Tie::TELL)
+        // Mail of one kind sent back to back to one receiver is one run, through a reference as by a named send.
+        let is_like_last = self.last_send().is_some_and(|(last, kind)| last == to && kind == KindId::of::<K>());
+
+        self.write_after(to, mail, is_like_last, Tie::TELL)
     }
 
     /// Replies `mail` to `to`, the source of the item handled: the answer to it, when it is a request this turn has
@@ -838,8 +840,8 @@ impl Seat<'_> {
         self.carry(to)?;
         self.sent += 1;
         let kind = KindId::of::<K>();
-        // Mail of one kind to one receiver, sent back to back by sends the turn named, is one run: one effect, one item
-        // in its stream.
+        // Mail of one kind to one receiver, sent back to back by sends the turn named or through a reference, is one run:
+        // one effect, one item in its stream.
         if is_like_last
             && let Some(last) = self.asked.buffers.mailed.last_mut()
             && last.count + u64::from(last.bytes.pieces()) == self.sent
@@ -2088,10 +2090,11 @@ impl<Me, S> Turn<'_, Me, S> {
         self.seat.table.now()
     }
 
-    /// A reference to this actor.
+    /// A reference to this actor, typed by its type: what it hands others to send to it, or looks beneath for a child
+    /// of its own (ADR-0022).
     #[must_use]
-    pub const fn me(&self) -> ErasedActorRef {
-        self.seat.me()
+    pub const fn me(&self) -> ActorRef<Me> {
+        ActorRef::new(self.seat.me().seated())
     }
 
     /// The source of the item being handled: the sender of mail, or the actor that ended.
@@ -2561,10 +2564,11 @@ impl<Me, S> Beginning<'_, Me, S> {
         self.seat.table.now()
     }
 
-    /// A reference to this actor.
+    /// A reference to this actor, typed by its type: what it hands others to send to it, or looks beneath for a child
+    /// of its own (ADR-0022).
     #[must_use]
-    pub const fn me(&self) -> ErasedActorRef {
-        self.seat.me()
+    pub const fn me(&self) -> ActorRef<Me> {
+        ActorRef::new(self.seat.me().seated())
     }
 
     /// A reference to the live actor `path` names, as of the step's start.
@@ -2833,10 +2837,11 @@ impl<Me, S> Ending<'_, Me, S> {
         self.seat.table.now()
     }
 
-    /// A reference to this actor.
+    /// A reference to this actor, typed by its type: what it hands others to send to it, or looks beneath for a child
+    /// of its own (ADR-0022).
     #[must_use]
-    pub const fn me(&self) -> ErasedActorRef {
-        self.seat.me()
+    pub const fn me(&self) -> ActorRef<Me> {
+        ActorRef::new(self.seat.me().seated())
     }
 
     /// A reference to the live actor `path` names, as of the step's start.

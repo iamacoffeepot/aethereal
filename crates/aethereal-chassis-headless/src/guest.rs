@@ -2260,8 +2260,7 @@ mod tests {
         type EndSends = ();
 
         fn begin(questioner: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Volley { pings: 2 })?;
+            turn.send_to(turn.me(), &Volley { pings: 2 })?;
 
             Ok(questioner)
         }
@@ -2366,8 +2365,7 @@ mod tests {
         type EndSends = ();
 
         fn begin(petitioning: Petitioning, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Volley { pings: 2 })?;
+            turn.send_to(turn.me(), &Volley { pings: 2 })?;
 
             Ok(Self { petitioning })
         }
@@ -2871,8 +2869,7 @@ mod tests {
             let Ok(nester) = turn.spawn_from(&inquiring.code, &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
-            let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Lend)?;
+            turn.send_to(turn.me(), &Lend)?;
 
             Ok(Self { nester })
         }

@@ -3,7 +3,7 @@
 use super::super::*;
 use crate::Entry;
 use aethereal_actor::Time;
-use aethereal_actor::{Actor, ChildOf, Ending, Fault, Handle, Handles, Recursive, To, ToType, ToWithoutMail, Turn};
+use aethereal_actor::{Actor, ChildOf, Ending, Fault, Handle, Handles, Recursive, To, ToType, Turn};
 use aethereal_data::{Bound, Kind, KindName, Plain, TypedKey};
 use std::any;
 use std::cell::{Cell, RefCell};
@@ -135,8 +135,7 @@ impl Actor for Keeper {
         };
         say(format!("{number} began with {}", taken.len()));
         for text in orders {
-            let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Order { text })?;
+            turn.send_to(turn.me(), &Order { text })?;
         }
 
         Ok(Self { number, lamps: taken })
@@ -202,8 +201,8 @@ impl Handles<Order> for Keeper {
                 let lamps = self.give_all(turn)?;
                 let pass = Pass { lamps };
                 let me = turn.me();
-                let first = turn.send(To::Held(me), &pass).is_ok();
-                let second = turn.send(To::Held(me), &pass).is_ok();
+                let first = turn.send_to(me, &pass).is_ok();
+                let second = turn.send_to(me, &pass).is_ok();
                 say(format!("{} sent {first} then {second}", self.number));
             }
             ["fan"] => {

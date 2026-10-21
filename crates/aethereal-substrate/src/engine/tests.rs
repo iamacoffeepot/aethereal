@@ -69,7 +69,8 @@ impl Kind for NodeConfig {
 /// - `keep` sends the sender `late` through the reference to it, as an actor of its own type;
 /// - `many N text` sends itself `textI` for each `I` below `N`, a single digit: notes of one length, back to back;
 /// - `fan N,M,.. text` spawns each node `N`, `M` and so on beneath it, and sends them all `text` in one send;
-/// - `sibling N` says whether it finds the node `N` beneath its parent.
+/// - `sibling N` says whether it finds the node `N` beneath its parent;
+/// - `birth N` spawns the node `N`, and says whether it finds it beneath itself in the same turn.
 #[derive(Plain)]
 struct Node {
     number: u64,
@@ -80,6 +81,18 @@ impl Kind for Node {
 }
 
 impl Node {
+    /// Says whether it finds the node `number`: beneath its parent for `sibling`, and for `birth` beneath itself, once
+    /// it has spawned it in this turn.
+    fn look<S>(&self, turn: &mut Turn<'_, Self, S>, word: &str, number: u64) {
+        let found = if word == "birth" {
+            let _ = turn.spawn::<Self>(&number, NodeConfig { number, to_self: Vec::new(), spawns: Vec::new() });
+            turn.child::<Self>(turn.me(), &number)
+        } else {
+            turn.parent().and_then(|parent| turn.child::<Self>(parent, &number))
+        };
+        say(format!("{} {} {number}", self.number, finding(found)));
+    }
+
     /// The target that is the node `number` beneath this one.
     fn child(number: u64) -> To {
         To::ChildInstanced(Self::NAME, number.to_name())
@@ -103,8 +116,7 @@ impl Actor for Node {
             let _ = turn.spawn::<Self>(&number, NodeConfig { number, to_self, spawns: Vec::new() });
         }
         for text in config.to_self {
-            let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Note { text })?;
+            turn.send_to(turn.me(), &Note { text })?;
         }
 
         Ok(Self { number: config.number })
@@ -173,8 +185,7 @@ impl Handles<Note> for Node {
             }
             ["both"] => {
                 turn.send(To::Parent, &Note { text: String::from("watchme") })?;
-                let me = turn.me();
-                turn.send(To::Held(me), &Note { text: String::from("close") })?;
+                turn.send_to(turn.me(), &Note { text: String::from("close") })?;
             }
             ["watchme", ..] => {
                 let sender = turn.sender();
@@ -182,8 +193,7 @@ impl Handles<Note> for Node {
             }
             ["self", ..] => {
                 let (_, rest) = text.split_once(' ').unwrap_or_default();
-                let me = turn.me();
-                turn.send(To::Held(me), &Note { text: String::from(rest) })?;
+                turn.send_to(turn.me(), &Note { text: String::from(rest) })?;
             }
             ["keep", ..] => {
                 let sender = turn.sender();
@@ -192,7 +202,7 @@ impl Handles<Note> for Node {
             ["many", count, text] => {
                 let me = turn.me();
                 for index in 0..count.parse().unwrap_or(0u64) {
-                    turn.send(To::Held(me), &Note { text: format!("{text}{index}") })?;
+                    turn.send_to(me, &Note { text: format!("{text}{index}") })?;
                 }
             }
             ["fan", numbers, text] => {
@@ -206,11 +216,7 @@ impl Handles<Note> for Node {
                 turn.send_to_all(&children, &Note { text: String::from(text) })?;
             }
             ["where", ..] => say(format!("{} at depth {}", self.number, turn.chain().depth)),
-            ["sibling", number] => {
-                let number: u64 = number.parse().unwrap_or_default();
-                let found = turn.parent().and_then(|parent| turn.child::<Self>(parent, &number));
-                say(format!("{} {} {number}", self.number, finding(found)));
-            }
+            ["birth" | "sibling", number] => self.look(turn, words[0], number.parse().unwrap_or_default()),
             ["bye", number] => {
                 let watches = number == "5";
                 if watches {
@@ -395,17 +401,20 @@ fn send_through_a_reference_to_an_actor_that_has_ended_is_dropped() {
 #[test]
 fn a_child_is_found_beneath_a_reference_held_while_it_is_live() {
     // Catches `turn.child` looking beneath the turn's own actor rather than the reference it is handed, finding a key
-    // no child holds, and finding a child that has ended (ADR-0022). Node 2 looks for its siblings beneath its parent.
+    // no child holds, finding a child that has ended, and missing one its own turn stood up beneath the reference it
+    // holds to itself (ADR-0022). Node 2 looks for its siblings beneath its parent, and the root for the child it
+    // just stood up.
     let (mut engine, _) = engine(&[
         "spawn 3 x",
         "spawn 2 sibling 3",
         "self tell 2 sibling 5",
         "self tell 3 close",
         "self self self tell 2 sibling 3",
+        "birth 4",
     ]);
     let found: Vec<String> = (0..5).flat_map(|_| step(&mut engine)).filter(|line| line.contains(" found ")).collect();
 
-    assert_eq!(found, ["2 found 3", "2 found no 5", "2 found no 3"]);
+    assert_eq!(found, ["1 found 4", "2 found 3", "2 found no 5", "2 found no 3"]);
 }
 
 #[test]
@@ -1082,8 +1091,7 @@ impl Actor for Holder {
 
     fn begin(config: HolderConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         for text in config.to_self {
-            let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Note { text })?;
+            turn.send_to(turn.me(), &Note { text })?;
         }
         // Each blob it gives is one only that mail refers to, so mail that loses its pin loses its blob.
         for _ in 0..config.gives {
@@ -1092,8 +1100,8 @@ impl Actor for Holder {
             };
             // A note between each two keeps them from joining into one run, so the part carries many items.
             let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Given { blob, left: 1 })?;
-            turn.send(ToWithoutMail::Held(me), &Note { text: String::from("between") })?;
+            turn.send_to(me, &Given { blob, left: 1 })?;
+            turn.send_to(me, &Note { text: String::from("between") })?;
         }
 
         Ok(Self { held: Vec::new(), gave: config.gives > 0 })
@@ -1129,16 +1137,14 @@ impl Handles<Note> for Holder {
             ["fail"] => return Err(Fault::new(&Note { text })?),
             ["send", ..] => {
                 if let Some(blob) = self.held.pop() {
-                    let me = turn.me();
-                    turn.send(To::Held(me), &Given { blob, left: 0 })?;
+                    turn.send_to(turn.me(), &Given { blob, left: 0 })?;
                 }
                 if words.get(1) == Some(&"close") {
                     turn.close();
                 }
             }
             ["later", rest] => {
-                let me = turn.me();
-                turn.send(To::Held(me), &Note { text: String::from(rest) })?;
+                turn.send_to(turn.me(), &Note { text: String::from(rest) })?;
             }
             _ => {}
         }
@@ -1155,8 +1161,7 @@ impl Handles<Given> for Holder {
         if self.gave {
             let Given { blob, left } = given;
             if left > 0 {
-                let me = turn.me();
-                turn.send(To::Held(me), &Given { blob, left: left - 1 })?;
+                turn.send_to(turn.me(), &Given { blob, left: left - 1 })?;
             }
         } else {
             say(format!("given {held}"));
@@ -1455,8 +1460,7 @@ impl Actor for Clocked {
         let Ok(blob) = turn.put(vec![7; 3]) else {
             return Err(Fault::new(&Note { text: String::from("no room") })?);
         };
-        let me = turn.me();
-        turn.send(ToWithoutMail::Held(me), &Note { text: to_self })?;
+        turn.send_to(turn.me(), &Note { text: to_self })?;
 
         Ok(Self { number, blob })
     }
