@@ -59,5 +59,10 @@ name = "input"
 path = "examples/input/lib.rs"
 crate-type = ["cdylib"]
 
+[[example]]
+name = "frames"
+path = "examples/frames/lib.rs"
+crate-type = ["cdylib"]
+
 [lints]
 workspace = true

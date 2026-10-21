@@ -26,25 +26,30 @@ What engines have learned about such frames:
 **A frame is an ordered list of passes over the textures it draws into, made once, checked whole, and run at every `Render`.** It is made by asking the render root, as everything drawn is (ADR-0021), and owned by its maker.
 
 ```rust
-CreateFrame { ends: Ends, targets: Vec<TargetSpec>, passes: Vec<Pass> }   -> Made<FrameId> | Refused
+CreateFrame { ends: Ends, targets: Vec<TargetSpec>, passes: Vec<PassSpec> }   -> Made<FrameId> | Refused
 enum Ends { Window(WindowId), Texture(Size) }   // shown on a window (ADR-0024), or drawn into a texture
+enum TargetSpec { Float, Uint, Depth }          // Rgba16Float, R32Uint, Depth32Float
 
-struct Pass { name: PassName, does: Does }   // a type's id, as a kind's is (ADR-0006)
+struct PassSpec { name: PassName, does: Does }   // a type's id, as a kind's is (ADR-0006)
 enum Does {
     Draw   { into: Target, depth: DepthUse, load: Load },                    // placements that join it draw here
-    Effect { program: ProgramId, reads: Vec<Target>, into: Target },        // one draw over the whole target
+    Effect { program: ProgramId, reads: Vec<Target>, into: Target, bindings: Vec<Bind> },  // one draw over the whole target
 }
 enum Target { End, Texture(u32) }        // the frame's end, or one of `targets`
 enum DepthUse { Off, Write(u32), Test(u32) }    // one of `targets`, of a depth format
 enum Load { Clear, Keep }
 ```
 
+- A target of floats is four 16-bit floats a pixel, `Rgba16Float`, which WebGPU filters and blends; one of whole numbers is one 32-bit whole number, `R32Uint`; depth is `Depth32Float`, as every program tests. The description's pass is `PassSpec`, as the builder's `Pass` is the trait a pass's type implements.
+- **An effect binds what it reads and what it lists besides.** Its targets are bound in its first group, the first it reads at binding 0; its `bindings` are bound in the groups after, as a placement binds what its program lists (ADR-0023), so an effect that comes and goes is switched by its uniforms, and an effect reads a texture another frame ends on by binding it. **This departs from `Effect` having no bindings**, which left no way to bind those uniforms.
+- An effect pass begins from what an earlier pass drew into its target, so an effect that blends lays its colour over it, and from black when no earlier pass wrote it.
+
 - A pass reads only targets an earlier pass of the frame wrote, never the one it writes, and a depth it tests is one an earlier pass wrote.
 - Every target is the size of the frame's end. Targets of other sizes are later work.
 - A pass draws into one colour target. Several at once are later work.
 - The last pass writes the frame's end.
 
-**The frame is described whole, and replaced whole.** There is no frame half made, and no pass added to a frame or taken from it: a frame of another shape is a new frame, which takes the old one's place at the next `Render`. A frame's shape changes as a setting does, so it is described in one ask, and what changes every frame rides the data its passes read: placements, instances, uniforms, storage (ADR-0023). An effect that comes and goes is switched by its uniforms, and costs its pass while off.
+**The frame is described whole, and replaced whole.** There is no frame half made, and no pass added to a frame or taken from it: a frame of another shape is a new frame, which takes the old one's place at the next `Render`. A frame made for a window is its main frame from the turn it is made in, to what is placed after it and to `ShapeOf`, and is drawn from the next `Render`, which is the first to run after it; the frame it replaces is taken back with its id. A frame's shape changes as a setting does, so it is described in one ask, and what changes every frame rides the data its passes read: placements, instances, uniforms, storage (ADR-0023). An effect that comes and goes is switched by its uniforms, and costs its pass while off.
 
 **An actor builds the description with a typed builder,** so a frame that would be refused does not compile:
 
@@ -53,23 +58,39 @@ struct Surfaces;  impl Pass for Surfaces {}   // a pass is named by a type, whic
 struct Splats;    impl Pass for Splats {}     // actors that place things share
 
 let mut frame = FrameBuilder::on(Ends::Window(window));
-let (ids, depth) = frame.draw::<Surfaces>(Colour::<Uint>, Depth::Write);    // -> (Target<Uint>, DepthTarget)
-let splats = frame.draw::<Splats>(Colour::<Float>, Depth::Test(&depth));    // -> Target<Float>
-let create = frame.finish(Effect::new(glaze, (splats, ids)))?;              // -> CreateFrame, ending on the window
+let (ids, depth) = frame.draw(Surfaces, Uint, depth::Write);             // -> (Target<Uint>, DepthTarget)
+let splats = frame.draw(Splats, Float, depth::Test(&depth));             // -> Target<Float>
+let create = frame.finish(Glaze, Effect::new(&glaze, (splats, ids)))?;   // -> CreateFrame, ending on the window
 ```
+
+- **A pass's type and its target's kind are given as values**, `Surfaces` and `Uint`, where this record first wrote `draw::<Surfaces>(Colour::<Uint>, ..)`: a call that names one of its types and infers the rest is not one Rust has, and the kinds and the use of depth decide what a pass returns, so each is inferred from its value. A pass type is a unit struct, so its value is its name.
+- `draw_over` draws a pass over a target an earlier pass returned (`Load::Keep`), `effect` draws an effect into a new target, and `finish` takes the last pass's type and either an `Effect` or a draw `Onto` the end.
 
 - **A pass is named by a type, not a string.** A name mistyped, or one renamed by the frame's maker and not by those who place things, is a compile error, where a string would join nothing and be found only by what was not drawn. A guest names a pass by the type's id, as it names a kind: a pass type is a kind, `trait Pass: Kind`, given a name of its own, and its `PassName` is its `KindId`.
 
 - A target is the output of the pass that draws it, so a pass reads only what an earlier pass returned, and never what it writes.
 - `finish` takes the pass that writes the frame's end, and is the only way to a `CreateFrame`.
-- An effect is made for what it reads and writes, `EffectId<(Float, Uint)>`, and `Effect::new` takes targets of those kinds and no others.
-- A target of whole numbers takes no blend.
+- An effect is made for what it reads and writes, `EffectId<(Float, Uint)>`, and `Effect::new` takes targets of those kinds and no others. Handles are typed by kind and not by frame, so one taken from another builder compiles, and is refused by the render root when it names no target of this frame that an earlier pass wrote.
+- A target of whole numbers takes no blend: a program or an effect made for a shape of whole numbers is refused a blend, and writes `u32` where one of fractions or floats writes `vec4<f32>`.
 - Two passes of one type in one frame are refused by `finish`, at once and before anything is sent.
 - Each bound reads plainly when it fails (`#[diagnostic::on_unimplemented]`): which target, what the effect reads.
 
+**An effect is made by asking for its fragment stage and what it reads,** as a program is (ADR-0021):
+
+```rust
+CreateEffect { wgsl: String, fragment: String, reads: Vec<Read>, bindings: Vec<Binding>, blend: Blend, shape: Shape }
+    -> Effected::Made(MadeEffect { program: ProgramId, reads: Vec<Read> }) | Effected::Refused(ProgramRefused)
+enum Read { Float, Uint, Depth }   // texture_2d<f32>, texture_2d<u32>, texture_depth_2d, at @group(0) @binding(i)
+```
+
+- **The render root writes the vertex stage**: one triangle over the whole target, passing its fragment stage where each pixel is across the target from the top left, `@location(0) uv: vec2<f32>`, beside `@builtin(position)`. Every target of a frame is the size of its end, so the pixel an effect shades is the pixel it reads with `textureLoad`. An effect's shape holds no depth, and it lists nothing in group 0.
+- It is checked as a program is: its WGSL valid, its fragment stage reading only what the vertex stage writes and writing its shape's colour, each target it reads declared as `reads` says, each binding it uses listed, and no more textures than a stage binds, its reads counted with them. That is where an effect is held to the device's limits.
+- **`EffectId<R>` is had only from the answer, and only when the answer reads what `R` says**: `EffectId::<(Float, Uint)>::of(&made)` is none for an effect made to read anything else. On the wire, and in an actor's state, it is the program's id alone, as a guest names it; what it reads is its type's, and the render root checks a pass's reads against what the effect was made to read, whatever its sender claims.
+- An effect is a program, released as one; a placement cannot join with it, and an effect pass cannot draw a program that is not an effect.
+
 **The render root checks the description again, whole,** as a guest's mail does not come through the builder, and a forged one must fail as the builder would have. Whatever the builder rules out is refused here too, and so is what no type sees: a window that is not there, a program released, an effect program made for another format than the target it writes, an effect's bindings not what the pass reads, more than the device allows. A frame that is made can be drawn: nothing in it fails at `Render`.
 
-**A program is made against the shape of what it draws into: its format, its samples, and its depth.** A pass's targets have a shape, and a program fits every pass whose targets have its shape. So a frame replaced by one that keeps its passes' shapes keeps every program valid, and nothing compiles again. Samples are one and depth `Depth32Float` until a target of another shape is needed; the shape is one type from the start, so that each addition widens it rather than changing every program's.
+**A program is made against the shape of what it draws into: its format, its samples, and its depth.** A pass's targets have a shape, and a program fits every pass whose targets have its shape. So a frame replaced by one that keeps its passes' shapes keeps every program valid, and nothing compiles again. Samples are one and depth `Depth32Float`, or none for a pass that uses no depth and for an effect, until a target of another shape is needed; the shape is one type from the start, so that each addition widens it rather than changing every program's.
 
 **A placement joins passes by their type, each with its own program and bindings.** A depth pass and the pass that shades draw the same things, with a program that writes only depth and one that shades:
 

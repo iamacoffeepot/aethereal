@@ -3,7 +3,11 @@
 mod walk;
 
 use crate::Gpu;
-use crate::frame::{DepthUse, Does, Frame, Load, ShapeOf, Shaped, Target};
+use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
+use crate::frame::{
+    self, CreateFrame, DepthUse, Does, EffectReads, Frame, FrameId, FrameRefused, Framed, Holds, Load, PassRefused,
+    ShapeOf, Shaped, Target,
+};
 use crate::instances::{self, CreateInstances, Instanced, InstancesId, WriteInstances};
 use crate::made::{Ids, Made, Makers, Owned};
 use crate::mapping::{Mapped, Mapping};
@@ -17,7 +21,7 @@ use crate::program::{
     self, Binding, BindingKind, Blend, CreateProgram, Cull, Depth, PerInstance, ProgramId, Programmed,
 };
 use crate::readback::{self, Copied, Order, Pixels, ReadBack, ReadRefused, Readable};
-use crate::shape::Shape;
+use crate::shape::{ColourFormat, DepthFormat, Shape};
 use crate::storage::{self, CreateStorage, StorageId, Stored, WriteStorage};
 use crate::texture::{self, CreateTexture, TextureFormat, TextureId, Textured};
 use crate::timing::{self, TimeFrame, Timed, TimingRefused};
@@ -30,7 +34,7 @@ use aethereal_data::{ActorId, Bound, Kind, KindName, Plain};
 use aethereal_window::WindowId;
 use std::collections::HashMap;
 use std::mem;
-use walk::Walk;
+use walk::{Making, Step, Walk};
 
 /// The renderer, the one actor that touches the GPU. Actors ask it through [`Rendering`].
 #[derive(Bound)]
@@ -96,6 +100,14 @@ impl Carries<ShapeOf> for Renderer {
     type Answers = (Shaped,);
 }
 
+impl Carries<CreateEffect> for Renderer {
+    type Answers = (Effected,);
+}
+
+impl Carries<CreateFrame> for Renderer {
+    type Answers = (Framed,);
+}
+
 impl Carries<ReadBack> for Renderer {
     type Answers = (Pixels,);
 }
@@ -117,9 +129,9 @@ impl Kind for RendererConfig {
     const NAME: KindName = KindName::new("aether.render.config");
 }
 
-/// What an actor asks the renderer: to make a mesh, a texture, a program, instances, uniforms, or storage, to write
-/// instances, uniforms, or storage it made, to place what is drawn, the shape of a pass it joins, to release what it
-/// made, or to read back or time what it draws.
+/// What an actor asks the renderer: to make a mesh, a texture, a program, an effect, instances, uniforms, storage, or a
+/// frame, to write instances, uniforms, or storage it made, to place what is drawn, the shape of a pass it joins, to
+/// release what it made, or to read back or time what it draws.
 pub struct Rendering;
 
 impl Protocol for Rendering {
@@ -135,6 +147,8 @@ impl Protocol for Rendering {
         WriteStorage,
         Place,
         ShapeOf,
+        CreateEffect,
+        CreateFrame,
         Release,
         ReadBack,
         TimeFrame,
@@ -185,6 +199,14 @@ impl Carries<ShapeOf> for Rendering {
     type Answers = (Shaped,);
 }
 
+impl Carries<CreateEffect> for Rendering {
+    type Answers = (Effected,);
+}
+
+impl Carries<CreateFrame> for Rendering {
+    type Answers = (Framed,);
+}
+
 impl Carries<Release> for Rendering {
     type Answers = ();
 }
@@ -207,14 +229,15 @@ pub enum Release {
     Uniforms(UniformsId),
     Storage(StorageId),
     Placement(PlacementId),
+    Frame(FrameId),
 }
 
 impl Kind for Release {
     const NAME: KindName = KindName::new("aether.render.release");
 }
 
-/// What the renderer has made, and who made each, with the samplers its placements share, and the main frame of the
-/// window it draws to, `window`.
+/// What the renderer has made, and who made each, with the samplers its placements share, and the window it draws to,
+/// `window`, whose surface is of `format`: its own main frame of it, `own`, and which frame is its main frame, `main`.
 struct Kept {
     ids: Ids,
     makers: Makers,
@@ -227,8 +250,20 @@ struct Kept {
     placements: Made<Placement>,
     reads: HashMap<u64, Reading>,
     samplers: HashMap<Sampling, wgpu::Sampler>,
+    frames: Made<Walk>,
     window: WindowId,
-    main: Walk,
+    format: ColourFormat,
+    own: Walk,
+    main: Main,
+}
+
+/// Which frame is a window's main frame.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Main {
+    /// The renderer's own.
+    Own,
+    /// The frame an actor made, under this id.
+    Made(u64),
 }
 
 impl Resource for Kept {}
@@ -256,15 +291,22 @@ enum Reading {
     Stamps { buffer: wgpu::Buffer, period: f32 },
 }
 
-/// A program on the GPU: its pipeline, with the layouts of what it reads, what it binds, the layout of each group it
-/// binds in, and the shape it draws into.
+/// A program on the GPU: its pipeline, with what its stages read, what it binds, the layout of each group it binds in,
+/// and the shape it draws into.
 struct Program {
     pipeline: wgpu::RenderPipeline,
-    layout: VertexLayout,
-    instances: PerInstance,
+    stages: Stages,
     bindings: Vec<Binding>,
     groups: Vec<wgpu::BindGroupLayout>,
     shape: Shape,
+}
+
+/// What a program's stages read.
+enum Stages {
+    /// It draws placements: vertices laid out as `layout`, and what `instances` says once per instance.
+    Draws { layout: VertexLayout, instances: PerInstance },
+    /// It is an effect, drawn over a whole target, reading targets as `reads` says, bound in its first group.
+    Effect { reads: Vec<Read> },
 }
 
 /// Instances on the GPU: a buffer with room for their capacity, how they stand, and how a record is laid out.
@@ -340,6 +382,8 @@ impl Actor for Renderer {
         WriteStorage,
         Place,
         ShapeOf,
+        CreateEffect,
+        CreateFrame,
         Release,
         ReadBack,
         TimeFrame,
@@ -355,7 +399,11 @@ impl Actor for Renderer {
         let mapped = turn.take(config.mapped)?;
         let opened = turn.open(&mut gpu)?;
         let (window, format) = (opened.window(), opened.format());
-        let main = Walk::own(opened.device(), format);
+        // Made again at the first frame's size, as for each frame of a new size.
+        let own = match Walk::new(opened.device(), CreateFrame::own(window), format, (1, 1), drawn) {
+            Ok(own) => own,
+            Err((pass, why)) => return Err(Fault::new(&FrameRefused::Pass { pass, why })?),
+        };
         let kept = Kept {
             ids: Ids::default(),
             makers: Makers::default(),
@@ -368,8 +416,11 @@ impl Actor for Renderer {
             placements: Made::default(),
             reads: HashMap::new(),
             samplers: HashMap::new(),
+            frames: Made::default(),
             window,
-            main,
+            format,
+            own,
+            main: Main::Own,
         };
         let kept = turn.keep(kept)?;
         turn.subscribe::<Render>();
@@ -397,10 +448,10 @@ impl Handles<On<Render>> for Renderer {
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let kept = turn.open(&mut self.kept)?;
-        kept.main.fit(&device, frame.texture.width(), frame.texture.height());
+        kept.main_mut().fit(&device, frame.texture.width(), frame.texture.height());
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        let passes = kept.main.passes();
+        let passes = kept.main().passes();
         let stamps = (!self.owed.timings.is_empty()).then(|| Stamps::new(&device, passes));
         kept.run(&mut encoder, &view, stamps.as_ref());
         let copied = (!self.owed.frames.is_empty()).then(|| copy_frame(&device, &mut encoder, &frame.texture));
@@ -853,6 +904,65 @@ impl Handles<ShapeOf> for Renderer {
     }
 }
 
+impl Handles<CreateEffect> for Renderer {
+    type Sends = (ToSender<Effected>,);
+
+    fn handle(&mut self, create: CreateEffect, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let limits = turn.open(&mut self.gpu)?.device().limits();
+        if let Err(why) = effect::check(&create, &limits) {
+            turn.reply(&Effected::Refused(why))?;
+            return Ok(());
+        }
+
+        let gpu = turn.open(&mut self.gpu)?;
+        let made = effect_pipeline(gpu.device(), &create);
+        let id = self.made(turn, |kept, id, maker| kept.programs.keep(id, maker, made))?;
+        turn.reply(&Effected::Made(MadeEffect { program: ProgramId { id }, reads: create.reads }))?;
+
+        Ok(())
+    }
+}
+
+impl Handles<CreateFrame> for Renderer {
+    type Sends = (ToSender<Framed>,);
+
+    fn handle(&mut self, create: CreateFrame, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let device = turn.open(&mut self.gpu)?.device().clone();
+        let kept = turn.open(&mut self.kept)?;
+        if let Err(why) = frame::check(&create, &*kept) {
+            turn.reply(&Framed::Refused(why))?;
+            return Ok(());
+        }
+        let walked = Walk::new(&device, create, kept.format, (1, 1), |making| kept.step(&device, making));
+        let walk = match walked {
+            Ok(walk) => walk,
+            Err((pass, why)) => {
+                turn.reply(&Framed::Refused(FrameRefused::Pass { pass, why }))?;
+                return Ok(());
+            }
+        };
+
+        let id = self.made(turn, |kept, id, maker| kept.frames.keep(id, maker, walk))?;
+        let kept = turn.open(&mut self.kept)?;
+        // The frame it replaces is the window's no longer, and is dropped: a window has one main frame.
+        if let Main::Made(replaced) = mem::replace(&mut kept.main, Main::Made(id)) {
+            kept.frames.forget(replaced);
+        }
+        let undrawn = kept.undrawn();
+        for (placement, pass) in undrawn {
+            turn.log(
+                Level::Warn,
+                format_args!(
+                    "placement {placement} is not drawn: the window's main frame has no pass {pass:?} of its shape"
+                ),
+            );
+        }
+        turn.reply(&Framed::Made(FrameId { id }))?;
+
+        Ok(())
+    }
+}
+
 impl Handles<Release> for Renderer {
     type Sends = ();
 
@@ -873,6 +983,13 @@ impl Handles<Release> for Renderer {
             Release::Uniforms(uniforms) => kept.uniforms.release(uniforms.id, by).map(drop),
             Release::Storage(storage) => kept.storage.release(storage.id, by).map(drop),
             Release::Placement(placement) => kept.placements.release(placement.id, by).map(drop),
+            Release::Frame(frame) => {
+                let released = kept.frames.release(frame.id, by).map(drop);
+                if released == Owned::Mine(()) {
+                    kept.unframed([frame.id]);
+                }
+                released
+            }
         };
         match released {
             Owned::Mine(()) => {}
@@ -901,6 +1018,8 @@ impl Handles<Ended> for Renderer {
             kept.uniforms.release_all(maker);
             kept.storage.release_all(maker);
             kept.placements.release_all(maker);
+            let frames = kept.frames.release_all(maker).into_iter().map(|(id, _)| id);
+            kept.unframed(frames);
         }
 
         Ok(())
@@ -960,19 +1079,20 @@ impl Kept {
             shape: program.shape,
             program: join.program.id,
             pipeline: program.pipeline.clone(),
-            groups: self.bind_groups(device, &program.groups, &join.bindings)?,
+            groups: self.bind_groups(device, &program.groups, &join.bindings, 0)?,
         })
     }
 
-    /// A bind group for each of `layouts`, binding what `bindings` names in it.
+    /// A bind group for each of `layouts`, the first of the group `first`, binding what `bindings` names in it.
     fn bind_groups(
         &self,
         device: &wgpu::Device,
         layouts: &[wgpu::BindGroupLayout],
         bindings: &[Bind],
+        first: u32,
     ) -> Result<Vec<wgpu::BindGroup>, JoinRefused> {
         let mut groups = Vec::with_capacity(layouts.len());
-        for (group, layout) in (0..).zip(layouts) {
+        for (group, layout) in (first..).zip(layouts) {
             let mut entries = Vec::new();
             for bind in bindings.iter().filter(|bind| bind.group == group) {
                 let missing = JoinRefused::Missing { group, binding: bind.binding };
@@ -1006,41 +1126,135 @@ impl Kept {
     /// does recorded in it, each pass writing its timestamps to `stamps` when the frame is timed.
     fn run(&self, encoder: &mut wgpu::CommandEncoder, end: &wgpu::TextureView, stamps: Option<&Stamps>) {
         let frame = Frame::Main(self.window);
-        for (at, (pass, shape)) in (0..).zip(self.main.steps()) {
-            match pass.does {
-                Does::Draw { into, depth, load } => {
-                    let view = match into {
-                        Target::End => end,
-                    };
-                    let load = match load {
-                        Load::Clear => wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    };
-                    let colour = wgpu::RenderPassColorAttachment {
-                        view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
-                    };
-                    let depth = match depth {
-                        DepthUse::Write(target) => wgpu::RenderPassDepthStencilAttachment {
-                            view: self.main.target(target),
-                            depth_ops: Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(1.0),
-                                store: wgpu::StoreOp::Store,
-                            }),
-                            stencil_ops: None,
-                        },
-                    };
-                    let mut recording = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        color_attachments: &[Some(colour)],
-                        depth_stencil_attachment: Some(depth),
-                        timestamp_writes: stamps.map(|stamps| stamps.writes(at)),
-                        ..Default::default()
-                    });
-                    self.draw(&mut recording, frame, pass.name, shape);
+        let walk = self.main();
+        for (at, (pass, shape, step)) in (0..).zip(walk.steps()) {
+            let (into, load, depth) = match step {
+                Step::Draw { into, depth, load } => (*into, *load, *depth),
+                Step::Effect(effect) => (effect.into, effect.load, DepthUse::Off),
+            };
+            let view = match into {
+                Target::End => end,
+                Target::Texture(target) => walk.target(target),
+            };
+            let load = match load {
+                Load::Clear => wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                Load::Keep => wgpu::LoadOp::Load,
+            };
+            let colour = wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+            };
+            let depth_ops = |load| Some(wgpu::Operations { load, store: wgpu::StoreOp::Store });
+            let depth = match depth {
+                DepthUse::Off => None,
+                DepthUse::Write(target) => Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: walk.target(target),
+                    depth_ops: depth_ops(wgpu::LoadOp::Clear(1.0)),
+                    stencil_ops: None,
+                }),
+                DepthUse::Test(target) => Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: walk.target(target),
+                    depth_ops: depth_ops(wgpu::LoadOp::Load),
+                    stencil_ops: None,
+                }),
+            };
+            let mut recording = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(colour)],
+                depth_stencil_attachment: depth,
+                timestamp_writes: stamps.map(|stamps| stamps.writes(at)),
+                ..Default::default()
+            });
+            match step {
+                Step::Draw { .. } => self.draw(&mut recording, frame, pass, shape),
+                Step::Effect(effect) => {
+                    recording.set_pipeline(&effect.pipeline);
+                    recording.set_bind_group(0, &effect.read, &[]);
+                    for (group, bound) in (1..).zip(&effect.groups) {
+                        recording.set_bind_group(group, bound, &[]);
+                    }
+                    recording.draw(0..3, 0..1);
                 }
             }
         }
+    }
+
+    /// The window's main frame.
+    fn main(&self) -> &Walk {
+        match self.main {
+            Main::Own => &self.own,
+            Main::Made(id) => self.frames.get(id).unwrap_or(&self.own),
+        }
+    }
+
+    /// The window's main frame, to fit to its window.
+    fn main_mut(&mut self) -> &mut Walk {
+        match self.main {
+            Main::Own => &mut self.own,
+            Main::Made(id) => self.frames.get_mut(id).unwrap_or(&mut self.own),
+        }
+    }
+
+    /// Notes that the frames `released` are gone: the window's main frame is the renderer's own again when it was one
+    /// of them.
+    fn unframed(&mut self, released: impl IntoIterator<Item = u64>) {
+        for id in released {
+            if self.main == Main::Made(id) {
+                self.main = Main::Own;
+            }
+        }
+    }
+
+    /// The pass the frame `create` does at `making`, made: an effect's pipeline and bind groups, made of what the
+    /// frame's check found kept.
+    fn step(&self, device: &wgpu::Device, making: Making<'_>) -> Result<Step, PassRefused> {
+        let Does::Effect { program, reads, into, bindings } = making.does else {
+            return drawn(making);
+        };
+        let made = self.programs.get(program.id).ok_or(PassRefused::Effect)?;
+        let reads: Vec<u32> = reads
+            .iter()
+            .map(|read| match read {
+                Target::Texture(at) => Ok(*at),
+                Target::End => Err(PassRefused::End),
+            })
+            .collect::<Result<_, _>>()?;
+        let layout = made.groups.first().ok_or(PassRefused::Effect)?.clone();
+        let read = walk::read_group(device, &layout, &reads, making.targets);
+        let groups = self
+            .bind_groups(device, made.groups.get(1..).unwrap_or_default(), bindings, 1)
+            .map_err(|why| PassRefused::Bindings { why })?;
+        let load = if making.written {
+            Load::Keep
+        } else {
+            Load::Clear
+        };
+
+        Ok(Step::Effect(walk::Effected {
+            pipeline: made.pipeline.clone(),
+            reads,
+            layout,
+            read,
+            groups,
+            into: *into,
+            load,
+        }))
+    }
+
+    /// Each placement's joins of the window's main frame that it does not draw: those whose pass it has not, or has in
+    /// another shape, each as its placement and the pass it joined.
+    fn undrawn(&self) -> Vec<(u64, PassName)> {
+        let frame = Frame::Main(self.window);
+        let main = self.main();
+
+        self.placements
+            .iter()
+            .flat_map(|(id, placement)| placement.joins.iter().map(move |join| (id, join)))
+            .filter(|(_, join)| join.frame == frame)
+            .filter(|(_, join)| main.shape_of(join.pass) != Some(join.shape))
+            .map(|(id, join)| (id, join.pass))
+            .collect()
     }
 
     /// Records into `recording` every placement that joins the pass `pass` of `frame`, of the shape `shape`, each
@@ -1209,18 +1423,16 @@ impl Finds for Kept {
             return Err(JoinRefused::Frame);
         }
 
-        self.main.shape_of(pass).ok_or(JoinRefused::Pass)
+        self.main().shape_of(pass).ok_or(JoinRefused::Pass)
     }
 
     fn program(&self, id: ProgramId) -> Option<Reads<'_>> {
         let program = self.programs.get(id.id)?;
+        let Stages::Draws { layout, instances } = &program.stages else {
+            return None;
+        };
 
-        Some(Reads {
-            layout: &program.layout,
-            instances: &program.instances,
-            bindings: &program.bindings,
-            shape: program.shape,
-        })
+        Some(Reads { layout, instances, bindings: &program.bindings, shape: program.shape })
     }
 
     fn mesh(&self, id: MeshId) -> Option<&VertexLayout> {
@@ -1242,6 +1454,31 @@ impl Finds for Kept {
     fn has_texture(&self, id: TextureId) -> bool {
         self.textures.get(id.id).is_some()
     }
+}
+
+/// What a frame's check finds of what is kept, beside what a placement's does.
+impl Holds for Kept {
+    fn window(&self, window: WindowId) -> Option<ColourFormat> {
+        (window == self.window).then_some(self.format)
+    }
+
+    fn effect(&self, id: ProgramId) -> Option<EffectReads<'_>> {
+        let program = self.programs.get(id.id)?;
+        let Stages::Effect { reads } = &program.stages else {
+            return None;
+        };
+
+        Some(EffectReads { reads, bindings: &program.bindings, shape: program.shape })
+    }
+}
+
+/// A pass of a frame that draws what joins it, made: an effect is made by [`Kept::step`], with what it reads.
+fn drawn(making: Making<'_>) -> Result<Step, PassRefused> {
+    let Does::Draw { into, depth, load } = making.does else {
+        return Err(PassRefused::Effect);
+    };
+
+    Ok(Step::Draw { into: *into, depth: *depth, load: *load })
 }
 
 /// A sampler that reads as `sampling` says.
@@ -1345,6 +1582,16 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
     };
     let target =
         wgpu::ColorTargetState { format: create.shape.colour.wgpu(), blend, write_mask: wgpu::ColorWrites::ALL };
+    let depth_stencil = match create.shape.depth {
+        DepthFormat::None => None,
+        DepthFormat::Depth32Float => Some(wgpu::DepthStencilState {
+            format: DEPTH,
+            depth_write_enabled: Some(writes),
+            depth_compare: Some(compare),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+    };
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(&layout),
@@ -1360,13 +1607,7 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
             cull_mode: cull,
             ..Default::default()
         },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: create.shape.depth.wgpu(),
-            depth_write_enabled: Some(writes),
-            depth_compare: Some(compare),
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
+        depth_stencil,
         multisample: wgpu::MultisampleState { count: create.shape.samples.count(), ..Default::default() },
         fragment: Some(wgpu::FragmentState {
             module: &module,
@@ -1380,11 +1621,95 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
 
     Program {
         pipeline,
-        layout: create.layout.clone(),
-        instances: create.instances.clone(),
+        stages: Stages::Draws { layout: create.layout.clone(), instances: create.instances.clone() },
         bindings: create.bindings.clone(),
         groups,
         shape: create.shape,
+    }
+}
+
+/// The depth a pass holds beside its colour, when its shape holds any.
+const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// The pipeline of the effect `create` asks for: the renderer's vertex stage, one triangle over the whole target, and
+/// its fragment stage, drawing into targets of its shape, reading its targets in its first group and binding what it
+/// lists in the groups after; made from what its check let through.
+fn effect_pipeline(device: &wgpu::Device, create: &CreateEffect) -> Program {
+    let cover = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(COVER.into()),
+    });
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(create.wgsl.as_str().into()),
+    });
+    let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..)
+        .zip(&create.reads)
+        .map(|(binding, read)| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: sample_type(*read),
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        })
+        .collect();
+    let reads = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &entries });
+    let mut groups = groups(device, &create.bindings);
+    match groups.first_mut() {
+        Some(first) => *first = reads,
+        None => groups.push(reads),
+    }
+    let bound: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(Some).collect();
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &bound,
+        immediate_size: 0,
+    });
+    let target = wgpu::ColorTargetState {
+        format: create.shape.colour.wgpu(),
+        blend: blending(create.blend),
+        write_mask: wgpu::ColorWrites::ALL,
+    };
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &cover,
+            entry_point: Some(COVER_ENTRY),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState { count: create.shape.samples.count(), ..Default::default() },
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some(&create.fragment),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(target)],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+
+    Program {
+        pipeline,
+        stages: Stages::Effect { reads: create.reads.clone() },
+        bindings: create.bindings.clone(),
+        groups,
+        shape: create.shape,
+    }
+}
+
+/// How a target read so is sampled, as wgpu names it.
+const fn sample_type(read: Read) -> wgpu::TextureSampleType {
+    match read {
+        Read::Float => wgpu::TextureSampleType::Float { filterable: true },
+        Read::Uint => wgpu::TextureSampleType::Uint,
+        Read::Depth => wgpu::TextureSampleType::Depth,
     }
 }
 

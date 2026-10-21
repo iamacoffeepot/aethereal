@@ -23,6 +23,13 @@ impl Shape {
     pub const fn with_depth(colour: ColourFormat) -> Self {
         Self { colour, samples: Samples::One, depth: DepthFormat::Depth32Float }
     }
+
+    /// The shape of a pass drawing into `colour` of one sample, holding no depth: an effect's, or a draw's that uses
+    /// none.
+    #[must_use]
+    pub const fn flat(colour: ColourFormat) -> Self {
+        Self { colour, samples: Samples::One, depth: DepthFormat::None }
+    }
 }
 
 /// The format of a pass's colour target: a window's, or a texture's.
@@ -36,8 +43,10 @@ pub enum ColourFormat {
     Bgra8,
     /// Blue, green, red, and alpha, a byte each, the colours encoded as sRGB.
     Bgra8Srgb,
-    /// Red, green, blue, and alpha, a 16-bit float each.
+    /// Red, green, blue, and alpha, a 16-bit float each: a frame's target of floats.
     Rgba16Float,
+    /// One 32-bit whole number: a frame's target of whole numbers, which no program blends into.
+    R32Uint,
 }
 
 impl Kind for ColourFormat {
@@ -54,7 +63,14 @@ impl ColourFormat {
             Self::Bgra8 => wgpu::TextureFormat::Bgra8Unorm,
             Self::Bgra8Srgb => wgpu::TextureFormat::Bgra8UnormSrgb,
             Self::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
+            Self::R32Uint => wgpu::TextureFormat::R32Uint,
         }
+    }
+
+    /// Whether it holds whole numbers, which a fragment stage writes as `u32` and nothing blends.
+    #[must_use]
+    pub const fn is_whole(self) -> bool {
+        matches!(self, Self::R32Uint)
     }
 
     /// The format wgpu names `format`: none for one no pass draws into.
@@ -66,6 +82,7 @@ impl ColourFormat {
             wgpu::TextureFormat::Bgra8Unorm => Some(Self::Bgra8),
             wgpu::TextureFormat::Bgra8UnormSrgb => Some(Self::Bgra8Srgb),
             wgpu::TextureFormat::Rgba16Float => Some(Self::Rgba16Float),
+            wgpu::TextureFormat::R32Uint => Some(Self::R32Uint),
             _ => None,
         }
     }
@@ -95,20 +112,12 @@ impl Samples {
 /// The depth a pass holds beside its colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
 pub enum DepthFormat {
+    /// None: a program drawing there neither tests nor writes depth.
+    None,
     /// A 32-bit float for each pixel.
     Depth32Float,
 }
 
 impl Kind for DepthFormat {
     const NAME: KindName = KindName::new("aether.render.depth_format");
-}
-
-impl DepthFormat {
-    /// The format, as wgpu names it.
-    #[must_use]
-    pub const fn wgpu(self) -> wgpu::TextureFormat {
-        match self {
-            Self::Depth32Float => wgpu::TextureFormat::Depth32Float,
-        }
-    }
 }

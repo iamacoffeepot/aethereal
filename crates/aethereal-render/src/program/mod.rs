@@ -5,7 +5,7 @@
 mod tests;
 
 use crate::mesh::{self, MeshRefused, VertexFormat, VertexLayout};
-use crate::shape::Shape;
+use crate::shape::{ColourFormat, DepthFormat, Shape};
 use aethereal_data::{Kind, KindName, Plain};
 use naga::front::wgsl;
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
@@ -192,8 +192,17 @@ pub enum ProgramRefused {
     /// The fragment stage reads a location the vertex stage does not write, or writes as another type or
     /// interpolation.
     Stages { location: u32 },
-    /// The fragment stage does not write a `vec4<f32>` at location 0, the colour drawn.
+    /// The fragment stage does not write the colour drawn at location 0: a `vec4<f32>`, or for a shape of whole
+    /// numbers a `u32` or a vector of them.
     Output,
+    /// It blends into a shape of whole numbers, which nothing blends.
+    Blend,
+    /// It tests or writes depth, and its shape holds none.
+    Depthless,
+    /// An effect's shape holds depth: an effect draws over a whole target, and tests none.
+    EffectDepth,
+    /// An effect lists a binding in group 0, where what it reads is bound.
+    Reserved { binding: u32 },
     /// The shader uses a binding `bindings` does not list.
     Unbound { group: u32, binding: u32 },
     /// The shader uses a binding as another kind than `bindings` lists, or reads more of a uniform block or a storage
@@ -230,32 +239,61 @@ pub fn check(create: &CreateProgram, limits: &wgpu::Limits) -> Result<(), Progra
             return Err(ProgramRefused::Shared { location: attribute.location });
         }
     }
-    check_bindings(&create.bindings, limits)?;
-
-    let module = wgsl::parse_str(&create.wgsl)
-        .map_err(|error| ProgramRefused::Parse { message: error.emit_to_string(&create.wgsl) })?;
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .map_err(|error| ProgramRefused::Invalid { message: error.emit_to_string(&create.wgsl) })?;
-    if !module.overrides.is_empty() {
-        return Err(ProgramRefused::Overrides);
+    check_bindings(&create.bindings, 0, limits)?;
+    check_fixed(create.state.blend, create.shape)?;
+    let tests_depth = create.state.depth != Depth::Off;
+    let holds_depth = create.shape.depth != DepthFormat::None;
+    if tests_depth && !holds_depth {
+        return Err(ProgramRefused::Depthless);
     }
 
+    let (module, info) = parsed(&create.wgsl)?;
     let vertex = entry(&module, Stage::Vertex, &create.vertex)?;
     let fragment = entry(&module, Stage::Fragment, &create.fragment)?;
     check_inputs(&module, vertex, &create.layout, &create.instances)?;
-    check_stages(&module, vertex, fragment)?;
-    check_output(&module, fragment)?;
+    check_stages((&module, vertex), (&module, fragment))?;
+    check_output(&module, fragment, create.shape.colour)?;
     for at in [vertex, fragment] {
-        check_uses(&module, &info, at, &create.bindings)?;
+        check_uses(&module, &info, at, |group, binding| listed(&create.bindings, group, binding))?;
     }
 
     Ok(())
 }
 
+/// The module `wgsl` is, validated, with what its validation found: refused when it does not parse, is not valid, or
+/// declares a constant a pipeline overrides.
+pub(crate) fn parsed(wgsl: &str) -> Result<(Module, ModuleInfo), ProgramRefused> {
+    let module =
+        wgsl::parse_str(wgsl).map_err(|error| ProgramRefused::Parse { message: error.emit_to_string(wgsl) })?;
+    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        .validate(&module)
+        .map_err(|error| ProgramRefused::Invalid { message: error.emit_to_string(wgsl) })?;
+    if !module.overrides.is_empty() {
+        return Err(ProgramRefused::Overrides);
+    }
+
+    Ok((module, info))
+}
+
+/// Checks that a program blending by `blend` may draw into `shape`: nothing blends into whole numbers.
+pub(crate) fn check_fixed(blend: Blend, shape: Shape) -> Result<(), ProgramRefused> {
+    let blends = blend != Blend::Opaque;
+    if blends && shape.colour.is_whole() {
+        return Err(ProgramRefused::Blend);
+    }
+
+    Ok(())
+}
+
+/// The kind `bindings` lists at `group`, `binding`: none when it lists nothing there.
+fn listed(bindings: &[Binding], group: u32, binding: u32) -> Option<BindingKind> {
+    bindings.iter().find(|listed| listed.group == group && listed.binding == binding).map(|listed| listed.kind)
+}
+
 /// Checks that each binding is at a place of its own, in a group the GPU has, a uniform block or a storage buffer of a
-/// size it binds, and that there are no more of each kind than a stage binds.
-fn check_bindings(bindings: &[Binding], limits: &wgpu::Limits) -> Result<(), ProgramRefused> {
+/// size it binds, and that there are no more of each kind than a stage binds, `textures` more besides counted with
+/// the textures.
+pub(crate) fn check_bindings(bindings: &[Binding], textures: u32, limits: &wgpu::Limits) -> Result<(), ProgramRefused> {
     for (at, listed) in bindings.iter().enumerate() {
         let (group, binding) = (listed.group, listed.binding);
         if group >= limits.max_bind_groups {
@@ -284,7 +322,12 @@ fn check_bindings(bindings: &[Binding], limits: &wgpu::Limits) -> Result<(), Pro
         (BindingKind::Sampler, limits.max_samplers_per_shader_stage),
     ];
     for (kind, most) in most {
-        let count = bindings.iter().filter(|listed| same_kind(listed.kind, kind)).count();
+        let besides = if kind == BindingKind::Texture {
+            textures as usize
+        } else {
+            0
+        };
+        let count = bindings.iter().filter(|listed| same_kind(listed.kind, kind)).count() + besides;
         if count > most as usize {
             return Err(ProgramRefused::Many { kind });
         }
@@ -305,7 +348,7 @@ const fn same_kind(one: BindingKind, other: BindingKind) -> bool {
 }
 
 /// The index of the entry point `name` of `stage`.
-fn entry(module: &Module, stage: Stage, name: &str) -> Result<usize, ProgramRefused> {
+pub(crate) fn entry(module: &Module, stage: Stage, name: &str) -> Result<usize, ProgramRefused> {
     let shader = match stage {
         Stage::Vertex => ShaderStage::Vertex,
         Stage::Fragment => ShaderStage::Fragment,
@@ -395,10 +438,13 @@ fn check_inputs(
 }
 
 /// Checks that the fragment stage reads each of its locations as the vertex stage writes it: the same type, and the
-/// same interpolation.
-fn check_stages(module: &Module, vertex: usize, fragment: usize) -> Result<(), ProgramRefused> {
-    let written = outputs(module, vertex);
-    for read in inputs(module, fragment) {
+/// same interpolation. Each stage is an entry point of a module, which may be another's.
+pub(crate) fn check_stages(
+    (vertex_module, vertex): (&Module, usize),
+    (fragment_module, fragment): (&Module, usize),
+) -> Result<(), ProgramRefused> {
+    let written = outputs(vertex_module, vertex);
+    for read in inputs(fragment_module, fragment) {
         let matched = written.contains(&read);
         if !matched {
             return Err(ProgramRefused::Stages { location: read.location });
@@ -408,11 +454,21 @@ fn check_stages(module: &Module, vertex: usize, fragment: usize) -> Result<(), P
     Ok(())
 }
 
-/// Checks that the fragment stage writes the colour drawn: a `vec4<f32>` at location 0, as the target has four
-/// channels and blending by alpha reads the fourth.
-fn check_output(module: &Module, fragment: usize) -> Result<(), ProgramRefused> {
+/// Checks that the fragment stage writes the colour drawn into `format` at location 0: a `vec4<f32>`, as a target of
+/// fractions or floats is read as four channels and blending by alpha reads the fourth, or a `u32` or a vector of them
+/// into whole numbers, of which WebGPU keeps the channels the format has.
+pub(crate) fn check_output(module: &Module, fragment: usize, format: ColourFormat) -> Result<(), ProgramRefused> {
     let colour = TypeInner::Vector { size: naga::VectorSize::Quad, scalar: naga::Scalar::F32 };
-    let written = outputs(module, fragment).iter().any(|output| output.location == 0 && *output.ty == colour);
+    let writes = |output: &Passed<'_>| {
+        let whole = scalar(output.ty) == Some(naga::Scalar::U32);
+        let fits = if format.is_whole() {
+            whole
+        } else {
+            *output.ty == colour
+        };
+        output.location == 0 && fits
+    };
+    let written = outputs(module, fragment).iter().any(writes);
     if !written {
         return Err(ProgramRefused::Output);
     }
@@ -420,30 +476,52 @@ fn check_output(module: &Module, fragment: usize) -> Result<(), ProgramRefused> 
     Ok(())
 }
 
-/// Checks that each binding the entry point `at` uses is listed, as the kind it is used as. What is read of a block
-/// counts an array whose length is its buffer's as one element, as WebGPU's least binding size does.
-fn check_uses(module: &Module, info: &ModuleInfo, at: usize, bindings: &[Binding]) -> Result<(), ProgramRefused> {
+/// What a binding is used as, as a program lists it, or as an effect reads a target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Used {
+    /// As a program lists it.
+    Listed(BindingKind),
+    /// A target an effect reads, of floats, whole numbers, or depth.
+    Read(ImageClass),
+}
+
+/// Checks that each binding the entry point `at` uses is one `lists` answers for its group and binding, as the kind it
+/// is used as. What is read of a block counts an array whose length is its buffer's as one element, as WebGPU's least
+/// binding size does.
+pub(crate) fn check_uses<U: Into<Used>>(
+    module: &Module,
+    info: &ModuleInfo,
+    at: usize,
+    lists: impl Fn(u32, u32) -> Option<U>,
+) -> Result<(), ProgramRefused> {
     let uses = info.get_entry_point(at);
     for (handle, global) in module.global_variables.iter() {
         let (Some(place), false) = (&global.binding, uses[handle].is_empty()) else {
             continue;
         };
         let (group, binding) = (place.group, place.binding);
-        let Some(listed) = bindings.iter().find(|listed| listed.group == group && listed.binding == binding) else {
+        let Some(listed) = lists(group, binding) else {
             return Err(ProgramRefused::Unbound { group, binding });
         };
         let inner = &module.types[global.ty].inner;
         let float_texture = ImageClass::Sampled { kind: ScalarKind::Float, multi: false };
-        let fits = match (global.space, inner, listed.kind) {
-            (AddressSpace::Uniform, _, BindingKind::Uniform { bytes }) => inner.size(module.to_ctx()) <= bytes,
-            (AddressSpace::Storage { access }, _, BindingKind::Storage { bytes }) => {
+        let fits = match (global.space, inner, listed.into()) {
+            (AddressSpace::Uniform, _, Used::Listed(BindingKind::Uniform { bytes })) => {
+                inner.size(module.to_ctx()) <= bytes
+            }
+            (AddressSpace::Storage { access }, _, Used::Listed(BindingKind::Storage { bytes })) => {
                 let read_only = access == StorageAccess::LOAD;
                 read_only && inner.size(module.to_ctx()) <= bytes
             }
-            (AddressSpace::Handle, TypeInner::Image { dim, arrayed, class }, BindingKind::Texture) => {
+            (AddressSpace::Handle, TypeInner::Image { dim, arrayed, class }, Used::Listed(BindingKind::Texture)) => {
                 *dim == ImageDimension::D2 && !*arrayed && *class == float_texture
             }
-            (AddressSpace::Handle, TypeInner::Sampler { comparison }, BindingKind::Sampler) => !*comparison,
+            (AddressSpace::Handle, TypeInner::Image { dim, arrayed, class }, Used::Read(read)) => {
+                *dim == ImageDimension::D2 && !*arrayed && *class == read
+            }
+            (AddressSpace::Handle, TypeInner::Sampler { comparison }, Used::Listed(BindingKind::Sampler)) => {
+                !*comparison
+            }
             _ => false,
         };
         if !fits {
@@ -452,4 +530,10 @@ fn check_uses(module: &Module, info: &ModuleInfo, at: usize, bindings: &[Binding
     }
 
     Ok(())
+}
+
+impl From<BindingKind> for Used {
+    fn from(kind: BindingKind) -> Self {
+        Self::Listed(kind)
+    }
 }
