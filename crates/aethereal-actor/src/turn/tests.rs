@@ -610,14 +610,39 @@ fn mail_to_a_child_by_its_type_reaches_it_only_when_it_was_made_and_is_of_that_t
         ME,
     );
 
-    assert!(turn.to(child::<Leaf>(&0)).send(&Poke).is_ok());
-    assert!(turn.to(child::<Branch>(&())).send(&Poked).is_ok());
-    assert!(turn.to(child::<Leaf>(&9)).send(&Poke).is_ok());
+    assert!(turn.to(child::<Leaf>(0)).send(&Poke).is_ok());
+    assert!(turn.to(child::<Branch>(())).send(&Poked).is_ok());
+    assert!(turn.to(child::<Leaf>(9)).send(&Poke).is_ok());
 
     let to: Vec<Seated> = asked.into_parts().0.mailed.iter().map(|mailed| mailed.to).collect();
     let never = probe.child(ME.id, &PathSegment::new(Leaf::NAME, &9u64));
     let nowhere = |id| Seated { id, seat: SeatNumber::NOWHERE };
     assert_eq!(to, [leaf, nowhere(branch.id), nowhere(never)]);
+}
+
+#[test]
+fn mail_to_a_place_beneath_a_child_reaches_the_actor_its_types_and_keys_name() {
+    // Catches a place beneath the sender built with its segments out of order, a key put on the keyless segment, or
+    // one found from the root rather than from the sender.
+    let Ok(sender) = ROOT.child(&PathSegment::new(Leaf::NAME, &1u64)) else {
+        panic!("a child of the root fits");
+    };
+    let beneath = sender
+        .child(&PathSegment::new(Herald::NAME, &()))
+        .and_then(|herald| herald.child(&PathSegment::new(Leaf::NAME, &5u64)));
+    let Ok(beneath) = beneath else {
+        panic!("a place three deep fits");
+    };
+    let leaf = seated(9, 6);
+    let table = Listed(vec![(leaf, beneath)]);
+    let mut asked = Asked::new();
+    let mut turn = opened::<Leaf, (ToType<Leaf, Poke>,)>(ME, &sender, Above::Chassis, &table, &mut asked, ME);
+
+    assert!(turn.to(child::<(Herald, Leaf)>(5)).send(&Poke).is_ok());
+    assert!(turn.to(child::<(Herald, Leaf)>(6)).send(&Poke).is_ok());
+
+    let to: Vec<Seated> = asked.into_parts().0.mailed.iter().map(|mailed| mailed.to).collect();
+    assert_eq!(to, [leaf, Seated { id: ActorId::new(0), seat: SeatNumber::NOWHERE }]);
 }
 
 #[test]
