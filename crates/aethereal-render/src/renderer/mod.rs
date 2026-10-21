@@ -4,6 +4,9 @@ use crate::Gpu;
 use crate::instances::{self, CreateInstances, Held, Instanced, InstancesId, WriteInstances};
 use crate::made::{Ids, Made, Makers, Owned};
 use crate::mesh::{self, Counted, CreateMesh, MeshId, Meshed, VertexLayout};
+use crate::placement::{
+    self, Drawn, Filter, Finds, Place, Placed, PlacementId, PlacementRefused, Sampling, Shape, Wrap,
+};
 use crate::program::{
     self, Binding, BindingKind, Blend, CreateProgram, Cull, Depth, PerInstance, ProgramId, Programmed,
 };
@@ -14,6 +17,7 @@ use aethereal_actor::{
     Resource, ToSender, Top, Turn,
 };
 use aethereal_data::{ActorId, Bound, Kind, KindName, Plain};
+use std::collections::HashMap;
 
 /// The renderer, the one actor that touches the GPU. Actors ask it through [`Rendering`].
 #[derive(Bound)]
@@ -53,6 +57,10 @@ impl Carries<CreateUniforms> for Renderer {
     type Answers = (Uniformed,);
 }
 
+impl Carries<Place> for Renderer {
+    type Answers = (Placed,);
+}
+
 /// What the renderer is made from: the GPU the chassis opened.
 #[derive(Bound)]
 pub struct RendererConfig {
@@ -64,7 +72,7 @@ impl Kind for RendererConfig {
 }
 
 /// What an actor asks the renderer: to make a mesh, a texture, a program, instances, or uniforms, to write instances
-/// or uniforms it made, or to release what it made.
+/// or uniforms it made, to place what is drawn, or to release what it made.
 pub struct Rendering;
 
 impl Protocol for Rendering {
@@ -76,6 +84,7 @@ impl Protocol for Rendering {
         WriteInstances,
         CreateUniforms,
         WriteUniforms,
+        Place,
         Release,
     );
 }
@@ -108,6 +117,10 @@ impl Carries<WriteUniforms> for Rendering {
     type Answers = ();
 }
 
+impl Carries<Place> for Rendering {
+    type Answers = (Placed,);
+}
+
 impl Carries<Release> for Rendering {
     type Answers = ();
 }
@@ -120,14 +133,15 @@ pub enum Release {
     Program(ProgramId),
     Instances(InstancesId),
     Uniforms(UniformsId),
+    Placement(PlacementId),
 }
 
 impl Kind for Release {
     const NAME: KindName = KindName::new("aether.render.release");
 }
 
-/// What the renderer has made, and who made each.
-#[derive(Default)]
+/// What the renderer has made, and who made each, with the samplers its placements share and the depth its frames
+/// test against.
 struct Kept {
     ids: Ids,
     makers: Makers,
@@ -136,12 +150,14 @@ struct Kept {
     programs: Made<Program>,
     instances: Made<Instances>,
     uniforms: Made<Uniforms>,
+    placements: Made<Placement>,
+    samplers: HashMap<Sampling, wgpu::Sampler>,
+    depth: DepthTexture,
 }
 
 impl Resource for Kept {}
 
 /// A mesh on the GPU.
-#[expect(dead_code, reason = "drawn once the renderer draws what actors place (ADR-0021)")]
 struct Mesh {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -149,19 +165,18 @@ struct Mesh {
     layout: VertexLayout,
 }
 
-/// A texture on the GPU, and the view a program samples it through.
-#[expect(dead_code, reason = "drawn with once programs bind textures (ADR-0021)")]
+/// A texture on the GPU, through the view a program samples it, which keeps it.
 struct Texture {
-    texture: wgpu::Texture,
     view: wgpu::TextureView,
 }
 
-/// A program on the GPU: its pipeline, with the layout of the vertices it reads and of each group it binds.
-#[expect(dead_code, reason = "drawn with once the renderer draws what actors place (ADR-0021)")]
+/// A program on the GPU: its pipeline, with the layouts of what it reads, what it binds, and the layout of each
+/// group it binds in.
 struct Program {
     pipeline: wgpu::RenderPipeline,
     layout: VertexLayout,
     instances: PerInstance,
+    bindings: Vec<Binding>,
     groups: Vec<wgpu::BindGroupLayout>,
 }
 
@@ -169,8 +184,44 @@ struct Program {
 struct Instances {
     buffer: wgpu::Buffer,
     held: Held,
-    #[expect(dead_code, reason = "matched against a program's once actors place what they draw (ADR-0023)")]
     layout: VertexLayout,
+}
+
+/// One thing drawn at each frame, holding all it draws with, so a frame looks nothing up and releasing what it was
+/// made of frees it only once the placement goes (ADR-0023). `program` is its program's id, which a frame draws
+/// placements together by.
+struct Placement {
+    program: u64,
+    pipeline: wgpu::RenderPipeline,
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    index_count: u32,
+    drawing: Drawing,
+    groups: Vec<wgpu::BindGroup>,
+}
+
+/// How many instances a placement draws.
+enum Drawing {
+    /// A count, fixed when it was placed.
+    Count(u32),
+    /// One for each record of the instances `instances`, read from `buffer`.
+    Records { instances: u64, buffer: wgpu::Buffer, length: Length },
+}
+
+/// How many records a placement draws from its instances.
+#[derive(Clone, Copy)]
+enum Length {
+    /// As many as the instances hold at the frame: they are still kept, and written.
+    Live,
+    /// As many as they held when they were released: nothing writes them again.
+    Last(u32),
+}
+
+/// The depth texture a frame tests against, of the size of the frame it was last made for.
+struct DepthTexture {
+    view: wgpu::TextureView,
+    width: u32,
+    height: u32,
 }
 
 /// Uniforms on the GPU, and their size in bytes.
@@ -191,6 +242,7 @@ impl Actor for Renderer {
         WriteInstances,
         CreateUniforms,
         WriteUniforms,
+        Place,
         Release,
         Ended,
     );
@@ -198,8 +250,22 @@ impl Actor for Renderer {
     type EndSends = ();
 
     fn begin(config: RendererConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let gpu = turn.take(config.gpu)?;
-        let kept = turn.keep(Kept::default())?;
+        let mut gpu = turn.take(config.gpu)?;
+        // Made again at the first frame's size, as for each frame of a new size.
+        let depth = DepthTexture::new(turn.open(&mut gpu)?.device(), 1, 1);
+        let kept = Kept {
+            ids: Ids::default(),
+            makers: Makers::default(),
+            meshes: Made::default(),
+            textures: Made::default(),
+            programs: Made::default(),
+            instances: Made::default(),
+            uniforms: Made::default(),
+            placements: Made::default(),
+            samplers: HashMap::new(),
+            depth,
+        };
+        let kept = turn.keep(kept)?;
         turn.subscribe::<Render>();
 
         Ok(Self { gpu, kept })
@@ -219,20 +285,33 @@ impl Handles<On<Render>> for Renderer {
         let wgpu::CurrentSurfaceTexture::Success(frame) = gpu.surface().get_current_texture() else {
             return Ok(());
         };
+        // Held past the opening of what is kept, as a turn opens one resource at a time.
+        let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let kept = turn.open(&mut self.kept)?;
+        kept.depth.fit(&device, frame.texture.width(), frame.texture.height());
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let attachment = wgpu::RenderPassColorAttachment {
             view: &view,
             depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
         };
-        drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let depth = wgpu::RenderPassDepthStencilAttachment {
+            view: &kept.depth.view,
+            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+            stencil_ops: None,
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             color_attachments: &[Some(attachment)],
+            depth_stencil_attachment: Some(depth),
             ..Default::default()
-        }));
-        gpu.queue().submit([encoder.finish()]);
-        gpu.queue().present(frame);
+        });
+        kept.draw(&mut pass);
+        drop(pass);
+        queue.submit([encoder.finish()]);
+        queue.present(frame);
 
         Ok(())
     }
@@ -298,7 +377,7 @@ impl Handles<CreateTexture> for Renderer {
         };
         gpu.queue().write_texture(made.as_image_copy(), &pixels, layout, size);
         let view = made.create_view(&wgpu::TextureViewDescriptor::default());
-        let texture = Texture { texture: made, view };
+        let texture = Texture { view };
         let id = self.made(turn, |kept, id, maker| kept.textures.keep(id, maker, texture))?;
         turn.reply(&Textured::Made(TextureId { id }))?;
 
@@ -452,6 +531,27 @@ impl Handles<WriteUniforms> for Renderer {
     }
 }
 
+impl Handles<Place> for Renderer {
+    type Sends = (ToSender<Placed>,);
+
+    fn handle(&mut self, place: Place, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let device = turn.open(&mut self.gpu)?.device().clone();
+        let kept = turn.open(&mut self.kept)?;
+        let placed = placement::check(&place, &*kept).and_then(|()| kept.placement(&device, &place));
+        let made = match placed {
+            Ok(made) => made,
+            Err(why) => {
+                turn.reply(&Placed::Refused(why))?;
+                return Ok(());
+            }
+        };
+        let id = self.made(turn, |kept, id, maker| kept.placements.keep(id, maker, made))?;
+        turn.reply(&Placed::Made(PlacementId { id }))?;
+
+        Ok(())
+    }
+}
+
 impl Handles<Release> for Renderer {
     type Sends = ();
 
@@ -462,8 +562,15 @@ impl Handles<Release> for Renderer {
             Release::Mesh(mesh) => kept.meshes.release(mesh.id, by).map(drop),
             Release::Texture(texture) => kept.textures.release(texture.id, by).map(drop),
             Release::Program(program) => kept.programs.release(program.id, by).map(drop),
-            Release::Instances(instances) => kept.instances.release(instances.id, by).map(drop),
+            Release::Instances(instances) => {
+                let released = kept.instances.release(instances.id, by);
+                if let Owned::Mine(made) = &released {
+                    kept.last_drawn(instances.id, made.held.length);
+                }
+                released.map(drop)
+            }
             Release::Uniforms(uniforms) => kept.uniforms.release(uniforms.id, by).map(drop),
+            Release::Placement(placement) => kept.placements.release(placement.id, by).map(drop),
         };
         match released {
             Owned::Mine(()) => {}
@@ -486,12 +593,187 @@ impl Handles<Ended> for Renderer {
             kept.meshes.release_all(maker);
             kept.textures.release_all(maker);
             kept.programs.release_all(maker);
-            kept.instances.release_all(maker);
+            for (id, made) in kept.instances.release_all(maker) {
+                kept.last_drawn(id, made.held.length);
+            }
             kept.uniforms.release_all(maker);
+            kept.placements.release_all(maker);
         }
 
         Ok(())
     }
+}
+
+impl Kept {
+    /// Notes that the instances `instances` were released holding `length` records: what is placed of them draws
+    /// that many from then.
+    fn last_drawn(&mut self, instances: u64, length: u32) {
+        for placement in self.placements.values_mut() {
+            if let Drawing::Records { instances: drawn, length: drawing, .. } = &mut placement.drawing
+                && *drawn == instances
+            {
+                *drawing = Length::Last(length);
+            }
+        }
+    }
+
+    /// The placement `place` asks for, made of what its check found kept, with its bind groups made now.
+    fn placement(&mut self, device: &wgpu::Device, place: &Place) -> Result<Placement, PlacementRefused> {
+        for bind in &place.bindings {
+            if let placement::Resource::Sampler(sampling) = bind.to {
+                self.samplers.entry(sampling).or_insert_with(|| sampler(device, sampling));
+            }
+        }
+        let program = self.programs.get(place.program.id).ok_or(PlacementRefused::Program)?;
+        let mesh = self.meshes.get(place.mesh.id).ok_or(PlacementRefused::Mesh)?;
+        let drawing = match place.instances {
+            Drawn::Count(count) => Drawing::Count(count),
+            Drawn::Records(instances) => {
+                let made = self.instances.get(instances.id).ok_or(PlacementRefused::Instances)?;
+                Drawing::Records { instances: instances.id, buffer: made.buffer.clone(), length: Length::Live }
+            }
+        };
+        let mut groups = Vec::with_capacity(program.groups.len());
+        for (group, layout) in (0..).zip(&program.groups) {
+            let mut entries = Vec::new();
+            for bind in place.bindings.iter().filter(|bind| bind.group == group) {
+                let missing = PlacementRefused::Missing { group, binding: bind.binding };
+                let resource = match bind.to {
+                    placement::Resource::Uniforms(uniforms) => {
+                        self.uniforms.get(uniforms.id).ok_or(missing)?.buffer.as_entire_binding()
+                    }
+                    placement::Resource::Texture(texture) => {
+                        wgpu::BindingResource::TextureView(&self.textures.get(texture.id).ok_or(missing)?.view)
+                    }
+                    placement::Resource::Sampler(sampling) => {
+                        wgpu::BindingResource::Sampler(self.samplers.get(&sampling).ok_or(missing)?)
+                    }
+                };
+                entries.push(wgpu::BindGroupEntry { binding: bind.binding, resource });
+            }
+            groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout,
+                entries: &entries,
+            }));
+        }
+
+        Ok(Placement {
+            program: place.program.id,
+            pipeline: program.pipeline.clone(),
+            vertices: mesh.vertices.clone(),
+            indices: mesh.indices.clone(),
+            index_count: mesh.counted.indices,
+            drawing,
+            groups,
+        })
+    }
+
+    /// Records every placement into `pass`, each program's together, setting each pipeline once.
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        let mut placed: Vec<&Placement> = self.placements.values().collect();
+        placed.sort_unstable_by_key(|placement| placement.program);
+        let mut pipeline = 0;
+        for placement in placed {
+            let count = match &placement.drawing {
+                Drawing::Count(count) => *count,
+                Drawing::Records { instances, length: Length::Live, .. } => {
+                    self.instances.get(*instances).map_or(0, |made| made.held.length)
+                }
+                Drawing::Records { length: Length::Last(length), .. } => *length,
+            };
+            if count == 0 {
+                continue;
+            }
+            // Ids begin at one, so no program's is the zero it begins from.
+            if pipeline != placement.program {
+                pass.set_pipeline(&placement.pipeline);
+                pipeline = placement.program;
+            }
+            for (group, bound) in (0..).zip(&placement.groups) {
+                pass.set_bind_group(group, bound, &[]);
+            }
+            pass.set_vertex_buffer(0, placement.vertices.slice(..));
+            if let Drawing::Records { buffer, .. } = &placement.drawing {
+                pass.set_vertex_buffer(1, buffer.slice(..));
+            }
+            pass.set_index_buffer(placement.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..placement.index_count, 0, 0..count);
+        }
+    }
+}
+
+/// What a placement's check finds of what is kept.
+impl Finds for Kept {
+    fn program(&self, id: ProgramId) -> Option<Shape<'_>> {
+        let program = self.programs.get(id.id)?;
+
+        Some(Shape { layout: &program.layout, instances: &program.instances, bindings: &program.bindings })
+    }
+
+    fn mesh(&self, id: MeshId) -> Option<&VertexLayout> {
+        self.meshes.get(id.id).map(|mesh| &mesh.layout)
+    }
+
+    fn instances(&self, id: InstancesId) -> Option<&VertexLayout> {
+        self.instances.get(id.id).map(|instances| &instances.layout)
+    }
+
+    fn uniforms(&self, id: UniformsId) -> Option<u32> {
+        self.uniforms.get(id.id).map(|uniforms| uniforms.size)
+    }
+
+    fn has_texture(&self, id: TextureId) -> bool {
+        self.textures.get(id.id).is_some()
+    }
+}
+
+impl DepthTexture {
+    /// A depth texture of `width` by `height`.
+    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        Self { view, width, height }
+    }
+
+    /// Makes the texture again when the frame is of another size.
+    fn fit(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        let resized = (width, height) != (self.width, self.height);
+        if resized {
+            *self = Self::new(device, width, height);
+        }
+    }
+}
+
+/// A sampler that reads as `sampling` says.
+fn sampler(device: &wgpu::Device, sampling: Sampling) -> wgpu::Sampler {
+    let filter = match sampling.filter {
+        Filter::Linear => wgpu::FilterMode::Linear,
+        Filter::Nearest => wgpu::FilterMode::Nearest,
+    };
+    let address = match sampling.wrap {
+        Wrap::Clamp => wgpu::AddressMode::ClampToEdge,
+        Wrap::Repeat => wgpu::AddressMode::Repeat,
+    };
+
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        address_mode_u: address,
+        address_mode_v: address,
+        address_mode_w: address,
+        mag_filter: filter,
+        min_filter: filter,
+        ..Default::default()
+    })
 }
 
 impl Renderer {
@@ -620,7 +902,13 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
         cache: None,
     });
 
-    Program { pipeline, layout: create.layout.clone(), instances: create.instances.clone(), groups }
+    Program {
+        pipeline,
+        layout: create.layout.clone(),
+        instances: create.instances.clone(),
+        bindings: create.bindings.clone(),
+        groups,
+    }
 }
 
 /// The attributes of `layout`, as wgpu names them.
