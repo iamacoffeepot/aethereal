@@ -2,6 +2,7 @@
 //! asked for, and its workgroup size is read from its shader.
 
 use super::*;
+use crate::asked::{Asked, blob};
 use crate::program::{Access, BindingKind};
 
 /// A compute program that moves each particle of a field by its speed and a pull it reads, over a step of time, its
@@ -29,18 +30,18 @@ fn simulate(@builtin(global_invocation_id) at: vec3<u32>, @builtin(local_invocat
 
 /// The compute program [`WGSL`] is, with what it binds. The field's count, padded to the particles' alignment, is 16
 /// bytes, and a particle 32.
-fn compute() -> CreateCompute {
+fn compute() -> Asked<CreateCompute> {
     let bindings = vec![
         Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 4 } },
         Binding { group: 0, binding: 1, kind: BindingKind::Storage { bytes: 48, access: Access::Write } },
         Binding { group: 0, binding: 2, kind: BindingKind::Storage { bytes: 16, access: Access::Read } },
     ];
 
-    CreateCompute { wgsl: String::from(WGSL), entry: String::from("simulate"), bindings }
+    Asked::new(CreateCompute { wgsl: blob(), entry: String::from("simulate"), bindings }, WGSL)
 }
 
 /// [`compute`] with its WGSL's `from` written as `to`.
-fn rewritten(from: &str, to: &str) -> CreateCompute {
+fn rewritten(from: &str, to: &str) -> Asked<CreateCompute> {
     let mut compute = compute();
     assert!(compute.wgsl.contains(from), "the WGSL holds {from}");
     compute.wgsl = compute.wgsl.replace(from, to);
@@ -49,16 +50,16 @@ fn rewritten(from: &str, to: &str) -> CreateCompute {
 }
 
 /// What the check answers `compute`, under the limits every WebGPU device has.
-fn checked(compute: &CreateCompute) -> Result<[u32; 3], ProgramRefused> {
-    check(compute, &wgpu::Limits::default()).map(|checked| checked.workgroup)
+fn checked(compute: &Asked<CreateCompute>) -> Result<[u32; 3], ProgramRefused> {
+    check(compute, &compute.wgsl, &wgpu::Limits::default()).map(|checked| checked.workgroup)
 }
 
 #[test]
 fn a_compute_stage_is_made_with_the_workgroup_size_its_shader_declares() {
     // Catches a workgroup size taken as given rather than read, or read before its constants are worked out, which a
     // dispatch would count its workgroups by.
-    let constant = rewritten("@workgroup_size(64)", "@workgroup_size(SIDE, SIDE)");
-    let constant = CreateCompute { wgsl: format!("const SIDE = 8u;\n{}", constant.wgsl), ..constant };
+    let mut constant = rewritten("@workgroup_size(64)", "@workgroup_size(SIDE, SIDE)");
+    constant.wgsl = format!("const SIDE = 8u;\n{}", constant.wgsl);
 
     assert_eq!(checked(&compute()), Ok([64, 1, 1]));
     assert_eq!(checked(&constant), Ok([8, 8, 1]));
@@ -69,7 +70,7 @@ fn each_storage_ending_in_an_array_is_read_with_its_fixed_part_and_stride() {
     // Catches the elements of storage counted from its listed bytes or from the array's element size rather than its
     // stride, or the fixed part before the array left out: a dispatch of one invocation for each element would run
     // too few or too many. The field's count is padded to the particles' alignment of 16; the pull is all array.
-    let Ok(checked) = check(&compute(), &wgpu::Limits::default()) else {
+    let Ok(checked) = check(&compute(), WGSL, &wgpu::Limits::default()) else {
         panic!("the compute program is made");
     };
 
@@ -83,8 +84,8 @@ fn each_storage_ending_in_an_array_is_read_with_its_fixed_part_and_stride() {
 #[test]
 fn a_workgroup_size_a_pipeline_overrides_is_refused() {
     // Catches a size read from an override's default, which the pipeline could run at another.
-    let overridden = rewritten("@workgroup_size(64)", "@workgroup_size(side)");
-    let overridden = CreateCompute { wgsl: format!("override side: u32 = 64u;\n{}", overridden.wgsl), ..overridden };
+    let mut overridden = rewritten("@workgroup_size(64)", "@workgroup_size(side)");
+    overridden.wgsl = format!("override side: u32 = 64u;\n{}", overridden.wgsl);
 
     assert_eq!(checked(&overridden), Err(ProgramRefused::Overrides));
 }
@@ -143,7 +144,7 @@ fn workgroup_memory_past_what_the_gpu_gives_is_refused_counted_as_webgpu_counts_
             "var<workgroup> first: u32;\nvar<workgroup> second: u32;\nvar<workgroup> speeds",
         );
         let wgsl = wgsl.replace("speeds[local] = ", "first = 1u;\n    second = 1u;\n    speeds[local] = ");
-        checked(&CreateCompute { wgsl, ..compute() })
+        checked(&Asked { wgsl, ..compute() })
     };
 
     assert_eq!(held(1022), Ok([64, 1, 1]));

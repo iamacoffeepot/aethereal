@@ -1,6 +1,7 @@
 //! A program's check: what WebGPU would refuse as the pipeline is made is refused as the program is asked for.
 
 use super::*;
+use crate::asked::{Asked, blob};
 use crate::mesh::Attribute;
 use crate::shape::ColourFormat;
 
@@ -29,7 +30,7 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 ";
 
 /// The program [`WGSL`] is, with a layout of a position and a texture coordinate, and what it binds.
-fn program() -> CreateProgram {
+fn program() -> Asked<CreateProgram> {
     let position = Attribute { location: 0, format: VertexFormat::Float32x3, offset: 0 };
     let uv = Attribute { location: 1, format: VertexFormat::Float32x2, offset: 12 };
     let bindings = vec![
@@ -37,9 +38,8 @@ fn program() -> CreateProgram {
         Binding { group: 1, binding: 0, kind: BindingKind::Texture },
         Binding { group: 1, binding: 1, kind: BindingKind::Sampler },
     ];
-
-    CreateProgram {
-        wgsl: String::from(WGSL),
+    let create = CreateProgram {
+        wgsl: blob(),
         vertex: String::from("lift"),
         fragment: String::from("shade"),
         layout: VertexLayout { stride: 20, attributes: vec![position, uv] },
@@ -47,11 +47,13 @@ fn program() -> CreateProgram {
         bindings,
         state: Fixed { blend: Blend::Opaque, depth: Depth::TestWrite, cull: Cull::Back },
         shape: Shape::with_depth(ColourFormat::Bgra8),
-    }
+    };
+
+    Asked::new(create, WGSL)
 }
 
 /// [`program`] with its WGSL's `from` written as `to`.
-fn rewritten(from: &str, to: &str) -> CreateProgram {
+fn rewritten(from: &str, to: &str) -> Asked<CreateProgram> {
     let mut program = program();
     assert!(program.wgsl.contains(from), "the WGSL holds {from}");
     program.wgsl = program.wgsl.replace(from, to);
@@ -60,8 +62,19 @@ fn rewritten(from: &str, to: &str) -> CreateProgram {
 }
 
 /// What the check answers `program`, under the limits every WebGPU device has.
-fn checked(program: &CreateProgram) -> Result<(), ProgramRefused> {
-    check(program, &wgpu::Limits::default())
+fn checked(program: &Asked<CreateProgram>) -> Result<(), ProgramRefused> {
+    check(program, &program.wgsl, &wgpu::Limits::default())
+}
+
+#[test]
+fn wgsl_whose_bytes_are_not_utf8_is_refused_with_how_many_are() {
+    // Catches a blob's bytes taken as text unchecked, which would fail the renderer's turn or hand the GPU what it
+    // cannot read, and a refusal that does not say where the text stops.
+    let mut bytes = WGSL.as_bytes().to_vec();
+    bytes.insert(5, 0xff);
+
+    assert_eq!(source(WGSL.as_bytes()), Ok(WGSL));
+    assert_eq!(source(&bytes), Err(ProgramRefused::Utf8 { valid: 5 }));
 }
 
 #[test]
@@ -242,7 +255,7 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 ";
 
 /// The program [`SPLATS`] is, binding storage of `bytes`.
-fn splats(bytes: u32) -> CreateProgram {
+fn splats(bytes: u32) -> Asked<CreateProgram> {
     let mut program = program();
     program.wgsl = String::from(SPLATS);
     program.layout.attributes.pop();

@@ -2,6 +2,7 @@
 //! asked for.
 
 use super::*;
+use crate::asked::{Asked, blob};
 use crate::program::{Access, BindingKind};
 use crate::shape::ColourFormat;
 
@@ -23,20 +24,22 @@ fn glaze(@builtin(position) at: vec4<f32>, @location(0) uv: vec2<f32>) -> @locat
 ";
 
 /// The effect [`WGSL`] is, into the window's colour.
-fn effect() -> CreateEffect {
-    CreateEffect {
-        wgsl: String::from(WGSL),
+fn effect() -> Asked<CreateEffect> {
+    let create = CreateEffect {
+        wgsl: blob(),
         fragment: String::from("glaze"),
         reads: vec![Read::Float, Read::Uint, Read::Depth],
         bindings: vec![Binding { group: 1, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
         blend: Blend::Opaque,
         shape: Shape::flat(ColourFormat::Bgra8),
-    }
+    };
+
+    Asked::new(create, WGSL)
 }
 
 /// What the check answers `effect`, under the limits every WebGPU device has.
-fn checked(effect: &CreateEffect) -> Result<(), ProgramRefused> {
-    check(effect, &wgpu::Limits::default())
+fn checked(effect: &Asked<CreateEffect>) -> Result<(), ProgramRefused> {
+    check(effect, &effect.wgsl, &wgpu::Limits::default())
 }
 
 #[test]
@@ -121,13 +124,14 @@ fn copy(@builtin(position) at: vec4<f32>) -> @location(0) u32 {
 }
 ";
     let copy = CreateEffect {
-        wgsl: String::from(wgsl),
+        wgsl: blob(),
         fragment: String::from("copy"),
         reads: vec![Read::Uint],
         bindings: Vec::new(),
         blend: Blend::Opaque,
         shape: Shape::flat(ColourFormat::R32Uint),
     };
+    let copy = Asked::new(copy, wgsl);
     let mut blended = copy.clone();
     blended.blend = Blend::Additive;
     let mut into_floats = effect();

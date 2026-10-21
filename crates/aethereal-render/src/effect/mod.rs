@@ -11,24 +11,25 @@ use crate::program::{
     check_reads_only, check_stages, check_uses, entry, parsed,
 };
 use crate::shape::{DepthFormat, Shape};
+use aethereal_actor::BlobRef;
 use aethereal_data::{
-    Bare, Boundary, Decode, DecodeError, Encode, EncodeError, Kind, KindName, Plain, Reader, Schema, Writer,
+    Bare, Bound, Boundary, Decode, DecodeError, Encode, EncodeError, Kind, KindName, Plain, Reader, Schema, Writer,
 };
 use core::fmt::{self, Debug, Formatter};
 use core::marker::PhantomData;
 use naga::{ImageClass, ScalarKind};
 
-/// Asks the renderer for an effect: the fragment stage `fragment` of the WGSL `wgsl`, drawn over the whole of a target
-/// of the shape `shape`, which holds no depth, blending by `blend`. It reads the targets `reads` names, the first at
-/// `@group(0) @binding(0)`, the next at binding 1, and binds what `bindings` lists in the groups after. Answered with
-/// [`Effected`].
+/// Asks the renderer for an effect: the fragment stage `fragment` of the WGSL the blob `wgsl` holds as UTF-8, drawn
+/// over the whole of a target of the shape `shape`, which holds no depth, blending by `blend`. It reads the targets
+/// `reads` names, the first at `@group(0) @binding(0)`, the next at binding 1, and binds what `bindings` lists in the
+/// groups after. Answered with [`Effected`].
 ///
 /// Its fragment stage may read the target's pixel, `@builtin(position)`, and where it is across the target from its
 /// top left, `@location(0) uv: vec2<f32>`, from zero to one; every target of a frame is the size of its end, so a
-/// pixel of one is the same pixel of another.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+/// pixel of one is the same pixel of another. The WGSL travels as a blob, as a program's does.
+#[derive(Debug, Clone, PartialEq, Eq, Bound)]
 pub struct CreateEffect {
-    pub wgsl: String,
+    pub wgsl: BlobRef,
     pub fragment: String,
     pub reads: Vec<Read>,
     pub bindings: Vec<Binding>,
@@ -239,15 +240,15 @@ fn cover(@builtin(vertex_index) corner: u32) -> Covered {
 /// The entry point of [`COVER`].
 pub(crate) const COVER_ENTRY: &str = "cover";
 
-/// Checks an effect before it is made: that its shape holds no depth and takes its blend, that it binds nothing in
-/// group 0 and what it binds after within `limits`, storage only to read, and that its WGSL is a valid module whose fragment stage reads
-/// what the renderer's vertex stage writes, writes the colour its shape draws, reads each target in group 0 as
-/// `reads` says, and binds only what `bindings` lists.
+/// Checks an effect before it is made, with `wgsl` the WGSL its blob holds: that its shape holds no depth and takes
+/// its blend, that it binds nothing in group 0 and what it binds after within `limits`, storage only to read, and that
+/// the WGSL is a valid module whose fragment stage reads what the renderer's vertex stage writes, writes the colour
+/// its shape draws, reads each target in group 0 as `reads` says, and binds only what `bindings` lists.
 ///
 /// # Errors
 ///
 /// Why it would not be made as asked.
-pub fn check(create: &CreateEffect, limits: &wgpu::Limits) -> Result<(), ProgramRefused> {
+pub fn check(create: &CreateEffect, wgsl: &str, limits: &wgpu::Limits) -> Result<(), ProgramRefused> {
     if create.shape.depth != DepthFormat::None {
         return Err(ProgramRefused::EffectDepth);
     }
@@ -262,7 +263,7 @@ pub fn check(create: &CreateEffect, limits: &wgpu::Limits) -> Result<(), Program
     check_reads_only(&create.bindings)?;
 
     let (cover, _) = parsed(COVER)?;
-    let (module, info) = parsed(&create.wgsl)?;
+    let (module, info) = parsed(wgsl)?;
     let vertex = entry(&cover, Stage::Vertex, COVER_ENTRY)?;
     let fragment = entry(&module, Stage::Fragment, &create.fragment)?;
     check_stages((&cover, vertex), (&module, fragment))?;

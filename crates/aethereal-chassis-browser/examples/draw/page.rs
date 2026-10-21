@@ -320,9 +320,16 @@ impl Handles<Answer<Meshed, Learned>> for Drawer {
             say(format!("the triangle was not made: {answered:?}"));
             return Ok(());
         };
+        let wgsl = match turn.put(Vec::from(SHADE)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no program asked: {why}"));
+                return Ok(());
+            }
+        };
         let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
         let shade = CreateProgram {
-            wgsl: String::from(SHADE),
+            wgsl,
             vertex: String::from("place"),
             fragment: String::from("shade"),
             layout: VertexLayout { stride: 8, attributes: vec![position] },
