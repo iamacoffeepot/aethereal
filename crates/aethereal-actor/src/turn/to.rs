@@ -123,6 +123,18 @@ impl<'s, 'a> Vantage<'s, 'a> {
         cast.map_or(Seated { id: parent.id, seat: SeatNumber::NOWHERE }, ProtocolRef::seated)
     }
 
+    /// The place `segments` name beneath the sender, from a child of its own down, when one of kind `kind` is live
+    /// there, as a typed path is found: otherwise its place in [`SeatNumber::NOWHERE`], and the place in no seat at
+    /// all when it would be deeper than any path.
+    pub(crate) fn beneath(&self, segments: &[PathSegment], kind: KindId) -> Seated {
+        let path = segments.iter().try_fold(self.seat.path.clone(), |path, segment| path.child(segment));
+        let Ok(path) = path else {
+            return Seated { id: ActorId::new(0), seat: SeatNumber::NOWHERE };
+        };
+
+        self.seat.table.reach(&path, kind)
+    }
+
     /// The child `segment` names beneath the sender, when the sender made it, in this step or before, live or not,
     /// and it is of kind `kind`: otherwise its place in [`SeatNumber::NOWHERE`]. A guest, which holds no other code's
     /// types, has its host find one it cannot check, live.

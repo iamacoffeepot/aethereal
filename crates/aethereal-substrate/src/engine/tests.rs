@@ -184,7 +184,7 @@ impl Handles<Note> for Node {
             }
             ["tell", number, text] => {
                 let number: u64 = number.parse().unwrap_or_default();
-                turn.to(child::<Self>(&number)).send(&Note { text: String::from(text) })?;
+                turn.to(child::<Self>(number)).send(&Note { text: String::from(text) })?;
             }
             ["both"] => {
                 if let Some(parent) = turn.parent() {
@@ -229,7 +229,7 @@ impl Handles<Note> for Node {
                     turn.watch(sender);
                 }
                 let number: u64 = number.parse().unwrap_or_default();
-                turn.to(child::<Self>(&number)).send(&Note { text: String::from("late") })?;
+                turn.to(child::<Self>(number)).send(&Note { text: String::from("late") })?;
             }
             _ => {}
         }
