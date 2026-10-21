@@ -42,6 +42,7 @@ fn program() -> CreateProgram {
         vertex: String::from("lift"),
         fragment: String::from("shade"),
         layout: VertexLayout { stride: 20, attributes: vec![position, uv] },
+        instances: PerInstance::None,
         bindings,
         state: Fixed { blend: Blend::Opaque, depth: Depth::TestWrite, cull: Cull::Back },
     }
@@ -112,6 +113,29 @@ fn a_vertex_stage_that_reads_what_the_layout_does_not_give_is_refused() {
     assert_eq!(checked(&missing), Err(ProgramRefused::Input { location: 1 }));
     assert_eq!(checked(&integer), Err(ProgramRefused::InputFormat { location: 1 }));
     assert_eq!(checked(&bad_layout), Err(ProgramRefused::Layout { why: MeshRefused::Stride { stride: 18 } }));
+}
+
+#[test]
+fn a_vertex_stage_reads_per_instance_what_the_instance_layout_gives_at_locations_of_its_own() {
+    // Catches inputs checked against the vertex layout alone, which refuses every program drawn per instance, or
+    // instance attributes left unchecked, or two layouts read at one location, which WebGPU refuses as the pipeline
+    // is made.
+    let mut lifted =
+        rewritten("@location(1) uv: vec2<f32>)", "@location(1) uv: vec2<f32>, @location(2) offset: vec3<f32>)");
+    let offset = Attribute { location: 2, format: VertexFormat::Float32x3, offset: 0 };
+    lifted.instances = PerInstance::Records(VertexLayout { stride: 12, attributes: vec![offset] });
+    let mut unread = lifted.clone();
+    unread.instances = PerInstance::None;
+    let mut shared = program();
+    let over = Attribute { location: 1, format: VertexFormat::Float32x2, offset: 0 };
+    shared.instances = PerInstance::Records(VertexLayout { stride: 8, attributes: vec![over] });
+    let mut bad_layout = lifted.clone();
+    bad_layout.instances = PerInstance::Records(VertexLayout { stride: 6, attributes: vec![offset] });
+
+    assert_eq!(checked(&lifted), Ok(()));
+    assert_eq!(checked(&unread), Err(ProgramRefused::Input { location: 2 }));
+    assert_eq!(checked(&shared), Err(ProgramRefused::Shared { location: 1 }));
+    assert_eq!(checked(&bad_layout), Err(ProgramRefused::InstanceLayout { why: MeshRefused::Stride { stride: 6 } }));
 }
 
 #[test]

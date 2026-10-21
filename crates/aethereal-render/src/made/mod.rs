@@ -35,24 +35,24 @@ impl<T> Default for Made<T> {
     }
 }
 
-/// What came of asking to release one thing.
+/// What came of asking for one thing as its maker: to write it, or to release it.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Released<T> {
-    /// It was released: here it is, to drop.
-    Freed(T),
+pub enum Owned<T> {
+    /// The asker made it: here it is, to write, or to drop once released.
+    Mine(T),
     /// Another actor made it, and only that actor may release it.
     NotOwner,
     /// Nothing of this sort has the id: never made, or released already.
     Unknown,
 }
 
-impl<T> Released<T> {
-    /// What was freed, as `f` makes it of what was released.
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Released<U> {
+impl<T> Owned<T> {
+    /// What the asker made, as `f` makes it of what was asked for.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Owned<U> {
         match self {
-            Self::Freed(value) => Released::Freed(f(value)),
-            Self::NotOwner => Released::NotOwner,
-            Self::Unknown => Released::Unknown,
+            Self::Mine(value) => Owned::Mine(f(value)),
+            Self::NotOwner => Owned::NotOwner,
+            Self::Unknown => Owned::Unknown,
         }
     }
 }
@@ -64,15 +64,24 @@ impl<T> Made<T> {
     }
 
     /// Releases what is kept under `id`, when `by` made it.
-    pub fn release(&mut self, id: u64, by: ActorId) -> Released<T> {
+    pub fn release(&mut self, id: u64, by: ActorId) -> Owned<T> {
         let Some((owner, _)) = self.kept.get(&id) else {
-            return Released::Unknown;
+            return Owned::Unknown;
         };
         if *owner != by {
-            return Released::NotOwner;
+            return Owned::NotOwner;
         }
 
-        self.kept.remove(&id).map_or(Released::Unknown, |(_, value)| Released::Freed(value))
+        self.kept.remove(&id).map_or(Owned::Unknown, |(_, value)| Owned::Mine(value))
+    }
+
+    /// What is kept under `id`, to write, when `by` made it.
+    pub fn owned(&mut self, id: u64, by: ActorId) -> Owned<&mut T> {
+        match self.kept.get_mut(&id) {
+            Some((owner, value)) if *owner == by => Owned::Mine(value),
+            Some(_) => Owned::NotOwner,
+            None => Owned::Unknown,
+        }
     }
 
     /// Releases everything `owner` made, and answers how many there were.
