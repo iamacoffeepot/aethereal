@@ -5,8 +5,8 @@ mod walk;
 use crate::Gpu;
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
 use crate::frame::{
-    self, CreateFrame, DepthUse, Does, EffectReads, Frame, FrameId, FrameRefused, Framed, Holds, Load, PassRefused,
-    ShapeOf, Shaped, Target,
+    self, CreateFrame, DepthUse, Does, ENDS_IN, EffectReads, Ends, Frame, FrameId, FrameRefused, Framed, Holds, Load,
+    PassRefused, ShapeOf, Shaped, Size, Target,
 };
 use crate::instances::{self, CreateInstances, Instanced, InstancesId, WriteInstances};
 use crate::made::{Ids, Made, Makers, Owned};
@@ -34,7 +34,7 @@ use aethereal_data::{ActorId, Bound, Kind, KindName, Plain};
 use aethereal_window::WindowId;
 use std::collections::HashMap;
 use std::mem;
-use walk::{Making, Step, Walk};
+use walk::{End, Making, Step, Walk};
 
 /// The renderer, the one actor that touches the GPU. Actors ask it through [`Rendering`].
 #[derive(Bound)]
@@ -236,8 +236,9 @@ impl Kind for Release {
     const NAME: KindName = KindName::new("aether.render.release");
 }
 
-/// What the renderer has made, and who made each, with the samplers its placements share, and the window it draws to,
-/// `window`, whose surface is of `format`: its own main frame of it, `own`, and which frame is its main frame, `main`.
+/// What the renderer has made, and who made each, with the samplers its placements share, the frames that end on
+/// textures in the order they run, `order`, and the window it draws to, `window`, whose surface is of `format`: its
+/// own main frame of it, `own`, and which frame is its main frame, `main`.
 struct Kept {
     ids: Ids,
     makers: Makers,
@@ -251,6 +252,8 @@ struct Kept {
     reads: HashMap<u64, Reading>,
     samplers: HashMap<Sampling, wgpu::Sampler>,
     frames: Made<Walk>,
+    order: Vec<u64>,
+    longest: u32,
     window: WindowId,
     format: ColourFormat,
     own: Walk,
@@ -281,6 +284,14 @@ struct Texture {
     made: wgpu::Texture,
     view: wgpu::TextureView,
     format: TextureFormat,
+    origin: Origin,
+}
+
+/// What a texture holds: the pixels it was made of, or what the frame of this id draws into it at each `Render`.
+#[derive(Clone, Copy)]
+enum Origin {
+    Pixels,
+    Frame(u64),
 }
 
 /// A buffer the GPU copied into, waiting for the chassis to map it, and how its bytes are read once mapped.
@@ -335,6 +346,7 @@ struct Joined {
     program: u64,
     pipeline: wgpu::RenderPipeline,
     groups: Vec<wgpu::BindGroup>,
+    textures: Vec<u64>,
 }
 
 /// How many instances a placement draws.
@@ -400,7 +412,7 @@ impl Actor for Renderer {
         let opened = turn.open(&mut gpu)?;
         let (window, format) = (opened.window(), opened.format());
         // Made again at the first frame's size, as for each frame of a new size.
-        let own = match Walk::new(opened.device(), CreateFrame::own(window), format, (1, 1), drawn) {
+        let own = match Walk::new(opened.device(), CreateFrame::own(window), (End::Window, format), (1, 1), drawn) {
             Ok(own) => own,
             Err((pass, why)) => return Err(Fault::new(&FrameRefused::Pass { pass, why })?),
         };
@@ -417,6 +429,8 @@ impl Actor for Renderer {
             reads: HashMap::new(),
             samplers: HashMap::new(),
             frames: Made::default(),
+            order: Vec::new(),
+            longest: opened.device().limits().max_texture_dimension_2d,
             window,
             format,
             own,
@@ -451,9 +465,9 @@ impl Handles<On<Render>> for Renderer {
         kept.main_mut().fit(&device, frame.texture.width(), frame.texture.height());
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        let passes = kept.main().passes();
+        let passes = kept.passes();
         let stamps = (!self.owed.timings.is_empty()).then(|| Stamps::new(&device, passes));
-        kept.run(&mut encoder, &view, stamps.as_ref());
+        kept.run_all(&mut encoder, &view, stamps.as_ref());
         let copied = (!self.owed.frames.is_empty()).then(|| copy_frame(&device, &mut encoder, &frame.texture));
         let timed = stamps.map(|stamps| stamps.resolve(&mut encoder, queue.get_timestamp_period()));
         queue.submit([encoder.finish()]);
@@ -657,7 +671,7 @@ impl Handles<CreateTexture> for Renderer {
         };
         gpu.queue().write_texture(made.as_image_copy(), &pixels, layout, size);
         let view = made.create_view(&wgpu::TextureViewDescriptor::default());
-        let texture = Texture { made, view, format };
+        let texture = Texture { made, view, format, origin: Origin::Pixels };
         let id = self.made(turn, |kept, id, maker| kept.textures.keep(id, maker, texture))?;
         turn.reply(&Textured::Made(TextureId { id }))?;
 
@@ -882,7 +896,10 @@ impl Handles<Place> for Renderer {
                 return Ok(());
             }
         };
-        let id = self.made(turn, |kept, id, maker| kept.placements.keep(id, maker, made))?;
+        let id = self.made(turn, |kept, id, maker| {
+            kept.placements.keep(id, maker, made);
+            kept.reorder();
+        })?;
         turn.reply(&Placed::Made(PlacementId { id }))?;
 
         Ok(())
@@ -927,27 +944,17 @@ impl Handles<CreateFrame> for Renderer {
     type Sends = (ToSender<Framed>,);
 
     fn handle(&mut self, create: CreateFrame, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let by = turn.sender().id();
         let device = turn.open(&mut self.gpu)?.device().clone();
         let kept = turn.open(&mut self.kept)?;
-        if let Err(why) = frame::check(&create, &*kept) {
+        let checked = kept.may_make(create.ends, by).and_then(|()| frame::check(&create, &*kept));
+        if let Err(why) = checked {
             turn.reply(&Framed::Refused(why))?;
             return Ok(());
         }
-        let walked = Walk::new(&device, create, kept.format, (1, 1), |making| kept.step(&device, making));
-        let walk = match walked {
-            Ok(walk) => walk,
-            Err((pass, why)) => {
-                turn.reply(&Framed::Refused(FrameRefused::Pass { pass, why }))?;
-                return Ok(());
-            }
-        };
 
-        let id = self.made(turn, |kept, id, maker| kept.frames.keep(id, maker, walk))?;
+        let framed = self.kept_for(turn, |kept, maker| kept.frame(&device, create, maker))?;
         let kept = turn.open(&mut self.kept)?;
-        // The frame it replaces is the window's no longer, and is dropped: a window has one main frame.
-        if let Main::Made(replaced) = mem::replace(&mut kept.main, Main::Made(id)) {
-            kept.frames.forget(replaced);
-        }
         let undrawn = kept.undrawn();
         for (placement, pass) in undrawn {
             turn.log(
@@ -957,7 +964,7 @@ impl Handles<CreateFrame> for Renderer {
                 ),
             );
         }
-        turn.reply(&Framed::Made(FrameId { id }))?;
+        turn.reply(&framed.unwrap_or_else(Framed::Refused))?;
 
         Ok(())
     }
@@ -984,13 +991,14 @@ impl Handles<Release> for Renderer {
             Release::Storage(storage) => kept.storage.release(storage.id, by).map(drop),
             Release::Placement(placement) => kept.placements.release(placement.id, by).map(drop),
             Release::Frame(frame) => {
-                let released = kept.frames.release(frame.id, by).map(drop);
-                if released == Owned::Mine(()) {
-                    kept.unframed([frame.id]);
+                let released = kept.frames.release(frame.id, by);
+                if let Owned::Mine(walk) = &released {
+                    kept.unframed([(frame.id, walk.texture())]);
                 }
-                released
+                released.map(drop)
             }
         };
+        kept.reorder();
         match released {
             Owned::Mine(()) => {}
             Owned::NotOwner => turn.log(Level::Warn, format_args!("{release:?} was not released: another made it")),
@@ -1018,8 +1026,10 @@ impl Handles<Ended> for Renderer {
             kept.uniforms.release_all(maker);
             kept.storage.release_all(maker);
             kept.placements.release_all(maker);
-            let frames = kept.frames.release_all(maker).into_iter().map(|(id, _)| id);
+            let frames: Vec<(u64, Option<u64>)> =
+                kept.frames.release_all(maker).into_iter().map(|(id, walk)| (id, walk.texture())).collect();
             kept.unframed(frames);
+            kept.reorder();
         }
 
         Ok(())
@@ -1080,6 +1090,16 @@ impl Kept {
             program: join.program.id,
             pipeline: program.pipeline.clone(),
             groups: self.bind_groups(device, &program.groups, &join.bindings, 0)?,
+            textures: join
+                .bindings
+                .iter()
+                .filter_map(|bind| match bind.to {
+                    placement::Resource::Texture(texture) => Some(texture.id),
+                    placement::Resource::Uniforms(_)
+                    | placement::Resource::Storage(_)
+                    | placement::Resource::Sampler(_) => None,
+                })
+                .collect(),
         })
     }
 
@@ -1122,12 +1142,18 @@ impl Kept {
         Ok(groups)
     }
 
-    /// Records the window's main frame on `encoder`, its end `end`: each of its passes begun in order, and what it
-    /// does recorded in it, each pass writing its timestamps to `stamps` when the frame is timed.
-    fn run(&self, encoder: &mut wgpu::CommandEncoder, end: &wgpu::TextureView, stamps: Option<&Stamps>) {
-        let frame = Frame::Main(self.window);
-        let walk = self.main();
-        for (at, (pass, shape, step)) in (0..).zip(walk.steps()) {
+    /// Records the frame `walk`, joined as `frame`, on `encoder`, a frame that ends on a window drawing into `window`:
+    /// each of its passes begun in order, and what it does recorded in it, each pass writing its timestamps to `stamps`
+    /// from the pass `first` of the `Render`, when the frames are timed.
+    fn run(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        (frame, walk): (Frame, &Walk),
+        window: &wgpu::TextureView,
+        (stamps, first): (Option<&Stamps>, u32),
+    ) {
+        let end = walk.end(window);
+        for (at, (pass, shape, step)) in (first..).zip(walk.steps()) {
             let (into, load, depth) = match step {
                 Step::Draw { into, depth, load } => (*into, *load, *depth),
                 Step::Effect(effect) => (effect.into, effect.load, DepthUse::Off),
@@ -1196,14 +1222,122 @@ impl Kept {
         }
     }
 
-    /// Notes that the frames `released` are gone: the window's main frame is the renderer's own again when it was one
-    /// of them.
-    fn unframed(&mut self, released: impl IntoIterator<Item = u64>) {
-        for id in released {
+    /// Notes that the frames `released` are gone, each with the texture it ends on, if any: the window's main frame
+    /// is the renderer's own again when it was one of them, and the id of each texture is taken back, as the frames
+    /// and placements that read it keep it as it was last drawn (ADR-0025).
+    fn unframed(&mut self, released: impl IntoIterator<Item = (u64, Option<u64>)>) {
+        for (id, texture) in released {
             if self.main == Main::Made(id) {
                 self.main = Main::Own;
             }
+            if let Some(texture) = texture {
+                self.textures.forget(texture);
+            }
         }
+    }
+
+    /// Who owns the main frame of `window`: the maker of the frame that is it, none while it is the renderer's own.
+    fn owner(&self, window: WindowId) -> Option<ActorId> {
+        let Main::Made(id) = self.main else {
+            return None;
+        };
+        let shown = window == self.window;
+
+        shown.then(|| self.frames.maker(id)).flatten()
+    }
+
+    /// Checks that `by` may make a frame that ends as `ends` says: only the owner of a window's main frame replaces
+    /// it.
+    fn may_make(&self, ends: Ends, by: ActorId) -> Result<(), FrameRefused> {
+        match ends {
+            Ends::Window(window) => frame::may_replace(self.owner(window), by),
+            Ends::Texture(_) => Ok(()),
+        }
+    }
+
+    /// Makes the frame `create`, which its check let through, for `maker`: a window's main frame in place of the one
+    /// before, which is dropped, or a frame that ends on a texture of its own, kept as an ordinary texture.
+    fn frame(&mut self, device: &wgpu::Device, create: CreateFrame, maker: ActorId) -> Result<Framed, FrameRefused> {
+        let id = self.ids.next();
+        let (end, format, size) = match create.ends {
+            Ends::Window(_) => (End::Window, self.format, (1, 1)),
+            Ends::Texture(Size { width, height }) => {
+                let texture = self.ids.next();
+                let made = device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: ENDS_IN.wgpu(),
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = made.create_view(&wgpu::TextureViewDescriptor::default());
+                let origin = Origin::Frame(id);
+                self.textures.keep(texture, maker, Texture { made, view: view.clone(), format: ENDS_IN, origin });
+                // What `ENDS_IN` is drawn in.
+                (End::Texture { texture, view }, ColourFormat::Rgba8, (width, height))
+            }
+        };
+        let texture = match end {
+            End::Window => None,
+            End::Texture { texture, .. } => Some(texture),
+        };
+        let walked = Walk::new(device, create, (end, format), size, |making| self.step(device, making));
+        let walk = match walked {
+            Ok(walk) => walk,
+            Err((pass, why)) => {
+                if let Some(texture) = texture {
+                    self.textures.forget(texture);
+                }
+                return Err(FrameRefused::Pass { pass, why });
+            }
+        };
+        self.frames.keep(id, maker, walk);
+
+        let framed = if let Some(texture) = texture {
+            Framed::Texture { frame: FrameId { id }, texture: TextureId { id: texture } }
+        } else {
+            // The frame it replaces is the window's no longer, and is dropped: a window has one main frame.
+            if let Main::Made(replaced) = mem::replace(&mut self.main, Main::Made(id)) {
+                self.frames.forget(replaced);
+            }
+            Framed::Made(FrameId { id })
+        };
+        self.reorder();
+
+        Ok(framed)
+    }
+
+    /// Orders the frames that end on textures to run each after the frames it reads.
+    fn reorder(&mut self) {
+        let frames: Vec<u64> =
+            self.frames.iter().filter(|(_, walk)| walk.texture().is_some()).map(|(id, _)| id).collect();
+        self.order = frame::ordered(&frames, &self.reads());
+    }
+
+    /// How many passes a `Render` runs: every frame's that ends on a texture, and the window's main frame's.
+    fn passes(&self) -> u32 {
+        let textures: u32 = self.order.iter().filter_map(|id| self.frames.get(*id)).map(Walk::passes).sum();
+
+        textures + self.main().passes()
+    }
+
+    /// Records every frame on `encoder`: those that end on textures in their order, then the window's main frame,
+    /// drawing into `window`, each pass writing its timestamps to `stamps` in the order they run when the frames are
+    /// timed.
+    fn run_all(&self, encoder: &mut wgpu::CommandEncoder, window: &wgpu::TextureView, stamps: Option<&Stamps>) {
+        let mut first = 0;
+        for id in &self.order {
+            if let Some(walk) = self.frames.get(*id) {
+                self.run(encoder, (Frame::Texture(FrameId { id: *id }), walk), window, (stamps, first));
+                first += walk.passes();
+            }
+        }
+        self.run(encoder, (Frame::Main(self.window), self.main()), window, (stamps, first));
     }
 
     /// The pass the frame `create` does at `making`, made: an effect's pipeline and bind groups, made of what the
@@ -1418,12 +1552,45 @@ impl Stamps {
 /// What a placement's check finds of what is kept.
 impl Finds for Kept {
     fn pass(&self, frame: Frame, pass: PassName) -> Result<Shape, JoinRefused> {
-        let Frame::Main(window) = frame;
-        if window != self.window {
-            return Err(JoinRefused::Frame);
-        }
+        let walk = match frame {
+            Frame::Main(window) if window == self.window => self.main(),
+            Frame::Main(_) => return Err(JoinRefused::Frame),
+            Frame::Texture(id) => {
+                self.frames.get(id.id).filter(|walk| walk.texture().is_some()).ok_or(JoinRefused::Frame)?
+            }
+        };
 
-        self.main().shape_of(pass).ok_or(JoinRefused::Pass)
+        walk.shape_of(pass).ok_or(JoinRefused::Pass)
+    }
+
+    fn drawn_by(&self, texture: TextureId) -> Option<u64> {
+        let Origin::Frame(frame) = self.textures.get(texture.id)?.origin else {
+            return None;
+        };
+
+        self.frames.get(frame).map(|_| frame)
+    }
+
+    fn reads(&self) -> Vec<(u64, u64)> {
+        let joined = self
+            .placements
+            .values()
+            .flat_map(|placement| &placement.joins)
+            .filter_map(|join| match join.frame {
+                Frame::Texture(frame) => Some((frame.id, &join.textures)),
+                Frame::Main(_) => None,
+            })
+            .flat_map(|(frame, textures)| textures.iter().map(move |texture| (frame, *texture)));
+        let bound = self
+            .frames
+            .iter()
+            .filter(|(_, walk)| walk.texture().is_some())
+            .flat_map(|(frame, walk)| walk.binds().iter().map(move |texture| (frame, *texture)));
+
+        joined
+            .chain(bound)
+            .filter_map(|(frame, texture)| Some((frame, self.drawn_by(TextureId { id: texture })?)))
+            .collect()
     }
 
     fn program(&self, id: ProgramId) -> Option<Reads<'_>> {
@@ -1460,6 +1627,10 @@ impl Finds for Kept {
 impl Holds for Kept {
     fn window(&self, window: WindowId) -> Option<ColourFormat> {
         (window == self.window).then_some(self.format)
+    }
+
+    fn longest(&self) -> u32 {
+        self.longest
     }
 
     fn effect(&self, id: ProgramId) -> Option<EffectReads<'_>> {
@@ -1510,16 +1681,29 @@ impl Renderer {
         turn: &mut Turn<'_, Self, S>,
         keep: impl FnOnce(&mut Kept, u64, ActorId),
     ) -> Result<u64, Fault> {
+        self.kept_for(turn, |kept, maker| {
+            let id = kept.ids.next();
+            keep(kept, id, maker);
+            id
+        })
+    }
+
+    /// What `keep` makes of what is kept for the sender of the mail being handled, watching the sender when it is
+    /// the first time it has made anything, so what it made is released when it ends.
+    fn kept_for<S, T>(
+        &mut self,
+        turn: &mut Turn<'_, Self, S>,
+        keep: impl FnOnce(&mut Kept, ActorId) -> T,
+    ) -> Result<T, Fault> {
         let maker = turn.sender();
         let kept = turn.open(&mut self.kept)?;
-        let id = kept.ids.next();
-        keep(kept, id, maker.id());
+        let made = keep(kept, maker.id());
         let first = kept.makers.made(maker.id());
         if first {
             turn.watch(maker);
         }
 
-        Ok(id)
+        Ok(made)
     }
 }
 

@@ -3,8 +3,11 @@
 //! [`Main`](crate::pass::Main), onto the window with depth.
 
 pub mod builder;
+mod order;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use order::{ordered, reaches};
 
 pub use builder::FrameBuilder;
 
@@ -13,13 +16,16 @@ use crate::pass::{Main, Pass, PassName};
 use crate::placement::{self, Bind, Finds, JoinRefused};
 use crate::program::{Binding, ProgramId};
 use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
-use aethereal_data::{Kind, KindName, Plain};
+use crate::texture::{TextureFormat, TextureId};
+use aethereal_data::{ActorId, Kind, KindName, Plain};
 use aethereal_window::WindowId;
 
-/// A frame, as a placement joins its passes: a window's main frame, whichever frame it is at each `Render`.
+/// A frame, as a placement joins its passes: a window's main frame, whichever frame it is at each `Render`, or a frame
+/// that ends on a texture, by its id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
 pub enum Frame {
     Main(WindowId),
+    Texture(FrameId),
 }
 
 impl Kind for Frame {
@@ -40,15 +46,31 @@ impl Kind for CreateFrame {
     const NAME: KindName = KindName::new("aether.render.create_frame");
 }
 
-/// Where a frame ends: shown on a window, as its main frame.
+/// Where a frame ends: shown on a window, as its main frame, or drawn into a texture of a size, which any actor handed
+/// its id binds or reads back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Ends {
     Window(WindowId),
+    Texture(Size),
 }
 
 impl Kind for Ends {
     const NAME: KindName = KindName::new("aether.render.ends");
 }
+
+/// The size of a texture a frame ends on, in its pixels. Its format is [`TextureFormat::Rgba8`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub struct Size {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Kind for Size {
+    const NAME: KindName = KindName::new("aether.render.size");
+}
+
+/// The format of the texture a frame that ends on one draws into.
+pub const ENDS_IN: TextureFormat = TextureFormat::Rgba8;
 
 /// A target of a frame besides its end, each the size of the end: floats, whole numbers, or depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
@@ -149,7 +171,7 @@ impl Kind for Load {
 }
 
 /// A frame the renderer made, which only its maker may release.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
 pub struct FrameId {
     pub(crate) id: u64,
 }
@@ -161,7 +183,14 @@ impl Kind for FrameId {
 /// What the renderer answers [`CreateFrame`] with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Framed {
+    /// A window's main frame.
     Made(FrameId),
+    /// A frame that ends on a texture, and the texture: an ordinary one, which a placement or an effect binds and
+    /// which is read back.
+    Texture {
+        frame: FrameId,
+        texture: TextureId,
+    },
     Refused(FrameRefused),
 }
 
@@ -174,6 +203,10 @@ impl Kind for Framed {
 pub enum FrameRefused {
     /// It ends on a window the renderer does not draw to.
     Window,
+    /// The window's main frame is another actor's, `owner`, which alone may replace it.
+    Owned { owner: ActorId },
+    /// It ends on a texture with a side of no pixels, or longer than the GPU's longest, `most`.
+    Size { width: u32, height: u32, most: u32 },
     /// It has no passes.
     Empty,
     /// The pass at `pass`, counted from zero, has the name of an earlier pass.
@@ -267,17 +300,38 @@ pub(crate) struct EffectReads<'a> {
 pub(crate) trait Holds: Finds {
     /// The format of the surface of `window`: none when the renderer does not draw to it.
     fn window(&self, window: WindowId) -> Option<ColourFormat>;
+    /// The longest side of a texture the GPU makes.
+    fn longest(&self) -> u32;
     /// The effect kept under `id`: none when there is no program under it, or it is not an effect.
     fn effect(&self, id: ProgramId) -> Option<EffectReads<'_>>;
 }
 
+/// Checks that `by` may make a frame on a window whose main frame is owned by `owner`, or by none: the first to make one
+/// owns it, and only it may replace it, until it releases it or ends (ADR-0025).
+pub(crate) fn may_replace(owner: Option<ActorId>, by: ActorId) -> Result<(), FrameRefused> {
+    match owner {
+        Some(owner) if owner != by => Err(FrameRefused::Owned { owner }),
+        Some(_) | None => Ok(()),
+    }
+}
+
 /// Checks a frame before it is made, whole, as the builder would have built it and more: that it ends on a window
-/// drawn to, that it has passes, each of a name of its own, each reading and testing only what an earlier pass wrote,
+/// drawn to or on a texture of a size the GPU makes, that it has passes, each of a name of its own, each reading and testing only what an earlier pass wrote,
 /// never what it writes, each writing colour into colour and depth into depth, each effect reading and binding what
 /// it was made to and made for the shape it writes, and that its last pass writes its end.
 pub(crate) fn check(create: &CreateFrame, kept: &impl Holds) -> Result<(), FrameRefused> {
-    let Ends::Window(window) = create.ends;
-    let end = kept.window(window).ok_or(FrameRefused::Window)?;
+    let end = match create.ends {
+        Ends::Window(window) => kept.window(window).ok_or(FrameRefused::Window)?,
+        Ends::Texture(Size { width, height }) => {
+            let most = kept.longest();
+            let fits = (1..=most).contains(&width) && (1..=most).contains(&height);
+            if !fits {
+                return Err(FrameRefused::Size { width, height, most });
+            }
+            // What `ENDS_IN` is drawn in.
+            ColourFormat::Rgba8
+        }
+    };
     if create.passes.is_empty() {
         return Err(FrameRefused::Empty);
     }
