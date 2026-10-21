@@ -53,7 +53,7 @@ Release { id }                                                                  
   - the module declares no constant a pipeline overrides, as a program sets none;
   - `bindings` lists each place once, in a group the GPU has, uniform blocks and storage buffers of a size it binds, and no more of each kind than a stage binds, by the device's limits;
   - a vertex layout reads at most sixteen locations, as many as WebGPU lets every device read; a mesh's layout is checked the same.
-- **A program draws to the surface's format, and tests depth in `Depth32Float`.** The pass a frame draws in holds a depth texture of that format, so every program is made against it, a program that does not test depth comparing `Always` and writing nothing. When a scene pass draws into a texture of its own (below), programs are made against that texture's format.
+- **A program is made against the shape of what it draws into: its format, its samples, and its depth** (ADR-0025). A program fits every pass whose targets have its shape, in any frame, so a frame replaced keeps its programs. Depth is `Depth32Float`, a program that does not test depth comparing `Always` and writing nothing, and samples are one, until a target of another shape is needed.
 
 **The id is plain data.** The render root numbers ids from one count it never takes back, so an id once released is refused, not taken for another resource. An actor may hand an id to another, so two actors can draw one mesh.
 

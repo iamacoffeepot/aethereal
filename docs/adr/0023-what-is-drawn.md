@@ -70,6 +70,7 @@ struct Sampling { filter: Filter, wrap: Wrap }   // Filter::{Linear, Nearest}, W
 
 - A placement drawn from `Records` draws one instance for each record its instances hold at that frame, so a swarm whose count changes writes its records and leaves the placement as it is.
 - A placement does not change once made. Another mesh, program, or binding is another placement, and the old one is released.
+- **A placement joins a frame's passes by their type, each with a program and bindings of its own** (ADR-0025): `program` and `bindings` above are one join, of the render root's own main frame's one pass, `Main`. Each join is checked as this record checks a placement.
 - A sampler is not made: a placement names how it samples, and the render root keeps one sampler for each way.
 
 **A program says what it reads per instance.** `CreateProgram` gains `instances: PerInstance`, where `PerInstance::None` reads nothing per instance and `PerInstance::Records(VertexLayout)` reads a record laid out so, as a second vertex buffer stepped once per instance. Its attributes are checked as the vertex layout's are, the two layouts read no location in common, and together they read at most sixteen.
@@ -86,9 +87,9 @@ The placement's bind groups are made then, once, so a frame binds what is made a
 
 **Who may change what.** Only the maker of a resource may write it or release it (ADR-0021), and that includes a placement. Its ids are plain data and may be handed on, so others may place with them.
 
-**The render root draws every placement in one pass onto the canvas at each `Render`**, with a depth texture of `Depth32Float` cleared to the far plane, as every program is made to test against (ADR-0021). It sets each program's pipeline once, and draws its placements together.
+**Until an actor makes a window's main frame, the render root's own draws every placement in one pass onto the canvas at each `Render`** (ADR-0025), with a depth texture of `Depth32Float` cleared to the far plane, as every program is made to test against (ADR-0021). It sets each program's pipeline once, and draws its placements together.
 
-**Draw order is not promised.** Placements of one program are drawn together, and programs and placements in no order an actor may rely on. Depth orders what is drawn where order would show: a 3D scene, and a 2D game whose layers are depths. Placements whose programs blend by `Multiply`, their colour times what is drawn, keeping the alpha drawn already, give the same frame in any order among themselves, as `Additive` ones do. The records of one placement are drawn in order, as they are one actor's. What depth cannot order, overlapping things that blend, is left to the record that decides a frame's passes (see Consequences).
+**Draw order within a pass is not promised.** Order across passes is a frame's (ADR-0025). Placements of one program are drawn together, and programs and placements in no order an actor may rely on. Depth orders what is drawn where order would show: a 3D scene, and a 2D game whose layers are depths. Placements whose programs blend by `Multiply`, their colour times what is drawn, keeping the alpha drawn already, give the same frame in any order among themselves, as `Additive` ones do. The records of one placement are drawn in order, as they are one actor's. What depth cannot order, overlapping things that blend, is ordered by putting them in passes of their own (ADR-0025).
 
 **What is drawn can be read back, and a frame timed.** Each is an ask the render root holds and answers once the GPU has done the work, a frame or more later (ADR-0017: `turn.hold`, `turn.answer`):
 
@@ -130,7 +131,7 @@ enum Mapped { Ready { read: u64 }, Failed { read: u64 } }  // brought from the s
 - A resource released while placed is kept on the GPU until its last placement goes: an actor that releases a mesh it still has placed frees no memory until it releases the placements too.
 - Layers by depth asks a 2D program to write a depth per instance and test it. Programs that blend, a UI's translucent panels, particles, glass, draw in an order nothing promises until a frame's passes are decided.
 - What is decided separately, each when it is needed:
-  - **The frame's passes**: the programs a frame runs in order, drawing into textures and the canvas, which orders what depth cannot, and post-processing over the scene.
+  - **The frame's passes**: decided by ADR-0025.
   - **Materials shared by many placements**, and texture arrays.
   - **Compute programs, and storage they write**, and a range of a mesh's indices per placement.
   - **Spreading uploads over the frames before first use** (ADR-0021).
