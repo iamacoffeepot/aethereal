@@ -7,6 +7,7 @@ use crate::{
 use aethereal_data::{
     ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, Reader, Schema, Shape, Writer,
 };
+use alloc::vec::Vec;
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
@@ -375,34 +376,21 @@ where
 /// }
 ///
 /// fn poke<A>(turn: &mut Turn<'_, A, ()>, listener: ProtocolRef<(Poke,)>) {
-///     let sent = turn.send_to(listener, &Poke);
+///     let sent = turn.to(listener).send(&Poke);
 /// }
 /// ```
 pub trait Reaches<K> {
     /// What a turn's sends list for it: [`ToType<T, K>`] for an `ActorRef<T>`, [`ToAny<P, K>`] for a
     /// `ProtocolRef<P>`, and [`Tells<Path<L>, K>`] for a [`Path<L>`].
     type Marker;
-
-    /// The actor it reaches as it is sent, and its seat, read from `table` when it is a path: the place in
-    /// [`SeatNumber::NOWHERE`] when it holds no live actor of its type, where the mail is dropped (ADR-0022). A
-    /// reference reaches its actor without reading the table.
-    fn reached(self, table: &dyn Table) -> Seated;
 }
 
 impl<T: Actor + Handles<K>, K: Kind + Handled> Reaches<K> for ActorRef<T> {
     type Marker = ToType<T, K>;
-
-    fn reached(self, _: &dyn Table) -> Seated {
-        self.seated
-    }
 }
 
 impl<P: Listed, K: Kind> Reaches<K> for ProtocolRef<P> {
     type Marker = ToAny<P, K>;
-
-    fn reached(self, _: &dyn Table) -> Seated {
-        self.seated
-    }
 }
 
 /// A reference, which reaches its actor with no lookup: what a send to many at once takes, written once for all.
@@ -428,9 +416,75 @@ impl<P> Proven for ProtocolRef<P> {
 /// that holds none is mailed to no seat, where the engine drops it as it drops mail to an actor that has gone.
 impl<L: ChildOf + PathTo + Handles<K>, K: Kind + Handled> Reaches<K> for Path<L> {
     type Marker = Tells<Self, K>;
+}
 
-    fn reached(self, table: &dyn Table) -> Seated {
+/// What a turn's `to` takes: one actor, through a reference or at a typed path, or several references at once, each
+/// found once, as the target is made (ADR-0016, ADR-0022).
+pub trait Reachable {
+    /// What the mail goes through, whose markers a turn's sends list: the reference or path itself, or the type of
+    /// each of several references.
+    type Through;
+    /// Where the target was found: one actor and its seat, or the references themselves.
+    type At;
+
+    /// Where it is, read from `table` when it is a path: the place in [`SeatNumber::NOWHERE`] when it holds no live
+    /// actor of its type, where mail is dropped and a request is answered as by an actor that has gone. A reference
+    /// is found without reading the table.
+    fn at(self, table: &dyn Table) -> Self::At;
+}
+
+impl<T> Reachable for ActorRef<T> {
+    type Through = Self;
+    type At = Seated;
+
+    fn at(self, _: &dyn Table) -> Seated {
+        self.seated
+    }
+}
+
+impl<P> Reachable for ProtocolRef<P> {
+    type Through = Self;
+    type At = Seated;
+
+    fn at(self, _: &dyn Table) -> Seated {
+        self.seated
+    }
+}
+
+/// A path is found once, as the target is made: every send and ask through it goes to the actor found then.
+impl<L: ChildOf + PathTo> Reachable for Path<L> {
+    type Through = Self;
+    type At = Seated;
+
+    fn at(self, table: &dyn Table) -> Seated {
         table.reach(self.names(), KindId::of::<L>())
+    }
+}
+
+impl<'r, R: Proven> Reachable for &'r [R] {
+    type Through = R;
+    type At = &'r [R];
+
+    fn at(self, _: &dyn Table) -> &'r [R] {
+        self
+    }
+}
+
+impl<'r, R: Proven, const N: usize> Reachable for &'r [R; N] {
+    type Through = R;
+    type At = &'r [R];
+
+    fn at(self, _: &dyn Table) -> &'r [R] {
+        self
+    }
+}
+
+impl<'r, R: Proven> Reachable for &'r Vec<R> {
+    type Through = R;
+    type At = &'r [R];
+
+    fn at(self, _: &dyn Table) -> &'r [R] {
+        self
     }
 }
 

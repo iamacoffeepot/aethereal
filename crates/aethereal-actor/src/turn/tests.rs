@@ -249,7 +249,9 @@ impl Actor for Branch {
             let is_last = key + 1 == config.leaves;
             let fails = is_last && config.last_fails;
             match turn.spawn(&key, LeafConfig { fails }) {
-                Ok(leaf) => turn.send_to(leaf, &Poke)?,
+                Ok(leaf) => {
+                    turn.to(leaf).send(&Poke)?;
+                }
                 Err(Refused::Began(fault)) => return Err(fault),
                 Err(_) => {}
             }
@@ -590,8 +592,8 @@ fn mail_sent_to_all_is_a_piece_for_each_receiver_with_its_bytes_written_once() {
     let references = receivers.map(ActorRef::<Leaf>::new);
     let meeting = Meet { other: ErasedActorRef::new(receivers[0]) };
 
-    assert_eq!(turn.send_to_all(&references, &meeting), Ok(()));
-    assert_eq!(turn.send_to_all(&references[..0], &meeting), Ok(()));
+    assert!(turn.to(&references).send(&meeting).is_ok());
+    assert!(turn.to(&references[..0]).send(&meeting).is_ok());
 
     let (buffers, _, _, _, _) = asked.into_parts();
     let seen: Vec<(Seated, u64)> = buffers.mailed.iter().map(|mailed| (mailed.to, mailed.count)).collect();
@@ -611,8 +613,8 @@ fn mail_sent_through_a_protocol_reference_reaches_the_actor_it_refers_to() {
     let mut turn = opened::<Leaf, (ToAny<(Poke,), Poke>,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let references: [ProtocolRef<(Poke,)>; 3] = receivers.map(|receiver| ActorRef::<Leaf>::new(receiver).protocol());
 
-    assert_eq!(turn.send_to(references[0], &Poke), Ok(()));
-    assert_eq!(turn.send_to_all(&references[1..], &Poke), Ok(()));
+    assert!(turn.to(references[0]).send(&Poke).is_ok());
+    assert!(turn.to(&references[1..]).send(&Poke).is_ok());
 
     let (buffers, _, _, _, _) = asked.into_parts();
     let seen: Vec<(Seated, KindId)> = buffers.mailed.iter().map(|mailed| (mailed.to, mailed.kind)).collect();
@@ -651,8 +653,8 @@ fn mail_sent_through_a_named_protocol_reaches_the_actor_it_refers_to() {
         opened::<Leaf, (ToAny<Poking, Poke>, ToAny<(Shut,), Shut>)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let references: [ProtocolRef<Poking>; 2] = receivers.map(|receiver| ActorRef::<Leaf>::new(receiver).protocol());
 
-    assert_eq!(turn.send_to(references[0], &Poke), Ok(()));
-    assert_eq!(turn.send_to(references[1].narrow(), &Shut), Ok(()));
+    assert!(turn.to(references[0]).send(&Poke).is_ok());
+    assert!(turn.to(references[1].narrow()).send(&Shut).is_ok());
 
     let (buffers, _, _, _, _) = asked.into_parts();
     let seen: Vec<(Seated, KindId)> = buffers.mailed.iter().map(|mailed| (mailed.to, mailed.kind)).collect();

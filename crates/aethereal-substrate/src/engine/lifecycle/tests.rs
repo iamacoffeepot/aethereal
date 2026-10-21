@@ -77,7 +77,7 @@ impl Actor for Staged {
         turn.subscribe::<Start>();
         turn.subscribe::<Stop>();
         for text in config.to_self {
-            turn.send_to(turn.me(), &Note { text })?;
+            turn.to(turn.me()).send(&Note { text })?;
         }
 
         Ok(Self { number: config.number })
@@ -93,11 +93,11 @@ impl Handles<On<Start>> for Staged {
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         say(format!("{} started", self.number));
-        turn.send_to(turn.me(), &Note { text: String::from("pass 2") })?;
+        turn.to(turn.me()).send(&Note { text: String::from("pass 2") })?;
         // The second asks to stop in a turn of `Start`'s chain, before the chain has finished.
         let quits = self.number == 2;
         if quits {
-            turn.send_to(turn.me(), &Note { text: String::from("quit") })?;
+            turn.to(turn.me()).send(&Note { text: String::from("quit") })?;
         }
 
         Ok(())
@@ -125,7 +125,7 @@ impl Handles<Note> for Staged {
             ["pass", left] => {
                 let left: u64 = left.parse().unwrap_or_default();
                 if left > 0 {
-                    turn.send_to(turn.me(), &Note { text: format!("pass {}", left - 1) })?;
+                    turn.to(turn.me()).send(&Note { text: format!("pass {}", left - 1) })?;
                 }
             }
             ["quit"] => turn.quit(),
@@ -324,7 +324,7 @@ impl Handles<On<Tick>> for Cycler {
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         say(format!("tick {} {}", tick.delta_nanos, tick.elapsed_nanos));
-        turn.send_to(turn.me(), &Note { text: String::from("pass 1") })?;
+        turn.to(turn.me()).send(&Note { text: String::from("pass 1") })?;
 
         Ok(())
     }
@@ -494,7 +494,7 @@ impl Actor for Nest {
     fn begin(_: Note, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let spawned = turn.spawn::<Cycler>(&(), Note { text: String::new() });
         say(format!("{:?}", spawned.err()));
-        turn.send_to(turn.me(), &Note { text: String::new() })?;
+        turn.to(turn.me()).send(&Note { text: String::new() })?;
 
         Ok(Self)
     }

@@ -2260,7 +2260,7 @@ mod tests {
         type EndSends = ();
 
         fn begin(questioner: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            turn.send_to(turn.me(), &Volley { pings: 2 })?;
+            turn.to(turn.me()).send(&Volley { pings: 2 })?;
 
             Ok(questioner)
         }
@@ -2278,7 +2278,7 @@ mod tests {
                 return Ok(());
             };
             for at in 0..volley.pings {
-                turn.ask_to(echo.protocol(), &echo::Ping { n: at * 10 }, &Which { at })?;
+                turn.to(echo.protocol()).ask(&echo::Ping { n: at * 10 }, &Which { at })?;
             }
 
             Ok(())
@@ -2365,7 +2365,7 @@ mod tests {
         type EndSends = ();
 
         fn begin(petitioning: Petitioning, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            turn.send_to(turn.me(), &Volley { pings: 2 })?;
+            turn.to(turn.me()).send(&Volley { pings: 2 })?;
 
             Ok(Self { petitioning })
         }
@@ -2388,9 +2388,9 @@ mod tests {
                 return Err(Fault::new(&Doom)?);
             };
             // Held in one call into the guest, each answered with its own kind.
-            turn.ask_to(steward.protocol(), &echo::Ping { n: 0 }, &Which { at: 0 })?;
-            turn.ask_to(steward.protocol(), &echo::Weigh { n: 5 }, &Which { at: 1 })?;
-            turn.ask_to(steward.protocol(), &echo::Ping { n: 20 }, &Which { at: 2 })?;
+            turn.to(steward.protocol()).ask(&echo::Ping { n: 0 }, &Which { at: 0 })?;
+            turn.to(steward.protocol()).ask(&echo::Weigh { n: 5 }, &Which { at: 1 })?;
+            turn.to(steward.protocol()).ask(&echo::Ping { n: 20 }, &Which { at: 2 })?;
             turn.send(To::Held(steward.erase()), &echo::Release { how: *how })?;
 
             Ok(())
@@ -2869,7 +2869,7 @@ mod tests {
             let Ok(nester) = turn.spawn_from(&inquiring.code, &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
-            turn.send_to(turn.me(), &Lend)?;
+            turn.to(turn.me()).send(&Lend)?;
 
             Ok(Self { nester })
         }
@@ -2886,7 +2886,7 @@ mod tests {
             let Ok(blob) = turn.put(vec![7; 3]) else {
                 return Err(Fault::new(&Doom)?);
             };
-            turn.send_to(self.nester, &echo::Book { blob })?;
+            turn.to(self.nester).send(&echo::Book { blob })?;
 
             Ok(())
         }

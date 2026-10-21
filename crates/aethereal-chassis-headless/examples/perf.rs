@@ -126,7 +126,7 @@ impl Handles<Count> for Counter {
         if left == 0 {
             turn.close();
         } else {
-            turn.send_to(turn.me(), &Count { left: left - 1 })?;
+            turn.to(turn.me()).send(&Count { left: left - 1 })?;
         }
 
         Ok(())

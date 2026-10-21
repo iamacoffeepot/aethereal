@@ -1,13 +1,13 @@
 //! The actors one actor sends to as they come and go: a list it holds, which it watches so the ended leave it
 //! (ADR-0016).
 
-use crate::{Ended, ErasedActorRef, Handles, ProtocolRef, Turn};
+use crate::{Ended, ErasedActorRef, Handles, ProtocolRef, Reachable, Table, Turn};
 use aethereal_data::ActorId;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 /// The actors that take the protocol `P` and have asked to be sent to: listeners of any type, in one list, which
-/// `send_to_all` sends to (ADR-0016).
+/// a turn sends to as one target, `turn.to(&subscribers).send(&mail)` (ADR-0016).
 ///
 /// Each is watched when it is added, so its ending reaches the actor that
 /// holds the list, whose handler of endings hands it to [`Self::ended`]. An
@@ -76,5 +76,15 @@ impl<P> Subscribers<P> {
 impl<P> Default for Subscribers<P> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The actors held, as one target of a turn's sends.
+impl<'r, P> Reachable for &'r Subscribers<P> {
+    type Through = ProtocolRef<P>;
+    type At = &'r [ProtocolRef<P>];
+
+    fn at(self, _: &dyn Table) -> &'r [ProtocolRef<P>] {
+        &self.references
     }
 }

@@ -135,7 +135,7 @@ impl Actor for Keeper {
         };
         say(format!("{number} began with {}", taken.len()));
         for text in orders {
-            turn.send_to(turn.me(), &Order { text })?;
+            turn.to(turn.me()).send(&Order { text })?;
         }
 
         Ok(Self { number, lamps: taken })
@@ -201,8 +201,8 @@ impl Handles<Order> for Keeper {
                 let lamps = self.give_all(turn)?;
                 let pass = Pass { lamps };
                 let me = turn.me();
-                let first = turn.send_to(me, &pass).is_ok();
-                let second = turn.send_to(me, &pass).is_ok();
+                let first = turn.to(me).send(&pass).is_ok();
+                let second = turn.to(me).send(&pass).is_ok();
                 say(format!("{} sent {first} then {second}", self.number));
             }
             ["fan"] => {
@@ -211,7 +211,7 @@ impl Handles<Order> for Keeper {
                 let Ok(child) = turn.spawn(&50, config) else {
                     return Err(Fault::new(&Self::order("unborn"))?);
                 };
-                let sent = turn.send_to_all(&[child, child], &Pass { lamps }).is_ok();
+                let sent = turn.to(&[child, child]).send(&Pass { lamps }).is_ok();
                 say(format!("{} fanned {sent}", self.number));
             }
             ["close"] => turn.close(),

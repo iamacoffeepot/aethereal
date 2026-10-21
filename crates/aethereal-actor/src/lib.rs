@@ -82,7 +82,7 @@ pub use path::{
     Beneath, HandlersNeedIn, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Path, PathTo, Placed, There, TypeSegment, path,
 };
 pub use placement::{Admits, Anywhere, AtTop, ChildOf, ParentOf, Parented, Placement, Recursive, Root, Spawner, Top};
-pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Proven, Reaches, Watchable};
+pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Proven, Reachable, Reaches, Watchable};
 pub use resource::{
     Carried, Claim, Claimed, Gift, Given, Giver, Handle, Holds, Keeping, Keeps, KeepsNothing, Kept, NotHeld, Resource,
     Was, carry, is_loose_claim, take_claimed, take_loose_ticket,
@@ -97,6 +97,6 @@ pub use subscribers::Subscribers;
 pub use time::Time;
 pub use turn::{
     Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseStage, FalseWatch, Forged,
-    Garbled, Hosted, Logger, Refused, Request, Stood, Trapped, Turn, Turning, Unspawned, Why,
+    Garbled, Hosted, Leaves, Lives, Logger, Refused, Request, Stood, Toward, Trapped, Turn, Turning, Unspawned, Why,
 };
 pub use written::Written;

@@ -165,9 +165,9 @@ impl Handles<On<Start>> for Maker {
             }
         };
 
-        turn.ask_to(path::<Renderer>(()), &requests.triangle, &Asked { what: String::from("a triangle") })?;
-        turn.ask_to(path::<Renderer>(()), &requests.texture, &Asked { what: String::from("a texture") })?;
-        turn.ask_to(path::<Renderer>(()), &requests.past, &Asked { what: String::from("an index past the end") })?;
+        turn.to(path::<Renderer>(())).ask(&requests.triangle, &Asked { what: String::from("a triangle") })?;
+        turn.to(path::<Renderer>(())).ask(&requests.texture, &Asked { what: String::from("a texture") })?;
+        turn.to(path::<Renderer>(())).ask(&requests.past, &Asked { what: String::from("an index past the end") })?;
 
         Ok(())
     }
@@ -184,7 +184,7 @@ impl Handles<Answer<Meshed, Asked>> for Maker {
         match answered {
             Answered::Yes(Meshed::Made(mesh)) => {
                 say(format!("{}: made {mesh:?}, then released", asked.what));
-                turn.send_to(path::<Renderer>(()), &Release::Mesh(mesh))?;
+                turn.to(path::<Renderer>(())).send(&Release::Mesh(mesh))?;
             }
             Answered::Yes(Meshed::Refused(why)) => say(format!("{}: refused, {why:?}", asked.what)),
             Answered::No(why) => say(format!("{}: unanswered, {why:?}", asked.what)),

@@ -199,7 +199,7 @@ impl Actor for Pinger {
         let Ok(ponger) = turn.spawn(&0, Number { number: 0 }) else {
             panic!("the pong side begins");
         };
-        turn.send_to(ponger, &Ready)?;
+        turn.to(ponger).send(&Ready)?;
 
         Ok(Self)
     }
@@ -293,7 +293,7 @@ impl Actor for Producer {
         let Ok(counter) = turn.spawn(&0, Number { number: 0 }) else {
             panic!("the counter begins");
         };
-        turn.send_to(counter, &Ready)?;
+        turn.to(counter).send(&Ready)?;
 
         Ok(Self)
     }
@@ -351,9 +351,9 @@ impl Actor for BeginProducer {
             panic!("the counter begins");
         };
         for _ in 0..COUNTS {
-            turn.send_to(counter, &Increment)?;
+            turn.to(counter).send(&Increment)?;
         }
-        turn.send_to(counter, &Retrieve)?;
+        turn.to(counter).send(&Retrieve)?;
 
         Ok(Self)
     }
@@ -463,7 +463,7 @@ impl Handles<Ready> for Forker {
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         for _ in 0..FORKED {
             for worker in &self.workers {
-                turn.send_to(*worker, &Work)?;
+                turn.to(*worker).send(&Work)?;
             }
         }
 
@@ -550,9 +550,9 @@ impl Handles<Ready> for Crowd {
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         for actor in &self.actors {
             for other in self.actors.iter().filter(|other| *other != actor) {
-                turn.send_to(*actor, &Neighbour { other: *other })?;
+                turn.to(*actor).send(&Neighbour { other: *other })?;
             }
-            turn.send_to(*actor, &Start)?;
+            turn.to(*actor).send(&Start)?;
         }
 
         Ok(())
@@ -583,7 +583,7 @@ impl Pinging {
         self.random ^= self.random << 17;
         let count = u64::try_from(self.neighbours.len()).unwrap_or(1).max(1);
         let picked = usize::try_from(self.random % count).unwrap_or(0);
-        turn.send_to(self.neighbours[picked], &Ping { left })?;
+        turn.to(self.neighbours[picked]).send(&Ping { left })?;
 
         Ok(())
     }
@@ -767,7 +767,7 @@ impl Handles<Request> for Fib {
                 let Ok(child) = turn.spawn(&key, Number { number: key }) else {
                     panic!("a child begins");
                 };
-                turn.send_to(child, &Request { number: before })?;
+                turn.to(child).send(&Request { number: before })?;
             }
         }
 
@@ -908,7 +908,9 @@ impl Handles<Candidate> for Filter {
             return Ok(());
         }
         match self.next {
-            Next::Filter(next) => turn.send_to(next, &Candidate { number })?,
+            Next::Filter(next) => {
+                turn.to(next).send(&Candidate { number })?;
+            }
             Next::Last if self.primes.len() < SIEVE_KEPT => self.primes.push(number),
             Next::Last => {
                 let Ok(next) = turn.spawn(&0, Number { number }) else {
@@ -927,7 +929,7 @@ impl Handles<Exit> for Filter {
 
     fn handle(&mut self, _: Exit, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if let Next::Filter(next) = self.next {
-            turn.send_to(next, &Exit)?;
+            turn.to(next).send(&Exit)?;
         }
         turn.close();
 
@@ -976,7 +978,7 @@ impl Churn {
             panic!("a churn actor begins");
         };
         self.spawned += 1;
-        turn.send_to(child, &Live { left: CHURN_LIFE })?;
+        turn.to(child).send(&Live { left: CHURN_LIFE })?;
 
         Ok(())
     }
@@ -1064,7 +1066,7 @@ impl Handles<Live> for Mortal {
 
     fn handle(&mut self, Live { left }: Live, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if left > 0 {
-            turn.send_to(turn.me(), &Live { left: left - 1 })?;
+            turn.to(turn.me()).send(&Live { left: left - 1 })?;
         } else {
             turn.send(To::Parent, &Died)?;
             turn.close();
@@ -1145,7 +1147,7 @@ impl Region {
         self.answered = 0;
         if self.frame == WORLD_FRAMES {
             for body in &self.places {
-                turn.send_to(*body, &Over)?;
+                turn.to(*body).send(&Over)?;
             }
             turn.close();
             WORLD_OVER.fetch_add(1, Ordering::Relaxed);
@@ -1157,7 +1159,7 @@ impl Region {
         for (place, body) in self.places.iter().enumerate() {
             let left = self.places[(place + count - 1) % count];
             let right = self.places[(place + 1) % count];
-            turn.send_to(*body, &Frame { left, right })?;
+            turn.to(*body).send(&Frame { left, right })?;
         }
         self.frame += 1;
 
@@ -1294,8 +1296,8 @@ impl Handles<Frame> for Body {
             self.velocity = -self.velocity;
         }
         self.pushed = 0.0;
-        turn.send_to(left, &Nudge { push: -0.01 * self.velocity })?;
-        turn.send_to(right, &Nudge { push: 0.01 * self.velocity })?;
+        turn.to(left).send(&Nudge { push: -0.01 * self.velocity })?;
+        turn.to(right).send(&Nudge { push: 0.01 * self.velocity })?;
 
         self.left -= 1;
         if self.left == 0 {
@@ -1388,7 +1390,7 @@ where
     S: Allows<ToType<T, Ready>, I>,
 {
     if let Some(last) = children.last() {
-        turn.send_to(*last, &Ready)?;
+        turn.to(*last).send(&Ready)?;
     }
 
     Ok(())
