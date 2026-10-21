@@ -8,9 +8,11 @@ use aethereal_chassis_browser::{Browser, Performance, open, renderer};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_render::mesh::{Attribute, CreateMesh, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::program::{Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, Programmed};
+use aethereal_render::shape::{ColourFormat, Shape};
 use aethereal_render::texture::{CreateTexture, TextureFormat, Textured};
 use aethereal_render::{Release, Renderer};
 use aethereal_substrate::Engine;
+use aethereal_window::{Heard, Opening, Windows};
 use core::cell::RefCell;
 use core::mem;
 use core::num::NonZeroUsize;
@@ -34,17 +36,22 @@ pub struct Program {
     browser: Browser<Performance>,
 }
 
-/// Opens WebGPU on `canvas`, then makes the engine with the renderer, handed the GPU, and the maker as its roots.
+/// Opens `canvas` as the one window and WebGPU on it, then makes the engine with the window root, the renderer, handed
+/// the GPU, and the maker as its roots.
 ///
 /// # Errors
 ///
 /// When WebGPU will not open on the canvas, or a root does not begin.
 #[wasm_bindgen]
 pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
-    let gpu = open(canvas).await?;
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
+    let mut opening = Opening::new(setup.source::<Heard>());
+    let (gpu, _) = open(canvas, &mut opening).await?;
+    let mut setup = setup
+        .add_root::<Windows>(&(), opening.config())
+        .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
     let (rendering, mappings) = renderer(&mut setup, gpu);
     // The maker reaches the renderer at its typed path, so the renderer is made first: `ready` builds only then.
     let engine = setup
@@ -178,6 +185,8 @@ impl Requests {
             instances: PerInstance::None,
             bindings: Vec::new(),
             state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None },
+            // Made against a shape of its own, as it is drawn in no pass: a program is made for any shape.
+            shape: Shape::with_depth(ColourFormat::Rgba8),
         };
         let mut unread = shade.clone();
         unread.wgsl = unread.wgsl.replace(

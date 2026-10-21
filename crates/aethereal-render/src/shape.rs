@@ -1,0 +1,114 @@
+//! The shape of what a pass draws into: its colour's format, its samples, and its depth. A program is made against a
+//! shape, and fits every pass of that shape in any frame, so a frame replaced by one whose passes keep their shapes
+//! keeps every program (ADR-0025).
+
+use aethereal_data::{Kind, KindName, Plain};
+
+/// What a pass draws into, as a program is made against it: the format of its one colour target, how many samples
+/// each pixel holds, and the depth it holds beside its colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+pub struct Shape {
+    pub colour: ColourFormat,
+    pub samples: Samples,
+    pub depth: DepthFormat,
+}
+
+impl Kind for Shape {
+    const NAME: KindName = KindName::new("aether.render.shape");
+}
+
+impl Shape {
+    /// The shape of a pass drawing into `colour` of one sample, with the depth every program tests against.
+    #[must_use]
+    pub const fn with_depth(colour: ColourFormat) -> Self {
+        Self { colour, samples: Samples::One, depth: DepthFormat::Depth32Float }
+    }
+}
+
+/// The format of a pass's colour target: a window's, or a texture's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+pub enum ColourFormat {
+    /// Red, green, blue, and alpha, a byte each, read as fractions.
+    Rgba8,
+    /// Red, green, blue, and alpha, a byte each, the colours encoded as sRGB.
+    Rgba8Srgb,
+    /// Blue, green, red, and alpha, a byte each, as a browser's canvas often prefers.
+    Bgra8,
+    /// Blue, green, red, and alpha, a byte each, the colours encoded as sRGB.
+    Bgra8Srgb,
+    /// Red, green, blue, and alpha, a 16-bit float each.
+    Rgba16Float,
+}
+
+impl Kind for ColourFormat {
+    const NAME: KindName = KindName::new("aether.render.colour_format");
+}
+
+impl ColourFormat {
+    /// The format, as wgpu names it.
+    #[must_use]
+    pub const fn wgpu(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
+            Self::Rgba8Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+            Self::Bgra8 => wgpu::TextureFormat::Bgra8Unorm,
+            Self::Bgra8Srgb => wgpu::TextureFormat::Bgra8UnormSrgb,
+            Self::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
+        }
+    }
+
+    /// The format wgpu names `format`: none for one no pass draws into.
+    #[must_use]
+    pub const fn of(format: wgpu::TextureFormat) -> Option<Self> {
+        match format {
+            wgpu::TextureFormat::Rgba8Unorm => Some(Self::Rgba8),
+            wgpu::TextureFormat::Rgba8UnormSrgb => Some(Self::Rgba8Srgb),
+            wgpu::TextureFormat::Bgra8Unorm => Some(Self::Bgra8),
+            wgpu::TextureFormat::Bgra8UnormSrgb => Some(Self::Bgra8Srgb),
+            wgpu::TextureFormat::Rgba16Float => Some(Self::Rgba16Float),
+            _ => None,
+        }
+    }
+}
+
+/// How many samples a target holds of each pixel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+pub enum Samples {
+    /// One: nothing is multisampled.
+    One,
+}
+
+impl Kind for Samples {
+    const NAME: KindName = KindName::new("aether.render.samples");
+}
+
+impl Samples {
+    /// How many samples, as wgpu counts them.
+    #[must_use]
+    pub const fn count(self) -> u32 {
+        match self {
+            Self::One => 1,
+        }
+    }
+}
+
+/// The depth a pass holds beside its colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+pub enum DepthFormat {
+    /// A 32-bit float for each pixel.
+    Depth32Float,
+}
+
+impl Kind for DepthFormat {
+    const NAME: KindName = KindName::new("aether.render.depth_format");
+}
+
+impl DepthFormat {
+    /// The format, as wgpu names it.
+    #[must_use]
+    pub const fn wgpu(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Depth32Float => wgpu::TextureFormat::Depth32Float,
+        }
+    }
+}

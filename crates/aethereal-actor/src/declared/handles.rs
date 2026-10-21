@@ -160,6 +160,14 @@ tuples! {
     [B C D E F G H I J K L M N O]
     [B C D E F G H I J K L M N O P]
     [B C D E F G H I J K L M N O P Q]
+    [B C D E F G H I J K L M N O P Q T17]
+    [B C D E F G H I J K L M N O P Q T17 T18]
+    [B C D E F G H I J K L M N O P Q T17 T18 T19]
+    [B C D E F G H I J K L M N O P Q T17 T18 T19 T20]
+    [B C D E F G H I J K L M N O P Q T17 T18 T19 T20 T21]
+    [B C D E F G H I J K L M N O P Q T17 T18 T19 T20 T21 T22]
+    [B C D E F G H I J K L M N O P Q T17 T18 T19 T20 T21 T22 T23]
+    [B C D E F G H I J K L M N O P Q T17 T18 T19 T20 T21 T22 T23 T24]
 }
 
 impl<A: Actor> HandledList<A> for () {
