@@ -30,6 +30,11 @@ impl Table for Listed {
         self.resolve(path).unwrap_or(Seated { id: ActorId::new(0), seat: SeatNumber::NOWHERE })
     }
 
+    /// Nothing: the table holds no actor's type.
+    fn reach_child(&self, _: ActorId, _: &PathSegment, _: KindId) -> Option<Seated> {
+        None
+    }
+
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
         ActorId::new(Fnv::resume(parent.bits()).bytes(segment.to_string().as_bytes()).finish())
     }
@@ -377,6 +382,25 @@ fn child_begins_inside_its_parents_turn() {
     assert_eq!(stood[2].seated(), branch.seated());
     let seats: Vec<u64> = stood.iter().map(|child| child.seated().seat.number()).collect();
     assert_eq!(seats, [1, 2, 0]);
+}
+
+#[test]
+fn a_child_this_turn_stood_up_is_found_beneath_its_actor_and_no_other() {
+    // Catches `turn.child` missing a child this turn stood up, which its table does not hold yet, finding one beneath
+    // another actor, or one of another kind (ADR-0022).
+    let table = Listed::default();
+    let mut asked = Asked::new();
+    let mut turn = opened::<Herald, ()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let Ok(leaf) = turn.spawn::<Leaf>(&0, LeafConfig { fails: false }) else {
+        panic!("the leaf begins");
+    };
+    let me = turn.me();
+    let other = ErasedActorRef::new(seated(2, 101));
+
+    assert_eq!(turn.child::<Leaf>(me, &0), Some(leaf));
+    assert_eq!(turn.child::<Leaf>(me, &1), None, "no leaf stands at that key");
+    assert_eq!(turn.child::<Leaf>(other, &0), None, "the leaf stands beneath this actor");
+    assert_eq!(turn.seat.found_child(ME.id, &PathSegment::new(Leaf::NAME, &0u64), KindId::of::<Poke>()), None);
 }
 
 #[test]

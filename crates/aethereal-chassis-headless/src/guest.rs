@@ -352,6 +352,28 @@ fn reads_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
             write_seated(&mut caller, reached, seated)
         },
     )?;
+    linker.func_wrap(
+        "aethereal",
+        "aethereal_reach_child",
+        |mut caller: Caller<'_, Lending>, parent: u64, at: u32, len: u32, kind: u64, seated: u32| {
+            let naming = guest_bytes(&mut caller, Span { at, len });
+            let naming = naming.and_then(|naming| from_bytes::<Naming>(&naming, &mut Budget::new(1 << 10)).ok());
+            let kind = from_bytes::<KindId>(&kind.to_le_bytes(), &mut Budget::new(8)).ok();
+            // A segment or kind the guest wrote that does not read back finds no child.
+            let found = answer(&mut caller, |answering| {
+                let (Some(naming), Some(kind)) = (naming, kind) else {
+                    return None;
+                };
+                answering.table.reach_child(ActorId::new(parent), &naming.segment(), kind)
+            })?;
+            let Some(found) = found else {
+                return Ok(0);
+            };
+            write_seated(&mut caller, found, seated)?;
+
+            Ok(1)
+        },
+    )?;
     linker.func_wrap("aethereal", "aethereal_is_live", |mut caller: Caller<'_, Lending>, id: u64| {
         answer(&mut caller, |answering| u32::from(answering.table.is_live(ActorId::new(id))))
     })?;
@@ -3493,7 +3515,7 @@ mod tests {
     }
 
     /// The answers each test's askers were given, by the tally the test keeps them in.
-    static ANSWERS: [Mutex<Vec<u64>>; 15] = [const { Mutex::new(Vec::new()) }; 15];
+    static ANSWERS: [Mutex<Vec<u64>>; 16] = [const { Mutex::new(Vec::new()) }; 16];
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
@@ -3870,6 +3892,25 @@ mod tests {
         settle(&mut engine);
 
         assert_eq!(answers(14), [7]);
+    }
+
+    #[test]
+    fn a_guest_finds_a_child_beneath_a_reference_it_holds_by_its_type_and_key() {
+        // Catches a guest's `turn.child` that misses a child its turn stood up, which its host's table does not hold
+        // yet, one its host's table holds, or finds one beneath an actor that has none, so what its host answers does
+        // not cross intact (ADR-0022).
+        let (mut engine, code) = with_echo(Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0));
+        let Ok(_) = engine.add_root::<Keeper>(&0, Keeps { key: 0, tally: 15 }) else {
+            panic!("the keeper begins");
+        };
+        let keeper = ActorPath::from_root(&PathSegment::new(Keeper::NAME, &0u64));
+        let Ok(_) = engine.add_root_from::<echo::Usher>(&code, &(), &echo::Ring { keeper }) else {
+            panic!("the usher begins");
+        };
+        engine.start();
+        settle(&mut engine);
+
+        assert_eq!(answers(15), [110]);
     }
 
     #[test]

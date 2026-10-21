@@ -68,7 +68,8 @@ impl Kind for NodeConfig {
 /// - `bounce N` answers the sender `bounce N-1` until `N` is zero, and `pair` answers it `bounce 2`, then `last`;
 /// - `keep` sends the sender `late` through the reference to it, as an actor of its own type;
 /// - `many N text` sends itself `textI` for each `I` below `N`, a single digit: notes of one length, back to back;
-/// - `fan N,M,.. text` spawns each node `N`, `M` and so on beneath it, and sends them all `text` in one send.
+/// - `fan N,M,.. text` spawns each node `N`, `M` and so on beneath it, and sends them all `text` in one send;
+/// - `sibling N` says whether it finds the node `N` beneath its parent.
 #[derive(Plain)]
 struct Node {
     number: u64,
@@ -205,6 +206,11 @@ impl Handles<Note> for Node {
                 turn.send_to_all(&children, &Note { text: String::from(text) })?;
             }
             ["where", ..] => say(format!("{} at depth {}", self.number, turn.chain().depth)),
+            ["sibling", number] => {
+                let number: u64 = number.parse().unwrap_or_default();
+                let found = turn.parent().and_then(|parent| turn.child::<Self>(parent, &number));
+                say(format!("{} {} {number}", self.number, finding(found)));
+            }
             ["bye", number] => {
                 let watches = number == "5";
                 if watches {
@@ -228,6 +234,14 @@ impl Handles<Ended> for Node {
         say(format!("{} saw {}", self.number, how(ended.how())));
 
         Ok(())
+    }
+}
+
+/// Whether a node looked for was found, in words.
+fn finding(found: Option<ActorRef<Node>>) -> &'static str {
+    match found {
+        Some(_) => "found",
+        None => "found no",
     }
 }
 
@@ -376,6 +390,37 @@ fn send_through_a_reference_to_an_actor_that_has_ended_is_dropped() {
     assert_eq!(third, ["1 got keep from 2", "2 ended Closed"]);
     assert_eq!(step(&mut engine), ["1 got bye 2"]);
     assert_eq!(step(&mut engine), [""; 0]);
+}
+
+#[test]
+fn a_child_is_found_beneath_a_reference_held_while_it_is_live() {
+    // Catches `turn.child` looking beneath the turn's own actor rather than the reference it is handed, finding a key
+    // no child holds, and finding a child that has ended (ADR-0022). Node 2 looks for its siblings beneath its parent.
+    let (mut engine, _) = engine(&[
+        "spawn 3 x",
+        "spawn 2 sibling 3",
+        "self tell 2 sibling 5",
+        "self tell 3 close",
+        "self self self tell 2 sibling 3",
+    ]);
+    let found: Vec<String> = (0..5).flat_map(|_| step(&mut engine)).filter(|line| line.contains(" found ")).collect();
+
+    assert_eq!(found, ["2 found 3", "2 found no 5", "2 found no 3"]);
+}
+
+#[test]
+fn a_child_is_found_in_the_table_only_of_its_kind() {
+    // Catches the table's lookup of a child beneath a reference answering an actor of another kind at the place, or a
+    // place no child holds (ADR-0022).
+    let (mut engine, root) = engine(&["spawn 2 x"]);
+    step(&mut engine);
+    let two = PathSegment::new(Node::NAME, &2u64);
+    let three = PathSegment::new(Node::NAME, &3u64);
+    let child = seated(&engine, child_id(root, &two));
+
+    assert_eq!(Table::reach_child(engine.table(), root, &two, KindId::of::<Node>()), Some(child));
+    assert_eq!(Table::reach_child(engine.table(), root, &two, KindId::of::<Note>()), None);
+    assert_eq!(Table::reach_child(engine.table(), root, &three, KindId::of::<Node>()), None);
 }
 
 #[test]
@@ -837,6 +882,8 @@ fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
     assert_eq!(Table::reach(&in_run, &child_path, node), child);
     assert_eq!(Table::reach(&in_run, &child_path, KindId::of::<Note>()), nowhere(&child_path));
     assert_eq!(Table::reach(&in_run, &root_path, node), nowhere(&root_path));
+    assert_eq!(Table::reach_child(&in_run, root, &segment, node), Some(child));
+    assert_eq!(Table::reach_child(&in_run, root, &segment, KindId::of::<Note>()), None);
 
     let outside = Since {
         table: engine.table(),
@@ -851,6 +898,26 @@ fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
     assert!(Table::is_live(&outside, root));
     assert_eq!(Table::reach(&outside, &child_path, node), nowhere(&child_path));
     assert_eq!(Table::reach(&outside, &root_path, node), seated(&engine, root));
+    assert_eq!(Table::reach_child(&outside, root, &segment, node), None);
+}
+
+#[test]
+fn a_child_that_ended_in_a_run_is_not_found_by_its_later_turns() {
+    // Catches `turn.child` in a run finding beneath a reference a child the table holds that ended in the run, and
+    // a turn outside the run not finding it before the step is folded (ADR-0013, ADR-0022).
+    let (mut engine, root) = fusing(8, &["spawn 2 x"]);
+    step(&mut engine);
+    let segment = PathSegment::new(Node::NAME, &2u64);
+    let child = seated(&engine, child_id(root, &segment));
+    let mut run = fuse::Run::default();
+    run.end(child.id);
+    let stood = ByActor::default();
+    let node = KindId::of::<Node>();
+    let since =
+        |sees| Since { table: engine.table(), stood: &stood, sees, blobs: &engine.blobs, now: Time::ZERO, cycle: &[] };
+
+    assert_eq!(Table::reach_child(&since(Sees::Run(&run)), root, &segment, node), None);
+    assert_eq!(Table::reach_child(&since(Sees::Step), root, &segment, node), Some(child));
 }
 
 #[test]

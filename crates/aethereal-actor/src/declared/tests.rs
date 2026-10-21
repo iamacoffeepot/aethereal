@@ -31,6 +31,10 @@ impl Table for Typed {
         Seated { id: ActorId::new(0), seat: SeatNumber::NOWHERE }
     }
 
+    fn reach_child(&self, _: ActorId, _: &PathSegment, _: KindId) -> Option<Seated> {
+        None
+    }
+
     fn child(&self, parent: ActorId, _: &PathSegment) -> ActorId {
         parent
     }

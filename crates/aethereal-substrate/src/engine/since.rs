@@ -65,6 +65,22 @@ impl Table for Since<'_> {
         reach(self, path, kind)
     }
 
+    fn reach_child(&self, parent: ActorId, segment: &PathSegment, kind: KindId) -> Option<Seated> {
+        let Some(run) = self.run() else {
+            return self.table.reach_child(parent, segment, kind);
+        };
+        let id = self.table.child(parent, segment);
+        if run.has_ended(id) {
+            return None;
+        }
+        let Some(seat) = run.stood(id) else {
+            return self.table.reach_child(parent, segment, kind);
+        };
+        let is_kind = Table::declared(self, id).is_some_and(|declared| declared.id() == kind);
+
+        is_kind.then_some(Seated { id, seat })
+    }
+
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
         self.table.child(parent, segment)
     }

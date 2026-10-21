@@ -2511,6 +2511,62 @@ impl Handles<On<Start>> for Chimer {
     }
 }
 
+/// A root that spawns an echo beneath itself as it begins and looks for it there in the same turn, and on `Start`
+/// looks for it again, now that its host's table holds it, and for one beneath its keeper, which has none. It pings
+/// the actor at its keeper's path with what it found: a hundred for the first, ten for the second, and one for the
+/// third, each when it was found.
+#[derive(Bound)]
+pub struct Usher {
+    keeper: ActorPath,
+    found_as_it_began: bool,
+}
+
+impl Kind for Usher {
+    const NAME: KindName = KindName::new("aether.guest.usher");
+}
+
+impl ChildOf for Usher {
+    type Parent = Top;
+}
+
+impl Actor for Usher {
+    type Config = Ring;
+    type Key = ();
+    type Handles = (On<Start>,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(ring: Ring, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.subscribe::<Start>();
+        let _ = turn.spawn::<Echo>(&(), EchoConfig);
+        let me = turn.me();
+        let found_as_it_began = turn.child::<Echo>(me, &()).is_some();
+
+        Ok(Self { keeper: ring.keeper, found_as_it_began })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<On<Start>> for Usher {
+    type Sends = (ToAny<(Ping,), Ping>,);
+
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let Some(keeper) = turn.resolve(&self.keeper) else {
+            return Ok(());
+        };
+        let me = turn.me();
+        let found_live = turn.child::<Echo>(me, &()).is_some();
+        let found_beneath_keeper = turn.child::<Echo>(keeper, &()).is_some();
+        let n = 100 * u64::from(self.found_as_it_began) + 10 * u64::from(found_live) + u64::from(found_beneath_keeper);
+        turn.send_to_any(To::Held(keeper), &Ping { n })?;
+
+        Ok(())
+    }
+}
+
 aethereal_actor::guest!(
     Echo,
     Mirror,
@@ -2547,5 +2603,6 @@ aethereal_actor::guest!(
     Ringer,
     Steeple,
     Sexton,
-    Chimer
+    Chimer,
+    Usher
 );

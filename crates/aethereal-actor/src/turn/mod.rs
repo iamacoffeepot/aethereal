@@ -16,10 +16,10 @@ use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Askable, Asking, ChildOf, Children, Claim, Claimed,
     Code, Declared, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held,
-    Instances, Keeping, Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, On, Owed, Owes, Parented,
-    Payload, ProtocolRef, Proven, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage,
-    Table, Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable, What, Within,
-    Written,
+    Instances, Keeping, Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, On, Owed, Owes, ParentOf,
+    Parented, Payload, ProtocolRef, Proven, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen,
+    Sends, Stage, Table, Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable,
+    What, Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -1100,6 +1100,22 @@ impl Seat<'_> {
         Some(Seated { id, seat })
     }
 
+    /// The child `segment` names beneath the actor `parent`, and its seat, when one of kind `kind` is live there, or
+    /// this actor stood it up in this turn (ADR-0022). A guest asks its host once, and once more for a child of its own
+    /// that its host does not hold, to look among those this turn stood up.
+    fn found_child(&self, parent: ActorId, segment: &PathSegment, kind: KindId) -> Option<Seated> {
+        let found = self.table.reach_child(parent, segment, kind);
+        let is_mine = parent == self.me.id;
+        if found.is_some() || !is_mine {
+            return found;
+        }
+        let id = self.table.child(parent, segment);
+        let seat = self.asked.stood_seat(id)?;
+        let is_kind = self.asked.stood_declared(id).is_some_and(|declared| declared.id() == kind);
+
+        is_kind.then_some(Seated { id, seat })
+    }
+
     /// Stands up a child of type `C` under `key`: adds its spawn effect, then runs its `begin` here, lent `instances`.
     /// A guest begins only its own types here, and asks its host to begin a child of any other (ADR-0015).
     fn spawn<C: ChildOf>(
@@ -1451,6 +1467,84 @@ pub struct Turn<'a, Me, S> {
 }
 
 impl<Me, S> Turn<'_, Me, S> {
+    /// The child of type `C` under `key` beneath the actor `parent` refers to, when one is live there, as a resolve
+    /// sees it, or this actor stood it up in this turn (ADR-0022). It builds only when `C` may stand beneath the
+    /// parent's type, as its parent says ([`ParentOf`]). A child is found while it is live, whether or not its parent
+    /// is. `C` is inferred from where the reference goes, or named at the call, `turn.child::<Unit>(army, &7)`.
+    ///
+    /// Looking for a child beneath a type it does not stand beneath does not build:
+    ///
+    /// ```compile_fail,E0277
+    /// use aethereal_actor::{Actor, ActorRef, Beginning, ChildOf, Ending, Fault, Top, Turn};
+    /// use aethereal_data::{Kind, KindName, Plain};
+    ///
+    /// #[derive(Plain)]
+    /// struct Army;
+    ///
+    /// impl Kind for Army {
+    ///     const NAME: KindName = KindName::new("aether.doc.army");
+    /// }
+    ///
+    /// impl ChildOf for Army {
+    ///     type Parent = Top;
+    /// }
+    ///
+    /// // Stands beneath itself, not an `Army`.
+    /// #[derive(Plain)]
+    /// struct Lens;
+    ///
+    /// impl Kind for Lens {
+    ///     const NAME: KindName = KindName::new("aether.doc.lens");
+    /// }
+    ///
+    /// impl ChildOf for Lens {
+    ///     type Parent = Lens;
+    /// }
+    ///
+    /// impl Actor for Lens {
+    ///     type Config = Lens;
+    ///     type Key = ();
+    ///     type Handles = ();
+    ///     type BeginSends = ();
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(lens: Lens, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///         Ok(lens)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// impl Actor for Army {
+    ///     type Config = Army;
+    ///     type Key = ();
+    ///     type Handles = ();
+    ///     type BeginSends = ();
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(army: Army, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///         Ok(army)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// fn lens<S>(turn: &Turn<'_, Army, S>, army: ActorRef<Army>) -> Option<ActorRef<Lens>> {
+    ///     turn.child::<Lens>(army, &())
+    /// }
+    /// ```
+    #[must_use]
+    pub fn child<C: ChildOf>(&self, parent: impl ParentOf<C>, key: &C::Key) -> Option<ActorRef<C>> {
+        let segment = PathSegment::new(C::NAME, key);
+        let found = self.seat.found_child(parent.seated().id, &segment, KindId::of::<C>())?;
+
+        Some(ActorRef::new(found))
+    }
+
     /// The actor this one stands beneath, typed by where its type stands: an [`ActorRef<P>`] beneath the one type
     /// `P`, an `Option<ActorRef<Self>>` beneath [`Recursive`](crate::Recursive), and an `Option<ErasedActorRef>`
     /// beneath [`Anywhere`](crate::Anywhere), none for a root (ADR-0022). It is the actor that spawned this one, live
@@ -2096,6 +2190,18 @@ impl<'a, Me: ChildOf> Beginning<'a, Me, Me::BeginSends> {
 }
 
 impl<Me, S> Beginning<'_, Me, S> {
+    /// The child of type `C` under `key` beneath the actor `parent` refers to, when one is live there, as a resolve
+    /// sees it, or this actor stood it up in this turn (ADR-0022). It builds only when `C` may stand beneath the
+    /// parent's type, as its parent says ([`ParentOf`]). A child is found while it is live, whether or not its parent
+    /// is. `C` is inferred from where the reference goes, or named at the call, `turn.child::<Unit>(army, &7)`.
+    #[must_use]
+    pub fn child<C: ChildOf>(&self, parent: impl ParentOf<C>, key: &C::Key) -> Option<ActorRef<C>> {
+        let segment = PathSegment::new(C::NAME, key);
+        let found = self.seat.found_child(parent.seated().id, &segment, KindId::of::<C>())?;
+
+        Some(ActorRef::new(found))
+    }
+
     /// The actor this one stands beneath, typed by where its type stands: an [`ActorRef<P>`] beneath the one type
     /// `P`, an `Option<ActorRef<Self>>` beneath [`Recursive`](crate::Recursive), and an `Option<ErasedActorRef>`
     /// beneath [`Anywhere`](crate::Anywhere), none for a root (ADR-0022). It is the actor that spawned this one, live
@@ -2554,6 +2660,18 @@ pub struct Ending<'a, Me, S> {
 }
 
 impl<Me, S> Ending<'_, Me, S> {
+    /// The child of type `C` under `key` beneath the actor `parent` refers to, when one is live there, as a resolve
+    /// sees it, or this actor stood it up in this turn (ADR-0022). It builds only when `C` may stand beneath the
+    /// parent's type, as its parent says ([`ParentOf`]). A child is found while it is live, whether or not its parent
+    /// is. `C` is inferred from where the reference goes, or named at the call, `turn.child::<Unit>(army, &7)`.
+    #[must_use]
+    pub fn child<C: ChildOf>(&self, parent: impl ParentOf<C>, key: &C::Key) -> Option<ActorRef<C>> {
+        let segment = PathSegment::new(C::NAME, key);
+        let found = self.seat.found_child(parent.seated().id, &segment, KindId::of::<C>())?;
+
+        Some(ActorRef::new(found))
+    }
+
     /// The actor this one stands beneath, typed by where its type stands: an [`ActorRef<P>`] beneath the one type
     /// `P`, an `Option<ActorRef<Self>>` beneath [`Recursive`](crate::Recursive), and an `Option<ErasedActorRef>`
     /// beneath [`Anywhere`](crate::Anywhere), none for a root (ADR-0022). It is the actor that spawned this one, live
