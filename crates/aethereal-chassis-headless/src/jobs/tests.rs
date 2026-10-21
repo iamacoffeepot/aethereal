@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::Monotonic;
+use crate::waiting::{self, BUDGET};
 use aethereal_actor::{
     Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Handles, Job, Runner, Running, Sleep, Slept, Time, Top,
     Turn,
@@ -118,18 +119,14 @@ fn each_job_runs_on_a_thread_of_its_own_and_those_past_its_threads_wait_their_tu
     let clock = Monotonic::new();
     let mut said = Vec::new();
 
-    // A bounded number of brings, each after the threads have had a chance to run: far more than three jobs need.
-    for _ in 0..1_000_000 {
+    waiting::until(BUDGET, || {
         engine.bring();
         while !engine.is_idle() {
             engine.step(Time::ZERO, &clock);
         }
         said.extend(SAID.with_borrow_mut(mem::take));
-        if said.len() == 3 {
-            break;
-        }
-        thread::yield_now();
-    }
+        said.len() == 3
+    });
     drop(engine);
     drop(runners);
 
@@ -260,21 +257,16 @@ fn a_sleep_wakes_once_its_time_has_come_and_a_job_given_up_on_is_dropped() {
     };
     let mut said = Vec::new();
 
-    let give_up = now() + Duration::from_secs(10);
     let mut is_dropped = false;
-    while now() < give_up {
+    waiting::until(BUDGET, || {
         engine.bring();
         while !engine.is_idle() {
             engine.step(now(), &clock);
         }
         said.extend(SAID.with_borrow_mut(mem::take));
         is_dropped = DROPPED.load(Ordering::Acquire);
-        let is_done = said.len() == 2 && is_dropped;
-        if is_done {
-            break;
-        }
-        thread::yield_now();
-    }
+        said.len() == 2 && is_dropped
+    });
     drop(engine);
     drop(runners);
 
