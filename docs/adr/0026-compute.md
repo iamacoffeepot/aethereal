@@ -1,0 +1,115 @@
+# ADR-0026: Compute
+
+- **Status:** Proposed
+- **Date:** 2026-10-21
+
+## Context
+
+A frame is an ordered list of passes that draw (ADR-0025: `CreateFrame`, `Does::Draw`, `Does::Effect`), and the storage they read is written only by its maker, from the CPU (ADR-0023: `WriteStorage`, `BindingKind::Storage`). A field of particles moved by its own rules, a cloth, a crowd, the culling of what is not seen, or a histogram of a frame's light, is written fastest by the GPU itself, many invocations of one program at once, each writing its part of a buffer.
+
+What the earlier engine learned (its ADR-0170, ADR-0246: `PassStage::Compute`):
+
+- **A compute pass costs about what a draw pass does.** It measured a compute pass and the indirect draw it fed at about 90 µs, against about 35 µs for a draw pass.
+- **A grid fixed when a program was made was too rigid.** A compute pass's workgroups were fixed at registration, so what a pass covered changed only with a new program, and values that changed every frame rode the uniforms.
+- **Compute and the draws it feeds belong in one frame.** It made a compute pass a stage of a program beside its draws, so a draw could read in the same frame what compute wrote.
+
+WebGPU runs a compute pass's dispatches one after another, with what one wrote visible to the next, and orders passes as they are submitted. It never binds a storage buffer for writing in a vertex stage.
+
+## Decision
+
+**A compute pass is a kind of pass in a frame, and actors join it with dispatches, as placements join a draw pass.**
+
+```rust
+struct Simulate;  impl Pass for Simulate {}
+
+let mut frame = FrameBuilder::on(Ends::Window(window));
+frame.compute(Simulate);                                    // a pass with no target: it writes storage
+let (scene, depth) = frame.draw(Surfaces, Float, depth::Write);
+let create = frame.finish(Glaze, Effect::new(&glaze, (scene,)))?;
+```
+
+- `Does` gains `Compute`: a pass that runs every dispatch that joins it, and draws into nothing. A frame's last pass still writes its end, so a compute pass is never last.
+- **Order is the frame's pass order.** A draw in a pass after a compute pass reads what it wrote this `Render`; one in a pass before it reads what it wrote at the last.
+- **The render root's own main frame is two passes:** `Compute`, then `Main`, each a pass the render root names (ADR-0025: `Main`). An actor that simulates joins `Compute` and draws what it wrote in `Main`, without the main frame's owner doing anything for it. **This departs from ADR-0025, whose render root's own main frame was the one pass `Main`**, and ADR-0025 is edited to match.
+
+**A compute program is made by asking for its WGSL, its entry point, and what it binds,** as a program is (ADR-0021):
+
+```rust
+CreateCompute { wgsl: String, entry: String, bindings: Vec<Binding> }  -> Computed::Made(ComputeId) | Computed::Refused(ProgramRefused)
+```
+
+- Its workgroup size is read from the shader's `@workgroup_size`, which must be constant.
+- It is checked as a program is: its WGSL valid, `entry` a compute stage, each binding it uses listed, each listed one bound as the shader declares it, and no more than the device allows: invocations in a workgroup, workgroup memory, and storage buffers a stage binds.
+- It is released as everything the render root makes is, and kept by the dispatches made with it until they are released (ADR-0023: a placement keeps what it draws).
+
+**Storage is bound for reading or for writing.** `BindingKind::Storage` gains an access:
+
+```rust
+BindingKind::Storage { bytes: u32, access: Access }
+enum Access { Read, Write }   // var<storage, read>, var<storage, read_write>
+```
+
+- A compute program binds storage either way. A draw program or an effect binds it only to read, and one whose shader writes storage is refused, as ADR-0023 refused it.
+- A binding listed `Write` that the shader only reads is refused, as is one listed `Read` that it writes: what a program says it writes is what it writes.
+
+**A dispatch is one compute program, run in one compute pass, with what it binds, over a count of invocations:**
+
+```rust
+CreateDispatch {
+    join: Join,               // Dispatch::to::<Simulate>(frame, compute, bindings): the pass by its type's id
+    size: Invocations,
+}                                                                  -> Made<DispatchId> | Refused
+enum Invocations {
+    PerElement(StorageId),    // one invocation for each element of the array a bound storage ends in
+    Workgroups([u32; 3]),     // a grid of workgroups, each of the shader's size
+}
+```
+
+- **`PerElement` runs one invocation for each element of storage the dispatch binds,** in its first dimension: the storage's bytes past the fixed part its binding reads, divided by the stride of the array it ends in (ADR-0023: `array<T>`, read with `arrayLength`). The render root works out the workgroups from the shader's size, and the last workgroup's invocations past the end read `arrayLength` and stop. A field of particles made at its capacity is dispatched for its capacity, and a live count that changes every frame rides a uniform the shader tests, as a field of splats is drawn for a count of instances.
+- `Workgroups` is a grid for work that is not one invocation per element: a frame's tiles, a grid of cells.
+- A grid past what the device dispatches in one dimension, `max_compute_workgroups_per_dimension`, is refused (`Size`), and so is a `PerElement` whose storage the dispatch does not bind, or binds at a binding whose shader type ends in no array.
+- A count a buffer holds, written by the GPU, is decided with draws whose count a buffer holds (ADR-0025, Consequences).
+
+**A dispatch is checked when it is made, as a placement is (ADR-0023), and nothing when it runs:** each id names a resource of its sort that is kept, the pass is a compute pass of the frame, and the bindings name each place the compute program binds, once, each with a resource of its kind and size. Its bind groups are made then, once. A dispatch joins a window's main frame by the window, and follows it when the frame is replaced, as a placement does (ADR-0025: `Frame::Main`); one whose pass the new frame has not is not run, and is logged, until a frame has that pass again. A dispatch does not change once made, and only its maker releases it.
+
+**Only a storage's maker binds it for writing.** A dispatch that binds another actor's storage to write is refused (`NotOwner`), as only a maker writes its storage from the CPU (ADR-0023). Anyone handed its id may bind it to read. A storage another actor writes is later work, decided when it is needed.
+
+**A storage may have several writers on the GPU, when passes or frames order them.** Two dispatches that write one storage in one pass would leave it as whichever the render root ran last, and dispatches of one pass run in no order an actor may rely on, so the second is refused (`Written`). Two that write it in different passes of one frame are ordered by the frame's passes, and two in different frames by the frames' order, so both are made. Two in frames that neither reads the other, whose order is nobody's, are refused (`Written`).
+
+**Frames are ordered by the storage they write and read, as by the textures they end on** (ADR-0025: `JoinRefused::Round`). A frame that writes a storage, by a dispatch that joins it, runs before a frame that reads it, by a placement, an effect, or a dispatch that binds it to read. A dispatch or placement that would have frames read each other round is refused (`Round`), and the order is worked out again whenever a frame, a placement, or a dispatch comes or goes.
+
+**A storage's maker writes it from the CPU as well.** A `WriteStorage` handled before a `Render` lands before that `Render`'s frames run, so an actor seeds a field from the CPU and moves it on the GPU, and what the GPU writes later overwrites it.
+
+**Dispatches of one pass run in no order an actor may rely on.** The render root runs them grouped by program, each program's pipeline set once, as it draws a pass's placements (ADR-0025). A dispatch that needs another's output is in a later pass. **Order is declared where drawing is described, and nowhere else**: the frame's passes, which their author writes, and, within one dispatch, the order its own shader gives.
+
+**Storage can be read back,** as a texture is (ADR-0023: `ReadBack`), by an ask of its own:
+
+```rust
+ReadStorage { storage: StorageId }  -> Bytes::Read { bytes: BlobRef } | Bytes::Refused(ReadRefused)
+```
+
+- It is read as it is when the ask is handled, after every `Render` before it, and answered with its bytes, held and answered as a texture's pixels are. Any actor handed the storage may read it. Storage not kept is refused (`Storage`), and storage larger than the store lets one worker put (`Unstored`).
+- **It is an ask of its own, where this record first gave `ReadBack` a `Readable::Storage`.** An ask is answered with one kind (ADR-0017: `Carries`, `Answers = (A,)`), so a `ReadBack` answered with pixels or bytes could not be asked, and every actor that reads a frame back would handle bytes. ADR-0023 is edited to match.
+
+**`TimeFrame` times a compute pass as it times a draw pass,** its nanoseconds from beginning to end, in the order of the frame's passes.
+
+## Consequences
+
+- A particle system is one storage, one compute program, one dispatch, one draw program, and one placement, each made once. Nothing is sent each frame but the uniforms that change.
+- A dispatch made by one actor runs in a frame another owns. The frame's owner decides where compute runs among its passes; an actor that dispatches decides what runs there.
+- A frame replaced by one that keeps its compute passes keeps its dispatches running, and nothing compiles again.
+- The render root handles two more kinds, `CreateCompute` and `CreateDispatch`, within an actor's 64 (ADR-0013: `HandledList`).
+- What is decided separately, each when it is needed:
+  - **Compute that reads a frame's targets**, a compute pass with `reads`, as an effect reads: culling against the depth of an earlier pass, post-processing by compute.
+  - **Compute that writes textures**, storage textures.
+  - **Counts a buffer holds**: dispatches and draws whose count the GPU wrote.
+  - **Storage another actor writes.**
+  - **Workgroup memory and subgroups beyond what WGSL gives every device.**
+
+## Alternatives considered
+
+- **Dispatches outside frames, all run before them, ordered by what they read and write.** Simpler, and frames would not change, but no compute could run after a draw of the same `Render`, which culling against depth and compute post-processing need, and ordering by data would be a second order beside the frame's passes.
+- **A compute pass as a stage of a program, with its grid fixed when the program is made**, as the earlier engine did. Its grid changed only with a new program, and an actor could not add compute to a frame another owns.
+- **One writer for each storage, whatever orders them.** Deterministic, but it refuses writers that passes already order, such as two passes of one simulation that each write the field.
+- **Writers of one storage in one pass, run in the order they were made.** Order would hang on when mail came, which ADR-0025 refused for draws.
+- **Any actor handed a storage may write it.** Who writes what would be no single actor's, and nothing yet needs it.

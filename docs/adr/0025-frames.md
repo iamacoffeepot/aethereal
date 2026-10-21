@@ -112,7 +112,7 @@ Place {
 **There are many frames, and each window shows one: its main frame.**
 
 - A frame that ends on a texture is answered with that texture's `TextureId` beside its own id, `Framed::Texture { frame, texture }`. The texture is an ordinary one: an effect pass of another frame binds it, a placement binds it, and it is read back. A minimap, a screen in the world, a layer of interface, a reflection, each is a frame of its own that ends on a texture. **Its format is `Rgba8`**, as `Size` names none: a texture a placement binds is one of floats it filters, and one that is read back is one of bytes. A side of no pixels, or longer than the GPU's longest, is refused (`Size`).
-- A frame that ends on a window is that window's main frame, and a window has one. Until an actor makes one, a window's main frame is the render root's own: one pass onto the window, with depth, which every placement joins as `Main`, a pass the render root names, as ADR-0023's one pass was.
+- A frame that ends on a window is that window's main frame, and a window has one. Until an actor makes one, a window's main frame is the render root's own: a compute pass, `Compute`, which every dispatch joins (ADR-0026), then one pass onto the window, with depth, which every placement joins as `Main`, each a pass the render root names, as ADR-0023's one pass was.
 - An actor that asks to make a frame on a window whose main frame another owns is refused, `FrameRefused::Owned { owner }`, naming the owner's `ActorId`.
 - The chassis hands the render root the surface of a window with the window's id (ADR-0024: `WindowId`), so a frame that ends on a window names it as every other actor does. A browser's chassis opens the canvas as its one window and WebGPU on it in one call. Surfaces for several windows wait for a host that opens several.
 - **The main frame of a window is owned as a resource is** (ADR-0010): the first actor to make a frame ending on a window owns that window's main frame, only it may replace it, and another actor's is refused, naming the owner. When the owner releases it, or ends, the window's main frame is the render root's own again. The render root tracks the owner as it tracks the maker of everything it holds (ADR-0021: `Made`, and its watch of each maker), and no token passes between them. **This departs from making the slot a resource the owner holds.** A resource is shown only by giving it, so each replacement would give it to the render root and back; what a held resource would add is handing the slot to another actor, and a token is added when that is needed.
@@ -134,7 +134,7 @@ Place {
 - A frame cannot depth test against another frame's depth. A frame that needs to reads it as a texture, which the other frame ends on.
 - ADR-0021 and ADR-0023 are edited to match: a program is made against a shape rather than the surface's format, a placement joins passes, and what ADR-0023 drew in one pass is the render root's own main frame.
 - What is decided separately, each when it is needed:
-  - **Compute passes**, and the storage they write; then **draws whose count a buffer holds**.
+  - **Compute passes**, and the storage they write: decided by ADR-0026. Then **draws whose count a buffer holds**.
   - **Targets of other sizes and several colour targets in one pass.**
   - **A viewport for each draw**, for shadows drawn into tiles of one texture.
   - **Shared memory for targets never alive at once.**

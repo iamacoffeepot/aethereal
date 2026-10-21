@@ -50,7 +50,7 @@ WriteStorage  { storage: StorageId, first: u32, bytes: BlobRef }    // no answer
 ```
 
 - Its bytes are a whole number of words, and at most what the GPU binds as one storage buffer (`max_storage_buffer_binding_size`). Its size is fixed when it is made, a write lies inside it on whole words or is refused and logged, and only its maker writes or releases it.
-- A program binds it as `BindingKind::Storage { bytes }`: a storage buffer its shader only reads, `var<storage, read>`, which both stages see. A shader that writes it is refused, as writing storage from a draw is left with compute (see Consequences).
+- A program binds it as `BindingKind::Storage { bytes }`: a storage buffer its shader only reads, `var<storage, read>`, which both stages see. A shader that writes it is refused: storage is written on the GPU only by compute (ADR-0026: `Access::Write`).
 - `bytes` is the least the program binds: what the shader reads of the buffer, with an array whose length is the buffer's (`array<T>`, the usual last member) counted as holding one element. That is the fixed part before the array, padded to its alignment, and one element, as WebGPU counts a binding's least size. Storage bound there is at least `bytes`, and the array then holds as many elements as fit in the rest, which the shader reads with `arrayLength`. A field of splats is made at its capacity and drawn for a count of instances, as the shader reads one splat per instance.
 - No more storage buffers are listed than a stage binds (`max_storage_buffers_per_shader_stage`), counted apart from uniform blocks.
 
@@ -95,7 +95,7 @@ The placement's bind groups are made then, once, so a frame binds what is made a
 
 ```rust
 ReadBack { of: Readable }  -> Pixels::Read { width: u32, height: u32, format: TextureFormat, pixels: BlobRef } | Pixels::Refused
-enum Readable { Frame, Texture(TextureId) }
+enum Readable { Frame, Texture(TextureId) }                      // storage is read back by `ReadStorage` (ADR-0026)
 TimeFrame                  -> Timed::Took { passes: Vec<u64> } | Timed::Refused
 ```
 
@@ -133,7 +133,7 @@ enum Mapped { Ready { read: u64 }, Failed { read: u64 } }  // brought from the s
 - What is decided separately, each when it is needed:
   - **The frame's passes**: decided by ADR-0025.
   - **Materials shared by many placements**, and texture arrays.
-  - **Compute programs, and storage they write**, and a range of a mesh's indices per placement.
+  - **Compute programs, and storage they write**: decided by ADR-0026. A range of a mesh's indices per placement.
   - **Spreading uploads over the frames before first use** (ADR-0021).
 
 ## Alternatives considered
