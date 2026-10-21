@@ -6,7 +6,7 @@ use crate::{ByActor, Entry, child_id, path_id};
 use aethereal_actor::Time;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Carries, ChildOf, Ended, Ending, Fault, Handles, How, Level,
-    Path, Recursive, Spawns, Table, Tells, To, ToAny, ToSender, ToType, ToWithoutMail, Top, Turn, path,
+    Path, Recursive, Table, Tells, To, ToAny, ToSender, ToType, ToWithoutMail, Top, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
@@ -93,13 +93,13 @@ impl Actor for Node {
     type Config = NodeConfig;
     type Key = u64;
     type Handles = (Note, Ended);
-    type BeginSends = (ToType<Self, Note>, Spawns<Self>);
+    type BeginSends = (ToType<Self, Note>,);
     type EndSends = (ToType<Self, Note>,);
 
     fn begin(config: NodeConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         for number in config.spawns {
             let to_self = vec![String::from("close")];
-            let _ = turn.spawn(&number, NodeConfig { number, to_self, spawns: Vec::new() });
+            let _ = turn.spawn::<Self>(&number, NodeConfig { number, to_self, spawns: Vec::new() });
         }
         for text in config.to_self {
             let me = turn.me();
@@ -122,7 +122,7 @@ impl Actor for Node {
 }
 
 impl Handles<Note> for Node {
-    type Sends = (ToType<Self, Note>, ToSender<Note>, Spawns<Self>);
+    type Sends = (ToType<Self, Note>, ToSender<Note>);
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Note { text } = note;
@@ -153,7 +153,7 @@ impl Handles<Note> for Node {
             ["spawn" | "watch", number, text] => {
                 let number = number.parse().unwrap_or_default();
                 let config = NodeConfig { number, to_self: Vec::new(), spawns: Vec::new() };
-                if let Ok(child) = turn.spawn(&number, config) {
+                if let Ok(child) = turn.spawn::<Self>(&number, config) {
                     let watches = words[0] == "watch";
                     if watches {
                         turn.watch(child);
@@ -164,7 +164,7 @@ impl Handles<Note> for Node {
             ["nest", number, beneath] => {
                 let number = number.parse().unwrap_or_default();
                 let spawns = vec![beneath.parse().unwrap_or_default()];
-                let _ = turn.spawn(&number, NodeConfig { number, to_self: Vec::new(), spawns });
+                let _ = turn.spawn::<Self>(&number, NodeConfig { number, to_self: Vec::new(), spawns });
             }
             ["tell", number, text] => {
                 let child = Self::child(number.parse().unwrap_or_default());
@@ -1403,7 +1403,7 @@ impl Actor for Clocked {
 }
 
 impl Handles<Note> for Clocked {
-    type Sends = (Spawns<Self>,);
+    type Sends = ();
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Note { text } = note;
@@ -1412,7 +1412,7 @@ impl Handles<Note> for Clocked {
             "spawn" => {
                 for number in [2, 3] {
                     let config = ClockedConfig { number, to_self: String::from("close") };
-                    let _ = turn.spawn(&number, config);
+                    let _ = turn.spawn::<Self>(&number, config);
                 }
             }
             "close" => turn.close(),
@@ -1992,7 +1992,7 @@ impl Actor for Harbor {
     type Config = Self;
     type Key = ();
     type Handles = (Note,);
-    type BeginSends = (Spawns<Pilot>, Spawns<Smuggler>);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(harbor: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -2099,7 +2099,7 @@ impl Actor for Barracks {
     type Config = Self;
     type Key = ();
     type Handles = (Note,);
-    type BeginSends = (Spawns<Squad>, Spawns<Scout>, ToType<Squad, Note>);
+    type BeginSends = (ToType<Squad, Note>,);
     type EndSends = ();
 
     fn begin(barracks: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -2220,7 +2220,7 @@ impl Actor for Cell {
     type Config = Self;
     type Key = ();
     type Handles = ();
-    type BeginSends = (Spawns<Self>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(cell: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {

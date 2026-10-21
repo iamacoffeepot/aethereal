@@ -28,8 +28,8 @@ use crate::records::{
 };
 use crate::section;
 use crate::{
-    Above, Actor, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, BlobRef, Children, Declared, Ended, Fault,
-    How, Item, Tie, Tied, Unanswered,
+    Above, Actor, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, BlobRef, ChildOf, Children, Declared, Ended,
+    Fault, How, Item, Tie, Tied, Unanswered,
 };
 use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, PinSource, Preparing, Puts, Refused};
 use crate::{Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Time, Turning, Unfit, What, Written};
@@ -97,7 +97,7 @@ pub struct Type {
 impl Type {
     /// What the guest's code does for actors of type `A`.
     #[must_use]
-    pub const fn of<A: Actor>() -> Self {
+    pub const fn of<A: ChildOf>() -> Self {
         Self { declared: Declared::of::<A>(), begin: begin::<A>, take_in: take_in::<A>, take_out: take_out::<A> }
     }
 }
@@ -212,7 +212,7 @@ const NO_HANDLE: u32 = u32::MAX;
 const ELSEWHERE_BIT: u64 = 1 << 63;
 
 /// Begins an actor of type `A` as `me`, where it stands, from its config's bytes.
-fn begin<A: Actor>(
+fn begin<A: ChildOf>(
     config: &[u8],
     me: Seated,
     standing: &Standing,
@@ -234,7 +234,7 @@ fn begin<A: Actor>(
 
 /// An actor of type `A` taken in from `bytes`, its path and state as [`take_out`] wrote them, read within `read_limit`
 /// bytes: nothing when they do not read back.
-fn take_in<A: Actor>(bytes: &[u8], read_limit: usize) -> Option<(Box<dyn Runs>, Standing)> {
+fn take_in<A: ChildOf>(bytes: &[u8], read_limit: usize) -> Option<(Box<dyn Runs>, Standing)> {
     let (born, actor) =
         carried_in(bytes)?.reading(read_limit, |reader| Ok((Born::decode(reader)?, A::decode(reader)?))).ok()?;
 

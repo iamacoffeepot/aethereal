@@ -3,7 +3,7 @@
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, BlobRef, Carries, ChildOf, Ended, Ending,
     ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, On, Path, Protocol, Recursive, Refused,
-    Resource, Runner, Running, Spawns, Start, Stop, Tells, Tick, To, ToAny, ToSender, ToType, ToWithoutMail, Top, Turn,
+    Resource, Runner, Running, Start, Stop, Tells, Tick, To, ToAny, ToSender, ToType, ToWithoutMail, Top, Turn,
     Unanswered, Unrun, path,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, Plain};
@@ -290,11 +290,11 @@ impl Actor for Metronome {
     type Config = EchoConfig;
     type Key = ();
     type Handles = ();
-    type BeginSends = (Spawns<Ticker>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let spawned = turn.spawn(&(), EchoConfig);
+        let spawned = turn.spawn::<Ticker>(&(), EchoConfig);
         let said = match spawned {
             Ok(_) => "ticker made",
             Err(Refused::Unstaged(stage)) if stage.same(KindId::of::<Tick>()) => "ticker refused for tick",
@@ -526,13 +526,13 @@ impl Actor for Brood {
     type Config = BroodConfig;
     type Key = ();
     type Handles = (Grow,);
-    type BeginSends = (Spawns<Adder>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(config: BroodConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         for key in 0..config.children {
             let config = AddBy { by: 10 * key + 1, deeper: u64::from(key == 0) };
-            if turn.spawn(&key, config).is_err() {
+            if turn.spawn::<Adder>(&key, config).is_err() {
                 turn.log(Level::Error, "an adder was refused");
             }
         }
@@ -546,11 +546,11 @@ impl Actor for Brood {
 }
 
 impl Handles<Grow> for Brood {
-    type Sends = (Spawns<Adder>,);
+    type Sends = ();
 
     fn handle(&mut self, _: Grow, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let key = self.next;
-        if turn.spawn(&key, AddBy { by: 10 * key + 1, deeper: 0 }).is_err() {
+        if turn.spawn::<Adder>(&key, AddBy { by: 10 * key + 1, deeper: 0 }).is_err() {
             turn.log(Level::Error, "an adder was refused");
         }
         self.next += 1;
@@ -589,13 +589,13 @@ impl Actor for Adder {
     type Config = AddBy;
     type Key = u64;
     type Handles = (Ping,);
-    type BeginSends = (Spawns<Self>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(config: AddBy, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         if config.deeper > 0 {
             let below = AddBy { by: config.by + 1000, deeper: config.deeper - 1 };
-            if turn.spawn(&0, below).is_err() {
+            if turn.spawn::<Self>(&0, below).is_err() {
                 turn.log(Level::Error, "an adder below was refused");
             }
         }
@@ -987,7 +987,7 @@ impl Actor for Hatcher {
     type Config = Hatch;
     type Key = ();
     type Handles = (Pong, Grow);
-    type BeginSends = (ToType<Reporter, Ping>, Spawns<Reporter>);
+    type BeginSends = (ToType<Reporter, Ping>,);
     type EndSends = ();
 
     fn begin(hatch: Hatch, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -1013,14 +1013,7 @@ impl Handles<Pong> for Hatcher {
 }
 
 impl Handles<Grow> for Hatcher {
-    type Sends = (
-        ToType<Boomerang, Ping>,
-        ToAny<(Pong,), Pong>,
-        Spawns<Chick>,
-        Spawns<Stray>,
-        Spawns<FakeChick>,
-        Spawns<Boomerang>,
-    );
+    type Sends = (ToType<Boomerang, Ping>, ToAny<(Pong,), Pong>);
 
     fn handle(&mut self, _: Grow, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let chick = AddBy { by: 10 * self.grown + 2, deeper: 0 };
@@ -1075,11 +1068,11 @@ impl Actor for Boomerang {
     type Config = Home;
     type Key = ();
     type Handles = (Ping,);
-    type BeginSends = (ToAny<(Pong,), Pong>, Spawns<Reporter>);
+    type BeginSends = (ToAny<(Pong,), Pong>,);
     type EndSends = ();
 
     fn begin(home: Home, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let spawned = turn.spawn_from(&home.home, &0, &AddBy { by: 0, deeper: 0 });
+        let spawned = turn.spawn_from::<Reporter>(&home.home, &0, &AddBy { by: 0, deeper: 0 });
         let n = spawned.err().map_or(300, |why| 300 + refused(&why));
         turn.send_to_any(ToWithoutMail::Parent, &Pong { n })?;
 
@@ -1092,10 +1085,10 @@ impl Actor for Boomerang {
 }
 
 impl Handles<Ping> for Boomerang {
-    type Sends = (ToAny<(Pong,), Pong>, Spawns<Reporter>);
+    type Sends = (ToAny<(Pong,), Pong>,);
 
     fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let spawned = turn.spawn_from(&self.home, &1, &AddBy { by: 0, deeper: 0 });
+        let spawned = turn.spawn_from::<Reporter>(&self.home, &1, &AddBy { by: 0, deeper: 0 });
         let n = spawned.err().map_or(400, |why| 400 + refused(&why));
         turn.send_to_any(To::Parent, &Pong { n })?;
 
@@ -1311,14 +1304,14 @@ impl Actor for Spendthrift {
 }
 
 impl Handles<Ping> for Spendthrift {
-    type Sends = (ToSender<Book>, Spawns<Librarian>);
+    type Sends = (ToSender<Book>,);
 
     fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let len = usize::try_from(ping.n).unwrap_or(0);
         let book = turn.put(vec![7; len]).map_err(|why| unhatched(&why))?;
         let tell = ActorPath::from_root(&aethereal_data::PathSegment::new(KindName::new("aether.guest.no_one"), &()));
         let engine = book.id().engine();
-        turn.spawn(&(), Shelf { book, tell }).map_err(|why| unhatched(&why))?;
+        turn.spawn::<Librarian>(&(), Shelf { book, tell }).map_err(|why| unhatched(&why))?;
         turn.reply(&Book { blob: forged(BlobId::new(engine, u64::MAX)) })?;
 
         Ok(())
@@ -1427,12 +1420,12 @@ impl Actor for Archive {
     type Config = Stacks;
     type Key = ();
     type Handles = ();
-    type BeginSends = (Spawns<Reader>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(stacks: Stacks, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         for key in 0..stacks.readers {
-            if turn.spawn(&key, Book { blob: stacks.book.clone() }).is_err() {
+            if turn.spawn::<Reader>(&key, Book { blob: stacks.book.clone() }).is_err() {
                 turn.log(Level::Error, "a reader was refused");
             }
         }
@@ -1570,7 +1563,7 @@ impl Actor for Porter {
     type Config = Porting;
     type Key = u64;
     type Handles = (Hand,);
-    type BeginSends = (ToAny<(Hand,), Hand>, ToType<Bearer, Ping>, Spawns<Self>, Spawns<Bearer>);
+    type BeginSends = (ToAny<(Hand,), Hand>, ToType<Bearer, Ping>);
     type EndSends = ();
 
     fn begin(config: Porting, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -1744,7 +1737,7 @@ impl Actor for Querent {
     type Config = EchoConfig;
     type Key = ();
     type Handles = (Query, Answer<Pong, Which>);
-    type BeginSends = (Spawns<Echo>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -1819,7 +1812,7 @@ impl Actor for Opener {
     type Config = Opening;
     type Key = u64;
     type Handles = (Answer<Pong, Which>, Heard);
-    type BeginSends = (Asks<Pings, Ping, Which>, Spawns<Echo>, Spawns<Self>, Spawns<Inlet>);
+    type BeginSends = (Asks<Pings, Ping, Which>,);
     type EndSends = ();
 
     fn begin(opening: Opening, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -1887,11 +1880,11 @@ impl Actor for Inlet {
     type Config = Ping;
     type Key = ();
     type Handles = (Answer<Pong, Which>,);
-    type BeginSends = (Asks<Pings, Ping, Which>, Spawns<Echo>);
+    type BeginSends = (Asks<Pings, Ping, Which>,);
     type EndSends = ();
 
     fn begin(ping: Ping, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let echo = turn.spawn(&(), EchoConfig).map_err(|why| unhatched(&why))?;
+        let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|why| unhatched(&why))?;
         turn.ask_to(echo.protocol(), &Ping { n: ping.n }, &Which { at: ping.n })?;
 
         Ok(Self)
@@ -2041,7 +2034,7 @@ impl Actor for Steward {
     type Config = EchoConfig;
     type Key = ();
     type Handles = (Ping, Weigh, Release, Answer<Pong, Kept>);
-    type BeginSends = (Spawns<Echo>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -2171,7 +2164,7 @@ impl Actor for Stasher {
     type Config = EchoConfig;
     type Key = ();
     type Handles = (Stash, Answer<Pong, Stashed>);
-    type BeginSends = (Spawns<Echo>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -2278,10 +2271,10 @@ impl Actor for Nester {
 }
 
 impl Handles<Book> for Nester {
-    type Sends = (Spawns<Nestling>,);
+    type Sends = ();
 
     fn handle(&mut self, book: Book, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.spawn(&(), book).map_err(|why| unhatched(&why))?;
+        turn.spawn::<Nestling>(&(), book).map_err(|why| unhatched(&why))?;
 
         Ok(())
     }

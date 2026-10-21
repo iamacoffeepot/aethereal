@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::{
-    Above, Asked, Beginning, Chain, Ending, ErasedActorRef, Fault, Instances, Item, Keeps, Level, Mail, MailId, Mailed,
-    Runs, SeatNumber, Seated, Table, Tie, To, Turn, Turning, section,
+    Above, Actor, Anywhere, Asked, Beginning, Chain, ChildOf, Ending, ErasedActorRef, Fault, Instances, Item, Keeps,
+    Level, Mail, MailId, Mailed, Recursive, Runs, SeatNumber, Seated, Spawner, Table, Tie, To, Turn, Turning, section,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -93,6 +93,10 @@ impl Kind for Keeper {
     const NAME: KindName = KindName::new("aether.test.keeper");
 }
 
+impl ChildOf for Keeper {
+    type Parent = Anywhere;
+}
+
 impl Actor for Keeper {
     type Config = Kept;
     type Key = ();
@@ -137,6 +141,10 @@ impl Kind for Strict {
     const NAME: KindName = KindName::new("aether.test.strict");
 }
 
+impl ChildOf for Strict {
+    type Parent = Keeper;
+}
+
 impl Actor for Strict {
     type Config = Kept;
     type Key = ();
@@ -169,6 +177,10 @@ impl Kind for Sink {
     const NAME: KindName = KindName::new("aether.test.sink");
 }
 
+impl ChildOf for Sink {
+    type Parent = Recursive;
+}
+
 impl Actor for Sink {
     type Config = Kept;
     type Key = u64;
@@ -199,7 +211,7 @@ const OTHER: Seated = Seated { id: ActorId::new(2), seat: SeatNumber::new(1) };
 const CHAIN: Chain = Chain { root: MailId { sender: OTHER.id, count: 1 }, depth: 1 };
 
 /// The lines an actor of type `A` logged when it was handed mail of `kind` from `OTHER`.
-fn handed<A: Actor>(actor: A, kind: KindId) -> Vec<String> {
+fn handed<A: ChildOf>(actor: A, kind: KindId) -> Vec<String> {
     let table = Typed(Vec::new());
     let mut asked = Asked::new();
     let mut actor: Box<dyn Runs> = Box::new(actor);
@@ -244,7 +256,7 @@ fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, Keeper, <Keeper as Han
         CHAIN,
         Tie::TELL,
     );
-    then(&mut turning.declaring::<Keeper, <Keeper as Handles<Kept>>::Sends>(kept));
+    then(&mut turning.declaring::<Keeper, <Keeper as Handles<Kept>>::Sends>(kept, Declared::of::<Keeper>()));
 
     asked.into_parts().0.mailed
 }
@@ -325,7 +337,8 @@ const STRAY_TO_KEEPERS: &[Sending] = &[<ToAny<(Kept,), Stray> as Marker>::SENDIN
 fn a_declaration_whose_handler_sends_a_protocol_a_kind_outside_it_does_not_hold() {
     // Catches a type built that declares, in a handler, a send of a kind to actors that need not take it.
     const HANDLERS: &[Handler] = &[Handler::new(Role::Kind(KindId::of::<Kept>()), STRAY_TO_KEEPERS)];
-    let sending = Declared::new(Keeper::NAME, KindId::of::<Keeper>(), Keyed::Singleton, &[], HANDLERS, &[]);
+    let sending =
+        Declared::new(Keeper::NAME, KindId::of::<Keeper>(), Keyed::Singleton, Spawner::Anyone, &[], HANDLERS, &[]);
 
     let _ = sending.checked();
 }
@@ -334,7 +347,15 @@ fn a_declaration_whose_handler_sends_a_protocol_a_kind_outside_it_does_not_hold(
 #[should_panic(expected = "the protocol does not hold")]
 fn a_declaration_whose_begin_sends_a_protocol_a_kind_outside_it_does_not_hold() {
     // Catches the check of a protocol's kinds left out of a type's `begin`.
-    let beginning = Declared::new(Keeper::NAME, KindId::of::<Keeper>(), Keyed::Singleton, STRAY_TO_KEEPERS, &[], &[]);
+    let beginning = Declared::new(
+        Keeper::NAME,
+        KindId::of::<Keeper>(),
+        Keyed::Singleton,
+        Spawner::Anyone,
+        STRAY_TO_KEEPERS,
+        &[],
+        &[],
+    );
 
     let _ = beginning.checked();
 }
@@ -343,7 +364,15 @@ fn a_declaration_whose_begin_sends_a_protocol_a_kind_outside_it_does_not_hold() 
 #[should_panic(expected = "the protocol does not hold")]
 fn a_declaration_whose_closing_turn_sends_a_protocol_a_kind_outside_it_does_not_hold() {
     // Catches the check of a protocol's kinds left out of a type's closing turn.
-    let ending = Declared::new(Keeper::NAME, KindId::of::<Keeper>(), Keyed::Singleton, &[], &[], STRAY_TO_KEEPERS);
+    let ending = Declared::new(
+        Keeper::NAME,
+        KindId::of::<Keeper>(),
+        Keyed::Singleton,
+        Spawner::Anyone,
+        &[],
+        &[],
+        STRAY_TO_KEEPERS,
+    );
 
     let _ = ending.checked();
 }
@@ -371,8 +400,9 @@ fn declaration_lists_each_handler_with_the_sends_its_impl_names() {
 #[test]
 fn a_section_written_in_a_constant_reads_back_as_what_its_types_declare() {
     // Catches the constant writer of a guest's section and the plain types a host reads it as drifting apart: a field
-    // written in another order, or a selector numbered otherwise than the enum it stands for (a singleton read as keyed), so a host reads a
-    // declaration other than the one the guest was built with (ADR-0015).
+    // written in another order, or a selector numbered otherwise than the enum it stands for (a singleton read as keyed,
+    // or one type's spawner read as another's), so a host reads a declaration other than the one the guest was built
+    // with (ADR-0015, ADR-0022).
     const TYPES: &[&Declared] = &[Declared::of::<Keeper>(), Declared::of::<Strict>(), Declared::of::<Sink>()];
     const LEN: usize = section::len(TYPES);
     const BYTES: [u8; LEN] = section::bytes::<LEN>(TYPES);

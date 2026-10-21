@@ -4,8 +4,8 @@
 use super::super::*;
 use crate::stages::key;
 use aethereal_actor::{
-    Actor, Anywhere, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, On, Path, Present, Render, Spawns, Stage,
-    Start, Stop, Tells, Tick, Time, To, ToSender, ToType, ToWithoutMail, Top, Turn, Unordered,
+    Actor, Anywhere, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, On, Path, Present, Render, Stage, Start,
+    Stop, Tells, Tick, Time, To, ToSender, ToType, ToWithoutMail, Top, Turn, Unordered,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, PathSegment, Plain};
 use core::time::Duration;
@@ -492,11 +492,11 @@ impl Actor for Nest {
     type Config = Note;
     type Key = ();
     type Handles = (Note,);
-    type BeginSends = (ToType<Self, Note>, Spawns<Cycler>);
+    type BeginSends = (ToType<Self, Note>,);
     type EndSends = ();
 
     fn begin(_: Note, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let spawned = turn.spawn(&(), Note { text: String::new() });
+        let spawned = turn.spawn::<Cycler>(&(), Note { text: String::new() });
         say(format!("{:?}", spawned.err()));
         let me = turn.me();
         turn.send(ToWithoutMail::Held(me), &Note { text: String::new() })?;
@@ -510,10 +510,10 @@ impl Actor for Nest {
 }
 
 impl Handles<Note> for Nest {
-    type Sends = (Spawns<Latecomer>,);
+    type Sends = ();
 
     fn handle(&mut self, _: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let spawned = turn.spawn(&(), Note { text: String::new() });
+        let spawned = turn.spawn::<Latecomer>(&(), Note { text: String::new() });
         say(format!("{:?}", spawned.err()));
 
         Ok(())

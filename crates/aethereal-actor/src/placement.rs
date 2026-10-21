@@ -1,6 +1,7 @@
 //! Where an actor may stand: the one place each type declares, beneath its parent's type or at the top (ADR-0022).
 
 use crate::{Actor, ActorRef, ErasedActorRef, Seated};
+use aethereal_data::KindId;
 
 /// Where an actor of this type may stand: beneath an actor of its [`Parent`](Self::Parent) type, or at the top of
 /// the tree as a root when its parent is [`Top`].
@@ -75,15 +76,40 @@ pub struct Recursive;
 
 /// A place a type may declare as its parent: [`Top`], an actor type that declares its own, [`Recursive`], or
 /// [`Anywhere`].
-pub trait Placement {}
+pub trait Placement {
+    /// Who may spawn a child that stands here, as the engine reads it.
+    const SPAWNER: Spawner;
+}
 
-impl Placement for Top {}
+impl Placement for Top {
+    const SPAWNER: Spawner = Spawner::Nobody;
+}
 
-impl Placement for Anywhere {}
+impl Placement for Anywhere {
+    const SPAWNER: Spawner = Spawner::Anyone;
+}
 
-impl Placement for Recursive {}
+impl Placement for Recursive {
+    const SPAWNER: Spawner = Spawner::Own;
+}
 
-impl<T: ChildOf> Placement for T {}
+impl<T: ChildOf> Placement for T {
+    const SPAWNER: Spawner = Spawner::Type(KindId::of::<T>());
+}
+
+/// Who may spawn an actor of a type, as the engine reads the type's parent: what a guest's host checks a guest's
+/// spawn by, as [`Admits`] checks a native one where it is built (ADR-0022).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spawner {
+    /// No actor: the type stands at the top, and only the chassis makes it.
+    Nobody,
+    /// An actor of any type.
+    Anyone,
+    /// An actor of the type's own.
+    Own,
+    /// An actor of the type of this id.
+    Type(KindId),
+}
 
 /// What a turn of an actor of type `Me`, whose type stands beneath this place, is handed as its parent by
 /// [`Turn::parent`](crate::Turn::parent): an [`ActorRef<P>`] beneath the one type `P`; an `Option<ActorRef<Me>>`
@@ -130,17 +156,20 @@ impl<Me> Parented<Me> for Anywhere {
 }
 
 /// This place, the parent a type `C` declares, admits a child of `C` spawned by an actor of type `A`: `A` itself as
-/// the one parent, any type for [`Anywhere`], and `C`'s own for [`Recursive`]. [`Top`] admits no spawner.
+/// the one parent, any type for [`Anywhere`], and `C`'s own for [`Recursive`]. [`Top`] admits no spawner. A turn's
+/// `spawn` builds only when it does (ADR-0022).
 ///
-/// A type may spawn what stands beneath it, and a tree of one type may spawn its own:
+/// A type may spawn what stands beneath it, and a tree of one type may spawn its own, as `Host` spawns a `Camera` and
+/// `Fib` a `Fib`:
 ///
 /// ```
 /// use aethereal_actor::{ChildOf, Recursive, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Spawns};
+/// # use aethereal_actor::{Actor, Beginning, Ending, Fault};
 /// # use aethereal_data::{Kind, KindName, Plain};
 /// #
+/// # // An actor type whose `begin` spawns a `$child`, when one is named.
 /// # macro_rules! actor {
-/// #     ($name:ident, $sends:ty) => {
+/// #     ($name:ident $(, $child:ident)?) => {
 /// #         #[derive(Plain)]
 /// #         struct $name;
 /// #
@@ -152,10 +181,11 @@ impl<Me> Parented<Me> for Anywhere {
 /// #             type Config = $name;
 /// #             type Key = ();
 /// #             type Handles = ();
-/// #             type BeginSends = $sends;
+/// #             type BeginSends = ();
 /// #             type EndSends = ();
 /// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
 /// #                 Ok(config)
 /// #             }
 /// #
@@ -165,9 +195,9 @@ impl<Me> Parented<Me> for Anywhere {
 /// #         }
 /// #     };
 /// # }
-/// # actor!(Host, (Spawns<Camera>,));
-/// # actor!(Camera, ());
-/// # actor!(Fib, (Spawns<Fib>,));
+/// # actor!(Host, Camera);
+/// # actor!(Camera);
+/// # actor!(Fib, Fib);
 ///
 /// impl ChildOf for Host {
 ///     type Parent = Top;
@@ -182,15 +212,16 @@ impl<Me> Parented<Me> for Anywhere {
 /// }
 /// ```
 ///
-/// A type that declares it spawns what stands beneath another does not build:
+/// A type that spawns what stands beneath another does not build, as `Host` spawning a `Lens`:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// use aethereal_actor::{ChildOf, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Spawns};
+/// # use aethereal_actor::{Actor, Beginning, Ending, Fault};
 /// # use aethereal_data::{Kind, KindName, Plain};
 /// #
+/// # // An actor type whose `begin` spawns a `$child`, when one is named.
 /// # macro_rules! actor {
-/// #     ($name:ident, $sends:ty) => {
+/// #     ($name:ident $(, $child:ident)?) => {
 /// #         #[derive(Plain)]
 /// #         struct $name;
 /// #
@@ -202,10 +233,11 @@ impl<Me> Parented<Me> for Anywhere {
 /// #             type Config = $name;
 /// #             type Key = ();
 /// #             type Handles = ();
-/// #             type BeginSends = $sends;
+/// #             type BeginSends = ();
 /// #             type EndSends = ();
 /// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
 /// #                 Ok(config)
 /// #             }
 /// #
@@ -215,9 +247,9 @@ impl<Me> Parented<Me> for Anywhere {
 /// #         }
 /// #     };
 /// # }
-/// # actor!(Host, (Spawns<Lens>,));
-/// # actor!(Camera, ());
-/// # actor!(Lens, ());
+/// # actor!(Host, Lens);
+/// # actor!(Camera);
+/// # actor!(Lens);
 ///
 /// impl ChildOf for Host {
 ///     type Parent = Top;
@@ -232,15 +264,16 @@ impl<Me> Parented<Me> for Anywhere {
 /// }
 /// ```
 ///
-/// Nor does one that spawns a tree of another type:
+/// Nor does one that spawns a tree of another type, as `Host` spawning a `Fib`:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// use aethereal_actor::{ChildOf, Recursive, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Spawns};
+/// # use aethereal_actor::{Actor, Beginning, Ending, Fault};
 /// # use aethereal_data::{Kind, KindName, Plain};
 /// #
+/// # // An actor type whose `begin` spawns a `$child`, when one is named.
 /// # macro_rules! actor {
-/// #     ($name:ident, $sends:ty) => {
+/// #     ($name:ident $(, $child:ident)?) => {
 /// #         #[derive(Plain)]
 /// #         struct $name;
 /// #
@@ -252,10 +285,11 @@ impl<Me> Parented<Me> for Anywhere {
 /// #             type Config = $name;
 /// #             type Key = ();
 /// #             type Handles = ();
-/// #             type BeginSends = $sends;
+/// #             type BeginSends = ();
 /// #             type EndSends = ();
 /// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
 /// #                 Ok(config)
 /// #             }
 /// #
@@ -265,8 +299,8 @@ impl<Me> Parented<Me> for Anywhere {
 /// #         }
 /// #     };
 /// # }
-/// # actor!(Host, (Spawns<Fib>,));
-/// # actor!(Fib, (Spawns<Fib>,));
+/// # actor!(Host, Fib);
+/// # actor!(Fib);
 ///
 /// impl ChildOf for Host {
 ///     type Parent = Top;
