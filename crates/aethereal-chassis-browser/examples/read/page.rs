@@ -1,4 +1,5 @@
-//! The page's entry points, and an actor that places two squares and a tint, then reads back what was drawn.
+//! The page's entry points, and an actor that places two squares and a tint, then reads back what was drawn and the
+//! storage it drew from.
 
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick, Top,
@@ -14,9 +15,9 @@ use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
 use aethereal_render::program::{
     Binding, BindingKind, Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
-use aethereal_render::readback::{Pixels, ReadBack, Readable};
+use aethereal_render::readback::{Bytes, Pixels, ReadBack, ReadStorage, Readable};
 use aethereal_render::shape::Shape;
-use aethereal_render::storage::{CreateStorage, Stored};
+use aethereal_render::storage::{CreateStorage, StorageId, Stored};
 use aethereal_render::texture::{CreateTexture, TextureFormat, TextureId, Textured};
 use aethereal_render::timing::{TimeFrame, Timed};
 use aethereal_substrate::Engine;
@@ -151,6 +152,10 @@ fn tint() -> @location(0) vec4<f32> {
 }
 ";
 
+/// The splats the storage holds, and is read back: a red square left of the middle, under the tint, and a green one
+/// right of it, each a place, a size, a colour.
+const SPLATS_HELD: [f32; 16] = [-0.5, 0.0, 0.3, 0.3, 1.0, 0.0, 0.0, 1.0, 0.5, 0.0, 0.3, 0.3, 0.0, 1.0, 0.0, 1.0];
+
 /// The texture read back: two by two, each byte its own.
 const TEXELS: [u8; 16] = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160];
 
@@ -158,13 +163,13 @@ const TEXELS: [u8; 16] = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130
 const SETTLED: u32 = 3;
 
 /// The reader: it makes what it draws one ask after another, each answer carrying what was made so far, places it,
-/// and once a few frames are drawn reads back a frame, its texture, and a frame's time.
+/// and once a few frames are drawn reads back a frame, its texture, its storage, and a frame's time.
 #[derive(Bound)]
 enum Reader {
     /// Its asks are under way, and nothing is placed on `window`.
     Making { window: WindowId },
     /// Both are placed and the texture made: `drawn` frames have passed since.
-    Drawing { texture: TextureId, drawn: u32 },
+    Drawing { texture: TextureId, storage: StorageId, drawn: u32 },
     /// It has asked for what it reads back.
     Asked,
 }
@@ -203,17 +208,27 @@ impl Kind for MadePrograms {
     const NAME: KindName = KindName::new("aether.example.made_programs");
 }
 
-/// Which placement was asked for.
+/// Which placement was asked for, with the storage the splats are drawn from.
 #[derive(Plain)]
 enum Placing {
     /// The splats, with what the tint is then placed with.
-    Splats { mesh: MeshId, tint: ProgramId },
+    Splats { mesh: MeshId, tint: ProgramId, storage: StorageId },
     /// The tint.
-    Tint,
+    Tint { storage: StorageId },
 }
 
 impl Kind for Placing {
     const NAME: KindName = KindName::new("aether.example.placing");
+}
+
+/// What the texture was asked for with: the storage the splats are drawn from, read back with it.
+#[derive(Plain)]
+struct Splatted {
+    storage: StorageId,
+}
+
+impl Kind for Splatted {
+    const NAME: KindName = KindName::new("aether.example.splatted");
 }
 
 /// What was asked to be read back.
@@ -238,8 +253,9 @@ impl Actor for Reader {
         Answer<Programmed, Making>,
         Answer<Stored, MadePrograms>,
         Answer<Placed, Placing>,
-        Answer<Textured, Nothing>,
+        Answer<Textured, Splatted>,
         Answer<Pixels, Of>,
+        Answer<Bytes, Nothing>,
         Answer<Timed, Nothing>,
     );
     type BeginSends = ();
@@ -375,9 +391,7 @@ impl Handles<Answer<Programmed, Making>> for Reader {
             }
             Making::Tint { mesh, splats } => (mesh, splats),
         };
-        // A red square left of the middle, under the tint, and a green one right of it: a place, a size, a colour.
-        let splatted = floats([-0.5, 0.0, 0.3, 0.3, 1.0, 0.0, 0.0, 1.0, 0.5, 0.0, 0.3, 0.3, 0.0, 1.0, 0.0, 1.0]);
-        let bytes = match turn.put(splatted) {
+        let bytes = match turn.put(floats(SPLATS_HELD)) {
             Ok(bytes) => bytes,
             Err(why) => {
                 say(format!("no storage asked: {why}"));
@@ -411,14 +425,15 @@ impl Handles<Answer<Stored, MadePrograms>> for Reader {
             instances: Drawn::Count(2),
             joins: vec![Join::to::<Main>(Frame::Main(window), made.splats, bindings)],
         };
-        turn.to(path::<Renderer>(())).ask(&place, &Placing::Splats { mesh: made.mesh, tint: made.tint })?;
+        let placing = Placing::Splats { mesh: made.mesh, tint: made.tint, storage };
+        turn.to(path::<Renderer>(())).ask(&place, &placing)?;
 
         Ok(())
     }
 }
 
 impl Handles<Answer<Placed, Placing>> for Reader {
-    type Sends = (Asks<Path<Renderer>, Place, Placing>, Asks<Path<Renderer>, CreateTexture, Nothing>);
+    type Sends = (Asks<Path<Renderer>, Place, Placing>, Asks<Path<Renderer>, CreateTexture, Splatted>);
 
     fn handle(
         &mut self,
@@ -432,13 +447,16 @@ impl Handles<Answer<Placed, Placing>> for Reader {
         let Self::Making { window } = *self else {
             return Ok(());
         };
-        if let Placing::Splats { mesh, tint } = placing {
-            // Drawn after the splats, as the renderer draws the programs it made first first; nothing promises it.
-            let join = Join::to::<Main>(Frame::Main(window), tint, Vec::new());
-            let place = Place { mesh, instances: Drawn::Count(1), joins: vec![join] };
-            turn.to(path::<Renderer>(())).ask(&place, &Placing::Tint)?;
-            return Ok(());
-        }
+        let storage = match placing {
+            Placing::Splats { mesh, tint, storage } => {
+                // Drawn after the splats, as the renderer draws the programs it made first first; nothing promises it.
+                let join = Join::to::<Main>(Frame::Main(window), tint, Vec::new());
+                let place = Place { mesh, instances: Drawn::Count(1), joins: vec![join] };
+                turn.to(path::<Renderer>(())).ask(&place, &Placing::Tint { storage })?;
+                return Ok(());
+            }
+            Placing::Tint { storage } => storage,
+        };
         let pixels = match turn.put(TEXELS.to_vec()) {
             Ok(pixels) => pixels,
             Err(why) => {
@@ -447,18 +465,18 @@ impl Handles<Answer<Placed, Placing>> for Reader {
             }
         };
         let texture = CreateTexture { width: 2, height: 2, format: TextureFormat::Rgba8, pixels };
-        turn.to(path::<Renderer>(())).ask(&texture, &Nothing)?;
+        turn.to(path::<Renderer>(())).ask(&texture, &Splatted { storage })?;
 
         Ok(())
     }
 }
 
-impl Handles<Answer<Textured, Nothing>> for Reader {
+impl Handles<Answer<Textured, Splatted>> for Reader {
     type Sends = ();
 
     fn handle(
         &mut self,
-        (answered, _): (Answered<Textured>, Nothing),
+        (answered, splatted): (Answered<Textured>, Splatted),
         _: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Textured::Made(texture)) = answered else {
@@ -466,26 +484,31 @@ impl Handles<Answer<Textured, Nothing>> for Reader {
             return Ok(());
         };
         say(String::from("placed splats tint texture"));
-        *self = Self::Drawing { texture, drawn: 0 };
+        *self = Self::Drawing { texture, storage: splatted.storage, drawn: 0 };
 
         Ok(())
     }
 }
 
 impl Handles<On<Tick>> for Reader {
-    type Sends = (Asks<Path<Renderer>, ReadBack, Of>, Asks<Path<Renderer>, TimeFrame, Nothing>);
+    type Sends = (
+        Asks<Path<Renderer>, ReadBack, Of>,
+        Asks<Path<Renderer>, ReadStorage, Nothing>,
+        Asks<Path<Renderer>, TimeFrame, Nothing>,
+    );
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let Self::Drawing { texture, drawn } = *self else {
+        let Self::Drawing { texture, storage, drawn } = *self else {
             return Ok(());
         };
         if drawn < SETTLED {
-            *self = Self::Drawing { texture, drawn: drawn + 1 };
+            *self = Self::Drawing { texture, storage, drawn: drawn + 1 };
             return Ok(());
         }
         turn.to(path::<Renderer>(()))
             .ask(&ReadBack { of: Readable::Frame }, &Of::Frame)?
             .ask(&ReadBack { of: Readable::Texture(texture) }, &Of::Texture)?
+            .ask(&ReadStorage { storage }, &Nothing)?
             .ask(&TimeFrame, &Nothing)?;
         *self = Self::Asked;
 
@@ -527,6 +550,27 @@ impl Handles<Answer<Pixels, Of>> for Reader {
             }
         };
         say(said);
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Bytes, Nothing>> for Reader {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, _): (Answered<Bytes>, Nothing),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Bytes::Read { bytes }) = answered else {
+            say(format!("the storage was not read: {answered:?}"));
+            return Ok(());
+        };
+        let read = turn.read(&bytes);
+        let same = read == floats(SPLATS_HELD);
+        let bytes = read.len();
+        say(format!("storage bytes={bytes} same={same}"));
 
         Ok(())
     }

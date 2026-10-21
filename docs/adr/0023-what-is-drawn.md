@@ -95,7 +95,7 @@ The placement's bind groups are made then, once, so a frame binds what is made a
 
 ```rust
 ReadBack { of: Readable }  -> Pixels::Read { width: u32, height: u32, format: TextureFormat, pixels: BlobRef } | Pixels::Refused
-enum Readable { Frame, Texture(TextureId), Storage(StorageId) }   // storage is answered with its bytes (ADR-0026)
+enum Readable { Frame, Texture(TextureId) }                      // storage is read back by `ReadStorage` (ADR-0026)
 TimeFrame                  -> Timed::Took { passes: Vec<u64> } | Timed::Refused
 ```
 

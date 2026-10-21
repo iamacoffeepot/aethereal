@@ -30,7 +30,7 @@ impl Kind for WriteStorage {
     const NAME: KindName = KindName::new("aether.render.write_storage");
 }
 
-/// Storage the renderer made, which any actor handed it may bind.
+/// Storage the renderer made, which any actor handed it may bind or read back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub struct StorageId {
     pub(crate) id: u64,
