@@ -1,8 +1,9 @@
 //! The stages of a program's lifecycle, which the engine runs and sends its actors (ADR-0020).
 
-use crate::{Actors, Arena, Payload};
-use aethereal_data::{Encode, EncodeError, Kind, KindId, KindName, Plain};
+use crate::{Actors, Arena, Fault, Handled, Item, Payload, Role};
+use aethereal_data::{Decode, Encode, EncodeError, Kind, KindId, KindName, Plain};
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 /// A stage of the program's lifecycle: a kind the engine sends every actor that subscribed to it, and waits, before the
 /// next, until every turn it set off has run (ADR-0020).
@@ -11,7 +12,7 @@ use alloc::vec::Vec;
 /// holds nothing but what the cycle's time gives it, and most hold nothing.
 /// A chassis's crate may define a stage of its own, which its cycle runs
 /// wherever the chassis puts it.
-pub trait Stage: Kind + Encode<Actors> + Default + 'static {
+pub trait Stage: Kind + Encode<Actors> + Decode<Actors> + Default + 'static {
     /// Where the stage may stand: at an end of the lifecycle, among the shared stages in their order, or anywhere
     /// in a cycle, as a chassis's own stage.
     const PLACE: Place = Place::Own;
@@ -20,6 +21,26 @@ pub trait Stage: Kind + Encode<Actors> + Default + 'static {
     #[must_use]
     fn made(_time: Cycled) -> Self {
         Self::default()
+    }
+}
+
+/// The stage `K`, as an actor handles it: what it lists in its `Handles` for each stage it may subscribe to, and whose
+/// handler is handed the stage (ADR-0020).
+///
+/// It says which of the kinds a type handles are stages, so a type made where its engine does not run one is refused
+/// before any of its code runs, and a turn subscribes only to a stage its actor's type handles.
+pub struct On<K>(PhantomData<fn() -> K>);
+
+impl<K: Stage> Handled for On<K> {
+    const ROLE: Role = Role::Stage(KindId::of::<K>());
+    type Item<'a> = K;
+
+    fn take(item: Item<'_>) -> Result<K, Fault> {
+        let Item::Mail(mail) = item else {
+            unreachable!("only the stage is handed to its handler");
+        };
+
+        Ok(mail.contents()?)
     }
 }
 

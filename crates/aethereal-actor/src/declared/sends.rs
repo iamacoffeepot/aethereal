@@ -1,7 +1,7 @@
 //! What a handler may send, and whether it may watch, written as a tuple of markers (ADR-0013).
 
 use super::{Handled, Handles, Listed, Sending, Target};
-use crate::{Actor, Beneath, ChildOf, Path, PathTo, Stage};
+use crate::{Actor, Beneath, ChildOf, Path, PathTo};
 use aethereal_data::{Kind, KindId, KindName};
 use core::marker::PhantomData;
 
@@ -17,10 +17,6 @@ pub struct ToSender<K>(PhantomData<fn() -> K>);
 /// `K` is one of `P`'s kinds: a type whose declaration names another does not build (ADR-0016).
 pub struct ToAny<P, K>(PhantomData<fn() -> (P, K)>);
 
-/// A handler may subscribe its actor to the stage `K` of the program's lifecycle, and unsubscribe it: only an actor
-/// whose type handles `K` may declare it, as its build fails otherwise (ADR-0020).
-pub struct Subscribes<K>(PhantomData<fn() -> K>);
-
 /// A handler may spawn a child of type `C`: only an actor that `C`'s parent admits may declare it, as its build fails
 /// otherwise (ADR-0022).
 pub struct Spawns<C>(PhantomData<fn() -> C>);
@@ -33,10 +29,6 @@ pub struct Tells<T, K>(PhantomData<fn() -> (T, K)>);
 pub trait Marker {
     /// What it declares, as the engine reads it.
     const SENDING: Sending;
-}
-
-impl<K: Stage> Marker for Subscribes<K> {
-    const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Subscribed);
 }
 
 impl<C: ChildOf> Marker for Spawns<C> {

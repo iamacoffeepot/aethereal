@@ -44,7 +44,6 @@ pub enum To {
     Type { name: KindName, id: KindId },
     Sender,
     Handling { kinds: Vec<KindId> },
-    Subscribed,
     Job,
     Spawned,
     Path { last: Segment, above: Vec<Segment> },
@@ -72,6 +71,7 @@ pub enum Handled {
     Ended,
     Others,
     Answer { kind: KindId },
+    Stage { kind: KindId },
 }
 
 /// How many bytes the section of `types` takes.
@@ -183,11 +183,10 @@ const fn sendings(out: &mut [u8], at: usize, sendings: &[Sending]) -> usize {
 
                 at
             }
-            Target::Subscribed => count(out, at, 3),
-            Target::Job => count(out, at, 4),
-            Target::Spawned => count(out, at, 5),
+            Target::Job => count(out, at, 3),
+            Target::Spawned => count(out, at, 4),
             Target::Path(last) => {
-                let mut at = count(out, at, 6);
+                let mut at = count(out, at, 5);
                 at = segment(out, at, last);
                 at = count(out, at, depth(last) - 1);
                 let mut below = last;
@@ -247,6 +246,11 @@ const fn handlers(out: &mut [u8], at: usize, handlers: &[Handler]) -> usize {
 
                 id(out, at, kind)
             }
+            Role::Stage(kind) => {
+                let at = count(out, at, 4);
+
+                id(out, at, kind)
+            }
         };
         at = sendings(out, at, handler.sends());
         index += 1;
@@ -267,6 +271,7 @@ impl Made {
                 Handled::Ended => Role::Ended,
                 Handled::Others => Role::Others,
                 Handled::Answer { kind } => Role::Answer(kind),
+                Handled::Stage { kind } => Role::Stage(kind),
             };
 
             Handler::new(role, leak_sends(&handles.sends))
@@ -290,7 +295,6 @@ fn leak_sends(sends: &[Send]) -> &'static [Sending] {
             To::Type { name, id } => Target::Type(Box::leak(Box::new(name.clone())), *id),
             To::Sender => Target::Sender,
             To::Handling { kinds } => Target::Handling(Box::leak(kinds.clone().into_boxed_slice())),
-            To::Subscribed => Target::Subscribed,
             To::Job => Target::Job,
             To::Spawned => Target::Spawned,
             To::Path { last, above } => Target::Path(leak_path(last, above)),

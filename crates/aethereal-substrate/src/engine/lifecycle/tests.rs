@@ -4,8 +4,8 @@
 use super::super::*;
 use crate::stages::key;
 use aethereal_actor::{
-    Actor, Anywhere, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, Path, Present, Render, Spawns, Stage,
-    Start, Stop, Subscribes, Tells, Tick, Time, To, ToSender, ToType, ToWithoutMail, Top, Turn, Unordered,
+    Actor, Anywhere, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, On, Path, Present, Render, Spawns, Stage,
+    Start, Stop, Tells, Tick, Time, To, ToSender, ToType, ToWithoutMail, Top, Turn, Unordered,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, PathSegment, Plain};
 use core::time::Duration;
@@ -69,13 +69,13 @@ impl ChildOf for Staged {
 impl Actor for Staged {
     type Config = StagedConfig;
     type Key = u64;
-    type Handles = (Start, Stop, Note);
-    type BeginSends = (Subscribes<Start>, Subscribes<Stop>, ToType<Self, Note>);
+    type Handles = (On<Start>, On<Stop>, Note);
+    type BeginSends = (ToType<Self, Note>,);
     type EndSends = ();
 
     fn begin(config: StagedConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Start, _>();
-        turn.subscribe::<Stop, _>();
+        turn.subscribe::<Start>();
+        turn.subscribe::<Stop>();
         for text in config.to_self {
             let me = turn.me();
             turn.send(ToWithoutMail::Held(me), &Note { text })?;
@@ -89,7 +89,7 @@ impl Actor for Staged {
     }
 }
 
-impl Handles<Start> for Staged {
+impl Handles<On<Start>> for Staged {
     type Sends = (ToType<Self, Note>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -106,7 +106,7 @@ impl Handles<Start> for Staged {
     }
 }
 
-impl Handles<Stop> for Staged {
+impl Handles<On<Stop>> for Staged {
     type Sends = ();
 
     fn handle(&mut self, _: Stop, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -117,7 +117,7 @@ impl Handles<Stop> for Staged {
 }
 
 impl Handles<Note> for Staged {
-    type Sends = (ToType<Self, Note>, Subscribes<Start>);
+    type Sends = (ToType<Self, Note>,);
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Note { text } = note;
@@ -133,7 +133,7 @@ impl Handles<Note> for Staged {
             }
             ["quit"] => turn.quit(),
             ["close"] => turn.close(),
-            ["leave"] => turn.unsubscribe::<Start, _>(),
+            ["leave"] => turn.unsubscribe::<Start>(),
             _ => {}
         }
 
@@ -303,17 +303,16 @@ impl ChildOf for Cycler {
 impl Actor for Cycler {
     type Config = Note;
     type Key = ();
-    type Handles = (Receive, Tick, Render, Present, Stop, Note);
-    type BeginSends =
-        (Subscribes<Receive>, Subscribes<Tick>, Subscribes<Render>, Subscribes<Present>, Subscribes<Stop>);
+    type Handles = (On<Receive>, On<Tick>, On<Render>, On<Present>, On<Stop>, Note);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: Note, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Receive, _>();
-        turn.subscribe::<Tick, _>();
-        turn.subscribe::<Render, _>();
-        turn.subscribe::<Present, _>();
-        turn.subscribe::<Stop, _>();
+        turn.subscribe::<Receive>();
+        turn.subscribe::<Tick>();
+        turn.subscribe::<Render>();
+        turn.subscribe::<Present>();
+        turn.subscribe::<Stop>();
 
         Ok(Self)
     }
@@ -323,7 +322,7 @@ impl Actor for Cycler {
     }
 }
 
-impl Handles<Tick> for Cycler {
+impl Handles<On<Tick>> for Cycler {
     type Sends = (ToType<Self, Note>,);
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -349,7 +348,7 @@ impl Handles<Note> for Cycler {
 macro_rules! says {
     ($($stage:ident => $said:literal),+) => {
         $(
-            impl Handles<$stage> for Cycler {
+            impl Handles<On<$stage>> for Cycler {
                 type Sends = ();
 
                 fn handle(&mut self, _: $stage, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -570,7 +569,7 @@ impl ChildOf for Latecomer {
 impl Actor for Latecomer {
     type Config = Note;
     type Key = ();
-    type Handles = (Receive, Note);
+    type Handles = (On<Receive>, Note);
     type BeginSends = ();
     type EndSends = ();
 
@@ -583,7 +582,7 @@ impl Actor for Latecomer {
     }
 }
 
-impl Handles<Receive> for Latecomer {
+impl Handles<On<Receive>> for Latecomer {
     type Sends = ();
 
     fn handle(&mut self, _: Receive, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -592,10 +591,10 @@ impl Handles<Receive> for Latecomer {
 }
 
 impl Handles<Note> for Latecomer {
-    type Sends = (Subscribes<Receive>,);
+    type Sends = ();
 
     fn handle(&mut self, _: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.subscribe::<Receive, _>();
+        turn.subscribe::<Receive>();
 
         Ok(())
     }
@@ -620,12 +619,12 @@ impl ChildOf for Drainer {
 impl Actor for Drainer {
     type Config = Note;
     type Key = ();
-    type Handles = (Stop, Note);
-    type BeginSends = (Subscribes<Stop>,);
+    type Handles = (On<Stop>, Note);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: Note, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Stop, _>();
+        turn.subscribe::<Stop>();
 
         Ok(Self { held: Vec::new() })
     }
@@ -635,7 +634,7 @@ impl Actor for Drainer {
     }
 }
 
-impl Handles<Stop> for Drainer {
+impl Handles<On<Stop>> for Drainer {
     type Sends = (ToSender<Drained>,);
 
     fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -806,8 +805,8 @@ impl ChildOf for Castaway {
 impl Actor for Castaway {
     type Config = Note;
     type Key = ();
-    type Handles = (Receive,);
-    type BeginSends = (Subscribes<Receive>, Tells<Path<Shore>, Note>);
+    type Handles = (On<Receive>,);
+    type BeginSends = (Tells<Path<Shore>, Note>,);
     type EndSends = ();
 
     fn begin(_: Note, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -819,7 +818,7 @@ impl Actor for Castaway {
     }
 }
 
-impl Handles<Receive> for Castaway {
+impl Handles<On<Receive>> for Castaway {
     type Sends = ();
 
     fn handle(&mut self, _: Receive, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

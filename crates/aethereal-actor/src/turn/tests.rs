@@ -1,9 +1,10 @@
 //! The turn's tests: what a spawn, a send, and a failed `begin` leave in a turn's effect buffers.
 
 use super::*;
+use crate::records::Staging;
 use crate::{
     Anywhere, Beginning, Carries, ChildOf, Claim, Claimed, Ended, Ending, Fault, Hosted, How, Item, Keeping, Kept,
-    Mail, MailId, NotHeld, Payload, Protocol, Recursive, Resource, Spawns, Subscribers, Unspawned,
+    Mail, MailId, NotHeld, On, Payload, Protocol, Recursive, Resource, Spawns, Subscribers, Tick, Unspawned,
 };
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
@@ -136,7 +137,7 @@ impl ChildOf for Leaf {
 impl Actor for Leaf {
     type Config = LeafConfig;
     type Key = u64;
-    type Handles = (Poke, Poked, Shut, Meet, Ended);
+    type Handles = (Poke, Poked, Shut, Meet, Ended, On<Tick>);
     type BeginSends = ();
     type EndSends = ();
 
@@ -186,6 +187,15 @@ impl Handles<Meet> for Leaf {
 
     fn handle(&mut self, Meet { other }: Meet, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         Ok(turn.send(To::Held(other), &Poke)?)
+    }
+}
+
+/// A leaf may subscribe to ticks.
+impl Handles<On<Tick>> for Leaf {
+    type Sends = ();
+
+    fn handle(&mut self, _: Tick, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
     }
 }
 
@@ -772,4 +782,24 @@ fn a_hosted_watch_by_an_actor_whose_type_handles_no_ending_fails() {
 
     assert_eq!(hosted.watch(ME, child), Err(FalseWatch), "a branch handles no ending");
     assert_eq!(hosted.watch(child, ME), Ok(()), "a leaf handles endings");
+}
+
+#[test]
+fn a_hosted_subscription_to_a_stage_its_actors_type_does_not_handle_fails() {
+    // Catches a guest's turn handed a subscription to a stage its actor's type has no handler of, and a child's in its
+    // `begin` checked against its spawner's type rather than its own (ADR-0020).
+    let table = Listed::default();
+    let mut asked = Asked::new();
+    let mut keeping = Keeping::default();
+    let mut hosted =
+        Hosted::beginning(ME, &ROOT, Above::Chassis, &table, &mut asked, Declared::of::<Branch>(), &mut keeping);
+    let leaf = Code::Linked(Declared::of::<Leaf>());
+    let Ok(child) = hosted.spawn(ME, leaf, Some(KeyName::new("0")), SeatNumber::new(1)) else {
+        panic!("a branch declares its leaves");
+    };
+    let tick = KindId::of::<Tick>();
+
+    assert_eq!(hosted.stage(ME, Staging::Subscribe(tick)), Err(FalseStage), "a branch handles no tick");
+    assert_eq!(hosted.stage(child, Staging::Subscribe(tick)), Ok(()), "a leaf handles ticks");
+    assert_eq!(hosted.stage(child, Staging::Unsubscribe(tick)), Ok(()));
 }

@@ -1,8 +1,6 @@
 //! The page's entry points, and the root that draws.
 
-use aethereal_actor::{
-    Actor, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, Render, Subscribes, Tick, Top, Turn,
-};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, On, Render, Tick, Top, Turn};
 use aethereal_chassis_browser::{Browser, Gpu, Performance};
 use aethereal_data::{Bound, Kind, KindName};
 use aethereal_substrate::Engine;
@@ -75,14 +73,14 @@ impl ChildOf for Painter {
 impl Actor for Painter {
     type Config = PainterConfig;
     type Key = ();
-    type Handles = (Tick, Render);
-    type BeginSends = (Subscribes<Tick>, Subscribes<Render>);
+    type Handles = (On<Tick>, On<Render>);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(config: PainterConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let gpu = turn.take(config.gpu)?;
-        turn.subscribe::<Tick, _>();
-        turn.subscribe::<Render, _>();
+        turn.subscribe::<Tick>();
+        turn.subscribe::<Render>();
 
         Ok(Self { gpu, elapsed_nanos: 0 })
     }
@@ -92,7 +90,7 @@ impl Actor for Painter {
     }
 }
 
-impl Handles<Tick> for Painter {
+impl Handles<On<Tick>> for Painter {
     type Sends = ();
 
     fn handle(&mut self, tick: Tick, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -102,7 +100,7 @@ impl Handles<Tick> for Painter {
     }
 }
 
-impl Handles<Render> for Painter {
+impl Handles<On<Render>> for Painter {
     type Sends = ();
 
     fn handle(&mut self, _: Render, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
