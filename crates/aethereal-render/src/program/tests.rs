@@ -246,7 +246,8 @@ fn splats(bytes: u32) -> CreateProgram {
     let mut program = program();
     program.wgsl = String::from(SPLATS);
     program.layout.attributes.pop();
-    program.bindings = vec![Binding { group: 0, binding: 0, kind: BindingKind::Storage { bytes } }];
+    program.bindings =
+        vec![Binding { group: 0, binding: 0, kind: BindingKind::Storage { bytes, access: Access::Read } }];
 
     program
 }
@@ -273,11 +274,24 @@ fn storage_the_shader_writes_or_binds_as_another_kind_is_refused() {
     let mut as_uniform = splats(48);
     as_uniform.bindings[0].kind = BindingKind::Uniform { bytes: 48 };
     let mut as_storage = program();
-    as_storage.bindings[0].kind = BindingKind::Storage { bytes: 64 };
+    as_storage.bindings[0].kind = BindingKind::Storage { bytes: 64, access: Access::Read };
 
     assert_eq!(checked(&written), Err(ProgramRefused::Mismatch { group: 0, binding: 0 }));
     assert_eq!(checked(&as_uniform), Err(ProgramRefused::Mismatch { group: 0, binding: 0 }));
     assert_eq!(checked(&as_storage), Err(ProgramRefused::Mismatch { group: 0, binding: 0 }));
+}
+
+#[test]
+fn a_draw_program_listing_storage_to_write_is_refused_whatever_its_shader_declares() {
+    // Catches a draw program let write storage, which WebGPU never binds for writing in a vertex stage, whether its
+    // shader declares it written or only read (ADR-0026).
+    let mut listed = splats(48);
+    listed.bindings[0].kind = BindingKind::Storage { bytes: 48, access: Access::Write };
+    let mut declared = listed.clone();
+    declared.wgsl = declared.wgsl.replace("var<storage, read>", "var<storage, read_write>");
+
+    assert_eq!(checked(&listed), Err(ProgramRefused::Writes { group: 0, binding: 0 }));
+    assert_eq!(checked(&declared), Err(ProgramRefused::Writes { group: 0, binding: 0 }));
 }
 
 #[test]
@@ -287,7 +301,11 @@ fn storage_the_gpu_would_not_bind_is_refused() {
     let limits = wgpu::Limits::default();
     let most = u32::try_from(limits.max_storage_buffer_binding_size).expect("the default limit is under 4 GiB");
     let mut many = splats(48);
-    let more = (1..=8).map(|binding| Binding { group: 1, binding, kind: BindingKind::Storage { bytes: 4 } });
+    let more = (1..=8).map(|binding| Binding {
+        group: 1,
+        binding,
+        kind: BindingKind::Storage { bytes: 4, access: Access::Read },
+    });
     many.bindings.extend(more);
     let mut uniforms_beside = splats(48);
     let uniforms = (1..=8).map(|binding| Binding { group: 1, binding, kind: BindingKind::Uniform { bytes: 4 } });
@@ -296,7 +314,10 @@ fn storage_the_gpu_would_not_bind_is_refused() {
     assert_eq!(checked(&splats(0)), Err(ProgramRefused::Size { group: 0, binding: 0 }));
     assert_eq!(checked(&splats(most)), Ok(()));
     assert_eq!(checked(&splats(most + 4)), Err(ProgramRefused::Size { group: 0, binding: 0 }));
-    assert_eq!(checked(&many), Err(ProgramRefused::Many { kind: BindingKind::Storage { bytes: 0 } }));
+    assert_eq!(
+        checked(&many),
+        Err(ProgramRefused::Many { kind: BindingKind::Storage { bytes: 0, access: Access::Read } })
+    );
     assert_eq!(checked(&uniforms_beside), Ok(()));
 }
 

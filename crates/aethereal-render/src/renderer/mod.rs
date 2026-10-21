@@ -3,6 +3,7 @@
 mod walk;
 
 use crate::Gpu;
+use crate::compute::{self, ComputeId, Computed, CreateCompute};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
 use crate::frame::{
     self, CreateFrame, DepthUse, Does, ENDS_IN, EffectReads, Ends, Frame, FrameId, FrameRefused, Framed, Holds, Load,
@@ -18,7 +19,7 @@ use crate::placement::{
     Wrap,
 };
 use crate::program::{
-    self, Binding, BindingKind, Blend, CreateProgram, Cull, Depth, PerInstance, ProgramId, Programmed,
+    self, Access, Binding, BindingKind, Blend, CreateProgram, Cull, Depth, PerInstance, ProgramId, Programmed,
 };
 use crate::readback::{self, Bytes, Copied, Order, Pixels, ReadBack, ReadRefused, ReadStorage, Readable};
 use crate::shape::{ColourFormat, DepthFormat, Shape};
@@ -81,6 +82,10 @@ impl Carries<CreateProgram> for Renderer {
     type Answers = (Programmed,);
 }
 
+impl Carries<CreateCompute> for Renderer {
+    type Answers = (Computed,);
+}
+
 impl Carries<CreateInstances> for Renderer {
     type Answers = (Instanced,);
 }
@@ -134,9 +139,9 @@ impl Kind for RendererConfig {
     const NAME: KindName = KindName::new("aether.render.config");
 }
 
-/// What an actor asks the renderer: to make a mesh, a texture, a program, an effect, instances, uniforms, storage, or a
-/// frame, to write instances, uniforms, or storage it made, to place what is drawn, the shape of a pass it joins, to
-/// release what it made, to read back what it draws or storage, or to time what it draws.
+/// What an actor asks the renderer: to make a mesh, a texture, a program, a compute program, an effect, instances,
+/// uniforms, storage, or a frame, to write instances, uniforms, or storage it made, to place what is drawn, the shape of
+/// a pass it joins, to release what it made, to read back what it draws or storage, or to time what it draws.
 pub struct Rendering;
 
 impl Protocol for Rendering {
@@ -144,6 +149,7 @@ impl Protocol for Rendering {
         CreateMesh,
         CreateTexture,
         CreateProgram,
+        CreateCompute,
         CreateInstances,
         WriteInstances,
         CreateUniforms,
@@ -171,6 +177,10 @@ impl Carries<CreateTexture> for Rendering {
 
 impl Carries<CreateProgram> for Rendering {
     type Answers = (Programmed,);
+}
+
+impl Carries<CreateCompute> for Rendering {
+    type Answers = (Computed,);
 }
 
 impl Carries<CreateInstances> for Rendering {
@@ -235,6 +245,7 @@ pub enum Release {
     Mesh(MeshId),
     Texture(TextureId),
     Program(ProgramId),
+    Compute(ComputeId),
     Instances(InstancesId),
     Uniforms(UniformsId),
     Storage(StorageId),
@@ -255,6 +266,7 @@ struct Kept {
     meshes: Made<Mesh>,
     textures: Made<Texture>,
     programs: Made<Program>,
+    computes: Made<Compute>,
     instances: Made<Instances>,
     uniforms: Made<Uniforms>,
     storage: Made<Storage>,
@@ -322,6 +334,16 @@ struct Program {
     bindings: Vec<Binding>,
     groups: Vec<wgpu::BindGroupLayout>,
     shape: Shape,
+}
+
+/// A compute program on the GPU: its pipeline, what it binds, the layout of each group it binds in, and the size of its
+/// workgroups, which a dispatch counts the workgroups it runs by (ADR-0026).
+#[expect(dead_code, reason = "a compute program is kept for the dispatches made with it, which read it")]
+struct Compute {
+    pipeline: wgpu::ComputePipeline,
+    bindings: Vec<Binding>,
+    groups: Vec<wgpu::BindGroupLayout>,
+    workgroup: [u32; 3],
 }
 
 /// What a program's stages read.
@@ -398,6 +420,7 @@ impl Actor for Renderer {
         CreateMesh,
         CreateTexture,
         CreateProgram,
+        CreateCompute,
         CreateInstances,
         WriteInstances,
         CreateUniforms,
@@ -435,6 +458,7 @@ impl Actor for Renderer {
             meshes: Made::default(),
             textures: Made::default(),
             programs: Made::default(),
+            computes: Made::default(),
             instances: Made::default(),
             uniforms: Made::default(),
             storage: Made::default(),
@@ -753,6 +777,28 @@ impl Handles<CreateProgram> for Renderer {
     }
 }
 
+impl Handles<CreateCompute> for Renderer {
+    type Sends = (ToSender<Computed>,);
+
+    fn handle(&mut self, create: CreateCompute, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let limits = turn.open(&mut self.gpu)?.device().limits();
+        let workgroup = match compute::check(&create, &limits) {
+            Ok(workgroup) => workgroup,
+            Err(why) => {
+                turn.reply(&Computed::Refused(why))?;
+                return Ok(());
+            }
+        };
+
+        let gpu = turn.open(&mut self.gpu)?;
+        let made = compute_pipeline(gpu.device(), &create, workgroup);
+        let id = self.made(turn, |kept, id, maker| kept.computes.keep(id, maker, made))?;
+        turn.reply(&Computed::Made(ComputeId { id }))?;
+
+        Ok(())
+    }
+}
+
 impl Handles<CreateInstances> for Renderer {
     type Sends = (ToSender<Instanced>,);
 
@@ -1036,6 +1082,7 @@ impl Handles<Release> for Renderer {
             Release::Mesh(mesh) => kept.meshes.release(mesh.id, by).map(drop),
             Release::Texture(texture) => kept.textures.release(texture.id, by).map(drop),
             Release::Program(program) => kept.programs.release(program.id, by).map(drop),
+            Release::Compute(compute) => kept.computes.release(compute.id, by).map(drop),
             Release::Instances(instances) => {
                 let released = kept.instances.release(instances.id, by);
                 if let Owned::Mine(made) = &released {
@@ -1076,6 +1123,7 @@ impl Handles<Ended> for Renderer {
             kept.meshes.release_all(maker);
             kept.textures.release_all(maker);
             kept.programs.release_all(maker);
+            kept.computes.release_all(maker);
             for (id, made) in kept.instances.release_all(maker) {
                 kept.last_drawn(id, made.held.length);
             }
@@ -1801,7 +1849,7 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
         label: None,
         source: wgpu::ShaderSource::Wgsl(create.wgsl.as_str().into()),
     });
-    let groups = groups(device, &create.bindings);
+    let groups = groups(device, &create.bindings, wgpu::ShaderStages::VERTEX_FRAGMENT);
     let bound: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(Some).collect();
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
@@ -1915,7 +1963,7 @@ fn effect_pipeline(device: &wgpu::Device, create: &CreateEffect) -> Program {
         })
         .collect();
     let reads = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &entries });
-    let mut groups = groups(device, &create.bindings);
+    let mut groups = groups(device, &create.bindings, wgpu::ShaderStages::VERTEX_FRAGMENT);
     match groups.first_mut() {
         Some(first) => *first = reads,
         None => groups.push(reads),
@@ -1960,6 +2008,32 @@ fn effect_pipeline(device: &wgpu::Device, create: &CreateEffect) -> Program {
         groups,
         shape: create.shape,
     }
+}
+
+/// The pipeline of the compute program `create` asks for, its workgroups of `workgroup` invocations, made from what
+/// its check let through.
+fn compute_pipeline(device: &wgpu::Device, create: &CreateCompute, workgroup: [u32; 3]) -> Compute {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(create.wgsl.as_str().into()),
+    });
+    let groups = groups(device, &create.bindings, wgpu::ShaderStages::COMPUTE);
+    let bound: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(Some).collect();
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &bound,
+        immediate_size: 0,
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        module: &module,
+        entry_point: Some(&create.entry),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
+    });
+
+    Compute { pipeline, bindings: create.bindings.clone(), groups, workgroup }
 }
 
 /// How a target read so is sampled, as wgpu names it.
@@ -2014,8 +2088,8 @@ fn attributes_of(layout: &VertexLayout) -> Vec<wgpu::VertexAttribute> {
 }
 
 /// The layout of each group `bindings` binds in, from the first to the last of them, an empty one for a group they
-/// skip; each binding is seen by both stages.
-fn groups(device: &wgpu::Device, bindings: &[Binding]) -> Vec<wgpu::BindGroupLayout> {
+/// skip; each binding is seen by the stages `visibility` names.
+fn groups(device: &wgpu::Device, bindings: &[Binding], visibility: wgpu::ShaderStages) -> Vec<wgpu::BindGroupLayout> {
     let count = bindings.iter().map(|binding| binding.group + 1).max().unwrap_or(0);
 
     (0..count)
@@ -2025,7 +2099,7 @@ fn groups(device: &wgpu::Device, bindings: &[Binding]) -> Vec<wgpu::BindGroupLay
                 .filter(|binding| binding.group == group)
                 .map(|binding| wgpu::BindGroupLayoutEntry {
                     binding: binding.binding,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    visibility,
                     ty: binding_type(binding.kind),
                     count: None,
                 })
@@ -2043,8 +2117,8 @@ fn binding_type(kind: BindingKind) -> wgpu::BindingType {
             has_dynamic_offset: false,
             min_binding_size: wgpu::BufferSize::new(u64::from(bytes)),
         },
-        BindingKind::Storage { bytes } => wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
+        BindingKind::Storage { bytes, access } => wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: access == Access::Read },
             has_dynamic_offset: false,
             min_binding_size: wgpu::BufferSize::new(u64::from(bytes)),
         },
