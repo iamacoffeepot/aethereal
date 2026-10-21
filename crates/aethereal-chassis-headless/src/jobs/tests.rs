@@ -3,8 +3,8 @@
 use super::*;
 use crate::Monotonic;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Handles, Job, Runner, Running, RunsJob, Sleep, Slept,
-    Time, Top, Turn,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Handles, Job, Runner, Running, Sleep, Slept, Time, Top,
+    Turn,
 };
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_substrate::{Clock, Engine};
@@ -74,7 +74,7 @@ impl Actor for Asker {
     type Config = Nothing;
     type Key = ();
     type Handles = (Answer<Ran, Nothing>,);
-    type BeginSends = (RunsJob<Where, Nothing>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -198,7 +198,7 @@ impl Actor for Sleeper {
     type Config = Nothing;
     type Key = ();
     type Handles = (Answer<Ran, Nothing>, Answer<Slept, Woke>);
-    type BeginSends = (RunsJob<Forever, Nothing>, RunsJob<Sleep, Woke>);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {

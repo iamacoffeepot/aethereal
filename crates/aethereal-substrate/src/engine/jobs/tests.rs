@@ -5,8 +5,8 @@ use super::super::*;
 use super::*;
 use crate::Entry;
 use aethereal_actor::{
-    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Handles, Job, JobType, Runner, Running, RunsJob, Spawns, Time,
-    ToType, ToWithoutMail, Top, Turn,
+    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Handles, Job, JobType, Runner, Running, Spawns, Time, ToType,
+    ToWithoutMail, Top, Turn,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
 use std::cell::RefCell;
@@ -291,7 +291,7 @@ impl Actor for Worker {
     type Config = Which;
     type Key = ();
     type Handles = (Go, Answer<Doubled, Which>, Answer<Rang, GiveUp>, Answer<Shrunk, Which>);
-    type BeginSends = (RunsJob<Double, Which>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: Which, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -307,18 +307,7 @@ impl Actor for Worker {
 }
 
 impl Handles<Go> for Worker {
-    type Sends = (
-        RunsJob<Double, Which>,
-        RunsJob<Fails, Which>,
-        RunsJob<Panics, Which>,
-        RunsJob<Sleeps, Which>,
-        RunsJob<Unlinked, Which>,
-        RunsJob<Ring, GiveUp>,
-        RunsJob<Measure, Which>,
-        RunsJob<Hangs, Which>,
-        RunsJob<Shrink, Which>,
-        Spawns<Failing>,
-    );
+    type Sends = (Spawns<Failing>,);
 
     fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let which = Which { at: go.at };
@@ -456,7 +445,7 @@ impl Actor for Failing {
     type Config = Which;
     type Key = ();
     type Handles = (Answer<Doubled, Which>,);
-    type BeginSends = (RunsJob<Unlinked, Which>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(which: Which, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {

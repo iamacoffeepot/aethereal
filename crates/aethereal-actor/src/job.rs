@@ -6,11 +6,10 @@
 //! is handed to its handler of [`Answer<J::Done, C>`](crate::Answer) with
 //! the context.
 
-use crate::declared::{DeclaredBy, Handles, Marker, RepliesTo, RepliesWith, ReplyWithin, Sending, Target};
 #[cfg(feature = "std")]
 use crate::pins;
 use crate::{
-    Actors, ActorsReader, ActorsWriter, Answer, BlobId, Fault, MailId, Seated, Time, Timer, Until, Unwritable, Within,
+    Actors, ActorsReader, ActorsWriter, BlobId, Fault, MailId, Seated, Time, Timer, Until, Unwritable, Within,
 };
 use aethereal_data::{
     ActorId, Budget, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, KindName, Plain, Reader, Schema,
@@ -20,7 +19,6 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::{self, Future};
-use core::marker::PhantomData;
 use core::mem;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -215,31 +213,6 @@ impl Decode<Within> for JobId {
         Ok(Self(MailId { sender, count }))
     }
 }
-
-/// A handler may run a job of type `J`, keeping a context of kind `C` until it is answered (ADR-0018).
-///
-/// It builds only when the actor handles [`Answer<J::Done, C>`](crate::Answer). The job's own type says what it answers
-/// with, so no protocol is named, as one is for a request (ADR-0017).
-pub struct RunsJob<J, C>(PhantomData<fn() -> (J, C)>);
-
-impl<J: Job, C> Marker for RunsJob<J, C> {
-    const SENDING: Sending = Sending::new(KindId::of::<J>(), Target::Job);
-}
-
-/// An actor that runs a job handles what it answers with, with its context.
-impl<T, J, C> DeclaredBy<T> for RunsJob<J, C>
-where
-    J: Job,
-    C: Kind + Decode<Within> + 'static,
-    T: Handles<Answer<J::Done, C>>,
-{
-}
-
-impl<T, J, C> RepliesTo<T> for RunsJob<J, C> {}
-
-impl<Answers, J, C> ReplyWithin<Answers, ()> for RunsJob<J, C> {}
-
-impl<A, J, C> RepliesWith<A> for RunsJob<J, C> {}
 
 /// Why a turn ran no job (ADR-0018).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

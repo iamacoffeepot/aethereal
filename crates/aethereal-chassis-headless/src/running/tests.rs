@@ -2,8 +2,8 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Drained, Ending, Fault, Handles, Held, On, RunsJob, Sleep, Slept,
-    Start, Stop, Tick, ToSender, Top, Turn,
+    Actor, Answer, Answered, Beginning, ChildOf, Drained, Ending, Fault, Handles, Held, On, Sleep, Slept, Start, Stop,
+    Tick, ToSender, Top, Turn,
 };
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_substrate::{Engine, Jobs, Setup};
@@ -275,7 +275,7 @@ impl Actor for Napper {
 }
 
 impl Handles<On<Start>> for Napper {
-    type Sends = (RunsJob<Sleep, Nothing>,);
+    type Sends = ();
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.run(&Sleep { until: turn.now() + Duration::from_millis(20) }, &Nothing)?;

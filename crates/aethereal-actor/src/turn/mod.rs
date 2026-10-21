@@ -21,10 +21,10 @@ use crate::{
     Table, Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable, What, Within,
     Written,
 };
+use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
-use crate::{Job, JobId, RunsJob, Unrun};
-use aethereal_data::{ActorId, ActorPath, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
+use aethereal_data::{ActorId, ActorPath, Decode, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -1030,7 +1030,7 @@ impl Seat<'_> {
             Target::Type(_, id) => receiver.id() == id,
             Target::Handling(kinds) => receiver.lists_all(kinds),
             Target::Path(segment) => receiver.id() == segment.kind,
-            Target::Job | Target::Spawned => false,
+            Target::Spawned => false,
         };
         let receiver = receiver.name();
         assert!(
@@ -1698,18 +1698,65 @@ impl<Me, S> Turn<'_, Me, S> {
     /// became of it with the context, as [`Answer<J::Done, C>`](crate::Answer), in a later step, as for a request it
     /// asked (ADR-0018). The job's id is its mail's: it takes the next count of what this actor sends.
     ///
-    /// It builds only when the turn's sends list [`RunsJob<J, C>`](crate::RunsJob), which only an actor that handles
-    /// the answer may.
+    /// It builds only when the actor handles [`Answer<J::Done, C>`](crate::Answer). Running a job sends no mail to an
+    /// actor, so the turn's sends do not list it:
+    ///
+    /// ```compile_fail,E0277
+    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Sleep, Turn};
+    /// use aethereal_data::{Kind, KindName, Plain};
+    ///
+    /// #[derive(Plain)]
+    /// struct Nap;
+    ///
+    /// impl Kind for Nap {
+    ///     const NAME: KindName = KindName::new("aether.doc.nap");
+    /// }
+    ///
+    /// #[derive(Plain)]
+    /// struct Napper;
+    ///
+    /// impl Kind for Napper {
+    ///     const NAME: KindName = KindName::new("aether.doc.napper");
+    /// }
+    ///
+    /// // Handles no `Answer<Slept, Nap>`.
+    /// impl Actor for Napper {
+    ///     type Config = Napper;
+    ///     type Key = ();
+    ///     type Handles = (Nap,);
+    ///     type BeginSends = ();
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(napper: Napper, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///         Ok(napper)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// impl Handles<Nap> for Napper {
+    ///     type Sends = ();
+    ///
+    ///     fn handle(&mut self, nap: Nap, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    ///         let until = turn.now();
+    ///         turn.run(&Sleep { until }, &nap)?;
+    ///
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
     ///
     /// # Errors
     ///
     /// [`Unrun`] when the job or its context could not be written, or the turn runs in a guest.
     #[cfg(feature = "std")]
-    pub fn run<J, C, I>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun>
+    pub fn run<J, C>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun>
     where
         J: Job,
-        C: Kind + Encode<Within>,
-        S: Allows<RunsJob<J, C>, I>,
+        C: Kind + Encode<Within> + Decode<Within> + 'static,
+        Me: Handles<Answer<J::Done, C>>,
     {
         self.seat.run(job, context)
     }
@@ -2047,17 +2094,17 @@ impl<Me, S> Beginning<'_, Me, S> {
     /// Runs `job` outside the steps, on its host, keeping `context` until it is answered, as a turn's job is: in a
     /// turn after this `begin` (ADR-0018). A `begin` that fails runs nothing.
     ///
-    /// It builds only when the `begin`'s sends list [`RunsJob<J, C>`](crate::RunsJob).
+    /// It builds only when the actor handles [`Answer<J::Done, C>`](crate::Answer), as a turn's `run` does.
     ///
     /// # Errors
     ///
     /// [`Unrun`] when the job or its context could not be written, or the `begin` runs in a guest.
     #[cfg(feature = "std")]
-    pub fn run<J, C, I>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun>
+    pub fn run<J, C>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun>
     where
         J: Job,
-        C: Kind + Encode<Within>,
-        S: Allows<RunsJob<J, C>, I>,
+        C: Kind + Encode<Within> + Decode<Within> + 'static,
+        Me: Handles<Answer<J::Done, C>>,
     {
         self.seat.run(job, context)
     }
