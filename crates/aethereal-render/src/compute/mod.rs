@@ -5,18 +5,19 @@
 mod tests;
 
 use crate::program::{Binding, ProgramRefused, Stage, check_bindings, check_uses, entry, listed, parsed};
-use aethereal_data::{Kind, KindName, Plain};
+use aethereal_actor::BlobRef;
+use aethereal_data::{Bound, Kind, KindName, Plain};
 use naga::valid::ModuleInfo;
 use naga::{AddressSpace, ArraySize, Handle, Module, Type, TypeInner};
 
-/// Asks the renderer for a compute program: the compute stage `entry` of the WGSL `wgsl`, binding what `bindings`
-/// lists, storage to read or to write. Answered with [`Computed`].
+/// Asks the renderer for a compute program: the compute stage `entry` of the WGSL the blob `wgsl` holds as UTF-8,
+/// binding what `bindings` lists, storage to read or to write. Answered with [`Computed`].
 ///
 /// Its workgroup size is read from the stage's `@workgroup_size`, which is constant, as a module that declares a
-/// constant a pipeline overrides is refused.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+/// constant a pipeline overrides is refused. The WGSL travels as a blob, as a program's does.
+#[derive(Debug, Clone, PartialEq, Eq, Bound)]
 pub struct CreateCompute {
-    pub wgsl: String,
+    pub wgsl: BlobRef,
     pub entry: String,
     pub bindings: Vec<Binding>,
 }
@@ -74,18 +75,18 @@ impl Array {
     }
 }
 
-/// Checks a compute program before it is made: that its WGSL is a valid module whose entry point is a compute stage,
-/// binding only what `bindings` lists, each as it is listed, within `limits`, and running workgroups no larger than
-/// `limits` lets one be, in invocations and in workgroup memory. Answers the size of its workgroups, and the storage
-/// it uses that ends in an array whose length is its buffer's.
+/// Checks a compute program before it is made, with `wgsl` the WGSL its blob holds: that the WGSL is a valid module
+/// whose entry point is a compute stage, binding only what `bindings` lists, each as it is listed, within `limits`,
+/// and running workgroups no larger than `limits` lets one be, in invocations and in workgroup memory. Answers the
+/// size of its workgroups, and the storage it uses that ends in an array whose length is its buffer's.
 ///
 /// # Errors
 ///
 /// Why it would not be made as asked.
-pub fn check(create: &CreateCompute, limits: &wgpu::Limits) -> Result<Checked, ProgramRefused> {
+pub fn check(create: &CreateCompute, wgsl: &str, limits: &wgpu::Limits) -> Result<Checked, ProgramRefused> {
     check_bindings(&create.bindings, 0, limits)?;
 
-    let (module, info) = parsed(&create.wgsl)?;
+    let (module, info) = parsed(wgsl)?;
     let at = entry(&module, Stage::Compute, &create.entry)?;
     check_uses(&module, &info, at, |group, binding| listed(&create.bindings, group, binding))?;
     let workgroup = module.entry_points[at].workgroup_size;

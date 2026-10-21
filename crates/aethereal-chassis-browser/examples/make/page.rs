@@ -178,7 +178,7 @@ impl Requests {
             indices: turn.put(bytes([0, 1, 3]))?,
         };
         let shade = CreateProgram {
-            wgsl: String::from(SHADE),
+            wgsl: turn.put(Vec::from(SHADE))?,
             vertex: String::from("place"),
             fragment: String::from("shade"),
             layout,
@@ -188,11 +188,11 @@ impl Requests {
             // Made against a shape of its own, as it is drawn in no pass: a program is made for any shape.
             shape: Shape::with_depth(ColourFormat::Rgba8),
         };
-        let mut unread = shade.clone();
-        unread.wgsl = unread.wgsl.replace(
+        let tinted = SHADE.replace(
             "(@location(0) corner: vec2<f32>)",
             "(@location(0) corner: vec2<f32>, @location(1) tint: vec4<f32>)",
         );
+        let unread = CreateProgram { wgsl: turn.put(tinted.into_bytes())?, ..shade.clone() };
 
         Ok(Self { triangle, texture, past, shade, unread })
     }

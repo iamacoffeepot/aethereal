@@ -2,8 +2,8 @@
 //! storage it drew from.
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick, Top,
-    Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, BlobRef, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
+    Top, Turn, path,
 };
 use aethereal_chassis_browser::{Browser, Performance, open, renderer};
 use aethereal_data::{Bound, Kind, KindName, Plain};
@@ -290,17 +290,17 @@ fn corners() -> VertexLayout {
     VertexLayout { stride: 8, attributes: vec![corner] }
 }
 
-/// A program of `wgsl`, drawn from `vertex` and `fragment` over the quad into `shape`, binding `bindings`, blending by
-/// `blend`.
+/// A program of the WGSL the blob `wgsl` holds, drawn from `vertex` and `fragment` over the quad into `shape`, binding
+/// `bindings`, blending by `blend`.
 fn program(
-    wgsl: &str,
+    wgsl: BlobRef,
     (vertex, fragment): (&str, &str),
     shape: Shape,
     bindings: Vec<Binding>,
     blend: Blend,
 ) -> CreateProgram {
     CreateProgram {
-        wgsl: String::from(wgsl),
+        wgsl,
         vertex: String::from(vertex),
         fragment: String::from(fragment),
         layout: corners(),
@@ -364,7 +364,14 @@ impl Handles<Answer<Meshed, Learned>> for Reader {
         };
         let storage = Binding { group: 0, binding: 0, kind: BindingKind::Storage { bytes: 32, access: Access::Read } };
         let shape = learned.shape;
-        let splats = program(SPLATS, ("place", "shade"), shape, vec![storage], Blend::Opaque);
+        let wgsl = match turn.put(Vec::from(SPLATS)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no splats asked: {why}"));
+                return Ok(());
+            }
+        };
+        let splats = program(wgsl, ("place", "shade"), shape, vec![storage], Blend::Opaque);
         turn.to(path::<Renderer>(())).ask(&splats, &Making::Splats { shape, mesh })?;
 
         Ok(())
@@ -385,7 +392,14 @@ impl Handles<Answer<Programmed, Making>> for Reader {
         };
         let (mesh, splats) = match making {
             Making::Splats { shape, mesh } => {
-                let tint = program(TINT, ("cover", "tint"), shape, Vec::new(), Blend::Multiply);
+                let wgsl = match turn.put(Vec::from(TINT)) {
+                    Ok(wgsl) => wgsl,
+                    Err(why) => {
+                        say(format!("no tint asked: {why}"));
+                        return Ok(());
+                    }
+                };
+                let tint = program(wgsl, ("cover", "tint"), shape, Vec::new(), Blend::Multiply);
                 turn.to(path::<Renderer>(())).ask(&tint, &Making::Tint { mesh, splats: made })?;
                 return Ok(());
             }

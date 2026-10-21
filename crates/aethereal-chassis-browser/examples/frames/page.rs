@@ -2,8 +2,8 @@
 //! both, places a surface and a splat in it, then reads back what was drawn and times the frame's passes.
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick, Top,
-    Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, BlobRef, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
+    Top, Turn, path,
 };
 use aethereal_chassis_browser::{Browser, Performance, open, renderer};
 use aethereal_data::{Bound, Kind, KindName, Plain};
@@ -292,11 +292,11 @@ fn corners() -> VertexLayout {
     VertexLayout { stride: 8, attributes: vec![corner] }
 }
 
-/// A program of `wgsl` over the quad, drawing into the scene, a target of floats with depth, using depth as `depth`
-/// says.
-fn program(wgsl: &str, depth: Depth) -> CreateProgram {
+/// A program of the WGSL the blob `wgsl` holds over the quad, drawing into the scene, a target of floats with depth,
+/// using depth as `depth` says.
+fn program(wgsl: BlobRef, depth: Depth) -> CreateProgram {
     CreateProgram {
-        wgsl: String::from(wgsl),
+        wgsl,
         vertex: String::from("place"),
         fragment: String::from("shade"),
         layout: corners(),
@@ -359,8 +359,15 @@ impl Handles<Answer<Meshed, Learned>> for Framer {
             say(format!("the quad was not made: {answered:?}"));
             return Ok(());
         };
+        let wgsl = match turn.put(Vec::from(TINT)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no tint asked: {why}"));
+                return Ok(());
+            }
+        };
         let tint = CreateEffect {
-            wgsl: String::from(TINT),
+            wgsl,
             fragment: String::from("tint"),
             reads: vec![Read::Float],
             bindings: Vec::new(),
@@ -389,7 +396,14 @@ impl Handles<Answer<Effected, MadeMesh>> for Framer {
             say(format!("the tint reads what it was not asked to: {:?}", effect.reads()));
             return Ok(());
         };
-        let surface = program(SURFACE, Depth::TestWrite);
+        let wgsl = match turn.put(Vec::from(SURFACE)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no surface asked: {why}"));
+                return Ok(());
+            }
+        };
+        let surface = program(wgsl, Depth::TestWrite);
         turn.to(path::<Renderer>(())).ask(&surface, &Making::Surface { mesh: made.mesh, tint })?;
 
         Ok(())
@@ -410,7 +424,14 @@ impl Handles<Answer<Programmed, Making>> for Framer {
         };
         let (mesh, tint, surface) = match making {
             Making::Surface { mesh, tint } => {
-                let splat = program(SPLAT, Depth::Test);
+                let wgsl = match turn.put(Vec::from(SPLAT)) {
+                    Ok(wgsl) => wgsl,
+                    Err(why) => {
+                        say(format!("no splat asked: {why}"));
+                        return Ok(());
+                    }
+                };
+                let splat = program(wgsl, Depth::Test);
                 turn.to(path::<Renderer>(())).ask(&splat, &Making::Splat { mesh, tint, surface: made })?;
                 return Ok(());
             }

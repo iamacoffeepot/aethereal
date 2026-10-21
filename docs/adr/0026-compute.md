@@ -35,9 +35,10 @@ let create = frame.finish(Glaze, Effect::new(&glaze, (scene,)))?;
 **A compute program is made by asking for its WGSL, its entry point, and what it binds,** as a program is (ADR-0021):
 
 ```rust
-CreateCompute { wgsl: String, entry: String, bindings: Vec<Binding> }  -> Computed::Made(ComputeId) | Computed::Refused(ProgramRefused)
+CreateCompute { wgsl: BlobRef, entry: String, bindings: Vec<Binding> }  -> Computed::Made(ComputeId) | Computed::Refused(ProgramRefused)
 ```
 
+- Its WGSL travels as a blob of UTF-8, as a program's does (ADR-0021).
 - Its workgroup size is read from the shader's `@workgroup_size`, which must be constant.
 - It is checked as a program is: its WGSL valid, `entry` a compute stage, each binding it uses listed, each listed one bound as the shader declares it, and no more than the device allows: invocations in a workgroup, workgroup memory, and storage buffers a stage binds.
 - It is released as everything the render root makes is, and kept by the dispatches made with it until they are released (ADR-0023: a placement keeps what it draws).

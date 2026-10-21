@@ -65,15 +65,31 @@ impl Fault {
 /// It is what `?` makes of a [`DecodeError`] in a handler. A handler that is
 /// to carry on past unreadable mail matches on the error.
 #[derive(Debug, PartialEq, Eq, Plain)]
-pub struct Unreadable;
+pub enum Unreadable {
+    /// The bytes are not a value of the kind.
+    Malformed,
+    /// Reading them would take `requested` bytes at once, more than the `remaining` left of what the read may take:
+    /// mail past the engine's limit, whose large parts belong in blobs.
+    Limit { requested: u64, remaining: u64 },
+}
 
 impl Kind for Unreadable {
     const NAME: KindName = KindName::new("aether.actor.unreadable");
 }
 
 impl From<DecodeError> for Fault {
-    fn from(_: DecodeError) -> Self {
-        Self::bare::<Unreadable>()
+    fn from(error: DecodeError) -> Self {
+        let reason = match error {
+            DecodeError::BudgetExceeded { requested, remaining } => Unreadable::Limit {
+                requested: u64::try_from(requested).unwrap_or(u64::MAX),
+                remaining: u64::try_from(remaining).unwrap_or(u64::MAX),
+            },
+            _ => Unreadable::Malformed,
+        };
+        // A reason that holds no collection always encodes.
+        let bytes = to_bytes(&reason).unwrap_or_default();
+
+        Self { kind: KindId::of::<Unreadable>(), bytes }
     }
 }
 
@@ -127,5 +143,17 @@ mod tests {
 
         assert_eq!(fault.read(&mut budget), Ok(Some(FileMissing { name: String::from("map.bin") })));
         assert_eq!(fault.read::<FileLocked>(&mut budget), Ok(None));
+    }
+
+    #[test]
+    fn a_read_past_its_limit_faults_naming_what_it_asked_for_and_what_was_left() {
+        // Catches the sizes of a read past the engine's limit dropped as `?` makes a fault of it, which leaves the log
+        // of a turn that failed on mail too large to read saying only that it could not read it.
+        let past = Fault::from(DecodeError::BudgetExceeded { requested: 7168, remaining: 1024 });
+        let malformed = Fault::from(DecodeError::InvalidBoolean(2));
+        let read = |fault: &Fault| fault.read::<Unreadable>(&mut Budget::new(64));
+
+        assert_eq!(read(&past), Ok(Some(Unreadable::Limit { requested: 7168, remaining: 1024 })));
+        assert_eq!(read(&malformed), Ok(Some(Unreadable::Malformed)));
     }
 }

@@ -381,9 +381,16 @@ impl Handles<Answer<Meshed, Learned>> for Simulator {
             say(format!("the quad was not made: {answered:?}"));
             return Ok(());
         };
+        let wgsl = match turn.put(Vec::from(DOTS)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no dots asked: {why}"));
+                return Ok(());
+            }
+        };
         let corner = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
         let dots = CreateProgram {
-            wgsl: String::from(DOTS),
+            wgsl,
             vertex: String::from("place"),
             fragment: String::from("shade"),
             layout: VertexLayout { stride: 8, attributes: vec![corner] },
@@ -410,11 +417,14 @@ impl Handles<Answer<Programmed, MeshId>> for Simulator {
             say(format!("the dots were not made: {answered:?}"));
             return Ok(());
         };
-        let simulate = CreateCompute {
-            wgsl: String::from(SIMULATE),
-            entry: String::from("simulate"),
-            bindings: vec![field(Access::Write)],
+        let wgsl = match turn.put(Vec::from(SIMULATE)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no compute program asked: {why}"));
+                return Ok(());
+            }
         };
+        let simulate = CreateCompute { wgsl, entry: String::from("simulate"), bindings: vec![field(Access::Write)] };
         turn.to(path::<Renderer>(())).ask(&simulate, &Drawing { mesh, dots })?;
 
         Ok(())
