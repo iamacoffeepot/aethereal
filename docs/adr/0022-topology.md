@@ -105,6 +105,17 @@ turn.to(path::<Renderer>(())).send(&Release::Mesh(mesh))?;
 - Both see what a resolve sees (ADR-0011): the table as the step began, and in a fused turn's run what that run stood up and ended (ADR-0013). A child this turn stood up is found, as a send by `To::Child` finds it. The same holds for a typed path.
 - A guest reads each in one call out. For `turn.child` the host is handed the parent, the child's segment, and its kind, `Table::reach_child`, and answers with the child and its seat when one of the kind is live there, as `Table::reach` answers for a path. A child of the turn's own actor its host does not hold takes a second call, for the id to look it up among those the turn stood up. **This departs from the host answering with the kind** for the guest to compare: the host compares, as it does for a path.
 
+### `parent` and `child`: places named from where the sender stands
+
+```rust
+turn.to(parent()).send(&Pong { n })?;                 // an Anywhere type: whoever stands above, if it takes (Pong,)
+turn.to(child::<Unit>(&7)).send(&order)?;             // the Unit under 7 beneath the sender, if it made one
+```
+
+- **`parent::<P>()` and `child::<C>(&key)` are targets a turn's `to` takes, named from where the sender stands**, as `path::<L>(keys)` is named from the root. Each is found when the target is made (ADR-0016) and checked by what it names, and a place that does not hold it is as an empty place: mail to it is dropped, as at a typed path.
+- **`parent::<P>()` names the actor above by what it takes, a protocol `P`**, and builds only for a type that may stand `Anywhere`, whose parent's type is a fact of the run: the guest that stands beneath a host's actor cannot name the host's type at all. It reaches the parent when its type lists every kind of `P`, as `turn.cast::<P>` finds, and is declared as a send through a protocol reference is, `ToAny<P, K>`, with `P` found from the sends where one names `K`. A type that stands beneath one type, or its own, sends through `turn.parent()`, so each has one way to its parent. **This departs from `To::Parent` for those types**, whose send was checked at each send and stopped the engine when the parent did not list the kinds: a parent that does not take `P` now receives nothing, as a path whose actor is of another type.
+- **`child::<C>(&key)` names a child of the sender by its type**, and builds only where `C` may stand beneath the sender's type (`Admits`). It reaches the child the sender made under `key`, in this step or before, live or not, when it is of `C`'s kind, and is declared `ToType<C, K>`. A child an earlier turn of the step stood up is found, as by `To::ChildInstanced`, which it replaces; a child just spawned is sent to through the reference `spawn` answers.
+
 ### References
 
 **A fourth way to reach an actor is added to the three of ADR-0008: a typed path, named by the type of its last segment.** **This departs from ADR-0008**, which is edited to say so. It is not a reference the actor holds: the engine finds the actor there at each send, as it finds the sender's parent for `To::Parent`. It reaches the same actor a resolve of its path would, through the types that path is made of, which a resolve's cast cannot give (ADR-0016).

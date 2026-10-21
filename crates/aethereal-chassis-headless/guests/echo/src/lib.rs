@@ -4,7 +4,7 @@ use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, BlobRef, Carries, ChildOf, Ended, Ending,
     ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, On, Path, Protocol, Recursive, Refused,
     Resource, Runner, Running, Start, Stop, Tells, Tick, To, ToAny, ToSender, ToType, ToWithoutMail, Top, Turn,
-    Unanswered, Unrun, path,
+    Unanswered, Unrun, parent, path,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, Plain};
 use core::mem;
@@ -821,7 +821,7 @@ impl Handles<Ping> for Reporter {
     type Sends = (ToAny<(Pong,), Pong>,);
 
     fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.send_to_any(To::Parent, &Pong { n: ping.n + self.key })?;
+        turn.to(parent()).send(&Pong { n: ping.n + self.key })?;
 
         Ok(())
     }
@@ -1006,7 +1006,7 @@ impl Handles<Pong> for Hatcher {
     type Sends = (ToAny<(Pong,), Pong>,);
 
     fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.send_to_any(To::Parent, &pong)?;
+        turn.to(parent()).send(&pong)?;
 
         Ok(())
     }
@@ -1020,11 +1020,11 @@ impl Handles<Grow> for Hatcher {
         let _: ActorRef<Chick> = turn.spawn(&self.grown, chick).map_err(|why| unhatched(&why))?;
         let stray: Result<ActorRef<Stray>, _> = turn.spawn(&(), EchoConfig);
         if let Err(why) = stray {
-            turn.send_to_any(To::Parent, &Pong { n: 500 + refused(&why) })?;
+            turn.to(parent()).send(&Pong { n: 500 + refused(&why) })?;
         }
         let fake: Result<ActorRef<FakeChick>, _> = turn.spawn(&(100 + self.grown), AddBy { by: 0, deeper: 0 });
         if let Err(why) = fake {
-            turn.send_to_any(To::Parent, &Pong { n: 600 + refused(&why) })?;
+            turn.to(parent()).send(&Pong { n: 600 + refused(&why) })?;
         }
         let is_first = self.grown == 0;
         if is_first {
@@ -1777,7 +1777,7 @@ impl Handles<Answer<Pong, Which>> for Querent {
             Answered::Yes(pong) => Heard::Pong { at: which.at, n: pong.n },
             Answered::No(why) => Heard::No { at: which.at, why },
         };
-        turn.send_to_any(To::Parent, &heard)?;
+        turn.to(parent()).send(&heard)?;
 
         Ok(())
     }
@@ -1847,7 +1847,7 @@ impl Handles<Answer<Pong, Which>> for Opener {
             Answered::Yes(pong) => Heard::Pong { at: which.at, n: pong.n },
             Answered::No(why) => Heard::No { at: which.at, why },
         };
-        turn.send_to_any(To::Parent, &heard)?;
+        turn.to(parent()).send(&heard)?;
 
         Ok(())
     }
@@ -1857,7 +1857,7 @@ impl Handles<Heard> for Opener {
     type Sends = (ToAny<(Heard,), Heard>,);
 
     fn handle(&mut self, heard: Heard, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.send_to_any(To::Parent, &heard)?;
+        turn.to(parent()).send(&heard)?;
 
         Ok(())
     }
@@ -1947,10 +1947,10 @@ impl Handles<Ping> for Shelver {
 
     fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let len = usize::try_from(ping.n).unwrap_or(0);
-        turn.send_to_any(To::Parent, &Pong { n: ping.n })?;
+        turn.to(parent()).send(&Pong { n: ping.n })?;
         for more in 0..2 {
             let blob = turn.put(vec![7; len + more]).map_err(|why| unhatched(&why))?;
-            turn.send_to_any(To::Parent, &Book { blob })?;
+            turn.to(parent()).send(&Book { blob })?;
         }
 
         Ok(())
@@ -2203,7 +2203,7 @@ impl Handles<Answer<Pong, Stashed>> for Stasher {
             Answered::Yes(pong) => Heard::Pong { at, n: pong.n },
             Answered::No(why) => Heard::No { at, why },
         };
-        turn.send_to_any(To::Parent, &heard)?;
+        turn.to(parent()).send(&heard)?;
 
         Ok(())
     }
@@ -2284,7 +2284,7 @@ impl Handles<Pong> for Nester {
     type Sends = (ToAny<(Pong,), Pong>,);
 
     fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.send_to_any(To::Parent, &pong)?;
+        turn.to(parent()).send(&pong)?;
 
         Ok(())
     }

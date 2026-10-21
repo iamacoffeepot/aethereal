@@ -79,7 +79,8 @@ pub use job::{Copied, Driven, Job, JobId, NotRun, Runner, Running, Submitted, Un
 pub use job::{JobType, Lending, Outcome, Produced};
 pub use mail::{Mail, MailId};
 pub use path::{
-    Beneath, HandlersNeedIn, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Path, PathTo, Placed, There, TypeSegment, path,
+    Beneath, Child, HandlersNeedIn, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Parent, Path, PathTo, Placed, There,
+    TypeSegment, child, parent, path,
 };
 pub use placement::{Admits, Anywhere, AtTop, ChildOf, ParentOf, Parented, Placement, Recursive, Root, Spawner, Top};
 pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Proven, Reachable, Reaches, Watchable};
@@ -97,6 +98,7 @@ pub use subscribers::Subscribers;
 pub use time::Time;
 pub use turn::{
     Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseStage, FalseWatch, Forged,
-    Garbled, Hosted, Leaves, Lives, Logger, Refused, Request, Stood, Toward, Trapped, Turn, Turning, Unspawned, Why,
+    Garbled, Hosted, Leaves, Lives, Logger, Refused, Request, Stood, Toward, Trapped, Turn, Turning, Unspawned,
+    Vantage, Why,
 };
 pub use written::Written;

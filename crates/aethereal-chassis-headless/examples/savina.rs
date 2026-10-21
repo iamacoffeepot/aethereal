@@ -46,7 +46,7 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Admits, Allows, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Root, To, ToAny, ToSender,
-    ToType, Top, Turn,
+    ToType, Top, Turn, parent,
 };
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{Bound, Kind, KindName, Plain};
@@ -760,7 +760,7 @@ impl Handles<Request> for Fib {
 
     fn handle(&mut self, Request { number }: Request, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if number <= 2 {
-            turn.send_to_any(To::Parent, &Response { value: 1 })?;
+            turn.to(parent()).send(&Response { value: 1 })?;
             turn.close();
         } else {
             for (key, before) in [(0, number - 1), (1, number - 2)] {
@@ -782,7 +782,7 @@ impl Handles<Response> for Fib {
         self.sum += value;
         self.answers += 1;
         if self.answers == 2 {
-            turn.send_to_any(To::Parent, &Response { value: self.sum })?;
+            turn.to(parent()).send(&Response { value: self.sum })?;
             turn.close();
         }
 

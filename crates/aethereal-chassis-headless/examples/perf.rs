@@ -10,9 +10,9 @@
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Recursive, ToType, ToWithoutMail, Turn};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Recursive, ToType, Turn};
 use aethereal_chassis_headless::{Headless, Measured};
-use aethereal_data::{Kind, KindName, Plain, TypedKey};
+use aethereal_data::{Kind, KindName, Plain};
 use aethereal_substrate::Engine;
 use std::env;
 use std::hint;
@@ -103,9 +103,11 @@ impl Actor for Counter {
         for number in 1..=config.children + config.idle {
             let child = CounterConfig { number, children: 0, idle: 0, shape: config.shape };
             let is_busy = number <= config.children;
-            let spawned = turn.spawn::<Self>(&number, child).is_ok();
-            if spawned && is_busy {
-                turn.send(ToWithoutMail::ChildInstanced(Self::NAME, number.to_name()), &Count { left: TURNS })?;
+            let spawned = turn.spawn::<Self>(&number, child);
+            if let Ok(child) = spawned
+                && is_busy
+            {
+                turn.to(child).send(&Count { left: TURNS })?;
             }
         }
 

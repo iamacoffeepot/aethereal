@@ -1,9 +1,11 @@
 //! Typed paths: the actor named by its type, the segments above it filled in from each type's parent (ADR-0022).
 
+mod relative;
 mod roots;
 #[cfg(test)]
 mod tests;
 
+pub use relative::{Child, Parent, child, parent};
 pub use roots::{HandlersNeedIn, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Placed, There};
 
 use crate::{ChildOf, Top};

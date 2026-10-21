@@ -8,7 +8,7 @@ mod to;
 
 pub use hosted::{Broke, FalseSend, FalseStage, FalseWatch, Forged, Garbled, Hosted, Request, Trapped, Unspawned};
 pub use refused::Refused;
-pub use to::{Leaves, Lives, Toward};
+pub use to::{Leaves, Lives, Toward, Vantage};
 
 use crate::Submitted;
 #[cfg(feature = "std")]
@@ -1520,8 +1520,8 @@ impl<'a, Me, S> Turn<'a, Me, S> {
     ///     }
     /// }
     /// ```
-    pub fn to<R: Reachable>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
-        let at = target.at(self.seat.table);
+    pub fn to<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+        let at = target.at(&Vantage::new(&self.seat));
 
         Toward::new(&mut self.seat, at)
     }
@@ -2209,8 +2209,8 @@ impl<'a, Me, S> Beginning<'a, Me, S> {
     /// the sends and asks that chain on what this answers, as a turn's [`to`](Turn::to) is. Its mail goes with the mail
     /// of the turn this `begin` runs in, and what it asks is answered in a turn after this `begin`; a `begin` that
     /// fails sends and asks nothing.
-    pub fn to<R: Reachable>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
-        let at = target.at(self.seat.table);
+    pub fn to<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+        let at = target.at(&Vantage::new(&self.seat));
 
         Toward::new(&mut self.seat, at)
     }
@@ -2733,8 +2733,8 @@ impl<'a, Me, S> Ending<'a, Me, S> {
     ///     }
     /// }
     /// ```
-    pub fn to<R: Reachable>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Leaves> {
-        let at = target.at(self.seat.table);
+    pub fn to<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Leaves> {
+        let at = target.at(&Vantage::new(&self.seat));
 
         Toward::new(&mut self.seat, at)
     }
