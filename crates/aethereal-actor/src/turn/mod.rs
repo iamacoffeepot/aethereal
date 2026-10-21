@@ -16,10 +16,10 @@ use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Askable, Asking, ChildOf, Children, Claim, Claimed, Code,
     Declared, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances,
-    Keeping, Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, Owed, Owes, Parented, Payload,
+    Keeping, Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, On, Owed, Owes, Parented, Payload,
     ProtocolRef, Proven, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Spawns, Stage,
-    Subscribes, Table, Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable,
-    What, Within, Written,
+    Table, Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable, What, Within,
+    Written,
 };
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
@@ -598,6 +598,7 @@ impl fmt::Display for During {
             Self::Handling(Role::Ended) => write!(f, "its handler of endings"),
             Self::Handling(Role::Others) => write!(f, "its fallback"),
             Self::Handling(Role::Answer(kind)) => write!(f, "its handler of answers of {kind:?}"),
+            Self::Handling(Role::Stage(kind)) => write!(f, "its handler of the stage {kind:?}"),
             Self::End => write!(f, "its closing turn"),
         }
     }
@@ -1029,7 +1030,7 @@ impl Seat<'_> {
             Target::Type(_, id) => receiver.id() == id,
             Target::Handling(kinds) => receiver.lists_all(kinds),
             Target::Path(segment) => receiver.id() == segment.kind,
-            Target::Subscribed | Target::Job | Target::Spawned => false,
+            Target::Job | Target::Spawned => false,
         };
         let receiver = receiver.name();
         assert!(
@@ -1530,20 +1531,65 @@ impl<Me, S> Turn<'_, Me, S> {
     /// Subscribes this actor to the stage `K` of the program's lifecycle: the engine sends it `K` each time that stage
     /// runs, from the step after this one's fold (ADR-0020). Subscribing again changes nothing.
     ///
-    /// It builds only when the turn's sends list [`Subscribes<K>`](crate::Subscribes), which only a type that
-    /// handles `K` may.
-    pub fn subscribe<K: Stage, I>(&mut self)
+    /// It builds only when the actor's type handles [`On<K>`](crate::On):
+    ///
+    /// ```compile_fail,E0277
+    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Tick, Turn};
+    /// use aethereal_data::{Kind, KindName, Plain};
+    ///
+    /// #[derive(Plain)]
+    /// struct Wind;
+    ///
+    /// impl Kind for Wind {
+    ///     const NAME: KindName = KindName::new("aether.doc.wind");
+    /// }
+    ///
+    /// #[derive(Plain)]
+    /// struct Clock;
+    ///
+    /// impl Kind for Clock {
+    ///     const NAME: KindName = KindName::new("aether.doc.clock");
+    /// }
+    ///
+    /// // Handles no `On<Tick>`.
+    /// impl Actor for Clock {
+    ///     type Config = Clock;
+    ///     type Key = ();
+    ///     type Handles = (Wind,);
+    ///     type BeginSends = ();
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(clock: Clock, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///         Ok(clock)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// impl Handles<Wind> for Clock {
+    ///     type Sends = ();
+    ///
+    ///     fn handle(&mut self, _: Wind, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    ///         turn.subscribe::<Tick>();
+    ///
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    pub fn subscribe<K: Stage>(&mut self)
     where
-        S: Allows<Subscribes<K>, I>,
+        Me: Handles<On<K>>,
     {
         self.seat.ask(What::Subscribe(KindId::of::<K>()));
     }
 
     /// Unsubscribes this actor from the stage `K`: the engine no longer sends it `K`. Unsubscribing an actor that is
     /// not subscribed changes nothing.
-    pub fn unsubscribe<K: Stage, I>(&mut self)
+    pub fn unsubscribe<K: Stage>(&mut self)
     where
-        S: Allows<Subscribes<K>, I>,
+        Me: Handles<On<K>>,
     {
         self.seat.ask(What::Unsubscribe(KindId::of::<K>()));
     }
@@ -2196,20 +2242,57 @@ impl<Me, S> Beginning<'_, Me, S> {
     /// Subscribes this actor to the stage `K` of the program's lifecycle: the engine sends it `K` each time that stage
     /// runs, from the step after this one's fold (ADR-0020). Subscribing again changes nothing.
     ///
-    /// It builds only when the turn's sends list [`Subscribes<K>`](crate::Subscribes), which only a type that
-    /// handles `K` may.
-    pub fn subscribe<K: Stage, I>(&mut self)
+    /// It builds only when the actor's type handles [`On<K>`](crate::On):
+    ///
+    /// ```compile_fail,E0277
+    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Tick, Turn};
+    /// use aethereal_data::{Kind, KindName, Plain};
+    ///
+    /// #[derive(Plain)]
+    /// struct Wind;
+    ///
+    /// impl Kind for Wind {
+    ///     const NAME: KindName = KindName::new("aether.doc.wind");
+    /// }
+    ///
+    /// #[derive(Plain)]
+    /// struct Clock;
+    ///
+    /// impl Kind for Clock {
+    ///     const NAME: KindName = KindName::new("aether.doc.clock");
+    /// }
+    ///
+    /// // Handles no `On<Tick>`.
+    /// impl Actor for Clock {
+    ///     type Config = Clock;
+    ///     type Key = ();
+    ///     type Handles = ();
+    ///     type BeginSends = ();
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(clock: Clock, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///         turn.subscribe::<Tick>();
+    ///
+    ///         Ok(clock)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    pub fn subscribe<K: Stage>(&mut self)
     where
-        S: Allows<Subscribes<K>, I>,
+        Me: Handles<On<K>>,
     {
         self.seat.ask(What::Subscribe(KindId::of::<K>()));
     }
 
     /// Unsubscribes this actor from the stage `K`: the engine no longer sends it `K`. Unsubscribing an actor that is
     /// not subscribed changes nothing.
-    pub fn unsubscribe<K: Stage, I>(&mut self)
+    pub fn unsubscribe<K: Stage>(&mut self)
     where
-        S: Allows<Subscribes<K>, I>,
+        Me: Handles<On<K>>,
     {
         self.seat.ask(What::Unsubscribe(KindId::of::<K>()));
     }

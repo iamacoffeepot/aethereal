@@ -94,6 +94,15 @@ fn role(item: &Item<'_>) -> Role {
     }
 }
 
+/// Whether the handler listed for `listed` takes an item of `role`: its own, or, for a stage's handler, mail of the
+/// stage's kind, as the engine sends a stage (ADR-0020).
+fn takes(listed: Role, role: Role) -> bool {
+    let is_own = listed == role;
+    let is_stage = matches!((listed, role), (Role::Stage(stage), Role::Kind(kind)) if stage == kind);
+
+    is_own || is_stage
+}
+
 /// Stops the engine: an actor of type `A` was handed an item it has no handler for.
 fn unhandled<A: Actor>(role: Role) -> ! {
     panic!("false declaration: {role:?} was sent to an actor of type {}, which does not take it", A::NAME);
@@ -108,8 +117,8 @@ macro_rules! tuples {
             fn dispatch(actor: &mut A, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
                 let role = role(&item);
                 $(
-                    if $name::ROLE == role {
-                        let mut turn = turning.declaring::<A, <A as Handles<$name>>::Sends>(role);
+                    if takes($name::ROLE, role) {
+                        let mut turn = turning.declaring::<A, <A as Handles<$name>>::Sends>($name::ROLE);
                         return <A as Handles<$name>>::handle(actor, $name::take(item)?, &mut turn);
                     }
                 )*

@@ -1151,6 +1151,7 @@ impl Runs for Guest {
     fn turn(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
         let role = match &item {
             Item::Mail(mail) if self.declared.lists(mail.kind()) => Role::Kind(mail.kind()),
+            Item::Mail(mail) if self.declared.stages(mail.kind()) => Role::Stage(mail.kind()),
             Item::Mail(_) => Role::Others,
             Item::Ended(_) => Role::Ended,
             Item::Answer { mail, .. } => Role::Answer(mail.kind()),
@@ -3493,7 +3494,7 @@ mod tests {
     }
 
     /// The answers each test's askers were given, by the tally the test keeps them in.
-    static ANSWERS: [Mutex<Vec<u64>>; 14] = [const { Mutex::new(Vec::new()) }; 14];
+    static ANSWERS: [Mutex<Vec<u64>>; 15] = [const { Mutex::new(Vec::new()) }; 15];
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
@@ -3852,6 +3853,24 @@ mod tests {
         };
 
         assert_eq!(answers(13), [0, 1]);
+    }
+
+    #[test]
+    fn a_guest_s_handler_of_a_stage_sends_what_it_declares() {
+        // Catches a guest's stage, sent as mail of its kind, taken by its host for mail the guest does not list, so
+        // what its handler of the stage declares is not found and its send is refused (ADR-0020).
+        let (mut engine, code) = with_echo(Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0));
+        let Ok(_) = engine.add_root::<Keeper>(&0, Keeps { key: 0, tally: 14 }) else {
+            panic!("the keeper begins");
+        };
+        let keeper = ActorPath::from_root(&PathSegment::new(Keeper::NAME, &0u64));
+        let Ok(_) = engine.add_root_from::<echo::Chimer>(&code, &(), &echo::Ring { keeper }) else {
+            panic!("the chimer begins");
+        };
+        engine.start();
+        settle(&mut engine);
+
+        assert_eq!(answers(14), [7]);
     }
 
     #[test]

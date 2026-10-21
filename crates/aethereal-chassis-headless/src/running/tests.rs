@@ -2,8 +2,8 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Drained, Ending, Fault, Handles, Held, RunsJob, Sleep, Slept, Start,
-    Stop, Subscribes, Tick, ToSender, Top, Turn,
+    Actor, Answer, Answered, Beginning, ChildOf, Drained, Ending, Fault, Handles, Held, On, RunsJob, Sleep, Slept,
+    Start, Stop, Tick, ToSender, Top, Turn,
 };
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_substrate::{Engine, Jobs, Setup};
@@ -57,12 +57,12 @@ impl ChildOf for Quitter {
 impl Actor for Quitter {
     type Config = Nothing;
     type Key = ();
-    type Handles = (Start,);
-    type BeginSends = (Subscribes<Start>,);
+    type Handles = (On<Start>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Start, _>();
+        turn.subscribe::<Start>();
 
         Ok(Self)
     }
@@ -72,7 +72,7 @@ impl Actor for Quitter {
     }
 }
 
-impl Handles<Start> for Quitter {
+impl Handles<On<Start>> for Quitter {
     type Sends = ();
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -115,12 +115,12 @@ impl ChildOf for Metronome {
 impl Actor for Metronome {
     type Config = Nothing;
     type Key = ();
-    type Handles = (Tick,);
-    type BeginSends = (Subscribes<Tick>,);
+    type Handles = (On<Tick>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Tick, _>();
+        turn.subscribe::<Tick>();
 
         Ok(Self)
     }
@@ -130,7 +130,7 @@ impl Actor for Metronome {
     }
 }
 
-impl Handles<Tick> for Metronome {
+impl Handles<On<Tick>> for Metronome {
     type Sends = ();
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -185,13 +185,13 @@ impl ChildOf for Holdout {
 impl Actor for Holdout {
     type Config = Nothing;
     type Key = ();
-    type Handles = (Start, Stop);
-    type BeginSends = (Subscribes<Start>, Subscribes<Stop>);
+    type Handles = (On<Start>, On<Stop>);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Start, _>();
-        turn.subscribe::<Stop, _>();
+        turn.subscribe::<Start>();
+        turn.subscribe::<Stop>();
 
         Ok(Self { held: Vec::new() })
     }
@@ -201,7 +201,7 @@ impl Actor for Holdout {
     }
 }
 
-impl Handles<Start> for Holdout {
+impl Handles<On<Start>> for Holdout {
     type Sends = ();
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -211,7 +211,7 @@ impl Handles<Start> for Holdout {
     }
 }
 
-impl Handles<Stop> for Holdout {
+impl Handles<On<Stop>> for Holdout {
     type Sends = (ToSender<Drained>,);
 
     fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -258,13 +258,13 @@ impl ChildOf for Napper {
 impl Actor for Napper {
     type Config = Nothing;
     type Key = ();
-    type Handles = (Start, Tick, Answer<Slept, Nothing>);
-    type BeginSends = (Subscribes<Start>, Subscribes<Tick>);
+    type Handles = (On<Start>, On<Tick>, Answer<Slept, Nothing>);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Start, _>();
-        turn.subscribe::<Tick, _>();
+        turn.subscribe::<Start>();
+        turn.subscribe::<Tick>();
 
         Ok(Self { ticks: 0 })
     }
@@ -274,7 +274,7 @@ impl Actor for Napper {
     }
 }
 
-impl Handles<Start> for Napper {
+impl Handles<On<Start>> for Napper {
     type Sends = (RunsJob<Sleep, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -284,7 +284,7 @@ impl Handles<Start> for Napper {
     }
 }
 
-impl Handles<Tick> for Napper {
+impl Handles<On<Tick>> for Napper {
     type Sends = ();
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

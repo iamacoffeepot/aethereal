@@ -61,7 +61,7 @@ pub use controller::{Controller, Requests};
 pub use declared::{
     Allows, AnsweredBy, At, CarriedBy, Carries, Conforms, Covers, Declared, DeclaredBy, Handled, HandledBy,
     HandledList, Handler, Handles, Kinds, Listed, Marker, Others, Protocol, RepliesTo, RepliesWith, RepliesWithin,
-    ReplyWithin, Role, Sending, Sends, Spawns, Subscribes, Target, Tells, ToAny, ToSender, ToType,
+    ReplyWithin, Role, Sending, Sends, Spawns, Target, Tells, ToAny, ToSender, ToType,
 };
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, To, ToWithoutMail, What};
 pub use ended::{Ended, How};
@@ -91,7 +91,7 @@ pub use seat::{SeatNumber, Seated, Seats};
 pub use sleep::{Never, Sleep, Slept, Timer, Until};
 pub use source::Source;
 pub use stage::{
-    Cycle, Cycled, Cycling, Drained, Place, Present, Render, Stage, Start, Stop, Tick, Unordered, ordered,
+    Cycle, Cycled, Cycling, Drained, On, Place, Present, Render, Stage, Start, Stop, Tick, Unordered, ordered,
 };
 pub use subscribers::Subscribers;
 pub use time::Time;

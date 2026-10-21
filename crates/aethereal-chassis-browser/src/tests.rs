@@ -2,8 +2,8 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, Render, RunsJob, Sleep, Slept,
-    Source, Subscribes, Tick, Top, Turn,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, On, Render, RunsJob, Sleep,
+    Slept, Source, Tick, Top, Turn,
 };
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_substrate::{Inline, Jobs, Setup};
@@ -50,13 +50,13 @@ impl ChildOf for Painter {
 impl Actor for Painter {
     type Config = Nothing;
     type Key = ();
-    type Handles = (Tick, Render, Answer<Slept, Nothing>);
-    type BeginSends = (Subscribes<Tick>, Subscribes<Render>);
+    type Handles = (On<Tick>, On<Render>, Answer<Slept, Nothing>);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Tick, _>();
-        turn.subscribe::<Render, _>();
+        turn.subscribe::<Tick>();
+        turn.subscribe::<Render>();
 
         Ok(Self)
     }
@@ -66,7 +66,7 @@ impl Actor for Painter {
     }
 }
 
-impl Handles<Tick> for Painter {
+impl Handles<On<Tick>> for Painter {
     type Sends = (RunsJob<Sleep, Nothing>,);
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -77,7 +77,7 @@ impl Handles<Tick> for Painter {
     }
 }
 
-impl Handles<Render> for Painter {
+impl Handles<On<Render>> for Painter {
     type Sends = ();
 
     fn handle(&mut self, _: Render, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

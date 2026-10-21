@@ -19,7 +19,7 @@ pub use handles::{Handled, HandledList, Handles, Others};
 pub use protocols::{AnsweredBy, CarriedBy, Carries, Conforms, Covers, Listed, Protocol};
 pub use replies::{DeclaredBy, HandledBy, RepliesTo, RepliesWith, RepliesWithin, ReplyWithin};
 pub use sends::Last;
-pub use sends::{Allows, At, Kinds, Marker, Sends, Spawns, Subscribes, Tells, ToAny, ToSender, ToType};
+pub use sends::{Allows, At, Kinds, Marker, Sends, Spawns, Tells, ToAny, ToSender, ToType};
 
 use crate::{Actor, TypeSegment};
 use aethereal_data::{ActorKey, ActorPath, Keyed, KindId, KindName};
@@ -130,14 +130,19 @@ impl Declared {
         self.handles(Role::Answer(answer))
     }
 
-    /// The first stage of the program's lifecycle that the type subscribes to, as it begins or in a handler, and
-    /// `runs` does not hold, when there is one: what an actor of it is refused for where it is made (ADR-0020). A
-    /// closing turn subscribes to nothing.
-    pub fn unstaged(&self, runs: impl Fn(KindId) -> bool) -> Option<KindId> {
-        let handled = self.handlers.iter().flat_map(Handler::sends);
-        let sendings = self.begins.iter().chain(handled);
+    /// Whether the type handles the stage of `stage`, as [`On`](crate::On) it: what it may subscribe to (ADR-0020).
+    #[must_use]
+    pub fn stages(&self, stage: KindId) -> bool {
+        self.handles(Role::Stage(stage))
+    }
 
-        sendings.filter(|sending| sending.to == Target::Subscribed).map(Sending::kind).find(|stage| !runs(*stage))
+    /// The first stage of the program's lifecycle that the type handles, and so may subscribe to, that `runs` does
+    /// not hold, when there is one: what an actor of it is refused for where it is made (ADR-0020).
+    pub fn unstaged(&self, runs: impl Fn(KindId) -> bool) -> Option<KindId> {
+        self.handlers.iter().find_map(|handler| match handler.role {
+            Role::Stage(stage) if !runs(stage) => Some(stage),
+            _ => None,
+        })
     }
 
     /// The first typed path of singletons the type sends at, as it begins, in a handler, or as it ends, whose place
@@ -292,6 +297,8 @@ pub enum Role {
     Others,
     /// What became of a request it asked whose answer is of this kind (ADR-0017).
     Answer(KindId),
+    /// The stage of the program's lifecycle of this kind, which it may subscribe to (ADR-0020).
+    Stage(KindId),
 }
 
 /// One send a handler may make: mail of a kind, to a target (ADR-0013).
@@ -331,8 +338,6 @@ pub enum Target {
     /// Any actor whose type lists every one of these kinds: what a reference that names a protocol, and not a type,
     /// reaches.
     Handling(&'static [KindId]),
-    /// No actor: the handler may subscribe its actor to the stage of the sending's kind, which is no send (ADR-0020).
-    Subscribed,
     /// No actor: the handler may run a job of the sending's kind, which its host runs (ADR-0018).
     Job,
     /// No actor: the handler may spawn a child of the type of the sending's kind (ADR-0022).

@@ -655,11 +655,10 @@ impl<'a> Hosted<'a> {
     /// no such child, or a stop is asked by a child's `begin` or the actor's own: what a guest's library would not
     /// have built (ADR-0013).
     pub fn stage(&mut self, by: Seated, asked: Staging) -> Result<(), FalseStage> {
-        let sends = if by == self.seat.me {
-            self.sends
+        let declared = if by == self.seat.me {
+            self.seat.declared
         } else {
-            let child = self.spawned.iter().find(|child| child.me == by).ok_or(FalseStage)?;
-            child.declared.begins()
+            self.spawned.iter().find(|child| child.me == by).ok_or(FalseStage)?.declared
         };
         let what = match asked {
             Staging::Subscribe(kind) => What::Subscribe(kind),
@@ -667,7 +666,7 @@ impl<'a> Hosted<'a> {
             Staging::Quit => What::Quit,
         };
         let is_allowed = match asked {
-            Staging::Subscribe(kind) | Staging::Unsubscribe(kind) => subscribes(sends, kind),
+            Staging::Subscribe(kind) | Staging::Unsubscribe(kind) => declared.stages(kind),
             Staging::Quit => by == self.seat.me && self.may_close(),
         };
         if !is_allowed {
@@ -744,7 +743,7 @@ impl<'a> Hosted<'a> {
                 receiver.is_none_or(|receiver| kinds.iter().all(|kind| receiver.lists(*kind)))
             }
             Target::Path(segment) => self.seat.declared_at(to.id).is_none_or(|receiver| receiver.id() == segment.kind),
-            Target::Subscribed | Target::Job | Target::Spawned => false,
+            Target::Job | Target::Spawned => false,
         }
     }
 }
@@ -752,9 +751,4 @@ impl<'a> Hosted<'a> {
 /// Whether `sends` list a spawn of a child of the type of `kind` (ADR-0022).
 fn spawns(sends: &[Sending], kind: KindId) -> bool {
     sends.iter().any(|sending| sending.to() == Target::Spawned && sending.kind() == kind)
-}
-
-/// Whether `sends` list a subscription to the stage of `kind` (ADR-0020).
-fn subscribes(sends: &[Sending], kind: KindId) -> bool {
-    sends.iter().any(|sending| sending.to() == Target::Subscribed && sending.kind() == kind)
 }

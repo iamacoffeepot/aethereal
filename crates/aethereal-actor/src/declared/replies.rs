@@ -1,7 +1,7 @@
 //! What comes back from what an actor sends, which its type must handle: the reply a receiver sends to whoever sent
 //! to it, checked against the sender where the sender declares the send (ADR-0016).
 
-use super::{Allows, Carries, Handled, Handles, Protocol, Spawns, Subscribes, Tells, ToAny, ToSender, ToType};
+use super::{Allows, Carries, Handled, Handles, Protocol, Spawns, Tells, ToAny, ToSender, ToType};
 use crate::{Actor, Admits, ChildOf, Path, PathTo};
 use aethereal_data::Kind;
 
@@ -379,9 +379,6 @@ impl<A, L: ChildOf + PathTo + Handles<K>, K: Kind + Handled> DeclaredBy<A> for T
 /// A spawner spawns only a type that may stand beneath it.
 impl<A, C: ChildOf> DeclaredBy<A> for Spawns<C> where C::Parent: Admits<A, C> {}
 
-/// A subscriber handles the stage it subscribes to.
-impl<A: Handles<K>, K: Kind + Handled> DeclaredBy<A> for Subscribes<K> {}
-
 /// A named protocol says what each of its kinds is answered with.
 impl<A, P: Protocol + Carries<K>, K: Kind> DeclaredBy<A> for ToAny<P, K> where <P as Carries<K>>::Answers: HandledBy<A> {}
 
@@ -397,8 +394,6 @@ impl<A, P, K> RepliesTo<A> for ToAny<P, K> {}
 impl<A, C> RepliesTo<A> for Spawns<C> {}
 
 impl<A, T, K> RepliesTo<A> for Tells<T, K> {}
-
-impl<A, K> RepliesTo<A> for Subscribes<K> {}
 
 /// This send, of a receiver's handler, replies only with a kind of the tuple `Answers`, found at its place in `I`:
 /// what a type that conforms to a named protocol replies with (ADR-0016).
@@ -428,8 +423,6 @@ impl<Answers, C> ReplyWithin<Answers, ()> for Spawns<C> {}
 
 impl<Answers, T, K> ReplyWithin<Answers, ()> for Tells<T, K> {}
 
-impl<Answers, K> ReplyWithin<Answers, ()> for Subscribes<K> {}
-
 impl<Answers> RepliesWithin<Answers, ()> for () {}
 
 impl<A> RepliesWith<A> for ToSender<A> {}
@@ -441,8 +434,6 @@ impl<A, P, K> RepliesWith<A> for ToAny<P, K> {}
 impl<A, C> RepliesWith<A> for Spawns<C> {}
 
 impl<A, T, K> RepliesWith<A> for Tells<T, K> {}
-
-impl<A, K> RepliesWith<A> for Subscribes<K> {}
 
 impl<A> RepliesWith<A> for () {}
 

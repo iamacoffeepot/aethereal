@@ -2,8 +2,8 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, BlobRef, Carries, ChildOf, Ended, Ending,
-    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, Path, Protocol, Recursive, Refused, Resource,
-    Runner, Running, RunsJob, Spawns, Start, Stop, Subscribes, Tells, Tick, To, ToAny, ToSender, ToType, ToWithoutMail,
+    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, On, Path, Protocol, Recursive, Refused,
+    Resource, Runner, Running, RunsJob, Spawns, Start, Stop, Tells, Tick, To, ToAny, ToSender, ToType, ToWithoutMail,
     Top, Turn, Unanswered, Unrun, path,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, Plain};
@@ -198,13 +198,13 @@ impl ChildOf for Starter {
 impl Actor for Starter {
     type Config = EchoConfig;
     type Key = ();
-    type Handles = (Start, Stop);
-    type BeginSends = (Subscribes<Start>, Subscribes<Stop>);
+    type Handles = (On<Start>, On<Stop>);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Start, _>();
-        turn.subscribe::<Stop, _>();
+        turn.subscribe::<Start>();
+        turn.subscribe::<Stop>();
 
         Ok(Self)
     }
@@ -214,7 +214,7 @@ impl Actor for Starter {
     }
 }
 
-impl Handles<Start> for Starter {
+impl Handles<On<Start>> for Starter {
     type Sends = ();
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -225,7 +225,7 @@ impl Handles<Start> for Starter {
     }
 }
 
-impl Handles<Stop> for Starter {
+impl Handles<On<Stop>> for Starter {
     type Sends = ();
 
     fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -250,12 +250,12 @@ impl ChildOf for Ticker {
 impl Actor for Ticker {
     type Config = EchoConfig;
     type Key = ();
-    type Handles = (Tick,);
-    type BeginSends = (Subscribes<Tick>,);
+    type Handles = (On<Tick>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Tick, _>();
+        turn.subscribe::<Tick>();
 
         Ok(Self)
     }
@@ -265,7 +265,7 @@ impl Actor for Ticker {
     }
 }
 
-impl Handles<Tick> for Ticker {
+impl Handles<On<Tick>> for Ticker {
     type Sends = ();
 
     fn handle(&mut self, _: Tick, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -2473,6 +2473,51 @@ impl Actor for Sexton {
     }
 }
 
+/// A root that subscribes to `Start` as it begins, and pings the actor at its keeper's path with seven when it is
+/// sent `Start`: a stage's handler that sends, which its host checks against what that handler declares.
+#[derive(Bound)]
+pub struct Chimer {
+    keeper: ActorPath,
+}
+
+impl Kind for Chimer {
+    const NAME: KindName = KindName::new("aether.guest.chimer");
+}
+
+impl ChildOf for Chimer {
+    type Parent = Top;
+}
+
+impl Actor for Chimer {
+    type Config = Ring;
+    type Key = ();
+    type Handles = (On<Start>,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(ring: Ring, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.subscribe::<Start>();
+
+        Ok(Self { keeper: ring.keeper })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<On<Start>> for Chimer {
+    type Sends = (ToAny<(Ping,), Ping>,);
+
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        if let Some(keeper) = turn.resolve(&self.keeper) {
+            turn.send_to_any(To::Held(keeper), &Ping { n: 7 })?;
+        }
+
+        Ok(())
+    }
+}
+
 aethereal_actor::guest!(
     Echo,
     Mirror,
@@ -2508,5 +2553,6 @@ aethereal_actor::guest!(
     Bell,
     Ringer,
     Steeple,
-    Sexton
+    Sexton,
+    Chimer
 );
