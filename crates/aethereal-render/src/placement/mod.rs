@@ -12,7 +12,7 @@ use crate::mesh::{MeshId, VertexLayout};
 use crate::pass::{Pass, PassName};
 use crate::program::{Access, Binding, BindingKind, PerInstance, ProgramId};
 use crate::shape::Shape;
-use crate::storage::StorageId;
+use crate::storage::{self, DRAW_ARGUMENTS, StorageId};
 use crate::texture::TextureId;
 use crate::uniforms::UniformsId;
 use aethereal_data::{Kind, KindName, Plain};
@@ -59,6 +59,20 @@ pub enum Drawn {
     Count(u32),
     /// Once for each record these instances hold at each frame, for a program that reads records of their layout.
     Records(InstancesId),
+    /// As the five words of `storage` from the byte `at` hold at each frame, for a program that reads nothing per
+    /// instance: its index count, instance count, first index, base vertex, and first instance, as compute or the
+    /// storage's maker wrote them (ADR-0026).
+    Indirect { storage: StorageId, at: u32 },
+}
+
+impl Drawn {
+    /// The storage it reads its counts from: none for a placement drawn for a count or for records.
+    pub(crate) const fn arguments(self) -> Option<StorageId> {
+        match self {
+            Self::Indirect { storage, .. } => Some(storage),
+            Self::Count(_) | Self::Records(_) => None,
+        }
+    }
 }
 
 impl Kind for Drawn {
@@ -156,6 +170,10 @@ pub enum PlacementRefused {
     Mesh,
     /// No instances are kept under the id.
     Instances,
+    /// No storage is kept under the id it reads its counts from.
+    Storage,
+    /// Its counts, five words from the byte `at`, lie off a word or past the storage's `bytes`.
+    Arguments { at: u32, bytes: u32 },
     /// It joins no pass, and would draw nothing.
     Unjoined,
     /// Its join at `join`, counted from zero, was refused.
@@ -185,8 +203,8 @@ pub enum JoinRefused {
     Shape,
     /// The mesh's layout is not the program's vertex layout.
     Layout,
-    /// What is drawn is not what the program reads per instance: records for a program that reads none, a count for
-    /// one that reads records, or records of another layout.
+    /// What is drawn is not what the program reads per instance: records for a program that reads none, a count, given
+    /// or held by storage, for one that reads records, or records of another layout.
     Drawn,
     /// The program binds a place nothing is bound to.
     Unbound { group: u32, binding: u32 },
@@ -242,6 +260,13 @@ pub(crate) fn check(place: &Place, kept: &impl Finds) -> Result<(), PlacementRef
     let instancing = match place.instances {
         Drawn::Count(_) => Instancing::Count,
         Drawn::Records(instances) => Instancing::Records(kept.instances(instances).ok_or(PlacementRefused::Instances)?),
+        Drawn::Indirect { storage, at } => {
+            let bytes = kept.storage(storage).ok_or(PlacementRefused::Storage)?;
+            if !storage::fits(bytes, at, DRAW_ARGUMENTS) {
+                return Err(PlacementRefused::Arguments { at, bytes });
+            }
+            Instancing::Count
+        }
     };
     if place.joins.is_empty() {
         return Err(PlacementRefused::Unjoined);
@@ -260,14 +285,17 @@ pub(crate) fn check(place: &Place, kept: &impl Finds) -> Result<(), PlacementRef
 }
 
 /// Checks that no join of `place` has frames read each other round: one that joins a frame ending on a texture and
-/// binds the texture of a frame that reads it, or storage such a frame writes, with what is read already and what its
-/// earlier joins read.
+/// binds the texture of a frame that reads it, or binds storage such a frame writes or reads its counts from it, with
+/// what is read already and what its earlier joins read.
 fn check_round(place: &Place, kept: &impl Finds) -> Result<(), PlacementRefused> {
     let mut reads = kept.reads();
     for (join, at) in place.joins.iter().zip(0..) {
         let round = Err(PlacementRefused::Join { join: at, why: JoinRefused::Round });
-        for bind in &join.bindings {
-            let read: Vec<(u64, u64)> = match (join.frame, bind.to) {
+        let bound = join.bindings.iter().map(|bind| bind.to);
+        // Counts read from storage are a read of it in each pass the placement joins, as storage it binds is.
+        let counted = place.instances.arguments().map(Resource::Storage);
+        for to in bound.chain(counted) {
+            let read: Vec<(u64, u64)> = match (join.frame, to) {
                 (Frame::Texture(reader), Resource::Texture(texture)) => {
                     kept.drawn_by(texture).map(|read| (reader.id, read)).into_iter().collect()
                 }
@@ -291,7 +319,7 @@ fn check_round(place: &Place, kept: &impl Finds) -> Result<(), PlacementRefused>
     Ok(())
 }
 
-/// How a placement's instances are read: a count, or records laid out so.
+/// How a placement's instances are read: a count, given or held by storage, or records laid out so.
 #[derive(Clone, Copy)]
 enum Instancing<'a> {
     Count,

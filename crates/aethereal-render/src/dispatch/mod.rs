@@ -10,7 +10,7 @@ use crate::frame::{self, Frame};
 use crate::pass::{Pass, PassName};
 use crate::placement::{self, Bind, Finds, JoinRefused, Resource};
 use crate::program::{Access, Binding, BindingKind};
-use crate::storage::StorageId;
+use crate::storage::{self, DISPATCH_ARGUMENTS, StorageId};
 use aethereal_data::{ActorId, Kind, KindName, Plain};
 
 /// Asks the renderer to run the compute program `join` names in the compute pass it names, with what it binds, over
@@ -55,6 +55,27 @@ pub enum Invocations {
     PerElement(StorageId),
     /// A grid of this many workgroups along each dimension, each of the shader's size.
     Workgroups([u32; 3]),
+    /// A grid of as many workgroups along each dimension as the three words of `storage` from the byte `at` hold at
+    /// each frame, as compute or the storage's maker wrote them (ADR-0026).
+    Indirect { storage: StorageId, at: u32 },
+}
+
+impl Invocations {
+    /// The storage it reads its workgroups from: none for a dispatch for each element or of a grid given.
+    pub(crate) const fn arguments(self) -> Option<StorageId> {
+        match self {
+            Self::Indirect { storage, .. } => Some(storage),
+            Self::PerElement(_) | Self::Workgroups(_) => None,
+        }
+    }
+}
+
+/// What a dispatch runs, as its check found it: a grid of workgroups, worked out or given, or as many as the three
+/// words of `storage` from the byte `at` hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Runs {
+    Workgroups([u32; 3]),
+    Indirect { storage: StorageId, at: u32 },
 }
 
 impl Kind for Invocations {
@@ -95,14 +116,18 @@ pub enum DispatchRefused {
     Bindings { why: JoinRefused },
     /// It binds storage another actor made at a place the compute program writes: only a storage's maker writes it.
     NotOwner { group: u32, binding: u32 },
-    /// It binds storage at a place the compute program writes, and binds the same storage at another place, which
-    /// WebGPU refuses in one dispatch.
+    /// It binds storage at a place the compute program writes, and binds the same storage at another place or reads
+    /// its workgroups from it, which WebGPU refuses in one dispatch.
     Aliased { group: u32, binding: u32 },
     /// It runs one invocation for each element of storage it does not bind, or binds at a place whose shader type
     /// ends in no array whose length is its buffer's.
     Elements,
     /// It runs more workgroups along a dimension than the GPU dispatches along one, `most`.
     Size { workgroups: [u32; 3], most: u32 },
+    /// No storage is kept under the id it reads its workgroups from.
+    Storage,
+    /// Its workgroups, three words from the byte `at`, lie off a word or past the storage's `bytes`.
+    Arguments { at: u32, bytes: u32 },
     /// It writes storage another dispatch of its pass reads or writes, or reads storage one of its pass writes, as the
     /// dispatches of one pass run in no order; or it writes storage a dispatch of another frame writes, and no order of
     /// frames runs one before the other.
@@ -172,15 +197,19 @@ pub(crate) trait Dispatches: Finds {
 
 /// Checks a dispatch `by` asks for before it is made: that its pass is a compute pass of its frame, that its compute
 /// program is kept and bound as it binds, only storage `by` made where it writes, and nothing it writes twice, that it
-/// runs no more workgroups than the GPU dispatches, and that no two dispatches write one storage in no order, and no
-/// frames read each other round. Answers the workgroups it runs.
-pub(crate) fn check(create: &CreateDispatch, by: ActorId, kept: &impl Dispatches) -> Result<[u32; 3], DispatchRefused> {
+/// runs no more workgroups than the GPU dispatches, or reads them from storage they fit in, and that no two
+/// dispatches write one storage in no order, and no frames read each other round. Answers what it runs.
+pub(crate) fn check(create: &CreateDispatch, by: ActorId, kept: &impl Dispatches) -> Result<Runs, DispatchRefused> {
     let join = &create.join;
     kept.computes(join.frame, join.pass)?;
     let compute = kept.compute(join.compute).ok_or(DispatchRefused::Compute)?;
     placement::check_bindings(&join.bindings, compute.bindings, kept)
         .map_err(|why| DispatchRefused::Bindings { why })?;
     let stored = stored(&join.bindings, compute.bindings);
+    // Workgroups read from storage are a read of it in the dispatch's pass, as storage it binds to read is.
+    let counted = create.size.arguments().map(|storage| (storage, Access::Read));
+    let accessed: Vec<(StorageId, Access)> =
+        stored.iter().map(|(_, storage, access)| (*storage, *access)).chain(counted).collect();
     for (bind, storage, access) in &stored {
         if *access == Access::Read {
             continue;
@@ -190,20 +219,22 @@ pub(crate) fn check(create: &CreateDispatch, by: ActorId, kept: &impl Dispatches
         if !mine {
             return Err(DispatchRefused::NotOwner { group, binding });
         }
-        let aliased = stored.iter().filter(|(_, other, _)| other == storage).count() > 1;
+        let aliased = accessed.iter().filter(|(other, _)| other == storage).count() > 1;
         if aliased {
             return Err(DispatchRefused::Aliased { group, binding });
         }
     }
-    let workgroups = workgroups(create.size, &join.bindings, &compute, kept)?;
-    let most = kept.most_workgroups();
-    let past = workgroups.iter().any(|along| *along > most);
-    if past {
-        return Err(DispatchRefused::Size { workgroups, most });
+    let runs = runs(create.size, &join.bindings, &compute, kept)?;
+    if let Runs::Workgroups(workgroups) = runs {
+        let most = kept.most_workgroups();
+        let past = workgroups.iter().any(|along| *along > most);
+        if past {
+            return Err(DispatchRefused::Size { workgroups, most });
+        }
     }
-    check_order(join, &stored, kept)?;
+    check_order(join, &accessed, kept)?;
 
-    Ok(workgroups)
+    Ok(runs)
 }
 
 /// Each storage `bindings` binds, beside the bind and how the compute program, which binds what `listed` lists, uses
@@ -224,16 +255,23 @@ fn stored<'a>(bindings: &'a [Bind], listed: &[Binding]) -> Vec<(&'a Bind, Storag
         .collect()
 }
 
-/// The workgroups `size` runs of `compute`, binding `bindings`: as given, or those that cover one invocation for each
-/// element of the storage named, along the first dimension.
-fn workgroups(
+/// What `size` runs of `compute`, binding `bindings`: workgroups as given, or those that cover one invocation for each
+/// element of the storage named, along the first dimension, or as many as storage they fit in holds.
+fn runs(
     size: Invocations,
     bindings: &[Bind],
     compute: &Computes<'_>,
     kept: &impl Finds,
-) -> Result<[u32; 3], DispatchRefused> {
+) -> Result<Runs, DispatchRefused> {
     let storage = match size {
-        Invocations::Workgroups(workgroups) => return Ok(workgroups),
+        Invocations::Workgroups(workgroups) => return Ok(Runs::Workgroups(workgroups)),
+        Invocations::Indirect { storage, at } => {
+            let bytes = kept.storage(storage).ok_or(DispatchRefused::Storage)?;
+            if !storage::fits(bytes, at, DISPATCH_ARGUMENTS) {
+                return Err(DispatchRefused::Arguments { at, bytes });
+            }
+            return Ok(Runs::Indirect { storage, at });
+        }
         Invocations::PerElement(storage) => storage,
     };
     let array = bindings
@@ -243,17 +281,13 @@ fn workgroups(
         .ok_or(DispatchRefused::Elements)?;
     let bytes = kept.storage(storage).ok_or(DispatchRefused::Elements)?;
 
-    Ok([array.elements(bytes).div_ceil(compute.workgroup[0]), 1, 1])
+    Ok(Runs::Workgroups([array.elements(bytes).div_ceil(compute.workgroup[0]), 1, 1]))
 }
 
-/// Checks that `join`, binding `stored` as it does, has no frames read each other round, with what is read already,
+/// Checks that `join`, using storage as `accessed` says, has no frames read each other round, with what is read already,
 /// and that what it writes no other dispatch of its pass uses, nor reads what one writes, and no dispatch of a frame
 /// it is in no order with writes.
-fn check_order(
-    join: &Dispatch,
-    stored: &[(&Bind, StorageId, Access)],
-    kept: &impl Finds,
-) -> Result<(), DispatchRefused> {
+fn check_order(join: &Dispatch, accessed: &[(StorageId, Access)], kept: &impl Finds) -> Result<(), DispatchRefused> {
     let mut reads = kept.reads();
     if let Frame::Texture(reader) = join.frame {
         for bind in &join.bindings {
@@ -269,9 +303,9 @@ fn check_order(
             reads.push((reader.id, read));
         }
     }
-    let uses: Vec<(Use, Use)> = stored
+    let uses: Vec<(Use, Use)> = accessed
         .iter()
-        .flat_map(|(_, storage, access)| {
+        .flat_map(|(storage, access)| {
             let mine = Use { frame: join.frame, pass: join.pass, access: *access };
             kept.uses(*storage).into_iter().map(move |theirs| (mine, theirs))
         })

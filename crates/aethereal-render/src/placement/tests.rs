@@ -13,7 +13,7 @@ use aethereal_window::WindowId;
 
 /// What a test keeps: one program, reading a position per vertex and an offset per instance, binding a camera's
 /// uniforms, a texture, a sampler, and storage of splats, made against `shape`; a mesh and instances laid out as it
-/// reads; uniforms of 64 bytes; storage of 256; a texture; and the main frame of the window [`window`], whose one
+/// reads; uniforms of 64 bytes; storage of 256, and arguments of 256; a texture; and the main frame of the window [`window`], whose one
 /// pass, [`Main`], is of `pass`.
 struct Kept {
     layout: VertexLayout,
@@ -24,7 +24,7 @@ struct Kept {
     shape: Shape,
     pass: Shape,
     reads: Vec<(u64, u64)>,
-    uses: Vec<Use>,
+    uses: Vec<(StorageId, Use)>,
 }
 
 /// The window opened `nth`, as a host's window capability numbers it.
@@ -52,6 +52,8 @@ const INSTANCES: InstancesId = InstancesId { id: 3 };
 const UNIFORMS: UniformsId = UniformsId { id: 4 };
 const TEXTURE: TextureId = TextureId { id: 5 };
 const STORAGE: StorageId = StorageId { id: 6 };
+/// Storage of 256 bytes a placement reads its counts from, and binds nowhere.
+const ARGUMENTS: StorageId = StorageId { id: 12 };
 const SAMPLING: Sampling = Sampling { filter: Filter::Linear, wrap: Wrap::Clamp };
 
 impl Kept {
@@ -115,7 +117,7 @@ impl Finds for Kept {
     }
 
     fn storage(&self, id: StorageId) -> Option<u32> {
-        (id == STORAGE).then_some(256)
+        [STORAGE, ARGUMENTS].contains(&id).then_some(256)
     }
 
     fn has_texture(&self, id: TextureId) -> bool {
@@ -135,11 +137,7 @@ impl Finds for Kept {
     }
 
     fn uses(&self, storage: StorageId) -> Vec<Use> {
-        if storage == STORAGE {
-            self.uses.clone()
-        } else {
-            Vec::new()
-        }
+        self.uses.iter().filter(|(used, _)| *used == storage).map(|(_, used)| *used).collect()
     }
 }
 
@@ -331,9 +329,9 @@ fn a_join_that_would_have_frames_read_each_other_round_is_refused() {
     assert_eq!(check(&binding(Frame::Main(window(0)), MAPPED), &inset_reads_map), Ok(()));
 }
 
-/// A dispatch's use of the kept storage in `frame`, writing it.
-fn written_in(frame: Frame) -> Use {
-    Use { frame, pass: PassName::of::<Elsewhere>(), access: Access::Write }
+/// A dispatch's use of `storage` in `frame`, writing it.
+fn written_in(storage: StorageId, frame: Frame) -> (StorageId, Use) {
+    (storage, Use { frame, pass: PassName::of::<Elsewhere>(), access: Access::Write })
 }
 
 #[test]
@@ -342,14 +340,73 @@ fn a_join_reading_storage_a_frame_that_reads_it_writes_is_refused() {
     // read what was written a `Render` before, or what is written after it in the same one.
     let mut inset_reads_map = Kept::new();
     inset_reads_map.reads = vec![(INSET.id, MAP.id)];
-    inset_reads_map.uses = vec![written_in(Frame::Texture(INSET))];
+    inset_reads_map.uses = vec![written_in(STORAGE, Frame::Texture(INSET))];
     let mut written_by_main = Kept::new();
-    written_by_main.uses = vec![written_in(Frame::Main(window(0)))];
+    written_by_main.uses = vec![written_in(STORAGE, Frame::Main(window(0)))];
     let mut written_by_itself = Kept::new();
-    written_by_itself.uses = vec![written_in(Frame::Texture(MAP))];
+    written_by_itself.uses = vec![written_in(STORAGE, Frame::Texture(MAP))];
 
     assert_eq!(check(&binding(Frame::Texture(MAP), TEXTURE), &inset_reads_map), first(JoinRefused::Round));
     assert_eq!(check(&binding(Frame::Main(window(0)), TEXTURE), &inset_reads_map), Ok(()));
     assert_eq!(check(&binding(Frame::Texture(MAP), TEXTURE), &written_by_main), Ok(()));
     assert_eq!(check(&binding(Frame::Texture(MAP), TEXTURE), &written_by_itself), Ok(()));
+}
+
+/// [`place`] joining `frame`, drawn as the counts of [`ARGUMENTS`] from the byte `at` hold.
+fn indirect(frame: Frame, at: u32) -> Place {
+    let mut place = place();
+    place.instances = Drawn::Indirect { storage: ARGUMENTS, at };
+    place.joins[0].frame = frame;
+
+    place
+}
+
+/// What a test keeps, of a program that reads nothing per instance.
+fn reading_none() -> Kept {
+    let mut kept = Kept::new();
+    kept.per_instance = PerInstance::None;
+
+    kept
+}
+
+#[test]
+fn a_placement_whose_counts_storage_holds_is_drawn_with_a_program_that_reads_nothing_per_instance() {
+    // Catches counts held by storage drawn with a program that reads records, which would read a buffer never bound,
+    // or refused with one that reads none, as a count is.
+    let main = indirect(Frame::Main(window(0)), 0);
+
+    assert_eq!(check(&main, &reading_none()), Ok(()));
+    assert_eq!(check(&main, &Kept::new()), first(JoinRefused::Drawn));
+}
+
+#[test]
+fn counts_read_from_storage_not_kept_or_past_its_bytes_or_off_a_word_are_refused() {
+    // Catches the five words checked short of their end, by their first word alone, or with the sum overflowing, any of
+    // which WebGPU refuses as the draw is recorded, or the last place they fit refused. Of 256 bytes, the five words
+    // fit from 236 and not from 240.
+    let main = |at| indirect(Frame::Main(window(0)), at);
+    let mut missing = main(0);
+    missing.instances = Drawn::Indirect { storage: StorageId { id: 9 }, at: 0 };
+    let kept = reading_none();
+
+    assert_eq!(check(&main(236), &kept), Ok(()));
+    assert_eq!(check(&main(240), &kept), Err(PlacementRefused::Arguments { at: 240, bytes: 256 }));
+    assert_eq!(check(&main(2), &kept), Err(PlacementRefused::Arguments { at: 2, bytes: 256 }));
+    assert_eq!(check(&main(u32::MAX - 3), &kept), Err(PlacementRefused::Arguments { at: u32::MAX - 3, bytes: 256 }));
+    assert_eq!(check(&missing, &kept), Err(PlacementRefused::Storage));
+}
+
+#[test]
+fn counts_read_from_storage_a_frame_that_reads_the_placement_s_frame_writes_are_refused() {
+    // Catches counts left out of the order of frames: a frame drawing as many as storage written by a frame that reads
+    // it holds would draw what was counted a `Render` before.
+    let mut inset_reads_map = reading_none();
+    inset_reads_map.reads = vec![(INSET.id, MAP.id)];
+    inset_reads_map.uses = vec![written_in(ARGUMENTS, Frame::Texture(INSET))];
+    let mut written_by_main = reading_none();
+    written_by_main.uses = vec![written_in(ARGUMENTS, Frame::Main(window(0)))];
+
+    assert_eq!(check(&indirect(Frame::Texture(MAP), 0), &inset_reads_map), first(JoinRefused::Round));
+    assert_eq!(check(&indirect(Frame::Main(window(0)), 0), &inset_reads_map), Ok(()));
+    assert_eq!(check(&indirect(Frame::Texture(MAP), 0), &written_by_main), Ok(()));
 }

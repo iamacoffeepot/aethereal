@@ -69,7 +69,7 @@ enum Invocations {
 - `Workgroups` is a grid for work that is not one invocation per element: a frame's tiles, a grid of cells.
 - A grid past what the device dispatches in one dimension, `max_compute_workgroups_per_dimension`, is refused (`Size`), and a `PerElement` whose storage the dispatch does not bind, or binds at a binding whose shader type ends in no array, is refused (`Elements`). **This departs from refusing both as `Size`**: a grid too large carries the grid and the device's most, and storage with no elements to count has neither.
 - The fixed part and the stride are read from the compute program's shader when it is made, for each storage buffer it uses whose type ends in an array whose length is its buffer's.
-- A count a buffer holds, written by the GPU, is decided with draws whose count a buffer holds (ADR-0025, Consequences).
+- A grid of workgroups the GPU wrote is read from storage, `Invocations::Indirect`, as a draw's count is (**Counts a storage holds**, below).
 
 **A dispatch is checked when it is made, as a placement is (ADR-0023), and nothing when it runs:** each id names a resource of its sort that is kept, the pass is a compute pass of the frame, and the bindings name each place the compute program binds, once, each with a resource of its kind and size. Storage bound where the program writes is bound nowhere else in the dispatch (`Aliased`), as WebGPU refuses one buffer bound to write and bound again in one dispatch. Its bind groups are made then, once. A dispatch joins a window's main frame by the window, and follows it when the frame is replaced, as a placement does (ADR-0025: `Frame::Main`); one whose pass the new frame has not is not run, and is logged, until a frame has that pass again. A dispatch does not change once made, and only its maker releases it.
 
@@ -92,6 +92,31 @@ ReadStorage { storage: StorageId }  -> Bytes::Read { bytes: BlobRef } | Bytes::R
 - It is read as it is when the ask is handled, after every `Render` before it, and answered with its bytes, held and answered as a texture's pixels are. Any actor handed the storage may read it. Storage not kept is refused (`Storage`), and storage larger than the store lets one worker put (`Unstored`).
 - **It is an ask of its own, where this record first gave `ReadBack` a `Readable::Storage`.** An ask is answered with one kind (ADR-0017: `Carries`, `Answers = (A,)`), so a `ReadBack` answered with pixels or bytes could not be asked, and every actor that reads a frame back would handle bytes. ADR-0023 is edited to match.
 
+**Counts a storage holds.** A draw's counts or a dispatch's workgroups may be read from storage at each frame, written by compute or by the storage's maker, so what the GPU culled or spawned is drawn without the CPU learning how many. It is decided here, with the storage compute writes, rather than in a record of its own:
+
+```rust
+enum Drawn {
+    Count(u32),
+    Records(InstancesId),
+    Indirect { storage: StorageId, at: u32 },   // five u32 words from the byte `at`
+}
+enum Invocations {
+    PerElement(StorageId),
+    Workgroups([u32; 3]),
+    Indirect { storage: StorageId, at: u32 },   // three u32 words from the byte `at`
+}
+```
+
+- A draw's five words are its index count, instance count, first index, base vertex, and first instance, as WebGPU's `drawIndexedIndirect` reads them: a mesh is always drawn by its indices (ADR-0021). A dispatch's three are its workgroups along each dimension, as `dispatchWorkgroupsIndirect` reads them.
+- Every storage buffer is made to be read as arguments as well, so any storage may hold them. Anyone handed a storage may draw or dispatch by it: reading arguments is a read, not a write.
+- They are checked when the placement or the dispatch is made: the storage is kept (`Storage`), and the words lie inside its bytes from a whole word: `at` a multiple of four, and `at` and 20 bytes for a draw, or 12 for a dispatch, at most its bytes (`Arguments { at, bytes }`, with what was asked and the storage's bytes).
+- A placement drawn `Indirect` reads nothing per instance, as one drawn for a `Count` does, and its program is checked as for a count (`Drawn`). Its shader reads what each instance needs from storage by `@builtin(instance_index)`, as a field of splats is read (ADR-0023).
+- **What the words hold is checked on the GPU, not when the draw is made.** WebGPU checks them as it draws: a draw whose indices or instances pass what is bound, or a dispatch past the most workgroups, is skipped. A draw whose first instance is not zero is skipped too, without the optional `indirect-first-instance` feature, which the chassis does not ask for. **This departs from checking everything when it is made** (ADR-0023), as the words are written on the GPU after it is.
+- **Reading arguments is a read of the storage** in the placement's or the dispatch's frame and pass. It joins the order of frames, the same-pass `Written` rule, and `Round`, as storage bound to read does. A dispatch that reads its workgroups from storage it binds to write is refused (`Aliased`), as WebGPU refuses one buffer used both ways in one dispatch.
+- A placement or a dispatch keeps the storage it reads its arguments from, as it keeps what it binds (ADR-0023: a placement keeps what it draws).
+- At `Render` the render root draws with `draw_indexed_indirect` and dispatches with `dispatch_workgroups_indirect`, from the storage's buffer at `at`.
+- A count compute adds to is reset by its writer each frame: the storage's maker writes it with `WriteStorage` at each `Tick`, or a dispatch in an earlier compute pass sets it.
+
 **`TimeFrame` times a compute pass as it times a draw pass,** its nanoseconds from beginning to end, in the order of the frame's passes.
 
 ## Consequences
@@ -103,7 +128,7 @@ ReadStorage { storage: StorageId }  -> Bytes::Read { bytes: BlobRef } | Bytes::R
 - What is decided separately, each when it is needed:
   - **Compute that reads a frame's targets**, a compute pass with `reads`, as an effect reads: culling against the depth of an earlier pass, post-processing by compute.
   - **Compute that writes textures**, storage textures.
-  - **Counts a buffer holds**: dispatches and draws whose count the GPU wrote.
+  - **Many draws from one storage, and a count of draws the GPU writes**: multi-draw indirect, which WebGPU does not have (ADR-0021), and how many draws a storage holds.
   - **Storage another actor writes.**
   - **Workgroup memory and subgroups beyond what WGSL gives every device.**
 
@@ -114,3 +139,4 @@ ReadStorage { storage: StorageId }  -> Bytes::Read { bytes: BlobRef } | Bytes::R
 - **One writer for each storage, whatever orders them.** Deterministic, but it refuses writers that passes already order, such as two passes of one simulation that each write the field.
 - **Writers of one storage in one pass, run in the order they were made.** Order would hang on when mail came, which ADR-0025 refused for draws.
 - **Any actor handed a storage may write it.** Who writes what would be no single actor's, and nothing yet needs it.
+- **A typed `Arguments` resource for a draw's or a dispatch's counts**, a second kind of resource for words in a buffer. Compute would have to bind it as storage to write it anyway, so it would be storage under another name; it can be added on top of storage later.

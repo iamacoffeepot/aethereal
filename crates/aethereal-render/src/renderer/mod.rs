@@ -4,7 +4,7 @@ mod walk;
 
 use crate::Gpu;
 use crate::compute::{self, Array, ComputeId, Computed, CreateCompute};
-use crate::dispatch::{self, Computes, CreateDispatch, DispatchId, DispatchRefused, Dispatched, Dispatches, Use};
+use crate::dispatch::{self, Computes, CreateDispatch, DispatchId, DispatchRefused, Dispatched, Dispatches, Runs, Use};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
 use crate::frame::{
     self, CreateFrame, DepthUse, Does, ENDS_IN, EffectReads, Ends, Frame, FrameId, FrameRefused, Framed, Holds, Load,
@@ -391,7 +391,7 @@ struct Placement {
 
 /// One pass a placement draws in, with what it draws there with: the program's id, which a pass draws placements
 /// together by, its pipeline and the shape it was made against, the bind groups made for it, and the textures and
-/// storage they bind, by their ids.
+/// storage they bind, by their ids, with the storage the placement reads its counts from.
 struct Joined {
     frame: Frame,
     pass: PassName,
@@ -406,16 +406,24 @@ struct Joined {
 /// One dispatch run at each frame, holding all it runs with, so a frame builds nothing and releasing what it was made
 /// of frees it only once the dispatch goes (ADR-0026): the compute pass it joins, its compute program's id, which a
 /// pass runs dispatches together by, and its pipeline, the bind groups made for it, the workgroups it runs, and the
-/// textures and storage it binds, by their ids, the storage with how it is used.
+/// textures and storage it binds or reads its workgroups from, by their ids, the storage with how it is used.
 struct Dispatching {
     frame: Frame,
     pass: PassName,
     compute: u64,
     pipeline: wgpu::ComputePipeline,
     groups: Vec<wgpu::BindGroup>,
-    workgroups: [u32; 3],
+    running: Running,
     textures: Vec<u64>,
     storage: Vec<(u64, Access)>,
+}
+
+/// How many workgroups a dispatch runs.
+enum Running {
+    /// A grid, fixed when it was made.
+    Workgroups([u32; 3]),
+    /// As many as the three words of `buffer` from the byte `at` hold at the frame, a storage's buffer kept for it.
+    Indirect { buffer: wgpu::Buffer, at: u64 },
 }
 
 /// How many instances a placement draws.
@@ -424,6 +432,8 @@ enum Drawing {
     Count(u32),
     /// One for each record of the instances `instances`, read from `buffer`.
     Records { instances: u64, buffer: wgpu::Buffer, length: Length },
+    /// As the five words of `buffer` from the byte `at` hold at the frame, a storage's buffer kept for it.
+    Indirect { buffer: wgpu::Buffer, at: u64 },
 }
 
 /// How many records a placement draws from its instances.
@@ -981,8 +991,9 @@ impl Handles<CreateStorage> for Renderer {
         };
 
         let gpu = turn.open(&mut self.gpu)?;
-        // Copied from as it is read back.
-        let buffer = upload(gpu, &bytes, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
+        // Copied from as it is read back, and read as a draw's or a dispatch's arguments by any that asks to.
+        let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC;
+        let buffer = upload(gpu, &bytes, usage);
         let made = Storage { buffer, size };
         let id = self.made(turn, |kept, id, maker| kept.storage.keep(id, maker, made))?;
         turn.reply(&Stored::Made(StorageId { id }))?;
@@ -999,7 +1010,7 @@ impl Handles<WriteStorage> for Renderer {
         let bytes = turn.read(&write.bytes).to_vec();
         let kept = turn.open(&mut self.kept)?;
         let written = kept.storage.owned(write.storage.id, by).map(|storage| {
-            let fits = storage::writes(storage.size, write.first, bytes.len() as u64);
+            let fits = storage::fits(storage.size, write.first, bytes.len() as u64);
             (fits, storage.buffer.clone())
         });
         let buffer = match written {
@@ -1055,8 +1066,7 @@ impl Handles<CreateDispatch> for Renderer {
         let by = turn.sender().id();
         let device = turn.open(&mut self.gpu)?.device().clone();
         let kept = turn.open(&mut self.kept)?;
-        let made =
-            dispatch::check(&create, by, &*kept).and_then(|workgroups| kept.dispatch(&device, &create, workgroups));
+        let made = dispatch::check(&create, by, &*kept).and_then(|runs| kept.dispatch(&device, &create, runs));
         let made = match made {
             Ok(made) => made,
             Err(why) => {
@@ -1254,10 +1264,15 @@ impl Kept {
                 let made = self.instances.get(instances.id).ok_or(PlacementRefused::Instances)?;
                 Drawing::Records { instances: instances.id, buffer: made.buffer.clone(), length: Length::Live }
             }
+            Drawn::Indirect { storage, at } => {
+                let made = self.storage.get(storage.id).ok_or(PlacementRefused::Storage)?;
+                Drawing::Indirect { buffer: made.buffer.clone(), at: u64::from(at) }
+            }
         };
         let mut joins = Vec::with_capacity(place.joins.len());
         for (join, at) in place.joins.iter().zip(0..) {
-            let joined = self.joined(device, join).map_err(|why| PlacementRefused::Join { join: at, why })?;
+            let joined =
+                self.joined(device, join, place.instances).map_err(|why| PlacementRefused::Join { join: at, why })?;
             joins.push(joined);
         }
 
@@ -1270,8 +1285,9 @@ impl Kept {
         })
     }
 
-    /// The pass `join` draws in, with its program's pipeline and the bind groups of what it binds, made now.
-    fn joined(&self, device: &wgpu::Device, join: &Join) -> Result<Joined, JoinRefused> {
+    /// The pass `join` draws in, with its program's pipeline and the bind groups of what it binds, made now, for a
+    /// placement drawn as `drawn` says, whose storage it reads its counts from, if any, is read in the pass.
+    fn joined(&self, device: &wgpu::Device, join: &Join, drawn: Drawn) -> Result<Joined, JoinRefused> {
         let program = self.programs.get(join.program.id).ok_or(JoinRefused::Program)?;
 
         Ok(Joined {
@@ -1291,17 +1307,18 @@ impl Kept {
                     | placement::Resource::Texture(_)
                     | placement::Resource::Sampler(_) => None,
                 })
+                .chain(drawn.arguments().map(|storage| storage.id))
                 .collect(),
         })
     }
 
-    /// The dispatch `create` asks for, made of what its check found kept, running `workgroups`, with its bind groups
+    /// The dispatch `create` asks for, made of what its check found kept, running as `runs` says, with its bind groups
     /// made now.
     fn dispatch(
         &mut self,
         device: &wgpu::Device,
         create: &CreateDispatch,
-        workgroups: [u32; 3],
+        runs: Runs,
     ) -> Result<Dispatching, DispatchRefused> {
         let join = &create.join;
         for bind in &join.bindings {
@@ -1326,7 +1343,15 @@ impl Kept {
                 };
                 Some((storage.id, access))
             })
+            .chain(create.size.arguments().map(|storage| (storage.id, Access::Read)))
             .collect();
+        let running = match runs {
+            Runs::Workgroups(workgroups) => Running::Workgroups(workgroups),
+            Runs::Indirect { storage, at } => {
+                let made = self.storage.get(storage.id).ok_or(DispatchRefused::Storage)?;
+                Running::Indirect { buffer: made.buffer.clone(), at: u64::from(at) }
+            }
+        };
 
         Ok(Dispatching {
             frame: join.frame,
@@ -1334,7 +1359,7 @@ impl Kept {
             compute: join.compute.id,
             pipeline: compute.pipeline.clone(),
             groups,
-            workgroups,
+            running,
             textures: textures(&join.bindings),
             storage,
         })
@@ -1687,8 +1712,10 @@ impl Kept {
             for (group, bound) in (0..).zip(&dispatch.groups) {
                 recording.set_bind_group(group, bound, &[]);
             }
-            let [x, y, z] = dispatch.workgroups;
-            recording.dispatch_workgroups(x, y, z);
+            match &dispatch.running {
+                Running::Workgroups([x, y, z]) => recording.dispatch_workgroups(*x, *y, *z),
+                Running::Indirect { buffer, at } => recording.dispatch_workgroups_indirect(buffer, *at),
+            }
         }
     }
 
@@ -1705,13 +1732,14 @@ impl Kept {
         let mut pipeline = 0;
         for (placement, join) in joined {
             let count = match &placement.drawing {
-                Drawing::Count(count) => *count,
+                Drawing::Count(count) => Count::Given(*count),
                 Drawing::Records { instances, length: Length::Live, .. } => {
-                    self.instances.get(*instances).map_or(0, |made| made.held.length)
+                    Count::Given(self.instances.get(*instances).map_or(0, |made| made.held.length))
                 }
-                Drawing::Records { length: Length::Last(length), .. } => *length,
+                Drawing::Records { length: Length::Last(length), .. } => Count::Given(*length),
+                Drawing::Indirect { buffer, at } => Count::Held { buffer, at: *at },
             };
-            if count == 0 {
+            if matches!(count, Count::Given(0)) {
                 continue;
             }
             // Ids begin at one, so no program's is the zero it begins from.
@@ -1727,9 +1755,19 @@ impl Kept {
                 recording.set_vertex_buffer(1, buffer.slice(..));
             }
             recording.set_index_buffer(placement.indices.slice(..), wgpu::IndexFormat::Uint32);
-            recording.draw_indexed(0..placement.index_count, 0, 0..count);
+            match count {
+                Count::Given(count) => recording.draw_indexed(0..placement.index_count, 0, 0..count),
+                Count::Held { buffer, at } => recording.draw_indexed_indirect(buffer, at),
+            }
         }
     }
+}
+
+/// How many instances a placement draws at a frame: a count known to the CPU, or as many as the five words of
+/// `buffer` from the byte `at` hold, read by the GPU.
+enum Count<'a> {
+    Given(u32),
+    Held { buffer: &'a wgpu::Buffer, at: u64 },
 }
 
 impl Joined {

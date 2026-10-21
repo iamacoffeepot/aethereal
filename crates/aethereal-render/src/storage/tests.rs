@@ -20,9 +20,9 @@ fn storage_is_whole_words_as_many_as_one_buffer_binds() {
 #[test]
 fn a_write_lies_inside_the_storage_on_whole_words() {
     // Catches a write past the buffer, which WebGPU refuses on the queue, or one off a word.
-    assert!(writes(64, 0, 64));
-    assert!(writes(64, 48, 16));
-    assert!(!writes(64, 52, 16));
-    assert!(!writes(64, 2, 4));
-    assert!(!writes(64, 0, 6));
+    assert!(fits(64, 0, 64));
+    assert!(fits(64, 48, 16));
+    assert!(!fits(64, 52, 16));
+    assert!(!fits(64, 2, 4));
+    assert!(!fits(64, 0, 6));
 }

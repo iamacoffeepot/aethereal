@@ -60,7 +60,8 @@ WriteStorage  { storage: StorageId, first: u32, bytes: BlobRef }    // no answer
 Place {
     program: ProgramId,
     mesh: MeshId,
-    instances: Drawn,       // Drawn::Count(n): n instances, the program reading none; Drawn::Records(InstancesId): one for each record
+    instances: Drawn,       // Drawn::Count(n): n instances, the program reading none; Drawn::Records(InstancesId): one for each record;
+                            // Drawn::Indirect { storage, at }: as storage holds, the program reading none (ADR-0026)
     bindings: Vec<Bind>,    // for each place the program binds: Bind { group, binding, to: Resource }
 }                                                                    -> Made<PlacementId> | Refused
 
@@ -78,7 +79,7 @@ struct Sampling { filter: Filter, wrap: Wrap }   // Filter::{Linear, Nearest}, W
 **Everything is checked when a placement is made, and nothing when it is drawn:**
 
 - each id names a resource of its sort that is kept;
-- the mesh's layout is the program's vertex layout, and the instances' layout is its instance layout, or the placement is a `Count` for a program that reads none;
+- the mesh's layout is the program's vertex layout, and the instances' layout is its instance layout, or the placement is a `Count`, or `Indirect` (ADR-0026), for a program that reads none;
 - the bindings name each place the program binds, once, and nothing else, each with a resource of the kind bound there: uniforms for a uniform block, at least as many bytes as the block; storage for a storage buffer, at least as many bytes as the program binds there; a texture for a texture; a sampling for a sampler.
 
 The placement's bind groups are made then, once, so a frame binds what is made and builds nothing.
