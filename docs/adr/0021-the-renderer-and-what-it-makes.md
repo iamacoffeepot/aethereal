@@ -33,8 +33,8 @@ CreateProgram {
     fragment: String,                   // the fragment stage's entry point
     layout: VertexLayout,               // the vertex buffer it reads: stride, and each attribute's location, format, offset
     instances: PerInstance,             // what it reads once per instance: nothing, or a record laid out so (ADR-0023)
-    bindings: Vec<Binding>,             // what it binds, by group and binding: a uniform block of a size, a texture, a sampler
-    state: Fixed,                       // blending (opaque, alpha, additive), depth (off, test, test and write), culling
+    bindings: Vec<Binding>,             // what it binds, by group and binding: a uniform block or read-only storage of a size, a texture, a sampler
+    state: Fixed,                       // blending (opaque, alpha, additive, multiply), depth (off, test, test and write), culling
 }                                                                                     -> Made<ProgramId> | Refused
 Release { id }                                                                        // no answer
 ```
@@ -47,11 +47,11 @@ Release { id }                                                                  
 
 - A mesh's indices are each less than its vertex count, its vertex bytes are a whole number of its layout's stride, and every attribute lies inside the stride.
 - A texture's bytes are its width times its height times its format's size.
-- A program's WGSL is parsed and validated with naga, in the render root's turn, with no capability beyond what every WebGPU device has. Its entry points exist and are a vertex and a fragment stage. Each input of the vertex stage is an attribute of `layout`, at its location and of its kind of number (`f32` or `u32`), of any count of components, as WebGPU fills what a format lacks. Each binding the shader uses is in `bindings`, at its group and binding and of its kind, and a uniform block's bytes are at least what the shader reads of it. Then the pipeline is made. **This departs from those checks alone**, as each of these is one WebGPU makes as the pipeline is made, where natively wgpu stops the program and a browser makes an invalid pipeline:
+- A program's WGSL is parsed and validated with naga, in the render root's turn, with no capability beyond what every WebGPU device has. Its entry points exist and are a vertex and a fragment stage. Each input of the vertex stage is an attribute of `layout`, at its location and of its kind of number (`f32` or `u32`), of any count of components, as WebGPU fills what a format lacks. Each binding the shader uses is in `bindings`, at its group and binding and of its kind, and a uniform block's or a storage buffer's bytes are at least what the shader reads of it. A storage buffer is one the shader only reads (`var<storage, read>`), from either stage, as WebGPU lets a vertex stage read storage it does not write; one it writes is refused (ADR-0023). Then the pipeline is made. **This departs from those checks alone**, as each of these is one WebGPU makes as the pipeline is made, where natively wgpu stops the program and a browser makes an invalid pipeline:
   - the fragment stage reads each of its locations as the vertex stage writes it, of the same type and interpolation;
   - the fragment stage writes a `vec4<f32>` at location 0, the colour drawn;
   - the module declares no constant a pipeline overrides, as a program sets none;
-  - `bindings` lists each place once, in a group the GPU has, uniform blocks of a size it binds, and no more of each kind than a stage binds, by the device's limits;
+  - `bindings` lists each place once, in a group the GPU has, uniform blocks and storage buffers of a size it binds, and no more of each kind than a stage binds, by the device's limits;
   - a vertex layout reads at most sixteen locations, as many as WebGPU lets every device read; a mesh's layout is checked the same.
 - **A program draws to the surface's format, and tests depth in `Depth32Float`.** The pass a frame draws in holds a depth texture of that format, so every program is made against it, a program that does not test depth comparing `Always` and writing nothing. When a scene pass draws into a texture of its own (below), programs are made against that texture's format.
 
@@ -70,7 +70,7 @@ Release { id }                                                                  
 - What is decided separately, each when it is needed:
   - **How actors say what is drawn each frame:** placements, instances, and uniforms, kept on the render root and changed by mail (ADR-0023).
   - **The frame's passes and effects:** a scene pass into a texture, effect passes over it, the last onto the canvas (the earlier engine's ADR-0170 pass graph).
-  - **Storage buffers and compute programs,** for content made on the GPU.
+  - **Compute programs, and storage they write,** for content made on the GPU. Storage a program only reads is decided (ADR-0023).
   - **Materials** shared by many placements, as above.
   - **A lost device**, through the capability's controller (ADR-0019).
 

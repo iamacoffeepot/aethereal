@@ -9,6 +9,7 @@ pub mod mesh;
 pub mod placement;
 pub mod program;
 mod renderer;
+pub mod storage;
 pub mod texture;
 pub mod uniforms;
 

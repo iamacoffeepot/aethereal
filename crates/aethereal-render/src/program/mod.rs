@@ -8,7 +8,10 @@ use crate::mesh::{self, MeshRefused, VertexFormat, VertexLayout};
 use aethereal_data::{Kind, KindName, Plain};
 use naga::front::wgsl;
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
-use naga::{AddressSpace, Binding as Bound, ImageClass, ImageDimension, Module, ScalarKind, ShaderStage, TypeInner};
+use naga::{
+    AddressSpace, Binding as Bound, ImageClass, ImageDimension, Module, ScalarKind, ShaderStage, StorageAccess,
+    TypeInner,
+};
 
 /// Asks the renderer for a program: the WGSL `wgsl`, drawn from its vertex stage `vertex` and its fragment stage
 /// `fragment`, reading vertices laid out as `layout` says and what `instances` says once per instance, binding what
@@ -59,6 +62,10 @@ impl Kind for Binding {
 pub enum BindingKind {
     /// A uniform block of `bytes`, at least what the shader reads of it.
     Uniform { bytes: u32 },
+    /// A storage buffer the shader only reads, `var<storage, read>`, in either stage, of at least `bytes`: what the
+    /// shader reads of it with any array whose length is the buffer's holding one element. Storage bound there is at
+    /// least as large, and such an array holds as many elements as fit in the rest (ADR-0023).
+    Storage { bytes: u32 },
     /// A two-dimensional texture of floats, as every [`TextureFormat`](crate::texture::TextureFormat) is read.
     Texture,
     /// A sampler that filters.
@@ -91,6 +98,8 @@ pub enum Blend {
     Alpha,
     /// It is added to it.
     Additive,
+    /// It multiplies it, channel by channel, darkening it as a tint or a shadow does; the alpha drawn already is kept.
+    Multiply,
 }
 
 impl Kind for Blend {
@@ -184,14 +193,15 @@ pub enum ProgramRefused {
     Output,
     /// The shader uses a binding `bindings` does not list.
     Unbound { group: u32, binding: u32 },
-    /// The shader uses a binding as another kind than `bindings` lists, or reads more of a uniform block than its
-    /// bytes, or binds what a program cannot: a storage buffer, or a texture that is not two-dimensional floats.
+    /// The shader uses a binding as another kind than `bindings` lists, or reads more of a uniform block or a storage
+    /// buffer than its bytes, or binds what a program cannot: a storage buffer it writes, or a texture that is not
+    /// two-dimensional floats.
     Mismatch { group: u32, binding: u32 },
     /// `bindings` lists two at one place.
     Repeated { group: u32, binding: u32 },
     /// A binding's group is past the last the GPU has.
     Group { group: u32 },
-    /// A uniform block is empty, or larger than the GPU binds.
+    /// A uniform block or a storage buffer is empty, or larger than the GPU binds.
     Size { group: u32, binding: u32 },
     /// `bindings` lists more of one kind than the GPU binds in a stage.
     Many { kind: BindingKind },
@@ -240,8 +250,8 @@ pub fn check(create: &CreateProgram, limits: &wgpu::Limits) -> Result<(), Progra
     Ok(())
 }
 
-/// Checks that each binding is at a place of its own, in a group the GPU has, a uniform block of a size it binds,
-/// and that there are no more of each kind than a stage binds.
+/// Checks that each binding is at a place of its own, in a group the GPU has, a uniform block or a storage buffer of a
+/// size it binds, and that there are no more of each kind than a stage binds.
 fn check_bindings(bindings: &[Binding], limits: &wgpu::Limits) -> Result<(), ProgramRefused> {
     for (at, listed) in bindings.iter().enumerate() {
         let (group, binding) = (listed.group, listed.binding);
@@ -252,8 +262,13 @@ fn check_bindings(bindings: &[Binding], limits: &wgpu::Limits) -> Result<(), Pro
         if repeated {
             return Err(ProgramRefused::Repeated { group, binding });
         }
-        if let BindingKind::Uniform { bytes } = listed.kind {
-            let bound = bytes > 0 && u64::from(bytes) <= limits.max_uniform_buffer_binding_size;
+        let sized = match listed.kind {
+            BindingKind::Uniform { bytes } => Some((bytes, limits.max_uniform_buffer_binding_size)),
+            BindingKind::Storage { bytes } => Some((bytes, limits.max_storage_buffer_binding_size)),
+            BindingKind::Texture | BindingKind::Sampler => None,
+        };
+        if let Some((bytes, most)) = sized {
+            let bound = bytes > 0 && u64::from(bytes) <= most;
             if !bound {
                 return Err(ProgramRefused::Size { group, binding });
             }
@@ -261,6 +276,7 @@ fn check_bindings(bindings: &[Binding], limits: &wgpu::Limits) -> Result<(), Pro
     }
     let most = [
         (BindingKind::Uniform { bytes: 0 }, limits.max_uniform_buffers_per_shader_stage),
+        (BindingKind::Storage { bytes: 0 }, limits.max_storage_buffers_per_shader_stage),
         (BindingKind::Texture, limits.max_sampled_textures_per_shader_stage),
         (BindingKind::Sampler, limits.max_samplers_per_shader_stage),
     ];
@@ -279,6 +295,7 @@ const fn same_kind(one: BindingKind, other: BindingKind) -> bool {
     matches!(
         (one, other),
         (BindingKind::Uniform { .. }, BindingKind::Uniform { .. })
+            | (BindingKind::Storage { .. }, BindingKind::Storage { .. })
             | (BindingKind::Texture, BindingKind::Texture)
             | (BindingKind::Sampler, BindingKind::Sampler)
     )
@@ -400,7 +417,8 @@ fn check_output(module: &Module, fragment: usize) -> Result<(), ProgramRefused> 
     Ok(())
 }
 
-/// Checks that each binding the entry point `at` uses is listed, as the kind it is used as.
+/// Checks that each binding the entry point `at` uses is listed, as the kind it is used as. What is read of a block
+/// counts an array whose length is its buffer's as one element, as WebGPU's least binding size does.
 fn check_uses(module: &Module, info: &ModuleInfo, at: usize, bindings: &[Binding]) -> Result<(), ProgramRefused> {
     let uses = info.get_entry_point(at);
     for (handle, global) in module.global_variables.iter() {
@@ -415,6 +433,10 @@ fn check_uses(module: &Module, info: &ModuleInfo, at: usize, bindings: &[Binding
         let float_texture = ImageClass::Sampled { kind: ScalarKind::Float, multi: false };
         let fits = match (global.space, inner, listed.kind) {
             (AddressSpace::Uniform, _, BindingKind::Uniform { bytes }) => inner.size(module.to_ctx()) <= bytes,
+            (AddressSpace::Storage { access }, _, BindingKind::Storage { bytes }) => {
+                let read_only = access == StorageAccess::LOAD;
+                read_only && inner.size(module.to_ctx()) <= bytes
+            }
             (AddressSpace::Handle, TypeInner::Image { dim, arrayed, class }, BindingKind::Texture) => {
                 *dim == ImageDimension::D2 && !*arrayed && *class == float_texture
             }

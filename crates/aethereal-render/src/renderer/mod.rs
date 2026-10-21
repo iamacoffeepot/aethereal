@@ -10,6 +10,7 @@ use crate::placement::{
 use crate::program::{
     self, Binding, BindingKind, Blend, CreateProgram, Cull, Depth, PerInstance, ProgramId, Programmed,
 };
+use crate::storage::{self, CreateStorage, StorageId, Stored, WriteStorage};
 use crate::texture::{self, CreateTexture, TextureId, Textured};
 use crate::uniforms::{self, CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_actor::{
@@ -57,6 +58,10 @@ impl Carries<CreateUniforms> for Renderer {
     type Answers = (Uniformed,);
 }
 
+impl Carries<CreateStorage> for Renderer {
+    type Answers = (Stored,);
+}
+
 impl Carries<Place> for Renderer {
     type Answers = (Placed,);
 }
@@ -71,8 +76,8 @@ impl Kind for RendererConfig {
     const NAME: KindName = KindName::new("aether.render.config");
 }
 
-/// What an actor asks the renderer: to make a mesh, a texture, a program, instances, or uniforms, to write instances
-/// or uniforms it made, to place what is drawn, or to release what it made.
+/// What an actor asks the renderer: to make a mesh, a texture, a program, instances, uniforms, or storage, to write
+/// instances, uniforms, or storage it made, to place what is drawn, or to release what it made.
 pub struct Rendering;
 
 impl Protocol for Rendering {
@@ -84,6 +89,8 @@ impl Protocol for Rendering {
         WriteInstances,
         CreateUniforms,
         WriteUniforms,
+        CreateStorage,
+        WriteStorage,
         Place,
         Release,
     );
@@ -117,6 +124,14 @@ impl Carries<WriteUniforms> for Rendering {
     type Answers = ();
 }
 
+impl Carries<CreateStorage> for Rendering {
+    type Answers = (Stored,);
+}
+
+impl Carries<WriteStorage> for Rendering {
+    type Answers = ();
+}
+
 impl Carries<Place> for Rendering {
     type Answers = (Placed,);
 }
@@ -133,6 +148,7 @@ pub enum Release {
     Program(ProgramId),
     Instances(InstancesId),
     Uniforms(UniformsId),
+    Storage(StorageId),
     Placement(PlacementId),
 }
 
@@ -150,6 +166,7 @@ struct Kept {
     programs: Made<Program>,
     instances: Made<Instances>,
     uniforms: Made<Uniforms>,
+    storage: Made<Storage>,
     placements: Made<Placement>,
     samplers: HashMap<Sampling, wgpu::Sampler>,
     depth: DepthTexture,
@@ -230,6 +247,12 @@ struct Uniforms {
     size: u32,
 }
 
+/// Storage on the GPU, and its size in bytes.
+struct Storage {
+    buffer: wgpu::Buffer,
+    size: u32,
+}
+
 impl Actor for Renderer {
     type Config = RendererConfig;
     type Key = ();
@@ -242,6 +265,8 @@ impl Actor for Renderer {
         WriteInstances,
         CreateUniforms,
         WriteUniforms,
+        CreateStorage,
+        WriteStorage,
         Place,
         Release,
         Ended,
@@ -261,6 +286,7 @@ impl Actor for Renderer {
             programs: Made::default(),
             instances: Made::default(),
             uniforms: Made::default(),
+            storage: Made::default(),
             placements: Made::default(),
             samplers: HashMap::new(),
             depth,
@@ -531,6 +557,63 @@ impl Handles<WriteUniforms> for Renderer {
     }
 }
 
+impl Handles<CreateStorage> for Renderer {
+    type Sends = (ToSender<Stored>,);
+
+    fn handle(&mut self, create: CreateStorage, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let bytes = turn.read(&create.bytes).to_vec();
+        let most = turn.open(&mut self.gpu)?.device().limits().max_storage_buffer_binding_size;
+        let size = match storage::check(&bytes, most) {
+            Ok(size) => size,
+            Err(why) => {
+                turn.reply(&Stored::Refused(why))?;
+                return Ok(());
+            }
+        };
+
+        let gpu = turn.open(&mut self.gpu)?;
+        let buffer = upload(gpu, &bytes, wgpu::BufferUsages::STORAGE);
+        let made = Storage { buffer, size };
+        let id = self.made(turn, |kept, id, maker| kept.storage.keep(id, maker, made))?;
+        turn.reply(&Stored::Made(StorageId { id }))?;
+
+        Ok(())
+    }
+}
+
+impl Handles<WriteStorage> for Renderer {
+    type Sends = ();
+
+    fn handle(&mut self, write: WriteStorage, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let by = turn.sender().id();
+        let bytes = turn.read(&write.bytes).to_vec();
+        let kept = turn.open(&mut self.kept)?;
+        let written = kept.storage.owned(write.storage.id, by).map(|storage| {
+            let fits = storage::writes(storage.size, write.first, bytes.len() as u64);
+            (fits, storage.buffer.clone())
+        });
+        let buffer = match written {
+            Owned::Mine((true, buffer)) => buffer,
+            Owned::Mine((false, _)) => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: it lies outside it", write.storage));
+                return Ok(());
+            }
+            Owned::NotOwner => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: another made it", write.storage));
+                return Ok(());
+            }
+            Owned::Unknown => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: no such thing", write.storage));
+                return Ok(());
+            }
+        };
+
+        turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, u64::from(write.first), &bytes);
+
+        Ok(())
+    }
+}
+
 impl Handles<Place> for Renderer {
     type Sends = (ToSender<Placed>,);
 
@@ -570,6 +653,7 @@ impl Handles<Release> for Renderer {
                 released.map(drop)
             }
             Release::Uniforms(uniforms) => kept.uniforms.release(uniforms.id, by).map(drop),
+            Release::Storage(storage) => kept.storage.release(storage.id, by).map(drop),
             Release::Placement(placement) => kept.placements.release(placement.id, by).map(drop),
         };
         match released {
@@ -597,6 +681,7 @@ impl Handles<Ended> for Renderer {
                 kept.last_drawn(id, made.held.length);
             }
             kept.uniforms.release_all(maker);
+            kept.storage.release_all(maker);
             kept.placements.release_all(maker);
         }
 
@@ -641,6 +726,9 @@ impl Kept {
                 let resource = match bind.to {
                     placement::Resource::Uniforms(uniforms) => {
                         self.uniforms.get(uniforms.id).ok_or(missing)?.buffer.as_entire_binding()
+                    }
+                    placement::Resource::Storage(storage) => {
+                        self.storage.get(storage.id).ok_or(missing)?.buffer.as_entire_binding()
                     }
                     placement::Resource::Texture(texture) => {
                         wgpu::BindingResource::TextureView(&self.textures.get(texture.id).ok_or(missing)?.view)
@@ -721,6 +809,10 @@ impl Finds for Kept {
 
     fn uniforms(&self, id: UniformsId) -> Option<u32> {
         self.uniforms.get(id.id).map(|uniforms| uniforms.size)
+    }
+
+    fn storage(&self, id: StorageId) -> Option<u32> {
+        self.storage.get(id.id).map(|storage| storage.size)
     }
 
     fn has_texture(&self, id: TextureId) -> bool {
@@ -846,18 +938,7 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
             attributes: &per_instance,
         }),
     };
-    let blend = match create.state.blend {
-        Blend::Opaque => None,
-        Blend::Alpha => Some(wgpu::BlendState::ALPHA_BLENDING),
-        Blend::Additive => {
-            let add = wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            };
-            Some(wgpu::BlendState { color: add, alpha: add })
-        }
-    };
+    let blend = blending(create.state.blend);
     let (compare, writes) = match create.state.depth {
         Depth::Off => (wgpu::CompareFunction::Always, false),
         Depth::Test => (wgpu::CompareFunction::Less, false),
@@ -911,6 +992,35 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
     }
 }
 
+/// How a program of `blend` lays its colour over what is drawn, as wgpu names it: no blending for one that replaces it.
+fn blending(blend: Blend) -> Option<wgpu::BlendState> {
+    match blend {
+        Blend::Opaque => None,
+        Blend::Alpha => Some(wgpu::BlendState::ALPHA_BLENDING),
+        Blend::Additive => {
+            let add = wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            };
+            Some(wgpu::BlendState { color: add, alpha: add })
+        }
+        Blend::Multiply => {
+            let multiply = wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Dst,
+                dst_factor: wgpu::BlendFactor::Zero,
+                operation: wgpu::BlendOperation::Add,
+            };
+            let kept = wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            };
+            Some(wgpu::BlendState { color: multiply, alpha: kept })
+        }
+    }
+}
+
 /// The attributes of `layout`, as wgpu names them.
 fn attributes_of(layout: &VertexLayout) -> Vec<wgpu::VertexAttribute> {
     layout
@@ -951,6 +1061,11 @@ fn binding_type(kind: BindingKind) -> wgpu::BindingType {
     match kind {
         BindingKind::Uniform { bytes } => wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: wgpu::BufferSize::new(u64::from(bytes)),
+        },
+        BindingKind::Storage { bytes } => wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
             has_dynamic_offset: false,
             min_binding_size: wgpu::BufferSize::new(u64::from(bytes)),
         },

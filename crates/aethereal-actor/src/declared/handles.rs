@@ -156,6 +156,10 @@ tuples! {
     [B C D E F G H I J K]
     [B C D E F G H I J K L]
     [B C D E F G H I J K L M]
+    [B C D E F G H I J K L M N]
+    [B C D E F G H I J K L M N O]
+    [B C D E F G H I J K L M N O P]
+    [B C D E F G H I J K L M N O P Q]
 }
 
 impl<A: Actor> HandledList<A> for () {
