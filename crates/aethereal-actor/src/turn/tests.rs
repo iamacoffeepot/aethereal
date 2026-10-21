@@ -4,7 +4,8 @@ use super::*;
 use crate::records::Staging;
 use crate::{
     Anywhere, Beginning, Carries, ChildOf, Claim, Claimed, Ended, Ending, Fault, Hosted, How, Item, Keeping, Kept,
-    Mail, MailId, NotHeld, On, Payload, Protocol, Resource, Subscribers, Tick, Unspawned, child, parent,
+    Mail, MailId, NotHeld, On, Payload, Protocol, Resource, Role, Subscribers, Tick, ToAny, ToType, Unspawned, child,
+    parent,
 };
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
@@ -188,10 +189,14 @@ impl Handles<Shut> for Leaf {
 }
 
 impl Handles<Meet> for Leaf {
-    type Sends = (ToType<Self, Poke>,);
+    type Sends = (ToAny<(Poke,), Poke>,);
 
     fn handle(&mut self, Meet { other }: Meet, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        Ok(turn.send(To::Held(other), &Poke)?)
+        if let Some(other) = turn.cast(other) {
+            turn.to(other).send(&Poke)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -291,18 +296,18 @@ impl Actor for Herald {
     type Config = Poke;
     type Key = ();
     type Handles = ();
-    type BeginSends = (ToType<Leaf, Poked>,);
-    type EndSends = (ToType<Leaf, Shut>,);
+    type BeginSends = (ToAny<(Poked,), Poked>,);
+    type EndSends = (ToAny<(Shut,), Shut>,);
 
     fn begin(_config: Poke, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.send(ToWithoutMail::Parent, &Poked)?;
+        turn.to(parent()).send(&Poked)?;
 
         Ok(Self)
     }
 
     fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         if turn.why() == Why::Closed {
-            turn.send(ToWithoutMail::Parent, &Shut)?;
+            turn.to(parent()).send(&Shut)?;
         }
 
         Ok(())
@@ -327,14 +332,12 @@ fn opened<'a, Me: ChildOf, S: Sends>(
     asked: &'a mut Asked,
     source: Seated,
 ) -> Turn<'a, Me, S> {
-    let poke = Role::Kind(KindId::of::<Poke>());
-
     // A turn built for a test lends no instance its handler reads, so it is lent a part's empty instances for as long
     // as the turn lives.
     let instances = Box::leak(Box::default());
 
     Turning::new(me, path, above, table, &(), asked, instances, Keeps::Claimed, 0, source, CHAIN, Tie::TELL)
-        .declaring::<Me, S>(poke, Declared::of::<Me>())
+        .declaring::<Me, S>(Declared::of::<Me>())
 }
 
 /// The actor `bits` names, in the seat numbered `seat`.
@@ -540,28 +543,6 @@ fn handler_asks_by_the_kind_of_its_mail() {
     };
     let poke = Mailed { by: ME, to: other, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING, tie: Tie::TELL };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Meet>(), &meet), (Ok(()), vec![poke], Vec::new()));
-}
-
-#[test]
-fn mail_to_a_parent_goes_only_while_it_is_live() {
-    // Catches a send to the parent that skips its liveness, or names another actor than the one that spawned it.
-    let parent = seated(7, 3);
-    let Ok(path) = ROOT.child(&PathSegment::new(Leaf::NAME, &0u64)) else {
-        panic!("a child of the root fits");
-    };
-    let send = |table: &Listed| {
-        let mut asked = Asked::new();
-        let above = Above::Actor(parent, Declared::of::<Leaf>());
-        let mut turn = opened::<Leaf, <Leaf as Handles<Meet>>::Sends>(ME, &path, above, table, &mut asked, ME);
-        let sent = turn.send(To::Parent, &Poke);
-
-        (sent.is_ok(), asked.into_parts().0.mailed)
-    };
-
-    let live = Listed(vec![(parent, ROOT.clone())]);
-    let to_parent = Mailed { by: ME, to: parent, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING, tie: Tie::TELL };
-    assert_eq!(send(&live), (true, vec![to_parent]));
-    assert_eq!(send(&Listed::default()), (true, Vec::new()));
 }
 
 #[test]
@@ -786,13 +767,13 @@ fn back_to_back_mail_of_one_kind_to_one_receiver_is_one_run() {
     let meet = |to: Seated| Meet { other: ErasedActorRef::new(to) };
     let sends = [(other, true), (other, true), (other, true), (other, false), (third, true), (other, true)];
     for (to, meets) in sends {
-        let target = To::Held(ErasedActorRef::new(to));
+        let mut target = turn.to(ActorRef::<Leaf>::new(to));
         let sent = if meets {
-            turn.send(target, &meet(third))
+            target.send(&meet(third))
         } else {
-            turn.send(target, &Poke)
+            target.send(&Poke)
         };
-        assert_eq!(sent, Ok(()));
+        assert!(sent.is_ok());
     }
 
     let (buffers, _, arena, _, _) = asked.into_parts();
@@ -804,6 +785,43 @@ fn back_to_back_mail_of_one_kind_to_one_receiver_is_one_run() {
     let run = buffers.mailed[0].bytes;
     let alone = buffers.mailed[2].bytes;
     assert_eq!(arena.read(run.piece(2, run.each())), arena.read(alone), "each piece holds a meeting with the third");
+}
+
+#[test]
+fn replies_to_a_tell_join_a_run_and_an_answer_stands_alone() {
+    // Catches a reply that answers a request joined to the run of a tell before it, its tie lost in the run, and
+    // replies to a tell each written as a piece of mail of their own.
+    let source = seated(9, 5);
+    let table = Listed(vec![(source, ActorPath::new("aether.test.source"))]);
+    let replied = |tie: Tie| {
+        let mut asked = Asked::new();
+        let instances = Box::leak(Box::default());
+        let turning = Turning::new(
+            ME,
+            &ROOT,
+            Above::Chassis,
+            &table,
+            &(),
+            &mut asked,
+            instances,
+            Keeps::Claimed,
+            0,
+            source,
+            CHAIN,
+            tie,
+        );
+        let mut turn = turning.declaring::<Leaf, (ToType<Leaf, Poke>, ToSender<Poke>)>(Declared::of::<Leaf>());
+        let sent = turn.to(ActorRef::<Leaf>::new(source)).send(&Poke).is_ok();
+        let first = turn.reply(&Poke).is_ok();
+        let second = tie == Tie::TELL && turn.reply(&Poke).is_ok();
+        let seen: Vec<(u32, Tie)> =
+            asked.into_parts().0.mailed.iter().map(|mailed| (mailed.bytes.pieces(), mailed.tie)).collect();
+
+        (sent && first, second, seen)
+    };
+
+    assert_eq!(replied(Tie::TELL), (true, true, vec![(3, Tie::TELL)]));
+    assert_eq!(replied(Tie::asks(7)), (true, false, vec![(1, Tie::TELL), (1, Tie::answers(7))]));
 }
 
 /// A resource, which a guest's host holds a guest to the claims of.

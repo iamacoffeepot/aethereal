@@ -4,7 +4,7 @@
 use super::*;
 use crate::{
     Above, Actor, Anywhere, Asked, Beginning, Chain, ChildOf, Ending, ErasedActorRef, Fault, Instances, Item, Keeps,
-    Level, Mail, MailId, Mailed, Recursive, Runs, SeatNumber, Seated, Spawner, Table, Tie, To, Turn, Turning, section,
+    Level, Mail, MailId, Mailed, Recursive, Runs, SeatNumber, Seated, Spawner, Table, Tie, Turn, Turning, section,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -244,7 +244,6 @@ fn handed<A: ChildOf>(actor: A, kind: KindId) -> Vec<String> {
 /// The mail a keeper's handler of kept mail sends when it runs `then` with the actors of `table`.
 fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, Keeper, <Keeper as Handles<Kept>>::Sends>)) -> Vec<Mailed> {
     let mut asked = Asked::new();
-    let kept = Role::Kind(KindId::of::<Kept>());
     let mut instances = Instances::default();
     let turning = Turning::new(
         ME,
@@ -260,7 +259,7 @@ fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, Keeper, <Keeper as Han
         CHAIN,
         Tie::TELL,
     );
-    then(&mut turning.declaring::<Keeper, <Keeper as Handles<Kept>>::Sends>(kept, Declared::of::<Keeper>()));
+    then(&mut turning.declaring::<Keeper, <Keeper as Handles<Kept>>::Sends>(Declared::of::<Keeper>()));
 
     asked.into_parts().0.mailed
 }
@@ -280,57 +279,18 @@ fn mail_no_handler_takes_stops_the_engine() {
 }
 
 #[test]
-fn send_to_a_type_reaches_an_actor_of_that_type() {
-    // Catches a send to the type its handler declares refused, or its effect lost.
-    let table = Typed(vec![(OTHER, Declared::of::<Keeper>())]);
-    let asked = keeping(&table, |turn| {
-        assert!(turn.send(To::Held(ErasedActorRef::new(OTHER)), &Kept).is_ok());
-    });
+fn a_cast_finds_a_type_that_lists_every_kind_and_not_one_that_only_falls_back() {
+    // Catches a fallback counted as handling a protocol's kinds, and a type that lists them refused.
+    let cast = |declared| {
+        let table = Typed(vec![(OTHER, declared)]);
+        let mut found = None;
+        keeping(&table, |turn| found = Some(turn.cast::<(Kept,)>(ErasedActorRef::new(OTHER)).is_some()));
 
-    assert!(matches!(asked[..], [Mailed { to: OTHER, .. }]));
-}
+        found
+    };
 
-#[test]
-#[should_panic(expected = "false declaration")]
-fn send_to_an_actor_of_another_type_stops_the_engine() {
-    // Catches a reference to an actor of one type sent mail its declaration gives to another.
-    let table = Typed(vec![(OTHER, Declared::of::<Strict>())]);
-    keeping(&table, |turn| {
-        let _ = turn.send(To::Held(ErasedActorRef::new(OTHER)), &Kept);
-    });
-}
-
-#[test]
-#[should_panic(expected = "false declaration")]
-fn send_like_a_reply_before_it_is_checked_all_the_same() {
-    // Catches a send skipping its check because the turn's last send, a reply that is never checked, went to the same
-    // actor with the same kind: the two would join one run, and the send would reach a type it does not declare.
-    let table = Typed(vec![(OTHER, Declared::of::<Strict>())]);
-    keeping(&table, |turn| {
-        assert!(turn.reply(&Kept).is_ok());
-        let _ = turn.send(To::Held(ErasedActorRef::new(OTHER)), &Kept);
-    });
-}
-
-#[test]
-fn send_to_any_reaches_a_type_that_lists_every_kind() {
-    // Catches a protocol send refused to a type that lists its kinds.
-    let table = Typed(vec![(OTHER, Declared::of::<Strict>())]);
-    let asked = keeping(&table, |turn| {
-        assert!(turn.send_to_any(To::Held(ErasedActorRef::new(OTHER)), &Kept).is_ok());
-    });
-
-    assert!(matches!(asked[..], [Mailed { to: OTHER, .. }]));
-}
-
-#[test]
-#[should_panic(expected = "false declaration")]
-fn send_to_any_by_a_type_that_only_falls_back_stops_the_engine() {
-    // Catches a fallback counted as handling a protocol's kinds.
-    let table = Typed(vec![(OTHER, Declared::of::<Sink>())]);
-    keeping(&table, |turn| {
-        let _ = turn.send_to_any(To::Held(ErasedActorRef::new(OTHER)), &Kept);
-    });
+    assert_eq!(cast(Declared::of::<Strict>()), Some(true));
+    assert_eq!(cast(Declared::of::<Sink>()), Some(false));
 }
 
 /// A send of a stray to any actor that takes kept mail: of a kind its protocol does not hold.

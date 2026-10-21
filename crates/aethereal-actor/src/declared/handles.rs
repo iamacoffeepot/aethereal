@@ -124,7 +124,7 @@ macro_rules! tuples {
                 let role = role(&item);
                 $(
                     if takes($name::ROLE, role) {
-                        let mut turn = turning.declaring::<A, <A as Handles<$name>>::Sends>($name::ROLE, declared);
+                        let mut turn = turning.declaring::<A, <A as Handles<$name>>::Sends>(declared);
                         return <A as Handles<$name>>::handle(actor, $name::take(item)?, &mut turn);
                     }
                 )*
@@ -132,7 +132,7 @@ macro_rules! tuples {
                 $(
                     let falls_back = $name::ROLE == Role::Others;
                     if is_mail && falls_back {
-                        let mut turn = turning.declaring::<A, <A as Handles<$name>>::Sends>(Role::Others, declared);
+                        let mut turn = turning.declaring::<A, <A as Handles<$name>>::Sends>(declared);
                         return <A as Handles<$name>>::handle(actor, $name::take(item)?, &mut turn);
                     }
                 )*

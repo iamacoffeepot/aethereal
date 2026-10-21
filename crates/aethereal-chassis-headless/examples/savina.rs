@@ -45,7 +45,7 @@
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
 use aethereal_actor::{
-    Actor, ActorRef, Admits, Allows, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Root, To, ToAny, ToSender,
+    Actor, ActorRef, Admits, Allows, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Root, ToAny, ToSender,
     ToType, Top, Turn, parent,
 };
 use aethereal_chassis_headless::{Headless, Monotonic};
@@ -210,21 +210,21 @@ impl Actor for Pinger {
 }
 
 impl Handles<Ready> for Pinger {
-    type Sends = (ToType<Ponger, Ping>,);
+    type Sends = (ToSender<Ping>,);
 
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.send(To::Sender, &Ping { left: PINGS - 1 })?;
+        turn.reply(&Ping { left: PINGS - 1 })?;
 
         Ok(())
     }
 }
 
 impl Handles<Pong> for Pinger {
-    type Sends = (ToType<Ponger, Ping>,);
+    type Sends = (ToSender<Ping>,);
 
     fn handle(&mut self, Pong { left }: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if left > 0 {
-            turn.send(To::Sender, &Ping { left: left - 1 })?;
+            turn.reply(&Ping { left: left - 1 })?;
         }
 
         Ok(())
@@ -304,13 +304,13 @@ impl Actor for Producer {
 }
 
 impl Handles<Ready> for Producer {
-    type Sends = (ToType<Counter, Increment>, ToType<Counter, Retrieve>);
+    type Sends = (ToSender<Increment>, ToSender<Retrieve>);
 
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         for _ in 0..COUNTS {
-            turn.send(To::Sender, &Increment)?;
+            turn.reply(&Increment)?;
         }
-        turn.send(To::Sender, &Retrieve)?;
+        turn.reply(&Retrieve)?;
 
         Ok(())
     }
@@ -701,10 +701,10 @@ impl Actor for FibRoot {
 }
 
 impl Handles<Ready> for FibRoot {
-    type Sends = (ToType<Fib, Request>,);
+    type Sends = (ToSender<Request>,);
 
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.send(To::Sender, &Request { number: FIB })?;
+        turn.reply(&Request { number: FIB })?;
 
         Ok(())
     }
@@ -843,13 +843,13 @@ impl Actor for Sieve {
 }
 
 impl Handles<Ready> for Sieve {
-    type Sends = (ToType<Filter, Candidate>, ToType<Filter, Exit>);
+    type Sends = (ToSender<Candidate>, ToSender<Exit>);
 
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         for number in (3..=SIEVE_LIMIT).step_by(2) {
-            turn.send(To::Sender, &Candidate { number })?;
+            turn.reply(&Candidate { number })?;
         }
-        turn.send(To::Sender, &Exit)?;
+        turn.reply(&Exit)?;
 
         Ok(())
     }
@@ -1009,10 +1009,10 @@ impl Actor for Churn {
 }
 
 impl Handles<Ready> for Churn {
-    type Sends = (ToType<Mortal, Live>,);
+    type Sends = (ToSender<Live>, ToType<Mortal, Live>);
 
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.send(To::Sender, &Live { left: CHURN_LIFE })?;
+        turn.reply(&Live { left: CHURN_LIFE })?;
         while self.spawned < CHURN_ALIVE / self.spawners {
             self.spawn_next(turn)?;
         }

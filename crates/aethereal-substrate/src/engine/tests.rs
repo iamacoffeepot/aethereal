@@ -670,7 +670,7 @@ impl Clock for Ticking {
 #[test]
 fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
     // Catches two workers giving one seat to two children, a seat a part numbered or took back left neither taken nor
-    // free, and a child spawned in an earlier turn of the step that a send by name cannot find.
+    // free, and a child spawned in an earlier turn of the step that a send to it cannot find.
     let (mut engine, root) = engine(&["spawn 2 spawn 4 up a", "spawn 3 spawn 5 up b", "tell 3 spawn 6 up c"]);
     let clock = Ticking::default();
     engine.step(Time::ZERO, &clock);
