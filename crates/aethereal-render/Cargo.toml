@@ -1,0 +1,20 @@
+[package]
+name = "aethereal-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The renderer: the root that owns the GPU, and makes what is drawn for the actors that ask (ADR-0021)"
+
+[dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-data = { path = "../aethereal-data" }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"] }
+
+# A browser's GPU is WebGPU, used on the page's one thread, so what it makes is never shared between threads: that is
+# what lets the GPU be a resource, which is `Send` (ADR-0010).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["webgpu", "fragile-send-sync-non-atomic-wasm"] }
+
+[lints]
+workspace = true
