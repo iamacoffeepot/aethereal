@@ -1,7 +1,7 @@
 //! The actors one actor sends to as they come and go: a list it holds, which it watches so the ended leave it
 //! (ADR-0016).
 
-use crate::{Allows, Ended, ErasedActorRef, ProtocolRef, Turn, Watches};
+use crate::{Ended, ErasedActorRef, Handles, ProtocolRef, Turn};
 use aethereal_data::ActorId;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -30,10 +30,7 @@ impl<P> Subscribers<P> {
     }
 
     /// Adds the actor `reference` refers to, and watches it: nothing, and answers false, when it is held already.
-    pub fn subscribe<A, S, I>(&mut self, turn: &mut Turn<'_, A, S>, reference: ProtocolRef<P>) -> bool
-    where
-        S: Allows<Watches, I>,
-    {
+    pub fn subscribe<A: Handles<Ended>, S>(&mut self, turn: &mut Turn<'_, A, S>, reference: ProtocolRef<P>) -> bool {
         let is_held = self.places.contains_key(&reference.id().bits());
         if is_held {
             return false;

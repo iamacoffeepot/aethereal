@@ -4,7 +4,7 @@ use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, BlobRef, Carries, ChildOf, Ended, Ending,
     ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, Path, Protocol, Recursive, Refused, Resource,
     Runner, Running, RunsJob, Spawns, Start, Stop, Subscribes, Tells, Tick, To, ToAny, ToSender, ToType, ToWithoutMail,
-    Top, Turn, Unanswered, Unrun, Watches, path,
+    Top, Turn, Unanswered, Unrun, path,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, Plain};
 use core::mem;
@@ -745,7 +745,7 @@ impl Actor for Watcher {
     type Config = Watching;
     type Key = ();
     type Handles = (Ended,);
-    type BeginSends = (Watches,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(watching: Watching, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {

@@ -136,7 +136,7 @@ impl ChildOf for Leaf {
 impl Actor for Leaf {
     type Config = LeafConfig;
     type Key = u64;
-    type Handles = (Poke, Poked, Shut, Meet);
+    type Handles = (Poke, Poked, Shut, Meet, Ended);
     type BeginSends = ();
     type EndSends = ();
 
@@ -186,6 +186,15 @@ impl Handles<Meet> for Leaf {
 
     fn handle(&mut self, Meet { other }: Meet, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         Ok(turn.send(To::Held(other), &Poke)?)
+    }
+}
+
+/// A leaf may watch, as the subscribers it holds do.
+impl Handles<Ended> for Leaf {
+    type Sends = ();
+
+    fn handle(&mut self, _: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
     }
 }
 
@@ -623,7 +632,7 @@ fn subscribers_are_held_once_watched_once_and_leave_by_ending_or_unsubscribing()
     let [first, second, third] = [seated(9, 5), seated(8, 6), seated(7, 7)];
     let table = Listed(Vec::new());
     let mut asked = Asked::new();
-    let mut turn = opened::<(Watches,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let listener = |at: Seated| -> ProtocolRef<(Poke,)> { ActorRef::<Leaf>::new(at).protocol() };
     let mut subscribers = Subscribers::new();
 
@@ -745,4 +754,22 @@ fn a_hosted_spawn_its_spawners_declaration_does_not_list_fails() {
         Hosted::beginning(ME, &ROOT, Above::Chassis, &table, &mut asked, Declared::of::<Herald>(), &mut keeping);
     let by_herald = hosted.spawn(ME, leaf(), Some(KeyName::new("0")), SeatNumber::new(1));
     assert_eq!(by_herald, Err(Unspawned::Undeclared), "a herald declares no spawn of a leaf");
+}
+
+#[test]
+fn a_hosted_watch_by_an_actor_whose_type_handles_no_ending_fails() {
+    // Catches a guest's turn handed a watch by an actor whose ending could never be handed to it, and a child's watch
+    // in its `begin` checked against its spawner's type rather than its own (ADR-0013).
+    let table = Listed::default();
+    let mut asked = Asked::new();
+    let mut keeping = Keeping::default();
+    let mut hosted =
+        Hosted::beginning(ME, &ROOT, Above::Chassis, &table, &mut asked, Declared::of::<Branch>(), &mut keeping);
+    let leaf = Code::Linked(Declared::of::<Leaf>());
+    let Ok(child) = hosted.spawn(ME, leaf, Some(KeyName::new("0")), SeatNumber::new(1)) else {
+        panic!("a branch declares its leaves");
+    };
+
+    assert_eq!(hosted.watch(ME, child), Err(FalseWatch), "a branch handles no ending");
+    assert_eq!(hosted.watch(child, ME), Ok(()), "a leaf handles endings");
 }

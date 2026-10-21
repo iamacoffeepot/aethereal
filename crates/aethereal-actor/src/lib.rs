@@ -61,7 +61,7 @@ pub use controller::{Controller, Requests};
 pub use declared::{
     Allows, AnsweredBy, At, CarriedBy, Carries, Conforms, Covers, Declared, DeclaredBy, Handled, HandledBy,
     HandledList, Handler, Handles, Kinds, Listed, Marker, Others, Protocol, RepliesTo, RepliesWith, RepliesWithin,
-    ReplyWithin, Role, Sending, Sends, Spawns, Subscribes, Target, Tells, ToAny, ToSender, ToType, Watches,
+    ReplyWithin, Role, Sending, Sends, Spawns, Subscribes, Target, Tells, ToAny, ToSender, ToType,
 };
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, To, ToWithoutMail, What};
 pub use ended::{Ended, How};

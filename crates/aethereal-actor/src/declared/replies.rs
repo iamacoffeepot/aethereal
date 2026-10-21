@@ -1,7 +1,7 @@
 //! What comes back from what an actor sends, which its type must handle: the reply a receiver sends to whoever sent
 //! to it, checked against the sender where the sender declares the send (ADR-0016).
 
-use super::{Allows, Carries, Handled, Handles, Protocol, Spawns, Subscribes, Tells, ToAny, ToSender, ToType, Watches};
+use super::{Allows, Carries, Handled, Handles, Protocol, Spawns, Subscribes, Tells, ToAny, ToSender, ToType};
 use crate::{Actor, Admits, ChildOf, Path, PathTo};
 use aethereal_data::Kind;
 
@@ -370,8 +370,6 @@ impl<A, T: Actor + Handles<K>, K: Kind + Handled> DeclaredBy<A> for ToType<T, K>
 
 impl<A, K> DeclaredBy<A> for ToSender<K> {}
 
-impl<A> DeclaredBy<A> for Watches {}
-
 /// A send at a typed path is checked as one to the path's type is.
 impl<A, L: ChildOf + PathTo + Handles<K>, K: Kind + Handled> DeclaredBy<A> for Tells<Path<L>, K> where
     <L as Handles<K>>::Sends: RepliesTo<A>
@@ -395,8 +393,6 @@ impl<A: Handles<K>, K: Kind + Handled> RepliesTo<A> for ToSender<K> {}
 impl<A, T, K> RepliesTo<A> for ToType<T, K> {}
 
 impl<A, P, K> RepliesTo<A> for ToAny<P, K> {}
-
-impl<A> RepliesTo<A> for Watches {}
 
 impl<A, C> RepliesTo<A> for Spawns<C> {}
 
@@ -428,8 +424,6 @@ impl<Answers, T, K> ReplyWithin<Answers, ()> for ToType<T, K> {}
 
 impl<Answers, P, K> ReplyWithin<Answers, ()> for ToAny<P, K> {}
 
-impl<Answers> ReplyWithin<Answers, ()> for Watches {}
-
 impl<Answers, C> ReplyWithin<Answers, ()> for Spawns<C> {}
 
 impl<Answers, T, K> ReplyWithin<Answers, ()> for Tells<T, K> {}
@@ -443,8 +437,6 @@ impl<A> RepliesWith<A> for ToSender<A> {}
 impl<A, T, K> RepliesWith<A> for ToType<T, K> {}
 
 impl<A, P, K> RepliesWith<A> for ToAny<P, K> {}
-
-impl<A> RepliesWith<A> for Watches {}
 
 impl<A, C> RepliesWith<A> for Spawns<C> {}
 

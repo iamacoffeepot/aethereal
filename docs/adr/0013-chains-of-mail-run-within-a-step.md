@@ -54,7 +54,7 @@ The other views are not read by a turn, so their records wait for the step's fol
 - **the sender**: the source of the item being handled;
 - **whoever handles some kinds**: any actor whose type lists all of them. This is what a reference that names a protocol, and not a type, resolves to. A fallback does not count as listing a kind.
 
-A handler, `begin`, or `end` that watches an actor lists that too, as `Watches`, beside its sends: a watch is the other thing a turn asks for that reaches another actor.
+A watch is not a send, and is not listed beside the sends: a turn may watch an actor when its actor's type handles endings, as the ending is handed to that handler, which the compiler checks at the watch (ADR-0022, which types a turn by its actor). **This departs from listing a watch as `Watches` among a handler's sends**, which put in the list of who a handler reaches something that reaches no one.
 
 ```rust
 impl Actor for Ponger {
@@ -65,14 +65,14 @@ impl Actor for Ponger {
 }
 
 impl Handles<Ping> for Ponger {
-    type Sends = (ToSender<Pong>, Watches);   // it may watch whoever pinged it
+    type Sends = (ToSender<Pong>,);   // it may watch whoever pinged it, as it handles Ended
     fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.reply(&Pong)
     }
 }
 ```
 
-**The declaration is the handler's own type, so the two cannot disagree.** A handler is handed a turn typed by its actor's type and by what it declares (ADR-0022), and that turn offers only those sends: a send to a type its handler does not list for that kind, a reply it does not list, a send to a protocol it does not list, or a watch it does not list does not build. A type that lists a watch anywhere and does not handle endings does not build either: its declaration, made when the program is built, is checked there, as its watcher could never be handed an ending. The check runs on each declaration the program uses, so it stops a build, not a check of types alone, and passes over a type nothing runs. A declaration written beside the code it describes, as a list the engine reads apart from the handler, would be a claim nothing ties to that code. The engine reads the same declaration as plain data, made from those types when the program is built: for each handler, what it handles and what it may send. There is no undeclared type, since a type is written as its handlers, and the declaration is the one way an actor is written.
+**The declaration is the handler's own type, so the two cannot disagree.** A handler is handed a turn typed by its actor's type and by what it declares (ADR-0022), and that turn offers only those sends: a send to a type its handler does not list for that kind, a reply it does not list, or a send to a protocol it does not list does not build, nor a watch by an actor whose type does not handle endings, as its watcher could never be handed one. The checks a declaration's constants make run on each declaration the program uses, so it stops a build, not a check of types alone, and passes over a type nothing runs. A declaration written beside the code it describes, as a list the engine reads apart from the handler, would be a claim nothing ties to that code. The engine reads the same declaration as plain data, made from those types when the program is built: for each handler, what it handles and what it may send. There is no undeclared type, since a type is written as its handlers, and the declaration is the one way an actor is written.
 
 **What the types cannot see, the engine checks at the send.** A reference names an actor whose type is known only at run time, so a send to a type checks that the receiver is of that type, and a send to whoever handles some kinds checks that the receiver's type lists them. Mail is handed to the handler of its kind, or to the fallback when the receiver lists no handler for it. A send that breaks the declaration, and mail its receiver neither lists nor falls back on, is a false declaration. In a native actor it is a bug in the program, and the engine panics, naming the actor's type, its handler, and the send. A declaration is a promise the engine relies on, as an id is (ADR-0008), and a run built on a false one would not leave the views the program's turns imply. A false watch does not build. A guest's host holds its records to the same declaration, so a guest that sends or watches past it, which only one not built from the guest library can, fails that turn (ADR-0015).
 
