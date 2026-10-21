@@ -32,6 +32,14 @@ impl Kind for VertexLayout {
     const NAME: KindName = KindName::new("aether.render.vertex_layout");
 }
 
+impl VertexLayout {
+    /// Whether an attribute of this layout is read at `location`.
+    #[must_use]
+    pub fn reads(&self, location: u32) -> bool {
+        self.attributes.iter().any(|attribute| attribute.location == location)
+    }
+}
+
 /// One attribute of a vertex: the location a vertex stage reads it at, its format, and where in the vertex it lies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub struct Attribute {

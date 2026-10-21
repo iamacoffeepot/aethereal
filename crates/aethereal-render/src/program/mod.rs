@@ -11,20 +11,35 @@ use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
 use naga::{AddressSpace, Binding as Bound, ImageClass, ImageDimension, Module, ScalarKind, ShaderStage, TypeInner};
 
 /// Asks the renderer for a program: the WGSL `wgsl`, drawn from its vertex stage `vertex` and its fragment stage
-/// `fragment`, reading vertices laid out as `layout` says, binding what `bindings` lists, with the fixed state
-/// `state`. Answered with [`Programmed`].
+/// `fragment`, reading vertices laid out as `layout` says and what `instances` says once per instance, binding what
+/// `bindings` lists, with the fixed state `state`. Answered with [`Programmed`].
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub struct CreateProgram {
     pub wgsl: String,
     pub vertex: String,
     pub fragment: String,
     pub layout: VertexLayout,
+    pub instances: PerInstance,
     pub bindings: Vec<Binding>,
     pub state: Fixed,
 }
 
 impl Kind for CreateProgram {
     const NAME: KindName = KindName::new("aether.render.create_program");
+}
+
+/// What a program's vertex stage reads once per instance (ADR-0023).
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+pub enum PerInstance {
+    /// Nothing: it is drawn a count of times, reading only its vertices.
+    None,
+    /// A record laid out so, from a second vertex buffer stepped once per instance, at locations the vertex layout
+    /// does not read.
+    Records(VertexLayout),
+}
+
+impl Kind for PerInstance {
+    const NAME: KindName = KindName::new("aether.render.per_instance");
 }
 
 /// One thing a program binds: where, by its group and its binding in the group, and what.
@@ -152,9 +167,13 @@ pub enum ProgramRefused {
     Overrides,
     /// The vertex layout is one no mesh could have.
     Layout { why: MeshRefused },
+    /// The instance layout is one no instances could have.
+    InstanceLayout { why: MeshRefused },
+    /// The vertex and instance layouts both read `location`.
+    Shared { location: u32 },
     /// The module has no entry point `name` of the stage.
     Entry { stage: Stage, name: String },
-    /// The vertex stage reads a location the layout gives no attribute at.
+    /// The vertex stage reads a location neither layout gives an attribute at.
     Input { location: u32 },
     /// The vertex stage reads an attribute as another kind of number than its format is.
     InputFormat { location: u32 },
@@ -183,7 +202,7 @@ impl Kind for ProgramRefused {
 }
 
 /// Checks a program before it is made: that its WGSL is a valid module, whose entry points are a vertex and a
-/// fragment stage, that read what its layout gives, pass between them what each reads, write the colour drawn, and
+/// fragment stage, that read what its layouts give, pass between them what each reads, write the colour drawn, and
 /// bind only what `bindings` lists, within `limits`: what WebGPU would refuse as the pipeline is made.
 ///
 /// # Errors
@@ -191,6 +210,13 @@ impl Kind for ProgramRefused {
 /// Why it would not be made as asked.
 pub fn check(create: &CreateProgram, limits: &wgpu::Limits) -> Result<(), ProgramRefused> {
     mesh::check_layout(&create.layout).map_err(|why| ProgramRefused::Layout { why })?;
+    if let PerInstance::Records(instances) = &create.instances {
+        mesh::check_layout(instances).map_err(|why| ProgramRefused::InstanceLayout { why })?;
+        let shared = instances.attributes.iter().find(|attribute| create.layout.reads(attribute.location));
+        if let Some(attribute) = shared {
+            return Err(ProgramRefused::Shared { location: attribute.location });
+        }
+    }
     check_bindings(&create.bindings, limits)?;
 
     let module = wgsl::parse_str(&create.wgsl)
@@ -204,7 +230,7 @@ pub fn check(create: &CreateProgram, limits: &wgpu::Limits) -> Result<(), Progra
 
     let vertex = entry(&module, Stage::Vertex, &create.vertex)?;
     let fragment = entry(&module, Stage::Fragment, &create.fragment)?;
-    check_inputs(&module, vertex, &create.layout)?;
+    check_inputs(&module, vertex, &create.layout, &create.instances)?;
     check_stages(&module, vertex, fragment)?;
     check_output(&module, fragment)?;
     for at in [vertex, fragment] {
@@ -313,12 +339,22 @@ const fn scalar(ty: &TypeInner) -> Option<naga::Scalar> {
     }
 }
 
-/// Checks that the vertex stage reads each of its locations from an attribute of the layout, as the kind of number
+/// Checks that the vertex stage reads each of its locations from an attribute of either layout, as the kind of number
 /// the attribute's format is: of however many of them, as WebGPU fills what a format lacks.
-fn check_inputs(module: &Module, vertex: usize, layout: &VertexLayout) -> Result<(), ProgramRefused> {
+fn check_inputs(
+    module: &Module,
+    vertex: usize,
+    layout: &VertexLayout,
+    instances: &PerInstance,
+) -> Result<(), ProgramRefused> {
+    let records = match instances {
+        PerInstance::None => [].as_slice(),
+        PerInstance::Records(records) => records.attributes.as_slice(),
+    };
     for input in inputs(module, vertex) {
         let location = input.location;
-        let Some(attribute) = layout.attributes.iter().find(|attribute| attribute.location == location) else {
+        let given = layout.attributes.iter().chain(records).find(|attribute| attribute.location == location);
+        let Some(attribute) = given else {
             return Err(ProgramRefused::Input { location });
         };
         let read = match attribute.format {

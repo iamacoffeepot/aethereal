@@ -1,10 +1,14 @@
 //! The renderer: the root that owns the GPU, makes what actors ask it for, and draws each frame (ADR-0021).
 
 use crate::Gpu;
-use crate::made::{Ids, Made, Makers, Released};
+use crate::instances::{self, CreateInstances, Held, Instanced, InstancesId, WriteInstances};
+use crate::made::{Ids, Made, Makers, Owned};
 use crate::mesh::{self, Counted, CreateMesh, MeshId, Meshed, VertexLayout};
-use crate::program::{self, Binding, BindingKind, Blend, CreateProgram, Cull, Depth, ProgramId, Programmed};
+use crate::program::{
+    self, Binding, BindingKind, Blend, CreateProgram, Cull, Depth, PerInstance, ProgramId, Programmed,
+};
 use crate::texture::{self, CreateTexture, TextureId, Textured};
+use crate::uniforms::{self, CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_actor::{
     Actor, Beginning, Carries, ChildOf, Ended, Ending, Fault, Given, Handle, Handles, Level, On, Protocol, Render,
     Resource, ToSender, Top, Turn,
@@ -41,6 +45,14 @@ impl Carries<CreateProgram> for Renderer {
     type Answers = (Programmed,);
 }
 
+impl Carries<CreateInstances> for Renderer {
+    type Answers = (Instanced,);
+}
+
+impl Carries<CreateUniforms> for Renderer {
+    type Answers = (Uniformed,);
+}
+
 /// What the renderer is made from: the GPU the chassis opened.
 #[derive(Bound)]
 pub struct RendererConfig {
@@ -51,11 +63,21 @@ impl Kind for RendererConfig {
     const NAME: KindName = KindName::new("aether.render.config");
 }
 
-/// What an actor asks the renderer: to make a mesh, a texture, or a program, or to release one it made.
+/// What an actor asks the renderer: to make a mesh, a texture, a program, instances, or uniforms, to write instances
+/// or uniforms it made, or to release what it made.
 pub struct Rendering;
 
 impl Protocol for Rendering {
-    type Kinds = (CreateMesh, CreateTexture, CreateProgram, Release);
+    type Kinds = (
+        CreateMesh,
+        CreateTexture,
+        CreateProgram,
+        CreateInstances,
+        WriteInstances,
+        CreateUniforms,
+        WriteUniforms,
+        Release,
+    );
 }
 
 impl Carries<CreateMesh> for Rendering {
@@ -70,16 +92,34 @@ impl Carries<CreateProgram> for Rendering {
     type Answers = (Programmed,);
 }
 
+impl Carries<CreateInstances> for Rendering {
+    type Answers = (Instanced,);
+}
+
+impl Carries<WriteInstances> for Rendering {
+    type Answers = ();
+}
+
+impl Carries<CreateUniforms> for Rendering {
+    type Answers = (Uniformed,);
+}
+
+impl Carries<WriteUniforms> for Rendering {
+    type Answers = ();
+}
+
 impl Carries<Release> for Rendering {
     type Answers = ();
 }
 
-/// Releases a mesh, a texture, or a program before its maker ends. Only its maker may; what another asks is logged and left.
+/// Releases what the renderer made before its maker ends. Only its maker may; what another asks is logged and left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Release {
     Mesh(MeshId),
     Texture(TextureId),
     Program(ProgramId),
+    Instances(InstancesId),
+    Uniforms(UniformsId),
 }
 
 impl Kind for Release {
@@ -94,6 +134,8 @@ struct Kept {
     meshes: Made<Mesh>,
     textures: Made<Texture>,
     programs: Made<Program>,
+    instances: Made<Instances>,
+    uniforms: Made<Uniforms>,
 }
 
 impl Resource for Kept {}
@@ -119,13 +161,39 @@ struct Texture {
 struct Program {
     pipeline: wgpu::RenderPipeline,
     layout: VertexLayout,
+    instances: PerInstance,
     groups: Vec<wgpu::BindGroupLayout>,
+}
+
+/// Instances on the GPU: a buffer with room for their capacity, how they stand, and how a record is laid out.
+struct Instances {
+    buffer: wgpu::Buffer,
+    held: Held,
+    #[expect(dead_code, reason = "matched against a program's once actors place what they draw (ADR-0023)")]
+    layout: VertexLayout,
+}
+
+/// Uniforms on the GPU, and their size in bytes.
+struct Uniforms {
+    buffer: wgpu::Buffer,
+    size: u32,
 }
 
 impl Actor for Renderer {
     type Config = RendererConfig;
     type Key = ();
-    type Handles = (On<Render>, CreateMesh, CreateTexture, CreateProgram, Release, Ended);
+    type Handles = (
+        On<Render>,
+        CreateMesh,
+        CreateTexture,
+        CreateProgram,
+        CreateInstances,
+        WriteInstances,
+        CreateUniforms,
+        WriteUniforms,
+        Release,
+        Ended,
+    );
     type BeginSends = ();
     type EndSends = ();
 
@@ -257,6 +325,133 @@ impl Handles<CreateProgram> for Renderer {
     }
 }
 
+impl Handles<CreateInstances> for Renderer {
+    type Sends = (ToSender<Instanced>,);
+
+    fn handle(&mut self, create: CreateInstances, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let CreateInstances { layout, capacity, records } = create;
+        let records = turn.read(&records).to_vec();
+        let most = turn.open(&mut self.gpu)?.device().limits().max_buffer_size;
+        let length = match instances::check(&layout, capacity, &records, most) {
+            Ok(length) => length,
+            Err(why) => {
+                turn.reply(&Instanced::Refused(why))?;
+                return Ok(());
+            }
+        };
+
+        let gpu = turn.open(&mut self.gpu)?;
+        let room = u64::from(capacity) * u64::from(layout.stride);
+        let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: room,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        gpu.queue().write_buffer(&buffer, 0, &records);
+        let held = Held { stride: layout.stride, capacity, length };
+        let made = Instances { buffer, held, layout };
+        let id = self.made(turn, |kept, id, maker| kept.instances.keep(id, maker, made))?;
+        turn.reply(&Instanced::Made(InstancesId { id }))?;
+
+        Ok(())
+    }
+}
+
+impl Handles<WriteInstances> for Renderer {
+    type Sends = ();
+
+    fn handle(&mut self, write: WriteInstances, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let by = turn.sender().id();
+        let records = turn.read(&write.records).to_vec();
+        let kept = turn.open(&mut self.kept)?;
+        let written = kept.instances.owned(write.instances.id, by).map(|instances| {
+            let length = instances.held.write(write.first, records.len() as u64);
+            if let Ok(length) = length {
+                instances.held.length = length;
+            }
+            length.map(|_| (instances.buffer.clone(), instances.held.stride))
+        });
+        let (buffer, stride) = match written {
+            Owned::Mine(Ok(written)) => written,
+            Owned::Mine(Err(why)) => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: {why:?}", write.instances));
+                return Ok(());
+            }
+            Owned::NotOwner => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: another made it", write.instances));
+                return Ok(());
+            }
+            Owned::Unknown => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: no such thing", write.instances));
+                return Ok(());
+            }
+        };
+
+        let at = u64::from(write.first) * u64::from(stride);
+        turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, at, &records);
+
+        Ok(())
+    }
+}
+
+impl Handles<CreateUniforms> for Renderer {
+    type Sends = (ToSender<Uniformed>,);
+
+    fn handle(&mut self, create: CreateUniforms, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let bytes = turn.read(&create.bytes).to_vec();
+        let most = turn.open(&mut self.gpu)?.device().limits().max_uniform_buffer_binding_size;
+        let size = match uniforms::check(&bytes, most) {
+            Ok(size) => size,
+            Err(why) => {
+                turn.reply(&Uniformed::Refused(why))?;
+                return Ok(());
+            }
+        };
+
+        let gpu = turn.open(&mut self.gpu)?;
+        let buffer = upload(gpu, &bytes, wgpu::BufferUsages::UNIFORM);
+        let made = Uniforms { buffer, size };
+        let id = self.made(turn, |kept, id, maker| kept.uniforms.keep(id, maker, made))?;
+        turn.reply(&Uniformed::Made(UniformsId { id }))?;
+
+        Ok(())
+    }
+}
+
+impl Handles<WriteUniforms> for Renderer {
+    type Sends = ();
+
+    fn handle(&mut self, write: WriteUniforms, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let by = turn.sender().id();
+        let bytes = turn.read(&write.bytes).to_vec();
+        let kept = turn.open(&mut self.kept)?;
+        let written = kept.uniforms.owned(write.uniforms.id, by).map(|uniforms| {
+            let fits = uniforms::writes(uniforms.size, write.first, bytes.len() as u64);
+            (fits, uniforms.buffer.clone())
+        });
+        let buffer = match written {
+            Owned::Mine((true, buffer)) => buffer,
+            Owned::Mine((false, _)) => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: it lies outside them", write.uniforms));
+                return Ok(());
+            }
+            Owned::NotOwner => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: another made them", write.uniforms));
+                return Ok(());
+            }
+            Owned::Unknown => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: no such thing", write.uniforms));
+                return Ok(());
+            }
+        };
+
+        turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, u64::from(write.first), &bytes);
+
+        Ok(())
+    }
+}
+
 impl Handles<Release> for Renderer {
     type Sends = ();
 
@@ -267,11 +462,13 @@ impl Handles<Release> for Renderer {
             Release::Mesh(mesh) => kept.meshes.release(mesh.id, by).map(drop),
             Release::Texture(texture) => kept.textures.release(texture.id, by).map(drop),
             Release::Program(program) => kept.programs.release(program.id, by).map(drop),
+            Release::Instances(instances) => kept.instances.release(instances.id, by).map(drop),
+            Release::Uniforms(uniforms) => kept.uniforms.release(uniforms.id, by).map(drop),
         };
         match released {
-            Released::Freed(()) => {}
-            Released::NotOwner => turn.log(Level::Warn, format_args!("{release:?} was not released: another made it")),
-            Released::Unknown => turn.log(Level::Warn, format_args!("{release:?} was not released: no such thing")),
+            Owned::Mine(()) => {}
+            Owned::NotOwner => turn.log(Level::Warn, format_args!("{release:?} was not released: another made it")),
+            Owned::Unknown => turn.log(Level::Warn, format_args!("{release:?} was not released: no such thing")),
         }
 
         Ok(())
@@ -289,6 +486,8 @@ impl Handles<Ended> for Renderer {
             kept.meshes.release_all(maker);
             kept.textures.release_all(maker);
             kept.programs.release_all(maker);
+            kept.instances.release_all(maker);
+            kept.uniforms.release_all(maker);
         }
 
         Ok(())
@@ -346,20 +545,24 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
         bind_group_layouts: &bound,
         immediate_size: 0,
     });
-    let attributes: Vec<wgpu::VertexAttribute> = create
-        .layout
-        .attributes
-        .iter()
-        .map(|attribute| wgpu::VertexAttribute {
-            format: attribute.format.wgpu(),
-            offset: u64::from(attribute.offset),
-            shader_location: attribute.location,
-        })
-        .collect();
+    let attributes = attributes_of(&create.layout);
     let vertices = wgpu::VertexBufferLayout {
         array_stride: u64::from(create.layout.stride),
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &attributes,
+    };
+    let per_instance = match &create.instances {
+        PerInstance::None => Vec::new(),
+        PerInstance::Records(records) => attributes_of(records),
+    };
+    // A second buffer only for a program that reads one: wgpu takes the buffers a pipeline reads as a list.
+    let instances = match &create.instances {
+        PerInstance::None => None,
+        PerInstance::Records(records) => Some(wgpu::VertexBufferLayout {
+            array_stride: u64::from(records.stride),
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &per_instance,
+        }),
     };
     let blend = match create.state.blend {
         Blend::Opaque => None,
@@ -391,7 +594,7 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
             module: &module,
             entry_point: Some(&create.vertex),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[Some(vertices)],
+            buffers: &[Some(vertices), instances],
         },
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
@@ -417,7 +620,20 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
         cache: None,
     });
 
-    Program { pipeline, layout: create.layout.clone(), groups }
+    Program { pipeline, layout: create.layout.clone(), instances: create.instances.clone(), groups }
+}
+
+/// The attributes of `layout`, as wgpu names them.
+fn attributes_of(layout: &VertexLayout) -> Vec<wgpu::VertexAttribute> {
+    layout
+        .attributes
+        .iter()
+        .map(|attribute| wgpu::VertexAttribute {
+            format: attribute.format.wgpu(),
+            offset: u64::from(attribute.offset),
+            shader_location: attribute.location,
+        })
+        .collect()
 }
 
 /// The layout of each group `bindings` binds in, from the first to the last of them, an empty one for a group they

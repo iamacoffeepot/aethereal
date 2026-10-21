@@ -3,11 +3,13 @@
 //! so nothing it draws can fail.
 
 mod gpu;
+pub mod instances;
 mod made;
 pub mod mesh;
 pub mod program;
 mod renderer;
 pub mod texture;
+pub mod uniforms;
 
 pub use gpu::Gpu;
 pub use renderer::{Release, Renderer, RendererConfig, Rendering};

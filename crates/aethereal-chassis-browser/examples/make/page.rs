@@ -7,7 +7,7 @@ use aethereal_actor::{
 use aethereal_chassis_browser::{Browser, Performance, open};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_render::mesh::{Attribute, CreateMesh, Meshed, VertexFormat, VertexLayout};
-use aethereal_render::program::{Blend, CreateProgram, Cull, Depth, Fixed, Programmed};
+use aethereal_render::program::{Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, Programmed};
 use aethereal_render::texture::{CreateTexture, TextureFormat, Textured};
 use aethereal_render::{Release, Renderer, RendererConfig};
 use aethereal_substrate::Engine;
@@ -175,6 +175,7 @@ impl Requests {
             vertex: String::from("place"),
             fragment: String::from("shade"),
             layout,
+            instances: PerInstance::None,
             bindings: Vec::new(),
             state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None },
         };
