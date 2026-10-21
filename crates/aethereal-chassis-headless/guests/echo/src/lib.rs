@@ -2,9 +2,9 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, BlobRef, Carries, ChildOf, Ended, Ending,
-    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, On, Path, Protocol, Recursive, Refused,
-    Resource, Runner, Running, Start, Stop, Tells, Tick, To, ToAny, ToSender, ToType, ToWithoutMail, Top, Turn,
-    Unanswered, Unrun, parent, path,
+    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, On, Path, Protocol, ProtocolRef, Recursive,
+    Refused, Resource, Runner, Running, Start, Stop, Tells, Tick, ToAny, ToSender, ToType, Top, Turn, Unanswered,
+    Unrun, parent, path,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, Plain};
 use core::mem;
@@ -650,8 +650,8 @@ impl Actor for Seeker {
 
     fn begin(seek: Seek, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         for (n, path) in (0..).zip(&seek.paths) {
-            if let Some(found) = turn.resolve(path) {
-                turn.send_to_any(ToWithoutMail::Held(found), &Ping { n })?;
+            if let Some(found) = turn.resolve(path).and_then(|found| turn.cast(found)) {
+                turn.to(found).send(&Ping { n })?;
             }
         }
 
@@ -681,7 +681,7 @@ impl Actor for Caster {
     type Config = Seek;
     type Key = ();
     type Handles = ();
-    type BeginSends = (ToAny<(Ping,), Ping>,);
+    type BeginSends = (ToAny<(Ping,), Ping>, ToAny<(Ping, Shut), Ping>);
     type EndSends = ();
 
     fn begin(seek: Seek, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -690,10 +690,10 @@ impl Actor for Caster {
                 continue;
             };
             if let Some(pinged) = turn.cast::<(Ping,)>(found) {
-                turn.send_to_any(ToWithoutMail::Held(pinged.erase()), &Ping { n })?;
+                turn.to(pinged).send(&Ping { n })?;
             }
             if let Some(shut) = turn.cast::<(Ping, Shut)>(found) {
-                turn.send_to_any(ToWithoutMail::Held(shut.erase()), &Ping { n: n + 50 })?;
+                turn.to(shut).send(&Ping { n: n + 50 })?;
             }
         }
 
@@ -730,7 +730,7 @@ impl Kind for Untold {
 #[derive(Bound)]
 pub struct Watcher {
     watched: Vec<ErasedActorRef>,
-    tell: ErasedActorRef,
+    tell: ProtocolRef<(Ping,)>,
 }
 
 impl Kind for Watcher {
@@ -749,7 +749,7 @@ impl Actor for Watcher {
     type EndSends = ();
 
     fn begin(watching: Watching, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let Some(tell) = turn.resolve(&watching.tell) else {
+        let Some(tell) = turn.resolve(&watching.tell).and_then(|found| turn.cast(found)) else {
             return Err(Fault::new(&Untold)?);
         };
         let mut watched = Vec::new();
@@ -779,7 +779,7 @@ impl Handles<Ended> for Watcher {
             How::Earlier => 3,
         };
         if let Some(place) = place {
-            turn.send_to_any(To::Held(self.tell), &Ping { n: 10 * place + how })?;
+            turn.to(self.tell).send(&Ping { n: 10 * place + how })?;
         }
 
         Ok(())
@@ -1142,8 +1142,8 @@ impl Actor for Librarian {
 
     fn begin(shelf: Shelf, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let n = turn.read(&shelf.book).len() as u64;
-        if let Some(tell) = turn.resolve(&shelf.tell) {
-            turn.send_to_any(ToWithoutMail::Held(tell), &Pong { n })?;
+        if let Some(tell) = turn.resolve(&shelf.tell).and_then(|found| turn.cast(found)) {
+            turn.to(tell).send(&Pong { n })?;
         }
 
         Ok(Self { book: shelf.book })
@@ -1333,7 +1333,7 @@ impl Kind for Farewell {
 /// it ends because a turn of its own failed.
 #[derive(Bound)]
 pub struct Parting {
-    tell: ErasedActorRef,
+    tell: ProtocolRef<(Pong,)>,
     pings: u64,
 }
 
@@ -1353,7 +1353,7 @@ impl Actor for Parting {
     type EndSends = (ToAny<(Pong,), Pong>,);
 
     fn begin(farewell: Farewell, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let Some(tell) = turn.resolve(&farewell.tell) else {
+        let Some(tell) = turn.resolve(&farewell.tell).and_then(|found| turn.cast(found)) else {
             return Err(Fault::new(&Untold)?);
         };
 
@@ -1363,7 +1363,7 @@ impl Actor for Parting {
     fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         let is_faulted = turn.why() == aethereal_actor::Why::Faulted;
         let n = 600 + 10 * self.pings + u64::from(is_faulted);
-        turn.send_to_any(ToWithoutMail::Held(self.tell), &Pong { n })?;
+        turn.to(self.tell).send(&Pong { n })?;
 
         Ok(())
     }
@@ -1526,7 +1526,7 @@ impl Kind for Porter {
 
 impl Porter {
     /// The actor it passes lamps on to, as one that handles hands of them.
-    fn to(&self, turn: &impl Resolves) -> Result<ErasedActorRef, Fault> {
+    fn to(&self, turn: &impl Resolves) -> Result<ProtocolRef<(Hand,)>, Fault> {
         let to = turn.resolve_cast(&self.to);
 
         to.ok_or_else(|| Fault::new(&Shut).unwrap_or_else(|why| why.into()))
@@ -1536,22 +1536,22 @@ impl Porter {
 /// What a porter's turns read to find who they pass lamps on to.
 trait Resolves {
     /// The actor `path` names, when it is live and handles hands of lamps.
-    fn resolve_cast(&self, path: &ActorPath) -> Option<ErasedActorRef>;
+    fn resolve_cast(&self, path: &ActorPath) -> Option<ProtocolRef<(Hand,)>>;
 }
 
 impl<A, S> Resolves for Beginning<'_, A, S> {
-    fn resolve_cast(&self, path: &ActorPath) -> Option<ErasedActorRef> {
+    fn resolve_cast(&self, path: &ActorPath) -> Option<ProtocolRef<(Hand,)>> {
         let found = self.resolve(path)?;
 
-        self.cast::<(Hand,)>(found).map(|to| to.erase())
+        self.cast(found)
     }
 }
 
 impl<A, S> Resolves for Turn<'_, A, S> {
-    fn resolve_cast(&self, path: &ActorPath) -> Option<ErasedActorRef> {
+    fn resolve_cast(&self, path: &ActorPath) -> Option<ProtocolRef<(Hand,)>> {
         let found = self.resolve(path)?;
 
-        self.cast::<(Hand,)>(found).map(|to| to.erase())
+        self.cast(found)
     }
 }
 
@@ -1578,7 +1578,7 @@ impl Actor for Porter {
         match how {
             0 => {
                 let to = porter.to(turn)?;
-                turn.send_to_any(ToWithoutMail::Held(to), &Hand { lamps })?;
+                turn.to(to).send(&Hand { lamps })?;
             }
             1 => {
                 let spawned: Result<ActorRef<Self>, _> = turn.spawn(&1, Porting { to, lamps, how: 0 });
@@ -1606,7 +1606,7 @@ impl Handles<Hand> for Porter {
         let held: Vec<Handle<Lamp>> = hand.lamps.into_iter().map(|lamp| turn.take(lamp)).collect::<Result<_, _>>()?;
         let lamps = held.into_iter().map(|lamp| turn.give(lamp)).collect::<Result<Vec<_>, _>>()?;
         let to = self.to(turn)?;
-        turn.send_to_any(To::Held(to), &Hand { lamps })?;
+        turn.to(to).send(&Hand { lamps })?;
 
         Ok(())
     }
@@ -1655,7 +1655,7 @@ impl Handles<Ping> for Bearer {
         let held = core::mem::take(&mut self.lamps);
         let lamps = held.into_iter().map(|lamp| turn.give(lamp)).collect::<Result<Vec<_>, _>>()?;
         let to = turn.resolve_cast(&self.to).ok_or_else(|| Fault::new(&Shut).unwrap_or_else(|why| why.into()))?;
-        turn.send_to_any(To::Held(to), &Hand { lamps })?;
+        turn.to(to).send(&Hand { lamps })?;
 
         Ok(())
     }
@@ -2393,8 +2393,8 @@ impl Handles<Answer<Pong, Ringing>> for Ringer {
             Answered::Yes(pong) => pong.n,
             Answered::No(_) => 90,
         };
-        if let Some(keeper) = turn.resolve(&self.keeper) {
-            turn.send_to_any(To::Held(keeper), &Ping { n })?;
+        if let Some(keeper) = turn.resolve(&self.keeper).and_then(|found| turn.cast(found)) {
+            turn.to(keeper).send(&Ping { n })?;
         }
 
         Ok(())
@@ -2503,8 +2503,8 @@ impl Handles<On<Start>> for Chimer {
     type Sends = (ToAny<(Ping,), Ping>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        if let Some(keeper) = turn.resolve(&self.keeper) {
-            turn.send_to_any(To::Held(keeper), &Ping { n: 7 })?;
+        if let Some(keeper) = turn.resolve(&self.keeper).and_then(|found| turn.cast(found)) {
+            turn.to(keeper).send(&Ping { n: 7 })?;
         }
 
         Ok(())
@@ -2561,7 +2561,9 @@ impl Handles<On<Start>> for Usher {
         let found_live = turn.child::<Echo>(me, &()).is_some();
         let found_beneath_keeper = turn.child::<Echo>(keeper, &()).is_some();
         let n = 100 * u64::from(self.found_as_it_began) + 10 * u64::from(found_live) + u64::from(found_beneath_keeper);
-        turn.send_to_any(To::Held(keeper), &Ping { n })?;
+        if let Some(keeper) = turn.cast(keeper) {
+            turn.to(keeper).send(&Ping { n })?;
+        }
 
         Ok(())
     }

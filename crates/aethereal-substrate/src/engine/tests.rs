@@ -6,7 +6,7 @@ use crate::{ByActor, Entry, child_id, path_id};
 use aethereal_actor::Time;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Carries, ChildOf, Ended, Ending, Fault, Handles, How, Level,
-    Path, Recursive, Table, Tells, To, ToAny, ToSender, ToType, Top, Turn, child, path,
+    Path, Recursive, Table, Tells, ToAny, ToSender, ToType, Top, Turn, child, path,
 };
 use aethereal_data::{Bound, Budget, Kind, KindName, Plain};
 use std::cell::RefCell;
@@ -132,7 +132,7 @@ impl Actor for Node {
 }
 
 impl Handles<Note> for Node {
-    type Sends = (ToType<Self, Note>, ToSender<Note>);
+    type Sends = (ToType<Self, Note>, ToSender<Note>, ToAny<(Note,), Note>);
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Note { text } = note;
@@ -201,8 +201,9 @@ impl Handles<Note> for Node {
                 turn.to(turn.me()).send(&Note { text: String::from(rest) })?;
             }
             ["keep", ..] => {
-                let sender = turn.sender();
-                turn.send(To::Held(sender), &Note { text: String::from("late") })?;
+                if let Some(sender) = turn.cast(turn.sender()) {
+                    turn.to(sender).send(&Note { text: String::from("late") })?;
+                }
             }
             ["many", count, text] => {
                 let me = turn.me();

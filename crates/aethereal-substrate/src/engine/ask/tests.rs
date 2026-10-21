@@ -7,9 +7,9 @@ use aethereal_actor::Time;
 use aethereal_actor::Written;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asking, Asks, BlobRef, Carries, ChildOf, Ending, Fault, Handles, Held,
-    Protocol, Tie, To, ToSender, ToType, Top, Turn, Unanswered,
+    Protocol, Tie, ToSender, ToType, Top, Turn, Unanswered, child,
 };
-use aethereal_data::{Bound, EncodeError, Kind, KindName, Plain, TypedKey};
+use aethereal_data::{Bound, EncodeError, Kind, KindName, Plain};
 use std::cell::RefCell;
 use std::iter;
 use std::mem;
@@ -311,7 +311,7 @@ impl Handles<Order> for Pointer {
             "both" => {
                 let (asked, told) = (xs.first().copied().unwrap_or_default(), xs.last().copied().unwrap_or_default());
                 turn.to(board.protocol()).ask(&WhichTile { x: asked }, &Looking { at: 0 })?;
-                turn.send(To::ChildInstanced(Board::NAME, 1_u64.to_name()), &WhichTile { x: told })?;
+                turn.to(child::<Board>(1)).send(&WhichTile { x: told })?;
             }
             _ => {}
         }

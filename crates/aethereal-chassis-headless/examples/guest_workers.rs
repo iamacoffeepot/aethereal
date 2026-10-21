@@ -9,7 +9,7 @@
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
 use aethereal_actor::BlobRef;
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToSender, ToWithoutMail, Top, Turn};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToSender, Top, Turn};
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
@@ -82,8 +82,8 @@ impl Actor for Pinger {
 
     fn begin(volley: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let responder = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.responder"), &volley.with));
-        if let Some(responder) = turn.resolve(&responder) {
-            turn.send_to_any(ToWithoutMail::Held(responder), &Ping { n: volley.pings })?;
+        if let Some(responder) = turn.resolve(&responder).and_then(|found| turn.cast(found)) {
+            turn.to(responder).send(&Ping { n: volley.pings })?;
         }
 
         Ok(Self)

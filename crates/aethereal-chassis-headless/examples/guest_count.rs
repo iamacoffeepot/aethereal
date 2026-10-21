@@ -5,9 +5,7 @@
 #![allow(clippy::print_stdout)] // A measure prints its rounds.
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
-use aethereal_actor::{
-    Actor, Beginning, ChildOf, Ending, Fault, Handles, Time, ToAny, ToSender, ToWithoutMail, Top, Turn,
-};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Time, ToAny, ToSender, Top, Turn};
 use aethereal_chassis_headless::Monotonic;
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
@@ -76,8 +74,8 @@ impl Actor for Counter {
 
     fn begin(bursts: Bursts, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-        if let Some(echo) = turn.resolve(&echo) {
-            turn.send_to_any(ToWithoutMail::Held(echo), &Ping { n: bursts.bursts })?;
+        if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast(found)) {
+            turn.to(echo).send(&Ping { n: bursts.bursts })?;
         }
 
         Ok(Self { each: bursts.each })

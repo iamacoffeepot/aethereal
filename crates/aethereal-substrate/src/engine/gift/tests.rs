@@ -3,8 +3,8 @@
 use super::super::*;
 use crate::Entry;
 use aethereal_actor::Time;
-use aethereal_actor::{Actor, ChildOf, Ending, Fault, Handle, Handles, Recursive, To, ToType, Turn};
-use aethereal_data::{Bound, Kind, KindName, Plain, TypedKey};
+use aethereal_actor::{Actor, ChildOf, Ending, Fault, Handle, Handles, Recursive, ToAny, ToType, Turn, child};
+use aethereal_data::{Bound, Kind, KindName, Plain};
 use std::any;
 use std::cell::{Cell, RefCell};
 use std::mem;
@@ -151,7 +151,7 @@ impl Actor for Keeper {
 }
 
 impl Handles<Order> for Keeper {
-    type Sends = (ToType<Self, Order>, ToType<Self, Pass>);
+    type Sends = (ToType<Self, Order>, ToType<Self, Pass>, ToAny<(Pass,), Pass>);
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let words: Vec<&str> = order.text.split(' ').collect();
@@ -174,23 +174,23 @@ impl Handles<Order> for Keeper {
             ["pass", number] => {
                 let number: u64 = number.parse().unwrap_or_default();
                 let lamps = self.give_all(turn)?;
-                turn.send(To::ChildInstanced(Self::NAME, number.to_name()), &Pass { lamps })?;
+                turn.to(child::<Self>(number)).send(&Pass { lamps })?;
             }
             ["root", number] => {
                 let number: u64 = number.parse().unwrap_or_default();
                 let lamps = self.give_all(turn)?;
                 let path = ActorPath::from_root(&PathSegment::new(Self::NAME, &number));
-                let Some(root) = turn.resolve(&path) else {
+                let Some(root) = turn.resolve(&path).and_then(|found| turn.cast(found)) else {
                     return Err(Fault::new(&Self::order("no such root"))?);
                 };
-                turn.send(To::Held(root), &Pass { lamps })?;
+                turn.to(root).send(&Pass { lamps })?;
             }
             ["slip", number] => {
                 let number: u64 = number.parse().unwrap_or_default();
                 let lamps = self.give_all(turn)?;
                 let path = ActorPath::from_root(&PathSegment::new(Self::NAME, &number));
-                if let Some(root) = turn.resolve(&path) {
-                    turn.send(To::Held(root), &Pass { lamps })?;
+                if let Some(root) = turn.resolve(&path).and_then(|found| turn.cast(found)) {
+                    turn.to(root).send(&Pass { lamps })?;
                 }
                 return Err(Fault::new(&Self::order("slipped"))?);
             }
