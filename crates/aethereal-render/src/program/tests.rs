@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::mesh::Attribute;
+use crate::shape::ColourFormat;
 
 /// A program that lifts each vertex by a camera and shades it from a texture through a sampler.
 const WGSL: &str = "
@@ -45,6 +46,7 @@ fn program() -> CreateProgram {
         instances: PerInstance::None,
         bindings,
         state: Fixed { blend: Blend::Opaque, depth: Depth::TestWrite, cull: Cull::Back },
+        shape: Shape::with_depth(ColourFormat::Bgra8),
     }
 }
 

@@ -1,29 +1,54 @@
-//! Placements: one thing drawn, a mesh with a program for each of a count of instances, with what the program binds,
-//! asked for by any actor and checked as it is made, so drawing it cannot fail (ADR-0023).
+//! Placements: one thing drawn, a mesh for each of a count of instances, joining passes of frames each with a program
+//! and what the program binds, asked for by any actor and checked as it is made, so drawing it cannot fail (ADR-0023,
+//! ADR-0025).
 
 #[cfg(test)]
 mod tests;
 
+use crate::frame::Frame;
 use crate::instances::InstancesId;
 use crate::mesh::{MeshId, VertexLayout};
+use crate::pass::{Pass, PassName};
 use crate::program::{Binding, BindingKind, PerInstance, ProgramId};
+use crate::shape::Shape;
 use crate::storage::StorageId;
 use crate::texture::TextureId;
 use crate::uniforms::UniformsId;
 use aethereal_data::{Kind, KindName, Plain};
 
-/// Asks the renderer to draw `mesh` with `program`, for each of `instances`, binding what `bindings` names at each
-/// place the program binds, at every frame until it is released. Answered with [`Placed`].
+/// Asks the renderer to draw `mesh` for each of `instances` in every pass `joins` names, once in each, at every frame
+/// until it is released. Answered with [`Placed`].
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub struct Place {
-    pub program: ProgramId,
     pub mesh: MeshId,
     pub instances: Drawn,
-    pub bindings: Vec<Bind>,
+    pub joins: Vec<Join>,
 }
 
 impl Kind for Place {
     const NAME: KindName = KindName::new("aether.render.place");
+}
+
+/// One pass a placement draws in: the pass `pass` of `frame`, drawn with `program`, binding what `bindings` names at
+/// each place the program binds.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+pub struct Join {
+    pub frame: Frame,
+    pub pass: PassName,
+    pub program: ProgramId,
+    pub bindings: Vec<Bind>,
+}
+
+impl Kind for Join {
+    const NAME: KindName = KindName::new("aether.render.join");
+}
+
+impl Join {
+    /// The pass `P` of `frame`, drawn with `program`, binding `bindings`: the pass named by its type.
+    #[must_use]
+    pub const fn to<P: Pass>(frame: Frame, program: ProgramId, bindings: Vec<Bind>) -> Self {
+        Self { frame, pass: PassName::of::<P>(), program, bindings }
+    }
 }
 
 /// How many times a placement is drawn.
@@ -126,12 +151,33 @@ impl Kind for Placed {
 /// Why a placement was not made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum PlacementRefused {
-    /// No program is kept under the id: never made, or released.
-    Program,
-    /// No mesh is kept under the id.
+    /// No mesh is kept under the id: never made, or released.
     Mesh,
     /// No instances are kept under the id.
     Instances,
+    /// It joins no pass, and would draw nothing.
+    Unjoined,
+    /// Its join at `join`, counted from zero, was refused.
+    Join { join: u32, why: JoinRefused },
+}
+
+impl Kind for PlacementRefused {
+    const NAME: KindName = KindName::new("aether.render.placement_refused");
+}
+
+/// Why one join of a placement was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum JoinRefused {
+    /// No frame is kept as the one named.
+    Frame,
+    /// The frame has no pass of the name.
+    Pass,
+    /// An earlier join of the placement joins the same pass of the same frame.
+    Twice,
+    /// No program is kept under the id: never made, or released.
+    Program,
+    /// The program is made against another shape than the pass draws into.
+    Shape,
     /// The mesh's layout is not the program's vertex layout.
     Layout,
     /// What is drawn is not what the program reads per instance: records for a program that reads none, a count for
@@ -150,21 +196,26 @@ pub enum PlacementRefused {
     Mismatch { group: u32, binding: u32 },
 }
 
-impl Kind for PlacementRefused {
-    const NAME: KindName = KindName::new("aether.render.placement_refused");
+impl Kind for JoinRefused {
+    const NAME: KindName = KindName::new("aether.render.join_refused");
 }
 
-/// What a placement is checked against of the program it draws with.
-pub(crate) struct Shape<'a> {
+/// What a join is checked against of the program it draws with: what it reads, what it binds, and the shape it was
+/// made against.
+pub(crate) struct Reads<'a> {
     pub layout: &'a VertexLayout,
     pub instances: &'a PerInstance,
     pub bindings: &'a [Binding],
+    pub shape: Shape,
 }
 
 /// What the renderer keeps, as a placement's check looks it up: each lookup misses when nothing of its sort is kept
 /// under the id.
 pub(crate) trait Finds {
-    fn program(&self, id: ProgramId) -> Option<Shape<'_>>;
+    /// The shape of the pass `pass` of `frame` as it is now: refused when there is no such frame, or it has no such
+    /// pass.
+    fn pass(&self, frame: Frame, pass: PassName) -> Result<Shape, JoinRefused>;
+    fn program(&self, id: ProgramId) -> Option<Reads<'_>>;
     fn mesh(&self, id: MeshId) -> Option<&VertexLayout>;
     fn instances(&self, id: InstancesId) -> Option<&VertexLayout>;
     fn uniforms(&self, id: UniformsId) -> Option<u32>;
@@ -172,49 +223,93 @@ pub(crate) trait Finds {
     fn has_texture(&self, id: TextureId) -> bool;
 }
 
-/// Checks a placement before it is made: that what it names is kept, that the mesh and the instances are laid out as
-/// the program reads them, and that it binds each place the program binds, once, with a resource of the kind there.
+/// Checks a placement before it is made: that its mesh and instances are kept, that it joins some pass, and that each
+/// join is one [`check_join`] lets through.
 pub(crate) fn check(place: &Place, kept: &impl Finds) -> Result<(), PlacementRefused> {
-    let program = kept.program(place.program).ok_or(PlacementRefused::Program)?;
     let mesh = kept.mesh(place.mesh).ok_or(PlacementRefused::Mesh)?;
-    if mesh != program.layout {
-        return Err(PlacementRefused::Layout);
+    let instancing = match place.instances {
+        Drawn::Count(_) => Instancing::Count,
+        Drawn::Records(instances) => Instancing::Records(kept.instances(instances).ok_or(PlacementRefused::Instances)?),
+    };
+    if place.joins.is_empty() {
+        return Err(PlacementRefused::Unjoined);
     }
-    match (place.instances, program.instances) {
-        (Drawn::Count(_), PerInstance::None) => {}
-        (Drawn::Records(instances), PerInstance::Records(read)) => {
-            let layout = kept.instances(instances).ok_or(PlacementRefused::Instances)?;
-            if layout != read {
-                return Err(PlacementRefused::Drawn);
-            }
-        }
-        (Drawn::Count(_), PerInstance::Records(_)) | (Drawn::Records(_), PerInstance::None) => {
-            return Err(PlacementRefused::Drawn);
-        }
+    for (join, at) in place.joins.iter().zip(0..) {
+        let twice =
+            place.joins[..at as usize].iter().any(|before| before.frame == join.frame && before.pass == join.pass);
+        let checked = if twice {
+            Err(JoinRefused::Twice)
+        } else {
+            check_join(join, mesh, instancing, kept)
+        };
+        checked.map_err(|why| PlacementRefused::Join { join: at, why })?;
     }
 
-    for (at, bind) in place.bindings.iter().enumerate() {
+    Ok(())
+}
+
+/// How a placement's instances are read: a count, or records laid out so.
+#[derive(Clone, Copy)]
+enum Instancing<'a> {
+    Count,
+    Records(&'a VertexLayout),
+}
+
+/// Checks one join of a placement of a mesh laid out as `mesh`, its instances read as `instancing` says: that the frame
+/// has the pass, that the program is kept and made against the pass's shape, that the mesh and the records are laid
+/// out as the program reads them, and that it binds each place the program binds, once, with a resource of the kind
+/// there.
+fn check_join(
+    join: &Join,
+    mesh: &VertexLayout,
+    instancing: Instancing<'_>,
+    kept: &impl Finds,
+) -> Result<(), JoinRefused> {
+    let pass = kept.pass(join.frame, join.pass)?;
+    let program = kept.program(join.program).ok_or(JoinRefused::Program)?;
+    if program.shape != pass {
+        return Err(JoinRefused::Shape);
+    }
+    if mesh != program.layout {
+        return Err(JoinRefused::Layout);
+    }
+    let drawn = match (instancing, program.instances) {
+        (Instancing::Count, PerInstance::None) => true,
+        (Instancing::Records(layout), PerInstance::Records(read)) => layout == read,
+        (Instancing::Count, PerInstance::Records(_)) | (Instancing::Records(_), PerInstance::None) => false,
+    };
+    if !drawn {
+        return Err(JoinRefused::Drawn);
+    }
+
+    check_bindings(&join.bindings, program.bindings, kept)
+}
+
+/// Checks that `bindings` bind each place `listed` lists, once, and nothing else, each with a resource kept of the kind
+/// listed there, and uniforms or storage of at least its bytes.
+pub(crate) fn check_bindings(bindings: &[Bind], listed: &[Binding], kept: &impl Finds) -> Result<(), JoinRefused> {
+    for (at, bind) in bindings.iter().enumerate() {
         let (group, binding) = (bind.group, bind.binding);
-        let repeated = place.bindings[..at].iter().any(|before| before.group == group && before.binding == binding);
+        let repeated = bindings[..at].iter().any(|before| before.group == group && before.binding == binding);
         if repeated {
-            return Err(PlacementRefused::Repeated { group, binding });
+            return Err(JoinRefused::Repeated { group, binding });
         }
-        let listed = program.bindings.iter().find(|listed| listed.group == group && listed.binding == binding);
-        let Some(listed) = listed else {
-            return Err(PlacementRefused::Unlisted { group, binding });
+        let found = listed.iter().find(|listed| listed.group == group && listed.binding == binding);
+        let Some(found) = found else {
+            return Err(JoinRefused::Unlisted { group, binding });
         };
-        let fits = match (bind.to, listed.kind) {
+        let fits = match (bind.to, found.kind) {
             (Resource::Uniforms(uniforms), BindingKind::Uniform { bytes }) => {
-                let size = kept.uniforms(uniforms).ok_or(PlacementRefused::Missing { group, binding })?;
+                let size = kept.uniforms(uniforms).ok_or(JoinRefused::Missing { group, binding })?;
                 size >= bytes
             }
             (Resource::Storage(storage), BindingKind::Storage { bytes }) => {
-                let size = kept.storage(storage).ok_or(PlacementRefused::Missing { group, binding })?;
+                let size = kept.storage(storage).ok_or(JoinRefused::Missing { group, binding })?;
                 size >= bytes
             }
             (Resource::Texture(texture), BindingKind::Texture) => {
                 if !kept.has_texture(texture) {
-                    return Err(PlacementRefused::Missing { group, binding });
+                    return Err(JoinRefused::Missing { group, binding });
                 }
                 true
             }
@@ -222,15 +317,14 @@ pub(crate) fn check(place: &Place, kept: &impl Finds) -> Result<(), PlacementRef
             _ => false,
         };
         if !fits {
-            return Err(PlacementRefused::Mismatch { group, binding });
+            return Err(JoinRefused::Mismatch { group, binding });
         }
     }
-    let unbound = program
-        .bindings
+    let unbound = listed
         .iter()
-        .find(|listed| !place.bindings.iter().any(|bind| bind.group == listed.group && bind.binding == listed.binding));
+        .find(|listed| !bindings.iter().any(|bind| bind.group == listed.group && bind.binding == listed.binding));
     if let Some(listed) = unbound {
-        return Err(PlacementRefused::Unbound { group: listed.group, binding: listed.binding });
+        return Err(JoinRefused::Unbound { group: listed.group, binding: listed.binding });
     }
 
     Ok(())

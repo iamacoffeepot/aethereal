@@ -7,16 +7,20 @@ use aethereal_actor::{
 use aethereal_chassis_browser::{Browser, Performance, open, renderer};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_render::Renderer;
+use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
-use aethereal_render::placement::{Bind, Drawn, Place, Placed, Resource};
+use aethereal_render::pass::Main;
+use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
 use aethereal_render::program::{
     Binding, BindingKind, Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
 use aethereal_render::readback::{Pixels, ReadBack, Readable};
+use aethereal_render::shape::Shape;
 use aethereal_render::storage::{CreateStorage, Stored};
 use aethereal_render::texture::{CreateTexture, TextureFormat, TextureId, Textured};
 use aethereal_render::timing::{TimeFrame, Timed};
 use aethereal_substrate::Engine;
+use aethereal_window::{Heard, Opening, WindowId, Windows};
 use core::cell::RefCell;
 use core::mem;
 use core::num::NonZeroUsize;
@@ -40,23 +44,27 @@ pub struct Program {
     browser: Browser<Performance>,
 }
 
-/// Opens WebGPU on `canvas`, then makes the engine with the renderer, handed the GPU, and the reader as its roots.
-/// Its blobs hold a frame of a large canvas.
+/// Opens `canvas` as the one window and WebGPU on it, then makes the engine with the window root, the renderer, handed
+/// the GPU, and the reader as its roots. Its blobs hold a frame of a large canvas.
 ///
 /// # Errors
 ///
 /// When WebGPU will not open on the canvas, or a root does not begin.
 #[wasm_bindgen]
 pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
-    let gpu = open(canvas).await?;
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 26, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
+    let mut opening = Opening::new(setup.source::<Heard>());
+    let (gpu, shown) = open(canvas, &mut opening).await?;
+    let mut setup = setup
+        .add_root::<Windows>(&(), opening.config())
+        .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
     let (rendering, mappings) = renderer(&mut setup, gpu);
     let engine = setup
         .add_root::<Renderer>(&(), rendering)
         .map_err(|refused| JsError::new(&format!("the renderer did not begin: {refused:?}")))?
-        .add_root::<Reader>(&(), Nothing)
+        .add_root::<Reader>(&(), Shows { window: shown.window() })
         .map_err(|refused| JsError::new(&format!("the reader did not begin: {refused:?}")))?
         .ready();
 
@@ -78,12 +86,32 @@ impl Program {
     }
 }
 
-/// An empty config, and the context of an ask that needs none.
+/// The context of an ask that needs none.
 #[derive(Plain)]
 struct Nothing;
 
 impl Kind for Nothing {
     const NAME: KindName = KindName::new("aether.example.nothing");
+}
+
+/// The reader's config: the window it draws on.
+#[derive(Plain)]
+struct Shows {
+    window: WindowId,
+}
+
+impl Kind for Shows {
+    const NAME: KindName = KindName::new("aether.example.shows");
+}
+
+/// What was learned before the quad was asked for: the shape the programs draw into.
+#[derive(Plain)]
+struct Learned {
+    shape: Shape,
+}
+
+impl Kind for Learned {
+    const NAME: KindName = KindName::new("aether.example.learned");
 }
 
 /// A program that draws the quad at each splat it reads from storage, by its instance: its place, its size, and its
@@ -133,8 +161,8 @@ const SETTLED: u32 = 3;
 /// and once a few frames are drawn reads back a frame, its texture, and a frame's time.
 #[derive(Bound)]
 enum Reader {
-    /// Its asks are under way, and nothing is placed.
-    Making,
+    /// Its asks are under way, and nothing is placed on `window`.
+    Making { window: WindowId },
     /// Both are placed and the texture made: `drawn` frames have passed since.
     Drawing { texture: TextureId, drawn: u32 },
     /// It has asked for what it reads back.
@@ -153,8 +181,8 @@ impl ChildOf for Reader {
 /// context.
 #[derive(Plain)]
 enum Making {
-    /// The splats, once the quad was made.
-    Splats { mesh: MeshId },
+    /// The splats, once the quad was made, drawing into `shape`.
+    Splats { shape: Shape, mesh: MeshId },
     /// The tint, once the splats were.
     Tint { mesh: MeshId, splats: ProgramId },
 }
@@ -200,12 +228,13 @@ impl Kind for Of {
 }
 
 impl Actor for Reader {
-    type Config = Nothing;
+    type Config = Shows;
     type Key = ();
     type Handles = (
         On<Start>,
         On<Tick>,
-        Answer<Meshed, Nothing>,
+        Answer<Shaped, Nothing>,
+        Answer<Meshed, Learned>,
         Answer<Programmed, Making>,
         Answer<Stored, MadePrograms>,
         Answer<Placed, Placing>,
@@ -216,11 +245,11 @@ impl Actor for Reader {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(shows: Shows, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
 
-        Ok(Self::Making)
+        Ok(Self::Making { window: shows.window })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -245,8 +274,15 @@ fn corners() -> VertexLayout {
     VertexLayout { stride: 8, attributes: vec![corner] }
 }
 
-/// A program of `wgsl`, drawn from `vertex` and `fragment` over the quad, binding `bindings`, blending by `blend`.
-fn program(wgsl: &str, vertex: &str, fragment: &str, bindings: Vec<Binding>, blend: Blend) -> CreateProgram {
+/// A program of `wgsl`, drawn from `vertex` and `fragment` over the quad into `shape`, binding `bindings`, blending by
+/// `blend`.
+fn program(
+    wgsl: &str,
+    (vertex, fragment): (&str, &str),
+    shape: Shape,
+    bindings: Vec<Binding>,
+    blend: Blend,
+) -> CreateProgram {
     CreateProgram {
         wgsl: String::from(wgsl),
         vertex: String::from(vertex),
@@ -255,13 +291,35 @@ fn program(wgsl: &str, vertex: &str, fragment: &str, bindings: Vec<Binding>, ble
         instances: PerInstance::None,
         bindings,
         state: Fixed { blend, depth: Depth::Off, cull: Cull::None },
+        shape,
     }
 }
 
 impl Handles<On<Start>> for Reader {
-    type Sends = (Asks<Path<Renderer>, CreateMesh, Nothing>,);
+    type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(window)), &Nothing)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Shaped, Nothing>> for Reader {
+    type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
+
+    fn handle(
+        &mut self,
+        (answered, _): (Answered<Shaped>, Nothing),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Shaped::Shape(shape)) = answered else {
+            say(format!("the window's main pass has no shape: {answered:?}"));
+            return Ok(());
+        };
         let quad = floats([-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0]);
         let (vertices, indices) = match (turn.put(quad), turn.put(bytes([0, 1, 2, 0, 2, 3]))) {
             (Ok(vertices), Ok(indices)) => (vertices, indices),
@@ -270,18 +328,18 @@ impl Handles<On<Start>> for Reader {
                 return Ok(());
             }
         };
-        turn.to(path::<Renderer>(())).ask(&CreateMesh { layout: corners(), vertices, indices }, &Nothing)?;
+        turn.to(path::<Renderer>(())).ask(&CreateMesh { layout: corners(), vertices, indices }, &Learned { shape })?;
 
         Ok(())
     }
 }
 
-impl Handles<Answer<Meshed, Nothing>> for Reader {
+impl Handles<Answer<Meshed, Learned>> for Reader {
     type Sends = (Asks<Path<Renderer>, CreateProgram, Making>,);
 
     fn handle(
         &mut self,
-        (answered, _): (Answered<Meshed>, Nothing),
+        (answered, learned): (Answered<Meshed>, Learned),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Meshed::Made(mesh)) = answered else {
@@ -289,8 +347,9 @@ impl Handles<Answer<Meshed, Nothing>> for Reader {
             return Ok(());
         };
         let storage = Binding { group: 0, binding: 0, kind: BindingKind::Storage { bytes: 32 } };
-        let splats = program(SPLATS, "place", "shade", vec![storage], Blend::Opaque);
-        turn.to(path::<Renderer>(())).ask(&splats, &Making::Splats { mesh })?;
+        let shape = learned.shape;
+        let splats = program(SPLATS, ("place", "shade"), shape, vec![storage], Blend::Opaque);
+        turn.to(path::<Renderer>(())).ask(&splats, &Making::Splats { shape, mesh })?;
 
         Ok(())
     }
@@ -309,8 +368,8 @@ impl Handles<Answer<Programmed, Making>> for Reader {
             return Ok(());
         };
         let (mesh, splats) = match making {
-            Making::Splats { mesh } => {
-                let tint = program(TINT, "cover", "tint", Vec::new(), Blend::Multiply);
+            Making::Splats { shape, mesh } => {
+                let tint = program(TINT, ("cover", "tint"), shape, Vec::new(), Blend::Multiply);
                 turn.to(path::<Renderer>(())).ask(&tint, &Making::Tint { mesh, splats: made })?;
                 return Ok(());
             }
@@ -343,11 +402,14 @@ impl Handles<Answer<Stored, MadePrograms>> for Reader {
             say(format!("the storage was not made: {answered:?}"));
             return Ok(());
         };
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Storage(storage) }];
         let place = Place {
-            program: made.splats,
             mesh: made.mesh,
             instances: Drawn::Count(2),
-            bindings: vec![Bind { group: 0, binding: 0, to: Resource::Storage(storage) }],
+            joins: vec![Join::to::<Main>(Frame::Main(window), made.splats, bindings)],
         };
         turn.to(path::<Renderer>(())).ask(&place, &Placing::Splats { mesh: made.mesh, tint: made.tint })?;
 
@@ -367,9 +429,13 @@ impl Handles<Answer<Placed, Placing>> for Reader {
             say(format!("a placement was not made: {answered:?}"));
             return Ok(());
         };
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
         if let Placing::Splats { mesh, tint } = placing {
             // Drawn after the splats, as the renderer draws the programs it made first first; nothing promises it.
-            let place = Place { program: tint, mesh, instances: Drawn::Count(1), bindings: Vec::new() };
+            let join = Join::to::<Main>(Frame::Main(window), tint, Vec::new());
+            let place = Place { mesh, instances: Drawn::Count(1), joins: vec![join] };
             turn.to(path::<Renderer>(())).ask(&place, &Placing::Tint)?;
             return Ok(());
         }

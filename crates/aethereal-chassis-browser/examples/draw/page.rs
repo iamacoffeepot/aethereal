@@ -7,14 +7,18 @@ use aethereal_actor::{
 use aethereal_chassis_browser::{Browser, Performance, open, renderer};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_render::Renderer;
+use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::instances::{CreateInstances, Instanced, InstancesId, WriteInstances};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
-use aethereal_render::placement::{Bind, Drawn, Place, Placed, Resource};
+use aethereal_render::pass::Main;
+use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
 use aethereal_render::program::{
     Binding, BindingKind, Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
+use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::Engine;
+use aethereal_window::{Heard, Opening, WindowId, Windows};
 use core::cell::RefCell;
 use core::f32::consts::TAU;
 use core::mem;
@@ -39,22 +43,27 @@ pub struct Program {
     browser: Browser<Performance>,
 }
 
-/// Opens WebGPU on `canvas`, then makes the engine with the renderer, handed the GPU, and the drawer as its roots.
+/// Opens `canvas` as the one window and WebGPU on it, then makes the engine with the window root, the renderer, handed
+/// the GPU, and the drawer as its roots.
 ///
 /// # Errors
 ///
 /// When WebGPU will not open on the canvas, or a root does not begin.
 #[wasm_bindgen]
 pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
-    let gpu = open(canvas).await?;
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
+    let mut opening = Opening::new(setup.source::<Heard>());
+    let (gpu, shown) = open(canvas, &mut opening).await?;
+    let mut setup = setup
+        .add_root::<Windows>(&(), opening.config())
+        .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
     let (rendering, mappings) = renderer(&mut setup, gpu);
     let engine = setup
         .add_root::<Renderer>(&(), rendering)
         .map_err(|refused| JsError::new(&format!("the renderer did not begin: {refused:?}")))?
-        .add_root::<Drawer>(&(), Nothing)
+        .add_root::<Drawer>(&(), Shows { window: shown.window() })
         .map_err(|refused| JsError::new(&format!("the drawer did not begin: {refused:?}")))?
         .ready();
 
@@ -76,12 +85,22 @@ impl Program {
     }
 }
 
-/// An empty config.
+/// An empty context.
 #[derive(Plain)]
 struct Nothing;
 
 impl Kind for Nothing {
     const NAME: KindName = KindName::new("aether.example.nothing");
+}
+
+/// The drawer's config: the window it draws on.
+#[derive(Plain)]
+struct Shows {
+    window: WindowId,
+}
+
+impl Kind for Shows {
+    const NAME: KindName = KindName::new("aether.example.shows");
 }
 
 /// The most triangles in the ring.
@@ -108,12 +127,12 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 }
 ";
 
-/// The drawer: it makes what it draws one ask after another, each answer carrying what was made so far, places it,
-/// and from then writes the ring at each `Tick`.
+/// The drawer: it asks the shape of its window's main pass, makes what it draws one ask after another, each answer
+/// carrying what was made so far, places it, and from then writes the ring at each `Tick`.
 #[derive(Bound)]
 enum Drawer {
-    /// Its asks are under way, and nothing is placed.
-    Making,
+    /// Its asks are under way, and nothing is placed on `window`.
+    Making { window: WindowId },
     /// The ring is placed: these are the instances and uniforms it writes.
     Drawing { instances: InstancesId, uniforms: UniformsId },
 }
@@ -126,9 +145,20 @@ impl ChildOf for Drawer {
     type Parent = Top;
 }
 
+/// What was learned before the mesh was asked for: the shape the program draws into.
+#[derive(Plain)]
+struct Learned {
+    shape: Shape,
+}
+
+impl Kind for Learned {
+    const NAME: KindName = KindName::new("aether.example.learned");
+}
+
 /// What was made before the program was asked for.
 #[derive(Plain)]
 struct MadeMesh {
+    shape: Shape,
     mesh: MeshId,
 }
 
@@ -171,12 +201,13 @@ impl Kind for MadeAll {
 }
 
 impl Actor for Drawer {
-    type Config = Nothing;
+    type Config = Shows;
     type Key = ();
     type Handles = (
         On<Start>,
         On<Tick>,
-        Answer<Meshed, Nothing>,
+        Answer<Shaped, Nothing>,
+        Answer<Meshed, Learned>,
         Answer<Programmed, MadeMesh>,
         Answer<Instanced, MadeProgram>,
         Answer<Uniformed, MadeInstances>,
@@ -185,11 +216,11 @@ impl Actor for Drawer {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(shows: Shows, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
 
-        Ok(Self::Making)
+        Ok(Self::Making { window: shows.window })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -229,9 +260,30 @@ fn look(millis: u64) -> Vec<u8> {
 }
 
 impl Handles<On<Start>> for Drawer {
-    type Sends = (Asks<Path<Renderer>, CreateMesh, Nothing>,);
+    type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(window)), &Nothing)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Shaped, Nothing>> for Drawer {
+    type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
+
+    fn handle(
+        &mut self,
+        (answered, _): (Answered<Shaped>, Nothing),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Shaped::Shape(shape)) = answered else {
+            say(format!("the window's main pass has no shape: {answered:?}"));
+            return Ok(());
+        };
         let corners = [0.0_f32, 0.05, -0.04, -0.03, 0.04, -0.03].map(f32::to_bits);
         let (vertices, indices) = match (turn.put(bytes(corners)), turn.put(bytes([0, 1, 2]))) {
             (Ok(vertices), Ok(indices)) => (vertices, indices),
@@ -242,7 +294,7 @@ impl Handles<On<Start>> for Drawer {
         };
         let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
         let triangle = CreateMesh { layout: VertexLayout { stride: 8, attributes: vec![position] }, vertices, indices };
-        turn.to(path::<Renderer>(())).ask(&triangle, &Nothing)?;
+        turn.to(path::<Renderer>(())).ask(&triangle, &Learned { shape })?;
 
         Ok(())
     }
@@ -256,12 +308,12 @@ fn record() -> VertexLayout {
     VertexLayout { stride: 12, attributes: vec![offset, colour] }
 }
 
-impl Handles<Answer<Meshed, Nothing>> for Drawer {
+impl Handles<Answer<Meshed, Learned>> for Drawer {
     type Sends = (Asks<Path<Renderer>, CreateProgram, MadeMesh>,);
 
     fn handle(
         &mut self,
-        (answered, _): (Answered<Meshed>, Nothing),
+        (answered, learned): (Answered<Meshed>, Learned),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Meshed::Made(mesh)) = answered else {
@@ -277,8 +329,9 @@ impl Handles<Answer<Meshed, Nothing>> for Drawer {
             instances: PerInstance::Records(record()),
             bindings: vec![Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
             state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None },
+            shape: learned.shape,
         };
-        turn.to(path::<Renderer>(())).ask(&shade, &MadeMesh { mesh })?;
+        turn.to(path::<Renderer>(())).ask(&shade, &MadeMesh { shape: learned.shape, mesh })?;
 
         Ok(())
     }
@@ -348,11 +401,14 @@ impl Handles<Answer<Uniformed, MadeInstances>> for Drawer {
             say(format!("the uniforms were not made: {answered:?}"));
             return Ok(());
         };
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(uniforms) }];
         let place = Place {
-            program: made.program,
             mesh: made.mesh,
             instances: Drawn::Records(made.instances),
-            bindings: vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(uniforms) }],
+            joins: vec![Join::to::<Main>(Frame::Main(window), made.program, bindings)],
         };
         turn.to(path::<Renderer>(())).ask(&place, &MadeAll { instances: made.instances, uniforms })?;
 

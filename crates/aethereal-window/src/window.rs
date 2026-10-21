@@ -9,7 +9,7 @@ use core::mem;
 
 /// A window, by the number the window capability gave it as its host opened it: the first `0`, the next `1`. It is
 /// the key of the window's actor, and never a host's own name for the window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
 pub struct WindowId(u64);
 
 impl WindowId {

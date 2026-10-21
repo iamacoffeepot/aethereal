@@ -5,6 +5,7 @@
 mod tests;
 
 use crate::mesh::{self, MeshRefused, VertexFormat, VertexLayout};
+use crate::shape::Shape;
 use aethereal_data::{Kind, KindName, Plain};
 use naga::front::wgsl;
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
@@ -15,7 +16,8 @@ use naga::{
 
 /// Asks the renderer for a program: the WGSL `wgsl`, drawn from its vertex stage `vertex` and its fragment stage
 /// `fragment`, reading vertices laid out as `layout` says and what `instances` says once per instance, binding what
-/// `bindings` lists, with the fixed state `state`. Answered with [`Programmed`].
+/// `bindings` lists, with the fixed state `state`, drawing into passes of the shape `shape` (ADR-0025). Answered with
+/// [`Programmed`].
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub struct CreateProgram {
     pub wgsl: String,
@@ -25,6 +27,7 @@ pub struct CreateProgram {
     pub instances: PerInstance,
     pub bindings: Vec<Binding>,
     pub state: Fixed,
+    pub shape: Shape,
 }
 
 impl Kind for CreateProgram {

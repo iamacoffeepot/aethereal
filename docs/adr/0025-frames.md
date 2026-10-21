@@ -58,7 +58,7 @@ let splats = frame.draw::<Splats>(Colour::<Float>, Depth::Test(&depth));    // -
 let create = frame.finish(Effect::new(glaze, (splats, ids)))?;              // -> CreateFrame, ending on the window
 ```
 
-- **A pass is named by a type, not a string.** A name mistyped, or one renamed by the frame's maker and not by those who place things, is a compile error, where a string would join nothing and be found only by what was not drawn. A guest names a pass by the type's id, as it names a kind.
+- **A pass is named by a type, not a string.** A name mistyped, or one renamed by the frame's maker and not by those who place things, is a compile error, where a string would join nothing and be found only by what was not drawn. A guest names a pass by the type's id, as it names a kind: a pass type is a kind, `trait Pass: Kind`, given a name of its own, and its `PassName` is its `KindId`.
 
 - A target is the output of the pass that draws it, so a pass reads only what an earlier pass returned, and never what it writes.
 - `finish` takes the pass that writes the frame's end, and is the only way to a `CreateFrame`.
@@ -81,7 +81,9 @@ Place {
 }                                                                    -> Made<PlacementId> | Refused
 ```
 
-- Each join is checked as ADR-0023 checks a placement: the program's shape is the pass's, and the mesh, the instances, and the bindings are what the program reads.
+- Each join is checked as ADR-0023 checks a placement: the program's shape is the pass's, and the mesh, the instances, and the bindings are what the program reads. A placement that joins nothing, or one pass of one frame twice, is refused, and a refused join is named by its place in `joins`.
+- **A join names a window's main frame by the window, `Frame::Main(WindowId)`**, whichever frame is that window's main frame at each `Render`, so the placements that joined it follow it when it is replaced. A frame that ends on a texture is never replaced, as its texture is another texture once it is made again, and is joined by its id.
+- **An actor learns the shape a join's program is made against by asking**, `ShapeOf { frame, pass } -> Shaped::Shape(Shape) | Shaped::Refused(JoinRefused)`, refused when there is no such frame or it has no such pass. A program written for a window's main frame cannot know the window's format, which is the host's: a browser's canvas prefers one laid out blue first. **This departs from the record, which said nothing of how a shape is learned.**
 - A placement is drawn in every pass it joins, once in each.
 - When a frame is replaced by one with a pass of the same type and shape, the placements that joined it draw in the new one. One whose pass the new frame has not, or has in another shape, is not drawn, and is logged, until a frame has that pass again.
 
@@ -89,6 +91,7 @@ Place {
 
 - A frame that ends on a texture is answered with that texture's `TextureId` beside its own id. The texture is an ordinary one: an effect pass of another frame reads it, and a placement binds it. A minimap, a screen in the world, a layer of interface, a reflection, each is a frame of its own that ends on a texture.
 - A frame that ends on a window is that window's main frame, and a window has one. Until an actor makes one, a window's main frame is the render root's own: one pass onto the window, with depth, which every placement joins as `Main`, a pass the render root names, as ADR-0023's one pass was.
+- The chassis hands the render root the surface of a window with the window's id (ADR-0024: `WindowId`), so a frame that ends on a window names it as every other actor does. A browser's chassis opens the canvas as its one window and WebGPU on it in one call. Surfaces for several windows wait for a host that opens several.
 - **The main frame of a window is owned as a resource is** (ADR-0010): the first actor to make a frame ending on a window owns that window's main frame, only it may replace it, and another actor's is refused, naming the owner. When the owner releases it, or ends, the window's main frame is the render root's own again. The render root tracks the owner as it tracks the maker of everything it holds (ADR-0021: `Made`, and its watch of each maker), and no token passes between them. **This departs from making the slot a resource the owner holds.** A resource is shown only by giving it, so each replacement would give it to the render root and back; what a held resource would add is handing the slot to another actor, and a token is added when that is needed.
 
 **Frames meet only through textures, and their order follows from what reads what.** No frame writes into another's targets: it reads another's finished texture. A frame names another's texture only once that frame is made and has answered with it, so a frame reads only frames made before it, and no two frames read each other. At each `Render` the render root runs every frame that ends on a texture before the frames that read it, then each window's main frame, and then shows each window. A frame read in the same `Render` is read as drawn in that `Render`. Two frames that do not read each other run in no order an actor may rely on, as neither touches what the other draws.

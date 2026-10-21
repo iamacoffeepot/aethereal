@@ -9,6 +9,7 @@ description = "The renderer: the root that owns the GPU, and makes what is drawn
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
+aethereal-window = { path = "../aethereal-window" }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"] }
 
