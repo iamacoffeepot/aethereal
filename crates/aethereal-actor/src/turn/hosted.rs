@@ -1,6 +1,6 @@
 //! A turn a host runs for an actor whose code runs where the engine cannot see it: a guest (ADR-0015).
 
-use super::{Checked, Closing, During, Owing, Seat, Stood, Turning, Why};
+use super::{Closing, Owing, Seat, Stood, Turning, Why};
 use crate::records::Staging;
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Effect, ErasedActorRef, Fault, Gift, Giver, Instances,
@@ -175,10 +175,8 @@ impl<'a> Turning<'a> {
         let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie } = self;
         let handler = declared.handlers().iter().find(|handler| handler.role() == role);
         let sends = handler.map_or(&[][..], |handler| handler.sends());
-        let during = During::Handling(role);
-        let checked = Checked::Nothing;
         let owing = Owing::Item(tie);
-        let seat = Seat { me, path, above, table, made, asked, keeps, sent, declared, during, checked, owing };
+        let seat = Seat { me, path, above, table, made, asked, keeps, sent, declared, owing };
 
         (
             Hosted { seat, sends, source: Source::Item(source), chain, spawned: Vec::new(), sent: Sent::Nothing },
@@ -194,10 +192,8 @@ impl<'a> Closing<'a> {
     #[must_use]
     pub fn hosted(self, declared: &'static Declared) -> (Hosted<'a>, Why, &'a mut Instances) {
         let Self { me, path, above, table, asked, instances, keeps, sent, why } = self;
-        let during = During::End;
-        let checked = Checked::Nothing;
         let owing = Owing::NOTHING;
-        let seat = Seat { me, path, above, table, made: &(), asked, keeps, sent, declared, during, checked, owing };
+        let seat = Seat { me, path, above, table, made: &(), asked, keeps, sent, declared, owing };
         let chain = Chain { root: MailId { sender: me.id, count: sent }, depth: 0 };
         let hosted = Hosted {
             seat,
@@ -236,8 +232,6 @@ impl<'a> Hosted<'a> {
             keeps: Keeps::Here(keeping),
             sent: 0,
             declared,
-            during: During::Begin,
-            checked: Checked::Nothing,
             owing: Owing::NOTHING,
         };
         let chain = Chain { root: MailId { sender: me.id, count: 0 }, depth: 0 };

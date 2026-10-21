@@ -63,7 +63,7 @@ pub use declared::{
     HandledList, Handler, Handles, Kinds, Listed, Marker, Others, Protocol, RepliesTo, RepliesWith, RepliesWithin,
     ReplyWithin, Role, Sending, Sends, Target, Tells, ToAny, ToSender, ToType,
 };
-pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, To, ToWithoutMail, What};
+pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
 pub use guests::{Birth, Guests, Link, Links, NoGuests, Unfit};

@@ -102,7 +102,7 @@ turn.to(path::<Renderer>(())).send(&Release::Mesh(mesh))?;
 - **`turn.parent()`** is the actor directly above, inferred from `Self::Parent` (`Parented`): an `ActorRef<P>` when it is the one type `P`; an `Option<ActorRef<Self>>` when it is `Recursive`, none for a root; and an `Option<ErasedActorRef>` when it is `Anywhere`, none for a root, as which it stands beneath is a fact of the run. A root's type has no `parent()`: it does not build. **This departs from an erased parent for `Recursive`**: its parent is of its own type when it has one, so it is typed. It is the actor that spawned this one, live or not, as a reference is valid while it exists (ADR-0008): mail to one that has ended is dropped. `turn.to(turn.parent()).send(&mail)` replaces `turn.send(To::Parent, &mail)` where the parent is typed, and is checked as the program is built.
 - **`turn.child(parent, &key)`** finds a child by its type beneath a reference held: `let unit: Option<ActorRef<Unit>> = turn.child(army, &7)`. It builds only when the child's `Parent` admits the parent's type: an `ActorRef<P>` whose type `C` may stand beneath, or an `ErasedActorRef` for a `C` that stands `Anywhere` (`ParentOf<C>`). The child's id is made from the parent's and the child's segment, and the answer is the reference when the table holds a live actor there of `C`'s kind, and nothing otherwise. `C` is named where the reference goes, or at the call, `turn.child::<Unit>(army, &7)`, as for a spawn. A turn looks beneath its own actor with `turn.me()`, an `ActorRef<Self>`: the turn is typed by its actor, so the reference to it is typed too.
 - A child is found while it is live, whether or not its parent is: a child outlives its parent (ADR-0009).
-- Both see what a resolve sees (ADR-0011): the table as the step began, and in a fused turn's run what that run stood up and ended (ADR-0013). A child this turn stood up is found, as a send by `To::Child` finds it. The same holds for a typed path.
+- Both see what a resolve sees (ADR-0011): the table as the step began, and in a fused turn's run what that run stood up and ended (ADR-0013). A child this turn stood up is found, as `child::<C>` finds it. The same holds for a typed path.
 - A guest reads each in one call out. For `turn.child` the host is handed the parent, the child's segment, and its kind, `Table::reach_child`, and answers with the child and its seat when one of the kind is live there, as `Table::reach` answers for a path. A child of the turn's own actor its host does not hold takes a second call, for the id to look it up among those the turn stood up. **This departs from the host answering with the kind** for the guest to compare: the host compares, as it does for a path.
 
 ### `parent` and `child`: places named from where the sender stands
@@ -119,7 +119,7 @@ turn.to(child::<(Unit, Squad)>((7, 2))).send(&order)?; // the Squad under 2 bene
 
 ### References
 
-**A fourth way to reach an actor is added to the three of ADR-0008: a typed path, named by the type of its last segment.** **This departs from ADR-0008**, which is edited to say so. It is not a reference the actor holds: the engine finds the actor there at each send, as it finds the sender's parent for `To::Parent`. It reaches the same actor a resolve of its path would, through the types that path is made of, which a resolve's cast cannot give (ADR-0016).
+**A fourth way to reach an actor is added to the three of ADR-0008: a typed path, named by the type of its last segment.** **This departs from ADR-0008**, which is edited to say so. It is not a reference the actor holds: the engine finds the actor there as each target is made of it (ADR-0016). It reaches the same actor a resolve of its path would, through the types that path is made of, which a resolve's cast cannot give (ADR-0016).
 
 ## Consequences
 
@@ -133,7 +133,7 @@ turn.to(child::<(Unit, Squad)>((7, 2))).send(&order)?; // the Squad under 2 bene
   The change is mechanical, and a site that is missed does not build.
 - A turn's sends are a tuple of at most 12 markers (`Allows`), and `Asks` and `Tells` count toward it. A handler that would declare more is split, or the tuples grow, when one does.
 - A type a guest reaches at a typed path must build in the guest: its name, its declaration of where it stands, and the protocol it is asked through. A root whose host state lives in resources (ADR-0010) builds there. Whether a root whose handlers' code cannot build in a guest is reachable from one is left until a guest needs one.
-- Sends to a child by name, `To::Child(KindName)` and `To::ChildInstanced`, are unchanged.
+- Sends to a child by name, `To::Child(KindName)` and `To::ChildInstanced`, are replaced by `child::<D>(keys)` (above), and removed with `To` (ADR-0013).
 - A send at a typed path costs the table's resolve of it, which hashes each of its segments, and a read of its actor's kind; a spawn's check is one pass over a declaration it already reads for stages; `turn.child` and `turn.parent` are one table read.
 
 ## Alternatives considered

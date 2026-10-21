@@ -17,10 +17,10 @@ use crate::job::lending;
 use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
-    Declared, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances,
-    Keeping, Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, On, Owed, Owes, ParentOf, Parented,
-    Payload, ProtocolRef, Puts, Reachable, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage, Table,
-    Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable, What, Within, Written,
+    Declared, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handles, Held, Instances, Keeping,
+    Keeps, Kinds, Level, Line, MailId, Mailed, NotOwed, On, Owed, Owes, ParentOf, Parented, Payload, ProtocolRef, Puts,
+    Reachable, Resource, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage, Table, Tie, Tied, Time, ToSender,
+    Unanswered, Watchable, What, Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -448,7 +448,7 @@ pub struct Stood {
     keeping: Keeping,
 }
 
-/// What stands directly above an actor: the actor [`To::Parent`] names.
+/// What stands directly above an actor: the actor [`Turn::parent`] answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Above {
     /// Nothing: the actor is a root, made for the chassis.
@@ -523,10 +523,6 @@ struct Seat<'a> {
     sent: u64,
     /// What the actor's type declares (ADR-0013).
     declared: &'static Declared,
-    /// Which of its turns this is, named when a send breaks the declaration.
-    during: During,
-    /// The last send of the turn that was checked against the declaration, if it is still the turn's last effect.
-    checked: Checked,
     /// What the turn owes the source of the item it handles (ADR-0017).
     owing: Owing,
 }
@@ -570,38 +566,6 @@ impl Owing {
         };
 
         Ok(replied)
-    }
-}
-
-/// Which send of a turn was last checked against the actor's declaration (ADR-0013): a send like it that follows it
-/// straight after need not be checked again.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Checked {
-    /// No send of the turn has been checked.
-    Nothing,
-    /// The send that was the last in the mail buffer when it held `mailed` pieces, checked against `target`.
-    Last { mailed: usize, target: Target },
-}
-
-/// Which of an actor's turns runs: named when a send breaks the declaration (ADR-0013).
-#[derive(Clone, Copy)]
-enum During {
-    Begin,
-    Handling(Role),
-    End,
-}
-
-impl fmt::Display for During {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Begin => write!(f, "its begin"),
-            Self::Handling(Role::Kind(kind)) => write!(f, "its handler of {kind:?}"),
-            Self::Handling(Role::Ended) => write!(f, "its handler of endings"),
-            Self::Handling(Role::Others) => write!(f, "its fallback"),
-            Self::Handling(Role::Answer(kind)) => write!(f, "its handler of answers of {kind:?}"),
-            Self::Handling(Role::Stage(kind)) => write!(f, "its handler of the stage {kind:?}"),
-            Self::End => write!(f, "its closing turn"),
-        }
     }
 }
 
@@ -697,29 +661,6 @@ impl Seat<'_> {
         }
     }
 
-    /// Encodes `mail` and adds the effect that sends it to the actor `to` names, which `target` says it may reach.
-    ///
-    /// Nothing is sent when `to` names no actor this turn can see: a parent no longer live, or a root's parent.
-    /// Whether the actor it names is live when the mail would be handed to it is the engine's to see, and mail to
-    /// one that is not is dropped there.
-    fn send<K: Kind + Encode<Actors>>(&mut self, to: &To, target: Target, mail: &K) -> Result<(), EncodeError> {
-        let Some(to) = self.receiver(to) else {
-            return Ok(());
-        };
-        // A send to the receiver and of the kind of the turn's last, made by the same declared send, was checked with
-        // it. A reply or a send through a reference is never checked, so one that went before proves nothing.
-        let is_like_last = self.last_send().is_some_and(|(last, kind)| last == to && kind == KindId::of::<K>());
-        let was_checked = self.checked == Checked::Last { mailed: self.asked.buffers.mailed.len(), target };
-        let is_checked = is_like_last && was_checked;
-        if !is_checked {
-            self.check(to, target, KindId::of::<K>());
-        }
-        self.write_after(to, mail, is_like_last, Tie::TELL)?;
-        self.checked = Checked::Last { mailed: self.asked.buffers.mailed.len(), target };
-
-        Ok(())
-    }
-
     /// The receiver and kind of this turn's last mail, when this actor sent it.
     fn last_send(&self) -> Option<(Seated, KindId)> {
         let last = self.asked.buffers.mailed.last()?;
@@ -728,24 +669,10 @@ impl Seat<'_> {
         is_mine.then_some((last.to, last.kind))
     }
 
-    /// Sends `mail` to the actor `to` names, which is checked to be of type `T` (ADR-0013).
-    fn send_typed<T: Actor + Handles<K>, K: Kind + Encode<Actors> + Handled>(
-        &mut self,
-        to: &To,
-        mail: &K,
-    ) -> Result<(), EncodeError> {
-        self.send(to, <ToType<T, K> as Marker>::SENDING.to(), mail)
-    }
-
-    /// Sends `mail` to the actor `to` names, which is checked to list every kind of `P` (ADR-0013).
-    fn send_any<P: Listed, K: Kind + Encode<Actors>>(&mut self, to: &To, mail: &K) -> Result<(), EncodeError> {
-        self.send(to, <ToAny<P, K> as Marker>::SENDING.to(), mail)
-    }
-
     /// Encodes `mail` and adds the effect that sends it to the actor `to`, which this actor reaches as it is: one a
     /// typed reference proves, or the sender.
     fn write<K: Kind + Encode<Actors>>(&mut self, to: Seated, mail: &K) -> Result<(), EncodeError> {
-        // Mail of one kind sent back to back to one receiver is one run, through a reference as by a named send.
+        // Mail of one kind sent back to back to one receiver is one run.
         let is_like_last = self.last_send().is_some_and(|(last, kind)| last == to && kind == KindId::of::<K>());
 
         self.write_after(to, mail, is_like_last, Tie::TELL)
@@ -755,7 +682,11 @@ impl Seat<'_> {
     /// not answered yet, and refused when it has (ADR-0017).
     fn reply<K: Kind + Encode<Actors>>(&mut self, to: Seated, mail: &K) -> Result<(), EncodeError> {
         let (tie, owing) = self.owing.reply()?;
-        self.write_after(to, mail, false, tie)?;
+        // A reply that answers nothing is a tell, and joins a run as one does; an answer is a piece of its own.
+        let is_tell = tie == Tie::TELL;
+        let is_like_last =
+            is_tell && self.last_send().is_some_and(|(last, kind)| last == to && kind == KindId::of::<K>());
+        self.write_after(to, mail, is_like_last, tie)?;
         self.owing = owing;
 
         Ok(())
@@ -1012,38 +943,6 @@ impl Seat<'_> {
         self.keeps.take_config(self.me, given, by, &mut self.asked.buffers.gifts, &mut self.asked.claims)
     }
 
-    /// Stops the engine when the actor `to` names is not one `target` reaches: the send breaks this actor's
-    /// declaration (ADR-0013). A send to the sender reaches it by how it was made.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the receiver's type is not the one `target` names, or does not list the kinds it names.
-    fn check(&self, to: Seated, target: Target, kind: KindId) {
-        // A reply reaches its receiver by how it was made, so nothing is looked up for it.
-        if target == Target::Sender {
-            return;
-        }
-        // An actor a reference names that the table no longer holds has ended: the mail is dropped where it would be
-        // handed over, and there is no type left to check it against (ADR-0008).
-        let Some(receiver) = self.declared_at(to.id) else {
-            return;
-        };
-        let reaches = match target {
-            Target::Sender => true,
-            Target::Type(_, id) => receiver.id() == id,
-            Target::Handling(kinds) => receiver.lists_all(kinds),
-            Target::Path(segment) => receiver.id() == segment.kind,
-        };
-        let receiver = receiver.name();
-        assert!(
-            reaches,
-            "false declaration: an actor of type {} sent {kind:?} in {} to {to:?}, of type {receiver:?}, which \
-             its declaration of {target:?} does not reach",
-            self.declared.name(),
-            self.during,
-        );
-    }
-
     /// What the type of the actor `id` stands for declares: this actor, its parent, a child this turn stood up, or one
     /// the table holds. An actor's own `begin`, and its parent's, may run before the table holds either.
     fn declared_at(&self, id: ActorId) -> Option<&'static Declared> {
@@ -1061,37 +960,12 @@ impl Seat<'_> {
         self.asked.stood_declared(id).or_else(|| self.table.declared(id))
     }
 
-    /// The actor `to` names, beside this one, and its seat: none for a parent this turn cannot see, or a child that
-    /// was never made.
-    #[inline]
-    fn receiver(&self, to: &To) -> Option<Seated> {
-        match to {
-            To::Parent => self.parent(),
-            To::Child(kind) => self.child(&PathSegment::new(kind.clone(), &())),
-            To::ChildInstanced(kind, key) => self.child(&PathSegment::instanced(kind.clone(), key.clone())),
-            To::Held(reference) => Some(reference.seated()),
-            // A turn puts the source of its item in its place before it asks.
-            To::Sender => None,
-        }
-    }
-
-    /// The actor directly above this one, and its seat, when it is live.
     /// The actor this one stands beneath, and its seat, live or not: none for a root.
     const fn above(&self) -> Option<Seated> {
         match self.above {
             Above::Chassis => None,
             Above::Actor(parent, _) | Above::Elsewhere(parent) => Some(parent),
         }
-    }
-
-    fn parent(&self) -> Option<Seated> {
-        let parent = match self.above {
-            Above::Chassis => return None,
-            Above::Actor(parent, _) | Above::Elsewhere(parent) => parent,
-        };
-        let is_live = self.table.is_live(parent.id);
-
-        is_live.then_some(parent)
     }
 
     /// The child `segment` names beneath this actor, and its seat, when it was made: stood up in this turn, or
@@ -1154,20 +1028,8 @@ impl Seat<'_> {
             Keeps::Here(_) => Keeps::Here(&mut keeping),
             Keeps::Claimed => Keeps::Claimed,
         };
-        let child = Seat {
-            me,
-            path: &path,
-            above,
-            table,
-            made: &(),
-            asked,
-            keeps,
-            sent: 0,
-            declared,
-            during: During::Begin,
-            checked: Checked::Nothing,
-            owing: Owing::NOTHING,
-        };
+        let child =
+            Seat { me, path: &path, above, table, made: &(), asked, keeps, sent: 0, declared, owing: Owing::NOTHING };
         let began = C::begin(config, &mut Beginning { seat: child, instances, of: PhantomData });
         match began {
             Ok(actor) => {
@@ -1431,23 +1293,10 @@ impl<'a> Turning<'a> {
         self.chain
     }
 
-    /// The turn of the handler of `A`, whose type declares `declared`, for `role`, which may send `S`.
-    pub(crate) fn declaring<A: Actor, S: Sends>(self, role: Role, declared: &'static Declared) -> Turn<'a, A, S> {
+    /// The turn of the handler of `A`, whose type declares `declared`, which may send `S`.
+    pub(crate) fn declaring<A: Actor, S: Sends>(self, declared: &'static Declared) -> Turn<'a, A, S> {
         let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie } = self;
-        let seat = Seat {
-            me,
-            path,
-            above,
-            table,
-            made,
-            asked,
-            keeps,
-            sent,
-            declared,
-            during: During::Handling(role),
-            checked: Checked::Nothing,
-            owing: Owing::Item(tie),
-        };
+        let seat = Seat { me, path, above, table, made, asked, keeps, sent, declared, owing: Owing::Item(tie) };
 
         Turn { seat, instances, source, chain, of: PhantomData }
     }
@@ -1463,7 +1312,7 @@ pub struct Turn<'a, Me, S> {
     seat: Seat<'a>,
     /// The instances of the actor's part, which a child spawned from a blob begins in (ADR-0015).
     instances: &'a mut Instances,
-    /// The actor the item being handled comes from: who [`To::Sender`] names.
+    /// The actor the item being handled comes from: whom a reply reaches.
     source: Seated,
     chain: Chain,
     of: PhantomData<fn() -> (Me, S)>,
@@ -1745,48 +1594,6 @@ impl<Me, S> Turn<'_, Me, S> {
         Me: Handles<On<K>>,
     {
         self.seat.ask(What::Unsubscribe(KindId::of::<K>()));
-    }
-
-    /// Sends `mail` to the actor `to` names. It is delivered after the turn, in a later step.
-    ///
-    /// It builds only when the turn's sends list a [`ToType<T, K>`], and `T` is found from them when one names `K`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the actor named is not of type `T` (ADR-0013).
-    pub fn send<T, K, I>(&mut self, to: To, mail: &K) -> Result<(), EncodeError>
-    where
-        T: Actor + Handles<K>,
-        K: Kind + Encode<Actors> + Handled,
-        S: Allows<ToType<T, K>, I>,
-    {
-        let to = self.named(to);
-        self.seat.send_typed::<T, K>(&to, mail)
-    }
-
-    /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`.
-    ///
-    /// It builds only when the turn's sends list a [`ToAny<P, K>`], and `P` is found from them when one names `K`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the actor named does not list every kind of `P` (ADR-0013).
-    pub fn send_to_any<P, K, I>(&mut self, to: To, mail: &K) -> Result<(), EncodeError>
-    where
-        P: Listed,
-        K: Kind + Encode<Actors>,
-        S: Allows<ToAny<P, K>, I>,
-    {
-        let to = self.named(to);
-        self.seat.send_any::<P, K>(&to, mail)
-    }
-
-    /// The actor `to` names, with the source of the item being handled named by its reference.
-    fn named(&self, to: To) -> To {
-        match to {
-            To::Sender => To::Held(ErasedActorRef::new(self.source)),
-            named => named,
-        }
     }
 
     /// Sends `mail` to the source of the item being handled. It is delivered after the turn, in a later step.
@@ -2163,7 +1970,6 @@ impl<'a, Me: ChildOf> Beginning<'a, Me, Me::BeginSends> {
         keeps: Keeps<'a>,
     ) -> Self {
         let declared = Declared::of::<Me>();
-        let during = During::Begin;
         let seat = Seat {
             me,
             path,
@@ -2174,8 +1980,6 @@ impl<'a, Me: ChildOf> Beginning<'a, Me, Me::BeginSends> {
             keeps,
             sent: 0,
             declared,
-            during,
-            checked: Checked::Nothing,
             owing: Owing::NOTHING,
         };
 
@@ -2276,24 +2080,6 @@ impl<Me, S> Beginning<'_, Me, S> {
         <Me::Parent as Parented<Me>>::parent(self.seat.above())
     }
 
-    /// Sends `mail` to the actor `to` names, with the mail of the turn this `begin` runs in. It is delivered after the
-    /// turn, in a later step.
-    ///
-    /// It builds only when the turn's sends list a [`ToType<T, K>`], and `T` is found from them when one names `K`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the actor named is not of type `T` (ADR-0013).
-    pub fn send<T, K, I>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError>
-    where
-        T: Actor + Handles<K>,
-        K: Kind + Encode<Actors> + Handled,
-        S: Allows<ToType<T, K>, I>,
-    {
-        let to = To::from(to);
-        self.seat.send_typed::<T, K>(&to, mail)
-    }
-
     /// Runs `job` outside the steps, on its host, keeping `context` until it is answered, as a turn's job is: in a
     /// turn after this `begin` (ADR-0018). A `begin` that fails runs nothing.
     ///
@@ -2310,24 +2096,6 @@ impl<Me, S> Beginning<'_, Me, S> {
         Me: Handles<Answer<J::Done, C>>,
     {
         self.seat.run(job, context)
-    }
-
-    /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`, with the mail
-    /// of the turn this `begin` runs in.
-    ///
-    /// It builds only when the turn's sends list a [`ToAny<P, K>`], and `P` is found from them when one names `K`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the actor named does not list every kind of `P` (ADR-0013).
-    pub fn send_to_any<P, K, I>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError>
-    where
-        P: Listed,
-        K: Kind + Encode<Actors>,
-        S: Allows<ToAny<P, K>, I>,
-    {
-        let to = To::from(to);
-        self.seat.send_any::<P, K>(&to, mail)
     }
 
     /// Keeps `value`, a resource this actor made, as its own, and answers with the handle to it (ADR-0010). If this
@@ -2614,20 +2382,7 @@ impl<'a> Closing<'a> {
     pub(crate) fn declaring<A: ChildOf>(self) -> Ending<'a, A, A::EndSends> {
         let Self { me, path, above, table, asked, keeps, sent, why, .. } = self;
         let declared = Declared::of::<A>();
-        let seat = Seat {
-            me,
-            path,
-            above,
-            table,
-            made: &(),
-            asked,
-            keeps,
-            sent,
-            declared,
-            during: During::End,
-            checked: Checked::Nothing,
-            owing: Owing::NOTHING,
-        };
+        let seat = Seat { me, path, above, table, made: &(), asked, keeps, sent, declared, owing: Owing::NOTHING };
 
         Ending { seat, why, of: PhantomData }
     }
@@ -2770,41 +2525,6 @@ impl<Me, S> Ending<'_, Me, S> {
     #[must_use]
     pub const fn why(&self) -> Why {
         self.why
-    }
-
-    /// Sends `mail` to the actor `to` names, as the actor's last mail. It is delivered after the turn, in a later step.
-    ///
-    /// It builds only when the turn's sends list a [`ToType<T, K>`], and `T` is found from them when one names `K`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the actor named is not of type `T` (ADR-0013).
-    pub fn send<T, K, I>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError>
-    where
-        T: Actor + Handles<K>,
-        K: Kind + Encode<Actors> + Handled,
-        S: Allows<ToType<T, K>, I>,
-    {
-        let to = To::from(to);
-        self.seat.send_typed::<T, K>(&to, mail)
-    }
-
-    /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`, as the
-    /// actor's last mail.
-    ///
-    /// It builds only when the turn's sends list a [`ToAny<P, K>`], and `P` is found from them when one names `K`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the actor named does not list every kind of `P` (ADR-0013).
-    pub fn send_to_any<P, K, I>(&mut self, to: ToWithoutMail, mail: &K) -> Result<(), EncodeError>
-    where
-        P: Listed,
-        K: Kind + Encode<Actors>,
-        S: Allows<ToAny<P, K>, I>,
-    {
-        let to = To::from(to);
-        self.seat.send_any::<P, K>(&to, mail)
     }
 
     /// The resource `handle` names, for a last use before it is dropped with this actor.
