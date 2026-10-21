@@ -289,6 +289,8 @@ struct Kept {
     samplers: HashMap<Sampling, wgpu::Sampler>,
     frames: Made<Walk>,
     order: Vec<u64>,
+    /// The dispatches not run: each writes a storage another writes in a frame it is in no order with.
+    held: Vec<u64>,
     longest: u32,
     most_workgroups: u32,
     window: WindowId,
@@ -503,6 +505,7 @@ impl Actor for Renderer {
             samplers: HashMap::new(),
             frames: Made::default(),
             order: Vec::new(),
+            held: Vec::new(),
             longest: opened.device().limits().max_texture_dimension_2d,
             most_workgroups: opened.device().limits().max_compute_workgroups_per_dimension,
             window,
@@ -1171,7 +1174,8 @@ impl Handles<Release> for Renderer {
                 released.map(drop)
             }
         };
-        kept.reorder();
+        let held = kept.reorder_after_release();
+        log_held(turn, &held);
         match released {
             Owned::Mine(()) => {}
             Owned::NotOwner => turn.log(Level::Warn, format_args!("{release:?} was not released: another made it")),
@@ -1179,6 +1183,17 @@ impl Handles<Release> for Renderer {
         }
 
         Ok(())
+    }
+}
+
+/// Logs each dispatch of `held`, which is not run until its frame is ordered again with the others that write what it
+/// writes.
+fn log_held<S>(turn: &mut Turn<'_, Renderer, S>, held: &[u64]) {
+    for dispatch in held {
+        turn.log(
+            Level::Warn,
+            format_args!("dispatch {dispatch} is not run: a frame in no order with its own writes what it writes"),
+        );
     }
 }
 
@@ -1204,7 +1219,8 @@ impl Handles<Ended> for Renderer {
             let frames: Vec<(u64, Option<u64>)> =
                 kept.frames.release_all(maker).into_iter().map(|(id, walk)| (id, walk.texture())).collect();
             kept.unframed(frames);
-            kept.reorder();
+            let held = kept.reorder_after_release();
+            log_held(turn, &held);
         }
 
         Ok(())
@@ -1546,7 +1562,26 @@ impl Kept {
     fn reorder(&mut self) {
         let frames: Vec<u64> =
             self.frames.iter().filter(|(_, walk)| walk.texture().is_some()).map(|(id, _)| id).collect();
-        self.order = frame::ordered(&frames, &self.reads());
+        let reads = self.reads();
+        self.order = frame::ordered(&frames, &reads);
+        let writers: Vec<(u64, Frame, u64)> = self
+            .dispatches
+            .iter()
+            .flat_map(|(id, dispatch)| {
+                let written = dispatch.storage.iter().filter(|(_, access)| *access == Access::Write);
+                written.map(move |(storage, _)| (id, dispatch.frame, *storage))
+            })
+            .collect();
+        self.held = dispatch::unordered(&writers, &reads);
+    }
+
+    /// Orders the frames again, as [`reorder`](Self::reorder) does, after something that ordered them went, and
+    /// answers each dispatch that ran before and is held now.
+    fn reorder_after_release(&mut self) -> Vec<u64> {
+        let before = self.held.clone();
+        self.reorder();
+
+        self.held.iter().filter(|id| !before.contains(id)).copied().collect()
     }
 
     /// How many passes a `Render` runs: every frame's that ends on a texture, and the window's main frame's.
@@ -1631,8 +1666,16 @@ impl Kept {
     /// together, setting each pipeline once. Nothing orders them among themselves: the check refuses two in one pass
     /// that one writes what the other uses.
     fn compute(&self, recording: &mut wgpu::ComputePass<'_>, frame: Frame, pass: PassName) {
-        let mut joined: Vec<&Dispatching> =
-            self.dispatches.values().filter(|dispatch| dispatch.runs_in(frame, pass)).collect();
+        let mut joined: Vec<&Dispatching> = self
+            .dispatches
+            .iter()
+            .filter(|(id, dispatch)| {
+                let joins = dispatch.runs_in(frame, pass);
+                let held = self.held.contains(id);
+                joins && !held
+            })
+            .map(|(_, dispatch)| dispatch)
+            .collect();
         joined.sort_unstable_by_key(|dispatch| dispatch.compute);
         let mut pipeline = 0;
         for dispatch in joined {

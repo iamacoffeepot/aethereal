@@ -300,6 +300,26 @@ fn check_order(
     Ok(())
 }
 
+/// Each dispatch of `writers`, each a dispatch, its frame, and a storage it writes, that writes a storage another
+/// writes in a frame it is in no order with, as `reads` holds the frames' reads: what a released placement leaves of
+/// two writers it ordered when they were made, which are not run until their frames are ordered again.
+pub(crate) fn unordered(writers: &[(u64, Frame, u64)], reads: &[(u64, u64)]) -> Vec<u64> {
+    let mut held: Vec<u64> = writers
+        .iter()
+        .filter(|(id, frame, storage)| {
+            writers.iter().any(|(other, theirs, written)| {
+                let rival = other != id && written == storage;
+                rival && !ordered(*frame, *theirs, reads)
+            })
+        })
+        .map(|(id, _, _)| *id)
+        .collect();
+    held.sort_unstable();
+    held.dedup();
+
+    held
+}
+
 /// Whether frames `one` and `other` run in an order: one frame, a frame that ends on a texture and a window's main
 /// frame, which runs after every such frame, or two that end on textures one of which reads the other, through
 /// frames between or at once, as `reads` holds.

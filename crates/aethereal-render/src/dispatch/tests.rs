@@ -306,6 +306,20 @@ fn storage_written_in_two_frames_is_made_only_when_the_frames_run_in_an_order() 
 }
 
 #[test]
+fn writers_in_two_frames_nothing_orders_any_longer_are_held() {
+    // Catches writers left running once the placement that ordered their frames is released, whose storage would be
+    // whichever frame ran last, and writers held that frames still order, or that write different storage.
+    let writers = [(1, Frame::Texture(MAP), FIELD.id), (2, Frame::Texture(INSET), FIELD.id)];
+    let main_and_map = [(1, Frame::Texture(MAP), FIELD.id), (2, Frame::Main(window(0)), FIELD.id)];
+    let apart = [(1, Frame::Texture(MAP), FIELD.id), (2, Frame::Texture(INSET), PULL.id)];
+
+    assert_eq!(unordered(&writers, &[]), vec![1, 2]);
+    assert_eq!(unordered(&writers, &[(INSET.id, MAP.id)]), Vec::<u64>::new());
+    assert_eq!(unordered(&main_and_map, &[]), Vec::<u64>::new());
+    assert_eq!(unordered(&apart, &[]), Vec::<u64>::new());
+}
+
+#[test]
 fn a_dispatch_that_would_have_frames_read_each_other_round_is_refused() {
     // Catches storage left out of the order of frames: a frame reading storage written by a frame that reads it, or
     // writing storage read by a frame it reads, would each read what the other wrote a `Render` before.
