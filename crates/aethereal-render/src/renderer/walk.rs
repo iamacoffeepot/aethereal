@@ -3,17 +3,28 @@
 
 use crate::frame::{CreateFrame, DepthUse, Does, Load, PassRefused, Target, TargetSpec};
 use crate::pass::PassName;
+use crate::placement::Resource;
 use crate::shape::{ColourFormat, Shape};
 
-/// A frame, checked and made: what it does, the shape of each of its passes, what each pass does with what it was
-/// made with, and its targets, each the size of its end as it was last drawn.
+/// A frame, checked and made: what it does, where it ends, the shape of each of its passes, what each pass does with
+/// what it was made with, the textures its effects bind, and its targets, each the size of its end as it was last
+/// drawn.
 pub(super) struct Walk {
     create: CreateFrame,
+    end: End,
     shapes: Vec<Shape>,
     steps: Vec<Step>,
+    binds: Vec<u64>,
     targets: Vec<wgpu::TextureView>,
     width: u32,
     height: u32,
+}
+
+/// Where a frame ends: on its window, whose surface gives each `Render` what it draws into, or on a texture of its
+/// own, kept under the id `texture`.
+pub(super) enum End {
+    Window,
+    Texture { texture: u64, view: wgpu::TextureView },
 }
 
 /// What one pass does, made.
@@ -47,16 +58,16 @@ pub(super) struct Making<'a> {
 }
 
 impl Walk {
-    /// The frame `create`, whose end is of `end` and `width` by `height`, its targets made at that size and each pass
-    /// made by `step`: refused as `step` refuses a pass, at its place.
+    /// The frame `create`, which ends on `end`, of `format` and `width` by `height`, its targets made at that size and
+    /// each pass made by `step`: refused as `step` refuses a pass, at its place.
     pub fn new(
         device: &wgpu::Device,
         create: CreateFrame,
-        end: ColourFormat,
+        (end, format): (End, ColourFormat),
         (width, height): (u32, u32),
         mut step: impl FnMut(Making<'_>) -> Result<Step, PassRefused>,
     ) -> Result<Self, (u32, PassRefused)> {
-        let shapes = create.shapes(end);
+        let shapes = create.shapes(format);
         let targets = made(device, &create.targets, width, height);
         let mut written: Vec<Target> = Vec::new();
         let mut steps = Vec::with_capacity(create.passes.len());
@@ -66,8 +77,41 @@ impl Walk {
             steps.push(step(making).map_err(|why| (at, why))?);
             written.push(into);
         }
+        let binds = create
+            .passes
+            .iter()
+            .flat_map(|pass| match &pass.does {
+                Does::Effect { bindings, .. } => bindings.as_slice(),
+                Does::Draw { .. } => &[],
+            })
+            .filter_map(|bind| match bind.to {
+                Resource::Texture(texture) => Some(texture.id),
+                Resource::Uniforms(_) | Resource::Storage(_) | Resource::Sampler(_) => None,
+            })
+            .collect();
 
-        Ok(Self { create, shapes, steps, targets, width, height })
+        Ok(Self { create, end, shapes, steps, binds, targets, width, height })
+    }
+
+    /// The texture it ends on, by its id: none for a frame that ends on a window.
+    pub const fn texture(&self) -> Option<u64> {
+        match self.end {
+            End::Window => None,
+            End::Texture { texture, .. } => Some(texture),
+        }
+    }
+
+    /// What it draws its end into, given the window's this `Render` for a frame that ends on a window.
+    pub const fn end<'a>(&'a self, window: &'a wgpu::TextureView) -> &'a wgpu::TextureView {
+        match &self.end {
+            End::Window => window,
+            End::Texture { view, .. } => view,
+        }
+    }
+
+    /// The textures its effects bind, by their ids.
+    pub fn binds(&self) -> &[u64] {
+        &self.binds
     }
 
     /// How many passes it runs.

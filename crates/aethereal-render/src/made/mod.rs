@@ -99,6 +99,11 @@ impl<T> Made<T> {
         self.kept.get(&id).map(|(_, value)| value)
     }
 
+    /// The actor that made what is kept under `id`: none when nothing is.
+    pub fn maker(&self, id: u64) -> Option<ActorId> {
+        self.kept.get(&id).map(|(maker, _)| *maker)
+    }
+
     /// What is kept under `id`, whoever made it, to change as its keeper.
     pub fn get_mut(&mut self, id: u64) -> Option<&mut T> {
         self.kept.get_mut(&id).map(|(_, value)| value)

@@ -1,6 +1,7 @@
 //! A placement's check: what WebGPU would refuse as a frame draws it is refused as it is placed.
 
 use super::*;
+use crate::frame::FrameId;
 use crate::mesh::{Attribute, VertexFormat};
 use crate::pass::Main;
 use crate::shape::ColourFormat;
@@ -20,6 +21,7 @@ struct Kept {
     bindings: Vec<Binding>,
     shape: Shape,
     pass: Shape,
+    reads: Vec<(u64, u64)>,
 }
 
 /// The window opened `nth`, as a host's window capability numbers it.
@@ -72,13 +74,15 @@ impl Kept {
             bindings,
             shape,
             pass: shape,
+            reads: Vec::new(),
         }
     }
 }
 
 impl Finds for Kept {
     fn pass(&self, frame: Frame, pass: PassName) -> Result<Shape, JoinRefused> {
-        if frame != Frame::Main(window(0)) {
+        let kept = [Frame::Main(window(0)), Frame::Texture(MAP), Frame::Texture(INSET)];
+        if !kept.contains(&frame) {
             return Err(JoinRefused::Frame);
         }
         if pass != PassName::of::<Main>() {
@@ -111,9 +115,30 @@ impl Finds for Kept {
     }
 
     fn has_texture(&self, id: TextureId) -> bool {
-        id == TEXTURE
+        [TEXTURE, MAPPED, INSET_TEXTURE].contains(&id)
+    }
+
+    fn drawn_by(&self, texture: TextureId) -> Option<u64> {
+        match texture {
+            MAPPED => Some(MAP.id),
+            INSET_TEXTURE => Some(INSET.id),
+            _ => None,
+        }
+    }
+
+    fn reads(&self) -> Vec<(u64, u64)> {
+        self.reads.clone()
     }
 }
+
+/// A frame that ends on a texture, [`MAPPED`], with one pass, [`Main`].
+const MAP: FrameId = FrameId { id: 7 };
+/// The texture [`MAP`] ends on.
+const MAPPED: TextureId = TextureId { id: 8 };
+/// Another frame that ends on a texture, [`INSET_TEXTURE`], with one pass, [`Main`].
+const INSET: FrameId = FrameId { id: 10 };
+/// The texture [`INSET`] ends on.
+const INSET_TEXTURE: TextureId = TextureId { id: 11 };
 
 /// A placement of the kept mesh, for each kept instance, joining the kept frame's one pass with the kept program,
 /// binding all it binds.
@@ -260,4 +285,36 @@ fn a_placement_joining_nothing_or_one_pass_twice_is_refused_naming_the_join() {
     assert_eq!(check(&twice, &kept), Err(PlacementRefused::Join { join: 1, why: JoinRefused::Twice }));
     assert_eq!(check(&second, &kept), Err(PlacementRefused::Join { join: 1, why: JoinRefused::Pass }));
     assert_eq!(check(&other_frame, &kept), Err(PlacementRefused::Join { join: 1, why: JoinRefused::Frame }));
+}
+
+/// [`place`] joining `frame` and binding `texture` where it binds a texture.
+fn binding(frame: Frame, texture: TextureId) -> Place {
+    let mut place = place();
+    place.joins[0].frame = frame;
+    place.joins[0].bindings[1].to = Resource::Texture(texture);
+
+    place
+}
+
+#[test]
+fn a_join_that_would_have_frames_read_each_other_round_is_refused() {
+    // Catches frames that read each other let through, through frames between, through two joins of one placement, or
+    // a frame reading its own texture: each would read what the other drew a `Render` before, or what it draws.
+    let mut inset_reads_map = Kept::new();
+    inset_reads_map.reads = vec![(INSET.id, MAP.id)];
+    let both = {
+        let mut both = binding(Frame::Texture(MAP), INSET_TEXTURE);
+        let mut back = both.joins[0].clone();
+        back.frame = Frame::Texture(INSET);
+        back.bindings[1].to = Resource::Texture(MAPPED);
+        both.joins.push(back);
+        both
+    };
+    let kept = Kept::new();
+
+    assert_eq!(check(&binding(Frame::Texture(MAP), MAPPED), &kept), first(JoinRefused::Round));
+    assert_eq!(check(&binding(Frame::Texture(MAP), INSET_TEXTURE), &inset_reads_map), first(JoinRefused::Round));
+    assert_eq!(check(&both, &kept), Err(PlacementRefused::Join { join: 1, why: JoinRefused::Round }));
+    assert_eq!(check(&binding(Frame::Texture(INSET), MAPPED), &inset_reads_map), Ok(()));
+    assert_eq!(check(&binding(Frame::Main(window(0)), MAPPED), &inset_reads_map), Ok(()));
 }

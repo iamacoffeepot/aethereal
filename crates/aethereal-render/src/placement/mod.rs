@@ -5,7 +5,7 @@
 #[cfg(test)]
 mod tests;
 
-use crate::frame::Frame;
+use crate::frame::{self, Frame};
 use crate::instances::InstancesId;
 use crate::mesh::{MeshId, VertexLayout};
 use crate::pass::{Pass, PassName};
@@ -174,6 +174,9 @@ pub enum JoinRefused {
     Pass,
     /// An earlier join of the placement joins the same pass of the same frame.
     Twice,
+    /// It binds the texture of the frame it joins, or of a frame that reads that frame, through frames between or at
+    /// once: frames would read each other round, each what the other drew a `Render` before.
+    Round,
     /// No program is kept under the id: never made, or released.
     Program,
     /// The program is made against another shape than the pass draws into.
@@ -216,6 +219,11 @@ pub(crate) trait Finds {
     /// pass.
     fn pass(&self, frame: Frame, pass: PassName) -> Result<Shape, JoinRefused>;
     fn program(&self, id: ProgramId) -> Option<Reads<'_>>;
+    /// The frame that ends on the texture `texture`, by its id: none for a texture made of pixels, or none kept.
+    fn drawn_by(&self, texture: TextureId) -> Option<u64>;
+    /// Each pair of a frame that ends on a texture and a frame whose texture it reads, by their ids: through what
+    /// the placements that join it bind, and what its effects bind.
+    fn reads(&self) -> Vec<(u64, u64)>;
     fn mesh(&self, id: MeshId) -> Option<&VertexLayout>;
     fn instances(&self, id: InstancesId) -> Option<&VertexLayout>;
     fn uniforms(&self, id: UniformsId) -> Option<u32>;
@@ -243,6 +251,30 @@ pub(crate) fn check(place: &Place, kept: &impl Finds) -> Result<(), PlacementRef
             check_join(join, mesh, instancing, kept)
         };
         checked.map_err(|why| PlacementRefused::Join { join: at, why })?;
+    }
+    check_round(place, kept)
+}
+
+/// Checks that no join of `place` has frames read each other round: one that joins a frame ending on a texture and
+/// binds the texture of a frame that reads it, with what is read already and what its earlier joins read.
+fn check_round(place: &Place, kept: &impl Finds) -> Result<(), PlacementRefused> {
+    let mut reads = kept.reads();
+    for (join, at) in place.joins.iter().zip(0..) {
+        let Frame::Texture(reader) = join.frame else {
+            continue;
+        };
+        for bind in &join.bindings {
+            let Resource::Texture(texture) = bind.to else {
+                continue;
+            };
+            let Some(read) = kept.drawn_by(texture) else {
+                continue;
+            };
+            if frame::reaches(&reads, read, reader.id) {
+                return Err(PlacementRefused::Join { join: at, why: JoinRefused::Round });
+            }
+            reads.push((reader.id, read));
+        }
     }
 
     Ok(())

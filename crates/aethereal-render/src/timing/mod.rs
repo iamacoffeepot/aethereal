@@ -19,8 +19,8 @@ impl Kind for TimeFrame {
 /// What the renderer answers [`TimeFrame`] with.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub enum Timed {
-    /// The nanoseconds from the beginning of each pass to its end, in the order the frame runs them: one today, the
-    /// pass onto the canvas.
+    /// The nanoseconds from the beginning of each pass to its end, in the order they run: each pass of each frame
+    /// that ends on a texture, in the order the frames run, then each pass of the window's main frame.
     Took {
         passes: Vec<u64>,
     },

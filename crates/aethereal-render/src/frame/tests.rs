@@ -1,7 +1,7 @@
 //! A frame's check, and its builder: what WebGPU would refuse as the frame is drawn is refused as it is made, and the
 //! builder builds what the check lets through.
 
-use super::builder::{Effect, Float, Uint, depth};
+use super::builder::{Effect, Float, Onto, Uint, depth};
 use super::*;
 use crate::effect::{EffectId, MadeEffect};
 use crate::instances::InstancesId;
@@ -28,6 +28,8 @@ const GLAZE: ProgramId = ProgramId { id: 7 };
 const BLUR: ProgramId = ProgramId { id: 8 };
 /// Uniforms of 16 bytes.
 const TINT: UniformsId = UniformsId { id: 4 };
+/// The longest side of a texture the test's GPU makes.
+const LONGEST: u32 = 2048;
 
 /// What a test keeps: the window [`window`] `0`, of `Bgra8`; [`GLAZE`]; [`BLUR`]; and [`TINT`].
 struct Kept {
@@ -71,11 +73,23 @@ impl Finds for Kept {
     fn has_texture(&self, _: TextureId) -> bool {
         false
     }
+
+    fn drawn_by(&self, _: TextureId) -> Option<u64> {
+        None
+    }
+
+    fn reads(&self) -> Vec<(u64, u64)> {
+        Vec::new()
+    }
 }
 
 impl Holds for Kept {
     fn window(&self, window: WindowId) -> Option<ColourFormat> {
         (window == self::window(0)).then_some(ColourFormat::Bgra8)
+    }
+
+    fn longest(&self) -> u32 {
+        LONGEST
     }
 
     fn effect(&self, id: ProgramId) -> Option<EffectReads<'_>> {
@@ -344,4 +358,40 @@ fn each_pass_is_shaped_by_what_it_draws_into() {
             Shape::flat(ColourFormat::Bgra8)
         ]
     );
+}
+
+/// A frame onto a texture `width` by `height`: one pass drawing into it.
+fn onto_texture(width: u32, height: u32) -> CreateFrame {
+    let frame = FrameBuilder::on(Ends::Texture(Size { width, height }));
+    let Ok(create) = frame.finish(Surfaces, Onto(depth::Off)) else {
+        panic!("a frame of one pass is of types of its own");
+    };
+
+    create
+}
+
+#[test]
+fn a_frame_onto_a_texture_of_a_size_the_gpu_makes_is_made() {
+    // Catches a texture frame's size left unchecked, which WebGPU refuses as the texture is made, or checked against
+    // a bound one side short.
+    let kept = Kept::new();
+
+    assert_eq!(check(&onto_texture(64, 64), &kept), Ok(()));
+    assert_eq!(check(&onto_texture(LONGEST, 1), &kept), Ok(()));
+    assert_eq!(check(&onto_texture(0, 64), &kept), Err(FrameRefused::Size { width: 0, height: 64, most: LONGEST }));
+    assert_eq!(
+        check(&onto_texture(64, LONGEST + 1), &kept),
+        Err(FrameRefused::Size { width: 64, height: LONGEST + 1, most: LONGEST })
+    );
+}
+
+#[test]
+fn only_the_owner_of_a_window_s_main_frame_replaces_it() {
+    // Catches a window's main frame replaced by whoever asks last, which would show whichever actor's mail came
+    // last, or its owner refused its own replacement.
+    let (owner, other) = (ActorId::new(1), ActorId::new(2));
+
+    assert_eq!(may_replace(None, other), Ok(()));
+    assert_eq!(may_replace(Some(owner), owner), Ok(()));
+    assert_eq!(may_replace(Some(owner), other), Err(FrameRefused::Owned { owner }));
 }
