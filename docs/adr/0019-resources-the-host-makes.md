@@ -91,32 +91,7 @@ What the capability gives, and to whom, is the capability's to decide: it may ha
 
 **A requested resource that the host cannot make yet is waited on by the host, never by a turn.** The capability holds the request, and the chassis pushes what it made when it has it: once a browser's GPU promise resolves, or once the page sees a gesture and its audio output can play. A host that cannot make it at all pushes an event that says so, and the capability answers with it.
 
-**The browser's input is a capability with a source and no controller.** What a page hears, the pointer over the canvas, the keys, and the controls the page marks, is brought in as ADR-0010 brings in a key press, and fronted by one root, `Input` in the browser chassis, that the actors which want it subscribe to:
-
-```rust
-pub enum Event {
-    PointerMoved { x: f32, y: f32 },                      // in the canvas's pixels: its backing store's
-    PointerDown { x: f32, y: f32, button: Button },       // Main | Middle | Secondary | Back | Forward | Other(i16)
-    PointerUp { x: f32, y: f32, button: Button },
-    KeyDown { code: String, key: String, repeat: bool },  // the page's names: "KeyW", "w"
-    KeyUp { code: String, key: String },
-    Control { name: String, value: Value },               // the element's id; Number(f64) | Checked(bool) | Text(String)
-}
-pub struct Subscribe;                                     // to the input root: send me every event
-pub struct Unsubscribe;
-
-let (source, feed) = setup.source::<Event>();
-let setup = setup.add_root::<Input>(&(), InputConfig { source })?;
-let listening = listen(&canvas, &feed)?;                  // the page's callbacks, kept while it listens
-```
-
-- **The chassis registers the page's listeners**, with `listen`, as callbacks the page runs as it hears each event: `pointermove`, `pointerdown`, and `pointerup` on the canvas, `keydown` and `keyup` on the window, and `input` on each element marked `data-control` that has an id. Each callback pushes one event onto the feed and returns, and the next frame brings in what was pushed, in the order it was pushed (ADR-0010). Nothing waits: a callback never touches the engine, and a push to a feed whose source has gone is refused and dropped, as the page has nothing more to tell it. Dropping what `listen` returns takes every callback off.
-- **The pointer's place is in the canvas's pixels**, those of its backing store, which the renderer draws in: its place on the page less the canvas's box, scaled on each axis by the backing store's size over the size the canvas is shown at. A canvas shown at 400 by 300 CSS pixels over a store of 800 by 600 reads a point 100 pixels across the page as 200.
-- **A control's value is typed by what the element is:** a checkbox or radio button is `Checked`, a range or number input whose value reads as a finite number is a `Number`, and anything else, a select, a text field, a number input left empty, is the `Text` the page holds. An actor reads a slider without parsing it, and a checkbox by whether it is checked, never by its value, which the page holds as `"on"` either way.
-- **Actors subscribe to the whole stream, one kind.** The pointer, the keys, and the controls are one source and one kind, so they keep the order the page heard them in across kinds, as two sources would not (ADR-0010: what one resource brings in keeps its order); and the root keeps one list of subscribers, `Subscribers<(Event,)>` (ADR-0016), which a subscriber joins with one `Subscribe` and the root sends to with one send. A subscriber that wants only the keys matches on the event.
-- **The root sends on only what its source brought**, mail from itself to itself. An `Event` another actor mails it is logged and dropped, so a subscriber hears only what the page did.
-- **The root keeps each control as it stands** and sends a new subscriber every one before anything else. The listeners read each control once as they are registered, before the first frame, and a root made then subscribes in its `begin`: whether its `Subscribe` or what the first frame brought reaches the input root first is not something either can rely on, and on the page the control was brought first and would have been missed. With the record, the subscriber hears each control once in either order, and an actor that subscribes long after a control last moved still hears it.
-- **The input root keeps its subscribers in its state**, so `Subscribers` is written as the references it holds, in order, and read back with each found where it is held; the watches that take an ended subscriber off are the engine's, and are not written. **This departs from building it on the engine's stage subscriptions** (ADR-0020): those carry only a stage, which holds nothing, from the engine, and an event holds what the page heard and comes from the root.
+**Windows and what they hear are ADR-0024's**: the window capability, its root and an actor for each window, and the browser's canvas as its one window, with a source and no controller.
 
 ## Consequences
 
@@ -127,8 +102,7 @@ let listening = listen(&canvas, &feed)?;                  // the page's callback
 - A turn that pushes to a controller cannot be run again from its record without pushing again: a replay gives the capability a controller whose requests go nowhere, and feeds it what its source brought from the record.
 - The thread that runs the windowing library's event loop is the thread that steps the engine, natively: requests are taken and windows made there, between steps, inside the library's callbacks. The workers run turns on other threads, as before (ADR-0011).
 - `Engine::hand` is no longer only for boot. A chassis that hands a value and never puts it in an event or a config leaves it in the engine's keeping until the engine is dropped.
-- **Not decided here:** a native window capability's own mail: which requests and events it has, and whether each window gets an actor of its own. The browser's input is decided above; the render capability's is ADR-0021's.
-- The browser's input needs no controller: it asks the page for nothing. Whether the pointer is captured, the cursor hidden, or a key's default stopped would each be a request, and would add one.
+- The window capability's own mail, which this record left undecided, is decided by ADR-0024: its events, and an actor for each window beneath one root. Its requests, opening and closing a window among them, are left by it for later. The render capability's is ADR-0021's.
 
 ## Alternatives considered
 
