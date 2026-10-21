@@ -2,6 +2,7 @@
 //! ask it. Every actor, native or a guest, reaches the GPU through it, and everything it makes is checked as it is made,
 //! so nothing it draws can fail.
 
+pub mod compute;
 pub mod effect;
 pub mod frame;
 mod gpu;

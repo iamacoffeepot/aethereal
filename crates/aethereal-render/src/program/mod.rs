@@ -65,10 +65,11 @@ impl Kind for Binding {
 pub enum BindingKind {
     /// A uniform block of `bytes`, at least what the shader reads of it.
     Uniform { bytes: u32 },
-    /// A storage buffer the shader only reads, `var<storage, read>`, in either stage, of at least `bytes`: what the
-    /// shader reads of it with any array whose length is the buffer's holding one element. Storage bound there is at
-    /// least as large, and such an array holds as many elements as fit in the rest (ADR-0023).
-    Storage { bytes: u32 },
+    /// A storage buffer the shader reads, or writes, as `access` says, of at least `bytes`: what the shader reads of
+    /// it with any array whose length is the buffer's holding one element. Storage bound there is at least as large,
+    /// and such an array holds as many elements as fit in the rest (ADR-0023). A draw program or an effect binds it
+    /// only to read, from either stage; a compute program binds it either way (ADR-0026).
+    Storage { bytes: u32, access: Access },
     /// A two-dimensional texture of floats, as every [`TextureFormat`](crate::texture::TextureFormat) is read.
     Texture,
     /// A sampler that filters.
@@ -77,6 +78,19 @@ pub enum BindingKind {
 
 impl Kind for BindingKind {
     const NAME: KindName = KindName::new("aether.render.binding_kind");
+}
+
+/// How a shader binds a storage buffer: what a program says it does with it is what its shader declares (ADR-0026).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Access {
+    /// It only reads it, `var<storage, read>`.
+    Read,
+    /// It reads and writes it, `var<storage, read_write>`.
+    Write,
+}
+
+impl Kind for Access {
+    const NAME: KindName = KindName::new("aether.render.access");
 }
 
 /// What a program fixes as it is made: how it blends, how it tests depth, and which faces it culls. It draws
@@ -157,11 +171,12 @@ impl Kind for Programmed {
     const NAME: KindName = KindName::new("aether.render.programmed");
 }
 
-/// One of a program's two stages.
+/// One of a program's two stages, or a compute program's one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Stage {
     Vertex,
     Fragment,
+    Compute,
 }
 
 impl Kind for Stage {
@@ -206,9 +221,11 @@ pub enum ProgramRefused {
     /// The shader uses a binding `bindings` does not list.
     Unbound { group: u32, binding: u32 },
     /// The shader uses a binding as another kind than `bindings` lists, or reads more of a uniform block or a storage
-    /// buffer than its bytes, or binds what a program cannot: a storage buffer it writes, or a texture that is not
-    /// two-dimensional floats.
+    /// buffer than its bytes, or declares a storage buffer to be written that is listed to be read, or to be read that
+    /// is listed to be written, or binds what a program cannot: a texture that is not two-dimensional floats.
     Mismatch { group: u32, binding: u32 },
+    /// A draw program or an effect lists storage to write, which only a compute program writes (ADR-0026).
+    Writes { group: u32, binding: u32 },
     /// `bindings` lists two at one place.
     Repeated { group: u32, binding: u32 },
     /// A binding's group is past the last the GPU has.
@@ -217,6 +234,11 @@ pub enum ProgramRefused {
     Size { group: u32, binding: u32 },
     /// `bindings` lists more of one kind than the GPU binds in a stage.
     Many { kind: BindingKind },
+    /// A compute program's workgroup, of `size` invocations along each dimension, is more than the GPU runs: more
+    /// along one dimension, or more in all.
+    Workgroup { size: [u32; 3] },
+    /// A compute program's workgroup memory, `bytes` as WebGPU counts it, is more than the GPU gives a workgroup.
+    WorkgroupMemory { bytes: u64 },
 }
 
 impl Kind for ProgramRefused {
@@ -225,7 +247,8 @@ impl Kind for ProgramRefused {
 
 /// Checks a program before it is made: that its WGSL is a valid module, whose entry points are a vertex and a
 /// fragment stage, that read what its layouts give, pass between them what each reads, write the colour drawn, and
-/// bind only what `bindings` lists, within `limits`: what WebGPU would refuse as the pipeline is made.
+/// bind only what `bindings` lists, storage only to read, within `limits`: what WebGPU would refuse as the pipeline is
+/// made.
 ///
 /// # Errors
 ///
@@ -240,6 +263,7 @@ pub fn check(create: &CreateProgram, limits: &wgpu::Limits) -> Result<(), Progra
         }
     }
     check_bindings(&create.bindings, 0, limits)?;
+    check_reads_only(&create.bindings)?;
     check_fixed(create.state.blend, create.shape)?;
     let tests_depth = create.state.depth != Depth::Off;
     let holds_depth = create.shape.depth != DepthFormat::None;
@@ -286,7 +310,7 @@ pub(crate) fn check_fixed(blend: Blend, shape: Shape) -> Result<(), ProgramRefus
 }
 
 /// The kind `bindings` lists at `group`, `binding`: none when it lists nothing there.
-fn listed(bindings: &[Binding], group: u32, binding: u32) -> Option<BindingKind> {
+pub(crate) fn listed(bindings: &[Binding], group: u32, binding: u32) -> Option<BindingKind> {
     bindings.iter().find(|listed| listed.group == group && listed.binding == binding).map(|listed| listed.kind)
 }
 
@@ -305,7 +329,7 @@ pub(crate) fn check_bindings(bindings: &[Binding], textures: u32, limits: &wgpu:
         }
         let sized = match listed.kind {
             BindingKind::Uniform { bytes } => Some((bytes, limits.max_uniform_buffer_binding_size)),
-            BindingKind::Storage { bytes } => Some((bytes, limits.max_storage_buffer_binding_size)),
+            BindingKind::Storage { bytes, .. } => Some((bytes, limits.max_storage_buffer_binding_size)),
             BindingKind::Texture | BindingKind::Sampler => None,
         };
         if let Some((bytes, most)) = sized {
@@ -317,7 +341,7 @@ pub(crate) fn check_bindings(bindings: &[Binding], textures: u32, limits: &wgpu:
     }
     let most = [
         (BindingKind::Uniform { bytes: 0 }, limits.max_uniform_buffers_per_shader_stage),
-        (BindingKind::Storage { bytes: 0 }, limits.max_storage_buffers_per_shader_stage),
+        (BindingKind::Storage { bytes: 0, access: Access::Read }, limits.max_storage_buffers_per_shader_stage),
         (BindingKind::Texture, limits.max_sampled_textures_per_shader_stage),
         (BindingKind::Sampler, limits.max_samplers_per_shader_stage),
     ];
@@ -336,7 +360,18 @@ pub(crate) fn check_bindings(bindings: &[Binding], textures: u32, limits: &wgpu:
     Ok(())
 }
 
-/// Whether two kinds of binding are the same kind, whatever their sizes.
+/// Checks that `bindings` lists no storage to write: what a draw program or an effect binds, which only reads.
+pub(crate) fn check_reads_only(bindings: &[Binding]) -> Result<(), ProgramRefused> {
+    let writes =
+        bindings.iter().find(|listed| matches!(listed.kind, BindingKind::Storage { access: Access::Write, .. }));
+    if let Some(listed) = writes {
+        return Err(ProgramRefused::Writes { group: listed.group, binding: listed.binding });
+    }
+
+    Ok(())
+}
+
+/// Whether two kinds of binding are the same kind, whatever their sizes and access.
 const fn same_kind(one: BindingKind, other: BindingKind) -> bool {
     matches!(
         (one, other),
@@ -352,6 +387,7 @@ pub(crate) fn entry(module: &Module, stage: Stage, name: &str) -> Result<usize, 
     let shader = match stage {
         Stage::Vertex => ShaderStage::Vertex,
         Stage::Fragment => ShaderStage::Fragment,
+        Stage::Compute => ShaderStage::Compute,
     };
     let found = module.entry_points.iter().position(|entry| entry.stage == shader && entry.name == name);
 
@@ -486,8 +522,8 @@ pub(crate) enum Used {
 }
 
 /// Checks that each binding the entry point `at` uses is one `lists` answers for its group and binding, as the kind it
-/// is used as. What is read of a block counts an array whose length is its buffer's as one element, as WebGPU's least
-/// binding size does.
+/// is used as, a storage buffer with the access its shader declares. What is read of a block counts an array whose
+/// length is its buffer's as one element, as WebGPU's least binding size does.
 pub(crate) fn check_uses<U: Into<Used>>(
     module: &Module,
     info: &ModuleInfo,
@@ -509,9 +545,13 @@ pub(crate) fn check_uses<U: Into<Used>>(
             (AddressSpace::Uniform, _, Used::Listed(BindingKind::Uniform { bytes })) => {
                 inner.size(module.to_ctx()) <= bytes
             }
-            (AddressSpace::Storage { access }, _, Used::Listed(BindingKind::Storage { bytes })) => {
-                let read_only = access == StorageAccess::LOAD;
-                read_only && inner.size(module.to_ctx()) <= bytes
+            (AddressSpace::Storage { access: declared }, _, Used::Listed(BindingKind::Storage { bytes, access })) => {
+                let declared = if declared.contains(StorageAccess::STORE) {
+                    Access::Write
+                } else {
+                    Access::Read
+                };
+                declared == access && inner.size(module.to_ctx()) <= bytes
             }
             (AddressSpace::Handle, TypeInner::Image { dim, arrayed, class }, Used::Listed(BindingKind::Texture)) => {
                 *dim == ImageDimension::D2 && !*arrayed && *class == float_texture

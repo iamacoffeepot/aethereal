@@ -335,7 +335,7 @@ pub(crate) fn check_bindings(bindings: &[Bind], listed: &[Binding], kept: &impl 
                 let size = kept.uniforms(uniforms).ok_or(JoinRefused::Missing { group, binding })?;
                 size >= bytes
             }
-            (Resource::Storage(storage), BindingKind::Storage { bytes }) => {
+            (Resource::Storage(storage), BindingKind::Storage { bytes, .. }) => {
                 let size = kept.storage(storage).ok_or(JoinRefused::Missing { group, binding })?;
                 size >= bytes
             }

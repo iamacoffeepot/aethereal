@@ -7,8 +7,8 @@ mod tests;
 
 use crate::frame::builder::{Depth32, Float, Uint};
 use crate::program::{
-    Binding, Blend, ProgramId, ProgramRefused, Stage, Used, check_bindings, check_fixed, check_output, check_stages,
-    check_uses, entry, parsed,
+    Binding, Blend, ProgramId, ProgramRefused, Stage, Used, check_bindings, check_fixed, check_output,
+    check_reads_only, check_stages, check_uses, entry, parsed,
 };
 use crate::shape::{DepthFormat, Shape};
 use aethereal_data::{
@@ -240,7 +240,7 @@ fn cover(@builtin(vertex_index) corner: u32) -> Covered {
 pub(crate) const COVER_ENTRY: &str = "cover";
 
 /// Checks an effect before it is made: that its shape holds no depth and takes its blend, that it binds nothing in
-/// group 0 and what it binds after within `limits`, and that its WGSL is a valid module whose fragment stage reads
+/// group 0 and what it binds after within `limits`, storage only to read, and that its WGSL is a valid module whose fragment stage reads
 /// what the renderer's vertex stage writes, writes the colour its shape draws, reads each target in group 0 as
 /// `reads` says, and binds only what `bindings` lists.
 ///
@@ -259,6 +259,7 @@ pub fn check(create: &CreateEffect, limits: &wgpu::Limits) -> Result<(), Program
     // An effect reads a handful of targets, far below what a `u32` counts.
     let reads = u32::try_from(create.reads.len()).unwrap_or(u32::MAX);
     check_bindings(&create.bindings, reads, limits)?;
+    check_reads_only(&create.bindings)?;
 
     let (cover, _) = parsed(COVER)?;
     let (module, info) = parsed(&create.wgsl)?;

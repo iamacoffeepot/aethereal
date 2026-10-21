@@ -2,7 +2,7 @@
 //! asked for.
 
 use super::*;
-use crate::program::BindingKind;
+use crate::program::{Access, BindingKind};
 use crate::shape::ColourFormat;
 
 /// An effect that reads a target of floats, one of whole numbers, and a depth, by the pixel it shades, and tints
@@ -73,6 +73,17 @@ fn an_effect_binding_in_group_0_or_holding_depth_is_refused() {
 
     assert_eq!(checked(&reserved), Err(ProgramRefused::Reserved { binding: 3 }));
     assert_eq!(checked(&deep), Err(ProgramRefused::EffectDepth));
+}
+
+#[test]
+fn an_effect_listing_storage_to_write_is_refused() {
+    // Catches an effect let write storage, which only a compute program writes: its writes would land in no order
+    // the frame's passes give (ADR-0026).
+    let mut writes = effect();
+    let written = BindingKind::Storage { bytes: 16, access: Access::Write };
+    writes.bindings.push(Binding { group: 1, binding: 1, kind: written });
+
+    assert_eq!(checked(&writes), Err(ProgramRefused::Writes { group: 1, binding: 1 }));
 }
 
 #[test]

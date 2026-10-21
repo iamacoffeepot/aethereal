@@ -12,7 +12,7 @@ use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat
 use aethereal_render::pass::Main;
 use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
 use aethereal_render::program::{
-    Binding, BindingKind, Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
+    Access, Binding, BindingKind, Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
 use aethereal_render::readback::{Pixels, ReadBack, Readable};
 use aethereal_render::shape::Shape;
@@ -346,7 +346,7 @@ impl Handles<Answer<Meshed, Learned>> for Reader {
             say(format!("the quad was not made: {answered:?}"));
             return Ok(());
         };
-        let storage = Binding { group: 0, binding: 0, kind: BindingKind::Storage { bytes: 32 } };
+        let storage = Binding { group: 0, binding: 0, kind: BindingKind::Storage { bytes: 32, access: Access::Read } };
         let shape = learned.shape;
         let splats = program(SPLATS, ("place", "shade"), shape, vec![storage], Blend::Opaque);
         turn.to(path::<Renderer>(())).ask(&splats, &Making::Splats { shape, mesh })?;

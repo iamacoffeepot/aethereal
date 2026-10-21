@@ -4,6 +4,7 @@ use super::*;
 use crate::frame::FrameId;
 use crate::mesh::{Attribute, VertexFormat};
 use crate::pass::Main;
+use crate::program::Access;
 use crate::shape::ColourFormat;
 use crate::storage::StorageId;
 use aethereal_data::{Budget, from_bytes};
@@ -60,7 +61,7 @@ impl Kept {
             Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 64 } },
             Binding { group: 1, binding: 0, kind: BindingKind::Texture },
             Binding { group: 1, binding: 1, kind: BindingKind::Sampler },
-            Binding { group: 2, binding: 0, kind: BindingKind::Storage { bytes: 48 } },
+            Binding { group: 2, binding: 0, kind: BindingKind::Storage { bytes: 48, access: Access::Read } },
         ];
 
         let layout = VertexLayout { stride: 12, attributes: vec![position] };
@@ -226,9 +227,9 @@ fn bindings_that_miss_add_to_repeat_or_mismatch_what_the_program_binds_are_refus
     let mut small = Kept::new();
     small.bindings[0].kind = BindingKind::Uniform { bytes: 80 };
     let mut few = Kept::new();
-    few.bindings[3].kind = BindingKind::Storage { bytes: 260 };
+    few.bindings[3].kind = BindingKind::Storage { bytes: 260, access: Access::Read };
     let mut fits = Kept::new();
-    fits.bindings[3].kind = BindingKind::Storage { bytes: 256 };
+    fits.bindings[3].kind = BindingKind::Storage { bytes: 256, access: Access::Read };
     let mut as_uniforms = place();
     as_uniforms.joins[0].bindings[3].to = Resource::Uniforms(UNIFORMS);
     let mut as_storage = place();
