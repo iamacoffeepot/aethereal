@@ -14,10 +14,10 @@ use crate::Submitted;
 use crate::job::lending;
 use crate::resource;
 use crate::{
-    Actor, ActorRef, Actors, ActorsWriter, Allows, Arena, Askable, Asking, ChildOf, Children, Claim, Claimed, Code,
-    Declared, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances,
-    Keeping, Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, On, Owed, Owes, Parented, Payload,
-    ProtocolRef, Proven, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Spawns, Stage,
+    Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Askable, Asking, ChildOf, Children, Claim, Claimed,
+    Code, Declared, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held,
+    Instances, Keeping, Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, On, Owed, Owes, Parented,
+    Payload, ProtocolRef, Proven, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage,
     Table, Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable, What, Within,
     Written,
 };
@@ -1030,7 +1030,6 @@ impl Seat<'_> {
             Target::Type(_, id) => receiver.id() == id,
             Target::Handling(kinds) => receiver.lists_all(kinds),
             Target::Path(segment) => receiver.id() == segment.kind,
-            Target::Spawned => false,
         };
         let receiver = receiver.name();
         assert!(
@@ -1103,7 +1102,7 @@ impl Seat<'_> {
 
     /// Stands up a child of type `C` under `key`: adds its spawn effect, then runs its `begin` here, lent `instances`.
     /// A guest begins only its own types here, and asks its host to begin a child of any other (ADR-0015).
-    fn spawn<C: Actor>(
+    fn spawn<C: ChildOf>(
         &mut self,
         instances: &mut Instances,
         key: &C::Key,
@@ -1169,7 +1168,7 @@ impl Seat<'_> {
     /// the blob's host run its `begin` here, in its part's instance of the blob, lent `instances` (ADR-0009,
     /// ADR-0015). Refused when the blob makes no actor of `C`'s type, as `C` declares it.
     #[cfg(feature = "std")]
-    fn spawn_from<C: Actor>(
+    fn spawn_from<C: ChildOf>(
         &mut self,
         instances: &mut Instances,
         code: &BlobRef,
@@ -1413,10 +1412,9 @@ impl<'a> Turning<'a> {
         self.chain
     }
 
-    /// The turn of the handler of `A` for `role`, which may send `S`.
-    pub(crate) fn declaring<A: Actor, S: Sends>(self, role: Role) -> Turn<'a, A, S> {
+    /// The turn of the handler of `A`, whose type declares `declared`, for `role`, which may send `S`.
+    pub(crate) fn declaring<A: Actor, S: Sends>(self, role: Role, declared: &'static Declared) -> Turn<'a, A, S> {
         let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie } = self;
-        let declared = Declared::of::<A>();
         let seat = Seat {
             me,
             path,
@@ -1805,14 +1803,86 @@ impl<Me, S> Turn<'_, Me, S> {
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it. It
-    /// builds only when the turn's sends list [`Spawns<C>`](crate::Spawns), and `C` is inferred from where the reference
-    /// goes (ADR-0022).
+    /// builds only when `C` may stand beneath this actor's type, as its parent says ([`Admits`]). `C` is inferred
+    /// from where the reference goes, or named at the call, `turn.spawn::<Camera>(&(), config)` (ADR-0022).
     ///
     /// The child takes its own mail. It is live once the engine applies this turn's effects.
-    pub fn spawn<C, I>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused>
+    ///
+    /// A type that spawns what stands beneath another does not build:
+    ///
+    /// ```compile_fail,E0277
+    /// use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn};
+    /// use aethereal_data::{Kind, KindName, Plain};
+    ///
+    /// #[derive(Plain)]
+    /// struct Host;
+    ///
+    /// impl Kind for Host {
+    ///     const NAME: KindName = KindName::new("aether.doc.host");
+    /// }
+    ///
+    /// impl ChildOf for Host {
+    ///     type Parent = Top;
+    /// }
+    ///
+    /// // Stands beneath itself, not a `Host`.
+    /// #[derive(Plain)]
+    /// struct Lens;
+    ///
+    /// impl Kind for Lens {
+    ///     const NAME: KindName = KindName::new("aether.doc.lens");
+    /// }
+    ///
+    /// impl ChildOf for Lens {
+    ///     type Parent = Lens;
+    /// }
+    ///
+    /// impl Actor for Lens {
+    ///     type Config = Lens;
+    ///     type Key = ();
+    ///     type Handles = ();
+    ///     type BeginSends = ();
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(lens: Lens, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///         Ok(lens)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// impl Actor for Host {
+    ///     type Config = Host;
+    ///     type Key = ();
+    ///     type Handles = (Lens,);
+    ///     type BeginSends = ();
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(host: Host, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///         Ok(host)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// impl Handles<Lens> for Host {
+    ///     type Sends = ();
+    ///
+    ///     fn handle(&mut self, lens: Lens, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    ///         let _ = turn.spawn::<Lens>(&(), lens);
+    ///
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    pub fn spawn<C>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
-        S: Allows<Spawns<C>, I>,
+        C::Parent: Admits<Me, C>,
     {
         self.seat.spawn::<C>(self.instances, key, config)
     }
@@ -1820,10 +1890,10 @@ impl<Me, S> Turn<'_, Me, S> {
     /// Stands up a child of type `C` under `key` whose code is the blob `code` pins, running its `begin` here in the
     /// blob, and answers with a reference to it (ADR-0009). Refused when the blob makes no actor of `C`'s type.
     #[cfg(feature = "std")]
-    pub fn spawn_from<C, I>(&mut self, code: &BlobRef, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
+    pub fn spawn_from<C>(&mut self, code: &BlobRef, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
-        S: Allows<Spawns<C>, I>,
+        C::Parent: Admits<Me, C>,
     {
         self.seat.spawn_from::<C>(self.instances, code, key, config)
     }
@@ -1969,7 +2039,7 @@ pub struct Beginning<'a, Me, S> {
     of: PhantomData<fn() -> (Me, S)>,
 }
 
-impl<'a, Me: Actor> Beginning<'a, Me, Me::BeginSends> {
+impl<'a, Me: ChildOf> Beginning<'a, Me, Me::BeginSends> {
     /// The `begin` of the root of type `Me` that `me` names, at `path`, reading `table`, adding to `asked`, lent its
     /// part's `instances`, and keeping what it keeps in `keeps`.
     ///
@@ -2216,12 +2286,12 @@ impl<Me, S> Beginning<'_, Me, S> {
     }
 
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it. It
-    /// builds only when the turn's sends list [`Spawns<C>`](crate::Spawns), and `C` is inferred from where the reference
-    /// goes (ADR-0022).
-    pub fn spawn<C, I>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused>
+    /// builds only when `C` may stand beneath this actor's type, as its parent says ([`Admits`]). `C` is inferred
+    /// from where the reference goes, or named at the call, `turn.spawn::<Camera>(&(), config)` (ADR-0022).
+    pub fn spawn<C>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
-        S: Allows<Spawns<C>, I>,
+        C::Parent: Admits<Me, C>,
     {
         self.seat.spawn::<C>(self.instances, key, config)
     }
@@ -2229,10 +2299,10 @@ impl<Me, S> Beginning<'_, Me, S> {
     /// Stands up a child of type `C` under `key` whose code is the blob `code` pins, running its `begin` here in the
     /// blob, and answers with a reference to it (ADR-0009). Refused when the blob makes no actor of `C`'s type.
     #[cfg(feature = "std")]
-    pub fn spawn_from<C, I>(&mut self, code: &BlobRef, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
+    pub fn spawn_from<C>(&mut self, code: &BlobRef, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
-        S: Allows<Spawns<C>, I>,
+        C::Parent: Admits<Me, C>,
     {
         self.seat.spawn_from::<C>(self.instances, code, key, config)
     }
@@ -2451,7 +2521,7 @@ impl<'a> Closing<'a> {
     }
 
     /// The closing turn of an actor of type `A`.
-    pub(crate) fn declaring<A: Actor>(self) -> Ending<'a, A, A::EndSends> {
+    pub(crate) fn declaring<A: ChildOf>(self) -> Ending<'a, A, A::EndSends> {
         let Self { me, path, above, table, asked, keeps, sent, why, .. } = self;
         let declared = Declared::of::<A>();
         let seat = Seat {

@@ -45,7 +45,7 @@
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Root, Spawns, To, ToAny, ToSender,
+    Actor, ActorRef, Admits, Allows, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Root, To, ToAny, ToSender,
     ToType, Top, Turn,
 };
 use aethereal_chassis_headless::{Headless, Monotonic};
@@ -192,7 +192,7 @@ impl Actor for Pinger {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready, Pong);
-    type BeginSends = (ToType<Ponger, Ready>, Spawns<Ponger>);
+    type BeginSends = (ToType<Ponger, Ready>,);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -286,7 +286,7 @@ impl Actor for Producer {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready, Total);
-    type BeginSends = (ToType<Counter, Ready>, Spawns<Counter>);
+    type BeginSends = (ToType<Counter, Ready>,);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -343,7 +343,7 @@ impl Actor for BeginProducer {
     type Config = Number;
     type Key = u64;
     type Handles = (Total,);
-    type BeginSends = (ToType<Counter, Increment>, ToType<Counter, Retrieve>, Spawns<Counter>);
+    type BeginSends = (ToType<Counter, Increment>, ToType<Counter, Retrieve>);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -442,7 +442,7 @@ impl Actor for Forker {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready,);
-    type BeginSends = (ToType<Forked, Ready>, Spawns<Forked>);
+    type BeginSends = (ToType<Forked, Ready>,);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -529,7 +529,7 @@ impl Actor for Crowd {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready,);
-    type BeginSends = (ToType<Pinging, Ready>, Spawns<Pinging>);
+    type BeginSends = (ToType<Pinging, Ready>,);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -685,7 +685,7 @@ impl Actor for FibRoot {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready, Response);
-    type BeginSends = (ToType<Fib, Ready>, Spawns<Fib>);
+    type BeginSends = (ToType<Fib, Ready>,);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -756,7 +756,7 @@ impl Actor for Fib {
 }
 
 impl Handles<Request> for Fib {
-    type Sends = (ToType<Self, Request>, Answer, Spawns<Self>);
+    type Sends = (ToType<Self, Request>, Answer);
 
     fn handle(&mut self, Request { number }: Request, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if number <= 2 {
@@ -825,7 +825,7 @@ impl Actor for Sieve {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready,);
-    type BeginSends = (ToType<Filter, Ready>, Spawns<Filter>);
+    type BeginSends = (ToType<Filter, Ready>,);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -900,7 +900,7 @@ impl Actor for Filter {
 }
 
 impl Handles<Candidate> for Filter {
-    type Sends = (ToType<Self, Candidate>, Spawns<Self>);
+    type Sends = (ToType<Self, Candidate>,);
 
     fn handle(&mut self, Candidate { number }: Candidate, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let divided = self.primes.iter().any(|prime| number % prime == 0);
@@ -968,11 +968,11 @@ impl Kind for Churn {
 
 impl Churn {
     /// Spawns the next actor and starts its life.
-    fn spawn_next<S, I, J>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
+    fn spawn_next<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
-        S: Allows<ToType<Mortal, Live>, I> + Allows<Spawns<Mortal>, J>,
+        S: Allows<ToType<Mortal, Live>, I>,
     {
-        let Ok(child) = turn.spawn(&self.spawned, Number { number: self.spawned }) else {
+        let Ok(child) = turn.spawn::<Mortal>(&self.spawned, Number { number: self.spawned }) else {
             panic!("a churn actor begins");
         };
         self.spawned += 1;
@@ -990,7 +990,7 @@ impl Actor for Churn {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready, Died);
-    type BeginSends = (ToType<Mortal, Ready>, Spawns<Mortal>);
+    type BeginSends = (ToType<Mortal, Ready>,);
     type EndSends = ();
 
     /// A root configured with `number` shares the program among that many roots, none and one alike being the whole.
@@ -1007,7 +1007,7 @@ impl Actor for Churn {
 }
 
 impl Handles<Ready> for Churn {
-    type Sends = (ToType<Mortal, Live>, Spawns<Mortal>);
+    type Sends = (ToType<Mortal, Live>,);
 
     fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.send(To::Sender, &Live { left: CHURN_LIFE })?;
@@ -1020,7 +1020,7 @@ impl Handles<Ready> for Churn {
 }
 
 impl Handles<Died> for Churn {
-    type Sends = (ToType<Mortal, Live>, Spawns<Mortal>);
+    type Sends = (ToType<Mortal, Live>,);
 
     fn handle(&mut self, _: Died, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if self.spawned < CHURN_TOTAL / self.spawners {
@@ -1188,7 +1188,7 @@ impl Actor for Region {
     type Config = Number;
     type Key = u64;
     type Handles = (Ready, Moved, Expired);
-    type BeginSends = (ToType<Body, Ready>, Spawns<Body>);
+    type BeginSends = (ToType<Body, Ready>,);
     type EndSends = ();
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -1220,7 +1220,7 @@ impl Handles<Moved> for Region {
 }
 
 impl Handles<Expired> for Region {
-    type Sends = (ToType<Body, Frame>, ToType<Body, Over>, Spawns<Body>);
+    type Sends = (ToType<Body, Frame>, ToType<Body, Over>);
 
     /// Puts a new body, with a whole life, in the expired one's place, unless the world is over after this frame.
     fn handle(&mut self, Expired { place }: Expired, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -1413,10 +1413,10 @@ macro_rules! answers_ready {
 answers_ready!(Ponger, Counter, Forked, Pinging, Fib, Filter, Mortal, Body);
 
 /// A child of type `A` numbered `number`, spawned by `turn`.
-fn spawned<Me, A, S, I>(turn: &mut Beginning<'_, Me, S>, number: u64) -> ActorRef<A>
+fn spawned<Me, A, S>(turn: &mut Beginning<'_, Me, S>, number: u64) -> ActorRef<A>
 where
     A: ChildOf + Actor<Config = Number, Key = u64>,
-    S: Allows<Spawns<A>, I>,
+    A::Parent: Admits<Me, A>,
 {
     let Ok(child) = turn.spawn(&number, Number { number }) else {
         panic!("a child begins");

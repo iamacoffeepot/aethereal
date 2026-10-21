@@ -3,8 +3,8 @@
 #[cfg(feature = "std")]
 use crate::ActorsWriter;
 use crate::{
-    Above, Actor, Actors, ActorsReader, Asked, Beginning, BlobId, BlobType, Declared, Fault, Instances, Keeping, Keeps,
-    Refused, Runs, Seated, Table,
+    Above, Actors, ActorsReader, Asked, Beginning, BlobId, BlobType, ChildOf, Declared, Fault, Instances, Keeping,
+    Keeps, Refused, Runs, Seated, Table,
 };
 use aethereal_data::{ActorPath, Budget, Decode, KindName, Reader};
 #[cfg(feature = "std")]
@@ -126,7 +126,7 @@ pub type BeginLinked = fn(&[u8], Birth<'_>) -> Result<Box<dyn Runs>, Refused>;
 impl Links {
     /// These, and the type `A`.
     #[must_use]
-    pub fn with<A: Actor>(mut self) -> Self {
+    pub fn with<A: ChildOf>(mut self) -> Self {
         self.linked.push(Link { declared: Declared::of::<A>(), begin: begin_linked::<A> });
 
         self
@@ -140,7 +140,7 @@ impl Links {
 }
 
 /// Begins `birth`'s child, of type `A`, from its config's bytes `config`.
-fn begin_linked<A: Actor>(config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Runs>, Refused> {
+fn begin_linked<A: ChildOf>(config: &[u8], birth: Birth<'_>) -> Result<Box<dyn Runs>, Refused> {
     let mut budget = Budget::new(birth.instances.read_limit());
     // The config holds the pins its birth refers to, each at where its reference begins in it.
     let pins = crate::PinSource::lying(config, birth.refers);

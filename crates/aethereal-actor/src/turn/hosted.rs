@@ -82,9 +82,9 @@ impl aethereal_data::Kind for FalseSend {
 /// Why a host does not hand its guest's turn a child the turn recorded spawning.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Unspawned {
-    /// The spawner's declaration lists no spawn of the child's type: the turn broke its declaration, and fails with
-    /// [`FalseSend`], as for a send past it (ADR-0022).
-    Undeclared,
+    /// The child's type does not stand beneath the spawner's, as its parent says: the turn broke its declaration, and
+    /// fails with [`FalseSend`], as for a send past it (ADR-0022).
+    Unadmitted,
     /// The spawner is not who it says, the key is not of the type's keying, or the key is taken: the guest's records
     /// do not read back.
     Garbled,
@@ -530,7 +530,7 @@ impl<'a> Hosted<'a> {
     ///
     /// # Errors
     ///
-    /// [`Unspawned::Undeclared`] when the sends of `by`'s turn list no spawn of the child's type: the turn's own, or a
+    /// [`Unspawned::Unadmitted`] when the child's type does not stand beneath `by`'s: the turn's own actor, or a
     /// child's `begin`'s. [`Unspawned::Garbled`] when `by` is not who it says, the key is not of the type's keying, or
     /// the key is taken.
     pub fn spawn(
@@ -541,14 +541,14 @@ impl<'a> Hosted<'a> {
         seat: SeatNumber,
     ) -> Result<Seated, Unspawned> {
         let declared = from.declared();
-        let (by_path, sends) = if by == self.seat.me {
-            (self.seat.path.clone(), self.sends)
+        let (by_path, by_type) = if by == self.seat.me {
+            (self.seat.path.clone(), self.seat.declared.id())
         } else {
             let child = self.spawned.iter().find(|child| child.me == by).ok_or(Unspawned::Garbled)?;
-            (child.path.clone(), child.declared.begins())
+            (child.path.clone(), child.declared.id())
         };
-        if !spawns(sends, declared.id()) {
-            return Err(Unspawned::Undeclared);
+        if !declared.admits(by_type) {
+            return Err(Unspawned::Unadmitted);
         }
         let segment = match (&key, declared.keyed()) {
             (None, Keyed::Singleton) => PathSegment::new(declared.name().clone(), &()),
@@ -743,12 +743,6 @@ impl<'a> Hosted<'a> {
                 receiver.is_none_or(|receiver| kinds.iter().all(|kind| receiver.lists(*kind)))
             }
             Target::Path(segment) => self.seat.declared_at(to.id).is_none_or(|receiver| receiver.id() == segment.kind),
-            Target::Spawned => false,
         }
     }
-}
-
-/// Whether `sends` list a spawn of a child of the type of `kind` (ADR-0022).
-fn spawns(sends: &[Sending], kind: KindId) -> bool {
-    sends.iter().any(|sending| sending.to() == Target::Spawned && sending.kind() == kind)
 }

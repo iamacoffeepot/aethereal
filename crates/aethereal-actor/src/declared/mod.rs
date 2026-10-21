@@ -19,9 +19,9 @@ pub use handles::{Handled, HandledList, Handles, Others};
 pub use protocols::{AnsweredBy, CarriedBy, Carries, Conforms, Covers, Listed, Protocol};
 pub use replies::{DeclaredBy, HandledBy, RepliesTo, RepliesWith, RepliesWithin, ReplyWithin};
 pub use sends::Last;
-pub use sends::{Allows, At, Kinds, Marker, Sends, Spawns, Tells, ToAny, ToSender, ToType};
+pub use sends::{Allows, At, Kinds, Marker, Sends, Tells, ToAny, ToSender, ToType};
 
-use crate::{Actor, TypeSegment};
+use crate::{ChildOf, Placement, Spawner, TypeSegment};
 use aethereal_data::{ActorKey, ActorPath, Keyed, KindId, KindName};
 use core::marker::PhantomData;
 
@@ -34,6 +34,8 @@ pub struct Declared {
     id: KindId,
     /// Whether it has one actor or many, each under its own key.
     keyed: Keyed,
+    /// Who may spawn an actor of it, as its parent says (ADR-0022).
+    spawner: Spawner,
     /// What its `begin` may send.
     begins: &'static [Sending],
     /// Each thing it handles, and what its handler may send.
@@ -43,23 +45,24 @@ pub struct Declared {
 }
 
 impl Declared {
-    /// The declaration of the type named `name`, of id `id`, keyed as `keyed`, whose `begin` may send `begins`,
-    /// which handles `handlers`, and whose closing turn may send `ends`.
+    /// The declaration of the type named `name`, of id `id`, keyed as `keyed`, that `spawner` may spawn, whose `begin`
+    /// may send `begins`, which handles `handlers`, and whose closing turn may send `ends`.
     #[must_use]
     pub const fn new(
         name: KindName,
         id: KindId,
         keyed: Keyed,
+        spawner: Spawner,
         begins: &'static [Sending],
         handlers: &'static [Handler],
         ends: &'static [Sending],
     ) -> Self {
-        Self { name, id, keyed, begins, handlers, ends }
+        Self { name, id, keyed, spawner, begins, handlers, ends }
     }
 
     /// The declaration of the actor type `A`, made when the program is built.
     #[must_use]
-    pub const fn of<A: Actor>() -> &'static Self {
+    pub const fn of<A: ChildOf>() -> &'static Self {
         Of::<A>::DECLARED
     }
 
@@ -79,6 +82,23 @@ impl Declared {
     #[must_use]
     pub const fn keyed(&self) -> Keyed {
         self.keyed
+    }
+
+    /// Who may spawn an actor of it.
+    #[must_use]
+    pub const fn spawner(&self) -> Spawner {
+        self.spawner
+    }
+
+    /// Whether an actor of the type of id `by` may spawn an actor of it, as its parent says (ADR-0022).
+    #[must_use]
+    pub fn admits(&self, by: KindId) -> bool {
+        match self.spawner {
+            Spawner::Nobody => false,
+            Spawner::Anyone => true,
+            Spawner::Own => by == self.id,
+            Spawner::Type(id) => by == id,
+        }
     }
 
     /// What its `begin` may send.
@@ -171,11 +191,12 @@ impl Declared {
 /// The declaration of `A`, as a constant.
 struct Of<A>(PhantomData<A>);
 
-impl<A: Actor> Of<A> {
+impl<A: ChildOf> Of<A> {
     const DECLARED: &'static Declared = &Declared::new(
         A::NAME,
         KindId::of::<A>(),
         <A::Key as ActorKey>::KEYED,
+        <A::Parent as Placement>::SPAWNER,
         <A::BeginSends as Sends>::SENDINGS,
         <A::Handles as HandledList<A>>::HANDLERS,
         <A::EndSends as Sends>::SENDINGS,
@@ -338,8 +359,6 @@ pub enum Target {
     /// Any actor whose type lists every one of these kinds: what a reference that names a protocol, and not a type,
     /// reaches.
     Handling(&'static [KindId]),
-    /// No actor: the handler may spawn a child of the type of the sending's kind (ADR-0022).
-    Spawned,
     /// The actor at the typed path whose last segment this is, found as each piece of mail is sent (ADR-0022).
     Path(&'static TypeSegment),
 }

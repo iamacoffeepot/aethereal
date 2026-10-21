@@ -294,7 +294,7 @@
 //! ready(PhantomData::<(Lighthouse, (Querent, ()))>);
 //! ```
 
-use crate::{Actor, Asks, ChildOf, Handles, Path, Protocol, Spawns, Tells, ToAny, ToSender, ToType};
+use crate::{Actor, Asks, ChildOf, Handles, Path, Protocol, Tells, ToAny, ToSender, ToType};
 use crate::{Handled, Top};
 use aethereal_data::{ActorKey, Instanced, Singleton};
 use core::marker::PhantomData;
@@ -357,8 +357,6 @@ impl<S, T, K> NeedsIn<S, ()> for ToType<T, K> {}
 impl<S, K> NeedsIn<S, ()> for ToSender<K> {}
 
 impl<S, P, K> NeedsIn<S, ()> for ToAny<P, K> {}
-
-impl<S, C> NeedsIn<S, ()> for Spawns<C> {}
 
 impl<S> NeedsIn<S, ()> for () {}
 

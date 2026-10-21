@@ -1,6 +1,6 @@
 //! What an actor handles: one handler for each thing it lists, and the engine's call to the right one (ADR-0013).
 
-use super::{DeclaredBy, Handler, Role, Sends};
+use super::{Declared, DeclaredBy, Handler, Role, Sends};
 use crate::{Actor, Actors, Ended, Fault, Item, Mail, Turn, Turning};
 use aethereal_data::{Decode, Kind, KindId};
 
@@ -76,12 +76,13 @@ pub trait HandledList<A: Actor>: 'static {
     /// Each thing handled, and what its handler may send, as the engine reads them.
     const HANDLERS: &'static [Handler];
 
-    /// Hands `item` to the handler for it: the one for its kind or for endings, else the fallback for mail.
+    /// Hands `item` to the handler for it: the one for its kind or for endings, else the fallback for mail, in a turn
+    /// of an actor whose type declares `declared`.
     ///
     /// # Panics
     ///
     /// Panics when `A` has no handler for `item`: its sender declared a send that `A` does not take (ADR-0013).
-    fn dispatch(actor: &mut A, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault>;
+    fn dispatch(actor: &mut A, item: Item<'_>, turning: Turning<'_>, declared: &'static Declared) -> Result<(), Fault>;
 }
 
 /// What `item` is, as its receiver's handlers are listed.
@@ -114,11 +115,16 @@ macro_rules! tuples {
             const HANDLERS: &'static [Handler] =
                 &[$(Handler::new($name::ROLE, <<A as Handles<$name>>::Sends as Sends>::SENDINGS)),*];
 
-            fn dispatch(actor: &mut A, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
+            fn dispatch(
+                actor: &mut A,
+                item: Item<'_>,
+                turning: Turning<'_>,
+                declared: &'static Declared,
+            ) -> Result<(), Fault> {
                 let role = role(&item);
                 $(
                     if takes($name::ROLE, role) {
-                        let mut turn = turning.declaring::<A, <A as Handles<$name>>::Sends>($name::ROLE);
+                        let mut turn = turning.declaring::<A, <A as Handles<$name>>::Sends>($name::ROLE, declared);
                         return <A as Handles<$name>>::handle(actor, $name::take(item)?, &mut turn);
                     }
                 )*
@@ -126,7 +132,7 @@ macro_rules! tuples {
                 $(
                     let falls_back = $name::ROLE == Role::Others;
                     if is_mail && falls_back {
-                        let mut turn = turning.declaring::<A, <A as Handles<$name>>::Sends>(Role::Others);
+                        let mut turn = turning.declaring::<A, <A as Handles<$name>>::Sends>(Role::Others, declared);
                         return <A as Handles<$name>>::handle(actor, $name::take(item)?, &mut turn);
                     }
                 )*
@@ -155,7 +161,7 @@ tuples! {
 impl<A: Actor> HandledList<A> for () {
     const HANDLERS: &'static [Handler] = &[];
 
-    fn dispatch(_: &mut A, item: Item<'_>, _: Turning<'_>) -> Result<(), Fault> {
+    fn dispatch(_: &mut A, item: Item<'_>, _: Turning<'_>, _: &'static Declared) -> Result<(), Fault> {
         unhandled::<A>(role(&item))
     }
 }

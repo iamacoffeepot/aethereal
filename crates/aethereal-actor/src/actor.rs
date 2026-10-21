@@ -1,8 +1,8 @@
 //! An actor: the calls the engine makes of it (ADR-0009, ADR-0013).
 
 use crate::{
-    Actors, Beginning, Chain, Children, Closing, Declared, DeclaredBy, Ending, Fault, HandledList, Holds, Instances,
-    Item, Puts, Seated, Seats, Sends, Table, Tie, Turning, Within,
+    Actors, Beginning, Chain, ChildOf, Children, Closing, Declared, DeclaredBy, Ending, Fault, HandledList, Holds,
+    Instances, Item, Puts, Seated, Seats, Sends, Table, Tie, Turning, Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
 use alloc::boxed::Box;
@@ -167,7 +167,7 @@ pub struct Peeked<'a> {
     pub tie: Tie,
 }
 
-impl<A: Actor> Runs for A {
+impl<A: ChildOf> Runs for A {
     fn declared(&self) -> &'static Declared {
         Declared::of::<A>()
     }
@@ -180,7 +180,7 @@ impl<A: Actor> Runs for A {
     fn prepare(&mut self, _: Preparing<'_>) {}
 
     fn turn(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
-        A::Handles::dispatch(self, item, turning)
+        A::Handles::dispatch(self, item, turning, Declared::of::<A>())
     }
 
     fn end(self: Box<Self>, closing: Closing<'_>) -> Result<(), Fault> {

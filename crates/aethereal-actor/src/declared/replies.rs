@@ -1,8 +1,8 @@
 //! What comes back from what an actor sends, which its type must handle: the reply a receiver sends to whoever sent
 //! to it, checked against the sender where the sender declares the send (ADR-0016).
 
-use super::{Allows, Carries, Handled, Handles, Protocol, Spawns, Tells, ToAny, ToSender, ToType};
-use crate::{Actor, Admits, ChildOf, Path, PathTo};
+use super::{Allows, Carries, Handled, Handles, Protocol, Tells, ToAny, ToSender, ToType};
+use crate::{Actor, ChildOf, Path, PathTo};
 use aethereal_data::Kind;
 
 /// These sends, a tuple of markers, may be declared by an actor of type `A`: what a type's sends are bounded by, so
@@ -376,9 +376,6 @@ impl<A, L: ChildOf + PathTo + Handles<K>, K: Kind + Handled> DeclaredBy<A> for T
 {
 }
 
-/// A spawner spawns only a type that may stand beneath it.
-impl<A, C: ChildOf> DeclaredBy<A> for Spawns<C> where C::Parent: Admits<A, C> {}
-
 /// A named protocol says what each of its kinds is answered with.
 impl<A, P: Protocol + Carries<K>, K: Kind> DeclaredBy<A> for ToAny<P, K> where <P as Carries<K>>::Answers: HandledBy<A> {}
 
@@ -390,8 +387,6 @@ impl<A: Handles<K>, K: Kind + Handled> RepliesTo<A> for ToSender<K> {}
 impl<A, T, K> RepliesTo<A> for ToType<T, K> {}
 
 impl<A, P, K> RepliesTo<A> for ToAny<P, K> {}
-
-impl<A, C> RepliesTo<A> for Spawns<C> {}
 
 impl<A, T, K> RepliesTo<A> for Tells<T, K> {}
 
@@ -419,8 +414,6 @@ impl<Answers, T, K> ReplyWithin<Answers, ()> for ToType<T, K> {}
 
 impl<Answers, P, K> ReplyWithin<Answers, ()> for ToAny<P, K> {}
 
-impl<Answers, C> ReplyWithin<Answers, ()> for Spawns<C> {}
-
 impl<Answers, T, K> ReplyWithin<Answers, ()> for Tells<T, K> {}
 
 impl<Answers> RepliesWithin<Answers, ()> for () {}
@@ -430,8 +423,6 @@ impl<A> RepliesWith<A> for ToSender<A> {}
 impl<A, T, K> RepliesWith<A> for ToType<T, K> {}
 
 impl<A, P, K> RepliesWith<A> for ToAny<P, K> {}
-
-impl<A, C> RepliesWith<A> for Spawns<C> {}
 
 impl<A, T, K> RepliesWith<A> for Tells<T, K> {}
 

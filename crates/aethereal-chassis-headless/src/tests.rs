@@ -2,8 +2,7 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Spawns, Time, To, ToType,
-    ToWithoutMail, Turn,
+    Actor, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Time, To, ToType, ToWithoutMail, Turn,
 };
 use aethereal_data::{ActorId, Kind, KindName, PathSegment, Plain, TypedKey};
 use aethereal_substrate::child_id;
@@ -52,7 +51,7 @@ impl Actor for Fan {
     type Config = FanConfig;
     type Key = u64;
     type Handles = (Count,);
-    type BeginSends = (ToType<Self, Count>, Spawns<Self>);
+    type BeginSends = (ToType<Self, Count>,);
     type EndSends = ();
 
     fn begin(config: FanConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -60,7 +59,7 @@ impl Actor for Fan {
         if is_root {
             for number in 1..=config.children {
                 let config = FanConfig { number, children: 0 };
-                if turn.spawn(&number, config).is_ok() {
+                if turn.spawn::<Self>(&number, config).is_ok() {
                     turn.send(ToWithoutMail::ChildInstanced(Self::NAME, number.to_name()), &Count { left: TURNS })?;
                 }
             }

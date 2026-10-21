@@ -17,10 +17,6 @@ pub struct ToSender<K>(PhantomData<fn() -> K>);
 /// `K` is one of `P`'s kinds: a type whose declaration names another does not build (ADR-0016).
 pub struct ToAny<P, K>(PhantomData<fn() -> (P, K)>);
 
-/// A handler may spawn a child of type `C`: only an actor that `C`'s parent admits may declare it, as its build fails
-/// otherwise (ADR-0022).
-pub struct Spawns<C>(PhantomData<fn() -> C>);
-
 /// A handler may send mail of kind `K` to the actor at the typed path `T`, a [`Path<L>`]: only when `L` handles `K`,
 /// as its build fails otherwise (ADR-0022).
 pub struct Tells<T, K>(PhantomData<fn() -> (T, K)>);
@@ -29,10 +25,6 @@ pub struct Tells<T, K>(PhantomData<fn() -> (T, K)>);
 pub trait Marker {
     /// What it declares, as the engine reads it.
     const SENDING: Sending;
-}
-
-impl<C: ChildOf> Marker for Spawns<C> {
-    const SENDING: Sending = Sending::new(KindId::of::<C>(), Target::Spawned);
 }
 
 impl<L: ChildOf + PathTo + Handles<K>, K: Kind + Handled> Marker for Tells<Path<L>, K> {

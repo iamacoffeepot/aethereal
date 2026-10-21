@@ -5,7 +5,7 @@
 //! program reads, by a writer that runs in a constant. A host reads it back as
 //! the plain types here, without making an instance.
 
-use crate::{Beneath, Declared, Handler, Role, Sending, Target, TypeSegment};
+use crate::{Beneath, Declared, Handler, Role, Sending, Spawner, Target, TypeSegment};
 use aethereal_data::{Keyed, KindId, KindName, Plain};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -19,6 +19,7 @@ pub struct Made {
     pub name: KindName,
     pub id: KindId,
     pub keyed: Key,
+    pub spawner: Spawned,
     pub begins: Vec<Send>,
     pub handlers: Vec<Handles>,
     pub ends: Vec<Send>,
@@ -29,6 +30,15 @@ pub struct Made {
 pub enum Key {
     Singleton,
     Instanced,
+}
+
+/// Who may spawn an actor of a type, as a section holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Spawned {
+    Nobody,
+    Anyone,
+    Own,
+    Type { id: KindId },
 }
 
 /// One send a handler may make, as a section holds it.
@@ -44,7 +54,6 @@ pub enum To {
     Type { name: KindName, id: KindId },
     Sender,
     Handling { kinds: Vec<KindId> },
-    Spawned,
     Path { last: Segment, above: Vec<Segment> },
 }
 
@@ -116,6 +125,16 @@ const fn write(types: &[&Declared], out: &mut [u8]) -> usize {
             Keyed::Singleton => count(out, at, 0),
             Keyed::Instanced => count(out, at, 1),
         };
+        at = match declared.spawner() {
+            Spawner::Nobody => count(out, at, 0),
+            Spawner::Anyone => count(out, at, 1),
+            Spawner::Own => count(out, at, 2),
+            Spawner::Type(type_id) => {
+                let at = count(out, at, 3);
+
+                id(out, at, type_id)
+            }
+        };
         at = sendings(out, at, declared.begins());
         at = handlers(out, at, declared.handlers());
         at = sendings(out, at, declared.ends());
@@ -182,9 +201,8 @@ const fn sendings(out: &mut [u8], at: usize, sendings: &[Sending]) -> usize {
 
                 at
             }
-            Target::Spawned => count(out, at, 3),
             Target::Path(last) => {
-                let mut at = count(out, at, 4);
+                let mut at = count(out, at, 3);
                 at = segment(out, at, last);
                 at = count(out, at, depth(last) - 1);
                 let mut below = last;
@@ -279,8 +297,14 @@ impl Made {
             Key::Singleton => Keyed::Singleton,
             Key::Instanced => Keyed::Instanced,
         };
+        let spawner = match self.spawner {
+            Spawned::Nobody => Spawner::Nobody,
+            Spawned::Anyone => Spawner::Anyone,
+            Spawned::Own => Spawner::Own,
+            Spawned::Type { id } => Spawner::Type(id),
+        };
         let begins = leak_sends(&self.begins);
-        let declared = Declared::new(name.clone(), self.id, keyed, begins, handlers, leak_sends(&self.ends));
+        let declared = Declared::new(name.clone(), self.id, keyed, spawner, begins, handlers, leak_sends(&self.ends));
 
         Box::leak(Box::new(declared))
     }
@@ -293,7 +317,6 @@ fn leak_sends(sends: &[Send]) -> &'static [Sending] {
             To::Type { name, id } => Target::Type(Box::leak(Box::new(name.clone())), *id),
             To::Sender => Target::Sender,
             To::Handling { kinds } => Target::Handling(Box::leak(kinds.clone().into_boxed_slice())),
-            To::Spawned => Target::Spawned,
             To::Path { last, above } => Target::Path(leak_path(last, above)),
         };
 
