@@ -104,7 +104,7 @@ impl Actor for Window {
         let lights = lights.into_iter().map(|light| turn.take(light)).collect::<Result<_, _>>()?;
         for text in orders {
             let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Order { text })?;
+            turn.send(ToWithoutMail::Held(me.erase()), &Order { text })?;
         }
 
         Ok(Self { number, pointers, lights })
@@ -119,7 +119,7 @@ impl Handles<Moved> for Window {
     type Sends = ();
 
     fn handle(&mut self, moved: Moved, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        let is_from_me = turn.sender() == turn.me();
+        let is_from_me = turn.sender() == turn.me().erase();
         let chain = turn.chain();
         let is_first = chain.depth == 0 && chain.root.sender == turn.me().id();
         say(format!("{} moved {} from me {is_from_me} first {is_first}", self.number, moved.x));
@@ -366,7 +366,7 @@ impl Actor for Windows {
         controller.push(Make::Window(String::from("b")));
         for text in orders {
             let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Order { text })?;
+            turn.send(ToWithoutMail::Held(me.erase()), &Order { text })?;
         }
 
         Ok(Self { control })

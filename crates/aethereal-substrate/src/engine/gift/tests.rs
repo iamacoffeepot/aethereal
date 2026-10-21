@@ -136,7 +136,7 @@ impl Actor for Keeper {
         say(format!("{number} began with {}", taken.len()));
         for text in orders {
             let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Order { text })?;
+            turn.send(ToWithoutMail::Held(me.erase()), &Order { text })?;
         }
 
         Ok(Self { number, lamps: taken })
@@ -202,8 +202,8 @@ impl Handles<Order> for Keeper {
                 let lamps = self.give_all(turn)?;
                 let pass = Pass { lamps };
                 let me = turn.me();
-                let first = turn.send(To::Held(me), &pass).is_ok();
-                let second = turn.send(To::Held(me), &pass).is_ok();
+                let first = turn.send(To::Held(me.erase()), &pass).is_ok();
+                let second = turn.send(To::Held(me.erase()), &pass).is_ok();
                 say(format!("{} sent {first} then {second}", self.number));
             }
             ["fan"] => {

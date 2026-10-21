@@ -261,7 +261,7 @@ impl Actor for Pointer {
                 say(format!("seeker {}", spawned.is_ok()));
             } else {
                 let me = turn.me();
-                turn.send(ToWithoutMail::Held(me), &Order { text })?;
+                turn.send(ToWithoutMail::Held(me.erase()), &Order { text })?;
             }
         }
 
@@ -292,7 +292,7 @@ impl Handles<Order> for Pointer {
             }
             "later" => {
                 let me = turn.me();
-                turn.send(To::Held(me), &Order { text: String::from(rest) })?;
+                turn.send(To::Held(me.erase()), &Order { text: String::from(rest) })?;
             }
             "ask" => {
                 for (at, x) in (0..).zip(xs) {
@@ -452,7 +452,7 @@ impl Actor for Keeper {
             return Err(Fault::new(&Order { text: String::from("no board") })?);
         };
         let me = turn.me();
-        turn.send(ToWithoutMail::Held(me), &Order { text: String::from("ask") })?;
+        turn.send(ToWithoutMail::Held(me.erase()), &Order { text: String::from("ask") })?;
 
         Ok(Self { board })
     }

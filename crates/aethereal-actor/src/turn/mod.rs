@@ -2088,10 +2088,11 @@ impl<Me, S> Turn<'_, Me, S> {
         self.seat.table.now()
     }
 
-    /// A reference to this actor.
+    /// A reference to this actor, typed by its type: what it hands others to send to it, or looks beneath for a child
+    /// of its own (ADR-0022).
     #[must_use]
-    pub const fn me(&self) -> ErasedActorRef {
-        self.seat.me()
+    pub const fn me(&self) -> ActorRef<Me> {
+        ActorRef::new(self.seat.me().seated())
     }
 
     /// The source of the item being handled: the sender of mail, or the actor that ended.
@@ -2561,10 +2562,11 @@ impl<Me, S> Beginning<'_, Me, S> {
         self.seat.table.now()
     }
 
-    /// A reference to this actor.
+    /// A reference to this actor, typed by its type: what it hands others to send to it, or looks beneath for a child
+    /// of its own (ADR-0022).
     #[must_use]
-    pub const fn me(&self) -> ErasedActorRef {
-        self.seat.me()
+    pub const fn me(&self) -> ActorRef<Me> {
+        ActorRef::new(self.seat.me().seated())
     }
 
     /// A reference to the live actor `path` names, as of the step's start.
@@ -2833,10 +2835,11 @@ impl<Me, S> Ending<'_, Me, S> {
         self.seat.table.now()
     }
 
-    /// A reference to this actor.
+    /// A reference to this actor, typed by its type: what it hands others to send to it, or looks beneath for a child
+    /// of its own (ADR-0022).
     #[must_use]
-    pub const fn me(&self) -> ErasedActorRef {
-        self.seat.me()
+    pub const fn me(&self) -> ActorRef<Me> {
+        ActorRef::new(self.seat.me().seated())
     }
 
     /// A reference to the live actor `path` names, as of the step's start.

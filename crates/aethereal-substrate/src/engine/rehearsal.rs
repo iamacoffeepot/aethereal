@@ -34,7 +34,7 @@ impl Actor for Echo {
 
     fn begin(_: Again, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let me = turn.me();
-        turn.send(ToWithoutMail::Held(me), &Again)?;
+        turn.send(ToWithoutMail::Held(me.erase()), &Again)?;
 
         Ok(Self)
     }
@@ -49,7 +49,7 @@ impl Handles<Again> for Echo {
 
     fn handle(&mut self, _: Again, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let me = turn.me();
-        turn.send(To::Held(me), &Again)?;
+        turn.send(To::Held(me.erase()), &Again)?;
 
         Ok(())
     }

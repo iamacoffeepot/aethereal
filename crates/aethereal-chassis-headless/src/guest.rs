@@ -2261,7 +2261,7 @@ mod tests {
 
         fn begin(questioner: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Volley { pings: 2 })?;
+            turn.send(ToWithoutMail::Held(me.erase()), &Volley { pings: 2 })?;
 
             Ok(questioner)
         }
@@ -2367,7 +2367,7 @@ mod tests {
 
         fn begin(petitioning: Petitioning, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Volley { pings: 2 })?;
+            turn.send(ToWithoutMail::Held(me.erase()), &Volley { pings: 2 })?;
 
             Ok(Self { petitioning })
         }
@@ -2872,7 +2872,7 @@ mod tests {
                 return Err(Fault::new(&Doom)?);
             };
             let me = turn.me();
-            turn.send(ToWithoutMail::Held(me), &Lend)?;
+            turn.send(ToWithoutMail::Held(me.erase()), &Lend)?;
 
             Ok(Self { nester })
         }
