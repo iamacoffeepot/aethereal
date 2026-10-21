@@ -4,8 +4,9 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
-use aethereal_chassis_browser::{Browser, Performance, open};
+use aethereal_chassis_browser::{Browser, Performance, open, renderer};
 use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_render::Renderer;
 use aethereal_render::instances::{CreateInstances, Instanced, InstancesId, WriteInstances};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::placement::{Bind, Drawn, Place, Placed, Resource};
@@ -13,7 +14,6 @@ use aethereal_render::program::{
     Binding, BindingKind, Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
-use aethereal_render::{Renderer, RendererConfig};
 use aethereal_substrate::Engine;
 use core::cell::RefCell;
 use core::f32::consts::TAU;
@@ -50,15 +50,15 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
-    let gpu = setup.hand(gpu);
+    let (rendering, mappings) = renderer(&mut setup, gpu);
     let engine = setup
-        .add_root::<Renderer>(&(), RendererConfig { gpu })
+        .add_root::<Renderer>(&(), rendering)
         .map_err(|refused| JsError::new(&format!("the renderer did not begin: {refused:?}")))?
         .add_root::<Drawer>(&(), Nothing)
         .map_err(|refused| JsError::new(&format!("the drawer did not begin: {refused:?}")))?
         .ready();
 
-    Ok(Program { browser: Browser::new(engine, Performance) })
+    Ok(Program { browser: Browser::new(engine, Performance, mappings) })
 }
 
 #[wasm_bindgen]

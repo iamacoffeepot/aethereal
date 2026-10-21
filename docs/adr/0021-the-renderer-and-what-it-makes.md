@@ -20,7 +20,7 @@ This record decides how actors make what is drawn: the first piece of the render
 
 ## Decision
 
-**One capability, the render root, owns the GPU.** It is the root the chassis hands `Gpu` to, and the only actor that touches the device, its queue, or the surface (ADR-0019: a capability fronts one host system). Every other actor, native or a guest, reaches the GPU by asking the render root.
+**One capability, the render root, owns the GPU.** It is the root the chassis hands `Gpu` to, with a controller and a source for the work it waits on the host for (ADR-0023), and the only actor that touches the device, its queue, or the surface (ADR-0019: a capability fronts one host system). Every other actor, native or a guest, reaches the GPU by asking the render root.
 
 **An actor makes a mesh, a texture, or a program by asking for it.** Each is answered with the resource's id or a refusal that says why (ADR-0017: `turn.to(target).ask`, `Answer`):
 
