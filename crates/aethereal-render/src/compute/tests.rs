@@ -50,7 +50,7 @@ fn rewritten(from: &str, to: &str) -> CreateCompute {
 
 /// What the check answers `compute`, under the limits every WebGPU device has.
 fn checked(compute: &CreateCompute) -> Result<[u32; 3], ProgramRefused> {
-    check(compute, &wgpu::Limits::default())
+    check(compute, &wgpu::Limits::default()).map(|checked| checked.workgroup)
 }
 
 #[test]
@@ -62,6 +62,22 @@ fn a_compute_stage_is_made_with_the_workgroup_size_its_shader_declares() {
 
     assert_eq!(checked(&compute()), Ok([64, 1, 1]));
     assert_eq!(checked(&constant), Ok([8, 8, 1]));
+}
+
+#[test]
+fn each_storage_ending_in_an_array_is_read_with_its_fixed_part_and_stride() {
+    // Catches the elements of storage counted from its listed bytes or from the array's element size rather than its
+    // stride, or the fixed part before the array left out: a dispatch of one invocation for each element would run
+    // too few or too many. The field's count is padded to the particles' alignment of 16; the pull is all array.
+    let Ok(checked) = check(&compute(), &wgpu::Limits::default()) else {
+        panic!("the compute program is made");
+    };
+
+    assert_eq!(
+        checked.arrays,
+        [Array { group: 0, binding: 1, fixed: 16, stride: 32 }, Array { group: 0, binding: 2, fixed: 0, stride: 16 }]
+    );
+    assert_eq!(checked.arrays[0].elements(16 + 32 * 100 + 8), 100);
 }
 
 #[test]

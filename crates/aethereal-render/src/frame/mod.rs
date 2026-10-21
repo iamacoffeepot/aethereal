@@ -1,6 +1,6 @@
 //! Frames: an ordered list of passes over the textures they draw into, made once, checked whole, and run at every
-//! `Render` (ADR-0025). Until an actor makes one, each window's main frame is the renderer's own: one pass,
-//! [`Main`](crate::pass::Main), onto the window with depth.
+//! `Render` (ADR-0025). Until an actor makes one, each window's main frame is the renderer's own: a compute pass,
+//! [`Compute`](crate::pass::Compute), then one pass, [`Main`](crate::pass::Main), onto the window with depth.
 
 pub mod builder;
 mod order;
@@ -12,7 +12,7 @@ pub(crate) use order::{ordered, reaches};
 pub use builder::FrameBuilder;
 
 use crate::effect::Read;
-use crate::pass::{Main, Pass, PassName};
+use crate::pass::{Compute, Main, Pass, PassName};
 use crate::placement::{self, Bind, Finds, JoinRefused};
 use crate::program::{Binding, ProgramId};
 use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
@@ -129,6 +129,10 @@ pub enum Does {
     /// binding what `bindings` names in the groups after the first. It begins from what `into` holds when an earlier
     /// pass wrote it, and from black when none did.
     Effect { program: ProgramId, reads: Vec<Target>, into: Target, bindings: Vec<Bind> },
+    /// The dispatches that join it run, and it draws into nothing: what they write is read by the passes after it in
+    /// the same `Render`, and by those before it as written at the last (ADR-0026). It is never a frame's last pass,
+    /// as the last writes the frame's end.
+    Compute,
 }
 
 impl Kind for Does {
@@ -251,32 +255,29 @@ impl Kind for PassRefused {
 }
 
 impl CreateFrame {
-    /// The renderer's own main frame of `window`: one pass, [`Main`], onto the window, writing a depth it clears to
-    /// the far plane, as ADR-0023's one pass was.
+    /// The renderer's own main frame of `window`: a compute pass, [`Compute`], which every dispatch that joins it runs
+    /// in, then one pass, [`Main`], onto the window, writing a depth it clears to the far plane, as ADR-0023's one
+    /// pass was (ADR-0026).
     #[must_use]
     pub fn own(window: WindowId) -> Self {
+        let compute = PassSpec { name: PassName::of::<Compute>(), does: Does::Compute };
         let main = PassSpec {
             name: PassName::of::<Main>(),
             does: Does::Draw { into: Target::End, depth: DepthUse::Write(0), load: Load::Clear },
         };
 
-        Self { ends: Ends::Window(window), targets: vec![TargetSpec::Depth], passes: vec![main] }
+        Self { ends: Ends::Window(window), targets: vec![TargetSpec::Depth], passes: vec![compute, main] }
     }
 
-    /// The shape of each pass, in order, for a frame whose end is of `end`, as its check let through.
-    pub(crate) fn shapes(&self, end: ColourFormat) -> Vec<Shape> {
-        self.passes
-            .iter()
-            .map(|pass| {
-                let (into, depth) = match &pass.does {
-                    Does::Draw { into, depth: DepthUse::Off, .. } | Does::Effect { into, .. } => {
-                        (*into, DepthFormat::None)
-                    }
-                    Does::Draw { into, .. } => (*into, DepthFormat::Depth32Float),
-                };
-                Shape { colour: self.colour(into, end).unwrap_or(end), samples: Samples::One, depth }
-            })
-            .collect()
+    /// The shape of a pass that draws into `into`, using depth as `depth` says, in a frame whose end is of `end`, as
+    /// its check let through. An effect uses no depth.
+    pub(crate) fn shape(&self, into: Target, depth: DepthUse, end: ColourFormat) -> Shape {
+        let depth = match depth {
+            DepthUse::Off => DepthFormat::None,
+            DepthUse::Write(_) | DepthUse::Test(_) => DepthFormat::Depth32Float,
+        };
+
+        Shape { colour: self.colour(into, end).unwrap_or(end), samples: Samples::One, depth }
     }
 
     /// The colour format `target` is drawn in, the end being of `end`: none for a depth target, or one past the last.
@@ -344,7 +345,7 @@ pub(crate) fn check(create: &CreateFrame, kept: &impl Holds) -> Result<(), Frame
         }
         check_pass(create, &pass.does, end, &mut written, kept).map_err(|why| FrameRefused::Pass { pass: at, why })?;
     }
-    let ends = create.passes.last().is_some_and(|last| last.does.writes() == Target::End);
+    let ends = create.passes.last().is_some_and(|last| last.does.writes() == Some(Target::End));
     if !ends {
         return Err(FrameRefused::Unended);
     }
@@ -377,11 +378,12 @@ impl Written {
 }
 
 impl Does {
-    /// What the pass draws into.
+    /// What the pass draws into: none for a compute pass, which draws into nothing.
     #[must_use]
-    pub const fn writes(&self) -> Target {
+    pub const fn writes(&self) -> Option<Target> {
         match self {
-            Self::Draw { into, .. } | Self::Effect { into, .. } => *into,
+            Self::Draw { into, .. } | Self::Effect { into, .. } => Some(*into),
+            Self::Compute => None,
         }
     }
 }
@@ -395,7 +397,10 @@ fn check_pass(
     written: &mut Written,
     kept: &impl Holds,
 ) -> Result<(), PassRefused> {
-    let into = does.writes();
+    let Some(into) = does.writes() else {
+        // A compute pass reads and writes no target: its dispatches are checked as they join it.
+        return Ok(());
+    };
     let colour = colour_of(create, into, end)?;
     match does {
         Does::Draw { depth, load, .. } => {
@@ -441,6 +446,7 @@ fn check_pass(
             }
             placement::check_bindings(bindings, effect.bindings, kept).map_err(|why| PassRefused::Bindings { why })?;
         }
+        Does::Compute => {}
     }
     written.write(into);
 

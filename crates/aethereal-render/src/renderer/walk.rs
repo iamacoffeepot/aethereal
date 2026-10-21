@@ -1,20 +1,19 @@
-//! A frame as the renderer walks it at each `Render`: its description, the shape of each pass, what each pass does,
-//! made, and its targets made at the size of its end.
+//! A frame as the renderer walks it at each `Render`: its description, what each pass does, made, with the shape of
+//! each pass that draws, and its targets made at the size of its end.
 
 use crate::frame::{CreateFrame, DepthUse, Does, Load, PassRefused, Target, TargetSpec};
 use crate::pass::PassName;
 use crate::placement::Resource;
 use crate::shape::{ColourFormat, Shape};
 
-/// A frame, checked and made: what it does, where it ends, the shape of each of its passes, what each pass does with
-/// what it was made with, the textures its effects bind, and its targets, each the size of its end as it was last
-/// drawn.
+/// A frame, checked and made: what it does, where it ends, what each pass does with what it was made with, the
+/// textures and the storage its effects bind, and its targets, each the size of its end as it was last drawn.
 pub(super) struct Walk {
     create: CreateFrame,
     end: End,
-    shapes: Vec<Shape>,
     steps: Vec<Step>,
     binds: Vec<u64>,
+    stored: Vec<(PassName, u64)>,
     targets: Vec<wgpu::TextureView>,
     width: u32,
     height: u32,
@@ -27,12 +26,14 @@ pub(super) enum End {
     Texture { texture: u64, view: wgpu::TextureView },
 }
 
-/// What one pass does, made.
+/// What one pass does, made, with the shape of a pass that draws.
 pub(super) enum Step {
     /// The placements that join it draw into `into`, using depth as `depth` says, beginning from what `load` says.
-    Draw { into: Target, depth: DepthUse, load: Load },
+    Draw { into: Target, depth: DepthUse, load: Load, shape: Shape },
     /// An effect drawn over the whole of its target.
-    Effect(Effected),
+    Effect { effect: Effected, shape: Shape },
+    /// The dispatches that join it run, and it draws into nothing.
+    Compute,
 }
 
 /// An effect pass, made: the effect's pipeline, the targets it reads and the bind group they are bound in, made again
@@ -48,8 +49,8 @@ pub(super) struct Effected {
     pub load: Load,
 }
 
-/// What a pass is made from as the frame is made: what it does, whether an earlier pass wrote what it draws into, and
-/// the frame's targets.
+/// What an effect pass is made from as the frame is made: what it does, whether an earlier pass wrote what it draws
+/// into, and the frame's targets.
 #[derive(Clone, Copy)]
 pub(super) struct Making<'a> {
     pub does: &'a Does,
@@ -59,38 +60,56 @@ pub(super) struct Making<'a> {
 
 impl Walk {
     /// The frame `create`, which ends on `end`, of `format` and `width` by `height`, its targets made at that size and
-    /// each pass made by `step`: refused as `step` refuses a pass, at its place.
+    /// each effect pass made by `effect`: refused as `effect` refuses a pass, at its place.
     pub fn new(
         device: &wgpu::Device,
         create: CreateFrame,
         (end, format): (End, ColourFormat),
         (width, height): (u32, u32),
-        mut step: impl FnMut(Making<'_>) -> Result<Step, PassRefused>,
+        mut effect: impl FnMut(Making<'_>) -> Result<Effected, PassRefused>,
     ) -> Result<Self, (u32, PassRefused)> {
-        let shapes = create.shapes(format);
         let targets = made(device, &create.targets, width, height);
         let mut written: Vec<Target> = Vec::new();
         let mut steps = Vec::with_capacity(create.passes.len());
         for (pass, at) in create.passes.iter().zip(0..) {
-            let into = pass.does.writes();
-            let making = Making { does: &pass.does, written: written.contains(&into), targets: &targets };
-            steps.push(step(making).map_err(|why| (at, why))?);
-            written.push(into);
+            let step = match &pass.does {
+                Does::Draw { into, depth, load } => {
+                    Step::Draw { into: *into, depth: *depth, load: *load, shape: create.shape(*into, *depth, format) }
+                }
+                Does::Effect { into, .. } => {
+                    let making = Making { does: &pass.does, written: written.contains(into), targets: &targets };
+                    let made = effect(making).map_err(|why| (at, why))?;
+                    Step::Effect { effect: made, shape: create.shape(*into, DepthUse::Off, format) }
+                }
+                Does::Compute => Step::Compute,
+            };
+            steps.push(step);
+            written.extend(pass.does.writes());
         }
-        let binds = create
+        let bound: Vec<(PassName, Resource)> = create
             .passes
             .iter()
             .flat_map(|pass| match &pass.does {
-                Does::Effect { bindings, .. } => bindings.as_slice(),
-                Does::Draw { .. } => &[],
+                Does::Effect { bindings, .. } => bindings.iter().map(|bind| (pass.name, bind.to)).collect(),
+                Does::Draw { .. } | Does::Compute => Vec::new(),
             })
-            .filter_map(|bind| match bind.to {
+            .collect();
+        let binds = bound
+            .iter()
+            .filter_map(|(_, to)| match to {
                 Resource::Texture(texture) => Some(texture.id),
                 Resource::Uniforms(_) | Resource::Storage(_) | Resource::Sampler(_) => None,
             })
             .collect();
+        let stored = bound
+            .iter()
+            .filter_map(|(pass, to)| match to {
+                Resource::Storage(storage) => Some((*pass, storage.id)),
+                Resource::Uniforms(_) | Resource::Texture(_) | Resource::Sampler(_) => None,
+            })
+            .collect();
 
-        Ok(Self { create, end, shapes, steps, binds, targets, width, height })
+        Ok(Self { create, end, steps, binds, stored, targets, width, height })
     }
 
     /// The texture it ends on, by its id: none for a frame that ends on a window.
@@ -114,25 +133,33 @@ impl Walk {
         &self.binds
     }
 
+    /// The storage its effects bind, by its id, each beside the pass that binds it, which reads it.
+    pub fn stored(&self) -> &[(PassName, u64)] {
+        &self.stored
+    }
+
     /// How many passes it runs.
     pub fn passes(&self) -> u32 {
         // A frame's passes are a handful, far below what a `u32` counts.
         u32::try_from(self.steps.len()).unwrap_or(u32::MAX)
     }
 
-    /// Each pass in the order it runs: its name, its shape, and what it does, made.
-    pub fn steps(&self) -> impl Iterator<Item = (PassName, Shape, &Step)> {
-        self.create
-            .passes
-            .iter()
-            .zip(&self.shapes)
-            .zip(&self.steps)
-            .map(|((pass, shape), step)| (pass.name, *shape, step))
+    /// Each pass in the order it runs: its name, and what it does, made.
+    pub fn steps(&self) -> impl Iterator<Item = (PassName, &Step)> {
+        self.create.passes.iter().zip(&self.steps).map(|(pass, step)| (pass.name, step))
     }
 
-    /// The shape of the pass `name`: none when it has no such pass.
+    /// The shape of the pass `name`: none when it has no such pass, or it is a compute pass, which draws into nothing.
     pub fn shape_of(&self, name: PassName) -> Option<Shape> {
-        self.steps().find(|(pass, ..)| *pass == name).map(|(_, shape, _)| shape)
+        match self.steps().find(|(pass, _)| *pass == name)? {
+            (_, Step::Draw { shape, .. } | Step::Effect { shape, .. }) => Some(*shape),
+            (_, Step::Compute) => None,
+        }
+    }
+
+    /// Whether it has a compute pass `name`.
+    pub fn computes(&self, name: PassName) -> bool {
+        self.steps().any(|(pass, step)| pass == name && matches!(step, Step::Compute))
     }
 
     /// The target at `at`, which its check found among its targets.
@@ -150,7 +177,7 @@ impl Walk {
         self.targets = made(device, &self.create.targets, width, height);
         (self.width, self.height) = (width, height);
         for step in &mut self.steps {
-            if let Step::Effect(effect) = step {
+            if let Step::Effect { effect, .. } = step {
                 effect.read = read_group(device, &effect.layout, &effect.reads, &self.targets);
             }
         }

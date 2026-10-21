@@ -3,6 +3,7 @@
 //! so nothing it draws can fail.
 
 pub mod compute;
+pub mod dispatch;
 pub mod effect;
 pub mod frame;
 mod gpu;

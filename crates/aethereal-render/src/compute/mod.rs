@@ -7,7 +7,7 @@ mod tests;
 use crate::program::{Binding, ProgramRefused, Stage, check_bindings, check_uses, entry, listed, parsed};
 use aethereal_data::{Kind, KindName, Plain};
 use naga::valid::ModuleInfo;
-use naga::{AddressSpace, Module};
+use naga::{AddressSpace, ArraySize, Handle, Module, Type, TypeInner};
 
 /// Asks the renderer for a compute program: the compute stage `entry` of the WGSL `wgsl`, binding what `bindings`
 /// lists, storage to read or to write. Answered with [`Computed`].
@@ -46,24 +46,80 @@ impl Kind for Computed {
     const NAME: KindName = KindName::new("aether.render.computed");
 }
 
+/// What a compute program's check reads of its shader: the size of its workgroups, which a dispatch counts the
+/// workgroups it runs by, and each storage buffer it uses whose type ends in an array whose length is its buffer's,
+/// which a dispatch of one invocation for each element counts its elements by (ADR-0026).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checked {
+    pub workgroup: [u32; 3],
+    pub arrays: Vec<Array>,
+}
+
+/// A storage buffer whose type ends in an array whose length is its buffer's (`array<T>`): where it is bound, the
+/// bytes before the array, and the stride of the array's elements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Array {
+    pub group: u32,
+    pub binding: u32,
+    pub fixed: u32,
+    pub stride: u32,
+}
+
+impl Array {
+    /// How many elements the array holds in storage of `bytes`, which is at least what the binding reads: those that
+    /// fit past its fixed part.
+    #[must_use]
+    pub const fn elements(self, bytes: u32) -> u32 {
+        bytes.saturating_sub(self.fixed) / self.stride
+    }
+}
+
 /// Checks a compute program before it is made: that its WGSL is a valid module whose entry point is a compute stage,
 /// binding only what `bindings` lists, each as it is listed, within `limits`, and running workgroups no larger than
-/// `limits` lets one be, in invocations and in workgroup memory. Answers the size of its workgroups.
+/// `limits` lets one be, in invocations and in workgroup memory. Answers the size of its workgroups, and the storage
+/// it uses that ends in an array whose length is its buffer's.
 ///
 /// # Errors
 ///
 /// Why it would not be made as asked.
-pub fn check(create: &CreateCompute, limits: &wgpu::Limits) -> Result<[u32; 3], ProgramRefused> {
+pub fn check(create: &CreateCompute, limits: &wgpu::Limits) -> Result<Checked, ProgramRefused> {
     check_bindings(&create.bindings, 0, limits)?;
 
     let (module, info) = parsed(&create.wgsl)?;
     let at = entry(&module, Stage::Compute, &create.entry)?;
     check_uses(&module, &info, at, |group, binding| listed(&create.bindings, group, binding))?;
-    let size = module.entry_points[at].workgroup_size;
-    check_workgroup(size, limits)?;
+    let workgroup = module.entry_points[at].workgroup_size;
+    check_workgroup(workgroup, limits)?;
     check_workgroup_memory(&module, &info, at, limits)?;
+    let uses = info.get_entry_point(at);
+    let arrays = module
+        .global_variables
+        .iter()
+        .filter(|(handle, global)| matches!(global.space, AddressSpace::Storage { .. }) && !uses[*handle].is_empty())
+        .filter_map(|(_, global)| {
+            let place = global.binding.as_ref()?;
+            let (fixed, stride) = ends_in_array(&module, global.ty)?;
+            Some(Array { group: place.group, binding: place.binding, fixed, stride })
+        })
+        .collect();
 
-    Ok(size)
+    Ok(Checked { workgroup, arrays })
+}
+
+/// Where the array whose length is its buffer's that `ty` ends in begins, and its stride: the type itself, or the
+/// last member of a struct. None when it ends in no such array.
+fn ends_in_array(module: &Module, ty: Handle<Type>) -> Option<(u32, u32)> {
+    let runtime = |ty: Handle<Type>| match module.types[ty].inner {
+        TypeInner::Array { size: ArraySize::Dynamic, stride, .. } => Some(stride),
+        _ => None,
+    };
+    match &module.types[ty].inner {
+        TypeInner::Struct { members, .. } => {
+            let last = members.last()?;
+            Some((last.offset, runtime(last.ty)?))
+        }
+        _ => Some((0, runtime(ty)?)),
+    }
 }
 
 /// Checks that a workgroup of `size` invocations along each dimension is one the GPU runs: no more along each than it
