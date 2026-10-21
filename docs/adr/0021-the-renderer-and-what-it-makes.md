@@ -32,6 +32,7 @@ CreateProgram {
     vertex: String,                     // the vertex stage's entry point
     fragment: String,                   // the fragment stage's entry point
     layout: VertexLayout,               // the vertex buffer it reads: stride, and each attribute's location, format, offset
+    instances: PerInstance,             // what it reads once per instance: nothing, or a record laid out so (ADR-0023)
     bindings: Vec<Binding>,             // what it binds, by group and binding: a uniform block of a size, a texture, a sampler
     state: Fixed,                       // blending (opaque, alpha, additive), depth (off, test, test and write), culling
 }                                                                                     -> Made<ProgramId> | Refused
@@ -39,7 +40,7 @@ Release { id }                                                                  
 ```
 
 - **A program is the compiled code and its fixed state:** one render pipeline. It is the costly thing to make and what draws are batched by.
-- **A material, a program with the values it is drawn with, is not made yet.** It is one bind group over a program, the cheap thing there are many of, and is added when objects that share a program first need different textures. Until then a program's values come through its uniforms.
+- **A material, a program with the values it is drawn with, is not made on its own.** It is one bind group over a program, the cheap thing there are many of. A placement names what its program binds and its bind groups are made with it (ADR-0023), so each placement carries a material of its own; one that many placements share is added when sharing first needs it.
 - **The bytes travel as blobs** (ADR-0014), so a mesh is not copied through mail. The render root reads them in its turn (`Turn::read`) and uploads them in the same turn, with `Queue::write_buffer` and `Queue::write_texture`. In a browser those calls hand the bytes to the GPU process and return.
 
 **Everything is checked when it is made, and nothing when it is drawn.** A resource that is made can be drawn:
@@ -67,10 +68,10 @@ Release { id }                                                                  
 - naga is linked into the render root's build. In a browser that makes the module larger: the make example's module grew from 636 KB (199 KB gzipped) to 2.06 MB (638 KB gzipped) with its WGSL front end and validator. Without it the browser checks WGSL itself, but reports through a promise, after the turn, and cannot check a shader against the layout and bindings it was made with before a pipeline uses them.
 - Uploads happen in the turn that makes a resource, so a turn that makes much uploads much. Spreading them over the frames before first use (the earlier engine's ADR-0251) is follow-on work, once content streams in.
 - What is decided separately, each when it is needed:
-  - **How actors say what is drawn each frame.** One choice is mail to the render root for each change; another is an effect each actor leaves, folded into a view the render root reads at `Render` (ADR-0011), which would be the first view outside the engine's own. This is the next record.
+  - **How actors say what is drawn each frame:** placements, instances, and uniforms, kept on the render root and changed by mail (ADR-0023).
   - **The frame's passes and effects:** a scene pass into a texture, effect passes over it, the last onto the canvas (the earlier engine's ADR-0170 pass graph).
   - **Storage buffers and compute programs,** for content made on the GPU.
-  - **Materials,** as above.
+  - **Materials** shared by many placements, as above.
   - **A lost device**, through the capability's controller (ADR-0019).
 
 ## Alternatives considered
