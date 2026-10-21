@@ -44,8 +44,19 @@ impl PassName {
     }
 }
 
-/// The one pass of the renderer's own main frame of each window: everything drawn onto the window until an actor makes
-/// a main frame of its own (ADR-0023, ADR-0025).
+/// The compute pass of the renderer's own main frame of each window, before [`Main`]: every dispatch that joins it runs
+/// there, so what it writes is drawn in `Main` in the same `Render` (ADR-0026).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub struct Compute;
+
+impl Kind for Compute {
+    const NAME: KindName = KindName::new("aether.render.compute");
+}
+
+impl Pass for Compute {}
+
+/// The pass of the renderer's own main frame of each window that draws: everything drawn onto the window until an
+/// actor makes a main frame of its own (ADR-0023, ADR-0025).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub struct Main;
 

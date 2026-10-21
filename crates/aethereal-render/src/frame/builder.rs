@@ -359,6 +359,13 @@ impl FrameBuilder {
         out
     }
 
+    /// A compute pass, `P`, which runs every dispatch that joins it and draws into nothing: what they write is read by
+    /// the passes after it in the same `Render` (ADR-0026). It is never the frame's last, as [`finish`](Self::finish)
+    /// takes the pass that writes the end.
+    pub fn compute<P: Pass>(&mut self, _: P) {
+        self.add::<P>(Does::Compute);
+    }
+
     /// A pass, `P`, drawing `effect` over a new target of `K`. Answers the target.
     pub fn effect<P: Pass, R: Reads, K: Colour>(&mut self, _: P, effect: Effect<R>, _: K) -> Target<K> {
         let into = next(&mut self.targets, K::SPEC);

@@ -3,7 +3,8 @@
 mod walk;
 
 use crate::Gpu;
-use crate::compute::{self, ComputeId, Computed, CreateCompute};
+use crate::compute::{self, Array, ComputeId, Computed, CreateCompute};
+use crate::dispatch::{self, Computes, CreateDispatch, DispatchId, DispatchRefused, Dispatched, Dispatches, Use};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
 use crate::frame::{
     self, CreateFrame, DepthUse, Does, ENDS_IN, EffectReads, Ends, Frame, FrameId, FrameRefused, Framed, Holds, Load,
@@ -86,6 +87,10 @@ impl Carries<CreateCompute> for Renderer {
     type Answers = (Computed,);
 }
 
+impl Carries<CreateDispatch> for Renderer {
+    type Answers = (Dispatched,);
+}
+
 impl Carries<CreateInstances> for Renderer {
     type Answers = (Instanced,);
 }
@@ -140,8 +145,9 @@ impl Kind for RendererConfig {
 }
 
 /// What an actor asks the renderer: to make a mesh, a texture, a program, a compute program, an effect, instances,
-/// uniforms, storage, or a frame, to write instances, uniforms, or storage it made, to place what is drawn, the shape of
-/// a pass it joins, to release what it made, to read back what it draws or storage, or to time what it draws.
+/// uniforms, storage, or a frame, to write instances, uniforms, or storage it made, to place what is drawn or dispatch
+/// what is computed, the shape of a pass it joins, to release what it made, to read back what it draws or storage, or to
+/// time what it draws.
 pub struct Rendering;
 
 impl Protocol for Rendering {
@@ -157,6 +163,7 @@ impl Protocol for Rendering {
         CreateStorage,
         WriteStorage,
         Place,
+        CreateDispatch,
         ShapeOf,
         CreateEffect,
         CreateFrame,
@@ -181,6 +188,10 @@ impl Carries<CreateProgram> for Rendering {
 
 impl Carries<CreateCompute> for Rendering {
     type Answers = (Computed,);
+}
+
+impl Carries<CreateDispatch> for Rendering {
+    type Answers = (Dispatched,);
 }
 
 impl Carries<CreateInstances> for Rendering {
@@ -250,6 +261,7 @@ pub enum Release {
     Uniforms(UniformsId),
     Storage(StorageId),
     Placement(PlacementId),
+    Dispatch(DispatchId),
     Frame(FrameId),
 }
 
@@ -258,8 +270,9 @@ impl Kind for Release {
 }
 
 /// What the renderer has made, and who made each, with the samplers its placements share, the frames that end on
-/// textures in the order they run, `order`, and the window it draws to, `window`, whose surface is of `format`: its
-/// own main frame of it, `own`, and which frame is its main frame, `main`.
+/// textures in the order they run, `order`, the longest side of a texture and the most workgroups along one dimension
+/// the GPU makes and dispatches, and the window it draws to, `window`, whose surface is of `format`: its own main frame
+/// of it, `own`, and which frame is its main frame, `main`.
 struct Kept {
     ids: Ids,
     makers: Makers,
@@ -271,11 +284,13 @@ struct Kept {
     uniforms: Made<Uniforms>,
     storage: Made<Storage>,
     placements: Made<Placement>,
+    dispatches: Made<Dispatching>,
     reads: HashMap<u64, Reading>,
     samplers: HashMap<Sampling, wgpu::Sampler>,
     frames: Made<Walk>,
     order: Vec<u64>,
     longest: u32,
+    most_workgroups: u32,
     window: WindowId,
     format: ColourFormat,
     own: Walk,
@@ -336,14 +351,15 @@ struct Program {
     shape: Shape,
 }
 
-/// A compute program on the GPU: its pipeline, what it binds, the layout of each group it binds in, and the size of its
-/// workgroups, which a dispatch counts the workgroups it runs by (ADR-0026).
-#[expect(dead_code, reason = "a compute program is kept for the dispatches made with it, which read it")]
+/// A compute program on the GPU: its pipeline, what it binds, the layout of each group it binds in, the size of its
+/// workgroups, which a dispatch counts the workgroups it runs by, and the storage it binds that ends in an array whose
+/// length is its buffer's, which a dispatch for each element counts the elements of (ADR-0026).
 struct Compute {
     pipeline: wgpu::ComputePipeline,
     bindings: Vec<Binding>,
     groups: Vec<wgpu::BindGroupLayout>,
     workgroup: [u32; 3],
+    arrays: Vec<Array>,
 }
 
 /// What a program's stages read.
@@ -372,7 +388,8 @@ struct Placement {
 }
 
 /// One pass a placement draws in, with what it draws there with: the program's id, which a pass draws placements
-/// together by, its pipeline and the shape it was made against, and the bind groups made for it.
+/// together by, its pipeline and the shape it was made against, the bind groups made for it, and the textures and
+/// storage they bind, by their ids.
 struct Joined {
     frame: Frame,
     pass: PassName,
@@ -381,6 +398,22 @@ struct Joined {
     pipeline: wgpu::RenderPipeline,
     groups: Vec<wgpu::BindGroup>,
     textures: Vec<u64>,
+    storage: Vec<u64>,
+}
+
+/// One dispatch run at each frame, holding all it runs with, so a frame builds nothing and releasing what it was made
+/// of frees it only once the dispatch goes (ADR-0026): the compute pass it joins, its compute program's id, which a
+/// pass runs dispatches together by, and its pipeline, the bind groups made for it, the workgroups it runs, and the
+/// textures and storage it binds, by their ids, the storage with how it is used.
+struct Dispatching {
+    frame: Frame,
+    pass: PassName,
+    compute: u64,
+    pipeline: wgpu::ComputePipeline,
+    groups: Vec<wgpu::BindGroup>,
+    workgroups: [u32; 3],
+    textures: Vec<u64>,
+    storage: Vec<(u64, Access)>,
 }
 
 /// How many instances a placement draws.
@@ -428,6 +461,7 @@ impl Actor for Renderer {
         CreateStorage,
         WriteStorage,
         Place,
+        CreateDispatch,
         ShapeOf,
         CreateEffect,
         CreateFrame,
@@ -448,7 +482,8 @@ impl Actor for Renderer {
         let opened = turn.open(&mut gpu)?;
         let (window, format) = (opened.window(), opened.format());
         // Made again at the first frame's size, as for each frame of a new size.
-        let own = match Walk::new(opened.device(), CreateFrame::own(window), (End::Window, format), (1, 1), drawn) {
+        let own = match Walk::new(opened.device(), CreateFrame::own(window), (End::Window, format), (1, 1), effectless)
+        {
             Ok(own) => own,
             Err((pass, why)) => return Err(Fault::new(&FrameRefused::Pass { pass, why })?),
         };
@@ -463,11 +498,13 @@ impl Actor for Renderer {
             uniforms: Made::default(),
             storage: Made::default(),
             placements: Made::default(),
+            dispatches: Made::default(),
             reads: HashMap::new(),
             samplers: HashMap::new(),
             frames: Made::default(),
             order: Vec::new(),
             longest: opened.device().limits().max_texture_dimension_2d,
+            most_workgroups: opened.device().limits().max_compute_workgroups_per_dimension,
             window,
             format,
             own,
@@ -782,8 +819,8 @@ impl Handles<CreateCompute> for Renderer {
 
     fn handle(&mut self, create: CreateCompute, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let limits = turn.open(&mut self.gpu)?.device().limits();
-        let workgroup = match compute::check(&create, &limits) {
-            Ok(workgroup) => workgroup,
+        let checked = match compute::check(&create, &limits) {
+            Ok(checked) => checked,
             Err(why) => {
                 turn.reply(&Computed::Refused(why))?;
                 return Ok(());
@@ -791,7 +828,7 @@ impl Handles<CreateCompute> for Renderer {
         };
 
         let gpu = turn.open(&mut self.gpu)?;
-        let made = compute_pipeline(gpu.device(), &create, workgroup);
+        let made = compute_pipeline(gpu.device(), &create, checked);
         let id = self.made(turn, |kept, id, maker| kept.computes.keep(id, maker, made))?;
         turn.reply(&Computed::Made(ComputeId { id }))?;
 
@@ -1008,6 +1045,32 @@ impl Handles<Place> for Renderer {
     }
 }
 
+impl Handles<CreateDispatch> for Renderer {
+    type Sends = (ToSender<Dispatched>,);
+
+    fn handle(&mut self, create: CreateDispatch, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let by = turn.sender().id();
+        let device = turn.open(&mut self.gpu)?.device().clone();
+        let kept = turn.open(&mut self.kept)?;
+        let made =
+            dispatch::check(&create, by, &*kept).and_then(|workgroups| kept.dispatch(&device, &create, workgroups));
+        let made = match made {
+            Ok(made) => made,
+            Err(why) => {
+                turn.reply(&Dispatched::Refused(why))?;
+                return Ok(());
+            }
+        };
+        let id = self.made(turn, |kept, id, maker| {
+            kept.dispatches.keep(id, maker, made);
+            kept.reorder();
+        })?;
+        turn.reply(&Dispatched::Made(DispatchId { id }))?;
+
+        Ok(())
+    }
+}
+
 impl Handles<ShapeOf> for Renderer {
     type Sends = (ToSender<Shaped>,);
 
@@ -1057,13 +1120,19 @@ impl Handles<CreateFrame> for Renderer {
 
         let framed = self.kept_for(turn, |kept, maker| kept.frame(&device, create, maker))?;
         let kept = turn.open(&mut self.kept)?;
-        let undrawn = kept.undrawn();
+        let (undrawn, unrun) = (kept.undrawn(), kept.unrun());
         for (placement, pass) in undrawn {
             turn.log(
                 Level::Warn,
                 format_args!(
                     "placement {placement} is not drawn: the window's main frame has no pass {pass:?} of its shape"
                 ),
+            );
+        }
+        for (dispatch, pass) in unrun {
+            turn.log(
+                Level::Warn,
+                format_args!("dispatch {dispatch} is not run: the window's main frame has no compute pass {pass:?}"),
             );
         }
         turn.reply(&framed.unwrap_or_else(Framed::Refused))?;
@@ -1093,6 +1162,7 @@ impl Handles<Release> for Renderer {
             Release::Uniforms(uniforms) => kept.uniforms.release(uniforms.id, by).map(drop),
             Release::Storage(storage) => kept.storage.release(storage.id, by).map(drop),
             Release::Placement(placement) => kept.placements.release(placement.id, by).map(drop),
+            Release::Dispatch(dispatch) => kept.dispatches.release(dispatch.id, by).map(drop),
             Release::Frame(frame) => {
                 let released = kept.frames.release(frame.id, by);
                 if let Owned::Mine(walk) = &released {
@@ -1130,6 +1200,7 @@ impl Handles<Ended> for Renderer {
             kept.uniforms.release_all(maker);
             kept.storage.release_all(maker);
             kept.placements.release_all(maker);
+            kept.dispatches.release_all(maker);
             let frames: Vec<(u64, Option<u64>)> =
                 kept.frames.release_all(maker).into_iter().map(|(id, walk)| (id, walk.texture())).collect();
             kept.unframed(frames);
@@ -1194,16 +1265,62 @@ impl Kept {
             program: join.program.id,
             pipeline: program.pipeline.clone(),
             groups: self.bind_groups(device, &program.groups, &join.bindings, 0)?,
-            textures: join
+            textures: textures(&join.bindings),
+            storage: join
                 .bindings
                 .iter()
                 .filter_map(|bind| match bind.to {
-                    placement::Resource::Texture(texture) => Some(texture.id),
+                    placement::Resource::Storage(storage) => Some(storage.id),
                     placement::Resource::Uniforms(_)
-                    | placement::Resource::Storage(_)
+                    | placement::Resource::Texture(_)
                     | placement::Resource::Sampler(_) => None,
                 })
                 .collect(),
+        })
+    }
+
+    /// The dispatch `create` asks for, made of what its check found kept, running `workgroups`, with its bind groups
+    /// made now.
+    fn dispatch(
+        &mut self,
+        device: &wgpu::Device,
+        create: &CreateDispatch,
+        workgroups: [u32; 3],
+    ) -> Result<Dispatching, DispatchRefused> {
+        let join = &create.join;
+        for bind in &join.bindings {
+            if let placement::Resource::Sampler(sampling) = bind.to {
+                self.samplers.entry(sampling).or_insert_with(|| sampler(device, sampling));
+            }
+        }
+        let compute = self.computes.get(join.compute.id).ok_or(DispatchRefused::Compute)?;
+        let groups = self
+            .bind_groups(device, &compute.groups, &join.bindings, 0)
+            .map_err(|why| DispatchRefused::Bindings { why })?;
+        let storage = join
+            .bindings
+            .iter()
+            .filter_map(|bind| {
+                let placement::Resource::Storage(storage) = bind.to else {
+                    return None;
+                };
+                let access = match program::listed(&compute.bindings, bind.group, bind.binding)? {
+                    BindingKind::Storage { access, .. } => access,
+                    BindingKind::Uniform { .. } | BindingKind::Texture | BindingKind::Sampler => return None,
+                };
+                Some((storage.id, access))
+            })
+            .collect();
+
+        Ok(Dispatching {
+            frame: join.frame,
+            pass: join.pass,
+            compute: join.compute.id,
+            pipeline: compute.pipeline.clone(),
+            groups,
+            workgroups,
+            textures: textures(&join.bindings),
+            storage,
         })
     }
 
@@ -1257,10 +1374,18 @@ impl Kept {
         (stamps, first): (Option<&Stamps>, u32),
     ) {
         let end = walk.end(window);
-        for (at, (pass, shape, step)) in (first..).zip(walk.steps()) {
+        for (at, (pass, step)) in (first..).zip(walk.steps()) {
             let (into, load, depth) = match step {
-                Step::Draw { into, depth, load } => (*into, *load, *depth),
-                Step::Effect(effect) => (effect.into, effect.load, DepthUse::Off),
+                Step::Draw { into, depth, load, .. } => (*into, *load, *depth),
+                Step::Effect { effect, .. } => (effect.into, effect.load, DepthUse::Off),
+                Step::Compute => {
+                    let mut recording = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: None,
+                        timestamp_writes: stamps.map(|stamps| stamps.compute_writes(at)),
+                    });
+                    self.compute(&mut recording, frame, pass);
+                    continue;
+                }
             };
             let view = match into {
                 Target::End => end,
@@ -1297,8 +1422,8 @@ impl Kept {
                 ..Default::default()
             });
             match step {
-                Step::Draw { .. } => self.draw(&mut recording, frame, pass, shape),
-                Step::Effect(effect) => {
+                Step::Draw { shape, .. } => self.draw(&mut recording, frame, pass, *shape),
+                Step::Effect { effect, .. } => {
                     recording.set_pipeline(&effect.pipeline);
                     recording.set_bind_group(0, &effect.read, &[]);
                     for (group, bound) in (1..).zip(&effect.groups) {
@@ -1306,6 +1431,7 @@ impl Kept {
                     }
                     recording.draw(0..3, 0..1);
                 }
+                Step::Compute => {}
             }
         }
     }
@@ -1444,11 +1570,11 @@ impl Kept {
         self.run(encoder, (Frame::Main(self.window), self.main()), window, (stamps, first));
     }
 
-    /// The pass the frame `create` does at `making`, made: an effect's pipeline and bind groups, made of what the
-    /// frame's check found kept.
-    fn step(&self, device: &wgpu::Device, making: Making<'_>) -> Result<Step, PassRefused> {
+    /// The effect pass the frame `create` does at `making`, made: the effect's pipeline and bind groups, made of what
+    /// the frame's check found kept.
+    fn step(&self, device: &wgpu::Device, making: Making<'_>) -> Result<walk::Effected, PassRefused> {
         let Does::Effect { program, reads, into, bindings } = making.does else {
-            return drawn(making);
+            return Err(PassRefused::Effect);
         };
         let made = self.programs.get(program.id).ok_or(PassRefused::Effect)?;
         let reads: Vec<u32> = reads
@@ -1469,15 +1595,7 @@ impl Kept {
             Load::Clear
         };
 
-        Ok(Step::Effect(walk::Effected {
-            pipeline: made.pipeline.clone(),
-            reads,
-            layout,
-            read,
-            groups,
-            into: *into,
-            load,
-        }))
+        Ok(walk::Effected { pipeline: made.pipeline.clone(), reads, layout, read, groups, into: *into, load })
     }
 
     /// Each placement's joins of the window's main frame that it does not draw: those whose pass it has not, or has in
@@ -1493,6 +1611,42 @@ impl Kept {
             .filter(|(_, join)| main.shape_of(join.pass) != Some(join.shape))
             .map(|(id, join)| (id, join.pass))
             .collect()
+    }
+
+    /// Each dispatch that joins the window's main frame and is not run: one whose compute pass it has not, each as the
+    /// dispatch and the pass it joined.
+    fn unrun(&self) -> Vec<(u64, PassName)> {
+        let frame = Frame::Main(self.window);
+        let main = self.main();
+
+        self.dispatches
+            .iter()
+            .filter(|(_, dispatch)| dispatch.frame == frame)
+            .filter(|(_, dispatch)| !main.computes(dispatch.pass))
+            .map(|(id, dispatch)| (id, dispatch.pass))
+            .collect()
+    }
+
+    /// Records into `recording` every dispatch that joins the compute pass `pass` of `frame`, each compute program's
+    /// together, setting each pipeline once. Nothing orders them among themselves: the check refuses two in one pass
+    /// that one writes what the other uses.
+    fn compute(&self, recording: &mut wgpu::ComputePass<'_>, frame: Frame, pass: PassName) {
+        let mut joined: Vec<&Dispatching> =
+            self.dispatches.values().filter(|dispatch| dispatch.runs_in(frame, pass)).collect();
+        joined.sort_unstable_by_key(|dispatch| dispatch.compute);
+        let mut pipeline = 0;
+        for dispatch in joined {
+            // Ids begin at one, so no compute program's is the zero it begins from.
+            if pipeline != dispatch.compute {
+                recording.set_pipeline(&dispatch.pipeline);
+                pipeline = dispatch.compute;
+            }
+            for (group, bound) in (0..).zip(&dispatch.groups) {
+                recording.set_bind_group(group, bound, &[]);
+            }
+            let [x, y, z] = dispatch.workgroups;
+            recording.dispatch_workgroups(x, y, z);
+        }
     }
 
     /// Records into `recording` every placement that joins the pass `pass` of `frame`, of the shape `shape`, each
@@ -1540,6 +1694,13 @@ impl Joined {
     /// made against.
     fn draws_in(&self, frame: Frame, pass: PassName, shape: Shape) -> bool {
         self.frame == frame && self.pass == pass && self.shape == shape
+    }
+}
+
+impl Dispatching {
+    /// Whether it runs in the compute pass `pass` of `frame`: the pass it joined.
+    fn runs_in(&self, frame: Frame, pass: PassName) -> bool {
+        self.frame == frame && self.pass == pass
     }
 }
 
@@ -1660,6 +1821,15 @@ impl Stamps {
         }
     }
 
+    /// Where the compute pass `at`, counted from zero, writes its timestamps, as a pass that draws does.
+    const fn compute_writes(&self, at: u32) -> wgpu::ComputePassTimestampWrites<'_> {
+        wgpu::ComputePassTimestampWrites {
+            query_set: &self.set,
+            beginning_of_pass_write_index: Some(2 * at),
+            end_of_pass_write_index: Some(2 * at + 1),
+        }
+    }
+
     /// Resolves the timestamps and copies them where the chassis can map them, recorded on `encoder` after the
     /// passes, each tick `period` nanoseconds.
     fn resolve(self, encoder: &mut wgpu::CommandEncoder, period: f32) -> Reading {
@@ -1698,21 +1868,38 @@ impl Finds for Kept {
             .placements
             .values()
             .flat_map(|placement| &placement.joins)
-            .filter_map(|join| match join.frame {
-                Frame::Texture(frame) => Some((frame.id, &join.textures)),
-                Frame::Main(_) => None,
-            })
-            .flat_map(|(frame, textures)| textures.iter().map(move |texture| (frame, *texture)));
+            .map(|join| (join.frame, join.textures.as_slice()));
+        let dispatched = self.dispatches.values().map(|dispatch| (dispatch.frame, dispatch.textures.as_slice()));
         let bound = self
             .frames
             .iter()
             .filter(|(_, walk)| walk.texture().is_some())
-            .flat_map(|(frame, walk)| walk.binds().iter().map(move |texture| (frame, *texture)));
-
-        joined
+            .map(|(frame, walk)| (Frame::Texture(FrameId { id: frame }), walk.binds()));
+        let textures = joined
+            .chain(dispatched)
             .chain(bound)
-            .filter_map(|(frame, texture)| Some((frame, self.drawn_by(TextureId { id: texture })?)))
-            .collect()
+            .filter_map(|(frame, textures)| match frame {
+                Frame::Texture(frame) => Some((frame.id, textures)),
+                Frame::Main(_) => None,
+            })
+            .flat_map(|(frame, textures)| textures.iter().map(move |texture| (frame, *texture)))
+            .filter_map(|(frame, texture)| Some((frame, self.drawn_by(TextureId { id: texture })?)));
+        let mut uses: HashMap<u64, Vec<Use>> = HashMap::new();
+        for (storage, used) in self.storage_uses() {
+            uses.entry(storage).or_default().push(used);
+        }
+        let stored = uses.into_values().flat_map(|uses| {
+            uses.iter().flat_map(|one| uses.iter().filter_map(|other| one.reads_from(*other))).collect::<Vec<_>>()
+        });
+        let mut reads: Vec<(u64, u64)> = textures.chain(stored).collect();
+        reads.sort_unstable();
+        reads.dedup();
+
+        reads
+    }
+
+    fn uses(&self, storage: StorageId) -> Vec<Use> {
+        self.storage_uses().filter(|(used, _)| *used == storage.id).map(|(_, used)| used).collect()
     }
 
     fn program(&self, id: ProgramId) -> Option<Reads<'_>> {
@@ -1745,6 +1932,65 @@ impl Finds for Kept {
     }
 }
 
+impl Kept {
+    /// Each use of storage by what is kept, beside the storage's id: each placement's join that binds it, each effect
+    /// of a frame, and each dispatch, in no order.
+    fn storage_uses(&self) -> impl Iterator<Item = (u64, Use)> {
+        let joined = self.placements.values().flat_map(|placement| &placement.joins).flat_map(|join| {
+            let used = Use { frame: join.frame, pass: join.pass, access: Access::Read };
+            join.storage.iter().map(move |storage| (*storage, used))
+        });
+        let bound = self.frames.iter().flat_map(move |(id, walk)| {
+            let frame = match walk.texture() {
+                Some(_) => Frame::Texture(FrameId { id }),
+                None => Frame::Main(self.window),
+            };
+            walk.stored()
+                .iter()
+                .map(move |(pass, storage)| (*storage, Use { frame, pass: *pass, access: Access::Read }))
+        });
+        let dispatched = self.dispatches.values().flat_map(|dispatch| {
+            dispatch.storage.iter().map(|(storage, access)| {
+                (*storage, Use { frame: dispatch.frame, pass: dispatch.pass, access: *access })
+            })
+        });
+
+        joined.chain(bound).chain(dispatched)
+    }
+}
+
+/// What a dispatch's check finds of what is kept, beside what a placement's does.
+impl Dispatches for Kept {
+    fn computes(&self, frame: Frame, pass: PassName) -> Result<(), DispatchRefused> {
+        let walk = match frame {
+            Frame::Main(window) if window == self.window => self.main(),
+            Frame::Main(_) => return Err(DispatchRefused::Frame),
+            Frame::Texture(id) => {
+                self.frames.get(id.id).filter(|walk| walk.texture().is_some()).ok_or(DispatchRefused::Frame)?
+            }
+        };
+        if !walk.computes(pass) {
+            return Err(DispatchRefused::Pass);
+        }
+
+        Ok(())
+    }
+
+    fn compute(&self, id: ComputeId) -> Option<Computes<'_>> {
+        let compute = self.computes.get(id.id)?;
+
+        Some(Computes { bindings: &compute.bindings, workgroup: compute.workgroup, arrays: &compute.arrays })
+    }
+
+    fn maker(&self, id: StorageId) -> Option<ActorId> {
+        self.storage.maker(id.id)
+    }
+
+    fn most_workgroups(&self) -> u32 {
+        self.most_workgroups
+    }
+}
+
 /// What a frame's check finds of what is kept, beside what a placement's does.
 impl Holds for Kept {
     fn window(&self, window: WindowId) -> Option<ColourFormat> {
@@ -1765,13 +2011,22 @@ impl Holds for Kept {
     }
 }
 
-/// A pass of a frame that draws what joins it, made: an effect is made by [`Kept::step`], with what it reads.
-fn drawn(making: Making<'_>) -> Result<Step, PassRefused> {
-    let Does::Draw { into, depth, load } = making.does else {
-        return Err(PassRefused::Effect);
-    };
+/// An effect pass of the renderer's own main frame, which has none.
+const fn effectless(_: Making<'_>) -> Result<walk::Effected, PassRefused> {
+    Err(PassRefused::Effect)
+}
 
-    Ok(Step::Draw { into: *into, depth: *depth, load: *load })
+/// The textures `bindings` binds, by their ids.
+fn textures(bindings: &[Bind]) -> Vec<u64> {
+    bindings
+        .iter()
+        .filter_map(|bind| match bind.to {
+            placement::Resource::Texture(texture) => Some(texture.id),
+            placement::Resource::Uniforms(_) | placement::Resource::Storage(_) | placement::Resource::Sampler(_) => {
+                None
+            }
+        })
+        .collect()
 }
 
 /// A sampler that reads as `sampling` says.
@@ -2010,9 +2265,9 @@ fn effect_pipeline(device: &wgpu::Device, create: &CreateEffect) -> Program {
     }
 }
 
-/// The pipeline of the compute program `create` asks for, its workgroups of `workgroup` invocations, made from what
-/// its check let through.
-fn compute_pipeline(device: &wgpu::Device, create: &CreateCompute, workgroup: [u32; 3]) -> Compute {
+/// The pipeline of the compute program `create` asks for, with what its check read of its shader, made from what its
+/// check let through.
+fn compute_pipeline(device: &wgpu::Device, create: &CreateCompute, checked: compute::Checked) -> Compute {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
         source: wgpu::ShaderSource::Wgsl(create.wgsl.as_str().into()),
@@ -2033,7 +2288,13 @@ fn compute_pipeline(device: &wgpu::Device, create: &CreateCompute, workgroup: [u
         cache: None,
     });
 
-    Compute { pipeline, bindings: create.bindings.clone(), groups, workgroup }
+    Compute {
+        pipeline,
+        bindings: create.bindings.clone(),
+        groups,
+        workgroup: checked.workgroup,
+        arrays: checked.arrays,
+    }
 }
 
 /// How a target read so is sampled, as wgpu names it.

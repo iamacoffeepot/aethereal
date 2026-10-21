@@ -3,6 +3,7 @@
 
 use super::builder::{Effect, Float, Onto, Uint, depth};
 use super::*;
+use crate::dispatch::Use;
 use crate::effect::{EffectId, MadeEffect};
 use crate::instances::InstancesId;
 use crate::mesh::{MeshId, VertexLayout};
@@ -81,6 +82,10 @@ impl Finds for Kept {
     fn reads(&self) -> Vec<(u64, u64)> {
         Vec::new()
     }
+
+    fn uses(&self, _: StorageId) -> Vec<Use> {
+        Vec::new()
+    }
 }
 
 impl Holds for Kept {
@@ -117,7 +122,7 @@ macro_rules! passes {
     )*};
 }
 
-passes!(Surfaces "aether.test.surfaces", Splats "aether.test.splats", Glaze "aether.test.glaze", Blur "aether.test.blur", Ids "aether.test.ids");
+passes!(Surfaces "aether.test.surfaces", Splats "aether.test.splats", Glaze "aether.test.glaze", Blur "aether.test.blur", Ids "aether.test.ids", Simulate "aether.test.simulate");
 
 /// [`GLAZE`], as the builder takes it.
 fn glaze() -> EffectId<(Float, Uint)> {
@@ -348,16 +353,39 @@ fn an_effect_released_made_for_another_shape_or_bound_otherwise_is_refused() {
 fn each_pass_is_shaped_by_what_it_draws_into() {
     // Catches a pass shaped by the window where it draws into a target, or with depth it does not hold: programs made
     // for it would not join it, or would be refused as it draws.
-    let shapes = frame().shapes(ColourFormat::Bgra8);
+    let frame = frame();
+    let shape = |into: Target, depth: DepthUse| frame.shape(into, depth, ColourFormat::Bgra8);
 
-    assert_eq!(
-        shapes,
-        [
-            Shape::with_depth(ColourFormat::R32Uint),
-            Shape::with_depth(ColourFormat::Rgba16Float),
-            Shape::flat(ColourFormat::Bgra8)
-        ]
-    );
+    assert_eq!(shape(Target::Texture(0), DepthUse::Write(1)), Shape::with_depth(ColourFormat::R32Uint));
+    assert_eq!(shape(Target::Texture(2), DepthUse::Test(1)), Shape::with_depth(ColourFormat::Rgba16Float));
+    assert_eq!(shape(Target::End, DepthUse::Off), Shape::flat(ColourFormat::Bgra8));
+}
+
+#[test]
+fn a_compute_pass_draws_into_nothing_and_never_ends_a_frame() {
+    // Catches a compute pass taken as writing a target, which would let a later pass keep or read what nothing drew,
+    // or a frame let end on one, which would show what the window last held: a forged one must fail as the builder,
+    // whose `finish` takes a pass that writes the end, would never build it.
+    let mut built = FrameBuilder::on(Ends::Window(window(0)));
+    built.compute(Simulate);
+    let (ids, depth) = built.draw(Surfaces, Uint, depth::Write);
+    let splats = built.draw(Splats, Float, depth::Test(&depth));
+    let Ok(built) = built.finish(Glaze, Effect::new(&glaze(), (splats, ids)).bound(tinted())) else {
+        panic!("the frame's passes are of types of their own");
+    };
+    let compute = PassSpec { name: PassName::of::<Simulate>(), does: Does::Compute };
+    let last = changed(|frame| frame.passes.push(compute.clone()));
+    let kept_over_compute = changed(|frame| {
+        frame.passes.insert(0, compute.clone());
+        frame.passes[1].does = Does::Draw { into: Target::Texture(0), depth: DepthUse::Write(1), load: Load::Keep };
+    });
+    let kept = Kept::new();
+
+    assert_eq!(built.passes[0], compute);
+    assert_eq!(check(&built, &kept), Ok(()));
+    assert_eq!(check(&last, &kept), Err(FrameRefused::Unended));
+    assert_eq!(check(&kept_over_compute, &kept), refused(1, PassRefused::Unwritten));
+    assert_eq!(check(&CreateFrame::own(window(0)), &kept), Ok(()));
 }
 
 /// A frame onto a texture `width` by `height`: one pass drawing into it.

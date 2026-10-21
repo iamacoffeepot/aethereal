@@ -1,6 +1,7 @@
 //! A placement's check: what WebGPU would refuse as a frame draws it is refused as it is placed.
 
 use super::*;
+use crate::dispatch::Use;
 use crate::frame::FrameId;
 use crate::mesh::{Attribute, VertexFormat};
 use crate::pass::Main;
@@ -23,6 +24,7 @@ struct Kept {
     shape: Shape,
     pass: Shape,
     reads: Vec<(u64, u64)>,
+    uses: Vec<Use>,
 }
 
 /// The window opened `nth`, as a host's window capability numbers it.
@@ -76,6 +78,7 @@ impl Kept {
             shape,
             pass: shape,
             reads: Vec::new(),
+            uses: Vec::new(),
         }
     }
 }
@@ -129,6 +132,14 @@ impl Finds for Kept {
 
     fn reads(&self) -> Vec<(u64, u64)> {
         self.reads.clone()
+    }
+
+    fn uses(&self, storage: StorageId) -> Vec<Use> {
+        if storage == STORAGE {
+            self.uses.clone()
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -318,4 +329,27 @@ fn a_join_that_would_have_frames_read_each_other_round_is_refused() {
     assert_eq!(check(&both, &kept), Err(PlacementRefused::Join { join: 1, why: JoinRefused::Round }));
     assert_eq!(check(&binding(Frame::Texture(INSET), MAPPED), &inset_reads_map), Ok(()));
     assert_eq!(check(&binding(Frame::Main(window(0)), MAPPED), &inset_reads_map), Ok(()));
+}
+
+/// A dispatch's use of the kept storage in `frame`, writing it.
+fn written_in(frame: Frame) -> Use {
+    Use { frame, pass: PassName::of::<Elsewhere>(), access: Access::Write }
+}
+
+#[test]
+fn a_join_reading_storage_a_frame_that_reads_it_writes_is_refused() {
+    // Catches storage left out of the order of frames: a frame reading storage that a frame reading it writes would
+    // read what was written a `Render` before, or what is written after it in the same one.
+    let mut inset_reads_map = Kept::new();
+    inset_reads_map.reads = vec![(INSET.id, MAP.id)];
+    inset_reads_map.uses = vec![written_in(Frame::Texture(INSET))];
+    let mut written_by_main = Kept::new();
+    written_by_main.uses = vec![written_in(Frame::Main(window(0)))];
+    let mut written_by_itself = Kept::new();
+    written_by_itself.uses = vec![written_in(Frame::Texture(MAP))];
+
+    assert_eq!(check(&binding(Frame::Texture(MAP), TEXTURE), &inset_reads_map), first(JoinRefused::Round));
+    assert_eq!(check(&binding(Frame::Main(window(0)), TEXTURE), &inset_reads_map), Ok(()));
+    assert_eq!(check(&binding(Frame::Texture(MAP), TEXTURE), &written_by_main), Ok(()));
+    assert_eq!(check(&binding(Frame::Texture(MAP), TEXTURE), &written_by_itself), Ok(()));
 }

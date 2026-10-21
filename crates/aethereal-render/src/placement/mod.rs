@@ -5,11 +5,12 @@
 #[cfg(test)]
 mod tests;
 
+use crate::dispatch::Use;
 use crate::frame::{self, Frame};
 use crate::instances::InstancesId;
 use crate::mesh::{MeshId, VertexLayout};
 use crate::pass::{Pass, PassName};
-use crate::program::{Binding, BindingKind, PerInstance, ProgramId};
+use crate::program::{Access, Binding, BindingKind, PerInstance, ProgramId};
 use crate::shape::Shape;
 use crate::storage::StorageId;
 use crate::texture::TextureId;
@@ -170,12 +171,13 @@ impl Kind for PlacementRefused {
 pub enum JoinRefused {
     /// No frame is kept as the one named.
     Frame,
-    /// The frame has no pass of the name.
+    /// The frame has no pass of the name that draws: none of the name, or a compute pass.
     Pass,
     /// An earlier join of the placement joins the same pass of the same frame.
     Twice,
     /// It binds the texture of the frame it joins, or of a frame that reads that frame, through frames between or at
-    /// once: frames would read each other round, each what the other drew a `Render` before.
+    /// once, or storage such a frame writes: frames would read each other round, each what the other drew a `Render`
+    /// before.
     Round,
     /// No program is kept under the id: never made, or released.
     Program,
@@ -216,14 +218,16 @@ pub(crate) struct Reads<'a> {
 /// under the id.
 pub(crate) trait Finds {
     /// The shape of the pass `pass` of `frame` as it is now: refused when there is no such frame, or it has no such
-    /// pass.
+    /// pass that draws.
     fn pass(&self, frame: Frame, pass: PassName) -> Result<Shape, JoinRefused>;
     fn program(&self, id: ProgramId) -> Option<Reads<'_>>;
     /// The frame that ends on the texture `texture`, by its id: none for a texture made of pixels, or none kept.
     fn drawn_by(&self, texture: TextureId) -> Option<u64>;
-    /// Each pair of a frame that ends on a texture and a frame whose texture it reads, by their ids: through what
-    /// the placements that join it bind, and what its effects bind.
+    /// Each pair of a frame that ends on a texture and a frame it reads, by their ids: whose texture, or storage a
+    /// dispatch of it writes, the placements and dispatches that join it bind, or its effects bind.
     fn reads(&self) -> Vec<(u64, u64)>;
+    /// Each use of the storage `storage` by what is kept: each placement's join, effect, and dispatch that binds it.
+    fn uses(&self, storage: StorageId) -> Vec<Use>;
     fn mesh(&self, id: MeshId) -> Option<&VertexLayout>;
     fn instances(&self, id: InstancesId) -> Option<&VertexLayout>;
     fn uniforms(&self, id: UniformsId) -> Option<u32>;
@@ -256,24 +260,31 @@ pub(crate) fn check(place: &Place, kept: &impl Finds) -> Result<(), PlacementRef
 }
 
 /// Checks that no join of `place` has frames read each other round: one that joins a frame ending on a texture and
-/// binds the texture of a frame that reads it, with what is read already and what its earlier joins read.
+/// binds the texture of a frame that reads it, or storage such a frame writes, with what is read already and what its
+/// earlier joins read.
 fn check_round(place: &Place, kept: &impl Finds) -> Result<(), PlacementRefused> {
     let mut reads = kept.reads();
     for (join, at) in place.joins.iter().zip(0..) {
-        let Frame::Texture(reader) = join.frame else {
-            continue;
-        };
+        let round = Err(PlacementRefused::Join { join: at, why: JoinRefused::Round });
         for bind in &join.bindings {
-            let Resource::Texture(texture) = bind.to else {
-                continue;
+            let read: Vec<(u64, u64)> = match (join.frame, bind.to) {
+                (Frame::Texture(reader), Resource::Texture(texture)) => {
+                    kept.drawn_by(texture).map(|read| (reader.id, read)).into_iter().collect()
+                }
+                (_, Resource::Storage(storage)) => {
+                    let mine = Use { frame: join.frame, pass: join.pass, access: Access::Read };
+                    kept.uses(storage).into_iter().filter_map(|theirs| mine.reads_from(theirs)).collect()
+                }
+                (Frame::Main(_), Resource::Texture(_)) | (_, Resource::Uniforms(_) | Resource::Sampler(_)) => {
+                    Vec::new()
+                }
             };
-            let Some(read) = kept.drawn_by(texture) else {
-                continue;
-            };
-            if frame::reaches(&reads, read, reader.id) {
-                return Err(PlacementRefused::Join { join: at, why: JoinRefused::Round });
+            for (reader, read) in read {
+                if frame::reaches(&reads, read, reader) {
+                    return round;
+                }
+                reads.push((reader, read));
             }
-            reads.push((reader.id, read));
         }
     }
 
