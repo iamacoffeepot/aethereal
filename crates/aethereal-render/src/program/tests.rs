@@ -214,3 +214,86 @@ fn bindings_the_gpu_would_not_bind_are_refused() {
     assert_eq!(checked(&large), Err(ProgramRefused::Size { group: 0, binding: 0 }));
     assert_eq!(checked(&many), Err(ProgramRefused::Many { kind: BindingKind::Texture }));
 }
+
+/// A program that places each vertex at a splat it reads from storage, in its vertex stage, by its instance, and
+/// shades it the splat's colour, read again in its fragment stage.
+const SPLATS: &str = "
+struct Splat { at: vec4<f32>, colour: vec4<f32> }
+struct Field { count: u32, splats: array<Splat> }
+
+@group(0) @binding(0) var<storage, read> field: Field;
+
+struct Between {
+    @builtin(position) at: vec4<f32>,
+    @location(0) @interpolate(flat) splat: u32,
+}
+
+@vertex
+fn lift(@location(0) position: vec3<f32>, @builtin(instance_index) splat: u32) -> Between {
+    return Between(vec4(position, 1.0) + field.splats[splat].at, splat);
+}
+
+@fragment
+fn shade(between: Between) -> @location(0) vec4<f32> {
+    return field.splats[between.splat].colour * f32(field.count);
+}
+";
+
+/// The program [`SPLATS`] is, binding storage of `bytes`.
+fn splats(bytes: u32) -> CreateProgram {
+    let mut program = program();
+    program.wgsl = String::from(SPLATS);
+    program.layout.attributes.pop();
+    program.bindings = vec![Binding { group: 0, binding: 0, kind: BindingKind::Storage { bytes } }];
+
+    program
+}
+
+#[test]
+fn storage_both_stages_only_read_is_bound_at_least_its_fixed_part_and_one_element() {
+    // Catches storage refused as every storage buffer was, a runtime-sized array counted as nothing, which lets a
+    // binding too small for one splat through, and the least size counted past one element, which refuses storage
+    // WebGPU binds. The field's count, padded to the splats' alignment, is 16 bytes, and a splat 32.
+    assert_eq!(checked(&splats(48)), Ok(()));
+    assert_eq!(checked(&splats(1 << 20)), Ok(()));
+    assert_eq!(checked(&splats(44)), Err(ProgramRefused::Mismatch { group: 0, binding: 0 }));
+}
+
+#[test]
+fn storage_the_shader_writes_or_binds_as_another_kind_is_refused() {
+    // Catches storage let through whatever the shader does with it: WebGPU binds a buffer a stage writes only as
+    // writable storage, which a program does not bind, and storage and uniforms are bound apart.
+    let mut written = splats(48);
+    written.wgsl = written.wgsl.replace("var<storage, read>", "var<storage, read_write>").replace(
+        "return field.splats[between.splat].colour",
+        "field.count = 1u;\n    return field.splats[between.splat].colour",
+    );
+    let mut as_uniform = splats(48);
+    as_uniform.bindings[0].kind = BindingKind::Uniform { bytes: 48 };
+    let mut as_storage = program();
+    as_storage.bindings[0].kind = BindingKind::Storage { bytes: 64 };
+
+    assert_eq!(checked(&written), Err(ProgramRefused::Mismatch { group: 0, binding: 0 }));
+    assert_eq!(checked(&as_uniform), Err(ProgramRefused::Mismatch { group: 0, binding: 0 }));
+    assert_eq!(checked(&as_storage), Err(ProgramRefused::Mismatch { group: 0, binding: 0 }));
+}
+
+#[test]
+fn storage_the_gpu_would_not_bind_is_refused() {
+    // Catches storage sized against the uniform limit, or not at all, and storage buffers counted with uniforms or
+    // not counted: WebGPU refuses the layout as the pipeline is made.
+    let limits = wgpu::Limits::default();
+    let most = u32::try_from(limits.max_storage_buffer_binding_size).expect("the default limit is under 4 GiB");
+    let mut many = splats(48);
+    let more = (1..=8).map(|binding| Binding { group: 1, binding, kind: BindingKind::Storage { bytes: 4 } });
+    many.bindings.extend(more);
+    let mut uniforms_beside = splats(48);
+    let uniforms = (1..=8).map(|binding| Binding { group: 1, binding, kind: BindingKind::Uniform { bytes: 4 } });
+    uniforms_beside.bindings.extend(uniforms);
+
+    assert_eq!(checked(&splats(0)), Err(ProgramRefused::Size { group: 0, binding: 0 }));
+    assert_eq!(checked(&splats(most)), Ok(()));
+    assert_eq!(checked(&splats(most + 4)), Err(ProgramRefused::Size { group: 0, binding: 0 }));
+    assert_eq!(checked(&many), Err(ProgramRefused::Many { kind: BindingKind::Storage { bytes: 0 } }));
+    assert_eq!(checked(&uniforms_beside), Ok(()));
+}

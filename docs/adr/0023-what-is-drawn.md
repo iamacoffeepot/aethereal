@@ -42,6 +42,18 @@ WriteUniforms  { uniforms: UniformsId, first: u32, bytes: BlobRef }  // no answe
 
 Their size is fixed when they are made, a write lies inside it or is refused and logged, and nothing else of them changes.
 
+**Storage holds the bytes a program's read-only storage buffer is bound to,** as uniforms hold a uniform block's: a field of splats, particles, or a skeleton's bones, read by index where a record per instance is read in order. It is made and written as uniforms are:
+
+```rust
+CreateStorage { bytes: BlobRef }                                    -> Made<StorageId> | Refused
+WriteStorage  { storage: StorageId, first: u32, bytes: BlobRef }    // no answer
+```
+
+- Its bytes are a whole number of words, and at most what the GPU binds as one storage buffer (`max_storage_buffer_binding_size`). Its size is fixed when it is made, a write lies inside it on whole words or is refused and logged, and only its maker writes or releases it.
+- A program binds it as `BindingKind::Storage { bytes }`: a storage buffer its shader only reads, `var<storage, read>`, which both stages see. A shader that writes it is refused, as writing storage from a draw is left with compute (see Consequences).
+- `bytes` is the least the program binds: what the shader reads of the buffer, with an array whose length is the buffer's (`array<T>`, the usual last member) counted as holding one element. That is the fixed part before the array, padded to its alignment, and one element, as WebGPU counts a binding's least size. Storage bound there is at least `bytes`, and the array then holds as many elements as fit in the rest, which the shader reads with `arrayLength`. A field of splats is made at its capacity and drawn for a count of instances, as the shader reads one splat per instance.
+- No more storage buffers are listed than a stage binds (`max_storage_buffers_per_shader_stage`), counted apart from uniform blocks.
+
 **A placement is one thing drawn: a mesh, with a program, for each of a count of instances, with what the program binds.**
 
 ```rust
@@ -52,7 +64,7 @@ Place {
     bindings: Vec<Bind>,    // for each place the program binds: Bind { group, binding, to: Resource }
 }                                                                    -> Made<PlacementId> | Refused
 
-enum Resource { Uniforms(UniformsId), Texture(TextureId), Sampler(Sampling) }
+enum Resource { Uniforms(UniformsId), Storage(StorageId), Texture(TextureId), Sampler(Sampling) }
 struct Sampling { filter: Filter, wrap: Wrap }   // Filter::{Linear, Nearest}, Wrap::{Clamp, Repeat}
 ```
 
@@ -66,17 +78,17 @@ struct Sampling { filter: Filter, wrap: Wrap }   // Filter::{Linear, Nearest}, W
 
 - each id names a resource of its sort that is kept;
 - the mesh's layout is the program's vertex layout, and the instances' layout is its instance layout, or the placement is a `Count` for a program that reads none;
-- the bindings name each place the program binds, once, and nothing else, each with a resource of the kind bound there: uniforms for a uniform block, at least as many bytes as the block; a texture for a texture; a sampling for a sampler.
+- the bindings name each place the program binds, once, and nothing else, each with a resource of the kind bound there: uniforms for a uniform block, at least as many bytes as the block; storage for a storage buffer, at least as many bytes as the program binds there; a texture for a texture; a sampling for a sampler.
 
 The placement's bind groups are made then, once, so a frame binds what is made and builds nothing.
 
-**A placement keeps what it draws.** Releasing a mesh, a program, instances, uniforms, or a texture, or its maker ending, takes back the id, so nothing more is placed with it, but the placements already made keep drawing it until they are released themselves. A placement made by one actor, of a mesh another made, is never dropped because the other ended. Writes to instances and uniforms still come only from their maker, and stop when it ends.
+**A placement keeps what it draws.** Releasing a mesh, a program, instances, uniforms, storage, or a texture, or its maker ending, takes back the id, so nothing more is placed with it, but the placements already made keep drawing it until they are released themselves. A placement made by one actor, of a mesh another made, is never dropped because the other ended. Writes to instances, uniforms, and storage still come only from their maker, and stop when it ends.
 
 **Who may change what.** Only the maker of a resource may write it or release it (ADR-0021), and that includes a placement. Its ids are plain data and may be handed on, so others may place with them.
 
 **The render root draws every placement in one pass onto the canvas at each `Render`**, with a depth texture of `Depth32Float` cleared to the far plane, as every program is made to test against (ADR-0021). It sets each program's pipeline once, and draws its placements together.
 
-**Draw order is not promised.** Placements of one program are drawn together, and programs and placements in no order an actor may rely on. Depth orders what is drawn where order would show: a 3D scene, and a 2D game whose layers are depths. The records of one placement are drawn in order, as they are one actor's. What depth cannot order, overlapping things that blend, is left to the record that decides a frame's passes (see Consequences).
+**Draw order is not promised.** Placements of one program are drawn together, and programs and placements in no order an actor may rely on. Depth orders what is drawn where order would show: a 3D scene, and a 2D game whose layers are depths. Placements whose programs blend by `Multiply`, their colour times what is drawn, keeping the alpha drawn already, give the same frame in any order among themselves, as `Additive` ones do. The records of one placement are drawn in order, as they are one actor's. What depth cannot order, overlapping things that blend, is left to the record that decides a frame's passes (see Consequences).
 
 **This departs from ADR-0021 in two places,** and ADR-0021 is edited to match:
 
@@ -93,7 +105,7 @@ The placement's bind groups are made then, once, so a frame binds what is made a
 - What is decided separately, each when it is needed:
   - **The frame's passes**: the programs a frame runs in order, drawing into textures and the canvas, which orders what depth cannot, and post-processing over the scene.
   - **Materials shared by many placements**, and texture arrays.
-  - **Storage buffers and compute programs**, and a range of a mesh's indices per placement.
+  - **Compute programs, and storage they write**, and a range of a mesh's indices per placement.
   - **Spreading uploads over the frames before first use** (ADR-0021).
 
 ## Alternatives considered
