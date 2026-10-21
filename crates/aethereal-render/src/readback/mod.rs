@@ -1,9 +1,10 @@
-//! Reading back: the frame just drawn, or a texture, copied off the GPU and answered as a blob, once the host has
-//! mapped the copy (ADR-0019, ADR-0023).
+//! Reading back: the frame just drawn, a texture, or storage, copied off the GPU and answered as a blob, once the host
+//! has mapped the copy (ADR-0019, ADR-0023, ADR-0026).
 
 #[cfg(test)]
 mod tests;
 
+use crate::storage::StorageId;
 use crate::texture::{TextureFormat, TextureId};
 use aethereal_actor::BlobRef;
 use aethereal_data::{Bound, Kind, KindName, Plain};
@@ -49,11 +50,38 @@ impl Kind for Pixels {
     const NAME: KindName = KindName::new("aether.render.pixels");
 }
 
+/// Asks the renderer for the bytes `storage` holds, as it is when the ask is handled. Any actor handed it may read it.
+/// Answered with [`Bytes`] once the GPU has copied it and the host has mapped the copy, a frame or more later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub struct ReadStorage {
+    pub storage: StorageId,
+}
+
+impl Kind for ReadStorage {
+    const NAME: KindName = KindName::new("aether.render.read_storage");
+}
+
+/// What the renderer answers [`ReadStorage`] with.
+#[derive(Debug, Bound)]
+pub enum Bytes {
+    /// The storage's bytes, all of them, as the GPU holds them.
+    Read {
+        bytes: BlobRef,
+    },
+    Refused(ReadRefused),
+}
+
+impl Kind for Bytes {
+    const NAME: KindName = KindName::new("aether.render.bytes");
+}
+
 /// Why what was asked for was not read back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum ReadRefused {
     /// No texture is kept under the id: never made, or released.
     Texture,
+    /// No storage is kept under the id: never made, or released.
+    Storage,
     /// The canvas is of a format no answer is laid out in: not four channels of a byte each.
     Format,
     /// The canvas was not opened to be copied from, as the chassis opens it when the GPU lets it.
