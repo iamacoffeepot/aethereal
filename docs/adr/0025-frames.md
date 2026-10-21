@@ -134,7 +134,7 @@ Place {
 - A frame cannot depth test against another frame's depth. A frame that needs to reads it as a texture, which the other frame ends on.
 - ADR-0021 and ADR-0023 are edited to match: a program is made against a shape rather than the surface's format, a placement joins passes, and what ADR-0023 drew in one pass is the render root's own main frame.
 - What is decided separately, each when it is needed:
-  - **Compute passes**, and the storage they write: decided by ADR-0026. Then **draws whose count a buffer holds**.
+  - **Compute passes**, and the storage they write: decided by ADR-0026. Then **draws whose count a buffer holds**: decided by ADR-0026, as counts a storage holds.
   - **Targets of other sizes and several colour targets in one pass.**
   - **A viewport for each draw**, for shadows drawn into tiles of one texture.
   - **Shared memory for targets never alive at once.**

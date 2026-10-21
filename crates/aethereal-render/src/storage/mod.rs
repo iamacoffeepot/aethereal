@@ -79,9 +79,16 @@ pub fn check(bytes: &[u8], most: u64) -> Result<u32, StorageRefused> {
     Ok(sized)
 }
 
-/// Whether `bytes` written from the byte `first` lie inside storage of `size` bytes, on whole words, as the GPU
-/// writes a buffer.
-pub(crate) fn writes(size: u32, first: u32, bytes: u64) -> bool {
+/// The bytes a draw reads its counts from, five words: its index count, instance count, first index, base vertex,
+/// and first instance (ADR-0026).
+pub(crate) const DRAW_ARGUMENTS: u64 = 20;
+
+/// The bytes a dispatch reads its counts from, three words: its workgroups along each dimension (ADR-0026).
+pub(crate) const DISPATCH_ARGUMENTS: u64 = 12;
+
+/// Whether `bytes` from the byte `first` lie inside storage of `size` bytes, on whole words, as the GPU writes a
+/// buffer and reads a draw's or a dispatch's arguments from one.
+pub(crate) fn fits(size: u32, first: u32, bytes: u64) -> bool {
     let end = u64::from(first) + bytes;
     let inside = end <= u64::from(size);
     let aligned = first.is_multiple_of(4) && bytes.is_multiple_of(4);

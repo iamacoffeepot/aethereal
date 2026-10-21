@@ -74,5 +74,10 @@ name = "compute"
 path = "examples/compute/lib.rs"
 crate-type = ["cdylib"]
 
+[[example]]
+name = "indirect"
+path = "examples/indirect/lib.rs"
+crate-type = ["cdylib"]
+
 [lints]
 workspace = true

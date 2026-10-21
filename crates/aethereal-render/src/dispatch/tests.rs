@@ -199,9 +199,9 @@ fn a_dispatch_for_each_element_runs_the_workgroups_that_cover_its_storage_s_arra
     let grid = changed(|dispatch| dispatch.size = Invocations::Workgroups([3, 2, 1]));
     let kept = Kept::new();
 
-    assert_eq!(check(&main(), ME, &kept), Ok([2, 1, 1]));
-    assert_eq!(check(&pulled, ME, &kept), Ok([1, 1, 1]));
-    assert_eq!(check(&grid, ME, &kept), Ok([3, 2, 1]));
+    assert_eq!(check(&main(), ME, &kept), Ok(Runs::Workgroups([2, 1, 1])));
+    assert_eq!(check(&pulled, ME, &kept), Ok(Runs::Workgroups([1, 1, 1])));
+    assert_eq!(check(&grid, ME, &kept), Ok(Runs::Workgroups([3, 2, 1])));
 }
 
 #[test]
@@ -232,7 +232,7 @@ fn storage_another_made_is_bound_to_read_and_never_to_write() {
     let theirs = dispatch(Frame::Main(window(0)), THEIRS);
 
     assert_eq!(check(&theirs, ME, &Kept::new()), Err(DispatchRefused::NotOwner { group: 0, binding: 1 }));
-    assert_eq!(check(&theirs, OTHER, &Kept::new()), Ok([2, 1, 1]));
+    assert_eq!(check(&theirs, OTHER, &Kept::new()), Ok(Runs::Workgroups([2, 1, 1])));
 }
 
 #[test]
@@ -282,8 +282,8 @@ fn storage_written_in_a_pass_another_dispatch_of_it_uses_is_refused() {
     assert_eq!(in_pass(vec![used::<Compute>(FIELD, main_frame, Access::Write)]), Err(DispatchRefused::Written));
     assert_eq!(in_pass(vec![used::<Compute>(FIELD, main_frame, Access::Read)]), Err(DispatchRefused::Written));
     assert_eq!(in_pass(vec![used::<Compute>(PULL, main_frame, Access::Write)]), Err(DispatchRefused::Written));
-    assert_eq!(in_pass(vec![used::<Compute>(PULL, main_frame, Access::Read)]), Ok([2, 1, 1]));
-    assert_eq!(in_pass(vec![used::<Settle>(FIELD, main_frame, Access::Write)]), Ok([2, 1, 1]));
+    assert_eq!(in_pass(vec![used::<Compute>(PULL, main_frame, Access::Read)]), Ok(Runs::Workgroups([2, 1, 1])));
+    assert_eq!(in_pass(vec![used::<Settle>(FIELD, main_frame, Access::Write)]), Ok(Runs::Workgroups([2, 1, 1])));
 }
 
 #[test]
@@ -299,10 +299,10 @@ fn storage_written_in_two_frames_is_made_only_when_the_frames_run_in_an_order() 
     };
 
     assert_eq!(written_in(Frame::Texture(INSET), Vec::new(), &in_map), Err(DispatchRefused::Written));
-    assert_eq!(written_in(Frame::Texture(INSET), vec![(INSET.id, MAP.id)], &in_map), Ok([2, 1, 1]));
-    assert_eq!(written_in(Frame::Texture(INSET), vec![(MAP.id, INSET.id)], &in_map), Ok([2, 1, 1]));
-    assert_eq!(written_in(Frame::Texture(INSET), Vec::new(), &main()), Ok([2, 1, 1]));
-    assert_eq!(written_in(Frame::Main(window(0)), Vec::new(), &in_map), Ok([2, 1, 1]));
+    assert_eq!(written_in(Frame::Texture(INSET), vec![(INSET.id, MAP.id)], &in_map), Ok(Runs::Workgroups([2, 1, 1])));
+    assert_eq!(written_in(Frame::Texture(INSET), vec![(MAP.id, INSET.id)], &in_map), Ok(Runs::Workgroups([2, 1, 1])));
+    assert_eq!(written_in(Frame::Texture(INSET), Vec::new(), &main()), Ok(Runs::Workgroups([2, 1, 1])));
+    assert_eq!(written_in(Frame::Main(window(0)), Vec::new(), &in_map), Ok(Runs::Workgroups([2, 1, 1])));
 }
 
 #[test]
@@ -337,10 +337,73 @@ fn a_dispatch_that_would_have_frames_read_each_other_round_is_refused() {
         check(&in_map, ME, &kept(pull_from_inset.clone(), vec![(INSET.id, MAP.id)])),
         Err(DispatchRefused::Round)
     );
-    assert_eq!(check(&in_map, ME, &kept(pull_from_inset, Vec::new())), Ok([2, 1, 1]));
+    assert_eq!(check(&in_map, ME, &kept(pull_from_inset, Vec::new())), Ok(Runs::Workgroups([2, 1, 1])));
     assert_eq!(
         check(&in_map, ME, &kept(field_to_inset.clone(), vec![(MAP.id, INSET.id)])),
         Err(DispatchRefused::Round)
     );
-    assert_eq!(check(&in_map, ME, &kept(field_to_inset, Vec::new())), Ok([2, 1, 1]));
+    assert_eq!(check(&in_map, ME, &kept(field_to_inset, Vec::new())), Ok(Runs::Workgroups([2, 1, 1])));
+}
+
+/// [`main`], running as many workgroups as the three words of `storage` from the byte `at` hold.
+fn indirect(storage: StorageId, at: u32) -> CreateDispatch {
+    changed(|dispatch| dispatch.size = Invocations::Indirect { storage, at })
+}
+
+#[test]
+fn workgroups_read_from_storage_not_kept_or_past_its_bytes_or_off_a_word_are_refused() {
+    // Catches the three words checked short of their end, by their first word alone, or with the sum overflowing, any
+    // of which WebGPU refuses as the dispatch is recorded, or the last place they fit refused, or a grid the GPU counts
+    // checked against the most it dispatches as a grid given is. Of the pull's 64 bytes, the three words fit from 52
+    // and not from 56; read from another's storage, as anyone handed it may read it.
+    let mut one = Kept::new();
+    one.most = 1;
+    let kept = Kept::new();
+
+    assert_eq!(check(&indirect(PULL, 52), ME, &kept), Ok(Runs::Indirect { storage: PULL, at: 52 }));
+    assert_eq!(check(&indirect(PULL, 52), ME, &one), Ok(Runs::Indirect { storage: PULL, at: 52 }));
+    assert_eq!(check(&indirect(PULL, 56), ME, &kept), Err(DispatchRefused::Arguments { at: 56, bytes: 64 }));
+    assert_eq!(check(&indirect(PULL, 2), ME, &kept), Err(DispatchRefused::Arguments { at: 2, bytes: 64 }));
+    assert_eq!(
+        check(&indirect(PULL, u32::MAX - 3), ME, &kept),
+        Err(DispatchRefused::Arguments { at: u32::MAX - 3, bytes: 64 })
+    );
+    assert_eq!(check(&indirect(StorageId { id: 9 }, 0), ME, &kept), Err(DispatchRefused::Storage));
+}
+
+#[test]
+fn workgroups_read_from_storage_the_dispatch_writes_are_refused() {
+    // Catches storage written at a place and read as the dispatch's workgroups, which WebGPU refuses as it is run.
+    assert_eq!(check(&indirect(FIELD, 0), ME, &Kept::new()), Err(DispatchRefused::Aliased { group: 0, binding: 1 }));
+}
+
+#[test]
+fn workgroups_read_from_storage_join_the_order_of_dispatches_and_frames() {
+    // Catches workgroups read from storage left out of what is read: a dispatch of the same pass writing it would leave
+    // the grid to whichever ran first, and a frame writing it that reads this one would have frames read each other
+    // round.
+    let with = |uses: Vec<(StorageId, Use)>, reads: Vec<(u64, u64)>| {
+        let mut kept = Kept::new();
+        kept.uses = uses;
+        kept.reads = reads;
+        kept
+    };
+    let main_frame = Frame::Main(window(0));
+    let in_map = changed(|dispatch| {
+        dispatch.join.frame = Frame::Texture(MAP);
+        dispatch.size = Invocations::Indirect { storage: THEIRS, at: 0 };
+    });
+    let from_inset = vec![used::<Compute>(THEIRS, Frame::Texture(INSET), Access::Write)];
+    let counted = Ok(Runs::Indirect { storage: THEIRS, at: 0 });
+
+    assert_eq!(
+        check(&indirect(THEIRS, 0), ME, &with(vec![used::<Compute>(THEIRS, main_frame, Access::Write)], Vec::new())),
+        Err(DispatchRefused::Written)
+    );
+    assert_eq!(
+        check(&indirect(THEIRS, 0), ME, &with(vec![used::<Settle>(THEIRS, main_frame, Access::Write)], Vec::new())),
+        counted
+    );
+    assert_eq!(check(&in_map, ME, &with(from_inset.clone(), vec![(INSET.id, MAP.id)])), Err(DispatchRefused::Round));
+    assert_eq!(check(&in_map, ME, &with(from_inset, Vec::new())), counted);
 }
