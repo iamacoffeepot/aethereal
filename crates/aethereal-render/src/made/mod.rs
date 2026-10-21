@@ -84,12 +84,24 @@ impl<T> Made<T> {
         }
     }
 
-    /// Releases everything `owner` made, and answers how many there were.
-    pub fn release_all(&mut self, owner: ActorId) -> usize {
-        let before = self.kept.len();
-        self.kept.retain(|_, (made_by, _)| *made_by != owner);
+    /// Releases everything `owner` made, and answers it, each under its id.
+    pub fn release_all(&mut self, owner: ActorId) -> Vec<(u64, T)> {
+        self.kept.extract_if(|_, (made_by, _)| *made_by == owner).map(|(id, (_, value))| (id, value)).collect()
+    }
 
-        before - self.kept.len()
+    /// What is kept under `id`, whoever made it: what any actor handed the id may draw with.
+    pub fn get(&self, id: u64) -> Option<&T> {
+        self.kept.get(&id).map(|(_, value)| value)
+    }
+
+    /// Everything kept, in no order.
+    pub fn values(&self) -> impl Iterator<Item = &T> {
+        self.kept.values().map(|(_, value)| value)
+    }
+
+    /// Everything kept, in no order, to change.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.kept.values_mut().map(|(_, value)| value)
     }
 }
 

@@ -27,5 +27,10 @@ name = "make"
 path = "examples/make/lib.rs"
 crate-type = ["cdylib"]
 
+[[example]]
+name = "draw"
+path = "examples/draw/lib.rs"
+crate-type = ["cdylib"]
+
 [lints]
 workspace = true

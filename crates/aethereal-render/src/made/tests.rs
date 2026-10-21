@@ -42,7 +42,10 @@ fn a_maker_that_ends_takes_what_it_made_and_nothing_else() {
     made.keep(2, actor(2), "two");
     made.keep(3, actor(1), "three");
 
-    assert_eq!(made.release_all(actor(1)), 2);
+    let mut released = made.release_all(actor(1));
+    released.sort_unstable();
+
+    assert_eq!(released, [(1, "one"), (3, "three")]);
     assert_eq!(made.release(2, actor(2)), Owned::Mine("two"));
     assert_eq!(made.release(3, actor(1)), Owned::Unknown);
 }

@@ -6,6 +6,7 @@ mod gpu;
 pub mod instances;
 mod made;
 pub mod mesh;
+pub mod placement;
 pub mod program;
 mod renderer;
 pub mod texture;
