@@ -858,11 +858,11 @@ impl Actor for Chick {
     type Config = AddBy;
     type Key = u64;
     type Handles = ();
-    type BeginSends = (ToAny<(Pong,), Pong>,);
+    type BeginSends = (ToType<Hatcher, Pong>,);
     type EndSends = ();
 
     fn begin(config: AddBy, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.send_to_any(ToWithoutMail::Parent, &Pong { n: 100 + config.by })?;
+        turn.to(turn.parent()).send(&Pong { n: 100 + config.by })?;
         turn.log(Level::Info, "a chick began");
 
         Ok(Self)
@@ -1068,13 +1068,13 @@ impl Actor for Boomerang {
     type Config = Home;
     type Key = ();
     type Handles = (Ping,);
-    type BeginSends = (ToAny<(Pong,), Pong>,);
+    type BeginSends = (ToType<Hatcher, Pong>,);
     type EndSends = ();
 
     fn begin(home: Home, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let spawned = turn.spawn_from::<Reporter>(&home.home, &0, &AddBy { by: 0, deeper: 0 });
         let n = spawned.err().map_or(300, |why| 300 + refused(&why));
-        turn.send_to_any(ToWithoutMail::Parent, &Pong { n })?;
+        turn.to(turn.parent()).send(&Pong { n })?;
 
         Ok(Self { home: home.home })
     }
@@ -1085,12 +1085,12 @@ impl Actor for Boomerang {
 }
 
 impl Handles<Ping> for Boomerang {
-    type Sends = (ToAny<(Pong,), Pong>,);
+    type Sends = (ToType<Hatcher, Pong>,);
 
     fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let spawned = turn.spawn_from::<Reporter>(&self.home, &1, &AddBy { by: 0, deeper: 0 });
         let n = spawned.err().map_or(400, |why| 400 + refused(&why));
-        turn.send_to_any(To::Parent, &Pong { n })?;
+        turn.to(turn.parent()).send(&Pong { n })?;
 
         Ok(())
     }
@@ -1896,7 +1896,7 @@ impl Actor for Inlet {
 }
 
 impl Handles<Answer<Pong, Which>> for Inlet {
-    type Sends = (ToAny<(Heard,), Heard>,);
+    type Sends = (ToType<Opener, Heard>,);
 
     fn handle(
         &mut self,
@@ -1907,7 +1907,7 @@ impl Handles<Answer<Pong, Which>> for Inlet {
             Answered::Yes(pong) => Heard::Pong { at: which.at, n: pong.n },
             Answered::No(why) => Heard::No { at: which.at, why },
         };
-        turn.send_to_any(To::Parent, &heard)?;
+        turn.to(turn.parent()).send(&heard)?;
 
         Ok(())
     }
@@ -2226,12 +2226,12 @@ impl Actor for Nestling {
     type Config = Book;
     type Key = ();
     type Handles = ();
-    type BeginSends = (ToAny<(Pong,), Pong>,);
+    type BeginSends = (ToType<Nester, Pong>,);
     type EndSends = ();
 
     fn begin(book: Book, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let n = 200 + turn.read(&book.blob).len() as u64;
-        turn.send_to_any(ToWithoutMail::Parent, &Pong { n })?;
+        turn.to(turn.parent()).send(&Pong { n })?;
 
         Ok(Self)
     }

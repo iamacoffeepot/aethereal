@@ -6,7 +6,7 @@ use crate::{ByActor, Entry, child_id, path_id};
 use aethereal_actor::Time;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Carries, ChildOf, Ended, Ending, Fault, Handles, How, Level,
-    Path, Recursive, Table, Tells, To, ToAny, ToSender, ToType, ToWithoutMail, Top, Turn, path,
+    Path, Recursive, Table, Tells, To, ToAny, ToSender, ToType, Top, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
@@ -124,7 +124,9 @@ impl Actor for Node {
 
     fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         say(format!("{} ended {:?}", self.number, turn.why()));
-        turn.send(ToWithoutMail::Parent, &Note { text: format!("bye {}", self.number) })?;
+        if let Some(parent) = turn.parent() {
+            turn.to(parent).send(&Note { text: format!("bye {}", self.number) })?;
+        }
         let fails = self.number == 13;
         if fails {
             return Err(Fault::new(&Note { text: String::from("unlucky") })?);
@@ -147,7 +149,9 @@ impl Handles<Note> for Node {
             ["fail"] => return Err(Fault::new(&Note { text })?),
             ["fail", line] => {
                 turn.log(Level::Warn, line);
-                turn.send(To::Parent, &Note { text: String::from("never") })?;
+                if let Some(parent) = turn.parent() {
+                    turn.to(parent).send(&Note { text: String::from("never") })?;
+                }
 
                 return Err(Fault::new(&Note { text: String::from(line) })?);
             }
@@ -162,7 +166,11 @@ impl Handles<Note> for Node {
                     turn.reply(&Note { text: format!("bounce {}", left - 1) })?;
                 }
             }
-            ["up", said] => turn.send(To::Parent, &Note { text: format!("{said} from {}", self.number) })?,
+            ["up", said] => {
+                if let Some(parent) = turn.parent() {
+                    turn.to(parent).send(&Note { text: format!("{said} from {}", self.number) })?;
+                }
+            }
             ["spawn" | "watch", number, text] => {
                 let number = number.parse().unwrap_or_default();
                 let config = NodeConfig { number, to_self: Vec::new(), spawns: Vec::new() };
@@ -184,7 +192,9 @@ impl Handles<Note> for Node {
                 turn.send(child, &Note { text: String::from(text) })?;
             }
             ["both"] => {
-                turn.send(To::Parent, &Note { text: String::from("watchme") })?;
+                if let Some(parent) = turn.parent() {
+                    turn.to(parent).send(&Note { text: String::from("watchme") })?;
+                }
                 turn.to(turn.me()).send(&Note { text: String::from("close") })?;
             }
             ["watchme", ..] => {

@@ -2,7 +2,7 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Time, To, ToType, ToWithoutMail, Turn,
+    Actor, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Time, ToType, ToWithoutMail, Turn,
 };
 use aethereal_data::{ActorId, Kind, KindName, PathSegment, Plain, TypedKey};
 use aethereal_substrate::child_id;
@@ -86,7 +86,9 @@ impl Handles<Count> for Fan {
 
         let worked = (0..self.number * 1_000).fold(self.number, |sum, step| sum.wrapping_mul(31).wrapping_add(step));
         turn.log(Level::Info, format!("{} at {left} worked {worked}", self.number));
-        turn.send(To::Parent, &Count { left })?;
+        if let Some(parent) = turn.parent() {
+            turn.to(parent).send(&Count { left })?;
+        }
         if left == 0 {
             turn.close();
         } else {
