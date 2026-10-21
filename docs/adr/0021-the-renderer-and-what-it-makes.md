@@ -49,7 +49,8 @@ Release { id }                                                                  
 - A texture's bytes are its width times its height times its format's size.
 - A program's WGSL is parsed and validated with naga, in the render root's turn, with no capability beyond what every WebGPU device has. Its entry points exist and are a vertex and a fragment stage. Each input of the vertex stage is an attribute of `layout`, at its location and of its kind of number (`f32` or `u32`), of any count of components, as WebGPU fills what a format lacks. Each binding the shader uses is in `bindings`, at its group and binding and of its kind, and a uniform block's or a storage buffer's bytes are at least what the shader reads of it. A storage buffer is one the shader only reads (`var<storage, read>`), from either stage, as WebGPU lets a vertex stage read storage it does not write; one it writes is refused (ADR-0023). Then the pipeline is made. **This departs from those checks alone**, as each of these is one WebGPU makes as the pipeline is made, where natively wgpu stops the program and a browser makes an invalid pipeline:
   - the fragment stage reads each of its locations as the vertex stage writes it, of the same type and interpolation;
-  - the fragment stage writes a `vec4<f32>` at location 0, the colour drawn;
+  - the fragment stage writes a `vec4<f32>` at location 0, the colour drawn, or a `u32` or a vector of them for a shape of whole numbers, which takes no blend (ADR-0025);
+  - a program tests or writes depth only for a shape that holds it;
   - the module declares no constant a pipeline overrides, as a program sets none;
   - `bindings` lists each place once, in a group the GPU has, uniform blocks and storage buffers of a size it binds, and no more of each kind than a stage binds, by the device's limits;
   - a vertex layout reads at most sixteen locations, as many as WebGPU lets every device read; a mesh's layout is checked the same.

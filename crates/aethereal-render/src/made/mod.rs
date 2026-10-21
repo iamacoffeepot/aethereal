@@ -75,6 +75,11 @@ impl<T> Made<T> {
         self.kept.remove(&id).map_or(Owned::Unknown, |(_, value)| Owned::Mine(value))
     }
 
+    /// Drops what is kept under `id`, whoever made it: what the renderer itself takes the place of.
+    pub fn forget(&mut self, id: u64) {
+        self.kept.remove(&id);
+    }
+
     /// What is kept under `id`, to write, when `by` made it.
     pub fn owned(&mut self, id: u64, by: ActorId) -> Owned<&mut T> {
         match self.kept.get_mut(&id) {
@@ -92,6 +97,16 @@ impl<T> Made<T> {
     /// What is kept under `id`, whoever made it: what any actor handed the id may draw with.
     pub fn get(&self, id: u64) -> Option<&T> {
         self.kept.get(&id).map(|(_, value)| value)
+    }
+
+    /// What is kept under `id`, whoever made it, to change as its keeper.
+    pub fn get_mut(&mut self, id: u64) -> Option<&mut T> {
+        self.kept.get_mut(&id).map(|(_, value)| value)
+    }
+
+    /// Everything kept, each under its id, in no order.
+    pub fn iter(&self) -> impl Iterator<Item = (u64, &T)> {
+        self.kept.iter().map(|(id, (_, value))| (*id, value))
     }
 
     /// Everything kept, in no order.

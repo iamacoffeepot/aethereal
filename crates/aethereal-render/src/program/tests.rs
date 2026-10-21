@@ -299,3 +299,34 @@ fn storage_the_gpu_would_not_bind_is_refused() {
     assert_eq!(checked(&many), Err(ProgramRefused::Many { kind: BindingKind::Storage { bytes: 0 } }));
     assert_eq!(checked(&uniforms_beside), Ok(()));
 }
+
+#[test]
+fn a_program_into_whole_numbers_writes_them_and_blends_nothing() {
+    // Catches a target of whole numbers drawn as colour, or blended into: WebGPU refuses each as the pipeline is made.
+    let whole = Shape::with_depth(ColourFormat::R32Uint);
+    let mut ids = rewritten(
+        "-> @location(0) vec4<f32> {\n    return textureSample(image, soft, between.uv);",
+        "-> @location(0) u32 {\n    return u32(textureSample(image, soft, between.uv).x * 255.0);",
+    );
+    ids.shape = whole;
+    let mut floats = program();
+    floats.shape = whole;
+    let mut blended = ids.clone();
+    blended.state.blend = Blend::Alpha;
+
+    assert_eq!(checked(&ids), Ok(()));
+    assert_eq!(checked(&floats), Err(ProgramRefused::Output));
+    assert_eq!(checked(&blended), Err(ProgramRefused::Blend));
+}
+
+#[test]
+fn a_program_testing_depth_in_a_shape_that_holds_none_is_refused() {
+    // Catches a pipeline made with depth for a pass without it, which WebGPU refuses as the pass draws it.
+    let mut depthless = program();
+    depthless.shape = Shape::flat(ColourFormat::Bgra8);
+    let mut untested = depthless.clone();
+    untested.state.depth = Depth::Off;
+
+    assert_eq!(checked(&depthless), Err(ProgramRefused::Depthless));
+    assert_eq!(checked(&untested), Ok(()));
+}
