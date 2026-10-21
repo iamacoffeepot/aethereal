@@ -40,6 +40,75 @@ impl ChildOf for Timer  { type Parent = Anywhere; }       // beneath any actor, 
 - Each type's declaration holds who may spawn it, as its `Parent` says: no one for `Top`, anyone for `Anywhere`, its own type for `Recursive`, and the one type otherwise (`Spawner`). A guest's section holds it with the rest of the type's declaration, and a guest's host checks a guest's spawns against the child type's: a guest that spawns a child that does not stand beneath its spawner's type has broken its declaration, and its host fails the turn that did, as for a send past it (ADR-0013); a child of other code it asked for in a call out is not begun.
 - So any actor may spawn a type that stands `Anywhere`, as any may hold one.
 
+### A typed path: the actor named by its type, its ancestors filled in
+
+```rust
+path::<Renderer>(())                  // the root Renderer
+path::<Lens>(())                      // the Lens beneath the Camera beneath the Host
+path::<Squad>((3, Name("scout")))     // World, then Army 3, then Hud, then the Squad "scout"
+path::<Banner>(3)                     // the Banner beneath Army 3: one key, alone
+```
+
+- **A path is named by its last type alone.** The engine fills in the rest from each type's `Parent`, up to a root: `path::<Lens>` is the path `Host`, `Camera`, `Lens`. It builds only when every type on the way has one type as its `Parent`, or `Top` at the root; a type that is `Recursive` or `Anywhere` has no one path, and is reached from a reference held (below). A path is at most as deep as any path (ADR-0008: 32 segments), and takes at most eight keys. **The refusal says why:** `ChildOf` carries `#[diagnostic::on_unimplemented]`, so `path::<Timer>` reads "`Anywhere` is not one actor type that declares where it stands", noting that a type that is `Recursive` or `Anywhere` has no one path and is reached from a reference held. It names the parent that is not one place, as the bound unmet is the parent's.
+- **Its keys are its keyed segments' keys, root first, and nothing for a singleton.** One key is passed alone and several as a tuple; a path of singletons takes `()`. The path's type says what its keys are: a key missing, extra, of the wrong type, or in the wrong place does not build.
+- **`path::<L>(keys)` answers a `Path<L>`**, which holds the path its names and keys spell: no id, as only the engine computes one (ADR-0008: `root_id`, `child_id`), and `path` runs in the actor's code, a guest's among it. The actor never handles an id or a seat.
+- **`send_to`, `ask_to`, and `watch` take a typed path wherever they take a reference**, `send_to_all` excepted: a send to many writes its bytes once for references, which need no lookup. At the send, the table resolves the path, making its id as it does when it seats each actor, and **the actor there must be of `L`'s kind.** A reference was proven when it was made, by the spawn, cast, or resolve that saw its actor's kind; a path proves nothing, so it is checked at each send, as `turn.child` checks. A place holding an actor of another kind (one of the same name, so the same id, and another layout) is treated as empty. Two types of one name and one layout are one kind (ADR-0006), and are not told apart.
+- A typed path names a place, not an actor that is live. Mail sent to one that holds no live actor is dropped, and an ask is answered `Unanswered::Ended`, as for a reference to an actor that has ended (ADR-0008, ADR-0017). A watch at one is shown the ending at once, `How::Earlier`.
+- **The table answers a path in one read, `Table::reach(path, kind)`:** the actor there and its seat when it is live and of the kind, and otherwise the place's id in `SeatNumber::NOWHERE`, a seat no actor sits in. Mail to that seat goes through the engine's way for mail to an actor that has gone, which drops it, answers a request `Ended`, and shows a watch the ending, so an empty place needs nothing of its own. A guest's table holds no other actor's type, so its host answers the read in one call out, the kind check with it.
+
+### What a turn may say at a typed path is declared, and the declaration is the dependency
+
+```rust
+impl Carries<CreateMesh> for Renderer { type Answers = (Meshed,); }   // what asking a Renderer for a mesh gets
+
+type Sends = (Asks<Path<Renderer>, CreateMesh, Made>, Tells<Path<Renderer>, Release>);
+
+turn.ask_to(path::<Renderer>(()), &CreateMesh { .. }, &Made::Ground)?;
+turn.send_to(path::<Renderer>(()), &Release::Mesh(mesh))?;
+```
+
+- **An ask at a typed path is declared with the path**, `Asks<Path<L>, K, C>`, and **the answer is read from the path's type `L`**: it says what it answers each kind it can be asked with `Carries<K>`, as a named protocol does (ADR-0016), beside its handler. Its handler's declared replies must be the answer it carries, checked in the marker and not at the call. An ask is answered with one kind, so the check is `RepliesWith<A>`: each reply its handler declares is `A`. This departs from checking it as a protocol's are (`AnsweredBy`), whose place in the answers is inferred, and a `DeclaredBy` impl has no parameter for it to be inferred into. A type carries only the kinds it can be asked, one by one, so no list of its kinds is kept beside `Handles`. A kind a type does not carry cannot be asked of it at a typed path.
+- **This departs from ADR-0016**, where only a named protocol carries kinds: an actor's type may carry them too, for the asks made of it by its type. Named protocols stay for asking any actor that handles a set of kinds, through a `ProtocolRef`.
+- **A send at a typed path is declared with the path**, `Tells<Path<L>, K>`, the counterpart of `Asks`, and builds only when `L` handles `K`.
+- Both are checked at build time as every send is (`Allows`), and an ask only when the asker handles the answer (`DeclaredBy<Self>`).
+- **Their `Sending` targets the path, `Target::Path(segments)`, so a type's declaration holds every path it reaches.** No dependency is declared beside the sends: a declared send at a typed path is one.
+
+**A spawn is refused, before the child's `begin` runs, when a typed path its type reaches holds no live actor.**
+
+- The refusal is `Refused::Missing(KindName)`, holding the name of the path's type `L`.
+- It is checked for every path of singletons. A path with a key is a place many actors fill and empty while the program runs, so it is not checked at the spawn, and a send to one that holds no live actor is dropped.
+- The check reads the child's whole declaration: its `begin`, every handler, and its `end`, which may send at a typed path as it may send to anyone.
+- **A root is checked as it is made** (`Engine::add_root`, beside its check of stages). So the chassis makes a root before any root that reaches it.
+- **An actor counts as live for the children its own `begin` spawns**, though it is not yet in the table: a root whose `begin` spawns a helper that reaches it back is not refused.
+- **When a child would be refused for both, `Unstaged` is the refusal**: stages are checked first.
+- **The check covers one level.** A root whose `begin` spawns a child that reaches a root made later has that child refused, and its `begin` decides what that means; one that fails is refused with `Refused::Began` and its fault, not `Missing`.
+- A path checked at a spawn may hold no live actor later, when its actor ends. Nothing about a send to it changes: it is dropped, and an ask answered `Ended`.
+- **A host's first roots are also checked as the program is built.** `Engine::new` hands out a `Setup<S>`, whose `S` lists the roots made so far, `()` and then `(R, S)`; `Setup::add_root` makes one and adds it to the list, and `ready()` hands out the `Engine`, building only when each root reaches at a typed path only roots made before it. So a chassis whose root reaches one made after it fails `cargo check`, and the error names the root missing.
+  - **The check is at `ready()`, not at each `add_root`**: a set's membership is proven through an index the compiler infers, which needs a type parameter of its own, and `add_root::<R>` names its root with a turbofish, which would have to name the index too (`add_root::<R, _>`). `ready` has no turbofish, so it carries the index.
+  - **It proves only a path whose one segment is a singleton root.** That a root was made says nothing of the children its `begin` spawns, so a deeper path is checked where its actor is made, as is a keyed one.
+  - Each `add_root` changes the setup's type, so roots of one instanced type made in a loop are made by `add_roots`, one entry in the list for them all.
+  - `ActorKey` gains `Keying`, `Singleton` or `Instanced`, `KEYED` as a type, which the check reads.
+  - The check as each root is made stays, for a root made once the engine runs, a child spawned in a turn, and a guest's section, none of which a setup's types see.
+- **Roots may be added between steps while the program runs**, as `add_root` allows today; the check reads the table as it stands, and nothing here needs the set of roots to be fixed.
+- **An actor moved onto a newer blob of its kind (ADR-0009) is checked against the new blob's declaration** as a child of it would be, and the move is refused when that would be.
+- The check reads the table a spawn's turn reads, as it reads which stages run (`Table::runs_stage`), through the read a send at a path makes, `Table::reach`: a place is live when it answers a seat. It is answered natively from the table and for a guest in a call out (ADR-0015). It runs for every child, whatever its code, as the check of stages does.
+- **A guest's turn checks a child before it asks its host to begin it**, as it checks its stages, so no host refuses a guest's spawn for a path. `Refused::Missing` crosses the call out that answers a guest's spawn (`records::refusal`) as a code of its own, without the name, as `Unstaged` crosses without its stage. **This departs from the name crossing with it**, which nothing would read.
+- **A declaration's path segment holds its type's kind as well as its name**, in a guest's section as natively, so the check, and a host's check of a guest's send at a path, compare kinds and not names: a place holding an actor of another layout under the same name is empty to both.
+- A guest's module that skipped the check makes an actor whose sends to a path that holds nothing are dropped, as for one whose actor ended; its host checks nothing more.
+
+### `turn.parent()` and `turn.child`: reaching what is not static
+
+- **A turn is typed by its actor's type**, `Turn<'_, Self, S>`, `Beginning<'_, Self, S>`, `Ending<'_, Self, S>`, so what a turn offers can be read from where its actor's type stands. **This departs from ADR-0009 and ADR-0013**, whose turn was typed only by what its handler may send, which names no actor: nothing in a handler's signature led to its type's `Parent`. Every handler, `begin`, and `end` names `Self` in its turn, and a helper that takes a turn takes its actor's type as a parameter.
+- **`turn.parent()`** is the actor directly above, inferred from `Self::Parent` (`Parented`): an `ActorRef<P>` when it is the one type `P`; an `Option<ActorRef<Self>>` when it is `Recursive`, none for a root; and an `Option<ErasedActorRef>` when it is `Anywhere`, none for a root, as which it stands beneath is a fact of the run. A root's type has no `parent()`: it does not build. **This departs from an erased parent for `Recursive`**: its parent is of its own type when it has one, so it is typed. It is the actor that spawned this one, live or not, as a reference is valid while it exists (ADR-0008): mail to one that has ended is dropped. `turn.send_to(turn.parent(), &mail)` replaces `turn.send(To::Parent, &mail)` where the parent is typed, and is checked as the program is built.
+- **`turn.child(parent, &key)`** finds a child by its type beneath a reference held: `let unit: Option<ActorRef<Unit>> = turn.child(army, &7)`. It builds only when the child's `Parent` admits the parent's type (for a typed parent). The child's id is made from the parent's and the child's segment, and the answer is the reference when the table holds a live actor there of `C`'s kind, and nothing otherwise.
+- A child is found while it is live, whether or not its parent is: a child outlives its parent (ADR-0009).
+- Both see what a resolve sees (ADR-0011): the table as the step began, and in a fused turn's run what that run stood up and ended (ADR-0013). A child this turn stood up is found, as a send by `To::Child` finds it. The same holds for a typed path.
+- A guest reads each in one call out, answered with the actor's seat and kind.
+
+### References
+
+**A fourth way to reach an actor is added to the three of ADR-0008: a typed path, named by the type of its last segment.** **This departs from ADR-0008**, which is edited to say so. It is not a reference the actor holds: the engine finds the actor there at each send, as it finds the sender's parent for `To::Parent`. It reaches the same actor a resolve of its path would, through the types that path is made of, which a resolve's cast cannot give (ADR-0016).
+
 ## Consequences
 
 - An actor reaches a root, or any actor beneath it whose place its types and keys name, by its type alone, at any depth a path may have, with nothing handed down through configs, and asks it through the protocol it declares.
