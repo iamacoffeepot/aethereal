@@ -26,6 +26,7 @@ version = "0.1.0"
 dependencies = [
  "aethereal-actor",
  "aethereal-data",
+ "aethereal-render",
  "aethereal-substrate",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -78,6 +79,15 @@ version = "0.1.0"
 dependencies = [
  "aethereal-data",
  "libm",
+]
+
+[[package]]
+name = "aethereal-render"
+version = "0.1.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
+ "wgpu",
 ]
 
 [[package]]

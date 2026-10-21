@@ -1,8 +1,8 @@
 //! The browser chassis: the engine on a page's one thread, cycled by its animation frames (ADR-0001, ADR-0020).
 //!
 //! The page owns the thread, the canvas, and when a frame is drawn. It opens
-//! the [`Gpu`] before the engine is made, hands it in to the root that draws
-//! (ADR-0010), and from each `requestAnimationFrame` calls
+//! the GPU with [`open`] before the engine is made, hands it in to the
+//! renderer (ADR-0010, ADR-0021), and from each `requestAnimationFrame` calls
 //! [`Browser::frame`], which runs one cycle through to its end before the
 //! page gets its thread back.
 
@@ -16,7 +16,7 @@ mod tests;
 #[cfg(target_arch = "wasm32")]
 pub use clock::Performance;
 #[cfg(target_arch = "wasm32")]
-pub use gpu::Gpu;
+pub use gpu::open;
 
 use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Engine};

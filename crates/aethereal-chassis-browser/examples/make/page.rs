@@ -1,0 +1,213 @@
+//! The page's entry points, and an actor that asks the renderer for a mesh and a texture.
+
+use aethereal_actor::{
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Refused, Render, Start, Tells,
+    Tick, Top, Turn, path,
+};
+use aethereal_chassis_browser::{Browser, Performance, open};
+use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_render::mesh::{Attribute, CreateMesh, Meshed, VertexFormat, VertexLayout};
+use aethereal_render::texture::{CreateTexture, TextureFormat, Textured};
+use aethereal_render::{Release, Renderer, RendererConfig};
+use aethereal_substrate::Engine;
+use core::cell::RefCell;
+use core::mem;
+use core::num::NonZeroUsize;
+use wasm_bindgen::JsError;
+use wasm_bindgen::prelude::wasm_bindgen;
+use web_sys::HtmlCanvasElement;
+
+thread_local! {
+    /// What the maker was answered, for the page to show.
+    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Notes what the maker was answered.
+fn say(line: String) {
+    SAID.with_borrow_mut(|said| said.push(line));
+}
+
+/// The program the page runs, for its `requestAnimationFrame` to call.
+#[wasm_bindgen]
+pub struct Program {
+    browser: Browser<Performance>,
+}
+
+/// Opens WebGPU on `canvas`, then makes the engine with the renderer, handed the GPU, and the maker as its roots.
+///
+/// # Errors
+///
+/// When WebGPU will not open on the canvas, or a root does not begin.
+#[wasm_bindgen]
+pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
+    let gpu = open(canvas).await?;
+    let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
+        .with_cycle::<(Tick, Render)>()
+        .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
+    let gpu = setup.hand(gpu);
+    // The maker reaches the renderer at its typed path, so the renderer is made first: `ready` builds only then.
+    let engine = setup
+        .add_root::<Renderer>(&(), RendererConfig { gpu })
+        .map_err(|refused| JsError::new(&format!("the renderer did not begin: {refused:?}")))?
+        .add_root::<Maker>(&(), Nothing)
+        .map_err(|refused| JsError::new(&format!("the maker did not begin: {refused:?}")))?
+        .ready();
+
+    Ok(Program { browser: Browser::new(engine, Performance) })
+}
+
+#[wasm_bindgen]
+impl Program {
+    /// Runs one frame.
+    pub fn frame(&mut self) {
+        self.browser.frame();
+    }
+
+    /// What the maker was answered since this was last asked, a line each.
+    #[must_use]
+    #[expect(clippy::unused_self, reason = "the page asks it of the program it started")]
+    pub fn said(&self) -> Vec<String> {
+        SAID.with_borrow_mut(mem::take)
+    }
+}
+
+/// An empty config.
+#[derive(Plain)]
+struct Nothing;
+
+impl Kind for Nothing {
+    const NAME: KindName = KindName::new("aether.example.nothing");
+}
+
+/// What the maker asked for, kept until it is answered.
+#[derive(Plain)]
+struct Asked {
+    what: String,
+}
+
+impl Kind for Asked {
+    const NAME: KindName = KindName::new("aether.example.asked");
+}
+
+/// An actor that, as the program starts, asks the renderer for a triangle, a texture of two by two pixels, and a
+/// triangle with an index past its last vertex, says what each was answered, and releases the triangle once made.
+#[derive(Bound)]
+struct Maker;
+
+impl Kind for Maker {
+    const NAME: KindName = KindName::new("aether.example.maker");
+}
+
+impl ChildOf for Maker {
+    type Parent = Top;
+}
+
+impl Actor for Maker {
+    type Config = Nothing;
+    type Key = ();
+    type Handles = (On<Start>, Answer<Meshed, Asked>, Answer<Textured, Asked>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.subscribe::<Start>();
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// The bytes of `values`, as a blob is put.
+fn bytes<const N: usize>(values: [u32; N]) -> Vec<u8> {
+    values.iter().flat_map(|value| value.to_ne_bytes()).collect()
+}
+
+/// What the maker asks the renderer for: a triangle, a texture of two by two pixels, and a triangle with an index
+/// past its last vertex, each put as blobs through `turn`.
+struct Requests {
+    triangle: CreateMesh,
+    texture: CreateTexture,
+    past: CreateMesh,
+}
+
+impl Requests {
+    /// The asks, their bytes put through `turn`: refused when a put is.
+    fn put<S>(turn: &mut Turn<'_, Maker, S>) -> Result<Self, Refused> {
+        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+        let layout = VertexLayout { stride: 8, attributes: vec![position] };
+        let corners = [0.0_f32, 0.5, -0.5, -0.5, 0.5, -0.5].map(f32::to_bits);
+
+        let triangle = CreateMesh {
+            layout: layout.clone(),
+            vertices: turn.put(bytes(corners))?,
+            indices: turn.put(bytes([0, 1, 2]))?,
+        };
+        let pixels = turn.put(vec![255; 16])?;
+        let texture = CreateTexture { width: 2, height: 2, format: TextureFormat::Rgba8, pixels };
+        let past = CreateMesh { layout, vertices: turn.put(bytes(corners))?, indices: turn.put(bytes([0, 1, 3]))? };
+
+        Ok(Self { triangle, texture, past })
+    }
+}
+
+impl Handles<On<Start>> for Maker {
+    type Sends = (Asks<Path<Renderer>, CreateMesh, Asked>, Asks<Path<Renderer>, CreateTexture, Asked>);
+
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let requests = match Requests::put(turn) {
+            Ok(requests) => requests,
+            Err(why) => {
+                say(format!("nothing asked: {why}"));
+                return Ok(());
+            }
+        };
+
+        turn.ask_to(path::<Renderer>(()), &requests.triangle, &Asked { what: String::from("a triangle") })?;
+        turn.ask_to(path::<Renderer>(()), &requests.texture, &Asked { what: String::from("a texture") })?;
+        turn.ask_to(path::<Renderer>(()), &requests.past, &Asked { what: String::from("an index past the end") })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Meshed, Asked>> for Maker {
+    type Sends = (Tells<Path<Renderer>, Release>,);
+
+    fn handle(
+        &mut self,
+        (answered, asked): (Answered<Meshed>, Asked),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        match answered {
+            Answered::Yes(Meshed::Made(mesh)) => {
+                say(format!("{}: made {mesh:?}, then released", asked.what));
+                turn.send_to(path::<Renderer>(()), &Release::Mesh(mesh))?;
+            }
+            Answered::Yes(Meshed::Refused(why)) => say(format!("{}: refused, {why:?}", asked.what)),
+            Answered::No(why) => say(format!("{}: unanswered, {why:?}", asked.what)),
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Textured, Asked>> for Maker {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, asked): (Answered<Textured>, Asked),
+        _: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        match answered {
+            Answered::Yes(Textured::Made(texture)) => say(format!("{}: made {texture:?}", asked.what)),
+            Answered::Yes(Textured::Refused(why)) => say(format!("{}: refused, {why:?}", asked.what)),
+            Answered::No(why) => say(format!("{}: unanswered, {why:?}", asked.what)),
+        }
+
+        Ok(())
+    }
+}
