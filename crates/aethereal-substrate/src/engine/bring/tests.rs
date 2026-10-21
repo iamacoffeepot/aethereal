@@ -4,7 +4,7 @@ use super::super::*;
 use crate::{Closed, Entry, Feed};
 use aethereal_actor::Time;
 use aethereal_actor::{
-    Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Recursive, Source, ToType, ToWithoutMail, Top, Turn,
+    Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Recursive, Source, ToType, Top, Turn,
 };
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use std::cell::RefCell;
@@ -103,8 +103,7 @@ impl Actor for Window {
         let pointers = pointers.into_iter().map(|pointer| turn.take(pointer)).collect::<Result<_, _>>()?;
         let lights = lights.into_iter().map(|light| turn.take(light)).collect::<Result<_, _>>()?;
         for text in orders {
-            let me = turn.me();
-            turn.send(ToWithoutMail::Held(me.erase()), &Order { text })?;
+            turn.send_to(turn.me(), &Order { text })?;
         }
 
         Ok(Self { number, pointers, lights })
@@ -365,8 +364,7 @@ impl Actor for Windows {
         controller.push(Make::Window(String::from("a")));
         controller.push(Make::Window(String::from("b")));
         for text in orders {
-            let me = turn.me();
-            turn.send(ToWithoutMail::Held(me.erase()), &Order { text })?;
+            turn.send_to(turn.me(), &Order { text })?;
         }
 
         Ok(Self { control })

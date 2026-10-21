@@ -90,8 +90,7 @@ impl Handles<Count> for Fan {
         if left == 0 {
             turn.close();
         } else {
-            let me = turn.me();
-            turn.send(To::Held(me.erase()), &Count { left: left - 1 })?;
+            turn.send_to(turn.me(), &Count { left: left - 1 })?;
         }
 
         Ok(())

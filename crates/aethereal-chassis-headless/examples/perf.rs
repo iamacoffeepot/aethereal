@@ -10,7 +10,7 @@
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Recursive, To, ToType, ToWithoutMail, Turn};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Recursive, ToType, ToWithoutMail, Turn};
 use aethereal_chassis_headless::{Headless, Measured};
 use aethereal_data::{Kind, KindName, Plain, TypedKey};
 use aethereal_substrate::Engine;
@@ -126,8 +126,7 @@ impl Handles<Count> for Counter {
         if left == 0 {
             turn.close();
         } else {
-            let me = turn.me();
-            turn.send(To::Held(me.erase()), &Count { left: left - 1 })?;
+            turn.send_to(turn.me(), &Count { left: left - 1 })?;
         }
 
         Ok(())

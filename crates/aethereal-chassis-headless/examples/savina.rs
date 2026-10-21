@@ -1064,8 +1064,7 @@ impl Handles<Live> for Mortal {
 
     fn handle(&mut self, Live { left }: Live, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if left > 0 {
-            let me = turn.me();
-            turn.send(To::Held(me.erase()), &Live { left: left - 1 })?;
+            turn.send_to(turn.me(), &Live { left: left - 1 })?;
         } else {
             turn.send(To::Parent, &Died)?;
             turn.close();

@@ -7,7 +7,7 @@ use aethereal_actor::Time;
 use aethereal_actor::Written;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asking, Asks, BlobRef, Carries, ChildOf, Ending, Fault, Handles, Held,
-    Protocol, Tie, To, ToSender, ToType, ToWithoutMail, Top, Turn, Unanswered,
+    Protocol, Tie, To, ToSender, ToType, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, EncodeError, Kind, KindName, Plain, TypedKey};
 use std::cell::RefCell;
@@ -260,8 +260,7 @@ impl Actor for Pointer {
                 let spawned: Result<ActorRef<Seeker>, _> = turn.spawn(&x, Seeking { x, fails: 0 });
                 say(format!("seeker {}", spawned.is_ok()));
             } else {
-                let me = turn.me();
-                turn.send(ToWithoutMail::Held(me.erase()), &Order { text })?;
+                turn.send_to(turn.me(), &Order { text })?;
             }
         }
 
@@ -291,8 +290,7 @@ impl Handles<Order> for Pointer {
                 turn.send_to(board, &Release { how })?;
             }
             "later" => {
-                let me = turn.me();
-                turn.send(To::Held(me.erase()), &Order { text: String::from(rest) })?;
+                turn.send_to(turn.me(), &Order { text: String::from(rest) })?;
             }
             "ask" => {
                 for (at, x) in (0..).zip(xs) {
@@ -451,8 +449,7 @@ impl Actor for Keeper {
         let Ok(board) = turn.spawn(&1, Blank) else {
             return Err(Fault::new(&Order { text: String::from("no board") })?);
         };
-        let me = turn.me();
-        turn.send(ToWithoutMail::Held(me.erase()), &Order { text: String::from("ask") })?;
+        turn.send_to(turn.me(), &Order { text: String::from("ask") })?;
 
         Ok(Self { board })
     }

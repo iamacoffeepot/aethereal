@@ -116,8 +116,7 @@ impl Actor for Node {
             let _ = turn.spawn::<Self>(&number, NodeConfig { number, to_self, spawns: Vec::new() });
         }
         for text in config.to_self {
-            let me = turn.me();
-            turn.send(ToWithoutMail::Held(me.erase()), &Note { text })?;
+            turn.send_to(turn.me(), &Note { text })?;
         }
 
         Ok(Self { number: config.number })
@@ -186,8 +185,7 @@ impl Handles<Note> for Node {
             }
             ["both"] => {
                 turn.send(To::Parent, &Note { text: String::from("watchme") })?;
-                let me = turn.me();
-                turn.send(To::Held(me.erase()), &Note { text: String::from("close") })?;
+                turn.send_to(turn.me(), &Note { text: String::from("close") })?;
             }
             ["watchme", ..] => {
                 let sender = turn.sender();
@@ -195,8 +193,7 @@ impl Handles<Note> for Node {
             }
             ["self", ..] => {
                 let (_, rest) = text.split_once(' ').unwrap_or_default();
-                let me = turn.me();
-                turn.send(To::Held(me.erase()), &Note { text: String::from(rest) })?;
+                turn.send_to(turn.me(), &Note { text: String::from(rest) })?;
             }
             ["keep", ..] => {
                 let sender = turn.sender();
@@ -205,7 +202,7 @@ impl Handles<Note> for Node {
             ["many", count, text] => {
                 let me = turn.me();
                 for index in 0..count.parse().unwrap_or(0u64) {
-                    turn.send(To::Held(me.erase()), &Note { text: format!("{text}{index}") })?;
+                    turn.send_to(me, &Note { text: format!("{text}{index}") })?;
                 }
             }
             ["fan", numbers, text] => {
@@ -1094,8 +1091,7 @@ impl Actor for Holder {
 
     fn begin(config: HolderConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         for text in config.to_self {
-            let me = turn.me();
-            turn.send(ToWithoutMail::Held(me.erase()), &Note { text })?;
+            turn.send_to(turn.me(), &Note { text })?;
         }
         // Each blob it gives is one only that mail refers to, so mail that loses its pin loses its blob.
         for _ in 0..config.gives {
@@ -1104,8 +1100,8 @@ impl Actor for Holder {
             };
             // A note between each two keeps them from joining into one run, so the part carries many items.
             let me = turn.me();
-            turn.send(ToWithoutMail::Held(me.erase()), &Given { blob, left: 1 })?;
-            turn.send(ToWithoutMail::Held(me.erase()), &Note { text: String::from("between") })?;
+            turn.send_to(me, &Given { blob, left: 1 })?;
+            turn.send_to(me, &Note { text: String::from("between") })?;
         }
 
         Ok(Self { held: Vec::new(), gave: config.gives > 0 })
@@ -1141,16 +1137,14 @@ impl Handles<Note> for Holder {
             ["fail"] => return Err(Fault::new(&Note { text })?),
             ["send", ..] => {
                 if let Some(blob) = self.held.pop() {
-                    let me = turn.me();
-                    turn.send(To::Held(me.erase()), &Given { blob, left: 0 })?;
+                    turn.send_to(turn.me(), &Given { blob, left: 0 })?;
                 }
                 if words.get(1) == Some(&"close") {
                     turn.close();
                 }
             }
             ["later", rest] => {
-                let me = turn.me();
-                turn.send(To::Held(me.erase()), &Note { text: String::from(rest) })?;
+                turn.send_to(turn.me(), &Note { text: String::from(rest) })?;
             }
             _ => {}
         }
@@ -1167,8 +1161,7 @@ impl Handles<Given> for Holder {
         if self.gave {
             let Given { blob, left } = given;
             if left > 0 {
-                let me = turn.me();
-                turn.send(To::Held(me.erase()), &Given { blob, left: left - 1 })?;
+                turn.send_to(turn.me(), &Given { blob, left: left - 1 })?;
             }
         } else {
             say(format!("given {held}"));
@@ -1467,8 +1460,7 @@ impl Actor for Clocked {
         let Ok(blob) = turn.put(vec![7; 3]) else {
             return Err(Fault::new(&Note { text: String::from("no room") })?);
         };
-        let me = turn.me();
-        turn.send(ToWithoutMail::Held(me.erase()), &Note { text: to_self })?;
+        turn.send_to(turn.me(), &Note { text: to_self })?;
 
         Ok(Self { number, blob })
     }
