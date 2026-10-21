@@ -2,11 +2,13 @@
 
 #[cfg(test)]
 mod tests;
+mod timer;
 
 use crate::Headless;
 use aethereal_substrate::{Clock, Lifecycle};
 use core::time::Duration;
 use std::thread;
+use timer::Timer;
 
 /// How a program run to its end ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,8 +37,9 @@ impl Headless {
     ///
     /// Between steps with nothing to run it parks its workers and sleeps until the next cycle is due, or until the
     /// time it gives `Stop` has passed. What is pushed, or finishes, while it sleeps is brought in when it wakes, so
-    /// it waits at most `every`. A cycle due while one runs is not queued: the next `Tick` covers the time. An
-    /// engine whose cycle holds no stage still wakes every `every`, and does nothing.
+    /// it waits at most `every`. Cycles are due on a grid of `every` from the start, and one missed while the program
+    /// was busy is skipped, not queued: the next `Tick` covers the time. An engine whose cycle holds no stage still
+    /// wakes every `every`, and does nothing.
     ///
     /// # Panics
     ///
@@ -46,7 +49,7 @@ impl Headless {
         let every = nanos(every);
         let stop_within = nanos(stop_within);
         self.engine.start();
-        let mut due = self.clock.nanos();
+        let mut timer = Timer::new(self.clock.nanos(), every);
         let mut stopping = Stopping::Not;
         loop {
             let now = self.clock.nanos();
@@ -56,10 +59,8 @@ impl Headless {
                 (Lifecycle::Stopping, Stopping::By(by)) if now >= by => break Exit::OutOfTime,
                 (Lifecycle::Waiting | Lifecycle::Running | Lifecycle::Stopping, _) => {}
             }
-            let is_due = now >= due;
-            if is_due {
+            if timer.fires(now) {
                 self.engine.cycle();
-                due = due.saturating_add(every).max(now);
             }
             self.engine.bring();
             if !self.engine.is_idle() {
@@ -68,7 +69,7 @@ impl Headless {
             }
             self.pool.park();
             let wake = match stopping {
-                Stopping::Not => due,
+                Stopping::Not => timer.due(),
                 Stopping::By(by) => by,
             };
             let rest = Duration::from_nanos(wake.saturating_sub(self.clock.nanos()));

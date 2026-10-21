@@ -14,6 +14,8 @@ mod rehearsal;
 mod running;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod waiting;
 
 pub use clock::Monotonic;
 pub use jobs::Runners;

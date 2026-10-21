@@ -149,22 +149,22 @@ impl Handles<On<Tick>> for Metronome {
 
 #[test]
 fn a_program_cycles_on_its_timer_until_an_actor_asks_it_to_stop() {
-    // Catches a host that never says a cycle is due, says it only once, or with no time between: the metronome would
-    // never be sent three ticks, or their deltas after the first would be nothing.
+    // Catches a host that never says a cycle is due, or says it only once: the metronome would never be sent three
+    // ticks. When each is due is the timer's, tested on stated times; on the real clock only a lower bound holds, as
+    // the third cycle is due two periods after the start, however a loaded machine spaces them.
     let headless = headless::<(Tick,)>(|engine| {
         let Ok(_) = engine.add_root::<Metronome>(&(), Nothing) else {
             panic!("the metronome begins");
         };
     });
-    let (_, exit) = timed(headless, Duration::from_millis(2), Duration::from_secs(30));
+    let (took, exit) = timed(headless, Duration::from_millis(2), Duration::from_secs(30));
 
     assert_eq!(exit, Exit::Stopped);
     let Ok(ticks) = TICKS.lock() else {
         panic!("the ticks are not poisoned");
     };
     assert_eq!(ticks.len(), 3, "no cycle begins once asked to stop");
-    let waited = ticks[1..].iter().all(|delta| *delta >= 1_000_000);
-    assert!(waited, "each cycle after the first is a timer's period after the last: {ticks:?}");
+    assert!(took >= Duration::from_millis(4), "the third cycle is two periods after the start: {took:?}");
 }
 
 /// An actor that asks the program to stop on `Start`, and holds `Stop` for good.
