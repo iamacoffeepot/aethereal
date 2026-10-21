@@ -3,7 +3,7 @@
 
 use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Path, Tells, Top, Turn, path};
 use aethereal_chassis_browser::controls::{self, Control, Controls, ControlsConfig};
-use aethereal_chassis_browser::{Browser, Listening, Performance, canvas};
+use aethereal_chassis_browser::{Browser, Listening, Mappings, Performance, canvas};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_substrate::Engine;
 use aethereal_window::{self as window, Event, Heard, Opening, Window, WindowId, Windows};
@@ -45,14 +45,15 @@ pub fn start(canvas: &HtmlCanvasElement) -> Result<Program, JsError> {
         .add_root::<Windows>(&(), opening.config())
         .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
     let (source, feed) = setup.source::<Control>();
-    let engine = setup
+    let mut engine = setup
         .add_root::<Controls>(&(), ControlsConfig { source })
         .map_err(|refused| JsError::new(&format!("the controls root did not begin: {refused:?}")))?
         .add_root::<Reporter>(&(), Watches { window: shown.window() })
         .map_err(|refused| JsError::new(&format!("the reporter did not begin: {refused:?}")))?
         .ready();
+    let mappings = Mappings::unasked(&mut engine);
     let program = Program {
-        browser: Browser::new(engine, Performance),
+        browser: Browser::new(engine, Performance, mappings),
         _canvas: canvas::listen(canvas, &shown)?,
         _controls: controls::listen(&feed)?,
     };

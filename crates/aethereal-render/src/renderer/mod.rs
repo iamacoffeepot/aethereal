@@ -1,8 +1,9 @@
 //! The renderer: the root that owns the GPU, makes what actors ask it for, and draws each frame (ADR-0021).
 
 use crate::Gpu;
-use crate::instances::{self, CreateInstances, Held, Instanced, InstancesId, WriteInstances};
+use crate::instances::{self, CreateInstances, Instanced, InstancesId, WriteInstances};
 use crate::made::{Ids, Made, Makers, Owned};
+use crate::mapping::{Mapped, Mapping};
 use crate::mesh::{self, Counted, CreateMesh, MeshId, Meshed, VertexLayout};
 use crate::placement::{
     self, Drawn, Filter, Finds, Place, Placed, PlacementId, PlacementRefused, Sampling, Shape, Wrap,
@@ -10,20 +11,38 @@ use crate::placement::{
 use crate::program::{
     self, Binding, BindingKind, Blend, CreateProgram, Cull, Depth, PerInstance, ProgramId, Programmed,
 };
-use crate::texture::{self, CreateTexture, TextureId, Textured};
+use crate::readback::{self, Copied, Order, Pixels, ReadBack, ReadRefused, Readable};
+use crate::storage::{self, CreateStorage, StorageId, Stored, WriteStorage};
+use crate::texture::{self, CreateTexture, TextureFormat, TextureId, Textured};
+use crate::timing::{self, TimeFrame, Timed, TimingRefused};
 use crate::uniforms::{self, CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_actor::{
-    Actor, Beginning, Carries, ChildOf, Ended, Ending, Fault, Given, Handle, Handles, Level, On, Protocol, Render,
-    Resource, ToSender, Top, Turn,
+    Actor, Beginning, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle, Handles, Held, Level, On,
+    Protocol, Render, Resource, Source, ToSender, Top, Turn,
 };
 use aethereal_data::{ActorId, Bound, Kind, KindName, Plain};
 use std::collections::HashMap;
+use std::mem;
 
 /// The renderer, the one actor that touches the GPU. Actors ask it through [`Rendering`].
 #[derive(Bound)]
 pub struct Renderer {
     gpu: Handle<Gpu>,
     kept: Handle<Kept>,
+    mapping: Handle<Controller<Mapping>>,
+    /// Held so the chassis's word of what it mapped is brought here; nothing opens it.
+    mapped: Handle<Source<Mapped>>,
+    owed: Owed,
+}
+
+/// The reads and timings the renderer owes: those of the next frame, and those copied and waiting on their buffer's
+/// map, each under the read the buffer is kept by.
+#[derive(Bound)]
+struct Owed {
+    frames: Vec<Held<Pixels>>,
+    timings: Vec<Held<Timed>>,
+    reading: Vec<(u64, Held<Pixels>)>,
+    timing: Vec<(u64, Held<Timed>)>,
 }
 
 impl Kind for Renderer {
@@ -57,22 +76,38 @@ impl Carries<CreateUniforms> for Renderer {
     type Answers = (Uniformed,);
 }
 
+impl Carries<CreateStorage> for Renderer {
+    type Answers = (Stored,);
+}
+
 impl Carries<Place> for Renderer {
     type Answers = (Placed,);
 }
 
-/// What the renderer is made from: the GPU the chassis opened.
+impl Carries<ReadBack> for Renderer {
+    type Answers = (Pixels,);
+}
+
+impl Carries<TimeFrame> for Renderer {
+    type Answers = (Timed,);
+}
+
+/// What the renderer is made from: the GPU the chassis opened, the controller it asks the chassis to map what it
+/// reads back through, and the source the chassis brings word of each through (ADR-0019).
 #[derive(Bound)]
 pub struct RendererConfig {
     pub gpu: Given<Gpu>,
+    pub mapping: Given<Controller<Mapping>>,
+    pub mapped: Given<Source<Mapped>>,
 }
 
 impl Kind for RendererConfig {
     const NAME: KindName = KindName::new("aether.render.config");
 }
 
-/// What an actor asks the renderer: to make a mesh, a texture, a program, instances, or uniforms, to write instances
-/// or uniforms it made, to place what is drawn, or to release what it made.
+/// What an actor asks the renderer: to make a mesh, a texture, a program, instances, uniforms, or storage, to write
+/// instances, uniforms, or storage it made, to place what is drawn, to release what it made, or to read back or time
+/// what it draws.
 pub struct Rendering;
 
 impl Protocol for Rendering {
@@ -84,8 +119,12 @@ impl Protocol for Rendering {
         WriteInstances,
         CreateUniforms,
         WriteUniforms,
+        CreateStorage,
+        WriteStorage,
         Place,
         Release,
+        ReadBack,
+        TimeFrame,
     );
 }
 
@@ -117,12 +156,28 @@ impl Carries<WriteUniforms> for Rendering {
     type Answers = ();
 }
 
+impl Carries<CreateStorage> for Rendering {
+    type Answers = (Stored,);
+}
+
+impl Carries<WriteStorage> for Rendering {
+    type Answers = ();
+}
+
 impl Carries<Place> for Rendering {
     type Answers = (Placed,);
 }
 
 impl Carries<Release> for Rendering {
     type Answers = ();
+}
+
+impl Carries<ReadBack> for Rendering {
+    type Answers = (Pixels,);
+}
+
+impl Carries<TimeFrame> for Rendering {
+    type Answers = (Timed,);
 }
 
 /// Releases what the renderer made before its maker ends. Only its maker may; what another asks is logged and left.
@@ -133,6 +188,7 @@ pub enum Release {
     Program(ProgramId),
     Instances(InstancesId),
     Uniforms(UniformsId),
+    Storage(StorageId),
     Placement(PlacementId),
 }
 
@@ -150,7 +206,9 @@ struct Kept {
     programs: Made<Program>,
     instances: Made<Instances>,
     uniforms: Made<Uniforms>,
+    storage: Made<Storage>,
     placements: Made<Placement>,
+    reads: HashMap<u64, Reading>,
     samplers: HashMap<Sampling, wgpu::Sampler>,
     depth: DepthTexture,
 }
@@ -165,9 +223,19 @@ struct Mesh {
     layout: VertexLayout,
 }
 
-/// A texture on the GPU, through the view a program samples it, which keeps it.
+/// A texture on the GPU, the view a program samples it through, and its format, which it is read back in.
 struct Texture {
+    made: wgpu::Texture,
     view: wgpu::TextureView,
+    format: TextureFormat,
+}
+
+/// A buffer the GPU copied into, waiting for the chassis to map it, and how its bytes are read once mapped.
+enum Reading {
+    /// Pixels, copied so, of `format`, their channels in `order`.
+    Pixels { buffer: wgpu::Buffer, copied: Copied, format: TextureFormat, order: Order },
+    /// A pass's timestamps, each tick `period` nanoseconds.
+    Stamps { buffer: wgpu::Buffer, period: f32 },
 }
 
 /// A program on the GPU: its pipeline, with the layouts of what it reads, what it binds, and the layout of each
@@ -183,7 +251,7 @@ struct Program {
 /// Instances on the GPU: a buffer with room for their capacity, how they stand, and how a record is laid out.
 struct Instances {
     buffer: wgpu::Buffer,
-    held: Held,
+    held: instances::Held,
     layout: VertexLayout,
 }
 
@@ -230,6 +298,12 @@ struct Uniforms {
     size: u32,
 }
 
+/// Storage on the GPU, and its size in bytes.
+struct Storage {
+    buffer: wgpu::Buffer,
+    size: u32,
+}
+
 impl Actor for Renderer {
     type Config = RendererConfig;
     type Key = ();
@@ -242,8 +316,13 @@ impl Actor for Renderer {
         WriteInstances,
         CreateUniforms,
         WriteUniforms,
+        CreateStorage,
+        WriteStorage,
         Place,
         Release,
+        ReadBack,
+        TimeFrame,
+        Mapped,
         Ended,
     );
     type BeginSends = ();
@@ -251,6 +330,8 @@ impl Actor for Renderer {
 
     fn begin(config: RendererConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let mut gpu = turn.take(config.gpu)?;
+        let mapping = turn.take(config.mapping)?;
+        let mapped = turn.take(config.mapped)?;
         // Made again at the first frame's size, as for each frame of a new size.
         let depth = DepthTexture::new(turn.open(&mut gpu)?.device(), 1, 1);
         let kept = Kept {
@@ -261,14 +342,18 @@ impl Actor for Renderer {
             programs: Made::default(),
             instances: Made::default(),
             uniforms: Made::default(),
+            storage: Made::default(),
             placements: Made::default(),
+            reads: HashMap::new(),
             samplers: HashMap::new(),
             depth,
         };
         let kept = turn.keep(kept)?;
         turn.subscribe::<Render>();
 
-        Ok(Self { gpu, kept })
+        let owed = Owed { frames: Vec::new(), timings: Vec::new(), reading: Vec::new(), timing: Vec::new() };
+
+        Ok(Self { gpu, kept, mapping, mapped, owed })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -281,7 +366,7 @@ impl Handles<On<Render>> for Renderer {
 
     fn handle(&mut self, _: Render, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let gpu = turn.open(&mut self.gpu)?;
-        // A frame the surface has no texture for is skipped; the next asks again.
+        // A frame the surface has no texture for is skipped; the next asks again, and is the one read and timed.
         let wgpu::CurrentSurfaceTexture::Success(frame) = gpu.surface().get_current_texture() else {
             return Ok(());
         };
@@ -292,6 +377,7 @@ impl Handles<On<Render>> for Renderer {
         kept.depth.fit(&device, frame.texture.width(), frame.texture.height());
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let stamps = (!self.owed.timings.is_empty()).then(|| Stamps::new(&device));
         let attachment = wgpu::RenderPassColorAttachment {
             view: &view,
             depth_slice: None,
@@ -306,15 +392,152 @@ impl Handles<On<Render>> for Renderer {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             color_attachments: &[Some(attachment)],
             depth_stencil_attachment: Some(depth),
+            timestamp_writes: stamps.as_ref().map(Stamps::writes),
             ..Default::default()
         });
         kept.draw(&mut pass);
         drop(pass);
+        let copied = (!self.owed.frames.is_empty()).then(|| copy_frame(&device, &mut encoder, &frame.texture));
+        let timed = stamps.map(|stamps| stamps.resolve(&mut encoder, queue.get_timestamp_period()));
         queue.submit([encoder.finish()]);
         queue.present(frame);
 
+        let mut mappings = Vec::new();
+        let mut refused = Vec::new();
+        match copied {
+            Some(Ok(reading)) => {
+                let (read, mapping) = kept.reading(reading);
+                mappings.push(mapping);
+                let frames = mem::take(&mut self.owed.frames);
+                self.owed.reading.extend(frames.into_iter().map(|held| (read, held)));
+            }
+            Some(Err(why)) => refused.extend(mem::take(&mut self.owed.frames).into_iter().map(|held| (held, why))),
+            None => {}
+        }
+        if let Some(reading) = timed {
+            let (read, mapping) = kept.reading(reading);
+            mappings.push(mapping);
+            let timings = mem::take(&mut self.owed.timings);
+            self.owed.timing.extend(timings.into_iter().map(|held| (read, held)));
+        }
+        for (held, why) in refused {
+            turn.answer(held, &Pixels::Refused(why))?;
+        }
+        // Pushed last, so a turn that fails before it asks the chassis for nothing (ADR-0019).
+        let control = turn.open(&mut self.mapping)?;
+        for mapping in mappings {
+            control.push(mapping);
+        }
+
         Ok(())
     }
+}
+
+impl Handles<ReadBack> for Renderer {
+    type Sends = (ToSender<Pixels>,);
+
+    fn handle(&mut self, read: ReadBack, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let Readable::Texture(texture) = read.of else {
+            // Read when the next frame is drawn.
+            let held = turn.hold()?;
+            self.owed.frames.push(held);
+            return Ok(());
+        };
+        let gpu = turn.open(&mut self.gpu)?;
+        let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
+        let kept = turn.open(&mut self.kept)?;
+        let Some((made, format)) = kept.textures.get(texture.id).map(|kept| (kept.made.clone(), kept.format)) else {
+            turn.reply(&Pixels::Refused(ReadRefused::Texture))?;
+            return Ok(());
+        };
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let reading = copy_texture(&device, &mut encoder, &made, format, Order::Kept);
+        queue.submit([encoder.finish()]);
+        let (read, mapping) = kept.reading(reading);
+        let held = turn.hold()?;
+        self.owed.reading.push((read, held));
+        turn.open(&mut self.mapping)?.push(mapping);
+
+        Ok(())
+    }
+}
+
+impl Handles<TimeFrame> for Renderer {
+    type Sends = (ToSender<Timed>,);
+
+    fn handle(&mut self, _: TimeFrame, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let features = turn.open(&mut self.gpu)?.device().features();
+        if !features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+            turn.reply(&Timed::Refused(TimingRefused::Unsupported))?;
+            return Ok(());
+        }
+        // Timed when the next frame is drawn.
+        let held = turn.hold()?;
+        self.owed.timings.push(held);
+
+        Ok(())
+    }
+}
+
+impl Handles<Mapped> for Renderer {
+    type Sends = ();
+
+    fn handle(&mut self, mapped: Mapped, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        // What the source brings comes from this actor to itself; a buffer is read only once the chassis says it is
+        // mapped, as reading one that is not stops the program.
+        let brought = turn.sender().id() == turn.me().id();
+        if !brought {
+            turn.log(Level::Warn, format_args!("{mapped:?} was not read: only the chassis says what it mapped"));
+            return Ok(());
+        }
+        let (read, ready) = match mapped {
+            Mapped::Ready { read } => (read, true),
+            Mapped::Failed { read } => (read, false),
+        };
+        let kept = turn.open(&mut self.kept)?;
+        let Some(reading) = kept.reads.remove(&read) else {
+            turn.log(Level::Warn, format_args!("{mapped:?} was not read: no such read"));
+            return Ok(());
+        };
+
+        match reading {
+            Reading::Pixels { buffer, copied, format, order } => {
+                let pixels = ready.then(|| mapped_bytes(&buffer, |bytes| copied.unpad(bytes, order))).flatten();
+                let answer = match pixels.map(|pixels| turn.put(pixels)) {
+                    Some(Ok(pixels)) => Pixels::Read { width: copied.width, height: copied.height, format, pixels },
+                    Some(Err(_)) => Pixels::Refused(ReadRefused::Unstored),
+                    None => Pixels::Refused(ReadRefused::Unmapped),
+                };
+                for held in owed_by(&mut self.owed.reading, read) {
+                    turn.answer(held, &answer)?;
+                }
+            }
+            Reading::Stamps { buffer, period } => {
+                let passes = ready.then(|| mapped_bytes(&buffer, |bytes| timing::passes(bytes, period))).flatten();
+                let answer = passes.map_or(Timed::Refused(TimingRefused::Unmapped), |passes| Timed::Took { passes });
+                for held in owed_by(&mut self.owed.timing, read) {
+                    turn.answer(held, &answer)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// What `read` owes of `owed`, taken from it.
+fn owed_by<A>(owed: &mut Vec<(u64, Held<A>)>, read: u64) -> Vec<Held<A>> {
+    owed.extract_if(.., |(owing, _)| *owing == read).map(|(_, held)| held).collect()
+}
+
+/// What `read` makes of the bytes of `buffer`, which the chassis has mapped, before it is unmapped: none when the GPU
+/// will not show them.
+fn mapped_bytes<T>(buffer: &wgpu::Buffer, read: impl FnOnce(&[u8]) -> T) -> Option<T> {
+    let made = buffer.get_mapped_range(..).ok().map(|view| read(&view));
+    buffer.unmap();
+
+    made
 }
 
 impl Handles<CreateMesh> for Renderer {
@@ -367,7 +590,7 @@ impl Handles<CreateTexture> for Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: format.wgpu(),
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let layout = wgpu::TexelCopyBufferLayout {
@@ -377,7 +600,7 @@ impl Handles<CreateTexture> for Renderer {
         };
         gpu.queue().write_texture(made.as_image_copy(), &pixels, layout, size);
         let view = made.create_view(&wgpu::TextureViewDescriptor::default());
-        let texture = Texture { view };
+        let texture = Texture { made, view, format };
         let id = self.made(turn, |kept, id, maker| kept.textures.keep(id, maker, texture))?;
         turn.reply(&Textured::Made(TextureId { id }))?;
 
@@ -428,7 +651,7 @@ impl Handles<CreateInstances> for Renderer {
             mapped_at_creation: false,
         });
         gpu.queue().write_buffer(&buffer, 0, &records);
-        let held = Held { stride: layout.stride, capacity, length };
+        let held = instances::Held { stride: layout.stride, capacity, length };
         let made = Instances { buffer, held, layout };
         let id = self.made(turn, |kept, id, maker| kept.instances.keep(id, maker, made))?;
         turn.reply(&Instanced::Made(InstancesId { id }))?;
@@ -531,6 +754,63 @@ impl Handles<WriteUniforms> for Renderer {
     }
 }
 
+impl Handles<CreateStorage> for Renderer {
+    type Sends = (ToSender<Stored>,);
+
+    fn handle(&mut self, create: CreateStorage, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let bytes = turn.read(&create.bytes).to_vec();
+        let most = turn.open(&mut self.gpu)?.device().limits().max_storage_buffer_binding_size;
+        let size = match storage::check(&bytes, most) {
+            Ok(size) => size,
+            Err(why) => {
+                turn.reply(&Stored::Refused(why))?;
+                return Ok(());
+            }
+        };
+
+        let gpu = turn.open(&mut self.gpu)?;
+        let buffer = upload(gpu, &bytes, wgpu::BufferUsages::STORAGE);
+        let made = Storage { buffer, size };
+        let id = self.made(turn, |kept, id, maker| kept.storage.keep(id, maker, made))?;
+        turn.reply(&Stored::Made(StorageId { id }))?;
+
+        Ok(())
+    }
+}
+
+impl Handles<WriteStorage> for Renderer {
+    type Sends = ();
+
+    fn handle(&mut self, write: WriteStorage, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let by = turn.sender().id();
+        let bytes = turn.read(&write.bytes).to_vec();
+        let kept = turn.open(&mut self.kept)?;
+        let written = kept.storage.owned(write.storage.id, by).map(|storage| {
+            let fits = storage::writes(storage.size, write.first, bytes.len() as u64);
+            (fits, storage.buffer.clone())
+        });
+        let buffer = match written {
+            Owned::Mine((true, buffer)) => buffer,
+            Owned::Mine((false, _)) => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: it lies outside it", write.storage));
+                return Ok(());
+            }
+            Owned::NotOwner => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: another made it", write.storage));
+                return Ok(());
+            }
+            Owned::Unknown => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: no such thing", write.storage));
+                return Ok(());
+            }
+        };
+
+        turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, u64::from(write.first), &bytes);
+
+        Ok(())
+    }
+}
+
 impl Handles<Place> for Renderer {
     type Sends = (ToSender<Placed>,);
 
@@ -570,6 +850,7 @@ impl Handles<Release> for Renderer {
                 released.map(drop)
             }
             Release::Uniforms(uniforms) => kept.uniforms.release(uniforms.id, by).map(drop),
+            Release::Storage(storage) => kept.storage.release(storage.id, by).map(drop),
             Release::Placement(placement) => kept.placements.release(placement.id, by).map(drop),
         };
         match released {
@@ -597,6 +878,7 @@ impl Handles<Ended> for Renderer {
                 kept.last_drawn(id, made.held.length);
             }
             kept.uniforms.release_all(maker);
+            kept.storage.release_all(maker);
             kept.placements.release_all(maker);
         }
 
@@ -641,6 +923,9 @@ impl Kept {
                 let resource = match bind.to {
                     placement::Resource::Uniforms(uniforms) => {
                         self.uniforms.get(uniforms.id).ok_or(missing)?.buffer.as_entire_binding()
+                    }
+                    placement::Resource::Storage(storage) => {
+                        self.storage.get(storage.id).ok_or(missing)?.buffer.as_entire_binding()
                     }
                     placement::Resource::Texture(texture) => {
                         wgpu::BindingResource::TextureView(&self.textures.get(texture.id).ok_or(missing)?.view)
@@ -703,6 +988,123 @@ impl Kept {
     }
 }
 
+impl Kept {
+    /// Keeps `reading` under a new read, until the chassis says its buffer is mapped, and answers the read with the
+    /// ask for the chassis to map it.
+    fn reading(&mut self, reading: Reading) -> (u64, Mapping) {
+        let read = self.ids.next();
+        let mapping = Mapping::new(read, reading.buffer().clone());
+        self.reads.insert(read, reading);
+
+        (read, mapping)
+    }
+}
+
+impl Reading {
+    /// The buffer the GPU copies into, which the chassis maps.
+    const fn buffer(&self) -> &wgpu::Buffer {
+        match self {
+            Self::Pixels { buffer, .. } | Self::Stamps { buffer, .. } => buffer,
+        }
+    }
+}
+
+/// The copy of the frame `texture` into a buffer, recorded on `encoder`, to read back once it is mapped: refused
+/// for a canvas that cannot be copied from, or of a format no answer is laid out in.
+fn copy_frame(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+) -> Result<Reading, ReadRefused> {
+    let copyable = texture.usage().contains(wgpu::TextureUsages::COPY_SRC);
+    if !copyable {
+        return Err(ReadRefused::Uncopied);
+    }
+    let (format, order) = readback::frame_format(texture.format()).ok_or(ReadRefused::Format)?;
+
+    Ok(copy_texture(device, encoder, texture, format, order))
+}
+
+/// The copy of `texture`, of `format`, its channels in `order`, into a buffer the chassis can map, recorded on
+/// `encoder`: each row padded to the 256 bytes WebGPU copies rows on.
+fn copy_texture(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+    format: TextureFormat,
+    order: Order,
+) -> Reading {
+    let copied = Copied::new(texture.width(), texture.height(), format.bytes());
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: copied.bytes(),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let layout =
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(copied.row), rows_per_image: Some(copied.height) };
+    let size = wgpu::Extent3d { width: copied.width, height: copied.height, depth_or_array_layers: 1 };
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo { buffer: &buffer, layout },
+        size,
+    );
+
+    Reading::Pixels { buffer, copied, format, order }
+}
+
+/// The timestamps a timed frame's pass writes as it begins and ends: where the GPU writes them, where it resolves
+/// them to, and the buffer they are copied into for the chassis to map.
+struct Stamps {
+    set: wgpu::QuerySet,
+    resolved: wgpu::Buffer,
+    read: wgpu::Buffer,
+}
+
+/// The bytes of a pass's two timestamps.
+const STAMPS: u64 = 2 * wgpu::QUERY_SIZE as u64;
+
+impl Stamps {
+    /// Room for one pass's timestamps.
+    fn new(device: &wgpu::Device) -> Self {
+        let set = device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: None,
+            ty: wgpu::QueryType::Timestamp,
+            count: 2,
+        });
+        let buffer = |usage| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: STAMPS,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let resolved = buffer(wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC);
+        let read = buffer(wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
+
+        Self { set, resolved, read }
+    }
+
+    /// Where the pass writes its timestamps: the first as it begins, the second as it ends.
+    const fn writes(&self) -> wgpu::RenderPassTimestampWrites<'_> {
+        wgpu::RenderPassTimestampWrites {
+            query_set: &self.set,
+            beginning_of_pass_write_index: Some(0),
+            end_of_pass_write_index: Some(1),
+        }
+    }
+
+    /// Resolves the timestamps and copies them where the chassis can map them, recorded on `encoder` after the pass,
+    /// each tick `period` nanoseconds.
+    fn resolve(self, encoder: &mut wgpu::CommandEncoder, period: f32) -> Reading {
+        encoder.resolve_query_set(&self.set, 0..2, &self.resolved, 0);
+        encoder.copy_buffer_to_buffer(&self.resolved, 0, &self.read, 0, STAMPS);
+
+        Reading::Stamps { buffer: self.read, period }
+    }
+}
+
 /// What a placement's check finds of what is kept.
 impl Finds for Kept {
     fn program(&self, id: ProgramId) -> Option<Shape<'_>> {
@@ -721,6 +1123,10 @@ impl Finds for Kept {
 
     fn uniforms(&self, id: UniformsId) -> Option<u32> {
         self.uniforms.get(id.id).map(|uniforms| uniforms.size)
+    }
+
+    fn storage(&self, id: StorageId) -> Option<u32> {
+        self.storage.get(id.id).map(|storage| storage.size)
     }
 
     fn has_texture(&self, id: TextureId) -> bool {
@@ -846,18 +1252,7 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
             attributes: &per_instance,
         }),
     };
-    let blend = match create.state.blend {
-        Blend::Opaque => None,
-        Blend::Alpha => Some(wgpu::BlendState::ALPHA_BLENDING),
-        Blend::Additive => {
-            let add = wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            };
-            Some(wgpu::BlendState { color: add, alpha: add })
-        }
-    };
+    let blend = blending(create.state.blend);
     let (compare, writes) = match create.state.depth {
         Depth::Off => (wgpu::CompareFunction::Always, false),
         Depth::Test => (wgpu::CompareFunction::Less, false),
@@ -911,6 +1306,35 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
     }
 }
 
+/// How a program of `blend` lays its colour over what is drawn, as wgpu names it: no blending for one that replaces it.
+fn blending(blend: Blend) -> Option<wgpu::BlendState> {
+    match blend {
+        Blend::Opaque => None,
+        Blend::Alpha => Some(wgpu::BlendState::ALPHA_BLENDING),
+        Blend::Additive => {
+            let add = wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            };
+            Some(wgpu::BlendState { color: add, alpha: add })
+        }
+        Blend::Multiply => {
+            let multiply = wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Dst,
+                dst_factor: wgpu::BlendFactor::Zero,
+                operation: wgpu::BlendOperation::Add,
+            };
+            let kept = wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            };
+            Some(wgpu::BlendState { color: multiply, alpha: kept })
+        }
+    }
+}
+
 /// The attributes of `layout`, as wgpu names them.
 fn attributes_of(layout: &VertexLayout) -> Vec<wgpu::VertexAttribute> {
     layout
@@ -951,6 +1375,11 @@ fn binding_type(kind: BindingKind) -> wgpu::BindingType {
     match kind {
         BindingKind::Uniform { bytes } => wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: wgpu::BufferSize::new(u64::from(bytes)),
+        },
+        BindingKind::Storage { bytes } => wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
             has_dynamic_offset: false,
             min_binding_size: wgpu::BufferSize::new(u64::from(bytes)),
         },

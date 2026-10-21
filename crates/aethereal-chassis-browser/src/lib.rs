@@ -4,7 +4,8 @@
 //! the GPU with [`open`] before the engine is made, hands it in to the
 //! renderer (ADR-0010, ADR-0021), and from each `requestAnimationFrame` calls
 //! [`Browser::frame`], which runs one cycle through to its end before the
-//! page gets its thread back.
+//! page gets its thread back, then starts mapping what the renderer asked
+//! to read back, which the page's promises bring in later frames.
 //!
 //! What the page hears, its callbacks push onto a source as they run, and the
 //! next frame brings in (ADR-0010): the pointer over the canvas, the keys, the
@@ -20,6 +21,7 @@ pub mod controls;
 mod gpu;
 #[cfg(target_arch = "wasm32")]
 mod listening;
+mod mappings;
 #[cfg(test)]
 mod tests;
 
@@ -29,23 +31,27 @@ pub use clock::Performance;
 pub use gpu::open;
 #[cfg(target_arch = "wasm32")]
 pub use listening::Listening;
+pub use mappings::{Mappings, renderer};
 
 use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Engine};
 
-/// An engine run on the page's thread, timed by the clock `C`: the page's own, [`Performance`], in a browser.
+/// An engine run on the page's thread, timed by the clock `C`: the page's own, [`Performance`], in a browser, with
+/// what it serves the renderer.
 pub struct Browser<C> {
     engine: Engine,
     clock: C,
+    mappings: Mappings,
 }
 
 impl<C: Clock> Browser<C> {
-    /// `engine`, with its roots made, started on `clock`: its `Start` runs in the first frame (ADR-0020).
+    /// `engine`, with its roots made, started on `clock`, serving the renderer `mappings`: its `Start` runs in the
+    /// first frame (ADR-0020).
     #[must_use]
-    pub fn new(mut engine: Engine, clock: C) -> Self {
+    pub fn new(mut engine: Engine, clock: C, mappings: Mappings) -> Self {
         engine.start();
 
-        Self { engine, clock }
+        Self { engine, clock, mappings }
     }
 
     /// The engine, as of the last frame.
@@ -57,7 +63,8 @@ impl<C: Clock> Browser<C> {
     /// Runs one frame, for the page's `requestAnimationFrame`: says a cycle is due, then brings in what its sources
     /// were pushed and its jobs finished and steps, until no actor has anything to run (ADR-0010, ADR-0018). The
     /// cycle's stages each run through to their end within the call, so what `Render` drew is there when the page
-    /// gets its thread back and shows it.
+    /// gets its thread back and shows it. Then it starts mapping what the renderer asked to read back, its turns'
+    /// copies submitted, for the page's promises to bring in once the GPU has mapped it (ADR-0019).
     ///
     /// # Panics
     ///
@@ -70,5 +77,6 @@ impl<C: Clock> Browser<C> {
             self.engine.step(now, &self.clock);
             self.engine.bring();
         }
+        self.mappings.serve();
     }
 }

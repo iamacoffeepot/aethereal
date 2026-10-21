@@ -7,6 +7,7 @@ mod tests;
 use crate::instances::InstancesId;
 use crate::mesh::{MeshId, VertexLayout};
 use crate::program::{Binding, BindingKind, PerInstance, ProgramId};
+use crate::storage::StorageId;
 use crate::texture::TextureId;
 use crate::uniforms::UniformsId;
 use aethereal_data::{Kind, KindName, Plain};
@@ -50,10 +51,12 @@ impl Kind for Bind {
     const NAME: KindName = KindName::new("aether.render.bind");
 }
 
-/// What is bound: uniforms to a uniform block, a texture to a texture, or a way of sampling to a sampler.
+/// What is bound: uniforms to a uniform block, storage to a storage buffer, a texture to a texture, or a way of
+/// sampling to a sampler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Resource {
     Uniforms(UniformsId),
+    Storage(StorageId),
     Texture(TextureId),
     Sampler(Sampling),
 }
@@ -140,9 +143,10 @@ pub enum PlacementRefused {
     Unlisted { group: u32, binding: u32 },
     /// Two are bound to one place.
     Repeated { group: u32, binding: u32 },
-    /// What is bound names nothing kept: uniforms or a texture never made, or released.
+    /// What is bound names nothing kept: uniforms, storage, or a texture never made, or released.
     Missing { group: u32, binding: u32 },
-    /// What is bound is not of the kind the program binds there, or uniforms are smaller than its block.
+    /// What is bound is not of the kind the program binds there, or uniforms or storage are smaller than the program
+    /// binds there.
     Mismatch { group: u32, binding: u32 },
 }
 
@@ -164,6 +168,7 @@ pub(crate) trait Finds {
     fn mesh(&self, id: MeshId) -> Option<&VertexLayout>;
     fn instances(&self, id: InstancesId) -> Option<&VertexLayout>;
     fn uniforms(&self, id: UniformsId) -> Option<u32>;
+    fn storage(&self, id: StorageId) -> Option<u32>;
     fn has_texture(&self, id: TextureId) -> bool;
 }
 
@@ -201,6 +206,10 @@ pub(crate) fn check(place: &Place, kept: &impl Finds) -> Result<(), PlacementRef
         let fits = match (bind.to, listed.kind) {
             (Resource::Uniforms(uniforms), BindingKind::Uniform { bytes }) => {
                 let size = kept.uniforms(uniforms).ok_or(PlacementRefused::Missing { group, binding })?;
+                size >= bytes
+            }
+            (Resource::Storage(storage), BindingKind::Storage { bytes }) => {
+                let size = kept.storage(storage).ok_or(PlacementRefused::Missing { group, binding })?;
                 size >= bytes
             }
             (Resource::Texture(texture), BindingKind::Texture) => {

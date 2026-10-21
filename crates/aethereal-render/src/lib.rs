@@ -5,11 +5,15 @@
 mod gpu;
 pub mod instances;
 mod made;
+pub mod mapping;
 pub mod mesh;
 pub mod placement;
 pub mod program;
+pub mod readback;
 mod renderer;
+pub mod storage;
 pub mod texture;
+pub mod timing;
 pub mod uniforms;
 
 pub use gpu::Gpu;

@@ -50,6 +50,11 @@ path = "examples/draw/lib.rs"
 crate-type = ["cdylib"]
 
 [[example]]
+name = "read"
+path = "examples/read/lib.rs"
+crate-type = ["cdylib"]
+
+[[example]]
 name = "input"
 path = "examples/input/lib.rs"
 crate-type = ["cdylib"]

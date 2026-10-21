@@ -2,9 +2,11 @@
 
 use super::*;
 use crate::mesh::{Attribute, VertexFormat};
+use crate::storage::StorageId;
 
 /// What a test keeps: one program, reading a position per vertex and an offset per instance, binding a camera's
-/// uniforms, a texture, and a sampler; a mesh and instances laid out as it reads; uniforms of 64 bytes; a texture.
+/// uniforms, a texture, a sampler, and storage of splats; a mesh and instances laid out as it reads; uniforms of 64
+/// bytes; storage of 256; a texture.
 struct Kept {
     layout: VertexLayout,
     mesh: VertexLayout,
@@ -18,6 +20,7 @@ const MESH: MeshId = MeshId { id: 2 };
 const INSTANCES: InstancesId = InstancesId { id: 3 };
 const UNIFORMS: UniformsId = UniformsId { id: 4 };
 const TEXTURE: TextureId = TextureId { id: 5 };
+const STORAGE: StorageId = StorageId { id: 6 };
 const SAMPLING: Sampling = Sampling { filter: Filter::Linear, wrap: Wrap::Clamp };
 
 impl Kept {
@@ -29,6 +32,7 @@ impl Kept {
             Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 64 } },
             Binding { group: 1, binding: 0, kind: BindingKind::Texture },
             Binding { group: 1, binding: 1, kind: BindingKind::Sampler },
+            Binding { group: 2, binding: 0, kind: BindingKind::Storage { bytes: 48 } },
         ];
 
         let layout = VertexLayout { stride: 12, attributes: vec![position] };
@@ -55,6 +59,10 @@ impl Finds for Kept {
         (id == UNIFORMS).then_some(64)
     }
 
+    fn storage(&self, id: StorageId) -> Option<u32> {
+        (id == STORAGE).then_some(256)
+    }
+
     fn has_texture(&self, id: TextureId) -> bool {
         id == TEXTURE
     }
@@ -66,6 +74,7 @@ fn place() -> Place {
         Bind { group: 0, binding: 0, to: Resource::Uniforms(UNIFORMS) },
         Bind { group: 1, binding: 0, to: Resource::Texture(TEXTURE) },
         Bind { group: 1, binding: 1, to: Resource::Sampler(SAMPLING) },
+        Bind { group: 2, binding: 0, to: Resource::Storage(STORAGE) },
     ];
 
     Place { program: PROGRAM, mesh: MESH, instances: Drawn::Records(INSTANCES), bindings }
@@ -90,6 +99,8 @@ fn a_placement_naming_what_is_not_kept_is_refused() {
     uniforms.bindings[0].to = Resource::Uniforms(UniformsId { id: 9 });
     let mut texture = place();
     texture.bindings[1].to = Resource::Texture(TextureId { id: 9 });
+    let mut storage = place();
+    storage.bindings[3].to = Resource::Storage(StorageId { id: 9 });
     let kept = Kept::new();
 
     assert_eq!(check(&program, &kept), Err(PlacementRefused::Program));
@@ -97,6 +108,7 @@ fn a_placement_naming_what_is_not_kept_is_refused() {
     assert_eq!(check(&instances, &kept), Err(PlacementRefused::Instances));
     assert_eq!(check(&uniforms, &kept), Err(PlacementRefused::Missing { group: 0, binding: 0 }));
     assert_eq!(check(&texture, &kept), Err(PlacementRefused::Missing { group: 1, binding: 0 }));
+    assert_eq!(check(&storage, &kept), Err(PlacementRefused::Missing { group: 2, binding: 0 }));
 }
 
 #[test]
@@ -122,23 +134,35 @@ fn a_mesh_or_instances_laid_out_otherwise_than_the_program_reads_is_refused() {
 
 #[test]
 fn bindings_that_miss_add_to_repeat_or_mismatch_what_the_program_binds_are_refused() {
-    // Catches a bind group made short of a place, or of a resource of another kind, or with uniforms smaller than
-    // the block: each is refused by WebGPU as the bind group is made or the draw is recorded.
+    // Catches a bind group made short of a place, or of a resource of another kind, or with uniforms or storage
+    // smaller than the program binds: each is refused by WebGPU as the bind group is made or the draw is recorded.
     let mut unbound = place();
-    unbound.bindings.pop();
+    unbound.bindings.remove(2);
     let mut unlisted = place();
-    unlisted.bindings.push(Bind { group: 2, binding: 0, to: Resource::Sampler(SAMPLING) });
+    unlisted.bindings.push(Bind { group: 3, binding: 0, to: Resource::Sampler(SAMPLING) });
     let mut repeated = place();
     repeated.bindings.push(Bind { group: 1, binding: 1, to: Resource::Sampler(SAMPLING) });
     let mut mismatched = place();
     mismatched.bindings[1].to = Resource::Sampler(SAMPLING);
     let mut small = Kept::new();
     small.bindings[0].kind = BindingKind::Uniform { bytes: 80 };
+    let mut few = Kept::new();
+    few.bindings[3].kind = BindingKind::Storage { bytes: 260 };
+    let mut fits = Kept::new();
+    fits.bindings[3].kind = BindingKind::Storage { bytes: 256 };
+    let mut as_uniforms = place();
+    as_uniforms.bindings[3].to = Resource::Uniforms(UNIFORMS);
+    let mut as_storage = place();
+    as_storage.bindings[0].to = Resource::Storage(STORAGE);
     let kept = Kept::new();
 
     assert_eq!(check(&unbound, &kept), Err(PlacementRefused::Unbound { group: 1, binding: 1 }));
-    assert_eq!(check(&unlisted, &kept), Err(PlacementRefused::Unlisted { group: 2, binding: 0 }));
+    assert_eq!(check(&unlisted, &kept), Err(PlacementRefused::Unlisted { group: 3, binding: 0 }));
     assert_eq!(check(&repeated, &kept), Err(PlacementRefused::Repeated { group: 1, binding: 1 }));
     assert_eq!(check(&mismatched, &kept), Err(PlacementRefused::Mismatch { group: 1, binding: 0 }));
     assert_eq!(check(&place(), &small), Err(PlacementRefused::Mismatch { group: 0, binding: 0 }));
+    assert_eq!(check(&place(), &few), Err(PlacementRefused::Mismatch { group: 2, binding: 0 }));
+    assert_eq!(check(&place(), &fits), Ok(()));
+    assert_eq!(check(&as_uniforms, &kept), Err(PlacementRefused::Mismatch { group: 2, binding: 0 }));
+    assert_eq!(check(&as_storage, &kept), Err(PlacementRefused::Mismatch { group: 0, binding: 0 }));
 }

@@ -3,7 +3,7 @@
 
 use super::read::value_of;
 use super::*;
-use crate::Browser;
+use crate::{Browser, Mappings};
 use aethereal_actor::{Path, Tells, path};
 use aethereal_substrate::{Clock, Engine, Setup};
 use std::num::NonZeroUsize;
@@ -97,7 +97,7 @@ fn a_subscriber_is_sent_what_the_page_pushed_in_the_order_pushed_and_nothing_ano
         panic!("the cycle is in order");
     };
     let (source, feed) = setup.source::<Control>();
-    let Ok(engine) = setup
+    let Ok(mut engine) = setup
         .add_root::<Controls>(&(), ControlsConfig { source })
         .and_then(|setup| setup.add_root::<Listener>(&(), Nothing))
         .map(Setup::ready)
@@ -106,7 +106,8 @@ fn a_subscriber_is_sent_what_the_page_pushed_in_the_order_pushed_and_nothing_ano
     };
     let read = number("speed", 0.25);
     assert_eq!(feed.push(read.clone()), Ok(()));
-    let mut browser = Browser::new(engine, Still);
+    let mappings = Mappings::unasked(&mut engine);
+    let mut browser = Browser::new(engine, Still, mappings);
     browser.frame();
 
     let pushed = [number("speed", 0.5), Control { name: String::from("shown"), value: Value::Checked(true) }];
@@ -206,14 +207,15 @@ fn an_actor_that_subscribes_after_a_control_last_moved_is_sent_it_as_it_stands_o
     };
     let (source, feed) = setup.source::<Control>();
     let (nudges, nudge) = setup.source::<Nudge>();
-    let Ok(engine) = setup
+    let Ok(mut engine) = setup
         .add_root::<Controls>(&(), ControlsConfig { source })
         .and_then(|setup| setup.add_root::<Late>(&(), LateConfig { nudges }))
         .map(Setup::ready)
     else {
         panic!("the controls root and the late listener begin");
     };
-    let mut browser = Browser::new(engine, Still);
+    let mappings = Mappings::unasked(&mut engine);
+    let mut browser = Browser::new(engine, Still, mappings);
     let moved = number("speed", 0.75);
     let later = number("speed", 1.0);
 
