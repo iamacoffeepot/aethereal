@@ -5,11 +5,16 @@
 //! renderer (ADR-0010, ADR-0021), and from each `requestAnimationFrame` calls
 //! [`Browser::frame`], which runs one cycle through to its end before the
 //! page gets its thread back.
+//!
+//! What the page hears, the pointer, the keys, and the controls it marks, its
+//! callbacks push onto the source of the [`input`] root as they run, and the
+//! next frame brings in (ADR-0010, ADR-0019).
 
 #[cfg(target_arch = "wasm32")]
 mod clock;
 #[cfg(target_arch = "wasm32")]
 mod gpu;
+pub mod input;
 #[cfg(test)]
 mod tests;
 

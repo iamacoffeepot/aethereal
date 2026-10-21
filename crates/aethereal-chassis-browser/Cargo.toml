@@ -8,6 +8,7 @@ description = "The browser chassis: the engine on a page's one thread, cycled by
 
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
+aethereal-data = { path = "../aethereal-data" }
 aethereal-render = { path = "../aethereal-render" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 
@@ -17,10 +18,22 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "webgp
 # The bindings' version is the `wasm-bindgen` tool's that writes the page's glue.
 wasm-bindgen = "=0.2.129"
 wasm-bindgen-futures = "0.4.79"
-web-sys = { version = "0.3.106", features = ["HtmlCanvasElement"] }
-
-[dev-dependencies]
-aethereal-data = { path = "../aethereal-data" }
+web-sys = { version = "0.3.106", features = [
+    "DomRect",
+    "Document",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlCanvasElement",
+    "HtmlInputElement",
+    "HtmlSelectElement",
+    "HtmlTextAreaElement",
+    "KeyboardEvent",
+    "MouseEvent",
+    "NodeList",
+    "PointerEvent",
+    "Window",
+] }
 
 [[example]]
 name = "make"
@@ -30,6 +43,11 @@ crate-type = ["cdylib"]
 [[example]]
 name = "draw"
 path = "examples/draw/lib.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "input"
+path = "examples/input/lib.rs"
 crate-type = ["cdylib"]
 
 [lints]
