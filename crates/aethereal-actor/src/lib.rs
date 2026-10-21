@@ -81,7 +81,7 @@ pub use mail::{Mail, MailId};
 pub use path::{
     Beneath, HandlersNeedIn, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Path, PathTo, Placed, There, TypeSegment, path,
 };
-pub use placement::{Admits, Anywhere, AtTop, ChildOf, Parented, Placement, Recursive, Root, Spawner, Top};
+pub use placement::{Admits, Anywhere, AtTop, ChildOf, ParentOf, Parented, Placement, Recursive, Root, Spawner, Top};
 pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Proven, Reaches, Watchable};
 pub use resource::{
     Carried, Claim, Claimed, Gift, Given, Giver, Handle, Holds, Keeping, Keeps, KeepsNothing, Kept, NotHeld, Resource,

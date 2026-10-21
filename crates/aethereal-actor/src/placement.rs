@@ -63,6 +63,33 @@ pub trait ChildOf: Actor {
     type Parent: Placement;
 }
 
+/// A reference to an actor that a child of type `C` may stand beneath, as `C`'s parent says: what
+/// [`Turn::child`](crate::Turn::child) looks beneath (ADR-0022). An [`ActorRef<P>`] when `C`'s parent admits `P`, and
+/// an [`ErasedActorRef`] when `C` stands [`Anywhere`].
+#[diagnostic::on_unimplemented(
+    message = "a `{C}` does not stand beneath `{Self}`",
+    note = "a type stands only beneath what its `ChildOf` names as its `Parent`"
+)]
+pub trait ParentOf<C>: Copy {
+    /// The actor referred to, and its seat.
+    fn seated(self) -> Seated;
+}
+
+impl<P: ChildOf, C: ChildOf> ParentOf<C> for ActorRef<P>
+where
+    C::Parent: Admits<P, C>,
+{
+    fn seated(self) -> Seated {
+        Self::seated(self)
+    }
+}
+
+impl<C: ChildOf<Parent = Anywhere>> ParentOf<C> for ErasedActorRef {
+    fn seated(self) -> Seated {
+        Self::seated(self)
+    }
+}
+
 /// The top of the tree: what a root stands beneath (ADR-0008).
 pub struct Top;
 

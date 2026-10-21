@@ -20,6 +20,10 @@ pub trait Table {
     /// reaches at each send.
     fn reach(&self, path: &ActorPath, kind: KindId) -> Seated;
 
+    /// The child `segment` names beneath the actor `parent` stands for, and its seat, when one of kind `kind` is live
+    /// there, as a resolve sees it (ADR-0022). What `turn.child` reads, in one call out from a guest.
+    fn reach_child(&self, parent: ActorId, segment: &PathSegment, kind: KindId) -> Option<Seated>;
+
     /// The id of the child `segment` names beneath the actor `parent` stands for. Only the engine computes an id.
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId;
 

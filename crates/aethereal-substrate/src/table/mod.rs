@@ -36,6 +36,16 @@ impl Table for ActorTable {
         reach(self, path, kind)
     }
 
+    fn reach_child(&self, parent: ActorId, segment: &PathSegment, kind: KindId) -> Option<Seated> {
+        let id = child_id(parent, segment);
+        let is_kind = self.entry(id).is_some_and(|entry| entry.declared().id() == kind);
+        if !is_kind {
+            return None;
+        }
+
+        Some(Seated { id, seat: Self::seat(self, id)? })
+    }
+
     fn child(&self, parent: ActorId, segment: &PathSegment) -> ActorId {
         child_id(parent, segment)
     }
