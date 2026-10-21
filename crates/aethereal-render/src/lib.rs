@@ -5,6 +5,7 @@
 mod gpu;
 mod made;
 pub mod mesh;
+pub mod program;
 mod renderer;
 pub mod texture;
 

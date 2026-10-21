@@ -33,7 +33,7 @@ CreateProgram {
     fragment: String,                   // the fragment stage's entry point
     layout: VertexLayout,               // the vertex buffer it reads: stride, and each attribute's location, format, offset
     bindings: Vec<Binding>,             // what it binds, by group and binding: a uniform block of a size, a texture, a sampler
-    state: Fixed,                       // blending, the depth test, culling
+    state: Fixed,                       // blending (opaque, alpha, additive), depth (off, test, test and write), culling
 }                                                                                     -> Made<ProgramId> | Refused
 Release { id }                                                                        // no answer
 ```
@@ -46,7 +46,13 @@ Release { id }                                                                  
 
 - A mesh's indices are each less than its vertex count, its vertex bytes are a whole number of its layout's stride, and every attribute lies inside the stride.
 - A texture's bytes are its width times its height times its format's size.
-- A program's WGSL is parsed and validated with naga, in the render root's turn. Its entry points exist and are a vertex and a fragment stage. Each input of the vertex stage is an attribute of `layout`, at its location and of its format. Each binding the shader uses is in `bindings`, at its group and binding and of its kind. Then the pipeline is made.
+- A program's WGSL is parsed and validated with naga, in the render root's turn, with no capability beyond what every WebGPU device has. Its entry points exist and are a vertex and a fragment stage. Each input of the vertex stage is an attribute of `layout`, at its location and of its kind of number (`f32` or `u32`), of any count of components, as WebGPU fills what a format lacks. Each binding the shader uses is in `bindings`, at its group and binding and of its kind, and a uniform block's bytes are at least what the shader reads of it. Then the pipeline is made. **This departs from those checks alone**, as each of these is one WebGPU makes as the pipeline is made, where natively wgpu stops the program and a browser makes an invalid pipeline:
+  - the fragment stage reads each of its locations as the vertex stage writes it, of the same type and interpolation;
+  - the fragment stage writes a `vec4<f32>` at location 0, the colour drawn;
+  - the module declares no constant a pipeline overrides, as a program sets none;
+  - `bindings` lists each place once, in a group the GPU has, uniform blocks of a size it binds, and no more of each kind than a stage binds, by the device's limits;
+  - a vertex layout reads at most sixteen locations, as many as WebGPU lets every device read; a mesh's layout is checked the same.
+- **A program draws to the surface's format, and tests depth in `Depth32Float`.** The pass a frame draws in holds a depth texture of that format, so every program is made against it, a program that does not test depth comparing `Always` and writing nothing. When a scene pass draws into a texture of its own (below), programs are made against that texture's format.
 
 **The id is plain data.** The render root numbers ids from one count it never takes back, so an id once released is refused, not taken for another resource. An actor may hand an id to another, so two actors can draw one mesh.
 
@@ -58,7 +64,7 @@ Release { id }                                                                  
 
 - An actor that draws needs no GPU value: a guest makes resources as native code does, by asking.
 - A program cannot fail at draw time, and neither can its mesh or texture, which is what lets a frame record its draws without a fallible path.
-- naga is linked into the render root's build. In a browser that makes the module larger; the size is measured when it is built. Without it the browser checks WGSL itself, but reports through a promise, after the turn, and cannot check a shader against the layout and bindings it was made with before a pipeline uses them.
+- naga is linked into the render root's build. In a browser that makes the module larger: the make example's module grew from 636 KB (199 KB gzipped) to 2.06 MB (638 KB gzipped) with its WGSL front end and validator. Without it the browser checks WGSL itself, but reports through a promise, after the turn, and cannot check a shader against the layout and bindings it was made with before a pipeline uses them.
 - Uploads happen in the turn that makes a resource, so a turn that makes much uploads much. Spreading them over the frames before first use (the earlier engine's ADR-0251) is follow-on work, once content streams in.
 - What is decided separately, each when it is needed:
   - **How actors say what is drawn each frame.** One choice is mail to the render root for each change; another is an effect each actor leaves, folded into a view the render root reads at `Render` (ADR-0011), which would be the first view outside the engine's own. This is the next record.

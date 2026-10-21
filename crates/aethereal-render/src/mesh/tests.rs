@@ -49,7 +49,8 @@ fn vertices_or_indices_that_are_not_whole_are_refused() {
 #[test]
 fn a_layout_webgpu_would_refuse_is_refused() {
     // Catches a layout let through that WebGPU refuses when the pipeline is made, or that reads past each vertex: a
-    // stride off a word, an attribute past the vertex or off a word, and two attributes at one location.
+    // stride off a word, an attribute past the vertex, off a word, or at a location no vertex stage reads, and two
+    // attributes at one location.
     let mut off_word = layout();
     off_word.stride = 18;
     let mut past_end = layout();
@@ -59,8 +60,11 @@ fn a_layout_webgpu_would_refuse_is_refused() {
     unaligned.attributes[1].offset = 13;
     let mut shared = layout();
     shared.attributes[1].location = 0;
+    let mut unreadable = layout();
+    unreadable.attributes[1].location = 16;
 
-    let refused = [off_word, past_end, unaligned, shared].map(|layout| check(&layout, &[0; 80], &indices(&[0, 1, 2])));
+    let refused = [off_word, past_end, unaligned, shared, unreadable]
+        .map(|layout| check(&layout, &[0; 80], &indices(&[0, 1, 2])));
 
     assert_eq!(
         refused,
@@ -69,6 +73,7 @@ fn a_layout_webgpu_would_refuse_is_refused() {
             Err(MeshRefused::Attribute { location: 1 }),
             Err(MeshRefused::Attribute { location: 1 }),
             Err(MeshRefused::Location { location: 0 }),
+            Err(MeshRefused::Attribute { location: 16 }),
         ]
     );
 }

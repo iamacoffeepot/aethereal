@@ -3,6 +3,7 @@
 use crate::Gpu;
 use crate::made::{Ids, Made, Makers, Released};
 use crate::mesh::{self, Counted, CreateMesh, MeshId, Meshed, VertexLayout};
+use crate::program::{self, Binding, BindingKind, Blend, CreateProgram, Cull, Depth, ProgramId, Programmed};
 use crate::texture::{self, CreateTexture, TextureId, Textured};
 use aethereal_actor::{
     Actor, Beginning, Carries, ChildOf, Ended, Ending, Fault, Given, Handle, Handles, Level, On, Protocol, Render,
@@ -36,6 +37,10 @@ impl Carries<CreateTexture> for Renderer {
     type Answers = (Textured,);
 }
 
+impl Carries<CreateProgram> for Renderer {
+    type Answers = (Programmed,);
+}
+
 /// What the renderer is made from: the GPU the chassis opened.
 #[derive(Bound)]
 pub struct RendererConfig {
@@ -46,11 +51,11 @@ impl Kind for RendererConfig {
     const NAME: KindName = KindName::new("aether.render.config");
 }
 
-/// What an actor asks the renderer: to make a mesh or a texture, or to release one it made.
+/// What an actor asks the renderer: to make a mesh, a texture, or a program, or to release one it made.
 pub struct Rendering;
 
 impl Protocol for Rendering {
-    type Kinds = (CreateMesh, CreateTexture, Release);
+    type Kinds = (CreateMesh, CreateTexture, CreateProgram, Release);
 }
 
 impl Carries<CreateMesh> for Rendering {
@@ -61,15 +66,20 @@ impl Carries<CreateTexture> for Rendering {
     type Answers = (Textured,);
 }
 
+impl Carries<CreateProgram> for Rendering {
+    type Answers = (Programmed,);
+}
+
 impl Carries<Release> for Rendering {
     type Answers = ();
 }
 
-/// Releases a mesh or a texture before its maker ends. Only its maker may; what another asks is logged and left.
+/// Releases a mesh, a texture, or a program before its maker ends. Only its maker may; what another asks is logged and left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Release {
     Mesh(MeshId),
     Texture(TextureId),
+    Program(ProgramId),
 }
 
 impl Kind for Release {
@@ -83,6 +93,7 @@ struct Kept {
     makers: Makers,
     meshes: Made<Mesh>,
     textures: Made<Texture>,
+    programs: Made<Program>,
 }
 
 impl Resource for Kept {}
@@ -103,10 +114,18 @@ struct Texture {
     view: wgpu::TextureView,
 }
 
+/// A program on the GPU: its pipeline, with the layout of the vertices it reads and of each group it binds.
+#[expect(dead_code, reason = "drawn with once the renderer draws what actors place (ADR-0021)")]
+struct Program {
+    pipeline: wgpu::RenderPipeline,
+    layout: VertexLayout,
+    groups: Vec<wgpu::BindGroupLayout>,
+}
+
 impl Actor for Renderer {
     type Config = RendererConfig;
     type Key = ();
-    type Handles = (On<Render>, CreateMesh, CreateTexture, Release, Ended);
+    type Handles = (On<Render>, CreateMesh, CreateTexture, CreateProgram, Release, Ended);
     type BeginSends = ();
     type EndSends = ();
 
@@ -219,6 +238,25 @@ impl Handles<CreateTexture> for Renderer {
     }
 }
 
+impl Handles<CreateProgram> for Renderer {
+    type Sends = (ToSender<Programmed>,);
+
+    fn handle(&mut self, create: CreateProgram, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let limits = turn.open(&mut self.gpu)?.device().limits();
+        if let Err(why) = program::check(&create, &limits) {
+            turn.reply(&Programmed::Refused(why))?;
+            return Ok(());
+        }
+
+        let gpu = turn.open(&mut self.gpu)?;
+        let made = pipeline(gpu, &create);
+        let id = self.made(turn, |kept, id, maker| kept.programs.keep(id, maker, made))?;
+        turn.reply(&Programmed::Made(ProgramId { id }))?;
+
+        Ok(())
+    }
+}
+
 impl Handles<Release> for Renderer {
     type Sends = ();
 
@@ -228,6 +266,7 @@ impl Handles<Release> for Renderer {
         let released = match release {
             Release::Mesh(mesh) => kept.meshes.release(mesh.id, by).map(drop),
             Release::Texture(texture) => kept.textures.release(texture.id, by).map(drop),
+            Release::Program(program) => kept.programs.release(program.id, by).map(drop),
         };
         match released {
             Released::Freed(()) => {}
@@ -249,6 +288,7 @@ impl Handles<Ended> for Renderer {
         if watched {
             kept.meshes.release_all(maker);
             kept.textures.release_all(maker);
+            kept.programs.release_all(maker);
         }
 
         Ok(())
@@ -287,4 +327,134 @@ fn upload(gpu: &Gpu, bytes: &[u8], usage: wgpu::BufferUsages) -> wgpu::Buffer {
     gpu.queue().write_buffer(&buffer, 0, bytes);
 
     buffer
+}
+
+/// The depth a program tests against: what the pass it draws in holds beside its colour.
+const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// The pipeline `create` asks for, drawing to the surface's format, made from what its check let through.
+fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
+    let device = gpu.device();
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(create.wgsl.as_str().into()),
+    });
+    let groups = groups(device, &create.bindings);
+    let bound: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(Some).collect();
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &bound,
+        immediate_size: 0,
+    });
+    let attributes: Vec<wgpu::VertexAttribute> = create
+        .layout
+        .attributes
+        .iter()
+        .map(|attribute| wgpu::VertexAttribute {
+            format: attribute.format.wgpu(),
+            offset: u64::from(attribute.offset),
+            shader_location: attribute.location,
+        })
+        .collect();
+    let vertices = wgpu::VertexBufferLayout {
+        array_stride: u64::from(create.layout.stride),
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &attributes,
+    };
+    let blend = match create.state.blend {
+        Blend::Opaque => None,
+        Blend::Alpha => Some(wgpu::BlendState::ALPHA_BLENDING),
+        Blend::Additive => {
+            let add = wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            };
+            Some(wgpu::BlendState { color: add, alpha: add })
+        }
+    };
+    let (compare, writes) = match create.state.depth {
+        Depth::Off => (wgpu::CompareFunction::Always, false),
+        Depth::Test => (wgpu::CompareFunction::Less, false),
+        Depth::TestWrite => (wgpu::CompareFunction::Less, true),
+    };
+    let cull = match create.state.cull {
+        Cull::None => None,
+        Cull::Back => Some(wgpu::Face::Back),
+        Cull::Front => Some(wgpu::Face::Front),
+    };
+    let target = wgpu::ColorTargetState { format: gpu.format(), blend, write_mask: wgpu::ColorWrites::ALL };
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some(&create.vertex),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[Some(vertices)],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: cull,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH,
+            depth_write_enabled: Some(writes),
+            depth_compare: Some(compare),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some(&create.fragment),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(target)],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+
+    Program { pipeline, layout: create.layout.clone(), groups }
+}
+
+/// The layout of each group `bindings` binds in, from the first to the last of them, an empty one for a group they
+/// skip; each binding is seen by both stages.
+fn groups(device: &wgpu::Device, bindings: &[Binding]) -> Vec<wgpu::BindGroupLayout> {
+    let count = bindings.iter().map(|binding| binding.group + 1).max().unwrap_or(0);
+
+    (0..count)
+        .map(|group| {
+            let entries: Vec<wgpu::BindGroupLayoutEntry> = bindings
+                .iter()
+                .filter(|binding| binding.group == group)
+                .map(|binding| wgpu::BindGroupLayoutEntry {
+                    binding: binding.binding,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: binding_type(binding.kind),
+                    count: None,
+                })
+                .collect();
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &entries })
+        })
+        .collect()
+}
+
+/// What a binding of `kind` is, as wgpu names it.
+fn binding_type(kind: BindingKind) -> wgpu::BindingType {
+    match kind {
+        BindingKind::Uniform { bytes } => wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: wgpu::BufferSize::new(u64::from(bytes)),
+        },
+        BindingKind::Texture => wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        BindingKind::Sampler => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+    }
 }
