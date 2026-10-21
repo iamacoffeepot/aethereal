@@ -743,7 +743,7 @@ impl<'a> Hosted<'a> {
                 receiver.is_none_or(|receiver| kinds.iter().all(|kind| receiver.lists(*kind)))
             }
             Target::Path(segment) => self.seat.declared_at(to.id).is_none_or(|receiver| receiver.id() == segment.kind),
-            Target::Job | Target::Spawned => false,
+            Target::Spawned => false,
         }
     }
 }

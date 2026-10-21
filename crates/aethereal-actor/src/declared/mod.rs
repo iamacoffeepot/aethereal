@@ -338,8 +338,6 @@ pub enum Target {
     /// Any actor whose type lists every one of these kinds: what a reference that names a protocol, and not a type,
     /// reaches.
     Handling(&'static [KindId]),
-    /// No actor: the handler may run a job of the sending's kind, which its host runs (ADR-0018).
-    Job,
     /// No actor: the handler may spawn a child of the type of the sending's kind (ADR-0022).
     Spawned,
     /// The actor at the typed path whose last segment this is, found as each piece of mail is sent (ADR-0022).

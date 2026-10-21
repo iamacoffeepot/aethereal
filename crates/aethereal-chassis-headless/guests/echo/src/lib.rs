@@ -3,8 +3,8 @@
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, BlobRef, Carries, ChildOf, Ended, Ending,
     ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, On, Path, Protocol, Recursive, Refused,
-    Resource, Runner, Running, RunsJob, Spawns, Start, Stop, Tells, Tick, To, ToAny, ToSender, ToType, ToWithoutMail,
-    Top, Turn, Unanswered, Unrun, path,
+    Resource, Runner, Running, Spawns, Start, Stop, Tells, Tick, To, ToAny, ToSender, ToType, ToWithoutMail, Top, Turn,
+    Unanswered, Unrun, path,
 };
 use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, Plain};
 use core::mem;
@@ -343,7 +343,7 @@ impl Actor for Errand {
     type Config = EchoConfig;
     type Key = ();
     type Handles = (Answer<Pong, EchoConfig>,);
-    type BeginSends = (RunsJob<Chore, EchoConfig>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {

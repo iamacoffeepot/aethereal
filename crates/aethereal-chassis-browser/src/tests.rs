@@ -2,8 +2,8 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, On, Render, RunsJob, Sleep,
-    Slept, Source, Tick, Top, Turn,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, On, Render, Sleep, Slept,
+    Source, Tick, Top, Turn,
 };
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_substrate::{Inline, Jobs, Setup};
@@ -67,7 +67,7 @@ impl Actor for Painter {
 }
 
 impl Handles<On<Tick>> for Painter {
-    type Sends = (RunsJob<Sleep, Nothing>,);
+    type Sends = ();
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         note("tick");
