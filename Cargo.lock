@@ -28,6 +28,8 @@ dependencies = [
  "aethereal-data",
  "aethereal-render",
  "aethereal-substrate",
+ "aethereal-window",
+ "js-sys",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -98,6 +100,15 @@ dependencies = [
  "aethereal-actor",
  "aethereal-data",
  "crossbeam-queue",
+]
+
+[[package]]
+name = "aethereal-window"
+version = "0.1.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
+ "aethereal-substrate",
 ]
 
 [[package]]

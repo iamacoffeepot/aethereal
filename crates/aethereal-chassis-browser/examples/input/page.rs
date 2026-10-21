@@ -1,10 +1,12 @@
-//! The page's entry points, and an actor that subscribes to the input root and notes each event it is sent.
+//! The page's entry points, and an actor that subscribes to the canvas's window and to the controls, and notes each
+//! event and control it is sent.
 
 use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Path, Tells, Top, Turn, path};
-use aethereal_chassis_browser::input::{Event, Input, InputConfig, Listening, Subscribe, listen};
-use aethereal_chassis_browser::{Browser, Performance};
+use aethereal_chassis_browser::controls::{self, Control, Controls, ControlsConfig};
+use aethereal_chassis_browser::{Browser, Listening, Performance, canvas};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_substrate::Engine;
+use aethereal_window::{self as window, Event, Heard, Opening, Window, WindowId, Windows};
 use core::cell::RefCell;
 use core::mem;
 use core::num::NonZeroUsize;
@@ -21,11 +23,13 @@ thread_local! {
 #[wasm_bindgen]
 pub struct Program {
     browser: Browser<Performance>,
-    _listening: Listening,
+    _canvas: Listening,
+    _controls: Listening,
 }
 
-/// Makes the engine with the input root and the reporter as its roots, and listens to the page for what the input
-/// root is fed: the pointer over `canvas`, the keys, and the controls the page marks.
+/// Makes the engine with the window root, the controls root, and the reporter as its roots, the canvas the one window,
+/// and listens to the page for what each is fed: the pointer over `canvas`, the keys, the focus, and resizes, and the
+/// controls the page marks.
 ///
 /// # Errors
 ///
@@ -35,16 +39,25 @@ pub fn start(canvas: &HtmlCanvasElement) -> Result<Program, JsError> {
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0)
         .with_cycle::<()>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
-    let (source, feed) = setup.source::<Event>();
+    let mut opening = Opening::new(setup.source::<Heard>());
+    let shown = canvas::open(canvas, &mut opening)?;
+    let mut setup = setup
+        .add_root::<Windows>(&(), opening.config())
+        .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
+    let (source, feed) = setup.source::<Control>();
     let engine = setup
-        .add_root::<Input>(&(), InputConfig { source })
-        .map_err(|refused| JsError::new(&format!("the input root did not begin: {refused:?}")))?
-        .add_root::<Reporter>(&(), Nothing)
+        .add_root::<Controls>(&(), ControlsConfig { source })
+        .map_err(|refused| JsError::new(&format!("the controls root did not begin: {refused:?}")))?
+        .add_root::<Reporter>(&(), Watches { window: shown.window() })
         .map_err(|refused| JsError::new(&format!("the reporter did not begin: {refused:?}")))?
         .ready();
-    let listening = listen(canvas, &feed)?;
+    let program = Program {
+        browser: Browser::new(engine, Performance),
+        _canvas: canvas::listen(canvas, &shown)?,
+        _controls: controls::listen(&feed)?,
+    };
 
-    Ok(Program { browser: Browser::new(engine, Performance), _listening: listening })
+    Ok(program)
 }
 
 #[wasm_bindgen]
@@ -62,15 +75,18 @@ impl Program {
     }
 }
 
-/// An empty config.
+/// What the reporter watches: the window it subscribes to.
 #[derive(Plain)]
-struct Nothing;
-
-impl Kind for Nothing {
-    const NAME: KindName = KindName::new("aether.example.nothing");
+struct Watches {
+    window: WindowId,
 }
 
-/// The reporter: it subscribes to the input root as it begins, and notes each event it is sent.
+impl Kind for Watches {
+    const NAME: KindName = KindName::new("aether.example.watches");
+}
+
+/// The reporter: it subscribes to the canvas's window and to the controls as it begins, and notes each event and
+/// control it is sent.
 #[derive(Bound)]
 struct Reporter;
 
@@ -83,14 +99,15 @@ impl ChildOf for Reporter {
 }
 
 impl Actor for Reporter {
-    type Config = Nothing;
+    type Config = Watches;
     type Key = ();
-    type Handles = (Event,);
-    type BeginSends = (Tells<Path<Input>, Subscribe>,);
+    type Handles = (Event, Control);
+    type BeginSends = (Tells<Path<Window>, window::Subscribe>, Tells<Path<Controls>, controls::Subscribe>);
     type EndSends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.to(path::<Input>(())).send(&Subscribe)?;
+    fn begin(watches: Watches, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.to(path::<Window>(watches.window)).send(&window::Subscribe)?;
+        turn.to(path::<Controls>(())).send(&controls::Subscribe)?;
 
         Ok(Self)
     }
@@ -104,7 +121,17 @@ impl Handles<Event> for Reporter {
     type Sends = ();
 
     fn handle(&mut self, event: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        SAID.with_borrow_mut(|said| said.push(format!("{event:?}")));
+        SAID.with_borrow_mut(|said| said.push(format!("window {event:?}")));
+
+        Ok(())
+    }
+}
+
+impl Handles<Control> for Reporter {
+    type Sends = ();
+
+    fn handle(&mut self, control: Control, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        SAID.with_borrow_mut(|said| said.push(format!("control {control:?}")));
 
         Ok(())
     }

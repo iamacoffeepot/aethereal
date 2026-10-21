@@ -1,7 +1,7 @@
-//! What the page's events read as: where the pointer is in the canvas's pixels, which button the page numbered, and
-//! what a control holds.
+//! What the page's pointer events read as: where the pointer is in the canvas's pixels, and which button the page
+//! numbered.
 
-use super::{Button, Event, Value};
+use aethereal_window::{Button, Event};
 
 /// The canvas as the page lays it out: the size of its backing store, in its pixels, and the size it is shown at, in
 /// the page's CSS pixels.
@@ -53,38 +53,27 @@ pub enum Pointing {
 
 impl Pointing {
     /// The event of the pointer doing this at `x`, `y` in the canvas's pixels, with the button the page numbered
-    /// `button`, which a move does not read.
-    pub const fn event(self, (x, y): (f32, f32), button: i16) -> Event {
+    /// `button`, which a move does not read: none for a press or release of no button, which the page numbers below
+    /// zero.
+    pub fn event(self, (x, y): (f32, f32), button: i16) -> Option<Event> {
         match self {
-            Self::Moved => Event::PointerMoved { x, y },
-            Self::Down => Event::PointerDown { x, y, button: button_of(button) },
-            Self::Up => Event::PointerUp { x, y, button: button_of(button) },
+            Self::Moved => Some(Event::PointerMoved { x, y }),
+            Self::Down => button_of(button).map(|button| Event::PointerDown { x, y, button }),
+            Self::Up => button_of(button).map(|button| Event::PointerUp { x, y, button }),
         }
     }
 }
 
-/// The button the page numbers `number`.
-pub const fn button_of(number: i16) -> Button {
-    match number {
+/// The button the page numbers `number`: none below zero, which numbers no button.
+pub fn button_of(number: i16) -> Option<Button> {
+    let button = match number {
         0 => Button::Main,
         1 => Button::Middle,
         2 => Button::Secondary,
         3 => Button::Back,
         4 => Button::Forward,
-        other => Button::Other(other),
-    }
-}
+        other => Button::Other(u16::try_from(other).ok()?),
+    };
 
-/// What an input element of type `kind` holds, its value `value` and whether it is `checked`: a checkbox or radio
-/// button by whether it is checked, a range or number input by its number when its value reads as a finite one, and
-/// any other by its value as written.
-pub fn value_of(kind: &str, value: String, checked: bool) -> Value {
-    match kind {
-        "checkbox" | "radio" => Value::Checked(checked),
-        "range" | "number" => {
-            let number = value.parse::<f64>().ok().filter(|number| number.is_finite());
-            number.map_or(Value::Text(value), Value::Number)
-        }
-        _ => Value::Text(value),
-    }
+    Some(button)
 }

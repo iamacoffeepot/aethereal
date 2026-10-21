@@ -6,15 +6,20 @@
 //! [`Browser::frame`], which runs one cycle through to its end before the
 //! page gets its thread back.
 //!
-//! What the page hears, the pointer, the keys, and the controls it marks, its
-//! callbacks push onto the source of the [`input`] root as they run, and the
-//! next frame brings in (ADR-0010, ADR-0019).
+//! What the page hears, its callbacks push onto a source as they run, and the
+//! next frame brings in (ADR-0010): the pointer over the canvas, the keys, the
+//! focus, and resizes onto the window capability's, the canvas its one window
+//! ([`canvas`], ADR-0024), and the controls the page marks onto the
+//! [`controls`] root's.
 
+pub mod canvas;
 #[cfg(target_arch = "wasm32")]
 mod clock;
+pub mod controls;
 #[cfg(target_arch = "wasm32")]
 mod gpu;
-pub mod input;
+#[cfg(target_arch = "wasm32")]
+mod listening;
 #[cfg(test)]
 mod tests;
 
@@ -22,6 +27,8 @@ mod tests;
 pub use clock::Performance;
 #[cfg(target_arch = "wasm32")]
 pub use gpu::open;
+#[cfg(target_arch = "wasm32")]
+pub use listening::Listening;
 
 use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Engine};

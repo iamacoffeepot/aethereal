@@ -11,10 +11,12 @@ aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 aethereal-render = { path = "../aethereal-render" }
 aethereal-substrate = { path = "../aethereal-substrate" }
+aethereal-window = { path = "../aethereal-window" }
 
 # The page's own clock, canvas, and GPU. A native build of the workspace compiles the chassis's frame loop alone.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "webgpu"] }
+js-sys = "0.3.106"
 # The bindings' version is the `wasm-bindgen` tool's that writes the page's glue.
 wasm-bindgen = "=0.2.129"
 wasm-bindgen-futures = "0.4.79"
@@ -30,6 +32,8 @@ web-sys = { version = "0.3.106", features = [
     "HtmlTextAreaElement",
     "KeyboardEvent",
     "MouseEvent",
+    "MutationObserver",
+    "MutationObserverInit",
     "NodeList",
     "PointerEvent",
     "Window",
