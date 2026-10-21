@@ -82,14 +82,14 @@ enum Invocations {
 
 **Dispatches of one pass run in no order an actor may rely on.** The render root runs them grouped by program, each program's pipeline set once, as it draws a pass's placements (ADR-0025). A dispatch that needs another's output is in a later pass. **Order is declared where drawing is described, and nowhere else**: the frame's passes, which their author writes, and, within one dispatch, the order its own shader gives.
 
-**Storage can be read back,** as a texture is (ADR-0023: `ReadBack`):
+**Storage can be read back,** as a texture is (ADR-0023: `ReadBack`), by an ask of its own:
 
 ```rust
-enum Readable { Frame, Texture(TextureId), Storage(StorageId) }
-ReadBack { of: Readable::Storage(storage) }  -> Bytes::Read { bytes: BlobRef } | Bytes::Refused
+ReadStorage { storage: StorageId }  -> Bytes::Read { bytes: BlobRef } | Bytes::Refused(ReadRefused)
 ```
 
-- It is read as it is when the ask is handled, after every `Render` before it, and answered with its bytes, held and answered as a texture's pixels are. A storage larger than the store lets one worker put is refused (`Unstored`). **This departs from ADR-0023, whose `ReadBack` answered only pixels**, so a pixel's answer and a storage's are answered by kinds of their own, and ADR-0023 is edited to match.
+- It is read as it is when the ask is handled, after every `Render` before it, and answered with its bytes, held and answered as a texture's pixels are. Any actor handed the storage may read it. Storage not kept is refused (`Storage`), and storage larger than the store lets one worker put (`Unstored`).
+- **It is an ask of its own, where this record first gave `ReadBack` a `Readable::Storage`.** An ask is answered with one kind (ADR-0017: `Carries`, `Answers = (A,)`), so a `ReadBack` answered with pixels or bytes could not be asked, and every actor that reads a frame back would handle bytes. ADR-0023 is edited to match.
 
 **`TimeFrame` times a compute pass as it times a draw pass,** its nanoseconds from beginning to end, in the order of the frame's passes.
 
