@@ -1,8 +1,13 @@
 //! An engine being set up: the roots its host makes before it runs, checked as the program is built (ADR-0022).
 
+use super::bring::Feed;
 use super::jobs::Jobs;
 use super::{CodeRefused, Engine};
-use aethereal_actor::{BlobRef, Cycle, Given, Guests, Links, Ordered, Refused, Resource, Root, Unordered};
+use aethereal_actor::{
+    Actors, BlobRef, Controller, Cycle, Given, Guests, Links, Ordered, Refused, Requests, Resource, Root, Source,
+    Unordered,
+};
+use aethereal_data::{Encode, Kind};
 use core::marker::PhantomData;
 use core::time::Duration;
 use std::sync::Arc;
@@ -257,6 +262,18 @@ impl<S> Setup<S> {
     /// Hands `value` in, for a root's config to carry, as [`Engine::hand`] does.
     pub fn hand<R: Resource>(&mut self, value: R) -> Given<R> {
         self.engine.hand(value)
+    }
+
+    /// Makes a source of `K`, for a root's config to carry, and the feed the chassis pushes onto, as
+    /// [`Engine::source`] does.
+    pub fn source<K: Kind + Encode<Actors> + Send + 'static>(&mut self) -> (Given<Source<K>>, Feed<K>) {
+        self.engine.source()
+    }
+
+    /// Makes a controller of requests `K`, for a root's config to carry, and the end the host takes its requests
+    /// from, as [`Engine::controller`] does.
+    pub fn controller<K: Send + 'static>(&mut self) -> (Given<Controller<K>>, Requests<K>) {
+        self.engine.controller()
     }
 
     /// Puts `bytes` in the store as code, for a root to be made from, as [`Engine::put_code`] does.

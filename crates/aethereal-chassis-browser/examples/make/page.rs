@@ -4,12 +4,12 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Refused, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
-use aethereal_chassis_browser::{Browser, Performance, open};
+use aethereal_chassis_browser::{Browser, Performance, open, renderer};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_render::mesh::{Attribute, CreateMesh, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::program::{Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, Programmed};
 use aethereal_render::texture::{CreateTexture, TextureFormat, Textured};
-use aethereal_render::{Release, Renderer, RendererConfig};
+use aethereal_render::{Release, Renderer};
 use aethereal_substrate::Engine;
 use core::cell::RefCell;
 use core::mem;
@@ -45,16 +45,16 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
-    let gpu = setup.hand(gpu);
+    let (rendering, mappings) = renderer(&mut setup, gpu);
     // The maker reaches the renderer at its typed path, so the renderer is made first: `ready` builds only then.
     let engine = setup
-        .add_root::<Renderer>(&(), RendererConfig { gpu })
+        .add_root::<Renderer>(&(), rendering)
         .map_err(|refused| JsError::new(&format!("the renderer did not begin: {refused:?}")))?
         .add_root::<Maker>(&(), Nothing)
         .map_err(|refused| JsError::new(&format!("the maker did not begin: {refused:?}")))?
         .ready();
 
-    Ok(Program { browser: Browser::new(engine, Performance) })
+    Ok(Program { browser: Browser::new(engine, Performance, mappings) })
 }
 
 #[wasm_bindgen]
