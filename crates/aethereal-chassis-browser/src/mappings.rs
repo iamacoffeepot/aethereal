@@ -4,9 +4,7 @@
 use aethereal_actor::Requests;
 use aethereal_render::mapping::{Mapped, Mapping};
 use aethereal_render::{Gpu, RendererConfig};
-#[cfg(test)]
-use aethereal_substrate::Engine;
-use aethereal_substrate::{Feed, Setup};
+use aethereal_substrate::{Engine, Feed, Setup};
 
 /// The chassis's ends of the renderer's controller and source.
 pub struct Mappings {
@@ -24,9 +22,9 @@ pub fn renderer<S>(setup: &mut Setup<S>, gpu: Gpu) -> (RendererConfig, Mappings)
 }
 
 impl Mappings {
-    /// The ends of a controller and a source no renderer holds, for a test's engine that has none: nothing is asked.
-    #[cfg(test)]
-    pub(crate) fn unasked(engine: &mut Engine) -> Self {
+    /// The ends of a controller and a source no renderer holds, for an engine that has none, such as a page that
+    /// draws nothing: nothing is asked.
+    pub fn unasked(engine: &mut Engine) -> Self {
         let (_, requests) = engine.controller();
         let (_, feed) = engine.source();
 

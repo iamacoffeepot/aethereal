@@ -91,6 +91,8 @@ What the capability gives, and to whom, is the capability's to decide: it may ha
 
 **A requested resource that the host cannot make yet is waited on by the host, never by a turn.** The capability holds the request, and the chassis pushes what it made when it has it: once a browser's GPU promise resolves, or once the page sees a gesture and its audio output can play. A host that cannot make it at all pushes an event that says so, and the capability answers with it.
 
+**Windows and what they hear are ADR-0024's**: the window capability, its root and an actor for each window, and the browser's canvas as its one window, with a source and no controller.
+
 ## Consequences
 
 - A window, a device, or an audio output can be asked for at any time a program runs, not only at boot, and arrives in a turn of its capability like any mail.
@@ -100,7 +102,7 @@ What the capability gives, and to whom, is the capability's to decide: it may ha
 - A turn that pushes to a controller cannot be run again from its record without pushing again: a replay gives the capability a controller whose requests go nowhere, and feeds it what its source brought from the record.
 - The thread that runs the windowing library's event loop is the thread that steps the engine, natively: requests are taken and windows made there, between steps, inside the library's callbacks. The workers run turns on other threads, as before (ADR-0011).
 - `Engine::hand` is no longer only for boot. A chassis that hands a value and never puts it in an event or a config leaves it in the engine's keeping until the engine is dropped.
-- **Not decided here:** the window capability's own mail: which requests and events it has, and whether each window gets an actor of its own; and the render capability's.
+- The window capability's own mail, which this record left undecided, is decided by ADR-0024: its events, and an actor for each window beneath one root. Its requests, opening and closing a window among them, are left by it for later. The render capability's is ADR-0021's.
 
 ## Alternatives considered
 

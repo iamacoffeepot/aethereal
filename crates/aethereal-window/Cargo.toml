@@ -1,0 +1,15 @@
+[package]
+name = "aethereal-window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The window capability: a root that holds what the host brings in from its windows, and an actor for each window that actors subscribe to (ADR-0024)"
+
+[dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-data = { path = "../aethereal-data" }
+aethereal-substrate = { path = "../aethereal-substrate" }
+
+[lints]
+workspace = true

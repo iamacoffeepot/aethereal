@@ -2,7 +2,7 @@
 //! (ADR-0016).
 
 use crate::{Ended, ErasedActorRef, Handles, ProtocolRef, Reachable, Turn, Vantage};
-use aethereal_data::ActorId;
+use aethereal_data::{ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Reader, Schema, Shape, Writer};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
@@ -16,6 +16,10 @@ use alloc::vec::Vec;
 ///
 /// No watch is undone: one removed before it ends is still watched, and its
 /// ending, when it comes, finds nothing to remove.
+///
+/// It is a field of its holder's state, written as the references it holds,
+/// in order, so an actor that keeps its listeners is still a kind (ADR-0009).
+/// The watches are the engine's, and are not written.
 pub struct Subscribers<P> {
     references: Vec<ProtocolRef<P>>,
     /// Where in `references` each actor is, by its id's bits.
@@ -31,13 +35,22 @@ impl<P> Subscribers<P> {
 
     /// Adds the actor `reference` refers to, and watches it: nothing, and answers false, when it is held already.
     pub fn subscribe<A: Handles<Ended>, S>(&mut self, turn: &mut Turn<'_, A, S>, reference: ProtocolRef<P>) -> bool {
+        let added = self.hold(reference);
+        if added {
+            turn.watch(reference);
+        }
+
+        added
+    }
+
+    /// Adds the actor `reference` refers to, unwatched: nothing, and answers false, when it is held already.
+    fn hold(&mut self, reference: ProtocolRef<P>) -> bool {
         let is_held = self.places.contains_key(&reference.id().bits());
         if is_held {
             return false;
         }
         self.places.insert(reference.id().bits(), self.references.len());
         self.references.push(reference);
-        turn.watch(reference);
 
         true
     }
@@ -76,6 +89,36 @@ impl<P> Subscribers<P> {
 impl<P> Default for Subscribers<P> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Written as the list of references it holds.
+impl<P> Schema for Subscribers<P> {
+    const SHAPE: Shape = <Vec<ProtocolRef<P>>>::SHAPE;
+}
+
+impl<B: Boundary, P> Encode<B> for Subscribers<P>
+where
+    Vec<ProtocolRef<P>>: Encode<B>,
+{
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+        self.references.encode(out)
+    }
+}
+
+/// Read as the list of references it was written as, each found again where it is held, and one written twice held
+/// once.
+impl<B: Boundary, P> Decode<B> for Subscribers<P>
+where
+    Vec<ProtocolRef<P>>: Decode<B>,
+{
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        let mut subscribers = Self::new();
+        for reference in Vec::<ProtocolRef<P>>::decode(input)? {
+            subscribers.hold(reference);
+        }
+
+        Ok(subscribers)
     }
 }
 

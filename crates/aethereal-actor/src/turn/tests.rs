@@ -755,6 +755,29 @@ fn subscribers_are_held_once_watched_once_and_leave_by_ending_or_unsubscribing()
 }
 
 #[test]
+fn subscribers_kept_in_an_actors_state_are_read_back_in_order_each_found_where_it_is_held() {
+    // Catches a list read back without where each subscriber is held, so one that unsubscribes or ends after its
+    // holder's state was carried is never removed, and one read back out of the order it was written in.
+    let [first, second, third] = [seated(9, 5), seated(8, 6), seated(7, 7)];
+    let table = Listed(Vec::new());
+    let mut asked = Asked::new();
+    let mut turn = opened::<Leaf, ()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let listener = |at: Seated| -> ProtocolRef<(Poke,)> { ActorRef::<Leaf>::new(at).protocol() };
+    let mut subscribers = Subscribers::new();
+    for at in [first, second, third] {
+        subscribers.subscribe(&mut turn, listener(at));
+    }
+
+    let Ok(Ok(mut read)) = Written::of(&subscribers).map(|written| written.read::<Subscribers<(Poke,)>>(256)) else {
+        panic!("the subscribers are written and read back");
+    };
+    assert_eq!(read.references(), [listener(first), listener(second), listener(third)]);
+    assert!(read.unsubscribe(listener(first)));
+    assert!(read.ended(&Ended::new(second, How::Closed)));
+    assert_eq!(read.references(), [listener(third)]);
+}
+
+#[test]
 fn back_to_back_mail_of_one_kind_to_one_receiver_is_one_run() {
     // Catches a run joining mail to another receiver or of another kind, one counted from the wrong piece, and a
     // piece of a run read from the bytes of another.
