@@ -4,7 +4,7 @@ use super::*;
 use crate::records::Staging;
 use crate::{
     Anywhere, Beginning, Carries, ChildOf, Claim, Claimed, Ended, Ending, Fault, Hosted, How, Item, Keeping, Kept,
-    Mail, MailId, NotHeld, On, Payload, Protocol, Resource, Subscribers, Tick, Unspawned,
+    Mail, MailId, NotHeld, On, Payload, Protocol, Resource, Subscribers, Tick, Unspawned, child, parent,
 };
 use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
 use alloc::string::ToString;
@@ -562,6 +562,62 @@ fn mail_to_a_parent_goes_only_while_it_is_live() {
     let to_parent = Mailed { by: ME, to: parent, count: 1, kind: KindId::of::<Poke>(), bytes: NOTHING, tie: Tie::TELL };
     assert_eq!(send(&live), (true, vec![to_parent]));
     assert_eq!(send(&Listed::default()), (true, Vec::new()));
+}
+
+#[test]
+fn mail_to_a_parent_by_what_it_takes_reaches_it_only_when_its_type_lists_every_kind() {
+    // Catches a parent target that skips its cast, sending to a parent that does not take the protocol, and one that
+    // finds an actor above a root.
+    let above = seated(7, 3);
+    let table = Listed(vec![(above, ROOT.clone())]);
+    let Ok(path) = ROOT.child(&PathSegment::new(Leaf::NAME, &0u64)) else {
+        panic!("a child of the root fits");
+    };
+    let sent = |over: Above| {
+        let mut asked = Asked::new();
+        let mut turn = opened::<Leaf, (ToAny<(Poke,), Poke>, ToAny<(Poke, ToldToFail), Poke>)>(
+            ME, &path, over, &table, &mut asked, ME,
+        );
+        let takes = turn.to(parent::<(Poke,)>()).send(&Poke).is_ok();
+        let lacks = turn.to(parent::<(Poke, ToldToFail)>()).send(&Poke).is_ok();
+        let to: Vec<Seated> = asked.into_parts().0.mailed.iter().map(|mailed| mailed.to).collect();
+
+        (takes && lacks, to)
+    };
+
+    let nowhere = |id| Seated { id: ActorId::new(id), seat: SeatNumber::NOWHERE };
+    assert_eq!(sent(Above::Actor(above, Declared::of::<Leaf>())), (true, vec![above, nowhere(7)]));
+    // Above a root is nowhere, for both: one run of two pieces.
+    assert_eq!(sent(Above::Chassis), (true, vec![nowhere(0)]));
+}
+
+#[test]
+fn mail_to_a_child_by_its_type_reaches_it_only_when_it_was_made_and_is_of_that_type() {
+    // Catches a child target that reaches a place the sender never made a child at, or one whose actor is of another
+    // type, as two types of one name share an id.
+    let probe = Listed::default();
+    let leaf = Seated { id: probe.child(ME.id, &PathSegment::new(Leaf::NAME, &0u64)), seat: SeatNumber::new(4) };
+    let branch = Seated { id: probe.child(ME.id, &PathSegment::new(Branch::NAME, &())), seat: SeatNumber::new(5) };
+    // The table says every actor it holds is a leaf, so the one at the branch's place is of another type.
+    let table = Listed(vec![(leaf, ROOT.clone()), (branch, ROOT.clone())]);
+    let mut asked = Asked::new();
+    let mut turn = opened::<Herald, (ToType<Leaf, Poke>, ToType<Branch, Poked>)>(
+        ME,
+        &ROOT,
+        Above::Chassis,
+        &table,
+        &mut asked,
+        ME,
+    );
+
+    assert!(turn.to(child::<Leaf>(&0)).send(&Poke).is_ok());
+    assert!(turn.to(child::<Branch>(&())).send(&Poked).is_ok());
+    assert!(turn.to(child::<Leaf>(&9)).send(&Poke).is_ok());
+
+    let to: Vec<Seated> = asked.into_parts().0.mailed.iter().map(|mailed| mailed.to).collect();
+    let never = probe.child(ME.id, &PathSegment::new(Leaf::NAME, &9u64));
+    let nowhere = |id| Seated { id, seat: SeatNumber::NOWHERE };
+    assert_eq!(to, [leaf, nowhere(branch.id), nowhere(never)]);
 }
 
 #[test]

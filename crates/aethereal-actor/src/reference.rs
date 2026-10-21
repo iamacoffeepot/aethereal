@@ -2,7 +2,7 @@
 
 use crate::{
     Actor, ChildOf, Conforms, Covers, Handled, Handles, Listed, Path, PathTo, Refers, SeatNumber, Seated, Table, Tells,
-    ToAny, ToType,
+    ToAny, ToType, Vantage,
 };
 use aethereal_data::{
     ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, Reader, Schema, Shape, Writer,
@@ -418,72 +418,73 @@ impl<L: ChildOf + PathTo + Handles<K>, K: Kind + Handled> Reaches<K> for Path<L>
     type Marker = Tells<Self, K>;
 }
 
-/// What a turn's `to` takes: one actor, through a reference or at a typed path, or several references at once, each
-/// found once, as the target is made (ADR-0016, ADR-0022).
-pub trait Reachable {
+/// What a turn's `to` takes, from an actor of type `Me`: one actor, through a reference, at a typed path, or at a
+/// place relative to the sender ([`parent`](crate::parent), [`child`](crate::child)), or several references at once,
+/// each found once, as the target is made (ADR-0016, ADR-0022).
+pub trait Reachable<Me> {
     /// What the mail goes through, whose markers a turn's sends list: the reference or path itself, or the type of
     /// each of several references.
     type Through;
     /// Where the target was found: one actor and its seat, or the references themselves.
     type At;
 
-    /// Where it is, read from `table` when it is a path: the place in [`SeatNumber::NOWHERE`] when it holds no live
-    /// actor of its type, where mail is dropped and a request is answered as by an actor that has gone. A reference
-    /// is found without reading the table.
-    fn at(self, table: &dyn Table) -> Self::At;
+    /// Where it is, seen from where the sender stands, `from`: for a path or a place, the place in
+    /// [`SeatNumber::NOWHERE`] when it holds no live actor of its type, where mail is dropped and a request is
+    /// answered as by an actor that has gone. A reference is found without reading the table.
+    fn at(self, from: &Vantage<'_, '_>) -> Self::At;
 }
 
-impl<T> Reachable for ActorRef<T> {
+impl<Me, T> Reachable<Me> for ActorRef<T> {
     type Through = Self;
     type At = Seated;
 
-    fn at(self, _: &dyn Table) -> Seated {
+    fn at(self, _: &Vantage<'_, '_>) -> Seated {
         self.seated
     }
 }
 
-impl<P> Reachable for ProtocolRef<P> {
+impl<Me, P> Reachable<Me> for ProtocolRef<P> {
     type Through = Self;
     type At = Seated;
 
-    fn at(self, _: &dyn Table) -> Seated {
+    fn at(self, _: &Vantage<'_, '_>) -> Seated {
         self.seated
     }
 }
 
 /// A path is found once, as the target is made: every send and ask through it goes to the actor found then.
-impl<L: ChildOf + PathTo> Reachable for Path<L> {
+impl<Me, L: ChildOf + PathTo> Reachable<Me> for Path<L> {
     type Through = Self;
     type At = Seated;
 
-    fn at(self, table: &dyn Table) -> Seated {
-        table.reach(self.names(), KindId::of::<L>())
+    fn at(self, from: &Vantage<'_, '_>) -> Seated {
+        from.table().reach(self.names(), KindId::of::<L>())
     }
 }
 
-impl<'r, R: Proven> Reachable for &'r [R] {
+impl<'r, Me, R: Proven> Reachable<Me> for &'r [R] {
     type Through = R;
     type At = &'r [R];
 
-    fn at(self, _: &dyn Table) -> &'r [R] {
+    fn at(self, _: &Vantage<'_, '_>) -> &'r [R] {
         self
     }
 }
 
-impl<'r, R: Proven, const N: usize> Reachable for &'r [R; N] {
+impl<'r, Me, R: Proven, const N: usize> Reachable<Me> for &'r [R; N] {
     type Through = R;
     type At = &'r [R];
 
-    fn at(self, _: &dyn Table) -> &'r [R] {
+    fn at(self, _: &Vantage<'_, '_>) -> &'r [R] {
         self
     }
 }
 
-impl<'r, R: Proven> Reachable for &'r Vec<R> {
+impl<'r, Me, R: Proven> Reachable<Me> for &'r Vec<R> {
     type Through = R;
     type At = &'r [R];
 
-    fn at(self, _: &dyn Table) -> &'r [R] {
+    fn at(self, _: &Vantage<'_, '_>) -> &'r [R] {
         self
     }
 }

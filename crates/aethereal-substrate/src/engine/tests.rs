@@ -6,9 +6,9 @@ use crate::{ByActor, Entry, child_id, path_id};
 use aethereal_actor::Time;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Carries, ChildOf, Ended, Ending, Fault, Handles, How, Level,
-    Path, Recursive, Table, Tells, To, ToAny, ToSender, ToType, Top, Turn, path,
+    Path, Recursive, Table, Tells, To, ToAny, ToSender, ToType, Top, Turn, child, path,
 };
-use aethereal_data::{Bound, Budget, Kind, KindName, Plain, TypedKey};
+use aethereal_data::{Bound, Budget, Kind, KindName, Plain};
 use std::cell::RefCell;
 use std::mem;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -92,11 +92,6 @@ impl Node {
         };
         say(format!("{} {} {number}", self.number, finding(found)));
     }
-
-    /// The target that is the node `number` beneath this one.
-    fn child(number: u64) -> To {
-        To::ChildInstanced(Self::NAME, number.to_name())
-    }
 }
 
 impl ChildOf for Node {
@@ -179,7 +174,7 @@ impl Handles<Note> for Node {
                     if watches {
                         turn.watch(child);
                     }
-                    turn.send(Self::child(number), &Note { text: String::from(text) })?;
+                    turn.to(child).send(&Note { text: String::from(text) })?;
                 }
             }
             ["nest", number, beneath] => {
@@ -188,8 +183,8 @@ impl Handles<Note> for Node {
                 let _ = turn.spawn::<Self>(&number, NodeConfig { number, to_self: Vec::new(), spawns });
             }
             ["tell", number, text] => {
-                let child = Self::child(number.parse().unwrap_or_default());
-                turn.send(child, &Note { text: String::from(text) })?;
+                let number: u64 = number.parse().unwrap_or_default();
+                turn.to(child::<Self>(&number)).send(&Note { text: String::from(text) })?;
             }
             ["both"] => {
                 if let Some(parent) = turn.parent() {
@@ -233,8 +228,8 @@ impl Handles<Note> for Node {
                     let sender = turn.sender();
                     turn.watch(sender);
                 }
-                let child = Self::child(number.parse().unwrap_or_default());
-                turn.send(child, &Note { text: String::from("late") })?;
+                let number: u64 = number.parse().unwrap_or_default();
+                turn.to(child::<Self>(&number)).send(&Note { text: String::from("late") })?;
             }
             _ => {}
         }

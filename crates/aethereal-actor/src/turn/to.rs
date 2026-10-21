@@ -1,8 +1,10 @@
 //! What a turn's `to` hands back: a target, found once, that sends and asks chain on (ADR-0016, ADR-0022).
 
 use super::Seat;
-use crate::{Actors, Allows, Askable, Proven, Reaches, Seated, Within};
-use aethereal_data::{Encode, EncodeError, Kind, KindId};
+use crate::{
+    Actors, Allows, Askable, ErasedActorRef, Kinds, ProtocolRef, Proven, Reaches, SeatNumber, Seated, Table, Within,
+};
+use aethereal_data::{ActorId, Encode, EncodeError, Kind, KindId, PathSegment};
 use core::marker::PhantomData;
 
 /// The target a turn's [`to`](crate::Turn::to) was given, found once: one actor, through a reference or at a typed path, or several
@@ -91,5 +93,54 @@ impl<S, R: Proven, Mode> Toward<'_, '_, S, R, &[R], Mode> {
         self.seat.write_to_all(self.at.iter().map(|reference| reference.seated()), mail)?;
 
         Ok(self)
+    }
+}
+
+/// Where a turn's sender stands, which what its `to` takes is found from: the table the turn reads, and the actor's
+/// place in it, beneath its parent.
+pub struct Vantage<'s, 'a> {
+    seat: &'s Seat<'a>,
+}
+
+impl<'s, 'a> Vantage<'s, 'a> {
+    pub(super) const fn new(seat: &'s Seat<'a>) -> Self {
+        Self { seat }
+    }
+
+    /// The table the turn reads.
+    pub(crate) fn table(&self) -> &'a dyn Table {
+        self.seat.table
+    }
+
+    /// The actor directly above the sender, when its type lists every one of `P`'s kinds, as a cast finds:
+    /// otherwise, and for a root, the place in [`SeatNumber::NOWHERE`].
+    pub(crate) fn parent<P: Kinds>(&self) -> Seated {
+        let Some(parent) = self.seat.above() else {
+            return Seated { id: ActorId::new(0), seat: SeatNumber::NOWHERE };
+        };
+        let cast = self.seat.cast::<P>(ErasedActorRef::new(parent));
+
+        cast.map_or(Seated { id: parent.id, seat: SeatNumber::NOWHERE }, ProtocolRef::seated)
+    }
+
+    /// The child `segment` names beneath the sender, when the sender made it, in this step or before, live or not,
+    /// and it is of kind `kind`: otherwise its place in [`SeatNumber::NOWHERE`]. A guest, which holds no other code's
+    /// types, has its host find one it cannot check, live.
+    pub(crate) fn child(&self, segment: &PathSegment, kind: KindId) -> Seated {
+        let me = self.seat.me.id;
+        let nowhere = Seated { id: self.seat.table.child(me, segment), seat: SeatNumber::NOWHERE };
+        let Some(made) = self.seat.child(segment) else {
+            return nowhere;
+        };
+        let Some(declared) = self.seat.declared_at(made.id) else {
+            return self.seat.found_child(me, segment, kind).unwrap_or(nowhere);
+        };
+        let is_kind = declared.id() == kind;
+
+        if is_kind {
+            made
+        } else {
+            nowhere
+        }
     }
 }

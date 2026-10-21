@@ -1,7 +1,7 @@
 //! The actors one actor sends to as they come and go: a list it holds, which it watches so the ended leave it
 //! (ADR-0016).
 
-use crate::{Ended, ErasedActorRef, Handles, ProtocolRef, Reachable, Table, Turn};
+use crate::{Ended, ErasedActorRef, Handles, ProtocolRef, Reachable, Turn, Vantage};
 use aethereal_data::ActorId;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -80,11 +80,11 @@ impl<P> Default for Subscribers<P> {
 }
 
 /// The actors held, as one target of a turn's sends.
-impl<'r, P> Reachable for &'r Subscribers<P> {
+impl<'r, Me, P> Reachable<Me> for &'r Subscribers<P> {
     type Through = ProtocolRef<P>;
     type At = &'r [ProtocolRef<P>];
 
-    fn at(self, _: &dyn Table) -> &'r [ProtocolRef<P>] {
+    fn at(self, _: &Vantage<'_, '_>) -> &'r [ProtocolRef<P>] {
         &self.references
     }
 }

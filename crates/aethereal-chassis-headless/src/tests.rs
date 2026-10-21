@@ -2,9 +2,9 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Time, ToType, ToWithoutMail, Turn,
+    Actor, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Time, ToType, Turn,
 };
-use aethereal_data::{ActorId, Kind, KindName, PathSegment, Plain, TypedKey};
+use aethereal_data::{ActorId, Kind, KindName, PathSegment, Plain};
 use aethereal_substrate::child_id;
 use std::iter;
 
@@ -59,8 +59,8 @@ impl Actor for Fan {
         if is_root {
             for number in 1..=config.children {
                 let config = FanConfig { number, children: 0 };
-                if turn.spawn::<Self>(&number, config).is_ok() {
-                    turn.send(ToWithoutMail::ChildInstanced(Self::NAME, number.to_name()), &Count { left: TURNS })?;
+                if let Ok(child) = turn.spawn::<Self>(&number, config) {
+                    turn.to(child).send(&Count { left: TURNS })?;
                 }
             }
         }
