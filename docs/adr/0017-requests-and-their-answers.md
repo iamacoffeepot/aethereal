@@ -23,13 +23,13 @@ What comes back is already typed. A named protocol says what each kind is answer
 ```rust
 impl Carries<WhichTile> for Tiles { type Answers = (TileIs,); }      // one answer: a kind that can be asked
 
-turn.ask_to(tiles, &WhichTile { x, y }, &Looking { at: x })?;         // the request, and what to keep until it is answered
+turn.to(tiles).ask(&WhichTile { x, y }, &Looking { at: x })?;        // the request, and what to keep until it is answered
 ```
 
 - **The request's id is its mail's id,** its sender and that sender's count (ADR-0012: `MailId`). No other number is made, and the asker writes none.
 - **The engine keeps the context beside the asker,** in its seat, as it keeps what the asker owns (ADR-0010: `Keeping`), under the request's count. The context is a kind that crosses `Within`, so it is kept as a `Written`, the same for native code and a guest's: its bytes, and a pin on each blob they refer to, which go when the context does (ADR-0014). An actor that has never asked holds no more for it than a pointer's width.
-- **`ask_to` builds only for a protocol that answers the kind with one kind, and only when the asker handles that answer.** Its turn's sends list the ask, `Asks<P, K>`, as they list any send, and the bound that checks a protocol's answers (`DeclaredBy`) checks this one. A tuple of kinds answers nothing, so nothing can be asked through one.
-- **A `begin` asks as a turn does,** its `BeginSends` listing the ask, and the answer comes to the actor in a turn after it. A child's `begin` runs in its parent's turn, so the engine notes beside each request who asked it, and files it beside that actor as it is seated: a root's beside the root, a child's beside the child. A `begin` that fails asks nothing, its requests dropped with its mail. A closing turn asks nothing: the actor is gone before an answer could reach it.
+- **An ask (`turn.to(target).ask`, ADR-0016) builds only for a protocol that answers the kind with one kind, and only when the asker handles that answer.** Its turn's sends list the ask, `Asks<P, K>`, as they list any send, and the bound that checks a protocol's answers (`DeclaredBy`) checks this one. A tuple of kinds answers nothing, so nothing can be asked through one.
+- **A `begin` asks as a turn does,** its `BeginSends` listing the ask, and the answer comes to the actor in a turn after it. A child's `begin` runs in its parent's turn, so the engine notes beside each request who asked it, and files it beside that actor as it is seated: a root's beside the root, a child's beside the child. A `begin` that fails asks nothing, its requests dropped with its mail. A closing turn asks nothing: the actor is gone before an answer could reach it, so its target (`Toward<.., Leaves>`) has no `ask`.
 
 **An answer is the receiver's reply to a request.** The receiver replies as it replies to any mail, `turn.reply(&answer)`, and when the mail it handles is a request, the reply answers it: the engine writes in the reply which request it answers. A request is answered once. A second reply to it in the same turn is refused, as a send its declaration does not allow is.
 

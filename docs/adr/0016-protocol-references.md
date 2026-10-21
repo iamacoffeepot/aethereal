@@ -5,7 +5,7 @@
 
 ## Context
 
-A reference proves what it reaches. `ActorRef<T>` proves its actor is a `T`, so a send through it is not checked again (ADR-0008, ADR-0013: `Seat::write`). That proof names one type. A list of `ActorRef<T>` holds actors of one type, so the fan-out send, `Turn::send_to_all`, reaches only actors of one type. A publisher whose listeners are a camera, a picker and a menu cannot hold them in one list.
+A reference proves what it reaches. `ActorRef<T>` proves its actor is a `T`, so a send through it is not checked again (ADR-0008, ADR-0013: `Seat::write`). That proof names one type. A list of `ActorRef<T>` holds actors of one type, so the fan-out send, `turn.to(&references).send(&mail)`, reaches only actors of one type. A publisher whose listeners are a camera, a picker and a menu cannot hold them in one list.
 
 What reaches actors of different types today is a send to "whoever handles some kinds": `ToAny<P, K>`, where `P` is a tuple of kinds (the `Kinds` trait), through a `To` that names the receiver. The send is checked at every send against the receiver's declaration (`Seat::check`, `Target::Handling`), and a receiver that does not list `P`'s kinds stops the engine. ADR-0008 left the reference that carries that proof to a later ADR: "a reference typed by a protocol rather than an actor's type … stand[s] on these types and [is] a later ADR".
 
@@ -53,11 +53,19 @@ It has the shape of an `ActorRef`: sixteen bytes, `Copy`, crossing what a refere
 
 **`ProtocolRef<(A, B)>` and `ProtocolRef<(B, A)>` are two types to the compiler, and one protocol to the engine.** Stable Rust cannot sort types. The engine reads a protocol as a set of kind ids (`Target::Handling`), and a guest's section holds the same set (`section::To::Handling`). The two spellings narrow into each other at no cost. A list holds one spelling, so its owner chooses it, and what is added to the list is narrowed to fit.
 
-**The send verbs take either reference.** `turn.send_to(reference, &mail)` and `turn.send_to_all(&references, &mail)` are generic over the reference:
-- an `ActorRef<T>` builds when the turn's sends list `ToType<T, K>`;
-- a `ProtocolRef<P>` builds when they list `ToAny<P, K>`.
+**A turn's target takes either reference.** `turn.to(target)` answers a `Toward`, the target found once, and its `send` and `ask` each answer it again, so they chain on the one target or it is bound and sent to many times:
 
-Neither is checked when it is sent: the reference is the proof. **`ToAny<P, K>` builds only when `K` is one of `P`'s kinds**, which it does not require today.
+```rust
+turn.to(listener).send(&moved)?;                               // one actor
+turn.to(&self.listeners).send(&moved)?;                        // several references, the bytes written once
+turn.to(renderer).ask(&mesh, &Made::Ground)?.ask(&texture, &Made::Sky)?;
+```
+
+`to` is generic over what it takes (`Reachable`): a reference, a typed path (ADR-0022), or a slice, array, or `Vec` of references. A send through it:
+- to an `ActorRef<T>` builds when the turn's sends list `ToType<T, K>`;
+- to a `ProtocolRef<P>` builds when they list `ToAny<P, K>`.
+
+Neither is checked when it is sent: the reference is the proof. **This departs from flat verbs, one call naming its action, target, and mail** (`send_to(reference, &mail)`, `ask_to(reference, &mail, &context)`, `send_to_all(&references, &mail)`): the target comes first so that what names it (a typed path's turbofish, ADR-0022) is a call of its own, and every send and ask to one target reads it once. A turn holds its target while it lives, so nothing else is asked of the turn between two sends through a target held. A send through a target answers the target, not `()`, so the last send of a handler is a statement, followed by `Ok(())`. Sends by a `To` name (`turn.send(To::Parent, &mail)`, `turn.send_to_any`) stay flat: what they reach is found from the turn's sends, not from a target. A closing turn's target sends and does not ask (ADR-0017). **`ToAny<P, K>` builds only when `K` is one of `P`'s kinds**, which it does not require today.
 
 **A sender handles what its protocol sends back.** A type whose sends list `ToAny<P, K>`, for a named `P`, must handle every kind of `Carries<K>::Answers`. That is a bound on its sends, `DeclaredBy<Self>`, on `Actor::BeginSends`, `Actor::EndSends` and `Handles::Sends`, so a type that does not handle them does not compile, and a check of types alone finds it. For a send through a named protocol, a reply therefore always reaches a type that takes it.
 
@@ -65,7 +73,7 @@ Neither is checked when it is sent: the reference is the proof. **`ToAny<P, K>` 
 
 ## Consequences
 
-- One list can hold listeners of many types: `&[ProtocolRef<P>]`, sent to with `send_to_all`.
+- One list can hold listeners of many types: `&[ProtocolRef<P>]`, sent to with `turn.to(&listeners).send(&mail)`.
 - A send through a protocol reference is checked once, when the reference is made, and never at the send. Today a send through `ToAny` and a named `To` is checked every time.
 - The reply that panics is closed for sends through named protocols and for sends to an actor of a type, by reference or by a `To` name. It stays open for a reply to a sender that reached its receiver through a tuple protocol, which does not say what the receiver answers. That reply is still checked only where it is handed over. Either it is checked when it is written, against the sender's declaration, or its delivery fails the replying turn instead of stopping the engine. That is a later change.
 - `ToAny<P, K>` with a `K` outside `P` stops building. Every such declaration in the code today names a `K` inside its `P`.

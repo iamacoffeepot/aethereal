@@ -116,7 +116,7 @@ impl Actor for Node {
             let _ = turn.spawn::<Self>(&number, NodeConfig { number, to_self, spawns: Vec::new() });
         }
         for text in config.to_self {
-            turn.send_to(turn.me(), &Note { text })?;
+            turn.to(turn.me()).send(&Note { text })?;
         }
 
         Ok(Self { number: config.number })
@@ -185,7 +185,7 @@ impl Handles<Note> for Node {
             }
             ["both"] => {
                 turn.send(To::Parent, &Note { text: String::from("watchme") })?;
-                turn.send_to(turn.me(), &Note { text: String::from("close") })?;
+                turn.to(turn.me()).send(&Note { text: String::from("close") })?;
             }
             ["watchme", ..] => {
                 let sender = turn.sender();
@@ -193,7 +193,7 @@ impl Handles<Note> for Node {
             }
             ["self", ..] => {
                 let (_, rest) = text.split_once(' ').unwrap_or_default();
-                turn.send_to(turn.me(), &Note { text: String::from(rest) })?;
+                turn.to(turn.me()).send(&Note { text: String::from(rest) })?;
             }
             ["keep", ..] => {
                 let sender = turn.sender();
@@ -202,7 +202,7 @@ impl Handles<Note> for Node {
             ["many", count, text] => {
                 let me = turn.me();
                 for index in 0..count.parse().unwrap_or(0u64) {
-                    turn.send_to(me, &Note { text: format!("{text}{index}") })?;
+                    turn.to(me).send(&Note { text: format!("{text}{index}") })?;
                 }
             }
             ["fan", numbers, text] => {
@@ -213,7 +213,7 @@ impl Handles<Note> for Node {
                         turn.spawn(&number, NodeConfig { number, to_self: Vec::new(), spawns: Vec::new() }).ok()
                     })
                     .collect();
-                turn.send_to_all(&children, &Note { text: String::from(text) })?;
+                turn.to(&children).send(&Note { text: String::from(text) })?;
             }
             ["where", ..] => say(format!("{} at depth {}", self.number, turn.chain().depth)),
             ["birth" | "sibling", number] => self.look(turn, words[0], number.parse().unwrap_or_default()),
@@ -1091,7 +1091,7 @@ impl Actor for Holder {
 
     fn begin(config: HolderConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         for text in config.to_self {
-            turn.send_to(turn.me(), &Note { text })?;
+            turn.to(turn.me()).send(&Note { text })?;
         }
         // Each blob it gives is one only that mail refers to, so mail that loses its pin loses its blob.
         for _ in 0..config.gives {
@@ -1100,8 +1100,8 @@ impl Actor for Holder {
             };
             // A note between each two keeps them from joining into one run, so the part carries many items.
             let me = turn.me();
-            turn.send_to(me, &Given { blob, left: 1 })?;
-            turn.send_to(me, &Note { text: String::from("between") })?;
+            turn.to(me).send(&Given { blob, left: 1 })?;
+            turn.to(me).send(&Note { text: String::from("between") })?;
         }
 
         Ok(Self { held: Vec::new(), gave: config.gives > 0 })
@@ -1137,14 +1137,14 @@ impl Handles<Note> for Holder {
             ["fail"] => return Err(Fault::new(&Note { text })?),
             ["send", ..] => {
                 if let Some(blob) = self.held.pop() {
-                    turn.send_to(turn.me(), &Given { blob, left: 0 })?;
+                    turn.to(turn.me()).send(&Given { blob, left: 0 })?;
                 }
                 if words.get(1) == Some(&"close") {
                     turn.close();
                 }
             }
             ["later", rest] => {
-                turn.send_to(turn.me(), &Note { text: String::from(rest) })?;
+                turn.to(turn.me()).send(&Note { text: String::from(rest) })?;
             }
             _ => {}
         }
@@ -1161,7 +1161,7 @@ impl Handles<Given> for Holder {
         if self.gave {
             let Given { blob, left } = given;
             if left > 0 {
-                turn.send_to(turn.me(), &Given { blob, left: left - 1 })?;
+                turn.to(turn.me()).send(&Given { blob, left: left - 1 })?;
             }
         } else {
             say(format!("given {held}"));
@@ -1460,7 +1460,7 @@ impl Actor for Clocked {
         let Ok(blob) = turn.put(vec![7; 3]) else {
             return Err(Fault::new(&Note { text: String::from("no room") })?);
         };
-        turn.send_to(turn.me(), &Note { text: to_self })?;
+        turn.to(turn.me()).send(&Note { text: to_self })?;
 
         Ok(Self { number, blob })
     }
@@ -1695,7 +1695,7 @@ impl Actor for Caller {
     type EndSends = ();
 
     fn begin(caller: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.send_to(path::<Listener>(0), &Note { text: caller.text.clone() })?;
+        turn.to(path::<Listener>(0)).send(&Note { text: caller.text.clone() })?;
 
         Ok(caller)
     }
@@ -1844,7 +1844,7 @@ impl Actor for Seer {
     type EndSends = ();
 
     fn begin(seer: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.ask_to(path::<Oracle>(0), &Question, &Wondering)?;
+        turn.to(path::<Oracle>(0)).ask(&Question, &Wondering)?;
         turn.watch(path::<Oracle>(0));
 
         Ok(seer)
@@ -2179,7 +2179,7 @@ impl Actor for Barracks {
         let (Ok(squad), Ok(_)) = (squad, scout) else {
             return Err(Fault::new(&Note { text: String::from("a child did not begin") })?);
         };
-        turn.send_to(squad, &Note { text: String::from("report") })?;
+        turn.to(squad).send(&Note { text: String::from("report") })?;
 
         Ok(barracks)
     }
@@ -2219,7 +2219,7 @@ impl Actor for Squad {
     type EndSends = ();
 
     fn begin(squad: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.send_to(turn.parent(), &Note { text: String::from("the squad") })?;
+        turn.to(turn.parent()).send(&Note { text: String::from("the squad") })?;
 
         Ok(squad)
     }
@@ -2233,7 +2233,9 @@ impl Handles<Note> for Squad {
     type Sends = (ToType<Barracks, Note>,);
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        Ok(turn.send_to(turn.parent(), &Note { text: format!("the squad's {}", note.text) })?)
+        turn.to(turn.parent()).send(&Note { text: format!("the squad's {}", note.text) })?;
+
+        Ok(())
     }
 }
 
@@ -2260,7 +2262,9 @@ impl Actor for Scout {
     fn begin(scout: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let parent = turn.parent().and_then(|parent| turn.cast::<(Note,)>(parent));
         match parent {
-            Some(parent) => turn.send_to(parent, &Note { text: String::from("the scout") })?,
+            Some(parent) => {
+                turn.to(parent).send(&Note { text: String::from("the scout") })?;
+            }
             None => say(String::from("the scout is a root")),
         }
 

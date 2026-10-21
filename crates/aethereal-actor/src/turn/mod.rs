@@ -4,9 +4,11 @@ mod hosted;
 mod refused;
 #[cfg(test)]
 mod tests;
+mod to;
 
 pub use hosted::{Broke, FalseSend, FalseStage, FalseWatch, Forged, Garbled, Hosted, Request, Trapped, Unspawned};
 pub use refused::Refused;
+pub use to::{Leaves, Lives, Toward};
 
 use crate::Submitted;
 #[cfg(feature = "std")]
@@ -14,12 +16,11 @@ use crate::Submitted;
 use crate::job::lending;
 use crate::resource;
 use crate::{
-    Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Askable, Asking, ChildOf, Children, Claim, Claimed,
-    Code, Declared, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held,
-    Instances, Keeping, Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, On, Owed, Owes, ParentOf,
-    Parented, Payload, ProtocolRef, Proven, Puts, Reaches, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen,
-    Sends, Stage, Table, Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable,
-    What, Within, Written,
+    Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
+    Declared, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handled, Handles, Held, Instances,
+    Keeping, Keeps, Kinds, Level, Line, Listed, MailId, Mailed, Marker, NotOwed, On, Owed, Owes, ParentOf, Parented,
+    Payload, ProtocolRef, Puts, Reachable, Resource, Role, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage, Table,
+    Target, Tie, Tied, Time, To, ToAny, ToSender, ToType, ToWithoutMail, Unanswered, Watchable, What, Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -1468,6 +1469,64 @@ pub struct Turn<'a, Me, S> {
     of: PhantomData<fn() -> (Me, S)>,
 }
 
+/// The target of a turn's sends and asks, chosen once.
+impl<'a, Me, S> Turn<'a, Me, S> {
+    /// The actor `target` refers to, at the typed path it is, or the several references it holds, as the target of
+    /// the sends and asks that chain on what this answers (ADR-0016, ADR-0022). A path is found here, once, as a
+    /// resolve sees it: each send and ask through it goes to the actor found then, and to none when the path held no
+    /// live actor of its type.
+    ///
+    /// ```
+    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, ToType, Turn};
+    /// use aethereal_data::{Kind, KindName, Plain};
+    ///
+    /// #[derive(Plain)]
+    /// struct Knock;
+    ///
+    /// impl Kind for Knock {
+    ///     const NAME: KindName = KindName::new("aether.doc.knock");
+    /// }
+    ///
+    /// #[derive(Plain)]
+    /// struct Door;
+    ///
+    /// impl Kind for Door {
+    ///     const NAME: KindName = KindName::new("aether.doc.door");
+    /// }
+    ///
+    /// impl Actor for Door {
+    ///     type Config = Door;
+    ///     type Key = ();
+    ///     type Handles = (Knock,);
+    ///     type BeginSends = ();
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(door: Door, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///         Ok(door)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// impl Handles<Knock> for Door {
+    ///     type Sends = (ToType<Door, Knock>,);
+    ///
+    ///     fn handle(&mut self, _: Knock, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    ///         turn.to(turn.me()).send(&Knock)?.send(&Knock)?;
+    ///
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    pub fn to<R: Reachable>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+        let at = target.at(self.seat.table);
+
+        Toward::new(&mut self.seat, at)
+    }
+}
+
 impl<Me, S> Turn<'_, Me, S> {
     /// The child of type `C` under `key` beneath the actor `parent` refers to, when one is live there, as a resolve
     /// sees it, or this actor stood it up in this turn (ADR-0022). It builds only when `C` may stand beneath the
@@ -1705,34 +1764,6 @@ impl<Me, S> Turn<'_, Me, S> {
         self.seat.send_typed::<T, K>(&to, mail)
     }
 
-    /// Sends `mail` to the actor `reference` refers to. What it reaches is proven, so nothing is checked when it
-    /// is sent.
-    ///
-    /// It builds only when the turn's sends list what the reference [`Reaches`] by: [`ToType<T, K>`] for an
-    /// [`ActorRef<T>`], and [`ToAny<P, K>`] for a [`ProtocolRef<P>`].
-    pub fn send_to<R, K, I>(&mut self, reference: R, mail: &K) -> Result<(), EncodeError>
-    where
-        R: Reaches<K>,
-        K: Kind + Encode<Actors>,
-        S: Allows<R::Marker, I>,
-    {
-        let to = reference.reached(self.seat.table);
-        self.seat.write(to, mail)
-    }
-
-    /// Sends `mail` to each actor `references` refer to, in their order: each its own piece of mail, as if each were sent alone,
-    /// and the bytes written once for all of them. What they reach is proven, so nothing is checked when it is sent.
-    ///
-    /// It builds only when the turn's sends list what the references [`Reaches`] by, as `send_to` does.
-    pub fn send_to_all<R, K, I>(&mut self, references: &[R], mail: &K) -> Result<(), EncodeError>
-    where
-        R: Reaches<K> + Proven,
-        K: Kind + Encode<Actors>,
-        S: Allows<R::Marker, I>,
-    {
-        self.seat.write_to_all(references.iter().map(|reference| reference.seated()), mail)
-    }
-
     /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`.
     ///
     /// It builds only when the turn's sends list a [`ToAny<P, K>`], and `P` is found from them when one names `K`.
@@ -1766,26 +1797,6 @@ impl<Me, S> Turn<'_, Me, S> {
         S: Allows<ToSender<K>, I>,
     {
         self.seat.reply(self.source, mail)
-    }
-
-    /// Asks `mail` of the actor `reference` refers to, or the one at the typed path it is, keeping `context` until the
-    /// request is answered, when the asker is handed what became of it with the context, as
-    /// [`Answer<A, C>`](crate::Answer) (ADR-0017, ADR-0022).
-    ///
-    /// It builds only when the turn's sends list what the reference is [`Askable`] by: [`Asks<P, K, C>`](crate::Asks) for a
-    /// [`ProtocolRef<P>`], where `P` answers `K` with one kind, and `Asks<Path<L>, K, C>` for a [`Path<L>`](crate::Path),
-    /// where `L` does; and the actor handles that answer with `C`. What a reference reaches is proven, so nothing is
-    /// checked when it is sent. A path is resolved as it is sent, and a place that holds no live actor of its type is
-    /// asked as an actor that has gone: the request is answered [`Unanswered::Ended`].
-    pub fn ask_to<R, K, C, I>(&mut self, reference: R, mail: &K, context: &C) -> Result<(), EncodeError>
-    where
-        R: Askable<K, C>,
-        K: Kind + Encode<Actors>,
-        C: Kind + Encode<Within>,
-        S: Allows<R::Marker, I>,
-    {
-        let to = reference.asked(self.seat.table);
-        self.seat.request(to, mail, KindId::of::<R::Answer>(), context)
     }
 
     /// Runs `job` outside the steps, on its host, keeping `context` until it is answered: the actor is handed what
@@ -2192,6 +2203,19 @@ impl<'a, Me: ChildOf> Beginning<'a, Me, Me::BeginSends> {
     }
 }
 
+/// The target of a `begin`'s sends and asks, chosen once.
+impl<'a, Me, S> Beginning<'a, Me, S> {
+    /// The actor `target` refers to, at the typed path it is, or the several references it holds, as the target of
+    /// the sends and asks that chain on what this answers, as a turn's [`to`](Turn::to) is. Its mail goes with the mail
+    /// of the turn this `begin` runs in, and what it asks is answered in a turn after this `begin`; a `begin` that
+    /// fails sends and asks nothing.
+    pub fn to<R: Reachable>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+        let at = target.at(self.seat.table);
+
+        Toward::new(&mut self.seat, at)
+    }
+}
+
 impl<Me, S> Beginning<'_, Me, S> {
     /// The child of type `C` under `key` beneath the actor `parent` refers to, when one is live there, as a resolve
     /// sees it, or this actor stood it up in this turn (ADR-0022). It builds only when `C` may stand beneath the
@@ -2286,50 +2310,6 @@ impl<Me, S> Beginning<'_, Me, S> {
         Me: Handles<Answer<J::Done, C>>,
     {
         self.seat.run(job, context)
-    }
-
-    /// Asks `mail` of the actor `reference` refers to, keeping `context` until the request is answered, when the
-    /// actor is handed what became of it with the context, as [`Answer<A, C>`](crate::Answer), in a turn after this
-    /// `begin`, as a turn's ask is (ADR-0017). A `begin` that fails asks nothing.
-    ///
-    /// It builds only when the `begin`'s sends list what the reference is [`Askable`] by, as a turn's `ask_to` does.
-    pub fn ask_to<R, K, C, I>(&mut self, reference: R, mail: &K, context: &C) -> Result<(), EncodeError>
-    where
-        R: Askable<K, C>,
-        K: Kind + Encode<Actors>,
-        C: Kind + Encode<Within>,
-        S: Allows<R::Marker, I>,
-    {
-        let to = reference.asked(self.seat.table);
-        self.seat.request(to, mail, KindId::of::<R::Answer>(), context)
-    }
-
-    /// Sends `mail` to the actor `reference` refers to, with the mail of the turn this `begin` runs in. What it reaches is proven, so nothing is checked when it
-    /// is sent.
-    ///
-    /// It builds only when the turn's sends list what the reference [`Reaches`] by: [`ToType<T, K>`] for an
-    /// [`ActorRef<T>`], and [`ToAny<P, K>`] for a [`ProtocolRef<P>`].
-    pub fn send_to<R, K, I>(&mut self, reference: R, mail: &K) -> Result<(), EncodeError>
-    where
-        R: Reaches<K>,
-        K: Kind + Encode<Actors>,
-        S: Allows<R::Marker, I>,
-    {
-        let to = reference.reached(self.seat.table);
-        self.seat.write(to, mail)
-    }
-
-    /// Sends `mail` to each actor `references` refer to, in their order, with the mail of the turn this `begin` runs in: each its own piece of mail, as if each were sent alone,
-    /// and the bytes written once for all of them. What they reach is proven, so nothing is checked when it is sent.
-    ///
-    /// It builds only when the turn's sends list what the references [`Reaches`] by, as `send_to` does.
-    pub fn send_to_all<R, K, I>(&mut self, references: &[R], mail: &K) -> Result<(), EncodeError>
-    where
-        R: Reaches<K> + Proven,
-        K: Kind + Encode<Actors>,
-        S: Allows<R::Marker, I>,
-    {
-        self.seat.write_to_all(references.iter().map(|reference| reference.seated()), mail)
     }
 
     /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`, with the mail
@@ -2663,6 +2643,103 @@ pub struct Ending<'a, Me, S> {
     of: PhantomData<fn() -> (Me, S)>,
 }
 
+/// The target of a closing turn's sends, chosen once.
+impl<'a, Me, S> Ending<'a, Me, S> {
+    /// The actor `target` refers to, at the typed path it is, or the several references it holds, as the target of
+    /// the sends that chain on what this answers, as the actor's last mail, as a turn's [`to`](Turn::to) is. It asks
+    /// nothing: the actor is gone by the time an answer could come.
+    ///
+    /// ```compile_fail,E0599
+    /// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path};
+    /// # use aethereal_actor::{ToSender, Top, Turn, path};
+    /// # use aethereal_data::{Kind, KindName, Plain};
+    /// #
+    /// # macro_rules! kind {
+    /// #     ($name:ident, $named:literal) => {
+    /// #         #[derive(Plain)]
+    /// #         struct $name;
+    /// #
+    /// #         impl Kind for $name {
+    /// #             const NAME: KindName = KindName::new($named);
+    /// #         }
+    /// #     };
+    /// # }
+    /// # kind!(Hello, "aether.doc.hello");
+    /// # kind!(Hi, "aether.doc.hi");
+    /// # kind!(Waiting, "aether.doc.waiting");
+    /// # kind!(Greeter, "aether.doc.greeter");
+    /// # kind!(Visitor, "aether.doc.visitor");
+    /// #
+    /// # impl ChildOf for Greeter {
+    /// #     type Parent = Top;
+    /// # }
+    /// #
+    /// # impl ChildOf for Visitor {
+    /// #     type Parent = Top;
+    /// # }
+    /// #
+    /// # impl Actor for Greeter {
+    /// #     type Config = Greeter;
+    /// #     type Key = ();
+    /// #     type Handles = (Hello,);
+    /// #     type BeginSends = ();
+    /// #     type EndSends = ();
+    /// #
+    /// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    /// #         Ok(greeter)
+    /// #     }
+    /// #
+    /// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    /// #         Ok(())
+    /// #     }
+    /// # }
+    /// #
+    /// # impl Carries<Hello> for Greeter {
+    /// #     type Answers = (Hi,);
+    /// # }
+    /// #
+    /// # impl Handles<Hello> for Greeter {
+    /// #     type Sends = (ToSender<Hi>,);
+    /// #
+    /// #     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    /// #         Ok(turn.reply(&Hi)?)
+    /// #     }
+    /// # }
+    /// #
+    /// # impl Handles<Answer<Hi, Waiting>> for Visitor {
+    /// #     type Sends = ();
+    /// #
+    /// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    /// #         Ok(())
+    /// #     }
+    /// # }
+    /// #
+    /// impl Actor for Visitor {
+    ///     type Config = Visitor;
+    ///     type Key = ();
+    ///     type Handles = (Answer<Hi, Waiting>,);
+    ///     type BeginSends = ();
+    ///     type EndSends = (Asks<Path<Greeter>, Hello, Waiting>,);
+    ///
+    ///     fn begin(visitor: Visitor, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///         Ok(visitor)
+    ///     }
+    ///
+    ///     // An ending turn's target has no `ask`.
+    ///     fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    ///         turn.to(path::<Greeter>(())).ask(&Hello, &Waiting)?;
+    ///
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    pub fn to<R: Reachable>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Leaves> {
+        let at = target.at(self.seat.table);
+
+        Toward::new(&mut self.seat, at)
+    }
+}
+
 impl<Me, S> Ending<'_, Me, S> {
     /// The child of type `C` under `key` beneath the actor `parent` refers to, when one is live there, as a resolve
     /// sees it, or this actor stood it up in this turn (ADR-0022). It builds only when `C` may stand beneath the
@@ -2710,34 +2787,6 @@ impl<Me, S> Ending<'_, Me, S> {
     {
         let to = To::from(to);
         self.seat.send_typed::<T, K>(&to, mail)
-    }
-
-    /// Sends `mail` to the actor `reference` refers to, as the actor's last mail. What it reaches is proven, so nothing is checked when it
-    /// is sent.
-    ///
-    /// It builds only when the turn's sends list what the reference [`Reaches`] by: [`ToType<T, K>`] for an
-    /// [`ActorRef<T>`], and [`ToAny<P, K>`] for a [`ProtocolRef<P>`].
-    pub fn send_to<R, K, I>(&mut self, reference: R, mail: &K) -> Result<(), EncodeError>
-    where
-        R: Reaches<K>,
-        K: Kind + Encode<Actors>,
-        S: Allows<R::Marker, I>,
-    {
-        let to = reference.reached(self.seat.table);
-        self.seat.write(to, mail)
-    }
-
-    /// Sends `mail` to each actor `references` refer to, in their order, as the actor's last mail: each its own piece of mail, as if each were sent alone,
-    /// and the bytes written once for all of them. What they reach is proven, so nothing is checked when it is sent.
-    ///
-    /// It builds only when the turn's sends list what the references [`Reaches`] by, as `send_to` does.
-    pub fn send_to_all<R, K, I>(&mut self, references: &[R], mail: &K) -> Result<(), EncodeError>
-    where
-        R: Reaches<K> + Proven,
-        K: Kind + Encode<Actors>,
-        S: Allows<R::Marker, I>,
-    {
-        self.seat.write_to_all(references.iter().map(|reference| reference.seated()), mail)
     }
 
     /// Sends `mail` to the actor `to` names, whatever its type, when that type lists every kind of `P`, as the

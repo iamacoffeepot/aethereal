@@ -33,7 +33,7 @@ impl Actor for Echo {
     type EndSends = ();
 
     fn begin(_: Again, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.send_to(turn.me(), &Again)?;
+        turn.to(turn.me()).send(&Again)?;
 
         Ok(Self)
     }
@@ -47,7 +47,7 @@ impl Handles<Again> for Echo {
     type Sends = (ToType<Self, Again>,);
 
     fn handle(&mut self, _: Again, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.send_to(turn.me(), &Again)?;
+        turn.to(turn.me()).send(&Again)?;
 
         Ok(())
     }

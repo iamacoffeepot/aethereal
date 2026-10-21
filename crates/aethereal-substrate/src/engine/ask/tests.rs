@@ -254,13 +254,13 @@ impl Actor for Pointer {
         for text in config.orders {
             if let Some(x) = text.strip_prefix("first ") {
                 let x = x.parse().unwrap_or_default();
-                turn.ask_to(board.protocol(), &WhichTile { x }, &Looking { at: 100 })?;
+                turn.to(board.protocol()).ask(&WhichTile { x }, &Looking { at: 100 })?;
             } else if let Some(x) = text.strip_prefix("begin seek ") {
                 let x = x.parse().unwrap_or_default();
                 let spawned: Result<ActorRef<Seeker>, _> = turn.spawn(&x, Seeking { x, fails: 0 });
                 say(format!("seeker {}", spawned.is_ok()));
             } else {
-                turn.send_to(turn.me(), &Order { text })?;
+                turn.to(turn.me()).send(&Order { text })?;
             }
         }
 
@@ -283,23 +283,23 @@ impl Handles<Order> for Pointer {
         match verb {
             "again" => {
                 let x = xs.first().copied().unwrap_or_default();
-                turn.ask_to(board.protocol(), &WhichTile { x }, &Looking { at: 9 })?;
+                turn.to(board.protocol()).ask(&WhichTile { x }, &Looking { at: 9 })?;
             }
             "release" => {
                 let how = xs.first().copied().unwrap_or_default();
-                turn.send_to(board, &Release { how })?;
+                turn.to(board).send(&Release { how })?;
             }
             "later" => {
-                turn.send_to(turn.me(), &Order { text: String::from(rest) })?;
+                turn.to(turn.me()).send(&Order { text: String::from(rest) })?;
             }
             "ask" => {
                 for (at, x) in (0..).zip(xs) {
-                    turn.ask_to(board.protocol(), &WhichTile { x }, &Looking { at })?;
+                    turn.to(board.protocol()).ask(&WhichTile { x }, &Looking { at })?;
                 }
             }
             "tell" => {
                 for x in xs {
-                    turn.send_to(board, &WhichTile { x })?;
+                    turn.to(board).send(&WhichTile { x })?;
                 }
             }
             "seek" | "fail" => {
@@ -310,7 +310,7 @@ impl Handles<Order> for Pointer {
             }
             "both" => {
                 let (asked, told) = (xs.first().copied().unwrap_or_default(), xs.last().copied().unwrap_or_default());
-                turn.ask_to(board.protocol(), &WhichTile { x: asked }, &Looking { at: 0 })?;
+                turn.to(board.protocol()).ask(&WhichTile { x: asked }, &Looking { at: 0 })?;
                 turn.send(To::ChildInstanced(Board::NAME, 1_u64.to_name()), &WhichTile { x: told })?;
             }
             _ => {}
@@ -382,7 +382,7 @@ impl Actor for Seeker {
         let Ok(board) = turn.spawn::<Board>(&2, Blank) else {
             return Err(Fault::new(&seeking)?);
         };
-        turn.ask_to(board.protocol(), &WhichTile { x: seeking.x }, &Looking { at: 200 })?;
+        turn.to(board.protocol()).ask(&WhichTile { x: seeking.x }, &Looking { at: 200 })?;
         let fails = seeking.fails != 0;
         if fails {
             return Err(Fault::new(&seeking)?);
@@ -449,7 +449,7 @@ impl Actor for Keeper {
         let Ok(board) = turn.spawn(&1, Blank) else {
             return Err(Fault::new(&Order { text: String::from("no board") })?);
         };
-        turn.send_to(turn.me(), &Order { text: String::from("ask") })?;
+        turn.to(turn.me()).send(&Order { text: String::from("ask") })?;
 
         Ok(Self { board })
     }
@@ -467,7 +467,7 @@ impl Handles<Order> for Keeper {
             return Err(Fault::new(&Order { text: String::from("no room") })?);
         };
         let board = self.board;
-        turn.ask_to(board.protocol(), &WhichTile { x: 3 }, &Kept { blob })?;
+        turn.to(board.protocol()).ask(&WhichTile { x: 3 }, &Kept { blob })?;
 
         Ok(())
     }

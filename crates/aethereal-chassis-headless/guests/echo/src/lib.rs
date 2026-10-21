@@ -992,7 +992,7 @@ impl Actor for Hatcher {
 
     fn begin(hatch: Hatch, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let reporter = turn.spawn_from(&hatch.other, &7, &AddBy { by: 20, deeper: 0 });
-        turn.send_to(reporter.map_err(|why| unhatched(&why))?, &Ping { n: 0 })?;
+        turn.to(reporter.map_err(|why| unhatched(&why))?).send(&Ping { n: 0 })?;
 
         Ok(Self { other: hatch.other, home: hatch.home, grown: 0 })
     }
@@ -1030,7 +1030,7 @@ impl Handles<Grow> for Hatcher {
         if is_first {
             let home = Home { home: self.home.clone() };
             let boomerang = turn.spawn_from(&self.other, &(), &home).map_err(|why| unhatched(&why))?;
-            turn.send_to(boomerang, &Ping { n: 0 })?;
+            turn.to(boomerang).send(&Ping { n: 0 })?;
         }
         self.grown += 1;
 
@@ -1587,7 +1587,7 @@ impl Actor for Porter {
             _ => {
                 let spawned: Result<ActorRef<Bearer>, _> = turn.spawn(&0, Porting { to, lamps, how: 0 });
                 let bearer = spawned.map_err(|why| unhatched(&why))?;
-                turn.send_to(bearer, &Ping { n: 0 })?;
+                turn.to(bearer).send(&Ping { n: 0 })?;
             }
         }
 
@@ -1757,9 +1757,9 @@ impl Handles<Query> for Querent {
     fn handle(&mut self, query: Query, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let last = query.first + query.pings;
         for at in query.first..last {
-            turn.ask_to(self.echo.protocol(), &Ping { n: at * 10 }, &Which { at })?;
+            turn.to(self.echo.protocol()).ask(&Ping { n: at * 10 }, &Which { at })?;
         }
-        turn.ask_to(self.echo.protocol(), &Increment, &Which { at: last })?;
+        turn.to(self.echo.protocol()).ask(&Increment, &Which { at: last })?;
 
         Ok(())
     }
@@ -1817,7 +1817,7 @@ impl Actor for Opener {
 
     fn begin(opening: Opening, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let echo: ActorRef<Echo> = turn.spawn(&(), EchoConfig).map_err(|why| unhatched(&why))?;
-        turn.ask_to(echo.protocol(), &Ping { n: opening.n }, &Which { at: opening.n })?;
+        turn.to(echo.protocol()).ask(&Ping { n: opening.n }, &Which { at: opening.n })?;
         let n = opening.n + 1;
         let is_deeper = opening.below > 0;
         if is_deeper {
@@ -1885,7 +1885,7 @@ impl Actor for Inlet {
 
     fn begin(ping: Ping, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|why| unhatched(&why))?;
-        turn.ask_to(echo.protocol(), &Ping { n: ping.n }, &Which { at: ping.n })?;
+        turn.to(echo.protocol()).ask(&Ping { n: ping.n }, &Which { at: ping.n })?;
 
         Ok(Self)
     }
@@ -2097,7 +2097,7 @@ impl Handles<Release> for Steward {
             1 => drop((held, weighing)),
             3 => {
                 for (n, held) in held {
-                    turn.ask_to(self.echo.protocol(), &Increment, &Kept { n, held })?;
+                    turn.to(self.echo.protocol()).ask(&Increment, &Kept { n, held })?;
                 }
                 for (n, held) in weighing {
                     turn.answer(held, &Weight { n: 300 + n })?;
@@ -2184,7 +2184,7 @@ impl Handles<Stash> for Stasher {
     fn handle(&mut self, stash: Stash, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let len = usize::try_from(stash.len).unwrap_or_default();
         let blob = turn.put(vec![7; len]).map_err(|why| unhatched(&why))?;
-        turn.ask_to(self.echo.protocol(), &Ping { n: 0 }, &Stashed { blob })?;
+        turn.to(self.echo.protocol()).ask(&Ping { n: 0 }, &Stashed { blob })?;
 
         Ok(())
     }
@@ -2371,7 +2371,7 @@ impl Actor for Ringer {
     type EndSends = ();
 
     fn begin(ring: Ring, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.ask_to(path::<Bell>(0), &Ping { n: 4 }, &Ringing)?;
+        turn.to(path::<Bell>(0)).ask(&Ping { n: 4 }, &Ringing)?;
 
         Ok(Self { keeper: ring.keeper })
     }

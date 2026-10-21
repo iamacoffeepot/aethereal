@@ -4,7 +4,7 @@
 use crate::BlobRef;
 use crate::declared::{Carries, DeclaredBy, Handled, Handles, Kinds, Last, Listed, Marker, Protocol, RepliesTo};
 use crate::declared::{RepliesWith, ReplyWithin, Role, Sending, Target};
-use crate::{Actors, ChildOf, Item, Path, PathTo, ProtocolRef, Seated, Table, Within, Written};
+use crate::{Actors, ChildOf, Item, Path, PathTo, ProtocolRef, Within, Written};
 use aethereal_data::{Decode, Kind, KindId, KindName, Plain};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
@@ -283,7 +283,7 @@ pub struct Asking {
 /// #     type EndSends = ();
 /// #
 /// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-/// #         turn.ask_to(path::<Greeter>(()), &Hello, &Waiting)?;
+/// #         turn.to(path::<Greeter>(())).ask(&Hello, &Waiting)?;
 /// #
 /// #         Ok(visitor)
 /// #     }
@@ -370,7 +370,7 @@ pub struct Asking {
 /// #     type EndSends = ();
 /// #
 /// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-/// #         turn.ask_to(path::<Greeter>(()), &Hello, &Waiting)?;
+/// #         turn.to(path::<Greeter>(())).ask(&Hello, &Waiting)?;
 /// #
 /// #         Ok(visitor)
 /// #     }
@@ -455,7 +455,7 @@ pub struct Asking {
 /// #     type EndSends = ();
 /// #
 /// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-/// #         turn.ask_to(path::<Greeter>(()), &Hello, &Waiting)?;
+/// #         turn.to(path::<Greeter>(())).ask(&Hello, &Waiting)?;
 /// #
 /// #         Ok(visitor)
 /// #     }
@@ -492,20 +492,11 @@ pub trait Askable<K, C> {
 
     /// The one kind the request is answered with.
     type Answer: Kind;
-
-    /// The actor asked as the request is sent, and its seat, read from `table` when it is a path: the place in
-    /// [`SeatNumber::NOWHERE`](crate::SeatNumber::NOWHERE) when it holds no live actor of its type, where the request
-    /// is answered [`Unanswered::Ended`].
-    fn asked(self, table: &dyn Table) -> Seated;
 }
 
 impl<P: Protocol + Carries<K, Answers = (A,)>, K: Kind, A: Kind, C> Askable<K, C> for ProtocolRef<P> {
     type Marker = Asks<P, K, C>;
     type Answer = A;
-
-    fn asked(self, _: &dyn Table) -> Seated {
-        self.seated()
-    }
 }
 
 /// A type asked at a typed path says what it answers each kind it can be asked with its own [`Carries`], beside its
@@ -518,10 +509,6 @@ where
 {
     type Marker = Asks<Self, K, C>;
     type Answer = A;
-
-    fn asked(self, table: &dyn Table) -> Seated {
-        table.reach(self.names(), KindId::of::<L>())
-    }
 }
 
 impl<P: Listed, K: Kind, C> Marker for Asks<P, K, C> {
