@@ -6,6 +6,8 @@ use crate::asked::blob;
 use crate::frame::{PassSpec, Scale, TargetKind, TargetSpec};
 use crate::pass::{Compute, Main, Pass};
 use crate::placement::Resource;
+use crate::program::Fixed;
+use crate::shape::Samples;
 use aethereal_data::{Budget, from_bytes};
 
 /// The actor that makes everything here.
@@ -122,7 +124,7 @@ fn an_effect_binding_a_sampler_none_has_made_is_made_and_drawn() {
     let smooth = Sampling { filter: Filter::Linear, wrap: Wrap::Clamp };
     let glow = PassSpec {
         name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::Texture(0), depth: DepthUse::Off, load: Load::Clear },
+        does: Does::Draw { into: Target::Texture(0), depth: DepthUse::Off, load: Load::Clear, reads: Vec::new() },
     };
     let composite = PassSpec {
         name: PassName::of::<Composite>(),
@@ -135,7 +137,7 @@ fn an_effect_binding_a_sampler_none_has_made_is_made_and_drawn() {
     };
     let frame = CreateFrame {
         ends: Ends::Texture { size: Size { width: 4, height: 4 }, format: TextureFormat::Rgba8 },
-        targets: vec![TargetSpec { kind: TargetKind::Float, scale: Scale::Full }],
+        targets: vec![TargetSpec { kind: TargetKind::Float, scale: Scale::Full, samples: Samples::One }],
         passes: vec![glow, composite],
     };
     assert_eq!(frame::check(&frame, &kept), Ok(()));
@@ -168,11 +170,11 @@ fn a_frame_that_ends_on_the_window_follows_its_surface_to_each_new_size() {
 
     let onto = PassSpec {
         name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::End, depth: DepthUse::Write(0), load: Load::Clear },
+        does: Does::Draw { into: Target::End, depth: DepthUse::Write(0), load: Load::Clear, reads: Vec::new() },
     };
     let frame = CreateFrame {
         ends: Ends::Window(window()),
-        targets: vec![TargetSpec { kind: TargetKind::Depth, scale: Scale::Full }],
+        targets: vec![TargetSpec { kind: TargetKind::Depth, scale: Scale::Full, samples: Samples::One }],
         passes: vec![onto],
     };
     assert_eq!(frame::check(&frame, &kept), Ok(()));
@@ -336,7 +338,7 @@ fn a_frame_ending_in_floats_is_sampled_by_another_frame_s_effect_and_read_back_i
     let Ok(Framed::Texture { frame, texture }) = framed else {
         panic!("the frame is refused: {framed:?}");
     };
-    let shaped = kept.pass(Frame::Texture(frame), PassName::of::<Composite>());
+    let shaped = kept.pass(Frame::Texture(frame), PassName::of::<Composite>()).map(|fits| fits.shape);
     assert_eq!(shaped, Ok(Shape::flat(ColourFormat::Rgba16Float)));
 
     let bindings = vec![
@@ -392,7 +394,10 @@ impl Pass for Downsample {}
 
 /// The sides of each target of the window's main frame of `kept`, in order.
 fn sides(kept: &Kept, targets: u32) -> Vec<(u32, u32)> {
-    (0..targets).map(|at| main(kept).target(at).texture()).map(|texture| (texture.width(), texture.height())).collect()
+    (0..targets)
+        .map(|at| main(kept).target(at).drawn().texture())
+        .map(|texture| (texture.width(), texture.height()))
+        .collect()
 }
 
 #[test]
@@ -423,7 +428,7 @@ fn a_frame_of_half_and_quarter_size_targets_is_drawn_at_each_size_its_window_is_
 
     let scene = PassSpec {
         name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::Texture(0), depth: DepthUse::Write(1), load: Load::Clear },
+        does: Does::Draw { into: Target::Texture(0), depth: DepthUse::Write(1), load: Load::Clear, reads: Vec::new() },
     };
     let downsampled = PassSpec {
         name: PassName::of::<Downsample>(),
@@ -446,9 +451,9 @@ fn a_frame_of_half_and_quarter_size_targets_is_drawn_at_each_size_its_window_is_
     let frame = CreateFrame {
         ends: Ends::Window(window()),
         targets: vec![
-            TargetSpec { kind: TargetKind::Float, scale: Scale::Half },
-            TargetSpec { kind: TargetKind::Depth, scale: Scale::Half },
-            TargetSpec { kind: TargetKind::Float, scale: Scale::Quarter },
+            TargetSpec { kind: TargetKind::Float, scale: Scale::Half, samples: Samples::One },
+            TargetSpec { kind: TargetKind::Depth, scale: Scale::Half, samples: Samples::One },
+            TargetSpec { kind: TargetKind::Float, scale: Scale::Quarter, samples: Samples::One },
         ],
         passes: vec![scene, downsampled, composited],
     };
@@ -461,9 +466,9 @@ fn a_frame_of_half_and_quarter_size_targets_is_drawn_at_each_size_its_window_is_
     drawn_at(&device, &queue, &mut kept, (40, 3));
     assert_eq!(sides(&kept, 3), vec![(20, 2), (20, 2), (10, 1)]);
 
-    let fitted = main(&kept).target(2).clone();
+    let fitted = main(&kept).target(2).drawn().clone();
     drawn_at(&device, &queue, &mut kept, (40, 3));
-    assert_eq!(main(&kept).target(2), &fitted, "a frame drawn again at its size keeps its targets");
+    assert_eq!(main(&kept).target(2).drawn(), &fitted, "a frame drawn again at its size keeps its targets");
 }
 
 #[test]
@@ -477,7 +482,7 @@ fn a_frame_that_ends_on_one_window_is_that_windows_main_frame_alone_and_drawn_on
 
     let onto = PassSpec {
         name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::End, depth: DepthUse::Off, load: Load::Clear },
+        does: Does::Draw { into: Target::End, depth: DepthUse::Off, load: Load::Clear, reads: Vec::new() },
     };
     let frame = CreateFrame { ends: Ends::Window(second), targets: Vec::new(), passes: vec![onto] };
     assert_eq!(frame::check(&frame, &kept), Ok(()));
@@ -507,7 +512,7 @@ fn a_window_closed_drops_the_main_frame_made_for_it_and_takes_none_after() {
     let mut kept = kept_for(&device, &[first, second]);
     let onto = PassSpec {
         name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::End, depth: DepthUse::Off, load: Load::Clear },
+        does: Does::Draw { into: Target::End, depth: DepthUse::Off, load: Load::Clear, reads: Vec::new() },
     };
     let frame = CreateFrame { ends: Ends::Window(first), targets: Vec::new(), passes: vec![onto] };
     let Ok(Framed::Made(made)) = kept.frame(&device, frame.clone(), MAKER) else {
@@ -521,4 +526,184 @@ fn a_window_closed_drops_the_main_frame_made_for_it_and_takes_none_after() {
     assert!(!kept.closed(first), "a window closed once is not drawn to");
     let refused = kept.frame(&device, frame, MAKER);
     assert!(matches!(refused, Err(FrameRefused::Window)), "a frame for a closed window is made: {refused:?}");
+}
+
+/// A program that draws the quad's corners over what a floor drew: it reads the floor's depth at group 0 and drops
+/// each fragment the floor is in front of.
+const RIM: &str = "
+@group(0) @binding(0) var floor: texture_depth_2d;
+
+@vertex
+fn place(@location(0) corner: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4(corner, 0.5, 1.0);
+}
+
+@fragment
+fn shade(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    if (textureLoad(floor, vec2<i32>(at.xy), 0) < at.z) {
+        discard;
+    }
+    return vec4(1.0, 1.0, 1.0, 0.5);
+}
+";
+
+/// The pass that draws rims into four samples, reading the floor's depth.
+#[derive(Plain)]
+#[kind(name = "aether.test.rims")]
+struct Rims;
+
+impl Pass for Rims {}
+
+/// How the quad's corners are laid out: a place of two floats.
+fn corners() -> VertexLayout {
+    let corner = mesh::Attribute { location: 0, format: mesh::VertexFormat::Float32x2, offset: 0 };
+
+    VertexLayout { stride: 8, attributes: vec![corner] }
+}
+
+/// A placement of a quad drawn once in the window's main frame's pass [`Rims`] with [`RIM`], reading the floor's
+/// depth into four samples, its alpha its coverage, each made and kept in `kept`, on `gpu`. Answers its id.
+fn rim_placed(gpu: &Gpu, kept: &mut Kept) -> u64 {
+    let vertices: Vec<u8> =
+        [-1.0_f32, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0].iter().flat_map(|value| value.to_ne_bytes()).collect();
+    let indices: Vec<u8> = [0_u32, 1, 2, 0, 2, 3].iter().flat_map(|value| value.to_ne_bytes()).collect();
+    let mesh = Mesh {
+        vertices: upload(gpu, &vertices, wgpu::BufferUsages::VERTEX),
+        indices: upload(gpu, &indices, wgpu::BufferUsages::INDEX),
+        counted: Counted { vertices: 4, indices: 6 },
+        layout: corners(),
+    };
+    let mesh_id = kept.ids.next();
+    kept.meshes.keep(mesh_id, MAKER, mesh);
+
+    let create = CreateProgram {
+        wgsl: blob(),
+        vertex: String::from("place"),
+        fragment: String::from("shade"),
+        layout: corners(),
+        instances: PerInstance::None,
+        bindings: Vec::new(),
+        reads: vec![Read::Depth],
+        state: Fixed { blend: Blend::Opaque, depth: Depth::TestWrite, cull: Cull::None, coverage: Coverage::Alpha },
+        shape: Shape { colour: ColourFormat::Rgba16Float, samples: Samples::Four, depth: DepthFormat::Depth32Float },
+    };
+    assert_eq!(program::check(&create, RIM, &gpu.device().limits()), Ok(()));
+    let program = kept.ids.next();
+    kept.programs.keep(program, MAKER, pipeline(gpu, &create, RIM));
+
+    let join = Join::to::<Rims>(Frame::Main(window()), ProgramId { id: program }, Vec::new());
+    let place = Place { mesh: MeshId { id: mesh_id }, instances: Drawn::Count(1), joins: vec![join] };
+    assert_eq!(placement::check(&place, &*kept), Ok(()));
+    let placed = kept.placement(gpu.device(), &place);
+    let Ok(placed) = placed else {
+        panic!("the placement is refused: {:?}", placed.err());
+    };
+    let id = kept.ids.next();
+    kept.placements.keep(id, MAKER, placed);
+
+    id
+}
+
+/// A main frame of the window: a floor drawn into floats of one sample, writing depth; rims drawn into floats of four
+/// samples with a depth of their own, reading `reads`; and the rims laid on the window by `lay`, which reads one target
+/// of floats.
+fn rims_frame(lay: ProgramId, reads: Vec<Target>) -> CreateFrame {
+    let sampled = |kind, samples| TargetSpec { kind, scale: Scale::Full, samples };
+    let floor = PassSpec {
+        name: PassName::of::<Main>(),
+        does: Does::Draw { into: Target::Texture(0), depth: DepthUse::Write(1), load: Load::Clear, reads: Vec::new() },
+    };
+    let rims = PassSpec {
+        name: PassName::of::<Rims>(),
+        does: Does::Draw { into: Target::Texture(2), depth: DepthUse::Write(3), load: Load::Clear, reads },
+    };
+    let laid = PassSpec {
+        name: PassName::of::<Composite>(),
+        does: Does::Effect { program: lay, reads: vec![Target::Texture(2)], into: Target::End, bindings: Vec::new() },
+    };
+
+    CreateFrame {
+        ends: Ends::Window(window()),
+        targets: vec![
+            sampled(TargetKind::Float, Samples::One),
+            sampled(TargetKind::Depth, Samples::One),
+            sampled(TargetKind::Float, Samples::Four),
+            sampled(TargetKind::Depth, Samples::Four),
+        ],
+        passes: vec![floor, rims, laid],
+    }
+}
+
+/// The effect [`LOADED`], reading one target of floats onto the window, kept in `kept`.
+fn laid(device: &wgpu::Device, kept: &mut Kept) -> ProgramId {
+    let create = CreateEffect {
+        wgsl: blob(),
+        fragment: String::from("composite"),
+        reads: vec![Read::Float],
+        bindings: Vec::new(),
+        blend: Blend::Opaque,
+        shape: Shape::flat(ColourFormat::Bgra8),
+    };
+    assert_eq!(effect::check(&create, LOADED, &device.limits()), Ok(()));
+    let program = kept.ids.next();
+    kept.programs.keep(program, MAKER, effect_pipeline(device, &create, LOADED));
+
+    ProgramId { id: program }
+}
+
+#[test]
+fn a_target_of_four_samples_is_drawn_into_as_four_and_read_as_the_one_they_resolve_to() {
+    // Catches a target of four samples bound to be read as its four, which WebGPU refuses where one is declared; a
+    // pass into it that does not resolve it, or resolves into a texture nothing reads; a draw's group of reads made
+    // through a layout its programs' are not alike to, which WebGPU refuses as the placement is drawn; and either
+    // texture left at its size when the window is drawn at another.
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let gpu = Gpu::new(device.clone(), queue.clone());
+    let mut kept = kept(&device);
+    let lay = laid(&device, &mut kept);
+    let frame = rims_frame(lay, vec![Target::Texture(1)]);
+    assert_eq!(frame::check(&frame, &kept), Ok(()));
+    let framed = kept.frame(&device, frame, MAKER);
+    assert!(matches!(framed, Ok(Framed::Made(_))), "the frame is refused: {framed:?}");
+    rim_placed(&gpu, &mut kept);
+
+    drawn_at(&device, &queue, &mut kept, (8, 6));
+    let samples = |image: &wgpu::TextureView| image.texture().sample_count();
+    let rims = main(&kept).target(2);
+    assert_eq!((samples(rims.drawn()), samples(rims.read())), (4, 1));
+    assert_eq!(rims.resolved(), Some(rims.read()), "a pass into it resolves into what is read");
+    assert_eq!(samples(main(&kept).target(3).drawn()), 4);
+
+    drawn_at(&device, &queue, &mut kept, (16, 12));
+    let rims = main(&kept).target(2);
+    let sides = |image: &wgpu::TextureView| (image.texture().width(), image.texture().height());
+    assert_eq!((sides(rims.drawn()), sides(rims.read())), ((16, 12), (16, 12)));
+}
+
+#[test]
+fn a_main_frame_replaced_by_one_whose_pass_reads_otherwise_stops_drawing_the_placement_until_it_reads_so_again() {
+    // Catches a placement drawn in a pass whose group 0 holds what its program was not made to read, or its own
+    // bindings drawn under the pass's reads, which WebGPU refuses; and one never drawn again once a frame whose pass
+    // reads as it was made to replaces that.
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let gpu = Gpu::new(device.clone(), queue.clone());
+    let mut kept = kept(&device);
+    let lay = laid(&device, &mut kept);
+    let reading = rims_frame(lay, vec![Target::Texture(1)]);
+    assert!(matches!(kept.frame(&device, reading.clone(), MAKER), Ok(Framed::Made(_))));
+    let placement = rim_placed(&gpu, &mut kept);
+    assert_eq!(kept.undrawn(), Vec::new());
+
+    let unread = rims_frame(lay, Vec::new());
+    assert_eq!(frame::check(&unread, &kept), Ok(()));
+    assert!(matches!(kept.frame(&device, unread, MAKER), Ok(Framed::Made(_))));
+    assert_eq!(kept.undrawn(), vec![(placement, window(), PassName::of::<Rims>())]);
+    let floats = rims_frame(lay, vec![Target::Texture(0)]);
+    assert!(matches!(kept.frame(&device, floats, MAKER), Ok(Framed::Made(_))));
+    assert_eq!(kept.undrawn(), vec![(placement, window(), PassName::of::<Rims>())]);
+    drawn_at(&device, &queue, &mut kept, (8, 6));
+
+    assert!(matches!(kept.frame(&device, reading, MAKER), Ok(Framed::Made(_))));
+    assert_eq!(kept.undrawn(), Vec::new());
+    drawn_at(&device, &queue, &mut kept, (8, 6));
 }

@@ -7,7 +7,7 @@ use aethereal_actor::{
 use aethereal_chassis_browser::{Browser, Hosted, Performance, open, renderer};
 use aethereal_data::{Bound, Plain};
 use aethereal_render::mesh::{Attribute, CreateMesh, Meshed, VertexFormat, VertexLayout};
-use aethereal_render::program::{Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, Programmed};
+use aethereal_render::program::{Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, Programmed};
 use aethereal_render::shape::{ColourFormat, Shape};
 use aethereal_render::texture::{CreateTexture, TextureFormat, Textured};
 use aethereal_render::{Release, Renderer};
@@ -176,7 +176,8 @@ impl Requests {
             layout,
             instances: PerInstance::None,
             bindings: Vec::new(),
-            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None },
+            reads: Vec::new(),
+            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
             // Made against a shape of its own, as it is drawn in no pass: a program is made for any shape.
             shape: Shape::with_depth(ColourFormat::Rgba8),
         };

@@ -6,6 +6,7 @@
 mod tests;
 
 use crate::dispatch::Use;
+use crate::effect::Read;
 use crate::frame::{self, Frame};
 use crate::instances::InstancesId;
 use crate::mesh::{MeshId, VertexLayout};
@@ -169,6 +170,8 @@ pub enum JoinRefused {
     Program,
     /// The program is made against another shape than the pass draws into.
     Shape,
+    /// The program reads targets of other kinds, or another count of them, than the pass reads (ADR-0025).
+    Reads,
     /// The mesh's layout is not the program's vertex layout.
     Layout,
     /// What is drawn is not what the program reads per instance: records for a program that reads none, a count, given
@@ -187,21 +190,30 @@ pub enum JoinRefused {
     Mismatch { group: u32, binding: u32 },
 }
 
-/// What a join is checked against of the program it draws with: what it reads, what it binds, and the shape it was
-/// made against.
+/// What a join is checked against of the program it draws with: what it reads, what it binds, the targets of its
+/// frame it reads, and the shape it was made against.
 pub(crate) struct Reads<'a> {
     pub layout: &'a VertexLayout,
     pub instances: &'a PerInstance,
     pub bindings: &'a [Binding],
+    pub targets: &'a [Read],
     pub shape: Shape,
+}
+
+/// What a program that joins a pass that draws is made against: the shape the pass draws into, and how it reads the
+/// targets it reads, in order (ADR-0025).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Fits {
+    pub shape: Shape,
+    pub reads: Vec<Read>,
 }
 
 /// What the renderer keeps, as a placement's check looks it up: each lookup misses when nothing of its sort is kept
 /// under the id.
 pub(crate) trait Finds {
-    /// The shape of the pass `pass` of `frame` as it is now: refused when there is no such frame, or it has no such
-    /// pass that draws.
-    fn pass(&self, frame: Frame, pass: PassName) -> Result<Shape, JoinRefused>;
+    /// What a program that joins the pass `pass` of `frame` as it is now is made against: refused when there is no
+    /// such frame, or it has no such pass that draws.
+    fn pass(&self, frame: Frame, pass: PassName) -> Result<Fits, JoinRefused>;
     fn program(&self, id: ProgramId) -> Option<Reads<'_>>;
     /// The frame that ends on the texture `texture`, by its id: none for a texture made of pixels, or none kept.
     fn drawn_by(&self, texture: TextureId) -> Option<u64>;
@@ -291,9 +303,9 @@ enum Instancing<'a> {
 }
 
 /// Checks one join of a placement of a mesh laid out as `mesh`, its instances read as `instancing` says: that the frame
-/// has the pass, that the program is kept and made against the pass's shape, that the mesh and the records are laid
-/// out as the program reads them, and that it binds each place the program binds, once, with a resource of the kind
-/// there.
+/// has the pass, that the program is kept and made against the pass's shape and to read what the pass reads, that the
+/// mesh and the records are laid out as the program reads them, and that it binds each place the program binds, once,
+/// with a resource of the kind there.
 fn check_join(
     join: &Join,
     mesh: &VertexLayout,
@@ -302,8 +314,11 @@ fn check_join(
 ) -> Result<(), JoinRefused> {
     let pass = kept.pass(join.frame, join.pass)?;
     let program = kept.program(join.program).ok_or(JoinRefused::Program)?;
-    if program.shape != pass {
+    if program.shape != pass.shape {
         return Err(JoinRefused::Shape);
+    }
+    if program.targets != pass.reads {
+        return Err(JoinRefused::Reads);
     }
     if mesh != program.layout {
         return Err(JoinRefused::Layout);

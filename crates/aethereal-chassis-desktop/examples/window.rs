@@ -22,7 +22,7 @@ use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat
 use aethereal_render::pass::Main;
 use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
 use aethereal_render::program::{
-    Binding, BindingKind, Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
+    Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
 use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
@@ -403,7 +403,8 @@ impl Handles<Answer<Meshed, Learned>> for Scene {
             layout: VertexLayout { stride: 8, attributes: vec![position] },
             instances: PerInstance::Records(record()),
             bindings: vec![Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
-            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None },
+            reads: Vec::new(),
+            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
             shape: learned.shape,
         };
         turn.to(path::<Renderer>(())).ask(&shade, &MadeMesh { shape: learned.shape, mesh })?;

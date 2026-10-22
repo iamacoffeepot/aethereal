@@ -12,9 +12,9 @@ use aethereal_data::{Budget, from_bytes};
 use aethereal_window::WindowId;
 
 /// What a test keeps: one program, reading a position per vertex and an offset per instance, binding a camera's
-/// uniforms, a texture, a sampler, and storage of splats, made against `shape`; a mesh and instances laid out as it
-/// reads; uniforms of 64 bytes; storage of 256, and arguments of 256; a texture; and the main frame of the window [`window`], whose one
-/// pass, [`Main`], is of `pass`.
+/// uniforms, a texture, a sampler, and storage of splats, made against `shape` and to read the targets `targets` says;
+/// a mesh and instances laid out as it reads; uniforms of 64 bytes; storage of 256, and arguments of 256; a texture;
+/// and the main frame of the window [`window`], whose one pass, [`Main`], a program is made against as `pass` says.
 struct Kept {
     layout: VertexLayout,
     mesh: VertexLayout,
@@ -22,7 +22,8 @@ struct Kept {
     records: VertexLayout,
     bindings: Vec<Binding>,
     shape: Shape,
-    pass: Shape,
+    targets: Vec<Read>,
+    pass: Fits,
     reads: Vec<(u64, u64)>,
     uses: Vec<(StorageId, Use)>,
 }
@@ -75,7 +76,8 @@ impl Kept {
             records,
             bindings,
             shape,
-            pass: shape,
+            targets: Vec::new(),
+            pass: Fits { shape, reads: Vec::new() },
             reads: Vec::new(),
             uses: Vec::new(),
         }
@@ -83,7 +85,7 @@ impl Kept {
 }
 
 impl Finds for Kept {
-    fn pass(&self, frame: Frame, pass: PassName) -> Result<Shape, JoinRefused> {
+    fn pass(&self, frame: Frame, pass: PassName) -> Result<Fits, JoinRefused> {
         let kept = [Frame::Main(window(0)), Frame::Texture(MAP), Frame::Texture(INSET)];
         if !kept.contains(&frame) {
             return Err(JoinRefused::Frame);
@@ -92,12 +94,17 @@ impl Finds for Kept {
             return Err(JoinRefused::Pass);
         }
 
-        Ok(self.pass)
+        Ok(self.pass.clone())
     }
 
     fn program(&self, id: ProgramId) -> Option<Reads<'_>> {
-        let reads =
-            Reads { layout: &self.layout, instances: &self.per_instance, bindings: &self.bindings, shape: self.shape };
+        let reads = Reads {
+            layout: &self.layout,
+            instances: &self.per_instance,
+            bindings: &self.bindings,
+            targets: &self.targets,
+            shape: self.shape,
+        };
         (id == PROGRAM).then_some(reads)
     }
 
@@ -268,6 +275,28 @@ fn a_join_of_a_pass_the_frame_has_not_or_of_another_shape_is_refused() {
     assert_eq!(check(&elsewhere, &kept), first(JoinRefused::Pass));
     assert_eq!(check(&other_window, &kept), first(JoinRefused::Frame));
     assert_eq!(check(&place(), &srgb), first(JoinRefused::Shape));
+}
+
+#[test]
+fn a_join_whose_program_reads_other_targets_than_its_pass_is_refused() {
+    // Catches a program joined to a pass whose read group it was not made for: its group 0 bound to targets it does
+    // not declare, or a program that binds its own from group 0 drawn with the pass's reads over them.
+    let mut unread = Kept::new();
+    unread.pass.reads = vec![Read::Depth];
+    let mut other = Kept::new();
+    other.pass.reads = vec![Read::Depth];
+    other.targets = vec![Read::Float];
+    let mut reordered = Kept::new();
+    reordered.pass.reads = vec![Read::Depth, Read::Float];
+    reordered.targets = vec![Read::Float, Read::Depth];
+    let mut reading = Kept::new();
+    reading.pass.reads = vec![Read::Depth, Read::Float];
+    reading.targets = vec![Read::Depth, Read::Float];
+
+    assert_eq!(check(&place(), &unread), first(JoinRefused::Reads));
+    assert_eq!(check(&place(), &other), first(JoinRefused::Reads));
+    assert_eq!(check(&place(), &reordered), first(JoinRefused::Reads));
+    assert_eq!(check(&place(), &reading), Ok(()));
 }
 
 #[test]

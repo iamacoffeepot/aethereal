@@ -13,7 +13,9 @@ use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::Main;
 use aethereal_render::placement::{Drawn, Join, Place, Placed};
-use aethereal_render::program::{Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed};
+use aethereal_render::program::{
+    Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
+};
 use aethereal_render::shape::Shape;
 use aethereal_substrate::Engine;
 use aethereal_window::{Heard, Opening, WindowId, Windowing, Windows};
@@ -273,7 +275,8 @@ fn program<S>(turn: &mut Turn<'_, Prober, S>, wgsl: String, shape: Shape) -> Res
         layout: corners(),
         instances: PerInstance::None,
         bindings: Vec::new(),
-        state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None },
+        reads: Vec::new(),
+        state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
         shape,
     };
 

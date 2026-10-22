@@ -15,7 +15,7 @@ use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat
 use aethereal_render::pass::{Main, Pass};
 use aethereal_render::placement::{Bind, Drawn, Filter, Join, Place, Placed, Resource, Sampling, Wrap};
 use aethereal_render::program::{
-    Binding, BindingKind, Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
+    Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
 use aethereal_render::readback::{Pixels, ReadBack, Readable};
 use aethereal_render::shape::{ColourFormat, Shape};
@@ -273,14 +273,15 @@ fn program(wgsl: BlobRef, shape: Shape, bindings: Vec<Binding>) -> CreateProgram
         layout: corners(),
         instances: PerInstance::None,
         bindings,
-        state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None },
+        reads: Vec::new(),
+        state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
         shape,
     }
 }
 
 /// The window's main frame: one pass, [`Main`], onto it, writing depth, as the renderer's own is.
 fn main_frame(window: WindowId) -> Result<CreateFrame, FrameRefused> {
-    FrameBuilder::on(Ends::Window(window)).finish(Main, Onto(depth::Write))
+    FrameBuilder::on(Ends::Window(window)).finish(Main, Onto(depth::Write, ()))
 }
 
 impl Handles<On<Start>> for Mapper {
@@ -381,7 +382,7 @@ impl Handles<Answer<Programmed, Making>> for Mapper {
             Making::Show { mesh, map } => (mesh, map),
         };
         let create = match FrameBuilder::on(Ends::Texture { size: MAP_SIZE, format: TextureFormat::Rgba8 })
-            .finish(Mapping, Onto(depth::Off))
+            .finish(Mapping, Onto(depth::Off, ()))
         {
             Ok(create) => create,
             Err(why) => {

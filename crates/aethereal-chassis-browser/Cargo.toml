@@ -95,5 +95,10 @@ name = "windows"
 path = "examples/windows/lib.rs"
 crate-type = ["cdylib"]
 
+[[example]]
+name = "rims"
+path = "examples/rims/lib.rs"
+crate-type = ["cdylib"]
+
 [lints]
 workspace = true

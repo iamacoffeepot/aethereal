@@ -4,8 +4,9 @@
 #[cfg(test)]
 mod tests;
 
+use crate::effect::Read;
 use crate::mesh::{self, MeshRefused, VertexFormat, VertexLayout};
-use crate::shape::{ColourFormat, DepthFormat, Shape};
+use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
 use aethereal_actor::BlobRef;
 use aethereal_data::{Bound, Plain};
 use naga::front::wgsl;
@@ -17,8 +18,12 @@ use naga::{
 
 /// Asks the renderer for a program: the WGSL the blob `wgsl` holds as UTF-8, drawn from its vertex stage `vertex` and
 /// its fragment stage `fragment`, reading vertices laid out as `layout` says and what `instances` says once per
-/// instance, binding what `bindings` lists, with the fixed state `state`, drawing into passes of the shape `shape`
-/// (ADR-0025). Answered with [`Programmed`].
+/// instance, binding what `bindings` lists, reading the targets of its frame `reads` names, with the fixed state
+/// `state`, drawing into passes of the shape `shape` (ADR-0025). Answered with [`Programmed`].
+///
+/// A program that reads targets binds them in group 0, the first at `@binding(0)`, its fragment stage loading each at
+/// its pixel, and lists nothing there; one that reads none binds what it lists from group 0, as every draw program did
+/// before draws read. It joins only a pass that reads targets of those kinds, in that order.
 ///
 /// The WGSL travels as a blob, as a mesh's vertices do, so a shader longer than the engine reads of one piece of mail
 /// can still be asked for.
@@ -31,6 +36,7 @@ pub struct CreateProgram {
     pub layout: VertexLayout,
     pub instances: PerInstance,
     pub bindings: Vec<Binding>,
+    pub reads: Vec<Read>,
     pub state: Fixed,
     pub shape: Shape,
 }
@@ -82,14 +88,26 @@ pub enum Access {
     Write,
 }
 
-/// What a program fixes as it is made: how it blends, how it tests depth, and which faces it culls. It draws
-/// triangles, counter-clockwise in front.
+/// What a program fixes as it is made: how it blends, how it tests depth, which faces it culls, and whether its alpha
+/// is its coverage. It draws triangles, counter-clockwise in front.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.fixed")]
 pub struct Fixed {
     pub blend: Blend,
     pub depth: Depth,
     pub cull: Cull,
+    pub coverage: Coverage,
+}
+
+/// What share of a pixel's samples a program's fragment covers (ADR-0021).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.coverage")]
+pub enum Coverage {
+    /// The samples its triangle covers.
+    Off,
+    /// As many of the samples its triangle covers as its alpha is a share of, so a soft edge is drawn in one pass, in
+    /// any order, with no blend: only on a shape of four samples.
+    Alpha,
 }
 
 /// How a program's colour is laid over what is drawn already.
@@ -185,9 +203,11 @@ pub enum ProgramRefused {
     Blend,
     /// It tests or writes depth, and its shape holds none.
     Depthless,
+    /// It turns its alpha into coverage on a shape of one sample, which has nothing to cover.
+    Coverage,
     /// An effect's shape holds depth: an effect draws over a whole target, and tests none.
     EffectDepth,
-    /// An effect lists a binding in group 0, where what it reads is bound.
+    /// An effect, or a program that reads targets, lists a binding in group 0, where what it reads is bound.
     Reserved { binding: u32 },
     /// The shader uses a binding `bindings` does not list.
     Unbound { group: u32, binding: u32 },
@@ -224,8 +244,8 @@ pub fn source(bytes: &[u8]) -> Result<&str, ProgramRefused> {
 
 /// Checks a program before it is made, with `wgsl` the WGSL its blob holds: that the WGSL is a valid module, whose
 /// entry points are a vertex and a fragment stage, that read what its layouts give, pass between them what each reads,
-/// write the colour drawn, and bind only what `bindings` lists, storage only to read, within `limits`: what WebGPU
-/// would refuse as the pipeline is made.
+/// write the colour drawn, and bind only what `bindings` lists, storage only to read, and in its fragment stage the
+/// targets `reads` names in group 0, within `limits`: what WebGPU would refuse as the pipeline is made.
 ///
 /// # Errors
 ///
@@ -239,13 +259,25 @@ pub fn check(create: &CreateProgram, wgsl: &str, limits: &wgpu::Limits) -> Resul
             return Err(ProgramRefused::Shared { location: attribute.location });
         }
     }
-    check_bindings(&create.bindings, 0, limits)?;
+    let reads = !create.reads.is_empty();
+    let reserved = create.bindings.iter().find(|listed| listed.group == 0).filter(|_| reads);
+    if let Some(listed) = reserved {
+        return Err(ProgramRefused::Reserved { binding: listed.binding });
+    }
+    // A program reads a handful of targets, far below what a `u32` counts.
+    let textures = u32::try_from(create.reads.len()).unwrap_or(u32::MAX);
+    check_bindings(&create.bindings, textures, limits)?;
     check_reads_only(&create.bindings)?;
     check_fixed(create.state.blend, create.shape)?;
     let tests_depth = create.state.depth != Depth::Off;
     let holds_depth = create.shape.depth != DepthFormat::None;
     if tests_depth && !holds_depth {
         return Err(ProgramRefused::Depthless);
+    }
+    let covers = create.state.coverage == Coverage::Alpha;
+    let sampled = create.shape.samples != Samples::One;
+    if covers && !sampled {
+        return Err(ProgramRefused::Coverage);
     }
 
     let (module, info) = parsed(wgsl)?;
@@ -254,11 +286,20 @@ pub fn check(create: &CreateProgram, wgsl: &str, limits: &wgpu::Limits) -> Resul
     check_inputs(&module, vertex, &create.layout, &create.instances)?;
     check_stages((&module, vertex), (&module, fragment))?;
     check_output(&module, fragment, create.shape.colour)?;
-    for at in [vertex, fragment] {
-        check_uses(&module, &info, at, |group, binding| listed(&create.bindings, group, binding))?;
+    // The targets it reads are loaded at the fragment's pixel, so only its fragment stage binds them.
+    check_uses(&module, &info, vertex, |group, binding| listed(&create.bindings, group, binding))?;
+    check_uses(&module, &info, fragment, |group, binding| used(&create.bindings, &create.reads, group, binding))
+}
+
+/// What a program reading `reads` and listing `bindings` binds at `group`, `binding`: a target it reads in group 0, when
+/// it reads any, and what it lists.
+pub(crate) fn used(bindings: &[Binding], reads: &[Read], group: u32, binding: u32) -> Option<Used> {
+    let read = group == 0 && !reads.is_empty();
+    if read {
+        return reads.get(binding as usize).map(|read| Used::Read(read.class()));
     }
 
-    Ok(())
+    listed(bindings, group, binding).map(Used::Listed)
 }
 
 /// The module `wgsl` is, validated, with what its validation found: refused when it does not parse, is not valid, or

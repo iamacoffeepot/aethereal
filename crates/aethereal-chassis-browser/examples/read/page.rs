@@ -13,7 +13,8 @@ use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat
 use aethereal_render::pass::Main;
 use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
 use aethereal_render::program::{
-    Access, Binding, BindingKind, Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
+    Access, Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId,
+    Programmed,
 };
 use aethereal_render::readback::{Bytes, Pixels, ReadBack, ReadStorage, Readable};
 use aethereal_render::shape::Shape;
@@ -280,7 +281,8 @@ fn program(
         layout: corners(),
         instances: PerInstance::None,
         bindings,
-        state: Fixed { blend, depth: Depth::Off, cull: Cull::None },
+        reads: Vec::new(),
+        state: Fixed { blend, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
         shape,
     }
 }
