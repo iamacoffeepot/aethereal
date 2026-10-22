@@ -55,7 +55,6 @@ pub struct Program {
 pub async fn start() -> Result<Program, JsError> {
     let started = Browser::program()
         .with_cycle::<(Tick, Render)>()
-        .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?
         // Its blobs hold a frame of a large canvas.
         .with_engine(EngineSettings { blob_bytes: 1 << 26, ..Default::default() })
         .root::<Windows>()

@@ -99,7 +99,6 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
 
     Ok(Desktop::program()
         .with_cycle::<(Tick, Render)>()
-        .map_err(|unordered| format!("the cycle is out of order: {unordered:?}"))?
         .with_engine(EngineSettings { workers, parts: workers, ..Default::default() })
         .root_with::<Windows>(WindowsSettings(vec![first]))
         .root::<Renderer>()

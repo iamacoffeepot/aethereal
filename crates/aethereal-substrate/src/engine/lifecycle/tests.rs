@@ -4,8 +4,8 @@
 use super::super::*;
 use crate::stages::key;
 use aethereal_actor::{
-    Actor, Anywhere, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, On, Path, Present, Render, Stage, Start,
-    Stop, Tells, Tick, Time, ToSender, ToType, Top, Turn, Unordered, path,
+    Actor, Anywhere, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, On, Own, Path, Present, Render, Stage,
+    Start, Stop, Tells, Tick, Time, ToSender, ToType, Top, Turn, path,
 };
 use aethereal_data::{Bound, Kind, KindId, KindName, Plain};
 use core::time::Duration;
@@ -270,7 +270,9 @@ fn no_root_is_made_at_the_lifecycle_s_name() {
 #[kind(name = "aether.test.receive")]
 struct Receive;
 
-impl Stage for Receive {}
+impl Stage for Receive {
+    type Place = Own;
+}
 
 /// An actor that subscribes to every stage of a cycle and to `Stop` as it begins, and says each it is sent, `Tick`
 /// with its delta and the time elapsed. On `Tick` it sends itself `pass 1`, so the stage's chain runs a step longer.
@@ -352,11 +354,7 @@ fn cycling<C: Cycle>(limit: Duration) -> Engine {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let Ok(mut engine) =
-        Engine::new(parts, 1024, 0, 1 << 20, 0).with_delta_limit(limit).with_cycle::<C>().map(Setup::ready)
-    else {
-        panic!("the cycle is in order");
-    };
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_delta_limit(limit).with_cycle::<C>().ready();
     let Ok(_) = engine.add_root::<Cycler>(&(), Note { text: String::new() }) else {
         panic!("the cycler begins");
     };
@@ -438,25 +436,6 @@ fn a_program_asked_to_stop_mid_cycle_finishes_the_cycle_first() {
     assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
 }
 
-#[test]
-fn a_cycle_out_of_order_or_holding_an_end_or_a_stage_twice_is_refused() {
-    // Catches a cycle that turns the shared stages round, holds `Start`, or holds a stage twice made into an engine,
-    // and a chassis's own stage refused anywhere.
-    let Some(parts) = NonZeroUsize::new(1) else {
-        panic!("one is not zero");
-    };
-    let made =
-        |cycle: fn(Engine) -> Result<Engine, Unordered>| cycle(Engine::new(parts, 1024, 0, 1 << 20, 0).ready()).err();
-
-    assert_eq!(made(Engine::with_cycle::<(Render, Tick)>), Some(Unordered::OutOfOrder));
-    assert_eq!(made(Engine::with_cycle::<(Tick, Present, Render)>), Some(Unordered::OutOfOrder));
-    assert_eq!(made(Engine::with_cycle::<(Start, Tick)>), Some(Unordered::HoldsAnEnd));
-    assert_eq!(made(Engine::with_cycle::<(Tick, Tick)>), Some(Unordered::Twice));
-    assert_eq!(made(Engine::with_cycle::<(Receive, Tick, Receive)>), Some(Unordered::Twice));
-    assert_eq!(made(Engine::with_cycle::<(Tick, Receive, Present)>), None);
-    assert_eq!(made(Engine::with_cycle::<(Receive, Render)>), None);
-}
-
 /// An actor that spawns a cycler beneath it as it begins, and a latecomer in a step, on the note it sends itself, and
 /// says why each was refused, if it was.
 #[derive(Bound)]
@@ -503,11 +482,7 @@ fn running<C: Cycle>() -> Engine {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
-    let Ok(engine) = Engine::new(parts, 1024, 0, 1 << 20, 0).with_cycle::<C>().map(Setup::ready) else {
-        panic!("the cycle is in order");
-    };
-
-    engine
+    Engine::new(parts, 1024, 0, 1 << 20, 0).with_cycle::<C>().ready()
 }
 
 #[test]

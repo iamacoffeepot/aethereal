@@ -92,7 +92,8 @@ pub use seat::{SeatNumber, Seated, Seats};
 pub use sleep::{Never, Sleep, Slept, Timer, Until};
 pub use source::Source;
 pub use stage::{
-    Cycle, Cycled, Cycling, Drained, On, Place, Present, Render, Stage, Start, Stop, Tick, Unordered, ordered,
+    Cycle, Cycled, Cycling, Drained, End, Follows, InCycle, On, Own, Place, Present, Render, Stage, StandsAfter, Start,
+    Stop, Tick, Unshared,
 };
 pub use subscribers::Subscribers;
 pub use time::Time;

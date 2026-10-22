@@ -22,7 +22,7 @@ pub use provided::{Gathers, Provided, Provision};
 pub use settings::{ENGINE, EngineSettings, RUNNING};
 
 use crate::{Engine, Jobs, Setup};
-use aethereal_actor::{Cycle, Guests, Links, Ordered, Unordered, ordered};
+use aethereal_actor::{Cycle, Guests, Links, Ordered};
 use aethereal_data::Budget;
 use aethereal_data::config::{Configuration, FlagTable, Flags, Overlay, Parts, RootSettings};
 use core::marker::PhantomData;
@@ -34,7 +34,7 @@ use std::sync::Arc;
 const CONFIGURATION_BYTES: usize = 1 << 24;
 
 /// One of the engine's options, applied to its setup as it is made.
-type EngineOption = Box<dyn FnOnce(Setup<()>) -> Result<Setup<()>, Unordered>>;
+type EngineOption = Box<dyn FnOnce(Setup<()>) -> Setup<()>>;
 
 /// One root's section, with the program's defaults for it, added to the sections composed so far.
 type Section = Box<dyn Fn(Composing) -> Result<Composing, ProgramError>>;
@@ -353,34 +353,30 @@ impl<H: Host> Program<H, ()> {
 
     /// The engine, running the guests' code `guests` holds (ADR-0015), as [`Setup::with_guests`] does.
     pub fn with_guests(self, guests: Arc<dyn Guests>) -> Self {
-        self.with(Box::new(move |setup| Ok(setup.with_guests(guests))))
+        self.with(Box::new(move |setup| setup.with_guests(guests)))
     }
 
     /// The engine, keeping the native types `links` by name, for a guest to spawn, as [`Setup::with_links`] does.
     pub fn with_links(self, links: Links) -> Self {
-        self.with(Box::new(move |setup| Ok(setup.with_links(links))))
+        self.with(Box::new(move |setup| setup.with_links(links)))
     }
 
     /// The engine, its jobs run by `jobs`, as [`Setup::with_jobs`] does.
     pub fn with_jobs(self, jobs: Arc<dyn Jobs>) -> Self {
-        self.with(Box::new(move |setup| Ok(setup.with_jobs(jobs))))
+        self.with(Box::new(move |setup| setup.with_jobs(jobs)))
     }
 
-    /// The engine, running the cycle `C` between `Start` and `Stop`, as [`Setup::with_cycle`] does.
-    ///
-    /// # Errors
-    ///
-    /// [`Unordered`] when the cycle holds `Start` or `Stop`, a stage twice, or the shared stages out of their order.
-    pub fn with_cycle<C: Cycle>(self) -> Result<Self, Unordered> {
-        ordered(&C::stages())?;
-        let cycle: fn(Setup<()>) -> Result<Setup<()>, Unordered> = Setup::with_cycle::<C>;
+    /// The engine, running the cycle `C` between `Start` and `Stop`, as [`Setup::with_cycle`] does: a cycle out of its
+    /// order does not build ([`Cycle`]).
+    pub fn with_cycle<C: Cycle>(self) -> Self {
+        let cycle: fn(Setup<()>) -> Setup<()> = Setup::with_cycle::<C>;
 
-        Ok(self.with(Box::new(cycle)))
+        self.with(Box::new(cycle))
     }
 
     /// The engine, limiting each `Tick`'s delta to `limit`, as [`Setup::with_delta_limit`] does.
     pub fn with_delta_limit(self, limit: Duration) -> Self {
-        self.with(Box::new(move |setup| Ok(setup.with_delta_limit(limit))))
+        self.with(Box::new(move |setup| setup.with_delta_limit(limit)))
     }
 }
 
@@ -598,7 +594,7 @@ impl<H: Host> Settled<H> {
     pub async fn bootstrap(self, hosting: H::Hosting<'_>) -> Result<(Engine, H::Hosting<'_>), ProgramError> {
         let mut setup = self.engine.setup();
         for option in self.options {
-            setup = option(setup).map_err(ProgramError::Cycle)?;
+            setup = option(setup);
         }
 
         let stage = Stage::new(setup.ready(), hosting, self.configuration);

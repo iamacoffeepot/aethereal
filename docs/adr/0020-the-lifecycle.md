@@ -23,7 +23,7 @@ Start → ( a cycle of stages )* → Stop
 
 ```rust
 pub trait Stage: Kind + Encode<Actors> + Default {   // the engine makes each stage's value itself
-    const PLACE: Place = Place::Own;                 // End (Start, Stop), Shared(rank), or a chassis's own
+    type Place: Place;                               // End (Start, Stop), the shared stage itself, or Own
     fn made(time: Cycled) -> Self { Self::default() }   // Tick takes the cycle's time; the rest hold nothing
 }
 
@@ -37,15 +37,16 @@ pub struct Stop;
 - **The chassis chooses the cycle as it makes the engine**, as a list of stages in the order they run:
 
   ```rust
-  Engine::new(..).with_cycle::<(Tick, Render, Present)>()?      // a desktop or a browser
-  Engine::new(..).with_cycle::<(Receive, Tick, Replicate)>()?   // a game's server, with stages of its own
-  Engine::new(..).with_cycle::<()>()?                           // a server for requests, a tool run once
-  Engine::new(..).with_cycle::<(Render, Tick)>()?               // refused: the shared stages out of their order
+  Engine::new(..).with_cycle::<(Tick, Render, Present)>()      // a desktop or a browser
+  Engine::new(..).with_cycle::<(Receive, Tick, Replicate)>()   // a game's server, with stages of its own
+  Engine::new(..).with_cycle::<()>()                           // a server for requests, a tool run once
+  Engine::new(..).with_cycle::<(Render, Tick)>()               // does not build: the shared stages out of their order
   ```
 
-- **`Tick`, `Render`, and `Present` are the stages the engine shares**, and a cycle that holds any of them holds them in that order: `Tick` before `Render` before `Present`. A camera that moves on `Tick` and a renderer that draws on `Render` are written for that order, and would draw last frame's view on a chassis that turned it round, though nothing else about them was wrong. So a cycle that breaks the order is refused where the engine is made.
+- **`Tick`, `Render`, and `Present` are the stages the engine shares**, and a cycle that holds any of them holds them in that order: `Tick` before `Render` before `Present`. A camera that moves on `Tick` and a renderer that draws on `Render` are written for that order, and would draw last frame's view on a chassis that turned it round, though nothing else about them was wrong. So a cycle that breaks the order is refused as the program is built.
 - **A stage of the chassis's own may go anywhere in the cycle**, before, between, or after the shared ones: a kind its chassis's crate defines, which holds nothing. An actor that subscribes to it depends on that crate, as an actor depends on the crate of any kind it handles.
 - No stage appears twice in a cycle, and `Start` and `Stop` are never in it: they are at its two ends on every chassis, since one carries every actor's start and the other may wait for draining.
+- **The cycle's order is checked as the program is built**, so `with_cycle` answers the engine and nothing is refused at run time. A cycle is a type, a tuple of stages, and each stage's `Place` is a type: the compiler folds the tuple, refusing a place at an end and a shared stage that does not follow the last one held, so a cycle with `Start` or `Stop`, or with the shared stages out of their order or one twice, is an error naming the stage as `cargo check` runs. No trait can tell two of a chassis's own stages apart on stable Rust, so one held twice is refused by a constant comparing the stages' kinds, which fails as the program is compiled. No cycle is built at run time: a guest declares the stages it handles, never the cycle.
 - A cycle is a list, not a graph. The earlier engine's graph had two kinds of edge, the next stage and the stage to go to on quitting, and quitting is the engine's own here, so the next stage is all that is left, which an order says.
 - So each chassis has a lifecycle of its own, and every lifecycle point two chassis share is the same mail on both.
 - `Tick` carries the cycle's time: how long since the last `Tick`, and the time elapsed, the sum of every delta. Every other stage carries nothing, the chassis's own included. What one actor's work in a stage means to another rides its own mail, as a camera mails its view to the renderer.
