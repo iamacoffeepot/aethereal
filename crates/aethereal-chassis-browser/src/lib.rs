@@ -60,7 +60,9 @@ impl<C: Clock> Browser<C> {
         &self.engine
     }
 
-    /// Runs one frame, for the page's `requestAnimationFrame`: says a cycle is due, then brings in what its sources
+    /// Runs one frame, for the page's `requestAnimationFrame`, whose callback is handed the frame's timestamp,
+    /// `timestamp_millis`, in milliseconds since the page opened: says a cycle is due at that time, so `Tick`'s delta
+    /// is the time between the display's frames however long each frame's work took, then brings in what its sources
     /// were pushed and its jobs finished and steps, until no actor has anything to run (ADR-0010, ADR-0018). The
     /// cycle's stages each run through to their end within the call, so what `Render` drew is there when the page
     /// gets its thread back and shows it. Then it starts mapping what the renderer asked to read back, its turns'
@@ -69,8 +71,8 @@ impl<C: Clock> Browser<C> {
     /// # Panics
     ///
     /// Panics with a turn's panic, and when a turn makes an actor under an id the table already holds (ADR-0008).
-    pub fn frame(&mut self) {
-        self.engine.cycle();
+    pub fn frame(&mut self, timestamp_millis: f64) {
+        self.engine.cycle(frame_time(timestamp_millis));
         self.engine.bring();
         while !self.engine.is_idle() {
             let now = Time::from_nanos(self.clock.nanos());
@@ -79,4 +81,11 @@ impl<C: Clock> Browser<C> {
         }
         self.mappings.serve();
     }
+}
+
+/// The time of an animation frame whose timestamp is `millis`, in milliseconds since the page opened, as the page's
+/// clock, `performance.now()`, counts it: none before the page opened.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a page is not open for 584 years")]
+fn frame_time(millis: f64) -> Time {
+    Time::from_nanos((millis.max(0.0) * 1_000_000.0) as u64)
 }
