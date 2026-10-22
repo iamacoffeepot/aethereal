@@ -28,6 +28,11 @@ pub const BALL_HALF: f32 = 0.0125;
 /// How fast the ball is served, in court units a second.
 pub const SERVE_SPEED: f32 = 0.95;
 
+/// The spin a paddle moving at its full speed puts on a ball it sends off at the serve's speed, in court units a second
+/// each second: a ball sent off faster takes more, by the square of how much faster, so that it bends about as far on
+/// its way across however fast it goes.
+pub const FULL_SPIN: f32 = 0.65;
+
 /// The points that win a match.
 pub const WINNING: u8 = 11;
 
@@ -85,6 +90,20 @@ impl Ball {
     #[must_use]
     pub fn speed(self) -> f32 {
         self.across.hypot(self.up)
+    }
+
+    /// How hard it curves, from nought, not at all, to one, as hard as a paddle at its full speed sends it off: its
+    /// spin against the most a ball going as fast across takes.
+    #[must_use]
+    pub fn curl(self) -> f32 {
+        let faster = self.across / SERVE_SPEED;
+        let most = FULL_SPIN * faster * faster;
+        let is_moving = most > 0.0;
+        if !is_moving {
+            return 0.0;
+        }
+
+        (self.spin.abs() / most).min(1.0)
     }
 }
 

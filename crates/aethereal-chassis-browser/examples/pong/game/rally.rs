@@ -2,7 +2,8 @@
 //! the paddles, faster on every hit and spun by a paddle struck moving, until it passes a paddle and a point is scored.
 
 use crate::court::{
-    BALL_HALF, Ball, HALF_HEIGHT, HALF_WIDTH, PADDLE_HALF_HEIGHT, PADDLE_HALF_WIDTH, PADDLE_X, SERVE_SPEED, Side,
+    BALL_HALF, Ball, FULL_SPIN, HALF_HEIGHT, HALF_WIDTH, PADDLE_HALF_HEIGHT, PADDLE_HALF_WIDTH, PADDLE_X, SERVE_SPEED,
+    Side,
 };
 use crate::dice::Dice;
 use crate::flight;
@@ -21,10 +22,6 @@ const SERVE_ANGLE: f32 = 0.45;
 
 /// The steepest the ball leaves a paddle, struck at its very end, in radians from straight across.
 const HIT_ANGLE: f32 = 0.9;
-
-/// How much spin a moving paddle puts on the ball it strikes, for each court unit a second it moves: the ball curves
-/// against the paddle's way.
-const SPIN_GRIP: f32 = 0.35;
 
 /// The longest stretch the ball moves in one go, in nanoseconds: short enough that it never passes through a paddle in
 /// a stretch, however long the frame.
@@ -110,7 +107,7 @@ pub fn roll(ball: Ball, left: Paddle, right: Paddle, nanos: u64) -> Rolled {
 
 /// The ball `now`, which was at `before`, struck back by the paddle of `side` when it crossed that paddle's face
 /// heading for it: faster, steeper the further from the paddle's centre it struck, and spun against the paddle's way
-/// as fast as the paddle moved.
+/// by how fast the paddle moved and how fast the ball leaves.
 fn off_paddle(now: Ball, before: Ball, side: Side, paddle: Paddle) -> Ball {
     let face = side.sign() * (PADDLE_X - PADDLE_HALF_WIDTH);
     let reach = PADDLE_HALF_HEIGHT + BALL_HALF;
@@ -127,12 +124,14 @@ fn off_paddle(now: Ball, before: Ball, side: Side, paddle: Paddle) -> Ball {
     }
     let speed = (now.speed() * SPEED_UP).min(TOP_SPEED);
     let angle = struck * HIT_ANGLE;
+    let faster = speed / SERVE_SPEED;
+    let spin = -(paddle.rising / PADDLE_SPEED) * FULL_SPIN * faster * faster;
 
     Ball {
         x: side.sign().mul_add(-BALL_HALF, face),
         y: now.y,
         across: -side.sign() * speed * angle.cos(),
         up: speed * angle.sin(),
-        spin: -paddle.rising * SPIN_GRIP,
+        spin,
     }
 }

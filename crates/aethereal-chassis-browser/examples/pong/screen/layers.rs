@@ -5,8 +5,9 @@
 use super::glyphs::{self, Line};
 use super::records::{Colour, Plane, Records};
 use crate::court::{
-    BALL_HALF, Court, HALF_HEIGHT, HALF_WIDTH, PADDLE_HALF_HEIGHT, PADDLE_HALF_WIDTH, PADDLE_X, Play, Score, Side,
+    BALL_HALF, Ball, Court, HALF_HEIGHT, HALF_WIDTH, PADDLE_HALF_HEIGHT, PADDLE_HALF_WIDTH, PADDLE_X, Play, Score, Side,
 };
+use crate::flight;
 use aethereal_data::Plain;
 
 /// The floor of the court, and the panel the board's words stand on.
@@ -21,8 +22,20 @@ const PLAYER: Colour = [205, 235, 255, 255];
 /// The opponent's paddle, lightly warm.
 const OPPONENT: Colour = [255, 222, 205, 255];
 
-/// The ball.
+/// The ball, without spin.
 const BALL: Colour = [255, 255, 255, 255];
+
+/// The ball spinning as hard as it can: it glows toward this the harder it curves.
+const SPINNING: Colour = [255, 150, 40, 255];
+
+/// How many marks the trail of a spinning ball leaves behind it.
+const TRAIL: u8 = 14;
+
+/// How far apart in time the trail's marks lie along the ball's way, in seconds.
+const TRAIL_SECS: f32 = 0.028;
+
+/// How little a ball curves, from nought to one, before it leaves a trail.
+const TRAIL_FROM: f32 = 0.08;
 
 /// The score.
 const SCORE: Colour = [196, 204, 220, 255];
@@ -58,8 +71,8 @@ pub const COURT_CAPACITY: u32 = 32;
 /// The most records the board holds.
 pub const BOARD_CAPACITY: u32 = 1024;
 
-/// The most records the play holds: two paddles and the ball.
-pub const PLAY_CAPACITY: u32 = 3;
+/// The most records the play holds: two paddles, the ball, and its trail.
+pub const PLAY_CAPACITY: u32 = 3 + TRAIL as u32;
 
 /// The court: its floor, its walls, and its dashed centre line.
 pub fn court() -> Records {
@@ -88,10 +101,49 @@ pub fn play(court: &Court) -> Records {
     records.rect(PADDLE_X, court.right, PADDLE_HALF_WIDTH, PADDLE_HALF_HEIGHT, Plane::Play, OPPONENT);
     let is_over = matches!(court.play, Play::Won { .. });
     if !is_over {
-        records.rect(court.ball.x, court.ball.y, BALL_HALF, BALL_HALF, Plane::Play, BALL);
+        ball(&mut records, court.ball);
     }
 
     records
+}
+
+/// The ball, glowing the harder it curves, and when it curves, a trail of fading marks behind it along the way it
+/// came, turned back off the walls as it was, and never behind the paddle that struck it.
+fn ball(records: &mut Records, ball: Ball) {
+    let curl = ball.curl();
+    records.rect(ball.x, ball.y, BALL_HALF, BALL_HALF, Plane::Play, mix(BALL, SPINNING, curl));
+    let is_curling = curl >= TRAIL_FROM;
+    if !is_curling {
+        return;
+    }
+    for mark in 1..=TRAIL {
+        let back = f32::from(mark) / f32::from(TRAIL);
+        let behind = flight::off_walls(flight::ahead(ball, -TRAIL_SECS * f32::from(mark)));
+        let is_behind_paddle = behind.x.abs() > PADDLE_X - PADDLE_HALF_WIDTH;
+        if is_behind_paddle {
+            break;
+        }
+        let half = BALL_HALF * 0.25f32.mul_add(-back, 0.9);
+        let colour = mix(mix(BALL, SPINNING, curl), FLOOR, back.mul_add(0.5, 0.35));
+        records.rect(behind.x, behind.y, half, half, Plane::Trail, colour);
+    }
+}
+
+/// The colour `part` of the way from `from` to `to`.
+fn mix(from: Colour, to: Colour, part: f32) -> Colour {
+    let part = part.clamp(0.0, 1.0);
+    let channel = |at: usize| {
+        let mixed = (f32::from(to[at]) - f32::from(from[at])).mul_add(part, f32::from(from[at]));
+        byte(mixed)
+    };
+
+    [channel(0), channel(1), channel(2), 255]
+}
+
+/// The byte nearest `value`, which lies between nought and 255.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a mix of two bytes is a byte")]
+fn byte(value: f32) -> u8 {
+    value.round() as u8
 }
 
 /// What the board says beside the score.

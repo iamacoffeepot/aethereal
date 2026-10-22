@@ -15,6 +15,8 @@ const STRIDE: u32 = 24;
 pub enum Plane {
     /// The paddles and the ball, over the score as the ball passes it.
     Play,
+    /// The trail a spinning ball leaves, under the ball.
+    Trail,
     /// The board's words and the score.
     Text,
     /// The panel the board's words stand on, over the court's lines.
@@ -30,6 +32,7 @@ impl Plane {
     const fn depth(self) -> f32 {
         match self {
             Self::Play => 0.1,
+            Self::Trail => 0.15,
             Self::Text => 0.2,
             Self::Panel => 0.3,
             Self::Lines => 0.6,
