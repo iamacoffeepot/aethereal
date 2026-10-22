@@ -79,5 +79,10 @@ name = "indirect"
 path = "examples/indirect/lib.rs"
 crate-type = ["cdylib"]
 
+[[example]]
+name = "blackhole"
+path = "examples/blackhole/lib.rs"
+crate-type = ["cdylib"]
+
 [lints]
 workspace = true
