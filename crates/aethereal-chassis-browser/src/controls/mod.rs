@@ -16,19 +16,16 @@ use aethereal_actor::{
     Actor, Beginning, ChildOf, Ended, Ending, Fault, Given, Handle, Handles, Level, Source, Subscribers, ToAny, Top,
     Turn,
 };
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
 
 /// A control the page marks changed, or was read as the page began listening; or this is how it stands, sent as the
 /// actor subscribed. `name` is its element's id.
 #[derive(Debug, Clone, PartialEq, Plain)]
+#[kind(name = "aether.controls.control")]
 pub struct Control {
     pub name: String,
     pub value: Value,
-}
-
-impl Kind for Control {
-    const NAME: KindName = KindName::new("aether.controls.control");
 }
 
 /// What a control holds.
@@ -46,19 +43,13 @@ pub enum Value {
 /// Asks the controls root to send this actor every control as it stands, and each change from the next: the sender
 /// must handle [`Control`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.controls.subscribe")]
 pub struct Subscribe;
-
-impl Kind for Subscribe {
-    const NAME: KindName = KindName::new("aether.controls.subscribe");
-}
 
 /// Asks the controls root to send this actor nothing more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.controls.unsubscribe")]
 pub struct Unsubscribe;
-
-impl Kind for Unsubscribe {
-    const NAME: KindName = KindName::new("aether.controls.unsubscribe");
-}
 
 /// The controls root: the capability that holds the page's source of controls, and sends what it brings to its
 /// subscribers.
@@ -67,14 +58,11 @@ impl Kind for Unsubscribe {
 /// it stands before anything else, so an actor made after the page was read, or subscribed after it changed, knows
 /// each control without waiting for it to move.
 #[derive(Bound)]
+#[kind(name = "aether.controls")]
 pub struct Controls {
     source: Handle<Source<Control>>,
     listeners: Subscribers<(Control,)>,
     standing: BTreeMap<String, Value>,
-}
-
-impl Kind for Controls {
-    const NAME: KindName = KindName::new("aether.controls");
 }
 
 /// The controls root is a root, made by the chassis that listens to the page.
@@ -84,12 +72,9 @@ impl ChildOf for Controls {
 
 /// What the controls root is made from: the source the chassis feeds the page's controls onto.
 #[derive(Bound)]
+#[kind(name = "aether.controls.config")]
 pub struct ControlsConfig {
     pub source: Given<Source<Control>>,
-}
-
-impl Kind for ControlsConfig {
-    const NAME: KindName = KindName::new("aether.controls.config");
 }
 
 impl Actor for Controls {

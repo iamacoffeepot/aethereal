@@ -5,11 +5,12 @@ mod tests;
 
 use crate::shape::ColourFormat;
 use aethereal_actor::BlobRef;
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 
 /// Asks the renderer for a texture `width` by `height` of `format`, from `pixels`, row by row from the top. Answered
 /// with [`Textured`].
 #[derive(Bound)]
+#[kind(name = "aether.render.create_texture")]
 pub struct CreateTexture {
     pub width: u32,
     pub height: u32,
@@ -17,13 +18,10 @@ pub struct CreateTexture {
     pub pixels: BlobRef,
 }
 
-impl Kind for CreateTexture {
-    const NAME: KindName = KindName::new("aether.render.create_texture");
-}
-
 /// The format of a texture's pixels. Every one is read by a program as filtered floats, `texture_2d<f32>`, and every
 /// one is drawn into by a frame that ends on a texture of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.texture_format")]
 pub enum TextureFormat {
     /// Red, green, blue, and alpha, a byte each, read as they are.
     Rgba8,
@@ -34,10 +32,6 @@ pub enum TextureFormat {
     /// Red, green, blue, and alpha, a 16-bit float each, little-endian: values past one are kept, as a glow kept
     /// between frames needs.
     Rgba16Float,
-}
-
-impl Kind for TextureFormat {
-    const NAME: KindName = KindName::new("aether.render.texture_format");
 }
 
 impl TextureFormat {
@@ -76,36 +70,27 @@ impl TextureFormat {
 
 /// A texture the renderer made, which any actor handed it may draw with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.texture_id")]
 pub struct TextureId {
     pub(crate) id: u64,
 }
 
-impl Kind for TextureId {
-    const NAME: KindName = KindName::new("aether.render.texture_id");
-}
-
 /// What the renderer answers [`CreateTexture`] with.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.textured")]
 pub enum Textured {
     Made(TextureId),
     Refused(TextureRefused),
 }
 
-impl Kind for Textured {
-    const NAME: KindName = KindName::new("aether.render.textured");
-}
-
 /// Why a texture was not made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.texture_refused")]
 pub enum TextureRefused {
     /// A side is zero, or longer than the GPU's longest.
     Size { width: u32, height: u32, most: u32 },
     /// The pixels are not the bytes the size and format take.
     Pixels { bytes: u64, expected: u64 },
-}
-
-impl Kind for TextureRefused {
-    const NAME: KindName = KindName::new("aether.render.texture_refused");
 }
 
 /// Checks a texture before it is made: each side is at least one pixel and at most `most`, the GPU's longest, and

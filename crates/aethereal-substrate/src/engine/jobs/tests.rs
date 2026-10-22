@@ -8,7 +8,7 @@ use aethereal_actor::{
     Actor, Answer, Answered, BlobRef, ChildOf, Ending, Handles, Job, JobType, Path, Runner, Running, Tells, Time, Top,
     Turn, path,
 };
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use std::cell::RefCell;
 use std::future;
 use std::sync::Mutex;
@@ -34,22 +34,16 @@ fn said() -> Vec<String> {
 
 /// A job that doubles its number.
 #[derive(Plain)]
+#[kind(name = "aether.test.double")]
 struct Double {
     n: u64,
 }
 
-impl Kind for Double {
-    const NAME: KindName = KindName::new("aether.test.double");
-}
-
 /// What a job answers with.
 #[derive(Plain)]
+#[kind(name = "aether.test.doubled")]
 struct Doubled {
     n: u64,
-}
-
-impl Kind for Doubled {
-    const NAME: KindName = KindName::new("aether.test.doubled");
 }
 
 impl Job for Double {
@@ -63,11 +57,8 @@ impl Job for Double {
 
 /// A job that returns a fault.
 #[derive(Plain)]
+#[kind(name = "aether.test.fails")]
 struct Fails;
-
-impl Kind for Fails {
-    const NAME: KindName = KindName::new("aether.test.fails");
-}
 
 impl Job for Fails {
     type Done = Doubled;
@@ -80,11 +71,8 @@ impl Job for Fails {
 
 /// A job that panics.
 #[derive(Plain)]
+#[kind(name = "aether.test.panics")]
 struct Panics;
-
-impl Kind for Panics {
-    const NAME: KindName = KindName::new("aether.test.panics");
-}
 
 impl Job for Panics {
     type Done = Doubled;
@@ -97,11 +85,8 @@ impl Job for Panics {
 
 /// A job that waits for good.
 #[derive(Plain)]
+#[kind(name = "aether.test.sleeps")]
 struct Sleeps;
-
-impl Kind for Sleeps {
-    const NAME: KindName = KindName::new("aether.test.sleeps");
-}
 
 impl Job for Sleeps {
     type Done = Doubled;
@@ -114,19 +99,13 @@ impl Job for Sleeps {
 
 /// A job that rings at once: the stand-in for a timer.
 #[derive(Plain)]
+#[kind(name = "aether.test.ring")]
 struct Ring;
-
-impl Kind for Ring {
-    const NAME: KindName = KindName::new("aether.test.ring");
-}
 
 /// What a ring answers with.
 #[derive(Plain)]
+#[kind(name = "aether.test.rang")]
 struct Rang;
-
-impl Kind for Rang {
-    const NAME: KindName = KindName::new("aether.test.rang");
-}
 
 impl Job for Ring {
     type Done = Rang;
@@ -139,14 +118,11 @@ impl Job for Ring {
 
 /// A job that sums the bytes of the blobs it refers to: one twice, and another.
 #[derive(Bound)]
+#[kind(name = "aether.test.measure")]
 struct Measure {
     blob: BlobRef,
     again: BlobRef,
     other: BlobRef,
-}
-
-impl Kind for Measure {
-    const NAME: KindName = KindName::new("aether.test.measure");
 }
 
 impl Job for Measure {
@@ -162,12 +138,9 @@ impl Job for Measure {
 
 /// A job that reads the blob it refers to, then waits for good.
 #[derive(Bound)]
+#[kind(name = "aether.test.hangs")]
 struct Hangs {
     blob: BlobRef,
-}
-
-impl Kind for Hangs {
-    const NAME: KindName = KindName::new("aether.test.hangs");
 }
 
 impl Job for Hangs {
@@ -185,25 +158,19 @@ impl Job for Hangs {
 /// A job that puts the bytes of the blob it refers to backwards, and then the count of what it put, read back, or past
 /// any budget when told to, and answers with references to both and to the blob it was handed.
 #[derive(Bound)]
+#[kind(name = "aether.test.shrink")]
 struct Shrink {
     blob: BlobRef,
     big: bool,
 }
 
-impl Kind for Shrink {
-    const NAME: KindName = KindName::new("aether.test.shrink");
-}
-
 /// What a shrink answers with.
 #[derive(Bound)]
+#[kind(name = "aether.test.shrunk")]
 struct Shrunk {
     first: BlobRef,
     kept: BlobRef,
     second: BlobRef,
-}
-
-impl Kind for Shrunk {
-    const NAME: KindName = KindName::new("aether.test.shrunk");
 }
 
 impl Job for Shrink {
@@ -226,11 +193,8 @@ impl Job for Shrink {
 
 /// A job no runner is handed.
 #[derive(Plain)]
+#[kind(name = "aether.test.unlinked")]
 struct Unlinked;
-
-impl Kind for Unlinked {
-    const NAME: KindName = KindName::new("aether.test.unlinked");
-}
 
 impl Job for Unlinked {
     type Done = Doubled;
@@ -243,44 +207,32 @@ impl Job for Unlinked {
 
 /// What a job's asker keeps: which job it was.
 #[derive(Plain)]
+#[kind(name = "aether.test.which_job")]
 struct Which {
     at: u64,
 }
 
-impl Kind for Which {
-    const NAME: KindName = KindName::new("aether.test.which_job");
-}
-
 /// What a job's asker keeps to give up on another job: the job it gives up on.
 #[derive(Bound)]
+#[kind(name = "aether.test.give_up")]
 struct GiveUp {
     on: JobId,
 }
 
-impl Kind for GiveUp {
-    const NAME: KindName = KindName::new("aether.test.give_up");
-}
-
 /// What a worker is told to run: a job of `what`, numbered `at`.
 #[derive(Plain)]
+#[kind(name = "aether.test.go")]
 struct Go {
     what: String,
     at: u64,
 }
 
-impl Kind for Go {
-    const NAME: KindName = KindName::new("aether.test.go");
-}
-
 /// An actor that doubles one as it begins, runs the job each `Go` names, and says what became of each. It keeps the
 /// jobs it was told to hold, to cancel later.
 #[derive(Bound)]
+#[kind(name = "aether.test.job_worker")]
 struct Worker {
     kept: Vec<JobId>,
-}
-
-impl Kind for Worker {
-    const NAME: KindName = KindName::new("aether.test.job_worker");
 }
 
 impl ChildOf for Worker {
@@ -431,11 +383,8 @@ impl Handles<Answer<Shrunk, Which>> for Worker {
 
 /// A child that runs a job as it begins, then fails: refused, it runs nothing.
 #[derive(Bound)]
+#[kind(name = "aether.test.failing_child")]
 struct Failing;
-
-impl Kind for Failing {
-    const NAME: KindName = KindName::new("aether.test.failing_child");
-}
 
 impl ChildOf for Failing {
     type Parent = Worker;
@@ -469,11 +418,8 @@ impl Handles<Answer<Doubled, Which>> for Failing {
 
 /// A root that tells the worker to run a job as it begins, from a chain of its own.
 #[derive(Bound)]
+#[kind(name = "aether.test.poker")]
 struct Poker;
-
-impl Kind for Poker {
-    const NAME: KindName = KindName::new("aether.test.poker");
-}
 
 impl ChildOf for Poker {
     type Parent = Top;

@@ -38,11 +38,8 @@ fn window(nth: u64) -> WindowId {
 
 /// A pass the kept frame does not have.
 #[derive(Plain)]
+#[kind(name = "aether.test.elsewhere")]
 struct Elsewhere;
-
-impl Kind for Elsewhere {
-    const NAME: KindName = KindName::new("aether.test.elsewhere");
-}
 
 impl Pass for Elsewhere {}
 

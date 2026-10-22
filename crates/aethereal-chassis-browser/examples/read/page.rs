@@ -6,7 +6,7 @@ use aethereal_actor::{
     Top, Turn, path,
 };
 use aethereal_chassis_browser::{Browser, Performance, open, renderer};
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
@@ -89,30 +89,21 @@ impl Program {
 
 /// The context of an ask that needs none.
 #[derive(Plain)]
+#[kind(name = "aether.example.nothing")]
 struct Nothing;
-
-impl Kind for Nothing {
-    const NAME: KindName = KindName::new("aether.example.nothing");
-}
 
 /// The reader's config: the window it draws on.
 #[derive(Plain)]
+#[kind(name = "aether.example.shows")]
 struct Shows {
     window: WindowId,
 }
 
-impl Kind for Shows {
-    const NAME: KindName = KindName::new("aether.example.shows");
-}
-
 /// What was learned before the quad was asked for: the shape the programs draw into.
 #[derive(Plain)]
+#[kind(name = "aether.example.learned")]
 struct Learned {
     shape: Shape,
-}
-
-impl Kind for Learned {
-    const NAME: KindName = KindName::new("aether.example.learned");
 }
 
 /// A program that draws the quad at each splat it reads from storage, by its instance: its place, its size, and its
@@ -165,6 +156,7 @@ const SETTLED: u32 = 3;
 /// The reader: it makes what it draws one ask after another, each answer carrying what was made so far, places it,
 /// and once a few frames are drawn reads back a frame, its texture, its storage, and a frame's time.
 #[derive(Bound)]
+#[kind(name = "aether.example.reader")]
 enum Reader {
     /// Its asks are under way, and nothing is placed on `window`.
     Making { window: WindowId },
@@ -174,10 +166,6 @@ enum Reader {
     Asked,
 }
 
-impl Kind for Reader {
-    const NAME: KindName = KindName::new("aether.example.reader");
-}
-
 impl ChildOf for Reader {
     type Parent = Top;
 }
@@ -185,6 +173,7 @@ impl ChildOf for Reader {
 /// Which program was asked for, with what was made before it: an actor handles one kind of answer with one kind of
 /// context.
 #[derive(Plain)]
+#[kind(name = "aether.example.making")]
 enum Making {
     /// The splats, once the quad was made, drawing into `shape`.
     Splats { shape: Shape, mesh: MeshId },
@@ -192,24 +181,18 @@ enum Making {
     Tint { mesh: MeshId, splats: ProgramId },
 }
 
-impl Kind for Making {
-    const NAME: KindName = KindName::new("aether.example.making");
-}
-
 /// What was made before the storage was asked for.
 #[derive(Plain)]
+#[kind(name = "aether.example.made_programs")]
 struct MadePrograms {
     mesh: MeshId,
     splats: ProgramId,
     tint: ProgramId,
 }
 
-impl Kind for MadePrograms {
-    const NAME: KindName = KindName::new("aether.example.made_programs");
-}
-
 /// Which placement was asked for, with the storage the splats are drawn from.
 #[derive(Plain)]
+#[kind(name = "aether.example.placing")]
 enum Placing {
     /// The splats, with what the tint is then placed with.
     Splats { mesh: MeshId, tint: ProgramId, storage: StorageId },
@@ -217,29 +200,19 @@ enum Placing {
     Tint { storage: StorageId },
 }
 
-impl Kind for Placing {
-    const NAME: KindName = KindName::new("aether.example.placing");
-}
-
 /// What the texture was asked for with: the storage the splats are drawn from, read back with it.
 #[derive(Plain)]
+#[kind(name = "aether.example.splatted")]
 struct Splatted {
     storage: StorageId,
 }
 
-impl Kind for Splatted {
-    const NAME: KindName = KindName::new("aether.example.splatted");
-}
-
 /// What was asked to be read back.
 #[derive(Plain)]
+#[kind(name = "aether.example.of")]
 enum Of {
     Frame,
     Texture,
-}
-
-impl Kind for Of {
-    const NAME: KindName = KindName::new("aether.example.of");
 }
 
 impl Actor for Reader {

@@ -15,33 +15,27 @@ use crate::shape::Shape;
 use crate::storage::{self, DRAW_ARGUMENTS, StorageId};
 use crate::texture::TextureId;
 use crate::uniforms::UniformsId;
-use aethereal_data::{Kind, KindName, Plain};
+use aethereal_data::Plain;
 
 /// Asks the renderer to draw `mesh` for each of `instances` in every pass `joins` names, once in each, at every frame
 /// until it is released. Answered with [`Placed`].
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.place")]
 pub struct Place {
     pub mesh: MeshId,
     pub instances: Drawn,
     pub joins: Vec<Join>,
 }
 
-impl Kind for Place {
-    const NAME: KindName = KindName::new("aether.render.place");
-}
-
 /// One pass a placement draws in: the pass `pass` of `frame`, drawn with `program`, binding what `bindings` names at
 /// each place the program binds.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.join")]
 pub struct Join {
     pub frame: Frame,
     pub pass: PassName,
     pub program: ProgramId,
     pub bindings: Vec<Bind>,
-}
-
-impl Kind for Join {
-    const NAME: KindName = KindName::new("aether.render.join");
 }
 
 impl Join {
@@ -54,6 +48,7 @@ impl Join {
 
 /// How many times a placement is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.drawn")]
 pub enum Drawn {
     /// This many times, for a program that reads nothing per instance.
     Count(u32),
@@ -75,25 +70,19 @@ impl Drawn {
     }
 }
 
-impl Kind for Drawn {
-    const NAME: KindName = KindName::new("aether.render.drawn");
-}
-
 /// What a placement binds at one place its program binds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.bind")]
 pub struct Bind {
     pub group: u32,
     pub binding: u32,
     pub to: Resource,
 }
 
-impl Kind for Bind {
-    const NAME: KindName = KindName::new("aether.render.bind");
-}
-
 /// What is bound: uniforms to a uniform block, storage to a storage buffer, a texture to a texture, or a way of
 /// sampling to a sampler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.resource")]
 pub enum Resource {
     Uniforms(UniformsId),
     Storage(StorageId),
@@ -101,23 +90,17 @@ pub enum Resource {
     Sampler(Sampling),
 }
 
-impl Kind for Resource {
-    const NAME: KindName = KindName::new("aether.render.resource");
-}
-
 /// How a sampler reads a texture. The renderer keeps one sampler for each way, so none is made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+#[kind(name = "aether.render.sampling")]
 pub struct Sampling {
     pub filter: Filter,
     pub wrap: Wrap,
 }
 
-impl Kind for Sampling {
-    const NAME: KindName = KindName::new("aether.render.sampling");
-}
-
 /// How a sampler reads between texels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+#[kind(name = "aether.render.filter")]
 pub enum Filter {
     /// It blends the nearest texels.
     Linear,
@@ -125,12 +108,9 @@ pub enum Filter {
     Nearest,
 }
 
-impl Kind for Filter {
-    const NAME: KindName = KindName::new("aether.render.filter");
-}
-
 /// How a sampler reads past a texture's edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+#[kind(name = "aether.render.wrap")]
 pub enum Wrap {
     /// It reads the edge.
     Clamp,
@@ -138,33 +118,24 @@ pub enum Wrap {
     Repeat,
 }
 
-impl Kind for Wrap {
-    const NAME: KindName = KindName::new("aether.render.wrap");
-}
-
 /// A placement the renderer made, which only its maker may release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.placement_id")]
 pub struct PlacementId {
     pub(crate) id: u64,
 }
 
-impl Kind for PlacementId {
-    const NAME: KindName = KindName::new("aether.render.placement_id");
-}
-
 /// What the renderer answers [`Place`] with.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.placed")]
 pub enum Placed {
     Made(PlacementId),
     Refused(PlacementRefused),
 }
 
-impl Kind for Placed {
-    const NAME: KindName = KindName::new("aether.render.placed");
-}
-
 /// Why a placement was not made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.placement_refused")]
 pub enum PlacementRefused {
     /// No mesh is kept under the id: never made, or released.
     Mesh,
@@ -180,12 +151,9 @@ pub enum PlacementRefused {
     Join { join: u32, why: JoinRefused },
 }
 
-impl Kind for PlacementRefused {
-    const NAME: KindName = KindName::new("aether.render.placement_refused");
-}
-
 /// Why one join of a placement was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.join_refused")]
 pub enum JoinRefused {
     /// No frame is kept as the one named.
     Frame,
@@ -217,10 +185,6 @@ pub enum JoinRefused {
     /// What is bound is not of the kind the program binds there, or uniforms or storage are smaller than the program
     /// binds there.
     Mismatch { group: u32, binding: u32 },
-}
-
-impl Kind for JoinRefused {
-    const NAME: KindName = KindName::new("aether.render.join_refused");
 }
 
 /// What a join is checked against of the program it draws with: what it reads, what it binds, and the shape it was

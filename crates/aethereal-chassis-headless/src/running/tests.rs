@@ -5,7 +5,7 @@ use aethereal_actor::{
     Actor, Answer, Answered, Beginning, ChildOf, Drained, Ending, Fault, Handles, Held, On, Sleep, Slept, Start, Stop,
     Tick, ToSender, Top, Turn,
 };
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Engine, Jobs, Setup};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -14,11 +14,8 @@ use std::time::Instant;
 
 /// An actor's empty config.
 #[derive(Plain)]
+#[kind(name = "aether.test.nothing")]
 struct Nothing;
-
-impl Kind for Nothing {
-    const NAME: KindName = KindName::new("aether.test.nothing");
-}
 
 /// An engine of one part, running the cycle `C` on one worker.
 fn headless<C: aethereal_actor::Cycle>(make: impl FnOnce(&mut Engine)) -> Headless {
@@ -44,11 +41,8 @@ fn timed(headless: Headless, every: Duration, stop_within: Duration) -> (Duratio
 
 /// An actor that asks the program to stop on `Start`.
 #[derive(Bound)]
+#[kind(name = "aether.test.quitter")]
 struct Quitter;
-
-impl Kind for Quitter {
-    const NAME: KindName = KindName::new("aether.test.quitter");
-}
 
 impl ChildOf for Quitter {
     type Parent = Top;
@@ -102,11 +96,8 @@ static TICKS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 
 /// An actor that notes each `Tick`'s delta, and asks the program to stop on the third.
 #[derive(Bound)]
+#[kind(name = "aether.test.metronome")]
 struct Metronome;
-
-impl Kind for Metronome {
-    const NAME: KindName = KindName::new("aether.test.metronome");
-}
 
 impl ChildOf for Metronome {
     type Parent = Top;
@@ -169,13 +160,10 @@ fn a_program_cycles_on_its_timer_until_an_actor_asks_it_to_stop() {
 
 /// An actor that asks the program to stop on `Start`, and holds `Stop` for good.
 #[derive(Bound)]
+#[kind(name = "aether.test.holdout")]
 struct Holdout {
     /// The `Stop` it holds: none until it is sent.
     held: Vec<Held<Drained>>,
-}
-
-impl Kind for Holdout {
-    const NAME: KindName = KindName::new("aether.test.holdout");
 }
 
 impl ChildOf for Holdout {
@@ -243,12 +231,9 @@ static NAPPED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 /// An actor that sleeps for twenty milliseconds on `Start`, and asks the program to stop once it has slept; or, if
 /// fifty ticks go by first, gives up and asks it to stop.
 #[derive(Bound)]
+#[kind(name = "aether.test.napper")]
 struct Napper {
     ticks: u64,
-}
-
-impl Kind for Napper {
-    const NAME: KindName = KindName::new("aether.test.napper");
 }
 
 impl ChildOf for Napper {

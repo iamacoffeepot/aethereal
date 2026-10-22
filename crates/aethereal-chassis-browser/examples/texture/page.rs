@@ -7,7 +7,7 @@ use aethereal_actor::{
     Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::{Browser, Performance, open, renderer};
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_render::effect::{CreateEffect, EffectId, Effected};
 use aethereal_render::frame::builder::{Effect, FrameBuilder, Onto, depth};
 use aethereal_render::frame::{CreateFrame, Ends, Frame, FrameId, FrameRefused, Framed, ShapeOf, Shaped, Size};
@@ -95,29 +95,20 @@ impl Program {
 
 /// An empty config, and the context of an ask that needs none.
 #[derive(Plain)]
+#[kind(name = "aether.example.nothing")]
 struct Nothing;
-
-impl Kind for Nothing {
-    const NAME: KindName = KindName::new("aether.example.nothing");
-}
 
 /// The mapper's config: the window it draws on.
 #[derive(Plain)]
+#[kind(name = "aether.example.shows")]
 struct Shows {
     window: WindowId,
 }
 
-impl Kind for Shows {
-    const NAME: KindName = KindName::new("aether.example.shows");
-}
-
 /// The one pass of the map's frame.
 #[derive(Plain)]
+#[kind(name = "aether.example.mapping")]
 struct Mapping;
-
-impl Kind for Mapping {
-    const NAME: KindName = KindName::new("aether.example.mapping");
-}
 
 impl Pass for Mapping {}
 
@@ -165,6 +156,7 @@ const SETTLED: u32 = 3;
 /// frame, a placement in it, the window's main frame, and the quad that shows the map in it. Once a few frames are
 /// drawn it reads back the window and the map, releases the map's frame, and reads the window back again.
 #[derive(Bound)]
+#[kind(name = "aether.example.mapper")]
 enum Mapper {
     /// Its asks are under way, and nothing is placed on `window`.
     Making { window: WindowId },
@@ -176,26 +168,20 @@ enum Mapper {
     Done,
 }
 
-impl Kind for Mapper {
-    const NAME: KindName = KindName::new("aether.example.mapper");
-}
-
 impl ChildOf for Mapper {
     type Parent = Top;
 }
 
 /// What was learned before the quad was asked for: the window's colour, which the quad is drawn in.
 #[derive(Plain)]
+#[kind(name = "aether.example.learned")]
 struct Learned {
     window: ColourFormat,
 }
 
-impl Kind for Learned {
-    const NAME: KindName = KindName::new("aether.example.learned");
-}
-
 /// Which program was asked for, with what was made before it.
 #[derive(Plain)]
+#[kind(name = "aether.example.making")]
 enum Making {
     /// The map's, once the quad was made.
     Map { window: ColourFormat, mesh: MeshId },
@@ -203,12 +189,9 @@ enum Making {
     Show { mesh: MeshId, map: ProgramId },
 }
 
-impl Kind for Making {
-    const NAME: KindName = KindName::new("aether.example.making");
-}
-
 /// Which frame was asked for, with what was made before it.
 #[derive(Plain)]
+#[kind(name = "aether.example.framing")]
 enum Framing {
     /// The map's, once both programs were made.
     Map { mesh: MeshId, map: ProgramId, show: ProgramId },
@@ -216,12 +199,9 @@ enum Framing {
     Main { mesh: MeshId, show: ProgramId, map: FrameId, texture: TextureId },
 }
 
-impl Kind for Framing {
-    const NAME: KindName = KindName::new("aether.example.framing");
-}
-
 /// Which placement was asked for, with what was made before it.
 #[derive(Plain)]
+#[kind(name = "aether.example.placing")]
 enum Placing {
     /// The map's, in its frame.
     Map { mesh: MeshId, show: ProgramId, map: FrameId, texture: TextureId },
@@ -229,12 +209,9 @@ enum Placing {
     Show { map: FrameId, texture: TextureId },
 }
 
-impl Kind for Placing {
-    const NAME: KindName = KindName::new("aether.example.placing");
-}
-
 /// What was asked to be read back.
 #[derive(Plain)]
+#[kind(name = "aether.example.of")]
 enum Of {
     /// The window, with the map's frame still made.
     Shown,
@@ -244,10 +221,6 @@ enum Of {
     Kept,
     /// The map, its frame released.
     Released,
-}
-
-impl Kind for Of {
-    const NAME: KindName = KindName::new("aether.example.of");
 }
 
 impl Actor for Mapper {
@@ -562,22 +535,16 @@ impl Handles<Answer<Pixels, Of>> for Mapper {
 
 /// Asks the claimer to make a main frame of `window`, which another made.
 #[derive(Debug, Clone, Copy, Plain)]
+#[kind(name = "aether.example.claim")]
 struct Claim {
     window: WindowId,
-}
-
-impl Kind for Claim {
-    const NAME: KindName = KindName::new("aether.example.claim");
 }
 
 /// The claimer: told to, it asks to make a main frame of a window whose main frame the mapper owns, and says what it
 /// was answered.
 #[derive(Bound)]
+#[kind(name = "aether.example.claimer")]
 struct Claimer;
-
-impl Kind for Claimer {
-    const NAME: KindName = KindName::new("aether.example.claimer");
-}
 
 impl ChildOf for Claimer {
     type Parent = Top;
@@ -585,12 +552,9 @@ impl ChildOf for Claimer {
 
 /// Who told the claimer to claim: the owner it expects to be named.
 #[derive(Plain)]
+#[kind(name = "aether.example.told")]
 struct Told {
     by: u64,
-}
-
-impl Kind for Told {
-    const NAME: KindName = KindName::new("aether.example.told");
 }
 
 impl Actor for Claimer {

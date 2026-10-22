@@ -12,11 +12,8 @@
 //! # use core::marker::PhantomData;
 //! #
 //! # #[derive(Plain)]
+//! # #[kind(name = "aether.example.note")]
 //! # struct Note;
-//! #
-//! # impl Kind for Note {
-//! #     const NAME: KindName = KindName::new("aether.example.note");
-//! # }
 //! #
 //! # macro_rules! root {
 //! #     ($name:ident, $named:literal, $parent:ty, $key:ty, $begins:ty, $handler:ty, $ends:ty) => {
@@ -78,11 +75,8 @@
 //! # use core::marker::PhantomData;
 //! #
 //! # #[derive(Plain)]
+//! # #[kind(name = "aether.example.note")]
 //! # struct Note;
-//! #
-//! # impl Kind for Note {
-//! #     const NAME: KindName = KindName::new("aether.example.note");
-//! # }
 //! #
 //! # macro_rules! root {
 //! #     ($name:ident, $named:literal, $parent:ty, $key:ty, $begins:ty, $handler:ty, $ends:ty) => {
@@ -139,11 +133,8 @@
 //! # use core::marker::PhantomData;
 //! #
 //! # #[derive(Plain)]
+//! # #[kind(name = "aether.example.note")]
 //! # struct Note;
-//! #
-//! # impl Kind for Note {
-//! #     const NAME: KindName = KindName::new("aether.example.note");
-//! # }
 //! #
 //! # macro_rules! root {
 //! #     ($name:ident, $named:literal, $parent:ty, $key:ty, $begins:ty, $handler:ty, $ends:ty) => {
@@ -201,11 +192,8 @@
 //! # use core::marker::PhantomData;
 //! #
 //! # #[derive(Plain)]
+//! # #[kind(name = "aether.example.note")]
 //! # struct Note;
-//! #
-//! # impl Kind for Note {
-//! #     const NAME: KindName = KindName::new("aether.example.note");
-//! # }
 //! #
 //! # macro_rules! root {
 //! #     ($name:ident, $named:literal, $parent:ty, $key:ty, $begins:ty, $handler:ty, $ends:ty) => {
@@ -257,11 +245,8 @@
 //! # }
 //! #
 //! # #[derive(Plain)]
+//! # #[kind(name = "aether.example.querent")]
 //! # struct Querent;
-//! #
-//! # impl Kind for Querent {
-//! #     const NAME: KindName = KindName::new("aether.example.querent");
-//! # }
 //! #
 //! # impl ChildOf for Querent {
 //! #     type Parent = Top;

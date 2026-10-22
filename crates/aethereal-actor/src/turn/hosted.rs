@@ -7,7 +7,7 @@ use crate::{
     Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Role, Runs, SeatNumber,
     Seated, Seats, Sending, Table, Target, Tie, What, Written, carry, take_claimed,
 };
-use aethereal_data::{ActorPath, KeyName, Keyed, KindId, KindName, PathSegment, Plain};
+use aethereal_data::{ActorPath, KeyName, Keyed, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::convert::Infallible;
@@ -73,11 +73,8 @@ pub enum Request {
 
 /// The reason of a guest's turn that sent what its declaration does not allow (ADR-0013, ADR-0015).
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.actor.false_send")]
 pub struct FalseSend;
-
-impl aethereal_data::Kind for FalseSend {
-    const NAME: KindName = KindName::new("aether.actor.false_send");
-}
 
 /// Why a host does not hand its guest's turn a child the turn recorded spawning.
 #[derive(Debug, PartialEq, Eq)]
@@ -93,46 +90,31 @@ pub enum Unspawned {
 /// The reason of a guest's turn that watched an actor though the watcher's type does not handle endings (ADR-0013,
 /// ADR-0015).
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.actor.false_watch")]
 pub struct FalseWatch;
-
-impl aethereal_data::Kind for FalseWatch {
-    const NAME: KindName = KindName::new("aether.actor.false_watch");
-}
 
 /// The reason of a guest's turn that asked of the program's lifecycle what the asker's declaration does not list: a
 /// stage it does not subscribe to, or a stop from a `begin` (ADR-0015, ADR-0020).
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.actor.false_stage")]
 pub struct FalseStage;
-
-impl aethereal_data::Kind for FalseStage {
-    const NAME: KindName = KindName::new("aether.actor.false_stage");
-}
 
 /// The reason of a guest's call that trapped: every actor of its instance ends with it (ADR-0015).
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.actor.trapped")]
 pub struct Trapped;
-
-impl aethereal_data::Kind for Trapped {
-    const NAME: KindName = KindName::new("aether.actor.trapped");
-}
 
 /// The reason of a guest's call that wrote what does not read back: every actor of its instance ends with it
 /// (ADR-0015).
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.actor.garbled")]
 pub struct Garbled;
-
-impl aethereal_data::Kind for Garbled {
-    const NAME: KindName = KindName::new("aether.actor.garbled");
-}
 
 /// The reason of a guest's call that changed its references to a blob it was not given, or dropped more of them than
 /// it held: every actor of its instance ends with it (ADR-0014, ADR-0015).
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.actor.forged")]
 pub struct Forged;
-
-impl aethereal_data::Kind for Forged {
-    const NAME: KindName = KindName::new("aether.actor.forged");
-}
 
 /// Why a call into a guest broke, so that nothing runs in its instance again: its host drops the instance, and every
 /// actor of it ends with this reason (ADR-0015).

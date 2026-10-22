@@ -5,7 +5,7 @@
 //! writes the frame's end, and is the only way to a [`CreateFrame`].
 //!
 //! ```
-//! use aethereal_data::{Kind, KindName, Plain};
+//! use aethereal_data::Plain;
 //! use aethereal_render::effect::EffectId;
 //! use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, Uint, depth, scale};
 //! use aethereal_render::frame::{CreateFrame, Ends, FrameRefused};
@@ -13,18 +13,18 @@
 //! use aethereal_window::WindowId;
 //!
 //! #[derive(Plain)]
+//! #[kind(name = "aether.example.surfaces")]
 //! struct Surfaces;
-//! # impl Kind for Surfaces { const NAME: KindName = KindName::new("aether.example.surfaces"); }
 //! impl Pass for Surfaces {}
 //!
 //! #[derive(Plain)]
+//! #[kind(name = "aether.example.splats")]
 //! struct Splats;
-//! # impl Kind for Splats { const NAME: KindName = KindName::new("aether.example.splats"); }
 //! impl Pass for Splats {}
 //!
 //! #[derive(Plain)]
+//! #[kind(name = "aether.example.glaze")]
 //! struct Glaze;
-//! # impl Kind for Glaze { const NAME: KindName = KindName::new("aether.example.glaze"); }
 //! impl Pass for Glaze {}
 //!
 //! fn frame(window: WindowId, glaze: &EffectId<(Float, Uint)>) -> Result<CreateFrame, FrameRefused> {
@@ -45,17 +45,15 @@
 //! An effect takes targets of the kinds it was made to read:
 //!
 //! ```compile_fail
-//! # use aethereal_data::{Kind, KindName, Plain};
+//! # use aethereal_data::Plain;
 //! # use aethereal_render::effect::EffectId;
 //! # use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, Uint, depth, scale};
 //! # use aethereal_render::frame::{CreateFrame, Ends, FrameRefused};
 //! # use aethereal_render::pass::Pass;
 //! # use aethereal_window::WindowId;
-//! # #[derive(Plain)] struct Ids;
-//! # impl Kind for Ids { const NAME: KindName = KindName::new("aether.example.ids"); }
+//! # #[derive(Plain)] #[kind(name = "aether.example.ids")] struct Ids;
 //! # impl Pass for Ids {}
-//! # #[derive(Plain)] struct Glaze;
-//! # impl Kind for Glaze { const NAME: KindName = KindName::new("aether.example.glaze"); }
+//! # #[derive(Plain)] #[kind(name = "aether.example.glaze")] struct Glaze;
 //! # impl Pass for Glaze {}
 //! fn frame(window: WindowId, glaze: &EffectId<(Float,)>) -> Result<CreateFrame, FrameRefused> {
 //!     let mut frame = FrameBuilder::on(Ends::Window(window));
@@ -67,16 +65,14 @@
 //! A pass tests a depth target, and a colour target is not one:
 //!
 //! ```compile_fail
-//! # use aethereal_data::{Kind, KindName, Plain};
+//! # use aethereal_data::Plain;
 //! # use aethereal_render::frame::builder::{Float, FrameBuilder, depth, scale};
 //! # use aethereal_render::frame::Ends;
 //! # use aethereal_render::pass::Pass;
 //! # use aethereal_window::WindowId;
-//! # #[derive(Plain)] struct Surfaces;
-//! # impl Kind for Surfaces { const NAME: KindName = KindName::new("aether.example.surfaces"); }
+//! # #[derive(Plain)] #[kind(name = "aether.example.surfaces")] struct Surfaces;
 //! # impl Pass for Surfaces {}
-//! # #[derive(Plain)] struct Splats;
-//! # impl Kind for Splats { const NAME: KindName = KindName::new("aether.example.splats"); }
+//! # #[derive(Plain)] #[kind(name = "aether.example.splats")] struct Splats;
 //! # impl Pass for Splats {}
 //! fn frame(window: WindowId) {
 //!     let mut frame = FrameBuilder::on(Ends::Window(window));
@@ -89,20 +85,17 @@
 //! half size and laid back over the scene, is passes of one frame. An effect reads targets of any scale:
 //!
 //! ```
-//! # use aethereal_data::{Kind, KindName, Plain};
+//! # use aethereal_data::Plain;
 //! # use aethereal_render::effect::EffectId;
 //! # use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, depth, scale};
 //! # use aethereal_render::frame::{CreateFrame, Ends, FrameRefused};
 //! # use aethereal_render::pass::Pass;
 //! # use aethereal_window::WindowId;
-//! # #[derive(Plain)] struct Scene;
-//! # impl Kind for Scene { const NAME: KindName = KindName::new("aether.example.scene"); }
+//! # #[derive(Plain)] #[kind(name = "aether.example.scene")] struct Scene;
 //! # impl Pass for Scene {}
-//! # #[derive(Plain)] struct Blur;
-//! # impl Kind for Blur { const NAME: KindName = KindName::new("aether.example.blur"); }
+//! # #[derive(Plain)] #[kind(name = "aether.example.blur")] struct Blur;
 //! # impl Pass for Blur {}
-//! # #[derive(Plain)] struct Bloom;
-//! # impl Kind for Bloom { const NAME: KindName = KindName::new("aether.example.bloom"); }
+//! # #[derive(Plain)] #[kind(name = "aether.example.bloom")] struct Bloom;
 //! # impl Pass for Bloom {}
 //! fn frame(
 //!     window: WindowId,
@@ -118,16 +111,14 @@
 //! A pass's targets are all of one size, so a pass tests a depth of the scale it draws at:
 //!
 //! ```compile_fail
-//! # use aethereal_data::{Kind, KindName, Plain};
+//! # use aethereal_data::Plain;
 //! # use aethereal_render::frame::builder::{Float, FrameBuilder, depth, scale};
 //! # use aethereal_render::frame::Ends;
 //! # use aethereal_render::pass::Pass;
 //! # use aethereal_window::WindowId;
-//! # #[derive(Plain)] struct Surfaces;
-//! # impl Kind for Surfaces { const NAME: KindName = KindName::new("aether.example.surfaces"); }
+//! # #[derive(Plain)] #[kind(name = "aether.example.surfaces")] struct Surfaces;
 //! # impl Pass for Surfaces {}
-//! # #[derive(Plain)] struct Splats;
-//! # impl Kind for Splats { const NAME: KindName = KindName::new("aether.example.splats"); }
+//! # #[derive(Plain)] #[kind(name = "aether.example.splats")] struct Splats;
 //! # impl Pass for Splats {}
 //! fn frame(window: WindowId) {
 //!     let mut frame = FrameBuilder::on(Ends::Window(window));

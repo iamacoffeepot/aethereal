@@ -6,58 +6,47 @@ mod tests;
 
 use crate::mesh::{self, MeshRefused, VertexLayout};
 use aethereal_actor::BlobRef;
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 
 /// Asks the renderer for instances: room for `capacity` records laid out as `layout` says, holding `records` to begin
 /// with. Answered with [`Instanced`].
 #[derive(Bound)]
+#[kind(name = "aether.render.create_instances")]
 pub struct CreateInstances {
     pub layout: VertexLayout,
     pub capacity: u32,
     pub records: BlobRef,
 }
 
-impl Kind for CreateInstances {
-    const NAME: KindName = KindName::new("aether.render.create_instances");
-}
-
 /// Writes `records` over the records of `instances` from the `first`: one that passes their end extends them, and an
 /// empty one cuts them to their first `first`. Only their maker may write them, and nothing is answered: a write that
 /// does not fit is logged, and the records are left as they were.
 #[derive(Bound)]
+#[kind(name = "aether.render.write_instances")]
 pub struct WriteInstances {
     pub instances: InstancesId,
     pub first: u32,
     pub records: BlobRef,
 }
 
-impl Kind for WriteInstances {
-    const NAME: KindName = KindName::new("aether.render.write_instances");
-}
-
 /// Instances the renderer made, which any actor handed them may draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.instances_id")]
 pub struct InstancesId {
     pub(crate) id: u64,
 }
 
-impl Kind for InstancesId {
-    const NAME: KindName = KindName::new("aether.render.instances_id");
-}
-
 /// What the renderer answers [`CreateInstances`] with.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.instanced")]
 pub enum Instanced {
     Made(InstancesId),
     Refused(InstancesRefused),
 }
 
-impl Kind for Instanced {
-    const NAME: KindName = KindName::new("aether.render.instanced");
-}
-
 /// Why instances were not made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.instances_refused")]
 pub enum InstancesRefused {
     /// The layout is one no record could have.
     Layout { why: MeshRefused },
@@ -65,10 +54,6 @@ pub enum InstancesRefused {
     Capacity { capacity: u32 },
     /// The records are no whole number of the stride, or more than there is room for.
     Records { bytes: u64 },
-}
-
-impl Kind for InstancesRefused {
-    const NAME: KindName = KindName::new("aether.render.instances_refused");
 }
 
 /// Checks instances before they are made: their layout, their room within the `most` bytes the GPU puts in a buffer,

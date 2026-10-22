@@ -12,7 +12,7 @@ use aethereal_actor::BlobRef;
 use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToSender, Top, Turn};
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_chassis_headless::{Headless, Monotonic};
-use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
+use aethereal_data::{ActorPath, Bound, KindName, PathSegment, Plain};
 use aethereal_guest_echo as guest;
 use aethereal_substrate::{Clock, Engine};
 use std::env;
@@ -26,48 +26,33 @@ const ECHO: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO"));
 const PIECES: u64 = 400_000;
 
 #[derive(Plain)]
+#[kind(name = "aether.guest.ping")]
 struct Ping {
     n: u64,
 }
 
-impl Kind for Ping {
-    const NAME: KindName = KindName::new("aether.guest.ping");
-}
-
 #[derive(Plain)]
+#[kind(name = "aether.guest.pong")]
 struct Pong {
     n: u64,
 }
 
-impl Kind for Pong {
-    const NAME: KindName = KindName::new("aether.guest.pong");
-}
-
 #[derive(Plain)]
+#[kind(name = "aether.guest.shut")]
 struct Shut;
-
-impl Kind for Shut {
-    const NAME: KindName = KindName::new("aether.guest.shut");
-}
 
 /// Whom a pinger volleys with, and how many times.
 #[derive(Plain)]
+#[kind(name = "aether.bench.volley")]
 struct Volley {
     with: u64,
     pings: u64,
 }
 
-impl Kind for Volley {
-    const NAME: KindName = KindName::new("aether.bench.volley");
-}
-
 /// The native side of a pair: it pings its responder until its volley is spent, then tells it to close, and closes.
 #[derive(Bound)]
+#[kind(name = "aether.bench.pinger")]
 struct Pinger;
-
-impl Kind for Pinger {
-    const NAME: KindName = KindName::new("aether.bench.pinger");
-}
 
 impl ChildOf for Pinger {
     type Parent = Top;
@@ -112,12 +97,9 @@ impl Handles<Pong> for Pinger {
 /// The responder written natively, for the measure's `native` run: what the engine does with the same volleys when
 /// no guest runs them.
 #[derive(Bound)]
+#[kind(name = "aether.guest.responder")]
 struct NativeResponder {
     answered: u64,
-}
-
-impl Kind for NativeResponder {
-    const NAME: KindName = KindName::new("aether.guest.responder");
 }
 
 impl ChildOf for NativeResponder {

@@ -32,12 +32,9 @@ static HEARD: Mutex<Vec<Event>> = Mutex::new(Vec::new());
 
 /// What the listener listens to: the window it subscribes to.
 #[derive(Plain)]
+#[kind(name = "aether.test.listens")]
 struct Listens {
     window: WindowId,
-}
-
-impl Kind for Listens {
-    const NAME: KindName = KindName::new("aether.test.listens");
 }
 
 /// What another actor sends the window root and the window, which is not the host's.
@@ -46,11 +43,8 @@ const FORGED: Event = Event::PointerMoved { x: -1.0, y: -1.0 };
 /// An actor that subscribes to one window twice, sends the window root and the window an event of its own, and notes
 /// each event it is sent.
 #[derive(Bound)]
+#[kind(name = "aether.test.listener")]
 struct Listener;
-
-impl Kind for Listener {
-    const NAME: KindName = KindName::new("aether.test.listener");
-}
 
 impl ChildOf for Listener {
     type Parent = Top;

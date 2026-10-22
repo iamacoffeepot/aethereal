@@ -11,32 +11,26 @@ use crate::pass::{Pass, PassName};
 use crate::placement::{self, Bind, Finds, JoinRefused, Resource};
 use crate::program::{Access, Binding, BindingKind};
 use crate::storage::{self, DISPATCH_ARGUMENTS, StorageId};
-use aethereal_data::{ActorId, Kind, KindName, Plain};
+use aethereal_data::{ActorId, Plain};
 
 /// Asks the renderer to run the compute program `join` names in the compute pass it names, with what it binds, over
 /// `size`, at every `Render` until it is released. Answered with [`Dispatched`].
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.create_dispatch")]
 pub struct CreateDispatch {
     pub join: Dispatch,
     pub size: Invocations,
 }
 
-impl Kind for CreateDispatch {
-    const NAME: KindName = KindName::new("aether.render.create_dispatch");
-}
-
 /// The compute pass a dispatch runs in: the pass `pass` of `frame`, running `compute`, binding what `bindings` names at
 /// each place the compute program binds.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.dispatch")]
 pub struct Dispatch {
     pub frame: Frame,
     pub pass: PassName,
     pub compute: ComputeId,
     pub bindings: Vec<Bind>,
-}
-
-impl Kind for Dispatch {
-    const NAME: KindName = KindName::new("aether.render.dispatch");
 }
 
 impl Dispatch {
@@ -49,6 +43,7 @@ impl Dispatch {
 
 /// How many invocations a dispatch runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.invocations")]
 pub enum Invocations {
     /// One for each element of the array the storage ends in, which the dispatch binds, in the first dimension: the
     /// workgroups that cover them, the last one's invocations past the end reading `arrayLength` and stopping.
@@ -78,33 +73,24 @@ pub(crate) enum Runs {
     Indirect { storage: StorageId, at: u32 },
 }
 
-impl Kind for Invocations {
-    const NAME: KindName = KindName::new("aether.render.invocations");
-}
-
 /// A dispatch the renderer made, which only its maker may release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.dispatch_id")]
 pub struct DispatchId {
     pub(crate) id: u64,
 }
 
-impl Kind for DispatchId {
-    const NAME: KindName = KindName::new("aether.render.dispatch_id");
-}
-
 /// What the renderer answers [`CreateDispatch`] with.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.dispatched")]
 pub enum Dispatched {
     Made(DispatchId),
     Refused(DispatchRefused),
 }
 
-impl Kind for Dispatched {
-    const NAME: KindName = KindName::new("aether.render.dispatched");
-}
-
 /// Why a dispatch was not made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.dispatch_refused")]
 pub enum DispatchRefused {
     /// No frame is kept as the one named.
     Frame,
@@ -135,10 +121,6 @@ pub enum DispatchRefused {
     /// It binds the texture of a frame, or storage a frame writes, that reads the frame it joins, through frames
     /// between or at once, or has that frame read storage it writes: frames would read each other round.
     Round,
-}
-
-impl Kind for DispatchRefused {
-    const NAME: KindName = KindName::new("aether.render.dispatch_refused");
 }
 
 /// One use of storage by what the renderer keeps: read in a pass of a frame by a placement, an effect, or a dispatch,

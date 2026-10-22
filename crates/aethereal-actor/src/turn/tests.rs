@@ -7,7 +7,7 @@ use crate::{
     Mail, MailId, NotHeld, On, Payload, Protocol, Resource, Role, Subscribers, Tick, ToAny, ToType, Unspawned, child,
     parent,
 };
-use aethereal_data::{Bound, Budget, Fnv, KeyName, KindName, Plain};
+use aethereal_data::{Bound, Budget, Fnv, KeyName, Plain};
 use alloc::string::ToString;
 use alloc::vec;
 
@@ -78,63 +78,42 @@ impl Table for Listed {
 
 /// Mail that asks a leaf to say it was poked.
 #[derive(Plain)]
+#[kind(name = "aether.test.poke")]
 struct Poke;
-
-impl Kind for Poke {
-    const NAME: KindName = KindName::new("aether.test.poke");
-}
 
 /// A leaf's answer to a poke.
 #[derive(Plain)]
+#[kind(name = "aether.test.poked")]
 struct Poked;
-
-impl Kind for Poked {
-    const NAME: KindName = KindName::new("aether.test.poked");
-}
 
 /// Mail that asks a leaf to close.
 #[derive(Plain)]
+#[kind(name = "aether.test.shut")]
 struct Shut;
-
-impl Kind for Shut {
-    const NAME: KindName = KindName::new("aether.test.shut");
-}
 
 /// Mail that hands a leaf a reference.
 #[derive(Bound)]
+#[kind(name = "aether.test.meet")]
 struct Meet {
     other: ErasedActorRef,
 }
 
-impl Kind for Meet {
-    const NAME: KindName = KindName::new("aether.test.meet");
-}
-
 /// Why a leaf told to fail did not begin.
 #[derive(Debug, PartialEq, Plain)]
+#[kind(name = "aether.test.told_to_fail")]
 struct ToldToFail;
-
-impl Kind for ToldToFail {
-    const NAME: KindName = KindName::new("aether.test.told_to_fail");
-}
 
 /// Whether a leaf's `begin` fails.
 #[derive(Plain)]
+#[kind(name = "aether.test.leaf_config")]
 struct LeafConfig {
     fails: bool,
 }
 
-impl Kind for LeafConfig {
-    const NAME: KindName = KindName::new("aether.test.leaf_config");
-}
-
 /// An actor with no children.
 #[derive(Plain)]
+#[kind(name = "aether.test.leaf")]
 struct Leaf;
-
-impl Kind for Leaf {
-    const NAME: KindName = KindName::new("aether.test.leaf");
-}
 
 impl ChildOf for Leaf {
     type Parent = Anywhere;
@@ -220,22 +199,16 @@ impl Handles<Ended> for Leaf {
 
 /// How many leaves a branch spawns, and whether the last of them fails to begin.
 #[derive(Plain)]
+#[kind(name = "aether.test.branch_config")]
 struct BranchConfig {
     leaves: u64,
     last_fails: bool,
 }
 
-impl Kind for BranchConfig {
-    const NAME: KindName = KindName::new("aether.test.branch_config");
-}
-
 /// A singleton that spawns leaves in its `begin`, and takes their answers to its pokes.
 #[derive(Plain)]
+#[kind(name = "aether.test.branch")]
 struct Branch;
-
-impl Kind for Branch {
-    const NAME: KindName = KindName::new("aether.test.branch");
-}
 
 impl ChildOf for Branch {
     type Parent = Herald;
@@ -281,11 +254,8 @@ impl Handles<Poked> for Branch {
 
 /// A singleton that tells its parent it began, and on ending tells it why.
 #[derive(Plain)]
+#[kind(name = "aether.test.herald")]
 struct Herald;
-
-impl Kind for Herald {
-    const NAME: KindName = KindName::new("aether.test.herald");
-}
 
 impl ChildOf for Herald {
     type Parent = Anywhere;

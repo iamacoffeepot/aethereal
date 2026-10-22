@@ -12,7 +12,7 @@
 
 use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Recursive, ToType, Turn};
 use aethereal_chassis_headless::{Headless, Measured};
-use aethereal_data::{Kind, KindName, Plain};
+use aethereal_data::Plain;
 use aethereal_substrate::Engine;
 use std::env;
 use std::hint;
@@ -20,17 +20,15 @@ use std::num::NonZeroUsize;
 
 /// How many turns a counter has left.
 #[derive(Plain)]
+#[kind(name = "aether.bench.count")]
 struct Count {
     left: u64,
-}
-
-impl Kind for Count {
-    const NAME: KindName = KindName::new("aether.bench.count");
 }
 
 /// What a counter is made from: its number, and for the root how many counters to spawn and of what cost, and how
 /// many idle ones beside them.
 #[derive(Plain)]
+#[kind(name = "aether.bench.counter_config")]
 struct CounterConfig {
     number: u64,
     children: u64,
@@ -38,19 +36,12 @@ struct CounterConfig {
     shape: u8,
 }
 
-impl Kind for CounterConfig {
-    const NAME: KindName = KindName::new("aether.bench.counter_config");
-}
-
 /// An actor that counts itself down, working as its shape says on each count.
 #[derive(Plain)]
+#[kind(name = "aether.bench.counter")]
 struct Counter {
     number: u64,
     shape: u8,
-}
-
-impl Kind for Counter {
-    const NAME: KindName = KindName::new("aether.bench.counter");
 }
 
 /// The quota for the bytes of mail in flight, shared among the workers.

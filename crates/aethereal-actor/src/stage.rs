@@ -1,7 +1,7 @@
 //! The stages of a program's lifecycle, which the engine runs and sends its actors (ADR-0020).
 
 use crate::{Actors, Arena, Fault, Handled, Item, Payload, Role};
-use aethereal_data::{Decode, Encode, EncodeError, Kind, KindId, KindName, Plain};
+use aethereal_data::{Decode, Encode, EncodeError, Kind, KindId, Plain};
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
@@ -66,11 +66,8 @@ pub struct Cycled {
 /// The first stage, sent once, when the host starts the engine: what every actor made by then subscribed to it is
 /// sent before anything the program runs.
 #[derive(Plain, Default)]
+#[kind(name = "aether.lifecycle.start")]
 pub struct Start;
-
-impl Kind for Start {
-    const NAME: KindName = KindName::new("aether.lifecycle.start");
-}
 
 impl Stage for Start {
     const PLACE: Place = Place::End;
@@ -83,11 +80,8 @@ impl Stage for Start {
 /// it ([`Turn::hold`](crate::Turn::hold)) and answers once that work is done, and the program stops only after
 /// (ADR-0020).
 #[derive(Plain, Default)]
+#[kind(name = "aether.lifecycle.stop")]
 pub struct Stop;
-
-impl Kind for Stop {
-    const NAME: KindName = KindName::new("aether.lifecycle.stop");
-}
 
 impl Stage for Stop {
     const PLACE: Place = Place::End;
@@ -95,22 +89,16 @@ impl Stage for Stop {
 
 /// What a subscriber answers [`Stop`] with: it has finished the work it had in flight (ADR-0020).
 #[derive(Plain, Default)]
+#[kind(name = "aether.lifecycle.drained")]
 pub struct Drained;
-
-impl Kind for Drained {
-    const NAME: KindName = KindName::new("aether.lifecycle.drained");
-}
 
 /// The stage in which actors update what they hold, first of the shared stages: how long since the last `Tick`, and
 /// the time elapsed, the sum of every delta, in nanoseconds on the steps' time (ADR-0018, ADR-0020).
 #[derive(Plain, Default)]
+#[kind(name = "aether.lifecycle.tick")]
 pub struct Tick {
     pub delta_nanos: u64,
     pub elapsed_nanos: u64,
-}
-
-impl Kind for Tick {
-    const NAME: KindName = KindName::new("aether.lifecycle.tick");
 }
 
 impl Stage for Tick {
@@ -123,11 +111,8 @@ impl Stage for Tick {
 
 /// The stage in which actors draw what they hold, after `Tick`.
 #[derive(Plain, Default)]
+#[kind(name = "aether.lifecycle.render")]
 pub struct Render;
-
-impl Kind for Render {
-    const NAME: KindName = KindName::new("aether.lifecycle.render");
-}
 
 impl Stage for Render {
     const PLACE: Place = Place::Shared(1);
@@ -135,11 +120,8 @@ impl Stage for Render {
 
 /// The stage in which what was drawn is shown, after `Render`.
 #[derive(Plain, Default)]
+#[kind(name = "aether.lifecycle.present")]
 pub struct Present;
-
-impl Kind for Present {
-    const NAME: KindName = KindName::new("aether.lifecycle.present");
-}
 
 impl Stage for Present {
     const PLACE: Place = Place::Shared(2);

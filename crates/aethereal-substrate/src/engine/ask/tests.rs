@@ -9,7 +9,7 @@ use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asking, Asks, BlobRef, Carries, ChildOf, Ending, Fault, Handles, Held,
     Protocol, Tie, ToSender, ToType, Top, Turn, Unanswered, child,
 };
-use aethereal_data::{Bound, EncodeError, Kind, KindName, Plain};
+use aethereal_data::{Bound, EncodeError, Plain};
 use std::cell::RefCell;
 use std::iter;
 use std::mem;
@@ -31,32 +31,23 @@ fn said() -> Vec<String> {
 
 /// Which tile is at `x`: what a board is asked.
 #[derive(Plain)]
+#[kind(name = "aether.test.which_tile")]
 struct WhichTile {
     x: u64,
 }
 
-impl Kind for WhichTile {
-    const NAME: KindName = KindName::new("aether.test.which_tile");
-}
-
 /// The tile a board answers with.
 #[derive(Plain)]
+#[kind(name = "aether.test.tile_is")]
 struct TileIs {
     tile: u64,
 }
 
-impl Kind for TileIs {
-    const NAME: KindName = KindName::new("aether.test.tile_is");
-}
-
 /// What an asker keeps until its question is answered: which of its questions it was.
 #[derive(Plain)]
+#[kind(name = "aether.test.looking")]
 struct Looking {
     at: u64,
-}
-
-impl Kind for Looking {
-    const NAME: KindName = KindName::new("aether.test.looking");
 }
 
 /// The protocol a board is asked through: which tile, answered with the tile.
@@ -75,33 +66,24 @@ impl Carries<WhichTile> for Tiles {
 /// itself. What it holds it answers with `50`, lets go of, or closes on, as a [`Release`] says, and its closing turn
 /// does with what it still holds what the release it closed on says.
 #[derive(Bound)]
+#[kind(name = "aether.test.board")]
 struct Board {
     held: Vec<Held<TileIs>>,
     closed_on: u64,
 }
 
-impl Kind for Board {
-    const NAME: KindName = KindName::new("aether.test.board");
-}
-
 /// What a board is made from: nothing.
 #[derive(Plain)]
+#[kind(name = "aether.test.blank")]
 struct Blank;
-
-impl Kind for Blank {
-    const NAME: KindName = KindName::new("aether.test.blank");
-}
 
 /// What a board does with what it holds: `0` answers it, `1` lets go of it, `2` closes on it, and `3` answers it
 /// twice, through a copy read back from bytes it was written into. From `4` it closes on it, and its closing turn
 /// answers it with `60`: and at `5` answers it again through a copy, and at `6` fails after answering.
 #[derive(Plain)]
+#[kind(name = "aether.test.release")]
 struct Release {
     how: u64,
-}
-
-impl Kind for Release {
-    const NAME: KindName = KindName::new("aether.test.release");
 }
 
 impl ChildOf for Board {
@@ -203,22 +185,16 @@ impl Handles<Release> for Board {
 
 /// An order a pointer sends itself.
 #[derive(Plain)]
+#[kind(name = "aether.test.pointer_order")]
 struct Order {
     text: String,
 }
 
-impl Kind for Order {
-    const NAME: KindName = KindName::new("aether.test.pointer_order");
-}
-
 /// A pointer's orders, which it sends itself as it begins.
 #[derive(Plain)]
+#[kind(name = "aether.test.pointer_config")]
 struct PointerConfig {
     orders: Vec<String>,
-}
-
-impl Kind for PointerConfig {
-    const NAME: KindName = KindName::new("aether.test.pointer_config");
 }
 
 /// An actor that asks a board it spawns as it begins, so its requests may be fused to it, as its orders say: `ask X…`
@@ -228,12 +204,9 @@ impl Kind for PointerConfig {
 /// `begin` asks at `X` itself for `first X`, keeping `100`, and spawns the seeker for `begin seek X`. It says each
 /// answer with what it kept, each tile it was told, and each seeker refused.
 #[derive(Bound)]
+#[kind(name = "aether.test.pointer")]
 struct Pointer {
     board: ActorRef<Board>,
-}
-
-impl Kind for Pointer {
-    const NAME: KindName = KindName::new("aether.test.pointer");
 }
 
 impl ChildOf for Pointer {
@@ -349,23 +322,17 @@ impl Handles<TileIs> for Pointer {
 
 /// Where a seeker asks, and whether its `begin` fails once it has asked.
 #[derive(Plain)]
+#[kind(name = "aether.test.seeking")]
 struct Seeking {
     x: u64,
     fails: u64,
 }
 
-impl Kind for Seeking {
-    const NAME: KindName = KindName::new("aether.test.seeking");
-}
-
 /// A child whose `begin` spawns a board of its own and asks it which tile is at `x`, keeping `200`, and then fails if
 /// it was told to: it says each answer with what it kept.
 #[derive(Bound)]
+#[kind(name = "aether.test.seeker")]
 struct Seeker;
-
-impl Kind for Seeker {
-    const NAME: KindName = KindName::new("aether.test.seeker");
-}
 
 impl ChildOf for Seeker {
     type Parent = Pointer;
@@ -415,23 +382,17 @@ impl Handles<Answer<TileIs, Looking>> for Seeker {
 
 /// What a keeper keeps until its question is answered: a blob nothing else refers to.
 #[derive(Bound)]
+#[kind(name = "aether.test.kept")]
 struct Kept {
     blob: BlobRef,
-}
-
-impl Kind for Kept {
-    const NAME: KindName = KindName::new("aether.test.kept");
 }
 
 /// An actor that asks a board it spawns as it begins, keeping a blob of three bytes it puts and refers to nowhere
 /// else, and says how many bytes the blob holds once it is answered.
 #[derive(Bound)]
+#[kind(name = "aether.test.keeper")]
 struct Keeper {
     board: ActorRef<Board>,
-}
-
-impl Kind for Keeper {
-    const NAME: KindName = KindName::new("aether.test.keeper");
 }
 
 impl ChildOf for Keeper {

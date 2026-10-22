@@ -19,28 +19,19 @@ use aethereal_data::Kind;
 ///
 /// ```compile_fail
 /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, ToSender, ToType, Turn};
-/// use aethereal_data::{Kind, KindName, Plain};
+/// use aethereal_data::Plain;
 ///
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.ask")]
 /// # struct Ask;
 /// #
-/// # impl Kind for Ask {
-/// #     const NAME: KindName = KindName::new("aether.example.ask");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.answer")]
 /// # struct Answer;
 /// #
-/// # impl Kind for Answer {
-/// #     const NAME: KindName = KindName::new("aether.example.answer");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.answerer")]
 /// # struct Answerer;
-/// #
-/// # impl Kind for Answerer {
-/// #     const NAME: KindName = KindName::new("aether.example.answerer");
-/// # }
 /// #
 /// # impl Actor for Answerer {
 /// #     type Config = Answerer;
@@ -68,11 +59,8 @@ use aethereal_data::Kind;
 /// }
 ///
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.asker")]
 /// # struct Asker;
-/// #
-/// # impl Kind for Asker {
-/// #     const NAME: KindName = KindName::new("aether.example.asker");
-/// # }
 /// #
 /// /// Asks as it begins, and handles nothing.
 /// impl Actor for Asker {
@@ -96,28 +84,19 @@ use aethereal_data::Kind;
 ///
 /// ```compile_fail
 /// # use aethereal_actor::{Actor, Beginning, Carries, Ending, Fault, Handles, Protocol, ToAny, ToSender, ToType, Turn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.ask")]
 /// # struct Ask;
 /// #
-/// # impl Kind for Ask {
-/// #     const NAME: KindName = KindName::new("aether.example.ask");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.answer")]
 /// # struct Answer;
 /// #
-/// # impl Kind for Answer {
-/// #     const NAME: KindName = KindName::new("aether.example.answer");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.answerer")]
 /// # struct Answerer;
-/// #
-/// # impl Kind for Answerer {
-/// #     const NAME: KindName = KindName::new("aether.example.answerer");
-/// # }
 /// #
 /// # impl Actor for Answerer {
 /// #     type Config = Answerer;
@@ -154,11 +133,8 @@ use aethereal_data::Kind;
 /// # }
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.asker")]
 /// # struct Asker;
-/// #
-/// # impl Kind for Asker {
-/// #     const NAME: KindName = KindName::new("aether.example.asker");
-/// # }
 /// #
 /// impl Actor for Asker {
 ///     type Config = Asker;
@@ -189,28 +165,19 @@ use aethereal_data::Kind;
 ///
 /// ```compile_fail
 /// # use aethereal_actor::{Actor, Beginning, Carries, Ending, Fault, Handles, Protocol, ToAny, ToSender, ToType, Turn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.ask")]
 /// # struct Ask;
 /// #
-/// # impl Kind for Ask {
-/// #     const NAME: KindName = KindName::new("aether.example.ask");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.answer")]
 /// # struct Answer;
 /// #
-/// # impl Kind for Answer {
-/// #     const NAME: KindName = KindName::new("aether.example.answer");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.answerer")]
 /// # struct Answerer;
-/// #
-/// # impl Kind for Answerer {
-/// #     const NAME: KindName = KindName::new("aether.example.answerer");
-/// # }
 /// #
 /// # impl Actor for Answerer {
 /// #     type Config = Answerer;
@@ -247,11 +214,8 @@ use aethereal_data::Kind;
 /// # }
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.asker")]
 /// # struct Asker;
-/// #
-/// # impl Kind for Asker {
-/// #     const NAME: KindName = KindName::new("aether.example.asker");
-/// # }
 /// #
 /// impl Actor for Asker {
 ///     type Config = Asker;
@@ -274,28 +238,19 @@ use aethereal_data::Kind;
 ///
 /// ```compile_fail
 /// # use aethereal_actor::{Actor, Beginning, Carries, Ending, Fault, Handles, Protocol, ToAny, ToSender, ToType, Turn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.ask")]
 /// # struct Ask;
 /// #
-/// # impl Kind for Ask {
-/// #     const NAME: KindName = KindName::new("aether.example.ask");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.answer")]
 /// # struct Answer;
 /// #
-/// # impl Kind for Answer {
-/// #     const NAME: KindName = KindName::new("aether.example.answer");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.answerer")]
 /// # struct Answerer;
-/// #
-/// # impl Kind for Answerer {
-/// #     const NAME: KindName = KindName::new("aether.example.answerer");
-/// # }
 /// #
 /// # impl Actor for Answerer {
 /// #     type Config = Answerer;
@@ -332,11 +287,8 @@ use aethereal_data::Kind;
 /// # }
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.asker")]
 /// # struct Asker;
-/// #
-/// # impl Kind for Asker {
-/// #     const NAME: KindName = KindName::new("aether.example.asker");
-/// # }
 /// #
 /// impl Actor for Asker {
 ///     type Config = Asker;

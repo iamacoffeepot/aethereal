@@ -235,14 +235,11 @@ where
 ///
 /// ```compile_fail
 /// use aethereal_actor::{Actor, ActorRef, ProtocolRef};
-/// use aethereal_data::{Kind, KindName, Plain};
+/// use aethereal_data::Plain;
 ///
 /// #[derive(Plain)]
+/// #[kind(name = "aether.example.poke")]
 /// struct Poke;
-///
-/// impl Kind for Poke {
-///     const NAME: KindName = KindName::new("aether.example.poke");
-/// }
 ///
 /// fn listen<T: Actor>(reference: ActorRef<T>) -> ProtocolRef<(Poke,)> {
 ///     reference.protocol()
@@ -366,14 +363,11 @@ where
 ///
 /// ```compile_fail
 /// use aethereal_actor::{ProtocolRef, Turn};
-/// use aethereal_data::{Kind, KindName, Plain};
+/// use aethereal_data::Plain;
 ///
 /// #[derive(Plain)]
+/// #[kind(name = "aether.example.poke")]
 /// struct Poke;
-///
-/// impl Kind for Poke {
-///     const NAME: KindName = KindName::new("aether.example.poke");
-/// }
 ///
 /// fn poke<A>(turn: &mut Turn<'_, A, ()>, listener: ProtocolRef<(Poke,)>) {
 ///     let sent = turn.to(listener).send(&Poke);

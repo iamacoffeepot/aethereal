@@ -2,19 +2,16 @@
 //! shape, and fits every pass of that shape in any frame, so a frame replaced by one whose passes keep their shapes
 //! keeps every program (ADR-0025).
 
-use aethereal_data::{Kind, KindName, Plain};
+use aethereal_data::Plain;
 
 /// What a pass draws into, as a program is made against it: the format of its one colour target, how many samples
 /// each pixel holds, and the depth it holds beside its colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+#[kind(name = "aether.render.shape")]
 pub struct Shape {
     pub colour: ColourFormat,
     pub samples: Samples,
     pub depth: DepthFormat,
-}
-
-impl Kind for Shape {
-    const NAME: KindName = KindName::new("aether.render.shape");
 }
 
 impl Shape {
@@ -34,6 +31,7 @@ impl Shape {
 
 /// The format of a pass's colour target: a window's, or a texture's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+#[kind(name = "aether.render.colour_format")]
 pub enum ColourFormat {
     /// Red, green, blue, and alpha, a byte each, read as fractions.
     Rgba8,
@@ -49,10 +47,6 @@ pub enum ColourFormat {
     R32Uint,
     /// One byte, read as a fraction: a frame's end in [`TextureFormat::R8`](crate::texture::TextureFormat::R8).
     R8,
-}
-
-impl Kind for ColourFormat {
-    const NAME: KindName = KindName::new("aether.render.colour_format");
 }
 
 impl ColourFormat {
@@ -94,13 +88,10 @@ impl ColourFormat {
 
 /// How many samples a target holds of each pixel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+#[kind(name = "aether.render.samples")]
 pub enum Samples {
     /// One: nothing is multisampled.
     One,
-}
-
-impl Kind for Samples {
-    const NAME: KindName = KindName::new("aether.render.samples");
 }
 
 impl Samples {
@@ -115,13 +106,10 @@ impl Samples {
 
 /// The depth a pass holds beside its colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+#[kind(name = "aether.render.depth_format")]
 pub enum DepthFormat {
     /// None: a program drawing there neither tests nor writes depth.
     None,
     /// A 32-bit float for each pixel.
     Depth32Float,
-}
-
-impl Kind for DepthFormat {
-    const NAME: KindName = KindName::new("aether.render.depth_format");
 }

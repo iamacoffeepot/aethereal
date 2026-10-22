@@ -12,7 +12,7 @@ use crate::program::BindingKind;
 use crate::storage::StorageId;
 use crate::texture::{TextureFormat, TextureId};
 use crate::uniforms::UniformsId;
-use aethereal_data::{Budget, from_bytes};
+use aethereal_data::{Budget, Kind, KindName, from_bytes};
 
 /// The window opened `nth`, as a host's window capability numbers it.
 fn window(nth: u64) -> WindowId {

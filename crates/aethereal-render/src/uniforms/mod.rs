@@ -5,62 +5,47 @@
 mod tests;
 
 use aethereal_actor::BlobRef;
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 
 /// Asks the renderer for uniforms holding `bytes`, whose size is fixed from then. Answered with [`Uniformed`].
 #[derive(Bound)]
+#[kind(name = "aether.render.create_uniforms")]
 pub struct CreateUniforms {
     pub bytes: BlobRef,
-}
-
-impl Kind for CreateUniforms {
-    const NAME: KindName = KindName::new("aether.render.create_uniforms");
 }
 
 /// Writes `bytes` over the bytes of `uniforms` from the byte `first`. Only their maker may write them, and nothing is
 /// answered: a write that does not fit is logged, and the bytes are left as they were.
 #[derive(Bound)]
+#[kind(name = "aether.render.write_uniforms")]
 pub struct WriteUniforms {
     pub uniforms: UniformsId,
     pub first: u32,
     pub bytes: BlobRef,
 }
 
-impl Kind for WriteUniforms {
-    const NAME: KindName = KindName::new("aether.render.write_uniforms");
-}
-
 /// Uniforms the renderer made, which any actor handed them may bind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.uniforms_id")]
 pub struct UniformsId {
     pub(crate) id: u64,
 }
 
-impl Kind for UniformsId {
-    const NAME: KindName = KindName::new("aether.render.uniforms_id");
-}
-
 /// What the renderer answers [`CreateUniforms`] with.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.uniformed")]
 pub enum Uniformed {
     Made(UniformsId),
     Refused(UniformsRefused),
 }
 
-impl Kind for Uniformed {
-    const NAME: KindName = KindName::new("aether.render.uniformed");
-}
-
 /// Why uniforms were not made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.uniforms_refused")]
 pub enum UniformsRefused {
     /// There are no bytes, or they are no whole number of four, or more than the `most` the GPU binds as a uniform
     /// block.
     Size { bytes: u64, most: u64 },
-}
-
-impl Kind for UniformsRefused {
-    const NAME: KindName = KindName::new("aether.render.uniforms_refused");
 }
 
 /// Checks uniforms before they are made: that their bytes are whole words, and as many as the GPU binds in one block,

@@ -2116,31 +2116,22 @@ mod tests {
 
     /// A ping, as the echo guest declares it: the same name and layout, so the same kind.
     #[derive(Plain)]
+    #[kind(name = "aether.guest.ping")]
     struct Ping {
         n: u64,
     }
 
-    impl Kind for Ping {
-        const NAME: KindName = KindName::new("aether.guest.ping");
-    }
-
     #[derive(Plain)]
+    #[kind(name = "aether.guest.pong")]
     struct Pong {
         n: u64,
     }
 
-    impl Kind for Pong {
-        const NAME: KindName = KindName::new("aether.guest.pong");
-    }
-
     /// How many pings a pinger sends.
     #[derive(Plain)]
+    #[kind(name = "aether.test.volley")]
     struct Volley {
         pings: u64,
-    }
-
-    impl Kind for Volley {
-        const NAME: KindName = KindName::new("aether.test.volley");
     }
 
     /// The pongs every pinger has been answered with.
@@ -2148,11 +2139,8 @@ mod tests {
 
     /// A native actor that pings the echo guest, and pings it again on each pong while it has pings left.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.pinger")]
     struct Pinger;
-
-    impl Kind for Pinger {
-        const NAME: KindName = KindName::new("aether.test.pinger");
-    }
 
     impl ChildOf for Pinger {
         type Parent = Top;
@@ -2227,12 +2215,9 @@ mod tests {
 
     /// What a questioner keeps until its ping is answered: which ping it was.
     #[derive(Plain)]
+    #[kind(name = "aether.test.which")]
     struct Which {
         at: u64,
-    }
-
-    impl Kind for Which {
-        const NAME: KindName = KindName::new("aether.test.which");
     }
 
     /// What the questioner was answered, each pong with what it kept for its ping.
@@ -2240,12 +2225,9 @@ mod tests {
 
     /// A native actor that spawns the echo guest from its code and asks it two pings, keeping which each was.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.questioner")]
     struct Questioner {
         code: BlobRef,
-    }
-
-    impl Kind for Questioner {
-        const NAME: KindName = KindName::new("aether.test.questioner");
     }
 
     impl ChildOf for Questioner {
@@ -2333,24 +2315,18 @@ mod tests {
 
     /// What a petitioner is made from: the steward guest's code, and how the steward is to release what it holds.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.petitioning")]
     struct Petitioning {
         code: BlobRef,
         how: u64,
     }
 
-    impl Kind for Petitioning {
-        const NAME: KindName = KindName::new("aether.test.petitioning");
-    }
-
     /// A native actor that spawns the steward guest from its code, asks it a ping, a weighing and a ping, one after
     /// another, and tells it how to release them.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.petitioner")]
     struct Petitioner {
         petitioning: Petitioning,
-    }
-
-    impl Kind for Petitioner {
-        const NAME: KindName = KindName::new("aether.test.petitioner");
     }
 
     impl ChildOf for Petitioner {
@@ -2496,11 +2472,8 @@ mod tests {
 
     /// A native actor that spawns the shelver guest from its code and pings it, keeping what it is told.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.shelving")]
     struct Shelving;
-
-    impl Kind for Shelving {
-        const NAME: KindName = KindName::new("aether.test.shelving");
-    }
 
     impl ChildOf for Shelving {
         type Parent = Top;
@@ -2575,22 +2548,16 @@ mod tests {
     /// A native actor that spawns the querent guest from its code and has it ask, keeping what it hears: once more
     /// when it hears its first query's last request went unanswered.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.inquirer")]
     struct Inquirer {
         querent: ActorRef<echo::Querent>,
     }
 
     /// What an inquirer is made from: the querent guest's code.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.inquiring")]
     struct Inquiring {
         code: BlobRef,
-    }
-
-    impl Kind for Inquiring {
-        const NAME: KindName = KindName::new("aether.test.inquiring");
-    }
-
-    impl Kind for Inquirer {
-        const NAME: KindName = KindName::new("aether.test.inquirer");
     }
 
     impl ChildOf for Inquirer {
@@ -2676,11 +2643,8 @@ mod tests {
     /// A native actor that spawns the opener guest from its code, which stands up one more beneath it, and that one a
     /// native inlet, keeping what they hear.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.opening")]
     struct Opening;
-
-    impl Kind for Opening {
-        const NAME: KindName = KindName::new("aether.test.opening");
-    }
 
     impl ChildOf for Opening {
         type Parent = Top;
@@ -2759,11 +2723,8 @@ mod tests {
     /// A native actor that spawns the stasher guest from its code and has it stash a blob of three bytes, keeping what
     /// it hears.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.stashing")]
     struct Stashing;
-
-    impl Kind for Stashing {
-        const NAME: KindName = KindName::new("aether.test.stashing");
-    }
 
     impl ChildOf for Stashing {
         type Parent = Top;
@@ -2837,21 +2798,15 @@ mod tests {
 
     /// The word to a lender to lend its nester a book.
     #[derive(Plain)]
+    #[kind(name = "aether.test.lend")]
     struct Lend;
-
-    impl Kind for Lend {
-        const NAME: KindName = KindName::new("aether.test.lend");
-    }
 
     /// A native actor that spawns the nester guest from its code, then puts a blob of three bytes and mails it to the
     /// nester in a turn of its own, keeping none of it, and keeps each pong it is told.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.lender")]
     struct Lender {
         nester: ActorRef<echo::Nester>,
-    }
-
-    impl Kind for Lender {
-        const NAME: KindName = KindName::new("aether.test.lender");
     }
 
     impl ChildOf for Lender {
@@ -2934,22 +2889,16 @@ mod tests {
 
     /// The word to close, as the echo guest declares it.
     #[derive(Plain)]
+    #[kind(name = "aether.guest.shut")]
     struct Shut;
-
-    impl Kind for Shut {
-        const NAME: KindName = KindName::new("aether.guest.shut");
-    }
 
     /// The pongs the closer has been answered with.
     static CLOSER_PONGS: AtomicU64 = AtomicU64::new(0);
 
     /// A native actor that sends the echo guest a ping, the word to close, and another ping, all in its `begin`.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.closer")]
     struct Closer;
-
-    impl Kind for Closer {
-        const NAME: KindName = KindName::new("aether.test.closer");
-    }
 
     impl ChildOf for Closer {
         type Parent = Top;
@@ -3020,12 +2969,9 @@ mod tests {
 
     /// A native actor that pings the echo guest once as it begins, and notes its answer under its key.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.caller")]
     struct Caller {
         key: u64,
-    }
-
-    impl Kind for Caller {
-        const NAME: KindName = KindName::new("aether.test.caller");
     }
 
     impl ChildOf for Caller {
@@ -3098,11 +3044,8 @@ mod tests {
 
     /// A native actor that tells the mirror guest to close, and volleys with the echo guest, both of one blob.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.volleyer")]
     struct Volleyer;
-
-    impl Kind for Volleyer {
-        const NAME: KindName = KindName::new("aether.test.volleyer");
-    }
 
     impl ChildOf for Volleyer {
         type Parent = Top;
@@ -3151,11 +3094,8 @@ mod tests {
 
     /// A native actor that asks the timekeeper guest the time as it begins, and keeps what it is told.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.time_asker")]
     struct TimeAsker;
-
-    impl Kind for TimeAsker {
-        const NAME: KindName = KindName::new("aether.test.time_asker");
-    }
 
     impl ChildOf for TimeAsker {
         type Parent = Top;
@@ -3246,12 +3186,9 @@ mod tests {
 
     /// A native actor that spawns a ticker from the echo's blob as it begins, and logs whether its engine made it.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.breeder")]
     struct Breeder {
         code: BlobRef,
-    }
-
-    impl Kind for Breeder {
-        const NAME: KindName = KindName::new("aether.test.breeder");
     }
 
     impl ChildOf for Breeder {
@@ -3372,19 +3309,13 @@ mod tests {
 
     /// The word to crash, as the echo guest declares it.
     #[derive(Plain)]
+    #[kind(name = "aether.guest.crash")]
     struct Crash;
-
-    impl Kind for Crash {
-        const NAME: KindName = KindName::new("aether.guest.crash");
-    }
 
     /// A native actor that tells the mirror guest to crash as it begins.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.crasher")]
     struct Crasher;
-
-    impl Kind for Crasher {
-        const NAME: KindName = KindName::new("aether.test.crasher");
-    }
 
     impl ChildOf for Crasher {
         type Parent = Top;
@@ -3492,21 +3423,15 @@ mod tests {
 
     /// The word to a brood to spawn one more child, as the echo guest declares it.
     #[derive(Plain)]
+    #[kind(name = "aether.guest.grow")]
     struct Grow;
-
-    impl Kind for Grow {
-        const NAME: KindName = KindName::new("aether.guest.grow");
-    }
 
     /// What an asker pings, and which of [`ANSWERS`] it keeps its answers in.
     #[derive(Plain)]
+    #[kind(name = "aether.test.asks")]
     struct Asks {
         paths: Vec<ActorPath>,
         tally: u64,
-    }
-
-    impl Kind for Asks {
-        const NAME: KindName = KindName::new("aether.test.asks");
     }
 
     /// The answers each test's askers were given, by the tally the test keeps them in.
@@ -3514,12 +3439,9 @@ mod tests {
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.asker")]
     struct Asker {
         tally: u64,
-    }
-
-    impl Kind for Asker {
-        const NAME: KindName = KindName::new("aether.test.asker");
     }
 
     impl ChildOf for Asker {
@@ -3562,11 +3484,8 @@ mod tests {
 
     /// A native actor that tells the brood to grow, as it begins.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.grower")]
     struct Grower;
-
-    impl Kind for Grower {
-        const NAME: KindName = KindName::new("aether.test.grower");
-    }
 
     impl ChildOf for Grower {
         type Parent = Top;
@@ -3691,24 +3610,18 @@ mod tests {
 
     /// What a keeper is made from: its key, and which of [`ANSWERS`] it keeps the pings it is sent in.
     #[derive(Plain)]
+    #[kind(name = "aether.test.keeps")]
     struct Keeps {
         key: u64,
         tally: u64,
     }
 
-    impl Kind for Keeps {
-        const NAME: KindName = KindName::new("aether.test.keeps");
-    }
-
     /// A native actor that keeps each ping it is sent in its tally, with a hundred for each of its key.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.keeper")]
     struct Keeper {
         key: u64,
         tally: u64,
-    }
-
-    impl Kind for Keeper {
-        const NAME: KindName = KindName::new("aether.test.keeper");
     }
 
     impl ChildOf for Keeper {
@@ -3807,22 +3720,16 @@ mod tests {
 
     /// What a vestry is made from: the blob it spawns its sexton from.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.vestment")]
     struct Vestment {
         code: BlobRef,
-    }
-
-    impl Kind for Vestment {
-        const NAME: KindName = KindName::new("aether.test.vestment");
     }
 
     /// A native actor that spawns a sexton of the echo guest's blob as it begins, and keeps in the fourteenth of
     /// [`ANSWERS`] one when it was refused for the steeple it reaches, and zero when it was made.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.vestry")]
     struct Vestry;
-
-    impl Kind for Vestry {
-        const NAME: KindName = KindName::new("aether.test.vestry");
-    }
 
     impl ChildOf for Vestry {
         type Parent = Top;
@@ -3933,23 +3840,17 @@ mod tests {
 
     /// What a shiner is made from: the tally it keeps the light of each lamp it is handed in.
     #[derive(Plain)]
+    #[kind(name = "aether.test.shining")]
     struct Shining {
         tally: u64,
-    }
-
-    impl Kind for Shining {
-        const NAME: KindName = KindName::new("aether.test.shining");
     }
 
     /// A native actor that takes each lamp it is handed and keeps its light in its tally: what reads that a lamp came
     /// through a guest whole, as only native code opens one.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.shiner")]
     struct Shiner {
         tally: u64,
-    }
-
-    impl Kind for Shiner {
-        const NAME: KindName = KindName::new("aether.test.shiner");
     }
 
     impl ChildOf for Shiner {
@@ -3990,23 +3891,17 @@ mod tests {
 
     /// What a lighter is made from: the actor it hands its lamps to, and the light of each.
     #[derive(Plain)]
+    #[kind(name = "aether.test.lighting")]
     struct Lighting {
         to: ActorPath,
         lights: Vec<u64>,
     }
 
-    impl Kind for Lighting {
-        const NAME: KindName = KindName::new("aether.test.lighting");
-    }
-
     /// A native actor that makes a lamp of each light it is made with as it begins, keeps it, and hands each in a hand
     /// of its own to the actor `to` names, so they arrive as turns of one batch.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.lighter")]
     struct Lighter;
-
-    impl Kind for Lighter {
-        const NAME: KindName = KindName::new("aether.test.lighter");
-    }
 
     impl ChildOf for Lighter {
         type Parent = Top;
@@ -4092,20 +3987,14 @@ mod tests {
 
     /// The reason a mortal fails.
     #[derive(Plain)]
+    #[kind(name = "aether.test.doom")]
     struct Doom;
-
-    impl Kind for Doom {
-        const NAME: KindName = KindName::new("aether.test.doom");
-    }
 
     /// A native actor that ends on its first ping: the one keyed zero closes, and any other fails.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.mortal")]
     struct Mortal {
         key: u64,
-    }
-
-    impl Kind for Mortal {
-        const NAME: KindName = KindName::new("aether.test.mortal");
     }
 
     impl ChildOf for Mortal {
@@ -4175,32 +4064,23 @@ mod tests {
 
     /// What a nest is made from: the blob its reporters are spawned from, and how many.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.nesting")]
     struct Nesting {
         code: BlobRef,
         reporters: u64,
     }
 
-    impl Kind for Nesting {
-        const NAME: KindName = KindName::new("aether.test.nesting");
-    }
-
     /// A word to a nest to ping each of its reporters.
     #[derive(Plain)]
+    #[kind(name = "aether.test.poke")]
     struct Poke;
-
-    impl Kind for Poke {
-        const NAME: KindName = KindName::new("aether.test.poke");
-    }
 
     /// A native actor that spawns reporters of the echo guest's blob as it begins, pings each when poked, and keeps
     /// what each tells it in the fifth of [`ANSWERS`].
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.nest")]
     struct Nest {
         reporters: Vec<ActorRef<echo::Reporter>>,
-    }
-
-    impl Kind for Nest {
-        const NAME: KindName = KindName::new("aether.test.nest");
     }
 
     impl ChildOf for Nest {
@@ -4265,11 +4145,8 @@ mod tests {
     /// A native type named as the echo guest's reporter is, which declares other handlers: a blob that makes a reporter
     /// does not make this.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.guest.reporter")]
     struct Impostor;
-
-    impl Kind for Impostor {
-        const NAME: KindName = KindName::new("aether.guest.reporter");
-    }
 
     impl ChildOf for Impostor {
         type Parent = Nest;
@@ -4301,11 +4178,8 @@ mod tests {
 
     /// A native actor that pokes the nest as it begins.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.poker")]
     struct Poker;
-
-    impl Kind for Poker {
-        const NAME: KindName = KindName::new("aether.test.poker");
-    }
 
     impl ChildOf for Poker {
         type Parent = Top;
@@ -4364,23 +4238,17 @@ mod tests {
 
     /// What a hen is made from: the blob its hatcher is spawned from, and the other blob the hatcher spawns from.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.henning")]
     struct Henning {
         home: BlobRef,
         other: BlobRef,
     }
 
-    impl Kind for Henning {
-        const NAME: KindName = KindName::new("aether.test.henning");
-    }
-
     /// A native actor that spawns a hatcher of the echo guest's blob as it begins, and keeps what it tells it in the
     /// sixth of [`ANSWERS`].
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.hen")]
     struct Hen;
-
-    impl Kind for Hen {
-        const NAME: KindName = KindName::new("aether.test.hen");
-    }
 
     impl ChildOf for Hen {
         type Parent = Top;
@@ -4421,11 +4289,8 @@ mod tests {
 
     /// A native actor that tells the hen's hatcher to grow twice, as it begins, so both words are one batch's.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.rouser")]
     struct Rouser;
-
-    impl Kind for Rouser {
-        const NAME: KindName = KindName::new("aether.test.rouser");
-    }
 
     impl ChildOf for Rouser {
         type Parent = Top;
@@ -4484,11 +4349,8 @@ mod tests {
 
     /// A native actor that keeps each pong it is sent in the seventh of [`ANSWERS`].
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.ledger")]
     struct Ledger;
-
-    impl Kind for Ledger {
-        const NAME: KindName = KindName::new("aether.test.ledger");
-    }
 
     impl ChildOf for Ledger {
         type Parent = Top;
@@ -4531,11 +4393,8 @@ mod tests {
     /// how long the book it is sent is and what its first byte is, read from the store, and sends the book back; and
     /// keeps the pong it is answered with there too.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.borrower")]
     struct Borrower;
-
-    impl Kind for Borrower {
-        const NAME: KindName = KindName::new("aether.test.borrower");
-    }
 
     impl ChildOf for Borrower {
         type Parent = Top;
@@ -4590,11 +4449,8 @@ mod tests {
 
     /// A native actor that tells the librarian to shut, as it begins.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.shutter")]
     struct Shutter;
-
-    impl Kind for Shutter {
-        const NAME: KindName = KindName::new("aether.test.shutter");
-    }
 
     impl ChildOf for Shutter {
         type Parent = Top;
@@ -4708,11 +4564,8 @@ mod tests {
 
     /// A native actor that pings the spendthrift for a book of three, as it begins.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.dun")]
     struct Dun;
-
-    impl Kind for Dun {
-        const NAME: KindName = KindName::new("aether.test.dun");
-    }
 
     impl ChildOf for Dun {
         type Parent = Top;
@@ -4806,11 +4659,8 @@ mod tests {
 
     /// A native actor that keeps in the eighth of [`ANSWERS`] each pong it is told.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.mourner")]
     struct Mourner;
-
-    impl Kind for Mourner {
-        const NAME: KindName = KindName::new("aether.test.mourner");
-    }
 
     impl ChildOf for Mourner {
         type Parent = Top;
@@ -4847,11 +4697,8 @@ mod tests {
     /// A native actor that, as it begins, pings the first parting twice and tells it to shut, and pings the second
     /// once and then with a zero, which fails it.
     #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.dismisser")]
     struct Dismisser;
-
-    impl Kind for Dismisser {
-        const NAME: KindName = KindName::new("aether.test.dismisser");
-    }
 
     impl ChildOf for Dismisser {
         type Parent = Top;

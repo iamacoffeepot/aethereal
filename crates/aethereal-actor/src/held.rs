@@ -3,8 +3,7 @@
 
 use crate::{Fault, Seated, Within};
 use aethereal_data::{
-    ActorId, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, KindName, Plain, Reader, Schema, Shape,
-    Writer,
+    ActorId, Decode, DecodeError, Encode, EncodeError, Field, KindId, Plain, Reader, Schema, Shape, Writer,
 };
 use core::any;
 use core::fmt;
@@ -144,11 +143,8 @@ fn seated(input: &mut Reader<'_, Within>) -> Result<Seated, DecodeError> {
 /// The reason of a turn that held a request where none is owed, the mail it handles being no request or one already
 /// answered, or that answered a debt its actor does not hold of that kind (ADR-0017).
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.actor.not_owed")]
 pub struct NotOwed;
-
-impl Kind for NotOwed {
-    const NAME: KindName = KindName::new("aether.actor.not_owed");
-}
 
 impl From<NotOwed> for Fault {
     fn from(_: NotOwed) -> Self {

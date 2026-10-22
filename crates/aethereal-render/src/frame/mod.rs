@@ -17,56 +17,44 @@ use crate::placement::{self, Bind, Finds, JoinRefused};
 use crate::program::{Binding, ProgramId};
 use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
 use crate::texture::{TextureFormat, TextureId};
-use aethereal_data::{ActorId, Kind, KindName, Plain};
+use aethereal_data::{ActorId, Plain};
 use aethereal_window::WindowId;
 
 /// A frame, as a placement joins its passes: a window's main frame, whichever frame it is at each `Render`, or a frame
 /// that ends on a texture, by its id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+#[kind(name = "aether.render.frame")]
 pub enum Frame {
     Main(WindowId),
     Texture(FrameId),
-}
-
-impl Kind for Frame {
-    const NAME: KindName = KindName::new("aether.render.frame");
 }
 
 /// Asks the renderer for a frame: its passes in the order they run, over its end and `targets`, each the size of its
 /// end or a part of it that its scale says. One that ends on a window is the window's main frame from the next `Render`, in place of the one before.
 /// Answered with [`Framed`].
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.create_frame")]
 pub struct CreateFrame {
     pub ends: Ends,
     pub targets: Vec<TargetSpec>,
     pub passes: Vec<PassSpec>,
 }
 
-impl Kind for CreateFrame {
-    const NAME: KindName = KindName::new("aether.render.create_frame");
-}
-
 /// Where a frame ends: shown on a window, as its main frame, or drawn into a texture of a size and a format, which any
 /// actor handed its id binds or reads back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.ends")]
 pub enum Ends {
     Window(WindowId),
     Texture { size: Size, format: TextureFormat },
 }
 
-impl Kind for Ends {
-    const NAME: KindName = KindName::new("aether.render.ends");
-}
-
 /// The size of a texture a frame ends on, in its pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.size")]
 pub struct Size {
     pub width: u32,
     pub height: u32,
-}
-
-impl Kind for Size {
-    const NAME: KindName = KindName::new("aether.render.size");
 }
 
 impl Size {
@@ -85,17 +73,15 @@ impl Size {
 
 /// A target of a frame besides its end: what it holds, and its size, a part of the end's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.target_spec")]
 pub struct TargetSpec {
     pub kind: TargetKind,
     pub scale: Scale,
 }
 
-impl Kind for TargetSpec {
-    const NAME: KindName = KindName::new("aether.render.target_spec");
-}
-
 /// What a target holds: floats, whole numbers, or depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.target_kind")]
 pub enum TargetKind {
     /// Four 16-bit floats a pixel.
     Float,
@@ -105,21 +91,14 @@ pub enum TargetKind {
     Depth,
 }
 
-impl Kind for TargetKind {
-    const NAME: KindName = KindName::new("aether.render.target_kind");
-}
-
 /// The size of a target, as a part of its frame's end: each side the end's divided by 1, 2, 4, or 8, and rounded up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.scale")]
 pub enum Scale {
     Full,
     Half,
     Quarter,
     Eighth,
-}
-
-impl Kind for Scale {
-    const NAME: KindName = KindName::new("aether.render.scale");
 }
 
 impl Scale {
@@ -159,17 +138,15 @@ impl TargetSpec {
 
 /// One pass of a frame: its name, which placements join it by, and what it does.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.pass_spec")]
 pub struct PassSpec {
     pub name: PassName,
     pub does: Does,
 }
 
-impl Kind for PassSpec {
-    const NAME: KindName = KindName::new("aether.render.pass_spec");
-}
-
 /// What a pass does.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.does")]
 pub enum Does {
     /// The placements that join it draw into `into`, with `depth`, beginning from what `load` says.
     Draw { into: Target, depth: DepthUse, load: Load },
@@ -183,57 +160,42 @@ pub enum Does {
     Compute,
 }
 
-impl Kind for Does {
-    const NAME: KindName = KindName::new("aether.render.does");
-}
-
 /// What a pass draws into or reads: the frame's end, or one of its targets, by its place in `targets`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.target")]
 pub enum Target {
     End,
     Texture(u32),
 }
 
-impl Kind for Target {
-    const NAME: KindName = KindName::new("aether.render.target");
-}
-
 /// How a draw pass uses depth: none, or the depth target at a place in `targets`, written from the far plane, or
 /// tested as an earlier pass left it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.depth_use")]
 pub enum DepthUse {
     Off,
     Write(u32),
     Test(u32),
 }
 
-impl Kind for DepthUse {
-    const NAME: KindName = KindName::new("aether.render.depth_use");
-}
-
 /// What a draw pass begins from in what it draws into: black, or what an earlier pass of the frame drew there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.load")]
 pub enum Load {
     Clear,
     Keep,
 }
 
-impl Kind for Load {
-    const NAME: KindName = KindName::new("aether.render.load");
-}
-
 /// A frame the renderer made, which only its maker may release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+#[kind(name = "aether.render.frame_id")]
 pub struct FrameId {
     pub(crate) id: u64,
 }
 
-impl Kind for FrameId {
-    const NAME: KindName = KindName::new("aether.render.frame_id");
-}
-
 /// What the renderer answers [`CreateFrame`] with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.framed")]
 pub enum Framed {
     /// A window's main frame.
     Made(FrameId),
@@ -246,12 +208,9 @@ pub enum Framed {
     Refused(FrameRefused),
 }
 
-impl Kind for Framed {
-    const NAME: KindName = KindName::new("aether.render.framed");
-}
-
 /// Why a frame was not made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.frame_refused")]
 pub enum FrameRefused {
     /// It ends on a window the renderer does not draw to.
     Window,
@@ -269,12 +228,9 @@ pub enum FrameRefused {
     Pass { pass: u32, why: PassRefused },
 }
 
-impl Kind for FrameRefused {
-    const NAME: KindName = KindName::new("aether.render.frame_refused");
-}
-
 /// Why one pass of a frame was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.pass_refused")]
 pub enum PassRefused {
     /// It names a target past the frame's last.
     Target,
@@ -298,10 +254,6 @@ pub enum PassRefused {
     Shape,
     /// What it binds besides is not what the effect binds.
     Bindings { why: JoinRefused },
-}
-
-impl Kind for PassRefused {
-    const NAME: KindName = KindName::new("aether.render.pass_refused");
 }
 
 impl CreateFrame {
@@ -551,13 +503,10 @@ fn depth_of(create: &CreateFrame, at: u32, drawn: Scale) -> Result<(), PassRefus
 /// Asks the renderer the shape of the pass `pass` of `frame` as it stands: what a program that joins it is made
 /// against. Answered with [`Shaped`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.shape_of")]
 pub struct ShapeOf {
     pub frame: Frame,
     pub pass: PassName,
-}
-
-impl Kind for ShapeOf {
-    const NAME: KindName = KindName::new("aether.render.shape_of");
 }
 
 impl ShapeOf {
@@ -570,11 +519,8 @@ impl ShapeOf {
 
 /// What the renderer answers [`ShapeOf`] with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.shaped")]
 pub enum Shaped {
     Shape(Shape),
     Refused(JoinRefused),
-}
-
-impl Kind for Shaped {
-    const NAME: KindName = KindName::new("aether.render.shaped");
 }

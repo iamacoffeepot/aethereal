@@ -13,25 +13,16 @@ fn context() -> Context {
 
 /// The types of these actors.
 #[derive(Plain)]
+#[kind(name = "aether.window")]
 struct Window;
 
-impl Kind for Window {
-    const NAME: KindName = KindName::new("aether.window");
-}
-
 #[derive(Plain)]
+#[kind(name = "aether.window.surface")]
 struct Surface;
 
-impl Kind for Surface {
-    const NAME: KindName = KindName::new("aether.window.surface");
-}
-
 #[derive(Plain)]
+#[kind(name = "aether.window.layer")]
 struct Layer;
-
-impl Kind for Layer {
-    const NAME: KindName = KindName::new("aether.window.layer");
-}
 
 const WINDOW: KindName = Window::NAME;
 const SURFACE: KindName = Surface::NAME;

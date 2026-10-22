@@ -1,6 +1,5 @@
 //! Kinds the `kind` and `same_layout` tests share (ADR-0006).
 
-use super::{Kind, KindName};
 use crate::{Budget, FieldNode, Plain, SchemaNode, SchemaNodes, from_bytes, to_bytes};
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
@@ -10,13 +9,10 @@ use core::iter::once;
 
 /// Two bytes the layout and id tests hash.
 #[derive(Plain)]
+#[kind(name = "aether.audio.note_on")]
 pub struct NoteOn {
     pitch: u8,
     velocity: u8,
-}
-
-impl Kind for NoteOn {
-    const NAME: KindName = KindName::new("aether.audio.note_on");
 }
 
 /// Two floats; not a kind, only a shape the tests share.
@@ -28,6 +24,7 @@ pub struct Point {
 
 /// A struct touching every leaf shape the tests hash.
 #[derive(Plain)]
+#[kind(name = "test.path")]
 pub struct Path {
     label: String,
     points: Vec<Point>,
@@ -38,12 +35,9 @@ pub struct Path {
     raw: Vec<u8>,
 }
 
-impl Kind for Path {
-    const NAME: KindName = KindName::new("test.path");
-}
-
 /// An enum with an empty, a named, and an unnamed variant.
 #[derive(Plain)]
+#[kind(name = "test.command")]
 pub enum Command {
     Stop,
     #[plain(selector = 7)]
@@ -54,20 +48,13 @@ pub enum Command {
     Say(String, u16),
 }
 
-impl Kind for Command {
-    const NAME: KindName = KindName::new("test.command");
-}
-
 /// A struct holding maps and a set.
 #[derive(Plain)]
+#[kind(name = "test.ledger")]
 pub struct Ledger {
     balances: BTreeMap<u64, i64>,
     notes: BTreeMap<String, (u32, bool)>,
     marks: BTreeSet<u16>,
-}
-
-impl Kind for Ledger {
-    const NAME: KindName = KindName::new("test.ledger");
 }
 
 /// Two floats under other names; the `Point` its copies use.
@@ -79,6 +66,7 @@ pub struct Spot {
 
 /// `Path` with every field and struct renamed and `Point` replaced by `Spot`.
 #[derive(Plain)]
+#[kind(name = "test.path")]
 pub struct Route {
     title: String,
     stops: Vec<Spot>,
@@ -89,12 +77,9 @@ pub struct Route {
     blob: Vec<u8>,
 }
 
-impl Kind for Route {
-    const NAME: KindName = KindName::new("test.path");
-}
-
 /// `Command` renamed, with named and unnamed fields swapped on purpose.
 #[derive(Plain)]
+#[kind(name = "test.command")]
 pub enum Renamed {
     Halt,
     #[plain(selector = 7)]
@@ -105,12 +90,9 @@ pub enum Renamed {
     },
 }
 
-impl Kind for Renamed {
-    const NAME: KindName = KindName::new("test.command");
-}
-
 /// `Command` with the middle selector changed.
 #[derive(Plain)]
+#[kind(name = "test.command")]
 pub enum Reselected {
     Stop,
     #[plain(selector = 8)]
@@ -121,30 +103,20 @@ pub enum Reselected {
     Say(String, u16),
 }
 
-impl Kind for Reselected {
-    const NAME: KindName = KindName::new("test.command");
-}
-
 /// `NoteOn` with the second byte widened.
 #[derive(Plain)]
+#[kind(name = "aether.audio.note_on")]
 pub struct Wide {
     pitch: u8,
     velocity: u16,
 }
 
-impl Kind for Wide {
-    const NAME: KindName = KindName::new("aether.audio.note_on");
-}
-
 /// `NoteOn` under another name.
 #[derive(Plain)]
+#[kind(name = "aether.audio.note_off")]
 pub struct NoteOff {
     pitch: u8,
     velocity: u8,
-}
-
-impl Kind for NoteOff {
-    const NAME: KindName = KindName::new("aether.audio.note_off");
 }
 
 /// A flat schema of `depth` structs over `leaf`: each has two fields, and both name the level below.

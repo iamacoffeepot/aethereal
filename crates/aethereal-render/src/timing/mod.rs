@@ -4,20 +4,18 @@
 #[cfg(test)]
 mod tests;
 
-use aethereal_data::{Kind, KindName, Plain};
+use aethereal_data::Plain;
 
 /// Asks the renderer how long the GPU takes over each pass of the next frame it draws. Answered with [`Timed`] once
 /// the GPU has drawn it and the host has mapped its timestamps back, a frame or more later; refused at once on a
 /// device without timestamps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.time_frame")]
 pub struct TimeFrame;
-
-impl Kind for TimeFrame {
-    const NAME: KindName = KindName::new("aether.render.time_frame");
-}
 
 /// What the renderer answers [`TimeFrame`] with.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.timed")]
 pub enum Timed {
     /// The nanoseconds from the beginning of each pass to its end, in the order they run: each pass of each frame
     /// that ends on a texture, in the order the frames run, then each pass of the window's main frame.
@@ -27,21 +25,14 @@ pub enum Timed {
     Refused(TimingRefused),
 }
 
-impl Kind for Timed {
-    const NAME: KindName = KindName::new("aether.render.timed");
-}
-
 /// Why a frame was not timed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.timing_refused")]
 pub enum TimingRefused {
     /// The device has no timestamps: the GPU it was opened on does not offer WebGPU's `timestamp-query`.
     Unsupported,
     /// The GPU did not map the timestamps back.
     Unmapped,
-}
-
-impl Kind for TimingRefused {
-    const NAME: KindName = KindName::new("aether.render.timing_refused");
 }
 
 /// The nanoseconds of each pass, from `stamps`, the timestamps the GPU resolved: a pass's beginning and its end after

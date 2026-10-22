@@ -12,8 +12,8 @@ use crate::{
     Actors, ActorsReader, ActorsWriter, BlobId, Fault, MailId, Seated, Time, Timer, Until, Unwritable, Within,
 };
 use aethereal_data::{
-    ActorId, Budget, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, KindName, Plain, Reader, Schema,
-    Shape, Writer,
+    ActorId, Budget, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, Plain, Reader, Schema, Shape,
+    Writer,
 };
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -225,11 +225,8 @@ pub enum Unrun {
 
 /// The reason of a turn whose job its turn could not run, as `?` makes of an [`Unrun`].
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.actor.not_run")]
 pub struct NotRun;
-
-impl Kind for NotRun {
-    const NAME: KindName = KindName::new("aether.actor.not_run");
-}
 
 impl From<Unrun> for Fault {
     fn from(unrun: Unrun) -> Self {

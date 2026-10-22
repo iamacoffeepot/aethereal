@@ -74,28 +74,19 @@ impl Table for Typed {
 
 /// Mail a keeper handles.
 #[derive(Plain)]
+#[kind(name = "aether.test.kept")]
 struct Kept;
-
-impl Kind for Kept {
-    const NAME: KindName = KindName::new("aether.test.kept");
-}
 
 /// Mail no actor here lists.
 #[derive(Plain)]
+#[kind(name = "aether.test.stray")]
 struct Stray;
-
-impl Kind for Stray {
-    const NAME: KindName = KindName::new("aether.test.stray");
-}
 
 /// An actor that handles kept mail, sends it on to keepers, to any actor that handles it, and back to its sender, and
 /// falls back on the rest, logging which handler it reached.
 #[derive(Plain)]
+#[kind(name = "aether.test.keeper")]
 struct Keeper;
-
-impl Kind for Keeper {
-    const NAME: KindName = KindName::new("aether.test.keeper");
-}
 
 impl ChildOf for Keeper {
     type Parent = Anywhere;
@@ -139,11 +130,8 @@ impl Handles<Others> for Keeper {
 
 /// An actor that handles kept mail and nothing else, and falls back on nothing.
 #[derive(Plain)]
+#[kind(name = "aether.test.strict")]
 struct Strict;
-
-impl Kind for Strict {
-    const NAME: KindName = KindName::new("aether.test.strict");
-}
 
 impl ChildOf for Strict {
     type Parent = Keeper;
@@ -175,11 +163,8 @@ impl Handles<Kept> for Strict {
 
 /// An actor that takes any mail through its fallback, and lists no kind.
 #[derive(Plain)]
+#[kind(name = "aether.test.sink")]
 struct Sink;
-
-impl Kind for Sink {
-    const NAME: KindName = KindName::new("aether.test.sink");
-}
 
 impl ChildOf for Sink {
     type Parent = Recursive;

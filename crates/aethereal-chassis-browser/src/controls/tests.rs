@@ -39,22 +39,16 @@ fn number(name: &str, value: f64) -> Control {
 
 /// An empty config.
 #[derive(Plain)]
+#[kind(name = "aether.test.listener_config")]
 struct Nothing;
-
-impl Kind for Nothing {
-    const NAME: KindName = KindName::new("aether.test.listener_config");
-}
 
 /// What the listener was sent, in order.
 static HEARD: Mutex<Vec<Control>> = Mutex::new(Vec::new());
 
 /// An actor that subscribes to the controls root, sends it a control of its own, and notes each control it is sent.
 #[derive(Bound)]
+#[kind(name = "aether.test.listener")]
 struct Listener;
-
-impl Kind for Listener {
-    const NAME: KindName = KindName::new("aether.test.listener");
-}
 
 impl ChildOf for Listener {
     type Parent = Top;
@@ -126,20 +120,14 @@ fn a_subscriber_is_sent_what_the_page_pushed_in_the_order_pushed_and_nothing_ano
 
 /// What tells the late listener to subscribe, brought from its own source.
 #[derive(Plain)]
+#[kind(name = "aether.test.nudge")]
 struct Nudge;
-
-impl Kind for Nudge {
-    const NAME: KindName = KindName::new("aether.test.nudge");
-}
 
 /// The source the late listener is nudged through.
 #[derive(Bound)]
+#[kind(name = "aether.test.late_config")]
 struct LateConfig {
     nudges: Given<Source<Nudge>>,
-}
-
-impl Kind for LateConfig {
-    const NAME: KindName = KindName::new("aether.test.late_config");
 }
 
 /// What the late listener was sent, in order.
@@ -147,12 +135,9 @@ static HEARD_LATE: Mutex<Vec<Control>> = Mutex::new(Vec::new());
 
 /// An actor that subscribes to the controls root twice when it is nudged, and notes each control it is sent.
 #[derive(Bound)]
+#[kind(name = "aether.test.late")]
 struct Late {
     nudges: Handle<Source<Nudge>>,
-}
-
-impl Kind for Late {
-    const NAME: KindName = KindName::new("aether.test.late");
 }
 
 impl ChildOf for Late {

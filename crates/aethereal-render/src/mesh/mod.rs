@@ -5,31 +5,25 @@
 mod tests;
 
 use aethereal_actor::BlobRef;
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 
 /// Asks the renderer for a mesh: `vertices`, laid out as `layout` says, and the triangles of `indices`, each three
 /// `u32`s in the platform's byte order that index the vertices. Answered with [`Meshed`].
 #[derive(Bound)]
+#[kind(name = "aether.render.create_mesh")]
 pub struct CreateMesh {
     pub layout: VertexLayout,
     pub vertices: BlobRef,
     pub indices: BlobRef,
 }
 
-impl Kind for CreateMesh {
-    const NAME: KindName = KindName::new("aether.render.create_mesh");
-}
-
 /// How a mesh's vertices are laid out: how many bytes each takes, and each attribute a program's vertex stage reads
 /// of it.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.vertex_layout")]
 pub struct VertexLayout {
     pub stride: u32,
     pub attributes: Vec<Attribute>,
-}
-
-impl Kind for VertexLayout {
-    const NAME: KindName = KindName::new("aether.render.vertex_layout");
 }
 
 impl VertexLayout {
@@ -42,18 +36,16 @@ impl VertexLayout {
 
 /// One attribute of a vertex: the location a vertex stage reads it at, its format, and where in the vertex it lies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.attribute")]
 pub struct Attribute {
     pub location: u32,
     pub format: VertexFormat,
     pub offset: u32,
 }
 
-impl Kind for Attribute {
-    const NAME: KindName = KindName::new("aether.render.attribute");
-}
-
 /// The format of a vertex attribute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.vertex_format")]
 pub enum VertexFormat {
     Float32,
     Float32x2,
@@ -62,10 +54,6 @@ pub enum VertexFormat {
     Uint32,
     /// Four bytes, each read as a fraction from zero to one: a colour.
     Unorm8x4,
-}
-
-impl Kind for VertexFormat {
-    const NAME: KindName = KindName::new("aether.render.vertex_format");
 }
 
 impl VertexFormat {
@@ -96,27 +84,22 @@ impl VertexFormat {
 
 /// A mesh the renderer made, which any actor handed it may draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.mesh_id")]
 pub struct MeshId {
     pub(crate) id: u64,
 }
 
-impl Kind for MeshId {
-    const NAME: KindName = KindName::new("aether.render.mesh_id");
-}
-
 /// What the renderer answers [`CreateMesh`] with.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.meshed")]
 pub enum Meshed {
     Made(MeshId),
     Refused(MeshRefused),
 }
 
-impl Kind for Meshed {
-    const NAME: KindName = KindName::new("aether.render.meshed");
-}
-
 /// Why a mesh was not made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.mesh_refused")]
 pub enum MeshRefused {
     /// The layout's stride is zero, or not a whole number of four bytes.
     Stride { stride: u32 },
@@ -130,10 +113,6 @@ pub enum MeshRefused {
     Indices { bytes: u64 },
     /// An index names a vertex past the last.
     Index { index: u32, vertices: u32 },
-}
-
-impl Kind for MeshRefused {
-    const NAME: KindName = KindName::new("aether.render.mesh_refused");
 }
 
 /// A mesh's counts, as its check found them.

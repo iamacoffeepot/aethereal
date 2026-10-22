@@ -9,7 +9,7 @@ use aethereal_actor::{
 };
 use aethereal_chassis_browser::canvas::{self, Density};
 use aethereal_chassis_browser::{Browser, Listening, Performance, open, renderer};
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::effect::{CreateEffect, EffectId, Effected, Read};
 use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, depth, scale};
@@ -95,20 +95,14 @@ impl Program {
 
 /// The context of an ask that needs none.
 #[derive(Plain)]
+#[kind(name = "aether.example.nothing")]
 struct Nothing;
-
-impl Kind for Nothing {
-    const NAME: KindName = KindName::new("aether.example.nothing");
-}
 
 /// The framer's config: the window it draws on.
 #[derive(Plain)]
+#[kind(name = "aether.example.shows")]
 struct Shows {
     window: WindowId,
-}
-
-impl Kind for Shows {
-    const NAME: KindName = KindName::new("aether.example.shows");
 }
 
 /// The pass that begins the scene with a sky, an effect that reads nothing.
@@ -120,21 +114,15 @@ impl Pass for Sky {}
 
 /// The pass that draws surfaces over the sky, writing their depth.
 #[derive(Plain)]
+#[kind(name = "aether.example.surfaces")]
 struct Surfaces;
-
-impl Kind for Surfaces {
-    const NAME: KindName = KindName::new("aether.example.surfaces");
-}
 
 impl Pass for Surfaces {}
 
 /// The pass that draws splats over the scene, tested against the surfaces' depth.
 #[derive(Plain)]
+#[kind(name = "aether.example.splats")]
 struct Splats;
-
-impl Kind for Splats {
-    const NAME: KindName = KindName::new("aether.example.splats");
-}
 
 impl Pass for Splats {}
 
@@ -147,11 +135,8 @@ impl Pass for Detail {}
 
 /// The pass that tints the scene onto the window.
 #[derive(Plain)]
+#[kind(name = "aether.example.tint")]
 struct Tint;
-
-impl Kind for Tint {
-    const NAME: KindName = KindName::new("aether.example.tint");
-}
 
 impl Pass for Tint {}
 
@@ -226,6 +211,7 @@ const SETTLED: u32 = 3;
 /// The framer: it makes what it draws one ask after another, each answer carrying what was made so far, makes its
 /// frame, places a surface and a splat, and once a few frames are drawn reads back a frame and times one.
 #[derive(Bound)]
+#[kind(name = "aether.example.framer")]
 enum Framer {
     /// Its asks are under way, and nothing is placed on `window`.
     Making { window: WindowId },
@@ -235,22 +221,15 @@ enum Framer {
     Asked,
 }
 
-impl Kind for Framer {
-    const NAME: KindName = KindName::new("aether.example.framer");
-}
-
 impl ChildOf for Framer {
     type Parent = Top;
 }
 
 /// What was learned before the quad was asked for: the window's colour, which the tint draws into.
 #[derive(Plain)]
+#[kind(name = "aether.example.learned")]
 struct Learned {
     window: ColourFormat,
-}
-
-impl Kind for Learned {
-    const NAME: KindName = KindName::new("aether.example.learned");
 }
 
 /// Which effect was asked for, with what was made before it.
@@ -267,6 +246,7 @@ enum Effecting {
 
 /// Which program was asked for, with what was made before it.
 #[derive(Plain)]
+#[kind(name = "aether.example.making")]
 enum Making {
     /// The surface, once the effects were made.
     Surface { mesh: MeshId, effects: Effects },
@@ -283,33 +263,23 @@ struct Effects {
     detail: EffectId<()>,
 }
 
-impl Kind for Making {
-    const NAME: KindName = KindName::new("aether.example.making");
-}
-
 /// What the placements draw with, kept until the frame is made.
 #[derive(Plain)]
+#[kind(name = "aether.example.made_programs")]
 struct MadePrograms {
     mesh: MeshId,
     surface: ProgramId,
     splat: ProgramId,
 }
 
-impl Kind for MadePrograms {
-    const NAME: KindName = KindName::new("aether.example.made_programs");
-}
-
 /// Which placement was asked for.
 #[derive(Plain)]
+#[kind(name = "aether.example.placing")]
 enum Placing {
     /// The surface, with what the splat is then placed with.
     Surface { mesh: MeshId, splat: ProgramId },
     /// The splat.
     Splat,
-}
-
-impl Kind for Placing {
-    const NAME: KindName = KindName::new("aether.example.placing");
 }
 
 impl Actor for Framer {

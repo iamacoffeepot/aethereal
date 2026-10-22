@@ -1,9 +1,7 @@
 //! An actor's resources: values that are not data, each with exactly one owner (ADR-0010).
 
 use crate::{Above, Actors, Fault, MailId, Seated, Within};
-use aethereal_data::{
-    Decode, DecodeError, Encode, EncodeError, Field, Kind, KindName, Plain, Reader, Schema, Shape, Writer,
-};
+use aethereal_data::{Decode, DecodeError, Encode, EncodeError, Field, Plain, Reader, Schema, Shape, Writer};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::any::{self, Any};
@@ -115,20 +113,14 @@ impl<R: Resource> Decode<Actors> for Given<R> {
 /// The reason of a turn that used a handle or a given resource that names nothing of that type it holds, or that has
 /// arrived for it with the mail it handles (ADR-0010).
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.actor.not_held")]
 pub struct NotHeld;
-
-impl Kind for NotHeld {
-    const NAME: KindName = KindName::new("aether.actor.not_held");
-}
 
 /// The reason of a turn that kept or opened a resource where nothing is kept: in a guest's code, which holds handles
 /// and opens none, and makes no resource to keep (ADR-0010, ADR-0015).
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.actor.keeps_nothing")]
 pub struct KeepsNothing;
-
-impl Kind for KeepsNothing {
-    const NAME: KindName = KindName::new("aether.actor.keeps_nothing");
-}
 
 /// One resource, held by the engine for an actor or on its way: its ticket, its name, and the value.
 pub struct Kept {

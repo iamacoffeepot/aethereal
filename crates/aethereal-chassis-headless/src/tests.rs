@@ -4,40 +4,31 @@ use super::*;
 use aethereal_actor::{
     Actor, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Time, ToType, Turn,
 };
-use aethereal_data::{ActorId, Kind, KindName, PathSegment, Plain};
+use aethereal_data::{ActorId, Kind, PathSegment, Plain};
 use aethereal_substrate::child_id;
 use std::iter;
 
 /// How many turns a fan has left to take.
 #[derive(Plain)]
+#[kind(name = "aether.test.count")]
 struct Count {
     left: u64,
 }
 
-impl Kind for Count {
-    const NAME: KindName = KindName::new("aether.test.count");
-}
-
 /// A fan's number, and how many children it spawns.
 #[derive(Plain)]
+#[kind(name = "aether.test.fan_config")]
 struct FanConfig {
     number: u64,
     children: u64,
 }
 
-impl Kind for FanConfig {
-    const NAME: KindName = KindName::new("aether.test.fan_config");
-}
-
 /// An actor that, as the root, spawns its children and counts each down; as a child, works an amount that grows
 /// with its number, logs where it is, tells its parent, and counts itself down until it closes.
 #[derive(Plain)]
+#[kind(name = "aether.test.fan")]
 struct Fan {
     number: u64,
-}
-
-impl Kind for Fan {
-    const NAME: KindName = KindName::new("aether.test.fan");
 }
 
 /// How many turns each child takes.

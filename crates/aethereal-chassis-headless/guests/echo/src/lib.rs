@@ -6,70 +6,49 @@ use aethereal_actor::{
     Refused, Resource, Runner, Running, Start, Stop, Tells, Tick, ToAny, ToSender, ToType, Top, Turn, Unanswered,
     Unrun, parent, path,
 };
-use aethereal_data::{ActorPath, Bound, Kind, KindId, KindName, Plain};
+use aethereal_data::{ActorPath, Bound, KindId, KindName, Plain};
 use core::mem;
 
 /// A ping, which an echo answers with a pong of the same number.
 #[derive(Plain)]
+#[kind(name = "aether.guest.ping")]
 pub struct Ping {
     pub n: u64,
 }
 
-impl Kind for Ping {
-    const NAME: KindName = KindName::new("aether.guest.ping");
-}
-
 /// The answer to a ping.
 #[derive(Plain)]
+#[kind(name = "aether.guest.pong")]
 pub struct Pong {
     pub n: u64,
 }
 
-impl Kind for Pong {
-    const NAME: KindName = KindName::new("aether.guest.pong");
-}
-
 /// One to count, which an echo counts and does not answer.
 #[derive(Plain)]
+#[kind(name = "aether.guest.increment")]
 pub struct Increment;
-
-impl Kind for Increment {
-    const NAME: KindName = KindName::new("aether.guest.increment");
-}
 
 /// A word to close, which an echo closes on.
 #[derive(Plain)]
+#[kind(name = "aether.guest.shut")]
 pub struct Shut;
-
-impl Kind for Shut {
-    const NAME: KindName = KindName::new("aether.guest.shut");
-}
 
 /// A word to crash, on which a mirror panics, which traps, as a guest's panic does.
 #[derive(Plain)]
+#[kind(name = "aether.guest.crash")]
 pub struct Crash;
-
-impl Kind for Crash {
-    const NAME: KindName = KindName::new("aether.guest.crash");
-}
 
 /// What an echo is made from: nothing.
 #[derive(Plain)]
+#[kind(name = "aether.guest.echo_config")]
 pub struct EchoConfig;
-
-impl Kind for EchoConfig {
-    const NAME: KindName = KindName::new("aether.guest.echo_config");
-}
 
 /// An actor that answers pings, and logs as it begins.
 #[derive(Bound)]
+#[kind(name = "aether.guest.echo")]
 pub struct Echo {
     answered: u64,
     counted: u64,
-}
-
-impl Kind for Echo {
-    const NAME: KindName = KindName::new("aether.guest.echo");
 }
 
 impl ChildOf for Echo {
@@ -128,11 +107,8 @@ impl Handles<Shut> for Echo {
 /// A second kind of actor the blob makes, so two of its actors can live in one instance: it answers pings, and
 /// closes on the word to.
 #[derive(Bound)]
+#[kind(name = "aether.guest.mirror")]
 pub struct Mirror;
-
-impl Kind for Mirror {
-    const NAME: KindName = KindName::new("aether.guest.mirror");
-}
 
 impl ChildOf for Mirror {
     type Parent = Top;
@@ -185,11 +161,8 @@ impl Handles<Crash> for Mirror {
 /// An actor that subscribes to the lifecycle's `Start` and `Stop` as it begins, logs each it is sent, and asks the
 /// program to stop on `Start` (ADR-0020).
 #[derive(Bound)]
+#[kind(name = "aether.guest.starter")]
 pub struct Starter;
-
-impl Kind for Starter {
-    const NAME: KindName = KindName::new("aether.guest.starter");
-}
 
 impl ChildOf for Starter {
     type Parent = Top;
@@ -237,11 +210,8 @@ impl Handles<On<Stop>> for Starter {
 
 /// An actor that subscribes to `Tick` as it begins: one an engine whose cycle runs no `Tick` does not make (ADR-0020).
 #[derive(Bound)]
+#[kind(name = "aether.guest.ticker")]
 pub struct Ticker;
-
-impl Kind for Ticker {
-    const NAME: KindName = KindName::new("aether.guest.ticker");
-}
 
 impl ChildOf for Ticker {
     type Parent = Anywhere;
@@ -276,11 +246,8 @@ impl Handles<On<Tick>> for Ticker {
 /// An actor that spawns a ticker of its own blob as it begins, and logs whether its engine made it: refused for
 /// `Tick`, by the stage's kind, when its cycle runs none (ADR-0020).
 #[derive(Bound)]
+#[kind(name = "aether.guest.metronome")]
 pub struct Metronome;
-
-impl Kind for Metronome {
-    const NAME: KindName = KindName::new("aether.guest.metronome");
-}
 
 impl ChildOf for Metronome {
     type Parent = Top;
@@ -312,11 +279,8 @@ impl Actor for Metronome {
 
 /// A job a guest cannot run yet: its host reads no job (ADR-0018).
 #[derive(Plain)]
+#[kind(name = "aether.guest.chore")]
 pub struct Chore;
-
-impl Kind for Chore {
-    const NAME: KindName = KindName::new("aether.guest.chore");
-}
 
 impl Job for Chore {
     type Done = Pong;
@@ -329,11 +293,8 @@ impl Job for Chore {
 
 /// An actor that runs a chore as it begins, and logs that its turn refused it, as a guest's does.
 #[derive(Bound)]
+#[kind(name = "aether.guest.errand")]
 pub struct Errand;
-
-impl Kind for Errand {
-    const NAME: KindName = KindName::new("aether.guest.errand");
-}
 
 impl ChildOf for Errand {
     type Parent = Top;
@@ -373,11 +334,8 @@ impl Handles<Answer<Pong, EchoConfig>> for Errand {
 
 /// An actor that answers each ping with the time its turn reads, in nanoseconds (ADR-0018).
 #[derive(Bound)]
+#[kind(name = "aether.guest.timekeeper")]
 pub struct Timekeeper;
-
-impl Kind for Timekeeper {
-    const NAME: KindName = KindName::new("aether.guest.timekeeper");
-}
 
 impl ChildOf for Timekeeper {
     type Parent = Top;
@@ -412,12 +370,9 @@ impl Handles<Ping> for Timekeeper {
 /// An actor of which the blob makes many, each under its own key: it answers pings, and counts them, so each keeps
 /// state of its own in the instance it lives in, and closes on the word to.
 #[derive(Bound)]
+#[kind(name = "aether.guest.responder")]
 pub struct Responder {
     answered: u64,
-}
-
-impl Kind for Responder {
-    const NAME: KindName = KindName::new("aether.guest.responder");
 }
 
 impl ChildOf for Responder {
@@ -463,11 +418,8 @@ impl Handles<Shut> for Responder {
 
 /// An actor whose `begin` panics, which traps, as a guest's panic does.
 #[derive(Bound)]
+#[kind(name = "aether.guest.doomed")]
 pub struct Doomed;
-
-impl Kind for Doomed {
-    const NAME: KindName = KindName::new("aether.guest.doomed");
-}
 
 impl ChildOf for Doomed {
     type Parent = Top;
@@ -491,31 +443,22 @@ impl Actor for Doomed {
 
 /// What a brood is made from: how many children it spawns as it begins.
 #[derive(Plain)]
+#[kind(name = "aether.guest.brood_config")]
 pub struct BroodConfig {
     pub children: u64,
 }
 
-impl Kind for BroodConfig {
-    const NAME: KindName = KindName::new("aether.guest.brood_config");
-}
-
 /// A word to a brood to spawn one more child.
 #[derive(Plain)]
+#[kind(name = "aether.guest.grow")]
 pub struct Grow;
-
-impl Kind for Grow {
-    const NAME: KindName = KindName::new("aether.guest.grow");
-}
 
 /// An actor that spawns adders: some as it begins, and one more on each word to grow. The `k`th adds `10 k + 1`, and
 /// the first spawns one of its own.
 #[derive(Bound)]
+#[kind(name = "aether.guest.brood")]
 pub struct Brood {
     next: u64,
-}
-
-impl Kind for Brood {
-    const NAME: KindName = KindName::new("aether.guest.brood");
 }
 
 impl ChildOf for Brood {
@@ -561,24 +504,18 @@ impl Handles<Grow> for Brood {
 
 /// What an adder is made from: what it adds, and how many generations of adders to spawn beneath it.
 #[derive(Plain)]
+#[kind(name = "aether.guest.add_by")]
 pub struct AddBy {
     pub by: u64,
     pub deeper: u64,
 }
 
-impl Kind for AddBy {
-    const NAME: KindName = KindName::new("aether.guest.add_by");
-}
-
 /// An actor that answers a ping with a pong of the ping's number and its own, so the answer says its state survived
 /// wherever it was kept. Made deeper, it spawns an adder of its own that adds a thousand more.
 #[derive(Bound)]
+#[kind(name = "aether.guest.adder")]
 pub struct Adder {
     by: u64,
-}
-
-impl Kind for Adder {
-    const NAME: KindName = KindName::new("aether.guest.adder");
 }
 
 impl ChildOf for Adder {
@@ -620,22 +557,16 @@ impl Handles<Ping> for Adder {
 
 /// What a seeker is made from: the paths it resolves as it begins.
 #[derive(Plain)]
+#[kind(name = "aether.guest.seek")]
 pub struct Seek {
     pub paths: Vec<ActorPath>,
-}
-
-impl Kind for Seek {
-    const NAME: KindName = KindName::new("aether.guest.seek");
 }
 
 /// An actor that resolves each path it is made with as it begins, and pings each actor one names with its place in
 /// the list, so what is pinged says which paths it found.
 #[derive(Bound)]
+#[kind(name = "aether.guest.seeker")]
 pub struct Seeker;
-
-impl Kind for Seeker {
-    const NAME: KindName = KindName::new("aether.guest.seeker");
-}
 
 impl ChildOf for Seeker {
     type Parent = Top;
@@ -667,11 +598,8 @@ impl Actor for Seeker {
 /// pings each that casts with its place in the list: to `(Ping,)` as it is, and to `(Ping, Shut)` past fifty, so what
 /// is pinged says which casts answered.
 #[derive(Bound)]
+#[kind(name = "aether.guest.caster")]
 pub struct Caster;
-
-impl Kind for Caster {
-    const NAME: KindName = KindName::new("aether.guest.caster");
-}
 
 impl ChildOf for Caster {
     type Parent = Top;
@@ -707,34 +635,25 @@ impl Actor for Caster {
 
 /// What a watcher is made from: the paths of the actors it watches, and of the one it tells of their endings.
 #[derive(Plain)]
+#[kind(name = "aether.guest.watching")]
 pub struct Watching {
     pub paths: Vec<ActorPath>,
     pub tell: ActorPath,
 }
 
-impl Kind for Watching {
-    const NAME: KindName = KindName::new("aether.guest.watching");
-}
-
 /// Why a watcher did not begin: the actor it tells was not found.
 #[derive(Plain)]
+#[kind(name = "aether.guest.untold")]
 pub struct Untold;
-
-impl Kind for Untold {
-    const NAME: KindName = KindName::new("aether.guest.untold");
-}
 
 /// An actor that watches each actor at the paths it is made with, and tells the actor at the last of how each ended:
 /// a ping of ten for its place in the list, and one for a close, two for a fault, or three for an ending before the
 /// watch.
 #[derive(Bound)]
+#[kind(name = "aether.guest.watcher")]
 pub struct Watcher {
     watched: Vec<ErasedActorRef>,
     tell: ProtocolRef<(Ping,)>,
-}
-
-impl Kind for Watcher {
-    const NAME: KindName = KindName::new("aether.guest.watcher");
 }
 
 impl ChildOf for Watcher {
@@ -789,12 +708,9 @@ impl Handles<Ended> for Watcher {
 /// An actor that answers each ping by telling its parent, with a pong of the ping's number and its own key, so a turn
 /// long after its `begin` still reaches whatever spawned it.
 #[derive(Bound)]
+#[kind(name = "aether.guest.reporter")]
 pub struct Reporter {
     key: u64,
-}
-
-impl Kind for Reporter {
-    const NAME: KindName = KindName::new("aether.guest.reporter");
 }
 
 impl ChildOf for Reporter {
@@ -844,11 +760,8 @@ const fn refused(refused: &Refused) -> u64 {
 /// A native actor the guest's crate holds but its blob does not make: one a guest spawns is begun by its host. It
 /// tells its parent, as it begins, a pong of a hundred and what it is made to add, and logs that it began.
 #[derive(Bound)]
+#[kind(name = "aether.guest.chick")]
 pub struct Chick;
-
-impl Kind for Chick {
-    const NAME: KindName = KindName::new("aether.guest.chick");
-}
 
 impl ChildOf for Chick {
     type Parent = Hatcher;
@@ -876,11 +789,8 @@ impl Actor for Chick {
 /// A native actor named as a chick is, which declares other handlers: a guest's spawn of it is refused, as what the
 /// program keeps of the name is not it.
 #[derive(Bound)]
+#[kind(name = "aether.guest.chick")]
 pub struct FakeChick;
-
-impl Kind for FakeChick {
-    const NAME: KindName = KindName::new("aether.guest.chick");
-}
 
 impl ChildOf for FakeChick {
     type Parent = Hatcher;
@@ -912,11 +822,8 @@ impl Handles<Ping> for FakeChick {
 
 /// A native actor no program keeps for a guest to spawn.
 #[derive(Bound)]
+#[kind(name = "aether.guest.stray")]
 pub struct Stray;
-
-impl Kind for Stray {
-    const NAME: KindName = KindName::new("aether.guest.stray");
-}
 
 impl ChildOf for Stray {
     type Parent = Hatcher;
@@ -940,12 +847,9 @@ impl Actor for Stray {
 
 /// Why a hatcher did not begin: a spawn was refused, for the reason numbered so.
 #[derive(Plain)]
+#[kind(name = "aether.guest.unhatched")]
 pub struct Unhatched {
     pub why: u64,
-}
-
-impl Kind for Unhatched {
-    const NAME: KindName = KindName::new("aether.guest.unhatched");
 }
 
 /// The fault of a hatcher whose spawn was refused for `why`.
@@ -955,13 +859,10 @@ fn unhatched(why: &Refused) -> Fault {
 
 /// What a hatcher is made from: another blob of code, and its own.
 #[derive(Bound)]
+#[kind(name = "aether.guest.hatch")]
 pub struct Hatch {
     pub other: BlobRef,
     pub home: BlobRef,
-}
-
-impl Kind for Hatch {
-    const NAME: KindName = KindName::new("aether.guest.hatch");
 }
 
 /// An actor that spawns children of other code and tells its parent each pong they tell it. As it begins it spawns a
@@ -969,14 +870,11 @@ impl Kind for Hatch {
 /// child, adding `10 k + 2`; a stray and a fake chick, whose refusals it tells its parent as five and six hundred and
 /// why; and, on the first, a boomerang of the other blob, which it pings.
 #[derive(Bound)]
+#[kind(name = "aether.guest.hatcher")]
 pub struct Hatcher {
     other: BlobRef,
     home: BlobRef,
     grown: u64,
-}
-
-impl Kind for Hatcher {
-    const NAME: KindName = KindName::new("aether.guest.hatcher");
 }
 
 impl ChildOf for Hatcher {
@@ -1040,24 +938,18 @@ impl Handles<Grow> for Hatcher {
 
 /// What a boomerang is made from: the blob of code that spawned it.
 #[derive(Bound)]
+#[kind(name = "aether.guest.home")]
 pub struct Home {
     pub home: BlobRef,
-}
-
-impl Kind for Home {
-    const NAME: KindName = KindName::new("aether.guest.home");
 }
 
 /// An actor that spawns a reporter of the blob it was spawned from: refused as it begins, as that blob's instance waits
 /// on the call out that begins it, which it tells its parent as three hundred and why, and made on a ping, which it
 /// tells as four hundred.
 #[derive(Bound)]
+#[kind(name = "aether.guest.boomerang")]
 pub struct Boomerang {
     home: BlobRef,
-}
-
-impl Kind for Boomerang {
-    const NAME: KindName = KindName::new("aether.guest.boomerang");
 }
 
 impl ChildOf for Boomerang {
@@ -1098,35 +990,26 @@ impl Handles<Ping> for Boomerang {
 
 /// What a librarian is made from: the book it keeps, and the path of the actor it tells how long the book is.
 #[derive(Bound)]
+#[kind(name = "aether.guest.shelf")]
 pub struct Shelf {
     pub book: BlobRef,
     pub tell: ActorPath,
 }
 
-impl Kind for Shelf {
-    const NAME: KindName = KindName::new("aether.guest.shelf");
-}
-
 /// A reference to a blob, sent as mail.
 #[derive(Bound)]
+#[kind(name = "aether.guest.book")]
 pub struct Book {
     pub blob: BlobRef,
-}
-
-impl Kind for Book {
-    const NAME: KindName = KindName::new("aether.guest.book");
 }
 
 /// An actor that keeps a blob and reads it as it begins, telling another a pong of its length; answers a ping of `n`
 /// with a reference to a blob of `n` sevens, which it puts; answers a book it is sent with a pong of a hundred and its
 /// length; and closes on a word to shut.
 #[derive(Bound)]
+#[kind(name = "aether.guest.librarian")]
 pub struct Librarian {
     book: BlobRef,
-}
-
-impl Kind for Librarian {
-    const NAME: KindName = KindName::new("aether.guest.librarian");
 }
 
 impl ChildOf for Librarian {
@@ -1189,13 +1072,10 @@ impl Handles<Shut> for Librarian {
 
 /// What a forger is made from: the engine's number and the bits of a blob's id, as plain numbers, not a reference.
 #[derive(Plain)]
+#[kind(name = "aether.guest.forge")]
 pub struct Forge {
     pub engine: u32,
     pub bits: u64,
-}
-
-impl Kind for Forge {
-    const NAME: KindName = KindName::new("aether.guest.forge");
 }
 
 /// A reference to the blob `id` names, which no one gave: what code that keeps no rules makes, as a guest's code
@@ -1213,11 +1093,8 @@ fn forged(id: BlobId) -> BlobRef {
 /// An actor that makes a reference to a blob out of an id it was told as numbers, and reads it as it begins: its host
 /// refuses the read, as the guest was never given the blob.
 #[derive(Bound)]
+#[kind(name = "aether.guest.forger")]
 pub struct Forger;
-
-impl Kind for Forger {
-    const NAME: KindName = KindName::new("aether.guest.forger");
-}
 
 impl ChildOf for Forger {
     type Parent = Top;
@@ -1245,12 +1122,9 @@ impl Actor for Forger {
 /// An actor that makes a reference to a blob out of an id it was told as numbers, and keeps it, reading nothing: its
 /// host finds, among what its `begin` changed of its references, one to a blob the guest was never given.
 #[derive(Bound)]
+#[kind(name = "aether.guest.hoarder")]
 pub struct Hoarder {
     forged: BlobRef,
-}
-
-impl Kind for Hoarder {
-    const NAME: KindName = KindName::new("aether.guest.hoarder");
 }
 
 impl ChildOf for Hoarder {
@@ -1277,11 +1151,8 @@ impl Actor for Hoarder {
 /// answers with a reference to a blob it was never given: its host refuses that send, and the turn fails with the librarian it stood
 /// up, which the engine never ends.
 #[derive(Bound)]
+#[kind(name = "aether.guest.spendthrift")]
 pub struct Spendthrift;
-
-impl Kind for Spendthrift {
-    const NAME: KindName = KindName::new("aether.guest.spendthrift");
-}
 
 impl ChildOf for Spendthrift {
     type Parent = Top;
@@ -1320,25 +1191,19 @@ impl Handles<Ping> for Spendthrift {
 
 /// What a parting actor is made from: the path of the actor it tells as it ends.
 #[derive(Bound)]
+#[kind(name = "aether.guest.farewell")]
 pub struct Farewell {
     pub tell: ActorPath,
-}
-
-impl Kind for Farewell {
-    const NAME: KindName = KindName::new("aether.guest.farewell");
 }
 
 /// An actor that counts the pings it is sent, and fails on a ping of zero; closes on a word to shut; and, in its
 /// closing turn, tells the actor it was made to tell a pong of six hundred, ten for each ping it counted, and one when
 /// it ends because a turn of its own failed.
 #[derive(Bound)]
+#[kind(name = "aether.guest.parting")]
 pub struct Parting {
     tell: ProtocolRef<(Pong,)>,
     pings: u64,
-}
-
-impl Kind for Parting {
-    const NAME: KindName = KindName::new("aether.guest.parting");
 }
 
 impl ChildOf for Parting {
@@ -1394,23 +1259,17 @@ impl Handles<Shut> for Parting {
 
 /// What an archive is made from: the book its readers keep, and how many readers it spawns.
 #[derive(Bound)]
+#[kind(name = "aether.guest.stacks")]
 pub struct Stacks {
     pub book: BlobRef,
     pub readers: u64,
 }
 
-impl Kind for Stacks {
-    const NAME: KindName = KindName::new("aether.guest.stacks");
-}
-
 /// An actor that spawns readers as it begins, each keeping a reference to the book it was made with, and keeps none
 /// itself.
 #[derive(Bound)]
+#[kind(name = "aether.guest.archive")]
 pub struct Archive;
-
-impl Kind for Archive {
-    const NAME: KindName = KindName::new("aether.guest.archive");
-}
 
 impl ChildOf for Archive {
     type Parent = Top;
@@ -1441,12 +1300,9 @@ impl Actor for Archive {
 /// An actor that keeps a reference to a book, and answers a ping with a pong of the ping's number and the length it
 /// reads the book to be, and closes.
 #[derive(Bound)]
+#[kind(name = "aether.guest.reader")]
 pub struct Reader {
     book: BlobRef,
-}
-
-impl Kind for Reader {
-    const NAME: KindName = KindName::new("aether.guest.reader");
 }
 
 impl ChildOf for Reader {
@@ -1491,24 +1347,18 @@ impl Resource for Lamp {}
 
 /// Lamps handed from one actor to another in mail.
 #[derive(Bound)]
+#[kind(name = "aether.guest.hand")]
 pub struct Hand {
     pub lamps: Vec<Given<Lamp>>,
 }
 
-impl Kind for Hand {
-    const NAME: KindName = KindName::new("aether.guest.hand");
-}
-
 /// What a porter is made from: who it passes lamps on to, the lamps it begins with, and how it passes those on.
 #[derive(Bound)]
+#[kind(name = "aether.guest.porting")]
 pub struct Porting {
     pub to: ActorPath,
     pub lamps: Vec<Given<Lamp>>,
     pub how: u64,
-}
-
-impl Kind for Porting {
-    const NAME: KindName = KindName::new("aether.guest.porting");
 }
 
 /// A guest that passes on every lamp it is given to the actor `to` names, which handles hands of lamps: what comes in
@@ -1516,12 +1366,9 @@ impl Kind for Porting {
 /// porter it spawns of its own code, which sends it on, for one, and to a bearer, of native code, which it pings to
 /// send it on, for two.
 #[derive(Bound)]
+#[kind(name = "aether.guest.porter")]
 pub struct Porter {
     to: ActorPath,
-}
-
-impl Kind for Porter {
-    const NAME: KindName = KindName::new("aether.guest.porter");
 }
 
 impl Porter {
@@ -1616,13 +1463,10 @@ impl Handles<Hand> for Porter {
 /// config holds as its host begins it, and keeps them until it is pinged, when it sends them on to the actor `to`
 /// names.
 #[derive(Bound)]
+#[kind(name = "aether.guest.bearer")]
 pub struct Bearer {
     to: ActorPath,
     lamps: Vec<Handle<Lamp>>,
-}
-
-impl Kind for Bearer {
-    const NAME: KindName = KindName::new("aether.guest.bearer");
 }
 
 impl ChildOf for Bearer {
@@ -1687,46 +1531,34 @@ impl Carries<Increment> for Counts {
 /// A word to a querent to ask its echo `pings` pings and then to count once, each kept with which it was, counting
 /// from `first`.
 #[derive(Plain)]
+#[kind(name = "aether.guest.query")]
 pub struct Query {
     pub first: u64,
     pub pings: u64,
 }
 
-impl Kind for Query {
-    const NAME: KindName = KindName::new("aether.guest.query");
-}
-
 /// What a querent keeps until a request it asked is answered: which it was.
 #[derive(Plain)]
+#[kind(name = "aether.guest.which")]
 pub struct Which {
     pub at: u64,
-}
-
-impl Kind for Which {
-    const NAME: KindName = KindName::new("aether.guest.which");
 }
 
 /// What became of a querent's request, as it tells its parent: the pong it was answered with, or why it was not, with
 /// which request it was.
 #[derive(Plain)]
+#[kind(name = "aether.guest.heard")]
 pub enum Heard {
     Pong { at: u64, n: u64 },
     No { at: u64, why: Unanswered },
 }
 
-impl Kind for Heard {
-    const NAME: KindName = KindName::new("aether.guest.heard");
-}
-
 /// An actor that asks an echo it spawns as it begins, and tells its parent what became of each request, with what it
 /// kept for it.
 #[derive(Bound)]
+#[kind(name = "aether.guest.querent")]
 pub struct Querent {
     echo: ActorRef<Echo>,
-}
-
-impl Kind for Querent {
-    const NAME: KindName = KindName::new("aether.guest.querent");
 }
 
 impl ChildOf for Querent {
@@ -1785,24 +1617,18 @@ impl Handles<Answer<Pong, Which>> for Querent {
 
 /// What an opener is made from: the ping it asks as it begins, and how many more openers to stand up beneath it.
 #[derive(Plain)]
+#[kind(name = "aether.guest.opening")]
 pub struct Opening {
     pub n: u64,
     pub below: u64,
-}
-
-impl Kind for Opening {
-    const NAME: KindName = KindName::new("aether.guest.opening");
 }
 
 /// An actor whose `begin` spawns an echo and asks it a ping of `n`, and, while `below` is more than none, stands up an
 /// opener of its own code beneath it that asks a ping of one more; the last stands up an inlet that does. It tells
 /// its parent what became of its request, and passes on what each actor below tells it.
 #[derive(Bound)]
+#[kind(name = "aether.guest.opener")]
 pub struct Opener;
-
-impl Kind for Opener {
-    const NAME: KindName = KindName::new("aether.guest.opener");
-}
 
 impl ChildOf for Opener {
     type Parent = Anywhere;
@@ -1866,11 +1692,8 @@ impl Handles<Heard> for Opener {
 /// A native actor the guest's crate holds but its blob does not make, begun by its host apart from the guest's call:
 /// its `begin` spawns an echo and asks it the ping it was made from, and it tells its parent what became of it.
 #[derive(Bound)]
+#[kind(name = "aether.guest.inlet")]
 pub struct Inlet;
-
-impl Kind for Inlet {
-    const NAME: KindName = KindName::new("aether.guest.inlet");
-}
 
 impl ChildOf for Inlet {
     type Parent = Opener;
@@ -1916,11 +1739,8 @@ impl Handles<Answer<Pong, Which>> for Inlet {
 /// An actor that answers a ping of `n` by telling its parent a pong of `n`, and then two books, of `n` sevens and of one
 /// more, sent back to back: a run of mail, after other mail, whose references its host must place.
 #[derive(Bound)]
+#[kind(name = "aether.guest.shelver")]
 pub struct Shelver;
-
-impl Kind for Shelver {
-    const NAME: KindName = KindName::new("aether.guest.shelver");
-}
 
 impl ChildOf for Shelver {
     type Parent = Anywhere;
@@ -1959,22 +1779,16 @@ impl Handles<Ping> for Shelver {
 
 /// A request to weigh `n`, which a steward holds.
 #[derive(Plain)]
+#[kind(name = "aether.guest.weigh")]
 pub struct Weigh {
     pub n: u64,
 }
 
-impl Kind for Weigh {
-    const NAME: KindName = KindName::new("aether.guest.weigh");
-}
-
 /// What something weighs: the answer to a [`Weigh`].
 #[derive(Plain)]
+#[kind(name = "aether.guest.weight")]
 pub struct Weight {
     pub n: u64,
-}
-
-impl Kind for Weight {
-    const NAME: KindName = KindName::new("aether.guest.weight");
 }
 
 /// The protocol a steward is asked to weigh through.
@@ -1991,23 +1805,17 @@ impl Carries<Weigh> for Weighs {
 /// What a steward does with the pings it holds: `0` answers each, `1` lets go of each, `2` closes on them, and `3`
 /// keeps each in what it keeps for a request of its own, and answers it as what became of that request is handed back.
 #[derive(Plain)]
+#[kind(name = "aether.guest.release")]
 pub struct Release {
     pub how: u64,
 }
 
-impl Kind for Release {
-    const NAME: KindName = KindName::new("aether.guest.release");
-}
-
 /// What a steward keeps for a request of its own: a ping it holds, and the ping's number.
 #[derive(Bound)]
+#[kind(name = "aether.guest.kept")]
 pub struct Kept {
     n: u64,
     held: Held<Pong>,
-}
-
-impl Kind for Kept {
-    const NAME: KindName = KindName::new("aether.guest.kept");
 }
 
 /// An actor that holds each ping it is asked, to answer it in a later turn as a [`Release`] says: with a pong of a
@@ -2015,15 +1823,12 @@ impl Kind for Kept {
 /// It holds each weighing too, answered with a weight of a hundred and its number, or of three hundred and it, with
 /// no request of its own. Closed on a release past three, its closing turn answers each with four hundred and it.
 #[derive(Bound)]
+#[kind(name = "aether.guest.steward")]
 pub struct Steward {
     held: Vec<(u64, Held<Pong>)>,
     weighing: Vec<(u64, Held<Weight>)>,
     echo: ActorRef<Echo>,
     closed_on: u64,
-}
-
-impl Kind for Steward {
-    const NAME: KindName = KindName::new("aether.guest.steward");
 }
 
 impl ChildOf for Steward {
@@ -2127,33 +1932,24 @@ impl Handles<Answer<Pong, Kept>> for Steward {
 
 /// A word to a stasher to put a blob of `len` bytes and ask its echo a ping, keeping the blob until it is answered.
 #[derive(Plain)]
+#[kind(name = "aether.guest.stash")]
 pub struct Stash {
     pub len: u64,
 }
 
-impl Kind for Stash {
-    const NAME: KindName = KindName::new("aether.guest.stash");
-}
-
 /// What a stasher keeps until its request is answered: a blob it refers to nowhere else.
 #[derive(Bound)]
+#[kind(name = "aether.guest.stashed")]
 pub struct Stashed {
     pub blob: BlobRef,
-}
-
-impl Kind for Stashed {
-    const NAME: KindName = KindName::new("aether.guest.stashed");
 }
 
 /// An actor that asks an echo it spawns as it begins, keeping only in its context a blob it puts, and tells its parent
 /// how many bytes the blob holds once it is answered, as a pong heard at that many.
 #[derive(Bound)]
+#[kind(name = "aether.guest.stasher")]
 pub struct Stasher {
     echo: ActorRef<Echo>,
-}
-
-impl Kind for Stasher {
-    const NAME: KindName = KindName::new("aether.guest.stasher");
 }
 
 impl ChildOf for Stasher {
@@ -2212,11 +2008,8 @@ impl Handles<Answer<Pong, Stashed>> for Stasher {
 /// A native actor the guest's crate holds but its blob does not make, begun by its host from a config that refers to a
 /// blob: it tells its parent, as it begins, a pong of two hundred and the blob's length.
 #[derive(Bound)]
+#[kind(name = "aether.guest.nestling")]
 pub struct Nestling;
-
-impl Kind for Nestling {
-    const NAME: KindName = KindName::new("aether.guest.nestling");
-}
 
 impl ChildOf for Nestling {
     type Parent = Nester;
@@ -2244,11 +2037,8 @@ impl Actor for Nestling {
 /// An actor that answers a book it is mailed by spawning a nestling made from it, keeping none of it, and tells its
 /// parent each pong it is told.
 #[derive(Bound)]
+#[kind(name = "aether.guest.nester")]
 pub struct Nester;
-
-impl Kind for Nester {
-    const NAME: KindName = KindName::new("aether.guest.nester");
-}
 
 impl ChildOf for Nester {
     type Parent = Anywhere;
@@ -2292,29 +2082,20 @@ impl Handles<Pong> for Nester {
 
 /// What a ringer keeps while it waits on the bell.
 #[derive(Plain)]
+#[kind(name = "aether.guest.ringing")]
 pub struct Ringing;
-
-impl Kind for Ringing {
-    const NAME: KindName = KindName::new("aether.guest.ringing");
-}
 
 /// What a ringer is made from: the path of the actor it tells what it heard.
 #[derive(Plain)]
+#[kind(name = "aether.guest.ring")]
 pub struct Ring {
     pub keeper: ActorPath,
 }
 
-impl Kind for Ring {
-    const NAME: KindName = KindName::new("aether.guest.ring");
-}
-
 /// A root that answers each ping with a pong of one more, which an actor reaches by its type alone.
 #[derive(Bound)]
+#[kind(name = "aether.guest.bell")]
 pub struct Bell;
-
-impl Kind for Bell {
-    const NAME: KindName = KindName::new("aether.guest.bell");
-}
 
 impl ChildOf for Bell {
     type Parent = Top;
@@ -2351,12 +2132,9 @@ impl Handles<Ping> for Bell {
 /// A root that, as it begins, asks the bell of key zero at its typed path, which its spawn does not check, a ping of four, and pings the actor at its keeper's
 /// path with what it hears: the bell's pong, or ninety when the ask went unanswered.
 #[derive(Bound)]
+#[kind(name = "aether.guest.ringer")]
 pub struct Ringer {
     keeper: ActorPath,
-}
-
-impl Kind for Ringer {
-    const NAME: KindName = KindName::new("aether.guest.ringer");
 }
 
 impl ChildOf for Ringer {
@@ -2403,11 +2181,8 @@ impl Handles<Answer<Pong, Ringing>> for Ringer {
 
 /// A root, a singleton, that a sexton reaches at its typed path.
 #[derive(Bound)]
+#[kind(name = "aether.guest.steeple")]
 pub struct Steeple;
-
-impl Kind for Steeple {
-    const NAME: KindName = KindName::new("aether.guest.steeple");
-}
 
 impl ChildOf for Steeple {
     type Parent = Top;
@@ -2440,11 +2215,8 @@ impl Handles<Ping> for Steeple {
 /// An actor, a root or beneath any other, that declares a send at the steeple's typed path as it begins, and sends nothing: its spawn is checked by
 /// what its section says of the path.
 #[derive(Bound)]
+#[kind(name = "aether.guest.sexton")]
 pub struct Sexton;
-
-impl Kind for Sexton {
-    const NAME: KindName = KindName::new("aether.guest.sexton");
-}
 
 impl ChildOf for Sexton {
     type Parent = Anywhere;
@@ -2469,12 +2241,9 @@ impl Actor for Sexton {
 /// A root that subscribes to `Start` as it begins, and pings the actor at its keeper's path with seven when it is
 /// sent `Start`: a stage's handler that sends, which its host checks against what that handler declares.
 #[derive(Bound)]
+#[kind(name = "aether.guest.chimer")]
 pub struct Chimer {
     keeper: ActorPath,
-}
-
-impl Kind for Chimer {
-    const NAME: KindName = KindName::new("aether.guest.chimer");
 }
 
 impl ChildOf for Chimer {
@@ -2516,13 +2285,10 @@ impl Handles<On<Start>> for Chimer {
 /// the actor at its keeper's path with what it found: a hundred for the first, ten for the second, and one for the
 /// third, each when it was found.
 #[derive(Bound)]
+#[kind(name = "aether.guest.usher")]
 pub struct Usher {
     keeper: ActorPath,
     found_as_it_began: bool,
-}
-
-impl Kind for Usher {
-    const NAME: KindName = KindName::new("aether.guest.usher");
 }
 
 impl ChildOf for Usher {

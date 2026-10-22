@@ -7,21 +7,19 @@ mod tests;
 use crate::storage::StorageId;
 use crate::texture::{TextureFormat, TextureId};
 use aethereal_actor::BlobRef;
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 
 /// Asks the renderer for what `of` holds, as bytes. Answered with [`Pixels`] once the GPU has copied it and the host
 /// has mapped the copy, a frame or more later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.read_back")]
 pub struct ReadBack {
     pub of: Readable,
 }
 
-impl Kind for ReadBack {
-    const NAME: KindName = KindName::new("aether.render.read_back");
-}
-
 /// What is read back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.readable")]
 pub enum Readable {
     /// The next frame drawn onto the canvas, as it is when its pass ends.
     Frame,
@@ -29,12 +27,9 @@ pub enum Readable {
     Texture(TextureId),
 }
 
-impl Kind for Readable {
-    const NAME: KindName = KindName::new("aether.render.readable");
-}
-
 /// What the renderer answers [`ReadBack`] with.
 #[derive(Debug, Bound)]
+#[kind(name = "aether.render.pixels")]
 pub enum Pixels {
     /// The pixels, `width` by `height` of `format`, row by row from the top, each row packed tight: a pixel of
     /// `Rgba16Float` is its four 16-bit floats, little-endian, as the GPU holds them.
@@ -47,23 +42,17 @@ pub enum Pixels {
     Refused(ReadRefused),
 }
 
-impl Kind for Pixels {
-    const NAME: KindName = KindName::new("aether.render.pixels");
-}
-
 /// Asks the renderer for the bytes `storage` holds, as it is when the ask is handled. Any actor handed it may read it.
 /// Answered with [`Bytes`] once the GPU has copied it and the host has mapped the copy, a frame or more later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.read_storage")]
 pub struct ReadStorage {
     pub storage: StorageId,
 }
 
-impl Kind for ReadStorage {
-    const NAME: KindName = KindName::new("aether.render.read_storage");
-}
-
 /// What the renderer answers [`ReadStorage`] with.
 #[derive(Debug, Bound)]
+#[kind(name = "aether.render.bytes")]
 pub enum Bytes {
     /// The storage's bytes, all of them, as the GPU holds them.
     Read {
@@ -72,12 +61,9 @@ pub enum Bytes {
     Refused(ReadRefused),
 }
 
-impl Kind for Bytes {
-    const NAME: KindName = KindName::new("aether.render.bytes");
-}
-
 /// Why what was asked for was not read back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.read_refused")]
 pub enum ReadRefused {
     /// No texture is kept under the id: never made, or released.
     Texture,
@@ -91,10 +77,6 @@ pub enum ReadRefused {
     Unmapped,
     /// The store refused the bytes, as they are more than this worker may put.
     Unstored,
-}
-
-impl Kind for ReadRefused {
-    const NAME: KindName = KindName::new("aether.render.read_refused");
 }
 
 /// The order of the channels of a pixel the GPU copied.
