@@ -21,7 +21,8 @@ pub struct ReadBack {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.readable")]
 pub enum Readable {
-    /// The next frame drawn onto the canvas, as it is when its pass ends.
+    /// The next frame drawn onto a window, as it is when its pass ends: of the first window drawn that `Render`, in the
+    /// order its chassis opened them.
     Frame,
     /// A texture the renderer keeps, as it is when the ask is handled.
     Texture(TextureId),

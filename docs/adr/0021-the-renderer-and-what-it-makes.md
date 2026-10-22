@@ -20,32 +20,38 @@ This record decides how actors make what is drawn: the first piece of the render
 
 ## Decision
 
-**One capability, the render root, owns the GPU.** It is the root the chassis hands `Gpu` to, the device, its queue, and the window it draws to, with a controller and a source for the work it waits on the host for (ADR-0023), and the only actor that touches the device or its queue (ADR-0019: a capability fronts one host system). Every other actor, native or a guest, reaches the GPU by asking the render root.
+**One capability, the render root, owns the GPU.** It is the root the chassis hands `Gpu` to, the device and its queue, with each window it draws to and the format of that window's surface, and a controller and a source for the work it waits on the host for (ADR-0023), and the only actor that touches the device or its queue (ADR-0019: a capability fronts one host system). Every other actor, native or a guest, reaches the GPU by asking the render root.
 
-**The chassis owns the window's surface, and hands the render root each frame through a front.** A frame of a surface is bound to its host, as ADR-0019's values that stay with the chassis are: it is presented by value, and natively it is acquired by waiting for the display. So the chassis keeps the surface and each frame it acquires, `WindowSurface`, and the render root holds from boot a front for the frame, a way in, and a controller for presenting it, a way out:
+**The chassis owns each window's surface, and hands the render root each window's frame through one front.** A frame of a surface is bound to its host, as ADR-0019's values that stay with the chassis are: it is presented by value, and natively it is acquired by waiting for the display. So the chassis keeps each window's surface and each frame it acquires, `WindowSurface`, and the render root holds from boot one front for every window's frame, a way in, and a controller for presenting each, a way out:
 
 ```rust
-pub struct Front { .. }            // a resource: a slot holding at most one frame's texture
-pub struct Present;                // asked of the chassis once the frame is drawn and submitted
+pub struct Front { .. }                   // a resource: a slot for each window, keyed by its id, each holding at most one frame's texture
+pub struct Present { window: WindowId }   // asked of the chassis once the window's frame is drawn and submitted
+pub struct WindowFormat { pub window: WindowId, pub format: ColourFormat }
 
-RendererConfig { gpu: Given<Gpu>, front: Given<Front>, presenting: Given<Controller<Present>>, mapping: .., mapped: .. }
+RendererConfig { gpu: Given<Gpu>, front: Given<Front>, presenting: Given<Controller<Present>>, windows: Vec<WindowFormat>, mapping: .., mapped: .. }
 
+let mut front = Front::new();
+let surface = WindowSurface::new(surface, &gpu, window, config, &mut front)?;   // configured here, in its own format
+let windows = surfaces.iter().map(WindowSurface::drawn).collect();               // each window, and its format
 let (presenting, presents) = setup.controller();
-let (surface, front) = WindowSurface::new(surface, &gpu, config, presents);   // configured here, in the GPU's format
 
 // each cycle, on the chassis's thread
-surface.resized(width, height);    // the size it pushed as the window's last `Resized`
-surface.acquire();                 // configures if the size changed, acquires, puts the frame's texture in the front
-engine.cycle(time);                // then steps: `Render` takes the texture, draws into it, submits, pushes `Present`
-surface.present();                 // takes the requests, and presents the frame it kept if `Present` was asked
+surface.resized(width, height);    // for each window: the size it pushed as the window's last `Resized`
+surface.acquire();                 // each shown window in turn: configures if the size changed, acquires, puts the frame's texture in its slot
+engine.cycle(time);                // then steps: `Render` takes the textures, draws into each, submits, pushes `Present` for each
+let asked = presents.take();
+surface.present(&asked);           // each window: presents the frame it kept if `Present` was asked for that window
 ```
 
-- **The front is a lock-free slot that holds at most one frame**, a queue of one: the chassis puts in the texture of the frame it acquired, a clone of the frame's own, and the render root takes it at `Render`. A frame put while one is there takes its place. The host's thread and a worker's turn share the slot, so it is no lock: what the host brings in never waits on a turn.
-- **An empty front is no frame this cycle**: the surface gave no texture, or the window is hidden or of no size. The render root draws nothing and asks for nothing, and the next frame drawn is the one read and timed (ADR-0023).
-- **The chassis presents after the cycle**, the frame it kept, when `Present` was asked. A kept frame that was not presented is dropped before the next acquire, and its texture taken back from the front.
+- **The front is one resource with a lock-free slot for each window, keyed by the window's id, each holding at most one frame**, a queue of one: the chassis puts in the texture of each window's frame it acquired, a clone of the frame's own, and the render root takes every window's at `Render`. A frame put while one is there takes its place. The host's thread and a worker's turn share each slot, so it is no lock: what the host brings in never waits on a turn.
+- **It is one front for every window, not a front for each.** A resource the render root keeps leaves it only when the render root ends (ADR-0010), and windows will come and go while the program runs, so a front handed for each window would stay kept in the render root after its window closed. The render root learns each window and the format of its surface through its config, from each `WindowSurface`, and the GPU names no window.
+- **A window whose slot is empty is not drawn this cycle**: its surface gave no texture, or it is hidden or of no size. Its main frame is not drawn and its frame not asked to be presented. A cycle with every slot empty draws nothing and asks for nothing, and the next frame drawn is the one read and timed (ADR-0023); a frame read back is the first window's drawn that cycle, in the order the chassis opened them.
+- **The chassis presents each window after the cycle**, the frame it kept, when `Present` was asked for that window. A kept frame that was not presented is dropped before the next acquire, and its texture taken back from its slot.
+- **One cycle draws every window shown, so a window on a slower display paces every window to its rate.** The chassis acquires each shown window's frame in turn before the cycle, and with `Fifo` each acquire waits on its own display. Presentation modes chosen per window are the way out of that (#246).
 - **The chassis configures the surface**, when it is made and before an acquire whenever its window was resized since, at the size it pushed as `Resized` (ADR-0024). A window of no size is not acquired, and nothing is handed. A frame that no longer matches the surface, `Suboptimal`, is handed, and the surface is configured again before the next acquire. One that is `Outdated` or `Lost` configures the surface again and hands nothing.
 - **Why: a native acquire blocks.** With `Fifo`, which is vsync, it waits until the display frees an image. A turn that waited would hold its worker, and the engine would time about one refresh as the render root's cost every frame. The chassis waits on its own thread instead, and that wait paces the cycles natively as `requestAnimationFrame` does in a browser, where the acquire returns at once. Both hosts take the one path, so the render root has no host's branch.
-- **No resource is made each frame, and nothing is added to the actor API.** The front and the controller are resources the render root owns from boot (ADR-0010, ADR-0019), and the size of the window's main frame follows the texture each frame is drawn into (ADR-0025).
+- **No resource is made each frame, and nothing is added to the actor API.** The front and the controller are resources the render root owns from boot (ADR-0010, ADR-0019), and the size of each window's main frame follows the texture each of its frames is drawn into (ADR-0025).
 
 **An actor makes a mesh, a texture, or a program by asking for it.** Each is answered with the resource's id or a refusal that says why (ADR-0017: `turn.to(target).ask`, `Answer`):
 

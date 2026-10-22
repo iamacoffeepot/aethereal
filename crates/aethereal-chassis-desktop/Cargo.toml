@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "The desktop chassis: the native host with a window, on winit, drawing through the GPU it opens on it"
+description = "The desktop chassis: the native host with windows, on winit, drawing through the GPU it opens on them"
 
 # A native-only host crate (ADR-0001): its window, its GPU, and the waits on them are a native host's. A build for
 # wasm32 compiles it empty.
