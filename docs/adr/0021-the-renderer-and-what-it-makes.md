@@ -65,7 +65,8 @@ CreateProgram {
     layout: VertexLayout,               // the vertex buffer it reads: stride, and each attribute's location, format, offset
     instances: PerInstance,             // what it reads once per instance: nothing, or a record laid out so (ADR-0023)
     bindings: Vec<Binding>,             // what it binds, by group and binding: a uniform block or read-only storage of a size, a texture, a sampler
-    state: Fixed,                       // blending (opaque, alpha, additive, multiply), depth (off, test, test and write), culling
+    reads: Vec<Read>,                   // the targets of its frame it reads at group 0, most often none (ADR-0025)
+    state: Fixed,                       // blending (opaque, alpha, additive, multiply), depth (off, test, test and write), culling, coverage
 }                                                                                     -> Made<ProgramId> | Refused
 Release { id }                                                                        // no answer
 ```
@@ -86,7 +87,8 @@ Release { id }                                                                  
   - the module declares no constant a pipeline overrides, as a program sets none;
   - `bindings` lists each place once, in a group the GPU has, uniform blocks and storage buffers of a size it binds, and no more of each kind than a stage binds, by the device's limits;
   - a vertex layout reads at most sixteen locations, as many as WebGPU lets every device read; a mesh's layout is checked the same.
-- **A program is made against the shape of what it draws into: its format, its samples, and its depth** (ADR-0025). A program fits every pass whose targets have its shape, in any frame, so a frame replaced keeps its programs. Depth is `Depth32Float`, a program that does not test depth comparing `Always` and writing nothing, and samples are one, until a target of another shape is needed.
+- **A program is made against the shape of what it draws into: its format, its samples, and its depth** (ADR-0025). A program fits every pass whose targets have its shape, in any frame, so a frame replaced keeps its programs. Depth is `Depth32Float`, tested as less than what is drawn, and a program that does not test depth compares `Always` and writes nothing. Samples are one or four (ADR-0025).
+- **A program on a shape of four samples may turn its alpha into coverage**, `Fixed { .., coverage: Coverage::Alpha }`: the share of a pixel's samples it covers is its alpha, so a soft edge is drawn in one pass, in any order, with no blend. `Coverage::Off` is every program's until it asks; one asking on a shape of one sample is refused (`ProgramRefused::Coverage`), as there is nothing to cover.
 
 **The id is plain data.** The render root numbers ids from one count it never takes back, so an id once released is refused, not taken for another resource. An actor may hand an id to another, so two actors can draw one mesh.
 
