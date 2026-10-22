@@ -18,6 +18,7 @@ pub mod placement;
 pub mod program;
 pub mod readback;
 mod renderer;
+pub mod shaders;
 pub mod shape;
 pub mod storage;
 pub mod surface;
