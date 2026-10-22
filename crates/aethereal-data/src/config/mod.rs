@@ -1,15 +1,16 @@
-//! A program's configuration: plain data, the composite of its parts' sections (ADR-0028).
+//! A program's configuration: plain data, the composite of its roots' sections (ADR-0028).
 //!
-//! Each part a chassis composes brings a section, a config kind under a short name, and the program brings one of
-//! its own. Layers are overlays on one document, the first winning, merged field by field and decoded once with the
-//! composite's schema. A field is named by the handle `#[section]` emits beside it, and the flags a program's users
-//! type are a table built from what each part suggests and what the program changes.
+//! Each root that has settings brings a section: a settings kind, under the short name the root gives it as it is
+//! added (ADR-0029). Layers are overlays on one document, the first winning, merged field by field and decoded once
+//! with the composite's schema, and each section is then taken by the root that reads it. A field is named by the
+//! handle `#[settings]` emits beside it, and the flags a program's users type are a table built from what each kind
+//! suggests and what the program changes.
 //!
-//! The handles and the section declarations are always here, as the derives write them; the composite, its
+//! The handles and the settings declarations are always here, as the derives write them; the composite, its
 //! overlays, and its flags read and write JSON, and are behind the `json` feature.
 
 pub(crate) mod field;
-mod section;
+mod settings;
 
 #[cfg(feature = "json")]
 mod document;
@@ -29,7 +30,7 @@ mod place;
 mod samples;
 
 pub use field::Field;
-pub use section::{Declared, Section, Suggested};
+pub use settings::{Declared, Settings, Suggested};
 
 #[cfg(feature = "json")]
 pub use error::{ConfigError, ConfigFault, FlagError, FlagName, RepeatedSection};

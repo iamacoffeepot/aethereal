@@ -3,7 +3,7 @@
 
 use super::document::{Document, Json, path_of};
 use super::place::Place;
-use super::{ConfigError, ConfigFault, Declared, Overlay, RepeatedSection, Section};
+use super::{ConfigError, ConfigFault, Declared, Overlay, RepeatedSection, Settings};
 use crate::{
     Bare, Budget, DecodeError, EncodeError, JsonError, JsonPath, JsonStep, KindName, Reader, SchemaNodes, Shape,
     Writer, from_json, to_json,
@@ -28,11 +28,11 @@ struct Part {
     name: &'static str,
     /// The section's kind's name.
     kind: KindName,
-    /// The section's type, by which a handle and a decoded value find it.
+    /// The type the section is read as, by which a handle and its reader find it.
     type_id: TypeId,
     /// The section's shape.
     shape: Shape,
-    /// The section's named fields as its part declares them.
+    /// The section's named fields as its settings kind declares them.
     fields: &'static [Declared],
     /// The bytes of the section's `Default`.
     defaults: fn() -> Result<Vec<u8>, EncodeError>,
@@ -40,10 +40,30 @@ struct Part {
     decode: DecodeSection,
 }
 
-/// The sections a program's configuration is put together from: each part's, and the program's own (ADR-0028).
+/// The sections a program's configuration is put together from: the host's, and each root's that has settings
+/// (ADR-0028).
 ///
 /// Its schema is the sections' schemas under their names, so it says exactly what this program, on this host, can
 /// be configured with.
+///
+/// ```
+/// use aethereal_data::config::Parts;
+/// use aethereal_data::{Budget, Plain};
+///
+/// #[derive(Plain, Default)]
+/// #[kind(name = "example.show.settings")]
+/// #[settings]
+/// struct Show {
+///     seconds: u32,
+/// }
+///
+/// let parts = Parts::new().with::<Show>("show")?;
+/// let mut configuration = parts.configure(&[], &mut Budget::new(1 << 20))?;
+/// let show = configuration.take::<Show>("show")?;
+/// assert_eq!(show.seconds, 0);
+/// assert!(configuration.take::<Show>("show").is_err());
+/// # Ok::<(), Box<dyn core::error::Error>>(())
+/// ```
 pub struct Parts {
     sections: Vec<Part>,
 }
@@ -55,15 +75,20 @@ impl Parts {
         Self { sections: Vec::new() }
     }
 
-    /// The composite with the section `S` added after those already in it, refusing a second section of one name.
-    pub fn with<S: Section>(mut self) -> Result<Self, RepeatedSection> {
-        let found = self.sections.iter().find(|part| part.name == S::SECTION);
+    /// The composite with the section `name`, read as `S`, added after those already in it: the name is the one
+    /// the root that reads it gives (ADR-0029).
+    ///
+    /// # Errors
+    ///
+    /// [`RepeatedSection`] when a section of that name is already in it, naming both kinds.
+    pub fn with<S: Settings>(mut self, name: &'static str) -> Result<Self, RepeatedSection> {
+        let found = self.sections.iter().find(|part| part.name == name);
         if let Some(first) = found {
-            return Err(RepeatedSection { name: S::SECTION, first: first.kind.clone(), second: S::NAME });
+            return Err(RepeatedSection { name, first: first.kind.clone(), second: S::NAME });
         }
 
         self.sections.push(Part {
-            name: S::SECTION,
+            name,
             kind: S::NAME,
             type_id: TypeId::of::<S>(),
             shape: S::SHAPE,
@@ -86,10 +111,10 @@ impl Parts {
         self.sections.iter().map(|part| (part.name, part.fields))
     }
 
-    /// Whether the section named `name` is of the type `S`.
-    pub(super) fn holds<S: Section>(&self, name: &str) -> bool {
+    /// The names of the sections read as `S`, in the order they were added.
+    pub(super) fn read_as<S: Settings>(&self) -> Vec<&'static str> {
         let type_id = TypeId::of::<S>();
-        self.sections.iter().any(|part| part.name == name && part.type_id == type_id)
+        self.sections.iter().filter(|part| part.type_id == type_id).map(|part| part.name).collect()
     }
 
     /// The configuration `layers` set over the sections' defaults, the first winning, merged field by field and
@@ -146,7 +171,7 @@ impl Parts {
         for part in &self.sections {
             let value =
                 (part.decode)(&mut reader).map_err(|error| ConfigError::Section { section: part.name, error })?;
-            sections.push(Decoded { type_id: part.type_id, value });
+            sections.push(Decoded { name: part.name, type_id: part.type_id, value });
         }
 
         let trailing = reader.input().len();
@@ -177,36 +202,58 @@ fn refused(layer: &str, error: &JsonError) -> ConfigError {
 }
 
 /// The bytes of `S`'s `Default`.
-fn defaults_of<S: Section>() -> Result<Vec<u8>, EncodeError> {
+fn defaults_of<S: Settings>() -> Result<Vec<u8>, EncodeError> {
     let mut out = Writer::<Bare>::new(());
     S::default().encode(&mut out)?;
     Ok(out.into_bytes())
 }
 
 /// Reads one `S` from `reader`.
-fn decode_of<S: Section>(reader: &mut Reader<'_, Bare>) -> Result<Box<dyn Any>, DecodeError> {
+fn decode_of<S: Settings>(reader: &mut Reader<'_, Bare>) -> Result<Box<dyn Any>, DecodeError> {
     let value = S::decode(reader)?;
     Ok(Box::new(value))
 }
 
 /// One section's value, its type erased.
 struct Decoded {
+    /// The section's name.
+    name: &'static str,
+    /// The type it was read as.
     type_id: TypeId,
+    /// Its value, of that type.
     value: Box<dyn Any>,
 }
 
-/// A program's configuration, set up: each section's value (ADR-0028).
+impl Decoded {
+    /// Whether this is the section `name`, read as the type of `type_id`.
+    fn is(&self, name: &str, type_id: TypeId) -> bool {
+        let same_name = self.name == name;
+        let same_type = self.type_id == type_id;
+        same_name && same_type
+    }
+}
+
+/// A program's configuration, set up: each section's value, until the root that reads it takes it (ADR-0028,
+/// ADR-0029).
 pub struct Configuration {
     sections: Vec<Decoded>,
 }
 
 impl Configuration {
-    /// The value of the section `S`, or nothing when the composite has no such section.
-    #[must_use]
-    pub fn get<S: Section>(&self) -> Option<&S> {
+    /// The section `name`, read as `S`, taken out: the bootstrap of the root that gave the name is its one reader
+    /// (ADR-0029).
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Untaken`] when no section of that name, read as `S`, is left: none was composed, or it was taken
+    /// already.
+    pub fn take<S: Settings>(&mut self, name: &'static str) -> Result<S, ConfigError> {
         let type_id = TypeId::of::<S>();
-        let found = self.sections.iter().find(|decoded| decoded.type_id == type_id)?;
-        found.value.downcast_ref::<S>()
+        let untaken = || ConfigError::Untaken { section: name, kind: S::NAME };
+        let position = self.sections.iter().position(|decoded| decoded.is(name, type_id)).ok_or_else(untaken)?;
+        let value = self.sections.swap_remove(position).value.downcast::<S>().map_err(|_| untaken())?;
+
+        Ok(*value)
     }
 }
 
@@ -214,7 +261,7 @@ impl Configuration {
 mod tests {
     use super::*;
     use crate::JsonFault;
-    use crate::config::samples::{EngineConfig, OtherEngine, Window, WindowsConfig};
+    use crate::config::samples::{EngineSettings, PoolSettings, Window, WindowsSettings};
     use alloc::string::ToString;
     use core::error::Error;
 
@@ -222,7 +269,7 @@ mod tests {
 
     /// The engine's and the windows' sections.
     fn parts() -> Result<Parts, RepeatedSection> {
-        Parts::new().with::<EngineConfig>()?.with::<WindowsConfig>()
+        Parts::new().with::<EngineSettings>("engine")?.with::<WindowsSettings>("windows")
     }
 
     /// An overlay of the layer `layer`, setting each `--set` text in order.
@@ -251,10 +298,10 @@ mod tests {
         let file = overlay(&parts, "file", &["engine={\"workers\":2,\"mail_bytes\":\"7\"}"])?;
         let mut budget = Budget::new(1 << 20);
 
-        let configuration = parts.configure(&[command_line, file], &mut budget)?;
+        let mut configuration = parts.configure(&[command_line, file], &mut budget)?;
 
-        let engine = configuration.get::<EngineConfig>();
-        assert_eq!(engine, Some(&EngineConfig { workers: 4, mail_bytes: 7, fused: true }));
+        let engine = configuration.take::<EngineSettings>("engine")?;
+        assert_eq!(engine, EngineSettings { workers: 4, mail_bytes: 7, fused: true });
         Ok(())
     }
 
@@ -268,12 +315,12 @@ mod tests {
         let file = overlay(&parts, "file", &[whole])?;
         let mut budget = Budget::new(1 << 20);
 
-        let configuration = parts.configure(&[command_line, file], &mut budget)?;
+        let mut configuration = parts.configure(&[command_line, file], &mut budget)?;
 
         let first = Window { title: String::from("a"), size: [1, 2] };
         let second = Window { title: String::from("b"), size: [10, 20] };
-        let windows = configuration.get::<WindowsConfig>();
-        assert_eq!(windows, Some(&WindowsConfig(Vec::from([first, second]))));
+        let windows = configuration.take::<WindowsSettings>("windows")?;
+        assert_eq!(windows, WindowsSettings(Vec::from([first, second])));
         Ok(())
     }
 
@@ -330,13 +377,36 @@ mod tests {
     #[test]
     fn two_sections_of_one_name_are_refused_naming_both() -> Outcome {
         // Catches a composite that lets the second section of a name replace or shadow the first.
-        let engine = Parts::new().with::<EngineConfig>()?;
+        let engine = Parts::new().with::<EngineSettings>("engine")?;
 
-        let refused = engine.with::<OtherEngine>().err();
+        let refused = engine.with::<PoolSettings>("engine").err();
 
-        let first = <EngineConfig as crate::Kind>::NAME;
-        let second = <OtherEngine as crate::Kind>::NAME;
+        let first = <EngineSettings as crate::Kind>::NAME;
+        let second = <PoolSettings as crate::Kind>::NAME;
         assert_eq!(refused, Some(RepeatedSection { name: "engine", first, second }));
+        Ok(())
+    }
+
+    #[test]
+    fn a_section_is_taken_once_by_its_name_and_type() -> Outcome {
+        // Catches a take that finds a section by its type alone, handing one root another's section of the same
+        // kind, or by its name alone, and one that leaves the section to be taken again.
+        let parts = parts()?.with::<EngineSettings>("spare")?;
+        let file = overlay(&parts, "file", &["spare.workers=9"])?;
+        let mut budget = Budget::new(1 << 20);
+        let mut configuration = parts.configure(&[file], &mut budget)?;
+
+        let spare = configuration.take::<EngineSettings>("spare")?;
+        let again = configuration.take::<EngineSettings>("spare").err();
+        let misread = configuration.take::<PoolSettings>("engine").err();
+        let engine = configuration.take::<EngineSettings>("engine")?;
+
+        assert_eq!(spare.workers, 9);
+        assert_eq!(engine.workers, 1);
+        let spare_kind = <EngineSettings as crate::Kind>::NAME;
+        assert_eq!(again, Some(ConfigError::Untaken { section: "spare", kind: spare_kind }));
+        let pool_kind = <PoolSettings as crate::Kind>::NAME;
+        assert_eq!(misread, Some(ConfigError::Untaken { section: "engine", kind: pool_kind }));
         Ok(())
     }
 }
