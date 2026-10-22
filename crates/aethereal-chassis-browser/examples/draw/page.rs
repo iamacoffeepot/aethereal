@@ -72,9 +72,9 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
 
 #[wasm_bindgen]
 impl Program {
-    /// Runs one frame.
-    pub fn frame(&mut self) {
-        self.browser.frame();
+    /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
+    pub fn frame(&mut self, timestamp_millis: f64) {
+        self.browser.frame(timestamp_millis);
     }
 
     /// What the drawer was answered since this was last asked, a line each.
@@ -320,9 +320,16 @@ impl Handles<Answer<Meshed, Learned>> for Drawer {
             say(format!("the triangle was not made: {answered:?}"));
             return Ok(());
         };
+        let wgsl = match turn.put(Vec::from(SHADE)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no program asked: {why}"));
+                return Ok(());
+            }
+        };
         let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
         let shade = CreateProgram {
-            wgsl: String::from(SHADE),
+            wgsl,
             vertex: String::from("place"),
             fragment: String::from("shade"),
             layout: VertexLayout { stride: 8, attributes: vec![position] },

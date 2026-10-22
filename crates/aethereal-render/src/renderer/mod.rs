@@ -812,14 +812,20 @@ impl Handles<CreateProgram> for Renderer {
     type Sends = (ToSender<Programmed>,);
 
     fn handle(&mut self, create: CreateProgram, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        // Copied out of the store, as a mesh's bytes are: the GPU is opened through the turn.
+        let bytes = turn.read(&create.wgsl).to_vec();
         let limits = turn.open(&mut self.gpu)?.device().limits();
-        if let Err(why) = program::check(&create, &limits) {
-            turn.reply(&Programmed::Refused(why))?;
-            return Ok(());
-        }
+        let checked = program::source(&bytes).and_then(|wgsl| program::check(&create, wgsl, &limits).map(|()| wgsl));
+        let wgsl = match checked {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                turn.reply(&Programmed::Refused(why))?;
+                return Ok(());
+            }
+        };
 
         let gpu = turn.open(&mut self.gpu)?;
-        let made = pipeline(gpu, &create);
+        let made = pipeline(gpu, &create, wgsl);
         let id = self.made(turn, |kept, id, maker| kept.programs.keep(id, maker, made))?;
         turn.reply(&Programmed::Made(ProgramId { id }))?;
 
@@ -831,8 +837,10 @@ impl Handles<CreateCompute> for Renderer {
     type Sends = (ToSender<Computed>,);
 
     fn handle(&mut self, create: CreateCompute, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let bytes = turn.read(&create.wgsl).to_vec();
         let limits = turn.open(&mut self.gpu)?.device().limits();
-        let checked = match compute::check(&create, &limits) {
+        let checked = program::source(&bytes).and_then(|wgsl| Ok((wgsl, compute::check(&create, wgsl, &limits)?)));
+        let (wgsl, checked) = match checked {
             Ok(checked) => checked,
             Err(why) => {
                 turn.reply(&Computed::Refused(why))?;
@@ -841,7 +849,7 @@ impl Handles<CreateCompute> for Renderer {
         };
 
         let gpu = turn.open(&mut self.gpu)?;
-        let made = compute_pipeline(gpu.device(), &create, checked);
+        let made = compute_pipeline(gpu.device(), &create, wgsl, checked);
         let id = self.made(turn, |kept, id, maker| kept.computes.keep(id, maker, made))?;
         turn.reply(&Computed::Made(ComputeId { id }))?;
 
@@ -1103,14 +1111,19 @@ impl Handles<CreateEffect> for Renderer {
     type Sends = (ToSender<Effected>,);
 
     fn handle(&mut self, create: CreateEffect, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let bytes = turn.read(&create.wgsl).to_vec();
         let limits = turn.open(&mut self.gpu)?.device().limits();
-        if let Err(why) = effect::check(&create, &limits) {
-            turn.reply(&Effected::Refused(why))?;
-            return Ok(());
-        }
+        let checked = program::source(&bytes).and_then(|wgsl| effect::check(&create, wgsl, &limits).map(|()| wgsl));
+        let wgsl = match checked {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                turn.reply(&Effected::Refused(why))?;
+                return Ok(());
+            }
+        };
 
         let gpu = turn.open(&mut self.gpu)?;
-        let made = effect_pipeline(gpu.device(), &create);
+        let made = effect_pipeline(gpu.device(), &create, wgsl);
         let id = self.made(turn, |kept, id, maker| kept.programs.keep(id, maker, made))?;
         turn.reply(&Effected::Made(MadeEffect { program: ProgramId { id }, reads: create.reads }))?;
 
@@ -2178,12 +2191,13 @@ fn upload(gpu: &Gpu, bytes: &[u8], usage: wgpu::BufferUsages) -> wgpu::Buffer {
     buffer
 }
 
-/// The pipeline `create` asks for, drawing into passes of its shape, made from what its check let through.
-fn pipeline(gpu: &Gpu, create: &CreateProgram) -> Program {
+/// The pipeline `create` asks for, of the WGSL `wgsl` its blob holds, drawing into passes of its shape, made from what
+/// its check let through.
+fn pipeline(gpu: &Gpu, create: &CreateProgram, wgsl: &str) -> Program {
     let device = gpu.device();
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: wgpu::ShaderSource::Wgsl(create.wgsl.as_str().into()),
+        source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     });
     let groups = groups(device, &create.bindings, wgpu::ShaderStages::VERTEX_FRAGMENT);
     let bound: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(Some).collect();
@@ -2275,15 +2289,15 @@ const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// The pipeline of the effect `create` asks for: the renderer's vertex stage, one triangle over the whole target, and
 /// its fragment stage, drawing into targets of its shape, reading its targets in its first group and binding what it
-/// lists in the groups after; made from what its check let through.
-fn effect_pipeline(device: &wgpu::Device, create: &CreateEffect) -> Program {
+/// lists in the groups after, of the WGSL `wgsl` its blob holds; made from what its check let through.
+fn effect_pipeline(device: &wgpu::Device, create: &CreateEffect, wgsl: &str) -> Program {
     let cover = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
         source: wgpu::ShaderSource::Wgsl(COVER.into()),
     });
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: wgpu::ShaderSource::Wgsl(create.wgsl.as_str().into()),
+        source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     });
     let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..)
         .zip(&create.reads)
@@ -2346,12 +2360,12 @@ fn effect_pipeline(device: &wgpu::Device, create: &CreateEffect) -> Program {
     }
 }
 
-/// The pipeline of the compute program `create` asks for, with what its check read of its shader, made from what its
-/// check let through.
-fn compute_pipeline(device: &wgpu::Device, create: &CreateCompute, checked: compute::Checked) -> Compute {
+/// The pipeline of the compute program `create` asks for, of the WGSL `wgsl` its blob holds, with what its check read
+/// of its shader, made from what its check let through.
+fn compute_pipeline(device: &wgpu::Device, create: &CreateCompute, wgsl: &str, checked: compute::Checked) -> Compute {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: wgpu::ShaderSource::Wgsl(create.wgsl.as_str().into()),
+        source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     });
     let groups = groups(device, &create.bindings, wgpu::ShaderStages::COMPUTE);
     let bound: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(Some).collect();

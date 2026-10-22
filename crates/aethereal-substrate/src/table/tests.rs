@@ -121,7 +121,7 @@ fn failed_turn_ends_its_actor() {
     // Catches a view that follows `Close` and passes over the ending the engine writes for a failed turn.
     let (window, root) = window();
     let mut table = table(1);
-    let Ok(fault) = Fault::new(&Unreadable) else {
+    let Ok(fault) = Fault::new(&Unreadable::Malformed) else {
         panic!("a reason that holds nothing encodes");
     };
     table.fold(&[root, Effect::new(at(window), What::Failed(fault))], &context());

@@ -2,6 +2,8 @@
 //! ask it. Every actor, native or a guest, reaches the GPU through it, and everything it makes is checked as it is made,
 //! so nothing it draws can fail.
 
+#[cfg(test)]
+mod asked;
 pub mod compute;
 pub mod dispatch;
 pub mod effect;

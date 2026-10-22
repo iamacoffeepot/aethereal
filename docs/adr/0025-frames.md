@@ -79,12 +79,13 @@ let create = frame.finish(Glaze, Effect::new(&glaze, (splats, ids)))?;   // -> C
 **An effect is made by asking for its fragment stage and what it reads,** as a program is (ADR-0021):
 
 ```rust
-CreateEffect { wgsl: String, fragment: String, reads: Vec<Read>, bindings: Vec<Binding>, blend: Blend, shape: Shape }
+CreateEffect { wgsl: BlobRef, fragment: String, reads: Vec<Read>, bindings: Vec<Binding>, blend: Blend, shape: Shape }
     -> Effected::Made(MadeEffect { program: ProgramId, reads: Vec<Read> }) | Effected::Refused(ProgramRefused)
 enum Read { Float, Uint, Depth }   // texture_2d<f32>, texture_2d<u32>, texture_depth_2d, at @group(0) @binding(i)
 ```
 
 - **The render root writes the vertex stage**: one triangle over the whole target, passing its fragment stage where each pixel is across the target from the top left, `@location(0) uv: vec2<f32>`, beside `@builtin(position)`. Every target of a frame is the size of its end, so the pixel an effect shades is the pixel it reads with `textureLoad`. An effect's shape holds no depth, and it lists nothing in group 0.
+- Its WGSL travels as a blob of UTF-8, as a program's does (ADR-0021).
 - It is checked as a program is: its WGSL valid, its fragment stage reading only what the vertex stage writes and writing its shape's colour, each target it reads declared as `reads` says, each binding it uses listed, and no more textures than a stage binds, its reads counted with them. That is where an effect is held to the device's limits.
 - **`EffectId<R>` is had only from the answer, and only when the answer reads what `R` says**: `EffectId::<(Float, Uint)>::of(&made)` is none for an effect made to read anything else. On the wire, and in an actor's state, it is the program's id alone, as a guest names it; what it reads is its type's, and the render root checks a pass's reads against what the effect was made to read, whatever its sender claims.
 - An effect is a program, released as one; a placement cannot join with it, and an effect pass cannot draw a program that is not an effect.

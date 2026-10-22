@@ -2,8 +2,8 @@
 //! makes, and an actor that asks to replace that main frame.
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells, Tick,
-    Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, BlobRef, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells,
+    Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::{Browser, Performance, open, renderer};
 use aethereal_data::{Bound, Kind, KindName, Plain};
@@ -76,9 +76,9 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
 
 #[wasm_bindgen]
 impl Program {
-    /// Runs one frame.
-    pub fn frame(&mut self) {
-        self.browser.frame();
+    /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
+    pub fn frame(&mut self, timestamp_millis: f64) {
+        self.browser.frame(timestamp_millis);
     }
 
     /// What the actors were answered since this was last asked, a line each.
@@ -286,10 +286,10 @@ fn corners() -> VertexLayout {
     VertexLayout { stride: 8, attributes: vec![corner] }
 }
 
-/// A program of `wgsl` over the quad, drawing into `shape`, binding `bindings`.
-fn program(wgsl: &str, shape: Shape, bindings: Vec<Binding>) -> CreateProgram {
+/// A program of the WGSL the blob `wgsl` holds over the quad, drawing into `shape`, binding `bindings`.
+fn program(wgsl: BlobRef, shape: Shape, bindings: Vec<Binding>) -> CreateProgram {
     CreateProgram {
-        wgsl: String::from(wgsl),
+        wgsl,
         vertex: String::from("place"),
         fragment: String::from("shade"),
         layout: corners(),
@@ -357,7 +357,14 @@ impl Handles<Answer<Meshed, Learned>> for Mapper {
             say(format!("the quad was not made: {answered:?}"));
             return Ok(());
         };
-        let map = program(MAP, Shape::flat(ColourFormat::Rgba8), Vec::new());
+        let wgsl = match turn.put(Vec::from(MAP)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no map asked: {why}"));
+                return Ok(());
+            }
+        };
+        let map = program(wgsl, Shape::flat(ColourFormat::Rgba8), Vec::new());
         turn.to(path::<Renderer>(())).ask(&map, &Making::Map { window: learned.window, mesh })?;
 
         Ok(())
@@ -382,7 +389,14 @@ impl Handles<Answer<Programmed, Making>> for Mapper {
                     Binding { group: 0, binding: 0, kind: BindingKind::Texture },
                     Binding { group: 0, binding: 1, kind: BindingKind::Sampler },
                 ];
-                let show = program(SHOW, Shape::with_depth(window), bindings);
+                let wgsl = match turn.put(Vec::from(SHOW)) {
+                    Ok(wgsl) => wgsl,
+                    Err(why) => {
+                        say(format!("no show asked: {why}"));
+                        return Ok(());
+                    }
+                };
+                let show = program(wgsl, Shape::with_depth(window), bindings);
                 turn.to(path::<Renderer>(())).ask(&show, &Making::Show { mesh, map: made })?;
                 return Ok(());
             }

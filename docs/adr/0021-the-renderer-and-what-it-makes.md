@@ -28,7 +28,7 @@ This record decides how actors make what is drawn: the first piece of the render
 CreateMesh    { layout: VertexLayout, vertices: BlobRef, indices: BlobRef }           -> Made<MeshId> | Refused
 CreateTexture { width: u32, height: u32, format: TextureFormat, pixels: BlobRef }     -> Made<TextureId> | Refused
 CreateProgram {
-    wgsl: String,
+    wgsl: BlobRef,                      // the WGSL, as UTF-8
     vertex: String,                     // the vertex stage's entry point
     fragment: String,                   // the fragment stage's entry point
     layout: VertexLayout,               // the vertex buffer it reads: stride, and each attribute's location, format, offset
@@ -42,6 +42,7 @@ Release { id }                                                                  
 - **A program is the compiled code and its fixed state:** one render pipeline. It is the costly thing to make and what draws are batched by.
 - **A material, a program with the values it is drawn with, is not made on its own.** It is one bind group over a program, the cheap thing there are many of. A placement names what its program binds and its bind groups are made with it (ADR-0023), so each placement carries a material of its own; one that many placements share is added when sharing first needs it.
 - **The bytes travel as blobs** (ADR-0014), so a mesh is not copied through mail. The render root reads them in its turn (`Turn::read`) and uploads them in the same turn, with `Queue::write_buffer` and `Queue::write_texture`. In a browser those calls hand the bytes to the GPU process and return.
+- **A program's WGSL travels as a blob too.** A shader is kilobytes, and mail is read within the engine's limit, which a page sets to one kilobyte; a shader past it would fail the render root's turn as its request is read. Bytes that are not UTF-8 are refused, `ProgramRefused::Utf8`, naming how many of them are.
 
 **Everything is checked when it is made, and nothing when it is drawn.** A resource that is made can be drawn:
 

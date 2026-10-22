@@ -76,9 +76,9 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
 
 #[wasm_bindgen]
 impl Program {
-    /// Runs one frame.
-    pub fn frame(&mut self) {
-        self.browser.frame();
+    /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
+    pub fn frame(&mut self, timestamp_millis: f64) {
+        self.browser.frame(timestamp_millis);
     }
 
     /// What the culler was answered since this was last asked, a line each.
@@ -407,10 +407,17 @@ impl Handles<Answer<Meshed, Learned>> for Culler {
             say(format!("the quad was not made: {answered:?}"));
             return Ok(());
         };
+        let wgsl = match turn.put(Vec::from(DOTS)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no dots asked: {why}"));
+                return Ok(());
+            }
+        };
         let corner = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
         // Nothing per instance: the shader reads the item its instance names from storage.
         let dots = CreateProgram {
-            wgsl: String::from(DOTS),
+            wgsl,
             vertex: String::from("place"),
             fragment: String::from("shade"),
             layout: VertexLayout { stride: 8, attributes: vec![corner] },
@@ -437,8 +444,15 @@ impl Handles<Answer<Programmed, MeshId>> for Culler {
             say(format!("the dots were not made: {answered:?}"));
             return Ok(());
         };
+        let wgsl = match turn.put(Vec::from(CULL)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no culling asked: {why}"));
+                return Ok(());
+            }
+        };
         let cull = CreateCompute {
-            wgsl: String::from(CULL),
+            wgsl,
             entry: String::from("cull"),
             bindings: vec![stored(0, 8, Access::Read), stored(1, 4, Access::Write), stored(2, 20, Access::Write)],
         };

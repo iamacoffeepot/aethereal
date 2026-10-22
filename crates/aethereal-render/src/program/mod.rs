@@ -6,7 +6,8 @@ mod tests;
 
 use crate::mesh::{self, MeshRefused, VertexFormat, VertexLayout};
 use crate::shape::{ColourFormat, DepthFormat, Shape};
-use aethereal_data::{Kind, KindName, Plain};
+use aethereal_actor::BlobRef;
+use aethereal_data::{Bound, Kind, KindName, Plain};
 use naga::front::wgsl;
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
 use naga::{
@@ -14,13 +15,16 @@ use naga::{
     TypeInner,
 };
 
-/// Asks the renderer for a program: the WGSL `wgsl`, drawn from its vertex stage `vertex` and its fragment stage
-/// `fragment`, reading vertices laid out as `layout` says and what `instances` says once per instance, binding what
-/// `bindings` lists, with the fixed state `state`, drawing into passes of the shape `shape` (ADR-0025). Answered with
-/// [`Programmed`].
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+/// Asks the renderer for a program: the WGSL the blob `wgsl` holds as UTF-8, drawn from its vertex stage `vertex` and
+/// its fragment stage `fragment`, reading vertices laid out as `layout` says and what `instances` says once per
+/// instance, binding what `bindings` lists, with the fixed state `state`, drawing into passes of the shape `shape`
+/// (ADR-0025). Answered with [`Programmed`].
+///
+/// The WGSL travels as a blob, as a mesh's vertices do, so a shader longer than the engine reads of one piece of mail
+/// can still be asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Bound)]
 pub struct CreateProgram {
-    pub wgsl: String,
+    pub wgsl: BlobRef,
     pub vertex: String,
     pub fragment: String,
     pub layout: VertexLayout,
@@ -186,6 +190,8 @@ impl Kind for Stage {
 /// Why a program was not made.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub enum ProgramRefused {
+    /// The WGSL's bytes are not UTF-8: the first `valid` of them are.
+    Utf8 { valid: u64 },
     /// The WGSL does not parse; `message` says where and why.
     Parse { message: String },
     /// The WGSL parses, and is not a valid module; `message` says where and why.
@@ -245,15 +251,25 @@ impl Kind for ProgramRefused {
     const NAME: KindName = KindName::new("aether.render.program_refused");
 }
 
-/// Checks a program before it is made: that its WGSL is a valid module, whose entry points are a vertex and a
-/// fragment stage, that read what its layouts give, pass between them what each reads, write the colour drawn, and
-/// bind only what `bindings` lists, storage only to read, within `limits`: what WebGPU would refuse as the pipeline is
-/// made.
+/// The WGSL a request's blob holds, `bytes`, as text: refused when they are not UTF-8.
+///
+/// # Errors
+///
+/// [`ProgramRefused::Utf8`], with how many of the bytes are.
+pub fn source(bytes: &[u8]) -> Result<&str, ProgramRefused> {
+    str::from_utf8(bytes)
+        .map_err(|error| ProgramRefused::Utf8 { valid: u64::try_from(error.valid_up_to()).unwrap_or(u64::MAX) })
+}
+
+/// Checks a program before it is made, with `wgsl` the WGSL its blob holds: that the WGSL is a valid module, whose
+/// entry points are a vertex and a fragment stage, that read what its layouts give, pass between them what each reads,
+/// write the colour drawn, and bind only what `bindings` lists, storage only to read, within `limits`: what WebGPU
+/// would refuse as the pipeline is made.
 ///
 /// # Errors
 ///
 /// Why it would not be made as asked.
-pub fn check(create: &CreateProgram, limits: &wgpu::Limits) -> Result<(), ProgramRefused> {
+pub fn check(create: &CreateProgram, wgsl: &str, limits: &wgpu::Limits) -> Result<(), ProgramRefused> {
     mesh::check_layout(&create.layout).map_err(|why| ProgramRefused::Layout { why })?;
     if let PerInstance::Records(instances) = &create.instances {
         mesh::check_layout(instances).map_err(|why| ProgramRefused::InstanceLayout { why })?;
@@ -271,7 +287,7 @@ pub fn check(create: &CreateProgram, limits: &wgpu::Limits) -> Result<(), Progra
         return Err(ProgramRefused::Depthless);
     }
 
-    let (module, info) = parsed(&create.wgsl)?;
+    let (module, info) = parsed(wgsl)?;
     let vertex = entry(&module, Stage::Vertex, &create.vertex)?;
     let fragment = entry(&module, Stage::Fragment, &create.fragment)?;
     check_inputs(&module, vertex, &create.layout, &create.instances)?;

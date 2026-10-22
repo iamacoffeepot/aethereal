@@ -390,19 +390,20 @@ fn step_at(engine: &mut Engine, nanos: u64) -> Vec<String> {
 #[test]
 fn a_cycle_runs_its_stages_in_order_each_once_the_last_has_finished() {
     // Catches a stage of a cycle sent before every turn of the one before it has run, a cycle that does not end
-    // with its last stage, cycles said to be due while one runs queued up, and a `Tick` whose delta is not the time
-    // since the cycle before.
+    // with its last stage, cycles said to be due while one runs queued up, and a `Tick` whose delta is not the host's
+    // time since the cycle before: the steps' time, which drifts with how long each cycle's work took, or the time
+    // of the first cycle said due while one ran rather than the last.
     let mut engine = cycling::<Full>(Duration::from_secs(1));
-    engine.cycle();
+    engine.cycle(Time::ZERO);
     assert_eq!(step_at(&mut engine, 10), ["receive"]);
-    engine.cycle();
-    engine.cycle();
+    engine.cycle(Time::from_nanos(15));
+    engine.cycle(Time::from_nanos(25));
     assert_eq!(step_at(&mut engine, 20), ["tick 0 0"]);
     assert_eq!(step_at(&mut engine, 30), ["pass 1"]);
     assert_eq!(step_at(&mut engine, 40), ["render"]);
     assert_eq!(step_at(&mut engine, 50), ["present"]);
     assert_eq!(step_at(&mut engine, 60), ["receive"], "the cycles due while one ran are one cycle");
-    assert_eq!(step_at(&mut engine, 70), ["tick 50 50"]);
+    assert_eq!(step_at(&mut engine, 70), ["tick 25 25"]);
     assert_eq!(step_at(&mut engine, 80), ["pass 1"]);
     assert_eq!(step_at(&mut engine, 90), ["render"]);
     assert_eq!(step_at(&mut engine, 100), ["present"]);
@@ -414,7 +415,7 @@ fn a_tick_s_delta_is_limited_and_its_stage_of_a_chassis_s_own_comes_first() {
     // Catches a delta past the host's limit, a time elapsed that is not the sum of the deltas, and a `Tick` that is
     // not its cycle's first stage given no time at all.
     let mut engine = cycling::<Full>(Duration::from_nanos(25));
-    engine.cycle();
+    engine.cycle(Time::ZERO);
     assert_eq!(step_at(&mut engine, 10), ["receive"]);
     assert_eq!(step_at(&mut engine, 20), ["tick 0 0"]);
     assert_eq!(step_at(&mut engine, 30), ["pass 1"]);
@@ -422,13 +423,13 @@ fn a_tick_s_delta_is_limited_and_its_stage_of_a_chassis_s_own_comes_first() {
     assert_eq!(step_at(&mut engine, 50), ["present"]);
 
     // 50 since the last cycle began, limited to 25.
-    engine.cycle();
+    engine.cycle(Time::from_nanos(50));
     assert_eq!(step_at(&mut engine, 60), ["receive"]);
     assert_eq!(step_at(&mut engine, 70), ["tick 25 25"]);
     assert_eq!(step_at(&mut engine, 80), ["pass 1"]);
     assert_eq!(step_at(&mut engine, 90), ["render"]);
     assert_eq!(step_at(&mut engine, 100), ["present"]);
-    engine.cycle();
+    engine.cycle(Time::from_nanos(100));
     assert_eq!(step_at(&mut engine, 110), ["receive"]);
     assert_eq!(step_at(&mut engine, 120), ["tick 25 50"]);
 }
@@ -437,10 +438,10 @@ fn a_tick_s_delta_is_limited_and_its_stage_of_a_chassis_s_own_comes_first() {
 fn a_program_asked_to_stop_mid_cycle_finishes_the_cycle_first() {
     // Catches `Stop` sent in the middle of a cycle, so an actor stops between drawing and showing.
     let mut engine = cycling::<Full>(Duration::from_secs(1));
-    engine.cycle();
+    engine.cycle(Time::ZERO);
     assert_eq!(step_at(&mut engine, 10), ["receive"]);
     engine.quit();
-    engine.cycle();
+    engine.cycle(Time::from_nanos(15));
     assert_eq!(step_at(&mut engine, 20), ["tick 0 0"]);
     assert_eq!(step_at(&mut engine, 30), ["pass 1"]);
     assert_eq!(step_at(&mut engine, 40), ["render"]);
