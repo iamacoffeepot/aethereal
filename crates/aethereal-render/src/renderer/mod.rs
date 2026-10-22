@@ -371,7 +371,8 @@ struct Compute {
 enum Stages {
     /// It draws placements: vertices laid out as `layout`, and what `instances` says once per instance.
     Draws { layout: VertexLayout, instances: PerInstance },
-    /// It is an effect, drawn over a whole target, reading targets as `reads` says, bound in its first group.
+    /// It is an effect, drawn over a whole target, reading targets as `reads` says, bound in its first group, which is
+    /// empty when it reads none.
     Effect { reads: Vec<Read> },
 }
 
@@ -2327,8 +2328,9 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram, wgsl: &str) -> Program {
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// The pipeline of the effect `create` asks for: the renderer's vertex stage, one triangle over the whole target, and
-/// its fragment stage, drawing into targets of its shape, reading its targets in its first group and binding what it
-/// lists in the groups after, of the WGSL `wgsl` its blob holds; made from what its check let through.
+/// its fragment stage, drawing into targets of its shape, reading its targets in its first group, empty when it reads
+/// none, and binding what it lists in the groups after, of the WGSL `wgsl` its blob holds; made from what its check
+/// let through.
 fn effect_pipeline(device: &wgpu::Device, create: &CreateEffect, wgsl: &str) -> Program {
     let cover = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,

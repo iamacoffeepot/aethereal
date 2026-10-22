@@ -245,6 +245,12 @@ pub trait ReadsAs<R> {
     fn named(self) -> Vec<super::Target>;
 }
 
+impl ReadsAs<()> for () {
+    fn named(self) -> Vec<super::Target> {
+        Vec::new()
+    }
+}
+
 impl<A> ReadsAs<(A,)> for (Target<A>,) {
     fn named(self) -> Vec<super::Target> {
         vec![self.0.named()]
