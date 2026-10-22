@@ -28,15 +28,16 @@ use crate::program::{
 use crate::readback::{self, Bytes, Copied, Order, Pixels, ReadBack, ReadRefused, ReadStorage, Readable};
 use crate::shape::{ColourFormat, DepthFormat, Shape};
 use crate::storage::{self, CreateStorage, StorageId, Stored, WriteStorage};
+use crate::surface::{Front, Present};
 use crate::texture::{self, CreateTexture, TextureFormat, TextureId, Textured};
 use crate::timing::{self, TimeFrame, Timed, TimingRefused};
 use crate::uniforms::{self, CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_actor::{
     Actor, Beginning, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle, Handles, Held, Level, On,
-    Path, Protocol, Render, Resource, Source, Tells, ToSender, Top, Turn, path,
+    Protocol, Render, Resource, Source, ToSender, Top, Turn,
 };
 use aethereal_data::{ActorId, Bound, Plain};
-use aethereal_window::{Event, Subscribe, Window, WindowId};
+use aethereal_window::WindowId;
 use std::collections::HashMap;
 use std::mem;
 use walk::{End, Making, Step, Walk};
@@ -47,6 +48,8 @@ use walk::{End, Making, Step, Walk};
 pub struct Renderer {
     gpu: Handle<Gpu>,
     kept: Handle<Kept>,
+    front: Handle<Front>,
+    presenting: Handle<Controller<Present>>,
     mapping: Handle<Controller<Mapping>>,
     /// Held so the chassis's word of what it mapped is brought here; nothing opens it.
     mapped: Handle<Source<Mapped>>,
@@ -131,12 +134,17 @@ impl Carries<TimeFrame> for Renderer {
     type Answers = (Timed,);
 }
 
-/// What the renderer is made from: the GPU the chassis opened, the controller it asks the chassis to map what it
-/// reads back through, and the source the chassis brings word of each through (ADR-0019).
+/// What the renderer is made from: the GPU the chassis opened; the front the chassis hands it each frame's texture
+/// through, and the controller it asks the chassis to present each frame it drew through, which the chassis makes
+/// with the window's surface it keeps ([`WindowSurface::new`](crate::surface::WindowSurface::new)); and the
+/// controller it asks the chassis to map what it reads back through, and the source the chassis brings word of each
+/// through (ADR-0019, ADR-0021).
 #[derive(Bound)]
 #[kind(name = "aether.render.config")]
 pub struct RendererConfig {
     pub gpu: Given<Gpu>,
+    pub front: Given<Front>,
+    pub presenting: Given<Controller<Present>>,
     pub mapping: Given<Controller<Mapping>>,
     pub mapped: Given<Source<Mapped>>,
 }
@@ -478,13 +486,14 @@ impl Actor for Renderer {
         TimeFrame,
         Mapped,
         Ended,
-        Event,
     );
-    type BeginSends = (Tells<Path<Window>, Subscribe>,);
+    type BeginSends = ();
     type EndSends = ();
 
     fn begin(config: RendererConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let mut gpu = turn.take(config.gpu)?;
+        let front = turn.take(config.front)?;
+        let presenting = turn.take(config.presenting)?;
         let mapping = turn.take(config.mapping)?;
         let mapped = turn.take(config.mapped)?;
         let opened = turn.open(&mut gpu)?;
@@ -504,8 +513,6 @@ impl Actor for Renderer {
         let kept = Kept::new(opened.device(), (window, format), own);
         let kept = turn.keep(kept)?;
         turn.subscribe::<Render>();
-        // Sent the window's surface as it stands, then each time it is resized.
-        turn.to(path::<Window>(window)).send(&Subscribe)?;
 
         let owed = Owed {
             frames: Vec::new(),
@@ -515,7 +522,7 @@ impl Actor for Renderer {
             timing: Vec::new(),
         };
 
-        Ok(Self { gpu, kept, mapping, mapped, owed })
+        Ok(Self { gpu, kept, front, presenting, mapping, mapped, owed })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -527,26 +534,25 @@ impl Handles<On<Render>> for Renderer {
     type Sends = ();
 
     fn handle(&mut self, _: Render, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        let gpu = turn.open(&mut self.gpu)?;
-        gpu.fit();
-        // A frame the surface has no texture for is skipped; the next asks again, and is the one read and timed.
-        let wgpu::CurrentSurfaceTexture::Success(frame) = gpu.surface().get_current_texture() else {
+        // A cycle the chassis handed no frame for is skipped: nothing is drawn, nor asked to be presented, and the next
+        // frame drawn is the one read and timed.
+        let Some(frame) = turn.open(&mut self.front)?.take() else {
             return Ok(());
         };
+        let gpu = turn.open(&mut self.gpu)?;
         // Held past the opening of what is kept, as a turn opens one resource at a time.
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = frame.create_view(&wgpu::TextureViewDescriptor::default());
         let kept = turn.open(&mut self.kept)?;
-        kept.main_mut().fit(&device, Size { width: frame.texture.width(), height: frame.texture.height() });
+        kept.main_mut().fit(&device, Size { width: frame.width(), height: frame.height() });
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let passes = kept.passes();
         let stamps = (!self.owed.timings.is_empty()).then(|| Stamps::new(&device, passes));
         kept.run_all(&mut encoder, &view, stamps.as_ref());
-        let copied = (!self.owed.frames.is_empty()).then(|| copy_frame(&device, &mut encoder, &frame.texture));
+        let copied = (!self.owed.frames.is_empty()).then(|| copy_frame(&device, &mut encoder, &frame));
         let timed = stamps.map(|stamps| stamps.resolve(&mut encoder, queue.get_timestamp_period()));
         queue.submit([encoder.finish()]);
-        queue.present(frame);
 
         let mut mappings = Vec::new();
         let mut refused = Vec::new();
@@ -566,6 +572,8 @@ impl Handles<On<Render>> for Renderer {
             let timings = mem::take(&mut self.owed.timings);
             self.owed.timing.extend(timings.into_iter().map(|held| (read, held)));
         }
+        // Asked once the frame is submitted, so a frame drawn is presented however its answers fare.
+        turn.open(&mut self.presenting)?.push(Present);
         for (held, why) in refused {
             turn.answer(held, &Pixels::Refused(why))?;
         }
@@ -574,28 +582,6 @@ impl Handles<On<Render>> for Renderer {
         for mapping in mappings {
             control.push(mapping);
         }
-
-        Ok(())
-    }
-}
-
-/// The window's resize, sent by its actor, which the surface is configured to as the next frame begins. A resize
-/// another actor sends is not the window's, and is dropped, and the rest of what the window hears is not the
-/// renderer's.
-impl Handles<Event> for Renderer {
-    type Sends = ();
-
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        let Event::Resized(surface) = event else {
-            return Ok(());
-        };
-        let window = path::<Window>(turn.open(&mut self.gpu)?.window());
-        let is_the_windows = turn.resolve(window.names()) == Some(turn.sender());
-        if !is_the_windows {
-            turn.log(Level::Warn, "a resize another actor sent the renderer was dropped: only its window's are");
-            return Ok(());
-        }
-        turn.open(&mut self.gpu)?.heard(surface.width, surface.height);
 
         Ok(())
     }

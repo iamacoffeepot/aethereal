@@ -20,7 +20,32 @@ This record decides how actors make what is drawn: the first piece of the render
 
 ## Decision
 
-**One capability, the render root, owns the GPU.** It is the root the chassis hands `Gpu` to, with a controller and a source for the work it waits on the host for (ADR-0023), and the only actor that touches the device, its queue, or the surface (ADR-0019: a capability fronts one host system). Every other actor, native or a guest, reaches the GPU by asking the render root.
+**One capability, the render root, owns the GPU.** It is the root the chassis hands `Gpu` to, the device, its queue, and the window it draws to, with a controller and a source for the work it waits on the host for (ADR-0023), and the only actor that touches the device or its queue (ADR-0019: a capability fronts one host system). Every other actor, native or a guest, reaches the GPU by asking the render root.
+
+**The chassis owns the window's surface, and hands the render root each frame through a front.** A frame of a surface is bound to its host, as ADR-0019's values that stay with the chassis are: it is presented by value, and natively it is acquired by waiting for the display. So the chassis keeps the surface and each frame it acquires, `WindowSurface`, and the render root holds from boot a front for the frame, a way in, and a controller for presenting it, a way out:
+
+```rust
+pub struct Front { .. }            // a resource: a slot holding at most one frame's texture
+pub struct Present;                // asked of the chassis once the frame is drawn and submitted
+
+RendererConfig { gpu: Given<Gpu>, front: Given<Front>, presenting: Given<Controller<Present>>, mapping: .., mapped: .. }
+
+let (presenting, presents) = setup.controller();
+let (surface, front) = WindowSurface::new(surface, &gpu, config, presents);   // configured here, in the GPU's format
+
+// each cycle, on the chassis's thread
+surface.resized(width, height);    // the size it pushed as the window's last `Resized`
+surface.acquire();                 // configures if the size changed, acquires, puts the frame's texture in the front
+engine.cycle(time);                // then steps: `Render` takes the texture, draws into it, submits, pushes `Present`
+surface.present();                 // takes the requests, and presents the frame it kept if `Present` was asked
+```
+
+- **The front is a lock-free slot that holds at most one frame**, a queue of one: the chassis puts in the texture of the frame it acquired, a clone of the frame's own, and the render root takes it at `Render`. A frame put while one is there takes its place. The host's thread and a worker's turn share the slot, so it is no lock: what the host brings in never waits on a turn.
+- **An empty front is no frame this cycle**: the surface gave no texture, or the window is hidden or of no size. The render root draws nothing and asks for nothing, and the next frame drawn is the one read and timed (ADR-0023).
+- **The chassis presents after the cycle**, the frame it kept, when `Present` was asked. A kept frame that was not presented is dropped before the next acquire, and its texture taken back from the front.
+- **The chassis configures the surface**, when it is made and before an acquire whenever its window was resized since, at the size it pushed as `Resized` (ADR-0024). A window of no size is not acquired, and nothing is handed. A frame that no longer matches the surface, `Suboptimal`, is handed, and the surface is configured again before the next acquire. One that is `Outdated` or `Lost` configures the surface again and hands nothing.
+- **Why: a native acquire blocks.** With `Fifo`, which is vsync, it waits until the display frees an image. A turn that waited would hold its worker, and the engine would time about one refresh as the render root's cost every frame. The chassis waits on its own thread instead, and that wait paces the cycles natively as `requestAnimationFrame` does in a browser, where the acquire returns at once. Both hosts take the one path, so the render root has no host's branch.
+- **No resource is made each frame, and nothing is added to the actor API.** The front and the controller are resources the render root owns from boot (ADR-0010, ADR-0019), and the size of the window's main frame follows the texture each frame is drawn into (ADR-0025).
 
 **An actor makes a mesh, a texture, or a program by asking for it.** Each is answered with the resource's id or a refusal that says why (ADR-0017: `turn.to(target).ask`, `Answer`):
 
@@ -82,3 +107,6 @@ Release { id }                                                                  
 - **A closed set of shaders the engine writes.** What the earlier engine began with and outgrew.
 - **A material that is the program and its values together.** Two materials over one shader would compile it twice and batch apart.
 - **The browser's own WGSL checks in place of naga.** The answer to `CreateProgram` would come only after a promise, and would not cover the layout and bindings.
+- **The render root acquiring its frame in `Render`**, as the earlier engine's render actor did. The surface would be one actor's alone. That was harmless there, as its render ran last and alone on the main thread; here a native acquire blocks a turn on a worker, timed as the render root's cost.
+- **`Mailbox` presenting, with cycles the host times.** No acquire would wait. Metal offers only `Fifo`, and a timer drifts from the display's refresh.
+- **A new resource handed each frame**, through the source. Nothing would be held from boot. A resource the render root keeps leaves it only when it ends (ADR-0010), so each frame would be kept until then, and presenting needs the frame by value.

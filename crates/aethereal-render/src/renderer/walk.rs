@@ -19,7 +19,7 @@ pub(super) struct Walk {
     size: Size,
 }
 
-/// Where a frame ends: on its window, whose surface gives each `Render` what it draws into, or on a texture of its
+/// Where a frame ends: on its window, into the frame of its surface the chassis hands each `Render`, or on a texture of its
 /// own, kept under the id `texture`.
 pub(super) enum End {
     Window,

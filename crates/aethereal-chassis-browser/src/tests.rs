@@ -110,8 +110,7 @@ fn a_frame_runs_its_cycle_through_to_its_end_and_is_answered_for_the_jobs_it_ran
     let Ok(_) = engine.add_root::<Painter>(&(), Nothing) else {
         panic!("the painter begins");
     };
-    let mappings = Mappings::unasked(&mut engine);
-    let mut browser = Browser::new(engine, Still, mappings);
+    let mut browser = Browser::new(engine, Still, Serving::Nothing);
 
     browser.frame(16.0);
     let Ok(first) = PAINTED.lock().map(|painted| painted.clone()) else {
@@ -195,8 +194,7 @@ fn a_frame_brings_in_what_the_page_pushed_before_it_though_its_cycle_runs_no_sta
     let Ok(_) = engine.add_root::<Pointer>(&(), PointerConfig { source }) else {
         panic!("the pointer begins");
     };
-    let mappings = Mappings::unasked(&mut engine);
-    let mut browser = Browser::new(engine, Still, mappings);
+    let mut browser = Browser::new(engine, Still, Serving::Nothing);
     browser.frame(48.0);
 
     let Ok(()) = feed.push(Moved { x: 7 }) else {

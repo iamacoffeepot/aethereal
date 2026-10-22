@@ -2,10 +2,11 @@
 //!
 //! The page owns the thread, the canvas, and when a frame is drawn. It opens
 //! the GPU with [`open`] before the engine is made, hands it in to the
-//! renderer (ADR-0010, ADR-0021), and from each `requestAnimationFrame` calls
-//! [`Browser::frame`], which runs one cycle through to its end before the
-//! page gets its thread back, then starts mapping what the renderer asked
-//! to read back, which the page's promises bring in later frames.
+//! renderer with [`renderer`] (ADR-0010, ADR-0021), and from each
+//! `requestAnimationFrame` calls [`Browser::frame`], which hands the renderer
+//! the canvas's frame, runs one cycle through to its end before the page gets
+//! its thread back, presents what the renderer drew, then starts mapping what
+//! it asked to read back, which the page's promises bring in later frames.
 //!
 //! What the page hears, its callbacks push onto a source as they run, and the
 //! next frame brings in (ADR-0010): the pointer over the canvas, the keys, the
@@ -34,17 +35,17 @@ pub mod controls;
 mod gpu;
 #[cfg(target_arch = "wasm32")]
 mod listening;
-mod mappings;
+mod serving;
 #[cfg(test)]
 mod tests;
 
 #[cfg(target_arch = "wasm32")]
 pub use clock::Performance;
 #[cfg(target_arch = "wasm32")]
-pub use gpu::open;
+pub use gpu::{Opened, open, renderer};
 #[cfg(target_arch = "wasm32")]
 pub use listening::Listening;
-pub use mappings::{Mappings, renderer};
+pub use serving::{Drawing, Serving};
 /// The futures crate an async `#[wasm_bindgen]` export names, for a page to point the macro at.
 #[cfg(target_arch = "wasm32")]
 pub use wasm_bindgen_futures;
@@ -57,17 +58,17 @@ use aethereal_substrate::{Clock, Engine};
 pub struct Browser<C> {
     engine: Engine,
     clock: C,
-    mappings: Mappings,
+    serving: Serving,
 }
 
 impl<C: Clock> Browser<C> {
-    /// `engine`, with its roots made, started on `clock`, serving the renderer `mappings`: its `Start` runs in the
-    /// first frame (ADR-0020).
+    /// `engine`, with its roots made, started on `clock`, serving its renderer as `serving` says: its `Start` runs in
+    /// the first frame (ADR-0020).
     #[must_use]
-    pub fn new(mut engine: Engine, clock: C, mappings: Mappings) -> Self {
+    pub fn new(mut engine: Engine, clock: C, serving: Serving) -> Self {
         engine.start();
 
-        Self { engine, clock, mappings }
+        Self { engine, clock, serving }
     }
 
     /// The engine, as of the last frame.
@@ -77,17 +78,20 @@ impl<C: Clock> Browser<C> {
     }
 
     /// Runs one frame, for the page's `requestAnimationFrame`, whose callback is handed the frame's timestamp,
-    /// `timestamp_millis`, in milliseconds since the page opened: says a cycle is due at that time, so `Tick`'s delta
-    /// is the time between the display's frames however long each frame's work took, then brings in what its sources
-    /// were pushed and its jobs finished and steps, until no actor has anything to run (ADR-0010, ADR-0018). The
-    /// cycle's stages each run through to their end within the call, so what `Render` drew is there when the page
-    /// gets its thread back and shows it. Then it starts mapping what the renderer asked to read back, its turns'
-    /// copies submitted, for the page's promises to bring in once the GPU has mapped it (ADR-0019).
+    /// `timestamp_millis`, in milliseconds since the page opened. First it hands the renderer the canvas's frame,
+    /// its surface configured to the size the window was last resized to. Then it says a cycle is due at that time,
+    /// so `Tick`'s delta is the time between the display's frames however long each frame's work took, and brings in
+    /// what its sources were pushed and its jobs finished and steps, until no actor has anything to run (ADR-0010,
+    /// ADR-0018). The cycle's stages each run through to their end within the call, so what `Render` drew is
+    /// presented before the page gets its thread back and shows it. Then it starts mapping what the renderer asked to
+    /// read back, its turns' copies submitted, for the page's promises to bring in once the GPU has mapped it
+    /// (ADR-0019).
     ///
     /// # Panics
     ///
     /// Panics with a turn's panic, and when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn frame(&mut self, timestamp_millis: f64) {
+        self.serving.acquire();
         self.engine.cycle(frame_time(timestamp_millis));
         self.engine.bring();
         while !self.engine.is_idle() {
@@ -95,7 +99,7 @@ impl<C: Clock> Browser<C> {
             self.engine.step(now, &self.clock);
             self.engine.bring();
         }
-        self.mappings.serve();
+        self.serving.serve();
     }
 }
 
