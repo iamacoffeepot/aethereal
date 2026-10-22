@@ -27,12 +27,14 @@ fn window(nth: u64) -> WindowId {
 const GLAZE: ProgramId = ProgramId { id: 7 };
 /// The effect that blurs a target of floats into another.
 const BLUR: ProgramId = ProgramId { id: 8 };
+/// The effect that draws a sky into a target of floats, reading nothing.
+const SKY: ProgramId = ProgramId { id: 9 };
 /// Uniforms of 16 bytes.
 const TINT: UniformsId = UniformsId { id: 4 };
 /// The longest side of a texture the test's GPU makes.
 const LONGEST: u32 = 2048;
 
-/// What a test keeps: the window [`window`] `0`, of `Bgra8`; [`GLAZE`]; [`BLUR`]; and [`TINT`].
+/// What a test keeps: the window [`window`] `0`, of `Bgra8`; [`GLAZE`]; [`BLUR`]; [`SKY`]; and [`TINT`].
 struct Kept {
     glaze: (Vec<Read>, Vec<Binding>),
     blur: Vec<Read>,
@@ -101,6 +103,7 @@ impl Holds for Kept {
         let (reads, bindings, colour) = match id {
             GLAZE => (self.glaze.0.as_slice(), self.glaze.1.as_slice(), ColourFormat::Bgra8),
             BLUR => (self.blur.as_slice(), [].as_slice(), ColourFormat::Rgba16Float),
+            SKY => ([].as_slice(), [].as_slice(), ColourFormat::Rgba16Float),
             _ => return None,
         };
 
@@ -122,7 +125,7 @@ macro_rules! passes {
     )*};
 }
 
-passes!(Surfaces "aether.test.surfaces", Splats "aether.test.splats", Glaze "aether.test.glaze", Blur "aether.test.blur", Ids "aether.test.ids", Simulate "aether.test.simulate");
+passes!(Surfaces "aether.test.surfaces", Splats "aether.test.splats", Glaze "aether.test.glaze", Blur "aether.test.blur", Ids "aether.test.ids", Simulate "aether.test.simulate", Sky "aether.test.sky");
 
 /// [`GLAZE`], as the builder takes it.
 fn glaze() -> EffectId<(Float, Uint)> {
@@ -216,6 +219,27 @@ fn a_frame_drawing_over_kept_targets_keeps_what_its_draws_left() {
     assert_eq!(check(&create, &Kept::new()), Ok(()));
 }
 
+#[test]
+fn a_frame_begins_with_an_effect_that_reads_nothing() {
+    // Catches an effect reading nothing described as reading something, and the check refusing it as the first pass,
+    // which no earlier pass wrote for: what it draws into is its own, begun from black.
+    let mut frame = FrameBuilder::on(Ends::Window(window(0)));
+    let sky = MadeEffect { program: SKY, reads: Vec::new() };
+    let Some(sky) = EffectId::<()>::of(&sky) else {
+        panic!("the sky reads nothing");
+    };
+    let sky = frame.effect(Sky, Effect::new(&sky, ()), Float);
+    let scene = frame.draw_over(Splats, sky, depth::Off);
+    let ids = frame.draw(Ids, Uint, depth::Off);
+    let Ok(create) = frame.finish(Glaze, Effect::new(&glaze(), (scene, ids)).bound(tinted())) else {
+        panic!("the frame's passes are of types of their own");
+    };
+
+    let begun = Does::Effect { program: SKY, reads: Vec::new(), into: Target::Texture(0), bindings: Vec::new() };
+    assert_eq!(create.passes[0].does, begun);
+    assert_eq!(check(&create, &Kept::new()), Ok(()));
+}
+
 /// [`frame`], with `change` made to it.
 fn changed(change: impl FnOnce(&mut CreateFrame)) -> CreateFrame {
     let mut frame = frame();
@@ -306,6 +330,15 @@ fn an_effect_reading_the_end_itself_or_other_kinds_than_it_was_made_for_is_refus
     let end = reading(vec![Target::End, Target::Texture(0)]);
     let swapped = reading(vec![Target::Texture(0), Target::Texture(2)]);
     let fewer = reading(vec![Target::Texture(2)]);
+    let none = reading(Vec::new());
+    let sky_reading = changed(|frame| {
+        frame.passes[2].does = Does::Effect {
+            program: SKY,
+            reads: vec![Target::Texture(0)],
+            into: Target::Texture(2),
+            bindings: Vec::new(),
+        };
+    });
     let itself = changed(|frame| {
         frame.passes[2].does = Does::Effect {
             program: BLUR,
@@ -319,6 +352,8 @@ fn an_effect_reading_the_end_itself_or_other_kinds_than_it_was_made_for_is_refus
     assert_eq!(check(&end, &kept), refused(2, PassRefused::End));
     assert_eq!(check(&swapped, &kept), refused(2, PassRefused::Reads));
     assert_eq!(check(&fewer, &kept), refused(2, PassRefused::Reads));
+    assert_eq!(check(&none, &kept), refused(2, PassRefused::Reads));
+    assert_eq!(check(&sky_reading, &kept), refused(2, PassRefused::Reads));
     assert_eq!(check(&itself, &kept), refused(2, PassRefused::Itself));
 }
 

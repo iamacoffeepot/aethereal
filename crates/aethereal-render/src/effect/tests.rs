@@ -152,4 +152,56 @@ fn an_effect_id_is_had_only_for_what_the_effect_reads() {
     assert!(EffectId::<(Uint, Float)>::of(&made).is_none());
     assert!(EffectId::<(Float,)>::of(&made).is_none());
     assert!(EffectId::<(Float, Uint, Depth32)>::of(&made).is_none());
+    assert!(EffectId::<()>::of(&made).is_none());
+}
+
+/// An effect that reads no target and shades by the place across its target and uniforms, as a sky does.
+const SKY: &str = "
+@group(1) @binding(0) var<uniform> horizon: vec4<f32>;
+
+@fragment
+fn sky(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    return horizon * uv.y;
+}
+";
+
+/// The effect [`SKY`] is, into the window's colour, reading nothing and binding its uniforms at group 1.
+fn sky() -> Asked<CreateEffect> {
+    let create = CreateEffect {
+        wgsl: blob(),
+        fragment: String::from("sky"),
+        reads: Vec::new(),
+        bindings: vec![Binding { group: 1, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
+        blend: Blend::Opaque,
+        shape: Shape::flat(ColourFormat::Bgra8),
+    };
+
+    Asked::new(create, SKY)
+}
+
+#[test]
+fn an_effect_reading_nothing_binds_what_it_lists_from_group_1() {
+    // Catches group 0 dropped from an effect that reads nothing, its listed bindings moved down into it: what it
+    // lists begins at group 1 whatever it reads, so a shader that binds there is made, and one that reads a target
+    // its effect does not, or lists a binding in group 0, is refused.
+    let mut reading = sky();
+    reading.wgsl = reading.wgsl.replace("@fragment", "@group(0) @binding(0) var scene: texture_2d<f32>;\n@fragment");
+    reading.wgsl = reading.wgsl.replace("horizon * uv.y", "horizon * textureLoad(scene, vec2<i32>(uv), 0)");
+    let mut moved = sky();
+    moved.bindings[0].group = 0;
+    moved.wgsl = moved.wgsl.replace("@group(1)", "@group(0)");
+
+    assert_eq!(checked(&sky()), Ok(()));
+    assert_eq!(checked(&reading), Err(ProgramRefused::Unbound { group: 0, binding: 0 }));
+    assert_eq!(checked(&moved), Err(ProgramRefused::Reserved { binding: 0 }));
+}
+
+#[test]
+fn an_effect_id_reading_nothing_is_had_only_for_an_effect_that_reads_nothing() {
+    // Catches an effect typed as reading nothing when it reads a target, which would leave its group 0 unbound as
+    // the frame draws it.
+    let alone = MadeEffect { program: ProgramId { id: 7 }, reads: Vec::new() };
+
+    assert!(EffectId::<()>::of(&alone).is_some());
+    assert!(EffectId::<(Float,)>::of(&alone).is_none());
 }

@@ -1,6 +1,6 @@
 //! Effects: programs drawn once over a whole target in an effect pass, reading targets earlier passes of the frame
-//! wrote (ADR-0025). An effect is a fragment stage alone; the renderer draws one triangle over the target with a
-//! vertex stage of its own.
+//! wrote (ADR-0025), or none, as a sky or a ray tracer that begins a frame reads none. An effect is a fragment stage
+//! alone; the renderer draws one triangle over the target with a vertex stage of its own.
 
 #[cfg(test)]
 mod tests;
@@ -22,7 +22,8 @@ use naga::{ImageClass, ScalarKind};
 /// Asks the renderer for an effect: the fragment stage `fragment` of the WGSL the blob `wgsl` holds as UTF-8, drawn
 /// over the whole of a target of the shape `shape`, which holds no depth, blending by `blend`. It reads the targets
 /// `reads` names, the first at `@group(0) @binding(0)`, the next at binding 1, and binds what `bindings` lists in the
-/// groups after. Answered with [`Effected`].
+/// groups after. Group 0 is its reads' whatever their count: one that reads none binds nothing there, and what it
+/// lists still begins at group 1. Answered with [`Effected`].
 ///
 /// Its fragment stage may read the target's pixel, `@builtin(position)`, and where it is across the target from its
 /// top left, `@location(0) uv: vec2<f32>`, from zero to one; every target of a frame is the size of its end, so a
@@ -128,12 +129,17 @@ impl ReadKind for Depth32 {
 /// What an effect reads, in order, as a tuple of the kinds of its targets: `(Float, Uint)`.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not what an effect reads",
-    label = "an effect reads a tuple of one to four kinds of target",
-    note = "write what it reads as a tuple of `Float`, `Uint`, and `Depth32`: `(Float,)`, `(Float, Uint)`"
+    label = "an effect reads a tuple of up to four kinds of target",
+    note = "write what it reads as a tuple of `Float`, `Uint`, and `Depth32`: `()`, `(Float,)`, `(Float, Uint)`"
 )]
 pub trait Reads: 'static {
     /// How each is read, in order.
     const READS: &'static [Read];
+}
+
+/// An effect that reads no target: one that begins a frame, as a sky or a ray tracer does.
+impl Reads for () {
+    const READS: &'static [Read] = &[];
 }
 
 impl<A: ReadKind + 'static> Reads for (A,) {
