@@ -112,3 +112,82 @@ fn an_effect_binding_a_sampler_none_has_made_is_made_and_drawn() {
     kept.run_all(&mut encoder, &surface(&device), None);
     queue.submit([encoder.finish()]);
 }
+
+/// An effect that reads no target and shades the place across its target by uniforms, as a sky does.
+const SKY: &str = "
+@group(1) @binding(0) var<uniform> horizon: vec4<f32>;
+
+@fragment
+fn sky(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    return horizon * uv.y;
+}
+";
+
+/// The pass the sky draws in.
+#[derive(Plain)]
+#[kind(name = "aether.test.sky")]
+struct Sky;
+
+impl Pass for Sky {}
+
+#[test]
+fn a_frame_begun_by_an_effect_that_reads_nothing_is_made_and_drawn_from_black() {
+    // Catches an effect that reads nothing made without its empty group 0, its uniforms bound where its shader does
+    // not look for them, which WebGPU refuses as the pipeline is made or the pass draws, and the first pass of a
+    // frame begun from what its target held before rather than from black.
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let mut kept = kept(&device);
+
+    let create = CreateEffect {
+        wgsl: blob(),
+        fragment: String::from("sky"),
+        reads: Vec::new(),
+        bindings: vec![Binding { group: 1, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
+        blend: Blend::Opaque,
+        shape: Shape::flat(ColourFormat::Rgba8),
+    };
+    assert_eq!(effect::check(&create, SKY, &device.limits()), Ok(()));
+    let program = kept.ids.next();
+    kept.programs.keep(program, MAKER, effect_pipeline(&device, &create, SKY));
+    let horizon = kept.ids.next();
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 16,
+        usage: wgpu::BufferUsages::UNIFORM,
+        mapped_at_creation: false,
+    });
+    kept.uniforms.keep(horizon, MAKER, Uniforms { buffer, size: 16 });
+
+    let sky = PassSpec {
+        name: PassName::of::<Sky>(),
+        does: Does::Effect {
+            program: ProgramId { id: program },
+            reads: Vec::new(),
+            into: Target::End,
+            bindings: vec![Bind { group: 1, binding: 0, to: Resource::Uniforms(UniformsId { id: horizon }) }],
+        },
+    };
+    let frame =
+        CreateFrame { ends: Ends::Texture(Size { width: 4, height: 4 }), targets: Vec::new(), passes: vec![sky] };
+    assert_eq!(frame::check(&frame, &kept), Ok(()));
+
+    let framed = kept.frame(&device, frame, MAKER);
+    let Ok(Framed::Texture { frame, .. }) = framed else {
+        panic!("the frame is refused: {framed:?}");
+    };
+    let Some(walk) = kept.frames.get(frame.id) else {
+        panic!("the frame is kept");
+    };
+    let loads: Vec<Load> = walk
+        .steps()
+        .filter_map(|(_, step)| match step {
+            Step::Effect { effect, .. } => Some(effect.load),
+            Step::Draw { .. } | Step::Compute => None,
+        })
+        .collect();
+    assert_eq!(loads, vec![Load::Clear]);
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    kept.run_all(&mut encoder, &surface(&device), None);
+    queue.submit([encoder.finish()]);
+}

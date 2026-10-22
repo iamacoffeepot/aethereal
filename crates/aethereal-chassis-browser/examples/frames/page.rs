@@ -1,5 +1,6 @@
-//! The page's entry points, and an actor that makes a frame of a depth pass, a pass tested against it, and a tint over
-//! both, places a surface and a splat in it, then reads back what was drawn and times the frame's passes.
+//! The page's entry points, and an actor that makes a frame of a sky, an effect that reads nothing, a depth pass over
+//! it, a pass tested against that, and a tint over all three, places a surface and a splat in it, then reads back what
+//! was drawn and times the frame's passes.
 
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, BlobRef, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
@@ -103,7 +104,14 @@ impl Kind for Shows {
     const NAME: KindName = KindName::new("aether.example.shows");
 }
 
-/// The pass that draws surfaces into the scene, writing their depth.
+/// The pass that begins the scene with a sky, an effect that reads nothing.
+#[derive(Plain)]
+#[kind(name = "aether.example.sky")]
+struct Sky;
+
+impl Pass for Sky {}
+
+/// The pass that draws surfaces over the sky, writing their depth.
 #[derive(Plain)]
 struct Surfaces;
 
@@ -146,16 +154,25 @@ fn shade() -> @location(0) vec4<f32> {
 }
 ";
 
-/// A program that draws the quad over the whole canvas, green, behind the surface: drawn where nothing nearer was.
+/// A program that draws the quad across the canvas's middle, green, behind the surface: drawn where nothing nearer was.
 const SPLAT: &str = "
 @vertex
 fn place(@location(0) corner: vec2<f32>) -> @builtin(position) vec4<f32> {
-    return vec4(corner, 0.7, 1.0);
+    return vec4(corner.x, corner.y * 0.5, 0.7, 1.0);
 }
 
 @fragment
 fn shade() -> @location(0) vec4<f32> {
     return vec4(0.0, 1.0, 0.0, 1.0);
+}
+";
+
+/// An effect that reads nothing and draws a sky, blue at the top of the canvas and half as blue at its bottom, by the
+/// place across it the renderer's vertex stage writes.
+const SKY: &str = "
+@fragment
+fn sky(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    return vec4(0.2, 0.4, 1.0 - 0.5 * uv.y, 1.0);
 }
 ";
 
@@ -202,23 +219,23 @@ impl Kind for Learned {
     const NAME: KindName = KindName::new("aether.example.learned");
 }
 
-/// What was made before the tint was asked for.
+/// Which effect was asked for, with what was made before it.
 #[derive(Plain)]
-struct MadeMesh {
-    mesh: MeshId,
-}
-
-impl Kind for MadeMesh {
-    const NAME: KindName = KindName::new("aether.example.made_mesh");
+#[kind(name = "aether.example.effecting")]
+enum Effecting {
+    /// The tint, once the quad was made.
+    Tint { mesh: MeshId },
+    /// The sky, once the tint was.
+    Sky { mesh: MeshId, tint: EffectId<(Float,)> },
 }
 
 /// Which program was asked for, with what was made before it.
 #[derive(Plain)]
 enum Making {
-    /// The surface, once the tint was made.
-    Surface { mesh: MeshId, tint: EffectId<(Float,)> },
+    /// The surface, once the sky was made.
+    Surface { mesh: MeshId, tint: EffectId<(Float,)>, sky: EffectId<()> },
     /// The splat, once the surface was.
-    Splat { mesh: MeshId, tint: EffectId<(Float,)>, surface: ProgramId },
+    Splat { mesh: MeshId, tint: EffectId<(Float,)>, sky: EffectId<()>, surface: ProgramId },
 }
 
 impl Kind for Making {
@@ -258,7 +275,7 @@ impl Actor for Framer {
         On<Tick>,
         Answer<Shaped, Nothing>,
         Answer<Meshed, Learned>,
-        Answer<Effected, MadeMesh>,
+        Answer<Effected, Effecting>,
         Answer<Programmed, Making>,
         Answer<Framed, MadePrograms>,
         Answer<Placed, Placing>,
@@ -348,7 +365,7 @@ impl Handles<Answer<Shaped, Nothing>> for Framer {
 }
 
 impl Handles<Answer<Meshed, Learned>> for Framer {
-    type Sends = (Asks<Path<Renderer>, CreateEffect, MadeMesh>,);
+    type Sends = (Asks<Path<Renderer>, CreateEffect, Effecting>,);
 
     fn handle(
         &mut self,
@@ -374,27 +391,55 @@ impl Handles<Answer<Meshed, Learned>> for Framer {
             blend: Blend::Opaque,
             shape: Shape::flat(learned.window),
         };
-        turn.to(path::<Renderer>(())).ask(&tint, &MadeMesh { mesh })?;
+        turn.to(path::<Renderer>(())).ask(&tint, &Effecting::Tint { mesh })?;
 
         Ok(())
     }
 }
 
-impl Handles<Answer<Effected, MadeMesh>> for Framer {
-    type Sends = (Asks<Path<Renderer>, CreateProgram, Making>,);
+impl Handles<Answer<Effected, Effecting>> for Framer {
+    type Sends = (Asks<Path<Renderer>, CreateEffect, Effecting>, Asks<Path<Renderer>, CreateProgram, Making>);
 
     fn handle(
         &mut self,
-        (answered, made): (Answered<Effected>, MadeMesh),
+        (answered, effecting): (Answered<Effected>, Effecting),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Effected::Made(effect)) = answered else {
-            say(format!("the tint was not made: {answered:?}"));
+            say(format!("an effect was not made: {answered:?}"));
             return Ok(());
         };
-        let Some(tint) = EffectId::of(&effect) else {
-            say(format!("the tint reads what it was not asked to: {:?}", effect.reads()));
-            return Ok(());
+        let (mesh, tint, sky) = match effecting {
+            Effecting::Tint { mesh } => {
+                let Some(tint) = EffectId::of(&effect) else {
+                    say(format!("the tint reads what it was not asked to: {:?}", effect.reads()));
+                    return Ok(());
+                };
+                let wgsl = match turn.put(Vec::from(SKY)) {
+                    Ok(wgsl) => wgsl,
+                    Err(why) => {
+                        say(format!("no sky asked: {why}"));
+                        return Ok(());
+                    }
+                };
+                let sky = CreateEffect {
+                    wgsl,
+                    fragment: String::from("sky"),
+                    reads: Vec::new(),
+                    bindings: Vec::new(),
+                    blend: Blend::Opaque,
+                    shape: Shape::flat(ColourFormat::Rgba16Float),
+                };
+                turn.to(path::<Renderer>(())).ask(&sky, &Effecting::Sky { mesh, tint })?;
+                return Ok(());
+            }
+            Effecting::Sky { mesh, tint } => {
+                let Some(sky) = EffectId::of(&effect) else {
+                    say(format!("the sky reads what it was not asked to: {:?}", effect.reads()));
+                    return Ok(());
+                };
+                (mesh, tint, sky)
+            }
         };
         let wgsl = match turn.put(Vec::from(SURFACE)) {
             Ok(wgsl) => wgsl,
@@ -404,7 +449,7 @@ impl Handles<Answer<Effected, MadeMesh>> for Framer {
             }
         };
         let surface = program(wgsl, Depth::TestWrite);
-        turn.to(path::<Renderer>(())).ask(&surface, &Making::Surface { mesh: made.mesh, tint })?;
+        turn.to(path::<Renderer>(())).ask(&surface, &Making::Surface { mesh, tint, sky })?;
 
         Ok(())
     }
@@ -422,8 +467,8 @@ impl Handles<Answer<Programmed, Making>> for Framer {
             say(format!("a program was not made: {answered:?}"));
             return Ok(());
         };
-        let (mesh, tint, surface) = match making {
-            Making::Surface { mesh, tint } => {
+        let (mesh, tint, sky, surface) = match making {
+            Making::Surface { mesh, tint, sky } => {
                 let wgsl = match turn.put(Vec::from(SPLAT)) {
                     Ok(wgsl) => wgsl,
                     Err(why) => {
@@ -432,16 +477,17 @@ impl Handles<Answer<Programmed, Making>> for Framer {
                     }
                 };
                 let splat = program(wgsl, Depth::Test);
-                turn.to(path::<Renderer>(())).ask(&splat, &Making::Splat { mesh, tint, surface: made })?;
+                turn.to(path::<Renderer>(())).ask(&splat, &Making::Splat { mesh, tint, sky, surface: made })?;
                 return Ok(());
             }
-            Making::Splat { mesh, tint, surface } => (mesh, tint, surface),
+            Making::Splat { mesh, tint, sky, surface } => (mesh, tint, sky, surface),
         };
         let Self::Making { window } = *self else {
             return Ok(());
         };
         let mut frame = FrameBuilder::on(Ends::Window(window));
-        let (scene, depth) = frame.draw(Surfaces, Float, depth::Write);
+        let sky = frame.effect(Sky, Effect::new(&sky, ()), Float);
+        let (scene, depth) = frame.draw_over(Surfaces, sky, depth::Write);
         let scene = frame.draw_over(Splats, scene, depth::Test(&depth));
         let create = match frame.finish(Tint, Effect::new(&tint, (scene,))) {
             Ok(create) => create,
@@ -549,9 +595,11 @@ impl Handles<Answer<Pixels, Nothing>> for Framer {
         let read = turn.read(&pixels);
         let surface = pixel(read, width, width / 4, height / 2);
         let splat = pixel(read, width, width * 3 / 4, height / 2);
-        let corner = pixel(read, width, 2, 2);
+        let sky_top = pixel(read, width, 2, 2);
+        let sky_bottom = pixel(read, width, 2, height - 3);
         say(format!(
-            "frame width={width} height={height} format={format:?} surface={surface} splat={splat} corner={corner}"
+            "frame width={width} height={height} format={format:?} surface={surface} splat={splat} sky_top={sky_top} \
+             sky_bottom={sky_bottom}"
         ));
 
         Ok(())

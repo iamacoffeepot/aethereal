@@ -43,7 +43,8 @@ enum Load { Clear, Keep }
 
 - A target of floats is four 16-bit floats a pixel, `Rgba16Float`, which WebGPU filters and blends; one of whole numbers is one 32-bit whole number, `R32Uint`; depth is `Depth32Float`, as every program tests. The description's pass is `PassSpec`, as the builder's `Pass` is the trait a pass's type implements.
 - **An effect binds what it reads and what it lists besides.** Its targets are bound in its first group, the first it reads at binding 0; its `bindings` are bound in the groups after, as a placement binds what its program lists (ADR-0023), so an effect that comes and goes is switched by its uniforms, and an effect reads a texture another frame ends on by binding it. **This departs from `Effect` having no bindings**, which left no way to bind those uniforms.
-- An effect pass begins from what an earlier pass drew into its target, so an effect that blends lays its colour over it, and from black when no earlier pass wrote it.
+- **An effect may read nothing**, as a sky or a ray tracer that begins a frame does. Its first group is then bound empty, and what it lists is bound from group 1 as it is for an effect that reads, so where an effect's shader finds its bindings never hangs on how many targets it reads. **This departs from the builder's first form, which took one to four targets**, so a frame could not begin with an effect and a full-screen pass that read nothing was drawn as a placement.
+- An effect pass begins from what an earlier pass drew into its target, so an effect that blends lays its colour over it, and from black when no earlier pass wrote it: an effect that begins a frame begins from black.
 
 - A pass reads only targets an earlier pass of the frame wrote, never the one it writes, and a depth it tests is one an earlier pass wrote.
 - Every target is the size of the frame's end. Targets of other sizes are later work.
@@ -71,7 +72,7 @@ let create = frame.finish(Glaze, Effect::new(&glaze, (splats, ids)))?;   // -> C
 
 - A target is the output of the pass that draws it, so a pass reads only what an earlier pass returned, and never what it writes.
 - `finish` takes the pass that writes the frame's end, and is the only way to a `CreateFrame`.
-- An effect is made for what it reads and writes, `EffectId<(Float, Uint)>`, and `Effect::new` takes targets of those kinds and no others. Handles are typed by kind and not by frame, so one taken from another builder compiles, and is refused by the render root when it names no target of this frame that an earlier pass wrote.
+- An effect is made for what it reads and writes, `EffectId<(Float, Uint)>`, and `Effect::new` takes targets of those kinds and no others; one that reads nothing is an `EffectId<()>`, drawn by `Effect::new(&sky, ())`. Handles are typed by kind and not by frame, so one taken from another builder compiles, and is refused by the render root when it names no target of this frame that an earlier pass wrote.
 - A target of whole numbers takes no blend: a program or an effect made for a shape of whole numbers is refused a blend, and writes `u32` where one of fractions or floats writes `vec4<f32>`.
 - Two passes of one type in one frame are refused by `finish`, at once and before anything is sent.
 - Each bound reads plainly when it fails (`#[diagnostic::on_unimplemented]`): which target, what the effect reads.
@@ -81,7 +82,7 @@ let create = frame.finish(Glaze, Effect::new(&glaze, (splats, ids)))?;   // -> C
 ```rust
 CreateEffect { wgsl: BlobRef, fragment: String, reads: Vec<Read>, bindings: Vec<Binding>, blend: Blend, shape: Shape }
     -> Effected::Made(MadeEffect { program: ProgramId, reads: Vec<Read> }) | Effected::Refused(ProgramRefused)
-enum Read { Float, Uint, Depth }   // texture_2d<f32>, texture_2d<u32>, texture_depth_2d, at @group(0) @binding(i)
+enum Read { Float, Uint, Depth }   // texture_2d<f32>, texture_2d<u32>, texture_depth_2d, at @group(0) @binding(i); `reads` may be empty
 ```
 
 - **The render root writes the vertex stage**: one triangle over the whole target, passing its fragment stage where each pixel is across the target from the top left, `@location(0) uv: vec2<f32>`, beside `@builtin(position)`. Every target of a frame is the size of its end, so the pixel an effect shades is the pixel it reads with `textureLoad`. An effect's shape holds no depth, and it lists nothing in group 0.
