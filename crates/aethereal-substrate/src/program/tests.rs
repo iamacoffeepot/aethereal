@@ -265,12 +265,9 @@ fn program() -> Program<Bench, Roots> {
 }
 
 /// A layer of the program `program`, setting each `--set` text.
-fn layer<R, I>(program: &Program<Bench, R>, sets: &[&str]) -> Result<Overlay, Box<dyn Error>>
-where
-    R: Bootstraps<Bench, I>,
-{
+fn layer<R>(program: &Program<Bench, R>, sets: &[&str]) -> Result<Overlay, Box<dyn Error>> {
     let parts = program.parts()?;
-    let mut overlay = Overlay::new("code");
+    let mut overlay = Overlay::new("file");
     for text in sets {
         overlay.set(&parts, text)?;
     }
@@ -374,5 +371,25 @@ fn a_host_that_waits_bootstraps_each_root_after_the_one_it_awaits() -> Outcome {
     assert_eq!(served, [Lit(0)]);
     let scene = ActorPath::from_root(&PathSegment::new(Scene::NAME, &()));
     assert!(engine.table().resolve(&scene).is_some());
+    Ok(())
+}
+
+#[test]
+fn the_programs_defaults_reach_their_sections_beneath_every_layer() -> Outcome {
+    // Catches the program's defaults for a root or the host put in another section than the one the root or the host
+    // names, left out in favour of the kind's `Default`, or put above a layer rather than beneath it.
+    let program = Bench::program()
+        .with_engine(EngineSettings { hops: 2, ..Default::default() })
+        .with_running(BenchRunning { pace: 5 })
+        .root_with::<Lamp>(LampSettings { brightness: 7 })
+        .root::<Counter>()
+        .root::<Keeper>()
+        .root_with::<Scene>(SceneSettings { seconds: 3 });
+    let file = layer(&program, &["scene.seconds=4", "engine.hops=1"])?;
+
+    let bench = program.layer(file).build()?;
+
+    assert_eq!(said(), ["lamp 7", "counter", "keeper 2 7", "scene 4"]);
+    assert_eq!((bench.pace, bench.hops), (5, 1));
     Ok(())
 }

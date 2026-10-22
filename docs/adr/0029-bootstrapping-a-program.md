@@ -25,15 +25,18 @@ What a setup already checks: `Setup::ready` builds only when each root reaches a
 ```rust
 Desktop::program()
     .with_jobs::<(Sum,)>()
+    .with_engine(EngineSettings { workers, ..Default::default() })
     .root::<Windows>()
     .root::<Renderer>()
     .root::<CameraRig>()
-    .root::<Scene>()
+    .root_with::<Scene>(Show { seconds: 30 })
     .run()
 ```
 
-- `.root::<A>()` names an actor. There is no second noun: a root is the actor and how it stands itself up.
-- The engine's options keep the words `Setup` already uses: `with_cycle`, `with_jobs`, `with_guests`, `with_links`, `with_delta_limit`. They make no root and are set before any root, as `Setup<()>` requires.
+- `.root::<A>()` names an actor. There is no second noun: a root is the actor and how it stands itself up. Its settings start from their kind's `Default`, and only this method asks for one.
+- `.root_with::<A>(settings)` lists it the same way, with this program's defaults for its section, a whole typed value: `Show { seconds: 30 }`, or `Show { seconds: 30, ..Default::default() }` when the kind has a `Default`. A root whose settings have no honest default is listed only this way.
+- The engine's options keep the words `Setup` already uses: `with_cycle`, `with_jobs`, `with_guests`, `with_links`, `with_delta_limit`. They make no root and are set before any root, as `Setup<()>` requires. Beside them, `with_engine(..)` and `with_running(..)` give the program's defaults for the host's two sections.
+- The defaults these give are the program's, beneath every layer of ADR-0028: the command line, the environment, the file, and the page all win over them.
 - `run` is the host's: it bootstraps the program, then runs it, as `Desktop::run` and `Browser` do now. It answers one error, the host's, which holds a program that did not start beside whatever else stops that host running it, so a program reads `program.run()?`.
 - **The headless host also has `build`**: both phases, then the host handed back with its engine, not yet run, for a test to `step` or `run_until_idle`. A host whose setup happens inside its event loop, as the desktop's does in winit's first callback, has only `run`.
 
@@ -43,7 +46,7 @@ Desktop::program()
 pub trait Bootstrap<H: Host>: Root {
     /// The section this root reads its settings from (ADR-0028).
     const SECTION: &'static str;
-    /// Its settings: plain data, with a `Default`. `()` when it has none.
+    /// Its settings: plain data, `()` when it has none. A `Default` is needed only to list it with `.root`.
     type Settings;
     /// What it takes from roots bootstrapped before it.
     type Needs;
@@ -62,7 +65,7 @@ pub trait Bootstrap<H: Host>: Root {
 - **The host's crate writes it for the roots that need the host:** `impl Bootstrap<Desktop> for Windows` in `aethereal-chassis-desktop`, `impl Bootstrap<Browser> for Windows` in `aethereal-chassis-browser`. The same list runs on every host that bootstraps each of its roots, and a root a host does not bootstrap does not build there.
 - **A library or the program writes it for a root that needs no host:** `impl<H: Host> Bootstrap<H> for Scene`.
 - **Only the crate of the actor or of the host can write it.** `Bootstrap`, the host, and the actor would all be foreign to a program's crate, which Rust's orphan rule refuses. So a library ships a bootstrap for each actor it means to be a root, generic over the host where it needs none, and an actor shipped without one cannot be listed.
-- **An actor whose config is its settings opts in with `#[derive(Bootstrap)]`.** Its config is plain data with a `Default`, it needs nothing, and it provides nothing; the derive writes `bootstrap` as beginning it from its settings. It is a derive, not a blanket impl, because a blanket impl over every such actor would overlap every impl a host writes.
+- **An actor whose config is its settings opts in with `#[derive(Bootstrap)]`.** Its config is plain data, it needs nothing, and it provides nothing; the derive writes `bootstrap` as beginning it from its settings. It is a derive, not a blanket impl, because a blanket impl over every such actor would overlap every impl a host writes.
 - **`Bootstrapping<'_, H, A>` begins only `A`**, once for a singleton and once per key for an instanced root, so each `.root::<A>()` adds exactly `A` to the list `Ordered<I>` checks. It makes handles (`hand`, `source`, `controller`), puts code and blobs, and reaches the host's own setup, such as the desktop's `Screen`.
 - **A host end goes to the host through `cx.serve(end)`,** which builds only when the host serves that end (`Desktop: Serves<Hosting>`). A pair is made and split inside one bootstrap: its `Given` half goes into the root's config, its other half to `serve`, and neither leaves.
 

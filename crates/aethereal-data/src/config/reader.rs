@@ -8,12 +8,12 @@ pub trait RootSettings: Sized + 'static {
     /// Whether it brings a section: false only for `()`.
     const SECTIONED: bool;
 
-    /// `parts` with its section added under `name`, when it brings one.
+    /// `parts` with its section added under `name`, its defaults `defaults`, when it brings one.
     ///
     /// # Errors
     ///
     /// [`RepeatedSection`] when `parts` already holds a section of that name.
-    fn compose(parts: Parts, name: &'static str) -> Result<Parts, RepeatedSection>;
+    fn compose(parts: Parts, name: &'static str, defaults: &Self) -> Result<Parts, RepeatedSection>;
 
     /// Its section `name`, taken from `configuration`.
     ///
@@ -26,8 +26,8 @@ pub trait RootSettings: Sized + 'static {
 impl<S: Settings> RootSettings for S {
     const SECTIONED: bool = true;
 
-    fn compose(parts: Parts, name: &'static str) -> Result<Parts, RepeatedSection> {
-        parts.with::<S>(name)
+    fn compose(parts: Parts, name: &'static str, defaults: &Self) -> Result<Parts, RepeatedSection> {
+        parts.with_defaults(name, defaults)
     }
 
     fn take(configuration: &mut Configuration, name: &'static str) -> Result<Self, ConfigError> {
@@ -38,7 +38,7 @@ impl<S: Settings> RootSettings for S {
 impl RootSettings for () {
     const SECTIONED: bool = false;
 
-    fn compose(parts: Parts, _: &'static str) -> Result<Parts, RepeatedSection> {
+    fn compose(parts: Parts, _: &'static str, &(): &Self) -> Result<Parts, RepeatedSection> {
         Ok(parts)
     }
 

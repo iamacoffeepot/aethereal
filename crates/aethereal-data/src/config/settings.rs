@@ -5,7 +5,8 @@ use crate::{Bare, Decode, Encode, Kind};
 /// A config kind a section of a program's configuration is read as (ADR-0028).
 ///
 /// `#[settings]` on a struct that derives `Plain` or `Bound` writes this, and a handle for each named field. Its
-/// defaults are its `Default`. It is plain data, crossing `Bare`: only what a person could type, never a value the
+/// defaults are its `Default` when it has one, or the value a program gives for its section; a kind with no honest
+/// default leaves `Default` off, and each program gives its own. It is plain data, crossing `Bare`: only what a person could type, never a value the
 /// host makes. It carries no name: the section's name is given where the section is added, by the root that reads
 /// it (ADR-0029).
 ///
@@ -62,7 +63,7 @@ use crate::{Bare, Decode, Encode, Kind};
 ///     workers: u32,
 /// }
 /// ```
-pub trait Settings: Kind + Encode<Bare> + Decode<Bare> + Default + 'static {
+pub trait Settings: Kind + Encode<Bare> + Decode<Bare> + 'static {
     /// Each named field, in declared order, with its doc comment and the flag it suggests.
     const FIELDS: &'static [Declared];
 }

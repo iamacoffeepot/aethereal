@@ -24,7 +24,7 @@ pub use settings::{ENGINE, EngineSettings, RUNNING};
 use crate::{Engine, Jobs, Setup};
 use aethereal_actor::{Cycle, Guests, Links, Ordered, Unordered, ordered};
 use aethereal_data::Budget;
-use aethereal_data::config::{Configuration, Overlay, Parts, RootSettings};
+use aethereal_data::config::{Configuration, FlagTable, Flags, Overlay, Parts, RootSettings};
 use core::marker::PhantomData;
 use core::pin::Pin;
 use core::time::Duration;
@@ -36,12 +36,22 @@ const CONFIGURATION_BYTES: usize = 1 << 24;
 /// One of the engine's options, applied to its setup as it is made.
 type EngineOption = Box<dyn FnOnce(Setup<()>) -> Result<Setup<()>, Unordered>>;
 
-/// A program for the host `H`: the engine's options, the layers of its configuration, and its roots `R`, a list, `()`
-/// for none and `(A, S)` for the root `A` listed after those of `S` (ADR-0029).
+/// One root's section, with the program's defaults for it, added to the sections composed so far.
+type Section = Box<dyn Fn(Composing) -> Result<Composing, ProgramError>>;
+
+/// One change the program makes to the flags its sections suggest (ADR-0028).
+type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
+
+/// A program for the host `H`: the engine's options, its defaults for each section, the layers of its configuration,
+/// and its roots `R`, a list, `()` for none and `(A, S)` for the root `A` listed after those of `S` (ADR-0029).
+///
+/// A root listed with [`root`](Self::root) starts from its settings kind's `Default`; one listed with
+/// [`root_with`](Self::root_with) starts from the value the program gives. Either is only the program's defaults:
+/// every layer, the command line, the environment, a file, or one given with [`layer`](Self::layer), wins over them
+/// (ADR-0028).
 ///
 /// ```
 /// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top};
-/// # use aethereal_data::config::Overlay;
 /// # use aethereal_data::{ActorPath, Kind, PathSegment, Plain};
 /// # use aethereal_substrate::{Bootstrap, Builds, Engine, Host, ProgramError, Settled};
 /// #
@@ -101,10 +111,7 @@ type EngineOption = Box<dyn FnOnce(Setup<()>) -> Result<Setup<()>, Unordered>>;
 /// #     }
 /// # }
 ///
-/// let program = Bench::program().root::<Scene>();
-/// let mut code = Overlay::new("code");
-/// code.set(&program.parts()?, "scene.seconds=3")?;
-/// let Bench(engine) = program.layer(code).build()?;
+/// let Bench(engine) = Bench::program().root_with::<Scene>(Show { seconds: 3 }).build()?;
 ///
 /// let scene = ActorPath::from_root(&PathSegment::new(Scene::NAME, &()));
 /// assert!(engine.table().resolve(&scene).is_some());
@@ -290,18 +297,52 @@ type EngineOption = Box<dyn FnOnce(Setup<()>) -> Result<Setup<()>, Unordered>>;
 /// }
 /// ```
 #[must_use]
-pub struct Program<H, R> {
+pub struct Program<H: Host, R> {
     /// The engine's options, applied in the order they were set.
     options: Vec<EngineOption>,
-    /// The layers of the configuration, the first winning (ADR-0028).
+    /// The program's defaults for the engine's section, beneath every layer: `EngineSettings`'s `Default` until the
+    /// program gives its own (ADR-0028).
+    engine: EngineSettings,
+    /// The program's defaults for the host's own section, beneath every layer: its `Default` until the program gives
+    /// its own (ADR-0028).
+    running: H::Running,
+    /// Each root's section, with the program's defaults for it, in the order the roots were listed (ADR-0029).
+    sections: Vec<Section>,
+    /// The layers of the configuration, the first winning, every one above the program's defaults (ADR-0028).
     layers: Vec<Overlay>,
+    /// The program's changes to the flags its sections suggest, in the order it made them.
+    flags: Vec<FlagChange>,
     listed: PhantomData<fn() -> (H, R)>,
 }
 
 impl<H: Host> Program<H, ()> {
-    /// A program with no options, no layers, and no roots.
-    pub(super) const fn new() -> Self {
-        Self { options: Vec::new(), layers: Vec::new(), listed: PhantomData }
+    /// A program with no options, no layers, and no roots, its host's sections starting from their `Default`s.
+    pub(super) fn new() -> Self {
+        Self {
+            options: Vec::new(),
+            engine: EngineSettings::default(),
+            running: H::Running::default(),
+            sections: Vec::new(),
+            layers: Vec::new(),
+            flags: Vec::new(),
+            listed: PhantomData,
+        }
+    }
+
+    /// The program with its defaults for the engine's section `settings`, in place of `EngineSettings`'s `Default`:
+    /// beneath every layer, so a person running it still sets any field (ADR-0028).
+    ///
+    /// `.with_engine(EngineSettings { workers, ..Default::default() })` gives the fields it has opinions on.
+    pub fn with_engine(mut self, settings: EngineSettings) -> Self {
+        self.engine = settings;
+        self
+    }
+
+    /// The program with its defaults for the host's own section `settings`, in place of its `Default`, as
+    /// [`with_engine`](Self::with_engine) gives the engine's.
+    pub fn with_running(mut self, settings: H::Running) -> Self {
+        self.running = settings;
+        self
     }
 
     /// The program with the engine's option `option` added after those set already.
@@ -344,31 +385,132 @@ impl<H: Host> Program<H, ()> {
 }
 
 impl<H: Host, R> Program<H, R> {
-    /// The program with the root `A` listed after its roots so far: it builds only when `H` bootstraps `A`.
-    pub fn root<A: Bootstrap<H>>(self) -> Program<H, (A, R)> {
-        Program { options: self.options, layers: self.layers, listed: PhantomData }
+    /// The program with the root `A` listed after its roots so far, its settings starting from their kind's
+    /// `Default`: it builds only when `H` bootstraps `A`, and only when `A`'s settings have a `Default`. A root whose
+    /// settings have none is listed with [`root_with`](Self::root_with).
+    ///
+    /// ```compile_fail
+    /// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top};
+    /// # use aethereal_data::Plain;
+    /// # use aethereal_substrate::{Bootstrap, Builds, Engine, Host, ProgramError, Settled};
+    /// #
+    /// # struct Bench(Engine);
+    /// #
+    /// # #[derive(Plain, Default)]
+    /// # #[kind(name = "example.bench.running")]
+    /// # #[settings]
+    /// # struct Running {}
+    /// #
+    /// # impl Host for Bench {
+    /// #     type Running = Running;
+    /// #     type Hosting = ();
+    /// #     type Exit = Engine;
+    /// #
+    /// #     fn run(settled: Settled<Self>) -> Result<Engine, ProgramError> {
+    /// #         settled.bootstrap(&mut ())
+    /// #     }
+    /// # }
+    /// #
+    /// # impl Builds for Bench {
+    /// #     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
+    /// #         Ok(Self(settled.bootstrap(&mut ())?))
+    /// #     }
+    /// # }
+    /// /// Where the show is played: it has no honest default.
+    /// #[derive(Plain)]
+    /// #[kind(name = "example.show")]
+    /// #[settings]
+    /// struct Show {
+    ///     port: u16,
+    /// }
+    ///
+    /// #[derive(Plain, Bootstrap)]
+    /// #[kind(name = "example.scene")]
+    /// struct Scene;
+    /// #
+    /// # impl ChildOf for Scene {
+    /// #     type Parent = Top;
+    /// # }
+    /// #
+    /// # impl Actor for Scene {
+    /// #     type Config = Show;
+    /// #     type Key = ();
+    /// #     type Handles = ();
+    /// #     type BeginSends = ();
+    /// #     type EndSends = ();
+    /// #
+    /// #     fn begin(_: Show, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    /// #         Ok(Self)
+    /// #     }
+    /// #
+    /// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    /// #         Ok(())
+    /// #     }
+    /// # }
+    ///
+    /// // `Show` has no `Default`: the program must give it, `.root_with::<Scene>(Show { port: 7000 })`.
+    /// let program = Bench::program().root::<Scene>();
+    /// ```
+    pub fn root<A>(self) -> Program<H, (A, R)>
+    where
+        A: Bootstrap<H>,
+        A::Settings: Default,
+    {
+        self.root_with::<A>(A::Settings::default())
     }
 
-    /// The program with the layer `overlay` beneath those given already: an earlier layer wins (ADR-0028).
+    /// The program with the root `A` listed after its roots so far, its settings starting from `settings`, this
+    /// program's defaults for `A`'s section, in place of its kind's `Default`: beneath every layer, so a person
+    /// running it still sets any field (ADR-0028). It builds only when `H` bootstraps `A`.
+    ///
+    /// `.root_with::<Counter>(Counters { children, ..Default::default() })` gives the fields it has opinions on.
+    pub fn root_with<A: Bootstrap<H>>(self, settings: A::Settings) -> Program<H, (A, R)> {
+        let Self { options, engine, running, mut sections, layers, flags, listed: _ } = self;
+        sections.push(Box::new(move |composing| composing.add(A::SECTION, Reader::Root(A::NAME), &settings)));
+
+        Program { options, engine, running, sections, layers, flags, listed: PhantomData }
+    }
+
+    /// The program with the layer `overlay` beneath those given already: an earlier layer wins, and every layer wins
+    /// over the program's defaults (ADR-0028).
     pub fn layer(mut self, overlay: Overlay) -> Self {
         self.layers.push(overlay);
         self
     }
 
-    /// The sections of the program's configuration: the engine's, the host's, then each root's in order, for
-    /// reading layers against.
+    /// The program with the flags its sections suggest changed by `change`, after its changes so far: it renames,
+    /// hides, or adds a flag for any field (ADR-0028).
+    pub fn flags(mut self, change: impl for<'parts> Fn(Flags<'parts>) -> Flags<'parts> + 'static) -> Self {
+        self.flags.push(Box::new(change));
+        self
+    }
+
+    /// The sections of the program's configuration: the engine's, the host's, then each root's in order, each with
+    /// the program's defaults for it, for reading layers against.
     ///
     /// # Errors
     ///
     /// [`ProgramError::Repeated`] when two sections share a name, naming what reads each.
-    pub fn parts<I>(&self) -> Result<Parts, ProgramError>
-    where
-        R: Bootstraps<H, I>,
-    {
-        let composing =
-            Composing::new().add::<EngineSettings>(ENGINE, Reader::Host)?.add::<H::Running>(RUNNING, Reader::Host)?;
+    pub fn parts(&self) -> Result<Parts, ProgramError> {
+        let host =
+            Composing::new().add(ENGINE, Reader::Host, &self.engine)?.add(RUNNING, Reader::Host, &self.running)?;
+        let composed = self.sections.iter().try_fold(host, |composing, section| section(composing))?;
 
-        Ok(R::compose(composing)?.into_parts())
+        Ok(composed.into_parts())
+    }
+
+    /// The program's flags: what its sections suggest, as it changed them, for a host to read its command line or
+    /// its page with (ADR-0028).
+    ///
+    /// # Errors
+    ///
+    /// [`ProgramError::Repeated`] as [`parts`](Self::parts) refuses, and [`ProgramError::Flags`] when a change names
+    /// a flag that does not exist or two flags are left of one name.
+    pub fn flag_table(&self) -> Result<FlagTable, ProgramError> {
+        let parts = self.parts()?;
+        let changed = self.flags.iter().fold(Flags::of(&parts), |flags, change| change(flags));
+
+        Ok(changed.finish()?)
     }
 
     /// Bootstraps the program, then runs it on its host: it builds only when each root reaches at a typed path only

@@ -7,8 +7,8 @@
 //! best of three runs: mails a second, nanoseconds a piece of mail, and a step's time split into planning, running,
 //! and applying.
 //!
-//! Each run is a program of one root, the counter that spawns the rest, bootstrapped on the headless host with its
-//! settings and the engine's set in code (ADR-0029).
+//! Each run is a program of one root, the counter that spawns the rest, bootstrapped on the headless host with the
+//! program's defaults for its settings and the engine's (ADR-0028, ADR-0029).
 
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
@@ -16,8 +16,8 @@
 use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Recursive, ToType, Turn};
 use aethereal_chassis_headless::{Headless, Measured};
 use aethereal_data::Plain;
-use aethereal_data::config::Overlay;
-use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
+use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
+use core::num::NonZeroU32;
 use std::env;
 use std::error::Error;
 use std::hint;
@@ -40,8 +40,9 @@ struct CounterConfig {
     shape: u8,
 }
 
-/// The counters a run spawns: how many busy and how many idle, and the shape of the busy ones' work.
-#[derive(Plain, Default)]
+/// The counters a run spawns: how many busy and how many idle, and the shape of the busy ones' work. A run has no
+/// honest default, so it has no `Default`, and the program gives it whole.
+#[derive(Plain)]
 #[kind(name = "aether.bench.counters")]
 #[settings]
 struct Counters {
@@ -60,6 +61,12 @@ struct Counter {
 
 /// The quota for the bytes of mail in flight, shared among the workers.
 const MAIL_BYTES: u64 = 1 << 30;
+
+/// The most bytes the engine's blobs hold.
+const BLOB_BYTES: u64 = 1 << 30;
+
+/// The parts the engine's views are kept in.
+const PARTS: NonZeroU32 = NonZeroU32::new(16).expect("16 is not zero");
 
 /// How many counts each counter takes.
 const TURNS: u64 = 50;
@@ -155,24 +162,11 @@ impl<H: Host> Bootstrap<H> for Counter {
 
 /// One run of `children` counters of `shape`, beside `idle` idle ones, to idle on `workers` workers: the nanoseconds
 /// it took, and what its steps cost.
-fn run(children: u64, idle: u64, shape: u8, workers: u32) -> Result<(u64, Measured), Box<dyn Error>> {
-    let program = Headless::program().root::<Counter>();
-    let parts = program.parts()?;
-    let mut code = Overlay::new("code");
-    let sets = [
-        format!("engine.workers={workers}"),
-        String::from("engine.parts=16"),
-        format!("engine.mail_bytes={MAIL_BYTES}"),
-        format!("engine.blob_bytes={}", 1_u64 << 30),
-        format!("counters.children={children}"),
-        format!("counters.idle={idle}"),
-        format!("counters.shape={shape}"),
-    ];
-    for set in &sets {
-        code.set(&parts, set)?;
-    }
-
-    let mut headless = program.layer(code).build()?;
+fn run(children: u64, idle: u64, shape: u8, workers: NonZeroU32) -> Result<(u64, Measured), Box<dyn Error>> {
+    let engine =
+        EngineSettings { workers, parts: PARTS, mail_bytes: MAIL_BYTES, blob_bytes: BLOB_BYTES, ..Default::default() };
+    let mut headless =
+        Headless::program().with_engine(engine).root_with::<Counter>(Counters { children, idle, shape }).build()?;
     headless.run_until_idle();
 
     let measured = headless.measured();
@@ -197,7 +191,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             continue;
         }
         for &children in &counts {
-            for workers in [1, 4, 16] {
+            for workers in [1_u32, 4, 16] {
+                let workers = NonZeroU32::try_from(workers)?;
                 let runs = (0..3).map(|_| run(children, idle, shape, workers)).collect::<Result<Vec<_>, _>>()?;
                 let (took, measured) = runs.into_iter().min_by_key(|(took, _)| *took).unwrap_or_default();
                 let mails = children * (TURNS + 1);
