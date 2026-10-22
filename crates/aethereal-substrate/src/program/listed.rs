@@ -5,26 +5,23 @@ use super::{Bootstrap, Bootstrapping, Gathers, Host, ProgramError, Provision, Re
 use crate::Engine;
 use aethereal_data::config::{Configuration, Parts, RootSettings};
 
-/// The engine, the host's hosting, and the configuration's sections not yet taken, as a program's roots bootstrap.
-pub struct Stage<'stage, H: Host> {
-    engine: &'stage mut Engine,
-    hosting: &'stage mut H::Hosting,
-    configuration: Configuration,
+/// The engine, the host's hosting, and the configuration's sections not yet taken, as a program's roots bootstrap:
+/// handed from each root's bootstrap to the next, and to the host once the last has.
+pub struct Stage<'host, H: Host> {
+    pub(super) engine: Engine,
+    pub(super) hosting: H::Hosting<'host>,
+    pub(super) configuration: Configuration,
 }
 
-impl<'stage, H: Host> Stage<'stage, H> {
+impl<'host, H: Host> Stage<'host, H> {
     /// The stage of `engine`, `hosting`, and `configuration`.
-    pub(super) const fn new(
-        engine: &'stage mut Engine,
-        hosting: &'stage mut H::Hosting,
-        configuration: Configuration,
-    ) -> Self {
+    pub(super) const fn new(engine: Engine, hosting: H::Hosting<'host>, configuration: Configuration) -> Self {
         Self { engine, hosting, configuration }
     }
 
-    /// The engine and the hosting, borrowed together for one root's bootstrap.
-    pub(super) const fn engine_and_hosting(&mut self) -> (&mut Engine, &mut H::Hosting) {
-        (&mut *self.engine, &mut *self.hosting)
+    /// The engine and the hosting, the roots bootstrapped.
+    pub(super) fn into_made(self) -> (Engine, H::Hosting<'host>) {
+        (self.engine, self.hosting)
     }
 }
 
@@ -90,12 +87,13 @@ pub trait Bootstraps<H: Host, I> {
     /// [`ProgramError::Repeated`] when two sections share a name.
     fn compose(composing: Composing) -> Result<Composing, ProgramError>;
 
-    /// Bootstraps each root on `stage`, in the order they were listed, and what they provided.
+    /// Bootstraps each root on `stage`, in the order they were listed, each awaited before the next begins, and the
+    /// stage with what they provided.
     ///
     /// # Errors
     ///
     /// The first failure: a section not left to take, or a root's bootstrap, naming the root.
-    fn bootstrap(stage: &mut Stage<'_, H>) -> Result<Self::Provided, ProgramError>;
+    fn bootstrap(stage: Stage<'_, H>) -> impl Future<Output = Result<(Stage<'_, H>, Self::Provided), ProgramError>>;
 }
 
 impl<H: Host> Bootstraps<H, ()> for () {
@@ -105,8 +103,8 @@ impl<H: Host> Bootstraps<H, ()> for () {
         Ok(composing)
     }
 
-    fn bootstrap(_: &mut Stage<'_, H>) -> Result<(), ProgramError> {
-        Ok(())
+    async fn bootstrap(stage: Stage<'_, H>) -> Result<(Stage<'_, H>, ()), ProgramError> {
+        Ok((stage, ()))
     }
 }
 
@@ -123,14 +121,15 @@ where
         S::compose(composing)?.add::<A::Settings>(A::SECTION, Reader::Root(A::NAME))
     }
 
-    fn bootstrap(stage: &mut Stage<'_, H>) -> Result<Self::Provided, ProgramError> {
-        let earlier = S::bootstrap(stage)?;
+    async fn bootstrap(stage: Stage<'_, H>) -> Result<(Stage<'_, H>, Self::Provided), ProgramError> {
+        let (mut stage, earlier) = S::bootstrap(stage).await?;
         let settings = A::Settings::take(&mut stage.configuration, A::SECTION)?;
         let needs = earlier.gather();
 
-        let provides = A::bootstrap(settings, needs, &mut Bootstrapping::of(stage))
-            .map_err(|why| ProgramError::Root { root: A::NAME, why })?;
+        let mut cx = Bootstrapping::of(stage);
+        let provides =
+            A::bootstrap(settings, needs, &mut cx).await.map_err(|why| ProgramError::Root { root: A::NAME, why })?;
 
-        Ok(provides.onto(earlier))
+        Ok((cx.into_stage(), provides.onto(earlier)))
     }
 }

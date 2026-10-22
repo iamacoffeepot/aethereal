@@ -6,8 +6,8 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, BlobRef, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
     Top, Turn, path,
 };
-use aethereal_chassis_browser::canvas::{self, Density};
-use aethereal_chassis_browser::{Browser, Hosted, Listening, Performance, open, renderer};
+use aethereal_chassis_browser::{Browser, Started};
+use aethereal_data::config::Overlay;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::effect::{CreateEffect, EffectId, Effected, Read};
@@ -20,14 +20,12 @@ use aethereal_render::program::{
     Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
 use aethereal_render::shape::{ColourFormat, DepthFormat, Samples, Shape};
-use aethereal_substrate::Engine;
-use aethereal_window::{Heard, Opening, WindowId, Windowing, Windows};
+use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
+use aethereal_window::{InitialWindows, WindowId, Windows};
 use core::cell::RefCell;
 use core::mem;
-use core::num::NonZeroUsize;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
-use web_sys::HtmlCanvasElement;
 
 thread_local! {
     /// What the rimmer was answered, for the page to show.
@@ -39,49 +37,38 @@ fn say(line: String) {
     SAID.with_borrow_mut(|said| said.push(line));
 }
 
-/// The program the page runs, for its `requestAnimationFrame` to call, and the page's listeners, kept while it runs.
+/// The program the page runs, for its `requestAnimationFrame` to call.
 #[wasm_bindgen]
 pub struct Program {
-    browser: Browser<Performance>,
-    _canvas: Listening,
+    started: Started,
 }
 
-/// Opens `canvas` as the one window and WebGPU on it, then makes the engine with the window root, the renderer, handed
-/// the GPU, and the rimmer as its roots, and listens to the page for the canvas's size.
+/// Bootstraps the program on the page with the window root, which opens the page's canvas as the one window,
+/// the renderer, which opens WebGPU on it, and the rimmer.
 ///
 /// # Errors
 ///
-/// When WebGPU will not open on the canvas, a root does not begin, or the page will not be listened to.
-#[wasm_bindgen]
-pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
-    let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 26, 0)
+/// When the canvas or WebGPU on it will not open, the page will not be listened to, or a root does not begin.
+#[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
+pub async fn start() -> Result<Program, JsError> {
+    let program = Browser::program()
         .with_cycle::<(Tick, Render)>()
-        .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
-    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
-    let (gpu, [shown]) = open([canvas.clone()], &mut opening).await?;
-    let (windows, hosting) = opening.config();
-    let mut setup = setup
-        .add_root::<Windows>(&(), windows)
-        .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
-    let (rendering, mappings) = renderer(&mut setup, gpu);
-    let engine = setup
-        .add_root::<Renderer>(&(), rendering)
-        .map_err(|refused| JsError::new(&format!("the renderer did not begin: {refused:?}")))?
-        .add_root::<Rimmer>(&(), Shows { window: shown.window() })
-        .map_err(|refused| JsError::new(&format!("the rimmer did not begin: {refused:?}")))?
-        .ready();
+        .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?
+        .root::<Windows>()
+        .root::<Renderer>()
+        .root::<Rimmer>();
+    // Its blobs hold a frame of a large canvas.
+    let mut code = Overlay::new("code");
+    code.set(&program.parts()?, "engine.blob_bytes=67108864")?;
 
-    // The canvas is drawn at every device pixel of the size the page lays it out at, followed as it is resized.
-    let listening = canvas::listen(&canvas, &shown, Density::SCREEN)?;
-
-    Ok(Program { browser: Browser::new(engine, Performance, mappings, Hosted::Windows(hosting)), _canvas: listening })
+    Ok(Program { started: program.layer(code).run()?.await? })
 }
 
 #[wasm_bindgen]
 impl Program {
     /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
     pub fn frame(&mut self, timestamp_millis: f64) {
-        self.browser.frame(timestamp_millis);
+        self.started.frame(timestamp_millis);
     }
 
     /// What the rimmer was answered since this was last asked, a line each.
@@ -89,6 +76,22 @@ impl Program {
     #[expect(clippy::unused_self, reason = "the page asks it of the program it started")]
     pub fn said(&self) -> Vec<String> {
         SAID.with_borrow_mut(mem::take)
+    }
+}
+
+/// The rimmer draws on the one window the window root opened.
+impl<H: Host> Bootstrap<H> for Rimmer {
+    const SECTION: &'static str = "rimmer";
+    type Settings = ();
+    type Needs = (InitialWindows,);
+    type Provides = ();
+
+    async fn bootstrap(
+        (): (),
+        (windows,): (InitialWindows,),
+        cx: &mut Bootstrapping<'_, H, Self>,
+    ) -> Result<(), Unbuilt> {
+        cx.begin(&(), Shows { window: windows.first() })
     }
 }
 

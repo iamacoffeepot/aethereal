@@ -7,6 +7,7 @@ use crate::window::{WindowConfig, WindowId};
 use crate::windows::{Closing, Heard, Initial, Unclosed, Unopened, Windowing, WindowsConfig};
 use aethereal_actor::{Controller, Given, Requests, Source};
 use aethereal_substrate::{Closed, Feed};
+use core::iter;
 
 /// The windows a chassis opens as it sets the program up, the source their events come in through, and the
 /// controller the window root asks for windows through, until it makes the window root's config of them.
@@ -147,5 +148,33 @@ impl WindowFeed {
     /// [`Closed`] when the window root's source has been dropped.
     pub fn push(&self, event: Event) -> Result<(), Closed> {
         self.feed.push(Heard::Event { window: self.window, event })
+    }
+}
+
+/// The windows a host opened as it set the program up, in the order opened: what the host's bootstrap of the window
+/// root provides the roots bootstrapped after it, so a root is given the window it draws on (ADR-0029). There is at
+/// least one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitialWindows {
+    first: WindowId,
+    others: Vec<WindowId>,
+}
+
+impl InitialWindows {
+    /// The windows `first`, then `others`, in the order opened.
+    #[must_use]
+    pub const fn new(first: WindowId, others: Vec<WindowId>) -> Self {
+        Self { first, others }
+    }
+
+    /// The first window opened.
+    #[must_use]
+    pub const fn first(&self) -> WindowId {
+        self.first
+    }
+
+    /// Every window opened, in the order opened.
+    pub fn all(&self) -> impl Iterator<Item = WindowId> {
+        iter::once(self.first).chain(self.others.iter().copied())
     }
 }

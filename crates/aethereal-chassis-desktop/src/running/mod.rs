@@ -5,11 +5,12 @@
 mod window;
 mod windowing;
 
-use crate::gpu::{Screen, Unopened};
+use crate::gpu::Screen;
 use crate::serving::Drawing;
 use aethereal_actor::Time;
 use aethereal_chassis_headless::{Exit, Headless, Monotonic};
-use aethereal_substrate::{Clock, Engine, Lifecycle};
+use aethereal_substrate::{Clock, Lifecycle, ProgramError, Settled};
+use aethereal_window::Hosting;
 use core::error::Error;
 use core::fmt;
 use core::mem;
@@ -26,104 +27,104 @@ use winit::window::WindowId;
 /// so nothing else wakes it, and what `Stop`'s chain waits on, a job or a source, may come in at any time.
 const STOPPING_LOOK: Duration = Duration::from_millis(4);
 
-/// The desktop host: the workers it runs the engine on, and the time it gives `Stop`. The windows it opens are the
-/// program's to ask for, as it is set up ([`Screen::open_window`]).
-#[derive(Debug, Clone)]
-pub struct Desktop {
-    /// The most workers the engine runs on, the event loop's thread among them.
-    pub workers: NonZeroUsize,
-    /// How long `Stop` has to finish once the program is asked to stop.
-    pub stop_within: Duration,
-}
-
-/// What the program makes once its windows and GPU are open: its engine, with the window root and the renderer among
-/// its roots, and what the chassis serves the renderer, as [`renderer`](crate::renderer) answers.
-pub struct Made {
-    pub engine: Engine,
-    pub drawing: Drawing,
-}
-
-/// Why a program did not run to its end.
+/// The desktop host: a program's host by its type alone (ADR-0029). Its program is written
+/// `Desktop::program().root::<Windows>().root::<Renderer>()…`, and run with
+/// [`run`](aethereal_substrate::Program::run). The engine runs on as many workers as the engine's section says, the
+/// time `Stop` has to finish is its own section's, and the windows it opens are the window root's settings'.
 #[derive(Debug)]
-pub enum Failed<E> {
+pub enum Desktop {}
+
+/// Why a program that bootstrapped, or would have, did not run to its end.
+#[derive(Debug)]
+pub enum Failed {
     /// winit's event loop did not run.
     EventLoop(EventLoopError),
-    /// A window, or the GPU on it, did not open.
-    Unopened(Unopened),
-    /// The program did not make its engine, with this error of its own.
-    Program(E),
-    /// The event loop ended before the program did: before its windows opened, or with the program still running.
+    /// The program bootstrapped without serving the desktop an end it runs a program with, named here: it lists no
+    /// renderer, or no window root.
+    Unserved(&'static str),
+    /// The event loop ended before the program did: before it was bootstrapped, or with it still running.
     Unended,
 }
 
-impl<E: fmt::Display> fmt::Display for Failed<E> {
+impl fmt::Display for Failed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EventLoop(error) => write!(f, "the event loop did not run: {error}"),
-            Self::Unopened(unopened) => write!(f, "{unopened}"),
-            Self::Program(error) => write!(f, "the program was not made: {error}"),
+            Self::Unserved(end) => write!(f, "the program served the desktop no end of {end}"),
             Self::Unended => write!(f, "the event loop ended before the program did"),
         }
     }
 }
 
-impl<E: fmt::Debug + fmt::Display> Error for Failed<E> {}
+impl Error for Failed {}
 
 impl Desktop {
-    /// Runs a program on winit's event loop, on this thread, through its lifecycle, then drops it (ADR-0020). Once the
-    /// loop begins it hands `program` the [`Screen`], which opens each window the program asks for and the GPU on the
-    /// first, and which the program makes the engine with; this thread is then the first of the engine's workers, and
-    /// `Start` is sent. Each frame the display frees it says a cycle is due, at the time the frames were acquired, and
-    /// steps until no actor has anything to run: one cycle draws every window shown. Once the program is asked to
-    /// stop, by its last window closing or an actor's [`quit`](aethereal_actor::Turn::quit), it waits at most
-    /// [`stop_within`](Self::stop_within) for `Stop` to finish.
-    ///
-    /// # Errors
-    ///
-    /// When the event loop does not run, a window or the GPU does not open, `program` answers an error, or the loop
-    /// ends before the program does.
-    ///
-    /// # Panics
-    ///
-    /// Panics with a turn's panic, and when a turn makes an actor under an id the table already holds (ADR-0008).
-    pub fn run<P, E>(self, program: P) -> Result<Exit, Failed<E>>
-    where
-        P: FnOnce(Screen<'_>) -> Result<Made, E>,
-    {
-        let event_loop = EventLoop::new().map_err(Failed::EventLoop)?;
-        let mut app = App { desktop: self, clock: Monotonic::new(), stage: Stage::Unopened(program) };
-        event_loop.run_app(&mut app).map_err(Failed::EventLoop)?;
+    /// Runs the program `settled` on winit's event loop, as the desktop's [`run`](aethereal_substrate::Host::run) says.
+    pub(crate) fn run_settled(settled: Settled<Self>) -> Result<Result<Exit, Failed>, ProgramError> {
+        let workers = settled.engine().worker_threads();
+        let stop_within = Duration::from_millis(settled.running().stop_within_millis);
+        let event_loop = match EventLoop::new() {
+            Ok(event_loop) => event_loop,
+            Err(error) => return Ok(Err(Failed::EventLoop(error))),
+        };
+        let mut app = App { workers, stop_within, clock: Monotonic::new(), stage: Stage::Settled(Box::new(settled)) };
+        if let Err(error) = event_loop.run_app(&mut app) {
+            return Ok(Err(Failed::EventLoop(error)));
+        }
 
         match app.stage {
-            Stage::Ended(ended) => ended,
-            Stage::Unopened(_) | Stage::Opening | Stage::Running(_) => Err(Failed::Unended),
+            Stage::Ended(ended) => ended.into_result(),
+            Stage::Settled(_) | Stage::Opening | Stage::Running(_) => Ok(Err(Failed::Unended)),
         }
     }
 }
 
 /// The host, as winit's event loop calls it.
-struct App<P, E> {
-    desktop: Desktop,
+struct App {
+    workers: NonZeroUsize,
+    stop_within: Duration,
     clock: Monotonic,
-    stage: Stage<P, E>,
+    stage: Stage,
 }
 
 /// Where the program stands in the event loop.
-enum Stage<P, E> {
-    /// The loop has not begun: this is what makes the program, opening its windows.
-    Unopened(P),
-    /// The windows and the program are being opened and made, within the loop's first callback.
+enum Stage {
+    /// The loop has not begun: this is the program, its settings read, to bootstrap.
+    Settled(Box<Settled<Desktop>>),
+    /// The program is being bootstrapped, within the loop's first callback.
     Opening,
     /// The program runs.
     Running(Box<Running>),
     /// The program ended, as this says, and the loop is ending.
-    Ended(Result<Exit, Failed<E>>),
+    Ended(Ended),
+}
+
+/// How a program on the desktop ended.
+enum Ended {
+    /// It ran to its end, as this says.
+    Exited(Exit),
+    /// It did not run to its end, as this says.
+    Failed(Failed),
+    /// It did not bootstrap, as this says.
+    Unbuilt(ProgramError),
+}
+
+impl Ended {
+    /// What running the program comes to, as the desktop's [`run`](aethereal_substrate::Host::run) answers it.
+    fn into_result(self) -> Result<Result<Exit, Failed>, ProgramError> {
+        match self {
+            Self::Exited(exit) => Ok(Ok(exit)),
+            Self::Failed(failed) => Ok(Err(failed)),
+            Self::Unbuilt(error) => Err(error),
+        }
+    }
 }
 
 /// A program running in its windows.
 struct Running {
     headless: Headless,
-    drawing: Drawing,
+    drawing: Box<Drawing>,
+    windowing: Hosting,
     stopping: Stopping,
 }
 
@@ -146,16 +147,13 @@ enum Next {
     End(Exit),
 }
 
-impl<P, E> ApplicationHandler for App<P, E>
-where
-    P: FnOnce(Screen<'_>) -> Result<Made, E>,
-{
+impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let stage = mem::replace(&mut self.stage, Stage::Opening);
         self.stage = match stage {
-            Stage::Unopened(program) => match self.open(event_loop, program) {
+            Stage::Settled(settled) => match self.open(event_loop, *settled) {
                 Ok(running) => Stage::Running(Box::new(running)),
-                Err(failed) => Stage::Ended(Err(failed)),
+                Err(ended) => Stage::Ended(ended),
             },
             // The loop resumes again only where a platform suspends it, and the windows stay open through it.
             stage @ (Stage::Opening | Stage::Running(_) | Stage::Ended(_)) => stage,
@@ -184,7 +182,7 @@ where
             return;
         };
         let now = self.clock.nanos();
-        match running.settle(event_loop, now, self.desktop.stop_within) {
+        match running.settle(event_loop, now, self.stop_within) {
             Next::Wait => event_loop.set_control_flow(ControlFlow::Wait),
             Next::LookAt(at) => {
                 let rest = Duration::from_nanos(at.saturating_sub(now));
@@ -193,26 +191,24 @@ where
                 event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
             }
             Next::End(exit) => {
-                self.stage = Stage::Ended(Ok(exit));
+                self.stage = Stage::Ended(Ended::Exited(exit));
                 event_loop.exit();
             }
         }
     }
 }
 
-impl<P, E> App<P, E>
-where
-    P: FnOnce(Screen<'_>) -> Result<Made, E>,
-{
-    /// Has `program` open its windows and the GPU on them and make the engine with them, puts it on its workers, this
-    /// thread the first, and starts it, asking for the first frame.
-    fn open(&self, event_loop: &ActiveEventLoop, program: P) -> Result<Running, Failed<E>> {
-        let Made { engine, drawing } = program(Screen::new(event_loop)).map_err(Failed::Program)?;
-        let mut headless = Headless::new(engine, self.desktop.workers);
+impl App {
+    /// Bootstraps `settled` on the screen of `event_loop`, which opens its windows and the GPU on them, puts its engine
+    /// on its workers, this thread the first, and starts it, asking for the first frame.
+    fn open(&self, event_loop: &ActiveEventLoop, settled: Settled<Desktop>) -> Result<Running, Ended> {
+        let (engine, screen) = settled.bootstrap(Screen::new(event_loop)).map_err(Ended::Unbuilt)?;
+        let (drawing, windowing) = screen.into_served().map_err(|end| Ended::Failed(Failed::Unserved(end)))?;
+        let mut headless = Headless::new(engine, self.workers);
         headless.engine_mut().start();
         drawing.ask_next();
 
-        Ok(Running { headless, drawing, stopping: Stopping::Not })
+        Ok(Running { headless, drawing, windowing, stopping: Stopping::Not })
     }
 }
 

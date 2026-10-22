@@ -26,7 +26,7 @@ impl Default for RunningSettings {
 
 impl Host for Headless {
     type Running = RunningSettings;
-    type Hosting = ();
+    type Hosting<'host> = ();
     type Exit = Exit;
 
     /// Bootstraps the program, then runs it as [`Headless::run`] does, every `every_millis`, giving `Stop`
@@ -44,6 +44,8 @@ impl Builds for Headless {
     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
         let workers = settled.engine().worker_threads();
 
-        Ok(Self::new(settled.bootstrap(&mut ())?, workers))
+        let (engine, ()) = settled.bootstrap(())?;
+
+        Ok(Self::new(engine, workers))
     }
 }

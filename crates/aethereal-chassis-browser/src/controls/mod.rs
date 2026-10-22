@@ -10,7 +10,7 @@ mod read;
 mod tests;
 
 #[cfg(target_arch = "wasm32")]
-pub use listen::listen;
+pub(crate) use listen::listen;
 
 use aethereal_actor::{
     Actor, Beginning, ChildOf, Ended, Ending, Fault, Given, Handle, Handles, Level, Source, Subscribers, ToAny, Top,

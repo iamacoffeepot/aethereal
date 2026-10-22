@@ -7,12 +7,14 @@
 //!
 //! It runs the engine on the thread of winit's event loop, which steps it as
 //! the first worker of the headless chassis's pool, the others its own
-//! threads (ADR-0011). [`Desktop::run`] hands the program the [`Screen`] as
-//! the loop begins, and the program opens each window it asks for with
-//! [`Screen::open_window`], as a window of the window capability, the first
-//! opening the GPU on it, each waited for on that thread, which is the host's
-//! to do (ADR-0001 rule 4). It then makes the renderer's config with
-//! [`renderer`], as a page does in a browser.
+//! threads (ADR-0011). [`Desktop`] is a program's host (ADR-0029): inside the
+//! loop's first callback it bootstraps the program on the [`Screen`], where
+//! the window root's bootstrap opens each window its settings list, as a
+//! window of the window capability, and the renderer's opens the GPU on the
+//! first, each waited for on that thread, which is the host's to do (ADR-0001
+//! rule 4). The window root gives the desktop its end of the root's
+//! controller, and the renderer gives it what the desktop serves it each
+//! frame, [`Drawing`].
 //!
 //! Each frame it acquires the surface of each window shown, in turn, which
 //! with `Fifo` waits for the display to free an image and so paces the
@@ -39,13 +41,17 @@ mod gpu;
 #[cfg(not(target_arch = "wasm32"))]
 mod input;
 #[cfg(not(target_arch = "wasm32"))]
+mod program;
+#[cfg(not(target_arch = "wasm32"))]
 mod running;
 #[cfg(not(target_arch = "wasm32"))]
 mod serving;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use gpu::{Screen, Unopened, renderer};
+pub use gpu::{Screen, Unopened};
 #[cfg(not(target_arch = "wasm32"))]
-pub use running::{Desktop, Failed, Made};
+pub use program::{Presenting, RendererSettings, RunningSettings, WindowSettings, WindowsSettings};
+#[cfg(not(target_arch = "wasm32"))]
+pub use running::{Desktop, Failed};
 #[cfg(not(target_arch = "wasm32"))]
 pub use serving::Drawing;

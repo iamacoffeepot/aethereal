@@ -119,9 +119,6 @@ pub struct Density {
 }
 
 impl Density {
-    /// Every device pixel of the screen.
-    pub const SCREEN: Self = Self { most: f64::INFINITY };
-
     /// The screen's device pixels to each CSS pixel, but at most `most`: below one, fewer pixels than the page lays
     /// the canvas out at. A `most` of no pixels, or one that is no number, is the screen's.
     #[must_use]

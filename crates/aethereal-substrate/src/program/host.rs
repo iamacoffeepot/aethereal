@@ -7,12 +7,13 @@ use aethereal_data::config::Settings;
 ///
 /// A host brings its own section of the configuration, `running`, beside the engine's, and keeps its hosting as its
 /// program bootstraps: the ends its roots give it, and its own setup a bootstrap reaches, such as a screen.
-pub trait Host: Sized {
+pub trait Host: Sized + 'static {
     /// The host's own section: how the program is run.
     type Running: Settings;
     /// What the host keeps as its program bootstraps, which each root's bootstrap reaches through
-    /// [`Bootstrapping::host`](super::Bootstrapping::host) and gives its ends to.
-    type Hosting;
+    /// [`Bootstrapping::host`](super::Bootstrapping::host) and gives its ends to. It may borrow, for `'host`, what
+    /// the host has only while it bootstraps, such as the event loop a window is opened on.
+    type Hosting<'host>;
     /// What running a program to its end comes to.
     type Exit;
 
@@ -50,5 +51,5 @@ pub trait Builds: Host {
 )]
 pub trait Serves<E>: Host {
     /// Keeps `end` in `hosting`.
-    fn serve(hosting: &mut Self::Hosting, end: E);
+    fn serve(hosting: &mut Self::Hosting<'_>, end: E);
 }

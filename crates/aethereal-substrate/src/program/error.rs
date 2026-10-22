@@ -79,6 +79,9 @@ pub enum ProgramError {
     Configuration(ConfigError),
     /// The engine's cycle was refused as it was made.
     Cycle(Unordered),
+    /// A root's bootstrap waited, on a host that does not wait: the desktop's and the headless one bootstrap
+    /// without awaiting anything (ADR-0029).
+    Waited,
     /// A root's bootstrap failed.
     Root {
         /// The root whose bootstrap failed.
@@ -106,6 +109,7 @@ impl fmt::Display for ProgramError {
             }
             Self::Configuration(error) => write!(f, "program: {error}"),
             Self::Cycle(unordered) => write!(f, "program: the cycle was refused: {unordered:?}"),
+            Self::Waited => write!(f, "program: a root's bootstrap waited on a host that does not wait"),
             Self::Root { root, why } => write!(f, "program: {root} did not bootstrap: {why}"),
         }
     }

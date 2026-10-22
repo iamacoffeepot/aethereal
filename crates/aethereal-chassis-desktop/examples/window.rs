@@ -13,7 +13,9 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
-use aethereal_chassis_desktop::{Desktop, Made, Screen, renderer};
+use aethereal_chassis_desktop::Desktop;
+use aethereal_chassis_headless::Exit;
+use aethereal_data::config::Overlay;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -26,11 +28,11 @@ use aethereal_render::program::{
 };
 use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
-use aethereal_substrate::Engine;
-use aethereal_window::{self as window, Event, Heard, Opening, Window, WindowId, Windowing, Windows};
+use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
+use aethereal_window::{self as window, Event, InitialWindows, Window, WindowId, Windows};
+use core::error::Error;
 use core::f32::consts::TAU;
 use core::num::NonZeroUsize;
-use core::time::Duration;
 use std::env;
 use std::process::ExitCode;
 use std::thread;
@@ -63,18 +65,7 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 ";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = env::args().skip(1).collect();
-    let seconds = args
-        .iter()
-        .position(|arg| arg == "--seconds")
-        .and_then(|at| args.get(at + 1))
-        .and_then(|seconds| seconds.parse().ok())
-        .unwrap_or(0);
-    let cores = thread::available_parallelism().map_or(1, NonZeroUsize::get);
-    let workers = NonZeroUsize::new(cores.min(4)).unwrap_or(NonZeroUsize::MIN);
-    let desktop = Desktop { workers, stop_within: Duration::from_secs(1) };
-
-    match desktop.run(|screen| program(screen, workers, seconds)) {
+    match run() {
         Ok(exit) => {
             println!("exit={exit:?}");
             ExitCode::SUCCESS
@@ -86,27 +77,60 @@ fn main() -> ExitCode {
     }
 }
 
-/// The engine, its views in a part for each worker, with the window root, the renderer, handed the GPU opened on the
-/// window opened on `screen`, and the scene as its roots, the scene quitting after `seconds` when they are any.
-fn program(mut screen: Screen<'_>, workers: NonZeroUsize, seconds: u64) -> Result<Made, String> {
-    let mut setup = Engine::new(workers, 1024, 1 << 20, 1 << 20, 0)
-        .with_cycle::<(Tick, Render)>()
-        .map_err(|unordered| format!("the cycle is out of order: {unordered:?}"))?;
-    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
-    let window = screen.open_window(&mut opening, "aethereal", (800, 600)).map_err(|unopened| unopened.to_string())?;
-    let (windows, hosting) = opening.config();
-    let mut setup = setup
-        .add_root::<Windows>(&(), windows)
-        .map_err(|refused| format!("the window root did not begin: {refused:?}"))?;
-    let (rendering, drawing) = renderer(&mut setup, screen, hosting).map_err(|unopened| unopened.to_string())?;
-    let engine = setup
-        .add_root::<Renderer>(&(), rendering)
-        .map_err(|refused| format!("the renderer did not begin: {refused:?}"))?
-        .add_root::<Scene>(&(), Shows { window, seconds })
-        .map_err(|refused| format!("the scene did not begin: {refused:?}"))?
-        .ready();
+/// Runs the program of the window root, the renderer, which draws on the window it opened, and the scene, on as many
+/// workers as the machine has cores, at most four, the engine's views in a part for each, the scene quitting after
+/// `--seconds` when they are any.
+fn run() -> Result<Exit, Box<dyn Error>> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let seconds = args
+        .iter()
+        .position(|arg| arg == "--seconds")
+        .and_then(|at| args.get(at + 1))
+        .and_then(|seconds| seconds.parse::<u64>().ok())
+        .unwrap_or(0);
+    let cores = thread::available_parallelism().map_or(1, NonZeroUsize::get);
+    let workers = cores.min(4);
 
-    Ok(Made { engine, drawing })
+    let program = Desktop::program()
+        .with_cycle::<(Tick, Render)>()
+        .map_err(|unordered| format!("the cycle is out of order: {unordered:?}"))?
+        .root::<Windows>()
+        .root::<Renderer>()
+        .root::<Scene>();
+    let parts = program.parts()?;
+    let mut code = Overlay::new("code");
+    for set in
+        [format!("engine.workers={workers}"), format!("engine.parts={workers}"), format!("scene.seconds={seconds}")]
+    {
+        code.set(&parts, &set)?;
+    }
+
+    Ok(program.layer(code).run()??)
+}
+
+/// How long the scene runs: its section, `scene`.
+#[derive(Plain, Default)]
+#[kind(name = "aether.example.show")]
+#[settings]
+struct Show {
+    /// The seconds the scene runs for, none for as long as it is let.
+    seconds: u64,
+}
+
+/// The scene draws on the first window the window root opened, for as long as its settings say.
+impl<H: Host> Bootstrap<H> for Scene {
+    const SECTION: &'static str = "scene";
+    type Settings = Show;
+    type Needs = (InitialWindows,);
+    type Provides = ();
+
+    async fn bootstrap(
+        show: Show,
+        (windows,): (InitialWindows,),
+        cx: &mut Bootstrapping<'_, H, Self>,
+    ) -> Result<(), Unbuilt> {
+        cx.begin(&(), Shows { window: windows.first(), seconds: show.seconds })
+    }
 }
 
 /// An empty context.

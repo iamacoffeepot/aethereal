@@ -31,7 +31,7 @@
 
   try {
     await init();
-    const program = await start(canvases[0], canvases[1]);
+    const program = await start();
     const said = document.getElementById("said");
     const frame = (timestamp) => {
       program.frame(timestamp);
