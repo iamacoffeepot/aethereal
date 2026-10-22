@@ -1,5 +1,6 @@
 //! How the ball flies between strokes: along its way, curved by its spin, which fades as it goes, and turned back off
-//! the walls. The game plays the ball by it, and the opponent reads by it where the ball will reach its end.
+//! the walls, which turn its spin away from them. The game plays the ball by it, and the opponent reads by it where the
+//! ball will reach its end.
 
 use crate::court::{BALL_HALF, Ball, HALF_HEIGHT};
 
@@ -25,15 +26,16 @@ pub fn ahead(ball: Ball, secs: f32) -> Ball {
     Ball { x: ball.across.mul_add(secs, ball.x), y: up.mul_add(secs, ball.y), up, spin, ..ball }
 }
 
-/// The ball turned back off a wall it has gone into, by as far as it went in.
+/// The ball turned back off a wall it has gone into, by as far as it went in, its spin turned away from the wall so
+/// that it curves away from it.
 #[must_use]
 pub fn off_walls(ball: Ball) -> Ball {
     let into_top = ball.y > BALL_REACH;
     let into_bottom = ball.y < -BALL_REACH;
     if into_top {
-        Ball { y: 2.0f32.mul_add(BALL_REACH, -ball.y), up: -ball.up.abs(), ..ball }
+        Ball { y: 2.0f32.mul_add(BALL_REACH, -ball.y), up: -ball.up.abs(), spin: -ball.spin.abs(), ..ball }
     } else if into_bottom {
-        Ball { y: (-2.0f32).mul_add(BALL_REACH, -ball.y), up: ball.up.abs(), ..ball }
+        Ball { y: (-2.0f32).mul_add(BALL_REACH, -ball.y), up: ball.up.abs(), spin: ball.spin.abs(), ..ball }
     } else {
         ball
     }
