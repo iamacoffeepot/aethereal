@@ -45,8 +45,8 @@
     try {
       await init();
       const program = await start(canvas);
-      const frame = () => {
-        program.frame();
+      const frame = (timestamp) => {
+        program.frame(timestamp);
         requestAnimationFrame(frame);
       };
       requestAnimationFrame(frame);
