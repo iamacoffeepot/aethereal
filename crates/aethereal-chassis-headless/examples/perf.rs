@@ -6,6 +6,9 @@
 //! also seats N actors that are never sent anything, and `shape=NAME` runs one shape of work only. Each line is the
 //! best of three runs: mails a second, nanoseconds a piece of mail, and a step's time split into planning, running,
 //! and applying.
+//!
+//! Each run is a program of one root, the counter that spawns the rest, bootstrapped on the headless host with its
+//! settings and the engine's set in code (ADR-0029).
 
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
@@ -13,10 +16,11 @@
 use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Recursive, ToType, Turn};
 use aethereal_chassis_headless::{Headless, Measured};
 use aethereal_data::Plain;
-use aethereal_substrate::Engine;
+use aethereal_data::config::Overlay;
+use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use std::env;
+use std::error::Error;
 use std::hint;
-use std::num::NonZeroUsize;
 
 /// How many turns a counter has left.
 #[derive(Plain)]
@@ -36,6 +40,16 @@ struct CounterConfig {
     shape: u8,
 }
 
+/// The counters a run spawns: how many busy and how many idle, and the shape of the busy ones' work.
+#[derive(Plain, Default)]
+#[kind(name = "aether.bench.counters")]
+#[settings]
+struct Counters {
+    children: u64,
+    idle: u64,
+    shape: u8,
+}
+
 /// An actor that counts itself down, working as its shape says on each count.
 #[derive(Plain)]
 #[kind(name = "aether.bench.counter")]
@@ -45,7 +59,7 @@ struct Counter {
 }
 
 /// The quota for the bytes of mail in flight, shared among the workers.
-const MAIL_BYTES: usize = 1 << 30;
+const MAIL_BYTES: u64 = 1 << 30;
 
 /// How many counts each counter takes.
 const TURNS: u64 = 50;
@@ -126,22 +140,46 @@ impl Handles<Count> for Counter {
     }
 }
 
+/// The root counter stands up from the counters' settings, on any host.
+impl<H: Host> Bootstrap<H> for Counter {
+    const SECTION: &'static str = "counters";
+    type Settings = Counters;
+    type Needs = ();
+    type Provides = ();
+
+    fn bootstrap(counters: Counters, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
+        let Counters { children, idle, shape } = counters;
+        cx.begin(&0, CounterConfig { number: 0, children, idle, shape })
+    }
+}
+
 /// One run of `children` counters of `shape`, beside `idle` idle ones, to idle on `workers` workers: the nanoseconds
 /// it took, and what its steps cost.
-fn run(children: u64, idle: u64, shape: u8, workers: NonZeroUsize) -> (u64, Measured) {
-    let parts = NonZeroUsize::MIN.saturating_add(15);
-    let mut engine = Engine::new(parts, 1024, MAIL_BYTES, 1 << 30, 0).ready();
-    let Ok(_) = engine.add_root::<Counter>(&0, CounterConfig { number: 0, children, idle, shape }) else {
-        panic!("the root begins");
-    };
-    let mut headless = Headless::new(engine, workers);
+fn run(children: u64, idle: u64, shape: u8, workers: u32) -> Result<(u64, Measured), Box<dyn Error>> {
+    let program = Headless::program().root::<Counter>();
+    let parts = program.parts()?;
+    let mut code = Overlay::new("code");
+    let sets = [
+        format!("engine.workers={workers}"),
+        String::from("engine.parts=16"),
+        format!("engine.mail_bytes={MAIL_BYTES}"),
+        format!("engine.blob_bytes={}", 1_u64 << 30),
+        format!("counters.children={children}"),
+        format!("counters.idle={idle}"),
+        format!("counters.shape={shape}"),
+    ];
+    for set in &sets {
+        code.set(&parts, set)?;
+    }
+
+    let mut headless = program.layer(code).build()?;
     headless.run_until_idle();
 
     let measured = headless.measured();
-    (measured.plan_nanos + measured.step_nanos + measured.apply_nanos, measured)
+    Ok((measured.plan_nanos + measured.step_nanos + measured.apply_nanos, measured))
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let given: Vec<u64> = args.iter().filter_map(|actors| actors.parse().ok()).collect();
     let counts = if given.is_empty() {
@@ -160,9 +198,8 @@ fn main() {
         }
         for &children in &counts {
             for workers in [1, 4, 16] {
-                let workers = NonZeroUsize::MIN.saturating_add(workers - 1);
-                let runs = (0..3).map(|_| run(children, idle, shape, workers));
-                let (took, measured) = runs.min_by_key(|(took, _)| *took).unwrap_or_default();
+                let runs = (0..3).map(|_| run(children, idle, shape, workers)).collect::<Result<Vec<_>, _>>()?;
+                let (took, measured) = runs.into_iter().min_by_key(|(took, _)| *took).unwrap_or_default();
                 let mails = children * (TURNS + 1);
                 let steps = measured.steps.max(1);
                 println!(
@@ -176,4 +213,6 @@ fn main() {
             }
         }
     }
+
+    Ok(())
 }

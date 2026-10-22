@@ -1,5 +1,8 @@
 //! The headless chassis: the native host with nothing but the engine, its workers, and its clock (ADR-0001).
 //!
+//! It is a program's [`Host`](aethereal_substrate::Host) (ADR-0029): `Headless::program()`, its roots listed, then
+//! `run`, or `build` for a test to step.
+//!
 //! The substrate plans each step and runs a share of it wherever it is
 //! asked to; this host owns the threads those shares run on and the clock
 //! their turns are timed by. Between steps it wakes or parks workers as the
@@ -10,6 +13,7 @@ mod clock;
 pub mod guest;
 mod jobs;
 mod pool;
+mod program;
 mod rehearsal;
 mod running;
 #[cfg(test)]
@@ -23,6 +27,7 @@ pub use jobs::Runners;
 use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Engine, Split, SplitCost, Workers};
 pub use pool::Measured;
+pub use program::RunningSettings;
 pub use running::Exit;
 
 use pool::Pool;

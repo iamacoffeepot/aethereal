@@ -1,8 +1,10 @@
-//! The derives of `aethereal-data`: `Plain`, `Bound`, and `Key` (ADR-0004), and a kind named on the first two (ADR-0006).
+//! The derives of `aethereal-data`: `Plain`, `Bound`, and `Key` (ADR-0004), and a kind named on the first two (ADR-0006);
+//! and `Bootstrap`, which the substrate re-exports, for an actor whose config is its settings (ADR-0029).
 
 use proc_macro::TokenStream;
 use syn::{DeriveInput, parse_macro_input};
 
+mod bootstrap;
 mod key;
 mod lifetimes;
 mod plain;
@@ -49,6 +51,20 @@ pub fn derive_bound(input: TokenStream) -> TokenStream {
 pub fn derive_key(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match key::expand(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+/// Derives `Bootstrap<H>` for every host `H`, for an actor whose config is its settings (ADR-0029).
+///
+/// The actor's config is plain data with a `Default` and `#[settings]`, read from the section its kind name's last
+/// segment names (`aether.example.scene` reads `scene`). It needs nothing, provides nothing, and begins as a singleton
+/// from its settings. Use it through `aethereal_substrate::Bootstrap`, which re-exports it beside the trait.
+#[proc_macro_derive(Bootstrap, attributes(kind))]
+pub fn derive_bootstrap(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match bootstrap::expand(&input) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }

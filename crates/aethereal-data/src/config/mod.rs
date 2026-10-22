@@ -26,6 +26,8 @@ mod overlay;
 mod parts;
 #[cfg(feature = "json")]
 mod place;
+#[cfg(feature = "json")]
+mod reader;
 #[cfg(all(test, feature = "json"))]
 mod samples;
 
@@ -42,3 +44,5 @@ pub use form::{Form, NumberForm};
 pub use overlay::Overlay;
 #[cfg(feature = "json")]
 pub use parts::{Configuration, Parts};
+#[cfg(feature = "json")]
+pub use reader::RootSettings;

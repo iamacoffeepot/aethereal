@@ -8,7 +8,8 @@ description = "The substrate, the engine's core: the views folded from the effec
 
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
-aethereal-data = { path = "../aethereal-data" }
+aethereal-data = { path = "../aethereal-data", features = ["json"] }
+aethereal-data-derive = { path = "../aethereal-data-derive" }
 crossbeam-queue = { workspace = true }
 
 [lints]
