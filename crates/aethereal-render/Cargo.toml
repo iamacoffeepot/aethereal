@@ -27,10 +27,13 @@ wgpu = { version = "30.0.1", default-features = false, features = ["webgpu", "fr
 wesl = { version = "=0.6.0", features = ["package"] }
 
 # The renderer's tests make what it makes on a device that draws nothing, as no machine they run on need have a GPU.
-# The shader pieces' test links each module of the package as a dependent's build script does.
+# The shader pieces' test links each module of the package as a dependent's build script does. The scan's and the
+# compaction's test runs them on whatever adapter the machine has, by the desktop chassis's backends, and skips
+# without one.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-wgpu = { version = "30.0.1", default-features = false, features = ["noop"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["noop", "dx12", "metal", "vulkan"] }
 wesl = "=0.6.0"
+pollster = { workspace = true }
 
 [lints]
 workspace = true

@@ -126,6 +126,7 @@ dependencies = [
  "aethereal-window",
  "crossbeam-queue",
  "naga",
+ "pollster",
  "wesl",
  "wesl-core",
  "wgpu",
