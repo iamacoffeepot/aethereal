@@ -4,7 +4,7 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Refused, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
-use aethereal_chassis_browser::{Browser, Performance, open, renderer};
+use aethereal_chassis_browser::{Browser, Hosted, Performance, open, renderer};
 use aethereal_data::{Bound, Plain};
 use aethereal_render::mesh::{Attribute, CreateMesh, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::program::{Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, Programmed};
@@ -12,7 +12,7 @@ use aethereal_render::shape::{ColourFormat, Shape};
 use aethereal_render::texture::{CreateTexture, TextureFormat, Textured};
 use aethereal_render::{Release, Renderer};
 use aethereal_substrate::Engine;
-use aethereal_window::{Heard, Opening, Windows};
+use aethereal_window::{Heard, Opening, Windowing, Windows};
 use core::cell::RefCell;
 use core::mem;
 use core::num::NonZeroUsize;
@@ -47,10 +47,11 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
-    let mut opening = Opening::new(setup.source::<Heard>());
+    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
     let (gpu, _) = open([canvas], &mut opening).await?;
+    let (windows, hosting) = opening.config();
     let mut setup = setup
-        .add_root::<Windows>(&(), opening.config())
+        .add_root::<Windows>(&(), windows)
         .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
     let (rendering, mappings) = renderer(&mut setup, gpu);
     // The maker reaches the renderer at its typed path, so the renderer is made first: `ready` builds only then.
@@ -61,7 +62,7 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
         .map_err(|refused| JsError::new(&format!("the maker did not begin: {refused:?}")))?
         .ready();
 
-    Ok(Program { browser: Browser::new(engine, Performance, mappings) })
+    Ok(Program { browser: Browser::new(engine, Performance, mappings, Hosted::Windows(hosting)) })
 }
 
 #[wasm_bindgen]

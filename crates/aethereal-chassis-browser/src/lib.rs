@@ -15,6 +15,11 @@
 //! ([`canvas`], ADR-0024), and the controls the page marks onto the
 //! [`controls`] root's.
 //!
+//! A page owns its canvases, and the engine in it cannot make one: each window
+//! an actor asks for while the program runs, and each it asks to close, is
+//! answered `NoHost`, between steps ([`Hosted`], ADR-0027). A page that wants
+//! another window hands the chassis another canvas as it sets the program up.
+//!
 //! The jobs its turns run, it runs on the page's own event loop, each a task of
 //! its own, with `EventLoop` handed to the engine's setup: their answers are
 //! brought in a later frame (ADR-0018).
@@ -38,6 +43,7 @@ mod clock;
 pub mod controls;
 #[cfg(target_arch = "wasm32")]
 mod gpu;
+mod hosted;
 #[cfg(any(target_arch = "wasm32", test))]
 mod jobs;
 #[cfg(target_arch = "wasm32")]
@@ -50,6 +56,7 @@ mod tests;
 pub use clock::Performance;
 #[cfg(target_arch = "wasm32")]
 pub use gpu::{Opened, open, renderer};
+pub use hosted::Hosted;
 #[cfg(target_arch = "wasm32")]
 pub use jobs::EventLoop;
 #[cfg(target_arch = "wasm32")]
@@ -63,21 +70,22 @@ use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Engine};
 
 /// An engine run on the page's thread, timed by the clock `C`: the page's own, [`Performance`], in a browser, with
-/// what it serves the renderer.
+/// what it serves the renderer and what it answers the window root with.
 pub struct Browser<C> {
     engine: Engine,
     clock: C,
     serving: Serving,
+    hosted: Hosted,
 }
 
 impl<C: Clock> Browser<C> {
-    /// `engine`, with its roots made, started on `clock`, serving its renderer as `serving` says: its `Start` runs in
-    /// the first frame (ADR-0020).
+    /// `engine`, with its roots made, started on `clock`, serving its renderer as `serving` says, and answering its
+    /// window root through `hosted`: its `Start` runs in the first frame (ADR-0020).
     #[must_use]
-    pub fn new(mut engine: Engine, clock: C, serving: Serving) -> Self {
+    pub fn new(mut engine: Engine, clock: C, serving: Serving, hosted: Hosted) -> Self {
         engine.start();
 
-        Self { engine, clock, serving }
+        Self { engine, clock, serving, hosted }
     }
 
     /// The engine, as of the last frame.
@@ -91,7 +99,8 @@ impl<C: Clock> Browser<C> {
     /// its surface configured to the size its window was last resized to. Then it says a cycle is due at that time,
     /// so `Tick`'s delta is the time between the display's frames however long each frame's work took, and brings in
     /// what its sources were pushed and its jobs finished and steps, until no actor has anything to run (ADR-0010,
-    /// ADR-0018). The cycle's stages each run through to their end within the call, so what `Render` drew is
+    /// ADR-0018), answering what the window root asked between steps, `NoHost` (ADR-0027). The cycle's stages each run
+    /// through to their end within the call, so what `Render` drew is
     /// presented before the page gets its thread back and shows it. Then it starts mapping what the renderer asked to
     /// read back, its turns' copies submitted, for the page's promises to bring in once the GPU has mapped it
     /// (ADR-0019).
@@ -102,10 +111,12 @@ impl<C: Clock> Browser<C> {
     pub fn frame(&mut self, timestamp_millis: f64) {
         self.serving.acquire();
         self.engine.cycle(frame_time(timestamp_millis));
+        self.hosted.refuse();
         self.engine.bring();
         while !self.engine.is_idle() {
             let now = Time::from_nanos(self.clock.nanos());
             self.engine.step(now, &self.clock);
+            self.hosted.refuse();
             self.engine.bring();
         }
         self.serving.serve();

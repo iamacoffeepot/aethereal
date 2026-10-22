@@ -5,7 +5,7 @@ use aethereal_actor::{
     Top, Turn, path,
 };
 use aethereal_chassis_browser::canvas::{self, Density};
-use aethereal_chassis_browser::{Browser, Listening, Performance, open, renderer};
+use aethereal_chassis_browser::{Browser, Hosted, Listening, Performance, open, renderer};
 use aethereal_data::{Bound, Plain, TypedKey};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -19,7 +19,9 @@ use aethereal_render::program::{
 use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::Engine;
-use aethereal_window::{self as window, Event, Heard, Opening, Surface, Window, WindowId, Windows};
+use aethereal_window::{
+    self as window, Event, Heard, Logical, OpenWindow, Opened, Opening, Surface, Window, WindowId, Windowing, Windows,
+};
 use core::cell::RefCell;
 use core::f32::consts::TAU;
 use core::mem;
@@ -58,11 +60,12 @@ pub async fn start(first: HtmlCanvasElement, second: HtmlCanvasElement) -> Resul
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
-    let mut opening = Opening::new(setup.source::<Heard>());
+    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
     let (gpu, shown) = open([first.clone(), second.clone()], &mut opening).await?;
     let [one, other] = [shown[0].window(), shown[1].window()];
+    let (windows, hosting) = opening.config();
     let mut setup = setup
-        .add_root::<Windows>(&(), opening.config())
+        .add_root::<Windows>(&(), windows)
         .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
     let (rendering, mappings) = renderer(&mut setup, gpu);
     let engine = setup
@@ -81,7 +84,7 @@ pub async fn start(first: HtmlCanvasElement, second: HtmlCanvasElement) -> Resul
         canvas::listen(&second, &second_shown, Density::SCREEN)?,
     ];
 
-    Ok(Program { browser: Browser::new(engine, Performance, mappings), _canvases: canvases })
+    Ok(Program { browser: Browser::new(engine, Performance, mappings, Hosted::Windows(hosting)), _canvases: canvases })
 }
 
 #[wasm_bindgen]
@@ -229,6 +232,7 @@ impl Actor for Scene {
         Answer<Instanced, MadeProgram>,
         Answer<Uniformed, MadeInstances>,
         Answer<Placed, MadeAll>,
+        Answer<Opened, Nothing>,
     );
     type BeginSends = (Tells<Path<Window>, window::Subscribe>,);
     type EndSends = ();
@@ -298,12 +302,13 @@ impl Handles<On<Start>> for Scene {
     }
 }
 
-/// The window's events: the pointer moves the ring's middle, a key held turns it the other way, and each resize is
-/// said beside the window, so a canvas resized is seen to be its window alone.
+/// The window's events: the pointer moves the ring's middle, a key held turns it the other way, `N` asks the window
+/// root for another window, which a page answers `NoHost`, and each resize is said beside the window, so a canvas
+/// resized is seen to be its window alone.
 impl Handles<Event> for Scene {
-    type Sends = ();
+    type Sends = (Asks<Path<Windows>, OpenWindow, Nothing>,);
 
-    fn handle(&mut self, event: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         match event {
             Event::PointerMoved { x, y } => {
                 // A surface is some thousands of pixels across, which an f32 holds exactly.
@@ -312,9 +317,15 @@ impl Handles<Event> for Scene {
                 self.middle_x = (x / width).mul_add(2.0, -1.0);
                 self.middle_y = (y / height).mul_add(-2.0, 1.0);
             }
-            Event::KeyDown { repeat, .. } => {
+            Event::KeyDown { code, repeat, .. } => {
                 if !repeat {
                     self.held += 1;
+                }
+                let another = code == "KeyN" && !repeat;
+                if another {
+                    let open =
+                        OpenWindow { title: String::from("another"), size: Logical { width: 480.0, height: 360.0 } };
+                    turn.to(path::<Windows>(())).ask(&open, &Nothing)?;
                 }
             }
             Event::KeyUp { .. } => self.held = self.held.saturating_sub(1),
@@ -327,7 +338,27 @@ impl Handles<Event> for Scene {
             | Event::PointerUp { .. }
             | Event::Wheel { .. }
             | Event::FocusGained
-            | Event::CloseRequested => {}
+            | Event::CloseRequested
+            | Event::Closed => {}
+        }
+
+        Ok(())
+    }
+}
+
+/// What the window root answered the window asked for, said beside the window whose scene asked: a page opens no
+/// window on request, so it is refused, `NoHost`.
+impl Handles<Answer<Opened, Nothing>> for Scene {
+    type Sends = ();
+
+    fn handle(&mut self, (answered, _): (Answered<Opened>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let asked_by = self.window.to_name();
+        match answered {
+            Answered::Yes(Opened::Window { window, .. }) => {
+                say(format!("opened window={} asked_by={asked_by}", window.to_name()));
+            }
+            Answered::Yes(Opened::Refused(why)) => say(format!("refused open asked_by={asked_by} why={why:?}")),
+            Answered::No(why) => say(format!("unanswered open asked_by={asked_by} why={why:?}")),
         }
 
         Ok(())

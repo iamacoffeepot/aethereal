@@ -1,26 +1,34 @@
 //! The host's side of the window capability: the windows a chassis opens as it sets the program up, each given its id
-//! here, and the feed each one's events are pushed onto.
+//! here; the feed each one's events are pushed onto; and what the chassis keeps once the program runs, to take the
+//! window root's requests and say what it did with each (ADR-0024, ADR-0027).
 
 use crate::event::{Event, Surface};
 use crate::window::{WindowConfig, WindowId};
-use crate::windows::{Heard, Opened, WindowsConfig};
-use aethereal_actor::{Given, Source};
+use crate::windows::{Closing, Heard, Initial, Unclosed, Unopened, Windowing, WindowsConfig};
+use aethereal_actor::{Controller, Given, Requests, Source};
 use aethereal_substrate::{Closed, Feed};
 
-/// The windows a chassis opens as it sets the program up, and the source their events come in through, until it
-/// makes the window root's config of them.
+/// The windows a chassis opens as it sets the program up, the source their events come in through, and the
+/// controller the window root asks for windows through, until it makes the window root's config of them.
 pub struct Opening {
     source: Given<Source<Heard>>,
     feed: Feed<Heard>,
-    windows: Vec<Opened>,
+    control: Given<Controller<Windowing>>,
+    requests: Requests<Windowing>,
+    windows: Vec<Initial>,
 }
 
 impl Opening {
     /// Opening windows whose events come in through the source the engine made, `(source, feed)`, as
-    /// [`Setup::source`](aethereal_substrate::Setup::source) answers.
+    /// [`Setup::source`](aethereal_substrate::Setup::source) answers, for a window root that asks for windows through
+    /// the controller it made, `(control, requests)`, as [`Setup::controller`](aethereal_substrate::Setup::controller)
+    /// answers.
     #[must_use]
-    pub fn new((source, feed): (Given<Source<Heard>>, Feed<Heard>)) -> Self {
-        Self { source, feed, windows: Vec::new() }
+    pub fn new(
+        (source, feed): (Given<Source<Heard>>, Feed<Heard>),
+        (control, requests): (Given<Controller<Windowing>>, Requests<Windowing>),
+    ) -> Self {
+        Self { source, feed, control, requests, windows: Vec::new() }
     }
 
     /// Opens a window whose `surface` and `focused` stand as given, under the next id, and answers with the feed its
@@ -28,15 +36,93 @@ impl Opening {
     pub fn open(&mut self, surface: Surface, focused: bool) -> WindowFeed {
         // A host opens some windows, never more than a `u64` counts.
         let window = WindowId::nth(self.windows.len() as u64);
-        self.windows.push(Opened { window, config: WindowConfig { surface, focused } });
+        self.windows.push(Initial { window, config: WindowConfig { surface, focused } });
 
         WindowFeed { window, feed: self.feed.clone() }
     }
 
-    /// The window root's config: its source, and every window opened, in the order opened.
+    /// The window root's config, its source and controller and every window opened, in the order opened, each
+    /// window's close button closing it; and what the chassis keeps to take the root's requests and answer them. A
+    /// program whose close buttons only ask sets [`WindowsConfig::closing`] to [`Closing::ByProgram`].
     #[must_use]
-    pub fn config(self) -> WindowsConfig {
-        WindowsConfig { source: self.source, windows: self.windows }
+    pub fn config(self) -> (WindowsConfig, Hosting) {
+        let Self { source, feed, control, requests, windows } = self;
+        let config = WindowsConfig { source, control, windows, closing: Closing::ByButton };
+
+        (config, Hosting { requests, feed })
+    }
+}
+
+/// What the chassis keeps of the window capability once the program runs: its end of the window root's controller,
+/// which it takes the root's requests from between steps, and the root's feed, onto which it says what it did with
+/// each, and through which a window opened on request is fed, by the [`WindowFeed`] its opening answers.
+pub struct Hosting {
+    requests: Requests<Windowing>,
+    feed: Feed<Heard>,
+}
+
+impl Hosting {
+    /// Takes what the window root asked since the last take, in the order its turns asked.
+    #[must_use]
+    pub fn take(&self) -> Vec<Windowing> {
+        self.requests.take()
+    }
+
+    /// Pushes that the host opened `window`, as the root asked, its `surface` and `focused` standing as given, and
+    /// answers with the feed its events are pushed onto: the root hears that it opened before anything it heard.
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn opened(&self, window: WindowId, surface: Surface, focused: bool) -> Result<WindowFeed, Closed> {
+        self.feed.push(Heard::Opened { window, surface, focused })?;
+
+        Ok(WindowFeed { window, feed: self.feed.clone() })
+    }
+
+    /// Pushes that the host did not open `window`, as the root asked, and why.
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn unopened(&self, window: WindowId, why: Unopened) -> Result<(), Closed> {
+        self.feed.push(Heard::Unopened { window, why })
+    }
+
+    /// Pushes that the host closed `window`, as the root asked or of its own accord: what is pushed for the window
+    /// after reaches nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn closed(&self, window: WindowId) -> Result<(), Closed> {
+        self.feed.push(Heard::Closed { window })
+    }
+
+    /// Pushes that the host did not close `window`, as the root asked, and why: it stays open.
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn unclosed(&self, window: WindowId, why: Unclosed) -> Result<(), Closed> {
+        self.feed.push(Heard::Unclosed { window, why })
+    }
+
+    /// Answers each request the window root asked since the last take as a host that opens and closes no window
+    /// does, as a page does: [`Unopened::NoHost`] and [`Unclosed::NoHost`].
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn refuse(&self) -> Result<(), Closed> {
+        for request in self.take() {
+            match request {
+                Windowing::Open { window, .. } => self.unopened(window, Unopened::NoHost)?,
+                Windowing::Close { window } => self.unclosed(window, Unclosed::NoHost)?,
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -60,6 +146,6 @@ impl WindowFeed {
     ///
     /// [`Closed`] when the window root's source has been dropped.
     pub fn push(&self, event: Event) -> Result<(), Closed> {
-        self.feed.push(Heard { window: self.window, event })
+        self.feed.push(Heard::Event { window: self.window, event })
     }
 }

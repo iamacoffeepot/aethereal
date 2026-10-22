@@ -5,7 +5,7 @@ use aethereal_actor::{
     Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::canvas::{self, Density};
-use aethereal_chassis_browser::{Browser, Listening, Performance, open, renderer};
+use aethereal_chassis_browser::{Browser, Hosted, Listening, Performance, open, renderer};
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -19,7 +19,7 @@ use aethereal_render::program::{
 use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::Engine;
-use aethereal_window::{Heard, Opening, WindowId, Windows};
+use aethereal_window::{Heard, Opening, WindowId, Windowing, Windows};
 use core::cell::RefCell;
 use core::f32::consts::TAU;
 use core::mem;
@@ -56,10 +56,11 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
-    let mut opening = Opening::new(setup.source::<Heard>());
+    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
     let (gpu, [shown]) = open([canvas.clone()], &mut opening).await?;
+    let (windows, hosting) = opening.config();
     let mut setup = setup
-        .add_root::<Windows>(&(), opening.config())
+        .add_root::<Windows>(&(), windows)
         .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
     let (rendering, mappings) = renderer(&mut setup, gpu);
     let engine = setup
@@ -72,7 +73,7 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
     // The canvas is drawn at every device pixel of the size the page lays it out at, followed as it is resized.
     let listening = canvas::listen(&canvas, &shown, Density::SCREEN)?;
 
-    Ok(Program { browser: Browser::new(engine, Performance, mappings), _canvas: listening })
+    Ok(Program { browser: Browser::new(engine, Performance, mappings, Hosted::Windows(hosting)), _canvas: listening })
 }
 
 #[wasm_bindgen]

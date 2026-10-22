@@ -28,7 +28,7 @@ use crate::program::{
 use crate::readback::{self, Bytes, Copied, Order, Pixels, ReadBack, ReadRefused, ReadStorage, Readable};
 use crate::shape::{ColourFormat, DepthFormat, Shape};
 use crate::storage::{self, CreateStorage, StorageId, Stored, WriteStorage};
-use crate::surface::{Front, Present, WindowFormat};
+use crate::surface::{Front, Present, Surfaced, WindowFormat};
 use crate::texture::{self, CreateTexture, TextureFormat, TextureId, Textured};
 use crate::timing::{self, TimeFrame, Timed, TimingRefused};
 use crate::uniforms::{self, CreateUniforms, Uniformed, UniformsId, WriteUniforms};
@@ -53,6 +53,9 @@ pub struct Renderer {
     mapping: Handle<Controller<Mapping>>,
     /// Held so the chassis's word of what it mapped is brought here; nothing opens it.
     mapped: Handle<Source<Mapped>>,
+    /// Held so the chassis's word of each window it opened or closed while the program runs is brought here; nothing
+    /// opens it.
+    surfaced: Handle<Source<Surfaced>>,
     owed: Owed,
 }
 
@@ -137,9 +140,10 @@ impl Carries<TimeFrame> for Renderer {
 /// What the renderer is made from: the GPU the chassis opened; the front the chassis hands it each window's frame
 /// through, with a slot for each window's surface it keeps ([`WindowSurface::new`](crate::surface::WindowSurface::new)),
 /// and the controller it asks the chassis to present each window's frame it drew through; each window it draws to,
-/// with the format of the window's surface, in the order the chassis opened them; and the controller it asks the
-/// chassis to map what it reads back through, and the source the chassis brings word of each through (ADR-0019,
-/// ADR-0021).
+/// with the format of the window's surface, in the order the chassis opened them; the controller it asks the chassis
+/// to map what it reads back through, and the source the chassis brings word of each through; and the source the
+/// chassis brings word of each window it opens or closes while the program runs through (ADR-0019, ADR-0021,
+/// ADR-0027).
 #[derive(Bound)]
 #[kind(name = "aether.render.config")]
 pub struct RendererConfig {
@@ -149,6 +153,7 @@ pub struct RendererConfig {
     pub windows: Vec<WindowFormat>,
     pub mapping: Given<Controller<Mapping>>,
     pub mapped: Given<Source<Mapped>>,
+    pub surfaced: Given<Source<Surfaced>>,
 }
 
 /// What an actor asks the renderer: to make a mesh, a texture, a program, a compute program, an effect, instances,
@@ -306,6 +311,22 @@ struct Windowed {
     format: ColourFormat,
     own: Walk,
     main: Main,
+}
+
+impl Windowed {
+    /// The window `window`, whose surface is of `format`, drawn by the renderer's own main frame of it until an actor
+    /// makes one in its place.
+    ///
+    /// # Errors
+    ///
+    /// Why the renderer's own main frame of it was refused.
+    fn new(device: &wgpu::Device, window: WindowId, format: ColourFormat) -> Result<Self, FrameRefused> {
+        // Made again at the first frame's size, as for each frame of a new size.
+        let own = Walk::new(device, CreateFrame::own(window), (End::Window(window), format), Size::PIXEL, effectless)
+            .map_err(|(pass, why)| FrameRefused::Pass { pass, why })?;
+
+        Ok(Self { window, format, own, main: Main::Own })
+    }
 }
 
 /// Which frame is a window's main frame.
@@ -492,6 +513,7 @@ impl Actor for Renderer {
         ReadStorage,
         TimeFrame,
         Mapped,
+        Surfaced,
         Ended,
     );
     type BeginSends = ();
@@ -503,21 +525,14 @@ impl Actor for Renderer {
         let presenting = turn.take(config.presenting)?;
         let mapping = turn.take(config.mapping)?;
         let mapped = turn.take(config.mapped)?;
+        let surfaced = turn.take(config.surfaced)?;
         let opened = turn.open(&mut gpu)?;
         let mut windows = Vec::with_capacity(config.windows.len());
         for WindowFormat { window, format } in config.windows {
-            // Made again at the first frame's size, as for each frame of a new size.
-            let own = match Walk::new(
-                opened.device(),
-                CreateFrame::own(window),
-                (End::Window(window), format),
-                Size::PIXEL,
-                effectless,
-            ) {
-                Ok(own) => own,
-                Err((pass, why)) => return Err(Fault::new(&FrameRefused::Pass { pass, why })?),
-            };
-            windows.push(Windowed { window, format, own, main: Main::Own });
+            match Windowed::new(opened.device(), window, format) {
+                Ok(windowed) => windows.push(windowed),
+                Err(why) => return Err(Fault::new(&why)?),
+            }
         }
         // Made before it is kept, as keeping it ends the borrow of the GPU opened.
         let kept = Kept::new(opened.device(), windows);
@@ -532,7 +547,7 @@ impl Actor for Renderer {
             timing: Vec::new(),
         };
 
-        Ok(Self { gpu, kept, front, presenting, mapping, mapped, owed })
+        Ok(Self { gpu, kept, front, presenting, mapping, mapped, surfaced, owed })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -729,6 +744,49 @@ impl Handles<Mapped> for Renderer {
                 for held in owed_by(&mut self.owed.timing, read) {
                     turn.answer(held, &answer)?;
                 }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// What the chassis said of a window it opened or closed while the program runs, brought from the source to itself: a
+/// window opened is drawn to from the next `Render` it is handed a frame for, by the renderer's own main frame of it,
+/// and a window closed has its main frame dropped, with the targets made for it, so what joined only that frame is
+/// drawn nowhere until its maker releases it (ADR-0027).
+impl Handles<Surfaced> for Renderer {
+    type Sends = ();
+
+    fn handle(&mut self, surfaced: Surfaced, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let brought = turn.sender().id() == turn.me().id();
+        if !brought {
+            turn.log(
+                Level::Warn,
+                format_args!("{surfaced:?} was not acted on: only the chassis makes a window's surface"),
+            );
+            return Ok(());
+        }
+        let device = turn.open(&mut self.gpu)?.device().clone();
+        let kept = turn.open(&mut self.kept)?;
+        match surfaced {
+            Surfaced::Opened { window, format } => {
+                if kept.windowed(window).is_some() {
+                    turn.log(Level::Warn, format_args!("window {window:?} was opened again: it is drawn to already"));
+                    return Ok(());
+                }
+                match Windowed::new(&device, window, format) {
+                    Ok(windowed) => kept.windows.push(windowed),
+                    Err(why) => turn.log(Level::Error, format_args!("window {window:?} is not drawn to: {why:?}")),
+                }
+            }
+            Surfaced::Closed { window } => {
+                let closed = kept.closed(window);
+                let held = kept.reorder_after_release();
+                if !closed {
+                    turn.log(Level::Warn, format_args!("window {window:?} was closed, and was not drawn to"));
+                }
+                log_held(turn, &held);
             }
         }
 
@@ -1531,6 +1589,20 @@ impl Kept {
                 Step::Compute => {}
             }
         }
+    }
+
+    /// Drops what the renderer draws to `window` with, which has closed: its own main frame of it, and the frame an
+    /// actor made in its place, with what each made for it. Answers whether it drew to the window.
+    fn closed(&mut self, window: WindowId) -> bool {
+        let Some(at) = self.windows.iter().position(|windowed| windowed.window == window) else {
+            return false;
+        };
+        let closed = self.windows.remove(at);
+        if let Main::Made(id) = closed.main {
+            self.frames.forget(id);
+        }
+
+        true
     }
 
     /// The window `window`, as the renderer draws to it: none when it does not.

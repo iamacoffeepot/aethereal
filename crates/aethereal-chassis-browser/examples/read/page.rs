@@ -5,7 +5,7 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, BlobRef, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
     Top, Turn, path,
 };
-use aethereal_chassis_browser::{Browser, Performance, open, renderer};
+use aethereal_chassis_browser::{Browser, Hosted, Performance, open, renderer};
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -21,7 +21,7 @@ use aethereal_render::storage::{CreateStorage, StorageId, Stored};
 use aethereal_render::texture::{CreateTexture, TextureFormat, TextureId, Textured};
 use aethereal_render::timing::{TimeFrame, Timed};
 use aethereal_substrate::Engine;
-use aethereal_window::{Heard, Opening, WindowId, Windows};
+use aethereal_window::{Heard, Opening, WindowId, Windowing, Windows};
 use core::cell::RefCell;
 use core::mem;
 use core::num::NonZeroUsize;
@@ -56,10 +56,11 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 26, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
-    let mut opening = Opening::new(setup.source::<Heard>());
+    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
     let (gpu, [shown]) = open([canvas], &mut opening).await?;
+    let (windows, hosting) = opening.config();
     let mut setup = setup
-        .add_root::<Windows>(&(), opening.config())
+        .add_root::<Windows>(&(), windows)
         .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
     let (rendering, mappings) = renderer(&mut setup, gpu);
     let engine = setup
@@ -69,7 +70,7 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
         .map_err(|refused| JsError::new(&format!("the reader did not begin: {refused:?}")))?
         .ready();
 
-    Ok(Program { browser: Browser::new(engine, Performance, mappings) })
+    Ok(Program { browser: Browser::new(engine, Performance, mappings, Hosted::Windows(hosting)) })
 }
 
 #[wasm_bindgen]

@@ -1,6 +1,6 @@
 //! What a window hears, as winit tells the loop: each pushed onto that window's feed in the window capability's
 //! vocabulary, for the engine's next bring, and what the chassis itself does with a resize, the window shown or hidden,
-//! and its close button (ADR-0024).
+//! and the window destroyed (ADR-0024, ADR-0027).
 
 use super::Running;
 use crate::input;
@@ -14,10 +14,9 @@ impl Running {
     /// platforms do for the keys held as the window gains or loses the keyboard, is not pushed, as a page hears none.
     /// What is pushed once the window root has gone reaches nothing, and is refused, which the loop has no use for.
     ///
-    /// The close button asks: what it heard is pushed, and the program is asked to stop only when it is the program's
-    /// one window, as a window is never closed while the program runs, so the last open is the one asked.
+    /// The close button is pushed as it is heard, and the window root closes the window or not, as its config says. A
+    /// window the platform destroyed is closed, as one the root asked to close is.
     pub(super) fn heard(&mut self, window: WindowId, event: WindowEvent) {
-        let only = self.drawing.windows.len() == 1;
         let Some(opened) = self.drawing.window_mut(window) else {
             return;
         };
@@ -65,14 +64,9 @@ impl Running {
                 native.request_redraw();
                 return;
             }
-            WindowEvent::CloseRequested => {
-                if only {
-                    self.headless.engine_mut().quit();
-                }
-                Event::CloseRequested
-            }
+            WindowEvent::CloseRequested => Event::CloseRequested,
             WindowEvent::Destroyed => {
-                self.headless.engine_mut().quit();
+                self.close(window);
                 return;
             }
             _ => return,

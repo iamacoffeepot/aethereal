@@ -4,16 +4,17 @@
 use crate::event::{Event, Subscribe, Surface, Unsubscribe};
 use crate::windows::Windows;
 use aethereal_actor::{Actor, Beginning, ChildOf, Ended, Ending, Fault, Handles, Level, Subscribers, ToAny, Turn};
-use aethereal_data::{Bound, KeyName, Plain, TypedKey};
+use aethereal_data::{Bound, Key, KeyName, Plain, TypedKey};
 use core::mem;
 
-/// A window, by the number the window capability gave it as its host opened it: the first `0`, the next `1`. It is
+/// A window, by the number the window capability gave it: the first opened as the program was set up `0`, the next
+/// `1`, and each asked for while it runs the next after those, in the order asked. No number is given twice. It is
 /// the key of the window's actor, and never a host's own name for the window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
+#[derive(Debug, Clone, Copy, Hash, Plain, Key)]
 pub struct WindowId(u64);
 
 impl WindowId {
-    /// The window opened `nth`, from `0`.
+    /// The window given the `nth` number, from `0`.
     pub(crate) const fn nth(nth: u64) -> Self {
         Self(nth)
     }
@@ -48,7 +49,8 @@ pub struct Window {
     focused: bool,
 }
 
-/// Each window's actor stands beneath the window root, which makes it as its host opens the window.
+/// Each window's actor stands beneath the window root, which makes it as its host opens the window, and which tells
+/// it when its host has closed the window.
 impl ChildOf for Window {
     type Parent = Windows;
 }
@@ -87,7 +89,8 @@ impl Window {
             | Event::Wheel { .. }
             | Event::KeyDown { .. }
             | Event::KeyUp { .. }
-            | Event::CloseRequested => true,
+            | Event::CloseRequested
+            | Event::Closed => true,
         }
     }
 
@@ -132,7 +135,8 @@ impl Handles<Unsubscribe> for Window {
 }
 
 /// What the window root sent on from its host, sent to every subscriber when it says anything new. An event any other
-/// actor sends is not the host's, and is not sent on.
+/// actor sends is not the host's, and is not sent on. Once the window has closed, `Closed` is the last its subscribers
+/// are sent, and the actor ends.
 impl Handles<Event> for Window {
     type Sends = (ToAny<(Event,), Event>,);
 
@@ -146,6 +150,9 @@ impl Handles<Event> for Window {
         let is_new = self.heard(&event);
         if is_new {
             turn.to(&self.listeners).send(&event)?;
+        }
+        if event == Event::Closed {
+            turn.close();
         }
 
         Ok(())

@@ -27,7 +27,7 @@ use aethereal_render::program::{
 use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::Engine;
-use aethereal_window::{self as window, Event, Heard, Opening, Window, WindowId, Windows};
+use aethereal_window::{self as window, Event, Heard, Opening, Window, WindowId, Windowing, Windows};
 use core::f32::consts::TAU;
 use core::num::NonZeroUsize;
 use core::time::Duration;
@@ -92,12 +92,13 @@ fn program(mut screen: Screen<'_>, workers: NonZeroUsize, seconds: u64) -> Resul
     let mut setup = Engine::new(workers, 1024, 1 << 20, 1 << 20, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| format!("the cycle is out of order: {unordered:?}"))?;
-    let mut opening = Opening::new(setup.source::<Heard>());
+    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
     let window = screen.open_window(&mut opening, "aethereal", (800, 600)).map_err(|unopened| unopened.to_string())?;
+    let (windows, hosting) = opening.config();
     let mut setup = setup
-        .add_root::<Windows>(&(), opening.config())
+        .add_root::<Windows>(&(), windows)
         .map_err(|refused| format!("the window root did not begin: {refused:?}"))?;
-    let (rendering, drawing) = renderer(&mut setup, screen).map_err(|unopened| unopened.to_string())?;
+    let (rendering, drawing) = renderer(&mut setup, screen, hosting).map_err(|unopened| unopened.to_string())?;
     let engine = setup
         .add_root::<Renderer>(&(), rendering)
         .map_err(|refused| format!("the renderer did not begin: {refused:?}"))?
@@ -338,6 +339,7 @@ impl Handles<Event> for Scene {
                 self.held = 0;
             }
             Event::CloseRequested => println!("close=requested"),
+            Event::Closed => println!("closed"),
         }
 
         Ok(())

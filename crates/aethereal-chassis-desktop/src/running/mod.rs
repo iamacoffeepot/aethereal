@@ -1,7 +1,9 @@
 //! The program run on winit's event loop through its lifecycle: started once its windows and GPU are open, cycled each
-//! frame the display frees, and stopped when its last window is closed or it quits (ADR-0020, ADR-0024).
+//! frame the display frees, its windows opened and closed between steps as the window root asks, and stopped when its
+//! last window has closed or it quits (ADR-0020, ADR-0024, ADR-0027).
 
 mod window;
+mod windowing;
 
 use crate::gpu::{Screen, Unopened};
 use crate::serving::Drawing;
@@ -73,8 +75,8 @@ impl Desktop {
     /// first, and which the program makes the engine with; this thread is then the first of the engine's workers, and
     /// `Start` is sent. Each frame the display frees it says a cycle is due, at the time the frames were acquired, and
     /// steps until no actor has anything to run: one cycle draws every window shown. Once the program is asked to
-    /// stop, by the close button of its last window or an actor's [`quit`](aethereal_actor::Turn::quit), it waits at
-    /// most [`stop_within`](Self::stop_within) for `Stop` to finish.
+    /// stop, by its last window closing or an actor's [`quit`](aethereal_actor::Turn::quit), it waits at most
+    /// [`stop_within`](Self::stop_within) for `Stop` to finish.
     ///
     /// # Errors
     ///
@@ -164,7 +166,7 @@ where
     }
 
     /// Routes what winit says of a window to the window capability's window it is, by winit's id for it (ADR-0024).
-    fn window_event(&mut self, _: &ActiveEventLoop, native: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, native: WindowId, event: WindowEvent) {
         let Stage::Running(running) = &mut self.stage else {
             return;
         };
@@ -172,7 +174,7 @@ where
             return;
         };
         match event {
-            WindowEvent::RedrawRequested => running.frame(self.clock),
+            WindowEvent::RedrawRequested => running.frame(event_loop, self.clock),
             heard => running.heard(window, heard),
         }
     }
@@ -182,7 +184,7 @@ where
             return;
         };
         let now = self.clock.nanos();
-        match running.settle(now, self.desktop.stop_within) {
+        match running.settle(event_loop, now, self.desktop.stop_within) {
             Next::Wait => event_loop.set_control_flow(ControlFlow::Wait),
             Next::LookAt(at) => {
                 let rest = Duration::from_nanos(at.saturating_sub(now));
@@ -220,8 +222,8 @@ impl Running {
     /// until no actor has anything to run, presents what the renderer drew in each, and asks for the next frame. A
     /// program asked to stop draws none, a window hidden or of no size is handed no frame, and when none is shown at a
     /// size none is drawn: the loop then waits on the windows' events, and the frame is asked for again once one is
-    /// shown at a size.
-    fn frame(&mut self, clock: Monotonic) {
+    /// shown at a size. The windows the window root asks for are opened and closed between its steps, on `event_loop`.
+    fn frame(&mut self, event_loop: &ActiveEventLoop, clock: Monotonic) {
         let running = self.headless.engine().lifecycle() == Lifecycle::Running;
         if !running {
             return;
@@ -231,17 +233,21 @@ impl Running {
             return;
         }
         self.headless.engine_mut().cycle(Time::from_nanos(clock.nanos()));
-        self.step_until_idle();
+        self.step_until_idle(event_loop);
         self.drawing.serve();
         self.drawing.ask_next();
     }
 
-    /// Brings in what was pushed and finished since the last step and steps, until no actor has anything to run, then
-    /// parks the workers, as the loop next waits on the display or the windows' events.
-    fn step_until_idle(&mut self) {
+    /// Opens and closes what the window root asked for, brings in what was pushed and finished since the last step and
+    /// steps, until no actor has anything to run, then parks the workers, as the loop next waits on the display or the
+    /// windows' events. Each window asked for is opened or closed between steps, on `event_loop`, before the bring
+    /// that brings in what the chassis said of it.
+    fn step_until_idle(&mut self, event_loop: &ActiveEventLoop) {
+        self.windowing(event_loop);
         self.headless.engine_mut().bring();
         while !self.headless.engine().is_idle() {
             self.headless.step();
+            self.windowing(event_loop);
             self.headless.engine_mut().bring();
         }
         self.headless.park();
@@ -250,9 +256,9 @@ impl Running {
     /// Between the loop's events, at `now`: polls the device, steps what the windows' events and the jobs brought,
     /// and says what the loop does next, as the program's lifecycle stands. Once it is asked to stop, `Stop` has
     /// `stop_within` to finish, and the loop looks again every [`STOPPING_LOOK`] until it has or the time has passed.
-    fn settle(&mut self, now: u64, stop_within: Duration) -> Next {
+    fn settle(&mut self, event_loop: &ActiveEventLoop, now: u64, stop_within: Duration) -> Next {
         self.drawing.poll();
-        self.step_until_idle();
+        self.step_until_idle(event_loop);
         let within = u64::try_from(stop_within.as_nanos()).unwrap_or(u64::MAX);
         let look = u64::try_from(STOPPING_LOOK.as_nanos()).unwrap_or(u64::MAX);
         match (self.headless.engine().lifecycle(), self.stopping) {
