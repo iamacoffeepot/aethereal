@@ -12,6 +12,8 @@
 mod aabb;
 #[cfg(test)]
 mod approx;
+#[cfg(any(test, feature = "cases"))]
+pub mod cases;
 mod curve;
 mod mat4;
 mod polygon;

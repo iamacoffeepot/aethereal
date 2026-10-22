@@ -1,6 +1,8 @@
 // The mirrors below write each sum as the shader writes it, unfused, so they read as the shader does.
 #![allow(clippy::suboptimal_flops)]
 
+mod segment;
+
 use super::PACKAGE;
 use naga::front::wgsl;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
@@ -59,7 +61,7 @@ fn validate(what: &str, text: &str) {
 #[test]
 fn each_piece_links_alone_into_wgsl_the_renderer_validates() {
     let names: Vec<&str> = PACKAGE.root.submodules.iter().map(|module| module.name).collect();
-    assert_eq!(names.len(), 5, "the package holds its five modules: {names:?}");
+    assert_eq!(names.len(), 6, "the package holds its six modules: {names:?}");
 
     for name in names {
         validate(&format!("the module {name}"), &piece(name));
