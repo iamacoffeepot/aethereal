@@ -52,6 +52,15 @@ impl Vec2 {
         self.x * other.x + self.y * other.y
     }
 
+    /// Returns `self.x * other.y - self.y * other.x`: the `z` of the cross product of the two
+    /// vectors lifted into the plane `z = 0`. Positive when `other` lies less than a half turn
+    /// counter-clockwise from `self`, negative clockwise, zero when the two are parallel.
+    #[inline]
+    #[must_use]
+    pub fn perp_dot(self, other: Self) -> f32 {
+        self.x * other.y - self.y * other.x
+    }
+
     /// Returns the squared length of `self`.
     #[inline]
     #[must_use]

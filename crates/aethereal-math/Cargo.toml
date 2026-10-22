@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Vectors, a matrix, a rotation, boxes, and a ray: the engine's math types and their conventions"
+description = "Vectors, a matrix, a rotation, boxes, a ray, and curves, polylines, and polygons in a plane: the engine's math types and their conventions"
 
 [dependencies]
 aethereal-data = { path = "../aethereal-data" }
