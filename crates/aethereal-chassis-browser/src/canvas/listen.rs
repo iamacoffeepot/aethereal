@@ -1,12 +1,12 @@
 //! The canvas opened as a window, and the page's listeners that feed it: callbacks the page runs as it hears the
-//! pointer over the canvas, the keys, its focus, and a resize, which push each event onto the window's feed and
-//! return.
+//! pointer and the wheel over the canvas, the keys, its focus, and a resize, which push each event onto the window's
+//! feed and return.
 
 use super::dom::{Canvas, Pointing};
 use crate::Listening;
 use aethereal_window::{Event, Opening, Surface, WindowFeed};
 use wasm_bindgen::{JsCast, JsError};
-use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent};
+use web_sys::{HtmlCanvasElement, KeyboardEvent, MouseEvent, PointerEvent, WheelEvent};
 
 /// Opens `canvas` as a window, standing as the page has it now: its backing store as its surface, the page's device
 /// pixels to each CSS pixel as its scale, and focused when the page has the keyboard.
@@ -23,8 +23,10 @@ pub fn open(canvas: &HtmlCanvasElement, opening: &mut Opening) -> Result<WindowF
 }
 
 /// Listens to the page for what the canvas's window hears, pushing each event onto `window` as the page hears it: the
-/// pointer over `canvas`, in its pixels; the keys, the focus, and the page's resizes, on the page's window; and the
-/// canvas's backing store set to another size.
+/// pointer and the wheel over `canvas`, in its pixels; the keys, the focus, and the page's resizes, on the page's
+/// window; and the canvas's backing store set to another size.
+///
+/// The wheel over the canvas stops the page's default, so the page does not scroll while the wheel turns over it.
 ///
 /// A resize is pushed as the canvas's surface reads then, whether or not it changed: the window's actor sends on only
 /// one that did. What is pushed once the window root has been dropped reaches nothing, and is refused, which a
@@ -50,6 +52,18 @@ pub fn listen(canvas: &HtmlCanvasElement, window: &WindowFeed) -> Result<Listeni
             }
         })?;
     }
+
+    let (shown, turned) = (canvas.clone(), window.clone());
+    listening.on_preventing(canvas, "wheel", move |event| {
+        let Some(wheel) = event.dyn_ref::<WheelEvent>() else {
+            return;
+        };
+        wheel.prevent_default();
+        let (laid_out, from) = laid_out(&shown, wheel);
+        if let Some(event) = laid_out.wheel(from, (wheel.delta_x(), wheel.delta_y()), wheel.delta_mode()) {
+            turned.push(event).ok();
+        }
+    })?;
 
     let pressed = window.clone();
     listening.on(&page, "keydown", move |event| {
@@ -93,11 +107,19 @@ fn surface(canvas: &HtmlCanvasElement, page: &web_sys::Window) -> Surface {
     Surface { width: canvas.width(), height: canvas.height(), scale: page.device_pixel_ratio() }
 }
 
-/// Where `pointer` is on `canvas`, in the canvas's pixels: measured from the canvas's box as the page lays it out
-/// now, so a canvas moved or resized since is read where it is.
+/// Where `pointer` is on `canvas`, in the canvas's pixels.
 fn at(canvas: &HtmlCanvasElement, pointer: &PointerEvent) -> (f32, f32) {
-    let shown = canvas.get_bounding_client_rect();
-    let canvas_at = Canvas::new(canvas.width(), canvas.height(), shown.width(), shown.height());
+    let (laid_out, (from_left, from_top)) = laid_out(canvas, pointer);
 
-    canvas_at.pixel(f64::from(pointer.client_x()) - shown.left(), f64::from(pointer.client_y()) - shown.top())
+    laid_out.pixel(from_left, from_top)
+}
+
+/// `canvas` as the page lays it out now, and where `pointer` is from its top left, in CSS pixels: measured from the
+/// canvas's box now, so a canvas moved or resized since is read where it is.
+fn laid_out(canvas: &HtmlCanvasElement, pointer: &MouseEvent) -> (Canvas, (f64, f64)) {
+    let shown = canvas.get_bounding_client_rect();
+    let laid_out = Canvas::new(canvas.width(), canvas.height(), shown.width(), shown.height());
+    let from = (f64::from(pointer.client_x()) - shown.left(), f64::from(pointer.client_y()) - shown.top());
+
+    (laid_out, from)
 }

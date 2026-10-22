@@ -28,8 +28,8 @@ pub struct Program {
 }
 
 /// Makes the engine with the window root, the controls root, and the reporter as its roots, the canvas the one window,
-/// and listens to the page for what each is fed: the pointer over `canvas`, the keys, the focus, and resizes, and the
-/// controls the page marks.
+/// and listens to the page for what each is fed: the pointer and the wheel over `canvas`, the keys, the focus, and
+/// resizes, and the controls the page marks.
 ///
 /// # Errors
 ///

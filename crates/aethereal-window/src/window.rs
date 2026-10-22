@@ -90,6 +90,7 @@ impl Window {
             Event::PointerMoved { .. }
             | Event::PointerDown { .. }
             | Event::PointerUp { .. }
+            | Event::Wheel { .. }
             | Event::KeyDown { .. }
             | Event::KeyUp { .. }
             | Event::CloseRequested => true,

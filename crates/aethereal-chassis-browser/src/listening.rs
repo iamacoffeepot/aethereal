@@ -3,7 +3,7 @@
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsError};
-use web_sys::{EventTarget, MutationObserver};
+use web_sys::{AddEventListenerOptions, EventTarget, MutationObserver};
 
 /// The callbacks the page runs as it hears what the chassis feeds the engine, which the page keeps for as long as it
 /// listens. Dropped, it takes each off what it listens to.
@@ -45,16 +45,46 @@ impl Listening {
         Self { listeners: Vec::new(), observers: Vec::new() }
     }
 
-    /// Runs `heard` each time `target` hears `event`.
+    /// Runs `heard` each time `target` hears `event`, registered as the page registers a listener by default.
     pub(crate) fn on(
         &mut self,
         target: &EventTarget,
         event: &'static str,
         heard: impl FnMut(web_sys::Event) + 'static,
     ) -> Result<(), JsError> {
+        self.register(target, event, heard, &AddEventListenerOptions::new())
+    }
+
+    /// Runs `heard` each time `target` hears `event`, registered as not passive, so that `heard` may stop the page's
+    /// default with `preventDefault`: a page takes a passive listener's `preventDefault` as nothing, and may make a
+    /// listener passive by default, as it does one for `wheel` on its window or document.
+    pub(crate) fn on_preventing(
+        &mut self,
+        target: &EventTarget,
+        event: &'static str,
+        heard: impl FnMut(web_sys::Event) + 'static,
+    ) -> Result<(), JsError> {
+        let options = AddEventListenerOptions::new();
+        options.set_passive(false);
+
+        self.register(target, event, heard, &options)
+    }
+
+    /// Runs `heard` each time `target` hears `event`, registered with `options`.
+    fn register(
+        &mut self,
+        target: &EventTarget,
+        event: &'static str,
+        heard: impl FnMut(web_sys::Event) + 'static,
+        options: &AddEventListenerOptions,
+    ) -> Result<(), JsError> {
         let callback = Closure::<dyn FnMut(web_sys::Event)>::new(heard);
         target
-            .add_event_listener_with_callback(event, callback.as_ref().unchecked_ref())
+            .add_event_listener_with_callback_and_add_event_listener_options(
+                event,
+                callback.as_ref().unchecked_ref(),
+                options,
+            )
             .map_err(|_| JsError::new(&format!("the page would not listen for {event}")))?;
         self.listeners.push(Listener { target: target.clone(), event, callback });
 
