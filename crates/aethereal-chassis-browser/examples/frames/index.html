@@ -25,8 +25,8 @@
     await init();
     const program = await start(canvas);
     const said = document.getElementById("said");
-    const frame = () => {
-      program.frame();
+    const frame = (timestamp) => {
+      program.frame(timestamp);
       for (const line of program.said()) {
         said.textContent += `${line}\n`;
       }
