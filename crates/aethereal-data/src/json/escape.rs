@@ -4,7 +4,7 @@ use alloc::string::String;
 use core::fmt::Write as _;
 
 /// Appends `text` as a JSON string, quotes included.
-pub(super) fn write(text: &str, out: &mut String) {
+pub fn write(text: &str, out: &mut String) {
     out.push('"');
     for ch in text.chars() {
         match ch {

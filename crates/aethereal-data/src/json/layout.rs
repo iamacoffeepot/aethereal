@@ -6,11 +6,11 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 /// The deepest schema nesting a walk follows.
-pub(super) const DEPTH_LIMIT: u32 = 128;
+pub const DEPTH_LIMIT: u32 = 128;
 
 /// A place in a schema: a node, and how many nodes below the root it is.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct At<'schema> {
+pub struct At<'schema> {
     schema: &'schema SchemaNodes,
     node: &'schema SchemaNode,
     level: u32,
@@ -18,18 +18,18 @@ pub(super) struct At<'schema> {
 
 impl<'schema> At<'schema> {
     /// The root of `schema`, at level zero.
-    pub(super) fn root(schema: &'schema SchemaNodes) -> Self {
+    pub fn root(schema: &'schema SchemaNodes) -> Self {
         let node = schema.root();
         Self { schema, node, level: 0 }
     }
 
     /// The schema node at this place.
-    pub(super) fn node(self) -> &'schema SchemaNode {
+    pub fn node(self) -> &'schema SchemaNode {
         self.node
     }
 
     /// The node at `index`, one level down.
-    pub(super) fn child(self, index: u32) -> Result<Self, JsonError> {
+    pub fn child(self, index: u32) -> Result<Self, JsonError> {
         let level = self.level + 1;
         let deep = level > DEPTH_LIMIT;
         if deep {
@@ -46,7 +46,7 @@ impl<'schema> At<'schema> {
     }
 
     /// Whether a value here could itself be written `null`.
-    pub(super) fn could_be_null(self) -> Result<bool, JsonError> {
+    pub fn could_be_null(self) -> Result<bool, JsonError> {
         let mut current = self;
         loop {
             match current.node {
@@ -83,7 +83,7 @@ impl<'schema> At<'schema> {
 
 /// How a struct's or a variant's fields are written (ADR-0007).
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Layout<'schema> {
+pub enum Layout<'schema> {
     /// No fields.
     Empty,
     /// One positional field: its value alone.
@@ -96,7 +96,7 @@ pub(super) enum Layout<'schema> {
 
 impl<'schema> Layout<'schema> {
     /// How a struct's fields are written: empty, positional, or named.
-    pub(super) fn of_struct(fields: &'schema [FieldNode]) -> Self {
+    pub fn of_struct(fields: &'schema [FieldNode]) -> Self {
         let empty = fields.is_empty();
         if empty {
             return Self::Empty;
@@ -129,7 +129,7 @@ impl<'schema> Layout<'schema> {
     }
 
     /// How a variant's fields are written: empty, positional, or named.
-    pub(super) fn of_variant(fields: &'schema FieldsNode) -> Self {
+    pub fn of_variant(fields: &'schema FieldsNode) -> Self {
         match fields {
             FieldsNode::Unnamed(indices) => {
                 let empty = indices.is_empty();

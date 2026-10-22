@@ -2,12 +2,14 @@
 
 mod enumeration;
 mod kind;
+mod section;
 mod structure;
 
 use crate::lifetimes::reject_lifetimes;
 use kind::Declaration;
 use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
 use quote::{quote, quote_spanned};
+use section::Sectioned;
 use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Generics, Ident, Type};
 
@@ -40,21 +42,30 @@ pub struct Codec {
     pub decode: TokenStream2,
 }
 
-/// Expands a derive into `Schema`, `Encode`, and `Decode` impls, for `Plain` the `Plain` impl, and for a type
-/// `#[kind(name = "…")]` names the `Kind` impl.
+/// Expands a derive into `Schema`, `Encode`, and `Decode` impls, for `Plain` the `Plain` impl, for a type
+/// `#[kind(name = "…")]` names the `Kind` impl, and for a struct `#[section(name = "…")]` names the `Section` impl
+/// and its field handles.
 pub fn expand(input: &DeriveInput, derive: Derive) -> syn::Result<TokenStream2> {
     reject_lifetimes(&input.generics, derive.name())?;
     let declaration = Declaration::of(input)?;
+    let sectioned = Sectioned::of(input, &declaration)?;
 
-    match &input.data {
-        Data::Struct(data) => structure::expand(input, data, derive, &declaration),
-        Data::Enum(data) => enumeration::expand(input, data, derive, &declaration),
+    let codec = match &input.data {
+        Data::Struct(data) => structure::expand(input, data, derive, &declaration)?,
+        Data::Enum(data) => enumeration::expand(input, data, derive, &declaration)?,
         Data::Union(data) => {
             let token = data.union_token;
             let message = format!("{} derive does not support unions", derive.name());
-            Err(syn::Error::new_spanned(token, message))
+            return Err(syn::Error::new_spanned(token, message));
         }
-    }
+    };
+    let section = sectioned.implementation(input)?;
+
+    Ok(quote! {
+        #codec
+
+        #section
+    })
 }
 
 /// The impls of one derived type, each bounded by the type of every field.

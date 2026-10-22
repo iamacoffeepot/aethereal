@@ -2,7 +2,8 @@
 //!
 //! The byte layout is ADR-0002, the schema vocabulary ADR-0003, and the
 //! codec over a boundary, with `Plain` and the Rust types that implement it,
-//! ADR-0004.
+//! ADR-0004. A program's configuration, the sections its parts bring, is
+//! ADR-0028, in [`config`].
 
 #![no_std]
 
@@ -13,6 +14,7 @@ extern crate std;
 
 mod boundary;
 mod budget;
+pub mod config;
 mod error;
 mod fnv;
 #[cfg(feature = "json")]
@@ -213,6 +215,8 @@ pub use aethereal_data_derive::Key;
 /// Items the derives expand to; not part of the public interface.
 #[doc(hidden)]
 pub mod __derive {
+    /// Makes the handle of a section's field, for the emitted handle constants.
+    pub use crate::config::field::field;
     /// Reads a selector the emitted decode code calls.
     pub use crate::plain::read_selector;
     /// Writes a selector the emitted encode code calls.

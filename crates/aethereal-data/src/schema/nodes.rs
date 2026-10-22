@@ -133,6 +133,20 @@ impl SchemaNodes {
         Self { earlier, root }
     }
 
+    /// The flat form of a struct named `name` with `fields`, each a name and its shape, in order.
+    #[cfg(feature = "json")]
+    pub(crate) fn of_fields(name: &str, fields: &[(&str, Shape)]) -> Self {
+        let mut earlier = Vec::new();
+        let mut flat = Vec::new();
+        for (field, shape) in fields {
+            let child = intern(shape, &mut earlier);
+            flat.push(FieldNode { name: String::from(*field), shape: child });
+        }
+        let root = SchemaNode::Struct { name: String::from(name), fields: flat };
+
+        Self { earlier, root }
+    }
+
     /// The root node: the last one.
     #[must_use]
     pub fn root(&self) -> &SchemaNode {
