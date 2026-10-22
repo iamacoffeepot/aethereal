@@ -17,7 +17,6 @@ use crate::{Browser, Hosted, Listening, Performance};
 use aethereal_data::Plain;
 use aethereal_substrate::{Engine, Host, ProgramError, Serves, Settled, Unbuilt};
 use aethereal_window::Hosting;
-use core::mem;
 use core::pin::Pin;
 use wasm_bindgen::{JsCast, JsError, JsValue};
 use web_sys::HtmlCanvasElement;
@@ -30,8 +29,8 @@ use web_sys::HtmlCanvasElement;
 pub struct RunningSettings {}
 
 /// The page, as the program is bootstrapped on it: the browser's hosting (ADR-0029). It keeps each canvas the window
-/// root's bootstrap opened as a window, until the renderer's opens WebGPU on them, and the ends the roots give the
-/// browser: the window root's, the renderer's, and the page's listeners.
+/// root's bootstrap opened as a window, which the renderer's reaches through the host to open WebGPU on, and the ends
+/// the roots give the browser: the window root's, the renderer's, and the page's listeners.
 pub struct Paging {
     canvases: Vec<ShownCanvas>,
     serving: Serving,
@@ -56,12 +55,13 @@ impl Paging {
         self.canvases.push(ShownCanvas { canvas, shown });
     }
 
-    /// The canvases opened as windows, in the order opened, taken for the renderer to draw to.
-    fn take_canvases(&mut self) -> Vec<ShownCanvas> {
-        mem::take(&mut self.canvases)
+    /// The canvases opened as windows, in the order opened.
+    fn canvases(&self) -> &[ShownCanvas] {
+        &self.canvases
     }
 
-    /// The program of `engine`, started, served as the roots asked, and listening as they did.
+    /// The program of `engine`, started, served as the roots asked, and listening as they did: the canvases are the
+    /// page's, which its drawing draws to through their surfaces.
     fn start(self, engine: Engine) -> Started {
         let Self { serving, hosted, listening, .. } = self;
 
@@ -101,12 +101,13 @@ impl Host for Browser<Performance> {
     type Running = RunningSettings;
     type Hosting<'host> = Paging;
     type Exit = Starting;
+    type Error = ProgramError;
 
     /// Bootstraps the program on the page, each root's bootstrap awaited before the next begins, then starts it: its
     /// `Start` runs in the first frame the page calls (ADR-0020).
     fn run(settled: Settled<Self>) -> Result<Starting, ProgramError> {
         Ok(Box::pin(async move {
-            let (engine, paging) = settled.bootstrap_awaiting(Paging::new()).await?;
+            let (engine, paging) = settled.bootstrap(Paging::new()).await?;
 
             Ok(paging.start(engine))
         }))

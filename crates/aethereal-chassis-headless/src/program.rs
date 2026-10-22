@@ -28,6 +28,7 @@ impl Host for Headless {
     type Running = RunningSettings;
     type Hosting<'host> = ();
     type Exit = Exit;
+    type Error = ProgramError;
 
     /// Bootstraps the program, then runs it as [`Headless::run`] does, every `every_millis`, giving `Stop`
     /// `stop_within_millis`.
@@ -40,11 +41,12 @@ impl Host for Headless {
 }
 
 impl Builds for Headless {
-    /// Bootstraps the program, and the host holding its engine on as many workers as its settings say.
+    /// Bootstraps the program, blocking this thread on each root's bootstrap, and the host holding its engine on as
+    /// many workers as its settings say.
     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
         let workers = settled.engine().worker_threads();
 
-        let (engine, ()) = settled.bootstrap(())?;
+        let (engine, ()) = pollster::block_on(settled.bootstrap(()))?;
 
         Ok(Self::new(engine, workers))
     }

@@ -16,8 +16,7 @@ use core::marker::PhantomData;
 /// segment names, and begins it as a singleton.
 ///
 /// A bootstrap is a future, as a host whose setup awaits, the browser's, needs it to be: it opens its GPU there. A
-/// host that does not wait, the desktop's or the headless one, bootstraps without awaiting anything, and refuses a
-/// bootstrap that waits ([`ProgramError::Waited`](super::ProgramError::Waited)).
+/// host that does not await, the desktop's or the headless one, blocks on it.
 pub trait Bootstrap<H: Host>: Root {
     /// The section this root reads its settings from (ADR-0028).
     const SECTION: &'static str;

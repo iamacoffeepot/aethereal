@@ -16,6 +16,9 @@ pub trait Host: Sized + 'static {
     type Hosting<'host>;
     /// What running a program to its end comes to.
     type Exit;
+    /// Why a program did not run to its end: [`ProgramError`] for one that did not start, and whatever else stops
+    /// this host running it, so a program's `run` answers one error.
+    type Error: From<ProgramError>;
 
     /// The program this host runs, with no options and no roots yet.
     fn program() -> Program<Self, ()> {
@@ -27,8 +30,8 @@ pub trait Host: Sized + 'static {
     ///
     /// # Errors
     ///
-    /// Why bootstrapping it failed, as [`Settled::bootstrap`] says.
-    fn run(settled: Settled<Self>) -> Result<Self::Exit, ProgramError>;
+    /// Why bootstrapping it failed, as [`Settled::bootstrap`] says, or why the host did not run it to its end.
+    fn run(settled: Settled<Self>) -> Result<Self::Exit, Self::Error>;
 }
 
 /// A host that can hand back its program bootstrapped and not yet run, for a test to step (ADR-0029).

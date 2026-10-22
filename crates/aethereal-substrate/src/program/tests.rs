@@ -46,6 +46,7 @@ impl Host for Bench {
     type Running = BenchRunning;
     type Hosting<'host> = Vec<Lit>;
     type Exit = Self;
+    type Error = ProgramError;
 
     fn run(settled: Settled<Self>) -> Result<Self, ProgramError> {
         Self::build(settled)
@@ -56,7 +57,7 @@ impl Builds for Bench {
     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
         let pace = settled.running().pace;
         let hops = settled.engine().hops;
-        let (engine, served) = settled.bootstrap(Vec::new())?;
+        let (engine, served) = pollster::block_on(settled.bootstrap(Vec::new()))?;
 
         Ok(Self { engine, served, pace, hops })
     }
@@ -355,23 +356,10 @@ fn the_host_reads_its_own_sections() -> Outcome {
 }
 
 #[test]
-fn a_bootstrap_that_waits_is_refused_on_a_host_that_does_not_wait() -> Outcome {
-    // Catches a host that does not wait taking a bootstrap still waiting as done, and running an engine whose roots
-    // have not all begun.
-    let refused = Bench::program().root::<Lamp>().root::<Waiter>().root::<Scene>().build();
-
-    let Err(ProgramError::Waited) = refused else {
-        return Err("a bootstrap that waits is refused".into());
-    };
-    assert_eq!(said(), ["lamp 0"]);
-    Ok(())
-}
-
-#[test]
 fn a_host_that_waits_bootstraps_each_root_after_the_one_it_awaits() -> Outcome {
     // Catches roots after a waiting one bootstrapped before it is done, or an end given before the wait lost after it.
     let settled = Bench::program().root::<Lamp>().root::<Waiter>().root::<Scene>().settle()?;
-    let mut booting = Box::pin(settled.bootstrap_awaiting(Vec::new()));
+    let mut booting = Box::pin(settled.bootstrap(Vec::new()));
     let mut cx = Context::from_waker(Waker::noop());
 
     let first = booting.as_mut().poll(&mut cx);

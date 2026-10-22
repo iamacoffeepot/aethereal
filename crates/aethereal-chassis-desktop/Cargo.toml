@@ -15,7 +15,7 @@ aethereal-data = { path = "../aethereal-data" }
 aethereal-render = { path = "../aethereal-render" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 aethereal-window = { path = "../aethereal-window" }
-pollster = "1.0.1"
+pollster = { workspace = true }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "dx12", "metal", "vulkan"] }
 winit = "0.30.13"
 

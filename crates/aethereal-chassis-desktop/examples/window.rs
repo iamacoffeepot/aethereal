@@ -105,7 +105,7 @@ fn run() -> Result<Exit, Box<dyn Error>> {
         code.set(&parts, &set)?;
     }
 
-    Ok(program.layer(code).run()??)
+    Ok(program.layer(code).run()?)
 }
 
 /// How long the scene runs: its section, `scene`.

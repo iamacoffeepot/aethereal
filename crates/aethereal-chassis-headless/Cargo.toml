@@ -12,6 +12,8 @@ aethereal-data = { path = "../aethereal-data" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 core_affinity = "0.8.3"
 crossbeam-queue = { workspace = true }
+# Blocks on a program's bootstrap, which is a future (ADR-0029).
+pollster = { workspace = true }
 
 # The native guest host (ADR-0015); a browser runs guests with its own WebAssembly.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

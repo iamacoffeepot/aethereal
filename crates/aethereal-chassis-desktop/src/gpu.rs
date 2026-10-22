@@ -1,5 +1,5 @@
 //! The screen a program is bootstrapped on, inside the event loop's first callback: the native windows its window root
-//! asks for, each with a surface, and the GPU its renderer opens on the first (ADR-0001, ADR-0019, ADR-0021, ADR-0024,
+//! asks for, which the screen keeps, and the GPU its renderer opens on them (ADR-0001, ADR-0019, ADR-0021, ADR-0024,
 //! ADR-0029).
 
 use crate::serving::Drawing;
@@ -8,7 +8,6 @@ use aethereal_substrate::Unbuilt;
 use aethereal_window::{Hosting, Opening, Surface, WindowFeed, WindowId};
 use core::error::Error;
 use core::fmt;
-use core::mem;
 use std::sync::Arc;
 use winit::dpi::LogicalSize;
 use winit::error::OsError;
@@ -16,12 +15,12 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 /// The screen, as the program is bootstrapped inside the event loop's first callback: the desktop's hosting
-/// (ADR-0029). It opens each native window the window root's bootstrap asks for, keeps each with its surface until the
-/// renderer's bootstrap opens the GPU on them, and keeps the ends the roots give the host.
+/// (ADR-0029). It opens each native window the window root's bootstrap asks for and keeps it, for the renderer's
+/// bootstrap to reach through the host and make each window's surface on, and keeps the ends the roots give the host.
 pub struct Screen<'a> {
     event_loop: &'a ActiveEventLoop,
     instance: wgpu::Instance,
-    windows: Vec<Unsurfaced>,
+    windows: Vec<OnScreen>,
     windowing: Served<Hosting>,
     drawing: Served<Box<Drawing>>,
 }
@@ -34,11 +33,11 @@ enum Served<E> {
     Unserved,
 }
 
-/// A native window opened as the program is set up, and its surface, not yet configured: the renderer's bootstrap
-/// configures it for the GPU it opens.
-pub struct Unsurfaced {
+/// A native window opened as the program is set up, and the feed of what it hears: the screen's, which the renderer's
+/// bootstrap shares to make the window's surface on the GPU it opens and to draw it.
+#[derive(Clone)]
+pub struct OnScreen {
     pub(crate) native: Arc<Window>,
-    pub(crate) surface: wgpu::Surface<'static>,
     pub(crate) feed: WindowFeed,
 }
 
@@ -97,13 +96,13 @@ impl<'a> Screen<'a> {
     }
 
     /// Opens a native window titled `title`, its inner size `width` by `height` logical pixels, the screen's scale
-    /// giving its surface's pixels, and a surface on it, and opens it as the next window of the window capability with
-    /// `opening`, standing as it does now: its inner size in its pixels as its surface, the screen's pixels to each
-    /// logical one as its scale, and focused when it has the keyboard. Answers the capability's id for it.
+    /// giving its surface's pixels, keeps it, and opens it as the next window of the window capability with `opening`,
+    /// standing as it does now: its inner size in its pixels as its surface, the screen's pixels to each logical one as
+    /// its scale, and focused when it has the keyboard. Answers the capability's id for it.
     ///
     /// # Errors
     ///
-    /// When the window or its surface does not open.
+    /// When the window does not open.
     pub(crate) fn open_window(
         &mut self,
         opening: &mut Opening,
@@ -111,22 +110,21 @@ impl<'a> Screen<'a> {
         (width, height): (u32, u32),
     ) -> Result<WindowId, Unopened> {
         let native = native(self.event_loop, title, LogicalSize::new(f64::from(width), f64::from(height)))?;
-        let surface = self.instance.create_surface(Arc::clone(&native)).map_err(Unopened::Surface)?;
         let feed = opening.open(standing(&native), native.has_focus());
         let window = feed.window();
-        self.windows.push(Unsurfaced { native, surface, feed });
+        self.windows.push(OnScreen { native, feed });
 
         Ok(window)
     }
 
-    /// The instance the windows' surfaces were made on.
+    /// The instance the windows' surfaces are made on.
     pub(crate) const fn instance(&self) -> &wgpu::Instance {
         &self.instance
     }
 
-    /// The windows opened, each with its surface not yet configured, taken for the renderer to draw to.
-    pub(crate) fn take_windows(&mut self) -> Vec<Unsurfaced> {
-        mem::take(&mut self.windows)
+    /// The windows opened as the program is set up, in the order opened.
+    pub(crate) fn windows(&self) -> &[OnScreen] {
+        &self.windows
     }
 
     /// Keeps the window root's end, `hosting`, in place of any kept before.

@@ -34,7 +34,7 @@ Desktop::program()
 
 - `.root::<A>()` names an actor. There is no second noun: a root is the actor and how it stands itself up.
 - The engine's options keep the words `Setup` already uses: `with_cycle`, `with_jobs`, `with_guests`, `with_links`, `with_delta_limit`. They make no root and are set before any root, as `Setup<()>` requires.
-- `run` is the host's: it bootstraps the program, then runs it, as `Desktop::run` and `Browser` do now.
+- `run` is the host's: it bootstraps the program, then runs it, as `Desktop::run` and `Browser` do now. It answers one error, the host's, which holds a program that did not start beside whatever else stops that host running it, so a program reads `program.run()?`.
 - **The headless host also has `build`**: both phases, then the host handed back with its engine, not yet run, for a test to `step` or `run_until_idle`. A host whose setup happens inside its event loop, as the desktop's does in winit's first callback, has only `run`.
 
 **How a root bootstraps is a trait on the actor, for a host.**
@@ -54,10 +54,11 @@ pub trait Bootstrap<H: Host>: Root {
         settings: Self::Settings,
         needs: Self::Needs,
         cx: &mut Bootstrapping<'_, H, Self>,
-    ) -> Result<Self::Provides, Unbuilt>;
+    ) -> impl Future<Output = Result<Self::Provides, Unbuilt>>;
 }
 ```
 
+- **A bootstrap is async**, and an impl writes `async fn bootstrap`. One trait serves every host, so `impl<H: Host> Bootstrap<H> for Scene` runs on a host whose setup awaits and on one that does not.
 - **The host's crate writes it for the roots that need the host:** `impl Bootstrap<Desktop> for Windows` in `aethereal-chassis-desktop`, `impl Bootstrap<Browser> for Windows` in `aethereal-chassis-browser`. The same list runs on every host that bootstraps each of its roots, and a root a host does not bootstrap does not build there.
 - **A library or the program writes it for a root that needs no host:** `impl<H: Host> Bootstrap<H> for Scene`.
 - **An actor whose config is its settings opts in with `#[derive(Bootstrap)]`.** Its config is plain data with a `Default`, it needs nothing, and it provides nothing; the derive writes `bootstrap` as beginning it from its settings. It is a derive, not a blanket impl, because a blanket impl over every such actor would overlap every impl a host writes.
@@ -71,7 +72,7 @@ impl Bootstrap<Desktop> for Windows {
     type Needs = ();
     type Provides = Opened;
 
-    fn bootstrap(settings: WindowSettings, (): (), cx: &mut Bootstrapping<'_, Desktop, Self>) -> Result<Opened, Unbuilt> {
+    async fn bootstrap(settings: WindowSettings, (): (), cx: &mut Bootstrapping<'_, Desktop, Self>) -> Result<Opened, Unbuilt> {
         let mut opening = Opening::new(cx.source(), cx.controller());
         // each window in `settings` opened on the screen, then:
         let (config, hosting) = opening.config();
@@ -87,7 +88,7 @@ impl<H: Host> Bootstrap<H> for Scene {
     type Needs = (Opened,);
     type Provides = ();
 
-    fn bootstrap(show: Show, (opened,): (Opened,), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
+    async fn bootstrap(show: Show, (opened,): (Opened,), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
         cx.begin(&(), Shows { window: opened.first(), seconds: show.seconds })
     }
 }
@@ -123,7 +124,9 @@ A section belongs to the root that reads it, so a composed section that nothing 
 
 **A missing root is an error, never filled in.** The list cannot add a root a later one reaches: that asks the type system whether a root is already in the list, which stable Rust cannot answer. Which root stands where, on which host, is the program's to say.
 
-**On the browser, bootstrapping awaits.** Opening a canvas's GPU is a future (`open(..).await`). The browser's `Bootstrap` returns one and its `run` is `async`; the desktop's and the headless host's do not wait.
+**A host that awaits awaits the bootstrap; a host that does not blocks on it.** Opening a canvas's GPU is a future (`open(..).await`), so the browser awaits each root's bootstrap, and its `run` answers a future the page awaits. The desktop and the headless host do not await: each blocks its own thread on the bootstrap, as the desktop already blocks on wgpu's adapter and device. A bootstrap that waits is never refused.
+
+**What a host opens at bootstrap is the host's.** The windows and canvases the window root's bootstrap opens are kept in the host's hosting, never handed off by being taken out of it. A root bootstrapped after it, such as the renderer, reaches them through the host (`cx.host()`), borrowing what it needs to build its config and sharing what it draws with; nothing is taken out of the hosting to mark it used. The host's drawing then reaches the windows as the program runs.
 
 **Only how the program starts.** A window opened while the program runs (ADR-0027), a child, a guest loaded later, a setting changed later: each is mail to a root the list stood up, never a root of the list.
 

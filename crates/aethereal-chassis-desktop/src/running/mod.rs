@@ -34,9 +34,11 @@ const STOPPING_LOOK: Duration = Duration::from_millis(4);
 #[derive(Debug)]
 pub enum Desktop {}
 
-/// Why a program that bootstrapped, or would have, did not run to its end.
+/// Why a program on the desktop did not run to its end: it did not start, or the desktop could not run it.
 #[derive(Debug)]
 pub enum Failed {
+    /// The program did not start, as this says.
+    Unstarted(ProgramError),
     /// winit's event loop did not run.
     EventLoop(EventLoopError),
     /// The program bootstrapped without serving the desktop an end it runs a program with, named here: it lists no
@@ -49,6 +51,7 @@ pub enum Failed {
 impl fmt::Display for Failed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Unstarted(error) => write!(f, "{error}"),
             Self::EventLoop(error) => write!(f, "the event loop did not run: {error}"),
             Self::Unserved(end) => write!(f, "the program served the desktop no end of {end}"),
             Self::Unended => write!(f, "the event loop ended before the program did"),
@@ -58,23 +61,24 @@ impl fmt::Display for Failed {
 
 impl Error for Failed {}
 
+impl From<ProgramError> for Failed {
+    fn from(error: ProgramError) -> Self {
+        Self::Unstarted(error)
+    }
+}
+
 impl Desktop {
     /// Runs the program `settled` on winit's event loop, as the desktop's [`run`](aethereal_substrate::Host::run) says.
-    pub(crate) fn run_settled(settled: Settled<Self>) -> Result<Result<Exit, Failed>, ProgramError> {
+    pub(crate) fn run_settled(settled: Settled<Self>) -> Result<Exit, Failed> {
         let workers = settled.engine().worker_threads();
         let stop_within = Duration::from_millis(settled.running().stop_within_millis);
-        let event_loop = match EventLoop::new() {
-            Ok(event_loop) => event_loop,
-            Err(error) => return Ok(Err(Failed::EventLoop(error))),
-        };
+        let event_loop = EventLoop::new().map_err(Failed::EventLoop)?;
         let mut app = App { workers, stop_within, clock: Monotonic::new(), stage: Stage::Settled(Box::new(settled)) };
-        if let Err(error) = event_loop.run_app(&mut app) {
-            return Ok(Err(Failed::EventLoop(error)));
-        }
+        event_loop.run_app(&mut app).map_err(Failed::EventLoop)?;
 
         match app.stage {
-            Stage::Ended(ended) => ended.into_result(),
-            Stage::Settled(_) | Stage::Opening | Stage::Running(_) => Ok(Err(Failed::Unended)),
+            Stage::Ended(ended) => ended,
+            Stage::Settled(_) | Stage::Opening | Stage::Running(_) => Err(Failed::Unended),
         }
     }
 }
@@ -95,29 +99,8 @@ enum Stage {
     Opening,
     /// The program runs.
     Running(Box<Running>),
-    /// The program ended, as this says, and the loop is ending.
-    Ended(Ended),
-}
-
-/// How a program on the desktop ended.
-enum Ended {
-    /// It ran to its end, as this says.
-    Exited(Exit),
-    /// It did not run to its end, as this says.
-    Failed(Failed),
-    /// It did not bootstrap, as this says.
-    Unbuilt(ProgramError),
-}
-
-impl Ended {
-    /// What running the program comes to, as the desktop's [`run`](aethereal_substrate::Host::run) answers it.
-    fn into_result(self) -> Result<Result<Exit, Failed>, ProgramError> {
-        match self {
-            Self::Exited(exit) => Ok(Ok(exit)),
-            Self::Failed(failed) => Ok(Err(failed)),
-            Self::Unbuilt(error) => Err(error),
-        }
-    }
+    /// The program ended, as this says, and the loop is ending: it ran to its end, or did not.
+    Ended(Result<Exit, Failed>),
 }
 
 /// A program running in its windows.
@@ -153,7 +136,7 @@ impl ApplicationHandler for App {
         self.stage = match stage {
             Stage::Settled(settled) => match self.open(event_loop, *settled) {
                 Ok(running) => Stage::Running(Box::new(running)),
-                Err(ended) => Stage::Ended(ended),
+                Err(failed) => Stage::Ended(Err(failed)),
             },
             // The loop resumes again only where a platform suspends it, and the windows stay open through it.
             stage @ (Stage::Opening | Stage::Running(_) | Stage::Ended(_)) => stage,
@@ -191,7 +174,7 @@ impl ApplicationHandler for App {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
             }
             Next::End(exit) => {
-                self.stage = Stage::Ended(Ended::Exited(exit));
+                self.stage = Stage::Ended(Ok(exit));
                 event_loop.exit();
             }
         }
@@ -199,11 +182,12 @@ impl ApplicationHandler for App {
 }
 
 impl App {
-    /// Bootstraps `settled` on the screen of `event_loop`, which opens its windows and the GPU on them, puts its engine
-    /// on its workers, this thread the first, and starts it, asking for the first frame.
-    fn open(&self, event_loop: &ActiveEventLoop, settled: Settled<Desktop>) -> Result<Running, Ended> {
-        let (engine, screen) = settled.bootstrap(Screen::new(event_loop)).map_err(Ended::Unbuilt)?;
-        let (drawing, windowing) = screen.into_served().map_err(|end| Ended::Failed(Failed::Unserved(end)))?;
+    /// Bootstraps `settled` on the screen of `event_loop`, blocking this thread on each root's bootstrap, which opens
+    /// its windows and the GPU on them, puts its engine on its workers, this thread the first, and starts it, asking
+    /// for the first frame.
+    fn open(&self, event_loop: &ActiveEventLoop, settled: Settled<Desktop>) -> Result<Running, Failed> {
+        let (engine, screen) = pollster::block_on(settled.bootstrap(Screen::new(event_loop)))?;
+        let (drawing, windowing) = screen.into_served().map_err(Failed::Unserved)?;
         let mut headless = Headless::new(engine, self.workers);
         headless.engine_mut().start();
         drawing.ask_next();

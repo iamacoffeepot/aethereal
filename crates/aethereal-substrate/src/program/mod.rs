@@ -26,8 +26,7 @@ use aethereal_actor::{Cycle, Guests, Links, Ordered, Unordered, ordered};
 use aethereal_data::Budget;
 use aethereal_data::config::{Configuration, Overlay, Parts, RootSettings};
 use core::marker::PhantomData;
-use core::pin::{Pin, pin};
-use core::task::{Context, Poll, Waker};
+use core::pin::Pin;
 use core::time::Duration;
 use std::sync::Arc;
 
@@ -57,15 +56,16 @@ type EngineOption = Box<dyn FnOnce(Setup<()>) -> Result<Setup<()>, Unordered>>;
 /// #     type Running = Running;
 /// #     type Hosting<'host> = ();
 /// #     type Exit = Engine;
+/// #     type Error = ProgramError;
 /// #
 /// #     fn run(settled: Settled<Self>) -> Result<Engine, ProgramError> {
-/// #         Ok(settled.bootstrap(())?.0)
+/// #         Ok(pollster::block_on(settled.bootstrap(()))?.0)
 /// #     }
 /// # }
 /// #
 /// # impl Builds for Bench {
 /// #     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
-/// #         Ok(Self(settled.bootstrap(())?.0))
+/// #         Ok(Self(pollster::block_on(settled.bootstrap(()))?.0))
 /// #     }
 /// # }
 /// /// How long the show runs.
@@ -128,15 +128,16 @@ type EngineOption = Box<dyn FnOnce(Setup<()>) -> Result<Setup<()>, Unordered>>;
 /// #     type Running = Running;
 /// #     type Hosting<'host> = ();
 /// #     type Exit = Engine;
+/// #     type Error = ProgramError;
 /// #
 /// #     fn run(settled: Settled<Self>) -> Result<Engine, ProgramError> {
-/// #         Ok(settled.bootstrap(())?.0)
+/// #         Ok(pollster::block_on(settled.bootstrap(()))?.0)
 /// #     }
 /// # }
 /// #
 /// # impl Builds for Bench {
 /// #     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
-/// #         Ok(Self(settled.bootstrap(())?.0))
+/// #         Ok(Self(pollster::block_on(settled.bootstrap(()))?.0))
 /// #     }
 /// # }
 /// #
@@ -223,15 +224,16 @@ type EngineOption = Box<dyn FnOnce(Setup<()>) -> Result<Setup<()>, Unordered>>;
 /// #     type Running = Running;
 /// #     type Hosting<'host> = ();
 /// #     type Exit = Engine;
+/// #     type Error = ProgramError;
 /// #
 /// #     fn run(settled: Settled<Self>) -> Result<Engine, ProgramError> {
-/// #         Ok(settled.bootstrap(())?.0)
+/// #         Ok(pollster::block_on(settled.bootstrap(()))?.0)
 /// #     }
 /// # }
 /// #
 /// # impl Builds for Bench {
 /// #     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
-/// #         Ok(Self(settled.bootstrap(())?.0))
+/// #         Ok(Self(pollster::block_on(settled.bootstrap(()))?.0))
 /// #     }
 /// # }
 /// #
@@ -374,8 +376,8 @@ impl<H: Host, R> Program<H, R> {
     ///
     /// # Errors
     ///
-    /// Why the program did not start, as [`ProgramError`] says.
-    pub fn run<I: 'static, O>(self) -> Result<H::Exit, ProgramError>
+    /// Why the program did not start, as [`ProgramError`] says, or did not run to its end, as the host's error says.
+    pub fn run<I: 'static, O>(self) -> Result<H::Exit, H::Error>
     where
         R: Bootstraps<H, I> + Ordered<O> + 'static,
     {
@@ -410,7 +412,7 @@ impl<H: Host, R> Program<H, R> {
     }
 }
 
-/// Bootstrapping a program's roots on a stage: a future, awaited on a host whose setup awaits, and polled once on one
+/// Bootstrapping a program's roots on a stage: a future, awaited on a host whose setup awaits, and blocked on by one
 /// that does not.
 type Booting<'host, H> = Pin<Box<dyn Future<Output = Result<Stage<'host, H>, ProgramError>> + 'host>>;
 
@@ -442,29 +444,16 @@ impl<H: Host> Settled<H> {
         &self.running
     }
 
-    /// The second phase, on a host that does not wait: the engine made from its settings and options, then each root
-    /// bootstrapped in order on `hosting`, and the engine with the hosting, which holds the ends the roots gave it.
-    ///
-    /// # Errors
-    ///
-    /// [`ProgramError::Root`] naming the first root whose bootstrap failed, and [`ProgramError::Waited`] when a
-    /// root's bootstrap waited; the engine and the roots begun before it are dropped.
-    pub fn bootstrap(self, hosting: H::Hosting<'_>) -> Result<(Engine, H::Hosting<'_>), ProgramError> {
-        let mut booting = pin!(self.bootstrap_awaiting(hosting));
-        match booting.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
-            Poll::Ready(made) => made,
-            Poll::Pending => Err(ProgramError::Waited),
-        }
-    }
-
-    /// The second phase, on a host whose setup awaits, as the browser's does to open its GPU: as
-    /// [`bootstrap`](Self::bootstrap), each root's bootstrap awaited before the next begins.
+    /// The second phase: the engine made from its settings and options, then each root bootstrapped in order on
+    /// `hosting`, each root's bootstrap awaited before the next begins, and the engine with the hosting, which holds
+    /// the ends the roots gave it. A host whose setup awaits, as the browser's does to open its GPU, awaits it; a host
+    /// that does not blocks on it (ADR-0029).
     ///
     /// # Errors
     ///
     /// [`ProgramError::Root`] naming the first root whose bootstrap failed; the engine and the roots begun before it
     /// are dropped.
-    pub async fn bootstrap_awaiting(self, hosting: H::Hosting<'_>) -> Result<(Engine, H::Hosting<'_>), ProgramError> {
+    pub async fn bootstrap(self, hosting: H::Hosting<'_>) -> Result<(Engine, H::Hosting<'_>), ProgramError> {
         let mut setup = self.engine.setup();
         for option in self.options {
             setup = option(setup).map_err(ProgramError::Cycle)?;

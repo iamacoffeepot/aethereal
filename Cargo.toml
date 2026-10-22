@@ -26,6 +26,7 @@ publish = false
 blake3 = { version = "1.8", default-features = false }
 crossbeam-queue = "0.3"
 libm = { version = "0.2", default-features = false }
+pollster = "1.0.1"
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
