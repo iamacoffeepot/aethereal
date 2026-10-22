@@ -1,10 +1,11 @@
 //! How the ball and the paddles move over a stretch of time: the paddles at a capped speed, the ball off the walls and
-//! the paddles, faster on every hit, until it passes a paddle and a point is scored.
+//! the paddles, faster on every hit and spun by a paddle struck moving, until it passes a paddle and a point is scored.
 
 use crate::court::{
     BALL_HALF, Ball, HALF_HEIGHT, HALF_WIDTH, PADDLE_HALF_HEIGHT, PADDLE_HALF_WIDTH, PADDLE_X, SERVE_SPEED, Side,
 };
 use crate::dice::Dice;
+use crate::flight;
 
 /// The fastest a paddle moves, in court units a second.
 const PADDLE_SPEED: f32 = 1.7;
@@ -21,15 +22,16 @@ const SERVE_ANGLE: f32 = 0.45;
 /// The steepest the ball leaves a paddle, struck at its very end, in radians from straight across.
 const HIT_ANGLE: f32 = 0.9;
 
+/// How much spin a moving paddle puts on the ball it strikes, for each court unit a second it moves: the ball curves
+/// against the paddle's way.
+const SPIN_GRIP: f32 = 0.22;
+
 /// The longest stretch the ball moves in one go, in nanoseconds: short enough that it never passes through a paddle in
 /// a stretch, however long the frame.
 const STRETCH_NANOS: u64 = 2_000_000;
 
 /// The highest a paddle's centre goes, and the lowest below the middle: where its end meets the wall.
 const PADDLE_REACH: f32 = HALF_HEIGHT - PADDLE_HALF_HEIGHT;
-
-/// The highest the ball's centre goes, and the lowest below the middle: where its edge meets the wall.
-const BALL_REACH: f32 = HALF_HEIGHT - BALL_HALF;
 
 /// Where the paddle at `paddle` is once it has moved `direction` of its full speed for `secs`, kept between the walls.
 #[must_use]
@@ -39,12 +41,34 @@ pub fn moved(paddle: f32, direction: f32, secs: f32) -> f32 {
     speed.mul_add(secs, paddle).clamp(-PADDLE_REACH, PADDLE_REACH)
 }
 
+/// A paddle as the ball meets it: its centre's height, and how fast it rises, in court units a second, down below
+/// nought.
+#[derive(Clone, Copy)]
+pub struct Paddle {
+    at: f32,
+    rising: f32,
+}
+
+impl Paddle {
+    /// The paddle that moved from `before` to `now` over `secs`: still, when no time passed.
+    #[must_use]
+    pub fn between(before: f32, now: f32, secs: f32) -> Self {
+        let rising = if secs > 0.0 {
+            (now - before) / secs
+        } else {
+            0.0
+        };
+
+        Self { at: now, rising }
+    }
+}
+
 /// The ball served from the middle toward `toward`, at the serve's speed and an angle the dice choose.
 #[must_use]
 pub fn serve(toward: Side, dice: &mut Dice) -> Ball {
     let angle = dice.between(-SERVE_ANGLE, SERVE_ANGLE);
 
-    Ball { x: 0.0, y: 0.0, across: toward.sign() * SERVE_SPEED * angle.cos(), up: SERVE_SPEED * angle.sin() }
+    Ball { x: 0.0, y: 0.0, across: toward.sign() * SERVE_SPEED * angle.cos(), up: SERVE_SPEED * angle.sin(), spin: 0.0 }
 }
 
 /// What became of the ball over a stretch of play.
@@ -63,13 +87,13 @@ pub fn seconds(nanos: u64) -> f32 {
 
 /// Where `ball` is after `nanos` of play against the paddles at `left` and `right`, moved a short stretch at a time.
 #[must_use]
-pub fn roll(ball: Ball, left: f32, right: f32, nanos: u64) -> Rolled {
+pub fn roll(ball: Ball, left: Paddle, right: Paddle, nanos: u64) -> Rolled {
     let stretches = u16::try_from(nanos.div_ceil(STRETCH_NANOS)).unwrap_or(u16::MAX);
     let stretch = seconds(nanos) / f32::from(stretches.max(1));
     let mut ball = ball;
     for _ in 0..stretches {
         let before = ball;
-        let moved = off_walls(ahead(before, stretch));
+        let moved = flight::off_walls(flight::ahead(before, stretch));
         ball = off_paddle(off_paddle(moved, before, Side::Left, left), before, Side::Right, right);
         let passed_right = ball.x - BALL_HALF > HALF_WIDTH;
         let passed_left = ball.x + BALL_HALF < -HALF_WIDTH;
@@ -84,27 +108,10 @@ pub fn roll(ball: Ball, left: f32, right: f32, nanos: u64) -> Rolled {
     Rolled::On(ball)
 }
 
-/// The ball `secs` on along its way, through anything in it.
-fn ahead(ball: Ball, secs: f32) -> Ball {
-    Ball { x: ball.across.mul_add(secs, ball.x), y: ball.up.mul_add(secs, ball.y), ..ball }
-}
-
-/// The ball turned back off a wall it has gone into, by as far as it went in.
-fn off_walls(ball: Ball) -> Ball {
-    let into_top = ball.y > BALL_REACH;
-    let into_bottom = ball.y < -BALL_REACH;
-    if into_top {
-        Ball { y: 2.0f32.mul_add(BALL_REACH, -ball.y), up: -ball.up.abs(), ..ball }
-    } else if into_bottom {
-        Ball { y: (-2.0f32).mul_add(BALL_REACH, -ball.y), up: ball.up.abs(), ..ball }
-    } else {
-        ball
-    }
-}
-
-/// The ball `now`, which was at `before`, struck back by the paddle of `side` at `paddle` when it crossed that
-/// paddle's face heading for it: faster, and steeper the further from the paddle's centre it struck.
-fn off_paddle(now: Ball, before: Ball, side: Side, paddle: f32) -> Ball {
+/// The ball `now`, which was at `before`, struck back by the paddle of `side` when it crossed that paddle's face
+/// heading for it: faster, steeper the further from the paddle's centre it struck, and spun against the paddle's way
+/// as fast as the paddle moved.
+fn off_paddle(now: Ball, before: Ball, side: Side, paddle: Paddle) -> Ball {
     let face = side.sign() * (PADDLE_X - PADDLE_HALF_WIDTH);
     let reach = PADDLE_HALF_HEIGHT + BALL_HALF;
     let edge_before = side.sign().mul_add(BALL_HALF, before.x);
@@ -112,7 +119,7 @@ fn off_paddle(now: Ball, before: Ball, side: Side, paddle: f32) -> Ball {
     let heading = now.heads_to(side);
     let was_short = (face - edge_before) * side.sign() >= 0.0;
     let is_past = (edge_now - face) * side.sign() > 0.0;
-    let struck = (now.y - paddle) / reach;
+    let struck = (now.y - paddle.at) / reach;
     let is_level = struck.abs() <= 1.0;
     let hits = heading && was_short && is_past && is_level;
     if !hits {
@@ -126,5 +133,6 @@ fn off_paddle(now: Ball, before: Ball, side: Side, paddle: f32) -> Ball {
         y: now.y,
         across: -side.sign() * speed * angle.cos(),
         up: speed * angle.sin(),
+        spin: -paddle.rising * SPIN_GRIP,
     }
 }

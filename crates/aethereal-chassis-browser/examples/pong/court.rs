@@ -60,18 +60,20 @@ impl Side {
     }
 }
 
-/// Where the ball is, and how fast it goes along each axis, in court units a second.
+/// Where the ball is, how fast it goes along each axis, in court units a second, and its spin: how fast it curves up,
+/// in court units a second each second, down below nought, from the paddle that last struck it moving.
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
 pub struct Ball {
     pub x: f32,
     pub y: f32,
     pub across: f32,
     pub up: f32,
+    pub spin: f32,
 }
 
 impl Ball {
     /// The ball at rest in the middle of the court.
-    pub const RESTING: Self = Self { x: 0.0, y: 0.0, across: 0.0, up: 0.0 };
+    pub const RESTING: Self = Self { x: 0.0, y: 0.0, across: 0.0, up: 0.0, spin: 0.0 };
 
     /// Whether it is heading toward `side`.
     #[must_use]

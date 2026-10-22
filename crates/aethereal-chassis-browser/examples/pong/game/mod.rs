@@ -16,7 +16,7 @@ use aethereal_actor::{
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_window::{self as window, Event, Window, WindowId};
 use keys::Keys;
-use rally::Rolled;
+use rally::{Paddle, Rolled};
 
 /// How long the ball waits in the middle before the first serve of a match, in nanoseconds.
 const OPENING_NANOS: u64 = 1_200_000_000;
@@ -124,7 +124,12 @@ impl Pong {
             Play::Serving { toward, at_nanos } if elapsed_nanos >= at_nanos => {
                 (rally::serve(toward, &mut self.dice), self.court.score, Play::Rally)
             }
-            Play::Rally => match rally::roll(self.court.ball, left, right, delta_nanos) {
+            Play::Rally => match rally::roll(
+                self.court.ball,
+                Paddle::between(self.court.left, left, secs),
+                Paddle::between(self.court.right, right, secs),
+                delta_nanos,
+            ) {
                 Rolled::On(ball) => (ball, self.court.score, Play::Rally),
                 Rolled::Scored(side) => self.scored(side, elapsed_nanos),
             },

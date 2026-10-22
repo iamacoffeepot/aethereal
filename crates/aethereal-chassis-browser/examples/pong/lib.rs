@@ -8,6 +8,8 @@ mod court;
 #[cfg(target_arch = "wasm32")]
 mod dice;
 #[cfg(target_arch = "wasm32")]
+mod flight;
+#[cfg(target_arch = "wasm32")]
 mod game;
 #[cfg(target_arch = "wasm32")]
 mod opponent;

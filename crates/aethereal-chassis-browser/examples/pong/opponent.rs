@@ -2,15 +2,13 @@
 //! sends it and nothing else, and steers its paddle by mail.
 //!
 //! It is beatable by how it sees: it looks at the court only every so often, so it reacts a little late; it reads
-//! where the ball will reach its end, off the walls, but misjudges it by a little that it chooses afresh each time the
+//! where the ball will reach its end, along its curve and off the walls, but misjudges it by a little that it chooses afresh each time the
 //! ball comes its way, and by more the faster the ball goes; and it never moves its paddle at more than part of the
 //! speed the game allows.
 
-use crate::court::{
-    BALL_HALF, Ball, Court, HALF_HEIGHT, PADDLE_HALF_HEIGHT, PADDLE_HALF_WIDTH, PADDLE_X, Play, SERVE_SPEED, Side,
-    Steer,
-};
+use crate::court::{BALL_HALF, Court, PADDLE_HALF_HEIGHT, PADDLE_HALF_WIDTH, PADDLE_X, Play, SERVE_SPEED, Side, Steer};
 use crate::dice::Dice;
+use crate::flight;
 use crate::game::Pong;
 use aethereal_actor::{Actor, Beginning, ChildOf, Ending, ErasedActorRef, Fault, Handles, Level, ToType, Turn};
 use aethereal_data::{Bound, Kind, KindName, Plain};
@@ -89,22 +87,8 @@ impl Actor for Opponent {
     }
 }
 
-/// The height at which `ball`, coming toward the right end, reaches the face of the right paddle, turned back off
-/// each wall on the way.
-fn reaches(ball: Ball) -> f32 {
-    let face = PADDLE_X - PADDLE_HALF_WIDTH - BALL_HALF;
-    let secs = (face - ball.x).max(0.0) / ball.across;
-    let span = HALF_HEIGHT - BALL_HALF;
-    // Unfolded, the walls repeat every four spans: up one span, back down two, and up one to where it began.
-    let unfolded = ball.up.mul_add(secs, ball.y + span).rem_euclid(4.0 * span);
-    let folded = if unfolded > 2.0 * span {
-        4.0f32.mul_add(span, -unfolded)
-    } else {
-        unfolded
-    };
-
-    folded - span
-}
+/// Where the ball's centre is across when it meets the face of the right paddle.
+const FACE: f32 = PADDLE_X - PADDLE_HALF_WIDTH - BALL_HALF;
 
 impl Opponent {
     /// Looks at `court`: whether the ball comes its way, choosing how far it misjudges it when it has just turned
@@ -122,7 +106,7 @@ impl Opponent {
             (false, _) => Sight::Going,
         };
         self.aim = match self.sight {
-            Sight::Coming { error } => reaches(court.ball) + error,
+            Sight::Coming { error } => flight::reaching(court.ball, FACE) + error,
             Sight::Going => court.ball.y * FOLLOWING,
         };
         let hesitation = self.dice.between(0.0, HESITATION_NANOS);
