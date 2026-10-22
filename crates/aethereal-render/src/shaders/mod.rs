@@ -8,6 +8,7 @@
 //! | `shape` | `smooth_step(a, b, x)` and `smooth_min(a, b, k)` |
 //! | `colour` | `from_oklab`, Oklab to linear sRGB; `encode`, linear to sRGB encoding; and `tone`, the filmic tone curve |
 //! | `grid` | `bilinear(uv, size)`, the four cells and two weights of a bilinear sample of a grid of floats in a storage buffer |
+//! | `segment` | `Segment`, two `vec2<f32>`, and `along`, `closest_point`, `distance_to`, `contains_point`, `side`, and `crosses`, with the meanings of `aethereal_math::Segment`; its sides are the `i32` constants `SIDE_POSITIVE`, `SIDE_NEGATIVE`, and `SIDE_ON` |
 //!
 //! A program imports what it uses by the package's name, and the linker brings what that uses in turn:
 //!

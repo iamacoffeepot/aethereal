@@ -6,6 +6,10 @@ license.workspace = true
 publish.workspace = true
 description = "Vectors, a matrix, a rotation, boxes, a ray, and curves, polylines, and polygons in a plane: the engine's math types and their conventions"
 
+[features]
+# The tables of cases another implementation of the math types follows, as a shader's port does (`cases`).
+cases = []
+
 [dependencies]
 aethereal-data = { path = "../aethereal-data" }
 libm = { workspace = true }

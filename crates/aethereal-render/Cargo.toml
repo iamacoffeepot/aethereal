@@ -27,10 +27,14 @@ wgpu = { version = "30.0.1", default-features = false, features = ["webgpu", "fr
 wesl = { version = "=0.6.0", features = ["package"] }
 
 # The renderer's tests make what it makes on a device that draws nothing, as no machine they run on need have a GPU.
-# The shader pieces' test links each module of the package as a dependent's build script does.
+# The shader pieces' test links each module of the package as a dependent's build script does. The segment's test runs
+# the WGSL `Segment` on a Vulkan adapter where the machine has one, and compares it with `aethereal-math`'s on the table
+# of cases both follow.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-wgpu = { version = "30.0.1", default-features = false, features = ["noop"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["noop", "vulkan"] }
 wesl = "=0.6.0"
+aethereal-math = { path = "../aethereal-math", features = ["cases"] }
+pollster = { workspace = true }
 
 [lints]
 workspace = true
