@@ -1,31 +1,22 @@
-//! A handle naming one field of a section (ADR-0028).
+//! A handle naming one field of a settings kind (ADR-0028).
 
-use super::Section;
 use core::fmt;
 use core::marker::PhantomData;
 
-/// One field of the section `S`, holding a `V`: the handle `#[section]` emits for each named field (ADR-0028).
+/// One field of the settings kind `S`, holding a `V`: the handle `#[settings]` emits for each named field (ADR-0028).
 ///
-/// `EngineConfig::WORKERS: Field<EngineConfig, NonZeroU32>` names `workers` of `EngineConfig`, so a program's
-/// flags name a field that exists, checked when it is built.
+/// `EngineSettings::WORKERS: Field<EngineSettings, NonZeroU32>` names `workers` of `EngineSettings`, so a program's
+/// flags name a field that exists, checked when it is built. It names that field in each section read as `S`.
 pub struct Field<S, V> {
     name: &'static str,
     of: PhantomData<fn() -> (S, V)>,
 }
 
 impl<S, V> Field<S, V> {
-    /// The field's name in its section.
+    /// The field's name in its settings.
     #[must_use]
     pub const fn name(self) -> &'static str {
         self.name
-    }
-}
-
-impl<S: Section, V> Field<S, V> {
-    /// The name of the section the field is in.
-    #[must_use]
-    pub const fn section(self) -> &'static str {
-        S::SECTION
     }
 }
 

@@ -2,14 +2,14 @@
 
 mod enumeration;
 mod kind;
-mod section;
+mod settings;
 mod structure;
 
 use crate::lifetimes::reject_lifetimes;
 use kind::Declaration;
 use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
 use quote::{quote, quote_spanned};
-use section::Sectioned;
+use settings::Marked;
 use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Generics, Ident, Type};
 
@@ -43,12 +43,12 @@ pub struct Codec {
 }
 
 /// Expands a derive into `Schema`, `Encode`, and `Decode` impls, for `Plain` the `Plain` impl, for a type
-/// `#[kind(name = "…")]` names the `Kind` impl, and for a struct `#[section(name = "…")]` names the `Section` impl
-/// and its field handles.
+/// `#[kind(name = "…")]` names the `Kind` impl, and for a struct `#[settings]` marks the `Settings` impl and its
+/// field handles.
 pub fn expand(input: &DeriveInput, derive: Derive) -> syn::Result<TokenStream2> {
     reject_lifetimes(&input.generics, derive.name())?;
     let declaration = Declaration::of(input)?;
-    let sectioned = Sectioned::of(input, &declaration)?;
+    let marked = Marked::of(input, &declaration)?;
 
     let codec = match &input.data {
         Data::Struct(data) => structure::expand(input, data, derive, &declaration)?,
@@ -59,12 +59,12 @@ pub fn expand(input: &DeriveInput, derive: Derive) -> syn::Result<TokenStream2> 
             return Err(syn::Error::new_spanned(token, message));
         }
     };
-    let section = sectioned.implementation(input)?;
+    let settings = marked.implementation(input)?;
 
     Ok(quote! {
         #codec
 
-        #section
+        #settings
     })
 }
 

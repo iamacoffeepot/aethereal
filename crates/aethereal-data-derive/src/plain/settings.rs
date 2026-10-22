@@ -1,54 +1,59 @@
-//! `#[section(name = "…")]` and `#[flag]`: a config kind named as a section, with a handle for each named field and
-//! the flags its part suggests (ADR-0028).
+//! `#[settings]` and `#[flag]`: a settings kind, with a handle for each named field and the flags it suggests
+//! (ADR-0028).
 
 use super::kind::Declaration;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
-use syn::{Attribute, Data, DeriveInput, Expr, ExprLit, Field, Fields, Lit, LitChar, LitStr, Meta};
+use syn::{Attribute, Data, DeriveInput, Expr, ExprLit, Field, Fields, Lit, LitChar, LitStr, Meta, Path};
 
-/// Whether the derived type is a section, read from its attributes.
-pub enum Sectioned {
-    /// `#[section(name = …)]` names it, with this literal.
-    Named(LitStr),
-    /// No `#[section]` is written: the derive writes no `Section` and no handles.
-    Unnamed,
+/// Whether the derived type is a settings kind, read from its attributes.
+pub enum Marked {
+    /// `#[settings]` is written, by the attribute of this path.
+    Settings(Path),
+    /// No `#[settings]` is written: the derive writes no `Settings` and no handles.
+    Plain,
 }
 
-impl Sectioned {
-    /// The section `input` declares, refusing a `#[section]` that is repeated, misplaced, holds anything but a name,
-    /// or names a type that is not a kind, and a `#[flag]` anywhere but on a named field of a section.
+impl Marked {
+    /// The mark `input` carries, refusing a `#[settings]` that is repeated, misplaced, holds anything, or marks a
+    /// type that is not a kind, and a `#[flag]` anywhere but on a named field of a settings kind.
     pub fn of(input: &DeriveInput, declaration: &Declaration) -> syn::Result<Self> {
-        let mut sectioned = Self::Unnamed;
+        let mut marked = Self::Plain;
 
-        for attr in input.attrs.iter().filter(|attr| is_section(attr)) {
-            let already = matches!(sectioned, Self::Named(_));
+        for attr in input.attrs.iter().filter(|attr| is_settings(attr)) {
+            let already = matches!(marked, Self::Settings(_));
             if already {
-                return Err(syn::Error::new_spanned(attr, "`section` is written once on a type"));
+                return Err(syn::Error::new_spanned(attr, "`settings` is written once on a type"));
             }
-            sectioned = Self::Named(name_of(attr)?);
+            let bare = matches!(attr.meta, Meta::Path(_));
+            if !bare {
+                let message = "`settings` holds nothing: the section's name is given where it is added";
+                return Err(syn::Error::new_spanned(attr, message));
+            }
+            marked = Self::Settings(attr.path().clone());
         }
 
-        sectioned.refuse_misplaced(input, declaration)?;
+        marked.refuse_misplaced(input, declaration)?;
 
-        Ok(sectioned)
+        Ok(marked)
     }
 
-    /// Refuses a section that is not a plain struct kind, and `#[section]` or `#[flag]` where they do not belong.
+    /// Refuses settings that are not a plain struct kind, and `#[settings]` or `#[flag]` where they do not belong.
     fn refuse_misplaced(&self, input: &DeriveInput, declaration: &Declaration) -> syn::Result<()> {
         let Data::Struct(data) = &input.data else {
             return refuse_in_enum(input, self);
         };
 
         for attr in data.fields.iter().flat_map(|field| &field.attrs) {
-            if is_section(attr) {
-                return Err(syn::Error::new_spanned(attr, "`section` names the type and is written on the type"));
+            if is_settings(attr) {
+                return Err(syn::Error::new_spanned(attr, "`settings` marks the type and is written on the type"));
             }
         }
 
-        let Self::Named(literal) = self else {
+        let Self::Settings(mark) = self else {
             let flagged = data.fields.iter().flat_map(|field| &field.attrs).find(|attr| is_flag(attr));
             if let Some(attr) = flagged {
-                let message = "`flag` suggests a flag for a field of a `#[section]` struct";
+                let message = "`flag` suggests a flag for a field of a `#[settings]` struct";
                 return Err(syn::Error::new_spanned(attr, message));
             }
             return Ok(());
@@ -56,12 +61,12 @@ impl Sectioned {
 
         let is_kind = matches!(declaration, Declaration::Named(_));
         if !is_kind {
-            let message = "a section is a kind: write `#[kind(name = \"…\")]` beside `#[section]`";
-            return Err(syn::Error::new_spanned(literal, message));
+            let message = "settings are a kind: write `#[kind(name = \"…\")]` beside `#[settings]`";
+            return Err(syn::Error::new_spanned(mark, message));
         }
         let has_parameters = !input.generics.params.is_empty();
         if has_parameters {
-            return Err(syn::Error::new_spanned(&input.generics, "a section has no type parameters"));
+            return Err(syn::Error::new_spanned(&input.generics, "a settings kind has no type parameters"));
         }
         let positional = matches!(data.fields, Fields::Unnamed(_));
         if positional {
@@ -74,9 +79,9 @@ impl Sectioned {
         Ok(())
     }
 
-    /// `impl Section` and the field handles for a section; nothing otherwise.
+    /// `impl Settings` and the field handles for a settings kind; nothing otherwise.
     pub fn implementation(&self, input: &DeriveInput) -> syn::Result<TokenStream2> {
-        let Self::Named(literal) = self else {
+        let Self::Settings(_) = self else {
             return Ok(TokenStream2::new());
         };
         let Data::Struct(data) = &input.data else {
@@ -115,8 +120,7 @@ impl Sectioned {
 
         Ok(quote! {
             #[automatically_derived]
-            impl ::aethereal_data::config::Section for #name {
-                const SECTION: &'static str = #literal;
+            impl ::aethereal_data::config::Settings for #name {
                 const FIELDS: &'static [::aethereal_data::config::Declared] = &[ #( #declared ),* ];
             }
 
@@ -129,10 +133,10 @@ impl Sectioned {
     }
 }
 
-/// Refuses `#[section]` and `#[flag]` on an enum: a section is a struct of fields.
-fn refuse_in_enum(input: &DeriveInput, sectioned: &Sectioned) -> syn::Result<()> {
-    if let Sectioned::Named(literal) = sectioned {
-        return Err(syn::Error::new_spanned(literal, "a section is a struct"));
+/// Refuses `#[settings]` and `#[flag]` on an enum: a settings kind is a struct of fields.
+fn refuse_in_enum(input: &DeriveInput, marked: &Marked) -> syn::Result<()> {
+    if let Marked::Settings(mark) = marked {
+        return Err(syn::Error::new_spanned(mark, "a settings kind is a struct"));
     }
     let Data::Enum(data) = &input.data else {
         return Ok(());
@@ -140,44 +144,23 @@ fn refuse_in_enum(input: &DeriveInput, sectioned: &Sectioned) -> syn::Result<()>
     let variants = data.variants.iter().flat_map(|variant| &variant.attrs);
     let fields = data.variants.iter().flat_map(|variant| &variant.fields).flat_map(|field| &field.attrs);
     for attr in variants.chain(fields) {
-        let misplaced = is_section(attr) || is_flag(attr);
+        let misplaced = is_settings(attr) || is_flag(attr);
         if misplaced {
-            return Err(syn::Error::new_spanned(attr, "`section` and `flag` belong on a struct and its fields"));
+            return Err(syn::Error::new_spanned(attr, "`settings` and `flag` belong on a struct and its fields"));
         }
     }
 
     Ok(())
 }
 
-/// Whether `attr` is `#[section …]`.
-fn is_section(attr: &Attribute) -> bool {
-    attr.path().is_ident("section")
+/// Whether `attr` is `#[settings …]`.
+fn is_settings(attr: &Attribute) -> bool {
+    attr.path().is_ident("settings")
 }
 
 /// Whether `attr` is `#[flag …]`.
 fn is_flag(attr: &Attribute) -> bool {
     attr.path().is_ident("flag")
-}
-
-/// The name literal of one `#[section(name = "…")]`, refusing any other key and a missing name.
-fn name_of(attr: &Attribute) -> syn::Result<LitStr> {
-    let mut found: Vec<LitStr> = Vec::new();
-
-    attr.parse_nested_meta(|meta| {
-        let is_name = meta.path.is_ident("name");
-        if !is_name {
-            return Err(meta.error("`section` holds `name = \"…\"` and nothing else"));
-        }
-        let already = !found.is_empty();
-        if already {
-            return Err(meta.error("`name` is written once"));
-        }
-        found.push(string_value(meta.value()?.parse()?)?);
-
-        Ok(())
-    })?;
-
-    found.pop().ok_or_else(|| syn::Error::new_spanned(attr, "`section` needs its name: `#[section(name = \"…\")]`"))
 }
 
 /// The string literal `value` is, through the invisible groups a `macro_rules!` fragment arrives in.

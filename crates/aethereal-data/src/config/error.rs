@@ -23,6 +23,13 @@ pub enum ConfigError {
         /// The refusal of its bytes as its type.
         error: DecodeError,
     },
+    /// No section of this name, read as this kind, is left to take: none was composed, or it was taken already.
+    Untaken {
+        /// The section's name.
+        section: &'static str,
+        /// The kind it would be read as.
+        kind: KindName,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -33,6 +40,9 @@ impl fmt::Display for ConfigError {
             }
             Self::Section { section, error } => {
                 write!(f, "configuration: section {section}: {error}")
+            }
+            Self::Untaken { section, kind } => {
+                write!(f, "configuration: no section {section} read as {kind} is left to take")
             }
         }
     }
@@ -85,21 +95,21 @@ impl fmt::Display for ConfigFault {
     }
 }
 
-/// Two parts that declare one section name, refused as the program is put together (ADR-0028).
+/// Two sections of one name, refused as the program is put together (ADR-0028).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepeatedSection {
-    /// The name both declare.
+    /// The name both are given.
     pub name: &'static str,
     /// The kind of the section already composed under it.
     pub first: KindName,
-    /// The kind of the section that also declares it.
+    /// The kind of the section also given it.
     pub second: KindName,
 }
 
 impl fmt::Display for RepeatedSection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self { name, first, second } = self;
-        write!(f, "configuration: section {name} is declared by both {first} and {second}")
+        write!(f, "configuration: section {name} is given to both {first} and {second}")
     }
 }
 
@@ -117,10 +127,10 @@ pub enum FlagError {
         /// The field of the second.
         second: JsonPath,
     },
-    /// A handle names a field of a section the program does not compose.
+    /// A handle names a field of a settings kind no section of the program is read as.
     NoSection {
-        /// The section's name.
-        section: &'static str,
+        /// The settings kind.
+        kind: KindName,
     },
     /// A rename or a hide of a field that has no flag.
     NoFlag {
@@ -135,7 +145,7 @@ impl fmt::Display for FlagError {
             Self::Collision { name, first, second } => {
                 write!(f, "flags: {name} is the flag of both {first} and {second}")
             }
-            Self::NoSection { section } => write!(f, "flags: no section {section} is composed"),
+            Self::NoSection { kind } => write!(f, "flags: no section read as {kind} is composed"),
             Self::NoFlag { field } => write!(f, "flags: {field} has no flag"),
         }
     }

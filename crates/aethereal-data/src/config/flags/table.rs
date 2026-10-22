@@ -85,7 +85,7 @@ pub struct FlagTable {
 }
 
 impl FlagTable {
-    /// Every flag, each part's in the order its sections were added, then those the program added.
+    /// Every flag, each section's in the order the sections were added, then those the program added.
     #[must_use]
     pub fn flags(&self) -> &[Flag] {
         &self.flags

@@ -1,4 +1,4 @@
-//! A program's flags: what each part suggests, as the program changes it (ADR-0028).
+//! A program's flags: what each section's settings kind suggests, as the program changes it (ADR-0028).
 
 mod table;
 
@@ -6,39 +6,40 @@ pub use table::{Flag, FlagTable, Named};
 
 use super::form::Form;
 use super::place::Place;
-use super::{Declared, Field, FlagError, FlagName, Parts, Section, Suggested};
-use crate::{JsonPath, JsonStep};
+use super::{Declared, Field, FlagError, FlagName, Parts, Settings, Suggested};
+use crate::{JsonPath, JsonStep, KindName};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-/// The field a change names: its section and its name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The field a change names, in each section read as its handle's settings kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Target {
-    /// The section's name.
-    section: &'static str,
-    /// Whether the composite's section of that name is the handle's type.
-    composed: bool,
+    /// The handle's settings kind.
+    kind: KindName,
+    /// The names of the sections of `parts` read as that kind, in the order they were added.
+    sections: Vec<&'static str>,
     /// The field's name.
     field: &'static str,
 }
 
 impl Target {
-    /// The field `field` names, and whether `parts` holds its section.
-    fn of<S: Section, V>(parts: &Parts, field: Field<S, V>) -> Self {
-        let section = S::SECTION;
-        Self { section, composed: parts.holds::<S>(section), field: field.name() }
+    /// The field `field` names, in each section of `parts` read as its kind.
+    fn of<S: Settings, V>(parts: &Parts, field: Field<S, V>) -> Self {
+        Self { kind: S::NAME, sections: parts.read_as::<S>(), field: field.name() }
     }
 
-    /// The field's path from the configuration's root.
-    fn path(self) -> JsonPath {
-        JsonPath::of(Vec::from([
-            JsonStep::Field(String::from(self.section)),
-            JsonStep::Field(String::from(self.field)),
-        ]))
+    /// Whether `flag` sets the field, in one of the sections.
+    fn sets(&self, flag: &Flag) -> bool {
+        self.sections.iter().any(|section| flag.sets(section, self.field))
+    }
+
+    /// The field's path from the configuration's root, in the section `section`.
+    fn path(&self, section: &str) -> JsonPath {
+        JsonPath::of(Vec::from([JsonStep::Field(String::from(section)), JsonStep::Field(String::from(self.field))]))
     }
 }
 
-/// One change the program makes to the flags its parts suggest.
+/// One change the program makes to the flags its sections suggest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Change {
     /// The field's flag takes another long name.
@@ -49,23 +50,26 @@ enum Change {
     Add { target: Target, long: String, short: char },
 }
 
-/// The flags each part suggests for its fields, as the program renames, hides, and adds to them (ADR-0028).
+/// The flags each section's settings kind suggests for its fields, as the program renames, hides, and adds to them
+/// (ADR-0028).
+///
+/// A handle names its field in each section read as its kind, so a change made through it applies to each.
 ///
 /// ```
+/// use aethereal_data::Plain;
 /// use aethereal_data::config::{Flags, Parts};
-/// use aethereal_data::{Budget, Plain};
 ///
 /// #[derive(Plain, Default)]
-/// #[kind(name = "example.engine.config")]
-/// #[section(name = "engine")]
-/// struct EngineConfig {
+/// #[kind(name = "example.engine.settings")]
+/// #[settings]
+/// struct EngineSettings {
 ///     /// The threads that run a step.
 ///     #[flag(long = "workers", short = 'w')]
 ///     workers: u32,
 /// }
 ///
-/// let parts = Parts::new().with::<EngineConfig>()?;
-/// let table = Flags::of(&parts).rename(EngineConfig::WORKERS, "threads").finish()?;
+/// let parts = Parts::new().with::<EngineSettings>("engine")?;
+/// let table = Flags::of(&parts).rename(EngineSettings::WORKERS, "threads").finish()?;
 /// assert!(table.long("threads").is_some());
 /// assert!(table.long("workers").is_none());
 /// # Ok::<(), Box<dyn core::error::Error>>(())
@@ -76,7 +80,7 @@ pub struct Flags<'parts> {
 }
 
 impl<'parts> Flags<'parts> {
-    /// The flags the sections of `parts` suggest, changed by nothing yet.
+    /// The flags the settings kinds of the sections of `parts` suggest, changed by nothing yet.
     #[must_use]
     pub const fn of(parts: &'parts Parts) -> Self {
         Self { parts, changes: Vec::new() }
@@ -84,7 +88,7 @@ impl<'parts> Flags<'parts> {
 
     /// The flag of `field` renamed `long`.
     #[must_use]
-    pub fn rename<S: Section, V>(mut self, field: Field<S, V>, long: &str) -> Self {
+    pub fn rename<S: Settings, V>(mut self, field: Field<S, V>, long: &str) -> Self {
         let target = Target::of(self.parts, field);
         self.changes.push(Change::Rename { target, long: String::from(long) });
         self
@@ -92,22 +96,26 @@ impl<'parts> Flags<'parts> {
 
     /// `field` left with no flag.
     #[must_use]
-    pub fn hide<S: Section, V>(mut self, field: Field<S, V>) -> Self {
+    pub fn hide<S: Settings, V>(mut self, field: Field<S, V>) -> Self {
         let target = Target::of(self.parts, field);
         self.changes.push(Change::Hide { target });
         self
     }
 
-    /// A flag of the program's own, `--long` and `-short`, for `field` of any part.
+    /// A flag of the program's own, `--long` and `-short`, for `field` of any section.
     #[must_use]
-    pub fn flag<S: Section, V>(mut self, long: &str, short: char, field: Field<S, V>) -> Self {
+    pub fn flag<S: Settings, V>(mut self, long: &str, short: char, field: Field<S, V>) -> Self {
         let target = Target::of(self.parts, field);
         self.changes.push(Change::Add { target, long: String::from(long), short });
         self
     }
 
-    /// The table, refusing a change to a field of a section the program does not compose, a rename or a hide of a
+    /// The table, refusing a change to a field of a settings kind no section is read as, a rename or a hide of a
     /// field that has no flag, and two flags left of one name, naming both fields.
+    ///
+    /// # Errors
+    ///
+    /// The first refusal, as [`FlagError`] says.
     pub fn finish(self) -> Result<FlagTable, FlagError> {
         let schema = self.parts.schema();
         let form_of = |section: &str, field: &str| match Place::root(&schema).field(section).field(field) {
@@ -132,24 +140,26 @@ impl<'parts> Flags<'parts> {
         for change in self.changes {
             match change {
                 Change::Rename { target, long } => {
-                    let named = Self::named(&mut flags, target)?;
+                    let named = Self::named(&mut flags, &target)?;
                     for flag in named {
                         flag.long.clone_from(&long);
                     }
                 }
                 Change::Hide { target } => {
-                    Self::named(&mut flags, target)?;
-                    flags.retain(|flag| !flag.sets(target.section, target.field));
+                    Self::named(&mut flags, &target)?;
+                    flags.retain(|flag| !target.sets(flag));
                 }
                 Change::Add { target, long, short } => {
-                    if !target.composed {
-                        return Err(FlagError::NoSection { section: target.section });
+                    let uncomposed = target.sections.is_empty();
+                    if uncomposed {
+                        return Err(FlagError::NoSection { kind: target.kind });
                     }
-                    let doc = self.parts.doc(target.section, target.field);
-                    let form = form_of(target.section, target.field);
-                    let field = target.field;
-                    let section = target.section;
-                    flags.push(Flag { long, short: Some(short), section, field, doc, form });
+                    for section in target.sections {
+                        let doc = self.parts.doc(section, target.field);
+                        let form = form_of(section, target.field);
+                        let long = long.clone();
+                        flags.push(Flag { long, short: Some(short), section, field: target.field, doc, form });
+                    }
                 }
             }
         }
@@ -158,15 +168,15 @@ impl<'parts> Flags<'parts> {
         Ok(FlagTable { flags })
     }
 
-    /// The flags of `target`'s field, refusing a section the program does not compose and a field with no flag.
-    fn named(flags: &mut [Flag], target: Target) -> Result<Vec<&mut Flag>, FlagError> {
-        if !target.composed {
-            return Err(FlagError::NoSection { section: target.section });
-        }
-        let named: Vec<&mut Flag> = flags.iter_mut().filter(|flag| flag.sets(target.section, target.field)).collect();
+    /// The flags of `target`'s field, refusing a kind no section is read as and a field with no flag.
+    fn named<'flags>(flags: &'flags mut [Flag], target: &Target) -> Result<Vec<&'flags mut Flag>, FlagError> {
+        let Some(first) = target.sections.first() else {
+            return Err(FlagError::NoSection { kind: target.kind.clone() });
+        };
+        let named: Vec<&mut Flag> = flags.iter_mut().filter(|flag| target.sets(flag)).collect();
         let none = named.is_empty();
         if none {
-            return Err(FlagError::NoFlag { field: target.path() });
+            return Err(FlagError::NoFlag { field: target.path(first) });
         }
 
         Ok(named)
@@ -212,16 +222,16 @@ fn refuse_collisions(flags: &[Flag]) -> Result<(), FlagError> {
 mod tests {
     use super::*;
     use crate::Budget;
-    use crate::config::samples::{EngineConfig, PoolConfig, RendererConfig, WindowsConfig};
+    use crate::config::samples::{EngineSettings, PoolSettings, RendererSettings, WindowsSettings};
     use crate::config::{Overlay, RepeatedSection};
     use alloc::boxed::Box;
     use core::error::Error;
 
     type Outcome = Result<(), Box<dyn Error>>;
 
-    /// The engine's and the pool's sections, whose parts both suggest `--workers`.
+    /// The engine's and the pool's sections, whose settings both suggest `--workers`.
     fn parts() -> Result<Parts, RepeatedSection> {
-        Parts::new().with::<EngineConfig>()?.with::<PoolConfig>()
+        Parts::new().with::<EngineSettings>("engine")?.with::<PoolSettings>("pool")
     }
 
     /// The path of the field `field` of the section `section`.
@@ -235,7 +245,7 @@ mod tests {
         let parts = parts()?;
 
         let left = Flags::of(&parts).finish().err();
-        let renamed = Flags::of(&parts).rename(PoolConfig::WORKERS, "pool-workers").finish()?;
+        let renamed = Flags::of(&parts).rename(PoolSettings::WORKERS, "pool-workers").finish()?;
 
         let name = FlagName::Long(String::from("workers"));
         let collision =
@@ -256,9 +266,10 @@ mod tests {
         // flag of that name.
         let parts = parts()?;
 
-        let short = Flags::of(&parts).hide(PoolConfig::WORKERS).flag("pool", 'w', PoolConfig::WORKERS).finish().err();
+        let short =
+            Flags::of(&parts).hide(PoolSettings::WORKERS).flag("pool", 'w', PoolSettings::WORKERS).finish().err();
         let negated =
-            Flags::of(&parts).hide(PoolConfig::WORKERS).flag("no-fused", 'n', PoolConfig::WORKERS).finish().err();
+            Flags::of(&parts).hide(PoolSettings::WORKERS).flag("no-fused", 'n', PoolSettings::WORKERS).finish().err();
 
         let letter = FlagError::Collision {
             name: FlagName::Short('w'),
@@ -278,18 +289,19 @@ mod tests {
         // Catches a rename or hide of a field with no flag, or of a section not composed, that is quietly ignored.
         let parts = parts()?;
 
-        let no_flag = Flags::of(&parts).hide(EngineConfig::MAIL_BYTES).finish().err();
-        let no_section = Flags::of(&parts).rename(RendererConfig::PRESENTATION, "present").finish().err();
+        let no_flag = Flags::of(&parts).hide(EngineSettings::MAIL_BYTES).finish().err();
+        let no_section = Flags::of(&parts).rename(RendererSettings::PRESENTATION, "present").finish().err();
 
         assert_eq!(no_flag, Some(FlagError::NoFlag { field: path("engine", "mail_bytes") }));
-        assert_eq!(no_section, Some(FlagError::NoSection { section: "renderer" }));
+        let renderer = <RendererSettings as crate::Kind>::NAME;
+        assert_eq!(no_section, Some(FlagError::NoSection { kind: renderer }));
         Ok(())
     }
 
     #[test]
     fn no_turns_a_switch_off() -> Outcome {
         // Catches `--no-<name>` that names nothing, or sets the switch on.
-        let parts = Parts::new().with::<EngineConfig>()?.with::<WindowsConfig>()?;
+        let parts = Parts::new().with::<EngineSettings>("engine")?.with::<WindowsSettings>("windows")?;
         let table = Flags::of(&parts).finish()?;
         let Some(Named::Negated(fused)) = table.long("no-fused") else {
             return Err("no-fused names the switch, negated".into());
@@ -298,11 +310,32 @@ mod tests {
         command_line.switch(fused, false)?;
         let mut budget = Budget::new(1 << 20);
 
-        let configuration = parts.configure(&[command_line], &mut budget)?;
+        let mut configuration = parts.configure(&[command_line], &mut budget)?;
 
-        let fused = configuration.get::<EngineConfig>().map(|engine| engine.fused);
-        assert_eq!(fused, Some(false));
+        let fused = configuration.take::<EngineSettings>("engine")?.fused;
+        assert!(!fused);
         assert_eq!(table.long("no-workers"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_handle_names_its_field_in_each_section_of_its_kind() -> Outcome {
+        // Catches a change through a handle that reaches only the first section read as its kind, leaving the other
+        // section's flag in place.
+        let parts = parts()?.with::<PoolSettings>("spare")?;
+
+        let left = Flags::of(&parts).finish().err();
+        let hidden = Flags::of(&parts).hide(PoolSettings::WORKERS).finish()?;
+
+        let name = FlagName::Long(String::from("workers"));
+        let collision =
+            FlagError::Collision { name, first: path("engine", "workers"), second: path("pool", "workers") };
+        assert_eq!(left, Some(collision));
+        let workers = hidden
+            .long("workers")
+            .map(|named| matches!(named, Named::Flag(flag) if flag.path() == path("engine", "workers")));
+        assert_eq!(workers, Some(true));
+        assert_eq!(hidden.flags().len(), 2);
         Ok(())
     }
 }
