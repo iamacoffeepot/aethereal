@@ -46,19 +46,19 @@ impl Kind for CreateFrame {
     const NAME: KindName = KindName::new("aether.render.create_frame");
 }
 
-/// Where a frame ends: shown on a window, as its main frame, or drawn into a texture of a size, which any actor handed
-/// its id binds or reads back.
+/// Where a frame ends: shown on a window, as its main frame, or drawn into a texture of a size and a format, which any
+/// actor handed its id binds or reads back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Ends {
     Window(WindowId),
-    Texture(Size),
+    Texture { size: Size, format: TextureFormat },
 }
 
 impl Kind for Ends {
     const NAME: KindName = KindName::new("aether.render.ends");
 }
 
-/// The size of a texture a frame ends on, in its pixels. Its format is [`TextureFormat::Rgba8`].
+/// The size of a texture a frame ends on, in its pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub struct Size {
     pub width: u32,
@@ -68,9 +68,6 @@ pub struct Size {
 impl Kind for Size {
     const NAME: KindName = KindName::new("aether.render.size");
 }
-
-/// The format of the texture a frame that ends on one draws into.
-pub const ENDS_IN: TextureFormat = TextureFormat::Rgba8;
 
 /// A target of a frame besides its end, each the size of the end: floats, whole numbers, or depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
@@ -317,20 +314,20 @@ pub(crate) fn may_replace(owner: Option<ActorId>, by: ActorId) -> Result<(), Fra
 }
 
 /// Checks a frame before it is made, whole, as the builder would have built it and more: that it ends on a window
-/// drawn to or on a texture of a size the GPU makes, that it has passes, each of a name of its own, each reading and testing only what an earlier pass wrote,
-/// never what it writes, each writing colour into colour and depth into depth, each effect reading and binding what
-/// it was made to and made for the shape it writes, and that its last pass writes its end.
+/// drawn to or on a texture of a size the GPU makes, that it has passes, each of a name of its own, each reading and
+/// testing only what an earlier pass wrote, never what it writes, each writing colour into colour and depth into
+/// depth, each effect reading and binding what it was made to and made for the shape it writes, and that its last
+/// pass writes its end.
 pub(crate) fn check(create: &CreateFrame, kept: &impl Holds) -> Result<(), FrameRefused> {
     let end = match create.ends {
         Ends::Window(window) => kept.window(window).ok_or(FrameRefused::Window)?,
-        Ends::Texture(Size { width, height }) => {
+        Ends::Texture { size: Size { width, height }, format } => {
             let most = kept.longest();
             let fits = (1..=most).contains(&width) && (1..=most).contains(&height);
             if !fits {
                 return Err(FrameRefused::Size { width, height, most });
             }
-            // What `ENDS_IN` is drawn in.
-            ColourFormat::Rgba8
+            format.colour()
         }
     };
     if create.passes.is_empty() {

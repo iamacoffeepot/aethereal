@@ -47,6 +47,8 @@ pub enum ColourFormat {
     Rgba16Float,
     /// One 32-bit whole number: a frame's target of whole numbers, which no program blends into.
     R32Uint,
+    /// One byte, read as a fraction: a frame's end in [`TextureFormat::R8`](crate::texture::TextureFormat::R8).
+    R8,
 }
 
 impl Kind for ColourFormat {
@@ -64,6 +66,7 @@ impl ColourFormat {
             Self::Bgra8Srgb => wgpu::TextureFormat::Bgra8UnormSrgb,
             Self::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
             Self::R32Uint => wgpu::TextureFormat::R32Uint,
+            Self::R8 => wgpu::TextureFormat::R8Unorm,
         }
     }
 
@@ -83,6 +86,7 @@ impl ColourFormat {
             wgpu::TextureFormat::Bgra8UnormSrgb => Some(Self::Bgra8Srgb),
             wgpu::TextureFormat::Rgba16Float => Some(Self::Rgba16Float),
             wgpu::TextureFormat::R32Uint => Some(Self::R32Uint),
+            wgpu::TextureFormat::R8Unorm => Some(Self::R8),
             _ => None,
         }
     }

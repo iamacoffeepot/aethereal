@@ -10,7 +10,7 @@ use crate::mesh::{MeshId, VertexLayout};
 use crate::placement::{Reads, Resource};
 use crate::program::BindingKind;
 use crate::storage::StorageId;
-use crate::texture::TextureId;
+use crate::texture::{TextureFormat, TextureId};
 use crate::uniforms::UniformsId;
 use aethereal_data::{Budget, from_bytes};
 
@@ -425,7 +425,7 @@ fn a_compute_pass_draws_into_nothing_and_never_ends_a_frame() {
 
 /// A frame onto a texture `width` by `height`: one pass drawing into it.
 fn onto_texture(width: u32, height: u32) -> CreateFrame {
-    let frame = FrameBuilder::on(Ends::Texture(Size { width, height }));
+    let frame = FrameBuilder::on(Ends::Texture { size: Size { width, height }, format: TextureFormat::Rgba8 });
     let Ok(create) = frame.finish(Surfaces, Onto(depth::Off)) else {
         panic!("a frame of one pass is of types of its own");
     };
@@ -446,6 +446,30 @@ fn a_frame_onto_a_texture_of_a_size_the_gpu_makes_is_made() {
         check(&onto_texture(64, LONGEST + 1), &kept),
         Err(FrameRefused::Size { width: 64, height: LONGEST + 1, most: LONGEST })
     );
+}
+
+/// A frame onto a texture of `format`: the sky, made for floats, drawn into it.
+fn sky_onto(format: TextureFormat) -> CreateFrame {
+    let frame = FrameBuilder::on(Ends::Texture { size: Size { width: 64, height: 64 }, format });
+    let sky = MadeEffect { program: SKY, reads: Vec::new() };
+    let Some(sky) = EffectId::<()>::of(&sky) else {
+        panic!("the sky reads nothing");
+    };
+    let Ok(create) = frame.finish(Sky, Effect::new(&sky, ())) else {
+        panic!("a frame of one pass is of types of their own");
+    };
+
+    create
+}
+
+#[test]
+fn the_pass_that_writes_a_texture_end_is_shaped_by_the_end_s_format() {
+    // Catches a texture end drawn in one format whatever format it was asked in: an effect made for floats would be
+    // refused the float end it fits, or let draw into an end of bytes, which WebGPU refuses as it draws.
+    let kept = Kept::new();
+
+    assert_eq!(check(&sky_onto(TextureFormat::Rgba16Float), &kept), Ok(()));
+    assert_eq!(check(&sky_onto(TextureFormat::Rgba8), &kept), refused(0, PassRefused::Shape));
 }
 
 #[test]
