@@ -34,7 +34,7 @@ What this engine already has:
 - Configuration is read once, as the program is set up. Changing a setting while the program runs is mail to the actor that owns it, not configuration.
 - A value the host makes is never configuration: a device, a source, a controller, a feed, a `Given`. The chassis makes it, and builds each root's config from the configuration and the values it made. **So a root's config and the program's configuration are two things**: the first may hold handles, the second never does. This is the line the earlier engine drew late, drawn first.
 
-**The configuration is the composite of its parts, and the program's own section beside them.**
+**The configuration is the composite of its roots' sections, and the host's beside them.**
 
 ```json
 {
@@ -45,9 +45,9 @@ What this engine already has:
 }
 ```
 
-- **Each part a chassis composes brings a section:** the engine, the way the program is run, the windows, and each capability that has settings. The program brings one section of its own, its sidecar, named for the program.
-  - A section is a config kind, under a short name the part declares (`engine`, `windows`).
-  - Two parts that declare one name are refused as the program is put together, naming both.
+- **Each root that has settings brings a section,** the windows, each capability, and the program's own roots alike, and the host brings its own: the engine and the way the program is run. A section belongs to what reads it; how a root reads its section as it is stood up is ADR-0029.
+  - A section is a config kind, under a short name its root's bootstrap declares (`windows`, `game`); the host's are `engine` and `running`.
+  - Two roots that declare one name are refused as the program is put together, naming both.
 - **A section's defaults are its kind's `Default`.**
 - **The configuration's schema is the composite**, so it says exactly what this program, on this host, can be configured with: no more, no less. A host that composes no windows has no `windows`.
 
@@ -68,10 +68,10 @@ What this engine already has:
 --workers 4  -w 4  --size 1280x720  --fullscreen  --stop-within-millis 500  --set renderer.presentation=uncapped
 ```
 
-- **A part suggests the flags for its fields**, beside the field, as it declares the field's doc comment. **The program decides**, in its own section: it takes a suggestion, renames it, hides it, or adds a flag of its own for any field of any part.
+- **A section's author suggests the flags for its fields**, beside the field, as they declare the field's doc comment. **The program decides**: it takes a suggestion, renames it, hides it, or adds a flag of its own for any field of any section.
   ```rust
-  #[derive(Plain, Default)] #[kind(name = "aether.engine.config")]
-  pub struct EngineConfig {
+  #[derive(Plain, Default)] #[kind(name = "aether.engine.settings")]
+  pub struct EngineSettings {
       /// The threads that run a step.
       #[flag(long = "workers", short = 'w')]
       pub workers: NonZeroUsize,
@@ -79,10 +79,10 @@ What this engine already has:
   }
 
   Flags::of(&parts)
-      .rename(EngineConfig::WORKERS, "threads")
-      .flag("size", 's', WindowsConfig::FIRST_SIZE)
+      .rename(EngineSettings::WORKERS, "threads")
+      .flag("size", 's', WindowSettings::FIRST_SIZE)
   ```
-- **A field is named by a handle the derive emits**, `EngineConfig::WORKERS: Field<EngineConfig, NonZeroUsize>`, beside the schema it already emits. So a program's flags name fields that exist, checked when it is built.
+- **A field is named by a handle the derive emits**, `EngineSettings::WORKERS: Field<EngineSettings, NonZeroUsize>`, beside the schema it already emits. So a program's flags name fields that exist, checked when it is built.
 - **Two flags of one name, left so by the program, are an error as the program is put together**, naming both fields. Neither wins.
 - **A field's type picks how its flag's value is read:**
   - a size is `1280x720`;
@@ -93,7 +93,7 @@ What this engine already has:
   Each of these is written once and shared. They exist only on the command line: what a flag sets is the typed value, in the document.
 - **Every field is reachable without a flag**, by `--set <path>=<value>`, its value read as the flag of that field's type would read it, and JSON for a structure.
 - **`--help` lists the flags with each field's doc comment**, and `--describe` prints the composite's schema with its defaults, both made from the declarations, so nothing is kept in step by hand. The parser is `clap`, the one Rust programs' users already know: short and long flags, `--flag=value` and `--flag value`, subcommands, and the nearest flag suggested for a typo.
-- **The program's own arguments**, a file to open or a subcommand, are fields of its own section, and flags or positionals like any other.
+- **The program's own arguments**, a file to open or a subcommand, are fields of the section of the root that reads them, and flags or positionals like any other.
 
 **The environment is a layer that reads the same flags.**
 
@@ -105,7 +105,7 @@ What this engine already has:
 **In the browser, the page is the command line.**
 
 - A page hands the chassis a JSON object, or its URL query, read with the same flags: `?workers=4&size=1280x720`. A link to a program set up a certain way reads as its command line would.
-- The browser composes the parts it has. A field of a part it does not compose, such as a native window's size, is not in its schema, and a page that sets one is refused as any unknown field is.
+- The browser bootstraps the roots it can. A field of a section it does not compose, such as a native window's size, is not in its schema, and a page that sets one is refused as any unknown field is.
 
 **Where it lives.**
 
@@ -117,9 +117,9 @@ What this engine already has:
 ## Consequences
 
 - **A person, a script, or a link configures a program without building it again**, in the form tools already use. And a program can say exactly what it can be configured with.
-- The literals in the examples and the site's demos become defaults, or settings in each program's own section.
-- **The chassis's setup takes the configuration and builds the roots' configs from it.** This is the first half of a standard way to start a program on any chassis: the program's configuration, then its roots.
-- Each part's settings are a kind with a `Default`, declared by the part that owns them, as the earlier engine's were; there is no central list.
+- The literals in the examples and the site's demos become defaults, or settings of the program's own roots.
+- **Each root builds its config from its section and what the host made, as it is stood up** (ADR-0029). The configuration is read first, then the roots.
+- Each root's settings are a kind with a `Default`, declared beside the root that reads them, as the earlier engine's were; there is no central list.
 - A flag's value forms are a small fixed set, and a setting that needs another form is set by JSON through `--set` or the file until one is added.
 - `clap` is a dependency of the native host, and nothing else's.
 - **Left for later:**
@@ -130,8 +130,8 @@ What this engine already has:
 ## Alternatives considered
 
 - **A third-party configuration crate**, as the earlier engine used. Its own derive, its own idea of a field, and a second machine beside the schema every kind already has. One decode over the schema validates, merges, and describes with what exists.
-- **Flags declared only by the parts.** A part's author would choose names for every program that uses it. Two parts that each want `--size` could not both be used, and a program could not rename either.
-- **Flags declared only by the program.** Every program would write the same table again, and a part's settings would have no flag until someone mapped them.
+- **Flags declared only by the sections' authors.** They would choose names for every program that uses them. Two sections that each want `--size` could not both be used, and a program could not rename either.
+- **Flags declared only by the program.** Every program would write the same table again, and a section's settings would have no flag until someone mapped them.
 - **Dotted paths as the command line** (`--engine.workers=4`). Exact, and what `--set` is, but no one types it. A command line should read like any other tool's.
 - **No environment layer.** It would remove the class of problems the earlier engine patched four times. But containers, CI, and shells configure by environment, and names derived from the flags, under one prefix, refused when unknown, and never passed to a child, keep its convenience without a second registry of names.
 - **Warning on an unknown setting**, as the earlier engine did. It keeps a program running with a setting that does nothing, which is the failure this record exists to prevent.
