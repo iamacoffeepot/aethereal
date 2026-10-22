@@ -3,7 +3,6 @@
 
 use crate::canvas;
 use aethereal_render::Gpu;
-use aethereal_render::shape::ColourFormat;
 use aethereal_window::{Opening, WindowFeed};
 use wasm_bindgen::JsError;
 use web_sys::HtmlCanvasElement;
@@ -12,7 +11,8 @@ use web_sys::HtmlCanvasElement;
 /// page to await before it makes the engine's roots: the browser answers each of these asks with a promise, and a turn
 /// never waits on one. Answers the GPU, drawing to the window, and the window's feed. The device has
 /// timestamps when the adapter offers them, and the canvas can be copied from, so the renderer can time and read back
-/// its frames (ADR-0023).
+/// its frames (ADR-0023). The renderer configures the surface again to each size the window is resized to, which sets
+/// the canvas's backing store, and [`canvas::listen`] measures the canvas for it (ADR-0024).
 ///
 /// # Errors
 ///
@@ -45,9 +45,8 @@ pub async fn open(canvas: HtmlCanvasElement, opening: &mut Opening) -> Result<(G
     // WebGPU lets a canvas's textures be copied from, as from any texture of its format; wgpu's capabilities for a
     // canvas name only drawing to it, as they are fixed rather than asked of the browser.
     config.usage |= wgpu::TextureUsages::COPY_SRC;
-    let format = ColourFormat::of(config.format)
-        .ok_or_else(|| JsError::new(&format!("the canvas draws in {:?}, which no pass draws into", config.format)))?;
-    surface.configure(&device, &config);
+    let gpu = Gpu::new(device, queue, shown.window(), surface, config)
+        .map_err(|format| JsError::new(&format!("the canvas draws in {format:?}, which no pass draws into")))?;
 
-    Ok((Gpu::new(device, queue, shown.window(), surface, format), shown))
+    Ok((gpu, shown))
 }

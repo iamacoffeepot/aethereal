@@ -1,6 +1,7 @@
-//! The canvas's tests: what the page's pointer and wheel events read as, in the canvas's pixels and its buttons.
+//! The canvas's tests: what the page's pointer and wheel events read as, in the canvas's pixels and its buttons, and
+//! how many pixels the canvas is drawn at.
 
-use super::dom::{Canvas, Pointing, button_of, css_pixels};
+use super::dom::{Canvas, Density, Measured, Pointing, button_of, css_pixels};
 use aethereal_window::{Button, Event};
 
 #[test]
@@ -60,4 +61,44 @@ fn a_wheel_over_the_canvas_reads_its_place_and_its_turn_in_the_canvas_pixels() {
         Some(Event::Wheel { x: 0.0, y: 0.0, delta_x: 0.0, delta_y: 400.0 })
     );
     assert_eq!(small.wheel((0.0, 0.0), (0.0, 1.0), 7), None);
+}
+
+#[test]
+fn a_canvas_is_drawn_at_the_screens_pixels_of_the_size_it_is_laid_out_at() {
+    // Catches CSS pixels left unscaled by the screen's ratio, device pixels scaled by it a second time, a side rounded
+    // down rather than to the nearest pixel, and the axes swapped.
+    let css = Measured::CssPixels { width: 400.4, height: 300.6 };
+    let device = Measured::DevicePixels { width: 801.0, height: 601.0 };
+
+    assert_eq!(css.pixels(Density::SCREEN, 2.0, 8192), (801, 601));
+    assert_eq!(device.pixels(Density::SCREEN, 2.0, 8192), (801, 601));
+    assert_eq!(css.pixels(Density::SCREEN, 1.0, 8192), (400, 301));
+}
+
+#[test]
+fn a_density_draws_a_canvas_at_no_more_pixels_than_it_allows() {
+    // Catches the most taken as the least, a screen of fewer pixels than the most drawn at the most, device pixels
+    // left at the screen's ratio past the most, and a most of no pixels or no number drawing nothing.
+    let at_most_two = Density::at_most(2.0);
+    let css = Measured::CssPixels { width: 400.0, height: 300.0 };
+    let device = Measured::DevicePixels { width: 1200.0, height: 900.0 };
+
+    assert_eq!(css.pixels(at_most_two, 3.0, 8192), (800, 600));
+    assert_eq!(device.pixels(at_most_two, 3.0, 8192), (800, 600));
+    assert_eq!(css.pixels(at_most_two, 1.5, 8192), (600, 450));
+    assert_eq!(css.pixels(Density::at_most(0.5), 1.0, 8192), (200, 150));
+    assert_eq!(css.pixels(Density::at_most(0.0), 3.0, 8192), (1200, 900));
+    assert_eq!(css.pixels(Density::at_most(f64::NAN), 3.0, 8192), (1200, 900));
+}
+
+#[test]
+fn a_canvas_laid_out_at_no_size_or_past_the_longest_side_is_drawn_at_a_size_the_gpu_makes() {
+    // Catches a canvas laid out at no pixels drawn at none, which no surface is configured to, a side past the GPU's
+    // longest left past it, and a screen that gives no ratio drawing at none.
+    let hidden = Measured::CssPixels { width: 0.0, height: 0.3 };
+    let wide = Measured::DevicePixels { width: 20_000.0, height: 100.0 };
+
+    assert_eq!(hidden.pixels(Density::SCREEN, 2.0, 8192), (1, 1));
+    assert_eq!(wide.pixels(Density::SCREEN, 2.0, 8192), (8192, 100));
+    assert_eq!(Measured::CssPixels { width: 40.0, height: 30.0 }.pixels(Density::SCREEN, 0.0, 8192), (40, 30));
 }
