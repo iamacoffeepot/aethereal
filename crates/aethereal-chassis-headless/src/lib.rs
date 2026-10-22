@@ -1,7 +1,8 @@
 //! The headless chassis: the native host with nothing but the engine, its workers, and its clock (ADR-0001).
 //!
 //! It is a program's [`Host`](aethereal_substrate::Host) (ADR-0029): `Headless::program()`, its roots listed, then
-//! `run`, or `build` for a test to step.
+//! `run`, or `build` for a test to step. Its command line, environment, and a file are read into a program by
+//! [`native`] (ADR-0028), which the desktop host shares.
 //!
 //! The substrate plans each step and runs a share of it wherever it is
 //! asked to; this host owns the threads those shares run on and the clock
@@ -12,6 +13,7 @@ mod clock;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod guest;
 mod jobs;
+pub mod native;
 mod pool;
 mod program;
 mod rehearsal;

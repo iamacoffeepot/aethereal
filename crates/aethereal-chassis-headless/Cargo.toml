@@ -10,6 +10,8 @@ description = "The headless chassis: the native host with nothing but the engine
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 aethereal-substrate = { path = "../aethereal-substrate" }
+# The native host's command line (ADR-0028); nothing else depends on it.
+clap = { version = "4.6", default-features = false, features = ["std", "help", "usage", "error-context", "suggestions", "string"] }
 core_affinity = "0.8.3"
 crossbeam-queue = { workspace = true }
 
