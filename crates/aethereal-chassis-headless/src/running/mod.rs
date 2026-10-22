@@ -5,6 +5,7 @@ mod tests;
 mod timer;
 
 use crate::Headless;
+use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Lifecycle};
 use core::time::Duration;
 use std::thread;
@@ -60,7 +61,7 @@ impl Headless {
                 (Lifecycle::Waiting | Lifecycle::Running | Lifecycle::Stopping, _) => {}
             }
             if timer.fires(now) {
-                self.engine.cycle();
+                self.engine.cycle(Time::from_nanos(now));
             }
             self.engine.bring();
             if !self.engine.is_idle() {

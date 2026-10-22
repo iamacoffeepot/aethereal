@@ -119,11 +119,11 @@ fn a_frame_runs_its_cycle_through_to_its_end_and_is_answered_for_the_jobs_it_ran
     let mappings = Mappings::unasked(&mut engine);
     let mut browser = Browser::new(engine, Still, mappings);
 
-    browser.frame();
+    browser.frame(16.0);
     let Ok(first) = PAINTED.lock().map(|painted| painted.clone()) else {
         panic!("what was painted is not poisoned");
     };
-    browser.frame();
+    browser.frame(32.0);
     let Ok(both) = PAINTED.lock().map(|painted| painted.clone()) else {
         panic!("what was painted is not poisoned");
     };
@@ -212,15 +212,23 @@ fn a_frame_brings_in_what_the_page_pushed_before_it_though_its_cycle_runs_no_sta
     };
     let mappings = Mappings::unasked(&mut engine);
     let mut browser = Browser::new(engine, Still, mappings);
-    browser.frame();
+    browser.frame(48.0);
 
     let Ok(()) = feed.push(Moved { x: 7 }) else {
         panic!("the pointer holds its source");
     };
-    browser.frame();
+    browser.frame(64.0);
 
     let Ok(brought) = MOVED.lock().map(|brought| brought.clone()) else {
         panic!("what was brought is not poisoned");
     };
     assert_eq!(brought, [7]);
+}
+
+#[test]
+fn an_animation_frame_s_timestamp_is_its_time_in_nanoseconds() {
+    // Catches the frame's timestamp, in milliseconds, read in the wrong unit, which would run every actor's time
+    // a thousand times too fast or too slow, and one from before the page opened read as a time far in the future.
+    assert_eq!(frame_time(16.5), Time::from_nanos(16_500_000));
+    assert_eq!(frame_time(-1.0), Time::ZERO);
 }
