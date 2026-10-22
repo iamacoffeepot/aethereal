@@ -1,0 +1,25 @@
+[package]
+name = "aethereal-chassis-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The desktop chassis: the native host with a window, on winit, drawing through the GPU it opens on it"
+
+# A native-only host crate (ADR-0001): its window, its GPU, and the waits on them are a native host's. A build for
+# wasm32 compiles it empty.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-chassis-headless = { path = "../aethereal-chassis-headless" }
+aethereal-render = { path = "../aethereal-render" }
+aethereal-substrate = { path = "../aethereal-substrate" }
+aethereal-window = { path = "../aethereal-window" }
+pollster = "1.0.1"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "dx12", "metal", "vulkan"] }
+winit = "0.30.13"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+aethereal-data = { path = "../aethereal-data" }
+
+[lints]
+workspace = true
