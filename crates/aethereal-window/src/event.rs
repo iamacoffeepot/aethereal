@@ -13,6 +13,13 @@ pub enum Event {
     PointerDown { x: f32, y: f32, button: Button },
     /// A button of the pointer came up over the window, at `x`, `y`.
     PointerUp { x: f32, y: f32, button: Button },
+    /// The wheel turned with the pointer over the window at `x`, `y`, by `delta_x` across and `delta_y` down.
+    ///
+    /// Each delta is in the window's surface pixels, as a position is: how far the host would scroll what is under the
+    /// pointer. A positive `delta_y` scrolls down, toward what is below, as a wheel turned toward the person at it
+    /// does; a positive `delta_x` scrolls right. A host that counts the wheel in lines or pages takes a line as 40 of
+    /// its logical pixels and a page as 800, and converts those to the surface's.
+    Wheel { x: f32, y: f32, delta_x: f32, delta_y: f32 },
     /// A key went down while the window had the keyboard: `code` is the key's place on the keyboard, whatever its
     /// layout, as the W3C UI Events name it (`"KeyW"`, `"ArrowLeft"`), and `key` what it means under the layout
     /// (`"w"`, `"Shift"`). `repeat` when it is held down and this is the keyboard's repeat.

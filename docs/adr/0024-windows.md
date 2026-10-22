@@ -37,6 +37,7 @@ pub enum Event {
     PointerMoved { x: f32, y: f32 },                      // in the window's surface pixels, from its top left
     PointerDown { x: f32, y: f32, button: Button },       // Main | Middle | Secondary | Back | Forward | Other(u16)
     PointerUp { x: f32, y: f32, button: Button },
+    Wheel { x: f32, y: f32, delta_x: f32, delta_y: f32 },  // where the pointer is, and how far the wheel scrolls
     KeyDown { code: String, key: String, repeat: bool },  // "KeyW", "w": the W3C UI Events code, and the key's text
     KeyUp { code: String, key: String },
     Resized(Surface),                                     // Surface { width: u32, height: u32, scale: f64 }
@@ -47,6 +48,7 @@ pub enum Event {
 ```
 
 - **A position is in the window's surface pixels**: those of the surface the renderer draws in, its backing store, from its top left. An actor that hit-tests what it drew compares numbers of one kind, and never converts.
+- **The wheel's turn is in the window's surface pixels too**, as far as the host would scroll what is under the pointer, and carries where the pointer is, as a press does, so an actor zooms or scrolls about the place it points at. **A positive `delta_y` scrolls down**, toward what is below, as a wheel turned toward the person at it does, and a positive `delta_x` scrolls right: a page's `WheelEvent` signs its deltas so. A host that counts the wheel in lines or pages takes **a line as 40 of its logical pixels and a page as 800**, fixed factors that put a notch of a wheel, often three lines, near what a host that counts in pixels gives for one, and then converts those to the surface's pixels as it does a position.
 - **A key is named by its W3C UI Events `code`**, its place on the keyboard whatever the layout, and by its `key`, what it means under the layout (`"w"`, `"Shift"`). Both hosts give the `code` names as they are: a page as `KeyboardEvent.code`, and winit as the names of `KeyCode`'s variants, which follow the same specification. This is why it is the shared vocabulary: neither host translates a table of its own, and a name reads as the key it is. `repeat` is set on the keyboard's own repeat while a key is held.
 - **A resize carries the surface as it now stands**: its size in its pixels, and its scale, the screen's pixels to each of the host's logical ones (a page's `devicePixelRatio`, winit's `scale_factor`).
 - **`CloseRequested` asks; it closes nothing.** What to do is the program's, and closing a window on request is left for later (below).
@@ -99,8 +101,9 @@ let listening = canvas::listen(&canvas, &window)?;           // the page's callb
 ```
 
 - **The browser chassis is a window capability with exactly one window: the canvas.** `canvas::open` opens it standing as the page has it, its backing store as its surface, the page's `devicePixelRatio` as its scale, and focused when `document.hasFocus()`. What is the page's stays in `aethereal-chassis-browser`.
-- **`canvas::listen` registers the page's listeners**, as callbacks the page runs as it hears each event: `pointermove`, `pointerdown`, and `pointerup` on the canvas; `keydown`, `keyup`, `focus`, `blur`, and `resize` on the page's window; and an observer of the canvas's `width` and `height`. Each callback pushes one event onto the window's feed and returns, and the next frame brings in what was pushed, in the order it was pushed. Nothing waits: a callback never touches the engine, and a push to a feed whose source has gone is refused and dropped. Dropping what `listen` returns takes every callback off.
+- **`canvas::listen` registers the page's listeners**, as callbacks the page runs as it hears each event: `pointermove`, `pointerdown`, `pointerup`, and `wheel` on the canvas; `keydown`, `keyup`, `focus`, `blur`, and `resize` on the page's window; and an observer of the canvas's `width` and `height`. Each callback pushes one event onto the window's feed and returns, and the next frame brings in what was pushed, in the order it was pushed. Nothing waits: a callback never touches the engine, and a push to a feed whose source has gone is refused and dropped. Dropping what `listen` returns takes every callback off.
 - **The pointer's place is in the canvas's pixels**: its place on the page less the canvas's box, scaled on each axis by the backing store's size over the size the canvas is shown at. A canvas shown at 400 by 300 CSS pixels over a store of 800 by 600 reads a point 100 pixels across the page as 200. A press or release the page numbers below zero is no button, and is not pushed.
+- **The wheel over the canvas is the program's, not the page's**: its listener is registered as not passive and calls `preventDefault`, so the page does not scroll while the wheel turns over the canvas, and scrolls as ever over the rest of it. Its deltas are the page's, read in the `deltaMode` it gives, pixels as they are and lines and pages by the fixed factors above in CSS pixels, then scaled to the canvas's pixels on each axis as the pointer's place is. A `deltaMode` the page has no name for is not pushed.
 - **The keys are the page's**, heard on its window, not on the canvas: a canvas has the keyboard only once the page makes it focusable, and the page's keys are the one window's.
 - **A resize is pushed whenever the surface may have changed**, as it reads then: when the canvas's backing store is set to another size, which only the page's code does and the observer sees, and when the page resizes, which a zoom that changes `devicePixelRatio` does. The window's actor drops one that changed nothing.
 - **The canvas never sends `CloseRequested`**: a page is closed without asking the program, and nothing waits on an answer.
@@ -124,14 +127,14 @@ let listening = controls::listen(&feed)?;
 ## Consequences
 
 - An actor reads a window's pointer, keys, size, and focus in one vocabulary on every host, in the pixels it draws in, and reaches a window by its type and id alone.
-- A native chassis implements the capability by opening its windows with `Opening`, keeping a map from its library's window ids to each `WindowFeed`, and pushing each event in surface pixels with its `KeyCode` variant's name as the `code`; the window crate is unchanged.
+- A native chassis implements the capability by opening its windows with `Opening`, keeping a map from its library's window ids to each `WindowFeed`, and pushing each event in surface pixels with its `KeyCode` variant's name as the `code`; the window crate is unchanged. Its wheel is winit's `MouseWheel`: a `PixelDelta` in the screen's pixels as it is, a `LineDelta` by 40 logical pixels a line and the scale, each negated, as winit signs a delta by where the content moves rather than where the view scrolls.
 - Every window event costs one more mail than a root that sent to subscribers directly: the root's to the window's actor.
 - `Setup` gains `source`, as `Engine` has, so a chassis makes a source as it sets the program up.
 - **Left for later**, each its own record when a program needs it:
   - **opening and closing windows on request**: an `OpenWindow` asked of the root, a controller to the host, the host's answer pushed onto the source with the window's id, and the window's actor ended when its window closes (ADR-0019 sketches the road);
   - **a window opened while the program runs**, and how an actor learns of it;
   - **the cursor**: capturing the pointer, hiding or changing the cursor, and stopping a key's default, each a request;
-  - **the wheel**, and pointers entering and leaving;
+  - **pointers entering and leaving**;
   - **text input and IME** composition, which the `key` of a key press does not carry;
   - **more than one pointer**, a touch screen's contacts each its own;
   - **a native chassis** on winit;
@@ -142,6 +145,7 @@ let listening = controls::listen(&feed)?;
 - **A source for each window, held by its actor.** Each window's order is kept as well, and the root routes nothing. A window opened while the program runs would need a source made between steps and handed to its actor through mail, and the host would push onto as many feeds as it has windows, for one hop saved.
 - **Every window's events on the root, each carrying its id, and subscribers on the root.** One actor fewer for each window. Every subscriber would hear every window and filter, and a window could not be reached, or later closed, by its path.
 - **A source and a kind for the pointer, the keys, and each other thing a window hears.** An actor could subscribe to the keys alone. What one window heard would lose its order across kinds, as two sources keep no order between them (ADR-0010).
+- **The wheel as the host counts it**, a delta and its mode of pixels, lines, or pages. Nothing is lost, but every actor that reads it converts lines and pages itself, each by a factor of its own, and a native host's lines and a page's differ. A fixed factor is a guess at what a line scrolls, and one made once.
 - **Keys as the host's numbers**: scan codes, or a page's `keyCode`. A scan code is a host's own, and `keyCode` is deprecated; the `code` names are what both hosts already give.
 - **Positions in the host's logical pixels.** What the host reports natively, but every actor that compares the pointer with what it drew would convert by the scale.
 - **The host's own window ids as keys.** winit's `WindowId` is opaque and is the host's, and a page's canvas has none, so the key would not be one kind across hosts.

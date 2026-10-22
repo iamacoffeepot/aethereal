@@ -88,11 +88,11 @@ impl Handles<Event> for Listener {
 
 #[test]
 fn a_subscriber_hears_its_window_as_it_stood_then_what_its_host_pushed_that_says_something_new() {
-    // Catches the window root sending an event to the wrong window's actor or to every window's, an event another
-    // actor sent the root or the window sent on as though the host heard it, a subscriber not sent how the window
-    // stood or sent it twice for subscribing twice, a resize to the size the window has or a focus it has sent on, and
-    // a window's actor not made before a root made after the window root begins, so a subscription in its `begin` is
-    // lost.
+    // Catches the window root sending an event to the wrong window's actor or to every window's, an event another actor
+    // sent the root or the window sent on as though the host heard it, a subscriber not sent how the window stood or
+    // sent it twice for subscribing twice, a resize to the size the window has or a focus it has sent on, a turn of the
+    // wheel dropped as though it said nothing new, and a window's actor not made before a root made after the window
+    // root begins, so a subscription in its `begin` is lost.
     let Ok(mut setup) = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>() else {
         panic!("the cycle is in order");
     };
@@ -121,6 +121,7 @@ fn a_subscriber_hears_its_window_as_it_stood_then_what_its_host_pushed_that_says
         first.push(Event::FocusLost),
         second.push(Event::FocusLost),
         second.push(Event::PointerDown { x: 1.0, y: 2.0, button: Button::Main }),
+        second.push(Event::Wheel { x: 1.0, y: 2.0, delta_x: 0.0, delta_y: 80.0 }),
         second.push(Event::CloseRequested),
     ];
     assert!(pushed.iter().all(Result::is_ok), "the window root holds its source");
@@ -137,6 +138,7 @@ fn a_subscriber_hears_its_window_as_it_stood_then_what_its_host_pushed_that_says
         Event::FocusGained,
         Event::FocusLost,
         Event::PointerDown { x: 1.0, y: 2.0, button: Button::Main },
+        Event::Wheel { x: 1.0, y: 2.0, delta_x: 0.0, delta_y: 80.0 },
         Event::CloseRequested,
     ];
     assert_eq!(heard, expected);

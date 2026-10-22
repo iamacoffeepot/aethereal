@@ -1,5 +1,5 @@
-//! What the page's pointer events read as: where the pointer is in the canvas's pixels, and which button the page
-//! numbered.
+//! What the page's pointer and wheel events read as: where the pointer is in the canvas's pixels, which button the
+//! page numbered, and how far the wheel turned, in the canvas's pixels too.
 
 use aethereal_window::{Button, Event};
 
@@ -38,6 +38,37 @@ impl Canvas {
 
         pixel
     }
+
+    /// The event of the wheel turned by `delta_x`, `delta_y`, counted as the page's `deltaMode` `mode` says, with the
+    /// pointer `from_left`, `from_top` CSS pixels from the canvas's top left: the place and the turn each in the
+    /// canvas's pixels, scaled on each axis as [`pixel`](Self::pixel) scales a point, and each delta's sign as the page
+    /// gives it, positive down and right. None for a mode the page has no name for.
+    pub fn wheel(&self, (from_left, from_top): (f64, f64), (delta_x, delta_y): (f64, f64), mode: u32) -> Option<Event> {
+        let (x, y) = self.pixel(from_left, from_top);
+        let (delta_x, delta_y) = self.pixel(css_pixels(delta_x, mode)?, css_pixels(delta_y, mode)?);
+
+        Some(Event::Wheel { x, y, delta_x, delta_y })
+    }
+}
+
+/// The CSS pixels a line of the wheel's turn is taken as, for a page that counts the wheel in lines.
+pub const LINE_CSS_PIXELS: f64 = 40.0;
+
+/// The CSS pixels a page of the wheel's turn is taken as, for a page that counts the wheel in pages.
+pub const PAGE_CSS_PIXELS: f64 = 800.0;
+
+/// `delta` of the wheel's turn, counted as the page's `WheelEvent.deltaMode` `mode` says, in CSS pixels: as it is for
+/// pixels (`0`), by [`LINE_CSS_PIXELS`] for lines (`1`), and by [`PAGE_CSS_PIXELS`] for pages (`2`). None for a mode
+/// the page has no name for.
+pub fn css_pixels(delta: f64, mode: u32) -> Option<f64> {
+    let per = match mode {
+        0 => 1.0,
+        1 => LINE_CSS_PIXELS,
+        2 => PAGE_CSS_PIXELS,
+        _ => return None,
+    };
+
+    Some(delta * per)
 }
 
 /// What the pointer did, as the page's event names it.
