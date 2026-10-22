@@ -47,6 +47,7 @@ pub enum Heard {                                       // what the root's one so
     Opened { window: WindowId, surface: Surface, focused: bool },
     Unopened { window: WindowId, why: Unopened },
     Closed { window: WindowId },
+    Unclosed { window: WindowId, why: Unclosed },
 }
 ```
 
@@ -73,7 +74,8 @@ pub enum Heard {                                       // what the root's one so
   - A subscriber that wants to stop its work for the window does so on `Closed`.
 - **The render root drops the window's main frame**, and the targets it made for it, on `Surfaced::Closed`. Placements that joined only that window's main frame are drawn nowhere until their makers release them. Ids are never given twice, so nothing joins a window's main frame by mistake once it has closed.
 - **Any actor that may ask the root may close any window.** Who owns a window is not decided here; when a program needs it, the root keeps who asked for each, as the render root keeps the owner of a main frame (ADR-0025).
-- `CloseWindow` for a window that is not open is answered `Unclosed::NotOpen`, and a browser's chassis answers `NoHost`, as for opening.
+- `CloseWindow` for a window that is not open, or still opening, is answered `Unclosed::NotOpen` by the root. A host that closes no window pushes `Heard::Unclosed` with `NoHost`, as a browser's chassis does, and the root answers with it.
+- **Once a window has closed, the root drops what its source still brings for it**, so `Closed` is the last thing a subscriber hears of it, and `Event::Closed` pushed as an ordinary event is refused: closing is the host's to say.
 
 **The close button closes the window, unless the program says it only asks.**
 
