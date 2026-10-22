@@ -2,6 +2,7 @@
 #![allow(clippy::suboptimal_flops)]
 
 mod scan;
+mod segment;
 
 use super::PACKAGE;
 use naga::front::wgsl;
@@ -61,7 +62,7 @@ fn validate(what: &str, text: &str) {
 #[test]
 fn each_piece_links_alone_into_wgsl_the_renderer_validates() {
     let names: Vec<&str> = PACKAGE.root.submodules.iter().map(|module| module.name).collect();
-    assert_eq!(names.len(), 7, "the package holds its seven modules: {names:?}");
+    assert_eq!(names.len(), 8, "the package holds its eight modules: {names:?}");
 
     for name in names {
         validate(&format!("the module {name}"), &piece(name));

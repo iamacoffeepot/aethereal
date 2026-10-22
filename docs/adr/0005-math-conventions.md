@@ -75,6 +75,8 @@ The curve is a centripetal Catmull–Rom: knots spaced by the square root of the
 
 Touching is not crossing. Two segments cross when each passes strictly from one side of the other's line to the other, or when they lie on one line and share a stretch; a shared end, or an end resting on the other segment, is a touch. A polygon holds the points of its boundary, as a box does, and inside it is decided by crossings (the even-odd rule). The length along a polyline at a point is taken at the point's foot on the nearest segment's whole line, not clipped to the segment, so that collinear segments give one answer.
 
+The WGSL `Segment` in `aethereal-render`'s shader package (ADR-0030) carries these same meanings: `along` to the foot on the whole line, the nearest point and the distance clipped, the side by the sign of `perp_dot`, touching not crossing, and a segment of zero length measured as its point. A table of cases, behind this crate's `cases` feature, holds both to them: this crate's tests assert `Segment` against it, and the shader's port follows it.
+
 **Every bit pattern is a value.** No math type holds an invariant between its fields: an unnormalised quaternion, a singular matrix, and a box with `min` above `max` are all values with a stated meaning. This is what lets every type derive `Plain` with nothing to check on decode.
 
 | Type | Shape | Bytes |

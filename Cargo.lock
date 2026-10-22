@@ -123,6 +123,7 @@ version = "0.1.0"
 dependencies = [
  "aethereal-actor",
  "aethereal-data",
+ "aethereal-math",
  "aethereal-window",
  "crossbeam-queue",
  "naga",

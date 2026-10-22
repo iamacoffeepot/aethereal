@@ -43,13 +43,16 @@ A linker turns a WESL module and what it imports into one WGSL module. It includ
 | `shape` | the smooth step and the smooth minimum |
 | `colour` | Oklab to linear sRGB, linear to sRGB encoding, and the filmic tone curve |
 | `grid` | the four cells and two weights of a bilinear sample of a grid of floats in a storage buffer, which the program reads and blends |
+| `segment` | a segment of two points, with the meanings of `aethereal-math`'s `Segment` (ADR-0005); WGSL has no enums, so its side is one of three `i32` constants, the sign it names |
+| `scan` | the exclusive and inclusive prefix sums of `u32` across a workgroup and its total, and the same counted from a carry; the workgroup size, 256 |
+| `compact` | where an ordered compaction writes each element a predicate keeps, densely and in order, and where the workgroup's kept elements end |
 
 - **A program imports what it uses,** and the linker includes what that uses in turn: importing `noise` brings `hash`. No program lists what a piece needs, or orders it.
 - **Names cannot collide,** because the linker renames every imported declaration after its path. A piece's names need no prefix, and a program names its own functions as it likes.
 - **The package is offered through cargo, as `wesl` packages a crate's shaders.** `aethereal-render`'s build script packages the modules as the WESL package `aethereal_render`, and the crate exports it as a static, `aethereal_render::shaders::PACKAGE`. A program's build script depends on `aethereal-render` and names that static among its compiler's dependencies; `wesl` finds no package a crate carries on its own, and reads no dependencies from a `wesl.toml`. Each piece is declared `public`, as WESL requires of a declaration another package imports.
 - **`grid` does not read the buffer.** A module of a package cannot name a storage buffer the program declares, and passing one by pointer needs WGSL's `unrestricted_pointer_parameters`, which WebGPU does not enable by default. It answers the indices of the four cells around the point and the two weights, and the program reads the four cells and blends them.
 
-**Each piece is linked and validated as it is built.** A test in `aethereal-render` links each module of the package, alone, into a WGSL module, then parses and validates it with the `naga` the renderer uses. A reserved name, a built-in shadowed, or WGSL that WESL's parser and `naga` read differently fails there, before any program or page runs. The hash also has a test that it matches the JavaScript it ports, on a fixed set of inputs.
+**Each piece is linked and validated as it is built.** A test in `aethereal-render` links each module of the package, alone, into a WGSL module, then parses and validates it with the `naga` the renderer uses. A reserved name, a built-in shadowed, or WGSL that WESL's parser and `naga` read differently fails there, before any program or page runs. The hash also has a test that it matches the JavaScript it ports, on a fixed set of inputs. The segment follows the table of cases `aethereal-math` asserts its own `Segment` against, and a test runs it on a GPU where the machine has one and compares its answers with the CPU's.
 
 **`wesl` is a build dependency, at an exact version.** It is before its first stable release, so a newer version is taken on purpose, with the validation test as its gate. The package's static is written in the types of `wesl-core`, two structs of static strings with no dependencies of their own, which `aethereal-render` depends on at the version `wesl` uses.
 

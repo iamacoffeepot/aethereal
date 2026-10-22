@@ -10,6 +10,7 @@
 //! | `grid` | `bilinear(uv, size)`, the four cells and two weights of a bilinear sample of a grid of floats in a storage buffer |
 //! | `scan` | `scan(value, local)`, the exclusive and inclusive prefix sums of `u32` across a workgroup and its total; `scan_from`, the same counted from a carry; and `WORKGROUP_SIZE` |
 //! | `compact` | `place(keep, local, first)`, where an ordered compaction writes each element a predicate keeps, and where the workgroup's kept elements end |
+//! | `segment` | `Segment`, two `vec2<f32>`, and `along`, `closest_point`, `distance_to`, `contains_point`, `side`, and `crosses`, with the meanings of `aethereal_math::Segment`; its sides are the `i32` constants `SIDE_POSITIVE`, `SIDE_NEGATIVE`, and `SIDE_ON` |
 //!
 //! A program imports what it uses by the package's name, and the linker brings what that uses in turn:
 //!
