@@ -35,10 +35,14 @@ pub struct PoolSettings {
     pub workers: u32,
 }
 
-/// One window.
+/// One window: an element of the windows' settings, with a handle for each field.
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
+#[kind(name = "test.config.window")]
+#[settings]
 pub struct Window {
+    /// The window's title.
     pub title: String,
+    /// The window's inner size.
     pub size: [u32; 2],
 }
 
@@ -62,6 +66,19 @@ pub enum Presentation {
     Fifo,
     /// As fast as frames are made.
     VeryFast,
+}
+
+/// How sharply a canvas is drawn: variants of no field, one positional field, one named field, and two fields.
+#[derive(Plain, Debug, Clone, Copy, PartialEq)]
+pub enum Density {
+    /// Every device pixel.
+    Screen,
+    /// At most this many pixels to each CSS pixel.
+    AtMost(f64),
+    /// At least this many.
+    AtLeast { pixels: u32 },
+    /// Between two.
+    Between(f64, f64),
 }
 
 /// The renderer's settings.

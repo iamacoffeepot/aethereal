@@ -2,6 +2,7 @@
 //! page numbered, and how far the wheel turned, in the canvas's pixels too; and how many pixels the canvas is drawn
 //! at, from the size the page lays it out at.
 
+use aethereal_data::Plain;
 use aethereal_window::{Button, Event};
 
 /// The canvas as the page lays it out: the size of its backing store, in its pixels, and the size it is shown at, in
@@ -111,32 +112,36 @@ pub fn button_of(number: i16) -> Option<Button> {
 }
 
 /// How sharply the canvas is drawn: as many of its pixels to each of the page's CSS pixels as the screen has device
-/// pixels, but at most `most`. A page past two device pixels to each CSS pixel may draw at two, which is no less sharp
-/// to the eye and a quarter of the pixels of four.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Density {
-    most: f64,
+/// pixels, or at most a number of them. A page past two device pixels to each CSS pixel may draw at two, which is no
+/// less sharp to the eye and a quarter of the pixels of four. Typed `screen` or `at-most:2` (ADR-0028).
+#[derive(Plain, Debug, Default, Clone, Copy, PartialEq)]
+pub enum Density {
+    /// Every device pixel of the screen.
+    #[default]
+    Screen,
+    /// The screen's device pixels to each CSS pixel, but at most this many, more than none: below one, fewer pixels
+    /// than the page lays the canvas out at.
+    AtMost(f64),
 }
 
 impl Density {
-    /// The screen's device pixels to each CSS pixel, but at most `most`: below one, fewer pixels than the page lays
-    /// the canvas out at. A `most` of no pixels, or one that is no number, is the screen's.
-    #[must_use]
-    pub const fn at_most(most: f64) -> Self {
-        Self { most }
-    }
-
     /// The canvas's pixels to each CSS pixel, on a screen of `device_pixel_ratio` device pixels to each: the screen's,
     /// at most this density's most. A screen that gives no positive ratio is taken as one device pixel to each.
     #[must_use]
     pub fn scale(self, device_pixel_ratio: f64) -> f64 {
         let screen = screen(device_pixel_ratio);
-        let has_most = self.most > 0.0;
+        match self {
+            Self::Screen => screen,
+            Self::AtMost(most) => screen.min(most),
+        }
+    }
 
-        if has_most {
-            screen.min(self.most)
-        } else {
-            screen
+    /// Whether the canvas is drawn at some pixels: a most that is more than none.
+    #[must_use]
+    pub fn draws(self) -> bool {
+        match self {
+            Self::Screen => true,
+            Self::AtMost(most) => most > 0.0,
         }
     }
 }

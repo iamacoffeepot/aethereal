@@ -58,6 +58,8 @@ mod serving;
 mod tests;
 
 #[cfg(target_arch = "wasm32")]
+pub use canvas::Density;
+#[cfg(target_arch = "wasm32")]
 pub use clock::Performance;
 pub use hosted::Hosted;
 #[cfg(target_arch = "wasm32")]

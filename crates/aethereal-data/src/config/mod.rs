@@ -32,14 +32,14 @@ mod reader;
 mod samples;
 
 pub use field::Field;
-pub use settings::{Declared, Settings, Suggested};
+pub use settings::{Declared, Members, Settings, Sole, Suggested};
 
 #[cfg(feature = "json")]
 pub use error::{ConfigError, ConfigFault, FlagError, FlagName, RepeatedSection};
 #[cfg(feature = "json")]
 pub use flags::{Flag, FlagTable, Flags, Named};
 #[cfg(feature = "json")]
-pub use form::{Form, NumberForm};
+pub use form::{Form, NumberForm, VariantForm, VariantValue};
 #[cfg(feature = "json")]
 pub use overlay::Overlay;
 #[cfg(feature = "json")]

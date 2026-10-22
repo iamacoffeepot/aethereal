@@ -114,15 +114,34 @@ impl Marked {
             handles.push(quote! {
                 #[doc = #handle_doc]
                 #visibility const #handle: ::aethereal_data::config::Field<Self, #field_type> =
-                    ::aethereal_data::__derive::field(#field_name);
+                    ::aethereal_data::__derive::field(#field_name, #doc);
             });
         }
+
+        let shape = match &data.fields {
+            Fields::Named(_) => quote! {
+                #[automatically_derived]
+                impl ::aethereal_data::config::Members for #name {}
+            },
+            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                let value = &fields.unnamed[0].ty;
+                quote! {
+                    #[automatically_derived]
+                    impl ::aethereal_data::config::Sole for #name {
+                        type Value = #value;
+                    }
+                }
+            }
+            Fields::Unnamed(_) | Fields::Unit => TokenStream2::new(),
+        };
 
         Ok(quote! {
             #[automatically_derived]
             impl ::aethereal_data::config::Settings for #name {
                 const FIELDS: &'static [::aethereal_data::config::Declared] = &[ #( #declared ),* ];
             }
+
+            #shape
 
             #[automatically_derived]
             #[allow(dead_code)]

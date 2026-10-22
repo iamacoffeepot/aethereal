@@ -81,13 +81,14 @@ What this engine already has:
 
   Flags::of(&parts)
       .rename(EngineSettings::WORKERS, "threads")
-      .flag("size", 's', WindowSettings::FIRST_SIZE)
+      .flag("size", 's', WindowsSettings::FIRST_SIZE)
   ```
 - **A field is named by a handle the derive emits**, `EngineSettings::WORKERS: Field<EngineSettings, NonZeroUsize>`, beside the schema it already emits. So a program's flags name fields that exist, checked when it is built.
+- **A field of one element of a sequence is named by a handle made from its element's,** `WindowSettings::SIZE.in_element(0)`, which names `windows[0].size`. The section is then the sequence itself, `WindowsSettings(Vec<WindowSettings>)`, written as the sequence alone, so its path names it once; the derive marks such settings, and settings of named fields, so the element's type and the sequence's are checked when the program is built. The desktop's windows give it as `WindowsSettings::FIRST_SIZE`, and a program offers it as `--size`. An element the section does not have refuses what a layer sets there, naming its path, as any index past the end is.
 - **Two flags of one name, left so by the program, are an error as the program is put together**, naming both fields. Neither wins.
 - **A field's type picks how its flag's value is read:**
   - a size is `1280x720`;
-  - an enum is its variant's name in kebab case;
+  - an enum is its variant's name in kebab case, and a variant of one field its name, a colon, and the field's value read by the field's form: `screen`, `at-most:2`, `for:3`. A variant of several fields is set by JSON;
   - a `bool` is a switch, and `--no-<name>` turns it off;
   - a number is a number, and a string is itself.
 
