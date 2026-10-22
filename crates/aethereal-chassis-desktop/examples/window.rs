@@ -5,7 +5,7 @@
 //! the program quits itself after N seconds, and prints the time between the frames it was handed, from one `Tick` to
 //! the next, as `key=value` in milliseconds: their mean, median, 99th percentile, and longest. Without it, it runs until
 //! its window is closed or Escape is pressed. Each key, button, and turn of the wheel it hears is printed as it comes,
-//! and each resize.
+//! and each resize. `--help` lists every flag the program reads, each also read from its `WINDOW_` variable.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
@@ -15,7 +15,7 @@ use aethereal_actor::{
 };
 use aethereal_chassis_desktop::Desktop;
 use aethereal_chassis_headless::Exit;
-use aethereal_data::config::Overlay;
+use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -28,17 +28,19 @@ use aethereal_render::program::{
 };
 use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
-use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
+use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_window::{self as window, Event, InitialWindows, Window, WindowId, Windows};
 use core::error::Error;
 use core::f32::consts::TAU;
-use core::num::NonZeroUsize;
-use std::env;
+use core::num::{NonZeroU32, NonZeroUsize};
 use std::process::ExitCode;
 use std::thread;
 
 /// The triangles in the ring.
 const RING: u8 = 48;
+
+/// The most workers the program runs on.
+const MOST_WORKERS: NonZeroUsize = NonZeroUsize::new(4).expect("4 is not zero");
 
 /// How long one turn of the ring takes, in milliseconds.
 const TURN_MILLIS: u64 = 4_000;
@@ -66,10 +68,11 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 
 fn main() -> ExitCode {
     match run() {
-        Ok(exit) => {
+        Ok(Launched::Ran(exit)) => {
             println!("exit={exit:?}");
             ExitCode::SUCCESS
         }
+        Ok(Launched::Printed) => ExitCode::SUCCESS,
         Err(failed) => {
             eprintln!("{failed}");
             ExitCode::FAILURE
@@ -77,35 +80,22 @@ fn main() -> ExitCode {
     }
 }
 
-/// Runs the program of the window root, the renderer, which draws on the window it opened, and the scene, on as many
-/// workers as the machine has cores, at most four, the engine's views in a part for each, the scene quitting after
-/// `--seconds` when they are any.
-fn run() -> Result<Exit, Box<dyn Error>> {
-    let args: Vec<String> = env::args().skip(1).collect();
-    let seconds = args
-        .iter()
-        .position(|arg| arg == "--seconds")
-        .and_then(|at| args.get(at + 1))
-        .and_then(|seconds| seconds.parse::<u64>().ok())
-        .unwrap_or(0);
-    let cores = thread::available_parallelism().map_or(1, NonZeroUsize::get);
-    let workers = cores.min(4);
+/// Launches the program of the window root, the renderer, which draws on the window it opened, and the scene, on as
+/// many workers as the machine has cores, at most four, the engine's views in a part for each, with what its command
+/// line and environment set over that.
+fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
+    let workers = NonZeroU32::try_from(
+        thread::available_parallelism().map_or(NonZeroUsize::MIN, |cores| cores.min(MOST_WORKERS)),
+    )?;
 
-    let program = Desktop::program()
+    Ok(Desktop::program()
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| format!("the cycle is out of order: {unordered:?}"))?
+        .with_engine(EngineSettings { workers, parts: workers, ..Default::default() })
         .root::<Windows>()
         .root::<Renderer>()
-        .root::<Scene>();
-    let parts = program.parts()?;
-    let mut code = Overlay::new("code");
-    for set in
-        [format!("engine.workers={workers}"), format!("engine.parts={workers}"), format!("scene.seconds={seconds}")]
-    {
-        code.set(&parts, &set)?;
-    }
-
-    Ok(program.layer(code).run()?)
+        .root::<Scene>()
+        .launch("window")?)
 }
 
 /// How long the scene runs: its section, `scene`.
@@ -114,6 +104,7 @@ fn run() -> Result<Exit, Box<dyn Error>> {
 #[settings]
 struct Show {
     /// The seconds the scene runs for, none for as long as it is let.
+    #[flag]
     seconds: u64,
 }
 

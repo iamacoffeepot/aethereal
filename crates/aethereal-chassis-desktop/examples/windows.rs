@@ -10,7 +10,8 @@
 //! milliseconds: their mean, median, 99th percentile, and longest. Each answer to a window asked for is printed as it
 //! comes. A window's close button closes that window alone, and its scene prints its frames as it closes; the program
 //! ends once the last window has closed, or Escape is pressed in any. Each key, button, and turn of the wheel a window
-//! hears is printed as it comes, beside the window, and each resize.
+//! hears is printed as it comes, beside the window, and each resize. `--help` lists every flag the program reads, each
+//! also read from its `WINDOWS_` variable.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
@@ -18,9 +19,9 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
-use aethereal_chassis_desktop::Desktop;
+use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
-use aethereal_data::config::Overlay;
+use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_data::{Bound, Plain, TypedKey};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -33,19 +34,21 @@ use aethereal_render::program::{
 };
 use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
-use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
+use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_window::{
     self as window, Event, InitialWindows, Logical, OpenWindow, Opened, Surface, Window, WindowId, Windows,
 };
 use core::error::Error;
 use core::f32::consts::TAU;
-use core::num::NonZeroUsize;
-use std::env;
+use core::num::{NonZeroU32, NonZeroUsize};
 use std::process::ExitCode;
 use std::thread;
 
 /// The most triangles in a ring.
 const RING: u8 = 48;
+
+/// The most workers the program runs on.
+const MOST_WORKERS: NonZeroUsize = NonZeroUsize::new(4).expect("4 is not zero");
 
 /// How long one turn of the ring takes, in milliseconds.
 const TURN_MILLIS: u64 = 4_000;
@@ -73,10 +76,11 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 
 fn main() -> ExitCode {
     match run() {
-        Ok(exit) => {
+        Ok(Launched::Ran(exit)) => {
             println!("exit={exit:?}");
             ExitCode::SUCCESS
         }
+        Ok(Launched::Printed) => ExitCode::SUCCESS,
         Err(failed) => {
             eprintln!("{failed}");
             ExitCode::FAILURE
@@ -84,39 +88,23 @@ fn main() -> ExitCode {
     }
 }
 
-/// Runs the program of the window root, which opens one window, the renderer, which draws on it, and the director, on
-/// as many workers as the machine has cores, at most four, the engine's views in a part for each, each scene quitting
-/// after `--seconds` when they are any.
-fn run() -> Result<Exit, Box<dyn Error>> {
-    let args: Vec<String> = env::args().skip(1).collect();
-    let seconds = args
-        .iter()
-        .position(|arg| arg == "--seconds")
-        .and_then(|at| args.get(at + 1))
-        .and_then(|seconds| seconds.parse::<u64>().ok())
-        .unwrap_or(0);
-    let cores = thread::available_parallelism().map_or(1, NonZeroUsize::get);
-    let workers = cores.min(4);
+/// Launches the program of the window root, which opens one window, the renderer, which draws on it, and the director,
+/// on as many workers as the machine has cores, at most four, the engine's views in a part for each, with what its
+/// command line and environment set over that.
+fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
+    let workers = NonZeroU32::try_from(
+        thread::available_parallelism().map_or(NonZeroUsize::MIN, |cores| cores.min(MOST_WORKERS)),
+    )?;
+    let first = WindowSettings { title: String::from("aethereal: first"), width: 640, height: 480 };
 
-    let program = Desktop::program()
+    Ok(Desktop::program()
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| format!("the cycle is out of order: {unordered:?}"))?
-        .root::<Windows>()
+        .with_engine(EngineSettings { workers, parts: workers, ..Default::default() })
+        .root_with::<Windows>(WindowsSettings { windows: vec![first] })
         .root::<Renderer>()
-        .root::<Director>();
-    let parts = program.parts()?;
-    let mut code = Overlay::new("code");
-    let sets = [
-        format!("engine.workers={workers}"),
-        format!("engine.parts={workers}"),
-        String::from(r#"windows.windows=[{"title":"aethereal: first","width":640,"height":480}]"#),
-        format!("director.seconds={seconds}"),
-    ];
-    for set in sets {
-        code.set(&parts, &set)?;
-    }
-
-    Ok(program.layer(code).run()?)
+        .root::<Director>()
+        .launch("windows")?)
 }
 
 /// How long each scene runs: the director's section, `director`.
@@ -125,6 +113,7 @@ fn run() -> Result<Exit, Box<dyn Error>> {
 #[settings]
 struct Show {
     /// The seconds each scene runs for, none for as long as it is let.
+    #[flag]
     seconds: u64,
 }
 

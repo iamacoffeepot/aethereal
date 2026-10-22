@@ -4,8 +4,7 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells, Tick,
     Top, Turn, path,
 };
-use aethereal_chassis_browser::{Browser, Started};
-use aethereal_data::config::Overlay;
+use aethereal_chassis_browser::{Browser, Started, WindowsSettings};
 use aethereal_data::{Bound, Plain, TypedKey};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -52,16 +51,19 @@ pub struct Program {
 /// When a canvas or WebGPU on them will not open, the page will not be listened to, or a root does not begin.
 #[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
 pub async fn start() -> Result<Program, JsError> {
-    let program = Browser::program()
+    let started = Browser::program()
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?
-        .root::<Windows>()
+        .root_with::<Windows>(WindowsSettings {
+            canvases: vec![String::from("first"), String::from("second")],
+            ..Default::default()
+        })
         .root::<Renderer>()
-        .root::<Scene>();
-    let mut code = Overlay::new("code");
-    code.set(&program.parts()?, r#"windows.canvases=["first","second"]"#)?;
+        .root::<Scene>()
+        .run()?
+        .await?;
 
-    Ok(Program { started: program.layer(code).run()?.await? })
+    Ok(Program { started })
 }
 
 #[wasm_bindgen]

@@ -7,7 +7,6 @@ use aethereal_actor::{
     Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::{Browser, Started};
-use aethereal_data::config::Overlay;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::effect::{CreateEffect, EffectId, Effected};
 use aethereal_render::frame::builder::{Effect, FrameBuilder, Onto, depth};
@@ -22,7 +21,7 @@ use aethereal_render::readback::{Pixels, ReadBack, Readable};
 use aethereal_render::shape::{ColourFormat, Shape};
 use aethereal_render::texture::{TextureFormat, TextureId};
 use aethereal_render::{Release, Renderer};
-use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
+use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_window::{InitialWindows, WindowId, Windows};
 use core::cell::RefCell;
 use core::mem;
@@ -53,19 +52,20 @@ pub struct Program {
 /// When the canvas or WebGPU on it will not open, the page will not be listened to, or a root does not begin.
 #[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
 pub async fn start() -> Result<Program, JsError> {
-    let program = Browser::program()
+    let started = Browser::program()
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?
+        // Its blobs hold a frame of a large canvas.
+        .with_engine(EngineSettings { blob_bytes: 1 << 26, ..Default::default() })
         .root::<Windows>()
         .root::<Renderer>()
         .root::<Claimer>()
         .root::<Mapper>()
-        .root::<Glower>();
-    // Its blobs hold a frame of a large canvas.
-    let mut code = Overlay::new("code");
-    code.set(&program.parts()?, "engine.blob_bytes=67108864")?;
+        .root::<Glower>()
+        .run()?
+        .await?;
 
-    Ok(Program { started: program.layer(code).run()?.await? })
+    Ok(Program { started })
 }
 
 #[wasm_bindgen]
