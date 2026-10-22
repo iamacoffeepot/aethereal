@@ -19,11 +19,11 @@ use crate::mapping::{Mapped, Mapping};
 use crate::mesh::{self, Counted, CreateMesh, MeshId, Meshed, VertexLayout};
 use crate::pass::PassName;
 use crate::placement::{
-    self, Bind, Drawn, Filter, Finds, Join, JoinRefused, Place, Placed, PlacementId, PlacementRefused, Reads, Sampling,
-    Wrap,
+    self, Bind, Drawn, Filter, Finds, Fits, Join, JoinRefused, Place, Placed, PlacementId, PlacementRefused, Reads,
+    Sampling, Wrap,
 };
 use crate::program::{
-    self, Access, Binding, BindingKind, Blend, CreateProgram, Cull, Depth, PerInstance, ProgramId, Programmed,
+    self, Access, Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, PerInstance, ProgramId, Programmed,
 };
 use crate::readback::{self, Bytes, Copied, Order, Pixels, ReadBack, ReadRefused, ReadStorage, Readable};
 use crate::shape::{ColourFormat, DepthFormat, Shape};
@@ -40,7 +40,7 @@ use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_window::WindowId;
 use std::collections::HashMap;
 use std::mem;
-use walk::{End, Making, Step, Walk};
+use walk::{End, Making, ReadGroup, Step, Walk};
 
 /// The renderer, the one actor that touches the GPU. Actors ask it through [`Rendering`].
 #[derive(Bound)]
@@ -396,8 +396,9 @@ struct Compute {
 
 /// What a program's stages read.
 enum Stages {
-    /// It draws placements: vertices laid out as `layout`, and what `instances` says once per instance.
-    Draws { layout: VertexLayout, instances: PerInstance },
+    /// It draws placements: vertices laid out as `layout`, what `instances` says once per instance, and the targets of
+    /// the pass it joins as `reads` says, bound in its first group when it reads any.
+    Draws { layout: VertexLayout, instances: PerInstance, reads: Vec<Read> },
     /// It is an effect, drawn over a whole target, reading targets as `reads` says, bound in its first group, which is
     /// empty when it reads none.
     Effect { reads: Vec<Read> },
@@ -421,12 +422,13 @@ struct Placement {
 }
 
 /// One pass a placement draws in, with what it draws there with: the program's id, which a pass draws placements
-/// together by, its pipeline and the shape it was made against, the bind groups made for it, and the textures and
-/// storage they bind, by their ids, with the storage the placement reads its counts from.
+/// together by, its pipeline and what it was made against, the bind groups made for it, from group 1 when the program
+/// reads targets of the pass and from group 0 when it reads none, and the textures and storage they bind, by their
+/// ids, with the storage the placement reads its counts from.
 struct Joined {
     frame: Frame,
     pass: PassName,
-    shape: Shape,
+    fits: Fits,
     program: u64,
     pipeline: wgpu::RenderPipeline,
     groups: Vec<wgpu::BindGroup>,
@@ -1166,7 +1168,7 @@ impl Handles<ShapeOf> for Renderer {
     fn handle(&mut self, of: ShapeOf, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let kept = turn.open(&mut self.kept)?;
         let shaped = match kept.pass(of.frame, of.pass) {
-            Ok(shape) => Shaped::Shape(shape),
+            Ok(fits) => Shaped::Shape(fits.shape),
             Err(why) => Shaped::Refused(why),
         };
         turn.reply(&shaped)?;
@@ -1394,14 +1396,19 @@ impl Kept {
     /// placement drawn as `drawn` says, whose storage it reads its counts from, if any, is read in the pass.
     fn joined(&self, device: &wgpu::Device, join: &Join, drawn: Drawn) -> Result<Joined, JoinRefused> {
         let program = self.programs.get(join.program.id).ok_or(JoinRefused::Program)?;
+        let Stages::Draws { reads, .. } = &program.stages else {
+            return Err(JoinRefused::Program);
+        };
+        // A program that reads targets binds them in its first group, which the pass binds.
+        let first = u32::from(!reads.is_empty());
 
         Ok(Joined {
             frame: join.frame,
             pass: join.pass,
-            shape: program.shape,
+            fits: Fits { shape: program.shape, reads: reads.clone() },
             program: join.program.id,
             pipeline: program.pipeline.clone(),
-            groups: self.bind_groups(device, &program.groups, &join.bindings, 0)?,
+            groups: self.bind_groups(device, &program.groups[first as usize..], &join.bindings, first)?,
             textures: textures(&join.bindings),
             storage: join
                 .bindings
@@ -1542,9 +1549,11 @@ impl Kept {
                     continue;
                 }
             };
-            let view = match into {
-                Target::End => end,
-                Target::Texture(target) => walk.target(target),
+            // A target of four samples is drawn into as its four, kept for a later pass that draws over them, and
+            // resolved as the pass ends into the one a later pass reads.
+            let (view, resolve_target) = match into {
+                Target::End => (end, None),
+                Target::Texture(target) => (walk.target(target).drawn(), walk.target(target).resolved()),
             };
             let load = match load {
                 Load::Clear => wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1553,19 +1562,19 @@ impl Kept {
             let colour = wgpu::RenderPassColorAttachment {
                 view,
                 depth_slice: None,
-                resolve_target: None,
+                resolve_target,
                 ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
             };
             let depth_ops = |load| Some(wgpu::Operations { load, store: wgpu::StoreOp::Store });
             let depth = match depth {
                 DepthUse::Off => None,
                 DepthUse::Write(target) => Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: walk.target(target),
+                    view: walk.target(target).drawn(),
                     depth_ops: depth_ops(wgpu::LoadOp::Clear(1.0)),
                     stencil_ops: None,
                 }),
                 DepthUse::Test(target) => Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: walk.target(target),
+                    view: walk.target(target).drawn(),
                     depth_ops: depth_ops(wgpu::LoadOp::Load),
                     stencil_ops: None,
                 }),
@@ -1577,10 +1586,10 @@ impl Kept {
                 ..Default::default()
             });
             match step {
-                Step::Draw { shape, .. } => self.draw(&mut recording, frame, pass, *shape),
+                Step::Draw { fits, read, .. } => self.draw(&mut recording, (frame, pass), fits, read),
                 Step::Effect { effect, .. } => {
                     recording.set_pipeline(&effect.pipeline);
-                    recording.set_bind_group(0, &effect.read, &[]);
+                    recording.set_bind_group(0, &effect.read.group, &[]);
                     for (group, bound) in (1..).zip(&effect.groups) {
                         recording.set_bind_group(group, bound, &[]);
                     }
@@ -1834,7 +1843,7 @@ impl Kept {
             })
             .collect::<Result<_, _>>()?;
         let layout = made.groups.first().ok_or(PassRefused::Effect)?.clone();
-        let read = walk::read_group(device, &layout, &reads, making.targets);
+        let read = ReadGroup::new(device, layout, reads, making.targets);
         let groups = self
             .bind_groups(device, made.groups.get(1..).unwrap_or_default(), bindings, 1)
             .map_err(|why| PassRefused::Bindings { why })?;
@@ -1844,11 +1853,11 @@ impl Kept {
             Load::Clear
         };
 
-        Ok(walk::Effected { pipeline: made.pipeline.clone(), reads, layout, read, groups, into: *into, load })
+        Ok(walk::Effected { pipeline: made.pipeline.clone(), read, groups, into: *into, load })
     }
 
     /// Each placement's joins of a window's main frame that it does not draw: those whose pass it has not, or has in
-    /// another shape, each as its placement, the window, and the pass it joined.
+    /// another shape or reading other targets, each as its placement, the window, and the pass it joined.
     fn undrawn(&self) -> Vec<(u64, WindowId, PassName)> {
         self.placements
             .iter()
@@ -1857,7 +1866,7 @@ impl Kept {
                 let Frame::Main(window) = join.frame else {
                     return None;
                 };
-                let drawn = self.main(window)?.shape_of(join.pass) == Some(join.shape);
+                let drawn = self.main(window)?.fits(join.pass).is_some_and(|fits| fits == join.fits);
                 (!drawn).then_some((id, window, join.pass))
             })
             .collect()
@@ -1910,15 +1919,28 @@ impl Kept {
         }
     }
 
-    /// Records into `recording` every placement that joins the pass `pass` of `frame`, of the shape `shape`, each
-    /// program's together, setting each pipeline once. A join of another shape is not drawn.
-    fn draw(&self, recording: &mut wgpu::RenderPass<'_>, frame: Frame, pass: PassName, shape: Shape) {
+    /// Records into `recording` every placement that joins the pass `pass` of `frame`, whose programs are made against
+    /// `fits`, each program's together, setting each pipeline once, with the targets the pass reads bound at group 0
+    /// through `read` when it reads any. A join of another shape, or reading other targets, is not drawn.
+    fn draw(
+        &self,
+        recording: &mut wgpu::RenderPass<'_>,
+        (frame, pass): (Frame, PassName),
+        fits: &Fits,
+        read: &ReadGroup,
+    ) {
         let mut joined: Vec<(&Placement, &Joined)> = self
             .placements
             .values()
             .flat_map(|placement| placement.joins.iter().map(move |join| (placement, join)))
-            .filter(|(_, join)| join.draws_in(frame, pass, shape))
+            .filter(|(_, join)| join.draws_in(frame, pass, fits))
             .collect();
+        // The targets it reads are bound once, for every program that joins it, which lists nothing in group 0.
+        let reads = !fits.reads.is_empty();
+        if reads {
+            recording.set_bind_group(0, &read.group, &[]);
+        }
+        let first = u32::from(reads);
         joined.sort_unstable_by_key(|(_, join)| join.program);
         let mut pipeline = 0;
         for (placement, join) in joined {
@@ -1938,7 +1960,7 @@ impl Kept {
                 recording.set_pipeline(&join.pipeline);
                 pipeline = join.program;
             }
-            for (group, bound) in (0..).zip(&join.groups) {
+            for (group, bound) in (first..).zip(&join.groups) {
                 recording.set_bind_group(group, bound, &[]);
             }
             recording.set_vertex_buffer(0, placement.vertices.slice(..));
@@ -1962,10 +1984,10 @@ enum Count<'a> {
 }
 
 impl Joined {
-    /// Whether it draws in the pass `pass` of `frame`, whose shape is `shape`: the pass it joined, of the shape it was
-    /// made against.
-    fn draws_in(&self, frame: Frame, pass: PassName, shape: Shape) -> bool {
-        self.frame == frame && self.pass == pass && self.shape == shape
+    /// Whether it draws in the pass `pass` of `frame`, whose programs are made against `fits`: the pass it joined, of
+    /// the shape it was made against, reading what it was made to read.
+    fn draws_in(&self, frame: Frame, pass: PassName, fits: &Fits) -> bool {
+        self.frame == frame && self.pass == pass && self.fits == *fits
     }
 }
 
@@ -2115,7 +2137,7 @@ impl Stamps {
 
 /// What a placement's check finds of what is kept.
 impl Finds for Kept {
-    fn pass(&self, frame: Frame, pass: PassName) -> Result<Shape, JoinRefused> {
+    fn pass(&self, frame: Frame, pass: PassName) -> Result<Fits, JoinRefused> {
         let walk = match frame {
             Frame::Main(window) => self.main(window).ok_or(JoinRefused::Frame)?,
             Frame::Texture(id) => {
@@ -2123,7 +2145,7 @@ impl Finds for Kept {
             }
         };
 
-        walk.shape_of(pass).ok_or(JoinRefused::Pass)
+        walk.fits(pass).ok_or(JoinRefused::Pass)
     }
 
     fn drawn_by(&self, texture: TextureId) -> Option<u64> {
@@ -2175,11 +2197,11 @@ impl Finds for Kept {
 
     fn program(&self, id: ProgramId) -> Option<Reads<'_>> {
         let program = self.programs.get(id.id)?;
-        let Stages::Draws { layout, instances } = &program.stages else {
+        let Stages::Draws { layout, instances, reads } = &program.stages else {
             return None;
         };
 
-        Some(Reads { layout, instances, bindings: &program.bindings, shape: program.shape })
+        Some(Reads { layout, instances, bindings: &program.bindings, targets: reads, shape: program.shape })
     }
 
     fn mesh(&self, id: MeshId) -> Option<&VertexLayout> {
@@ -2372,7 +2394,11 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram, wgsl: &str) -> Program {
         label: None,
         source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     });
-    let groups = groups(device, &create.bindings, wgpu::ShaderStages::VERTEX_FRAGMENT);
+    let mut groups = groups(device, &create.bindings, wgpu::ShaderStages::VERTEX_FRAGMENT);
+    // One that reads targets binds them in its first group, where it lists nothing; one that reads none keeps it.
+    if !create.reads.is_empty() {
+        first_reads(&mut groups, read_layout(device, &create.reads));
+    }
     let bound: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(Some).collect();
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
@@ -2437,7 +2463,11 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram, wgsl: &str) -> Program {
             ..Default::default()
         },
         depth_stencil,
-        multisample: wgpu::MultisampleState { count: create.shape.samples.count(), ..Default::default() },
+        multisample: wgpu::MultisampleState {
+            count: create.shape.samples.count(),
+            alpha_to_coverage_enabled: create.state.coverage == Coverage::Alpha,
+            ..Default::default()
+        },
         fragment: Some(wgpu::FragmentState {
             module: &module,
             entry_point: Some(&create.fragment),
@@ -2450,7 +2480,11 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram, wgsl: &str) -> Program {
 
     Program {
         pipeline,
-        stages: Stages::Draws { layout: create.layout.clone(), instances: create.instances.clone() },
+        stages: Stages::Draws {
+            layout: create.layout.clone(),
+            instances: create.instances.clone(),
+            reads: create.reads.clone(),
+        },
         bindings: create.bindings.clone(),
         groups,
         shape: create.shape,
@@ -2473,25 +2507,8 @@ fn effect_pipeline(device: &wgpu::Device, create: &CreateEffect, wgsl: &str) -> 
         label: None,
         source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     });
-    let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..)
-        .zip(&create.reads)
-        .map(|(binding, read)| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: sample_type(*read),
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        })
-        .collect();
-    let reads = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &entries });
     let mut groups = groups(device, &create.bindings, wgpu::ShaderStages::VERTEX_FRAGMENT);
-    match groups.first_mut() {
-        Some(first) => *first = reads,
-        None => groups.push(reads),
-    }
+    first_reads(&mut groups, read_layout(device, &create.reads));
     let bound: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(Some).collect();
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
@@ -2563,6 +2580,36 @@ fn compute_pipeline(device: &wgpu::Device, create: &CreateCompute, wgsl: &str, c
         groups,
         workgroup: checked.workgroup,
         arrays: checked.arrays,
+    }
+}
+
+/// The layout of the group a pass's targets are read in, as `reads` says, the first at binding 0, by the fragment
+/// stage: one layout for an effect's reads and a draw program's, and for the group the pass binds them in, so each is
+/// bound through another made alike (ADR-0025).
+fn read_layout(device: &wgpu::Device, reads: &[Read]) -> wgpu::BindGroupLayout {
+    let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..)
+        .zip(reads)
+        .map(|(binding, read)| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: sample_type(*read),
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        })
+        .collect();
+
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &entries })
+}
+
+/// Puts `reads`, the layout of what a program reads, as the first of `groups`, the layouts of what it lists from group
+/// 1, whose first is empty as it lists nothing there, or the only one when it lists nothing.
+fn first_reads(groups: &mut Vec<wgpu::BindGroupLayout>, reads: wgpu::BindGroupLayout) {
+    match groups.first_mut() {
+        Some(first) => *first = reads,
+        None => groups.push(reads),
     }
 }
 

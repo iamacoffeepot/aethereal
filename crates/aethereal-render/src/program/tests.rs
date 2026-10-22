@@ -45,7 +45,8 @@ fn program() -> Asked<CreateProgram> {
         layout: VertexLayout { stride: 20, attributes: vec![position, uv] },
         instances: PerInstance::None,
         bindings,
-        state: Fixed { blend: Blend::Opaque, depth: Depth::TestWrite, cull: Cull::Back },
+        reads: Vec::new(),
+        state: Fixed { blend: Blend::Opaque, depth: Depth::TestWrite, cull: Cull::Back, coverage: Coverage::Off },
         shape: Shape::with_depth(ColourFormat::Bgra8),
     };
 
@@ -363,4 +364,77 @@ fn a_program_testing_depth_in_a_shape_that_holds_none_is_refused() {
 
     assert_eq!(checked(&depthless), Err(ProgramRefused::Depthless));
     assert_eq!(checked(&untested), Ok(()));
+}
+
+/// A program that draws a rim over what a floor drew: it reads the floor's depth at group 0 and drops each fragment the
+/// floor is in front of, and binds its tint in group 1.
+const RIM: &str = "
+@group(0) @binding(0) var floor: texture_depth_2d;
+@group(1) @binding(0) var<uniform> tint: vec4<f32>;
+
+@vertex
+fn place(@location(0) corner: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4(corner, 0.5, 1.0);
+}
+
+@fragment
+fn shade(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    if (textureLoad(floor, vec2<i32>(at.xy), 0) < at.z) {
+        discard;
+    }
+    return tint;
+}
+";
+
+/// The program [`RIM`] is, reading a depth, drawn into four samples of floats with a depth of its own, its alpha its
+/// coverage.
+fn rim() -> Asked<CreateProgram> {
+    let corner = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+    let create = CreateProgram {
+        wgsl: blob(),
+        vertex: String::from("place"),
+        fragment: String::from("shade"),
+        layout: VertexLayout { stride: 8, attributes: vec![corner] },
+        instances: PerInstance::None,
+        bindings: vec![Binding { group: 1, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
+        reads: vec![Read::Depth],
+        state: Fixed { blend: Blend::Opaque, depth: Depth::TestWrite, cull: Cull::None, coverage: Coverage::Alpha },
+        shape: Shape { colour: ColourFormat::Rgba16Float, samples: Samples::Four, depth: DepthFormat::Depth32Float },
+    };
+
+    Asked::new(create, RIM)
+}
+
+#[test]
+fn a_program_reading_targets_binds_them_in_group_0_and_lists_nothing_there() {
+    // Catches a program's reads checked as its listed bindings are, or not at all: a group 0 listed beside what it
+    // reads, which would bind two layouts at one group; a read of another kind than the shader declares, or none, which
+    // WebGPU refuses as the pipeline is made; and a read used by the vertex stage, which the group the pass binds is not
+    // seen by.
+    let mut listed = rim();
+    listed.bindings.push(Binding { group: 0, binding: 5, kind: BindingKind::Sampler });
+    let mut floats = rim();
+    floats.reads = vec![Read::Float];
+    let mut unread = rim();
+    unread.reads = Vec::new();
+    let mut vertex = rim();
+    vertex.wgsl = vertex.wgsl.replace("vec4(corner, 0.5, 1.0)", "vec4(corner, f32(textureDimensions(floor).x), 1.0)");
+
+    assert_eq!(checked(&rim()), Ok(()));
+    assert_eq!(checked(&listed), Err(ProgramRefused::Reserved { binding: 5 }));
+    assert_eq!(checked(&floats), Err(ProgramRefused::Mismatch { group: 0, binding: 0 }));
+    assert_eq!(checked(&unread), Err(ProgramRefused::Unbound { group: 0, binding: 0 }));
+    assert_eq!(checked(&vertex), Err(ProgramRefused::Unbound { group: 0, binding: 0 }));
+}
+
+#[test]
+fn a_program_turning_its_alpha_into_coverage_on_one_sample_is_refused() {
+    // Catches alpha to coverage asked of a pipeline of one sample, which WebGPU refuses as it is made.
+    let mut single = rim();
+    single.shape.samples = Samples::One;
+    let mut uncovered = single.clone();
+    uncovered.state.coverage = Coverage::Off;
+
+    assert_eq!(checked(&single), Err(ProgramRefused::Coverage));
+    assert_eq!(checked(&uncovered), Ok(()));
 }

@@ -7,8 +7,8 @@ mod tests;
 
 use crate::frame::builder::{Depth32, Float, Uint};
 use crate::program::{
-    Binding, Blend, ProgramId, ProgramRefused, Stage, Used, check_bindings, check_fixed, check_output,
-    check_reads_only, check_stages, check_uses, entry, parsed,
+    Binding, Blend, ProgramId, ProgramRefused, Stage, check_bindings, check_fixed, check_output, check_reads_only,
+    check_stages, check_uses, entry, parsed, used,
 };
 use crate::shape::{DepthFormat, Shape};
 use aethereal_actor::BlobRef;
@@ -41,7 +41,8 @@ pub struct CreateEffect {
     pub shape: Shape,
 }
 
-/// What an effect reads of a target, and how its shader declares it.
+/// What an effect or a draw program reads of a target, and how its shader declares it. A target of four samples is
+/// read as its resolved one, and a depth of four samples is never read (ADR-0025).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.read")]
 pub enum Read {
@@ -55,7 +56,7 @@ pub enum Read {
 
 impl Read {
     /// How a shader declares a texture read so, as naga names it.
-    const fn class(self) -> ImageClass {
+    pub(crate) const fn class(self) -> ImageClass {
         match self {
             Self::Float => ImageClass::Sampled { kind: ScalarKind::Float, multi: false },
             Self::Uint => ImageClass::Sampled { kind: ScalarKind::Uint, multi: false },
@@ -264,15 +265,7 @@ pub fn check(create: &CreateEffect, wgsl: &str, limits: &wgpu::Limits) -> Result
     let fragment = entry(&module, Stage::Fragment, &create.fragment)?;
     check_stages((&cover, vertex), (&module, fragment))?;
     check_output(&module, fragment, create.shape.colour)?;
-    check_uses(&module, &info, fragment, |group, binding| used(create, group, binding))
-}
-
-/// What `create` binds at `group`, `binding`: a target it reads in group 0, and what it lists in the groups after.
-fn used(create: &CreateEffect, group: u32, binding: u32) -> Option<Used> {
-    if group == 0 {
-        return create.reads.get(binding as usize).map(|read| Used::Read(read.class()));
-    }
-    let listed = create.bindings.iter().find(|listed| listed.group == group && listed.binding == binding)?;
-
-    Some(Used::Listed(listed.kind))
+    // Group 0 is its reads' whatever their count, and it lists nothing there, so one that reads none binds nothing
+    // there.
+    check_uses(&module, &info, fragment, |group, binding| used(&create.bindings, &create.reads, group, binding))
 }

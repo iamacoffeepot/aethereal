@@ -71,12 +71,16 @@ impl Size {
     }
 }
 
-/// A target of a frame besides its end: what it holds, and its size, a part of the end's.
+/// A target of a frame besides its end: what it holds, its size, a part of the end's, and how many samples it holds of
+/// each pixel. One of floats of four samples is two textures, the four a pass draws into and the one they are resolved
+/// into as each pass that draws into it ends, which is what any later pass or frame reads; one of depth of four is
+/// tested and written, and never read; one of whole numbers holds one (ADR-0025).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.target_spec")]
 pub struct TargetSpec {
     pub kind: TargetKind,
     pub scale: Scale,
+    pub samples: Samples,
 }
 
 /// What a target holds: floats, whole numbers, or depth.
@@ -125,7 +129,7 @@ impl TargetSpec {
         }
     }
 
-    /// How an effect reads it.
+    /// How a pass reads it.
     #[must_use]
     pub const fn read(self) -> Read {
         match self.kind {
@@ -148,8 +152,9 @@ pub struct PassSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.does")]
 pub enum Does {
-    /// The placements that join it draw into `into`, with `depth`, beginning from what `load` says.
-    Draw { into: Target, depth: DepthUse, load: Load },
+    /// The placements that join it draw into `into`, with `depth`, beginning from what `load` says, reading the
+    /// targets `reads` names, in order, at group 0 of each program that joins it, as an effect reads its own.
+    Draw { into: Target, depth: DepthUse, load: Load, reads: Vec<Target> },
     /// The effect `program` draws once over the whole of `into`, reading the targets `reads` names, in order, and
     /// binding what `bindings` names in the groups after the first. It begins from what `into` holds when an earlier
     /// pass wrote it, and from black when none did.
@@ -244,8 +249,14 @@ pub enum PassRefused {
     Unwritten,
     /// It reads the frame's end, which nothing reads.
     End,
-    /// It reads the target it writes.
+    /// It reads the target it writes, or the depth it tests or writes.
     Itself,
+    /// Its colour and its depth hold other counts of samples, as WebGPU draws a pass; it is an effect drawing into a
+    /// target of four, as an effect draws one sample a pixel; or the frame has a target of whole numbers of four, which
+    /// WebGPU does not multisample, refused at the first pass that names it, or at the first pass when none does.
+    Samples,
+    /// It reads a depth of four samples, which WebGPU resolves to none.
+    ReadsSamples,
     /// No effect is kept under the id: never made, released, or a program that is not an effect.
     Effect,
     /// It reads targets of other kinds, or another count of them, than the effect was made to read.
@@ -265,23 +276,31 @@ impl CreateFrame {
         let compute = PassSpec { name: PassName::of::<Compute>(), does: Does::Compute };
         let main = PassSpec {
             name: PassName::of::<Main>(),
-            does: Does::Draw { into: Target::End, depth: DepthUse::Write(0), load: Load::Clear },
+            does: Does::Draw { into: Target::End, depth: DepthUse::Write(0), load: Load::Clear, reads: Vec::new() },
         };
 
-        let depth = TargetSpec { kind: TargetKind::Depth, scale: Scale::Full };
+        let depth = TargetSpec { kind: TargetKind::Depth, scale: Scale::Full, samples: Samples::One };
 
         Self { ends: Ends::Window(window), targets: vec![depth], passes: vec![compute, main] }
     }
 
     /// The shape of a pass that draws into `into`, using depth as `depth` says, in a frame whose end is of `end`, as
-    /// its check let through. An effect uses no depth.
+    /// its check let through: of the samples its colour holds, as its depth holds the same. An effect uses no depth.
     pub(crate) fn shape(&self, into: Target, depth: DepthUse, end: ColourFormat) -> Shape {
         let depth = match depth {
             DepthUse::Off => DepthFormat::None,
             DepthUse::Write(_) | DepthUse::Test(_) => DepthFormat::Depth32Float,
         };
 
-        Shape { colour: self.colour(into, end).unwrap_or(end), samples: Samples::One, depth }
+        Shape { colour: self.colour(into, end).unwrap_or(end), samples: self.samples(into), depth }
+    }
+
+    /// How many samples `target` holds of each pixel: the end holds one.
+    fn samples(&self, target: Target) -> Samples {
+        match target {
+            Target::End => Samples::One,
+            Target::Texture(at) => self.targets.get(at as usize).map_or(Samples::One, |spec| spec.samples),
+        }
     }
 
     /// The colour format `target` is drawn in, the end being of `end`: none for a depth target, or one past the last.
@@ -322,9 +341,10 @@ pub(crate) fn may_replace(owner: Option<ActorId>, by: ActorId) -> Result<(), Fra
 
 /// Checks a frame before it is made, whole, as the builder would have built it and more: that it ends on a window
 /// drawn to or on a texture of a size the GPU makes, that it has passes, each of a name of its own, each reading and
-/// testing only what an earlier pass wrote, never what it writes, each writing colour into colour and depth into
-/// depth, each effect reading and binding what it was made to and made for the shape it writes, and that its last
-/// pass writes its end.
+/// testing only what an earlier pass wrote, never what it writes or tests, and never a depth of four samples, each
+/// writing colour into colour and depth into depth, of one count of samples, each effect drawing one sample a pixel,
+/// reading and binding what it was made to and made for the shape it writes, no target of whole numbers holding four
+/// samples, and that its last pass writes its end.
 pub(crate) fn check(create: &CreateFrame, kept: &impl Holds) -> Result<(), FrameRefused> {
     let end = match create.ends {
         Ends::Window(window) => kept.window(window).ok_or(FrameRefused::Window)?,
@@ -348,6 +368,11 @@ pub(crate) fn check(create: &CreateFrame, kept: &impl Holds) -> Result<(), Frame
             return Err(FrameRefused::Repeated { pass: at });
         }
         check_pass(create, &pass.does, end, &mut written, kept).map_err(|why| FrameRefused::Pass { pass: at, why })?;
+    }
+    // One no pass named, as each pass that names one was refused it.
+    let unsampled = create.targets.iter().any(|spec| spec.kind == TargetKind::Uint && spec.samples != Samples::One);
+    if unsampled {
+        return Err(FrameRefused::Pass { pass: 0, why: PassRefused::Samples });
     }
     let ends = create.passes.last().is_some_and(|last| last.does.writes() == Some(Target::End));
     if !ends {
@@ -416,22 +441,32 @@ fn check_pass(
         return Ok(());
     };
     let colour = colour_of(create, into, end)?;
+    let samples = create.samples(into);
+    let resolves = samples != Samples::One;
+    if resolves && colour.is_whole() {
+        return Err(PassRefused::Samples);
+    }
     match does {
-        Does::Draw { depth, load, .. } => {
+        Does::Draw { depth, load, reads, .. } => {
             let keeps = *load == Load::Keep;
             if keeps && !written.wrote(into) {
                 return Err(PassRefused::Unwritten);
             }
             let drawn = scale_of(create, into);
-            match depth {
-                DepthUse::Off => {}
-                DepthUse::Write(at) => {
-                    depth_of(create, *at, drawn)?;
-                    written.write(Target::Texture(*at));
+            let own = match *depth {
+                DepthUse::Off => vec![into],
+                DepthUse::Write(at) | DepthUse::Test(at) => {
+                    depth_of(create, at, drawn, samples)?;
+                    vec![into, Target::Texture(at)]
                 }
+            };
+            // What a draw reads is checked against each program that joins it, as the program is made to read it.
+            reads_of(create, reads, &own, written)?;
+            match *depth {
+                DepthUse::Off => {}
+                DepthUse::Write(at) => written.write(Target::Texture(at)),
                 DepthUse::Test(at) => {
-                    depth_of(create, *at, drawn)?;
-                    if !written.wrote(Target::Texture(*at)) {
+                    if !written.wrote(Target::Texture(at)) {
                         return Err(PassRefused::Unwritten);
                     }
                 }
@@ -439,20 +474,10 @@ fn check_pass(
         }
         Does::Effect { program, reads, bindings, .. } => {
             let effect = kept.effect(*program).ok_or(PassRefused::Effect)?;
-            let mut read = Vec::with_capacity(reads.len());
-            for target in reads {
-                let Target::Texture(at) = *target else {
-                    return Err(PassRefused::End);
-                };
-                let spec = *create.targets.get(at as usize).ok_or(PassRefused::Target)?;
-                if *target == into {
-                    return Err(PassRefused::Itself);
-                }
-                if !written.wrote(*target) {
-                    return Err(PassRefused::Unwritten);
-                }
-                read.push(spec.read());
+            if resolves {
+                return Err(PassRefused::Samples);
             }
+            let read = reads_of(create, reads, &[into], written)?;
             if read != effect.reads {
                 return Err(PassRefused::Reads);
             }
@@ -466,6 +491,36 @@ fn check_pass(
     written.write(into);
 
     Ok(())
+}
+
+/// How a pass reads each target of `reads`, in order: refused when one is the end, past the last target, one of `own`,
+/// the pass's own targets, one no earlier pass wrote, or a depth of four samples.
+fn reads_of(
+    create: &CreateFrame,
+    reads: &[Target],
+    own: &[Target],
+    written: &Written,
+) -> Result<Vec<Read>, PassRefused> {
+    let mut read = Vec::with_capacity(reads.len());
+    for target in reads {
+        let Target::Texture(at) = *target else {
+            return Err(PassRefused::End);
+        };
+        let spec = *create.targets.get(at as usize).ok_or(PassRefused::Target)?;
+        if own.contains(target) {
+            return Err(PassRefused::Itself);
+        }
+        if !written.wrote(*target) {
+            return Err(PassRefused::Unwritten);
+        }
+        let resolves = spec.kind != TargetKind::Depth || spec.samples == Samples::One;
+        if !resolves {
+            return Err(PassRefused::ReadsSamples);
+        }
+        read.push(spec.read());
+    }
+
+    Ok(read)
 }
 
 /// The colour format `target` is drawn in, the end being of `end`: refused when it is past the last target or a depth
@@ -486,15 +541,18 @@ fn scale_of(create: &CreateFrame, target: Target) -> Scale {
     }
 }
 
-/// Checks that the target at `at` is one of depth, of the scale `drawn` of the target its pass draws into: a pass's
-/// targets are all of one size, as WebGPU draws it.
-fn depth_of(create: &CreateFrame, at: u32, drawn: Scale) -> Result<(), PassRefused> {
+/// Checks that the target at `at` is one of depth, of the scale `drawn` and the samples `samples` of the target its
+/// pass draws into: a pass's targets are all of one size and one count of samples, as WebGPU draws it.
+fn depth_of(create: &CreateFrame, at: u32, drawn: Scale, samples: Samples) -> Result<(), PassRefused> {
     let spec = create.targets.get(at as usize).ok_or(PassRefused::Target)?;
     if spec.kind != TargetKind::Depth {
         return Err(PassRefused::Depth);
     }
     if spec.scale != drawn {
         return Err(PassRefused::DepthScale);
+    }
+    if spec.samples != samples {
+        return Err(PassRefused::Samples);
     }
 
     Ok(())

@@ -16,7 +16,8 @@ use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat
 use aethereal_render::pass::{Compute, Main};
 use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
 use aethereal_render::program::{
-    Access, Binding, BindingKind, Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
+    Access, Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId,
+    Programmed,
 };
 use aethereal_render::readback::{Bytes, ReadStorage};
 use aethereal_render::shape::Shape;
@@ -391,7 +392,8 @@ impl Handles<Answer<Meshed, Learned>> for Culler {
             layout: VertexLayout { stride: 8, attributes: vec![corner] },
             instances: PerInstance::None,
             bindings: vec![stored(0, 8, Access::Read), stored(1, 4, Access::Read)],
-            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None },
+            reads: Vec::new(),
+            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
             shape: learned.shape,
         };
         turn.to(path::<Renderer>(())).ask(&dots, &mesh)?;

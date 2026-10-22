@@ -6,9 +6,8 @@ use crate::frame::FrameId;
 use crate::instances::InstancesId;
 use crate::mesh::{MeshId, VertexLayout};
 use crate::pass::{Compute, Main};
-use crate::placement::Reads;
+use crate::placement::{Fits, Reads};
 use crate::program::ProgramId;
-use crate::shape::Shape;
 use crate::texture::TextureId;
 use crate::uniforms::UniformsId;
 use aethereal_data::{Budget, from_bytes};
@@ -79,7 +78,7 @@ impl Kept {
 }
 
 impl Finds for Kept {
-    fn pass(&self, _: Frame, _: PassName) -> Result<Shape, JoinRefused> {
+    fn pass(&self, _: Frame, _: PassName) -> Result<Fits, JoinRefused> {
         Err(JoinRefused::Frame)
     }
 

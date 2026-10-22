@@ -17,7 +17,9 @@ use aethereal_render::frame::{CreateFrame, Ends, Frame, Framed, ShapeOf, Shaped}
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::{Main, Pass};
 use aethereal_render::placement::{Drawn, Join, Place, Placed};
-use aethereal_render::program::{Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed};
+use aethereal_render::program::{
+    Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
+};
 use aethereal_render::readback::{Pixels, ReadBack, Readable};
 use aethereal_render::shape::{ColourFormat, Shape};
 use aethereal_render::timing::{TimeFrame, Timed};
@@ -335,7 +337,8 @@ fn program(wgsl: BlobRef, depth: Depth) -> CreateProgram {
         layout: corners(),
         instances: PerInstance::None,
         bindings: Vec::new(),
-        state: Fixed { blend: Blend::Opaque, depth, cull: Cull::None },
+        reads: Vec::new(),
+        state: Fixed { blend: Blend::Opaque, depth, cull: Cull::None, coverage: Coverage::Off },
         shape: Shape::with_depth(ColourFormat::Rgba16Float),
     }
 }
@@ -526,8 +529,8 @@ impl Handles<Answer<Programmed, Making>> for Framer {
         };
         let mut frame = FrameBuilder::on(Ends::Window(window));
         let sky = frame.effect(Sky, Effect::new(&effects.sky, ()), Float, scale::Full);
-        let (scene, depth) = frame.draw_over(Surfaces, sky, depth::Write);
-        let scene = frame.draw_over(Splats, scene, depth::Test(&depth));
+        let (scene, depth) = frame.draw_over(Surfaces, sky, depth::Write, ());
+        let scene = frame.draw_over(Splats, scene, depth::Test(&depth), ());
         let detail = frame.effect(Detail, Effect::new(&effects.detail, ()), Float, scale::Half);
         let create = match frame.finish(Tint, Effect::new(&effects.tint, (scene, detail))) {
             Ok(create) => create,

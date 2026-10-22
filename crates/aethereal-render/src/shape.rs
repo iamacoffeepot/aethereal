@@ -92,6 +92,8 @@ impl ColourFormat {
 pub enum Samples {
     /// One: nothing is multisampled.
     One,
+    /// Four, as WebGPU multisamples: resolved to one as each pass that draws into a target of them ends (ADR-0025).
+    Four,
 }
 
 impl Samples {
@@ -100,6 +102,7 @@ impl Samples {
     pub const fn count(self) -> u32 {
         match self {
             Self::One => 1,
+            Self::Four => 4,
         }
     }
 }
