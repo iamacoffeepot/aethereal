@@ -3,7 +3,7 @@
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsError};
-use web_sys::{AddEventListenerOptions, EventTarget, MutationObserver};
+use web_sys::{AddEventListenerOptions, EventTarget, ResizeObserver, ResizeObserverBoxOptions, ResizeObserverOptions};
 
 /// The callbacks the page runs as it hears what the chassis feeds the engine, which the page keeps for as long as it
 /// listens. Dropped, it takes each off what it listens to.
@@ -27,10 +27,10 @@ impl Drop for Listener {
     }
 }
 
-/// A callback the page runs as it sees an element change, and the observer it runs through.
+/// A callback the page runs as it sees an element resized, and the observer it runs through.
 struct Observer {
-    observer: MutationObserver,
-    _callback: Closure<dyn FnMut()>,
+    observer: ResizeObserver,
+    _callback: Closure<dyn FnMut(js_sys::Array)>,
 }
 
 impl Drop for Observer {
@@ -91,22 +91,21 @@ impl Listening {
         Ok(())
     }
 
-    /// Runs `seen` each time the page sees one of `attributes` of `element` set.
-    pub(crate) fn watch(
+    /// Runs `seen` with the page's entries for `element` each time the page lays it out at another size, measured as
+    /// `measured` says, and once as it begins observing it. The page runs it once a frame at most, after its animation
+    /// frame's callbacks and before it paints.
+    pub(crate) fn resized(
         &mut self,
         element: &web_sys::Element,
-        attributes: &[&str],
-        seen: impl FnMut() + 'static,
+        measured: ResizeObserverBoxOptions,
+        seen: impl FnMut(js_sys::Array) + 'static,
     ) -> Result<(), JsError> {
-        let callback = Closure::<dyn FnMut()>::new(seen);
-        let observer = MutationObserver::new(callback.as_ref().unchecked_ref())
-            .map_err(|_| JsError::new("the page would not observe an element"))?;
-        let filter: js_sys::Array = attributes.iter().map(|name| wasm_bindgen::JsValue::from_str(name)).collect();
-        let init = web_sys::MutationObserverInit::new();
-        init.set_attribute_filter(&filter);
-        observer
-            .observe_with_options(element, &init)
-            .map_err(|_| JsError::new("the page would not observe the element's attributes"))?;
+        let callback = Closure::<dyn FnMut(js_sys::Array)>::new(seen);
+        let observer = ResizeObserver::new(callback.as_ref().unchecked_ref())
+            .map_err(|_| JsError::new("the page would not observe an element's size"))?;
+        let options = ResizeObserverOptions::new();
+        options.set_box(measured);
+        observer.observe_with_options(element, &options);
         self.observers.push(Observer { observer, _callback: callback });
 
         Ok(())

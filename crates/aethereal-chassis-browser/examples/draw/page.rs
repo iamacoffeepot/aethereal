@@ -4,7 +4,8 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
-use aethereal_chassis_browser::{Browser, Performance, open, renderer};
+use aethereal_chassis_browser::canvas::{self, Density};
+use aethereal_chassis_browser::{Browser, Listening, Performance, open, renderer};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -37,25 +38,26 @@ fn say(line: String) {
     SAID.with_borrow_mut(|said| said.push(line));
 }
 
-/// The program the page runs, for its `requestAnimationFrame` to call.
+/// The program the page runs, for its `requestAnimationFrame` to call, and the page's listeners, kept while it runs.
 #[wasm_bindgen]
 pub struct Program {
     browser: Browser<Performance>,
+    _canvas: Listening,
 }
 
 /// Opens `canvas` as the one window and WebGPU on it, then makes the engine with the window root, the renderer, handed
-/// the GPU, and the drawer as its roots.
+/// the GPU, and the drawer as its roots, and listens to the page for the canvas's size.
 ///
 /// # Errors
 ///
-/// When WebGPU will not open on the canvas, or a root does not begin.
+/// When WebGPU will not open on the canvas, a root does not begin, or the page will not be listened to.
 #[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
 pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
     let mut opening = Opening::new(setup.source::<Heard>());
-    let (gpu, shown) = open(canvas, &mut opening).await?;
+    let (gpu, shown) = open(canvas.clone(), &mut opening).await?;
     let mut setup = setup
         .add_root::<Windows>(&(), opening.config())
         .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
@@ -67,7 +69,10 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
         .map_err(|refused| JsError::new(&format!("the drawer did not begin: {refused:?}")))?
         .ready();
 
-    Ok(Program { browser: Browser::new(engine, Performance, mappings) })
+    // The canvas is drawn at every device pixel of the size the page lays it out at, followed as it is resized.
+    let listening = canvas::listen(&canvas, &shown, Density::SCREEN)?;
+
+    Ok(Program { browser: Browser::new(engine, Performance, mappings), _canvas: listening })
 }
 
 #[wasm_bindgen]

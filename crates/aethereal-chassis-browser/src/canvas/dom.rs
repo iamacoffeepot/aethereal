@@ -1,5 +1,6 @@
 //! What the page's pointer and wheel events read as: where the pointer is in the canvas's pixels, which button the
-//! page numbered, and how far the wheel turned, in the canvas's pixels too.
+//! page numbered, and how far the wheel turned, in the canvas's pixels too; and how many pixels the canvas is drawn
+//! at, from the size the page lays it out at.
 
 use aethereal_window::{Button, Event};
 
@@ -107,4 +108,81 @@ pub fn button_of(number: i16) -> Option<Button> {
     };
 
     Some(button)
+}
+
+/// How sharply the canvas is drawn: as many of its pixels to each of the page's CSS pixels as the screen has device
+/// pixels, but at most `most`. A page past two device pixels to each CSS pixel may draw at two, which is no less sharp
+/// to the eye and a quarter of the pixels of four.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Density {
+    most: f64,
+}
+
+impl Density {
+    /// Every device pixel of the screen.
+    pub const SCREEN: Self = Self { most: f64::INFINITY };
+
+    /// The screen's device pixels to each CSS pixel, but at most `most`: below one, fewer pixels than the page lays
+    /// the canvas out at. A `most` of no pixels, or one that is no number, is the screen's.
+    #[must_use]
+    pub const fn at_most(most: f64) -> Self {
+        Self { most }
+    }
+
+    /// The canvas's pixels to each CSS pixel, on a screen of `device_pixel_ratio` device pixels to each: the screen's,
+    /// at most this density's most. A screen that gives no positive ratio is taken as one device pixel to each.
+    #[must_use]
+    pub fn scale(self, device_pixel_ratio: f64) -> f64 {
+        let screen = screen(device_pixel_ratio);
+        let has_most = self.most > 0.0;
+
+        if has_most {
+            screen.min(self.most)
+        } else {
+            screen
+        }
+    }
+}
+
+/// The size the page lays the canvas out at, as it measures it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Measured {
+    /// In the screen's device pixels, as a page that gives `devicePixelContentBoxSize` does: whole pixels, snapped as
+    /// the page shows them.
+    DevicePixels { width: f64, height: f64 },
+    /// In CSS pixels, as every page gives the box of its content.
+    CssPixels { width: f64, height: f64 },
+}
+
+impl Measured {
+    /// The canvas's pixels for this size, `width` by `height`, drawn at `density` on a screen of `device_pixel_ratio`
+    /// device pixels to each CSS pixel: each side rounded to the nearest pixel, at least one, as a surface of none is
+    /// not drawn, and at most `longest`, the longest side of a texture the GPU makes.
+    #[must_use]
+    pub fn pixels(self, density: Density, device_pixel_ratio: f64, longest: u32) -> (u32, u32) {
+        let scale = density.scale(device_pixel_ratio);
+        let (width, height, by) = match self {
+            Self::DevicePixels { width, height } => (width, height, scale / screen(device_pixel_ratio)),
+            Self::CssPixels { width, height } => (width, height, scale),
+        };
+        let side = |length: f64| {
+            // Saturates past a `u32`, and gives none for no number, which the clamp makes one.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let pixels = (length * by).round() as u32;
+
+            pixels.clamp(1, longest)
+        };
+
+        (side(width), side(height))
+    }
+}
+
+/// The screen's device pixels to each CSS pixel, as the page gives them, `device_pixel_ratio`: one when it gives no
+/// positive ratio.
+fn screen(device_pixel_ratio: f64) -> f64 {
+    if device_pixel_ratio > 0.0 {
+        device_pixel_ratio
+    } else {
+        1.0
+    }
 }
