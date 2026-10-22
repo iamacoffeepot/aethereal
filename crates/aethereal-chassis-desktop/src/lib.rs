@@ -16,12 +16,16 @@
 //! controller, and the renderer gives it what the desktop serves it each
 //! frame, [`Drawing`].
 //!
-//! Each frame it acquires the surface of each window shown, in turn, which
-//! with `Fifo` waits for the display to free an image and so paces the
-//! frames, says a cycle is due, steps until no actor has anything to run,
-//! then presents what the renderer drew in each window and starts mapping
-//! what it asked to read back (ADR-0020, ADR-0021). One cycle draws every
-//! window shown, so a window on a slower display paces them all to its rate.
+//! Each frame it acquires the surface of each window shown, in turn, says a
+//! cycle is due, steps until no actor has anything to run, then presents
+//! what the renderer drew in each window and starts mapping what it asked to
+//! read back (ADR-0020, ADR-0021). The renderer's settings say what paces the
+//! frames, as [`Presenting`] each window as it is opened: `fifo`, the
+//! default, where each acquire waits for the display to free an image, so a
+//! window on a slower display paces them all to its rate; `uncapped`, where
+//! none waits and each frame follows the last; or `capped`, where none waits
+//! and the loop waits until each frame is due on a grid of the rate, skipping
+//! one missed as the headless host skips a cycle.
 //! A window hidden or of no size is handed no frame, and when none is shown
 //! the loop waits on their events until one is shown again. What a window
 //! hears is pushed onto that window's feed as winit hears it, in the window's
@@ -41,6 +45,8 @@ mod gpu;
 #[cfg(not(target_arch = "wasm32"))]
 mod input;
 #[cfg(not(target_arch = "wasm32"))]
+mod presenting;
+#[cfg(not(target_arch = "wasm32"))]
 mod program;
 #[cfg(not(target_arch = "wasm32"))]
 mod running;
@@ -50,7 +56,9 @@ mod serving;
 #[cfg(not(target_arch = "wasm32"))]
 pub use gpu::{Screen, Unopened};
 #[cfg(not(target_arch = "wasm32"))]
-pub use program::{Presenting, RendererSettings, RunningSettings, WindowSettings, WindowsSettings};
+pub use presenting::{FrameRate, Presenting, Unoffered, Unrated};
+#[cfg(not(target_arch = "wasm32"))]
+pub use program::{RendererSettings, RunningSettings, WindowSettings, WindowsSettings};
 #[cfg(not(target_arch = "wasm32"))]
 pub use running::{Desktop, Failed};
 #[cfg(not(target_arch = "wasm32"))]

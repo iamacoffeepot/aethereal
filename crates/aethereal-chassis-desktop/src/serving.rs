@@ -4,6 +4,7 @@
 //! pushed onto its source once the device, polled without waiting, has mapped it (ADR-0019, ADR-0021). Between steps
 //! it opens and closes the windows the window root asks for (ADR-0027).
 
+use crate::Presenting;
 use crate::gpu::{self, Unopened};
 use aethereal_actor::Requests;
 use aethereal_render::Gpu;
@@ -33,7 +34,7 @@ pub struct Drawing {
     pub(crate) instance: wgpu::Instance,
     pub(crate) adapter: wgpu::Adapter,
     pub(crate) gpu: Gpu,
-    pub(crate) present: wgpu::PresentMode,
+    pub(crate) present: Presenting,
     pub(crate) fronting: Fronting,
     pub(crate) surfacing: Feed<Surfaced>,
 }
@@ -74,16 +75,21 @@ impl Kept {
 }
 
 impl Drawing {
+    /// How each window's frames are presented, as the renderer's settings say.
+    pub(crate) const fn presenting(&self) -> Presenting {
+        self.present
+    }
+
     /// The window the window capability calls `window`: none when the chassis opened none it calls so.
     pub(crate) fn window_mut(&mut self, window: WindowId) -> Option<&mut Kept> {
         self.windows.iter_mut().find(|opened| opened.feed.window() == window)
     }
 
     /// Before the cycle: acquires the frame of each window drawn this frame, shown and at a size, in turn, each surface
-    /// configured first to the size its window was last resized to, and hands the renderer each frame's texture. With
-    /// `Fifo`, the renderer's default, each waits until the display frees an image, on the event loop's thread, which
-    /// is what paces the frames: a window on a slower display paces every window to its rate. Answers whether any
-    /// window is drawn.
+    /// configured first to the size its window was last resized to, and hands the renderer each frame's texture.
+    /// Presented `fifo`, the renderer's default, each waits until the display frees an image, on the event loop's
+    /// thread, which is what paces the frames: a window on a slower display paces every window to its rate. Presented
+    /// `uncapped` or `capped`, none waits. Answers whether any window is drawn.
     pub(crate) fn acquire(&mut self) -> bool {
         let mut drawn = false;
         for opened in &mut self.windows {

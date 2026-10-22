@@ -71,6 +71,15 @@ pub enum DecodeError {
     Zero,
     /// A `Duration` held one billion nanoseconds or more.
     InvalidNanos(u32),
+    /// An integer outside the range its type holds.
+    OutOfRange {
+        /// The integer read.
+        value: u64,
+        /// The least the type holds.
+        least: u64,
+        /// The most the type holds.
+        most: u64,
+    },
     /// A map key or set element that is not greater than the one before it.
     KeyOrder,
     /// A flat schema node breaks the flat form.
@@ -108,6 +117,9 @@ impl fmt::Display for DecodeError {
             Self::InvalidChar(value) => write!(f, "plain data: invalid char code point {value}"),
             Self::Zero => f.write_str("plain data: zero for a non-zero integer"),
             Self::InvalidNanos(value) => write!(f, "plain data: invalid nanos {value}"),
+            Self::OutOfRange { value, least, most } => {
+                write!(f, "plain data: {value} is outside {least} to {most}")
+            }
             Self::KeyOrder => f.write_str("plain data: map keys out of order"),
             Self::InvalidSchema { node, fault } => {
                 write!(f, "plain data: invalid schema at node {node}: {fault}")

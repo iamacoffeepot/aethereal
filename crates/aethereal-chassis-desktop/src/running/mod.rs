@@ -1,7 +1,9 @@
 //! The program run on winit's event loop through its lifecycle: started once its windows and GPU are open, cycled each
-//! frame the display frees, its windows opened and closed between steps as the window root asks, and stopped when its
-//! last window has closed or it quits (ADR-0020, ADR-0024, ADR-0027).
+//! frame, as the display frees one, as fast as they are made, or at a rate, its windows opened and closed between
+//! steps as the window root asks, and stopped when its last window has closed or it quits (ADR-0020, ADR-0021,
+//! ADR-0024, ADR-0027).
 
+mod pacing;
 mod window;
 mod windowing;
 
@@ -16,6 +18,7 @@ use core::fmt;
 use core::mem;
 use core::num::NonZeroUsize;
 use core::time::Duration;
+use pacing::{Due, Pacing};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
@@ -103,12 +106,13 @@ enum Stage {
     Ended(Result<Exit, Failed>),
 }
 
-/// A program running in its windows.
+/// A program running in its windows, and what paces its frames.
 struct Running {
     headless: Headless,
     drawing: Box<Drawing>,
     windowing: Hosting,
     stopping: Stopping,
+    pacing: Pacing,
 }
 
 /// Whether the program has been asked to stop, as the host keeps it.
@@ -124,7 +128,8 @@ enum Stopping {
 enum Next {
     /// Waits on the windows' events, and the frame it asked for.
     Wait,
-    /// Waits on the windows' events until this time on the host's clock, in nanoseconds, then looks again.
+    /// Waits on the windows' events until this time on the host's clock, in nanoseconds, then looks again: when a
+    /// capped frame is next due, or when to look again at a program asked to stop.
     LookAt(u64),
     /// Ends, the program having ended as this says.
     End(Exit),
@@ -184,28 +189,35 @@ impl ApplicationHandler for App {
 impl App {
     /// Bootstraps `settled` on the screen of `event_loop`, blocking this thread on each root's bootstrap, which opens
     /// its windows and the GPU on them, puts its engine on its workers, this thread the first, and starts it, asking
-    /// for the first frame.
+    /// for the first frame. Its frames are paced as the renderer's settings present them, a capped grid starting now.
     fn open(&self, event_loop: &ActiveEventLoop, settled: Settled<Desktop>) -> Result<Running, Failed> {
         let (engine, screen) = pollster::block_on(settled.bootstrap(Screen::new(event_loop)))?;
         let (drawing, windowing) = screen.into_served().map_err(Failed::Unserved)?;
         let mut headless = Headless::new(engine, self.workers);
         headless.engine_mut().start();
+        let pacing = Pacing::new(drawing.presenting(), self.clock.nanos());
         drawing.ask_next();
 
-        Ok(Running { headless, drawing, windowing, stopping: Stopping::Not })
+        Ok(Running { headless, drawing, windowing, stopping: Stopping::Not, pacing })
     }
 }
 
 impl Running {
-    /// Draws a frame, when the program runs and a window is shown at a size: acquires the frame of each window shown
-    /// at a size, in turn, each waiting for the display, says a cycle is due at the time they were acquired, steps
-    /// until no actor has anything to run, presents what the renderer drew in each, and asks for the next frame. A
-    /// program asked to stop draws none, a window hidden or of no size is handed no frame, and when none is shown at a
-    /// size none is drawn: the loop then waits on the windows' events, and the frame is asked for again once one is
-    /// shown at a size. The windows the window root asks for are opened and closed between its steps, on `event_loop`.
+    /// Draws a frame, when the program runs, the pacing draws one now, and a window is shown at a size: acquires the
+    /// frame of each window shown at a size, in turn, each waiting for the display when `fifo`, says a cycle is due at
+    /// the time they were acquired, steps until no actor has anything to run, presents what the renderer drew in each,
+    /// and asks for the next frame when frames follow one another. A program asked to stop draws none, a capped frame
+    /// asked for before its grid's next point waits for it, a window hidden or of no size is handed no frame, and when
+    /// none is shown at a size none is drawn: the loop then waits on the windows' events, and the frame is asked for
+    /// again once one is shown at a size. The windows the window root asks for are opened and closed between its
+    /// steps, on `event_loop`.
     fn frame(&mut self, event_loop: &ActiveEventLoop, clock: Monotonic) {
         let running = self.headless.engine().lifecycle() == Lifecycle::Running;
         if !running {
+            return;
+        }
+        let paced = self.pacing.draws(clock.nanos());
+        if !paced {
             return;
         }
         let drawn = self.drawing.acquire();
@@ -215,7 +227,9 @@ impl Running {
         self.headless.engine_mut().cycle(Time::from_nanos(clock.nanos()));
         self.step_until_idle(event_loop);
         self.drawing.serve();
-        self.drawing.ask_next();
+        if self.pacing.follows() {
+            self.drawing.ask_next();
+        }
     }
 
     /// Opens and closes what the window root asked for, brings in what was pushed and finished since the last step and
@@ -234,8 +248,9 @@ impl Running {
     }
 
     /// Between the loop's events, at `now`: polls the device, steps what the windows' events and the jobs brought,
-    /// and says what the loop does next, as the program's lifecycle stands. Once it is asked to stop, `Stop` has
-    /// `stop_within` to finish, and the loop looks again every [`STOPPING_LOOK`] until it has or the time has passed.
+    /// and says what the loop does next, as the program's lifecycle stands. While it runs capped, the loop waits until
+    /// the next frame is due, and asks for it once it is. Once it is asked to stop, `Stop` has `stop_within` to
+    /// finish, and the loop looks again every [`STOPPING_LOOK`] until it has or the time has passed.
     fn settle(&mut self, event_loop: &ActiveEventLoop, now: u64, stop_within: Duration) -> Next {
         self.drawing.poll();
         self.step_until_idle(event_loop);
@@ -250,7 +265,22 @@ impl Running {
             }
             (Lifecycle::Stopping, Stopping::By(by)) if now >= by => Next::End(Exit::OutOfTime),
             (Lifecycle::Stopping, Stopping::By(by)) => Next::LookAt(by.min(now.saturating_add(look))),
-            (Lifecycle::Waiting | Lifecycle::Running, _) => Next::Wait,
+            (Lifecycle::Running, _) => self.paced(now),
+            (Lifecycle::Waiting, _) => Next::Wait,
+        }
+    }
+
+    /// What the loop does next while the program runs, at `now`, as its frames are paced: waits on the frame asked
+    /// for, asks for one due and waits on it, or waits until one is due. A frame due while no window is shown at a
+    /// size is asked of none, and the loop waits on the windows' events until one is.
+    fn paced(&self, now: u64) -> Next {
+        match self.pacing.due(now) {
+            Due::Asked => Next::Wait,
+            Due::Now => {
+                self.drawing.ask_next();
+                Next::Wait
+            }
+            Due::At(at) => Next::LookAt(at),
         }
     }
 }

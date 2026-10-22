@@ -101,7 +101,7 @@ WindowsConfig { .., closing: Closing::ByButton }      // the default; or Closing
 - The window capability gains a controller and two requests; its source's kind becomes `Heard`, an enum of an event in a window and of what the host did. The render root gains a source, `Source<Surfaced>`, and the front's slots come and go between steps.
 - The host's `Opening` still opens the windows of setup and gives their ids; after setup the root gives them. The chassis keeps the host's end of the controller and a way to make a window's feed for an id the root gave.
 - Every window opened costs the program a step before its asker is answered, and one more before the asker's first frame reaches the render root. A window's first `Render` may come a frame later than the request.
-- A window on a slower display still paces every window to its rate (ADR-0021). A window's presentation, when presentation modes enter, is given in `OpenWindow`.
+- A window on a slower display still paces every window to its rate when the windows are presented `fifo` (ADR-0021). A window opened while the program runs is presented as the renderer's settings present every window, as one opened at setup is; a presentation of its own, given in `OpenWindow`, is left for later.
 - The browser opens no window on request, and a program written for both hosts handles `Unopened::NoHost`.
 - **Left for later:** who owns a window; moving, resizing, retitling, hiding, or making a window fullscreen, each a request of the same controller; and a window opened by the host alone, such as a dialog the platform makes.
 

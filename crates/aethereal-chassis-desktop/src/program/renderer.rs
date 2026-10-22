@@ -1,6 +1,7 @@
 //! The renderer bootstrapped on the desktop: the GPU opened on the first window the window root opened, each window's
 //! surface configured for it, and what the desktop serves the renderer each frame (ADR-0019, ADR-0021, ADR-0029).
 
+use crate::Presenting;
 use crate::gpu::{self, OnScreen, Unopened};
 use crate::running::Desktop;
 use crate::serving::{Drawing, Kept};
@@ -17,45 +18,21 @@ use std::sync::Arc;
 #[kind(name = "aether.desktop.renderer")]
 #[settings]
 pub struct RendererSettings {
-    /// How each window's frames are presented.
+    /// How each window's frames are presented: `fifo`, in step with the display; `uncapped`, as fast as they are
+    /// made; or `capped:60`, at most sixty a second.
     #[flag]
     pub present: Presenting,
-}
-
-/// How a window's frames are presented, as wgpu names the modes.
-#[derive(Plain, Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Presenting {
-    /// As the display shows each frame: acquiring one waits for the display to free an image, which paces the frames.
-    #[default]
-    Fifo,
-    /// As `Fifo`, but a frame late for the display is shown at once, and may tear.
-    FifoRelaxed,
-    /// The newest frame replaces one waiting for the display: no frame waits, and none tears.
-    Mailbox,
-    /// Each frame shown at once: none waits, and frames may tear.
-    Immediate,
-}
-
-impl Presenting {
-    /// The mode wgpu presents with.
-    const fn mode(self) -> wgpu::PresentMode {
-        match self {
-            Self::Fifo => wgpu::PresentMode::Fifo,
-            Self::FifoRelaxed => wgpu::PresentMode::FifoRelaxed,
-            Self::Mailbox => wgpu::PresentMode::Mailbox,
-            Self::Immediate => wgpu::PresentMode::Immediate,
-        }
-    }
 }
 
 /// Reaches the windows the window root opened through the screen, which keeps them, and makes each one's surface on
 /// the screen's instance. Opens the GPU on the first: an adapter that draws to its surface and a device, each waited
 /// for on the event loop's thread, which is the host's to do (ADR-0001 rule 4). Then configures each surface for it,
-/// presented as the settings say and copied from where the adapter allows it, so the renderer can read back its frames
-/// (ADR-0023), and begins the renderer with the GPU, each window's format, and its handles. Gives the desktop its end:
-/// each window, sharing the screen's, with its surface, which hands the renderer the window's frame and presents what
-/// it drew, the buffers it asks to have mapped, and what the desktop opens the windows the window root asks for with
-/// while the program runs, on the same GPU (ADR-0027).
+/// presented as the settings say, refused when the surface lacks the mode they ask for, and copied from where the
+/// adapter allows it, so the renderer can read back its frames (ADR-0023), and begins the renderer with the GPU, each
+/// window's format, and its handles. Gives the desktop its end: each window, sharing the screen's, with its surface,
+/// which hands the renderer the window's frame and presents what it drew, the buffers it asks to have mapped, and what
+/// the desktop opens the windows the window root asks for with while the program runs, on the same GPU and presented
+/// the same (ADR-0027).
 impl Bootstrap<Desktop> for Renderer {
     const SECTION: &'static str = "renderer";
     type Settings = RendererSettings;
@@ -67,7 +44,7 @@ impl Bootstrap<Desktop> for Renderer {
         _: (InitialWindows,),
         cx: &mut Bootstrapping<'_, Desktop, Self>,
     ) -> Result<(), Unbuilt> {
-        let present = settings.present.mode();
+        let present = settings.present;
         let instance = cx.host().instance().clone();
         let mut surfaced = Vec::new();
         for window in cx.host().windows() {
