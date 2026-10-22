@@ -30,13 +30,14 @@ CreateFrame { ends: Ends, targets: Vec<TargetSpec>, passes: Vec<PassSpec> }   ->
 enum Ends { Window(WindowId), Texture { size: Size, format: TextureFormat } }   // shown on a window (ADR-0024), or drawn into a texture
 struct Size { width: u32, height: u32 }         // the texture's, each side at most the GPU's longest
 enum TextureFormat { Rgba8, Rgba8Srgb, R8, Rgba16Float }   // ADR-0021's, each one a pass draws into and a program filters
-struct TargetSpec { kind: TargetKind, scale: Scale }
+struct TargetSpec { kind: TargetKind, scale: Scale, samples: Samples }
 enum TargetKind { Float, Uint, Depth }          // Rgba16Float, R32Uint, Depth32Float
 enum Scale { Full, Half, Quarter, Eighth }      // each side the end's divided by 1, 2, 4, or 8, rounded up
+enum Samples { One, Four }                      // samples a pixel, as WebGPU multisamples
 
 struct PassSpec { name: PassName, does: Does }   // a type's id, as a kind's is (ADR-0006)
 enum Does {
-    Draw   { into: Target, depth: DepthUse, load: Load },                    // placements that join it draw here
+    Draw   { into: Target, depth: DepthUse, load: Load, reads: Vec<Target> },  // placements that join it draw here
     Effect { program: ProgramId, reads: Vec<Target>, into: Target, bindings: Vec<Bind> },  // one draw over the whole target
 }
 enum Target { End, Texture(u32) }        // the frame's end, or one of `targets`
@@ -55,6 +56,24 @@ enum Load { Clear, Keep }
 - **The scale is a small enum, not a divisor of any size.** A divisor of 3, or of 1000, would make sizes no downsample chain uses and edges rounded differently each time, and four steps of two cover a bloom's chain; a finer one is a scale added, not a number left open.
 - **A frame that ends on a window follows the window's size.** When the window is resized (ADR-0024: `Resized`), its chassis configures the window's surface to the new size before it acquires the next frame (ADR-0021), and at the next `Render` each frame that ends on the window makes its targets again at the sizes their scales make of the size of the frame's texture, with the bind groups its effects read them through, before anything is drawn; never during a frame. Resizes heard between two `Render`s are applied once, at the last size. A frame made for a window is made at one pixel and fitted at the first `Render` that draws it, so a frame that replaces another while the window stands at a size is drawn at that size.
 - A pass draws into one colour target. Several at once are later work.
+
+**A target may hold four samples of each pixel, `Samples::Four`, and is resolved to one as each pass that draws into it ends.** So a frame is antialiased where its edges are drawn, and a program can turn its alpha into coverage (ADR-0021: `Fixed`), drawing a soft edge in one pass that would otherwise be sorted and blended.
+
+- A multisampled target of floats is two textures, made together: the four samples a pass draws into, and one sample a pixel that each pass drawing into it resolves into as it ends. **What any later pass or frame reads is the resolved one**, a `texture_2d<f32>` as every target of floats is. The four samples are kept, so a later pass that draws into the target with `Load::Keep` begins from them.
+- **A multisampled depth is tested and written, and never read.** WebGPU resolves no depth, and a depth of four samples is read only sample by sample, as another kind of binding. A pass that reads a depth of four samples is refused (`PassRefused::ReadsSamples`). A frame that needs both writes the depth it reads at one sample, in a pass of its own: a depth-only pass is the cheapest a frame has.
+- **A pass's colour and its depth hold the same samples** (`PassRefused::Samples`), as WebGPU draws a pass.
+- A target of whole numbers holds one sample, as WebGPU multisamples no `R32Uint` (`PassRefused::Samples`).
+- **The end holds one sample.** A frame antialiased draws into a target of four and ends with an effect that lays it on the end, as a frame that tone-maps does already. An end of four samples, resolved into the window, is later work.
+- An effect draws one sample a pixel: one triangle over its target has no edge to antialias. An effect into a multisampled target is refused (`PassRefused::Samples`).
+- **This departs from samples being one until a target of another shape is needed**: the shape's samples are now the pass's, as the shape was made one type to allow.
+
+**A draw pass may read targets an earlier pass wrote, as an effect does.** A draw that tests its fragments against a surface drawn earlier, and draws into another target with a depth of its own, reads that surface's depth: the soft rims of strokes laid over a floor read the floor's depth at their pixel, and drop a fragment the floor is in front of, while their own depth holds the order they are painted in.
+
+- A draw pass lists what it reads, `reads`, as an effect pass does, and each target is read as `Read` says (`Float`, `Uint`, `Depth`). Each is one an earlier pass of the frame wrote, of one sample or the resolved texture of four, and none is the target the pass draws into or the depth it tests or writes.
+- **A program is made for what it reads**, `CreateProgram { .., reads: Vec<Read> }`, empty for most. A program that reads binds what it reads at group 0, the first at binding 0, and lists nothing there; one that reads nothing keeps every group, as before. **This departs from an effect's rule that group 0 is always what is read**: every draw program written so far binds from group 0, and it keeps doing so.
+- **A join's program reads what its pass reads**, kind for kind and in order (`JoinRefused::Reads`), as an effect's reads are checked against its pass. A main frame replaced keeps a placement drawn in a pass of the same type, the same shape, and the same reads.
+- A read is loaded, `textureLoad` at the fragment's pixel, as an effect loads one of its own target's scale; a depth is a `texture_depth_2d`, as an effect reads it. Nothing is filtered.
+- The builder takes a draw's reads as an effect's: a tuple of target handles, `()` for none, so a pass reading what no earlier pass wrote does not compile.
 - The last pass writes the frame's end.
 
 **The frame is described whole, and replaced whole.** There is no frame half made, and no pass added to a frame or taken from it: a frame of another shape is a new frame, which takes the old one's place at the next `Render`. A frame made for a window is its main frame from the turn it is made in, to what is placed after it and to `ShapeOf`, and is drawn from the next `Render`, which is the first to run after it; the frame it replaces is taken back with its id. A frame's shape changes as a setting does, so it is described in one ask, and what changes every frame rides the data its passes read: placements, instances, uniforms, storage (ADR-0023). An effect that comes and goes is switched by its uniforms, and costs its pass while off.
@@ -102,7 +121,7 @@ enum Read { Float, Uint, Depth }   // texture_2d<f32>, texture_2d<u32>, texture_
 
 **The render root checks the description again, whole,** as a guest's mail does not come through the builder, and a forged one must fail as the builder would have. Whatever the builder rules out is refused here too, and so is what no type sees: a window that is not there, a program released, an effect program made for another format than the target it writes, an effect's bindings not what the pass reads, more than the device allows. A frame that is made can be drawn: nothing in it fails at `Render`.
 
-**A program is made against the shape of what it draws into: its format, its samples, and its depth.** A pass's targets have a shape, and a program fits every pass whose targets have its shape. So a frame replaced by one that keeps its passes' shapes keeps every program valid, and nothing compiles again. Samples are one and depth `Depth32Float`, or none for a pass that uses no depth and for an effect, until a target of another shape is needed; the shape is one type from the start, so that each addition widens it rather than changing every program's.
+**A program is made against the shape of what it draws into: its format, its samples, and its depth.** A pass's targets have a shape, and a program fits every pass whose targets have its shape. So a frame replaced by one that keeps its passes' shapes keeps every program valid, and nothing compiles again. Samples are one or four, as the pass's targets hold, and depth `Depth32Float`, or none for a pass that uses no depth and for an effect; the shape is one type from the start, so that each addition widens it rather than changing every program's, as samples did.
 
 **A placement joins passes by their type, each with its own program and bindings.** A depth pass and the pass that shades draw the same things, with a program that writes only depth and one that shades:
 
@@ -150,6 +169,7 @@ Place {
 - What is decided separately, each when it is needed:
   - **Compute passes**, and the storage they write: decided by ADR-0026. Then **draws whose count a buffer holds**: decided by ADR-0026, as counts a storage holds.
   - **Several colour targets in one pass.** Targets of other sizes are decided here, as a scale of the end.
+  - **An end of four samples**, resolved into the window, and **multisampled depth read sample by sample.**
   - **A viewport for each draw**, for shadows drawn into tiles of one texture.
   - **Shared memory for targets never alive at once.**
   - **A texture frame run less often than every `Render`**, or when asked.
