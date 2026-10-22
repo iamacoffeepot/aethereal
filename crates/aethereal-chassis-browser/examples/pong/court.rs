@@ -5,7 +5,7 @@
 //! from `-HALF_HEIGHT` to `HALF_HEIGHT` up, with the middle at nought, the player's paddle on the left and the
 //! opponent's on the right.
 
-use aethereal_data::{Kind, KindName, Plain};
+use aethereal_data::Plain;
 
 /// Half the court's width: from the middle to the line a ball passes to score.
 pub const HALF_WIDTH: f32 = 1.0;
@@ -157,6 +157,7 @@ pub enum Play {
 /// The court as it stands after one of the game's ticks, sent to the actors beneath the game that follow the play:
 /// `elapsed_nanos` into the game, the ball, each paddle's height, the score, and where the match stands.
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
+#[kind(name = "aether.example.pong.court")]
 pub struct Court {
     pub elapsed_nanos: u64,
     pub ball: Ball,
@@ -164,10 +165,6 @@ pub struct Court {
     pub right: f32,
     pub score: Score,
     pub play: Play,
-}
-
-impl Kind for Court {
-    const NAME: KindName = KindName::new("aether.example.pong.court");
 }
 
 impl Court {
@@ -185,10 +182,7 @@ impl Court {
 /// How the opponent moves its paddle: `direction` from minus one, down at full speed, to one, up at full speed. The
 /// game moves the paddle so until it is sent another.
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
+#[kind(name = "aether.example.pong.steer")]
 pub struct Steer {
     pub direction: f32,
-}
-
-impl Kind for Steer {
-    const NAME: KindName = KindName::new("aether.example.pong.steer");
 }

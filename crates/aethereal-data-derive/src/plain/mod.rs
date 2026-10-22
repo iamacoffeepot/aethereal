@@ -1,9 +1,11 @@
 //! The `Plain` and `Bound` derives: one field list into a schema and a codec (ADR-0004).
 
 mod enumeration;
+mod kind;
 mod structure;
 
 use crate::lifetimes::reject_lifetimes;
+use kind::Declaration;
 use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
 use quote::{quote, quote_spanned};
 use syn::spanned::Spanned;
@@ -38,13 +40,15 @@ pub struct Codec {
     pub decode: TokenStream2,
 }
 
-/// Expands a derive into `Schema`, `Encode`, and `Decode` impls, and for `Plain` the `Plain` impl.
+/// Expands a derive into `Schema`, `Encode`, and `Decode` impls, for `Plain` the `Plain` impl, and for a type
+/// `#[kind(name = "…")]` names the `Kind` impl.
 pub fn expand(input: &DeriveInput, derive: Derive) -> syn::Result<TokenStream2> {
     reject_lifetimes(&input.generics, derive.name())?;
+    let declaration = Declaration::of(input)?;
 
     match &input.data {
-        Data::Struct(data) => structure::expand(input, data, derive),
-        Data::Enum(data) => enumeration::expand(input, data, derive),
+        Data::Struct(data) => structure::expand(input, data, derive, &declaration),
+        Data::Enum(data) => enumeration::expand(input, data, derive, &declaration),
         Data::Union(data) => {
             let token = data.union_token;
             let message = format!("{} derive does not support unions", derive.name());
@@ -58,8 +62,15 @@ pub fn expand(input: &DeriveInput, derive: Derive) -> syn::Result<TokenStream2> 
 /// The codec is written once over every boundary `__B`, so the type crosses
 /// exactly the boundaries all its fields cross. `impl Plain`, which only the
 /// `Plain` derive writes, requires every field to be `Plain`, so a field that
-/// is not is an error at its type.
-pub fn impls(input: &DeriveInput, field_types: &[&Type], codec: &Codec, derive: Derive) -> TokenStream2 {
+/// is not is an error at its type. `impl Kind`, written for a named type, is
+/// bounded as `Schema` is.
+pub fn impls(
+    input: &DeriveInput,
+    field_types: &[&Type],
+    codec: &Codec,
+    derive: Derive,
+    declaration: &Declaration,
+) -> TokenStream2 {
     let name = &input.ident;
     let (_, ty_generics, _) = input.generics.split_for_impl();
     let over_boundary = over_boundary(&input.generics);
@@ -79,6 +90,7 @@ pub fn impls(input: &DeriveInput, field_types: &[&Type], codec: &Codec, derive: 
         },
         Derive::Bound => TokenStream2::new(),
     };
+    let kind = declaration.implementation(input, &schema_generics);
 
     quote! {
         #[automatically_derived]
@@ -106,6 +118,8 @@ pub fn impls(input: &DeriveInput, field_types: &[&Type], codec: &Codec, derive: 
         }
 
         #plain
+
+        #kind
     }
 }
 

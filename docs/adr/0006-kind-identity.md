@@ -21,14 +21,21 @@ pub trait Kind: Schema {
 }
 
 #[derive(Plain)]
+#[kind(name = "aether.audio.note_on")]
 struct NoteOn { pitch: u8, velocity: u8 }
+```
 
+The name is all an author writes. A kind is declared by `#[kind(name = "…")]` on its `Plain` or `Bound` derive, and the derive writes the one-line implementation beside the schema and the codec, bounded as the schema is:
+
+```rust
 impl Kind for NoteOn {
     const NAME: KindName = KindName::new("aether.audio.note_on");
 }
 ```
 
-The name is all an author writes. There is no derive: the implementation is one line, and it is the whole declaration.
+The attribute holds the name and nothing else. A second `kind`, any other key, a name that is not a string literal, and a `kind` with no name are each a compile error, and so is a `kind` on a field or a variant. Whether the name conforms is decided by `KindName::new` and not by the derive, and for a type with no parameters the derive also reads the name in a constant of its own, so a name that does not conform stops the build even where nothing uses the kind.
+
+A type whose `Schema` is written by hand writes its `impl Kind` by hand too, as a type whose schema is written by hand writes its codec by hand. The longhand stands where the derive does not, and is not a second way to declare a kind.
 
 A kind does not state where it may go. The types of its fields decide that (ADR-0004): a kind of plain fields crosses every boundary, and a kind holding a value bound to its own actor is a kind that no send accepts. Mail is the door between actors, and requires of the kind it carries the codec for that boundary.
 
@@ -127,7 +134,7 @@ It compares the two schemas shape by shape, ignoring names, and does not compare
 - **The name and the full schema, names included.** Renaming a field would cut two peers apart though their bytes agree.
 - **A bare string for the name.** One type fewer. Nothing would then check a name, and a string invites uses a name does not have: parsing it for a namespace, matching on a prefix, building one at run time.
 - **An id written into the trait as a constant.** `K::ID` reads well, and an implementation written by hand could then state an id that is not its kind's.
-- **A derive for `Kind`.** A second way to write one line.
+- **An attribute macro that writes a kind's derives from flags.** The earlier engine's did: `copy`, `eq`, `bound`, and others each turned into derives the kind carried. The codec derive already is the stack a kind needs, and the standard derives are each type's own needs, which flags on the kind would only restate. That vocabulary was also never total, so the longhand lived on beside it and there were two ways to declare a kind.
 - **A cryptographic hash, or a wider id.** Collisions could not be made on purpose. The id rides on every piece of mail, such a hash is not computable in a constant, and the registry's check gives the same safety for 64 bits.
 - **Bits of the id reserved to say what sort of id it is.** The earlier engine did this so that an id met with no type beside it could still be recognised. Here every id has a type and a schema beside it.
 - **A prefix on the hashed bytes for each sort of id.** It keeps the id spaces of different types apart, and the types already do.

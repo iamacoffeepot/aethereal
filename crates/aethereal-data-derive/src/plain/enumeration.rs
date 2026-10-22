@@ -3,7 +3,7 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use super::{Codec, Derive, decode_binding, encode_call, impls, shape_field};
+use super::{Codec, Declaration, Derive, decode_binding, encode_call, impls, shape_field};
 use syn::{Attribute, DataEnum, DeriveInput, FieldsNamed, FieldsUnnamed, LitInt, Token, Type, Variant};
 
 /// One variant's three emitted pieces.
@@ -14,7 +14,12 @@ struct Built {
 }
 
 /// Expands an enum into the impls of `derive`.
-pub fn expand(input: &DeriveInput, data: &DataEnum, derive: Derive) -> syn::Result<TokenStream2> {
+pub fn expand(
+    input: &DeriveInput,
+    data: &DataEnum,
+    derive: Derive,
+    declaration: &Declaration,
+) -> syn::Result<TokenStream2> {
     let is_empty = data.variants.is_empty();
     if is_empty {
         let message = format!("{} derive does not support enums with no variants", derive.name());
@@ -47,7 +52,7 @@ pub fn expand(input: &DeriveInput, data: &DataEnum, derive: Derive) -> syn::Resu
     let all_fields = data.variants.iter().flat_map(|variant| variant.fields.iter());
     let field_types: Vec<&Type> = all_fields.map(|field| &field.ty).collect();
 
-    Ok(impls(input, &field_types, &codec(input, &shapes, &encodes, &decodes), derive))
+    Ok(impls(input, &field_types, &codec(input, &shapes, &encodes, &decodes), derive, declaration))
 }
 
 /// The enum's shape and the bodies of its codec.
