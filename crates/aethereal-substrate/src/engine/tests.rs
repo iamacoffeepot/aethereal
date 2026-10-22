@@ -1936,11 +1936,8 @@ lighthouse!(FalseLighthouse);
 macro_rules! reaching {
     ($name:ident, $named:literal, $begins:ty, $handler:ty, $ends:ty) => {
         #[derive(Plain, Default)]
+        #[kind(name = $named)]
         struct $name;
-
-        impl Kind for $name {
-            const NAME: KindName = KindName::new($named);
-        }
 
         impl ChildOf for $name {
             type Parent = Top;

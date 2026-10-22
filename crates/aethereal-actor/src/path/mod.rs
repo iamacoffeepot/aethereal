@@ -24,7 +24,7 @@ use core::marker::PhantomData;
 /// ```
 /// use aethereal_actor::{ChildOf, Path, Tells, Top};
 /// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Turn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
 /// # #[kind(name = "aether.example.poke")]
@@ -37,11 +37,8 @@ use core::marker::PhantomData;
 /// # macro_rules! actor {
 /// #     ($name:ident, $named:literal, $sends:ty) => {
 /// #         #[derive(Plain)]
+/// #         #[kind(name = $named)]
 /// #         struct $name;
-/// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new($named);
-/// #         }
 /// #
 /// #         impl Actor for $name {
 /// #             type Config = $name;
@@ -85,7 +82,7 @@ use core::marker::PhantomData;
 /// ```compile_fail
 /// use aethereal_actor::{ChildOf, Path, Tells, Top};
 /// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Turn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
 /// # #[kind(name = "aether.example.poke")]
@@ -98,11 +95,8 @@ use core::marker::PhantomData;
 /// # macro_rules! actor {
 /// #     ($name:ident, $named:literal, $sends:ty) => {
 /// #         #[derive(Plain)]
+/// #         #[kind(name = $named)]
 /// #         struct $name;
-/// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new($named);
-/// #         }
 /// #
 /// #         impl Actor for $name {
 /// #             type Config = $name;
@@ -146,7 +140,7 @@ use core::marker::PhantomData;
 /// ```compile_fail
 /// use aethereal_actor::{Anywhere, ChildOf, Path, Tells, Top};
 /// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Turn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
 /// # #[kind(name = "aether.example.poke")]
@@ -159,11 +153,8 @@ use core::marker::PhantomData;
 /// # macro_rules! actor {
 /// #     ($name:ident, $named:literal, $sends:ty) => {
 /// #         #[derive(Plain)]
+/// #         #[kind(name = $named)]
 /// #         struct $name;
-/// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new($named);
-/// #         }
 /// #
 /// #         impl Actor for $name {
 /// #             type Config = $name;

@@ -22,7 +22,7 @@ use std::sync::Arc;
 ///
 /// ```
 /// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Path, Tells, Top, Turn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// # use aethereal_substrate::Engine;
 /// # use std::num::NonZeroUsize;
 /// #
@@ -33,11 +33,8 @@ use std::sync::Arc;
 /// # macro_rules! root {
 /// #     ($name:ident, $named:literal, $sends:ty) => {
 /// #         #[derive(Plain)]
+/// #         #[kind(name = $named)]
 /// #         struct $name;
-/// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new($named);
-/// #         }
 /// #
 /// #         impl ChildOf for $name {
 /// #             type Parent = Top;
@@ -85,7 +82,7 @@ use std::sync::Arc;
 ///
 /// ```compile_fail
 /// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Path, Tells, Top, Turn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// # use aethereal_substrate::Engine;
 /// # use std::num::NonZeroUsize;
 /// #
@@ -96,11 +93,8 @@ use std::sync::Arc;
 /// # macro_rules! root {
 /// #     ($name:ident, $named:literal, $sends:ty) => {
 /// #         #[derive(Plain)]
+/// #         #[kind(name = $named)]
 /// #         struct $name;
-/// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new($named);
-/// #         }
 /// #
 /// #         impl ChildOf for $name {
 /// #             type Parent = Top;

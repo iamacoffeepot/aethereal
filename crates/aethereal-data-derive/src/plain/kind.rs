@@ -79,7 +79,11 @@ fn name_of(attr: &Attribute) -> syn::Result<LitStr> {
         if already {
             return Err(meta.error("`name` is written once"));
         }
-        let value: Expr = meta.value()?.parse()?;
+        let mut value: Expr = meta.value()?.parse()?;
+        // A `macro_rules!` fragment such as `$name:literal` reaches the derive wrapped in invisible groups.
+        while let Expr::Group(group) = value {
+            value = *group.expr;
+        }
         let Expr::Lit(ExprLit { lit: Lit::Str(literal), .. }) = value else {
             return Err(syn::Error::new_spanned(value, "a kind's name is a string literal"));
         };
