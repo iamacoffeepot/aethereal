@@ -60,6 +60,7 @@ pub trait Bootstrap<H: Host>: Root {
 
 - **The host's crate writes it for the roots that need the host:** `impl Bootstrap<Desktop> for Windows` in `aethereal-chassis-desktop`, `impl Bootstrap<Browser> for Windows` in `aethereal-chassis-browser`. The same list runs on every host that bootstraps each of its roots, and a root a host does not bootstrap does not build there.
 - **A library or the program writes it for a root that needs no host:** `impl<H: Host> Bootstrap<H> for Scene`.
+- **Only the crate of the actor or of the host can write it.** `Bootstrap`, the host, and the actor would all be foreign to a program's crate, which Rust's orphan rule refuses. So a library ships a bootstrap for each actor it means to be a root, generic over the host where it needs none, and an actor shipped without one cannot be listed.
 - **An actor whose config is its settings opts in with `#[derive(Bootstrap)]`.** Its config is plain data with a `Default`, it needs nothing, and it provides nothing; the derive writes `bootstrap` as beginning it from its settings. It is a derive, not a blanket impl, because a blanket impl over every such actor would overlap every impl a host writes.
 - **`Bootstrapping<'_, H, A>` begins only `A`**, once for a singleton and once per key for an instanced root, so each `.root::<A>()` adds exactly `A` to the list `Ordered<I>` checks. It makes handles (`hand`, `source`, `controller`), puts code and blobs, and reaches the host's own setup, such as the desktop's `Screen`.
 - **A host end goes to the host through `cx.serve(end)`,** which builds only when the host serves that end (`Desktop: Serves<Hosting>`). A pair is made and split inside one bootstrap: its `Given` half goes into the root's config, its other half to `serve`, and neither leaves.
@@ -105,7 +106,7 @@ A section belongs to the root that reads it, so a composed section that nothing 
 | | when |
 |---|---|
 | a root reaches a singleton root not bootstrapped before it | compile, at `run` (`Ordered<I>`, as at `ready` now) |
-| a root needs what no root before it provides | compile, at `.root` |
+| a root needs what no root before it provides | compile, at `run` / `build`, naming the type |
 | a root the host does not bootstrap | compile, at `.root` |
 | a host end the host does not serve | compile, in the root's `bootstrap` |
 | two sections of one name | phase 1, before anything opens, naming both roots |
@@ -119,7 +120,7 @@ A section belongs to the root that reads it, so a composed section that nothing 
 
 `run` and `build` report it naming the root whose bootstrap failed. The engine and the roots begun before it are dropped, as a setup whose `add_root` is refused is dropped now.
 
-**Needs and provides are found by type.** A root's `Needs` is a tuple of types, each found among what roots before it provided, as `Ordered<I>` finds a root. A type is provided once in a program. A root that needs two values of one kind needs two types.
+**Needs and provides are found by type.** A root's `Needs` and `Provides` are tuples of types; each need is found among what roots before it provided, as `Ordered<I>` finds a root, and handed over as a clone. The check is made at `run` / `build`, not at `.root`: finding a need there takes an index the compiler infers, which a turbofish would make every `.root::<A, _>()` spell out. A type is provided once in a program; two roots that provide one type are refused only where a later root needs it, as an ambiguous type. A root that needs two values of one kind needs two types.
 
 **A missing root is an error, never filled in.** The list cannot add a root a later one reaches: that asks the type system whether a root is already in the list, which stable Rust cannot answer. Which root stands where, on which host, is the program's to say.
 
