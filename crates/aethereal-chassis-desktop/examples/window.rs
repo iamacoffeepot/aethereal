@@ -5,7 +5,7 @@
 //! the program quits itself after N seconds, and prints the time between the frames it was handed, from one `Tick` to
 //! the next, as `key=value` in milliseconds: their mean, median, 99th percentile, and longest. Without it, it runs until
 //! its window is closed or Escape is pressed. Each key, button, and turn of the wheel it hears is printed as it comes,
-//! and each resize.
+//! and each resize. `--help` lists every flag the program reads, each also read from its `WINDOW_` variable.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
@@ -13,7 +13,9 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
-use aethereal_chassis_desktop::{Desktop, Made, Screen, renderer};
+use aethereal_chassis_desktop::Desktop;
+use aethereal_chassis_headless::Exit;
+use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -26,17 +28,19 @@ use aethereal_render::program::{
 };
 use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
-use aethereal_substrate::Engine;
-use aethereal_window::{self as window, Event, Heard, Opening, Window, WindowId, Windowing, Windows};
+use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
+use aethereal_window::{self as window, Event, InitialWindows, Window, WindowId, Windows};
+use core::error::Error;
 use core::f32::consts::TAU;
-use core::num::NonZeroUsize;
-use core::time::Duration;
-use std::env;
+use core::num::{NonZeroU32, NonZeroUsize};
 use std::process::ExitCode;
 use std::thread;
 
 /// The triangles in the ring.
 const RING: u8 = 48;
+
+/// The most workers the program runs on.
+const MOST_WORKERS: NonZeroUsize = NonZeroUsize::new(4).expect("4 is not zero");
 
 /// How long one turn of the ring takes, in milliseconds.
 const TURN_MILLIS: u64 = 4_000;
@@ -63,22 +67,12 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 ";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = env::args().skip(1).collect();
-    let seconds = args
-        .iter()
-        .position(|arg| arg == "--seconds")
-        .and_then(|at| args.get(at + 1))
-        .and_then(|seconds| seconds.parse().ok())
-        .unwrap_or(0);
-    let cores = thread::available_parallelism().map_or(1, NonZeroUsize::get);
-    let workers = NonZeroUsize::new(cores.min(4)).unwrap_or(NonZeroUsize::MIN);
-    let desktop = Desktop { workers, stop_within: Duration::from_secs(1) };
-
-    match desktop.run(|screen| program(screen, workers, seconds)) {
-        Ok(exit) => {
+    match run() {
+        Ok(Launched::Ran(exit)) => {
             println!("exit={exit:?}");
             ExitCode::SUCCESS
         }
+        Ok(Launched::Printed) => ExitCode::SUCCESS,
         Err(failed) => {
             eprintln!("{failed}");
             ExitCode::FAILURE
@@ -86,27 +80,48 @@ fn main() -> ExitCode {
     }
 }
 
-/// The engine, its views in a part for each worker, with the window root, the renderer, handed the GPU opened on the
-/// window opened on `screen`, and the scene as its roots, the scene quitting after `seconds` when they are any.
-fn program(mut screen: Screen<'_>, workers: NonZeroUsize, seconds: u64) -> Result<Made, String> {
-    let mut setup = Engine::new(workers, 1024, 1 << 20, 1 << 20, 0)
-        .with_cycle::<(Tick, Render)>()
-        .map_err(|unordered| format!("the cycle is out of order: {unordered:?}"))?;
-    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
-    let window = screen.open_window(&mut opening, "aethereal", (800, 600)).map_err(|unopened| unopened.to_string())?;
-    let (windows, hosting) = opening.config();
-    let mut setup = setup
-        .add_root::<Windows>(&(), windows)
-        .map_err(|refused| format!("the window root did not begin: {refused:?}"))?;
-    let (rendering, drawing) = renderer(&mut setup, screen, hosting).map_err(|unopened| unopened.to_string())?;
-    let engine = setup
-        .add_root::<Renderer>(&(), rendering)
-        .map_err(|refused| format!("the renderer did not begin: {refused:?}"))?
-        .add_root::<Scene>(&(), Shows { window, seconds })
-        .map_err(|refused| format!("the scene did not begin: {refused:?}"))?
-        .ready();
+/// Launches the program of the window root, the renderer, which draws on the window it opened, and the scene, on as
+/// many workers as the machine has cores, at most four, the engine's views in a part for each, with what its command
+/// line and environment set over that.
+fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
+    let workers = NonZeroU32::try_from(
+        thread::available_parallelism().map_or(NonZeroUsize::MIN, |cores| cores.min(MOST_WORKERS)),
+    )?;
 
-    Ok(Made { engine, drawing })
+    Ok(Desktop::program()
+        .with_cycle::<(Tick, Render)>()
+        .map_err(|unordered| format!("the cycle is out of order: {unordered:?}"))?
+        .with_engine(EngineSettings { workers, parts: workers, ..Default::default() })
+        .root::<Windows>()
+        .root::<Renderer>()
+        .root::<Scene>()
+        .launch("window")?)
+}
+
+/// How long the scene runs: its section, `scene`.
+#[derive(Plain, Default)]
+#[kind(name = "aether.example.show")]
+#[settings]
+struct Show {
+    /// The seconds the scene runs for, none for as long as it is let.
+    #[flag]
+    seconds: u64,
+}
+
+/// The scene draws on the first window the window root opened, for as long as its settings say.
+impl<H: Host> Bootstrap<H> for Scene {
+    const SECTION: &'static str = "scene";
+    type Settings = Show;
+    type Needs = (InitialWindows,);
+    type Provides = ();
+
+    async fn bootstrap(
+        show: Show,
+        (windows,): (InitialWindows,),
+        cx: &mut Bootstrapping<'_, H, Self>,
+    ) -> Result<(), Unbuilt> {
+        cx.begin(&(), Shows { window: windows.first(), seconds: show.seconds })
+    }
 }
 
 /// An empty context.

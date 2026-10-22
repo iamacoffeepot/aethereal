@@ -4,8 +4,7 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells, Tick,
     Top, Turn, path,
 };
-use aethereal_chassis_browser::canvas::{self, Density};
-use aethereal_chassis_browser::{Browser, Hosted, Listening, Performance, open, renderer};
+use aethereal_chassis_browser::{Browser, Started, WindowsSettings};
 use aethereal_data::{Bound, Plain, TypedKey};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -18,17 +17,15 @@ use aethereal_render::program::{
 };
 use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
-use aethereal_substrate::Engine;
+use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_window::{
-    self as window, Event, Heard, Logical, OpenWindow, Opened, Opening, Surface, Window, WindowId, Windowing, Windows,
+    self as window, Event, InitialWindows, Logical, OpenWindow, Opened, Surface, Window, WindowId, Windows,
 };
 use core::cell::RefCell;
 use core::f32::consts::TAU;
 use core::mem;
-use core::num::NonZeroUsize;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
-use web_sys::HtmlCanvasElement;
 
 thread_local! {
     /// What the scenes said, for the page to show.
@@ -40,58 +37,40 @@ fn say(line: String) {
     SAID.with_borrow_mut(|said| said.push(line));
 }
 
-/// The program the page runs, for its `requestAnimationFrame` to call, and the page's listeners on each canvas, kept
-/// while it runs.
+/// The program the page runs, for its `requestAnimationFrame` to call.
 #[wasm_bindgen]
 pub struct Program {
-    browser: Browser<Performance>,
-    _canvases: [Listening; 2],
+    started: Started,
 }
 
-/// Opens `first` and `second` as windows `0` and `1` and WebGPU on them, then makes the engine with the window root,
-/// the renderer, handed the GPU, and a scene for each window as its roots, and listens to the page for each canvas's
-/// size.
+/// Bootstraps the program on the page with the window root, which opens the canvases `first` and `second` as windows
+/// `0` and `1`, the renderer, which opens WebGPU on them, and a scene for each window.
 ///
 /// # Errors
 ///
-/// When WebGPU will not open on the canvases, a root does not begin, or the page will not be listened to.
+/// When a canvas or WebGPU on them will not open, the page will not be listened to, or a root does not begin.
 #[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
-pub async fn start(first: HtmlCanvasElement, second: HtmlCanvasElement) -> Result<Program, JsError> {
-    let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
+pub async fn start() -> Result<Program, JsError> {
+    let started = Browser::program()
         .with_cycle::<(Tick, Render)>()
-        .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
-    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
-    let (gpu, shown) = open([first.clone(), second.clone()], &mut opening).await?;
-    let [one, other] = [shown[0].window(), shown[1].window()];
-    let (windows, hosting) = opening.config();
-    let mut setup = setup
-        .add_root::<Windows>(&(), windows)
-        .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
-    let (rendering, mappings) = renderer(&mut setup, gpu);
-    let engine = setup
-        .add_root::<Renderer>(&(), rendering)
-        .map_err(|refused| JsError::new(&format!("the renderer did not begin: {refused:?}")))?
-        .add_root::<Scene>(&one, Shows { window: one, count: RING, warm: true })
-        .map_err(|refused| JsError::new(&format!("the first scene did not begin: {refused:?}")))?
-        .add_root::<Scene>(&other, Shows { window: other, count: RING / 4, warm: false })
-        .map_err(|refused| JsError::new(&format!("the second scene did not begin: {refused:?}")))?
-        .ready();
+        .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?
+        .root_with::<Windows>(WindowsSettings {
+            canvases: vec![String::from("first"), String::from("second")],
+            ..Default::default()
+        })
+        .root::<Renderer>()
+        .root::<Scene>()
+        .run()?
+        .await?;
 
-    // Each canvas is drawn at every device pixel of the size the page lays it out at, followed as it is resized.
-    let [first_shown, second_shown] = shown;
-    let canvases = [
-        canvas::listen(&first, &first_shown, Density::SCREEN)?,
-        canvas::listen(&second, &second_shown, Density::SCREEN)?,
-    ];
-
-    Ok(Program { browser: Browser::new(engine, Performance, mappings, Hosted::Windows(hosting)), _canvases: canvases })
+    Ok(Program { started })
 }
 
 #[wasm_bindgen]
 impl Program {
     /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
     pub fn frame(&mut self, timestamp_millis: f64) {
-        self.browser.frame(timestamp_millis);
+        self.started.frame(timestamp_millis);
     }
 
     /// What the scenes said since this was last asked, a line each.
@@ -142,6 +121,33 @@ struct Shows {
     window: WindowId,
     count: u8,
     warm: bool,
+}
+
+/// A scene for each window the window root opened: the first's ring full and warm, each other's a quarter as full and
+/// cool.
+impl<H: Host> Bootstrap<H> for Scene {
+    const SECTION: &'static str = "scene";
+    type Settings = ();
+    type Needs = (InitialWindows,);
+    type Provides = ();
+
+    async fn bootstrap(
+        (): (),
+        (windows,): (InitialWindows,),
+        cx: &mut Bootstrapping<'_, H, Self>,
+    ) -> Result<(), Unbuilt> {
+        for window in windows.all() {
+            let first = window == windows.first();
+            let count = if first {
+                RING
+            } else {
+                RING / 4
+            };
+            cx.begin(&window, Shows { window, count, warm: first })?;
+        }
+
+        Ok(())
+    }
 }
 
 /// A scene, keyed by the window it draws in: it asks the shape of its window's main pass, makes what it draws one ask

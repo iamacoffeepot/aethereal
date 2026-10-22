@@ -11,15 +11,13 @@ description = "The desktop chassis: the native host with windows, on winit, draw
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-chassis-headless = { path = "../aethereal-chassis-headless" }
+aethereal-data = { path = "../aethereal-data" }
 aethereal-render = { path = "../aethereal-render" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 aethereal-window = { path = "../aethereal-window" }
-pollster = "1.0.1"
+pollster = { workspace = true }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "dx12", "metal", "vulkan"] }
 winit = "0.30.13"
-
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-aethereal-data = { path = "../aethereal-data" }
 
 [lints]
 workspace = true

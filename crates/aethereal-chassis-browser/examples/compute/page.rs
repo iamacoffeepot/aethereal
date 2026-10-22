@@ -5,7 +5,7 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick, Top,
     Turn, path,
 };
-use aethereal_chassis_browser::{Browser, Hosted, Performance, open, renderer};
+use aethereal_chassis_browser::{Browser, Started};
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::compute::{ComputeId, Computed, CreateCompute};
@@ -22,14 +22,12 @@ use aethereal_render::readback::{Bytes, ReadStorage};
 use aethereal_render::shape::Shape;
 use aethereal_render::storage::{CreateStorage, StorageId, Stored};
 use aethereal_render::timing::{TimeFrame, Timed};
-use aethereal_substrate::Engine;
-use aethereal_window::{Heard, Opening, WindowId, Windowing, Windows};
+use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
+use aethereal_window::{InitialWindows, WindowId, Windows};
 use core::cell::RefCell;
 use core::mem;
-use core::num::NonZeroUsize;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
-use web_sys::HtmlCanvasElement;
 
 thread_local! {
     /// What the simulator was answered, for the page to show.
@@ -44,42 +42,36 @@ fn say(line: String) {
 /// The program the page runs, for its `requestAnimationFrame` to call.
 #[wasm_bindgen]
 pub struct Program {
-    browser: Browser<Performance>,
+    started: Started,
 }
 
-/// Opens `canvas` as the one window and WebGPU on it, then makes the engine with the window root, the renderer, handed
-/// the GPU, and the simulator as its roots.
+/// Bootstraps the program on the page with the window root, which opens the page's canvas as the one window,
+/// the renderer, which opens WebGPU on it, and the simulator.
 ///
 /// # Errors
 ///
-/// When WebGPU will not open on the canvas, or a root does not begin.
-#[wasm_bindgen]
-pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
-    let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 26, 0)
+/// When the canvas or WebGPU on it will not open, the page will not be listened to, or a root does not begin.
+#[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
+pub async fn start() -> Result<Program, JsError> {
+    let started = Browser::program()
         .with_cycle::<(Tick, Render)>()
-        .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
-    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
-    let (gpu, [shown]) = open([canvas], &mut opening).await?;
-    let (windows, hosting) = opening.config();
-    let mut setup = setup
-        .add_root::<Windows>(&(), windows)
-        .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
-    let (rendering, mappings) = renderer(&mut setup, gpu);
-    let engine = setup
-        .add_root::<Renderer>(&(), rendering)
-        .map_err(|refused| JsError::new(&format!("the renderer did not begin: {refused:?}")))?
-        .add_root::<Simulator>(&(), Shows { window: shown.window() })
-        .map_err(|refused| JsError::new(&format!("the simulator did not begin: {refused:?}")))?
-        .ready();
+        .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?
+        // Its blobs hold a frame of a large canvas.
+        .with_engine(EngineSettings { blob_bytes: 1 << 26, ..Default::default() })
+        .root::<Windows>()
+        .root::<Renderer>()
+        .root::<Simulator>()
+        .run()?
+        .await?;
 
-    Ok(Program { browser: Browser::new(engine, Performance, mappings, Hosted::Windows(hosting)) })
+    Ok(Program { started })
 }
 
 #[wasm_bindgen]
 impl Program {
     /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
     pub fn frame(&mut self, timestamp_millis: f64) {
-        self.browser.frame(timestamp_millis);
+        self.started.frame(timestamp_millis);
     }
 
     /// What the simulator was answered since this was last asked, a line each.
@@ -87,6 +79,22 @@ impl Program {
     #[expect(clippy::unused_self, reason = "the page asks it of the program it started")]
     pub fn said(&self) -> Vec<String> {
         SAID.with_borrow_mut(mem::take)
+    }
+}
+
+/// The simulator draws on the one window the window root opened.
+impl<H: Host> Bootstrap<H> for Simulator {
+    const SECTION: &'static str = "simulator";
+    type Settings = ();
+    type Needs = (InitialWindows,);
+    type Provides = ();
+
+    async fn bootstrap(
+        (): (),
+        (windows,): (InitialWindows,),
+        cx: &mut Bootstrapping<'_, H, Self>,
+    ) -> Result<(), Unbuilt> {
+        cx.begin(&(), Shows { window: windows.first() })
     }
 }
 

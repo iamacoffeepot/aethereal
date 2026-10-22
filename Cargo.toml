@@ -26,6 +26,7 @@ publish = false
 blake3 = { version = "1.8", default-features = false }
 crossbeam-queue = "0.3"
 libm = { version = "0.2", default-features = false }
+pollster = "1.0.1"
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
@@ -72,6 +73,9 @@ self_named_module_files = "deny"
 
 # Off: each fights an idiom this workspace uses on purpose.
 float_cmp = "allow"
+# A program's bootstrap is a future the host awaits on its own thread (ADR-0029): it is never sent, and holds the
+# host's setup, which need not be `Send`.
+future_not_send = "allow"
 missing_const_for_fn = "allow"
 missing_errors_doc = "allow"
 needless_pass_by_ref_mut = "allow"

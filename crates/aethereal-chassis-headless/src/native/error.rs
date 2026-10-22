@@ -1,4 +1,4 @@
-//! Why the native host's layers were refused, or the program they set up did not start (ADR-0028).
+//! Why the native host's layers were refused, or the program they set up did not start or run (ADR-0028).
 
 use aethereal_data::JsonPath;
 use aethereal_data::config::{ConfigError, FlagName};
@@ -81,3 +81,30 @@ impl fmt::Display for NativeError {
 }
 
 impl Error for NativeError {}
+
+/// Why a launched program did not run to its end: its invocation was refused, or the host, running it, answered its
+/// own error, `E`, which is the headless host's [`ProgramError`] and the desktop's own.
+#[derive(Debug)]
+pub enum LaunchError<E> {
+    /// The invocation was refused, as this says, before the program was run.
+    Read(NativeError),
+    /// The program was run and did not come to its end, as the host says.
+    Ran(E),
+}
+
+impl<E> From<NativeError> for LaunchError<E> {
+    fn from(error: NativeError) -> Self {
+        Self::Read(error)
+    }
+}
+
+impl<E: fmt::Display> fmt::Display for LaunchError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read(error) => write!(f, "{error}"),
+            Self::Ran(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl<E: Error> Error for LaunchError<E> {}

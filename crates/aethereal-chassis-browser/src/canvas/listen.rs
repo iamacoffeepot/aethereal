@@ -38,17 +38,6 @@ impl Shown {
     }
 }
 
-/// Opens `canvas` as a window, standing as the page has it now: its backing store as its surface, the page's device
-/// pixels to each CSS pixel as its scale, and focused when the page has the keyboard. A page with several canvases
-/// opens each, and each is the next window, `0`, `1`, … in the order opened.
-///
-/// # Errors
-///
-/// When the page has no window or document, or will not say whether it has the keyboard.
-pub fn open(canvas: &HtmlCanvasElement, opening: &mut Opening) -> Result<Shown, JsError> {
-    Ok(Page::now()?.open(canvas, opening))
-}
-
 /// The page as it stands as its canvases are opened: its window, and whether it has the keyboard.
 pub struct Page {
     window: web_sys::Window,
@@ -69,7 +58,8 @@ impl Page {
         Ok(Self { window, focused })
     }
 
-    /// Opens `canvas` as the next window, standing as the page has it now.
+    /// Opens `canvas` as the next window with `opening`, standing as the page has it now: its backing store as its
+    /// surface, the page's device pixels to each CSS pixel as its scale, and focused when the page has the keyboard.
     pub fn open(&self, canvas: &HtmlCanvasElement, opening: &mut Opening) -> Shown {
         let feed = opening.open(surface(canvas, &self.window), self.focused);
         let size = Rc::new(Cell::new((canvas.width(), canvas.height())));

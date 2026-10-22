@@ -79,6 +79,7 @@ dependencies = [
  "core_affinity",
  "crossbeam-queue",
  "libc",
+ "pollster",
  "wasmparser",
  "wasmtime",
 ]
@@ -135,6 +136,7 @@ dependencies = [
  "aethereal-data",
  "aethereal-data-derive",
  "crossbeam-queue",
+ "pollster",
 ]
 
 [[package]]

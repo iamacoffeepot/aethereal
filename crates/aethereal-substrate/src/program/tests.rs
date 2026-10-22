@@ -6,6 +6,8 @@ use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top};
 use aethereal_data::config::{ConfigError, ConfigFault};
 use aethereal_data::{ActorPath, JsonFault, Kind, PathSegment, Plain};
 use core::error::Error;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
 use std::cell::RefCell;
 use std::mem;
 
@@ -42,8 +44,9 @@ struct BenchRunning {
 
 impl Host for Bench {
     type Running = BenchRunning;
-    type Hosting = Vec<Lit>;
+    type Hosting<'host> = Vec<Lit>;
     type Exit = Self;
+    type Error = ProgramError;
 
     fn run(settled: Settled<Self>) -> Result<Self, ProgramError> {
         Self::build(settled)
@@ -54,8 +57,7 @@ impl Builds for Bench {
     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
         let pace = settled.running().pace;
         let hops = settled.engine().hops;
-        let mut served = Vec::new();
-        let engine = settled.bootstrap(&mut served)?;
+        let (engine, served) = pollster::block_on(settled.bootstrap(Vec::new()))?;
 
         Ok(Self { engine, served, pace, hops })
     }
@@ -137,6 +139,7 @@ root!(Lamp, "test.program.lamp");
 root!(Counter, "test.program.counter");
 root!(Keeper, "test.program.keeper");
 root!(Dimmer, "test.program.dimmer");
+root!(Waiter, "test.program.waiter");
 
 /// A root whose config is its settings, read from `scene`.
 #[derive(Plain, Bootstrap)]
@@ -171,7 +174,7 @@ impl<H: Host + Serves<Lit>> Bootstrap<H> for Lamp {
     type Needs = ();
     type Provides = (Lit,);
 
-    fn bootstrap(settings: LampSettings, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(Lit,), Unbuilt> {
+    async fn bootstrap(settings: LampSettings, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(Lit,), Unbuilt> {
         let lit = Lit(settings.brightness);
         cx.begin(&(), Line { text: format!("lamp {}", lit.0), faults: false })?;
         cx.serve(lit);
@@ -186,7 +189,7 @@ impl<H: Host> Bootstrap<H> for Counter {
     type Needs = ();
     type Provides = (Counted,);
 
-    fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(Counted,), Unbuilt> {
+    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(Counted,), Unbuilt> {
         cx.begin(&(), Line { text: String::from("counter"), faults: false })?;
 
         Ok((Counted(2),))
@@ -200,7 +203,11 @@ impl<H: Host> Bootstrap<H> for Keeper {
     type Needs = (Counted, Lit);
     type Provides = ();
 
-    fn bootstrap((): (), (counted, lit): (Counted, Lit), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
+    async fn bootstrap(
+        (): (),
+        (counted, lit): (Counted, Lit),
+        cx: &mut Bootstrapping<'_, H, Self>,
+    ) -> Result<(), Unbuilt> {
         let faults = lit.0 == 0;
         cx.begin(&(), Line { text: format!("keeper {} {}", counted.0, lit.0), faults })
     }
@@ -212,8 +219,40 @@ impl<H: Host> Bootstrap<H> for Dimmer {
     type Needs = ();
     type Provides = ();
 
-    fn bootstrap(_: SceneSettings, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
+    async fn bootstrap(_: SceneSettings, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
         cx.begin(&(), Line { text: String::from("dimmer"), faults: false })
+    }
+}
+
+/// What a bootstrap that awaits the host's setup waits on: pending as it is first polled, as a GPU opening is, and
+/// ready after.
+struct Opening {
+    polled: bool,
+}
+
+impl Future for Opening {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.polled {
+            return Poll::Ready(());
+        }
+        self.polled = true;
+        cx.waker().wake_by_ref();
+
+        Poll::Pending
+    }
+}
+
+impl<H: Host> Bootstrap<H> for Waiter {
+    const SECTION: &'static str = "waiter";
+    type Settings = ();
+    type Needs = (Lit,);
+    type Provides = ();
+
+    async fn bootstrap((): (), (lit,): (Lit,), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
+        Opening { polled: false }.await;
+        cx.begin(&(), Line { text: format!("waiter {}", lit.0), faults: false })
     }
 }
 
@@ -310,6 +349,28 @@ fn the_host_reads_its_own_sections() -> Outcome {
     let bench = program.layer(code).build()?;
 
     assert_eq!((bench.pace, bench.hops), (5, 2));
+    Ok(())
+}
+
+#[test]
+fn a_host_that_waits_bootstraps_each_root_after_the_one_it_awaits() -> Outcome {
+    // Catches roots after a waiting one bootstrapped before it is done, or an end given before the wait lost after it.
+    let settled = Bench::program().root::<Lamp>().root::<Waiter>().root::<Scene>().settle()?;
+    let mut booting = Box::pin(settled.bootstrap(Vec::new()));
+    let mut cx = Context::from_waker(Waker::noop());
+
+    let first = booting.as_mut().poll(&mut cx);
+    assert!(first.is_pending());
+    assert_eq!(said(), ["lamp 0"]);
+    let Poll::Ready(made) = booting.as_mut().poll(&mut cx) else {
+        return Err("the bootstrap is done once what it awaited is".into());
+    };
+
+    let (engine, served) = made?;
+    assert_eq!(said(), ["waiter 0", "scene 0"]);
+    assert_eq!(served, [Lit(0)]);
+    let scene = ActorPath::from_root(&PathSegment::new(Scene::NAME, &()));
+    assert!(engine.table().resolve(&scene).is_some());
     Ok(())
 }
 

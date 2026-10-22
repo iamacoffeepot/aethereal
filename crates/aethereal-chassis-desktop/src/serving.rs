@@ -21,11 +21,11 @@ use winit::window::{Window, WindowId as NativeId};
 /// beside the window capability's, which routes what winit says of a window to it (ADR-0024); its end of the
 /// renderer's controller for presenting each window's frame; its ends of the renderer's controller and source for the
 /// buffers it maps; and what it opens a window with while the program runs: the instance, the adapter, and the GPU
-/// the renderer draws with, whose device it polls, its end of the renderer's front and of the source it tells the
-/// renderer of each window through, and its end of the window root's controller (ADR-0027). Made by
-/// [`renderer`](crate::renderer).
+/// the renderer draws with, whose device it polls, how each surface is presented, and its end of the renderer's front
+/// and of the source it tells the renderer of each window through (ADR-0027). The end the renderer's bootstrap gives
+/// the desktop (ADR-0029).
 pub struct Drawing {
-    pub(crate) windows: Vec<Opened>,
+    pub(crate) windows: Vec<Kept>,
     pub(crate) routes: HashMap<NativeId, WindowId>,
     pub(crate) presents: Requests<Present>,
     pub(crate) requests: Requests<Mapping>,
@@ -33,14 +33,14 @@ pub struct Drawing {
     pub(crate) instance: wgpu::Instance,
     pub(crate) adapter: wgpu::Adapter,
     pub(crate) gpu: Gpu,
+    pub(crate) present: wgpu::PresentMode,
     pub(crate) fronting: Fronting,
     pub(crate) surfacing: Feed<Surfaced>,
-    pub(crate) hosting: Hosting,
 }
 
 /// A window the chassis opened: the native window, the feed of what it hears, its surface, where the pointer was last
 /// heard over it, in its surface pixels, its top left until it is heard, and whether it is shown.
-pub struct Opened {
+pub struct Kept {
     pub(crate) native: Arc<Window>,
     pub(crate) feed: WindowFeed,
     pub(crate) surface: WindowSurface,
@@ -57,7 +57,7 @@ pub enum Visible {
     Occluded,
 }
 
-impl Opened {
+impl Kept {
     /// The window `native`, fed through `feed`, drawn to through `surface`: shown, the pointer at its top left.
     pub(crate) const fn new(native: Arc<Window>, feed: WindowFeed, surface: WindowSurface) -> Self {
         Self { native, feed, surface, pointer: (0.0, 0.0), visible: Visible::Shown }
@@ -75,14 +75,15 @@ impl Opened {
 
 impl Drawing {
     /// The window the window capability calls `window`: none when the chassis opened none it calls so.
-    pub(crate) fn window_mut(&mut self, window: WindowId) -> Option<&mut Opened> {
+    pub(crate) fn window_mut(&mut self, window: WindowId) -> Option<&mut Kept> {
         self.windows.iter_mut().find(|opened| opened.feed.window() == window)
     }
 
     /// Before the cycle: acquires the frame of each window drawn this frame, shown and at a size, in turn, each surface
     /// configured first to the size its window was last resized to, and hands the renderer each frame's texture. With
-    /// `Fifo`, each waits until the display frees an image, on the event loop's thread, which is what paces the
-    /// frames: a window on a slower display paces every window to its rate. Answers whether any window is drawn.
+    /// `Fifo`, the renderer's default, each waits until the display frees an image, on the event loop's thread, which
+    /// is what paces the frames: a window on a slower display paces every window to its rate. Answers whether any
+    /// window is drawn.
     pub(crate) fn acquire(&mut self) -> bool {
         let mut drawn = false;
         for opened in &mut self.windows {
@@ -130,28 +131,36 @@ impl Drawing {
     /// Between steps, inside one of `event_loop`'s callbacks, where a native window is made: opens `window`, as the
     /// window root asked, titled `title`, at `size` in logical pixels. It makes the native window, its surface on the
     /// renderer's GPU, and the window's slot in the renderer's front, then tells the renderer of it, then the window
-    /// root, which so hears of it in the same bring and answers its asker a step after, so the renderer knows the
-    /// window before any actor can name it. A window or surface not made is answered `Failed`, with why.
-    pub(crate) fn open(&mut self, event_loop: &ActiveEventLoop, window: WindowId, title: &str, size: Logical) {
+    /// root through `hosting`, which so hears of it in the same bring and answers its asker a step after, so the
+    /// renderer knows the window before any actor can name it. A window or surface not made is answered `Failed`, with
+    /// why.
+    pub(crate) fn open(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        hosting: &Hosting,
+        window: WindowId,
+        title: &str,
+        size: Logical,
+    ) {
         let made = self.made(event_loop, window, title, size);
         let (native, surface) = match made {
             Ok(made) => made,
             Err(unopened) => {
                 // Refused only once the window root has gone, and no one is then owed an answer.
-                let _ = self.hosting.unopened(window, window::Unopened::Failed(unopened.to_string()));
+                let _ = hosting.unopened(window, window::Unopened::Failed(unopened.to_string()));
                 return;
             }
         };
         let format = surface.drawn().format;
         // Refused only once the renderer has gone, and nothing is then drawn.
         let _ = self.surfacing.push(Surfaced::Opened { window, format });
-        let Ok(feed) = self.hosting.opened(window, gpu::standing(&native), native.has_focus()) else {
+        let Ok(feed) = hosting.opened(window, gpu::standing(&native), native.has_focus()) else {
             self.fronting.remove(window);
             let _ = self.surfacing.push(Surfaced::Closed { window });
             return;
         };
         self.routes.insert(native.id(), window);
-        self.windows.push(Opened::new(native, feed, surface));
+        self.windows.push(Kept::new(native, feed, surface));
     }
 
     /// The native window `window`, titled `title`, at `size` in logical pixels, and its surface, its slot added to
@@ -165,7 +174,7 @@ impl Drawing {
     ) -> Result<(Arc<Window>, WindowSurface), Unopened> {
         let native = gpu::native(event_loop, title, LogicalSize::new(size.width, size.height))?;
         let surface = self.instance.create_surface(Arc::clone(&native)).map_err(Unopened::Surface)?;
-        let config = gpu::configured(&self.adapter, &surface, &native)?;
+        let config = gpu::configured(&self.adapter, &surface, &native, self.present)?;
         let surface =
             WindowSurface::new(surface, &self.gpu, window, config, &self.fronting).map_err(Unopened::Format)?;
 
@@ -174,11 +183,11 @@ impl Drawing {
 
     /// Between steps: closes `window`, as the window root asked or as its host did. It drops the window's surface,
     /// takes its slot out of the renderer's front, and closes the native window, then tells the renderer, then the
-    /// window root. A window not open is told closed all the same, as it is not open.
-    pub(crate) fn close(&mut self, window: WindowId) {
+    /// window root, through `hosting`. A window not open is told closed all the same, as it is not open.
+    pub(crate) fn close(&mut self, hosting: &Hosting, window: WindowId) {
         let at = self.windows.iter().position(|opened| opened.feed.window() == window);
         if let Some(at) = at {
-            let Opened { native, surface, .. } = self.windows.remove(at);
+            let Kept { native, surface, .. } = self.windows.remove(at);
             self.routes.remove(&native.id());
             drop(surface);
             self.fronting.remove(window);
@@ -186,6 +195,6 @@ impl Drawing {
         }
         // Each refused only once its root has gone, and nothing then hears of it.
         let _ = self.surfacing.push(Surfaced::Closed { window });
-        let _ = self.hosting.closed(window);
+        let _ = hosting.closed(window);
     }
 }

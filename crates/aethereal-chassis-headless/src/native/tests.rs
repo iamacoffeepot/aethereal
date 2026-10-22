@@ -35,8 +35,9 @@ struct BenchRunning {
 
 impl Host for Bench {
     type Running = BenchRunning;
-    type Hosting = ();
+    type Hosting<'host> = ();
     type Exit = Self;
+    type Error = ProgramError;
 
     fn run(settled: Settled<Self>) -> Result<Self, ProgramError> {
         Self::build(settled)
@@ -47,7 +48,7 @@ impl Builds for Bench {
     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
         let engine = settled.engine().clone();
         let running = settled.running().clone();
-        settled.bootstrap(&mut ())?;
+        pollster::block_on(settled.bootstrap(()))?;
 
         Ok(Self { engine, running })
     }

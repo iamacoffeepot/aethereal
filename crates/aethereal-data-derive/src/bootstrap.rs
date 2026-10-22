@@ -29,7 +29,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             type Needs = ();
             type Provides = ();
 
-            fn bootstrap(
+            async fn bootstrap(
                 settings: Self::Settings,
                 (): (),
                 cx: &mut ::aethereal_substrate::Bootstrapping<'_, __H, Self>,

@@ -154,7 +154,7 @@ impl<H: Host> Bootstrap<H> for Counter {
     type Needs = ();
     type Provides = ();
 
-    fn bootstrap(counters: Counters, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
+    async fn bootstrap(counters: Counters, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
         let Counters { children, idle, shape } = counters;
         cx.begin(&0, CounterConfig { number: 0, children, idle, shape })
     }

@@ -5,8 +5,7 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Job, JobId, JobType, On, Path, Render,
     Runner, Running, Sleep, Slept, Start, Tick, Time, Top, Turn, path,
 };
-use aethereal_chassis_browser::canvas::{self, Density};
-use aethereal_chassis_browser::{Browser, EventLoop, Hosted, Listening, Performance, open, renderer};
+use aethereal_chassis_browser::{Browser, EventLoop, Started};
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -17,16 +16,14 @@ use aethereal_render::program::{
     Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
 use aethereal_render::shape::Shape;
-use aethereal_substrate::Engine;
-use aethereal_window::{Heard, Opening, WindowId, Windowing, Windows};
+use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
+use aethereal_window::{InitialWindows, WindowId, Windows};
 use core::cell::RefCell;
 use core::mem;
-use core::num::NonZeroUsize;
 use core::time::Duration;
 use std::sync::Arc;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
-use web_sys::HtmlCanvasElement;
 
 thread_local! {
     /// What the prober was answered, for the page to show.
@@ -38,51 +35,36 @@ fn say(line: String) {
     SAID.with_borrow_mut(|said| said.push(line));
 }
 
-/// The program the page runs, for its `requestAnimationFrame` to call, and the page's listeners, kept while it runs.
+/// The program the page runs, for its `requestAnimationFrame` to call.
 #[wasm_bindgen]
 pub struct Program {
-    browser: Browser<Performance>,
-    _canvas: Listening,
+    started: Started,
 }
 
-/// Opens `canvas` as the one window and WebGPU on it, then makes the engine, its jobs run on the page's event loop,
-/// with the window root, the renderer, handed the GPU, and the prober as its roots, and listens to the page for the
-/// canvas's size.
+/// Bootstraps the program on the page, its jobs run on the page's event loop, with the window root, which opens the
+/// page's canvas as the one window, the renderer, which opens WebGPU on it, and the prober.
 ///
 /// # Errors
 ///
-/// When WebGPU will not open on the canvas, a root does not begin, or the page will not be listened to.
+/// When the canvas or WebGPU on it will not open, the page will not be listened to, or a root does not begin.
 #[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
-pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
-    let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 20, 0)
+pub async fn start() -> Result<Program, JsError> {
+    let program = Browser::program()
         .with_jobs(Arc::new(EventLoop::new(vec![JobType::of::<Sum>()])))
         .with_cycle::<(Tick, Render)>()
-        .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
-    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
-    let (gpu, [shown]) = open([canvas.clone()], &mut opening).await?;
-    let (windows, hosting) = opening.config();
-    let mut setup = setup
-        .add_root::<Windows>(&(), windows)
-        .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;
-    let (rendering, mappings) = renderer(&mut setup, gpu);
-    let engine = setup
-        .add_root::<Renderer>(&(), rendering)
-        .map_err(|refused| JsError::new(&format!("the renderer did not begin: {refused:?}")))?
-        .add_root::<Prober>(&(), Shows { window: shown.window() })
-        .map_err(|refused| JsError::new(&format!("the prober did not begin: {refused:?}")))?
-        .ready();
+        .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?
+        .root::<Windows>()
+        .root::<Renderer>()
+        .root::<Prober>();
 
-    // The canvas is drawn at every device pixel of the size the page lays it out at, followed as it is resized.
-    let listening = canvas::listen(&canvas, &shown, Density::SCREEN)?;
-
-    Ok(Program { browser: Browser::new(engine, Performance, mappings, Hosted::Windows(hosting)), _canvas: listening })
+    Ok(Program { started: program.run()?.await? })
 }
 
 #[wasm_bindgen]
 impl Program {
     /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
     pub fn frame(&mut self, timestamp_millis: f64) {
-        self.browser.frame(timestamp_millis);
+        self.started.frame(timestamp_millis);
     }
 
     /// What the prober was answered since this was last asked, a line each.
@@ -90,6 +72,22 @@ impl Program {
     #[expect(clippy::unused_self, reason = "the page asks it of the program it started")]
     pub fn said(&self) -> Vec<String> {
         SAID.with_borrow_mut(mem::take)
+    }
+}
+
+/// The prober draws on the one window the window root opened.
+impl<H: Host> Bootstrap<H> for Prober {
+    const SECTION: &'static str = "prober";
+    type Settings = ();
+    type Needs = (InitialWindows,);
+    type Provides = ();
+
+    async fn bootstrap(
+        (): (),
+        (windows,): (InitialWindows,),
+        cx: &mut Bootstrapping<'_, H, Self>,
+    ) -> Result<(), Unbuilt> {
+        cx.begin(&(), Shows { window: windows.first() })
     }
 }
 
@@ -400,8 +398,8 @@ impl Handles<Answer<Programmed, Making>> for Prober {
 }
 
 impl Prober {
-    /// Runs its jobs at the time of the turn `turn`: the sleep it gives up on, the sum that gives up on it, the sleep it
-    /// shows, and the one it checks by.
+    /// Runs its jobs at the time of the turn `turn`: the sleep it gives up on, the sum that gives up on it, the sleep
+    /// it shows, and the one it checks by.
     fn run_jobs<S>(&self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
         let ran = turn.now();
         let give_up = turn.run(&Sleep { until: ran + GIVEN_UP }, &Sleeping::GivenUp)?;

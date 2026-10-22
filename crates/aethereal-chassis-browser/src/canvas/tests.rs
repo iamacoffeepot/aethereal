@@ -4,6 +4,9 @@
 use super::dom::{Canvas, Density, Measured, Pointing, button_of, css_pixels};
 use aethereal_window::{Button, Event};
 
+/// Every device pixel of the screen.
+const SCREEN: Density = Density::at_most(f64::INFINITY);
+
 #[test]
 fn a_point_on_the_canvas_is_scaled_to_its_backing_store_on_each_axis() {
     // Catches a scale taken the wrong way up (shown over stored), one axis scaled by the other's ratio, and a canvas
@@ -70,9 +73,9 @@ fn a_canvas_is_drawn_at_the_screens_pixels_of_the_size_it_is_laid_out_at() {
     let css = Measured::CssPixels { width: 400.4, height: 300.6 };
     let device = Measured::DevicePixels { width: 801.0, height: 601.0 };
 
-    assert_eq!(css.pixels(Density::SCREEN, 2.0, 8192), (801, 601));
-    assert_eq!(device.pixels(Density::SCREEN, 2.0, 8192), (801, 601));
-    assert_eq!(css.pixels(Density::SCREEN, 1.0, 8192), (400, 301));
+    assert_eq!(css.pixels(SCREEN, 2.0, 8192), (801, 601));
+    assert_eq!(device.pixels(SCREEN, 2.0, 8192), (801, 601));
+    assert_eq!(css.pixels(SCREEN, 1.0, 8192), (400, 301));
 }
 
 #[test]
@@ -98,7 +101,7 @@ fn a_canvas_laid_out_at_no_size_or_past_the_longest_side_is_drawn_at_a_size_the_
     let hidden = Measured::CssPixels { width: 0.0, height: 0.3 };
     let wide = Measured::DevicePixels { width: 20_000.0, height: 100.0 };
 
-    assert_eq!(hidden.pixels(Density::SCREEN, 2.0, 8192), (1, 1));
-    assert_eq!(wide.pixels(Density::SCREEN, 2.0, 8192), (8192, 100));
-    assert_eq!(Measured::CssPixels { width: 40.0, height: 30.0 }.pixels(Density::SCREEN, 0.0, 8192), (40, 30));
+    assert_eq!(hidden.pixels(SCREEN, 2.0, 8192), (1, 1));
+    assert_eq!(wide.pixels(SCREEN, 2.0, 8192), (8192, 100));
+    assert_eq!(Measured::CssPixels { width: 40.0, height: 30.0 }.pixels(SCREEN, 0.0, 8192), (40, 30));
 }

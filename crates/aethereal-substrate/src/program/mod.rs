@@ -26,6 +26,7 @@ use aethereal_actor::{Cycle, Guests, Links, Ordered, Unordered, ordered};
 use aethereal_data::Budget;
 use aethereal_data::config::{Configuration, FlagTable, Flags, Overlay, Parts, RootSettings};
 use core::marker::PhantomData;
+use core::pin::Pin;
 use core::time::Duration;
 use std::sync::Arc;
 
@@ -63,17 +64,18 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// #
 /// # impl Host for Bench {
 /// #     type Running = Running;
-/// #     type Hosting = ();
+/// #     type Hosting<'host> = ();
 /// #     type Exit = Engine;
+/// #     type Error = ProgramError;
 /// #
 /// #     fn run(settled: Settled<Self>) -> Result<Engine, ProgramError> {
-/// #         settled.bootstrap(&mut ())
+/// #         Ok(pollster::block_on(settled.bootstrap(()))?.0)
 /// #     }
 /// # }
 /// #
 /// # impl Builds for Bench {
 /// #     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
-/// #         Ok(Self(settled.bootstrap(&mut ())?))
+/// #         Ok(Self(pollster::block_on(settled.bootstrap(()))?.0))
 /// #     }
 /// # }
 /// /// How long the show runs.
@@ -131,17 +133,18 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// #
 /// # impl Host for Bench {
 /// #     type Running = Running;
-/// #     type Hosting = ();
+/// #     type Hosting<'host> = ();
 /// #     type Exit = Engine;
+/// #     type Error = ProgramError;
 /// #
 /// #     fn run(settled: Settled<Self>) -> Result<Engine, ProgramError> {
-/// #         settled.bootstrap(&mut ())
+/// #         Ok(pollster::block_on(settled.bootstrap(()))?.0)
 /// #     }
 /// # }
 /// #
 /// # impl Builds for Bench {
 /// #     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
-/// #         Ok(Self(settled.bootstrap(&mut ())?))
+/// #         Ok(Self(pollster::block_on(settled.bootstrap(()))?.0))
 /// #     }
 /// # }
 /// #
@@ -189,7 +192,7 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 ///     type Needs = ();
 ///     type Provides = (Opened,);
 ///
-///     fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(Opened,), Unbuilt> {
+///     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(Opened,), Unbuilt> {
 ///         cx.begin(&(), Nothing)?;
 ///         Ok((Opened,))
 ///     }
@@ -201,7 +204,7 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 ///     type Needs = (Opened,);
 ///     type Provides = ();
 ///
-///     fn bootstrap((): (), (_,): (Opened,), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
+///     async fn bootstrap((): (), (_,): (Opened,), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
 ///         cx.begin(&(), Nothing)
 ///     }
 /// }
@@ -226,17 +229,18 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// #
 /// # impl Host for Bench {
 /// #     type Running = Running;
-/// #     type Hosting = ();
+/// #     type Hosting<'host> = ();
 /// #     type Exit = Engine;
+/// #     type Error = ProgramError;
 /// #
 /// #     fn run(settled: Settled<Self>) -> Result<Engine, ProgramError> {
-/// #         settled.bootstrap(&mut ())
+/// #         Ok(pollster::block_on(settled.bootstrap(()))?.0)
 /// #     }
 /// # }
 /// #
 /// # impl Builds for Bench {
 /// #     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
-/// #         Ok(Self(settled.bootstrap(&mut ())?))
+/// #         Ok(Self(pollster::block_on(settled.bootstrap(()))?.0))
 /// #     }
 /// # }
 /// #
@@ -286,7 +290,7 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 ///     type Needs = ();
 ///     type Provides = ();
 ///
-///     fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
+///     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
 ///         cx.serve(Feed);
 ///         cx.begin(&(), Nothing)
 ///     }
@@ -514,10 +518,10 @@ impl<H: Host, R> Program<H, R> {
     ///
     /// # Errors
     ///
-    /// Why the program did not start, as [`ProgramError`] says.
-    pub fn run<I, O>(self) -> Result<H::Exit, ProgramError>
+    /// Why the program did not start, as [`ProgramError`] says, or did not run to its end, as the host's error says.
+    pub fn run<I: 'static, O>(self) -> Result<H::Exit, H::Error>
     where
-        R: Bootstraps<H, I> + Ordered<O>,
+        R: Bootstraps<H, I> + Ordered<O> + 'static,
     {
         H::run(self.settle()?)
     }
@@ -528,18 +532,18 @@ impl<H: Host, R> Program<H, R> {
     /// # Errors
     ///
     /// Why the program did not start, as [`ProgramError`] says.
-    pub fn build<I, O>(self) -> Result<H, ProgramError>
+    pub fn build<I: 'static, O>(self) -> Result<H, ProgramError>
     where
         H: Builds,
-        R: Bootstraps<H, I> + Ordered<O>,
+        R: Bootstraps<H, I> + Ordered<O> + 'static,
     {
         H::build(self.settle()?)
     }
 
     /// The first phase: every section composed, every layer decoded into them, and the host's sections taken.
-    fn settle<I>(self) -> Result<Settled<H>, ProgramError>
+    fn settle<I: 'static>(self) -> Result<Settled<H>, ProgramError>
     where
-        R: Bootstraps<H, I>,
+        R: Bootstraps<H, I> + 'static,
     {
         let mut budget = Budget::new(CONFIGURATION_BYTES);
         let mut configuration = self.parts()?.configure(&self.layers, &mut budget)?;
@@ -550,11 +554,13 @@ impl<H: Host, R> Program<H, R> {
     }
 }
 
-/// Bootstraps the roots `R` on `stage`, dropping what they provided.
-fn bootstrap_roots<H: Host, R: Bootstraps<H, I>, I>(stage: &mut Stage<'_, H>) -> Result<(), ProgramError> {
-    R::bootstrap(stage)?;
+/// Bootstrapping a program's roots on a stage: a future, awaited on a host whose setup awaits, and blocked on by one
+/// that does not.
+type Booting<'host, H> = Pin<Box<dyn Future<Output = Result<Stage<'host, H>, ProgramError>> + 'host>>;
 
-    Ok(())
+/// Bootstraps the roots `R` on `stage`, dropping what they provided.
+fn bootstrap_roots<H: Host, R: Bootstraps<H, I> + 'static, I: 'static>(stage: Stage<'_, H>) -> Booting<'_, H> {
+    Box::pin(async move { Ok(R::bootstrap(stage).await?.0) })
 }
 
 /// A program whose settings are read, its engine and roots not yet made: what a host bootstraps when it is ready to,
@@ -564,7 +570,7 @@ pub struct Settled<H: Host> {
     running: H::Running,
     options: Vec<EngineOption>,
     configuration: Configuration,
-    roots: fn(&mut Stage<'_, H>) -> Result<(), ProgramError>,
+    roots: for<'host> fn(Stage<'host, H>) -> Booting<'host, H>,
 }
 
 impl<H: Host> Settled<H> {
@@ -581,21 +587,22 @@ impl<H: Host> Settled<H> {
     }
 
     /// The second phase: the engine made from its settings and options, then each root bootstrapped in order on
-    /// `hosting`, and the engine.
+    /// `hosting`, each root's bootstrap awaited before the next begins, and the engine with the hosting, which holds
+    /// the ends the roots gave it. A host whose setup awaits, as the browser's does to open its GPU, awaits it; a host
+    /// that does not blocks on it (ADR-0029).
     ///
     /// # Errors
     ///
     /// [`ProgramError::Root`] naming the first root whose bootstrap failed; the engine and the roots begun before it
     /// are dropped.
-    pub fn bootstrap(self, hosting: &mut H::Hosting) -> Result<Engine, ProgramError> {
+    pub async fn bootstrap(self, hosting: H::Hosting<'_>) -> Result<(Engine, H::Hosting<'_>), ProgramError> {
         let mut setup = self.engine.setup();
         for option in self.options {
             setup = option(setup).map_err(ProgramError::Cycle)?;
         }
 
-        let mut engine = setup.ready();
-        (self.roots)(&mut Stage::new(&mut engine, hosting, self.configuration))?;
+        let stage = Stage::new(setup.ready(), hosting, self.configuration);
 
-        Ok(engine)
+        Ok((self.roots)(stage).await?.into_made())
     }
 }

@@ -1,43 +1,46 @@
 //! The browser chassis: the engine on a page's one thread, cycled by its animation frames (ADR-0001, ADR-0020).
 //!
-//! The page owns the thread, its canvases, and when a frame is drawn. It
-//! opens the GPU on the canvases it hands over with [`open`] before the engine
-//! is made, each canvas a window, hands it in to the renderer with
-//! [`renderer`] (ADR-0010, ADR-0021), and from each `requestAnimationFrame`
-//! calls [`Browser::frame`], which hands the renderer each canvas's frame,
-//! runs one cycle through to its end before the page gets its thread back,
-//! presents what the renderer drew on each, then starts mapping what it asked
-//! to read back, which the page's promises bring in later frames.
+//! The page owns the thread, its canvases, and when a frame is drawn.
+//! [`Browser`] is a program's host (ADR-0029), and its bootstrapping
+//! awaits: the window root's opens each canvas its settings name as a
+//! window, the renderer's opens WebGPU on them and hands it to the renderer
+//! (ADR-0010, ADR-0021), and the controls root's listens to the controls the
+//! page marks. The page awaits the program, [`Starting`], and from each
+//! `requestAnimationFrame` calls [`Started::frame`], which hands the renderer
+//! each canvas's frame, runs one cycle through to its end before the page
+//! gets its thread back, presents what the renderer drew on each, then starts
+//! mapping what it asked to read back, which the page's promises bring in
+//! later frames.
 //!
-//! What the page hears, its callbacks push onto a source as they run, and the
-//! next frame brings in (ADR-0010): the pointer over a canvas, the keys, the
-//! focus, and resizes onto the window capability's, each canvas a window
-//! ([`canvas`], ADR-0024), and the controls the page marks onto the
+//! What the page hears, the listeners the browser keeps push onto a source as
+//! they run, and the next frame brings in (ADR-0010): the pointer over a
+//! canvas, the keys, the focus, and resizes onto the window capability's, each
+//! canvas a window (ADR-0024), and the controls the page marks onto the
 //! [`controls`] root's.
 //!
 //! A page owns its canvases, and the engine in it cannot make one: each window
 //! an actor asks for while the program runs, and each it asks to close, is
 //! answered `NoHost`, between steps ([`Hosted`], ADR-0027). A page that wants
-//! another window hands the chassis another canvas as it sets the program up.
+//! another window names another canvas in the window root's settings.
 //!
 //! The jobs its turns run, it runs on the page's own event loop, each a task of
-//! its own, with `EventLoop` handed to the engine's setup: their answers are
-//! brought in a later frame (ADR-0018).
+//! its own, with `EventLoop` handed to the program (ADR-0018): their answers are
+//! brought in a later frame.
 //!
-//! A page exports an async `start` that opens the GPU, and `#[wasm_bindgen]`
+//! A page exports an async `start` that awaits its program, and `#[wasm_bindgen]`
 //! on an async function writes code that names `wasm_bindgen_futures`. The
 //! chassis re-exports that crate, so a page points the macro at it through
 //! the chassis rather than depending on it, as the `draw` example does:
 //!
 //! ```ignore
 //! #[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
-//! pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> { /* ... */ }
+//! pub async fn start() -> Result<Program, JsError> { /* ... */ }
 //! ```
 //!
 //! The page still depends on `wasm-bindgen` itself, for the macro, at the
 //! version the chassis pins: the `wasm-bindgen` tool's that writes its glue.
 
-pub mod canvas;
+mod canvas;
 #[cfg(target_arch = "wasm32")]
 mod clock;
 pub mod controls;
@@ -48,19 +51,21 @@ mod hosted;
 mod jobs;
 #[cfg(target_arch = "wasm32")]
 mod listening;
+#[cfg(target_arch = "wasm32")]
+mod program;
 mod serving;
 #[cfg(test)]
 mod tests;
 
 #[cfg(target_arch = "wasm32")]
 pub use clock::Performance;
-#[cfg(target_arch = "wasm32")]
-pub use gpu::{Opened, open, renderer};
 pub use hosted::Hosted;
 #[cfg(target_arch = "wasm32")]
 pub use jobs::EventLoop;
 #[cfg(target_arch = "wasm32")]
 pub use listening::Listening;
+#[cfg(target_arch = "wasm32")]
+pub use program::{Paging, RunningSettings, Started, Starting, WindowsSettings};
 pub use serving::{Drawing, Serving};
 /// The futures crate an async `#[wasm_bindgen]` export names, for a page to point the macro at.
 #[cfg(target_arch = "wasm32")]

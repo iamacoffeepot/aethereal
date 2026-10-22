@@ -9,9 +9,11 @@ impl Running {
     /// Takes what the window root asked since the last take, and opens or closes each window, in the order asked, on
     /// `event_loop`.
     pub(super) fn windowing(&mut self, event_loop: &ActiveEventLoop) {
-        for request in self.drawing.hosting.take() {
+        for request in self.windowing.take() {
             match request {
-                Windowing::Open { window, title, size } => self.drawing.open(event_loop, window, &title, size),
+                Windowing::Open { window, title, size } => {
+                    self.drawing.open(event_loop, &self.windowing, window, &title, size);
+                }
                 Windowing::Close { window } => self.close(window),
             }
         }
@@ -19,7 +21,7 @@ impl Running {
 
     /// Closes `window`, and asks the program to stop once its last window has closed, as `quit` does.
     pub(super) fn close(&mut self, window: WindowId) {
-        self.drawing.close(window);
+        self.drawing.close(&self.windowing, window);
         let last = self.drawing.windows.is_empty();
         if last {
             self.headless.engine_mut().quit();

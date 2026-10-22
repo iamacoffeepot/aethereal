@@ -10,7 +10,8 @@
 //! milliseconds: their mean, median, 99th percentile, and longest. Each answer to a window asked for is printed as it
 //! comes. A window's close button closes that window alone, and its scene prints its frames as it closes; the program
 //! ends once the last window has closed, or Escape is pressed in any. Each key, button, and turn of the wheel a window
-//! hears is printed as it comes, beside the window, and each resize.
+//! hears is printed as it comes, beside the window, and each resize. `--help` lists every flag the program reads, each
+//! also read from its `WINDOWS_` variable.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
@@ -18,7 +19,9 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
-use aethereal_chassis_desktop::{Desktop, Made, Screen, Unopened, renderer};
+use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
+use aethereal_chassis_headless::Exit;
+use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_data::{Bound, Plain, TypedKey};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -31,19 +34,21 @@ use aethereal_render::program::{
 };
 use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
-use aethereal_substrate::Engine;
+use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_window::{
-    self as window, Event, Heard, Logical, OpenWindow, Opened, Opening, Surface, Window, WindowId, Windowing, Windows,
+    self as window, Event, InitialWindows, Logical, OpenWindow, Opened, Surface, Window, WindowId, Windows,
 };
+use core::error::Error;
 use core::f32::consts::TAU;
-use core::num::NonZeroUsize;
-use core::time::Duration;
-use std::env;
+use core::num::{NonZeroU32, NonZeroUsize};
 use std::process::ExitCode;
 use std::thread;
 
 /// The most triangles in a ring.
 const RING: u8 = 48;
+
+/// The most workers the program runs on.
+const MOST_WORKERS: NonZeroUsize = NonZeroUsize::new(4).expect("4 is not zero");
 
 /// How long one turn of the ring takes, in milliseconds.
 const TURN_MILLIS: u64 = 4_000;
@@ -70,22 +75,12 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 ";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = env::args().skip(1).collect();
-    let seconds = args
-        .iter()
-        .position(|arg| arg == "--seconds")
-        .and_then(|at| args.get(at + 1))
-        .and_then(|seconds| seconds.parse().ok())
-        .unwrap_or(0);
-    let cores = thread::available_parallelism().map_or(1, NonZeroUsize::get);
-    let workers = NonZeroUsize::new(cores.min(4)).unwrap_or(NonZeroUsize::MIN);
-    let desktop = Desktop { workers, stop_within: Duration::from_secs(1) };
-
-    match desktop.run(|screen| program(screen, workers, seconds)) {
-        Ok(exit) => {
+    match run() {
+        Ok(Launched::Ran(exit)) => {
             println!("exit={exit:?}");
             ExitCode::SUCCESS
         }
+        Ok(Launched::Printed) => ExitCode::SUCCESS,
         Err(failed) => {
             eprintln!("{failed}");
             ExitCode::FAILURE
@@ -93,28 +88,33 @@ fn main() -> ExitCode {
     }
 }
 
-/// The engine, its views in a part for each worker, with the window root, the renderer, handed the GPU opened on the
-/// window opened on `screen`, and the director as its roots, each scene quitting after `seconds` when they are any.
-fn program(mut screen: Screen<'_>, workers: NonZeroUsize, seconds: u64) -> Result<Made, String> {
-    let mut setup = Engine::new(workers, 1024, 1 << 20, 1 << 20, 0)
-        .with_cycle::<(Tick, Render)>()
-        .map_err(|unordered| format!("the cycle is out of order: {unordered:?}"))?;
-    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
-    let unopened = |unopened: Unopened| unopened.to_string();
-    let first = screen.open_window(&mut opening, "aethereal: first", (640, 480)).map_err(unopened)?;
-    let (windows, hosting) = opening.config();
-    let mut setup = setup
-        .add_root::<Windows>(&(), windows)
-        .map_err(|refused| format!("the window root did not begin: {refused:?}"))?;
-    let (rendering, drawing) = renderer(&mut setup, screen, hosting).map_err(unopened)?;
-    let engine = setup
-        .add_root::<Renderer>(&(), rendering)
-        .map_err(|refused| format!("the renderer did not begin: {refused:?}"))?
-        .add_root::<Director>(&(), Directs { first, seconds })
-        .map_err(|refused| format!("the director did not begin: {refused:?}"))?
-        .ready();
+/// Launches the program of the window root, which opens one window, the renderer, which draws on it, and the director,
+/// on as many workers as the machine has cores, at most four, the engine's views in a part for each, with what its
+/// command line and environment set over that.
+fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
+    let workers = NonZeroU32::try_from(
+        thread::available_parallelism().map_or(NonZeroUsize::MIN, |cores| cores.min(MOST_WORKERS)),
+    )?;
+    let first = WindowSettings { title: String::from("aethereal: first"), width: 640, height: 480 };
 
-    Ok(Made { engine, drawing })
+    Ok(Desktop::program()
+        .with_cycle::<(Tick, Render)>()
+        .map_err(|unordered| format!("the cycle is out of order: {unordered:?}"))?
+        .with_engine(EngineSettings { workers, parts: workers, ..Default::default() })
+        .root_with::<Windows>(WindowsSettings { windows: vec![first] })
+        .root::<Renderer>()
+        .root::<Director>()
+        .launch("windows")?)
+}
+
+/// How long each scene runs: the director's section, `director`.
+#[derive(Plain, Default)]
+#[kind(name = "aether.example.show")]
+#[settings]
+struct Show {
+    /// The seconds each scene runs for, none for as long as it is let.
+    #[flag]
+    seconds: u64,
 }
 
 /// The director's config: the window opened as the program was set up, and how many seconds each scene runs for,
@@ -124,6 +124,22 @@ fn program(mut screen: Screen<'_>, workers: NonZeroUsize, seconds: u64) -> Resul
 struct Directs {
     first: WindowId,
     seconds: u64,
+}
+
+/// The director makes its first scene for the first window the window root opened.
+impl<H: Host> Bootstrap<H> for Director {
+    const SECTION: &'static str = "director";
+    type Settings = Show;
+    type Needs = (InitialWindows,);
+    type Provides = ();
+
+    async fn bootstrap(
+        show: Show,
+        (windows,): (InitialWindows,),
+        cx: &mut Bootstrapping<'_, H, Self>,
+    ) -> Result<(), Unbuilt> {
+        cx.begin(&(), Directs { first: windows.first(), seconds: show.seconds })
+    }
 }
 
 /// The director: it makes a scene for the window opened as the program was set up, asks the window root for another

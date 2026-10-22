@@ -12,5 +12,9 @@ aethereal-data = { path = "../aethereal-data", features = ["json"] }
 aethereal-data-derive = { path = "../aethereal-data-derive" }
 crossbeam-queue = { workspace = true }
 
+[dev-dependencies]
+# The tests' hosts block on a program's bootstrap, as the native hosts do (ADR-0029).
+pollster = { workspace = true }
+
 [lints]
 workspace = true

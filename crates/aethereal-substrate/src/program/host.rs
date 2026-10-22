@@ -7,15 +7,19 @@ use aethereal_data::config::Settings;
 ///
 /// A host brings its own section of the configuration, `running`, beside the engine's, and keeps its hosting as its
 /// program bootstraps: the ends its roots give it, and its own setup a bootstrap reaches, such as a screen.
-pub trait Host: Sized {
+pub trait Host: Sized + 'static {
     /// The host's own section: how the program is run. Its `Default` is where a program starts, unless the program
     /// gives its own defaults with [`Program::with_running`].
     type Running: Settings + Default;
     /// What the host keeps as its program bootstraps, which each root's bootstrap reaches through
-    /// [`Bootstrapping::host`](super::Bootstrapping::host) and gives its ends to.
-    type Hosting;
+    /// [`Bootstrapping::host`](super::Bootstrapping::host) and gives its ends to. It may borrow, for `'host`, what
+    /// the host has only while it bootstraps, such as the event loop a window is opened on.
+    type Hosting<'host>;
     /// What running a program to its end comes to.
     type Exit;
+    /// Why a program did not run to its end: [`ProgramError`] for one that did not start, and whatever else stops
+    /// this host running it, so a program's `run` answers one error.
+    type Error: From<ProgramError>;
 
     /// The program this host runs, with no options and no roots yet.
     fn program() -> Program<Self, ()> {
@@ -27,8 +31,8 @@ pub trait Host: Sized {
     ///
     /// # Errors
     ///
-    /// Why bootstrapping it failed, as [`Settled::bootstrap`] says.
-    fn run(settled: Settled<Self>) -> Result<Self::Exit, ProgramError>;
+    /// Why bootstrapping it failed, as [`Settled::bootstrap`] says, or why the host did not run it to its end.
+    fn run(settled: Settled<Self>) -> Result<Self::Exit, Self::Error>;
 }
 
 /// A host that can hand back its program bootstrapped and not yet run, for a test to step (ADR-0029).
@@ -51,5 +55,5 @@ pub trait Builds: Host {
 )]
 pub trait Serves<E>: Host {
     /// Keeps `end` in `hosting`.
-    fn serve(hosting: &mut Self::Hosting, end: E);
+    fn serve(hosting: &mut Self::Hosting<'_>, end: E);
 }

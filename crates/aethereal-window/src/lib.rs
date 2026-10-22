@@ -17,7 +17,7 @@ mod window;
 mod windows;
 
 pub use event::{Button, Event, Subscribe, Surface, Unsubscribe};
-pub use host::{Hosting, Opening, WindowFeed};
+pub use host::{Hosting, InitialWindows, Opening, WindowFeed};
 pub use window::{Window, WindowConfig, WindowId};
 pub use windows::{
     CloseWindow, Closed, Closing, Heard, Initial, Logical, OpenWindow, Opened, Unclosed, Unmade, Unopened, Windowing,
