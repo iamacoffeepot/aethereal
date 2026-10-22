@@ -24,9 +24,15 @@
 //! the loop waits on their events until one is shown again. What a window
 //! hears is pushed onto that window's feed as winit hears it, in the window's
 //! surface pixels, routed by winit's id for the window, and brought in as the
-//! engine next steps (ADR-0024). The close button of the program's one window
-//! asks it to stop, as `quit` does, and `Stop` is given the time the host
-//! gives it to finish; with several windows, it only asks the program.
+//! engine next steps (ADR-0024).
+//!
+//! Between steps it takes what the window root asked for, and opens each
+//! window asked for, its surface on the same GPU and its slot in the
+//! renderer's front, or closes it, telling the renderer and then the window
+//! root (ADR-0027). A window's close button closes it unless the program says
+//! it only asks, and once its last window has closed the program is asked to
+//! stop, as `quit` does, and `Stop` is given the time the host gives it to
+//! finish.
 
 #[cfg(not(target_arch = "wasm32"))]
 mod gpu;

@@ -34,8 +34,11 @@ pub enum Event {
     FocusGained,
     /// The window no longer has the keyboard; or it has not as the actor subscribed.
     FocusLost,
-    /// The window was asked to close, by the person at it. It stays open: what to do is the program's.
+    /// The window was asked to close, by the person at it: its close button closes it, unless the program says the
+    /// button only asks (ADR-0027: `Closing`).
     CloseRequested,
+    /// The window has closed: the last its subscribers hear of it, as its actor then ends.
+    Closed,
 }
 
 /// A window's surface: what the renderer draws in, `width` by `height` of its pixels, on a screen of `scale` of them

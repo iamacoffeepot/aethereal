@@ -8,12 +8,17 @@
 //! in turn on its own thread, [`WindowSurface::acquire`], runs the cycle, whose `Render` takes the textures, draws into
 //! each, and pushes [`Present`] for each, and then presents each, [`WindowSurface::present`]. No turn waits on the
 //! display, and nothing is made each frame.
+//!
+//! A window opened or closed while the program runs is the chassis's to make or drop, between steps: it adds the
+//! window's slot to the front through its end of it, [`Fronting`], or takes it out, and tells the render root through a
+//! source of its own, [`Surfaced`], so the render root knows a window, and its format, before any actor can name it
+//! (ADR-0027).
 
 mod front;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
-pub use front::{Front, Present};
+pub use front::{Front, Fronting, Present};
 
 use crate::Gpu;
 use crate::shape::ColourFormat;
@@ -28,6 +33,17 @@ use std::mem;
 pub struct WindowFormat {
     pub window: WindowId,
     pub format: ColourFormat,
+}
+
+/// What the chassis tells the render root of a window it opened or closed while the program runs, through the render
+/// root's source, between steps (ADR-0027).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.surfaced")]
+pub enum Surfaced {
+    /// The window's surface is made, in this format, and its slot added to the front.
+    Opened { window: WindowId, format: ColourFormat },
+    /// The window's surface is dropped, and its slot taken out of the front: the render root drops its main frame.
+    Closed { window: WindowId },
 }
 
 /// A window's surface, as its chassis keeps it: configured in the format of its own, at the size its window was last
@@ -64,7 +80,8 @@ enum Kept {
 
 impl WindowSurface {
     /// `surface`, the surface of `window`, drawn to by `gpu`, configured here to `config` in the format it names, with
-    /// the window's slot in `front`, the front the render root is handed each window's frame through. The chassis
+    /// the window's slot added to the front the render root is handed each window's frame through, by the chassis's
+    /// end of it, `front`. The chassis
     /// configures it again whenever its window is resized, and nothing else configures it, so the size wgpu gives its
     /// textures is the size they are.
     ///
@@ -76,7 +93,7 @@ impl WindowSurface {
         gpu: &Gpu,
         window: WindowId,
         config: wgpu::SurfaceConfiguration,
-        front: &mut Front,
+        front: &Fronting,
     ) -> Result<Self, wgpu::TextureFormat> {
         let format = ColourFormat::of(config.format).ok_or(config.format)?;
         surface.configure(gpu.device(), &config);

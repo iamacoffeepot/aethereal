@@ -62,7 +62,8 @@ pub async fn open<const N: usize>(
     let shown = canvases.each_ref().map(|canvas| page.open(canvas, opening));
 
     let gpu = Gpu::new(device, queue);
-    let mut front = Front::new();
+    // The chassis's end of the front adds each canvas's slot here, and is dropped: a page opens no window after.
+    let (front, fronting) = Front::new();
     let mut kept = Vec::with_capacity(N);
     for ((surface, canvas), shown) in surfaces.into_iter().zip(&canvases).zip(&shown) {
         let (width, height) = (canvas.width().max(1), canvas.height().max(1));
@@ -72,7 +73,7 @@ pub async fn open<const N: usize>(
         // WebGPU lets a canvas's textures be copied from, as from any texture of its format; wgpu's capabilities for a
         // canvas name only drawing to it, as they are fixed rather than asked of the browser.
         config.usage |= wgpu::TextureUsages::COPY_SRC;
-        let surface = WindowSurface::new(surface, &gpu, shown.window(), config, &mut front)
+        let surface = WindowSurface::new(surface, &gpu, shown.window(), config, &fronting)
             .map_err(|format| JsError::new(&format!("the canvas draws in {format:?}, which no pass draws into")))?;
         kept.push(Surfaced { surface, size: shown.size() });
     }
@@ -82,7 +83,8 @@ pub async fn open<const N: usize>(
 
 /// The renderer's config, drawing with the GPU `opened`, made in `setup`, and what the chassis serves it each frame:
 /// each canvas's surface, which hands it the canvas's frame and presents what it drew, and the buffers it asks to have
-/// mapped.
+/// mapped. The source the renderer hears of windows opened and closed through is fed nothing, as a page opens and
+/// closes no window while the program runs (ADR-0027).
 pub fn renderer<S>(setup: &mut Setup<S>, opened: Opened) -> (RendererConfig, Serving) {
     let Opened { gpu, front, surfaces } = opened;
     let windows = surfaces.iter().map(|surfaced| surfaced.surface.drawn()).collect();
@@ -90,7 +92,8 @@ pub fn renderer<S>(setup: &mut Setup<S>, opened: Opened) -> (RendererConfig, Ser
     let (gpu, front) = (setup.hand(gpu), setup.hand(front));
     let (mapping, requests) = setup.controller();
     let (mapped, feed) = setup.source();
-    let config = RendererConfig { gpu, front, presenting, windows, mapping, mapped };
+    let (surfaced, _) = setup.source();
+    let config = RendererConfig { gpu, front, presenting, windows, mapping, mapped, surfaced };
 
     (config, Serving::Drawing(Box::new(Drawing { surfaces, presents, requests, feed })))
 }

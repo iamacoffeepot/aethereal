@@ -496,3 +496,29 @@ fn a_frame_that_ends_on_one_window_is_that_windows_main_frame_alone_and_drawn_on
     kept.run_all(&mut encoder, &handed, None);
     queue.submit([encoder.finish()]);
 }
+
+#[test]
+fn a_window_closed_drops_the_main_frame_made_for_it_and_takes_none_after() {
+    // Catches a closed window's main frame, made by an actor, kept after the window closed, and run or counted at each
+    // `Render` though no frame of the window is handed again; and a frame made for a window once it has closed taken as
+    // its main frame, which would be kept until its maker ended and drawn nowhere.
+    let (device, _) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let (first, second) = (nth_window(0), nth_window(1));
+    let mut kept = kept_for(&device, &[first, second]);
+    let onto = PassSpec {
+        name: PassName::of::<Main>(),
+        does: Does::Draw { into: Target::End, depth: DepthUse::Off, load: Load::Clear },
+    };
+    let frame = CreateFrame { ends: Ends::Window(first), targets: Vec::new(), passes: vec![onto] };
+    let Ok(Framed::Made(made)) = kept.frame(&device, frame.clone(), MAKER) else {
+        panic!("the frame is made");
+    };
+
+    assert!(kept.closed(first), "the renderer drew to the window");
+    assert!(kept.frames.get(made.id).is_none(), "the frame made for the window is dropped with it");
+    assert!(kept.main(first).is_none(), "the window has no main frame once it closed");
+    assert!(kept.main(second).is_some(), "the other window is drawn to still");
+    assert!(!kept.closed(first), "a window closed once is not drawn to");
+    let refused = kept.frame(&device, frame, MAKER);
+    assert!(matches!(refused, Err(FrameRefused::Window)), "a frame for a closed window is made: {refused:?}");
+}

@@ -3,7 +3,7 @@
 
 use super::read::value_of;
 use super::*;
-use crate::{Browser, Serving};
+use crate::{Browser, Hosted, Serving};
 use aethereal_actor::{Path, Tells, path};
 use aethereal_substrate::{Clock, Engine, Setup};
 use std::num::NonZeroUsize;
@@ -100,7 +100,7 @@ fn a_subscriber_is_sent_what_the_page_pushed_in_the_order_pushed_and_nothing_ano
     };
     let read = number("speed", 0.25);
     assert_eq!(feed.push(read.clone()), Ok(()));
-    let mut browser = Browser::new(engine, Still, Serving::Nothing);
+    let mut browser = Browser::new(engine, Still, Serving::Nothing, Hosted::Nothing);
     browser.frame(16.0);
 
     let pushed = [number("speed", 0.5), Control { name: String::from("shown"), value: Value::Checked(true) }];
@@ -198,7 +198,7 @@ fn an_actor_that_subscribes_after_a_control_last_moved_is_sent_it_as_it_stands_o
     else {
         panic!("the controls root and the late listener begin");
     };
-    let mut browser = Browser::new(engine, Still, Serving::Nothing);
+    let mut browser = Browser::new(engine, Still, Serving::Nothing, Hosted::Nothing);
     let moved = number("speed", 0.75);
     let later = number("speed", 1.0);
 

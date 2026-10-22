@@ -1,12 +1,16 @@
-//! Two windows, each drawing its own main frame: a ring of triangles of its own count and colours, turning, following
-//! the pointer over that window, and turning the other way while a key is held in that window, with the frames each
-//! was handed timed. One scene draws in each window, keyed by the window, and hears only its own window.
+//! Windows opened while the program runs, each drawing its own main frame: a ring of triangles of its own count and
+//! colours, turning, following the pointer over that window, and turning the other way while a key is held in that
+//! window, with the frames each was handed timed. The program opens one window as it is set up; `N` in any window asks
+//! the window root for another, and the director that asked makes a scene for each window it is answered with, keyed
+//! by the window, which hears only its own window (ADR-0027).
 //!
 //! Run with `cargo run --release -p aethereal-chassis-desktop --example windows -- --seconds 3`. With `--seconds N`
-//! the program quits itself after N seconds, and each scene prints the time between the frames its window was handed,
-//! from one `Tick` to the next, as `key=value` in milliseconds: their mean, median, 99th percentile, and longest.
-//! Without it, it runs until either window's close button is pressed or Escape is pressed in either. Each key, button,
-//! and turn of the wheel a window hears is printed as it comes, beside the window, and each resize.
+//! the director asks for a second window as the program starts, and the program quits itself after N seconds; each
+//! scene prints the time between the frames its window was handed, from one `Tick` to the next, as `key=value` in
+//! milliseconds: their mean, median, 99th percentile, and longest. Each answer to a window asked for is printed as it
+//! comes. A window's close button closes that window alone, and its scene prints its frames as it closes; the program
+//! ends once the last window has closed, or Escape is pressed in any. Each key, button, and turn of the wheel a window
+//! hears is printed as it comes, beside the window, and each resize.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
@@ -28,7 +32,9 @@ use aethereal_render::program::{
 use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::Engine;
-use aethereal_window::{self as window, Event, Heard, Opening, Surface, Window, WindowId, Windows};
+use aethereal_window::{
+    self as window, Event, Heard, Logical, OpenWindow, Opened, Opening, Surface, Window, WindowId, Windowing, Windows,
+};
 use core::f32::consts::TAU;
 use core::num::NonZeroUsize;
 use core::time::Duration;
@@ -88,30 +94,159 @@ fn main() -> ExitCode {
 }
 
 /// The engine, its views in a part for each worker, with the window root, the renderer, handed the GPU opened on the
-/// two windows opened on `screen`, and a scene for each window as its roots, each quitting after `seconds` when they
-/// are any.
+/// window opened on `screen`, and the director as its roots, each scene quitting after `seconds` when they are any.
 fn program(mut screen: Screen<'_>, workers: NonZeroUsize, seconds: u64) -> Result<Made, String> {
     let mut setup = Engine::new(workers, 1024, 1 << 20, 1 << 20, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| format!("the cycle is out of order: {unordered:?}"))?;
-    let mut opening = Opening::new(setup.source::<Heard>());
+    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
     let unopened = |unopened: Unopened| unopened.to_string();
     let first = screen.open_window(&mut opening, "aethereal: first", (640, 480)).map_err(unopened)?;
-    let second = screen.open_window(&mut opening, "aethereal: second", (480, 480)).map_err(unopened)?;
+    let (windows, hosting) = opening.config();
     let mut setup = setup
-        .add_root::<Windows>(&(), opening.config())
+        .add_root::<Windows>(&(), windows)
         .map_err(|refused| format!("the window root did not begin: {refused:?}"))?;
-    let (rendering, drawing) = renderer(&mut setup, screen).map_err(unopened)?;
+    let (rendering, drawing) = renderer(&mut setup, screen, hosting).map_err(unopened)?;
     let engine = setup
         .add_root::<Renderer>(&(), rendering)
         .map_err(|refused| format!("the renderer did not begin: {refused:?}"))?
-        .add_root::<Scene>(&first, Shows { window: first, seconds, count: RING, warm: true })
-        .map_err(|refused| format!("the first scene did not begin: {refused:?}"))?
-        .add_root::<Scene>(&second, Shows { window: second, seconds, count: RING / 4, warm: false })
-        .map_err(|refused| format!("the second scene did not begin: {refused:?}"))?
+        .add_root::<Director>(&(), Directs { first, seconds })
+        .map_err(|refused| format!("the director did not begin: {refused:?}"))?
         .ready();
 
     Ok(Made { engine, drawing })
+}
+
+/// The director's config: the window opened as the program was set up, and how many seconds each scene runs for,
+/// none for as long as it is let.
+#[derive(Plain)]
+#[kind(name = "aether.example.directs")]
+struct Directs {
+    first: WindowId,
+    seconds: u64,
+}
+
+/// The director: it makes a scene for the window opened as the program was set up, asks the window root for another
+/// window on `N` in any window, and for one as the program starts when it runs for some seconds, and makes a scene for
+/// each window it is answered with, each of its own count and colours.
+#[derive(Bound)]
+#[kind(name = "aether.example.director")]
+struct Director {
+    seconds: u64,
+    /// How many scenes it has made.
+    scenes: u8,
+}
+
+impl ChildOf for Director {
+    type Parent = Top;
+}
+
+impl Director {
+    /// Makes a scene for `window`, and subscribes to the window, to hear `N` in it.
+    fn direct(
+        &mut self,
+        window: WindowId,
+        turn: &mut Turn<'_, Self, (Tells<Path<Window>, window::Subscribe>,)>,
+    ) -> Result<(), Fault> {
+        let shows = Shows {
+            window,
+            seconds: self.seconds,
+            count: RING >> (self.scenes % 3),
+            warm: self.scenes.is_multiple_of(2),
+        };
+        self.scenes += 1;
+        if let Err(refused) = turn.spawn::<Scene>(&window, shows) {
+            turn.log(Level::Error, format_args!("the scene of window {window:?} was refused: {refused}"));
+        }
+        turn.to(path::<Window>(window)).send(&window::Subscribe)?;
+
+        Ok(())
+    }
+}
+
+/// The window asked for: titled after the window that asked, at a size in logical pixels.
+fn another() -> OpenWindow {
+    OpenWindow { title: String::from("aethereal: another"), size: Logical { width: 480.0, height: 480.0 } }
+}
+
+impl Actor for Director {
+    type Config = Directs;
+    type Key = ();
+    type Handles = (On<Start>, Event, Answer<Opened, Nothing>);
+    type BeginSends = (Tells<Path<Window>, window::Subscribe>,);
+    type EndSends = ();
+
+    fn begin(directs: Directs, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.subscribe::<Start>();
+        let shows = Shows { window: directs.first, seconds: directs.seconds, count: RING, warm: true };
+        if let Err(refused) = turn.spawn::<Scene>(&directs.first, shows) {
+            turn.log(Level::Error, format_args!("the first scene was refused: {refused}"));
+        }
+        turn.to(path::<Window>(directs.first)).send(&window::Subscribe)?;
+
+        Ok(Self { seconds: directs.seconds, scenes: 1 })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// Asks for a second window as the program starts, when it runs for some seconds, so a timed run shows a window
+/// opened on request.
+impl Handles<On<Start>> for Director {
+    type Sends = (Asks<Path<Windows>, OpenWindow, Nothing>,);
+
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        if self.seconds > 0 {
+            turn.to(path::<Windows>(())).ask(&another(), &Nothing)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// `N` in any window asks for another; Escape in any quits.
+impl Handles<Event> for Director {
+    type Sends = (Asks<Path<Windows>, OpenWindow, Nothing>,);
+
+    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let Event::KeyDown { code, repeat: false, .. } = event else {
+            return Ok(());
+        };
+        match code.as_str() {
+            "KeyN" => {
+                turn.to(path::<Windows>(())).ask(&another(), &Nothing)?;
+            }
+            "Escape" => turn.quit(),
+            _ => {}
+        }
+
+        Ok(())
+    }
+}
+
+/// The window asked for, printed as it is answered, and a scene made for it once it is open.
+impl Handles<Answer<Opened, Nothing>> for Director {
+    type Sends = (Tells<Path<Window>, window::Subscribe>,);
+
+    fn handle(
+        &mut self,
+        (answered, _): (Answered<Opened>, Nothing),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        match answered {
+            Answered::Yes(Opened::Window { window, surface }) => {
+                let Surface { width, height, scale } = surface;
+                println!("opened window={} width={width} height={height} scale={scale}", window.to_name());
+                self.direct(window, turn)?;
+            }
+            Answered::Yes(Opened::Refused(why)) => println!("refused open why={why:?}"),
+            Answered::No(why) => println!("unanswered open why={why:?}"),
+        }
+
+        Ok(())
+    }
 }
 
 /// An empty context.
@@ -130,10 +265,10 @@ struct Shows {
     warm: bool,
 }
 
-/// A scene, keyed by the window it draws in: it asks the shape of its window's main pass, makes what it draws one ask
-/// after another, each answer carrying what was made so far, places it, and from then writes the ring at each `Tick`,
-/// about the pointer. It subscribes to its window, prints what it hears, and keeps the time between each `Tick` and the
-/// last.
+/// A scene, keyed by the window it draws in: it asks the shape of its window's main pass as it begins, makes what it
+/// draws one ask after another, each answer carrying what was made so far, places it, and from then writes the ring at
+/// each `Tick`, about the pointer. It subscribes to its window, prints what it hears, and keeps the time between each
+/// `Tick` and the last, which it prints as its window closes, and ends.
 #[derive(Bound)]
 #[kind(name = "aether.example.scene")]
 struct Scene {
@@ -166,7 +301,7 @@ enum Ring {
 }
 
 impl ChildOf for Scene {
-    type Parent = Top;
+    type Parent = Director;
 }
 
 /// What was learned before the mesh was asked for: the shape the program draws into.
@@ -213,7 +348,6 @@ impl Actor for Scene {
     type Config = Shows;
     type Key = WindowId;
     type Handles = (
-        On<Start>,
         On<Tick>,
         Event,
         Answer<Shaped, Nothing>,
@@ -223,13 +357,13 @@ impl Actor for Scene {
         Answer<Uniformed, MadeInstances>,
         Answer<Placed, MadeAll>,
     );
-    type BeginSends = (Tells<Path<Window>, window::Subscribe>,);
+    type BeginSends = (Tells<Path<Window>, window::Subscribe>, Asks<Path<Renderer>, ShapeOf, Nothing>);
     type EndSends = ();
 
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
         turn.to(path::<Window>(shows.window)).send(&window::Subscribe)?;
+        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(shows.window)), &Nothing)?;
 
         Ok(Self {
             window: shows.window,
@@ -309,16 +443,6 @@ impl Scene {
     }
 }
 
-impl Handles<On<Start>> for Scene {
-    type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
-
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(self.window)), &Nothing)?;
-
-        Ok(())
-    }
-}
-
 impl Handles<Event> for Scene {
     type Sends = ();
 
@@ -344,9 +468,6 @@ impl Handles<Event> for Scene {
                 if !repeat {
                     self.held += 1;
                 }
-                if code == "Escape" {
-                    turn.quit();
-                }
             }
             Event::KeyUp { code, key } => {
                 println!("key_up window={window} code={code} key={key:?}");
@@ -362,11 +483,11 @@ impl Handles<Event> for Scene {
                 println!("focus=lost window={window}");
                 self.held = 0;
             }
-            Event::CloseRequested => {
-                // The chassis asks the program to stop only when its one window's close button is pressed: with two,
-                // this program says to.
-                println!("close_requested window={window}");
-                turn.quit();
+            Event::CloseRequested => println!("close_requested window={window}"),
+            Event::Closed => {
+                println!("closed window={window}");
+                self.print_intervals();
+                turn.close();
             }
         }
 
