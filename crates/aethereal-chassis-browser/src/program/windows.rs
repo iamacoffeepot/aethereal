@@ -17,14 +17,15 @@ use web_sys::HtmlCanvasElement;
 pub struct WindowsSettings {
     /// The ids of the page's canvases opened as windows, in order, at least one: the renderer opens WebGPU on them.
     pub canvases: Vec<String>,
-    /// The most of a canvas's pixels drawn to each of the page's CSS pixels: none for every device pixel of the screen.
+    /// How many of a canvas's pixels are drawn to each of the page's CSS pixels: `screen` for every device pixel of
+    /// the screen, or `at-most:2`.
     #[flag]
-    pub density: f64,
+    pub density: Density,
 }
 
 impl Default for WindowsSettings {
     fn default() -> Self {
-        Self { canvases: vec![String::from("canvas")], density: 0.0 }
+        Self { canvases: vec![String::from("canvas")], density: Density::Screen }
     }
 }
 
@@ -44,8 +45,12 @@ impl Bootstrap<Browser<Performance>> for Windows {
         (): (),
         cx: &mut Bootstrapping<'_, Browser<Performance>, Self>,
     ) -> Result<(InitialWindows,), Unbuilt> {
+        let density = settings.density;
+        let draws = density.draws();
+        if !draws {
+            return Err(Unbuilt::Failed(format!("the window root's density draws no pixels: {density:?}").into()));
+        }
         let page = Page::now().map_err(unopened)?;
-        let density = Density::at_most(settings.density);
         let mut opening = Opening::new(cx.source(), cx.controller());
         let mut opened = Vec::with_capacity(settings.canvases.len());
         for id in &settings.canvases {

@@ -3,29 +3,40 @@
 
 use crate::running::Desktop;
 use aethereal_data::Plain;
+use aethereal_data::config::Field;
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
 use aethereal_window::{InitialWindows, Opening, Windows};
 
-/// The window root's settings on the desktop: its section, `windows` (ADR-0028).
+/// The window root's settings on the desktop, its section, `windows`: the windows opened as the program is set up, in
+/// order, at least one, the renderer opening the GPU on the first (ADR-0028).
+///
+/// The section is the sequence itself, so the first window's size is `windows[0].size`, and a program offers it as a
+/// flag through [`FIRST_SIZE`](Self::FIRST_SIZE).
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
 #[kind(name = "aether.desktop.windows")]
 #[settings]
-pub struct WindowsSettings {
-    /// The windows opened as the program is set up, in order, at least one: the renderer opens the GPU on the first.
-    pub windows: Vec<WindowSettings>,
+pub struct WindowsSettings(pub Vec<WindowSettings>);
+
+impl WindowsSettings {
+    /// The handle of the first window's size, `windows[0].size`: `.flags(|flags| flags.flag("size", 's',
+    /// WindowsSettings::FIRST_SIZE))` offers `--size 1280x720`.
+    pub const FIRST_SIZE: Field<Self, [u32; 2]> = WindowSettings::SIZE.in_element(0);
 }
 
-/// One window opened as the program is set up: its title, and its inner size in logical pixels.
+/// One window opened as the program is set up: an element of the window root's settings (ADR-0028).
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
+#[kind(name = "aether.desktop.window")]
+#[settings]
 pub struct WindowSettings {
+    /// The window's title.
     pub title: String,
-    pub width: u32,
-    pub height: u32,
+    /// The window's inner size in logical pixels, width by height: `1280x720`.
+    pub size: [u32; 2],
 }
 
 impl Default for WindowsSettings {
     fn default() -> Self {
-        Self { windows: vec![WindowSettings { title: String::from("aethereal"), width: 800, height: 600 }] }
+        Self(vec![WindowSettings { title: String::from("aethereal"), size: [800, 600] }])
     }
 }
 
@@ -44,9 +55,9 @@ impl Bootstrap<Desktop> for Windows {
         cx: &mut Bootstrapping<'_, Desktop, Self>,
     ) -> Result<(InitialWindows,), Unbuilt> {
         let mut opening = Opening::new(cx.source(), cx.controller());
-        let mut opened = Vec::with_capacity(settings.windows.len());
-        for window in &settings.windows {
-            opened.push(cx.host().open_window(&mut opening, &window.title, (window.width, window.height))?);
+        let mut opened = Vec::with_capacity(settings.0.len());
+        for window in &settings.0 {
+            opened.push(cx.host().open_window(&mut opening, &window.title, window.size.into())?);
         }
         let mut opened = opened.into_iter();
         let Some(first) = opened.next() else {

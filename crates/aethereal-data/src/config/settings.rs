@@ -68,6 +68,19 @@ pub trait Settings: Kind + Encode<Bare> + Decode<Bare> + 'static {
     const FIELDS: &'static [Declared];
 }
 
+/// Settings of named fields, each with the handle `#[settings]` emits for it: what a handle into an element of a
+/// sequence names a field of (ADR-0028).
+pub trait Members: Settings {}
+
+/// Settings of one positional field, written as that field alone: `WindowsSettings(Vec<WindowSettings>)` is its
+/// sequence, so its section reads `windows[0].size`, not `windows.windows[0].size` (ADR-0028).
+///
+/// `#[settings]` writes it, with `Value` the field's type.
+pub trait Sole: Settings {
+    /// The type of the one field.
+    type Value;
+}
+
 /// One named field of a settings kind as it declares it (ADR-0028).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Declared {

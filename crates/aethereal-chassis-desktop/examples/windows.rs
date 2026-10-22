@@ -4,14 +4,14 @@
 //! the window root for another, and the director that asked makes a scene for each window it is answered with, keyed
 //! by the window, which hears only its own window (ADR-0027).
 //!
-//! Run with `cargo run --release -p aethereal-chassis-desktop --example windows -- --seconds 3`. With `--seconds N`
+//! Run with `cargo run --release -p aethereal-chassis-desktop --example windows -- --runs for:3`. With `--runs for:N`
 //! the director asks for a second window as the program starts, and the program quits itself after N seconds; each
 //! scene prints the time between the frames its window was handed, from one `Tick` to the next, as `key=value` in
 //! milliseconds: their mean, median, 99th percentile, and longest. Each answer to a window asked for is printed as it
 //! comes. A window's close button closes that window alone, and its scene prints its frames as it closes; the program
 //! ends once the last window has closed, or Escape is pressed in any. Each key, button, and turn of the wheel a window
-//! hears is printed as it comes, beside the window, and each resize. `--help` lists every flag the program reads, each
-//! also read from its `WINDOWS_` variable.
+//! hears is printed as it comes, beside the window, and each resize. `--size 1280x720` sizes the first window. `--help`
+//! lists every flag the program reads, each also read from its `WINDOWS_` variable.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
@@ -95,14 +95,15 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
     let workers = NonZeroU32::try_from(
         thread::available_parallelism().map_or(NonZeroUsize::MIN, |cores| cores.min(MOST_WORKERS)),
     )?;
-    let first = WindowSettings { title: String::from("aethereal: first"), width: 640, height: 480 };
+    let first = WindowSettings { title: String::from("aethereal: first"), size: [640, 480] };
 
     Ok(Desktop::program()
         .with_cycle::<(Tick, Render)>()
         .with_engine(EngineSettings { workers, parts: workers, ..Default::default() })
-        .root_with::<Windows>(WindowsSettings { windows: vec![first] })
+        .root_with::<Windows>(WindowsSettings(vec![first]))
         .root::<Renderer>()
         .root::<Director>()
+        .flags(|flags| flags.flag("size", 's', WindowsSettings::FIRST_SIZE))
         .launch("windows")?)
 }
 
@@ -111,18 +112,38 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
 #[kind(name = "aether.example.show")]
 #[settings]
 struct Show {
-    /// The seconds each scene runs for, none for as long as it is let.
+    /// How long each scene runs: `forever`, until its window is closed or Escape is pressed, or `for:3`, three
+    /// seconds, then the program quits.
     #[flag]
-    seconds: u64,
+    runs: Runs,
 }
 
-/// The director's config: the window opened as the program was set up, and how many seconds each scene runs for,
-/// none for as long as it is let.
+/// How long each scene runs.
+#[derive(Plain, Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Runs {
+    /// For as long as it is let: until its window is closed or Escape is pressed.
+    #[default]
+    Forever,
+    /// For this many seconds, then the program quits itself.
+    For { seconds: u64 },
+}
+
+impl Runs {
+    /// Whether a run `elapsed_nanos` long is over.
+    const fn over(self, elapsed_nanos: u64) -> bool {
+        match self {
+            Self::Forever => false,
+            Self::For { seconds } => elapsed_nanos >= seconds.saturating_mul(1_000_000_000),
+        }
+    }
+}
+
+/// The director's config: the window opened as the program was set up, and how long each scene runs.
 #[derive(Plain)]
 #[kind(name = "aether.example.directs")]
 struct Directs {
     first: WindowId,
-    seconds: u64,
+    runs: Runs,
 }
 
 /// The director makes its first scene for the first window the window root opened.
@@ -137,17 +158,17 @@ impl<H: Host> Bootstrap<H> for Director {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), Directs { first: windows.first(), seconds: show.seconds })
+        cx.begin(&(), Directs { first: windows.first(), runs: show.runs })
     }
 }
 
 /// The director: it makes a scene for the window opened as the program was set up, asks the window root for another
-/// window on `N` in any window, and for one as the program starts when it runs for some seconds, and makes a scene for
+/// window on `N` in any window, and for one as the program starts when it runs for a time, and makes a scene for
 /// each window it is answered with, each of its own count and colours.
 #[derive(Bound)]
 #[kind(name = "aether.example.director")]
 struct Director {
-    seconds: u64,
+    runs: Runs,
     /// How many scenes it has made.
     scenes: u8,
 }
@@ -163,12 +184,8 @@ impl Director {
         window: WindowId,
         turn: &mut Turn<'_, Self, (Tells<Path<Window>, window::Subscribe>,)>,
     ) -> Result<(), Fault> {
-        let shows = Shows {
-            window,
-            seconds: self.seconds,
-            count: RING >> (self.scenes % 3),
-            warm: self.scenes.is_multiple_of(2),
-        };
+        let shows =
+            Shows { window, runs: self.runs, count: RING >> (self.scenes % 3), warm: self.scenes.is_multiple_of(2) };
         self.scenes += 1;
         if let Err(refused) = turn.spawn::<Scene>(&window, shows) {
             turn.log(Level::Error, format_args!("the scene of window {window:?} was refused: {refused}"));
@@ -193,13 +210,13 @@ impl Actor for Director {
 
     fn begin(directs: Directs, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
-        let shows = Shows { window: directs.first, seconds: directs.seconds, count: RING, warm: true };
+        let shows = Shows { window: directs.first, runs: directs.runs, count: RING, warm: true };
         if let Err(refused) = turn.spawn::<Scene>(&directs.first, shows) {
             turn.log(Level::Error, format_args!("the first scene was refused: {refused}"));
         }
         turn.to(path::<Window>(directs.first)).send(&window::Subscribe)?;
 
-        Ok(Self { seconds: directs.seconds, scenes: 1 })
+        Ok(Self { runs: directs.runs, scenes: 1 })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -207,13 +224,13 @@ impl Actor for Director {
     }
 }
 
-/// Asks for a second window as the program starts, when it runs for some seconds, so a timed run shows a window
+/// Asks for a second window as the program starts, when it runs for a time, so a timed run shows a window
 /// opened on request.
 impl Handles<On<Start>> for Director {
     type Sends = (Asks<Path<Windows>, OpenWindow, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        if self.seconds > 0 {
+        if let Runs::For { .. } = self.runs {
             turn.to(path::<Windows>(())).ask(&another(), &Nothing)?;
         }
 
@@ -269,13 +286,13 @@ impl Handles<Answer<Opened, Nothing>> for Director {
 #[kind(name = "aether.example.nothing")]
 struct Nothing;
 
-/// A scene's config: the window it draws on, how many seconds it runs for, none for as long as it is let, how many
+/// A scene's config: the window it draws on, how long it runs, how many
 /// triangles its ring has, and whether they are shaded warm, from red, or cool, from blue.
 #[derive(Plain)]
 #[kind(name = "aether.example.shows")]
 struct Shows {
     window: WindowId,
-    seconds: u64,
+    runs: Runs,
     count: u8,
     warm: bool,
 }
@@ -288,7 +305,7 @@ struct Shows {
 #[kind(name = "aether.example.scene")]
 struct Scene {
     window: WindowId,
-    seconds: u64,
+    runs: Runs,
     count: u8,
     warm: bool,
     ring: Ring,
@@ -382,7 +399,7 @@ impl Actor for Scene {
 
         Ok(Self {
             window: shows.window,
-            seconds: shows.seconds,
+            runs: shows.runs,
             count: shows.count,
             warm: shows.warm,
             ring: Ring::Making,
@@ -674,7 +691,7 @@ impl Handles<On<Tick>> for Scene {
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.intervals.push(tick.delta_nanos);
-        let ran = self.seconds > 0 && tick.elapsed_nanos >= self.seconds.saturating_mul(1_000_000_000);
+        let ran = self.runs.over(tick.elapsed_nanos);
         if ran {
             self.print_intervals();
             turn.quit();

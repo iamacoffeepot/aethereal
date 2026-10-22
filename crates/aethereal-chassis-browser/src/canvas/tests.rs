@@ -5,7 +5,7 @@ use super::dom::{Canvas, Density, Measured, Pointing, button_of, css_pixels};
 use aethereal_window::{Button, Event};
 
 /// Every device pixel of the screen.
-const SCREEN: Density = Density::at_most(f64::INFINITY);
+const SCREEN: Density = Density::Screen;
 
 #[test]
 fn a_point_on_the_canvas_is_scaled_to_its_backing_store_on_each_axis() {
@@ -81,17 +81,18 @@ fn a_canvas_is_drawn_at_the_screens_pixels_of_the_size_it_is_laid_out_at() {
 #[test]
 fn a_density_draws_a_canvas_at_no_more_pixels_than_it_allows() {
     // Catches the most taken as the least, a screen of fewer pixels than the most drawn at the most, device pixels
-    // left at the screen's ratio past the most, and a most of no pixels or no number drawing nothing.
-    let at_most_two = Density::at_most(2.0);
+    // left at the screen's ratio past the most, and a most of no pixels taken as one that draws.
+    let at_most_two = Density::AtMost(2.0);
     let css = Measured::CssPixels { width: 400.0, height: 300.0 };
     let device = Measured::DevicePixels { width: 1200.0, height: 900.0 };
 
     assert_eq!(css.pixels(at_most_two, 3.0, 8192), (800, 600));
     assert_eq!(device.pixels(at_most_two, 3.0, 8192), (800, 600));
     assert_eq!(css.pixels(at_most_two, 1.5, 8192), (600, 450));
-    assert_eq!(css.pixels(Density::at_most(0.5), 1.0, 8192), (200, 150));
-    assert_eq!(css.pixels(Density::at_most(0.0), 3.0, 8192), (1200, 900));
-    assert_eq!(css.pixels(Density::at_most(f64::NAN), 3.0, 8192), (1200, 900));
+    assert_eq!(css.pixels(Density::AtMost(0.5), 1.0, 8192), (200, 150));
+    assert_eq!(css.pixels(SCREEN, 3.0, 8192), (1200, 900));
+    assert!(!Density::AtMost(0.0).draws());
+    assert!(!Density::AtMost(f64::NAN).draws());
 }
 
 #[test]

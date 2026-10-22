@@ -1,8 +1,9 @@
 //! The table of a program's flags, checked: one flag of each name (ADR-0028).
 
-use crate::config::document::Step;
+use crate::JsonPath;
+use crate::config::document::{Step, path_of};
+use crate::config::field::Within;
 use crate::config::form::Form;
-use crate::{JsonPath, JsonStep};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -12,8 +13,7 @@ pub struct Flag {
     pub(super) long: String,
     /// The short flag's letter, fixed as the flag is made; `None` when the flag has no short form.
     pub(super) short: Option<char>,
-    pub(super) section: &'static str,
-    pub(super) field: &'static str,
+    pub(super) path: FieldPath<'static>,
     pub(super) doc: &'static str,
     pub(super) form: Form,
 }
@@ -43,29 +43,55 @@ impl Flag {
         &self.form
     }
 
-    /// The path of the field the flag sets, from the configuration's root: `engine.workers`.
+    /// The path of the field the flag sets, from the configuration's root: `engine.workers`, or `windows[0].size`.
     #[must_use]
     pub fn path(&self) -> JsonPath {
-        let section = JsonStep::Field(String::from(self.section));
-        let field = JsonStep::Field(String::from(self.field));
-        JsonPath::of(Vec::from([section, field]))
+        self.path.path()
     }
 
     /// The steps of the path of the field the flag sets.
     pub(in crate::config) fn steps(&self) -> Vec<Step> {
-        Vec::from([Step::Field(String::from(self.section)), Step::Field(String::from(self.field))])
+        self.path.steps()
     }
 
-    /// Whether the flag sets the field `field` of the section `section`.
-    pub(super) fn sets(&self, section: &str, field: &str) -> bool {
-        let same_section = self.section == section;
-        let same_field = self.field == field;
-        same_section && same_field
+    /// Whether the flag sets the field `field`, `within` the section `section`.
+    pub(super) fn sets(&self, section: &str, within: Within, field: &str) -> bool {
+        self.path == FieldPath::new(section, within, field)
     }
 
     /// Whether the flag is a switch, which `--no-<name>` also turns off.
     pub(super) fn is_switch(&self) -> bool {
         self.form == Form::Switch
+    }
+}
+
+/// The field a flag sets: its section, where in the section, and its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct FieldPath<'name> {
+    section: &'name str,
+    within: Within,
+    field: &'name str,
+}
+
+impl<'name> FieldPath<'name> {
+    /// The field `field`, `within` the section `section`.
+    pub(super) const fn new(section: &'name str, within: Within, field: &'name str) -> Self {
+        Self { section, within, field }
+    }
+
+    /// The steps from the configuration's root: the section, the element's index when it is in one, and the field.
+    pub(super) fn steps(&self) -> Vec<Step> {
+        let section = Step::Field(String::from(self.section));
+        let field = Step::Field(String::from(self.field));
+        match self.within {
+            Within::Section => Vec::from([section, field]),
+            Within::Element(index) => Vec::from([section, Step::Index(index), field]),
+        }
+    }
+
+    /// The path from the configuration's root.
+    pub(super) fn path(&self) -> JsonPath {
+        path_of(&self.steps())
     }
 }
 

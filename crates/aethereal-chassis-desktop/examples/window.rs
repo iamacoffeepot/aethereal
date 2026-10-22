@@ -1,11 +1,12 @@
 //! A ring of triangles in a window, turning, following the pointer, and turning the other way while a key is held,
 //! with the frames it was handed timed.
 //!
-//! Run with `cargo run --release -p aethereal-chassis-desktop --example window -- --seconds 3`. With `--seconds N`
+//! Run with `cargo run --release -p aethereal-chassis-desktop --example window -- --runs for:3`. With `--runs for:N`
 //! the program quits itself after N seconds, and prints the time between the frames it was handed, from one `Tick` to
-//! the next, as `key=value` in milliseconds: their mean, median, 99th percentile, and longest. Without it, it runs until
-//! its window is closed or Escape is pressed. Each key, button, and turn of the wheel it hears is printed as it comes,
-//! and each resize. `--help` lists every flag the program reads, each also read from its `WINDOW_` variable.
+//! the next, as `key=value` in milliseconds: their mean, median, 99th percentile, and longest. With `--runs forever`,
+//! as without it, it runs until its window is closed or Escape is pressed. `--size 1280x720` sizes its window. Each
+//! key, button, and turn of the wheel it hears is printed as it comes, and each resize. `--help` lists every flag the
+//! program reads, each also read from its `WINDOW_` variable.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
@@ -13,7 +14,7 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
-use aethereal_chassis_desktop::Desktop;
+use aethereal_chassis_desktop::{Desktop, WindowsSettings};
 use aethereal_chassis_headless::Exit;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_data::{Bound, Plain};
@@ -94,6 +95,7 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root::<Windows>()
         .root::<Renderer>()
         .root::<Scene>()
+        .flags(|flags| flags.flag("size", 's', WindowsSettings::FIRST_SIZE))
         .launch("window")?)
 }
 
@@ -102,9 +104,30 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
 #[kind(name = "aether.example.show")]
 #[settings]
 struct Show {
-    /// The seconds the scene runs for, none for as long as it is let.
+    /// How long the scene runs: `forever`, until its window is closed or Escape is pressed, or `for:3`, three
+    /// seconds, then the program quits.
     #[flag]
-    seconds: u64,
+    runs: Runs,
+}
+
+/// How long the scene runs.
+#[derive(Plain, Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Runs {
+    /// For as long as it is let: until its window is closed or Escape is pressed.
+    #[default]
+    Forever,
+    /// For this many seconds, then the program quits itself.
+    For { seconds: u64 },
+}
+
+impl Runs {
+    /// Whether a run `elapsed_nanos` long is over.
+    const fn over(self, elapsed_nanos: u64) -> bool {
+        match self {
+            Self::Forever => false,
+            Self::For { seconds } => elapsed_nanos >= seconds.saturating_mul(1_000_000_000),
+        }
+    }
 }
 
 /// The scene draws on the first window the window root opened, for as long as its settings say.
@@ -119,7 +142,7 @@ impl<H: Host> Bootstrap<H> for Scene {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), Shows { window: windows.first(), seconds: show.seconds })
+        cx.begin(&(), Shows { window: windows.first(), runs: show.runs })
     }
 }
 
@@ -128,12 +151,12 @@ impl<H: Host> Bootstrap<H> for Scene {
 #[kind(name = "aether.example.nothing")]
 struct Nothing;
 
-/// The scene's config: the window it draws on, and how many seconds it runs for, none for as long as it is let.
+/// The scene's config: the window it draws on, and how long it runs.
 #[derive(Plain)]
 #[kind(name = "aether.example.shows")]
 struct Shows {
     window: WindowId,
-    seconds: u64,
+    runs: Runs,
 }
 
 /// The scene: it asks the shape of its window's main pass, makes what it draws one ask after another, each answer
@@ -143,7 +166,7 @@ struct Shows {
 #[kind(name = "aether.example.scene")]
 struct Scene {
     window: WindowId,
-    seconds: u64,
+    runs: Runs,
     ring: Ring,
     /// The window's surface, in its pixels, as it was last heard.
     width: u32,
@@ -236,7 +259,7 @@ impl Actor for Scene {
 
         Ok(Self {
             window: shows.window,
-            seconds: shows.seconds,
+            runs: shows.runs,
             ring: Ring::Making,
             width: 1,
             height: 1,
@@ -524,7 +547,7 @@ impl Handles<On<Tick>> for Scene {
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.intervals.push(tick.delta_nanos);
-        let ran = self.seconds > 0 && tick.elapsed_nanos >= self.seconds.saturating_mul(1_000_000_000);
+        let ran = self.runs.over(tick.elapsed_nanos);
         if ran {
             self.print_intervals();
             turn.quit();

@@ -4,10 +4,13 @@ mod table;
 
 pub use table::{Flag, FlagTable, Named};
 
+use table::FieldPath;
+
+use super::field::Within;
 use super::form::Form;
 use super::place::Place;
-use super::{Declared, Field, FlagError, FlagName, Parts, Settings, Suggested};
-use crate::{JsonPath, JsonStep, KindName};
+use super::{Field, FlagError, FlagName, Parts, Settings, Suggested};
+use crate::{JsonPath, KindName};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -18,24 +21,34 @@ struct Target {
     kind: KindName,
     /// The names of the sections of `parts` read as that kind, in the order they were added.
     sections: Vec<&'static str>,
+    /// Where in each section the field is.
+    within: Within,
     /// The field's name.
     field: &'static str,
+    /// The field's doc comment.
+    doc: &'static str,
 }
 
 impl Target {
     /// The field `field` names, in each section of `parts` read as its kind.
     fn of<S: Settings, V>(parts: &Parts, field: Field<S, V>) -> Self {
-        Self { kind: S::NAME, sections: parts.read_as::<S>(), field: field.name() }
+        Self {
+            kind: S::NAME,
+            sections: parts.read_as::<S>(),
+            within: field.within(),
+            field: field.name(),
+            doc: field.doc(),
+        }
     }
 
     /// Whether `flag` sets the field, in one of the sections.
     fn sets(&self, flag: &Flag) -> bool {
-        self.sections.iter().any(|section| flag.sets(section, self.field))
+        self.sections.iter().any(|section| flag.sets(section, self.within, self.field))
     }
 
     /// The field's path from the configuration's root, in the section `section`.
     fn path(&self, section: &str) -> JsonPath {
-        JsonPath::of(Vec::from([JsonStep::Field(String::from(section)), JsonStep::Field(String::from(self.field))]))
+        FieldPath::new(section, self.within, self.field).path()
     }
 }
 
@@ -118,7 +131,7 @@ impl<'parts> Flags<'parts> {
     /// The first refusal, as [`FlagError`] says.
     pub fn finish(self) -> Result<FlagTable, FlagError> {
         let schema = self.parts.schema();
-        let form_of = |section: &str, field: &str| match Place::root(&schema).field(section).field(field) {
+        let form_of = |path: &FieldPath| match path.steps().iter().fold(Place::root(&schema), Place::step) {
             Place::Schema(at) => Form::of(at),
             Place::Opaque | Place::Unknown => Form::Json,
         };
@@ -131,9 +144,10 @@ impl<'parts> Flags<'parts> {
                     Suggested::Long { long } => (long, None),
                     Suggested::LongAndShort { long, short } => (long, Some(short)),
                 };
-                let form = form_of(section, declared.name);
+                let path = FieldPath::new(section, Within::Section, declared.name);
+                let form = form_of(&path);
                 let long = String::from(long);
-                flags.push(Flag { long, short, section, field: declared.name, doc: declared.doc, form });
+                flags.push(Flag { long, short, path, doc: declared.doc, form });
             }
         }
 
@@ -155,10 +169,10 @@ impl<'parts> Flags<'parts> {
                         return Err(FlagError::NoSection { kind: target.kind });
                     }
                     for section in target.sections {
-                        let doc = self.parts.doc(section, target.field);
-                        let form = form_of(section, target.field);
+                        let path = FieldPath::new(section, target.within, target.field);
+                        let form = form_of(&path);
                         let long = long.clone();
-                        flags.push(Flag { long, short: Some(short), section, field: target.field, doc, form });
+                        flags.push(Flag { long, short: Some(short), path, doc: target.doc, form });
                     }
                 }
             }
@@ -180,15 +194,6 @@ impl<'parts> Flags<'parts> {
         }
 
         Ok(named)
-    }
-}
-
-impl Parts {
-    /// The doc comment of the field `field` of the section `section`, empty when it declares none.
-    fn doc(&self, section: &str, field: &str) -> &'static str {
-        let fields = self.declared().find(|(name, _)| *name == section).map_or(&[][..], |(_, fields)| fields);
-        let declared: Option<&Declared> = fields.iter().find(|declared| declared.name == field);
-        declared.map_or("", |declared| declared.doc)
     }
 }
 
@@ -221,9 +226,9 @@ fn refuse_collisions(flags: &[Flag]) -> Result<(), FlagError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Budget;
-    use crate::config::samples::{EngineSettings, PoolSettings, RendererSettings, WindowsSettings};
+    use crate::config::samples::{EngineSettings, PoolSettings, RendererSettings, Window, WindowsSettings};
     use crate::config::{Overlay, RepeatedSection};
+    use crate::{Budget, JsonStep};
     use alloc::boxed::Box;
     use core::error::Error;
 
@@ -336,6 +341,37 @@ mod tests {
             .map(|named| matches!(named, Named::Flag(flag) if flag.path() == path("engine", "workers")));
         assert_eq!(workers, Some(true));
         assert_eq!(hidden.flags().len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn an_element_handle_sets_its_field_of_that_element_alone() -> Outcome {
+        // Catches a handle into an element whose index is dropped, setting the section's field or the first element,
+        // a flag of it read by the wrong form, and its value replacing the element's other fields.
+        let first = Window { title: String::from("first"), size: [640, 480] };
+        let second = Window { title: String::from("second"), size: [320, 240] };
+        let windows = WindowsSettings(Vec::from([first.clone(), second]));
+        let parts = Parts::new().with_defaults("windows", &windows)?;
+        let table = Flags::of(&parts).flag("size", 's', Window::SIZE.in_element::<WindowsSettings>(1)).finish()?;
+        let Some(size) = table.short('s') else {
+            return Err("the program's flag is in the table".into());
+        };
+        let mut command_line = Overlay::new("command line");
+        command_line.read(size, "1280x720")?;
+        let mut budget = Budget::new(1 << 20);
+
+        let mut configuration = parts.configure(&[command_line], &mut budget)?;
+
+        let path = JsonPath::of(Vec::from([
+            JsonStep::Field(String::from("windows")),
+            JsonStep::Index(1),
+            JsonStep::Field(String::from("size")),
+        ]));
+        assert_eq!(size.path(), path);
+        assert_eq!(size.doc(), "The window's inner size.");
+        let resized = Window { title: String::from("second"), size: [1280, 720] };
+        let windows = configuration.take::<WindowsSettings>("windows")?;
+        assert_eq!(windows, WindowsSettings(Vec::from([first, resized])));
         Ok(())
     }
 }
