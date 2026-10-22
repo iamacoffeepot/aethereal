@@ -315,3 +315,35 @@ fn the_host_reads_its_own_sections() -> Outcome {
     assert_eq!((bench.pace, bench.hops), (5, 2));
     Ok(())
 }
+
+#[test]
+fn what_is_set_in_code_reaches_its_section_and_wins_over_every_layer() -> Outcome {
+    // Catches a typed setting put in another section than the one its root or the host names, and the code layer
+    // put beneath a layer given to the program rather than above it.
+    let program = program();
+    let file = layer(&program, &["lamp.brightness=1", "scene.seconds=1", "running.pace=1", "engine.hops=1"])?;
+
+    let bench = program
+        .layer(file)
+        .set::<Lamp>(LampSettings::BRIGHTNESS.to(7))
+        .set::<Scene>(SceneSettings::SECONDS.to(3))
+        .set_running(BenchRunning::PACE.to(5))
+        .set_engine(EngineSettings::HOPS.to(2))
+        .build()?;
+
+    assert_eq!(said(), ["lamp 7", "counter", "keeper 2 7", "scene 3"]);
+    assert_eq!((bench.pace, bench.hops), (5, 2));
+    Ok(())
+}
+
+#[test]
+fn a_setting_of_a_root_not_listed_is_refused_naming_the_code_layer() -> Outcome {
+    // Catches a setting of a root the program does not list that is dropped, or blamed on another layer.
+    let refused = Bench::program().root::<Scene>().set::<Lamp>(LampSettings::BRIGHTNESS.to(7)).build();
+
+    let Err(ProgramError::Configuration(ConfigError::Layer { layer, path, .. })) = refused else {
+        return Err("a setting of a root not listed is refused".into());
+    };
+    assert_eq!((layer.as_str(), path.to_string().as_str()), (CODE, "lamp"));
+    Ok(())
+}

@@ -3,7 +3,7 @@
 use crate::CodeRefused;
 use aethereal_actor::{Refused, Unordered};
 use aethereal_data::KindName;
-use aethereal_data::config::ConfigError;
+use aethereal_data::config::{ConfigError, FlagError};
 use core::error::Error;
 use core::fmt;
 
@@ -77,6 +77,9 @@ pub enum ProgramError {
     /// A layer set what does not exist or the wrong shape, or a section's value broke its type's rule, found before
     /// anything is made (ADR-0028).
     Configuration(ConfigError),
+    /// The program's flags were refused as it was put together: a change to a flag that does not exist, or two flags
+    /// left of one name (ADR-0028).
+    Flags(FlagError),
     /// The engine's cycle was refused as it was made.
     Cycle(Unordered),
     /// A root's bootstrap failed.
@@ -94,6 +97,12 @@ impl From<ConfigError> for ProgramError {
     }
 }
 
+impl From<FlagError> for ProgramError {
+    fn from(error: FlagError) -> Self {
+        Self::Flags(error)
+    }
+}
+
 impl fmt::Display for ProgramError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -105,6 +114,7 @@ impl fmt::Display for ProgramError {
                 Ok(())
             }
             Self::Configuration(error) => write!(f, "program: {error}"),
+            Self::Flags(error) => write!(f, "program: {error}"),
             Self::Cycle(unordered) => write!(f, "program: the cycle was refused: {unordered:?}"),
             Self::Root { root, why } => write!(f, "program: {root} did not bootstrap: {why}"),
         }

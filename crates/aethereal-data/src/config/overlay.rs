@@ -3,7 +3,7 @@
 use super::document::{Json, Leaf, Step, path_of};
 use super::form::Form;
 use super::place::Place;
-use super::{ConfigError, ConfigFault, Flag, Parts};
+use super::{ConfigError, ConfigFault, Flag, Parts, Setting, Settings};
 use crate::JsonPath;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -76,6 +76,19 @@ impl Overlay {
         };
 
         self.push(path, value)
+    }
+
+    /// Sets the field `setting` names, in the section `section`, to its value: what a program sets in code, typed
+    /// by the field's handle.
+    pub fn put<S: Settings>(&mut self, section: &str, setting: Setting<S>) -> Result<(), ConfigError> {
+        let path = Vec::from([Step::Field(String::from(section)), Step::Field(String::from(setting.field()))]);
+        self.push(path, setting.json())
+    }
+
+    /// Sets the whole configuration as the JSON text `text` states it, each section by its name, merged field by
+    /// field over the layers beneath: a file's contents (ADR-0028).
+    pub fn document(&mut self, text: &str) -> Result<(), ConfigError> {
+        self.push(Vec::new(), Json::read(text))
     }
 
     /// Adds the entry `value` sets at `path`, refusing a value its form did not read and one nested too deeply.

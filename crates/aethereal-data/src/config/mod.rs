@@ -7,7 +7,8 @@
 //! suggests and what the program changes.
 //!
 //! The handles and the settings declarations are always here, as the derives write them; the composite, its
-//! overlays, and its flags read and write JSON, and are behind the `json` feature.
+//! overlays, its flags, and the values a program sets in code read and write JSON, and are behind the `json`
+//! feature.
 
 pub(crate) mod field;
 mod settings;
@@ -30,6 +31,8 @@ mod place;
 mod reader;
 #[cfg(all(test, feature = "json"))]
 mod samples;
+#[cfg(feature = "json")]
+mod setting;
 
 pub use field::Field;
 pub use settings::{Declared, Settings, Suggested};
@@ -46,3 +49,5 @@ pub use overlay::Overlay;
 pub use parts::{Configuration, Parts};
 #[cfg(feature = "json")]
 pub use reader::RootSettings;
+#[cfg(feature = "json")]
+pub use setting::Setting;

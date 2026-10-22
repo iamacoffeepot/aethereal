@@ -5,9 +5,10 @@ use super::document::{Document, Json, path_of};
 use super::place::Place;
 use super::{ConfigError, ConfigFault, Declared, Overlay, RepeatedSection, Settings};
 use crate::{
-    Bare, Budget, DecodeError, EncodeError, JsonError, JsonPath, JsonStep, KindName, Reader, SchemaNodes, Shape,
-    Writer, from_json, to_json,
+    Bare, Budget, DecodeError, Encode, EncodeError, JsonError, JsonPath, JsonStep, KindName, Reader, Schema,
+    SchemaNodes, Shape, Writer, from_json, to_json,
 };
+use alloc::format;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -104,6 +105,23 @@ impl Parts {
     pub fn schema(&self) -> SchemaNodes {
         let fields: Vec<(&str, Shape)> = self.sections.iter().map(|part| (part.name, part.shape)).collect();
         SchemaNodes::of_fields(COMPOSITE, &fields)
+    }
+
+    /// The composite described as JSON, `{"schema": …, "defaults": …}`: its schema as the flat nodes ADR-0003 gives
+    /// every schema, and the document of every section's defaults, each in the form ADR-0007 gives every kind. What
+    /// the walks hold is charged to `budget`.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Layer`] when a section's defaults could not be written, naming the layer `defaults`.
+    pub fn describe(&self, budget: &mut Budget) -> Result<String, ConfigError> {
+        let mut out = Writer::<Bare>::new(());
+        let at_root = |error: JsonError| refused(DEFAULTS, &error);
+        self.schema().encode(&mut out).map_err(JsonError::from).map_err(at_root)?;
+        let schema = to_json(&SchemaNodes::of(&SchemaNodes::SHAPE), &out.into_bytes(), budget).map_err(at_root)?;
+        let defaults = self.defaults(0, budget)?.text();
+
+        Ok(format!("{{\"schema\":{schema},\"defaults\":{defaults}}}"))
     }
 
     /// Each section's name and its named fields, in the order they were added.
