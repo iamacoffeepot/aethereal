@@ -4,7 +4,7 @@
 mod renderer;
 mod windows;
 
-pub use renderer::{Presenting, RendererSettings};
+pub use renderer::RendererSettings;
 pub use windows::{WindowSettings, WindowsSettings};
 
 use crate::gpu::Screen;
@@ -40,10 +40,10 @@ impl Host for Desktop {
     /// Runs the program on winit's event loop, on this thread, through its lifecycle, then drops it (ADR-0020). Once
     /// the loop begins it bootstraps the program on the [`Screen`], which opens each window the window root's settings
     /// list, and on which the renderer opens the GPU; this thread is then the first of the engine's workers, and
-    /// `Start` is sent. Each frame the display frees it says a cycle is due, at the time the frames were acquired, and
-    /// steps until no actor has anything to run: one cycle draws every window shown. Once the program is asked to
-    /// stop, by its last window closing or an actor's [`quit`](aethereal_actor::Turn::quit), it waits at most
-    /// `stop_within_millis` for `Stop` to finish.
+    /// `Start` is sent. Each frame, paced as the renderer's settings present the windows, it says a cycle is due, at
+    /// the time the frames were acquired, and steps until no actor has anything to run: one cycle draws every window
+    /// shown. Once the program is asked to stop, by its last window closing or an actor's
+    /// [`quit`](aethereal_actor::Turn::quit), it waits at most `stop_within_millis` for `Stop` to finish.
     ///
     /// [`Failed`] when the program does not bootstrap, the event loop does not run, the program serves no drawing or
     /// no window root's end, or the loop ends before the program does.

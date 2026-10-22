@@ -1,4 +1,5 @@
-//! When a timer says a cycle is due (ADR-0020).
+//! When a timer says a cycle is due (ADR-0020): the headless host's cycles, and the desktop's frames when they are
+//! capped (ADR-0021).
 
 #[cfg(test)]
 mod tests;
@@ -7,6 +8,7 @@ mod tests;
 /// late a cycle fires. A cycle missed while the program was busy is skipped, not queued: once one fires late, the next
 /// is due at the first point of the grid after it, so a cycle that runs long makes the cycles fewer, never late in a
 /// queue (ADR-0020).
+#[derive(Debug, Clone, Copy)]
 pub struct Timer {
     every: u64,
     due: u64,
@@ -14,6 +16,7 @@ pub struct Timer {
 
 impl Timer {
     /// A timer that says a cycle is due at `start`, and each `every` nanoseconds after: at least one.
+    #[must_use]
     pub fn new(start: u64, every: u64) -> Self {
         Self { every: every.max(1), due: start }
     }
@@ -30,6 +33,7 @@ impl Timer {
     }
 
     /// When the next cycle is due.
+    #[must_use]
     pub const fn due(&self) -> u64 {
         self.due
     }

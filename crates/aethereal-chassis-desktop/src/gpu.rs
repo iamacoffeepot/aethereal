@@ -2,6 +2,8 @@
 //! asks for, which the screen keeps, and the GPU its renderer opens on them (ADR-0001, ADR-0019, ADR-0021, ADR-0024,
 //! ADR-0029).
 
+use crate::Presenting;
+use crate::presenting::Unoffered;
 use crate::serving::Drawing;
 use aethereal_render::Gpu;
 use aethereal_substrate::Unbuilt;
@@ -56,6 +58,8 @@ pub enum Unopened {
     Unsupported,
     /// The surface is drawn to in this format, which no pass draws into.
     Format(wgpu::TextureFormat),
+    /// The surface offers no mode the windows are presented as.
+    Presenting(Unoffered),
     /// No window was opened as the program was set up, so no GPU was opened for the renderer.
     NoWindow,
 }
@@ -69,6 +73,7 @@ impl fmt::Display for Unopened {
             Self::Device(error) => write!(f, "the adapter refused a device: {error}"),
             Self::Unsupported => write!(f, "the adapter cannot draw to the window's surface"),
             Self::Format(format) => write!(f, "the window's surface draws in {format:?}, which no pass draws into"),
+            Self::Presenting(unoffered) => write!(f, "{unoffered}"),
             Self::NoWindow => write!(f, "no window was opened to draw to"),
         }
     }
@@ -160,19 +165,20 @@ pub fn native(event_loop: &ActiveEventLoop, title: &str, size: LogicalSize<f64>)
 }
 
 /// How the surface of `window`, `surface`, is configured for `adapter`: at the window's inner size, in the surface's
-/// own format, presented as `present` says, and copied from where the adapter allows it.
+/// own format, presented with the mode `present` asks for, and copied from where the adapter allows it. A surface that
+/// offers no mode `present` asks for is refused, naming those it offers.
 pub fn configured(
     adapter: &wgpu::Adapter,
     surface: &wgpu::Surface<'_>,
     window: &Window,
-    present: wgpu::PresentMode,
+    present: Presenting,
 ) -> Result<wgpu::SurfaceConfiguration, Unopened> {
     let size = window.inner_size();
     let mut config =
         surface.get_default_config(adapter, size.width.max(1), size.height.max(1)).ok_or(Unopened::Unsupported)?;
-    config.present_mode = present;
-    let copied = surface.get_capabilities(adapter).usages & wgpu::TextureUsages::COPY_SRC;
-    config.usage |= copied;
+    let capabilities = surface.get_capabilities(adapter);
+    config.present_mode = present.mode(&capabilities.present_modes).map_err(Unopened::Presenting)?;
+    config.usage |= capabilities.usages & wgpu::TextureUsages::COPY_SRC;
 
     Ok(config)
 }

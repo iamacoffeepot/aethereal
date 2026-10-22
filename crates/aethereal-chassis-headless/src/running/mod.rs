@@ -9,7 +9,7 @@ use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Lifecycle};
 use core::time::Duration;
 use std::thread;
-use timer::Timer;
+pub use timer::Timer;
 
 /// How a program run to its end ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

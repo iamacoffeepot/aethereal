@@ -30,7 +30,7 @@ use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Engine, Split, SplitCost, Workers};
 pub use pool::Measured;
 pub use program::RunningSettings;
-pub use running::Exit;
+pub use running::{Exit, Timer};
 
 use pool::Pool;
 use std::num::NonZeroUsize;

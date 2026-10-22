@@ -66,7 +66,7 @@ What this engine already has:
 **People use flags. The flags are a layer in front of the document, never the document.**
 
 ```
---workers 4  -w 4  --size 1280x720  --fullscreen  --stop-within-millis 500  --set renderer.presentation=uncapped
+--workers 4  -w 4  --size 1280x720  --fullscreen  --stop-within-millis 500  --present capped:60  --set renderer.present=uncapped
 ```
 
 - **A section's author suggests the flags for its fields**, beside the field, as they declare the field's doc comment. **The program decides**: it takes a suggestion, renames it, hides it, or adds a flag of its own for any field of any section.
