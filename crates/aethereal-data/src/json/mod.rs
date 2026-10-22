@@ -5,18 +5,18 @@
 //! 64-bit integers are strings, and both walks follow the schema.
 
 mod error;
-mod escape;
+pub mod escape;
 mod float;
 mod from_json;
 mod hex;
 mod integer;
 mod key;
-mod layout;
-mod reader;
+pub mod layout;
+pub mod reader;
 #[cfg(test)]
 mod rows;
 mod to_json;
-mod tree;
+pub mod tree;
 
 pub use error::{JsonError, JsonFault, JsonForm, JsonPath, JsonStep, TextFault};
 pub use from_json::from_json;

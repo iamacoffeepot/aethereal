@@ -6,14 +6,14 @@ use alloc::vec::Vec;
 
 /// A run of entries in one of the tree's two lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Span {
+pub struct Span {
     start: usize,
     count: usize,
 }
 
 /// One JSON value, never owning another value.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Value<'json> {
+pub enum Value<'json> {
     /// JSON `null`.
     Null,
     /// A JSON boolean.
@@ -30,11 +30,11 @@ pub(super) enum Value<'json> {
 
 /// One object member: a name and its value.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct Member<'json> {
+pub struct Member<'json> {
     /// The member name, escapes resolved.
-    pub(super) name: String,
+    pub name: String,
     /// The member value.
-    pub(super) value: Value<'json>,
+    pub value: Value<'json>,
 }
 
 /// The lists a tree is built in: children are stored before the value that holds them.
@@ -90,7 +90,7 @@ impl<'json> Arena<'json> {
 }
 
 /// JSON text read into two flat lists and a root.
-pub(super) struct Tree<'json> {
+pub struct Tree<'json> {
     values: Vec<Value<'json>>,
     members: Vec<Member<'json>>,
     root: Value<'json>,
@@ -98,24 +98,24 @@ pub(super) struct Tree<'json> {
 
 impl<'json> Tree<'json> {
     /// The root value.
-    pub(super) fn root(&self) -> &Value<'json> {
+    pub fn root(&self) -> &Value<'json> {
         &self.root
     }
 
     /// The elements an array holds.
-    pub(super) fn elements(&self, span: Span) -> &[Value<'json>] {
+    pub fn elements(&self, span: Span) -> &[Value<'json>] {
         let end = span.start.saturating_add(span.count);
         self.values.get(span.start..end).unwrap_or_default()
     }
 
     /// The members an object holds, sorted by name.
-    pub(super) fn members(&self, span: Span) -> &[Member<'json>] {
+    pub fn members(&self, span: Span) -> &[Member<'json>] {
         let end = span.start.saturating_add(span.count);
         self.members.get(span.start..end).unwrap_or_default()
     }
 
     /// The member named `name`, by binary search.
-    pub(super) fn member(&self, span: Span, name: &str) -> Option<&Value<'json>> {
+    pub fn member(&self, span: Span, name: &str) -> Option<&Value<'json>> {
         let members = self.members(span);
         let found = members.binary_search_by(|member| member.name.as_str().cmp(name));
         let Ok(position) = found else {

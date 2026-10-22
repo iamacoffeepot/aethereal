@@ -13,7 +13,7 @@ use core::mem::{replace, size_of};
 use cursor::Cursor;
 
 /// Reads one JSON value and nothing after it.
-pub(in crate::json) fn read<'json>(json: &'json str, budget: &mut Budget) -> Result<Tree<'json>, JsonError> {
+pub fn read<'json>(json: &'json str, budget: &mut Budget) -> Result<Tree<'json>, JsonError> {
     let mut cursor = Cursor::new(json);
     let mut arena = Arena::new();
     let mut frames: Vec<Frame<'_>> = Vec::new();

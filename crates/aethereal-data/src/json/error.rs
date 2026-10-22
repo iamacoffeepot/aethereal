@@ -26,7 +26,7 @@ impl JsonError {
     }
 
     /// The same refusal, one step further out: `step` goes in front of the path.
-    pub(in crate::json) fn within(mut self, step: JsonStep) -> Self {
+    pub(crate) fn within(mut self, step: JsonStep) -> Self {
         self.path.steps.insert(0, step);
         self
     }
@@ -76,6 +76,11 @@ pub struct JsonPath {
 }
 
 impl JsonPath {
+    /// The path of `steps`, nearest the root first.
+    pub(crate) const fn of(steps: Vec<JsonStep>) -> Self {
+        Self { steps }
+    }
+
     /// The steps from the root, nearest the root first.
     #[must_use]
     pub fn steps(&self) -> &[JsonStep] {
