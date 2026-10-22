@@ -25,8 +25,12 @@ const OPPONENT: Colour = [255, 222, 205, 255];
 /// The ball, without spin.
 const BALL: Colour = [255, 255, 255, 255];
 
-/// The ball spinning as hard as it can: it glows toward this the harder it curves.
-const SPINNING: Colour = [255, 150, 40, 255];
+/// The ball spinning as hard as it can off the player's paddle: it glows toward this the harder it curves, the
+/// player's paddle's colour, deepened.
+const PLAYER_SPIN: Colour = [70, 175, 255, 255];
+
+/// The ball spinning as hard as it can off the opponent's paddle, the opponent's paddle's colour, deepened.
+const OPPONENT_SPIN: Colour = [255, 130, 70, 255];
 
 /// How many marks the trail of a spinning ball leaves behind it.
 const TRAIL: u8 = 14;
@@ -107,11 +111,18 @@ pub fn play(court: &Court) -> Records {
     records
 }
 
-/// The ball, glowing the harder it curves, and when it curves, a trail of fading marks behind it along the way it
-/// came, turned back off the walls as it was, and never behind the paddle that struck it.
+/// The ball, glowing in the colour of the paddle that struck it the harder it curves, and when it curves, a trail of
+/// fading marks behind it along the way it came, turned back off the walls as it was, and never behind the paddle that
+/// struck it.
 fn ball(records: &mut Records, ball: Ball) {
     let curl = ball.curl();
-    records.rect(ball.x, ball.y, BALL_HALF, BALL_HALF, Plane::Play, mix(BALL, SPINNING, curl));
+    let spinning = if ball.heads_to(Side::Right) {
+        PLAYER_SPIN
+    } else {
+        OPPONENT_SPIN
+    };
+    let glow = mix(BALL, spinning, curl);
+    records.rect(ball.x, ball.y, BALL_HALF, BALL_HALF, Plane::Play, glow);
     let is_curling = curl >= TRAIL_FROM;
     if !is_curling {
         return;
@@ -124,7 +135,7 @@ fn ball(records: &mut Records, ball: Ball) {
             break;
         }
         let half = BALL_HALF * 0.25f32.mul_add(-back, 0.9);
-        let colour = mix(mix(BALL, SPINNING, curl), FLOOR, back.mul_add(0.5, 0.35));
+        let colour = mix(glow, FLOOR, back.mul_add(0.5, 0.35));
         records.rect(behind.x, behind.y, half, half, Plane::Trail, colour);
     }
 }

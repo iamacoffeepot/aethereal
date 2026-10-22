@@ -25,6 +25,9 @@ pub const PADDLE_HALF_HEIGHT: f32 = 0.11;
 /// Half the side of the ball, which is square.
 pub const BALL_HALF: f32 = 0.0125;
 
+/// The fastest a paddle moves, in court units a second.
+pub const PADDLE_SPEED: f32 = 1.7;
+
 /// How fast the ball is served, in court units a second.
 pub const SERVE_SPEED: f32 = 0.95;
 

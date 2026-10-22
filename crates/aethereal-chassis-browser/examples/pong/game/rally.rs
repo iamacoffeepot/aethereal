@@ -2,14 +2,11 @@
 //! the paddles, faster on every hit and spun by a paddle struck moving, until it passes a paddle and a point is scored.
 
 use crate::court::{
-    BALL_HALF, Ball, FULL_SPIN, HALF_HEIGHT, HALF_WIDTH, PADDLE_HALF_HEIGHT, PADDLE_HALF_WIDTH, PADDLE_X, SERVE_SPEED,
-    Side,
+    BALL_HALF, Ball, FULL_SPIN, HALF_HEIGHT, HALF_WIDTH, PADDLE_HALF_HEIGHT, PADDLE_HALF_WIDTH, PADDLE_SPEED, PADDLE_X,
+    SERVE_SPEED, Side,
 };
 use crate::dice::Dice;
 use crate::flight;
-
-/// The fastest a paddle moves, in court units a second.
-const PADDLE_SPEED: f32 = 1.7;
 
 /// How much faster the ball goes after each hit.
 const SPEED_UP: f32 = 1.07;

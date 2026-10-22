@@ -4,9 +4,12 @@
 //! It is beatable by how it sees: it looks at the court only every so often, so it reacts a little late; it reads
 //! where the ball will reach its end, along its curve and off the walls, but misjudges it by a little that it chooses afresh each time the
 //! ball comes its way, and by more the faster the ball goes; and it never moves its paddle at more than part of the
-//! speed the game allows.
+//! speed the game allows, but at the last moment before the ball reaches it, it flicks its paddle up or down to spin
+//! the ball, as hard and which way as it chooses afresh each time the ball comes its way.
 
-use crate::court::{BALL_HALF, Court, PADDLE_HALF_HEIGHT, PADDLE_HALF_WIDTH, PADDLE_X, Play, SERVE_SPEED, Side, Steer};
+use crate::court::{
+    BALL_HALF, Court, PADDLE_HALF_HEIGHT, PADDLE_HALF_WIDTH, PADDLE_SPEED, PADDLE_X, Play, SERVE_SPEED, Side, Steer,
+};
 use crate::dice::Dice;
 use crate::flight;
 use crate::game::Pong;
@@ -31,6 +34,12 @@ const MISJUDGED: f32 = 0.5;
 /// How much further it misjudges the ball for each serve's speed more it goes, as a part of half its paddle.
 const MISJUDGED_FASTER: f32 = 1.2;
 
+/// How long before the ball reaches its paddle it flicks the paddle, in seconds.
+const FLICK_SECS: f32 = 0.1;
+
+/// The softest flick it makes, as a part of the paddle's full speed: the hardest is the full speed.
+const SOFTEST_FLICK: f32 = 0.4;
+
 /// How far it follows the ball's height while the ball goes away from it, as a part of that height.
 const FOLLOWING: f32 = 0.3;
 
@@ -47,8 +56,9 @@ impl Kind for Seeded {
 /// What it made of the ball when it last looked.
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
 enum Sight {
-    /// The ball is coming its way, and it misjudges where by `error`, in court units up.
-    Coming { error: f32 },
+    /// The ball is coming its way, it misjudges where by `error`, in court units up, and it flicks its paddle at
+    /// `flick` of its full speed just before the ball reaches it, up above nought and down below.
+    Coming { error: f32, flick: f32 },
     /// The ball is going away, or waits to be served.
     Going,
 }
@@ -100,22 +110,40 @@ impl Opponent {
             (true, Sight::Going) => {
                 let faster = (court.ball.speed() / SERVE_SPEED - 1.0).max(0.0);
                 let most = PADDLE_HALF_HEIGHT * MISJUDGED_FASTER.mul_add(faster, MISJUDGED);
-                Sight::Coming { error: self.dice.between(-most, most) }
+                let error = self.dice.between(-most, most);
+                let way = self.dice.side().sign();
+                let flick = way * self.dice.between(SOFTEST_FLICK, 1.0);
+                Sight::Coming { error, flick }
             }
             (true, sight @ Sight::Coming { .. }) => sight,
             (false, _) => Sight::Going,
         };
         self.aim = match self.sight {
-            Sight::Coming { error } => flight::reaching(court.ball, FACE) + error,
+            // Aimed short of the ball by as far as the flick carries the paddle, so the flick meets it.
+            Sight::Coming { error, flick } => {
+                let carried = flick * PADDLE_SPEED * FLICK_SECS;
+                flight::reaching(court.ball, FACE) + error - carried
+            }
             Sight::Going => court.ball.y * FOLLOWING,
         };
         let hesitation = self.dice.between(0.0, HESITATION_NANOS);
         self.looks_at_nanos = court.elapsed_nanos + REACTION_NANOS + nanos(hesitation);
     }
 
-    /// The way to steer the paddle at `paddle` toward the aim: at its effort while it is far, and slower as it nears.
-    fn steer(&self, paddle: f32) -> Steer {
-        let direction = ((self.aim - paddle) / SETTLING).clamp(-EFFORT, EFFORT);
+    /// The way to steer the paddle at `paddle` as `court` stands: its flick once the ball is about to reach it, and
+    /// otherwise toward the aim, at its effort while it is far, and slower as it nears.
+    fn steer(&self, paddle: f32, court: &Court) -> Steer {
+        let toward_aim = ((self.aim - paddle) / SETTLING).clamp(-EFFORT, EFFORT);
+        let Sight::Coming { flick, .. } = self.sight else {
+            return Steer { direction: toward_aim };
+        };
+        let secs = (FACE - court.ball.x) / court.ball.across;
+        let is_arriving = secs <= FLICK_SECS;
+        let direction = if is_arriving {
+            flick
+        } else {
+            toward_aim
+        };
 
         Steer { direction }
     }
@@ -142,7 +170,7 @@ impl Handles<Court> for Opponent {
         if is_time {
             self.look(&court);
         }
-        turn.to(game).send(&self.steer(court.right))?;
+        turn.to(game).send(&self.steer(court.right, &court))?;
 
         Ok(())
     }
