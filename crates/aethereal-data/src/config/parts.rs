@@ -5,10 +5,11 @@ use super::document::{Document, Json, path_of};
 use super::place::Place;
 use super::{ConfigError, ConfigFault, Declared, Overlay, RepeatedSection, Settings};
 use crate::{
-    Bare, Budget, DecodeError, EncodeError, JsonError, JsonPath, JsonStep, KindName, Reader, SchemaNodes, Shape,
-    Writer, from_json, to_json,
+    Bare, Budget, DecodeError, Encode, EncodeError, JsonError, JsonPath, JsonStep, KindName, Reader, Schema,
+    SchemaNodes, Shape, Writer, from_json, to_json,
 };
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::any::{Any, TypeId};
@@ -34,8 +35,8 @@ struct Part {
     shape: Shape,
     /// The section's named fields as its settings kind declares them.
     fields: &'static [Declared],
-    /// The bytes of the section's `Default`.
-    defaults: fn() -> Result<Vec<u8>, EncodeError>,
+    /// The bytes of the section's defaults, or why they could not be written.
+    defaults: Result<Vec<u8>, EncodeError>,
     /// Reads the section's bytes as its type.
     decode: DecodeSection,
 }
@@ -75,13 +76,23 @@ impl Parts {
         Self { sections: Vec::new() }
     }
 
-    /// The composite with the section `name`, read as `S`, added after those already in it: the name is the one
-    /// the root that reads it gives (ADR-0029).
+    /// The composite with the section `name`, read as `S`, its defaults `S`'s `Default`, added after those already in
+    /// it: the name is the one the root that reads it gives (ADR-0029).
     ///
     /// # Errors
     ///
     /// [`RepeatedSection`] when a section of that name is already in it, naming both kinds.
-    pub fn with<S: Settings>(mut self, name: &'static str) -> Result<Self, RepeatedSection> {
+    pub fn with<S: Settings + Default>(self, name: &'static str) -> Result<Self, RepeatedSection> {
+        self.with_defaults(name, &S::default())
+    }
+
+    /// The composite with the section `name`, read as `S`, its defaults `defaults`, added after those already in it:
+    /// beneath every layer, what the section holds where no layer sets it (ADR-0028).
+    ///
+    /// # Errors
+    ///
+    /// [`RepeatedSection`] when a section of that name is already in it, naming both kinds.
+    pub fn with_defaults<S: Settings>(mut self, name: &'static str, defaults: &S) -> Result<Self, RepeatedSection> {
         let found = self.sections.iter().find(|part| part.name == name);
         if let Some(first) = found {
             return Err(RepeatedSection { name, first: first.kind.clone(), second: S::NAME });
@@ -93,7 +104,7 @@ impl Parts {
             type_id: TypeId::of::<S>(),
             shape: S::SHAPE,
             fields: S::FIELDS,
-            defaults: defaults_of::<S>,
+            defaults: encoded(defaults),
             decode: decode_of::<S>,
         });
         Ok(self)
@@ -104,6 +115,23 @@ impl Parts {
     pub fn schema(&self) -> SchemaNodes {
         let fields: Vec<(&str, Shape)> = self.sections.iter().map(|part| (part.name, part.shape)).collect();
         SchemaNodes::of_fields(COMPOSITE, &fields)
+    }
+
+    /// The composite described as JSON, `{"schema": …, "defaults": …}`: its schema as the flat nodes ADR-0003 gives
+    /// every schema, and the document of every section's defaults, each in the form ADR-0007 gives every kind. What
+    /// the walks hold is charged to `budget`.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Layer`] when a section's defaults could not be written, naming the layer `defaults`.
+    pub fn describe(&self, budget: &mut Budget) -> Result<String, ConfigError> {
+        let mut out = Writer::<Bare>::new(());
+        let at_root = |error: JsonError| refused(DEFAULTS, &error);
+        self.schema().encode(&mut out).map_err(JsonError::from).map_err(at_root)?;
+        let schema = to_json(&SchemaNodes::of(&SchemaNodes::SHAPE), &out.into_bytes(), budget).map_err(at_root)?;
+        let defaults = self.defaults(0, budget)?.text();
+
+        Ok(format!("{{\"schema\":{schema},\"defaults\":{defaults}}}"))
     }
 
     /// Each section's name and its named fields, in the order they were added.
@@ -145,15 +173,15 @@ impl Parts {
         self.decode(&bytes, budget)
     }
 
-    /// The document of every section's `Default`, each value set by the layer at `layer`.
+    /// The document of every section's defaults, each value set by the layer at `layer`.
     fn defaults(&self, layer: usize, budget: &mut Budget) -> Result<Document, ConfigError> {
         let mut members = Vec::new();
         for part in &self.sections {
             let at_section =
                 |error: JsonError| refused(DEFAULTS, &error.within(JsonStep::Field(String::from(part.name))));
-            let bytes = (part.defaults)().map_err(JsonError::from).map_err(at_section)?;
+            let bytes = part.defaults.as_ref().map_err(|error| at_section(JsonError::from(*error)))?;
             let schema = SchemaNodes::of(&part.shape);
-            let text = to_json(&schema, &bytes, budget).map_err(at_section)?;
+            let text = to_json(&schema, bytes, budget).map_err(at_section)?;
             let json = Json::read(&text).map_err(|fault| {
                 let path = JsonPath::of(Vec::from([JsonStep::Field(String::from(part.name))]));
                 ConfigError::Layer { layer: String::from(DEFAULTS), path, fault }
@@ -201,10 +229,10 @@ fn refused(layer: &str, error: &JsonError) -> ConfigError {
     }
 }
 
-/// The bytes of `S`'s `Default`.
-fn defaults_of<S: Settings>() -> Result<Vec<u8>, EncodeError> {
+/// The bytes of `value`.
+fn encoded<S: Settings>(value: &S) -> Result<Vec<u8>, EncodeError> {
     let mut out = Writer::<Bare>::new(());
-    S::default().encode(&mut out)?;
+    value.encode(&mut out)?;
     Ok(out.into_bytes())
 }
 

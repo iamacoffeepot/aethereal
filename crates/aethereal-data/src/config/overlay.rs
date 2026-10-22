@@ -78,6 +78,12 @@ impl Overlay {
         self.push(path, value)
     }
 
+    /// Sets the whole configuration as the JSON text `text` states it, each section by its name, merged field by
+    /// field over the layers beneath: a file's contents (ADR-0028).
+    pub fn document(&mut self, text: &str) -> Result<(), ConfigError> {
+        self.push(Vec::new(), Json::read(text))
+    }
+
     /// Adds the entry `value` sets at `path`, refusing a value its form did not read and one nested too deeply.
     fn push(&mut self, path: Vec<Step>, value: Result<Json, ConfigFault>) -> Result<(), ConfigError> {
         let value = match value {

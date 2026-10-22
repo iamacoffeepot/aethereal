@@ -46,18 +46,23 @@ impl Composing {
         Self { parts: Parts::new(), read: Vec::new() }
     }
 
-    /// The sections with `S`'s added under `name`, read by `reader`, when it brings one.
+    /// The sections with `S`'s added under `name`, its defaults `defaults`, read by `reader`, when it brings one.
     ///
     /// # Errors
     ///
     /// [`ProgramError::Repeated`] when a section of that name is composed already, naming what reads each.
-    pub(super) fn add<S: RootSettings>(mut self, name: &'static str, reader: Reader) -> Result<Self, ProgramError> {
+    pub(super) fn add<S: RootSettings>(
+        mut self,
+        name: &'static str,
+        reader: Reader,
+        defaults: &S,
+    ) -> Result<Self, ProgramError> {
         if !S::SECTIONED {
             return Ok(self);
         }
 
         self.read.push(Read { name, reader });
-        match S::compose(self.parts, name) {
+        match S::compose(self.parts, name, defaults) {
             Ok(parts) => Ok(Self { parts, read: self.read }),
             Err(repeated) => {
                 let readers = self.read.into_iter().filter(|read| read.name == repeated.name).map(|read| read.reader);
@@ -83,13 +88,6 @@ pub trait Bootstraps<H: Host, I> {
     /// What the roots provided, the last root's first.
     type Provided;
 
-    /// `composing` with each root's section added, in the order they were listed.
-    ///
-    /// # Errors
-    ///
-    /// [`ProgramError::Repeated`] when two sections share a name.
-    fn compose(composing: Composing) -> Result<Composing, ProgramError>;
-
     /// Bootstraps each root on `stage`, in the order they were listed, and what they provided.
     ///
     /// # Errors
@@ -100,10 +98,6 @@ pub trait Bootstraps<H: Host, I> {
 
 impl<H: Host> Bootstraps<H, ()> for () {
     type Provided = ();
-
-    fn compose(composing: Composing) -> Result<Composing, ProgramError> {
-        Ok(composing)
-    }
 
     fn bootstrap(_: &mut Stage<'_, H>) -> Result<(), ProgramError> {
         Ok(())
@@ -118,10 +112,6 @@ where
     A::Provides: Provision<S::Provided>,
 {
     type Provided = <A::Provides as Provision<S::Provided>>::Onto;
-
-    fn compose(composing: Composing) -> Result<Composing, ProgramError> {
-        S::compose(composing)?.add::<A::Settings>(A::SECTION, Reader::Root(A::NAME))
-    }
 
     fn bootstrap(stage: &mut Stage<'_, H>) -> Result<Self::Provided, ProgramError> {
         let earlier = S::bootstrap(stage)?;

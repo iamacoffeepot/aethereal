@@ -48,16 +48,17 @@ What this engine already has:
 - **Each root that has settings brings a section,** the windows, each capability, and the program's own roots alike, and the host brings its own: the engine and the way the program is run. A section belongs to what reads it; how a root reads its section as it is stood up is ADR-0029.
   - A section is a config kind, under a short name its root's bootstrap declares (`windows`, `game`); the host's are `engine` and `running`.
   - Two roots that declare one name are refused as the program is put together, naming both.
-- **A section's defaults are its kind's `Default`.**
+- **A section's defaults are the program's, given where the section is listed, or else its kind's `Default`.** The host's sections take theirs with the engine's other options, `.with_engine(EngineSettings { workers, ..Default::default() })` and `.with_running(..)`; a root's take theirs where it is listed, `.root_with::<Counter>(Counters { children, idle, shape })`. A root listed with `.root::<A>()` starts from its kind's `Default`. A kind with no honest default leaves `Default` off, and every program that lists its root gives a value with `root_with`. Each is a whole typed value, a struct literal checked when the program is built.
 - **The configuration's schema is the composite**, so it says exactly what this program, on this host, can be configured with: no more, no less. A host that composes no windows has no `windows`.
 
 **Layers are overlays on one document, decoded once.**
 
 | host | layers, the first winning |
 |---|---|
-| native | set in code, the command line, the environment, a file (`--config path`), the defaults |
-| browser | set in code, the page (a JSON object, or the page's URL query), the defaults |
+| native | the command line, the environment, a file (`--config path`), the program's defaults, the kinds' `Default`s |
+| browser | the page (a JSON object, or the page's URL query), the program's defaults, the kinds' `Default`s |
 
+- **The program's defaults are the bottom layer, above only the kinds' `Default`s.** Defaults sit with what they are for, the engine's beside its options and a root's beside the root, and code never overrides the person running the program: what someone types, exports, or writes in the file always wins over what the program was built with.
 - Each layer is an overlay: the fields it sets, at their paths. Overlays are merged field by field: a structure by its fields, a sequence whole or one element by its index. The result is decoded once, with the composite's schema.
 - **A field that does not exist, or a value of the wrong shape, is an error that stops the program as it is set up**, naming the field's path and the layer that set it. **This departs from the earlier engine, which warned on an unknown name and went on**: a setting that does nothing is the failure configuration exists to prevent, and one decode over one schema leaves no reason to guess.
 - The file is JSON, in the form ADR-0007 gives every kind. A field that holds a time or a size of memory spells its unit in its name (`stop_within_millis`, `mail_bytes`), as every name in this repository does, and holds a number.
@@ -119,7 +120,7 @@ What this engine already has:
 - **A person, a script, or a link configures a program without building it again**, in the form tools already use. And a program can say exactly what it can be configured with.
 - The literals in the examples and the site's demos become defaults, or settings of the program's own roots.
 - **Each root builds its config from its section and what the host made, as it is stood up** (ADR-0029). The configuration is read first, then the roots.
-- Each root's settings are a kind with a `Default`, declared beside the root that reads them, as the earlier engine's were; there is no central list.
+- Each root's settings are a kind, declared beside the root that reads them, as the earlier engine's were; there is no central list. It has a `Default` when it has an honest one, and otherwise each program gives its defaults.
 - A flag's value forms are a small fixed set, and a setting that needs another form is set by JSON through `--set` or the file until one is added.
 - `clap` is a dependency of the native host, and nothing else's.
 - **Left for later:**
@@ -134,4 +135,5 @@ What this engine already has:
 - **Flags declared only by the program.** Every program would write the same table again, and a section's settings would have no flag until someone mapped them.
 - **Dotted paths as the command line** (`--engine.workers=4`). Exact, and what `--set` is, but no one types it. A command line should read like any other tool's.
 - **No environment layer.** It would remove the class of problems the earlier engine patched four times. But containers, CI, and shells configure by environment, and names derived from the flags, under one prefix, refused when unknown, and never passed to a child, keep its convenience without a second registry of names.
+- **Settings set in code, above every layer**, field by field through the flags' handles (`.set_engine(EngineSettings::WORKERS.to(w))`). A value the program fixes would win over what a person typed, so a flag would do nothing for that field, which is the failure this record exists to prevent; and a section written one field at a time through handles is verbose where a struct literal says it whole. A value a program means to fix is its own, not a setting.
 - **Warning on an unknown setting**, as the earlier engine did. It keeps a program running with a setting that does nothing, which is the failure this record exists to prevent.
