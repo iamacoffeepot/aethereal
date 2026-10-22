@@ -1,27 +1,30 @@
-//! The page's entry points, and an actor that makes items in storage, dispatches a compute program that culls them
-//! into a list and a count each frame, and places a program drawn as many times as the count says, then reads the
-//! count back to see that the GPU counted what it expects.
+//! The page's entry points, and an actor that makes items in storage, makes the window's main frame with three compute
+//! passes before the one that draws, dispatches into them the three passes of an ordered compaction that culls the
+//! items into a list and a count each frame, and places a program drawn as many times as the count says, then reads
+//! the count and the list back to see that the GPU kept what it expects, in order.
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Render, Start, Tells,
-    Tick, Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick, Top,
+    Turn, path,
 };
 use aethereal_chassis_browser::{Browser, Started};
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::compute::{ComputeId, Computed, CreateCompute};
 use aethereal_render::dispatch::{CreateDispatch, Dispatch, Dispatched, Invocations};
-use aethereal_render::frame::{Frame, ShapeOf, Shaped};
+use aethereal_render::frame::builder::{FrameBuilder, Onto, depth};
+use aethereal_render::frame::{CreateFrame, Ends, Frame, Framed, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
-use aethereal_render::pass::{Compute, Main};
+use aethereal_render::pass::{Main, Pass};
 use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
 use aethereal_render::program::{
     Access, Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId,
     Programmed,
 };
 use aethereal_render::readback::{Bytes, ReadStorage};
+use aethereal_render::shaders::WORKGROUP_SIZE;
 use aethereal_render::shape::Shape;
-use aethereal_render::storage::{CreateStorage, StorageId, Stored, WriteStorage};
+use aethereal_render::storage::{CreateStorage, StorageId, Stored};
 use aethereal_render::timing::{TimeFrame, Timed};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_window::{InitialWindows, WindowId, Windows};
@@ -117,34 +120,31 @@ struct Learned {
     shape: Shape,
 }
 
-/// A compute program that keeps each item inside the disc: it counts it into the arguments' instance count, and
-/// writes its index where the count stood. The last workgroup's invocations past the items' end stop.
-const CULL: &str = "
-struct Arguments {
-    index_count: u32,
-    instance_count: atomic<u32>,
-    first_index: u32,
-    base_vertex: u32,
-    first_instance: u32,
-}
+/// The compaction's first pass: each workgroup counts the items inside the disc it keeps.
+#[derive(Plain)]
+#[kind(name = "aether.example.tally")]
+struct Tally;
 
-@group(0) @binding(0) var<storage, read> items: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read_write> visible: array<u32>;
-@group(0) @binding(2) var<storage, read_write> arguments: Arguments;
+impl Pass for Tally {}
 
-@compute @workgroup_size(64)
-fn cull(@builtin(global_invocation_id) id: vec3<u32>) {
-    if id.x >= arrayLength(&items) {
-        return;
-    }
-    let at = items[id.x];
-    if dot(at, at) >= 0.5625 {
-        return;
-    }
-    let slot = atomicAdd(&arguments.instance_count, 1u);
-    visible[slot] = id.x;
-}
-";
+/// The compaction's second pass: one workgroup scans the counts into where each workgroup's kept items begin, and
+/// writes how many were kept into the draw's arguments.
+#[derive(Plain)]
+#[kind(name = "aether.example.offsets")]
+struct Offsets;
+
+impl Pass for Offsets {}
+
+/// The compaction's third pass: each kept item's index is written at its place in the list.
+#[derive(Plain)]
+#[kind(name = "aether.example.scatter")]
+struct Scatter;
+
+impl Pass for Scatter {}
+
+/// The cull, `cull.wesl`, linked to WGSL by the build script with the shared `scan` and `compact` pieces: an entry
+/// point for each of the compaction's three passes.
+const CULL: &str = include_str!(concat!(env!("OUT_DIR"), "/indirect_cull.wgsl"));
 
 /// A program that draws the quad, small, at the item the visible list names for its instance, coloured by the item's
 /// place among all of them.
@@ -173,8 +173,11 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 /// The items along each side of the grid they lie on.
 const SIDE: u32 = 32;
 
-/// The items: each a place of two floats, eight bytes.
+/// The items: each a place of two floats, eight bytes. They span four of the compaction's workgroups.
 const ITEMS: u32 = SIDE * SIDE;
+
+/// The workgroups of the first and third passes, one for each [`WORKGROUP_SIZE`] items: the words of the totals.
+const GROUPS: u32 = ITEMS.div_ceil(WORKGROUP_SIZE);
 
 /// The square of the disc's radius, 0.75: an item is kept when the square of its distance from the middle is less.
 const RADIUS_SQUARED: f32 = 0.5625;
@@ -182,20 +185,20 @@ const RADIUS_SQUARED: f32 = 0.5625;
 /// The quad's indices, the first word of the arguments.
 const QUAD_INDICES: u32 = 6;
 
-/// The frames drawn before the arguments are read back.
+/// The frames drawn before the arguments and the list are read back.
 const SETTLED: u32 = 3;
 
-/// The culler: it makes what it runs and draws one ask after another, each answer carrying what was made so far,
-/// places and dispatches it, resets the count at each `Tick`, and reads the arguments back once a few frames have
-/// passed.
+/// The culler: it makes what it runs and draws one ask after another, each answer carrying what was made so far, makes
+/// the frame, places and dispatches into it, and reads the arguments and the list back once a few frames have passed.
 #[derive(Bound)]
 #[kind(name = "aether.example.culler")]
 enum Culler {
     /// Its asks are under way, and nothing runs on `window`.
     Making { window: WindowId },
-    /// The dispatch runs and the placement draws, counted from `arguments`: `drawn` frames have passed since.
-    Running { arguments: StorageId, drawn: u32 },
-    /// It has asked for the arguments.
+    /// The dispatches run and the placement draws, counted from `arguments`, the list `visible`: `drawn` frames have
+    /// passed since.
+    Running { arguments: StorageId, visible: StorageId, drawn: u32 },
+    /// It has asked for the arguments and the list.
     Reading,
 }
 
@@ -222,19 +225,26 @@ fn places() -> impl Iterator<Item = [f32; 2]> {
     })
 }
 
-/// How many items lie inside the disc, as the cull counts them.
-fn expected() -> u32 {
-    let inside = places().filter(|[x, y]| x * x + y * y < RADIUS_SQUARED).count();
-
-    u32::try_from(inside).unwrap_or(u32::MAX)
+/// The index of each item inside the disc, in the items' order, as the compaction lists them.
+fn expected() -> Vec<u32> {
+    (0..).zip(places()).filter(|(_, [x, y])| x * x + y * y < RADIUS_SQUARED).map(|(at, _)| at).collect()
 }
 
-/// The arguments as each frame begins: the quad's indices, a count of nothing, and the rest from zero.
-fn reset() -> Vec<u8> {
-    bytes([QUAD_INDICES, 0, 0, 0, 0])
+/// The words of `bytes`, as storage is read back.
+fn words(bytes: &[u8]) -> Vec<u32> {
+    bytes.chunks_exact(4).filter_map(|word| word.try_into().ok()).map(u32::from_ne_bytes).collect()
 }
 
-/// What was made before the compute program was asked for.
+/// The three compute programs of the compaction, one for each of its passes.
+#[derive(Plain)]
+#[kind(name = "aether.example.culls")]
+struct Culls {
+    tally: ComputeId,
+    offsets: ComputeId,
+    scatter: ComputeId,
+}
+
+/// What was made before the compute programs were asked for.
 #[derive(Plain)]
 #[kind(name = "aether.example.drawing")]
 struct Drawing {
@@ -242,56 +252,63 @@ struct Drawing {
     dots: ProgramId,
 }
 
-/// What was made before the items were asked for.
+/// Which compute program was asked for, and what was made before it.
+#[derive(Plain)]
+#[kind(name = "aether.example.computing")]
+enum Computing {
+    Tally { drawing: Drawing },
+    Offsets { drawing: Drawing, tally: ComputeId },
+    Scatter { drawing: Drawing, tally: ComputeId, offsets: ComputeId },
+}
+
+/// What was made before the storage was asked for.
 #[derive(Plain)]
 #[kind(name = "aether.example.made_programs")]
 struct MadePrograms {
     mesh: MeshId,
     dots: ProgramId,
-    cull: ComputeId,
+    culls: Culls,
 }
 
-/// What a storage was asked for after: the items after the programs, the visible list after the items, and the
-/// arguments after the visible list.
+/// Which storage was asked for, and what was made before it: the items, the totals, the visible list, then the
+/// arguments.
 #[derive(Plain)]
 #[kind(name = "aether.example.storing")]
 enum Storing {
-    Items(MadePrograms),
-    Visible(MadeItems),
-    Arguments(MadeVisible),
+    Items { made: MadePrograms },
+    Totals { made: MadePrograms, items: StorageId },
+    Visible { made: MadePrograms, items: StorageId, totals: StorageId },
+    Arguments { made: MadePrograms, items: StorageId, totals: StorageId, visible: StorageId },
 }
 
-/// What was made before the visible list was asked for.
+/// Everything made before the frame was asked for, which the placement and the dispatches are made with.
 #[derive(Plain)]
-#[kind(name = "aether.example.made_items")]
-struct MadeItems {
-    made: MadePrograms,
+#[kind(name = "aether.example.made")]
+struct Made {
+    mesh: MeshId,
+    dots: ProgramId,
+    culls: Culls,
     items: StorageId,
-}
-
-/// What was made before the arguments were asked for.
-#[derive(Plain)]
-#[kind(name = "aether.example.made_visible")]
-struct MadeVisible {
-    made: MadeItems,
-    visible: StorageId,
-}
-
-/// What the placement was asked for with: what is dispatched once it is made.
-#[derive(Plain)]
-#[kind(name = "aether.example.placing")]
-struct Placing {
-    cull: ComputeId,
-    items: StorageId,
+    totals: StorageId,
     visible: StorageId,
     arguments: StorageId,
 }
 
-/// What the dispatch was asked for with: the arguments it counts into.
+/// Which pass's dispatch was asked for, with everything made.
 #[derive(Plain)]
 #[kind(name = "aether.example.dispatching")]
-struct Dispatching {
-    arguments: StorageId,
+enum Dispatching {
+    Tally { made: Made },
+    Offsets { made: Made },
+    Scatter { made: Made },
+}
+
+/// Which storage a reading is of.
+#[derive(Debug, Plain)]
+#[kind(name = "aether.example.read")]
+enum Read {
+    Arguments,
+    Visible,
 }
 
 impl Actor for Culler {
@@ -303,11 +320,12 @@ impl Actor for Culler {
         Answer<Shaped, Nothing>,
         Answer<Meshed, Learned>,
         Answer<Programmed, MeshId>,
-        Answer<Computed, Drawing>,
+        Answer<Computed, Computing>,
         Answer<Stored, Storing>,
-        Answer<Placed, Placing>,
+        Answer<Framed, Made>,
+        Answer<Placed, Made>,
         Answer<Dispatched, Dispatching>,
-        Answer<Bytes, Nothing>,
+        Answer<Bytes, Read>,
         Answer<Timed, Nothing>,
     );
     type BeginSends = ();
@@ -409,8 +427,21 @@ impl Handles<Answer<Meshed, Learned>> for Culler {
     }
 }
 
+/// The compute program of the cull's entry point `entry`, binding what that pass binds: the items at 0, the totals at
+/// 1, the visible list at 2, the arguments at 3, and the totals again at 4, to read the offsets.
+fn cull(entry: &str, turn: &mut Turn<'_, Culler, impl Sized>) -> Result<CreateCompute, String> {
+    let bindings = match entry {
+        "tally" => vec![stored(0, 8, Access::Read), stored(1, 4, Access::Write)],
+        "offsets" => vec![stored(1, 4, Access::Write), stored(3, 20, Access::Write)],
+        _ => vec![stored(0, 8, Access::Read), stored(2, 4, Access::Write), stored(4, 4, Access::Read)],
+    };
+    let wgsl = turn.put(Vec::from(CULL)).map_err(|why| format!("no {entry} asked: {why}"))?;
+
+    Ok(CreateCompute { wgsl, entry: String::from(entry), bindings })
+}
+
 impl Handles<Answer<Programmed, MeshId>> for Culler {
-    type Sends = (Asks<Path<Renderer>, CreateCompute, Drawing>,);
+    type Sends = (Asks<Path<Renderer>, CreateCompute, Computing>,);
 
     fn handle(
         &mut self,
@@ -421,60 +452,63 @@ impl Handles<Answer<Programmed, MeshId>> for Culler {
             say(format!("the dots were not made: {answered:?}"));
             return Ok(());
         };
-        let wgsl = match turn.put(Vec::from(CULL)) {
-            Ok(wgsl) => wgsl,
+        let tally = match cull("tally", turn) {
+            Ok(tally) => tally,
             Err(why) => {
-                say(format!("no culling asked: {why}"));
+                say(why);
                 return Ok(());
             }
         };
-        let cull = CreateCompute {
-            wgsl,
-            entry: String::from("cull"),
-            bindings: vec![stored(0, 8, Access::Read), stored(1, 4, Access::Write), stored(2, 20, Access::Write)],
-        };
-        turn.to(path::<Renderer>(())).ask(&cull, &Drawing { mesh, dots })?;
+        turn.to(path::<Renderer>(())).ask(&tally, &Computing::Tally { drawing: Drawing { mesh, dots } })?;
 
         Ok(())
     }
 }
 
-impl Handles<Answer<Computed, Drawing>> for Culler {
-    type Sends = (Asks<Path<Renderer>, CreateStorage, Storing>,);
+impl Handles<Answer<Computed, Computing>> for Culler {
+    type Sends = (Asks<Path<Renderer>, CreateCompute, Computing>, Asks<Path<Renderer>, CreateStorage, Storing>);
 
     fn handle(
         &mut self,
-        (answered, drawing): (Answered<Computed>, Drawing),
+        (answered, computing): (Answered<Computed>, Computing),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let Answered::Yes(Computed::Made(cull)) = answered else {
-            say(format!("the compute program was not made: {answered:?}"));
+        let Answered::Yes(Computed::Made(made)) = answered else {
+            say(format!("a compute program was not made: {answered:?}"));
             return Ok(());
         };
-        let bytes = match turn.put(floats(places().flatten())) {
-            Ok(bytes) => bytes,
-            Err(why) => {
-                say(format!("no items asked: {why}"));
+        let (entry, next) = match computing {
+            Computing::Tally { drawing } => ("offsets", Computing::Offsets { drawing, tally: made }),
+            Computing::Offsets { drawing, tally } => ("scatter", Computing::Scatter { drawing, tally, offsets: made }),
+            Computing::Scatter { drawing, tally, offsets } => {
+                let culls = Culls { tally, offsets, scatter: made };
+                let made = MadePrograms { mesh: drawing.mesh, dots: drawing.dots, culls };
+                let bytes = match turn.put(floats(places().flatten())) {
+                    Ok(bytes) => bytes,
+                    Err(why) => {
+                        say(format!("no items asked: {why}"));
+                        return Ok(());
+                    }
+                };
+                turn.to(path::<Renderer>(())).ask(&CreateStorage { bytes }, &Storing::Items { made })?;
                 return Ok(());
             }
         };
-        let made = MadePrograms { mesh: drawing.mesh, dots: drawing.dots, cull };
-        turn.to(path::<Renderer>(())).ask(&CreateStorage { bytes }, &Storing::Items(made))?;
+        let create = match cull(entry, turn) {
+            Ok(create) => create,
+            Err(why) => {
+                say(why);
+                return Ok(());
+            }
+        };
+        turn.to(path::<Renderer>(())).ask(&create, &next)?;
 
         Ok(())
     }
 }
 
-/// The items bound first and the visible list second, as both programs bind them.
-fn listed(items: StorageId, visible: StorageId) -> Vec<Bind> {
-    vec![
-        Bind { group: 0, binding: 0, to: Resource::Storage(items) },
-        Bind { group: 0, binding: 1, to: Resource::Storage(visible) },
-    ]
-}
-
 impl Handles<Answer<Stored, Storing>> for Culler {
-    type Sends = (Asks<Path<Renderer>, CreateStorage, Storing>, Asks<Path<Renderer>, Place, Placing>);
+    type Sends = (Asks<Path<Renderer>, CreateStorage, Storing>, Asks<Path<Renderer>, CreateFrame, Made>);
 
     fn handle(
         &mut self,
@@ -489,20 +523,40 @@ impl Handles<Answer<Stored, Storing>> for Culler {
             return Ok(());
         };
         let (bytes, next) = match storing {
+            // A word for each workgroup of the first and third passes.
+            Storing::Items { made } => (bytes((0..GROUPS).map(|_| 0)), Storing::Totals { made, items: storage }),
             // Room for every item, as many as the cull could keep.
-            Storing::Items(made) => {
-                (bytes((0..ITEMS).map(|_| 0)), Storing::Visible(MadeItems { made, items: storage }))
+            Storing::Totals { made, items } => {
+                (bytes((0..ITEMS).map(|_| 0)), Storing::Visible { made, items, totals: storage })
             }
-            Storing::Visible(made) => (reset(), Storing::Arguments(MadeVisible { made, visible: storage })),
-            Storing::Arguments(made) => {
-                let (programs, items, visible) = (made.made.made, made.made.items, made.visible);
-                let place = Place {
+            // The quad's indices, and a count the second pass writes at every `Render`.
+            Storing::Visible { made, items, totals } => {
+                (bytes([QUAD_INDICES, 0, 0, 0, 0]), Storing::Arguments { made, items, totals, visible: storage })
+            }
+            Storing::Arguments { made: programs, items, totals, visible } => {
+                let made = Made {
                     mesh: programs.mesh,
-                    instances: Drawn::Indirect { storage, at: 0 },
-                    joins: vec![Join::to::<Main>(Frame::Main(window), programs.dots, listed(items, visible))],
+                    dots: programs.dots,
+                    culls: programs.culls,
+                    items,
+                    totals,
+                    visible,
+                    arguments: storage,
                 };
-                let placing = Placing { cull: programs.cull, items, visible, arguments: storage };
-                turn.to(path::<Renderer>(())).ask(&place, &placing)?;
+                // The window's main frame: the compaction's three passes, each run after the one before, then the one
+                // that draws what they kept, onto the window with depth, as the renderer's own `Main` is.
+                let mut frame = FrameBuilder::on(Ends::Window(window));
+                frame.compute(Tally);
+                frame.compute(Offsets);
+                frame.compute(Scatter);
+                let create = match frame.finish(Main, Onto(depth::Write, ())) {
+                    Ok(create) => create,
+                    Err(why) => {
+                        say(format!("the frame was not built: {why:?}"));
+                        return Ok(());
+                    }
+                };
+                turn.to(path::<Renderer>(())).ask(&create, &made)?;
                 return Ok(());
             }
         };
@@ -519,12 +573,70 @@ impl Handles<Answer<Stored, Storing>> for Culler {
     }
 }
 
-impl Handles<Answer<Placed, Placing>> for Culler {
+/// `storage` bound at each of `bindings`, in group 0.
+fn bound(bindings: &[(u32, StorageId)]) -> Vec<Bind> {
+    bindings
+        .iter()
+        .map(|(binding, storage)| Bind { group: 0, binding: *binding, to: Resource::Storage(*storage) })
+        .collect()
+}
+
+impl Handles<Answer<Framed, Made>> for Culler {
+    type Sends = (Asks<Path<Renderer>, Place, Made>,);
+
+    fn handle(
+        &mut self,
+        (answered, made): (Answered<Framed>, Made),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Framed::Made(_)) = answered else {
+            say(format!("the frame was not made: {answered:?}"));
+            return Ok(());
+        };
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        let bindings = bound(&[(0, made.items), (1, made.visible)]);
+        let place = Place {
+            mesh: made.mesh,
+            instances: Drawn::Indirect { storage: made.arguments, at: 0 },
+            joins: vec![Join::to::<Main>(Frame::Main(window), made.dots, bindings)],
+        };
+        turn.to(path::<Renderer>(())).ask(&place, &made)?;
+
+        Ok(())
+    }
+}
+
+/// The dispatch of the compaction's pass `dispatching` names, into the main frame of `window`: the first and third
+/// one invocation for each item, the second one workgroup.
+fn dispatch(window: WindowId, dispatching: &Dispatching) -> CreateDispatch {
+    let frame = Frame::Main(window);
+    match dispatching {
+        Dispatching::Tally { made } => CreateDispatch {
+            join: Dispatch::to::<Tally>(frame, made.culls.tally, bound(&[(0, made.items), (1, made.totals)])),
+            size: Invocations::PerElement(made.items),
+        },
+        Dispatching::Offsets { made } => CreateDispatch {
+            join: Dispatch::to::<Offsets>(frame, made.culls.offsets, bound(&[(1, made.totals), (3, made.arguments)])),
+            size: Invocations::Workgroups([1, 1, 1]),
+        },
+        Dispatching::Scatter { made } => {
+            let bindings = bound(&[(0, made.items), (2, made.visible), (4, made.totals)]);
+            CreateDispatch {
+                join: Dispatch::to::<Scatter>(frame, made.culls.scatter, bindings),
+                size: Invocations::PerElement(made.items),
+            }
+        }
+    }
+}
+
+impl Handles<Answer<Placed, Made>> for Culler {
     type Sends = (Asks<Path<Renderer>, CreateDispatch, Dispatching>,);
 
     fn handle(
         &mut self,
-        (answered, placing): (Answered<Placed>, Placing),
+        (answered, made): (Answered<Placed>, Made),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Placed::Made(_)) = answered else {
@@ -534,92 +646,94 @@ impl Handles<Answer<Placed, Placing>> for Culler {
         let Self::Making { window } = *self else {
             return Ok(());
         };
-        let mut bindings = listed(placing.items, placing.visible);
-        bindings.push(Bind { group: 0, binding: 2, to: Resource::Storage(placing.arguments) });
-        // Run in the compute pass before the one the dots are drawn in, so each frame draws what it counted.
-        let dispatch = CreateDispatch {
-            join: Dispatch::to::<Compute>(Frame::Main(window), placing.cull, bindings),
-            size: Invocations::PerElement(placing.items),
-        };
-        turn.to(path::<Renderer>(())).ask(&dispatch, &Dispatching { arguments: placing.arguments })?;
+        let dispatching = Dispatching::Tally { made };
+        turn.to(path::<Renderer>(())).ask(&dispatch(window, &dispatching), &dispatching)?;
 
         Ok(())
     }
 }
 
 impl Handles<Answer<Dispatched, Dispatching>> for Culler {
-    type Sends = ();
+    type Sends = (Asks<Path<Renderer>, CreateDispatch, Dispatching>,);
 
     fn handle(
         &mut self,
         (answered, dispatching): (Answered<Dispatched>, Dispatching),
-        _: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Dispatched::Made(_)) = answered else {
-            say(format!("the cull was not dispatched: {answered:?}"));
+            say(format!("a pass of the cull was not dispatched: {answered:?}"));
             return Ok(());
         };
-        say(format!("placed dispatched items={ITEMS}"));
-        *self = Self::Running { arguments: dispatching.arguments, drawn: 0 };
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        let next = match dispatching {
+            Dispatching::Tally { made } => Dispatching::Offsets { made },
+            Dispatching::Offsets { made } => Dispatching::Scatter { made },
+            Dispatching::Scatter { made } => {
+                say(format!("placed dispatched items={ITEMS} workgroups={GROUPS}"));
+                *self = Self::Running { arguments: made.arguments, visible: made.visible, drawn: 0 };
+                return Ok(());
+            }
+        };
+        turn.to(path::<Renderer>(())).ask(&dispatch(window, &next), &next)?;
 
         Ok(())
     }
 }
 
 impl Handles<On<Tick>> for Culler {
-    type Sends = (
-        Tells<Path<Renderer>, WriteStorage>,
-        Asks<Path<Renderer>, ReadStorage, Nothing>,
-        Asks<Path<Renderer>, TimeFrame, Nothing>,
-    );
+    type Sends = (Asks<Path<Renderer>, ReadStorage, Read>, Asks<Path<Renderer>, TimeFrame, Nothing>);
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let Self::Running { arguments, drawn } = *self else {
+        let Self::Running { arguments, visible, drawn } = *self else {
             return Ok(());
         };
-        let Ok(bytes) = turn.put(reset()) else {
-            turn.log(Level::Warn, "the count was not reset: its bytes were not put");
-            return Ok(());
-        };
-        let mut renderer = turn.to(path::<Renderer>(()));
         if drawn < SETTLED {
-            renderer.send(&WriteStorage { storage: arguments, first: 0, bytes })?;
-            *self = Self::Running { arguments, drawn: drawn + 1 };
+            *self = Self::Running { arguments, visible, drawn: drawn + 1 };
             return Ok(());
         }
-        // Read before the reset, so the copy holds what the last `Render` counted: a write lands before what is
-        // submitted after it is handled, and the read's copy is submitted as it is handled.
-        renderer
-            .ask(&ReadStorage { storage: arguments }, &Nothing)?
-            .ask(&TimeFrame, &Nothing)?
-            .send(&WriteStorage { storage: arguments, first: 0, bytes })?;
+        turn.to(path::<Renderer>(()))
+            .ask(&ReadStorage { storage: arguments }, &Read::Arguments)?
+            .ask(&ReadStorage { storage: visible }, &Read::Visible)?
+            .ask(&TimeFrame, &Nothing)?;
         *self = Self::Reading;
 
         Ok(())
     }
 }
 
-impl Handles<Answer<Bytes, Nothing>> for Culler {
+impl Handles<Answer<Bytes, Read>> for Culler {
     type Sends = ();
 
     fn handle(
         &mut self,
-        (answered, _): (Answered<Bytes>, Nothing),
+        (answered, read): (Answered<Bytes>, Read),
         turn: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Bytes::Read { bytes }) = answered else {
-            say(format!("the arguments were not read: {answered:?}"));
+            say(format!("{read:?} was not read: {answered:?}"));
             return Ok(());
         };
-        let words: Vec<u32> =
-            turn.read(&bytes).chunks_exact(4).filter_map(|word| word.try_into().ok()).map(u32::from_ne_bytes).collect();
-        let (Some(indices), Some(visible)) = (words.first(), words.get(1)) else {
-            say(format!("the arguments were short: words={}", words.len()));
-            return Ok(());
-        };
+        let words = words(turn.read(&bytes));
         let expected = expected();
-        let same = *visible == expected;
-        say(format!("read indices={indices} visible={visible} expected={expected} of={ITEMS} same={same}"));
+        let said = match read {
+            Read::Arguments => {
+                let (Some(indices), Some(visible)) = (words.first(), words.get(1)) else {
+                    say(format!("the arguments were short: words={}", words.len()));
+                    return Ok(());
+                };
+                let wanted = expected.len();
+                let same = usize::try_from(*visible).is_ok_and(|visible| visible == wanted);
+                format!("read indices={indices} visible={visible} expected={wanted} of={ITEMS} same={same}")
+            }
+            Read::Visible => {
+                let in_order = words.get(..expected.len()).is_some_and(|kept| kept == expected);
+                format!("read listed={} in_order={in_order}", expected.len())
+            }
+        };
+        say(said);
 
         Ok(())
     }

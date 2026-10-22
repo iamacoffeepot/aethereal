@@ -44,6 +44,8 @@ A linker turns a WESL module and what it imports into one WGSL module. It includ
 | `colour` | Oklab to linear sRGB, linear to sRGB encoding, and the filmic tone curve |
 | `grid` | the four cells and two weights of a bilinear sample of a grid of floats in a storage buffer, which the program reads and blends |
 | `segment` | a segment of two points, with the meanings of `aethereal-math`'s `Segment` (ADR-0005); WGSL has no enums, so its side is one of three `i32` constants, the sign it names |
+| `scan` | the exclusive and inclusive prefix sums of `u32` across a workgroup and its total, and the same counted from a carry; the workgroup size, 256 |
+| `compact` | where an ordered compaction writes each element a predicate keeps, densely and in order, and where the workgroup's kept elements end |
 
 - **A program imports what it uses,** and the linker includes what that uses in turn: importing `noise` brings `hash`. No program lists what a piece needs, or orders it.
 - **Names cannot collide,** because the linker renames every imported declaration after its path. A piece's names need no prefix, and a program names its own functions as it likes.
