@@ -11,6 +11,8 @@ aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 aethereal-window = { path = "../aethereal-window" }
 crossbeam-queue = { workspace = true }
+# The types the shader package's generated code is written in (ADR-0030): two structs of static strings.
+wesl-core = "=0.1.0"
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"] }
 
@@ -19,9 +21,16 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "30.0.1", default-features = false, features = ["webgpu", "fragile-send-sync-non-atomic-wasm"] }
 
+# The build script packages the shared shader pieces in `shaders/` for dependents' build scripts (ADR-0030). It is
+# before its first stable release, so a newer version is taken on purpose, with the pieces' validation test as its gate.
+[build-dependencies]
+wesl = { version = "=0.6.0", features = ["package"] }
+
 # The renderer's tests make what it makes on a device that draws nothing, as no machine they run on need have a GPU.
+# The shader pieces' test links each module of the package as a dependent's build script does.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 wgpu = { version = "30.0.1", default-features = false, features = ["noop"] }
+wesl = "=0.6.0"
 
 [lints]
 workspace = true

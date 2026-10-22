@@ -138,28 +138,8 @@ fn simulate(@builtin(global_invocation_id) id: vec3<u32>) {
 ";
 
 /// A program that draws the quad, small, at each particle it reads from the field, by its instance, coloured by its
-/// place in the field.
-const DOTS: &str = "
-struct Particle { at: vec2<f32>, speed: vec2<f32> }
-
-@group(0) @binding(0) var<storage, read> particles: array<Particle>;
-
-struct Between {
-    @builtin(position) at: vec4<f32>,
-    @location(0) colour: vec4<f32>,
-}
-
-@vertex
-fn place(@location(0) corner: vec2<f32>, @builtin(instance_index) at: u32) -> Between {
-    let hue = f32(at) / f32(arrayLength(&particles));
-    return Between(vec4(corner * 0.015 + particles[at].at, 0.0, 1.0), vec4(hue, 0.7, 1.0 - hue, 1.0));
-}
-
-@fragment
-fn shade(between: Between) -> @location(0) vec4<f32> {
-    return between.colour;
-}
-";
+/// place in the field and shaded by the shared noise: `dots.wesl`, linked to WGSL by the build script.
+const DOTS: &str = include_str!(concat!(env!("OUT_DIR"), "/compute_dots.wgsl"));
 
 /// The particles of the field: each a place and a speed of two floats, sixteen bytes.
 const PARTICLES: u32 = 256;

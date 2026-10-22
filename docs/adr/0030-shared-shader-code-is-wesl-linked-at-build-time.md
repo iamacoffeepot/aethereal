@@ -42,15 +42,16 @@ A linker turns a WESL module and what it imports into one WGSL module. It includ
 | `noise` | value noise over the hash, and its two-octave sum |
 | `shape` | the smooth step and the smooth minimum |
 | `colour` | Oklab to linear sRGB, linear to sRGB encoding, and the filmic tone curve |
-| `grid` | bilinear sampling of a grid of floats in a storage buffer |
+| `grid` | the four cells and two weights of a bilinear sample of a grid of floats in a storage buffer, which the program reads and blends |
 
 - **A program imports what it uses,** and the linker includes what that uses in turn: importing `noise` brings `hash`. No program lists what a piece needs, or orders it.
 - **Names cannot collide,** because the linker renames every imported declaration after its path. A piece's names need no prefix, and a program names its own functions as it likes.
-- **The package is offered through cargo, as WESL's packaging defines.** A program's build script finds it as it finds any WESL package a crate it depends on carries.
+- **The package is offered through cargo, as `wesl` packages a crate's shaders.** `aethereal-render`'s build script packages the modules as the WESL package `aethereal_render`, and the crate exports it as a static, `aethereal_render::shaders::PACKAGE`. A program's build script depends on `aethereal-render` and names that static among its compiler's dependencies; `wesl` finds no package a crate carries on its own, and reads no dependencies from a `wesl.toml`. Each piece is declared `public`, as WESL requires of a declaration another package imports.
+- **`grid` does not read the buffer.** A module of a package cannot name a storage buffer the program declares, and passing one by pointer needs WGSL's `unrestricted_pointer_parameters`, which WebGPU does not enable by default. It answers the indices of the four cells around the point and the two weights, and the program reads the four cells and blends them.
 
 **Each piece is linked and validated as it is built.** A test in `aethereal-render` links each module of the package, alone, into a WGSL module, then parses and validates it with the `naga` the renderer uses. A reserved name, a built-in shadowed, or WGSL that WESL's parser and `naga` read differently fails there, before any program or page runs. The hash also has a test that it matches the JavaScript it ports, on a fixed set of inputs.
 
-**`wesl` is a build dependency, at an exact version.** It is before its first stable release, so a newer version is taken on purpose, with the validation test as its gate.
+**`wesl` is a build dependency, at an exact version.** It is before its first stable release, so a newer version is taken on purpose, with the validation test as its gate. The package's static is written in the types of `wesl-core`, two structs of static strings with no dependencies of their own, which `aethereal-render` depends on at the version `wesl` uses.
 
 ## Consequences
 
@@ -58,7 +59,7 @@ A linker turns a WESL module and what it imports into one WGSL module. It includ
 - The renderer, its kinds, and what a program sends are unchanged. Linking happens before any of them.
 - A shader that imports shared code is linked when the program is built, so a program cannot choose its pieces while it runs. Conditional translation (`@if`) chooses among variants known when it is built.
 - A shader is read by two parsers, WESL's when it is linked and `naga` when the renderer makes it. The validation test catches where they disagree for the shipped pieces. A program's own shader meets `naga` when the renderer makes it, as it does now.
-- Each program that imports shared code has a build script.
+- Each program that imports shared code has a build script, which depends on `aethereal-render` as well as on `wesl`. The renderer, and `wgpu` with it, is then compiled again for the build script.
 - **Left for later:**
   - pieces chosen at run time, which would need the renderer to link, or the linker at run time;
   - publishing the package to npm, for pages built in JavaScript.

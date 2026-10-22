@@ -45,6 +45,12 @@ web-sys = { version = "0.3.106", features = [
     "Window",
 ] }
 
+# The build script links the compute example's shader, which imports a shared piece from the renderer's WESL
+# package (ADR-0030).
+[build-dependencies]
+aethereal-render = { path = "../aethereal-render" }
+wesl = "=0.6.0"
+
 [[example]]
 name = "make"
 path = "examples/make/lib.rs"
