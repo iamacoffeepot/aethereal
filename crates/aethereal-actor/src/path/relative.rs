@@ -21,16 +21,13 @@ pub struct Parent<P> {
 ///
 /// ```compile_fail,E0277
 /// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToType, Top, Turn, child, parent};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
 /// # macro_rules! actor {
 /// #     ($name:ident, $named:literal, $parent:ty) => {
 /// #         #[derive(Plain)]
+/// #         #[kind(name = $named)]
 /// #         struct $name;
-/// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new($named);
-/// #         }
 /// #
 /// #         impl ChildOf for $name {
 /// #             type Parent = $parent;
@@ -192,16 +189,13 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 ///
 /// ```compile_fail,E0277
 /// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToType, Top, Turn, child, parent};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
 /// # macro_rules! actor {
 /// #     ($name:ident, $named:literal, $parent:ty) => {
 /// #         #[derive(Plain)]
+/// #         #[kind(name = $named)]
 /// #         struct $name;
-/// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new($named);
-/// #         }
 /// #
 /// #         impl ChildOf for $name {
 /// #             type Parent = $parent;
@@ -271,16 +265,13 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 ///
 /// ```compile_fail,E0277
 /// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToType, Top, Turn, child, parent};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
 /// # macro_rules! actor {
 /// #     ($name:ident, $named:literal, $parent:ty) => {
 /// #         #[derive(Plain)]
+/// #         #[kind(name = $named)]
 /// #         struct $name;
-/// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new($named);
-/// #         }
 /// #
 /// #         impl ChildOf for $name {
 /// #             type Parent = $parent;

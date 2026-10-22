@@ -1,7 +1,7 @@
 use super::*;
 use crate::section;
 use crate::{Actor, Beginning, Declared, Ending, Fault, Handles, Tells, Turn};
-use aethereal_data::{Kind, Plain};
+use aethereal_data::Plain;
 use alloc::vec::Vec;
 
 /// A tell, sent at a typed path.
@@ -14,11 +14,8 @@ struct Order;
 macro_rules! actor {
     ($name:ident, $named:literal, $key:ty, $parent:ty, $sends:ty) => {
         #[derive(Plain)]
+        #[kind(name = $named)]
         struct $name;
-
-        impl Kind for $name {
-            const NAME: KindName = KindName::new($named);
-        }
 
         impl ChildOf for $name {
             type Parent = $parent;

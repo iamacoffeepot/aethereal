@@ -8,7 +8,7 @@
 //!
 //! ```
 //! # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Ordered, Path, Tells, Top, Turn};
-//! # use aethereal_data::{Kind, KindName, Plain};
+//! # use aethereal_data::Plain;
 //! # use core::marker::PhantomData;
 //! #
 //! # #[derive(Plain)]
@@ -18,11 +18,8 @@
 //! # macro_rules! root {
 //! #     ($name:ident, $named:literal, $parent:ty, $key:ty, $begins:ty, $handler:ty, $ends:ty) => {
 //! #         #[derive(Plain)]
+//! #         #[kind(name = $named)]
 //! #         struct $name;
-//! #
-//! #         impl Kind for $name {
-//! #             const NAME: KindName = KindName::new($named);
-//! #         }
 //! #
 //! #         impl ChildOf for $name {
 //! #             type Parent = $parent;
@@ -71,7 +68,7 @@
 //!
 //! ```compile_fail
 //! # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Ordered, Path, Tells, Top, Turn};
-//! # use aethereal_data::{Kind, KindName, Plain};
+//! # use aethereal_data::Plain;
 //! # use core::marker::PhantomData;
 //! #
 //! # #[derive(Plain)]
@@ -81,11 +78,8 @@
 //! # macro_rules! root {
 //! #     ($name:ident, $named:literal, $parent:ty, $key:ty, $begins:ty, $handler:ty, $ends:ty) => {
 //! #         #[derive(Plain)]
+//! #         #[kind(name = $named)]
 //! #         struct $name;
-//! #
-//! #         impl Kind for $name {
-//! #             const NAME: KindName = KindName::new($named);
-//! #         }
 //! #
 //! #         impl ChildOf for $name {
 //! #             type Parent = $parent;
@@ -129,7 +123,7 @@
 //!
 //! ```compile_fail
 //! # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Ordered, Path, Tells, Top, Turn};
-//! # use aethereal_data::{Kind, KindName, Plain};
+//! # use aethereal_data::Plain;
 //! # use core::marker::PhantomData;
 //! #
 //! # #[derive(Plain)]
@@ -139,11 +133,8 @@
 //! # macro_rules! root {
 //! #     ($name:ident, $named:literal, $parent:ty, $key:ty, $begins:ty, $handler:ty, $ends:ty) => {
 //! #         #[derive(Plain)]
+//! #         #[kind(name = $named)]
 //! #         struct $name;
-//! #
-//! #         impl Kind for $name {
-//! #             const NAME: KindName = KindName::new($named);
-//! #         }
 //! #
 //! #         impl ChildOf for $name {
 //! #             type Parent = $parent;
@@ -188,7 +179,7 @@
 //! ```compile_fail
 //! # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles};
 //! # use aethereal_actor::{Ordered, Path, Tells, Top, Turn};
-//! # use aethereal_data::{Kind, KindName, Plain};
+//! # use aethereal_data::Plain;
 //! # use core::marker::PhantomData;
 //! #
 //! # #[derive(Plain)]
@@ -198,11 +189,8 @@
 //! # macro_rules! root {
 //! #     ($name:ident, $named:literal, $parent:ty, $key:ty, $begins:ty, $handler:ty, $ends:ty) => {
 //! #         #[derive(Plain)]
+//! #         #[kind(name = $named)]
 //! #         struct $name;
-//! #
-//! #         impl Kind for $name {
-//! #             const NAME: KindName = KindName::new($named);
-//! #         }
 //! #
 //! #         impl ChildOf for $name {
 //! #             type Parent = $parent;
