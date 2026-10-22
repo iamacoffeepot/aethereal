@@ -108,7 +108,7 @@ TimeFrame                  -> Timed::Took { passes: Vec<u64> } | Timed::Refused
 **The GPU's work is waited on by the host, never by a turn (ADR-0019).** The render root records the copy in the turn that draws the frame, or that handles the ask for a texture, and submits it. Reading the copy needs its buffer mapped, which the GPU does after that turn: in a browser through a promise, natively once the device is polled. So the render root holds the ask, and pushes the buffer to map onto a controller, and the chassis brings word of each map back through a source:
 
 ```rust
-RendererConfig { gpu: Given<Gpu>, mapping: Given<Controller<Mapping>>, mapped: Given<Source<Mapped>> }
+RendererConfig { gpu: Given<Gpu>, mapping: Given<Controller<Mapping>>, mapped: Given<Source<Mapped>>, .. }  // and ADR-0021's front
 enum Mapped { Ready { read: u64 }, Failed { read: u64 } }  // brought from the source, the render root to itself
 ```
 

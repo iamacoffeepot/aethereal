@@ -20,6 +20,7 @@ pub mod readback;
 mod renderer;
 pub mod shape;
 pub mod storage;
+pub mod surface;
 pub mod texture;
 pub mod timing;
 pub mod uniforms;

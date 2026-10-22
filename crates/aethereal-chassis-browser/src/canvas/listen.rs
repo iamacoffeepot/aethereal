@@ -4,7 +4,7 @@
 
 use super::dom::{Canvas, Density, Measured, Pointing};
 use crate::Listening;
-use aethereal_window::{Event, Opening, Surface, WindowFeed};
+use aethereal_window::{Event, Opening, Surface, WindowFeed, WindowId};
 use core::cell::Cell;
 use js_sys::Reflect;
 use std::rc::Rc;
@@ -18,18 +18,40 @@ use web_sys::{
 /// which asks WebGPU for its default limits, and so is given those.
 const LONGEST: u32 = 8192;
 
+/// The canvas opened as a window: the window's feed, and its size as last pushed, in the canvas's pixels, which the
+/// pointer is read in and the chassis configures the canvas's surface to as each frame begins.
+pub struct Shown {
+    feed: WindowFeed,
+    size: Rc<Cell<(u32, u32)>>,
+}
+
+impl Shown {
+    /// The window, by its id.
+    #[must_use]
+    pub const fn window(&self) -> WindowId {
+        self.feed.window()
+    }
+
+    /// The window's size as last pushed, shared with the listeners that push it.
+    pub(crate) fn size(&self) -> Rc<Cell<(u32, u32)>> {
+        Rc::clone(&self.size)
+    }
+}
+
 /// Opens `canvas` as a window, standing as the page has it now: its backing store as its surface, the page's device
 /// pixels to each CSS pixel as its scale, and focused when the page has the keyboard.
 ///
 /// # Errors
 ///
 /// When the page has no window or document, or will not say whether it has the keyboard.
-pub fn open(canvas: &HtmlCanvasElement, opening: &mut Opening) -> Result<WindowFeed, JsError> {
+pub fn open(canvas: &HtmlCanvasElement, opening: &mut Opening) -> Result<Shown, JsError> {
     let window = web_sys::window().ok_or_else(|| JsError::new("the page has no window"))?;
     let document = window.document().ok_or_else(|| JsError::new("the page has no document"))?;
     let focused = document.has_focus().map_err(|_| JsError::new("the page would not say whether it is focused"))?;
+    let feed = opening.open(surface(canvas, &window), focused);
+    let size = Rc::new(Cell::new((canvas.width(), canvas.height())));
 
-    Ok(opening.open(surface(canvas, &window), focused))
+    Ok(Shown { feed, size })
 }
 
 /// Listens to the page for what the canvas's window hears, pushing each event onto `window` as the page hears it: the
@@ -39,7 +61,7 @@ pub fn open(canvas: &HtmlCanvasElement, opening: &mut Opening) -> Result<WindowF
 /// The wheel over the canvas stops the page's default, so the page does not scroll while the wheel turns over it.
 ///
 /// **The canvas is drawn at the size the page lays it out at**, at `density`: whenever the page lays it out at
-/// another size, which it measures in device pixels where it can, the window is resized to it, and the renderer
+/// another size, which it measures in device pixels where it can, the window is resized to it, and the chassis
 /// configures its surface to it as its next frame begins, which sets the canvas's backing store. The page lays the
 /// canvas out once a frame at most, so a window dragged through many sizes is resized once a frame. The pointer and
 /// the wheel are read in the pixels of the size last pushed, the window's as its actors were told it.
@@ -51,11 +73,10 @@ pub fn open(canvas: &HtmlCanvasElement, opening: &mut Opening) -> Result<WindowF
 /// # Errors
 ///
 /// When the page has no window, or will not listen for one of the events.
-pub fn listen(canvas: &HtmlCanvasElement, window: &WindowFeed, density: Density) -> Result<Listening, JsError> {
+pub fn listen(canvas: &HtmlCanvasElement, shown: &Shown, density: Density) -> Result<Listening, JsError> {
     let page = web_sys::window().ok_or_else(|| JsError::new("the page has no window"))?;
     let mut listening = Listening::new();
-    // The window's size as last pushed, from the backing store it was opened at.
-    let sized = Rc::new(Cell::new((canvas.width(), canvas.height())));
+    let (window, sized) = (&shown.feed, shown.size());
 
     for (event, pointing) in
         [("pointermove", Pointing::Moved), ("pointerdown", Pointing::Down), ("pointerup", Pointing::Up)]

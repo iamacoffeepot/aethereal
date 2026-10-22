@@ -12,4 +12,4 @@ mod tests;
 #[cfg(target_arch = "wasm32")]
 pub use dom::Density;
 #[cfg(target_arch = "wasm32")]
-pub use listen::{listen, open};
+pub use listen::{Shown, listen, open};

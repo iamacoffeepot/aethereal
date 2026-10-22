@@ -90,6 +90,7 @@ dependencies = [
  "aethereal-actor",
  "aethereal-data",
  "aethereal-window",
+ "crossbeam-queue",
  "naga",
  "wgpu",
 ]
