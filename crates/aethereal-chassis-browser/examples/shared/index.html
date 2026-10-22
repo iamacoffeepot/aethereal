@@ -3,23 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>aethereal: input</title>
+<title>aethereal: {{name}}</title>
 <style>
   html, body { margin: 0; background: #111; color: #ddd; font: 14px system-ui, sans-serif; }
-  canvas { display: block; width: 400px; height: 300px; background: #234; }
-  label { display: block; margin: 8px; }
-  #said { margin: 8px; white-space: pre; }
+  #said { white-space: pre; }
+{{layout.css}}
 </style>
 </head>
 <body>
-<!-- Shown at 400 by 300 CSS pixels and drawn at every device pixel of that, which the chassis measures, so the
-     pointer's place in the canvas's pixels is its place on the page times the screen's device pixels to each. -->
-<canvas id="canvas"></canvas>
-<label>speed <input type="range" id="speed" data-control min="0" max="1" step="0.05" value="0.25"></label>
+{{layout.html}}
 <div id="said"></div>
 <script type="module">
-  import init, { start } from "./pkg/input.js";
+  import init, { start } from "./{{name}}.js";
 
+  // Each canvas is drawn at every device pixel of the size the page shows it at.
+  const scale = window.devicePixelRatio || 1;
+  for (const canvas of document.querySelectorAll("canvas")) {
+    canvas.width = Math.floor(canvas.clientWidth * scale);
+    canvas.height = Math.floor(canvas.clientHeight * scale);
+  }
+
+  // What the program's roots say, shown a line each under or over the canvas.
   const said = document.getElementById("said");
   try {
     await init();

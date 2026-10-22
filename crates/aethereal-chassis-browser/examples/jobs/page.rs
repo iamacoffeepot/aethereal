@@ -1,11 +1,12 @@
 //! The page's entry points, a job that sums, and an actor that runs it and three sleeps on the page's event loop, one
 //! of them given up on, and places a square as each is answered.
 
+use crate::said::{Program, say};
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Job, JobId, JobType, On, Path, Render,
     Runner, Running, Sleep, Slept, Start, Tick, Time, Top, Turn, path,
 };
-use aethereal_chassis_browser::{Browser, EventLoop, Started};
+use aethereal_chassis_browser::{Browser, EventLoop};
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -18,28 +19,10 @@ use aethereal_render::program::{
 use aethereal_render::shape::Shape;
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_window::{InitialWindows, WindowId, Windows};
-use core::cell::RefCell;
-use core::mem;
 use core::time::Duration;
 use std::sync::Arc;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
-
-thread_local! {
-    /// What the prober was answered, for the page to show.
-    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Notes what the prober was answered.
-fn say(line: String) {
-    SAID.with_borrow_mut(|said| said.push(line));
-}
-
-/// The program the page runs, for its `requestAnimationFrame` to call.
-#[wasm_bindgen]
-pub struct Program {
-    started: Started,
-}
 
 /// Bootstraps the program on the page, its jobs run on the page's event loop, with the window root, which opens the
 /// page's canvas as the one window, the renderer, which opens WebGPU on it, and the prober.
@@ -56,22 +39,7 @@ pub async fn start() -> Result<Program, JsError> {
         .root::<Renderer>()
         .root::<Prober>();
 
-    Ok(Program { started: program.run()?.await? })
-}
-
-#[wasm_bindgen]
-impl Program {
-    /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
-    pub fn frame(&mut self, timestamp_millis: f64) {
-        self.started.frame(timestamp_millis);
-    }
-
-    /// What the prober was answered since this was last asked, a line each.
-    #[must_use]
-    #[expect(clippy::unused_self, reason = "the page asks it of the program it started")]
-    pub fn said(&self) -> Vec<String> {
-        SAID.with_borrow_mut(mem::take)
-    }
+    Ok(Program::from(program.run()?.await?))
 }
 
 /// The prober draws on the one window the window root opened.

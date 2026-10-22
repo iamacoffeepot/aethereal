@@ -1,10 +1,11 @@
 //! The page's entry points, and an actor that asks the renderer for meshes, a texture, and programs.
 
+use crate::said::{Program, say};
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Refused, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
-use aethereal_chassis_browser::{Browser, Started};
+use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::mesh::{Attribute, CreateMesh, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::program::{Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, Programmed};
@@ -13,26 +14,8 @@ use aethereal_render::texture::{CreateTexture, TextureFormat, Textured};
 use aethereal_render::{Release, Renderer};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_window::Windows;
-use core::cell::RefCell;
-use core::mem;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
-
-thread_local! {
-    /// What the maker was answered, for the page to show.
-    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Notes what the maker was answered.
-fn say(line: String) {
-    SAID.with_borrow_mut(|said| said.push(line));
-}
-
-/// The program the page runs, for its `requestAnimationFrame` to call.
-#[wasm_bindgen]
-pub struct Program {
-    started: Started,
-}
 
 /// Bootstraps the program on the page with the window root, which opens the page's canvas as the one window,
 /// the renderer, which opens WebGPU on it, and the maker.
@@ -45,22 +28,7 @@ pub async fn start() -> Result<Program, JsError> {
     let program =
         Browser::program().with_cycle::<(Tick, Render)>().root::<Windows>().root::<Renderer>().root::<Maker>();
 
-    Ok(Program { started: program.run()?.await? })
-}
-
-#[wasm_bindgen]
-impl Program {
-    /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
-    pub fn frame(&mut self, timestamp_millis: f64) {
-        self.started.frame(timestamp_millis);
-    }
-
-    /// What the maker was answered since this was last asked, a line each.
-    #[must_use]
-    #[expect(clippy::unused_self, reason = "the page asks it of the program it started")]
-    pub fn said(&self) -> Vec<String> {
-        SAID.with_borrow_mut(mem::take)
-    }
+    Ok(Program::from(program.run()?.await?))
 }
 
 /// The maker needs no window and has no settings.
