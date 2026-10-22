@@ -35,6 +35,7 @@ Desktop::program()
 - `.root::<A>()` names an actor. There is no second noun: a root is the actor and how it stands itself up.
 - The engine's options keep the words `Setup` already uses: `with_cycle`, `with_jobs`, `with_guests`, `with_links`, `with_delta_limit`. They make no root and are set before any root, as `Setup<()>` requires.
 - `run` is the host's: it bootstraps the program, then runs it, as `Desktop::run` and `Browser` do now.
+- **The headless host also has `build`**: both phases, then the host handed back with its engine, not yet run, for a test to `step` or `run_until_idle`. A host whose setup happens inside its event loop, as the desktop's does in winit's first callback, has only `run`.
 
 **How a root bootstraps is a trait on the actor, for a host.**
 
@@ -110,6 +111,13 @@ A section belongs to the root that reads it, so a composed section that nothing 
 | two sections of one name | phase 1, before anything opens, naming both roots |
 | a flag, variable, file, or page that sets what does not exist or the wrong shape | phase 1, naming the path and the layer (ADR-0028) |
 | a window or a GPU that does not open, a root refused as it begins | phase 2, naming the root |
+
+**A bootstrap that fails stops the program as it is set up.** `Unbuilt` says why:
+- the root was refused as it began (`Refused`);
+- something the host opens did not open: a window, a GPU, a canvas;
+- the bootstrap's own failure, such as a module file that could not be read, carried as an error of its own.
+
+`run` and `build` report it naming the root whose bootstrap failed. The engine and the roots begun before it are dropped, as a setup whose `add_root` is refused is dropped now.
 
 **Needs and provides are found by type.** A root's `Needs` is a tuple of types, each found among what roots before it provided, as `Ordered<I>` finds a root. A type is provided once in a program. A root that needs two values of one kind needs two types.
 
