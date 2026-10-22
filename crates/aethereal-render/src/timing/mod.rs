@@ -18,7 +18,8 @@ pub struct TimeFrame;
 #[kind(name = "aether.render.timed")]
 pub enum Timed {
     /// The nanoseconds from the beginning of each pass to its end, in the order they run: each pass of each frame
-    /// that ends on a texture, in the order the frames run, then each pass of the window's main frame.
+    /// that ends on a texture, in the order the frames run, then each pass of the main frame of each window drawn,
+    /// in the order its chassis opened them.
     Took {
         passes: Vec<u64>,
     },

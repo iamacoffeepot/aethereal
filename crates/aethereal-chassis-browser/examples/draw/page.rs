@@ -57,7 +57,7 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?;
     let mut opening = Opening::new(setup.source::<Heard>());
-    let (gpu, shown) = open(canvas.clone(), &mut opening).await?;
+    let (gpu, [shown]) = open([canvas.clone()], &mut opening).await?;
     let mut setup = setup
         .add_root::<Windows>(&(), opening.config())
         .map_err(|refused| JsError::new(&format!("the window root did not begin: {refused:?}")))?;

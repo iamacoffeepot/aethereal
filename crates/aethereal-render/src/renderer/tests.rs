@@ -4,7 +4,7 @@
 use super::*;
 use crate::asked::blob;
 use crate::frame::{PassSpec, Scale, TargetKind, TargetSpec};
-use crate::pass::{Main, Pass};
+use crate::pass::{Compute, Main, Pass};
 use crate::placement::Resource;
 use aethereal_data::{Budget, from_bytes};
 
@@ -29,34 +29,62 @@ struct Composite;
 
 impl Pass for Composite {}
 
-/// The window opened first, as a host's window capability numbers it.
-fn window() -> WindowId {
-    let Ok(window) = from_bytes(&0_u64.to_le_bytes(), &mut Budget::new(8)) else {
+/// The window opened `nth`, from `0`, as a host's window capability numbers it.
+fn nth_window(nth: u64) -> WindowId {
+    let Ok(window) = from_bytes(&nth.to_le_bytes(), &mut Budget::new(8)) else {
         panic!("a window's id is its number");
     };
 
     window
 }
 
+/// The window opened first.
+fn window() -> WindowId {
+    nth_window(0)
+}
+
+/// The renderer's kept state, on `device`, before anything is asked of it, drawing into each of `windows`, each of
+/// `Bgra8`.
+fn kept_for(device: &wgpu::Device, windows: &[WindowId]) -> Kept {
+    let format = ColourFormat::Bgra8;
+    let windowed = windows
+        .iter()
+        .map(|window| {
+            let ends = (End::Window(*window), format);
+            let Ok(own) = Walk::new(device, CreateFrame::own(*window), ends, Size::PIXEL, effectless) else {
+                panic!("the renderer's own frame is made");
+            };
+            Windowed { window: *window, format, own, main: super::Main::Own }
+        })
+        .collect();
+
+    Kept::new(device, windowed)
+}
+
 /// The renderer's kept state, on `device`, before anything is asked of it, drawing into a window of `Bgra8`.
 fn kept(device: &wgpu::Device) -> Kept {
-    let format = ColourFormat::Bgra8;
-    let Ok(own) = Walk::new(device, CreateFrame::own(window()), (End::Window, format), Size::PIXEL, effectless) else {
-        panic!("the renderer's own frame is made");
+    kept_for(device, &[window()])
+}
+
+/// The window's main frame in `kept`.
+fn main(kept: &Kept) -> &Walk {
+    let Some(main) = kept.main(window()) else {
+        panic!("the renderer draws to the window");
     };
 
-    Kept::new(device, (window(), format), own)
+    main
 }
 
 /// A texture of the window's format, drawn into as the window's surface would be, of the one pixel the renderer's own
-/// frame is made at before the first frame's size.
-fn surface(device: &wgpu::Device) -> wgpu::TextureView {
+/// frame is made at before the first frame's size, as the window's frame handed a `Render`.
+fn surface(device: &wgpu::Device) -> [(WindowId, wgpu::TextureView); 1] {
     surface_of(device, 1, 1)
 }
 
-/// A texture of the window's format, drawn into as the window's surface would be, `width` by `height`.
-fn surface_of(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
-    device
+/// A texture of the window's format, drawn into as the window's surface would be, `width` by `height`, as the window's
+/// frame handed a `Render`.
+fn surface_of(device: &wgpu::Device, width: u32, height: u32) -> [(WindowId, wgpu::TextureView); 1] {
+    let view = device
         .create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -67,7 +95,9 @@ fn surface_of(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureVi
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         })
-        .create_view(&wgpu::TextureViewDescriptor::default())
+        .create_view(&wgpu::TextureViewDescriptor::default());
+
+    [(window(), view)]
 }
 
 #[test]
@@ -121,7 +151,7 @@ fn an_effect_binding_a_sampler_none_has_made_is_made_and_drawn() {
 /// Fits the window's main frame of `kept` to a surface `width` by `height`, as each `Render` does before it draws, and
 /// draws it there.
 fn drawn_at(device: &wgpu::Device, queue: &wgpu::Queue, kept: &mut Kept, (width, height): (u32, u32)) {
-    kept.main_mut().fit(device, Size { width, height });
+    kept.fit(device, window(), Size { width, height });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     kept.run_all(&mut encoder, &surface_of(device, width, height), None);
     queue.submit([encoder.finish()]);
@@ -362,7 +392,7 @@ impl Pass for Downsample {}
 
 /// The sides of each target of the window's main frame of `kept`, in order.
 fn sides(kept: &Kept, targets: u32) -> Vec<(u32, u32)> {
-    (0..targets).map(|at| kept.main().target(at).texture()).map(|texture| (texture.width(), texture.height())).collect()
+    (0..targets).map(|at| main(kept).target(at).texture()).map(|texture| (texture.width(), texture.height())).collect()
 }
 
 #[test]
@@ -431,7 +461,38 @@ fn a_frame_of_half_and_quarter_size_targets_is_drawn_at_each_size_its_window_is_
     drawn_at(&device, &queue, &mut kept, (40, 3));
     assert_eq!(sides(&kept, 3), vec![(20, 2), (20, 2), (10, 1)]);
 
-    let fitted = kept.main().target(2).clone();
+    let fitted = main(&kept).target(2).clone();
     drawn_at(&device, &queue, &mut kept, (40, 3));
-    assert_eq!(kept.main().target(2), &fitted, "a frame drawn again at its size keeps its targets");
+    assert_eq!(main(&kept).target(2), &fitted, "a frame drawn again at its size keeps its targets");
+}
+
+#[test]
+fn a_frame_that_ends_on_one_window_is_that_windows_main_frame_alone_and_drawn_only_into_its_frame() {
+    // Catches a frame made for one window put in place of another's main frame, or of every window's, with its maker
+    // made their owner; and a `Render` that runs the main frame of a window it was handed no frame for, which counts
+    // passes no timestamp is written for and draws into no surface.
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let (first, second) = (nth_window(0), nth_window(1));
+    let mut kept = kept_for(&device, &[first, second]);
+
+    let onto = PassSpec {
+        name: PassName::of::<Main>(),
+        does: Does::Draw { into: Target::End, depth: DepthUse::Off, load: Load::Clear },
+    };
+    let frame = CreateFrame { ends: Ends::Window(second), targets: Vec::new(), passes: vec![onto] };
+    assert_eq!(frame::check(&frame, &kept), Ok(()));
+    let framed = kept.frame(&device, frame, MAKER);
+    assert!(matches!(framed, Ok(Framed::Made(_))), "the frame is refused: {framed:?}");
+
+    assert_eq!((kept.owner(first), kept.owner(second)), (None, Some(MAKER)));
+    let computes = |window| kept.main(window).is_some_and(|main| main.computes(PassName::of::<Compute>()));
+    assert!(computes(first), "the first window's main frame is still the renderer's own");
+    assert!(!computes(second), "the second window's main frame is the one made for it");
+
+    let [(_, view)] = surface(&device);
+    let handed = [(second, view)];
+    assert_eq!(kept.passes(&handed), 1, "only the second window's main frame runs");
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    kept.run_all(&mut encoder, &handed, None);
+    queue.submit([encoder.finish()]);
 }

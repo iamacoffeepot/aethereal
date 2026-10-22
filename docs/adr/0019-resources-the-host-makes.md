@@ -91,7 +91,7 @@ What the capability gives, and to whom, is the capability's to decide: it may ha
 
 **A requested resource that the host cannot make yet is waited on by the host, never by a turn.** The capability holds the request, and the chassis pushes what it made when it has it: once a browser's GPU promise resolves, or once the page sees a gesture and its audio output can play. A host that cannot make it at all pushes an event that says so, and the capability answers with it.
 
-**Windows and what they hear are ADR-0024's**: the window capability, its root and an actor for each window, and the browser's canvas as its one window, with a source and no controller.
+**Windows and what they hear are ADR-0024's**: the window capability, its root and an actor for each window, and each of the browser's canvases a window, with a source and no controller.
 
 ## Consequences
 

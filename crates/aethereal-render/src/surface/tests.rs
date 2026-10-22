@@ -1,6 +1,18 @@
-//! The front's tests: it holds at most one frame, the last the chassis put, on a device that draws nothing.
+//! The front's tests: each window's slot holds at most one frame, the last the chassis put for that window, on a device
+//! that draws nothing; and an ask to present one window's frame is that window's alone.
 
-use super::Front;
+use super::{Front, Present};
+use aethereal_data::{Budget, from_bytes};
+use aethereal_window::WindowId;
+
+/// The window opened `nth`, as a host's window capability numbers it.
+fn window(nth: u64) -> WindowId {
+    let Ok(window) = from_bytes(&nth.to_le_bytes(), &mut Budget::new(8)) else {
+        panic!("a window's id is its number");
+    };
+
+    window
+}
 
 /// A texture of one pixel, `width` across, to tell the frames apart by.
 fn frame(device: &wgpu::Device, width: u32) -> wgpu::Texture {
@@ -16,20 +28,40 @@ fn frame(device: &wgpu::Device, width: u32) -> wgpu::Texture {
     })
 }
 
+/// What the front hands this cycle, each window's frame by its width.
+fn taken(front: &Front) -> Vec<(WindowId, u32)> {
+    front.take().into_iter().map(|(window, frame)| (window, frame.width())).collect()
+}
+
 #[test]
-fn the_front_holds_the_last_frame_put_once_and_none_once_cleared() {
+fn each_window_slot_holds_the_last_frame_put_for_it_once_and_none_once_cleared() {
     // Catches a frame put while the last was not taken left behind it, which the render root would take and draw
-    // into once the chassis had dropped the surface's frame it came from, a frame taken twice, and a frame the
-    // chassis took back still there for the render root.
+    // into once the chassis had dropped the surface's frame it came from; a frame taken twice; a frame the chassis
+    // took back still there for the render root; and a frame handed under another window's id, or put in place of
+    // another window's, which would draw one window's main frame into the other's surface or leave it undrawn.
     let (device, _) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-    let (front, handing) = Front::new();
+    let mut front = Front::new();
+    let (first, second) = (front.hand(window(0)), front.hand(window(1)));
 
-    handing.put(frame(&device, 1));
-    handing.put(frame(&device, 2));
-    assert_eq!(front.take().map(|taken| taken.width()), Some(2));
-    assert_eq!(front.take().map(|taken| taken.width()), None);
+    first.put(frame(&device, 1));
+    first.put(frame(&device, 2));
+    second.put(frame(&device, 3));
+    assert_eq!(taken(&front), [(window(0), 2), (window(1), 3)]);
+    assert_eq!(taken(&front), []);
 
-    handing.put(frame(&device, 3));
-    handing.clear();
-    assert_eq!(front.take().map(|taken| taken.width()), None);
+    first.put(frame(&device, 4));
+    second.put(frame(&device, 5));
+    first.clear();
+    assert_eq!(taken(&front), [(window(1), 5)]);
+}
+
+#[test]
+fn an_ask_to_present_one_window_presents_that_window_alone() {
+    // Catches a surface that presents whenever anything was asked, as one window's surface did, which would present
+    // a window's frame the render root never drew into, as when its main frame was not drawn that cycle.
+    let asked = [Present::of(window(1))];
+
+    assert!(Present::asked_for(&asked, window(1)));
+    assert!(!Present::asked_for(&asked, window(0)));
+    assert!(!Present::asked_for(&[], window(1)));
 }

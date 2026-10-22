@@ -1,10 +1,11 @@
 //! A frame as the renderer walks it at each `Render`: its description, what each pass does, made, with the shape of
 //! each pass that draws, and its targets made at the sizes their scales make of its end's.
 
-use crate::frame::{CreateFrame, DepthUse, Does, Load, PassRefused, Size, Target, TargetSpec};
+use crate::frame::{CreateFrame, DepthUse, Does, Frame, FrameId, Load, PassRefused, Size, Target, TargetSpec};
 use crate::pass::PassName;
 use crate::placement::Resource;
 use crate::shape::{ColourFormat, Shape};
+use aethereal_window::WindowId;
 
 /// A frame, checked and made: what it does, where it ends, what each pass does with what it was made with, the
 /// textures and the storage its effects bind, and its targets, each of the size its scale makes of its end's as it was
@@ -19,10 +20,10 @@ pub(super) struct Walk {
     size: Size,
 }
 
-/// Where a frame ends: on its window, into the frame of its surface the chassis hands each `Render`, or on a texture of its
-/// own, kept under the id `texture`.
+/// Where a frame ends: on its window, into the frame of the window's surface the chassis hands each `Render`, or on a
+/// texture of its own, kept under the id `texture`.
 pub(super) enum End {
-    Window,
+    Window(WindowId),
     Texture { texture: u64, view: wgpu::TextureView },
 }
 
@@ -115,16 +116,26 @@ impl Walk {
     /// The texture it ends on, by its id: none for a frame that ends on a window.
     pub const fn texture(&self) -> Option<u64> {
         match self.end {
-            End::Window => None,
+            End::Window(_) => None,
             End::Texture { texture, .. } => Some(texture),
         }
     }
 
-    /// What it draws its end into, given the window's this `Render` for a frame that ends on a window.
-    pub const fn end<'a>(&'a self, window: &'a wgpu::TextureView) -> &'a wgpu::TextureView {
+    /// The frame it is, kept under `id`: the main frame of the window it ends on, or the frame of that id.
+    pub const fn frame(&self, id: u64) -> Frame {
+        match self.end {
+            End::Window(window) => Frame::Main(window),
+            End::Texture { .. } => Frame::Texture(FrameId { id }),
+        }
+    }
+
+    /// What it draws its end into: its own texture, or for a frame that ends on a window, the frame of the window's
+    /// surface among `windows`, those handed this `Render`, each beside its window. None when its window was handed
+    /// none.
+    pub fn end<'a>(&'a self, windows: &'a [(WindowId, wgpu::TextureView)]) -> Option<&'a wgpu::TextureView> {
         match &self.end {
-            End::Window => window,
-            End::Texture { view, .. } => view,
+            End::Window(shown) => windows.iter().find(|(window, _)| window == shown).map(|(_, view)| view),
+            End::Texture { view, .. } => Some(view),
         }
     }
 

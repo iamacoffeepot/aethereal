@@ -72,13 +72,7 @@ fn main() -> ExitCode {
         .unwrap_or(0);
     let cores = thread::available_parallelism().map_or(1, NonZeroUsize::get);
     let workers = NonZeroUsize::new(cores.min(4)).unwrap_or(NonZeroUsize::MIN);
-    let desktop = Desktop {
-        title: String::from("aethereal"),
-        width: 800,
-        height: 600,
-        workers,
-        stop_within: Duration::from_secs(1),
-    };
+    let desktop = Desktop { workers, stop_within: Duration::from_secs(1) };
 
     match desktop.run(|screen| program(screen, workers, seconds)) {
         Ok(exit) => {
@@ -92,19 +86,18 @@ fn main() -> ExitCode {
     }
 }
 
-/// The engine, its views in a part for each worker, with the window root, the renderer, handed the GPU opened on
-/// `screen`, and the scene as its roots, the scene quitting after `seconds` when they are any.
-fn program(screen: Screen, workers: NonZeroUsize, seconds: u64) -> Result<Made, String> {
+/// The engine, its views in a part for each worker, with the window root, the renderer, handed the GPU opened on the
+/// window opened on `screen`, and the scene as its roots, the scene quitting after `seconds` when they are any.
+fn program(mut screen: Screen<'_>, workers: NonZeroUsize, seconds: u64) -> Result<Made, String> {
     let mut setup = Engine::new(workers, 1024, 1 << 20, 1 << 20, 0)
         .with_cycle::<(Tick, Render)>()
         .map_err(|unordered| format!("the cycle is out of order: {unordered:?}"))?;
     let mut opening = Opening::new(setup.source::<Heard>());
-    let opened = screen.open_window(&mut opening).map_err(|unopened| unopened.to_string())?;
-    let window = opened.window();
+    let window = screen.open_window(&mut opening, "aethereal", (800, 600)).map_err(|unopened| unopened.to_string())?;
     let mut setup = setup
         .add_root::<Windows>(&(), opening.config())
         .map_err(|refused| format!("the window root did not begin: {refused:?}"))?;
-    let (rendering, drawing) = renderer(&mut setup, opened);
+    let (rendering, drawing) = renderer(&mut setup, screen).map_err(|unopened| unopened.to_string())?;
     let engine = setup
         .add_root::<Renderer>(&(), rendering)
         .map_err(|refused| format!("the renderer did not begin: {refused:?}"))?
