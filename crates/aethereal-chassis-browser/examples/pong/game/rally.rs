@@ -24,7 +24,7 @@ const HIT_ANGLE: f32 = 0.9;
 
 /// How much spin a moving paddle puts on the ball it strikes, for each court unit a second it moves: the ball curves
 /// against the paddle's way.
-const SPIN_GRIP: f32 = 0.22;
+const SPIN_GRIP: f32 = 0.35;
 
 /// The longest stretch the ball moves in one go, in nanoseconds: short enough that it never passes through a paddle in
 /// a stretch, however long the frame.
