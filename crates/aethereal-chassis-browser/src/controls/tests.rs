@@ -108,13 +108,13 @@ fn a_subscriber_is_sent_what_the_page_pushed_in_the_order_pushed_and_nothing_ano
     assert_eq!(feed.push(read.clone()), Ok(()));
     let mappings = Mappings::unasked(&mut engine);
     let mut browser = Browser::new(engine, Still, mappings);
-    browser.frame();
+    browser.frame(16.0);
 
     let pushed = [number("speed", 0.5), Control { name: String::from("shown"), value: Value::Checked(true) }];
     for control in pushed.clone() {
         assert_eq!(feed.push(control), Ok(()));
     }
-    browser.frame();
+    browser.frame(32.0);
 
     let Ok(heard) = HEARD.lock().map(|heard| heard.clone()) else {
         panic!("what was heard is not poisoned");
@@ -221,11 +221,11 @@ fn an_actor_that_subscribes_after_a_control_last_moved_is_sent_it_as_it_stands_o
 
     let pushes = [feed.push(number("speed", 0.25)), feed.push(moved.clone())];
     assert_eq!(pushes, [Ok(()), Ok(())]);
-    browser.frame();
+    browser.frame(48.0);
     assert_eq!(nudge.push(Nudge), Ok(()));
-    browser.frame();
+    browser.frame(64.0);
     assert_eq!(feed.push(later.clone()), Ok(()));
-    browser.frame();
+    browser.frame(80.0);
 
     let Ok(heard) = HEARD_LATE.lock().map(|heard| heard.clone()) else {
         panic!("what was heard is not poisoned");

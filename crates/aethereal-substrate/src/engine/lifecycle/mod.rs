@@ -41,9 +41,9 @@ pub(super) struct Staging {
     sent: u64,
     /// The stages of the chassis's cycle, in the order they run.
     cycle: Vec<Cycling>,
-    /// Whether the host has said a cycle is due since the last one began.
-    due: bool,
-    /// The steps' time when the last cycle began, or `Start` was sent before the first.
+    /// Whether the host has said a cycle is due since the last one began, and at what time.
+    due: Due,
+    /// The host's time for the last cycle begun, or the steps' time when `Start` was sent, before the first.
     ticked: Time,
     /// The sum of every `Tick`'s delta, in nanoseconds.
     elapsed_nanos: u64,
@@ -54,6 +54,16 @@ pub(super) struct Staging {
     /// The subscribers `Stop` was asked of, each by its own count of the request: none before it is sent. `Stop` has
     /// finished only once none of them owes it.
     draining: Vec<(Seated, u64)>,
+}
+
+/// Whether a cycle is due.
+#[derive(Clone, Copy)]
+enum Due {
+    /// None is: the host has said none is due since the last began.
+    Not,
+    /// One is, and the host's time for it is `at`: the last the host said, when it said one was due more than once
+    /// while a cycle ran.
+    At(Time),
 }
 
 /// The stage whose chain the engine waits on, if any.
@@ -85,7 +95,7 @@ impl Staging {
             under_way: UnderWay::Nothing,
             sent: 0,
             cycle: Vec::new(),
-            due: false,
+            due: Due::Not,
             ticked: Time::ZERO,
             elapsed_nanos: 0,
             time: Cycled { delta_nanos: 0, elapsed_nanos: 0 },
@@ -163,11 +173,13 @@ impl Engine {
         self.send_stage(Cycling::of::<Start>(), At::Start);
     }
 
-    /// Says a cycle is due, for the host: on a browser's animation frame, a display's refresh, or a timer. The first
-    /// stage of the cycle is sent once nothing is under way; a cycle said to be due while one runs is not queued, and
-    /// the next `Tick` covers the time since the last (ADR-0020).
-    pub fn cycle(&mut self) {
-        self.staging.due = true;
+    /// Says a cycle is due, for the host, at `at`, the host's time for it: a browser's animation frame's timestamp, a
+    /// display's refresh, or a timer's. The first stage of the cycle is sent once nothing is under way; a cycle said to
+    /// be due while one runs is not queued, and the next `Tick` covers the time from the last cycle's to the latest
+    /// said (ADR-0020). A `Tick`'s delta is the host's time between cycles, not the steps', so it does not change with
+    /// how long each cycle's work took: what moves by it moves evenly on a display that shows each cycle evenly.
+    pub fn cycle(&mut self, at: Time) {
+        self.staging.due = Due::At(at);
         self.advance();
     }
 
@@ -245,11 +257,11 @@ impl Engine {
     /// Sends the cycle's first stage, when one is due and the cycle holds any, and answers whether it did.
     fn begin_cycle(&mut self) -> bool {
         let first = self.staging.cycle.first().copied();
-        let Some(first) = first.filter(|_| self.staging.due) else {
+        let (Some(first), Due::At(at)) = (first, self.staging.due) else {
             return false;
         };
-        self.staging.due = false;
-        self.staging.time = self.cycled();
+        self.staging.due = Due::Not;
+        self.staging.time = self.cycled(at);
         self.send_stage(first, At::Cycle(0));
 
         true
@@ -272,11 +284,11 @@ impl Engine {
         }
     }
 
-    /// The time a cycle begun now carries: since the last began, limited, and the sum with it.
-    fn cycled(&mut self) -> Cycled {
-        let since = self.now.nanos().saturating_sub(self.staging.ticked.nanos());
+    /// The time a cycle the host said was due `at` carries: since the last began, limited, and the sum with it.
+    fn cycled(&mut self, at: Time) -> Cycled {
+        let since = at.nanos().saturating_sub(self.staging.ticked.nanos());
         let delta_nanos = since.min(self.staging.delta_limit_nanos);
-        self.staging.ticked = self.now;
+        self.staging.ticked = at;
         self.staging.elapsed_nanos = self.staging.elapsed_nanos.saturating_add(delta_nanos);
 
         Cycled { delta_nanos, elapsed_nanos: self.staging.elapsed_nanos }

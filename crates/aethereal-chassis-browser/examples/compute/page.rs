@@ -75,9 +75,9 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
 
 #[wasm_bindgen]
 impl Program {
-    /// Runs one frame.
-    pub fn frame(&mut self) {
-        self.browser.frame();
+    /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
+    pub fn frame(&mut self, timestamp_millis: f64) {
+        self.browser.frame(timestamp_millis);
     }
 
     /// What the simulator was answered since this was last asked, a line each.
