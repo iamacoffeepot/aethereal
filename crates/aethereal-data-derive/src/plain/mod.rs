@@ -1,7 +1,7 @@
 //! The `Plain` and `Bound` derives: one field list into a schema and a codec (ADR-0004).
 
 mod enumeration;
-mod kind;
+pub mod kind;
 mod settings;
 mod structure;
 
