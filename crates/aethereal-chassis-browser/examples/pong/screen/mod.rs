@@ -17,7 +17,7 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, ErasedActorRef, Fault, Handles, Level, On, Path, Start,
     Tells, Turn, path,
 };
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::instances::{CreateInstances, Instanced, InstancesId, WriteInstances};
@@ -68,12 +68,9 @@ const SHOWN_UP: f32 = HALF_HEIGHT + 0.07;
 
 /// The screen's config: the window it draws on.
 #[derive(Plain)]
+#[kind(name = "aether.example.pong.shows")]
 pub struct Shows {
     pub window: WindowId,
-}
-
-impl Kind for Shows {
-    const NAME: KindName = KindName::new("aether.example.pong.shows");
 }
 
 /// How the court is scaled from its units to the window's, across and up, so it fits the window whole and square.
@@ -114,15 +111,12 @@ impl View {
 /// The screen: it subscribes to its window, makes what it draws one ask after another, then writes the board and the
 /// play from each court the game sends.
 #[derive(Bound)]
+#[kind(name = "aether.example.pong.screen")]
 pub enum Screen {
     /// Its asks are under way, and nothing is placed on `window`: the court is to be drawn in `view`.
     Making { window: WindowId, view: View },
     /// Everything is placed: these are the uniforms and instances it writes, and the board as they show it.
     Drawing { uniforms: UniformsId, board: InstancesId, play: InstancesId, shown: Board },
-}
-
-impl Kind for Screen {
-    const NAME: KindName = KindName::new("aether.example.pong.screen");
 }
 
 impl ChildOf for Screen {
@@ -131,42 +125,30 @@ impl ChildOf for Screen {
 
 /// The context of an ask that needs none.
 #[derive(Plain)]
+#[kind(name = "aether.example.pong.nothing")]
 pub struct Nothing;
-
-impl Kind for Nothing {
-    const NAME: KindName = KindName::new("aether.example.pong.nothing");
-}
 
 /// What was learned before the quad was asked for: the shape the program draws into.
 #[derive(Plain)]
+#[kind(name = "aether.example.pong.learned")]
 pub struct Learned {
     shape: Shape,
 }
 
-impl Kind for Learned {
-    const NAME: KindName = KindName::new("aether.example.pong.learned");
-}
-
 /// What was made before the program was asked for.
 #[derive(Plain)]
+#[kind(name = "aether.example.pong.made_mesh")]
 pub struct MadeMesh {
     shape: Shape,
     mesh: MeshId,
 }
 
-impl Kind for MadeMesh {
-    const NAME: KindName = KindName::new("aether.example.pong.made_mesh");
-}
-
 /// What was made before the uniforms were asked for.
 #[derive(Plain)]
+#[kind(name = "aether.example.pong.made_program")]
 pub struct MadeProgram {
     mesh: MeshId,
     program: ProgramId,
-}
-
-impl Kind for MadeProgram {
-    const NAME: KindName = KindName::new("aether.example.pong.made_program");
 }
 
 /// What every layer is placed with.
@@ -201,25 +183,19 @@ impl Layer {
 
 /// What a layer's instances were asked for with.
 #[derive(Plain)]
+#[kind(name = "aether.example.pong.laying")]
 pub struct Laying {
     kit: Kit,
     layer: Layer,
 }
 
-impl Kind for Laying {
-    const NAME: KindName = KindName::new("aether.example.pong.laying");
-}
-
 /// What a layer's placement was asked for with.
 #[derive(Plain)]
+#[kind(name = "aether.example.pong.placing")]
 pub struct Placing {
     kit: Kit,
     layer: Layer,
     instances: InstancesId,
-}
-
-impl Kind for Placing {
-    const NAME: KindName = KindName::new("aether.example.pong.placing");
 }
 
 impl Actor for Screen {

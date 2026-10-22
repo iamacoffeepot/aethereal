@@ -1,4 +1,4 @@
-//! The derives of `aethereal-data`: `Plain`, `Bound`, and `Key` (ADR-0004).
+//! The derives of `aethereal-data`: `Plain`, `Bound`, and `Key` (ADR-0004), and a kind named on the first two (ADR-0006).
 
 use proc_macro::TokenStream;
 use syn::{DeriveInput, parse_macro_input};
@@ -12,8 +12,9 @@ mod plain;
 /// A struct becomes a `Struct` shape with its fields in declared order;
 /// an enum becomes an `Enum` shape with a selector before each variant's
 /// fields. The codec is written over every boundary and bounded by each
-/// field's type. Every field must be `Plain`.
-#[proc_macro_derive(Plain, attributes(plain))]
+/// field's type. Every field must be `Plain`. `#[kind(name = "…")]` on the
+/// type also writes `Kind` (ADR-0006).
+#[proc_macro_derive(Plain, attributes(plain, kind))]
 pub fn derive_plain(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match plain::expand(&input, plain::Derive::Plain) {
@@ -26,8 +27,9 @@ pub fn derive_plain(input: TokenStream) -> TokenStream {
 ///
 /// It writes the codec `Plain` writes, over every boundary and bounded by each
 /// field's type, so the type crosses exactly the boundaries all its fields
-/// cross. It does not state `Plain`.
-#[proc_macro_derive(Bound, attributes(plain))]
+/// cross. It does not state `Plain`. `#[kind(name = "…")]` on the type also
+/// writes `Kind` (ADR-0006).
+#[proc_macro_derive(Bound, attributes(plain, kind))]
 pub fn derive_bound(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match plain::expand(&input, plain::Derive::Bound) {

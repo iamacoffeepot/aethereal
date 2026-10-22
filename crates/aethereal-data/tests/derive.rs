@@ -1,7 +1,9 @@
-//! The `Plain` and `Key` derives from outside the crate (ADR-0004).
+//! The `Plain`, `Bound`, and `Key` derives from outside the crate (ADR-0004), and a kind named on its derive
+//! (ADR-0006).
 
 use aethereal_data::{
-    Budget, DecodeError, Field, Fields, Integer, Key, Plain, Schema, Shape, Variant, from_bytes, to_bytes,
+    Bound, Boundary, Budget, Decode, DecodeError, Encode, EncodeError, Field, Fields, Integer, Key, Kind, KindId,
+    KindName, Plain, Reader, Schema, Shape, Variant, Writer, from_bytes, to_bytes,
 };
 use std::collections::BTreeMap;
 use std::vec::Vec;
@@ -40,6 +42,93 @@ struct Wrapper<T> {
 
 #[derive(Plain, Key, Debug, Clone)]
 struct Id(u64);
+
+#[derive(Plain)]
+#[kind(name = "test.derive.note_on")]
+struct NoteOn {
+    pitch: u8,
+    velocity: u8,
+}
+
+#[derive(Plain)]
+struct NoteOnByHand {
+    pitch: u8,
+    velocity: u8,
+}
+
+impl Kind for NoteOnByHand {
+    const NAME: KindName = KindName::new("test.derive.note_on");
+}
+
+#[derive(Plain)]
+#[kind(name = "test.derive.signal")]
+enum Signal {
+    Stop,
+    #[plain(selector = 4)]
+    Go(u8),
+}
+
+#[derive(Plain)]
+enum SignalByHand {
+    Stop,
+    #[plain(selector = 4)]
+    Go(u8),
+}
+
+impl Kind for SignalByHand {
+    const NAME: KindName = KindName::new("test.derive.signal");
+}
+
+#[derive(Plain)]
+#[kind(name = "test.derive.carried")]
+struct Carried<T> {
+    inner: T,
+}
+
+#[derive(Plain)]
+struct CarriedByHand<T> {
+    inner: T,
+}
+
+impl<T: Schema> Kind for CarriedByHand<T> {
+    const NAME: KindName = KindName::new("test.derive.carried");
+}
+
+/// A value with a schema and a codec that is not `Plain`, as a value bound to its actor is.
+struct Held(u32);
+
+impl Schema for Held {
+    const SHAPE: Shape = Shape::Integer(Integer::U32);
+}
+
+impl<B: Boundary> Encode<B> for Held {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+        self.0.encode(out)
+    }
+}
+
+impl<B: Boundary> Decode<B> for Held {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        u32::decode(input).map(Self)
+    }
+}
+
+#[derive(Bound)]
+#[kind(name = "test.derive.holding")]
+struct Holding<T> {
+    held: T,
+    count: u8,
+}
+
+#[derive(Bound)]
+struct HoldingByHand<T> {
+    held: T,
+    count: u8,
+}
+
+impl<T: Schema> Kind for HoldingByHand<T> {
+    const NAME: KindName = KindName::new("test.derive.holding");
+}
 
 #[test]
 fn named_struct_bytes_are_fields_in_order() {
@@ -133,4 +222,32 @@ fn key_newtype_orders_like_its_inner() {
         0x00, 0x00, 0x00, 0x14,
     ];
     assert_eq!(to_bytes(&map), Ok(expected));
+}
+
+#[test]
+fn named_struct_is_the_kind_written_by_hand() {
+    // Catches an attribute that mints a name or an id other than the one written out by hand.
+    assert_eq!(NoteOn::NAME, NoteOnByHand::NAME);
+    assert_eq!(KindId::of::<NoteOn>(), KindId::of::<NoteOnByHand>());
+}
+
+#[test]
+fn named_enum_is_the_kind_written_by_hand() {
+    // Catches the enum expansion naming its kind apart from the one written by hand.
+    assert_eq!(Signal::NAME, SignalByHand::NAME);
+    assert_eq!(KindId::of::<Signal>(), KindId::of::<SignalByHand>());
+}
+
+#[test]
+fn named_generic_is_a_kind_at_each_type() {
+    // Catches a generic kind bounded more tightly than its schema, or an impl that drops the type's parameters.
+    assert_eq!(KindId::of::<Carried<u32>>(), KindId::of::<CarriedByHand<u32>>());
+    assert_eq!(KindId::of::<Carried<String>>(), KindId::of::<CarriedByHand<String>>());
+}
+
+#[test]
+fn named_bound_type_is_a_kind_over_a_value_that_is_not_plain() {
+    // Catches the bound derive's kind requiring `Plain` of its fields, which a bound value is not.
+    assert_eq!(Holding::<Held>::NAME, HoldingByHand::<Held>::NAME);
+    assert_eq!(KindId::of::<Holding<Held>>(), KindId::of::<HoldingByHand<Held>>());
 }

@@ -14,7 +14,7 @@ use crate::dice::Dice;
 use crate::flight;
 use crate::game::Pong;
 use aethereal_actor::{Actor, Beginning, ChildOf, Ending, ErasedActorRef, Fault, Handles, Level, ToType, Turn};
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 
 /// How long it goes between looks at the court, at the least, in nanoseconds: its reaction time.
 const REACTION_NANOS: u64 = 110_000_000;
@@ -45,12 +45,9 @@ const FOLLOWING: f32 = 0.3;
 
 /// The opponent's config: its own chance.
 #[derive(Plain)]
+#[kind(name = "aether.example.pong.seeded")]
 pub struct Seeded {
     pub dice: Dice,
-}
-
-impl Kind for Seeded {
-    const NAME: KindName = KindName::new("aether.example.pong.seeded");
 }
 
 /// What it made of the ball when it last looked.
@@ -66,15 +63,12 @@ enum Sight {
 /// The opponent: its chance, what it made of the ball, the height it steers its paddle toward, and when it looks
 /// at the court again, as the game's clock counts.
 #[derive(Bound)]
+#[kind(name = "aether.example.pong.opponent")]
 pub struct Opponent {
     dice: Dice,
     sight: Sight,
     aim: f32,
     looks_at_nanos: u64,
-}
-
-impl Kind for Opponent {
-    const NAME: KindName = KindName::new("aether.example.pong.opponent");
 }
 
 impl ChildOf for Opponent {

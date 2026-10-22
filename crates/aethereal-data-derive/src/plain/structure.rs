@@ -3,7 +3,7 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use super::{Codec, Derive, decode_binding, encode_call, impls, shape_field};
+use super::{Codec, Declaration, Derive, decode_binding, encode_call, impls, shape_field};
 use syn::{DeriveInput, FieldsNamed, FieldsUnnamed, Type};
 
 /// The pieces one struct's impls are built from.
@@ -15,7 +15,12 @@ struct Parts {
 }
 
 /// Expands a struct into the impls of `derive`.
-pub fn expand(input: &DeriveInput, data: &syn::DataStruct, derive: Derive) -> syn::Result<TokenStream2> {
+pub fn expand(
+    input: &DeriveInput,
+    data: &syn::DataStruct,
+    derive: Derive,
+    declaration: &Declaration,
+) -> syn::Result<TokenStream2> {
     let parts = match &data.fields {
         syn::Fields::Named(fields) => named_parts(fields)?,
         syn::Fields::Unnamed(fields) => unnamed_parts(fields),
@@ -23,7 +28,7 @@ pub fn expand(input: &DeriveInput, data: &syn::DataStruct, derive: Derive) -> sy
     };
     let field_types: Vec<&Type> = data.fields.iter().map(|field| &field.ty).collect();
 
-    Ok(impls(input, &field_types, &codec(input, &parts), derive))
+    Ok(impls(input, &field_types, &codec(input, &parts), derive, declaration))
 }
 
 /// The struct's shape and the bodies of its codec.

@@ -13,7 +13,7 @@ use aethereal_actor::{
     Actor, ActorRef, Beginning, ChildOf, Ending, ErasedActorRef, Fault, Handles, Level, On, Path, Tells, Tick, ToType,
     Top, Turn, path,
 };
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_window::{self as window, Event, Window, WindowId};
 use keys::Keys;
 use rally::{Paddle, Rolled};
@@ -27,17 +27,15 @@ const BETWEEN_NANOS: u64 = 900_000_000;
 /// The game's config: the window whose keys move the player's paddle and that the screen draws on, and the seed of
 /// the match's chance.
 #[derive(Plain)]
+#[kind(name = "aether.example.pong.match")]
 pub struct Match {
     pub window: WindowId,
     pub seed: u64,
 }
 
-impl Kind for Match {
-    const NAME: KindName = KindName::new("aether.example.pong.match");
-}
-
 /// Why the game did not begin: an actor it stands up beneath it did not.
 #[derive(Plain)]
+#[kind(name = "aether.example.pong.unbegun")]
 enum Unbegun {
     /// The screen.
     Screen,
@@ -45,13 +43,10 @@ enum Unbegun {
     Opponent,
 }
 
-impl Kind for Unbegun {
-    const NAME: KindName = KindName::new("aether.example.pong.unbegun");
-}
-
 /// The game: the court as it stands, the keys the player holds, the way the opponent last steered, the match's
 /// chance, and the actors beneath it it sends the court to.
 #[derive(Bound)]
+#[kind(name = "aether.example.pong")]
 pub struct Pong {
     court: Court,
     keys: Keys,
@@ -59,10 +54,6 @@ pub struct Pong {
     dice: Dice,
     screen: ActorRef<Screen>,
     opponent: ActorRef<Opponent>,
-}
-
-impl Kind for Pong {
-    const NAME: KindName = KindName::new("aether.example.pong");
 }
 
 impl ChildOf for Pong {

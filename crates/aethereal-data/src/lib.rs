@@ -101,12 +101,98 @@ pub use schema::{
 ///     value: u32,
 /// }
 /// ```
+///
+/// `#[kind(name = "…")]` on the type names it as a kind (ADR-0006): the
+/// derive also writes `impl Kind`, bounded as `Schema` is.
+///
+/// ```
+/// use aethereal_data::{KindId, Plain};
+///
+/// #[derive(Plain)]
+/// #[kind(name = "aether.audio.note_on")]
+/// struct NoteOn {
+///     pitch: u8,
+///     velocity: u8,
+/// }
+///
+/// const ID: KindId = KindId::of::<NoteOn>();
+/// ```
+///
+/// A name that does not conform stops the build, though nothing uses the kind.
+///
+/// ```compile_fail
+/// use aethereal_data::Plain;
+///
+/// #[derive(Plain)]
+/// #[kind(name = "aether.Audio")]
+/// struct NoteOn {
+///     pitch: u8,
+/// }
+/// ```
+///
+/// The attribute holds the name and nothing else, and is written once on the
+/// type. Each of these is a compile error saying so: a second `kind`, another
+/// key, a name that is not a string literal, no name, and `kind` on a variant.
+///
+/// ```compile_fail
+/// use aethereal_data::Plain;
+///
+/// #[derive(Plain)]
+/// #[kind(name = "aether.audio.note_on")]
+/// #[kind(name = "aether.audio.note_off")]
+/// struct NoteOn {
+///     pitch: u8,
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use aethereal_data::Plain;
+///
+/// #[derive(Plain)]
+/// #[kind(name = "aether.audio.note_on", copy)]
+/// struct NoteOn {
+///     pitch: u8,
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use aethereal_data::Plain;
+///
+/// const NAME: &str = "aether.audio.note_on";
+///
+/// #[derive(Plain)]
+/// #[kind(name = NAME)]
+/// struct NoteOn {
+///     pitch: u8,
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use aethereal_data::Plain;
+///
+/// #[derive(Plain)]
+/// #[kind()]
+/// struct NoteOn {
+///     pitch: u8,
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use aethereal_data::Plain;
+///
+/// #[derive(Plain)]
+/// enum Note {
+///     #[kind(name = "aether.audio.note_on")]
+///     On,
+/// }
+/// ```
 pub use aethereal_data_derive::Plain;
 
 /// Derives `Schema` and the codec over every boundary, for a type that holds a bound value (ADR-0004).
 ///
 /// It writes the codec `Plain` writes and does not state `Plain`: the type
-/// crosses exactly the boundaries all its fields cross.
+/// crosses exactly the boundaries all its fields cross. `#[kind(name = "…")]`
+/// names the type as a kind, as it does on `Plain`.
 pub use aethereal_data_derive::Bound;
 
 /// Derives `Key` for a struct with exactly one field (ADR-0004).
