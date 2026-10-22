@@ -102,7 +102,7 @@ What the capability gives, and to whom, is the capability's to decide: it may ha
 - A turn that pushes to a controller cannot be run again from its record without pushing again: a replay gives the capability a controller whose requests go nowhere, and feeds it what its source brought from the record.
 - The thread that runs the windowing library's event loop is the thread that steps the engine, natively: requests are taken and windows made there, between steps, inside the library's callbacks. The workers run turns on other threads, as before (ADR-0011).
 - `Engine::hand` is no longer only for boot. A chassis that hands a value and never puts it in an event or a config leaves it in the engine's keeping until the engine is dropped.
-- The window capability's own mail, which this record left undecided, is decided by ADR-0024: its events, and an actor for each window beneath one root. Its requests, opening and closing a window among them, are left by it for later. The render capability's is ADR-0021's.
+- The window capability's own mail, which this record left undecided, is decided by ADR-0024: its events, and an actor for each window beneath one root. Its requests, opening and closing a window, are ADR-0027's. The render capability's is ADR-0021's.
 
 ## Alternatives considered
 

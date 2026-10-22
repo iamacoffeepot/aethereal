@@ -149,13 +149,11 @@ let listening = controls::listen(&feed)?;
 - The renderer subscribes to no window: the chassis that pushes a window's resizes configures its surface, so a pointer move or a key costs the renderer no mail.
 - `Setup` gains `source`, as `Engine` has, so a chassis makes a source as it sets the program up.
 - **Left for later**, each its own record when a program needs it:
-  - **opening and closing windows on request**: an `OpenWindow` asked of the root, a controller to the host, the host's answer pushed onto the source with the window's id, and the window's actor ended when its window closes (ADR-0019 sketches the road);
-  - **a window opened while the program runs**, and how an actor learns of it;
+  - **opening and closing windows on request**, and a window opened while the program runs: decided by ADR-0027;
   - **the cursor**: capturing the pointer, hiding or changing the cursor, and stopping a key's default, each a request;
   - **pointers entering and leaving**;
   - **text input and IME** composition, which the `key` of a key press does not carry;
   - **more than one pointer**, a touch screen's contacts each its own;
-  - **a native chassis** on winit;
   - **a browser screen whose scale changes alone**, as a window moved to another screen does with the page's size unchanged: the page fires no `resize`, and a `matchMedia` query on the resolution would hear it.
 
 ## Alternatives considered
