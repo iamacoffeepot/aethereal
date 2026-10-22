@@ -8,8 +8,9 @@ use aethereal_data::{JsonFault, JsonForm};
 use aethereal_substrate::{Builds, EngineSettings, ProgramError, Settled};
 use core::error::Error;
 use std::fs;
+use std::iter;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{self, Command};
 
 type Outcome = Result<(), Box<dyn Error>>;
 
@@ -56,9 +57,9 @@ impl Builds for Bench {
 struct File(PathBuf);
 
 impl File {
-    fn new(test: &str, text: &str) -> Result<Self, Box<dyn Error>> {
-        let path = env::temp_dir().join(format!("aethereal-native-{}-{test}.json", std::process::id()));
-        fs::write(&path, text)?;
+    fn new(test: &str, contents: &str) -> Result<Self, Box<dyn Error>> {
+        let path = env::temp_dir().join(format!("aethereal-native-{}-{test}.json", process::id()));
+        fs::write(&path, contents)?;
 
         Ok(Self(path))
     }
@@ -80,7 +81,7 @@ fn read(
     args: &[&str],
     variables: &[(&str, &str)],
 ) -> Result<Invoked<Program<Bench, ()>>, NativeError> {
-    let args = ["bench"].iter().chain(args).copied();
+    let args = iter::once("bench").chain(args.iter().copied());
     program.read("bench", Invocation::new(args, variables.iter().copied()))
 }
 
@@ -148,7 +149,7 @@ fn a_set_or_a_file_that_is_refused_names_its_layer_and_path() -> Outcome {
     // Catches a refusal of what `--set` or the file set blamed on another layer, or without the path it set.
     let bad_value = File::new("value", r#"{"running":{"pace":"fast"}}"#)?;
     let not_json = File::new("json", "{")?;
-    let missing = env::temp_dir().join(format!("aethereal-native-{}-missing.json", std::process::id()));
+    let missing = env::temp_dir().join(format!("aethereal-native-{}-missing.json", process::id()));
 
     let unknown = built(Bench::program(), &["--set", "running.bogus=1"], &[]).err();
     let no_value = read(Bench::program(), &["--set", "running.pace"], &[]).err();

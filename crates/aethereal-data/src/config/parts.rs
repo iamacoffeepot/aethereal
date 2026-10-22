@@ -8,8 +8,8 @@ use crate::{
     Bare, Budget, DecodeError, Encode, EncodeError, JsonError, JsonPath, JsonStep, KindName, Reader, Schema,
     SchemaNodes, Shape, Writer, from_json, to_json,
 };
-use alloc::format;
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::any::{Any, TypeId};

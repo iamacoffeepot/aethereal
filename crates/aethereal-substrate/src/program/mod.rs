@@ -27,6 +27,7 @@ use aethereal_data::Budget;
 use aethereal_data::config::{
     ConfigError, Configuration, FlagTable, Flags, Overlay, Parts, RootSettings, Setting, Settings,
 };
+use core::iter;
 use core::marker::PhantomData;
 use core::time::Duration;
 use std::sync::Arc;
@@ -383,7 +384,7 @@ impl<H: Host, R> Program<H, R> {
 
     /// The program with `setting` put into the code layer, in the section `section`.
     fn code<S: Settings>(mut self, section: &'static str, setting: Setting<S>) -> Self {
-        self.code.push(Box::new(move |overlay| overlay.put(section, setting)));
+        self.code.push(Box::new(move |overlay| overlay.put(section, &setting)));
         self
     }
 
@@ -472,7 +473,7 @@ impl<H: Host, R> Program<H, R> {
         for set in sets {
             set(&mut code)?;
         }
-        let layers: Vec<Overlay> = [code].into_iter().chain(layers).collect();
+        let layers: Vec<Overlay> = iter::once(code).chain(layers).collect();
 
         let mut budget = Budget::new(CONFIGURATION_BYTES);
         let mut configuration = parts.configure(&layers, &mut budget)?;

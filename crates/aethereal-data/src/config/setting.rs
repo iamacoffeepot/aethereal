@@ -25,7 +25,7 @@ use core::marker::PhantomData;
 ///
 /// let parts = Parts::new().with::<Show>("show")?;
 /// let mut code = Overlay::new("code");
-/// code.put("show", Show::SECONDS.to(3))?;
+/// code.put("show", &Show::SECONDS.to(3))?;
 ///
 /// let mut configuration = parts.configure(&[code], &mut Budget::new(1 << 20))?;
 /// assert_eq!(configuration.take::<Show>("show")?.seconds, 3);

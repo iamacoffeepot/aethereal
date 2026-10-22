@@ -80,7 +80,7 @@ impl Overlay {
 
     /// Sets the field `setting` names, in the section `section`, to its value: what a program sets in code, typed
     /// by the field's handle.
-    pub fn put<S: Settings>(&mut self, section: &str, setting: Setting<S>) -> Result<(), ConfigError> {
+    pub fn put<S: Settings>(&mut self, section: &str, setting: &Setting<S>) -> Result<(), ConfigError> {
         let path = Vec::from([Step::Field(String::from(section)), Step::Field(String::from(setting.field()))]);
         self.push(path, setting.json())
     }
