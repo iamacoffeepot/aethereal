@@ -1,13 +1,14 @@
 //! A frame as the renderer walks it at each `Render`: its description, what each pass does, made, with the shape of
-//! each pass that draws, and its targets made at the size of its end.
+//! each pass that draws, and its targets made at the sizes their scales make of its end's.
 
-use crate::frame::{CreateFrame, DepthUse, Does, Load, PassRefused, Target, TargetSpec};
+use crate::frame::{CreateFrame, DepthUse, Does, Load, PassRefused, Size, Target, TargetSpec};
 use crate::pass::PassName;
 use crate::placement::Resource;
 use crate::shape::{ColourFormat, Shape};
 
 /// A frame, checked and made: what it does, where it ends, what each pass does with what it was made with, the
-/// textures and the storage its effects bind, and its targets, each the size of its end as it was last drawn.
+/// textures and the storage its effects bind, and its targets, each of the size its scale makes of its end's as it was
+/// last drawn, `size`.
 pub(super) struct Walk {
     create: CreateFrame,
     end: End,
@@ -15,8 +16,7 @@ pub(super) struct Walk {
     binds: Vec<u64>,
     stored: Vec<(PassName, u64)>,
     targets: Vec<wgpu::TextureView>,
-    width: u32,
-    height: u32,
+    size: Size,
 }
 
 /// Where a frame ends: on its window, whose surface gives each `Render` what it draws into, or on a texture of its
@@ -59,16 +59,16 @@ pub(super) struct Making<'a> {
 }
 
 impl Walk {
-    /// The frame `create`, which ends on `end`, of `format` and `width` by `height`, its targets made at that size and
-    /// each effect pass made by `effect`: refused as `effect` refuses a pass, at its place.
+    /// The frame `create`, which ends on `end`, of `format` and `size`, its targets made at the sizes their scales make
+    /// of it and each effect pass made by `effect`: refused as `effect` refuses a pass, at its place.
     pub fn new(
         device: &wgpu::Device,
         create: CreateFrame,
         (end, format): (End, ColourFormat),
-        (width, height): (u32, u32),
+        size: Size,
         mut effect: impl FnMut(Making<'_>) -> Result<Effected, PassRefused>,
     ) -> Result<Self, (u32, PassRefused)> {
-        let targets = made(device, &create.targets, width, height);
+        let targets = made(device, &create.targets, size);
         let mut written: Vec<Target> = Vec::new();
         let mut steps = Vec::with_capacity(create.passes.len());
         for (pass, at) in create.passes.iter().zip(0..) {
@@ -109,7 +109,7 @@ impl Walk {
             })
             .collect();
 
-        Ok(Self { create, end, steps, binds, stored, targets, width, height })
+        Ok(Self { create, end, steps, binds, stored, targets, size })
     }
 
     /// The texture it ends on, by its id: none for a frame that ends on a window.
@@ -167,15 +167,14 @@ impl Walk {
         &self.targets[at as usize]
     }
 
-    /// Makes its targets again when its end is drawn at another size, so each is the end's size, and the bind groups
-    /// its effects read them through.
-    pub fn fit(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        let resized = (width, height) != (self.width, self.height);
-        if !resized {
+    /// Makes its targets again when its end is drawn at another size, `size`, so each is the size its scale makes of
+    /// it, and the bind groups its effects read them through.
+    pub fn fit(&mut self, device: &wgpu::Device, size: Size) {
+        if size == self.size {
             return;
         }
-        self.targets = made(device, &self.create.targets, width, height);
-        (self.width, self.height) = (width, height);
+        self.targets = made(device, &self.create.targets, size);
+        self.size = size;
         for step in &mut self.steps {
             if let Step::Effect { effect, .. } = step {
                 effect.read = read_group(device, &effect.layout, &effect.reads, &self.targets);
@@ -202,12 +201,13 @@ pub(super) fn read_group(
     device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout, entries: &entries })
 }
 
-/// Each of `targets`, made `width` by `height`, to draw into and read.
-fn made(device: &wgpu::Device, targets: &[TargetSpec], width: u32, height: u32) -> Vec<wgpu::TextureView> {
+/// Each of `targets`, made at the size its scale makes of the end's, `end`, to draw into and read.
+fn made(device: &wgpu::Device, targets: &[TargetSpec], end: Size) -> Vec<wgpu::TextureView> {
     targets
         .iter()
         .map(|target| {
             let format = target.colour().map_or(wgpu::TextureFormat::Depth32Float, ColourFormat::wgpu);
+            let Size { width, height } = end.scaled(target.scale);
             device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: None,

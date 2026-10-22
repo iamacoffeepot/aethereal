@@ -7,7 +7,7 @@
 //! ```
 //! use aethereal_data::{Kind, KindName, Plain};
 //! use aethereal_render::effect::EffectId;
-//! use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, Uint, depth};
+//! use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, Uint, depth, scale};
 //! use aethereal_render::frame::{CreateFrame, Ends, FrameRefused};
 //! use aethereal_render::pass::Pass;
 //! use aethereal_window::WindowId;
@@ -29,8 +29,8 @@
 //!
 //! fn frame(window: WindowId, glaze: &EffectId<(Float, Uint)>) -> Result<CreateFrame, FrameRefused> {
 //!     let mut frame = FrameBuilder::on(Ends::Window(window));
-//!     let (ids, depth) = frame.draw(Surfaces, Uint, depth::Write);
-//!     let splats = frame.draw(Splats, Float, depth::Test(&depth));
+//!     let (ids, depth) = frame.draw(Surfaces, Uint, scale::Full, depth::Write);
+//!     let splats = frame.draw(Splats, Float, scale::Full, depth::Test(&depth));
 //!     frame.finish(Glaze, Effect::new(glaze, (splats, ids)))
 //! }
 //! ```
@@ -47,7 +47,7 @@
 //! ```compile_fail
 //! # use aethereal_data::{Kind, KindName, Plain};
 //! # use aethereal_render::effect::EffectId;
-//! # use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, Uint, depth};
+//! # use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, Uint, depth, scale};
 //! # use aethereal_render::frame::{CreateFrame, Ends, FrameRefused};
 //! # use aethereal_render::pass::Pass;
 //! # use aethereal_window::WindowId;
@@ -59,7 +59,7 @@
 //! # impl Pass for Glaze {}
 //! fn frame(window: WindowId, glaze: &EffectId<(Float,)>) -> Result<CreateFrame, FrameRefused> {
 //!     let mut frame = FrameBuilder::on(Ends::Window(window));
-//!     let ids = frame.draw(Ids, Uint, depth::Off);
+//!     let ids = frame.draw(Ids, Uint, scale::Full, depth::Off);
 //!     frame.finish(Glaze, Effect::new(glaze, (ids,)))
 //! }
 //! ```
@@ -68,7 +68,7 @@
 //!
 //! ```compile_fail
 //! # use aethereal_data::{Kind, KindName, Plain};
-//! # use aethereal_render::frame::builder::{Float, FrameBuilder, depth};
+//! # use aethereal_render::frame::builder::{Float, FrameBuilder, depth, scale};
 //! # use aethereal_render::frame::Ends;
 //! # use aethereal_render::pass::Pass;
 //! # use aethereal_window::WindowId;
@@ -80,12 +80,63 @@
 //! # impl Pass for Splats {}
 //! fn frame(window: WindowId) {
 //!     let mut frame = FrameBuilder::on(Ends::Window(window));
-//!     let colour = frame.draw(Surfaces, Float, depth::Off);
-//!     let splats = frame.draw(Splats, Float, depth::Test(&colour));
+//!     let colour = frame.draw(Surfaces, Float, scale::Full, depth::Off);
+//!     let splats = frame.draw(Splats, Float, scale::Full, depth::Test(&colour));
+//! }
+//! ```
+//!
+//! A target is of a size its scale makes of the end's, so a chain at reduced resolution, such as a bloom blurred at
+//! half size and laid back over the scene, is passes of one frame. An effect reads targets of any scale:
+//!
+//! ```
+//! # use aethereal_data::{Kind, KindName, Plain};
+//! # use aethereal_render::effect::EffectId;
+//! # use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, depth, scale};
+//! # use aethereal_render::frame::{CreateFrame, Ends, FrameRefused};
+//! # use aethereal_render::pass::Pass;
+//! # use aethereal_window::WindowId;
+//! # #[derive(Plain)] struct Scene;
+//! # impl Kind for Scene { const NAME: KindName = KindName::new("aether.example.scene"); }
+//! # impl Pass for Scene {}
+//! # #[derive(Plain)] struct Blur;
+//! # impl Kind for Blur { const NAME: KindName = KindName::new("aether.example.blur"); }
+//! # impl Pass for Blur {}
+//! # #[derive(Plain)] struct Bloom;
+//! # impl Kind for Bloom { const NAME: KindName = KindName::new("aether.example.bloom"); }
+//! # impl Pass for Bloom {}
+//! fn frame(
+//!     window: WindowId,
+//!     (blur, bloom): (&EffectId<(Float,)>, &EffectId<(Float, Float)>),
+//! ) -> Result<CreateFrame, FrameRefused> {
+//!     let mut frame = FrameBuilder::on(Ends::Window(window));
+//!     let (scene, _) = frame.draw(Scene, Float, scale::Full, depth::Write);
+//!     let blurred = frame.effect(Blur, Effect::new(blur, (scene,)), Float, scale::Half);
+//!     frame.finish(Bloom, Effect::new(bloom, (scene, blurred)))
+//! }
+//! ```
+//!
+//! A pass's targets are all of one size, so a pass tests a depth of the scale it draws at:
+//!
+//! ```compile_fail
+//! # use aethereal_data::{Kind, KindName, Plain};
+//! # use aethereal_render::frame::builder::{Float, FrameBuilder, depth, scale};
+//! # use aethereal_render::frame::Ends;
+//! # use aethereal_render::pass::Pass;
+//! # use aethereal_window::WindowId;
+//! # #[derive(Plain)] struct Surfaces;
+//! # impl Kind for Surfaces { const NAME: KindName = KindName::new("aether.example.surfaces"); }
+//! # impl Pass for Surfaces {}
+//! # #[derive(Plain)] struct Splats;
+//! # impl Kind for Splats { const NAME: KindName = KindName::new("aether.example.splats"); }
+//! # impl Pass for Splats {}
+//! fn frame(window: WindowId) {
+//!     let mut frame = FrameBuilder::on(Ends::Window(window));
+//!     let (_, depth) = frame.draw(Surfaces, Float, scale::Full, depth::Write);
+//!     let splats = frame.draw(Splats, Float, scale::Half, depth::Test(&depth));
 //! }
 //! ```
 
-use super::{CreateFrame, DepthUse, Does, Ends, FrameRefused, Load, PassSpec, TargetSpec};
+use super::{CreateFrame, DepthUse, Does, Ends, FrameRefused, Load, PassSpec, Scale, TargetKind, TargetSpec};
 use crate::effect::{EffectId, ReadKind, Reads};
 use crate::pass::{Pass, PassName};
 use crate::placement::Bind;
@@ -110,43 +161,94 @@ pub struct Depth32;
     label = "not a kind of colour target"
 )]
 pub trait Colour: ReadKind {
-    /// The target it is.
-    const SPEC: TargetSpec;
+    /// What the target holds.
+    const KIND: TargetKind;
 }
 
 impl Colour for Float {
-    const SPEC: TargetSpec = TargetSpec::Float;
+    const KIND: TargetKind = TargetKind::Float;
 }
 
 impl Colour for Uint {
-    const SPEC: TargetSpec = TargetSpec::Uint;
+    const KIND: TargetKind = TargetKind::Uint;
 }
 
-/// A target of the frame being built, of the kind `K`: the output of the pass that drew it, which a later pass reads,
-/// tests, or draws over.
-pub struct Target<K> {
+/// The size of a target as a part of its frame's end: [`scale::Full`], [`scale::Half`], [`scale::Quarter`], or
+/// [`scale::Eighth`].
+pub mod scale {
+    /// The end's size.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Full;
+
+    /// Half the end's size each way, rounded up.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Half;
+
+    /// A quarter of the end's size each way, rounded up.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Quarter;
+
+    /// An eighth of the end's size each way, rounded up.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Eighth;
+}
+
+impl sealed::Sealed for scale::Full {}
+impl sealed::Sealed for scale::Half {}
+impl sealed::Sealed for scale::Quarter {}
+impl sealed::Sealed for scale::Eighth {}
+
+/// A size of target, as the frame's description names it.
+#[diagnostic::on_unimplemented(
+    message = "a target is of `scale::Full`, `scale::Half`, `scale::Quarter`, or `scale::Eighth`, not `{Self}`",
+    label = "not a scale of target"
+)]
+pub trait Scaled: sealed::Sealed {
+    /// The scale it is.
+    const SCALE: Scale;
+}
+
+impl Scaled for scale::Full {
+    const SCALE: Scale = Scale::Full;
+}
+
+impl Scaled for scale::Half {
+    const SCALE: Scale = Scale::Half;
+}
+
+impl Scaled for scale::Quarter {
+    const SCALE: Scale = Scale::Quarter;
+}
+
+impl Scaled for scale::Eighth {
+    const SCALE: Scale = Scale::Eighth;
+}
+
+/// A target of the frame being built, of the kind `K` and the scale `S`: the output of the pass that drew it, which a
+/// later pass reads, tests, or draws over.
+pub struct Target<K, S = scale::Full> {
     at: u32,
-    kind: PhantomData<fn() -> K>,
+    kind: PhantomData<fn() -> (K, S)>,
 }
 
-/// A depth target, written by the pass that returned it.
-pub type DepthTarget = Target<Depth32>;
+/// A depth target of the scale `S`, written by the pass that returned it.
+pub type DepthTarget<S = scale::Full> = Target<Depth32, S>;
 
-impl<K> Clone for Target<K> {
+impl<K, S> Clone for Target<K, S> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<K> Copy for Target<K> {}
+impl<K, S> Copy for Target<K, S> {}
 
-impl<K> Debug for Target<K> {
+impl<K, S> Debug for Target<K, S> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Target").field(&self.at).finish()
     }
 }
 
-impl<K> Target<K> {
+impl<K, S> Target<K, S> {
     /// The target at `at` of the frame's targets.
     const fn at(at: u32) -> Self {
         Self { at, kind: PhantomData }
@@ -160,7 +262,7 @@ impl<K> Target<K> {
 
 /// How a draw pass uses depth: [`depth::Off`], [`depth::Write`], or [`depth::Test`].
 pub mod depth {
-    use super::DepthTarget;
+    use super::{DepthTarget, scale};
 
     /// It uses none.
     #[derive(Debug, Clone, Copy)]
@@ -170,57 +272,58 @@ pub mod depth {
     #[derive(Debug, Clone, Copy)]
     pub struct Write;
 
-    /// It tests the depth an earlier pass wrote.
+    /// It tests the depth an earlier pass wrote, of the scale of the target it draws into.
     #[derive(Debug, Clone, Copy)]
-    pub struct Test<'a>(pub &'a DepthTarget);
+    pub struct Test<'a, S = scale::Full>(pub &'a DepthTarget<S>);
 }
 
-/// Keeps [`DepthArg`] to the three uses this module gives.
+/// Keeps [`DepthArg`] to the three uses this module gives, and [`Scaled`] to its four scales.
 mod sealed {
     pub trait Sealed {}
 }
 
 impl sealed::Sealed for depth::Off {}
 impl sealed::Sealed for depth::Write {}
-impl sealed::Sealed for depth::Test<'_> {}
+impl<S> sealed::Sealed for depth::Test<'_, S> {}
 
-/// How a draw pass uses depth, and what it returns: its colour target, and with [`depth::Write`] the depth target it
-/// wrote.
+/// How a draw pass into a target of the scale `S` uses depth, and what it returns: its colour target, and with
+/// [`depth::Write`] the depth target it wrote, of the same scale, as a pass's targets are all of one size.
 #[diagnostic::on_unimplemented(
-    message = "a pass uses depth as `depth::Off`, `depth::Write`, or `depth::Test(&depth)`, not `{Self}`",
-    label = "not a use of depth"
+    message = "a pass into a target of `{S}` uses depth as `depth::Off`, `depth::Write`, or `depth::Test(&depth)` of a \
+               depth target of `{S}`, not `{Self}`",
+    label = "not a use of depth at this target's scale"
 )]
-pub trait DepthArg: sealed::Sealed {
+pub trait DepthArg<S: Scaled>: sealed::Sealed {
     /// What the pass returns of a colour target of the kind `K`.
     type Out<K>;
 
     /// The use, adding the depth target it writes to the frame's `targets`, and what the pass that drew `colour`
     /// returns.
-    fn drawn<K>(self, colour: Target<K>, targets: &mut Vec<TargetSpec>) -> (DepthUse, Self::Out<K>);
+    fn drawn<K>(self, colour: Target<K, S>, targets: &mut Vec<TargetSpec>) -> (DepthUse, Self::Out<K>);
 }
 
-impl DepthArg for depth::Off {
-    type Out<K> = Target<K>;
+impl<S: Scaled> DepthArg<S> for depth::Off {
+    type Out<K> = Target<K, S>;
 
-    fn drawn<K>(self, colour: Target<K>, _: &mut Vec<TargetSpec>) -> (DepthUse, Target<K>) {
+    fn drawn<K>(self, colour: Target<K, S>, _: &mut Vec<TargetSpec>) -> (DepthUse, Target<K, S>) {
         (DepthUse::Off, colour)
     }
 }
 
-impl DepthArg for depth::Write {
-    type Out<K> = (Target<K>, DepthTarget);
+impl<S: Scaled> DepthArg<S> for depth::Write {
+    type Out<K> = (Target<K, S>, DepthTarget<S>);
 
-    fn drawn<K>(self, colour: Target<K>, targets: &mut Vec<TargetSpec>) -> (DepthUse, (Target<K>, DepthTarget)) {
-        let at = next(targets, TargetSpec::Depth);
+    fn drawn<K>(self, colour: Target<K, S>, targets: &mut Vec<TargetSpec>) -> (DepthUse, Self::Out<K>) {
+        let at = next(targets, TargetSpec { kind: TargetKind::Depth, scale: S::SCALE });
 
         (DepthUse::Write(at), (colour, Target::at(at)))
     }
 }
 
-impl DepthArg for depth::Test<'_> {
-    type Out<K> = Target<K>;
+impl<S: Scaled> DepthArg<S> for depth::Test<'_, S> {
+    type Out<K> = Target<K, S>;
 
-    fn drawn<K>(self, colour: Target<K>, _: &mut Vec<TargetSpec>) -> (DepthUse, Target<K>) {
+    fn drawn<K>(self, colour: Target<K, S>, _: &mut Vec<TargetSpec>) -> (DepthUse, Target<K, S>) {
         (DepthUse::Test(self.0.at), colour)
     }
 }
@@ -251,25 +354,27 @@ impl ReadsAs<()> for () {
     }
 }
 
-impl<A> ReadsAs<(A,)> for (Target<A>,) {
+impl<A, SA> ReadsAs<(A,)> for (Target<A, SA>,) {
     fn named(self) -> Vec<super::Target> {
         vec![self.0.named()]
     }
 }
 
-impl<A, B> ReadsAs<(A, B)> for (Target<A>, Target<B>) {
+impl<A, SA, B, SB> ReadsAs<(A, B)> for (Target<A, SA>, Target<B, SB>) {
     fn named(self) -> Vec<super::Target> {
         vec![self.0.named(), self.1.named()]
     }
 }
 
-impl<A, B, C> ReadsAs<(A, B, C)> for (Target<A>, Target<B>, Target<C>) {
+impl<A, SA, B, SB, C, SC> ReadsAs<(A, B, C)> for (Target<A, SA>, Target<B, SB>, Target<C, SC>) {
     fn named(self) -> Vec<super::Target> {
         vec![self.0.named(), self.1.named(), self.2.named()]
     }
 }
 
-impl<A, B, C, D> ReadsAs<(A, B, C, D)> for (Target<A>, Target<B>, Target<C>, Target<D>) {
+impl<A, SA, B, SB, C, SC, D, SD> ReadsAs<(A, B, C, D)>
+    for (Target<A, SA>, Target<B, SB>, Target<C, SC>, Target<D, SD>)
+{
     fn named(self) -> Vec<super::Target> {
         vec![self.0.named(), self.1.named(), self.2.named(), self.3.named()]
     }
@@ -302,7 +407,7 @@ impl<R: Reads> Effect<R> {
     }
 }
 
-/// A draw onto the frame's end, the last pass, using depth as `D` says.
+/// A draw onto the frame's end, the last pass, using depth as `D` says: a depth of the end's own size.
 #[derive(Debug, Clone, Copy)]
 pub struct Onto<D>(pub D);
 
@@ -322,10 +427,10 @@ impl<R: Reads> Last for Effect<R> {
     }
 }
 
-impl<D: DepthArg> Last for Onto<D> {
+impl<D: DepthArg<scale::Full>> Last for Onto<D> {
     fn does(self, targets: &mut Vec<TargetSpec>) -> Does {
         // The end is no target of the frame's, and nothing reads what the last pass returns.
-        let (depth, _) = self.0.drawn(Target::<Float>::at(u32::MAX), targets);
+        let (depth, _) = self.0.drawn(Target::<Float, scale::Full>::at(u32::MAX), targets);
 
         Does::Draw { into: super::Target::End, depth, load: Load::Clear }
     }
@@ -346,10 +451,10 @@ impl FrameBuilder {
         Self { ends, targets: Vec::new(), passes: Vec::new() }
     }
 
-    /// A pass, `P`, the placements that join it drawing into a new target of `K`, cleared, using depth as `depth`
-    /// says. Answers the target, and with [`depth::Write`] the depth it wrote.
-    pub fn draw<P: Pass, K: Colour, D: DepthArg>(&mut self, _: P, _: K, depth: D) -> D::Out<K> {
-        let colour = Target::at(next(&mut self.targets, K::SPEC));
+    /// A pass, `P`, the placements that join it drawing into a new target of `K` at the scale `S`, cleared, using
+    /// depth as `depth` says. Answers the target, and with [`depth::Write`] the depth it wrote, of the same scale.
+    pub fn draw<P: Pass, K: Colour, S: Scaled, D: DepthArg<S>>(&mut self, _: P, _: K, _: S, depth: D) -> D::Out<K> {
+        let colour = Target::at(next(&mut self.targets, TargetSpec { kind: K::KIND, scale: S::SCALE }));
         let (used, out) = depth.drawn(colour, &mut self.targets);
         self.add::<P>(Does::Draw { into: colour.named(), depth: used, load: Load::Clear });
 
@@ -358,7 +463,12 @@ impl FrameBuilder {
 
     /// A pass, `P`, the placements that join it drawing over what earlier passes drew into `target`, using depth as
     /// `depth` says. Answers the target as this pass leaves it, and with [`depth::Write`] the depth it wrote.
-    pub fn draw_over<P: Pass, K: Colour, D: DepthArg>(&mut self, _: P, target: Target<K>, depth: D) -> D::Out<K> {
+    pub fn draw_over<P: Pass, K: Colour, S: Scaled, D: DepthArg<S>>(
+        &mut self,
+        _: P,
+        target: Target<K, S>,
+        depth: D,
+    ) -> D::Out<K> {
         let (used, out) = depth.drawn(target, &mut self.targets);
         self.add::<P>(Does::Draw { into: target.named(), depth: used, load: Load::Keep });
 
@@ -372,9 +482,15 @@ impl FrameBuilder {
         self.add::<P>(Does::Compute);
     }
 
-    /// A pass, `P`, drawing `effect` over a new target of `K`. Answers the target.
-    pub fn effect<P: Pass, R: Reads, K: Colour>(&mut self, _: P, effect: Effect<R>, _: K) -> Target<K> {
-        let into = next(&mut self.targets, K::SPEC);
+    /// A pass, `P`, drawing `effect` over a new target of `K` at the scale `S`. Answers the target.
+    pub fn effect<P: Pass, R: Reads, K: Colour, S: Scaled>(
+        &mut self,
+        _: P,
+        effect: Effect<R>,
+        _: K,
+        _: S,
+    ) -> Target<K, S> {
+        let into = next(&mut self.targets, TargetSpec { kind: K::KIND, scale: S::SCALE });
         self.add::<P>(effect.does(super::Target::Texture(into)));
 
         Target::at(into)

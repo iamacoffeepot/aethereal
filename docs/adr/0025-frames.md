@@ -30,7 +30,9 @@ CreateFrame { ends: Ends, targets: Vec<TargetSpec>, passes: Vec<PassSpec> }   ->
 enum Ends { Window(WindowId), Texture { size: Size, format: TextureFormat } }   // shown on a window (ADR-0024), or drawn into a texture
 struct Size { width: u32, height: u32 }         // the texture's, each side at most the GPU's longest
 enum TextureFormat { Rgba8, Rgba8Srgb, R8, Rgba16Float }   // ADR-0021's, each one a pass draws into and a program filters
-enum TargetSpec { Float, Uint, Depth }          // Rgba16Float, R32Uint, Depth32Float
+struct TargetSpec { kind: TargetKind, scale: Scale }
+enum TargetKind { Float, Uint, Depth }          // Rgba16Float, R32Uint, Depth32Float
+enum Scale { Full, Half, Quarter, Eighth }      // each side the end's divided by 1, 2, 4, or 8, rounded up
 
 struct PassSpec { name: PassName, does: Does }   // a type's id, as a kind's is (ADR-0006)
 enum Does {
@@ -48,8 +50,10 @@ enum Load { Clear, Keep }
 - An effect pass begins from what an earlier pass drew into its target, so an effect that blends lays its colour over it, and from black when no earlier pass wrote it: an effect that begins a frame begins from black.
 
 - A pass reads only targets an earlier pass of the frame wrote, never the one it writes, and a depth it tests is one an earlier pass wrote.
-- Every target is the size of the frame's end. Targets of other sizes are later work.
-- **A frame that ends on a window follows the window's size.** When the window is resized (ADR-0024: `Resized`), the renderer configures its surface to the new size as its next `Render` begins, and each frame that ends on the window makes its targets again at that size, with the bind groups its effects read them through, before anything is drawn; never during a frame. Resizes heard between two `Render`s are applied once, at the last size. A frame made for a window is made at one pixel and fitted at the first `Render` that draws it, so a frame that replaces another while the window stands at a size is drawn at that size.
+- **A target is of a size its scale makes of the end's**: each side the end's divided by 1, 2, 4, or 8 and rounded up, and never less than one pixel, so an odd end keeps its last column at half size and an end narrower than eight pixels still has a target at an eighth. Full size is a scale like the others, `Scale::Full`, written out, never a scale left out. So a chain at reduced resolution, a bloom blurred at half and a quarter and laid back over the scene, is passes of one frame. **This departs from every target being the size of the end**, which made such a chain a frame of its own, and drew the scene twice: the galaxy demo drew its stars twice, and the black hole traced its photons twice.
+- **A pass's targets are all of one size**, as WebGPU draws a pass: a draw pass tests or writes a depth of the scale of the target it draws into, and the end is of `Scale::Full`. The check refuses a depth of another (`PassRefused::DepthScale`). A pass draws over the whole of its target: WebGPU begins each pass with its viewport and its scissor the size of what it draws into, so a draw into a half-size target is drawn at that target's size, and an effect's triangle covers a quarter-size target as it does the end. An effect reads targets of any scale.
+- **The scale is a small enum, not a divisor of any size.** A divisor of 3, or of 1000, would make sizes no downsample chain uses and edges rounded differently each time, and four steps of two cover a bloom's chain; a finer one is a scale added, not a number left open.
+- **A frame that ends on a window follows the window's size.** When the window is resized (ADR-0024: `Resized`), the renderer configures its surface to the new size as its next `Render` begins, and each frame that ends on the window makes its targets again at the sizes their scales make of that size, with the bind groups its effects read them through, before anything is drawn; never during a frame. Resizes heard between two `Render`s are applied once, at the last size. A frame made for a window is made at one pixel and fitted at the first `Render` that draws it, so a frame that replaces another while the window stands at a size is drawn at that size.
 - A pass draws into one colour target. Several at once are later work.
 - The last pass writes the frame's end.
 
@@ -60,15 +64,18 @@ enum Load { Clear, Keep }
 ```rust
 struct Surfaces;  impl Pass for Surfaces {}   // a pass is named by a type, which the frame's maker and the
 struct Splats;    impl Pass for Splats {}     // actors that place things share
+struct Blur;      impl Pass for Blur {}
 
 let mut frame = FrameBuilder::on(Ends::Window(window));
-let (ids, depth) = frame.draw(Surfaces, Uint, depth::Write);             // -> (Target<Uint>, DepthTarget)
-let splats = frame.draw(Splats, Float, depth::Test(&depth));             // -> Target<Float>
-let create = frame.finish(Glaze, Effect::new(&glaze, (splats, ids)))?;   // -> CreateFrame, ending on the window
+let (ids, depth) = frame.draw(Surfaces, Uint, scale::Full, depth::Write);   // -> (Target<Uint>, DepthTarget)
+let splats = frame.draw(Splats, Float, scale::Full, depth::Test(&depth));   // -> Target<Float>
+let glow = frame.effect(Blur, Effect::new(&blur, (splats,)), Float, scale::Half);   // -> Target<Float, scale::Half>
+let create = frame.finish(Glaze, Effect::new(&glaze, (glow, ids)))?;                // -> CreateFrame, on the window
 ```
 
 - **A pass's type and its target's kind are given as values**, `Surfaces` and `Uint`, where this record first wrote `draw::<Surfaces>(Colour::<Uint>, ..)`: a call that names one of its types and infers the rest is not one Rust has, and the kinds and the use of depth decide what a pass returns, so each is inferred from its value. A pass type is a unit struct, so its value is its name.
 - `draw_over` draws a pass over a target an earlier pass returned (`Load::Keep`), `effect` draws an effect into a new target, and `finish` takes the last pass's type and either an `Effect` or a draw `Onto` the end.
+- **A new target's scale is given as a value too**, `scale::Full` or `scale::Half`, and is in its handle's type, `Target<Float, scale::Half>`, whose scale is `scale::Full` when it is not written. A depth a pass writes is of its colour target's scale, and `depth::Test` takes only a depth of the scale of the target it draws into, so a pass whose targets are of two sizes does not compile; `draw_over` keeps its target's scale, and a draw `Onto` the end uses a depth of the end's size. An effect takes targets of any scale.
 
 - **A pass is named by a type, not a string.** A name mistyped, or one renamed by the frame's maker and not by those who place things, is a compile error, where a string would join nothing and be found only by what was not drawn. A guest names a pass by the type's id, as it names a kind: a pass type is a kind, `trait Pass: Kind`, given a name of its own, and its `PassName` is its `KindId`.
 
@@ -87,7 +94,7 @@ CreateEffect { wgsl: BlobRef, fragment: String, reads: Vec<Read>, bindings: Vec<
 enum Read { Float, Uint, Depth }   // texture_2d<f32>, texture_2d<u32>, texture_depth_2d, at @group(0) @binding(i); `reads` may be empty
 ```
 
-- **The render root writes the vertex stage**: one triangle over the whole target, passing its fragment stage where each pixel is across the target from the top left, `@location(0) uv: vec2<f32>`, beside `@builtin(position)`. Every target of a frame is the size of its end, so the pixel an effect shades is the pixel it reads with `textureLoad`. An effect's shape holds no depth, and it lists nothing in group 0.
+- **The render root writes the vertex stage**: one triangle over the whole target, passing its fragment stage where each pixel is across the target from the top left, `@location(0) uv: vec2<f32>`, beside `@builtin(position)`. `uv` is the same place across a target of any size, so an effect that samples what it reads at `uv` reads it at the place it shades whatever its scale. The pixel an effect shades is the pixel it reads with `textureLoad` only of a target of its own target's scale: one that loads a target of another scale scales the pixel itself, by `textureDimensions`, as WebGPU answers a load past a texture's edge with zero or with a texel inside it, and never refuses it. An effect's shape holds no depth, and it lists nothing in group 0.
 - Its WGSL travels as a blob of UTF-8, as a program's does (ADR-0021).
 - It is checked as a program is: its WGSL valid, its fragment stage reading only what the vertex stage writes and writing its shape's colour, each target it reads declared as `reads` says, each binding it uses listed, and no more textures than a stage binds, its reads counted with them. That is where an effect is held to the device's limits.
 - **`EffectId<R>` is had only from the answer, and only when the answer reads what `R` says**: `EffectId::<(Float, Uint)>::of(&made)` is none for an effect made to read anything else. On the wire, and in an actor's state, it is the program's id alone, as a guest names it; what it reads is its type's, and the render root checks a pass's reads against what the effect was made to read, whatever its sender claims.
@@ -136,13 +143,13 @@ Place {
 - A program that draws things and never mentions frames draws as it did: the render root's own main frame is ADR-0023's one pass.
 - A change of settings is one `CreateFrame` and one release. The programs are kept, as they are made against shapes, so a frame is replaced without compiling anything.
 - An actor written in Rust gets a frame's mistakes as compile errors that name them. A guest gets them as refusals from the render root's check, which is the one that decides.
-- Every target lives as long as its frame, and every frame's targets are its own. At 3840×2160, eight targets of four 16-bit floats are about 530 MB. A frame is fixed when it is made, so which of its targets are never alive at once can be worked out then, and they can share memory; that is later work, inside the render root.
+- Every target lives as long as its frame, and every frame's targets are its own. At 3840×2160, eight targets of four 16-bit floats are about 530 MB at full size; one at half size is a quarter of that, and at a quarter a sixteenth. A frame is fixed when it is made, so which of its targets are never alive at once can be worked out then, and they can share memory; that is later work, inside the render root.
 - An interface library, or anything drawn apart from the game, draws into a frame of its own and the main frame's owner reads its texture: one effect pass to lay it over the scene, decided by that owner.
 - A frame cannot depth test against another frame's depth. A frame that needs to reads it as a texture, which the other frame ends on.
 - ADR-0021 and ADR-0023 are edited to match: a program is made against a shape rather than the surface's format, a placement joins passes, and what ADR-0023 drew in one pass is the render root's own main frame.
 - What is decided separately, each when it is needed:
   - **Compute passes**, and the storage they write: decided by ADR-0026. Then **draws whose count a buffer holds**: decided by ADR-0026, as counts a storage holds.
-  - **Targets of other sizes and several colour targets in one pass.**
+  - **Several colour targets in one pass.** Targets of other sizes are decided here, as a scale of the end.
   - **A viewport for each draw**, for shadows drawn into tiles of one texture.
   - **Shared memory for targets never alive at once.**
   - **A texture frame run less often than every `Render`**, or when asked.

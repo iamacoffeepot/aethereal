@@ -1,6 +1,7 @@
 //! The page's entry points, and an actor that makes a frame of a sky, an effect that reads nothing, a depth pass over
-//! it, a pass tested against that, and a tint over all three, places a surface and a splat in it, then reads back what
-//! was drawn and times the frame's passes.
+//! it, a pass tested against that, a pattern drawn at half size, and a tint over all of them that lays the pattern
+//! over a band of the scene, places a surface and a splat in it, then reads back what was drawn and times the frame's
+//! passes.
 
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, BlobRef, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
@@ -11,7 +12,7 @@ use aethereal_chassis_browser::{Browser, Listening, Performance, open, renderer}
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::effect::{CreateEffect, EffectId, Effected, Read};
-use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, depth};
+use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, depth, scale};
 use aethereal_render::frame::{CreateFrame, Ends, Frame, Framed, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::{Main, Pass};
@@ -137,6 +138,13 @@ impl Kind for Splats {
 
 impl Pass for Splats {}
 
+/// The pass that draws a pattern into a target of half the window's size.
+#[derive(Plain)]
+#[kind(name = "aether.example.detail")]
+struct Detail;
+
+impl Pass for Detail {}
+
 /// The pass that tints the scene onto the window.
 #[derive(Plain)]
 struct Tint;
@@ -182,13 +190,33 @@ fn sky(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 }
 ";
 
-/// An effect that halves the green of each pixel of the scene it reads.
+/// An effect that reads nothing and draws a checker of its own target's pixels, each lit pixel beside an unlit one.
+const DETAIL: &str = "
+@fragment
+fn detail(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    let pixel = vec2<u32>(at.xy);
+    let lit = f32((pixel.x + pixel.y) % 2u);
+    return vec4(lit, lit, lit, 1.0);
+}
+";
+
+/// An effect that halves the green of each pixel of the scene it reads, and over the top eight rows of its right half
+/// lays the detail, read at the same place across it by `uv`: red where the detail is half the scene's size each way,
+/// rounded up, and green as the detail's checker is there.
 const TINT: &str = "
 @group(0) @binding(0) var scene: texture_2d<f32>;
+@group(0) @binding(1) var detail: texture_2d<f32>;
 
 @fragment
-fn tint(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
-    return textureLoad(scene, vec2<i32>(at.xy), 0) * vec4(1.0, 0.5, 1.0, 1.0);
+fn tint(@builtin(position) at: vec4<f32>, @location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let pixel = vec2<i32>(at.xy);
+    let tinted = textureLoad(scene, pixel, 0) * vec4(1.0, 0.5, 1.0, 1.0);
+    let whole = textureDimensions(scene);
+    let part = textureDimensions(detail);
+    let halved = all((whole + 1u) / 2u == part);
+    let checked = textureLoad(detail, vec2<i32>(uv * vec2<f32>(part)), 0).g;
+    let banded = pixel.y < 8 && pixel.x >= i32(whole.x) / 2;
+    return select(tinted, vec4(f32(halved), checked, 0.0, 1.0), banded);
 }
 ";
 
@@ -232,16 +260,27 @@ enum Effecting {
     /// The tint, once the quad was made.
     Tint { mesh: MeshId },
     /// The sky, once the tint was.
-    Sky { mesh: MeshId, tint: EffectId<(Float,)> },
+    Sky { mesh: MeshId, tint: EffectId<(Float, Float)> },
+    /// The detail, once the sky was.
+    Detail { mesh: MeshId, tint: EffectId<(Float, Float)>, sky: EffectId<()> },
 }
 
 /// Which program was asked for, with what was made before it.
 #[derive(Plain)]
 enum Making {
-    /// The surface, once the sky was made.
-    Surface { mesh: MeshId, tint: EffectId<(Float,)>, sky: EffectId<()> },
+    /// The surface, once the effects were made.
+    Surface { mesh: MeshId, effects: Effects },
     /// The splat, once the surface was.
-    Splat { mesh: MeshId, tint: EffectId<(Float,)>, sky: EffectId<()>, surface: ProgramId },
+    Splat { mesh: MeshId, effects: Effects, surface: ProgramId },
+}
+
+/// The frame's effects.
+#[derive(Plain)]
+#[kind(name = "aether.example.effects")]
+struct Effects {
+    tint: EffectId<(Float, Float)>,
+    sky: EffectId<()>,
+    detail: EffectId<()>,
 }
 
 impl Kind for Making {
@@ -392,7 +431,7 @@ impl Handles<Answer<Meshed, Learned>> for Framer {
         let tint = CreateEffect {
             wgsl,
             fragment: String::from("tint"),
-            reads: vec![Read::Float],
+            reads: vec![Read::Float, Read::Float],
             bindings: Vec::new(),
             blend: Blend::Opaque,
             shape: Shape::flat(learned.window),
@@ -415,7 +454,7 @@ impl Handles<Answer<Effected, Effecting>> for Framer {
             say(format!("an effect was not made: {answered:?}"));
             return Ok(());
         };
-        let (mesh, tint, sky) = match effecting {
+        let (mesh, effects) = match effecting {
             Effecting::Tint { mesh } => {
                 let Some(tint) = EffectId::of(&effect) else {
                     say(format!("the tint reads what it was not asked to: {:?}", effect.reads()));
@@ -444,7 +483,30 @@ impl Handles<Answer<Effected, Effecting>> for Framer {
                     say(format!("the sky reads what it was not asked to: {:?}", effect.reads()));
                     return Ok(());
                 };
-                (mesh, tint, sky)
+                let wgsl = match turn.put(Vec::from(DETAIL)) {
+                    Ok(wgsl) => wgsl,
+                    Err(why) => {
+                        say(format!("no detail asked: {why}"));
+                        return Ok(());
+                    }
+                };
+                let detail = CreateEffect {
+                    wgsl,
+                    fragment: String::from("detail"),
+                    reads: Vec::new(),
+                    bindings: Vec::new(),
+                    blend: Blend::Opaque,
+                    shape: Shape::flat(ColourFormat::Rgba16Float),
+                };
+                turn.to(path::<Renderer>(())).ask(&detail, &Effecting::Detail { mesh, tint, sky })?;
+                return Ok(());
+            }
+            Effecting::Detail { mesh, tint, sky } => {
+                let Some(detail) = EffectId::of(&effect) else {
+                    say(format!("the detail reads what it was not asked to: {:?}", effect.reads()));
+                    return Ok(());
+                };
+                (mesh, Effects { tint, sky, detail })
             }
         };
         let wgsl = match turn.put(Vec::from(SURFACE)) {
@@ -455,7 +517,7 @@ impl Handles<Answer<Effected, Effecting>> for Framer {
             }
         };
         let surface = program(wgsl, Depth::TestWrite);
-        turn.to(path::<Renderer>(())).ask(&surface, &Making::Surface { mesh, tint, sky })?;
+        turn.to(path::<Renderer>(())).ask(&surface, &Making::Surface { mesh, effects })?;
 
         Ok(())
     }
@@ -473,8 +535,8 @@ impl Handles<Answer<Programmed, Making>> for Framer {
             say(format!("a program was not made: {answered:?}"));
             return Ok(());
         };
-        let (mesh, tint, sky, surface) = match making {
-            Making::Surface { mesh, tint, sky } => {
+        let (mesh, effects, surface) = match making {
+            Making::Surface { mesh, effects } => {
                 let wgsl = match turn.put(Vec::from(SPLAT)) {
                     Ok(wgsl) => wgsl,
                     Err(why) => {
@@ -483,19 +545,20 @@ impl Handles<Answer<Programmed, Making>> for Framer {
                     }
                 };
                 let splat = program(wgsl, Depth::Test);
-                turn.to(path::<Renderer>(())).ask(&splat, &Making::Splat { mesh, tint, sky, surface: made })?;
+                turn.to(path::<Renderer>(())).ask(&splat, &Making::Splat { mesh, effects, surface: made })?;
                 return Ok(());
             }
-            Making::Splat { mesh, tint, sky, surface } => (mesh, tint, sky, surface),
+            Making::Splat { mesh, effects, surface } => (mesh, effects, surface),
         };
         let Self::Making { window } = *self else {
             return Ok(());
         };
         let mut frame = FrameBuilder::on(Ends::Window(window));
-        let sky = frame.effect(Sky, Effect::new(&sky, ()), Float);
+        let sky = frame.effect(Sky, Effect::new(&effects.sky, ()), Float, scale::Full);
         let (scene, depth) = frame.draw_over(Surfaces, sky, depth::Write);
         let scene = frame.draw_over(Splats, scene, depth::Test(&depth));
-        let create = match frame.finish(Tint, Effect::new(&tint, (scene,))) {
+        let detail = frame.effect(Detail, Effect::new(&effects.detail, ()), Float, scale::Half);
+        let create = match frame.finish(Tint, Effect::new(&effects.tint, (scene, detail))) {
             Ok(create) => create,
             Err(why) => {
                 say(format!("the frame was not built: {why:?}"));
@@ -607,6 +670,11 @@ impl Handles<Answer<Pixels, Nothing>> for Framer {
             "frame width={width} height={height} format={format:?} surface={surface} splat={splat} sky_top={sky_top} \
              sky_bottom={sky_bottom}"
         ));
+        // A block of two by two pixels of the band, from an even place: one pixel of the half-size detail each, so all
+        // four are alike, and unlike the block beside them. Drawn at the window's size, each would be unlike the next.
+        let (x, y) = ((width / 2 + 2) & !1, 2);
+        let block = [(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1), (x + 2, y)].map(|(x, y)| pixel(read, width, x, y));
+        say(format!("detail block={} beside={}", block[..4].join("/"), block[4]));
 
         Ok(())
     }

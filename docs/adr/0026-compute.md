@@ -24,7 +24,7 @@ struct Simulate;  impl Pass for Simulate {}
 
 let mut frame = FrameBuilder::on(Ends::Window(window));
 frame.compute(Simulate);                                    // a pass with no target: it writes storage
-let (scene, depth) = frame.draw(Surfaces, Float, depth::Write);
+let (scene, depth) = frame.draw(Surfaces, Float, scale::Full, depth::Write);
 let create = frame.finish(Glaze, Effect::new(&glaze, (scene,)))?;
 ```
 

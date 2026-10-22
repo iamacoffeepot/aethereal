@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::asked::blob;
-use crate::frame::{PassSpec, TargetSpec};
+use crate::frame::{PassSpec, Scale, TargetKind, TargetSpec};
 use crate::pass::{Main, Pass};
 use crate::placement::Resource;
 use aethereal_data::{Budget, from_bytes};
@@ -41,7 +41,7 @@ fn window() -> WindowId {
 /// The renderer's kept state, on `device`, before anything is asked of it, drawing into a window of `Bgra8`.
 fn kept(device: &wgpu::Device) -> Kept {
     let format = ColourFormat::Bgra8;
-    let Ok(own) = Walk::new(device, CreateFrame::own(window()), (End::Window, format), (1, 1), effectless) else {
+    let Ok(own) = Walk::new(device, CreateFrame::own(window()), (End::Window, format), Size::PIXEL, effectless) else {
         panic!("the renderer's own frame is made");
     };
 
@@ -105,7 +105,7 @@ fn an_effect_binding_a_sampler_none_has_made_is_made_and_drawn() {
     };
     let frame = CreateFrame {
         ends: Ends::Texture { size: Size { width: 4, height: 4 }, format: TextureFormat::Rgba8 },
-        targets: vec![TargetSpec::Float],
+        targets: vec![TargetSpec { kind: TargetKind::Float, scale: Scale::Full }],
         passes: vec![glow, composite],
     };
     assert_eq!(frame::check(&frame, &kept), Ok(()));
@@ -121,7 +121,7 @@ fn an_effect_binding_a_sampler_none_has_made_is_made_and_drawn() {
 /// Fits the window's main frame of `kept` to a surface `width` by `height`, as each `Render` does before it draws, and
 /// draws it there.
 fn drawn_at(device: &wgpu::Device, queue: &wgpu::Queue, kept: &mut Kept, (width, height): (u32, u32)) {
-    kept.main_mut().fit(device, width, height);
+    kept.main_mut().fit(device, Size { width, height });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     kept.run_all(&mut encoder, &surface_of(device, width, height), None);
     queue.submit([encoder.finish()]);
@@ -140,7 +140,11 @@ fn a_frame_that_ends_on_the_window_follows_its_surface_to_each_new_size() {
         name: PassName::of::<Main>(),
         does: Does::Draw { into: Target::End, depth: DepthUse::Write(0), load: Load::Clear },
     };
-    let frame = CreateFrame { ends: Ends::Window(window()), targets: vec![TargetSpec::Depth], passes: vec![onto] };
+    let frame = CreateFrame {
+        ends: Ends::Window(window()),
+        targets: vec![TargetSpec { kind: TargetKind::Depth, scale: Scale::Full }],
+        passes: vec![onto],
+    };
     assert_eq!(frame::check(&frame, &kept), Ok(()));
     let framed = kept.frame(&device, frame, MAKER);
     assert!(matches!(framed, Ok(Framed::Made(_))), "the frame is refused: {framed:?}");
@@ -337,4 +341,97 @@ fn a_frame_ending_in_floats_is_sampled_by_another_frame_s_effect_and_read_back_i
         panic!("a texture is read back as pixels");
     };
     assert_eq!((format, copied.pixel), (TextureFormat::Rgba16Float, 8));
+}
+
+/// An effect that reads a target of floats at the pixel it shades, as a downsample of one of another size would not.
+const LOADED: &str = "
+@group(0) @binding(0) var scene: texture_2d<f32>;
+
+@fragment
+fn composite(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(scene, vec2<i32>(at.xy), 0);
+}
+";
+
+/// The pass that downsamples the scene into a quarter-size target.
+#[derive(Plain)]
+#[kind(name = "aether.test.downsample")]
+struct Downsample;
+
+impl Pass for Downsample {}
+
+/// The sides of each target of the window's main frame of `kept`, in order.
+fn sides(kept: &Kept, targets: u32) -> Vec<(u32, u32)> {
+    (0..targets).map(|at| kept.main().target(at).texture()).map(|texture| (texture.width(), texture.height())).collect()
+}
+
+#[test]
+fn a_frame_of_half_and_quarter_size_targets_is_drawn_at_each_size_its_window_is_drawn_at() {
+    // Catches a target made at the end's size whatever its scale, or at the scale's size rounded down, and one made
+    // again at the end's size when the window is resized; and a draw into a half-size target whose depth is of
+    // another size, or an effect over a quarter-size target drawn at the end's size, which WebGPU refuses; and the
+    // targets made again at every `Render`, though the window kept its size.
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let mut kept = kept(&device);
+
+    let reading = |kept: &mut Kept, shape| {
+        let create = CreateEffect {
+            wgsl: blob(),
+            fragment: String::from("composite"),
+            reads: vec![Read::Float],
+            bindings: Vec::new(),
+            blend: Blend::Opaque,
+            shape,
+        };
+        assert_eq!(effect::check(&create, LOADED, &device.limits()), Ok(()));
+        let program = kept.ids.next();
+        kept.programs.keep(program, MAKER, effect_pipeline(&device, &create, LOADED));
+        ProgramId { id: program }
+    };
+    let downsample = reading(&mut kept, Shape::flat(ColourFormat::Rgba16Float));
+    let composite = reading(&mut kept, Shape::flat(ColourFormat::Bgra8));
+
+    let scene = PassSpec {
+        name: PassName::of::<Main>(),
+        does: Does::Draw { into: Target::Texture(0), depth: DepthUse::Write(1), load: Load::Clear },
+    };
+    let downsampled = PassSpec {
+        name: PassName::of::<Downsample>(),
+        does: Does::Effect {
+            program: downsample,
+            reads: vec![Target::Texture(0)],
+            into: Target::Texture(2),
+            bindings: Vec::new(),
+        },
+    };
+    let composited = PassSpec {
+        name: PassName::of::<Composite>(),
+        does: Does::Effect {
+            program: composite,
+            reads: vec![Target::Texture(2)],
+            into: Target::End,
+            bindings: Vec::new(),
+        },
+    };
+    let frame = CreateFrame {
+        ends: Ends::Window(window()),
+        targets: vec![
+            TargetSpec { kind: TargetKind::Float, scale: Scale::Half },
+            TargetSpec { kind: TargetKind::Depth, scale: Scale::Half },
+            TargetSpec { kind: TargetKind::Float, scale: Scale::Quarter },
+        ],
+        passes: vec![scene, downsampled, composited],
+    };
+    assert_eq!(frame::check(&frame, &kept), Ok(()));
+    let framed = kept.frame(&device, frame, MAKER);
+    assert!(matches!(framed, Ok(Framed::Made(_))), "the frame is refused: {framed:?}");
+
+    drawn_at(&device, &queue, &mut kept, (9, 6));
+    assert_eq!(sides(&kept, 3), vec![(5, 3), (5, 3), (3, 2)]);
+    drawn_at(&device, &queue, &mut kept, (40, 3));
+    assert_eq!(sides(&kept, 3), vec![(20, 2), (20, 2), (10, 1)]);
+
+    let fitted = kept.main().target(2).clone();
+    drawn_at(&device, &queue, &mut kept, (40, 3));
+    assert_eq!(kept.main().target(2), &fitted, "a frame drawn again at its size keeps its targets");
 }

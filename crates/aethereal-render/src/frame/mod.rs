@@ -33,7 +33,7 @@ impl Kind for Frame {
 }
 
 /// Asks the renderer for a frame: its passes in the order they run, over its end and `targets`, each the size of its
-/// end. One that ends on a window is the window's main frame from the next `Render`, in place of the one before.
+/// end or a part of it that its scale says. One that ends on a window is the window's main frame from the next `Render`, in place of the one before.
 /// Answered with [`Framed`].
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub struct CreateFrame {
@@ -69,9 +69,34 @@ impl Kind for Size {
     const NAME: KindName = KindName::new("aether.render.size");
 }
 
-/// A target of a frame besides its end, each the size of the end: floats, whole numbers, or depth.
+impl Size {
+    /// One pixel, the size a frame that ends on a window is made at before its first `Render` fits it.
+    pub const PIXEL: Self = Self { width: 1, height: 1 };
+
+    /// The size `scale` makes of it: each side divided and rounded up, so an odd side keeps its last pixel, and a side
+    /// of at least one pixel, as every end's is, keeps at least one.
+    #[must_use]
+    pub const fn scaled(self, scale: Scale) -> Self {
+        let by = scale.divisor();
+
+        Self { width: self.width.div_ceil(by), height: self.height.div_ceil(by) }
+    }
+}
+
+/// A target of a frame besides its end: what it holds, and its size, a part of the end's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-pub enum TargetSpec {
+pub struct TargetSpec {
+    pub kind: TargetKind,
+    pub scale: Scale,
+}
+
+impl Kind for TargetSpec {
+    const NAME: KindName = KindName::new("aether.render.target_spec");
+}
+
+/// What a target holds: floats, whole numbers, or depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum TargetKind {
     /// Four 16-bit floats a pixel.
     Float,
     /// One 32-bit whole number a pixel.
@@ -80,28 +105,54 @@ pub enum TargetSpec {
     Depth,
 }
 
-impl Kind for TargetSpec {
-    const NAME: KindName = KindName::new("aether.render.target_spec");
+impl Kind for TargetKind {
+    const NAME: KindName = KindName::new("aether.render.target_kind");
+}
+
+/// The size of a target, as a part of its frame's end: each side the end's divided by 1, 2, 4, or 8, and rounded up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Scale {
+    Full,
+    Half,
+    Quarter,
+    Eighth,
+}
+
+impl Kind for Scale {
+    const NAME: KindName = KindName::new("aether.render.scale");
+}
+
+impl Scale {
+    /// What each side of the end is divided by.
+    #[must_use]
+    pub const fn divisor(self) -> u32 {
+        match self {
+            Self::Full => 1,
+            Self::Half => 2,
+            Self::Quarter => 4,
+            Self::Eighth => 8,
+        }
+    }
 }
 
 impl TargetSpec {
     /// The colour format a pass draws into it in: none for depth.
     #[must_use]
     pub const fn colour(self) -> Option<ColourFormat> {
-        match self {
-            Self::Float => Some(ColourFormat::Rgba16Float),
-            Self::Uint => Some(ColourFormat::R32Uint),
-            Self::Depth => None,
+        match self.kind {
+            TargetKind::Float => Some(ColourFormat::Rgba16Float),
+            TargetKind::Uint => Some(ColourFormat::R32Uint),
+            TargetKind::Depth => None,
         }
     }
 
     /// How an effect reads it.
     #[must_use]
     pub const fn read(self) -> Read {
-        match self {
-            Self::Float => Read::Float,
-            Self::Uint => Read::Uint,
-            Self::Depth => Read::Depth,
+        match self.kind {
+            TargetKind::Float => Read::Float,
+            TargetKind::Uint => Read::Uint,
+            TargetKind::Depth => Read::Depth,
         }
     }
 }
@@ -231,6 +282,8 @@ pub enum PassRefused {
     Colour,
     /// It uses a colour target as depth.
     Depth,
+    /// Its depth target is of another scale than the target it draws into, and so of another size.
+    DepthScale,
     /// It reads, keeps, or tests a target no earlier pass wrote.
     Unwritten,
     /// It reads the frame's end, which nothing reads.
@@ -263,7 +316,9 @@ impl CreateFrame {
             does: Does::Draw { into: Target::End, depth: DepthUse::Write(0), load: Load::Clear },
         };
 
-        Self { ends: Ends::Window(window), targets: vec![TargetSpec::Depth], passes: vec![compute, main] }
+        let depth = TargetSpec { kind: TargetKind::Depth, scale: Scale::Full };
+
+        Self { ends: Ends::Window(window), targets: vec![depth], passes: vec![compute, main] }
     }
 
     /// The shape of a pass that draws into `into`, using depth as `depth` says, in a frame whose end is of `end`, as
@@ -415,14 +470,15 @@ fn check_pass(
             if keeps && !written.wrote(into) {
                 return Err(PassRefused::Unwritten);
             }
+            let drawn = scale_of(create, into);
             match depth {
                 DepthUse::Off => {}
                 DepthUse::Write(at) => {
-                    depth_of(create, *at)?;
+                    depth_of(create, *at, drawn)?;
                     written.write(Target::Texture(*at));
                 }
                 DepthUse::Test(at) => {
-                    depth_of(create, *at)?;
+                    depth_of(create, *at, drawn)?;
                     if !written.wrote(Target::Texture(*at)) {
                         return Err(PassRefused::Unwritten);
                     }
@@ -470,11 +526,23 @@ fn colour_of(create: &CreateFrame, target: Target, end: ColourFormat) -> Result<
     create.targets.get(at as usize).ok_or(PassRefused::Target)?.colour().ok_or(PassRefused::Colour)
 }
 
-/// Checks that the target at `at` is one of depth.
-fn depth_of(create: &CreateFrame, at: u32) -> Result<(), PassRefused> {
+/// The scale of `target`, which the check found in the frame: the end is its own size.
+fn scale_of(create: &CreateFrame, target: Target) -> Scale {
+    match target {
+        Target::End => Scale::Full,
+        Target::Texture(at) => create.targets[at as usize].scale,
+    }
+}
+
+/// Checks that the target at `at` is one of depth, of the scale `drawn` of the target its pass draws into: a pass's
+/// targets are all of one size, as WebGPU draws it.
+fn depth_of(create: &CreateFrame, at: u32, drawn: Scale) -> Result<(), PassRefused> {
     let spec = create.targets.get(at as usize).ok_or(PassRefused::Target)?;
-    if *spec != TargetSpec::Depth {
+    if spec.kind != TargetKind::Depth {
         return Err(PassRefused::Depth);
+    }
+    if spec.scale != drawn {
+        return Err(PassRefused::DepthScale);
     }
 
     Ok(())
