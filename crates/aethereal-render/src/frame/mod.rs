@@ -386,6 +386,16 @@ impl Does {
             Self::Compute => None,
         }
     }
+
+    /// What the pass binds: an effect's bindings, and nothing for a draw or a compute pass, whose placements and
+    /// dispatches bind their own.
+    #[must_use]
+    pub fn bindings(&self) -> &[Bind] {
+        match self {
+            Self::Effect { bindings, .. } => bindings,
+            Self::Draw { .. } | Self::Compute => &[],
+        }
+    }
 }
 
 /// Checks one pass of `create`, whose end is of `end`, after the passes that wrote what `written` says, and notes what
