@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aethereal: galaxy</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color: #9aa6c0; font: 13px system-ui, sans-serif; }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; cursor: grab; }
+  canvas:active { cursor: grabbing; }
+  #overlay { position: fixed; left: 20px; bottom: 18px; letter-spacing: 0.08em; pointer-events: none; user-select: none; text-shadow: 0 0 8px #000; }
+  #count { color: #d8e0f2; font-variant-numeric: tabular-nums; }
+  #hint { margin-top: 4px; opacity: 0.75; }
+  #said { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 36em; padding: 18px 22px; border: 1px solid #2a3142; border-radius: 6px; color: #d6dae3; line-height: 1.5; text-align: center; }
+  #said strong { display: block; margin-bottom: 6px; color: #fff; font-size: 16px; }
+  body.unable canvas, body.unable #overlay { display: none; }
+  body.unable #said { display: block; }
+</style>
+</head>
+<body>
+<!-- The canvas fills the window, its backing store set once to the pixels it is shown at. -->
+<canvas id="canvas"></canvas>
+<div id="overlay">
+  <div id="count"></div>
+  <div id="hint">drag to pull the stars</div>
+</div>
+<div id="said"></div>
+<script type="module">
+  import init, { start } from "./pkg/galaxy.js";
+
+  const said = document.getElementById("said");
+  const unable = (headline, detail) => {
+    said.innerHTML = "";
+    const strong = document.createElement("strong");
+    strong.textContent = headline;
+    said.append(strong, detail);
+    document.body.classList.add("unable");
+  };
+
+  if (!navigator.gpu) {
+    unable("WebGPU is not available", "This galaxy is drawn with WebGPU, which this browser does not offer. Try a recent Chrome or Edge, or Firefox or Safari with WebGPU turned on.");
+  } else {
+    const canvas = document.getElementById("canvas");
+    // Past two device pixels to each CSS pixel the stars are no sharper, only slower.
+    const scale = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.floor(canvas.clientWidth * scale);
+    canvas.height = Math.floor(canvas.clientHeight * scale);
+
+    try {
+      await init();
+      const program = await start(canvas);
+      document.getElementById("count").textContent = `${program.stars().toLocaleString("en-US")} stars`;
+      // Every few seconds the console says how long a frame took, on average, between the page's animation frames
+      // and inside the engine's.
+      let frames = 0, inside = 0, since = performance.now();
+      const frame = (timestamp) => {
+        const began = performance.now();
+        program.frame(timestamp);
+        inside += performance.now() - began;
+        frames += 1;
+        for (const line of program.said()) {
+          console.warn(line);
+        }
+        const now = performance.now();
+        if (now - since > 3000) {
+          console.log(`frame_millis=${((now - since) / frames).toFixed(2)} engine_millis=${(inside / frames).toFixed(2)}`);
+          frames = 0, inside = 0, since = now;
+        }
+        requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    } catch (error) {
+      unable("The galaxy could not start", `${error}`);
+      throw error;
+    }
+  }
+</script>
+</body>
+</html>

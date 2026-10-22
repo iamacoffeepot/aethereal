@@ -84,5 +84,10 @@ name = "pong"
 path = "examples/pong/lib.rs"
 crate-type = ["cdylib"]
 
+[[example]]
+name = "galaxy"
+path = "examples/galaxy/lib.rs"
+crate-type = ["cdylib"]
+
 [lints]
 workspace = true
