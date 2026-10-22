@@ -1,5 +1,8 @@
 //! The renderer: the root that owns the GPU, makes what actors ask it for, and draws each frame (ADR-0021).
 
+// The tests draw on a device that draws nothing, which only a native build has.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
 mod walk;
 
 use crate::Gpu;
@@ -269,10 +272,10 @@ impl Kind for Release {
     const NAME: KindName = KindName::new("aether.render.release");
 }
 
-/// What the renderer has made, and who made each, with the samplers its placements share, the frames that end on
-/// textures in the order they run, `order`, the longest side of a texture and the most workgroups along one dimension
-/// the GPU makes and dispatches, and the window it draws to, `window`, whose surface is of `format`: its own main frame
-/// of it, `own`, and which frame is its main frame, `main`.
+/// What the renderer has made, and who made each, with the samplers its placements, dispatches, and effects share, the
+/// frames that end on textures in the order they run, `order`, the longest side of a texture and the most workgroups
+/// along one dimension the GPU makes and dispatches, and the window it draws to, `window`, whose surface is of
+/// `format`: its own main frame of it, `own`, and which frame is its main frame, `main`.
 struct Kept {
     ids: Ids,
     makers: Makers,
@@ -499,30 +502,8 @@ impl Actor for Renderer {
             Ok(own) => own,
             Err((pass, why)) => return Err(Fault::new(&FrameRefused::Pass { pass, why })?),
         };
-        let kept = Kept {
-            ids: Ids::default(),
-            makers: Makers::default(),
-            meshes: Made::default(),
-            textures: Made::default(),
-            programs: Made::default(),
-            computes: Made::default(),
-            instances: Made::default(),
-            uniforms: Made::default(),
-            storage: Made::default(),
-            placements: Made::default(),
-            dispatches: Made::default(),
-            reads: HashMap::new(),
-            samplers: HashMap::new(),
-            frames: Made::default(),
-            order: Vec::new(),
-            held: Vec::new(),
-            longest: opened.device().limits().max_texture_dimension_2d,
-            most_workgroups: opened.device().limits().max_compute_workgroups_per_dimension,
-            window,
-            format,
-            own,
-            main: Main::Own,
-        };
+        // Made before it is kept, as keeping it ends the borrow of the GPU opened.
+        let kept = Kept::new(opened.device(), (window, format), own);
         let kept = turn.keep(kept)?;
         turn.subscribe::<Render>();
 
@@ -1251,6 +1232,35 @@ impl Handles<Ended> for Renderer {
 }
 
 impl Kept {
+    /// Nothing made yet, on `device`, for the window `window`, whose surface is of `format`, drawn by its own main
+    /// frame `own`.
+    fn new(device: &wgpu::Device, (window, format): (WindowId, ColourFormat), own: Walk) -> Self {
+        Self {
+            ids: Ids::default(),
+            makers: Makers::default(),
+            meshes: Made::default(),
+            textures: Made::default(),
+            programs: Made::default(),
+            computes: Made::default(),
+            instances: Made::default(),
+            uniforms: Made::default(),
+            storage: Made::default(),
+            placements: Made::default(),
+            dispatches: Made::default(),
+            reads: HashMap::new(),
+            samplers: HashMap::new(),
+            frames: Made::default(),
+            order: Vec::new(),
+            held: Vec::new(),
+            longest: device.limits().max_texture_dimension_2d,
+            most_workgroups: device.limits().max_compute_workgroups_per_dimension,
+            window,
+            format,
+            own,
+            main: Main::Own,
+        }
+    }
+
     /// Notes that the instances `instances` were released holding `length` records: what is placed of them draws
     /// that many from then.
     fn last_drawn(&mut self, instances: u64, length: u32) {
@@ -1265,11 +1275,7 @@ impl Kept {
 
     /// The placement `place` asks for, made of what its check found kept, with each join's bind groups made now.
     fn placement(&mut self, device: &wgpu::Device, place: &Place) -> Result<Placement, PlacementRefused> {
-        for bind in place.joins.iter().flat_map(|join| &join.bindings) {
-            if let placement::Resource::Sampler(sampling) = bind.to {
-                self.samplers.entry(sampling).or_insert_with(|| sampler(device, sampling));
-            }
-        }
+        self.sampled(device, place.joins.iter().flat_map(|join| &join.bindings));
         let mesh = self.meshes.get(place.mesh.id).ok_or(PlacementRefused::Mesh)?;
         let drawing = match place.instances {
             Drawn::Count(count) => Drawing::Count(count),
@@ -1334,11 +1340,7 @@ impl Kept {
         runs: Runs,
     ) -> Result<Dispatching, DispatchRefused> {
         let join = &create.join;
-        for bind in &join.bindings {
-            if let placement::Resource::Sampler(sampling) = bind.to {
-                self.samplers.entry(sampling).or_insert_with(|| sampler(device, sampling));
-            }
-        }
+        self.sampled(device, &join.bindings);
         let compute = self.computes.get(join.compute.id).ok_or(DispatchRefused::Compute)?;
         let groups = self
             .bind_groups(device, &compute.groups, &join.bindings, 0)
@@ -1376,6 +1378,16 @@ impl Kept {
             textures: textures(&join.bindings),
             storage,
         })
+    }
+
+    /// Makes the sampler of each way `bindings` samples that none has made yet: one sampler for each way, shared by
+    /// every placement, dispatch, and effect that samples so.
+    fn sampled<'a>(&mut self, device: &wgpu::Device, bindings: impl IntoIterator<Item = &'a Bind>) {
+        for bind in bindings {
+            if let placement::Resource::Sampler(sampling) = bind.to {
+                self.samplers.entry(sampling).or_insert_with(|| sampler(device, sampling));
+            }
+        }
     }
 
     /// A bind group for each of `layouts`, the first of the group `first`, binding what `bindings` names in it.
@@ -1570,6 +1582,7 @@ impl Kept {
             End::Window => None,
             End::Texture { texture, .. } => Some(texture),
         };
+        self.sampled(device, create.passes.iter().flat_map(|pass| pass.does.bindings()));
         let walked = Walk::new(device, create, (end, format), size, |making| self.step(device, making));
         let walk = match walked {
             Ok(walk) => walk,

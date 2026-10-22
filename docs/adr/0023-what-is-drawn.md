@@ -72,7 +72,7 @@ struct Sampling { filter: Filter, wrap: Wrap }   // Filter::{Linear, Nearest}, W
 - A placement drawn from `Records` draws one instance for each record its instances hold at that frame, so a swarm whose count changes writes its records and leaves the placement as it is.
 - A placement does not change once made. Another mesh, program, or binding is another placement, and the old one is released.
 - **A placement joins a frame's passes by their type, each with a program and bindings of its own** (ADR-0025): `program` and `bindings` above are one join, of the render root's own main frame's one pass, `Main`. Each join is checked as this record checks a placement.
-- A sampler is not made: a placement names how it samples, and the render root keeps one sampler for each way.
+- A sampler is not made: a placement names how it samples, as a dispatch (ADR-0026) and an effect (ADR-0025) do, and the render root keeps one sampler for each way, made the first time any of them samples so and shared by all.
 
 **A program says what it reads per instance.** `CreateProgram` gains `instances: PerInstance`, where `PerInstance::None` reads nothing per instance and `PerInstance::Records(VertexLayout)` reads a record laid out so, as a second vertex buffer stepped once per instance. Its attributes are checked as the vertex layout's are, the two layouts read no location in common, and together they read at most sixteen.
 

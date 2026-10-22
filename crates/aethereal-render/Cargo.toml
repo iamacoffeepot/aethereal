@@ -18,5 +18,9 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "30.0.1", default-features = false, features = ["webgpu", "fragile-send-sync-non-atomic-wasm"] }
 
+# The renderer's tests make what it makes on a device that draws nothing, as no machine they run on need have a GPU.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["noop"] }
+
 [lints]
 workspace = true
