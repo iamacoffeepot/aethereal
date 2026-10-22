@@ -3251,9 +3251,7 @@ mod tests {
 
             [lines(&engine, metronome), lines(&engine, breeder)]
         };
-        let Ok(ticking) = Engine::new(parts, 1024, 0, 1 << 20, 0).with_cycle::<(Tick,)>() else {
-            panic!("the cycle is in order");
-        };
+        let ticking = Engine::new(parts, 1024, 0, 1 << 20, 0).with_cycle::<(Tick,)>();
 
         assert_eq!(said(ticking), [["ticker made"], ["ticker made"]]);
         let refused = [["ticker refused for tick"], ["ticker refused for tick"]];

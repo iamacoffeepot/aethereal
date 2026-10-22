@@ -87,9 +87,7 @@ fn a_subscriber_is_sent_what_the_page_pushed_in_the_order_pushed_and_nothing_ano
     // Catches a controls root that sends on or keeps a control any actor mails it as though the page held it, one
     // that sends a subscriber nothing or sends it twice, controls reordered among themselves, and a control the page
     // read before its listener subscribed never heard by it.
-    let Ok(mut setup) = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>() else {
-        panic!("the cycle is in order");
-    };
+    let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>();
     let (source, feed) = setup.source::<Control>();
     let Ok(engine) = setup
         .add_root::<Controls>(&(), ControlsConfig { source })
@@ -186,9 +184,7 @@ fn an_actor_that_subscribes_after_a_control_last_moved_is_sent_it_as_it_stands_o
     // Catches a controls root that keeps no record of its controls, or does not send it to a new subscriber, so an
     // actor never knows a slider until it moves, one that keeps the first value of a control and not its last, and
     // one that sends it again to an actor that subscribes twice.
-    let Ok(mut setup) = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>() else {
-        panic!("the cycle is in order");
-    };
+    let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>();
     let (source, feed) = setup.source::<Control>();
     let (nudges, nudge) = setup.source::<Nudge>();
     let Ok(engine) = setup

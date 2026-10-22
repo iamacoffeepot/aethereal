@@ -5,7 +5,6 @@ use super::jobs::Jobs;
 use super::{CodeRefused, Engine};
 use aethereal_actor::{
     Actors, BlobRef, Controller, Cycle, Given, Guests, Links, Ordered, Refused, Requests, Resource, Root, Source,
-    Unordered,
 };
 use aethereal_data::{Encode, Kind};
 use core::marker::PhantomData;
@@ -166,14 +165,10 @@ impl Setup<()> {
     }
 
     /// The engine, running the cycle `C` between `Start` and `Stop`: its stages in order, each a barrier (ADR-0020).
-    /// With none set, the lifecycle runs `Start` and `Stop` alone.
-    ///
-    /// # Errors
-    ///
-    /// [`Unordered`] when the cycle holds `Start` or `Stop`, a stage twice, or the shared stages, `Tick`, `Render`,
-    /// and `Present`, out of that order.
-    pub fn with_cycle<C: Cycle>(self) -> Result<Self, Unordered> {
-        Ok(Self::of(self.engine.with_cycle::<C>()?))
+    /// With none set, the lifecycle runs `Start` and `Stop` alone. A cycle that holds `Start` or `Stop`, a stage
+    /// twice, or the shared stages, `Tick`, `Render`, and `Present`, out of that order, does not build ([`Cycle`]).
+    pub fn with_cycle<C: Cycle>(self) -> Self {
+        Self::of(self.engine.with_cycle::<C>())
     }
 
     /// The engine, limiting each `Tick`'s delta to `limit`, a quarter of a second unless set (ADR-0020).

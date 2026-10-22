@@ -49,12 +49,8 @@ pub struct Program {
 /// When the canvas or WebGPU on it will not open, the page will not be listened to, or a root does not begin.
 #[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
 pub async fn start() -> Result<Program, JsError> {
-    let program = Browser::program()
-        .with_cycle::<(Tick, Render)>()
-        .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?
-        .root::<Windows>()
-        .root::<Renderer>()
-        .root::<Drawer>();
+    let program =
+        Browser::program().with_cycle::<(Tick, Render)>().root::<Windows>().root::<Renderer>().root::<Drawer>();
 
     Ok(Program { started: program.run()?.await? })
 }

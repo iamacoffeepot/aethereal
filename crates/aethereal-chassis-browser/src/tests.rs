@@ -107,11 +107,7 @@ fn a_frame_runs_its_cycle_through_to_its_end_and_is_answered_for_the_jobs_it_ran
     // sleep its `Tick` ran was answered, and the next would begin with what the last left.
     let one = NonZeroUsize::MIN;
     let jobs: Arc<dyn Jobs> = Arc::new(Inline::new(Vec::new()));
-    let Ok(mut engine) =
-        Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(jobs).with_cycle::<(Tick, Render)>().map(Setup::ready)
-    else {
-        panic!("the cycle is in order");
-    };
+    let mut engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(jobs).with_cycle::<(Tick, Render)>().ready();
     let Ok(_) = engine.add_root::<Painter>(&(), Nothing) else {
         panic!("the painter begins");
     };
@@ -191,10 +187,7 @@ impl Handles<Moved> for Pointer {
 fn a_frame_brings_in_what_the_page_pushed_before_it_though_its_cycle_runs_no_stage() {
     // Catches a frame that brings in what was pushed only after a step: with no stage to run, the engine is idle as
     // the frame begins, takes no step, and the move waits for a frame that never brings it.
-    let Ok(mut engine) = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>().map(Setup::ready)
-    else {
-        panic!("the cycle is in order");
-    };
+    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>().ready();
     let (source, feed) = engine.source::<Moved>();
     let Ok(_) = engine.add_root::<Pointer>(&(), PointerConfig { source }) else {
         panic!("the pointer begins");
@@ -286,9 +279,7 @@ fn a_window_asked_to_open_or_close_is_answered_no_host_within_the_frame() {
     // Catches a page that never takes what the window root asks, so an actor that asks for a window waits on an
     // answer that never comes and a program written for both hosts cannot fall back; and a canvas asked to close
     // answered as closed, or refused as not open, though the page still shows it.
-    let Ok(mut setup) = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>() else {
-        panic!("the cycle is in order");
-    };
+    let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>();
     let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
     let canvas = opening.open(Surface { width: 640, height: 480, scale: 1.0 }, true);
     let (windows, hosting) = opening.config();
