@@ -1,7 +1,7 @@
 //! Why a program did not start: a refusal as it is put together, a setting, or a root's bootstrap (ADR-0029).
 
 use crate::CodeRefused;
-use aethereal_actor::{Refused, Unordered};
+use aethereal_actor::Refused;
 use aethereal_data::KindName;
 use aethereal_data::config::{ConfigError, FlagError};
 use core::error::Error;
@@ -80,8 +80,6 @@ pub enum ProgramError {
     /// The program's flags were refused as it was put together: a change to a flag that does not exist, or two flags
     /// left of one name (ADR-0028).
     Flags(FlagError),
-    /// The engine's cycle was refused as it was made.
-    Cycle(Unordered),
     /// A root's bootstrap failed.
     Root {
         /// The root whose bootstrap failed.
@@ -115,7 +113,6 @@ impl fmt::Display for ProgramError {
             }
             Self::Configuration(error) => write!(f, "program: {error}"),
             Self::Flags(error) => write!(f, "program: {error}"),
-            Self::Cycle(unordered) => write!(f, "program: the cycle was refused: {unordered:?}"),
             Self::Root { root, why } => write!(f, "program: {root} did not bootstrap: {why}"),
         }
     }

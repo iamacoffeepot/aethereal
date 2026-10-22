@@ -14,9 +14,7 @@ use super::{Engine, ROOTS, parity};
 use crate::id::root_id;
 use crate::lives;
 use crate::stages::{self, key};
-use aethereal_actor::{
-    Cycle, Cycled, Cycling, Declared, MailId, Mailed, Refused, Seated, Start, Stop, Tie, Time, Unordered, ordered,
-};
+use aethereal_actor::{Cycle, Cycled, Cycling, Declared, MailId, Mailed, Refused, Seated, Start, Stop, Tie, Time};
 use aethereal_data::{ActorId, KindId, KindName, PathSegment};
 use core::time::Duration;
 
@@ -139,18 +137,11 @@ fn lifecycle_id() -> ActorId {
 impl Engine {
     /// The engine, running the cycle `C` between `Start` and `Stop`: its stages in order, each a barrier (ADR-0020).
     /// Set as the engine is made, before the host starts it. With none set, the lifecycle runs `Start` and `Stop`
-    /// alone.
-    ///
-    /// # Errors
-    ///
-    /// [`Unordered`] when the cycle holds `Start` or `Stop`, a stage twice, or the shared stages, `Tick`, `Render`,
-    /// and `Present`, out of that order.
-    pub(super) fn with_cycle<C: Cycle>(mut self) -> Result<Self, Unordered> {
-        let stages = C::stages();
-        ordered(&stages)?;
-        self.staging.cycle = stages;
+    /// alone. A cycle out of its order does not build ([`Cycle`]).
+    pub(super) fn with_cycle<C: Cycle>(mut self) -> Self {
+        self.staging.cycle = C::stages();
 
-        Ok(self)
+        self
     }
 
     /// The engine, limiting each `Tick`'s delta to `limit`, a quarter of a second unless set: a longer stall slows the

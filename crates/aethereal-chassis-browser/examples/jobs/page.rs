@@ -52,7 +52,6 @@ pub async fn start() -> Result<Program, JsError> {
     let program = Browser::program()
         .with_jobs(Arc::new(EventLoop::new(vec![JobType::of::<Sum>()])))
         .with_cycle::<(Tick, Render)>()
-        .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?
         .root::<Windows>()
         .root::<Renderer>()
         .root::<Prober>();

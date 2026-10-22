@@ -53,7 +53,6 @@ pub struct Program {
 pub async fn start() -> Result<Program, JsError> {
     let started = Browser::program()
         .with_cycle::<(Tick, Render)>()
-        .map_err(|unordered| JsError::new(&format!("the cycle is out of order: {unordered:?}")))?
         .root_with::<Windows>(WindowsSettings {
             canvases: vec![String::from("first"), String::from("second")],
             ..Default::default()

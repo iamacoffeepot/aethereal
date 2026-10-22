@@ -6,7 +6,7 @@ use aethereal_actor::{
     Tick, ToSender, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
-use aethereal_substrate::{Engine, Jobs, Setup};
+use aethereal_substrate::{Engine, Jobs};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -22,9 +22,7 @@ fn headless<C: aethereal_actor::Cycle>(make: impl FnOnce(&mut Engine)) -> Headle
     let Some(one) = NonZeroUsize::new(1) else {
         panic!("one is not zero");
     };
-    let Ok(mut engine) = Engine::new(one, 1024, 0, 1 << 20, 0).with_cycle::<C>().map(Setup::ready) else {
-        panic!("the cycle is in order");
-    };
+    let mut engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_cycle::<C>().ready();
     make(&mut engine);
 
     Headless::new(engine, one)
@@ -305,10 +303,7 @@ fn a_program_is_answered_for_its_jobs_while_it_runs() {
     // up once fifty ticks of five milliseconds have gone by.
     let one = NonZeroUsize::MIN;
     let runners: Arc<dyn Jobs> = Arc::new(crate::Runners::new(Vec::new(), one));
-    let Ok(engine) = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(runners).with_cycle::<(Tick,)>().map(Setup::ready)
-    else {
-        panic!("the cycle is in order");
-    };
+    let engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(runners).with_cycle::<(Tick,)>().ready();
     let mut headless = Headless::new(engine, one);
     let Ok(_) = headless.engine_mut().add_root::<Napper>(&(), Nothing) else {
         panic!("the napper begins");

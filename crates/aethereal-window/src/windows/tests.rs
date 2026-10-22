@@ -84,11 +84,7 @@ impl Handles<Event> for Listener {
 
 /// An engine of one worker, set up with no cycle.
 fn setup() -> Setup<()> {
-    let Ok(setup) = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>() else {
-        panic!("the cycle is in order");
-    };
-
-    setup
+    Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>()
 }
 
 /// The window opened `nth`.
