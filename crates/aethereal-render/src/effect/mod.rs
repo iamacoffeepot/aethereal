@@ -26,8 +26,12 @@ use naga::{ImageClass, ScalarKind};
 /// lists still begins at group 1. Answered with [`Effected`].
 ///
 /// Its fragment stage may read the target's pixel, `@builtin(position)`, and where it is across the target from its
-/// top left, `@location(0) uv: vec2<f32>`, from zero to one; every target of a frame is the size of its end, so a
-/// pixel of one is the same pixel of another. The WGSL travels as a blob, as a program's does.
+/// top left, `@location(0) uv: vec2<f32>`, from zero to one. Targets of a frame may be of other sizes (ADR-0025:
+/// `Scale`), so `uv` is the same place across a target of any size, and a target read through a sampler at `uv` is
+/// read at the place shaded whatever its size. A pixel of one is the same pixel of another only when both are of one
+/// scale: an effect that reads a target of another scale with `textureLoad` scales the pixel itself, by
+/// `textureDimensions`, as WebGPU answers a load past a texture's edge with zero or with a texel inside it, never an
+/// error. The WGSL travels as a blob, as a program's does.
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
 pub struct CreateEffect {
     pub wgsl: BlobRef,

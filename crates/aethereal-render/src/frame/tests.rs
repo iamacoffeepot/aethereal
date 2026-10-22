@@ -1,7 +1,7 @@
 //! A frame's check, and its builder: what WebGPU would refuse as the frame is drawn is refused as it is made, and the
 //! builder builds what the check lets through.
 
-use super::builder::{Effect, Float, Onto, Uint, depth};
+use super::builder::{Effect, Float, Onto, Uint, depth, scale};
 use super::*;
 use crate::dispatch::Use;
 use crate::effect::{EffectId, MadeEffect};
@@ -137,6 +137,11 @@ fn glaze() -> EffectId<(Float, Uint)> {
     glaze
 }
 
+/// A target holding `kind`, of the end's size.
+const fn full(kind: TargetKind) -> TargetSpec {
+    TargetSpec { kind, scale: Scale::Full }
+}
+
 /// The glaze bound to [`TINT`].
 fn tinted() -> Vec<Bind> {
     vec![Bind { group: 1, binding: 0, to: Resource::Uniforms(TINT) }]
@@ -146,8 +151,8 @@ fn tinted() -> Vec<Bind> {
 /// it; and the glaze of both onto the window.
 fn frame() -> CreateFrame {
     let mut frame = FrameBuilder::on(Ends::Window(window(0)));
-    let (ids, depth) = frame.draw(Surfaces, Uint, depth::Write);
-    let splats = frame.draw(Splats, Float, depth::Test(&depth));
+    let (ids, depth) = frame.draw(Surfaces, Uint, scale::Full, depth::Write);
+    let splats = frame.draw(Splats, Float, scale::Full, depth::Test(&depth));
     let Ok(create) = frame.finish(Glaze, Effect::new(&glaze(), (splats, ids)).bound(tinted())) else {
         panic!("the frame's passes are of types of their own");
     };
@@ -162,7 +167,7 @@ fn the_builder_describes_each_pass_over_the_targets_it_returned() {
     let named = |pass: PassName, does: Does| PassSpec { name: pass, does };
     let expected = CreateFrame {
         ends: Ends::Window(window(0)),
-        targets: vec![TargetSpec::Uint, TargetSpec::Depth, TargetSpec::Float],
+        targets: vec![full(TargetKind::Uint), full(TargetKind::Depth), full(TargetKind::Float)],
         passes: vec![
             named(
                 PassName::of::<Surfaces>(),
@@ -192,8 +197,8 @@ fn the_builder_describes_each_pass_over_the_targets_it_returned() {
 fn the_builder_refuses_two_passes_of_one_type_before_anything_is_sent() {
     // Catches a frame whose placements would join one of two passes of a name, whichever the renderer found first.
     let mut frame = FrameBuilder::on(Ends::Window(window(0)));
-    let (ids, depth) = frame.draw(Surfaces, Uint, depth::Write);
-    let splats = frame.draw(Surfaces, Float, depth::Test(&depth));
+    let (ids, depth) = frame.draw(Surfaces, Uint, scale::Full, depth::Write);
+    let splats = frame.draw(Surfaces, Float, scale::Full, depth::Test(&depth));
 
     assert_eq!(frame.finish(Glaze, Effect::new(&glaze(), (splats, ids))), Err(FrameRefused::Repeated { pass: 1 }));
 }
@@ -202,14 +207,14 @@ fn the_builder_refuses_two_passes_of_one_type_before_anything_is_sent() {
 fn a_frame_drawing_over_kept_targets_keeps_what_its_draws_left() {
     // Catches a draw over a target described as cleared, which would draw on black what the passes before drew.
     let mut frame = FrameBuilder::on(Ends::Window(window(0)));
-    let (scene, depth) = frame.draw(Surfaces, Float, depth::Write);
+    let (scene, depth) = frame.draw(Surfaces, Float, scale::Full, depth::Write);
     let scene = frame.draw_over(Splats, scene, depth::Test(&depth));
     let blur = MadeEffect { program: BLUR, reads: vec![Read::Float] };
     let Some(blur) = EffectId::<(Float,)>::of(&blur) else {
         panic!("the blur reads floats");
     };
-    let blurred = frame.effect(Blur, Effect::new(&blur, (scene,)), Float);
-    let ids = frame.draw(Ids, Uint, depth::Off);
+    let blurred = frame.effect(Blur, Effect::new(&blur, (scene,)), Float, scale::Full);
+    let ids = frame.draw(Ids, Uint, scale::Full, depth::Off);
     let Ok(create) = frame.finish(Glaze, Effect::new(&glaze(), (blurred, ids)).bound(tinted())) else {
         panic!("the frame's passes are of types of their own");
     };
@@ -228,9 +233,9 @@ fn a_frame_begins_with_an_effect_that_reads_nothing() {
     let Some(sky) = EffectId::<()>::of(&sky) else {
         panic!("the sky reads nothing");
     };
-    let sky = frame.effect(Sky, Effect::new(&sky, ()), Float);
+    let sky = frame.effect(Sky, Effect::new(&sky, ()), Float, scale::Full);
     let scene = frame.draw_over(Splats, sky, depth::Off);
-    let ids = frame.draw(Ids, Uint, depth::Off);
+    let ids = frame.draw(Ids, Uint, scale::Full, depth::Off);
     let Ok(create) = frame.finish(Glaze, Effect::new(&glaze(), (scene, ids)).bound(tinted())) else {
         panic!("the frame's passes are of types of their own");
     };
@@ -403,8 +408,8 @@ fn a_compute_pass_draws_into_nothing_and_never_ends_a_frame() {
     // whose `finish` takes a pass that writes the end, would never build it.
     let mut built = FrameBuilder::on(Ends::Window(window(0)));
     built.compute(Simulate);
-    let (ids, depth) = built.draw(Surfaces, Uint, depth::Write);
-    let splats = built.draw(Splats, Float, depth::Test(&depth));
+    let (ids, depth) = built.draw(Surfaces, Uint, scale::Full, depth::Write);
+    let splats = built.draw(Splats, Float, scale::Full, depth::Test(&depth));
     let Ok(built) = built.finish(Glaze, Effect::new(&glaze(), (splats, ids)).bound(tinted())) else {
         panic!("the frame's passes are of types of their own");
     };
@@ -481,4 +486,84 @@ fn only_the_owner_of_a_window_s_main_frame_replaces_it() {
     assert_eq!(may_replace(None, other), Ok(()));
     assert_eq!(may_replace(Some(owner), owner), Ok(()));
     assert_eq!(may_replace(Some(owner), other), Err(FrameRefused::Owned { owner }));
+}
+
+#[test]
+fn a_scale_divides_each_side_of_the_end_rounding_up_to_at_least_a_pixel() {
+    // Catches a side divided rounding down, which loses an odd end's last column and makes a target of no pixels
+    // of an end narrower than its divisor, which WebGPU refuses as the target is made.
+    let end = Size { width: 1281, height: 7 };
+
+    assert_eq!(end.scaled(Scale::Full), end);
+    assert_eq!(end.scaled(Scale::Half), Size { width: 641, height: 4 });
+    assert_eq!(end.scaled(Scale::Quarter), Size { width: 321, height: 2 });
+    assert_eq!(end.scaled(Scale::Eighth), Size { width: 161, height: 1 });
+    assert_eq!(Size::PIXEL.scaled(Scale::Eighth), Size::PIXEL);
+    assert_eq!(Size { width: 16, height: 8 }.scaled(Scale::Eighth), Size { width: 2, height: 1 });
+}
+
+/// A frame onto the window at reduced resolution: surfaces drawn at half size, writing a depth of that size, splats
+/// over them tested against it, the blur of them into a quarter-size target, and the glaze of the blur and of ids
+/// drawn at the end's size onto the window.
+fn reduced() -> CreateFrame {
+    let mut frame = FrameBuilder::on(Ends::Window(window(0)));
+    let (scene, depth) = frame.draw(Surfaces, Float, scale::Half, depth::Write);
+    let scene = frame.draw_over(Splats, scene, depth::Test(&depth));
+    let blur = MadeEffect { program: BLUR, reads: vec![Read::Float] };
+    let Some(blur) = EffectId::<(Float,)>::of(&blur) else {
+        panic!("the blur reads floats");
+    };
+    let blurred = frame.effect(Blur, Effect::new(&blur, (scene,)), Float, scale::Quarter);
+    let ids = frame.draw(Ids, Uint, scale::Full, depth::Off);
+    let Ok(create) = frame.finish(Glaze, Effect::new(&glaze(), (blurred, ids)).bound(tinted())) else {
+        panic!("the frame's passes are of types of their own");
+    };
+
+    create
+}
+
+#[test]
+fn the_builder_gives_each_target_the_scale_of_the_pass_that_draws_it() {
+    // Catches a target described at the end's size whatever scale it was drawn at, and a depth written at another
+    // scale than the colour drawn beside it, which WebGPU refuses as the pass begins.
+    let scales: Vec<(TargetKind, Scale)> = reduced().targets.iter().map(|target| (target.kind, target.scale)).collect();
+
+    assert_eq!(
+        scales,
+        vec![
+            (TargetKind::Float, Scale::Half),
+            (TargetKind::Depth, Scale::Half),
+            (TargetKind::Float, Scale::Quarter),
+            (TargetKind::Uint, Scale::Full),
+        ]
+    );
+    assert_eq!(check(&reduced(), &Kept::new()), Ok(()));
+}
+
+#[test]
+fn a_pass_whose_depth_is_of_another_scale_than_its_colour_is_refused() {
+    // Catches a forged frame whose pass draws into a target of one size with a depth of another, which WebGPU
+    // refuses as the pass begins, at `Render`: a frame that is made can be drawn.
+    let kept = Kept::new();
+    let writes_full_depth = {
+        let mut frame = reduced();
+        frame.targets[1].scale = Scale::Full;
+        frame
+    };
+    let tests_quarter_depth = {
+        let mut frame = reduced();
+        frame.targets.push(TargetSpec { kind: TargetKind::Depth, scale: Scale::Quarter });
+        frame.passes[1].does = Does::Draw { into: Target::Texture(0), depth: DepthUse::Test(4), load: Load::Keep };
+        frame
+    };
+    let onto_end_at_half = {
+        let mut frame = reduced();
+        let onto = Does::Draw { into: Target::End, depth: DepthUse::Test(1), load: Load::Clear };
+        frame.passes.push(PassSpec { name: PassName::of::<Sky>(), does: onto });
+        frame
+    };
+
+    assert_eq!(check(&writes_full_depth, &kept), refused(0, PassRefused::DepthScale));
+    assert_eq!(check(&tests_quarter_depth, &kept), refused(1, PassRefused::DepthScale));
+    assert_eq!(check(&onto_end_at_half, &kept), refused(5, PassRefused::DepthScale));
 }

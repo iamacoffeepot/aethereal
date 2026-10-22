@@ -499,8 +499,13 @@ impl Actor for Renderer {
         let opened = turn.open(&mut gpu)?;
         let (window, format) = (opened.window(), opened.format());
         // Made again at the first frame's size, as for each frame of a new size.
-        let own = match Walk::new(opened.device(), CreateFrame::own(window), (End::Window, format), (1, 1), effectless)
-        {
+        let own = match Walk::new(
+            opened.device(),
+            CreateFrame::own(window),
+            (End::Window, format),
+            Size::PIXEL,
+            effectless,
+        ) {
             Ok(own) => own,
             Err((pass, why)) => return Err(Fault::new(&FrameRefused::Pass { pass, why })?),
         };
@@ -541,7 +546,7 @@ impl Handles<On<Render>> for Renderer {
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let kept = turn.open(&mut self.kept)?;
-        kept.main_mut().fit(&device, frame.texture.width(), frame.texture.height());
+        kept.main_mut().fit(&device, Size { width: frame.texture.width(), height: frame.texture.height() });
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let passes = kept.passes();
@@ -1583,7 +1588,7 @@ impl Kept {
     fn frame(&mut self, device: &wgpu::Device, create: CreateFrame, maker: ActorId) -> Result<Framed, FrameRefused> {
         let id = self.ids.next();
         let (end, format, size) = match create.ends {
-            Ends::Window(_) => (End::Window, self.format, (1, 1)),
+            Ends::Window(_) => (End::Window, self.format, Size::PIXEL),
             Ends::Texture { size: Size { width, height }, format } => {
                 let texture = self.ids.next();
                 let made = device.create_texture(&wgpu::TextureDescriptor {
@@ -1601,7 +1606,7 @@ impl Kept {
                 let view = made.create_view(&wgpu::TextureViewDescriptor::default());
                 let origin = Origin::Frame(id);
                 self.textures.keep(texture, maker, Texture { made, view: view.clone(), format, origin });
-                (End::Texture { texture, view }, format.colour(), (width, height))
+                (End::Texture { texture, view }, format.colour(), Size { width, height })
             }
         };
         let texture = match end {
