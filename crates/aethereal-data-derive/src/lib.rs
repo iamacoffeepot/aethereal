@@ -58,8 +58,9 @@ pub fn derive_key(input: TokenStream) -> TokenStream {
 
 /// Derives `Bootstrap<H>` for every host `H`, for an actor whose config is its settings (ADR-0029).
 ///
-/// The actor's config is plain data with a `Default` and `#[settings]`, read from the section its kind name's last
-/// segment names (`aether.example.scene` reads `scene`). It needs nothing, provides nothing, and begins as a singleton
+/// The actor's config is plain data with `#[settings]`, read from the section its kind name's last segment names
+/// (`aether.example.scene` reads `scene`); a program lists it with `.root` when the config has a `Default`, and with
+/// `.root_with` otherwise. It needs nothing, provides nothing, and begins as a singleton
 /// from its settings. Use it through `aethereal_substrate::Bootstrap`, which re-exports it beside the trait.
 #[proc_macro_derive(Bootstrap, attributes(kind))]
 pub fn derive_bootstrap(input: TokenStream) -> TokenStream {

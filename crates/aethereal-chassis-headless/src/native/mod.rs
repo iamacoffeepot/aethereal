@@ -3,8 +3,9 @@
 //! A program's flags are its sections' suggestions as it changed them ([`Program::flags`]). The command line reads
 //! them with `clap`, with `--set path=value` for any field, `--config path` for a JSON file, `--help` from each
 //! field's doc comment, and `--describe` for the configuration's schema and defaults. The environment reads each
-//! flag under the program's prefix. The layers go beneath what the program sets in code, the first winning: set in
-//! code, the command line, the environment, the file, the defaults.
+//! flag under the program's prefix. The layers go beneath any the program gave with [`Program::layer`], the first
+//! winning: those, the command line, the environment, the file, then the program's defaults (`with_engine`,
+//! `root_with`), and the kinds' `Default`s beneath those.
 //!
 //! This is the native host's alone, so the desktop host, which builds on this crate, reads them the same way. A
 //! page has no command line or environment; the browser reads its own layer.
@@ -68,7 +69,7 @@ impl Invocation {
 
 /// What an invocation asks of a program.
 pub enum Invoked<P> {
-    /// The program, with the layers the invocation set beneath what it sets in code, to run or build.
+    /// The program, with the layers the invocation set beneath those it has, to run or build.
     Run(P),
     /// The help: the flags, each with its field's doc comment and its variable.
     Help(String),
@@ -93,7 +94,7 @@ pub enum Launched<E> {
 /// use aethereal_substrate::{EngineSettings, Host};
 ///
 /// let invocation = Invocation::new(["bench", "--workers", "2"], [("BENCH_HOPS", "3")]);
-/// let program = Headless::program().set_engine(EngineSettings::PARTS.to(4_u32.try_into()?));
+/// let program = Headless::program().with_engine(EngineSettings { parts: 4_u32.try_into()?, ..Default::default() });
 /// let Invoked::Run(program) = program.read("bench", invocation)? else {
 ///     return Err("the invocation asks for the program to run".into());
 /// };
@@ -108,9 +109,7 @@ pub trait NativeLayers<H: Host, R>: Sized {
     /// # Errors
     ///
     /// The first refusal, as [`NativeError`] says: each names its layer, and a setting's names its path.
-    fn read<I>(self, name: &str, invocation: Invocation) -> Result<Invoked<Self>, NativeError>
-    where
-        R: Bootstraps<H, I>;
+    fn read(self, name: &str, invocation: Invocation) -> Result<Invoked<Self>, NativeError>;
 
     /// Reads the process's own invocation, as [`read`](Self::read) does, then runs the program, or prints what it
     /// asked for.
@@ -124,10 +123,7 @@ pub trait NativeLayers<H: Host, R>: Sized {
 }
 
 impl<H: Host, R> NativeLayers<H, R> for Program<H, R> {
-    fn read<I>(self, name: &str, invocation: Invocation) -> Result<Invoked<Self>, NativeError>
-    where
-        R: Bootstraps<H, I>,
-    {
+    fn read(self, name: &str, invocation: Invocation) -> Result<Invoked<Self>, NativeError> {
         let name = ProgramName::new(name)?;
         let parts = self.parts()?;
         let table = self.flag_table()?;

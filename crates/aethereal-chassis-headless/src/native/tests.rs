@@ -103,18 +103,20 @@ fn refusal(error: &ConfigError) -> Option<(&str, String, ConfigFault)> {
 }
 
 #[test]
-fn the_first_layer_wins_set_in_code_then_the_command_line_the_environment_and_the_file() -> Outcome {
-    // Catches the native layers stacked in another order, the code layer put beneath them, and a command line whose
-    // later argument for one place does not win over an earlier one.
+fn the_first_layer_wins_the_command_line_then_the_environment_the_file_and_the_programs_defaults() -> Outcome {
+    // Catches the native layers stacked in another order, the program's defaults put above any of them or left out,
+    // and a command line whose later argument for one place does not win over an earlier one.
     let file = File::new("order", r#"{"engine":{"hops":4,"parts":4,"read_limit":4},"running":{"pace":4}}"#)?;
-    let program = Bench::program().set_engine(EngineSettings::HOPS.to(1));
+    let defaults =
+        EngineSettings { hops: 5, parts: 5_u32.try_into()?, read_limit: 5, mail_bytes: 5, ..Default::default() };
+    let program = Bench::program().with_engine(defaults);
     let args = ["--hops", "2", "-p", "9", "--set", "running.pace=2", "--loud", "--no-loud", "--config", &file.path()];
     let variables = [("BENCH_HOPS", "3"), ("BENCH_PACE", "3"), ("BENCH_PARTS", "3"), ("BENCH_LOUD", "true")];
 
     let bench = built(program, &args, &variables)?;
 
     let engine = (bench.engine.hops, bench.engine.parts.get(), bench.engine.read_limit, bench.engine.mail_bytes);
-    assert_eq!(engine, (1, 3, 4, 1 << 20));
+    assert_eq!(engine, (2, 3, 4, 5));
     assert_eq!(bench.running, BenchRunning { pace: 2, loud: false });
     Ok(())
 }
