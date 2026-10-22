@@ -6,7 +6,7 @@ use aethereal_actor::{
     Turn, path,
 };
 use aethereal_chassis_browser::{Browser, Performance, open, renderer};
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::compute::{ComputeId, Computed, CreateCompute};
 use aethereal_render::dispatch::{CreateDispatch, Dispatch, Dispatched, Invocations};
@@ -90,30 +90,21 @@ impl Program {
 
 /// The context of an ask that needs none.
 #[derive(Plain)]
+#[kind(name = "aether.example.nothing")]
 struct Nothing;
-
-impl Kind for Nothing {
-    const NAME: KindName = KindName::new("aether.example.nothing");
-}
 
 /// The simulator's config: the window it draws on.
 #[derive(Plain)]
+#[kind(name = "aether.example.shows")]
 struct Shows {
     window: WindowId,
 }
 
-impl Kind for Shows {
-    const NAME: KindName = KindName::new("aether.example.shows");
-}
-
 /// What was learned before the quad was asked for: the shape the program draws into.
 #[derive(Plain)]
+#[kind(name = "aether.example.learned")]
 struct Learned {
     shape: Shape,
-}
-
-impl Kind for Learned {
-    const NAME: KindName = KindName::new("aether.example.learned");
 }
 
 /// A compute program that moves each particle of the field by its speed, turning it back at the canvas's edges. The
@@ -170,6 +161,7 @@ const SETTLED: u32 = 3;
 /// The simulator: it makes what it runs and draws one ask after another, each answer carrying what was made so far,
 /// dispatches and places it, then reads the field back twice, a few frames apart.
 #[derive(Bound)]
+#[kind(name = "aether.example.simulator")]
 enum Simulator {
     /// Its asks are under way, and nothing runs on `window`.
     Making { window: WindowId },
@@ -183,23 +175,16 @@ enum Simulator {
     Asked { first: Digest },
 }
 
-impl Kind for Simulator {
-    const NAME: KindName = KindName::new("aether.example.simulator");
-}
-
 impl ChildOf for Simulator {
     type Parent = Top;
 }
 
 /// What is kept of a reading of the field: a digest of its bytes, and the first particle's place across, its bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.example.digest")]
 struct Digest {
     bytes: u64,
     x: u32,
-}
-
-impl Kind for Digest {
-    const NAME: KindName = KindName::new("aether.example.digest");
 }
 
 impl Digest {
@@ -221,46 +206,34 @@ impl Digest {
 
 /// What was made before the compute program was asked for.
 #[derive(Plain)]
+#[kind(name = "aether.example.drawing")]
 struct Drawing {
     mesh: MeshId,
     dots: ProgramId,
 }
 
-impl Kind for Drawing {
-    const NAME: KindName = KindName::new("aether.example.drawing");
-}
-
 /// What was made before the field was asked for.
 #[derive(Plain)]
+#[kind(name = "aether.example.made_programs")]
 struct MadePrograms {
     mesh: MeshId,
     dots: ProgramId,
     simulate: ComputeId,
 }
 
-impl Kind for MadePrograms {
-    const NAME: KindName = KindName::new("aether.example.made_programs");
-}
-
 /// What the placement was asked for with: what is dispatched once it is made.
 #[derive(Plain)]
+#[kind(name = "aether.example.placing")]
 struct Placing {
     simulate: ComputeId,
     storage: StorageId,
 }
 
-impl Kind for Placing {
-    const NAME: KindName = KindName::new("aether.example.placing");
-}
-
 /// What the dispatch was asked for with: the field it moves.
 #[derive(Plain)]
+#[kind(name = "aether.example.dispatching")]
 struct Dispatching {
     storage: StorageId,
-}
-
-impl Kind for Dispatching {
-    const NAME: KindName = KindName::new("aether.example.dispatching");
 }
 
 impl Actor for Simulator {

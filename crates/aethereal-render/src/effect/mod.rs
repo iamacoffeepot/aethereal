@@ -12,9 +12,7 @@ use crate::program::{
 };
 use crate::shape::{DepthFormat, Shape};
 use aethereal_actor::BlobRef;
-use aethereal_data::{
-    Bare, Bound, Boundary, Decode, DecodeError, Encode, EncodeError, Kind, KindName, Plain, Reader, Schema, Writer,
-};
+use aethereal_data::{Bare, Bound, Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Writer};
 use core::fmt::{self, Debug, Formatter};
 use core::marker::PhantomData;
 use naga::{ImageClass, ScalarKind};
@@ -33,6 +31,7 @@ use naga::{ImageClass, ScalarKind};
 /// `textureDimensions`, as WebGPU answers a load past a texture's edge with zero or with a texel inside it, never an
 /// error. The WGSL travels as a blob, as a program's does.
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
+#[kind(name = "aether.render.create_effect")]
 pub struct CreateEffect {
     pub wgsl: BlobRef,
     pub fragment: String,
@@ -42,12 +41,9 @@ pub struct CreateEffect {
     pub shape: Shape,
 }
 
-impl Kind for CreateEffect {
-    const NAME: KindName = KindName::new("aether.render.create_effect");
-}
-
 /// What an effect reads of a target, and how its shader declares it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.read")]
 pub enum Read {
     /// A target of floats, `texture_2d<f32>`.
     Float,
@@ -55,10 +51,6 @@ pub enum Read {
     Uint,
     /// A depth target, `texture_depth_2d`.
     Depth,
-}
-
-impl Kind for Read {
-    const NAME: KindName = KindName::new("aether.render.read");
 }
 
 impl Read {
@@ -74,13 +66,10 @@ impl Read {
 
 /// An effect the renderer made: the program an effect pass names, and what it reads, in order.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.made_effect")]
 pub struct MadeEffect {
     pub(crate) program: ProgramId,
     pub(crate) reads: Vec<Read>,
-}
-
-impl Kind for MadeEffect {
-    const NAME: KindName = KindName::new("aether.render.made_effect");
 }
 
 impl MadeEffect {
@@ -99,13 +88,10 @@ impl MadeEffect {
 
 /// What the renderer answers [`CreateEffect`] with.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.effected")]
 pub enum Effected {
     Made(MadeEffect),
     Refused(ProgramRefused),
-}
-
-impl Kind for Effected {
-    const NAME: KindName = KindName::new("aether.render.effected");
 }
 
 /// A kind of target an effect reads: [`Float`], [`Uint`], or [`Depth32`].

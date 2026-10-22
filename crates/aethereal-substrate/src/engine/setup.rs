@@ -27,11 +27,8 @@ use std::sync::Arc;
 /// # use std::num::NonZeroUsize;
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.note")]
 /// # struct Note;
-/// #
-/// # impl Kind for Note {
-/// #     const NAME: KindName = KindName::new("aether.example.note");
-/// # }
 /// #
 /// # macro_rules! root {
 /// #     ($name:ident, $named:literal, $sends:ty) => {
@@ -93,11 +90,8 @@ use std::sync::Arc;
 /// # use std::num::NonZeroUsize;
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.note")]
 /// # struct Note;
-/// #
-/// # impl Kind for Note {
-/// #     const NAME: KindName = KindName::new("aether.example.note");
-/// # }
 /// #
 /// # macro_rules! root {
 /// #     ($name:ident, $named:literal, $sends:ty) => {

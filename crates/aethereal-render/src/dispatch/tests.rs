@@ -25,11 +25,8 @@ fn window(nth: u64) -> WindowId {
 
 /// A second compute pass of the window's main frame, after [`Compute`].
 #[derive(Plain)]
+#[kind(name = "aether.test.settle")]
 struct Settle;
-
-impl Kind for Settle {
-    const NAME: KindName = KindName::new("aether.test.settle");
-}
 
 impl Pass for Settle {}
 

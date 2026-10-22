@@ -6,7 +6,7 @@ use aethereal_actor::{
 };
 use aethereal_chassis_browser::canvas::{self, Density};
 use aethereal_chassis_browser::{Browser, Listening, Performance, open, renderer};
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::instances::{CreateInstances, Instanced, InstancesId, WriteInstances};
@@ -92,20 +92,14 @@ impl Program {
 
 /// An empty context.
 #[derive(Plain)]
+#[kind(name = "aether.example.nothing")]
 struct Nothing;
-
-impl Kind for Nothing {
-    const NAME: KindName = KindName::new("aether.example.nothing");
-}
 
 /// The drawer's config: the window it draws on.
 #[derive(Plain)]
+#[kind(name = "aether.example.shows")]
 struct Shows {
     window: WindowId,
-}
-
-impl Kind for Shows {
-    const NAME: KindName = KindName::new("aether.example.shows");
 }
 
 /// The most triangles in the ring.
@@ -135,15 +129,12 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 /// The drawer: it asks the shape of its window's main pass, makes what it draws one ask after another, each answer
 /// carrying what was made so far, places it, and from then writes the ring at each `Tick`.
 #[derive(Bound)]
+#[kind(name = "aether.example.drawer")]
 enum Drawer {
     /// Its asks are under way, and nothing is placed on `window`.
     Making { window: WindowId },
     /// The ring is placed: these are the instances and uniforms it writes.
     Drawing { instances: InstancesId, uniforms: UniformsId },
-}
-
-impl Kind for Drawer {
-    const NAME: KindName = KindName::new("aether.example.drawer");
 }
 
 impl ChildOf for Drawer {
@@ -152,57 +143,42 @@ impl ChildOf for Drawer {
 
 /// What was learned before the mesh was asked for: the shape the program draws into.
 #[derive(Plain)]
+#[kind(name = "aether.example.learned")]
 struct Learned {
     shape: Shape,
 }
 
-impl Kind for Learned {
-    const NAME: KindName = KindName::new("aether.example.learned");
-}
-
 /// What was made before the program was asked for.
 #[derive(Plain)]
+#[kind(name = "aether.example.made_mesh")]
 struct MadeMesh {
     shape: Shape,
     mesh: MeshId,
 }
 
-impl Kind for MadeMesh {
-    const NAME: KindName = KindName::new("aether.example.made_mesh");
-}
-
 /// What was made before the instances were asked for.
 #[derive(Plain)]
+#[kind(name = "aether.example.made_program")]
 struct MadeProgram {
     mesh: MeshId,
     program: ProgramId,
 }
 
-impl Kind for MadeProgram {
-    const NAME: KindName = KindName::new("aether.example.made_program");
-}
-
 /// What was made before the uniforms were asked for.
 #[derive(Plain)]
+#[kind(name = "aether.example.made_instances")]
 struct MadeInstances {
     mesh: MeshId,
     program: ProgramId,
     instances: InstancesId,
 }
 
-impl Kind for MadeInstances {
-    const NAME: KindName = KindName::new("aether.example.made_instances");
-}
-
 /// What the placement draws with, kept until it is placed.
 #[derive(Plain)]
+#[kind(name = "aether.example.made_all")]
 struct MadeAll {
     instances: InstancesId,
     uniforms: UniformsId,
-}
-
-impl Kind for MadeAll {
-    const NAME: KindName = KindName::new("aether.example.made_all");
 }
 
 impl Actor for Drawer {

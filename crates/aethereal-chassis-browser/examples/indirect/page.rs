@@ -7,7 +7,7 @@ use aethereal_actor::{
     Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::{Browser, Performance, open, renderer};
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::compute::{ComputeId, Computed, CreateCompute};
 use aethereal_render::dispatch::{CreateDispatch, Dispatch, Dispatched, Invocations};
@@ -91,30 +91,21 @@ impl Program {
 
 /// The context of an ask that needs none.
 #[derive(Plain)]
+#[kind(name = "aether.example.nothing")]
 struct Nothing;
-
-impl Kind for Nothing {
-    const NAME: KindName = KindName::new("aether.example.nothing");
-}
 
 /// The culler's config: the window it draws on.
 #[derive(Plain)]
+#[kind(name = "aether.example.shows")]
 struct Shows {
     window: WindowId,
 }
 
-impl Kind for Shows {
-    const NAME: KindName = KindName::new("aether.example.shows");
-}
-
 /// What was learned before the quad was asked for: the shape the program draws into.
 #[derive(Plain)]
+#[kind(name = "aether.example.learned")]
 struct Learned {
     shape: Shape,
-}
-
-impl Kind for Learned {
-    const NAME: KindName = KindName::new("aether.example.learned");
 }
 
 /// A compute program that keeps each item inside the disc: it counts it into the arguments' instance count, and
@@ -189,6 +180,7 @@ const SETTLED: u32 = 3;
 /// places and dispatches it, resets the count at each `Tick`, and reads the arguments back once a few frames have
 /// passed.
 #[derive(Bound)]
+#[kind(name = "aether.example.culler")]
 enum Culler {
     /// Its asks are under way, and nothing runs on `window`.
     Making { window: WindowId },
@@ -196,10 +188,6 @@ enum Culler {
     Running { arguments: StorageId, drawn: u32 },
     /// It has asked for the arguments.
     Reading,
-}
-
-impl Kind for Culler {
-    const NAME: KindName = KindName::new("aether.example.culler");
 }
 
 impl ChildOf for Culler {
@@ -239,64 +227,50 @@ fn reset() -> Vec<u8> {
 
 /// What was made before the compute program was asked for.
 #[derive(Plain)]
+#[kind(name = "aether.example.drawing")]
 struct Drawing {
     mesh: MeshId,
     dots: ProgramId,
 }
 
-impl Kind for Drawing {
-    const NAME: KindName = KindName::new("aether.example.drawing");
-}
-
 /// What was made before the items were asked for.
 #[derive(Plain)]
+#[kind(name = "aether.example.made_programs")]
 struct MadePrograms {
     mesh: MeshId,
     dots: ProgramId,
     cull: ComputeId,
 }
 
-impl Kind for MadePrograms {
-    const NAME: KindName = KindName::new("aether.example.made_programs");
-}
-
 /// What a storage was asked for after: the items after the programs, the visible list after the items, and the
 /// arguments after the visible list.
 #[derive(Plain)]
+#[kind(name = "aether.example.storing")]
 enum Storing {
     Items(MadePrograms),
     Visible(MadeItems),
     Arguments(MadeVisible),
 }
 
-impl Kind for Storing {
-    const NAME: KindName = KindName::new("aether.example.storing");
-}
-
 /// What was made before the visible list was asked for.
 #[derive(Plain)]
+#[kind(name = "aether.example.made_items")]
 struct MadeItems {
     made: MadePrograms,
     items: StorageId,
 }
 
-impl Kind for MadeItems {
-    const NAME: KindName = KindName::new("aether.example.made_items");
-}
-
 /// What was made before the arguments were asked for.
 #[derive(Plain)]
+#[kind(name = "aether.example.made_visible")]
 struct MadeVisible {
     made: MadeItems,
     visible: StorageId,
 }
 
-impl Kind for MadeVisible {
-    const NAME: KindName = KindName::new("aether.example.made_visible");
-}
-
 /// What the placement was asked for with: what is dispatched once it is made.
 #[derive(Plain)]
+#[kind(name = "aether.example.placing")]
 struct Placing {
     cull: ComputeId,
     items: StorageId,
@@ -304,18 +278,11 @@ struct Placing {
     arguments: StorageId,
 }
 
-impl Kind for Placing {
-    const NAME: KindName = KindName::new("aether.example.placing");
-}
-
 /// What the dispatch was asked for with: the arguments it counts into.
 #[derive(Plain)]
+#[kind(name = "aether.example.dispatching")]
 struct Dispatching {
     arguments: StorageId,
-}
-
-impl Kind for Dispatching {
-    const NAME: KindName = KindName::new("aether.example.dispatching");
 }
 
 impl Actor for Culler {

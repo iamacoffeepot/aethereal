@@ -1327,21 +1327,15 @@ impl<'a, Me, S> Turn<'a, Me, S> {
     ///
     /// ```
     /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, ToType, Turn};
-    /// use aethereal_data::{Kind, KindName, Plain};
+    /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.knock")]
     /// struct Knock;
     ///
-    /// impl Kind for Knock {
-    ///     const NAME: KindName = KindName::new("aether.doc.knock");
-    /// }
-    ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.door")]
     /// struct Door;
-    ///
-    /// impl Kind for Door {
-    ///     const NAME: KindName = KindName::new("aether.doc.door");
-    /// }
     ///
     /// impl Actor for Door {
     ///     type Config = Door;
@@ -1386,14 +1380,11 @@ impl<Me, S> Turn<'_, Me, S> {
     ///
     /// ```compile_fail,E0277
     /// use aethereal_actor::{Actor, ActorRef, Beginning, ChildOf, Ending, Fault, Top, Turn};
-    /// use aethereal_data::{Kind, KindName, Plain};
+    /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.army")]
     /// struct Army;
-    ///
-    /// impl Kind for Army {
-    ///     const NAME: KindName = KindName::new("aether.doc.army");
-    /// }
     ///
     /// impl ChildOf for Army {
     ///     type Parent = Top;
@@ -1401,11 +1392,8 @@ impl<Me, S> Turn<'_, Me, S> {
     ///
     /// // Stands beneath itself, not an `Army`.
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.lens")]
     /// struct Lens;
-    ///
-    /// impl Kind for Lens {
-    ///     const NAME: KindName = KindName::new("aether.doc.lens");
-    /// }
     ///
     /// impl ChildOf for Lens {
     ///     type Parent = Lens;
@@ -1479,21 +1467,15 @@ impl<Me, S> Turn<'_, Me, S> {
     ///
     /// ```compile_fail,E0277
     /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Turn};
-    /// use aethereal_data::{Kind, KindName, Plain};
+    /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.look")]
     /// struct Look;
     ///
-    /// impl Kind for Look {
-    ///     const NAME: KindName = KindName::new("aether.doc.look");
-    /// }
-    ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.watcher")]
     /// struct Watcher;
-    ///
-    /// impl Kind for Watcher {
-    ///     const NAME: KindName = KindName::new("aether.doc.watcher");
-    /// }
     ///
     /// impl Actor for Watcher {
     ///     type Config = Watcher;
@@ -1537,21 +1519,15 @@ impl<Me, S> Turn<'_, Me, S> {
     ///
     /// ```compile_fail,E0277
     /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Tick, Turn};
-    /// use aethereal_data::{Kind, KindName, Plain};
+    /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.wind")]
     /// struct Wind;
     ///
-    /// impl Kind for Wind {
-    ///     const NAME: KindName = KindName::new("aether.doc.wind");
-    /// }
-    ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.clock")]
     /// struct Clock;
-    ///
-    /// impl Kind for Clock {
-    ///     const NAME: KindName = KindName::new("aether.doc.clock");
-    /// }
     ///
     /// // Handles no `On<Tick>`.
     /// impl Actor for Clock {
@@ -1615,21 +1591,15 @@ impl<Me, S> Turn<'_, Me, S> {
     ///
     /// ```compile_fail,E0277
     /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Sleep, Turn};
-    /// use aethereal_data::{Kind, KindName, Plain};
+    /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.nap")]
     /// struct Nap;
     ///
-    /// impl Kind for Nap {
-    ///     const NAME: KindName = KindName::new("aether.doc.nap");
-    /// }
-    ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.napper")]
     /// struct Napper;
-    ///
-    /// impl Kind for Napper {
-    ///     const NAME: KindName = KindName::new("aether.doc.napper");
-    /// }
     ///
     /// // Handles no `Answer<Slept, Nap>`.
     /// impl Actor for Napper {
@@ -1726,14 +1696,11 @@ impl<Me, S> Turn<'_, Me, S> {
     ///
     /// ```compile_fail,E0277
     /// use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn};
-    /// use aethereal_data::{Kind, KindName, Plain};
+    /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.host")]
     /// struct Host;
-    ///
-    /// impl Kind for Host {
-    ///     const NAME: KindName = KindName::new("aether.doc.host");
-    /// }
     ///
     /// impl ChildOf for Host {
     ///     type Parent = Top;
@@ -1741,11 +1708,8 @@ impl<Me, S> Turn<'_, Me, S> {
     ///
     /// // Stands beneath itself, not a `Host`.
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.lens")]
     /// struct Lens;
-    ///
-    /// impl Kind for Lens {
-    ///     const NAME: KindName = KindName::new("aether.doc.lens");
-    /// }
     ///
     /// impl ChildOf for Lens {
     ///     type Parent = Lens;
@@ -2040,14 +2004,11 @@ impl<Me, S> Beginning<'_, Me, S> {
     ///
     /// ```compile_fail,E0599
     /// use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top};
-    /// use aethereal_data::{Kind, KindName, Plain};
+    /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.fort")]
     /// struct Fort;
-    ///
-    /// impl Kind for Fort {
-    ///     const NAME: KindName = KindName::new("aether.doc.fort");
-    /// }
     ///
     /// impl ChildOf for Fort {
     ///     type Parent = Top;
@@ -2170,21 +2131,15 @@ impl<Me, S> Beginning<'_, Me, S> {
     ///
     /// ```compile_fail,E0277
     /// use aethereal_actor::{Actor, Beginning, Ending, Fault};
-    /// use aethereal_data::{Bound, Kind, KindName, Plain};
+    /// use aethereal_data::{Bound, Plain};
     ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.nothing")]
     /// struct Nothing;
     ///
-    /// impl Kind for Nothing {
-    ///     const NAME: KindName = KindName::new("aether.doc.nothing");
-    /// }
-    ///
     /// #[derive(Bound)]
+    /// #[kind(name = "aether.doc.watcher")]
     /// struct Watcher;
-    ///
-    /// impl Kind for Watcher {
-    ///     const NAME: KindName = KindName::new("aether.doc.watcher");
-    /// }
     ///
     /// impl Actor for Watcher {
     ///     type Config = Nothing;
@@ -2220,21 +2175,15 @@ impl<Me, S> Beginning<'_, Me, S> {
     ///
     /// ```compile_fail,E0277
     /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Tick, Turn};
-    /// use aethereal_data::{Kind, KindName, Plain};
+    /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.wind")]
     /// struct Wind;
     ///
-    /// impl Kind for Wind {
-    ///     const NAME: KindName = KindName::new("aether.doc.wind");
-    /// }
-    ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.clock")]
     /// struct Clock;
-    ///
-    /// impl Kind for Clock {
-    ///     const NAME: KindName = KindName::new("aether.doc.clock");
-    /// }
     ///
     /// // Handles no `On<Tick>`.
     /// impl Actor for Clock {
@@ -2407,23 +2356,23 @@ impl<'a, Me, S> Ending<'a, Me, S> {
     /// ```compile_fail,E0599
     /// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path};
     /// # use aethereal_actor::{ToSender, Top, Turn, path};
-    /// # use aethereal_data::{Kind, KindName, Plain};
+    /// # use aethereal_data::Plain;
     /// #
-    /// # macro_rules! kind {
-    /// #     ($name:ident, $named:literal) => {
-    /// #         #[derive(Plain)]
-    /// #         struct $name;
-    /// #
-    /// #         impl Kind for $name {
-    /// #             const NAME: KindName = KindName::new($named);
-    /// #         }
-    /// #     };
-    /// # }
-    /// # kind!(Hello, "aether.doc.hello");
-    /// # kind!(Hi, "aether.doc.hi");
-    /// # kind!(Waiting, "aether.doc.waiting");
-    /// # kind!(Greeter, "aether.doc.greeter");
-    /// # kind!(Visitor, "aether.doc.visitor");
+    /// # #[derive(Plain)]
+    /// # #[kind(name = "aether.doc.hello")]
+    /// # struct Hello;
+    /// # #[derive(Plain)]
+    /// # #[kind(name = "aether.doc.hi")]
+    /// # struct Hi;
+    /// # #[derive(Plain)]
+    /// # #[kind(name = "aether.doc.waiting")]
+    /// # struct Waiting;
+    /// # #[derive(Plain)]
+    /// # #[kind(name = "aether.doc.greeter")]
+    /// # struct Greeter;
+    /// # #[derive(Plain)]
+    /// # #[kind(name = "aether.doc.visitor")]
+    /// # struct Visitor;
     /// #
     /// # impl ChildOf for Greeter {
     /// #     type Parent = Top;

@@ -38,11 +38,8 @@ pub struct Parent<P> {
 /// #     };
 /// # }
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.doc.poke")]
 /// # struct Poke;
-/// #
-/// # impl Kind for Poke {
-/// #     const NAME: KindName = KindName::new("aether.doc.poke");
-/// # }
 /// #
 /// # impl Actor for Squad {
 /// #     type Config = Squad;
@@ -212,11 +209,8 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #     };
 /// # }
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.doc.poke")]
 /// # struct Poke;
-/// #
-/// # impl Kind for Poke {
-/// #     const NAME: KindName = KindName::new("aether.doc.poke");
-/// # }
 /// #
 /// # impl Actor for Squad {
 /// #     type Config = Squad;
@@ -294,11 +288,8 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #     };
 /// # }
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.doc.poke")]
 /// # struct Poke;
-/// #
-/// # impl Kind for Poke {
-/// #     const NAME: KindName = KindName::new("aether.doc.poke");
-/// # }
 /// #
 /// # impl Actor for Squad {
 /// #     type Config = Squad;

@@ -6,11 +6,8 @@ use alloc::vec::Vec;
 
 /// A tell, sent at a typed path.
 #[derive(Plain)]
+#[kind(name = "aether.test.order")]
 struct Order;
-
-impl Kind for Order {
-    const NAME: KindName = KindName::new("aether.test.order");
-}
 
 /// An actor named `name`, keyed by `key`, standing beneath `parent`, that handles orders and
 /// may send `sends` as it begins.

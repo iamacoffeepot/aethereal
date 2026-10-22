@@ -1,11 +1,12 @@
 //! What a window hears, as its subscribers are sent it, and how they subscribe.
 
-use aethereal_data::{Kind, KindName, Plain};
+use aethereal_data::Plain;
 
 /// What a window heard, or how it stands, sent to the actors subscribed to it in the order its host heard it.
 ///
 /// A position is in the window's surface pixels: those of the surface the renderer draws in, from its top left.
 #[derive(Debug, Clone, PartialEq, Plain)]
+#[kind(name = "aether.window.event")]
 pub enum Event {
     /// The pointer moved over the window, to `x`, `y`.
     PointerMoved { x: f32, y: f32 },
@@ -37,10 +38,6 @@ pub enum Event {
     CloseRequested,
 }
 
-impl Kind for Event {
-    const NAME: KindName = KindName::new("aether.window.event");
-}
-
 /// A window's surface: what the renderer draws in, `width` by `height` of its pixels, on a screen of `scale` of them
 /// to each of the host's logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
@@ -70,16 +67,10 @@ pub enum Button {
 /// Asks a window to send this actor how it stands now, and every event from the next it hears: the sender must handle
 /// [`Event`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.window.subscribe")]
 pub struct Subscribe;
-
-impl Kind for Subscribe {
-    const NAME: KindName = KindName::new("aether.window.subscribe");
-}
 
 /// Asks a window to send this actor nothing more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.window.unsubscribe")]
 pub struct Unsubscribe;
-
-impl Kind for Unsubscribe {
-    const NAME: KindName = KindName::new("aether.window.unsubscribe");
-}

@@ -51,13 +51,10 @@ struct NoteOn {
 }
 
 #[derive(Plain)]
+#[kind(name = "test.derive.note_on")]
 struct NoteOnByHand {
     pitch: u8,
     velocity: u8,
-}
-
-impl Kind for NoteOnByHand {
-    const NAME: KindName = KindName::new("test.derive.note_on");
 }
 
 #[derive(Plain)]
@@ -69,14 +66,11 @@ enum Signal {
 }
 
 #[derive(Plain)]
+#[kind(name = "test.derive.signal")]
 enum SignalByHand {
     Stop,
     #[plain(selector = 4)]
     Go(u8),
-}
-
-impl Kind for SignalByHand {
-    const NAME: KindName = KindName::new("test.derive.signal");
 }
 
 #[derive(Plain)]

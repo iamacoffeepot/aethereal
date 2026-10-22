@@ -4,7 +4,7 @@ use super::super::*;
 use crate::Entry;
 use aethereal_actor::Time;
 use aethereal_actor::{Actor, ChildOf, Ending, Fault, Handle, Handles, Recursive, ToAny, ToType, Turn, child};
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Kind, Plain};
 use std::any;
 use std::cell::{Cell, RefCell};
 use std::mem;
@@ -51,34 +51,25 @@ impl Drop for Lamp {
 
 /// A keeper's number, the lamps it is given, and the orders it sends itself as it begins.
 #[derive(Bound)]
+#[kind(name = "aether.test.keeper_config")]
 struct KeeperConfig {
     number: u64,
     lamps: Vec<Given<Lamp>>,
     orders: Vec<String>,
 }
 
-impl Kind for KeeperConfig {
-    const NAME: KindName = KindName::new("aether.test.keeper_config");
-}
-
 /// An order a keeper sends itself.
 #[derive(Plain)]
+#[kind(name = "aether.test.order")]
 struct Order {
     text: String,
 }
 
-impl Kind for Order {
-    const NAME: KindName = KindName::new("aether.test.order");
-}
-
 /// Lamps passed from one keeper to another in mail.
 #[derive(Bound)]
+#[kind(name = "aether.test.pass")]
 struct Pass {
     lamps: Vec<Given<Lamp>>,
-}
-
-impl Kind for Pass {
-    const NAME: KindName = KindName::new("aether.test.pass");
 }
 
 /// An actor that keeps lamps, as its orders say:
@@ -93,13 +84,10 @@ impl Kind for Pass {
 ///
 /// It takes every lamp it is given, in its config or in mail, but for the keeper `99`, which takes none.
 #[derive(Bound)]
+#[kind(name = "aether.test.keeper")]
 struct Keeper {
     number: u64,
     lamps: Vec<Handle<Lamp>>,
-}
-
-impl Kind for Keeper {
-    const NAME: KindName = KindName::new("aether.test.keeper");
 }
 
 impl Keeper {

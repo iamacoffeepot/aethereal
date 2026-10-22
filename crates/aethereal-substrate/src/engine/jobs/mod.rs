@@ -10,7 +10,7 @@ use aethereal_actor::{
     BlobId, Copied, Fault, JobId, JobType, Lending, MailId, Mailed, Never, Outcome, Pinning, Produced, Seated, Sleep,
     Submitted, Tie, Timer, Unanswered,
 };
-use aethereal_data::{Kind, KindId, KindName, Plain};
+use aethereal_data::{Kind, KindId, Plain};
 use crossbeam_queue::SegQueue;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
@@ -134,35 +134,23 @@ fn fault<K: Kind>() -> Fault {
 
 /// The reason of a job no runner the host holds runs: its type was not handed to the host.
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.job.no_runner")]
 pub struct NoRunner;
-
-impl Kind for NoRunner {
-    const NAME: KindName = KindName::new("aether.job.no_runner");
-}
 
 /// The reason of a job that waited where its runner polls each job once.
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.job.waits")]
 pub struct Waits;
-
-impl Kind for Waits {
-    const NAME: KindName = KindName::new("aether.job.waits");
-}
 
 /// The reason of a job one of whose blobs did not fit the budget for blobs when it was answered.
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.job.no_room")]
 pub struct NoRoom;
-
-impl Kind for NoRoom {
-    const NAME: KindName = KindName::new("aether.job.no_room");
-}
 
 /// The reason of a job that panicked.
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.job.panicked")]
 pub struct Panicked;
-
-impl Kind for Panicked {
-    const NAME: KindName = KindName::new("aether.job.panicked");
-}
 
 impl Engine {
     /// The engine, its jobs run by `jobs`, which with none set answers every job that no runner runs it (ADR-0018).

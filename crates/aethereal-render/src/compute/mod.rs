@@ -6,7 +6,7 @@ mod tests;
 
 use crate::program::{Binding, ProgramRefused, Stage, check_bindings, check_uses, entry, listed, parsed};
 use aethereal_actor::BlobRef;
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use naga::valid::ModuleInfo;
 use naga::{AddressSpace, ArraySize, Handle, Module, Type, TypeInner};
 
@@ -16,35 +16,26 @@ use naga::{AddressSpace, ArraySize, Handle, Module, Type, TypeInner};
 /// Its workgroup size is read from the stage's `@workgroup_size`, which is constant, as a module that declares a
 /// constant a pipeline overrides is refused. The WGSL travels as a blob, as a program's does.
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
+#[kind(name = "aether.render.create_compute")]
 pub struct CreateCompute {
     pub wgsl: BlobRef,
     pub entry: String,
     pub bindings: Vec<Binding>,
 }
 
-impl Kind for CreateCompute {
-    const NAME: KindName = KindName::new("aether.render.create_compute");
-}
-
 /// A compute program the renderer made, which any actor handed it may dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.compute_id")]
 pub struct ComputeId {
     pub(crate) id: u64,
 }
 
-impl Kind for ComputeId {
-    const NAME: KindName = KindName::new("aether.render.compute_id");
-}
-
 /// What the renderer answers [`CreateCompute`] with.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.computed")]
 pub enum Computed {
     Made(ComputeId),
     Refused(ProgramRefused),
-}
-
-impl Kind for Computed {
-    const NAME: KindName = KindName::new("aether.render.computed");
 }
 
 /// What a compute program's check reads of its shader: the size of its workgroups, which a dispatch counts the

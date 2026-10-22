@@ -13,16 +13,13 @@ impl KindId {
     /// The id of `K`, computed when the program is built.
     ///
     /// ```rust
-    /// use aethereal_data::{Kind, KindId, KindName, Plain};
+    /// use aethereal_data::{KindId, Plain};
     ///
     /// #[derive(Plain)]
+    /// #[kind(name = "aether.audio.note_on")]
     /// struct NoteOn {
     ///     pitch: u8,
     ///     velocity: u8,
-    /// }
-    ///
-    /// impl Kind for NoteOn {
-    ///     const NAME: KindName = KindName::new("aether.audio.note_on");
     /// }
     ///
     /// const ID: KindId = KindId::of::<NoteOn>();

@@ -7,7 +7,7 @@ use aethereal_actor::{
     Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Handles, Job, Runner, Running, Sleep, Slept, Time, Top,
     Turn,
 };
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Clock, Engine};
 use std::cell::RefCell;
 use std::future;
@@ -21,23 +21,17 @@ thread_local! {
 
 /// A job that says whether it ran on one of the host's threads for jobs.
 #[derive(Plain)]
+#[kind(name = "aether.test.where")]
 struct Where {
     at: u64,
 }
 
-impl Kind for Where {
-    const NAME: KindName = KindName::new("aether.test.where");
-}
-
 /// What a job that says where it ran answers with.
 #[derive(Plain)]
+#[kind(name = "aether.test.ran")]
 struct Ran {
     at: u64,
     on_a_job_thread: bool,
-}
-
-impl Kind for Ran {
-    const NAME: KindName = KindName::new("aether.test.ran");
 }
 
 impl Job for Where {
@@ -53,19 +47,13 @@ impl Job for Where {
 
 /// What an asker keeps: nothing.
 #[derive(Plain)]
+#[kind(name = "aether.test.nothing")]
 struct Nothing;
-
-impl Kind for Nothing {
-    const NAME: KindName = KindName::new("aether.test.nothing");
-}
 
 /// An actor that runs three jobs as it begins, and says what each was answered with.
 #[derive(Bound)]
+#[kind(name = "aether.test.asker")]
 struct Asker;
-
-impl Kind for Asker {
-    const NAME: KindName = KindName::new("aether.test.asker");
-}
 
 impl ChildOf for Asker {
     type Parent = Top;
@@ -148,11 +136,8 @@ impl Drop for Guard {
 
 /// A job that waits for good, until it is dropped.
 #[derive(Plain)]
+#[kind(name = "aether.test.forever")]
 struct Forever;
-
-impl Kind for Forever {
-    const NAME: KindName = KindName::new("aether.test.forever");
-}
 
 impl Job for Forever {
     type Done = Ran;
@@ -168,24 +153,18 @@ impl Job for Forever {
 
 /// What a sleeper keeps of each sleep: which it is, the time it sleeps until, and the job it gives up on.
 #[derive(Bound)]
+#[kind(name = "aether.test.woke")]
 struct Woke {
     order: u64,
     until: Time,
     on: JobId,
 }
 
-impl Kind for Woke {
-    const NAME: KindName = KindName::new("aether.test.woke");
-}
-
 /// An actor that runs a job that waits for good and two sleeps as it begins, the later run first, and gives up on the
 /// job once the later sleep wakes.
 #[derive(Bound)]
+#[kind(name = "aether.test.sleeper")]
 struct Sleeper;
-
-impl Kind for Sleeper {
-    const NAME: KindName = KindName::new("aether.test.sleeper");
-}
 
 impl ChildOf for Sleeper {
     type Parent = Top;

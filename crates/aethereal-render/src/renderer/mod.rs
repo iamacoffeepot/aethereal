@@ -35,7 +35,7 @@ use aethereal_actor::{
     Actor, Beginning, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle, Handles, Held, Level, On,
     Path, Protocol, Render, Resource, Source, Tells, ToSender, Top, Turn, path,
 };
-use aethereal_data::{ActorId, Bound, Kind, KindName, Plain};
+use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_window::{Event, Subscribe, Window, WindowId};
 use std::collections::HashMap;
 use std::mem;
@@ -43,6 +43,7 @@ use walk::{End, Making, Step, Walk};
 
 /// The renderer, the one actor that touches the GPU. Actors ask it through [`Rendering`].
 #[derive(Bound)]
+#[kind(name = "aether.render")]
 pub struct Renderer {
     gpu: Handle<Gpu>,
     kept: Handle<Kept>,
@@ -61,10 +62,6 @@ struct Owed {
     reading: Vec<(u64, Held<Pixels>)>,
     storing: Vec<(u64, Held<Bytes>)>,
     timing: Vec<(u64, Held<Timed>)>,
-}
-
-impl Kind for Renderer {
-    const NAME: KindName = KindName::new("aether.render");
 }
 
 /// The renderer is a root, made by the chassis that opened the GPU (ADR-0021, ADR-0022).
@@ -137,14 +134,11 @@ impl Carries<TimeFrame> for Renderer {
 /// What the renderer is made from: the GPU the chassis opened, the controller it asks the chassis to map what it
 /// reads back through, and the source the chassis brings word of each through (ADR-0019).
 #[derive(Bound)]
+#[kind(name = "aether.render.config")]
 pub struct RendererConfig {
     pub gpu: Given<Gpu>,
     pub mapping: Given<Controller<Mapping>>,
     pub mapped: Given<Source<Mapped>>,
-}
-
-impl Kind for RendererConfig {
-    const NAME: KindName = KindName::new("aether.render.config");
 }
 
 /// What an actor asks the renderer: to make a mesh, a texture, a program, a compute program, an effect, instances,
@@ -255,6 +249,7 @@ impl Carries<TimeFrame> for Rendering {
 
 /// Releases what the renderer made before its maker ends. Only its maker may; what another asks is logged and left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.release")]
 pub enum Release {
     Mesh(MeshId),
     Texture(TextureId),
@@ -266,10 +261,6 @@ pub enum Release {
     Placement(PlacementId),
     Dispatch(DispatchId),
     Frame(FrameId),
-}
-
-impl Kind for Release {
-    const NAME: KindName = KindName::new("aether.render.release");
 }
 
 /// What the renderer has made, and who made each, with the samplers its placements, dispatches, and effects share, the

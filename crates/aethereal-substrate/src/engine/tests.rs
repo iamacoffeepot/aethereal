@@ -30,25 +30,19 @@ fn said() -> Vec<String> {
 
 /// A line of text one node sends another. A node acts on the text it is sent.
 #[derive(Plain)]
+#[kind(name = "aether.test.note")]
 struct Note {
     text: String,
-}
-
-impl Kind for Note {
-    const NAME: KindName = KindName::new("aether.test.note");
 }
 
 /// A node's number, the notes it sends itself as it begins, and the children it spawns as it begins, each of which
 /// closes on its first note.
 #[derive(Plain)]
+#[kind(name = "aether.test.node_config")]
 struct NodeConfig {
     number: u64,
     to_self: Vec<String>,
     spawns: Vec<u64>,
-}
-
-impl Kind for NodeConfig {
-    const NAME: KindName = KindName::new("aether.test.node_config");
 }
 
 /// An actor that says what it is sent, and acts on it:
@@ -72,12 +66,9 @@ impl Kind for NodeConfig {
 /// - `sibling N` says whether it finds the node `N` beneath its parent;
 /// - `birth N` spawns the node `N`, and says whether it finds it beneath itself in the same turn.
 #[derive(Plain)]
+#[kind(name = "aether.test.node")]
 struct Node {
     number: u64,
-}
-
-impl Kind for Node {
-    const NAME: KindName = KindName::new("aether.test.node");
 }
 
 impl Node {
@@ -1041,6 +1032,7 @@ fn a_child_stood_up_in_a_turn_counts_what_it_sent_from_its_begin() {
 /// The notes a holder sends itself as it begins, and how many times it mails itself a blob of three bytes there,
 /// keeping none of it.
 #[derive(Plain)]
+#[kind(name = "aether.test.holder_config")]
 struct HolderConfig {
     to_self: Vec<String>,
     gives: u64,
@@ -1048,17 +1040,10 @@ struct HolderConfig {
 
 /// A blob, given in mail, to be given on `left` more times.
 #[derive(Bound)]
+#[kind(name = "aether.test.given")]
 struct Given {
     blob: BlobRef,
     left: u64,
-}
-
-impl Kind for Given {
-    const NAME: KindName = KindName::new("aether.test.given");
-}
-
-impl Kind for HolderConfig {
-    const NAME: KindName = KindName::new("aether.test.holder_config");
 }
 
 /// An actor that puts, keeps, reads, and lets go of blobs as its notes say (ADR-0014):
@@ -1074,14 +1059,11 @@ impl Kind for HolderConfig {
 /// and keeps a blob it is given, saying how many bytes it holds, but for one it gave itself as it began, which it
 /// reads, gives itself on while it has more times to go, and lets go of.
 #[derive(Bound)]
+#[kind(name = "aether.test.holder")]
 struct Holder {
     held: Vec<BlobRef>,
     /// Whether it gave itself a blob as it began.
     gave: bool,
-}
-
-impl Kind for Holder {
-    const NAME: KindName = KindName::new("aether.test.holder");
 }
 
 impl ChildOf for Holder {
@@ -1427,26 +1409,20 @@ fn mail_carried_past_its_receivers_slice_keeps_its_blob_until_it_is_handed() {
 
 /// What a clocked actor is told as it begins: its number, and the note it sends itself.
 #[derive(Plain)]
+#[kind(name = "aether.test.clocked_config")]
 struct ClockedConfig {
     number: u64,
     to_self: String,
-}
-
-impl Kind for ClockedConfig {
-    const NAME: KindName = KindName::new("aether.test.clocked_config");
 }
 
 /// An actor that says the time each of its turns reads, and puts a blob of three bytes as it begins, which its
 /// closing turn reads (ADR-0014, ADR-0018): `spawn` spawns the actors `2` and `3` beneath it, which each send
 /// themselves `close`.
 #[derive(Bound)]
+#[kind(name = "aether.test.clocked")]
 struct Clocked {
     number: u64,
     blob: BlobRef,
-}
-
-impl Kind for Clocked {
-    const NAME: KindName = KindName::new("aether.test.clocked");
 }
 
 impl ChildOf for Clocked {
@@ -1681,12 +1657,9 @@ listening!(Impostor, "the impostor");
 /// A root that, as it begins, tells the listener of key zero at its typed path what it is made from: a keyed path,
 /// which its spawn does not check, so it may hold anything as the caller sends.
 #[derive(Plain)]
+#[kind(name = "aether.test.caller")]
 struct Caller {
     text: String,
-}
-
-impl Kind for Caller {
-    const NAME: KindName = KindName::new("aether.test.caller");
 }
 
 impl ChildOf for Caller {
@@ -1751,29 +1724,20 @@ fn a_send_at_a_typed_path_reaches_only_a_live_actor_of_the_paths_type() {
 
 /// A question an oracle answers.
 #[derive(Plain)]
+#[kind(name = "aether.test.question")]
 struct Question;
-
-impl Kind for Question {
-    const NAME: KindName = KindName::new("aether.test.question");
-}
 
 /// An oracle's answer to a question.
 #[derive(Plain)]
+#[kind(name = "aether.test.reply")]
 struct Reply {
     text: String,
 }
 
-impl Kind for Reply {
-    const NAME: KindName = KindName::new("aether.test.reply");
-}
-
 /// What a seer keeps while its question is out.
 #[derive(Plain)]
+#[kind(name = "aether.test.wondering")]
 struct Wondering;
-
-impl Kind for Wondering {
-    const NAME: KindName = KindName::new("aether.test.wondering");
-}
 
 /// A root that answers each question, at the oracle's name.
 #[derive(Plain)]
@@ -1832,11 +1796,8 @@ answering!(FalseOracle, "a lie");
 /// A root that, as it begins, asks the oracle of key zero at its typed path a question and watches it, and says what it
 /// hears: a keyed path, which its spawn does not check.
 #[derive(Plain)]
+#[kind(name = "aether.test.seer")]
 struct Seer;
-
-impl Kind for Seer {
-    const NAME: KindName = KindName::new("aether.test.seer");
-}
 
 impl ChildOf for Seer {
     type Parent = Top;
@@ -2055,11 +2016,8 @@ fn a_root_that_reaches_a_typed_path_of_singletons_is_refused_while_no_actor_of_i
 /// A root that, as it begins, spawns a pilot, which reaches it back at its typed path, and a smuggler, which reaches
 /// the lighthouse, and says what became of each.
 #[derive(Plain)]
+#[kind(name = "aether.test.harbor")]
 struct Harbor;
-
-impl Kind for Harbor {
-    const NAME: KindName = KindName::new("aether.test.harbor");
-}
 
 impl ChildOf for Harbor {
     type Parent = Top;
@@ -2162,11 +2120,8 @@ fn a_setup_makes_each_root_of_an_instanced_type_it_is_handed_at_once() {
 /// A root that, as it begins, spawns a squad beneath it, which tells it of its parent, and a scout and a cell, which
 /// may stand anywhere and beneath their own type, and says what each tells it.
 #[derive(Plain)]
+#[kind(name = "aether.test.barracks")]
 struct Barracks;
-
-impl Kind for Barracks {
-    const NAME: KindName = KindName::new("aether.test.barracks");
-}
 
 impl ChildOf for Barracks {
     type Parent = Top;
@@ -2207,11 +2162,8 @@ impl Handles<Note> for Barracks {
 
 /// A child of the barracks that, as it begins and when it is told to report, tells its parent it stands beneath it.
 #[derive(Plain)]
+#[kind(name = "aether.test.squad")]
 struct Squad;
-
-impl Kind for Squad {
-    const NAME: KindName = KindName::new("aether.test.squad");
-}
 
 impl ChildOf for Squad {
     type Parent = Barracks;
@@ -2248,11 +2200,8 @@ impl Handles<Note> for Squad {
 /// An actor that may stand anywhere: as it begins, it tells its parent, when it has one, that it stands beneath it, and
 /// says whether it is a root.
 #[derive(Plain)]
+#[kind(name = "aether.test.scout")]
 struct Scout;
-
-impl Kind for Scout {
-    const NAME: KindName = KindName::new("aether.test.scout");
-}
 
 impl ChildOf for Scout {
     type Parent = Anywhere;
@@ -2285,12 +2234,9 @@ impl Actor for Scout {
 /// An actor of a tree of its own type: one of depth zero, a root, spawns one beneath it, and each says whether it has
 /// a parent of its own type.
 #[derive(Plain)]
+#[kind(name = "aether.test.cell")]
 struct Cell {
     depth: u64,
-}
-
-impl Kind for Cell {
-    const NAME: KindName = KindName::new("aether.test.cell");
 }
 
 impl ChildOf for Cell {

@@ -7,7 +7,7 @@
 use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Time, ToAny, ToSender, Top, Turn};
 use aethereal_chassis_headless::Monotonic;
 use aethereal_chassis_headless::guest::Runtime;
-use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
+use aethereal_data::{ActorPath, Bound, KindName, PathSegment, Plain};
 use aethereal_guest_echo as guest;
 use aethereal_substrate::{Clock, Engine};
 use std::env;
@@ -17,38 +17,26 @@ use std::sync::Arc;
 const ECHO: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO"));
 
 #[derive(Plain)]
+#[kind(name = "aether.guest.ping")]
 struct Ping {
     n: u64,
 }
 
-impl Kind for Ping {
-    const NAME: KindName = KindName::new("aether.guest.ping");
-}
-
 #[derive(Plain)]
+#[kind(name = "aether.guest.pong")]
 struct Pong {
     n: u64,
 }
 
-impl Kind for Pong {
-    const NAME: KindName = KindName::new("aether.guest.pong");
-}
-
 #[derive(Plain)]
+#[kind(name = "aether.bench.volley")]
 struct Volley {
     pings: u64,
 }
 
-impl Kind for Volley {
-    const NAME: KindName = KindName::new("aether.bench.volley");
-}
-
 #[derive(Bound)]
+#[kind(name = "aether.bench.pinger")]
 struct Pinger;
-
-impl Kind for Pinger {
-    const NAME: KindName = KindName::new("aether.bench.pinger");
-}
 
 impl ChildOf for Pinger {
     type Parent = Top;

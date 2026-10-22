@@ -9,17 +9,14 @@ use crate::window::{Window, WindowConfig, WindowId};
 use aethereal_actor::{
     Actor, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, Level, Source, ToType, Top, Turn, child,
 };
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 
 /// What the host heard in one of its windows: what its source brings in.
 #[derive(Debug, Clone, PartialEq, Plain)]
+#[kind(name = "aether.windows.heard")]
 pub struct Heard {
     pub(crate) window: WindowId,
     pub(crate) event: Event,
-}
-
-impl Kind for Heard {
-    const NAME: KindName = KindName::new("aether.windows.heard");
 }
 
 /// A window the host opened as the program was set up, and how it stood.
@@ -32,34 +29,25 @@ pub struct Opened {
 /// What the window root is made from: the source its host feeds, and the windows open as it begins, which it makes an
 /// actor for each of. Made by [`Opening::config`](crate::Opening::config).
 #[derive(Bound)]
+#[kind(name = "aether.windows.config")]
 pub struct WindowsConfig {
     pub(crate) source: Given<Source<Heard>>,
     pub(crate) windows: Vec<Opened>,
 }
 
-impl Kind for WindowsConfig {
-    const NAME: KindName = KindName::new("aether.windows.config");
-}
-
 /// Why the window root did not begin: the actor of this window was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.windows.unopened")]
 pub struct Unopened {
     pub window: WindowId,
-}
-
-impl Kind for Unopened {
-    const NAME: KindName = KindName::new("aether.windows.unopened");
 }
 
 /// The window root: it holds the source every window's events come in through, and sends each to the actor of its
 /// window, [`Window`], beneath it, keyed by the window's id.
 #[derive(Bound)]
+#[kind(name = "aether.windows")]
 pub struct Windows {
     source: Handle<Source<Heard>>,
-}
-
-impl Kind for Windows {
-    const NAME: KindName = KindName::new("aether.windows");
 }
 
 /// The window root is a root, made by the chassis that opens the windows.

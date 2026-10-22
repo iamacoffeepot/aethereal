@@ -27,18 +27,12 @@ use core::marker::PhantomData;
 /// # use aethereal_data::{Kind, KindName, Plain};
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.poke")]
 /// # struct Poke;
 /// #
-/// # impl Kind for Poke {
-/// #     const NAME: KindName = KindName::new("aether.example.poke");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.shut")]
 /// # struct Shut;
-/// #
-/// # impl Kind for Shut {
-/// #     const NAME: KindName = KindName::new("aether.example.shut");
-/// # }
 /// #
 /// # macro_rules! actor {
 /// #     ($name:ident, $named:literal, $sends:ty) => {
@@ -94,18 +88,12 @@ use core::marker::PhantomData;
 /// # use aethereal_data::{Kind, KindName, Plain};
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.poke")]
 /// # struct Poke;
 /// #
-/// # impl Kind for Poke {
-/// #     const NAME: KindName = KindName::new("aether.example.poke");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.shut")]
 /// # struct Shut;
-/// #
-/// # impl Kind for Shut {
-/// #     const NAME: KindName = KindName::new("aether.example.shut");
-/// # }
 /// #
 /// # macro_rules! actor {
 /// #     ($name:ident, $named:literal, $sends:ty) => {
@@ -161,18 +149,12 @@ use core::marker::PhantomData;
 /// # use aethereal_data::{Kind, KindName, Plain};
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.poke")]
 /// # struct Poke;
 /// #
-/// # impl Kind for Poke {
-/// #     const NAME: KindName = KindName::new("aether.example.poke");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.shut")]
 /// # struct Shut;
-/// #
-/// # impl Kind for Shut {
-/// #     const NAME: KindName = KindName::new("aether.example.shut");
-/// # }
 /// #
 /// # macro_rules! actor {
 /// #     ($name:ident, $named:literal, $sends:ty) => {

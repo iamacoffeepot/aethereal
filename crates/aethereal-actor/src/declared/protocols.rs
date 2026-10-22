@@ -10,21 +10,15 @@ use aethereal_data::Kind;
 ///
 /// ```
 /// use aethereal_actor::{Carries, Protocol};
-/// use aethereal_data::{Kind, KindName, Plain};
+/// use aethereal_data::Plain;
 ///
 /// #[derive(Plain)]
+/// #[kind(name = "aether.example.which_tile")]
 /// struct WhichTile;
 ///
-/// impl Kind for WhichTile {
-///     const NAME: KindName = KindName::new("aether.example.which_tile");
-/// }
-///
 /// #[derive(Plain)]
+/// #[kind(name = "aether.example.tile_is")]
 /// struct TileIs;
-///
-/// impl Kind for TileIs {
-///     const NAME: KindName = KindName::new("aether.example.tile_is");
-/// }
 ///
 /// struct Tiles;
 ///
@@ -41,14 +35,11 @@ use aethereal_data::Kind;
 ///
 /// ```compile_fail
 /// use aethereal_actor::Protocol;
-/// use aethereal_data::{Kind, KindName, Plain};
+/// use aethereal_data::Plain;
 ///
 /// #[derive(Plain)]
+/// #[kind(name = "aether.example.highlight")]
 /// struct Highlight;
-///
-/// impl Kind for Highlight {
-///     const NAME: KindName = KindName::new("aether.example.highlight");
-/// }
 ///
 /// struct Tiles;
 ///
@@ -101,28 +92,19 @@ impl<P> CarriedBy<P> for () {}
 ///
 /// ```compile_fail
 /// # use aethereal_actor::{Actor, ActorRef, Beginning, Carries, Ending, Fault, Handles, Protocol, ProtocolRef, ToSender, Turn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.which_tile")]
 /// # struct WhichTile;
 /// #
-/// # impl Kind for WhichTile {
-/// #     const NAME: KindName = KindName::new("aether.example.which_tile");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.tile_is")]
 /// # struct TileIs;
 /// #
-/// # impl Kind for TileIs {
-/// #     const NAME: KindName = KindName::new("aether.example.tile_is");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.lost")]
 /// # struct Lost;
-/// #
-/// # impl Kind for Lost {
-/// #     const NAME: KindName = KindName::new("aether.example.lost");
-/// # }
 /// #
 /// # struct Tiles;
 /// #
@@ -135,11 +117,8 @@ impl<P> CarriedBy<P> for () {}
 /// # }
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.board")]
 /// # struct Board;
-/// #
-/// # impl Kind for Board {
-/// #     const NAME: KindName = KindName::new("aether.example.board");
-/// # }
 /// #
 /// # impl Actor for Board {
 /// #     type Config = Board;

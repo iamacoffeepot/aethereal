@@ -49,7 +49,7 @@ use aethereal_actor::{
     ToType, Top, Turn, parent,
 };
 use aethereal_chassis_headless::{Headless, Monotonic};
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Clock, Engine, Hops};
 use std::env;
 use std::hint;
@@ -86,103 +86,70 @@ const WORLD_LIFE: u64 = 32;
 
 /// A ping with this many to go after it.
 #[derive(Plain)]
+#[kind(name = "aether.savina.ping")]
 struct Ping {
     left: u64,
 }
 
-impl Kind for Ping {
-    const NAME: KindName = KindName::new("aether.savina.ping");
-}
-
 /// The answer to a ping.
 #[derive(Plain)]
+#[kind(name = "aether.savina.pong")]
 struct Pong {
     left: u64,
 }
 
-impl Kind for Pong {
-    const NAME: KindName = KindName::new("aether.savina.pong");
-}
-
 /// One to count.
 #[derive(Plain)]
+#[kind(name = "aether.savina.increment")]
 struct Increment;
-
-impl Kind for Increment {
-    const NAME: KindName = KindName::new("aether.savina.increment");
-}
 
 /// A request for the count so far.
 #[derive(Plain)]
+#[kind(name = "aether.savina.retrieve")]
 struct Retrieve;
-
-impl Kind for Retrieve {
-    const NAME: KindName = KindName::new("aether.savina.retrieve");
-}
 
 /// The count, answering a [`Retrieve`].
 #[derive(Plain)]
+#[kind(name = "aether.savina.total")]
 struct Total {
     count: u64,
 }
 
-impl Kind for Total {
-    const NAME: KindName = KindName::new("aether.savina.total");
-}
-
 /// A piece of work in the fork-join program.
 #[derive(Plain)]
+#[kind(name = "aether.savina.work")]
 struct Work;
-
-impl Kind for Work {
-    const NAME: KindName = KindName::new("aether.savina.work");
-}
 
 /// A neighbour, handed to an actor of the big program.
 #[derive(Bound)]
+#[kind(name = "aether.savina.neighbour")]
 struct Neighbour {
     other: ActorRef<Pinging>,
 }
 
-impl Kind for Neighbour {
-    const NAME: KindName = KindName::new("aether.savina.neighbour");
-}
-
 /// The word to start pinging.
 #[derive(Plain)]
+#[kind(name = "aether.savina.start")]
 struct Start;
-
-impl Kind for Start {
-    const NAME: KindName = KindName::new("aether.savina.start");
-}
 
 /// The word that a program can start. A root sends it to its last child as it begins, the child answers it from a
 /// turn, and the root sends its first mail on that answer: from an ordinary turn, as Savina's producer acts on a
 /// start message, and not from its `begin`.
 #[derive(Plain)]
+#[kind(name = "aether.savina.ready")]
 struct Ready;
-
-impl Kind for Ready {
-    const NAME: KindName = KindName::new("aether.savina.ready");
-}
 
 /// What every actor here is made from: its number.
 #[derive(Plain)]
+#[kind(name = "aether.savina.number")]
 struct Number {
     number: u64,
 }
 
-impl Kind for Number {
-    const NAME: KindName = KindName::new("aether.savina.number");
-}
-
 /// The ping side of the ping-pong program, and its root: it spawns the pong side and serves first.
 #[derive(Plain)]
+#[kind(name = "aether.savina.pinger")]
 struct Pinger;
-
-impl Kind for Pinger {
-    const NAME: KindName = KindName::new("aether.savina.pinger");
-}
 
 impl ChildOf for Pinger {
     type Parent = Top;
@@ -233,11 +200,8 @@ impl Handles<Pong> for Pinger {
 
 /// The pong side of the ping-pong program: it answers each ping.
 #[derive(Plain)]
+#[kind(name = "aether.savina.ponger")]
 struct Ponger;
-
-impl Kind for Ponger {
-    const NAME: KindName = KindName::new("aether.savina.ponger");
-}
 
 impl ChildOf for Ponger {
     type Parent = Pinger;
@@ -272,11 +236,8 @@ impl Handles<Ping> for Ponger {
 /// The producer of the counting program, and its root: it spawns the counter, and once the counter is ready sends
 /// it everything to count, then asks for the count.
 #[derive(Plain)]
+#[kind(name = "aether.savina.producer")]
 struct Producer;
-
-impl Kind for Producer {
-    const NAME: KindName = KindName::new("aether.savina.producer");
-}
 
 impl ChildOf for Producer {
     type Parent = Top;
@@ -329,11 +290,8 @@ impl Handles<Total> for Producer {
 /// The counting program with its producer sending everything from its `begin`, between steps: what a root that
 /// sends a great deal as it begins costs.
 #[derive(Plain)]
+#[kind(name = "aether.savina.begin_producer")]
 struct BeginProducer;
-
-impl Kind for BeginProducer {
-    const NAME: KindName = KindName::new("aether.savina.begin_producer");
-}
 
 impl ChildOf for BeginProducer {
     type Parent = Top;
@@ -375,12 +333,9 @@ impl Handles<Total> for BeginProducer {
 
 /// The counter of the counting program.
 #[derive(Plain)]
+#[kind(name = "aether.savina.counter")]
 struct Counter {
     count: u64,
-}
-
-impl Kind for Counter {
-    const NAME: KindName = KindName::new("aether.savina.counter");
 }
 
 impl ChildOf for Counter {
@@ -426,12 +381,9 @@ impl Handles<Retrieve> for Counter {
 /// The root of the fork-join program: it spawns the workers, and once they are ready sends each its share of the
 /// work.
 #[derive(Bound)]
+#[kind(name = "aether.savina.forker")]
 struct Forker {
     workers: Vec<ActorRef<Forked>>,
-}
-
-impl Kind for Forker {
-    const NAME: KindName = KindName::new("aether.savina.forker");
 }
 
 impl ChildOf for Forker {
@@ -473,11 +425,8 @@ impl Handles<Ready> for Forker {
 
 /// A worker of the fork-join program: it does Savina's little sum for each piece of work.
 #[derive(Plain)]
+#[kind(name = "aether.savina.forked")]
 struct Forked;
-
-impl Kind for Forked {
-    const NAME: KindName = KindName::new("aether.savina.forked");
-}
 
 impl ChildOf for Forked {
     type Parent = Forker;
@@ -513,12 +462,9 @@ impl Handles<Work> for Forked {
 /// The root of the big program: it spawns the actors, and once they are ready introduces each to every other and
 /// starts them.
 #[derive(Bound)]
+#[kind(name = "aether.savina.crowd")]
 struct Crowd {
     actors: Vec<ActorRef<Pinging>>,
-}
-
-impl Kind for Crowd {
-    const NAME: KindName = KindName::new("aether.savina.crowd");
 }
 
 impl ChildOf for Crowd {
@@ -562,14 +508,11 @@ impl Handles<Ready> for Crowd {
 /// An actor of the big program: it pings a neighbour picked at random, and on each answer pings again until it has
 /// sent all its pings. It answers every ping it is sent.
 #[derive(Bound)]
+#[kind(name = "aether.savina.pinging")]
 struct Pinging {
     neighbours: Vec<ActorRef<Self>>,
     /// The state of its random numbers.
     random: u64,
-}
-
-impl Kind for Pinging {
-    const NAME: KindName = KindName::new("aether.savina.pinging");
 }
 
 impl Pinging {
@@ -651,31 +594,22 @@ impl Handles<Pong> for Pinging {
 
 /// A request for the Fibonacci number at `number`.
 #[derive(Plain)]
+#[kind(name = "aether.savina.request")]
 struct Request {
     number: u64,
 }
 
-impl Kind for Request {
-    const NAME: KindName = KindName::new("aether.savina.request");
-}
-
 /// A Fibonacci number, answering a [`Request`].
 #[derive(Plain)]
+#[kind(name = "aether.savina.response")]
 struct Response {
     value: u64,
 }
 
-impl Kind for Response {
-    const NAME: KindName = KindName::new("aether.savina.response");
-}
-
 /// The root of the fib program: it spawns the first actor, and once it is ready asks it for the number.
 #[derive(Plain)]
+#[kind(name = "aether.savina.fib_root")]
 struct FibRoot;
-
-impl Kind for FibRoot {
-    const NAME: KindName = KindName::new("aether.savina.fib_root");
-}
 
 impl ChildOf for FibRoot {
     type Parent = Top;
@@ -722,13 +656,10 @@ impl Handles<Response> for FibRoot {
 /// An actor of the fib program: asked for a number, it answers at once if it is one of the first two, and otherwise
 /// spawns a child for each of the two before it and answers with their sum. It closes once it has answered.
 #[derive(Plain)]
+#[kind(name = "aether.savina.fib")]
 struct Fib {
     sum: u64,
     answers: u64,
-}
-
-impl Kind for Fib {
-    const NAME: KindName = KindName::new("aether.savina.fib");
 }
 
 /// An answer to a parent, which is another actor of the fib program or its root: any actor that handles a
@@ -792,30 +723,21 @@ impl Handles<Response> for Fib {
 
 /// A number for the sieve to test.
 #[derive(Plain)]
+#[kind(name = "aether.savina.candidate")]
 struct Candidate {
     number: u64,
 }
 
-impl Kind for Candidate {
-    const NAME: KindName = KindName::new("aether.savina.candidate");
-}
-
 /// The word that the sieve has every number: each filter passes it on and closes.
 #[derive(Plain)]
+#[kind(name = "aether.savina.exit")]
 struct Exit;
-
-impl Kind for Exit {
-    const NAME: KindName = KindName::new("aether.savina.exit");
-}
 
 /// The root of the sieve program: it spawns the first filter, which keeps 2, and once it is ready sends it every
 /// odd number up to the limit, then the word to stop.
 #[derive(Plain)]
+#[kind(name = "aether.savina.sieve")]
 struct Sieve;
-
-impl Kind for Sieve {
-    const NAME: KindName = KindName::new("aether.savina.sieve");
-}
 
 impl ChildOf for Sieve {
     type Parent = Top;
@@ -857,6 +779,7 @@ impl Handles<Ready> for Sieve {
 
 /// What follows a filter in the sieve's pipeline.
 #[derive(Bound)]
+#[kind(name = "aether.savina.next")]
 enum Next {
     /// Nothing: it is the last filter, and keeps a number no filter divides.
     Last,
@@ -864,19 +787,12 @@ enum Next {
     Filter(ActorRef<Filter>),
 }
 
-impl Kind for Next {
-    const NAME: KindName = KindName::new("aether.savina.next");
-}
-
 /// A filter of the sieve: it drops a number one of its primes divides, and keeps or passes on the rest.
 #[derive(Bound)]
+#[kind(name = "aether.savina.filter")]
 struct Filter {
     primes: Vec<u64>,
     next: Next,
-}
-
-impl Kind for Filter {
-    const NAME: KindName = KindName::new("aether.savina.filter");
 }
 
 impl ChildOf for Filter {
@@ -939,33 +855,24 @@ impl Handles<Exit> for Filter {
 
 /// One more hop of a churn actor's life, with this many to go after it.
 #[derive(Plain)]
+#[kind(name = "aether.savina.live")]
 struct Live {
     left: u64,
 }
 
-impl Kind for Live {
-    const NAME: KindName = KindName::new("aether.savina.live");
-}
-
 /// The word that a churn actor has lived its hops and is closing.
 #[derive(Plain)]
+#[kind(name = "aether.savina.died")]
 struct Died;
-
-impl Kind for Died {
-    const NAME: KindName = KindName::new("aether.savina.died");
-}
 
 /// The root of the churn program: it keeps its population alive, spawning one in the place of each that closes,
 /// until the total has lived.
 #[derive(Plain)]
+#[kind(name = "aether.savina.churn")]
 struct Churn {
     spawned: u64,
     /// How many roots share the program: the population and the total are each this one's share of them.
     spawners: u64,
-}
-
-impl Kind for Churn {
-    const NAME: KindName = KindName::new("aether.savina.churn");
 }
 
 impl Churn {
@@ -1035,11 +942,8 @@ impl Handles<Died> for Churn {
 
 /// An actor of the churn program: it lives a number of hops of mail to itself, then tells its parent and closes.
 #[derive(Plain)]
+#[kind(name = "aether.savina.mortal")]
 struct Mortal;
-
-impl Kind for Mortal {
-    const NAME: KindName = KindName::new("aether.savina.mortal");
-}
 
 impl ChildOf for Mortal {
     type Parent = Churn;
@@ -1078,64 +982,46 @@ impl Handles<Live> for Mortal {
 
 /// A frame of the world program for a body, with the bodies either side of it to nudge.
 #[derive(Bound)]
+#[kind(name = "aether.savina.frame")]
 struct Frame {
     left: ActorRef<Body>,
     right: ActorRef<Body>,
 }
 
-impl Kind for Frame {
-    const NAME: KindName = KindName::new("aether.savina.frame");
-}
-
 /// A push from the body beside it.
 #[derive(Plain)]
+#[kind(name = "aether.savina.nudge")]
 struct Nudge {
     push: f32,
 }
 
-impl Kind for Nudge {
-    const NAME: KindName = KindName::new("aether.savina.nudge");
-}
-
 /// A body's answer to its frame, its life going on.
 #[derive(Plain)]
+#[kind(name = "aether.savina.moved")]
 struct Moved;
-
-impl Kind for Moved {
-    const NAME: KindName = KindName::new("aether.savina.moved");
-}
 
 /// A body's answer to its frame, its last: the body in place `place` has lived its frames and is closing.
 #[derive(Plain)]
+#[kind(name = "aether.savina.expired")]
 struct Expired {
     place: u64,
 }
 
-impl Kind for Expired {
-    const NAME: KindName = KindName::new("aether.savina.expired");
-}
-
 /// The word that the world program is over: each body closes.
 #[derive(Plain)]
+#[kind(name = "aether.savina.over")]
 struct Over;
-
-impl Kind for Over {
-    const NAME: KindName = KindName::new("aether.savina.over");
-}
 
 /// A region of the world program, and one of its roots: it keeps its bodies in a row of places, and runs them a
 /// frame at a time, sending each its frame and starting the next once every body has answered. It puts a new body in
 /// the place of each that expires, and once the frames are run tells its bodies the world is over, and closes.
 #[derive(Bound)]
+#[kind(name = "aether.savina.region")]
 struct Region {
     places: Vec<ActorRef<Body>>,
     frame: u64,
     answered: u64,
     spawned: u64,
-}
-
-impl Kind for Region {
-    const NAME: KindName = KindName::new("aether.savina.region");
 }
 
 impl Region {
@@ -1243,16 +1129,13 @@ impl Handles<Expired> for Region {
 /// A body of the world program: each frame it moves, pushed by what its neighbours nudged it with, nudges them in
 /// turn, and answers its region. It lives a number of frames, its last answer saying it has expired.
 #[derive(Plain)]
+#[kind(name = "aether.savina.body")]
 struct Body {
     place: u64,
     left: u64,
     position: f32,
     velocity: f32,
     pushed: f32,
-}
-
-impl Kind for Body {
-    const NAME: KindName = KindName::new("aether.savina.body");
 }
 
 impl ChildOf for Body {

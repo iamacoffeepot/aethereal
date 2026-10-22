@@ -5,7 +5,7 @@ use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Path, T
 use aethereal_chassis_browser::canvas::Density;
 use aethereal_chassis_browser::controls::{self, Control, Controls, ControlsConfig};
 use aethereal_chassis_browser::{Browser, Listening, Mappings, Performance, canvas};
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_substrate::Engine;
 use aethereal_window::{self as window, Event, Heard, Opening, Window, WindowId, Windows};
 use core::cell::RefCell;
@@ -79,22 +79,16 @@ impl Program {
 
 /// What the reporter watches: the window it subscribes to.
 #[derive(Plain)]
+#[kind(name = "aether.example.watches")]
 struct Watches {
     window: WindowId,
-}
-
-impl Kind for Watches {
-    const NAME: KindName = KindName::new("aether.example.watches");
 }
 
 /// The reporter: it subscribes to the canvas's window and to the controls as it begins, and notes each event and
 /// control it is sent.
 #[derive(Bound)]
+#[kind(name = "aether.example.reporter")]
 struct Reporter;
-
-impl Kind for Reporter {
-    const NAME: KindName = KindName::new("aether.example.reporter");
-}
 
 impl ChildOf for Reporter {
     type Parent = Top;

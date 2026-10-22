@@ -5,7 +5,7 @@ use aethereal_actor::{
     Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, On, Render, Sleep, Slept,
     Source, Tick, Top, Turn,
 };
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Inline, Jobs, Setup};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -21,11 +21,8 @@ impl Clock for Still {
 
 /// An actor's empty config.
 #[derive(Plain)]
+#[kind(name = "aether.test.nothing")]
 struct Nothing;
-
-impl Kind for Nothing {
-    const NAME: KindName = KindName::new("aether.test.nothing");
-}
 
 /// What the painter was sent, in order.
 static PAINTED: Mutex<Vec<&str>> = Mutex::new(Vec::new());
@@ -37,11 +34,8 @@ fn note(what: &'static str) {
 
 /// An actor that notes each `Tick` and `Render` it is sent, and sleeps until now on each `Tick`, noting the answer.
 #[derive(Bound)]
+#[kind(name = "aether.test.painter")]
 struct Painter;
-
-impl Kind for Painter {
-    const NAME: KindName = KindName::new("aether.test.painter");
-}
 
 impl ChildOf for Painter {
     type Parent = Top;
@@ -135,22 +129,16 @@ fn a_frame_runs_its_cycle_through_to_its_end_and_is_answered_for_the_jobs_it_ran
 
 /// The pointer moved: what the page pushes onto a pointer's source.
 #[derive(Plain)]
+#[kind(name = "aether.test.moved")]
 struct Moved {
     x: u64,
 }
 
-impl Kind for Moved {
-    const NAME: KindName = KindName::new("aether.test.moved");
-}
-
 /// The source a pointer is handed.
 #[derive(Bound)]
+#[kind(name = "aether.test.pointer_config")]
 struct PointerConfig {
     source: Given<Source<Moved>>,
-}
-
-impl Kind for PointerConfig {
-    const NAME: KindName = KindName::new("aether.test.pointer_config");
 }
 
 /// Where the pointer was brought, in order.
@@ -158,12 +146,9 @@ static MOVED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 
 /// An actor that holds a source of moves, and notes each it is brought.
 #[derive(Bound)]
+#[kind(name = "aether.test.pointer")]
 struct Pointer {
     source: Handle<Source<Moved>>,
-}
-
-impl Kind for Pointer {
-    const NAME: KindName = KindName::new("aether.test.pointer");
 }
 
 impl ChildOf for Pointer {

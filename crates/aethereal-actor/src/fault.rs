@@ -1,6 +1,6 @@
 //! A fault: why a turn could not go on (ADR-0009).
 
-use aethereal_data::{Budget, DecodeError, EncodeError, Kind, KindId, KindName, Plain, from_bytes, to_bytes};
+use aethereal_data::{Budget, DecodeError, EncodeError, Kind, KindId, Plain, from_bytes, to_bytes};
 use alloc::vec::Vec;
 
 /// Why a turn could not go on: a reason the actor chose, as its kind's id and bytes (ADR-0009).
@@ -65,16 +65,13 @@ impl Fault {
 /// It is what `?` makes of a [`DecodeError`] in a handler. A handler that is
 /// to carry on past unreadable mail matches on the error.
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.actor.unreadable")]
 pub enum Unreadable {
     /// The bytes are not a value of the kind.
     Malformed,
     /// Reading them would take `requested` bytes at once, more than the `remaining` left of what the read may take:
     /// mail past the engine's limit, whose large parts belong in blobs.
     Limit { requested: u64, remaining: u64 },
-}
-
-impl Kind for Unreadable {
-    const NAME: KindName = KindName::new("aether.actor.unreadable");
 }
 
 impl From<DecodeError> for Fault {
@@ -97,11 +94,8 @@ impl From<DecodeError> for Fault {
 ///
 /// It is what `?` makes of an [`EncodeError`] in a handler.
 #[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.actor.unwritable")]
 pub struct Unwritable;
-
-impl Kind for Unwritable {
-    const NAME: KindName = KindName::new("aether.actor.unwritable");
-}
 
 impl From<EncodeError> for Fault {
     fn from(_: EncodeError) -> Self {
@@ -115,22 +109,16 @@ mod tests {
     use alloc::string::String;
 
     #[derive(Debug, PartialEq, Plain)]
+    #[kind(name = "aether.test.file_missing")]
     struct FileMissing {
         name: String,
     }
 
-    impl Kind for FileMissing {
-        const NAME: KindName = KindName::new("aether.test.file_missing");
-    }
-
     /// The same layout as [`FileMissing`] under another name.
     #[derive(Debug, PartialEq, Plain)]
+    #[kind(name = "aether.test.file_locked")]
     struct FileLocked {
         name: String,
-    }
-
-    impl Kind for FileLocked {
-        const NAME: KindName = KindName::new("aether.test.file_locked");
     }
 
     #[test]

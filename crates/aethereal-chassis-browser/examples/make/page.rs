@@ -5,7 +5,7 @@ use aethereal_actor::{
     Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::{Browser, Performance, open, renderer};
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_render::mesh::{Attribute, CreateMesh, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::program::{Blend, CreateProgram, Cull, Depth, Fixed, PerInstance, Programmed};
 use aethereal_render::shape::{ColourFormat, Shape};
@@ -81,31 +81,22 @@ impl Program {
 
 /// An empty config.
 #[derive(Plain)]
+#[kind(name = "aether.example.nothing")]
 struct Nothing;
-
-impl Kind for Nothing {
-    const NAME: KindName = KindName::new("aether.example.nothing");
-}
 
 /// What the maker asked for, kept until it is answered.
 #[derive(Plain)]
+#[kind(name = "aether.example.asked")]
 struct Asked {
     what: String,
-}
-
-impl Kind for Asked {
-    const NAME: KindName = KindName::new("aether.example.asked");
 }
 
 /// An actor that, as the program starts, asks the renderer for a triangle, a texture of two by two pixels, a triangle
 /// with an index past its last vertex, a program that shades the triangle, and one that reads a vertex the layout does
 /// not give, says what each was answered, and releases the triangle once made.
 #[derive(Bound)]
+#[kind(name = "aether.example.maker")]
 struct Maker;
-
-impl Kind for Maker {
-    const NAME: KindName = KindName::new("aether.example.maker");
-}
 
 impl ChildOf for Maker {
     type Parent = Top;

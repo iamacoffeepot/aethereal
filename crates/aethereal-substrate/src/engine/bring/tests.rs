@@ -6,7 +6,7 @@ use aethereal_actor::Time;
 use aethereal_actor::{
     Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Recursive, Source, ToType, Top, Turn,
 };
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use std::cell::RefCell;
 use std::mem;
 
@@ -27,12 +27,9 @@ fn said() -> Vec<String> {
 
 /// The pointer moved: what the chassis brings a window.
 #[derive(Plain)]
+#[kind(name = "aether.test.moved")]
 struct Moved {
     x: u64,
-}
-
-impl Kind for Moved {
-    const NAME: KindName = KindName::new("aether.test.moved");
 }
 
 /// A resource the chassis hands in, which an event carries to a window (ADR-0019).
@@ -42,17 +39,15 @@ impl Resource for Lamp {}
 
 /// What the chassis brings that holds a resource it handed in, and whether its window takes it.
 #[derive(Bound)]
+#[kind(name = "aether.test.lit")]
 struct Lit {
     lamp: Given<Lamp>,
     take: bool,
 }
 
-impl Kind for Lit {
-    const NAME: KindName = KindName::new("aether.test.lit");
-}
-
 /// A window's number, the sources it is given, and the orders it sends itself as it begins.
 #[derive(Bound)]
+#[kind(name = "aether.test.window_config")]
 struct WindowConfig {
     number: u64,
     pointers: Vec<Given<Source<Moved>>>,
@@ -60,31 +55,21 @@ struct WindowConfig {
     orders: Vec<String>,
 }
 
-impl Kind for WindowConfig {
-    const NAME: KindName = KindName::new("aether.test.window_config");
-}
-
 /// An order a window sends itself.
 #[derive(Plain)]
+#[kind(name = "aether.test.window_order")]
 struct Order {
     text: String,
-}
-
-impl Kind for Order {
-    const NAME: KindName = KindName::new("aether.test.window_order");
 }
 
 /// An actor that holds sources and says what each brings it, whether it came from itself, and whether it is the first
 /// of its chain. `spawn N` gives every pointer source to the window `N` it spawns beneath it, and `close` closes it.
 #[derive(Bound)]
+#[kind(name = "aether.test.window")]
 struct Window {
     number: u64,
     pointers: Vec<Handle<Source<Moved>>>,
     lights: Vec<Handle<Source<Lit>>>,
-}
-
-impl Kind for Window {
-    const NAME: KindName = KindName::new("aether.test.window");
 }
 
 impl ChildOf for Window {
@@ -326,24 +311,18 @@ enum Make {
 
 /// What a windows capability is made from: its controller, and the orders it sends itself as it begins.
 #[derive(Bound)]
+#[kind(name = "aether.test.windows_config")]
 struct WindowsConfig {
     control: Given<Controller<Make>>,
     orders: Vec<String>,
 }
 
-impl Kind for WindowsConfig {
-    const NAME: KindName = KindName::new("aether.test.windows_config");
-}
-
 /// A capability that asks its host for the windows `a` and `b` as it begins, and for one more on each order it sends
 /// itself, but `close`, which closes it.
 #[derive(Bound)]
+#[kind(name = "aether.test.windows")]
 struct Windows {
     control: Handle<Controller<Make>>,
-}
-
-impl Kind for Windows {
-    const NAME: KindName = KindName::new("aether.test.windows");
 }
 
 impl ChildOf for Windows {

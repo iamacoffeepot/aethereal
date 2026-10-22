@@ -29,23 +29,17 @@ fn said() -> Vec<String> {
 
 /// A note an actor sends itself.
 #[derive(Plain)]
+#[kind(name = "aether.test.stage_note")]
 struct Note {
     text: String,
 }
 
-impl Kind for Note {
-    const NAME: KindName = KindName::new("aether.test.stage_note");
-}
-
 /// What a staged actor is told as it begins: its number, and the notes it sends itself.
 #[derive(Plain)]
+#[kind(name = "aether.test.staged_config")]
 struct StagedConfig {
     number: u64,
     to_self: Vec<String>,
-}
-
-impl Kind for StagedConfig {
-    const NAME: KindName = KindName::new("aether.test.staged_config");
 }
 
 /// An actor that subscribes to `Start` and `Stop` as it begins, and says each it is sent. On `Start` it sends itself
@@ -54,12 +48,9 @@ impl Kind for StagedConfig {
 /// - `pass N` sends itself `pass N-1` until `N` is zero, so a stage's chain runs on for a few steps;
 /// - `quit` asks the program to stop, `close` closes it, and `leave` unsubscribes it from `Start`.
 #[derive(Bound)]
+#[kind(name = "aether.test.staged")]
 struct Staged {
     number: u64,
-}
-
-impl Kind for Staged {
-    const NAME: KindName = KindName::new("aether.test.staged");
 }
 
 impl ChildOf for Staged {
@@ -276,22 +267,16 @@ fn no_root_is_made_at_the_lifecycle_s_name() {
 
 /// A stage of a chassis's own, which a cycle may hold anywhere.
 #[derive(Plain, Default)]
+#[kind(name = "aether.test.receive")]
 struct Receive;
-
-impl Kind for Receive {
-    const NAME: KindName = KindName::new("aether.test.receive");
-}
 
 impl Stage for Receive {}
 
 /// An actor that subscribes to every stage of a cycle and to `Stop` as it begins, and says each it is sent, `Tick`
 /// with its delta and the time elapsed. On `Tick` it sends itself `pass 1`, so the stage's chain runs a step longer.
 #[derive(Bound)]
+#[kind(name = "aether.test.cycler")]
 struct Cycler;
-
-impl Kind for Cycler {
-    const NAME: KindName = KindName::new("aether.test.cycler");
-}
 
 impl ChildOf for Cycler {
     type Parent = Anywhere;
@@ -475,11 +460,8 @@ fn a_cycle_out_of_order_or_holding_an_end_or_a_stage_twice_is_refused() {
 /// An actor that spawns a cycler beneath it as it begins, and a latecomer in a step, on the note it sends itself, and
 /// says why each was refused, if it was.
 #[derive(Bound)]
+#[kind(name = "aether.test.nest")]
 struct Nest;
-
-impl Kind for Nest {
-    const NAME: KindName = KindName::new("aether.test.nest");
-}
 
 impl ChildOf for Nest {
     type Parent = Top;
@@ -552,11 +534,8 @@ fn an_actor_that_subscribes_to_a_stage_its_engine_does_not_run_is_refused_where_
 
 /// An actor that declares its subscription to `Receive` in a handler, not as it begins.
 #[derive(Bound)]
+#[kind(name = "aether.test.latecomer")]
 struct Latecomer;
-
-impl Kind for Latecomer {
-    const NAME: KindName = KindName::new("aether.test.latecomer");
-}
 
 impl ChildOf for Latecomer {
     type Parent = Anywhere;
@@ -599,13 +578,10 @@ impl Handles<Note> for Latecomer {
 /// An actor that subscribes to `Stop` as it begins, holds it when it is sent, and acts on the notes it is sent: `answer`
 /// answers it, `let go` drops it unanswered, and `close` closes the actor holding it.
 #[derive(Bound)]
+#[kind(name = "aether.test.drainer")]
 struct Drainer {
     /// The `Stop` it holds: none until it is sent, and none once answered or let go.
     held: Vec<Held<Drained>>,
-}
-
-impl Kind for Drainer {
-    const NAME: KindName = KindName::new("aether.test.drainer");
 }
 
 impl ChildOf for Drainer {
@@ -663,11 +639,8 @@ impl Handles<Note> for Drainer {
 
 /// An actor that, as it begins, sends the drainer the note it is made with: from a chain of its own, not `Stop`'s.
 #[derive(Bound)]
+#[kind(name = "aether.test.waker")]
 struct Waker;
-
-impl Kind for Waker {
-    const NAME: KindName = KindName::new("aether.test.waker");
-}
 
 impl ChildOf for Waker {
     type Parent = Top;
@@ -748,11 +721,8 @@ fn a_stage_nothing_subscribes_to_is_passed_at_once() {
 
 /// A root, a singleton, that a castaway reaches at its typed path and is never made.
 #[derive(Bound)]
+#[kind(name = "aether.test.shore")]
 struct Shore;
-
-impl Kind for Shore {
-    const NAME: KindName = KindName::new("aether.test.shore");
-}
 
 impl ChildOf for Shore {
     type Parent = Top;
@@ -784,11 +754,8 @@ impl Handles<Note> for Shore {
 
 /// A root that subscribes to `Receive` as it begins and reaches the shore at its typed path: refused for both.
 #[derive(Bound)]
+#[kind(name = "aether.test.castaway")]
 struct Castaway;
-
-impl Kind for Castaway {
-    const NAME: KindName = KindName::new("aether.test.castaway");
-}
 
 impl ChildOf for Castaway {
     type Parent = Top;

@@ -7,7 +7,7 @@ mod tests;
 use crate::mesh::{self, MeshRefused, VertexFormat, VertexLayout};
 use crate::shape::{ColourFormat, DepthFormat, Shape};
 use aethereal_actor::BlobRef;
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use naga::front::wgsl;
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
 use naga::{
@@ -23,6 +23,7 @@ use naga::{
 /// The WGSL travels as a blob, as a mesh's vertices do, so a shader longer than the engine reads of one piece of mail
 /// can still be asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
+#[kind(name = "aether.render.create_program")]
 pub struct CreateProgram {
     pub wgsl: BlobRef,
     pub vertex: String,
@@ -34,12 +35,9 @@ pub struct CreateProgram {
     pub shape: Shape,
 }
 
-impl Kind for CreateProgram {
-    const NAME: KindName = KindName::new("aether.render.create_program");
-}
-
 /// What a program's vertex stage reads once per instance (ADR-0023).
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.per_instance")]
 pub enum PerInstance {
     /// Nothing: it is drawn a count of times, reading only its vertices.
     None,
@@ -48,24 +46,18 @@ pub enum PerInstance {
     Records(VertexLayout),
 }
 
-impl Kind for PerInstance {
-    const NAME: KindName = KindName::new("aether.render.per_instance");
-}
-
 /// One thing a program binds: where, by its group and its binding in the group, and what.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.binding")]
 pub struct Binding {
     pub group: u32,
     pub binding: u32,
     pub kind: BindingKind,
 }
 
-impl Kind for Binding {
-    const NAME: KindName = KindName::new("aether.render.binding");
-}
-
 /// What a program binds at one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.binding_kind")]
 pub enum BindingKind {
     /// A uniform block of `bytes`, at least what the shader reads of it.
     Uniform { bytes: u32 },
@@ -80,12 +72,9 @@ pub enum BindingKind {
     Sampler,
 }
 
-impl Kind for BindingKind {
-    const NAME: KindName = KindName::new("aether.render.binding_kind");
-}
-
 /// How a shader binds a storage buffer: what a program says it does with it is what its shader declares (ADR-0026).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.access")]
 pub enum Access {
     /// It only reads it, `var<storage, read>`.
     Read,
@@ -93,25 +82,19 @@ pub enum Access {
     Write,
 }
 
-impl Kind for Access {
-    const NAME: KindName = KindName::new("aether.render.access");
-}
-
 /// What a program fixes as it is made: how it blends, how it tests depth, and which faces it culls. It draws
 /// triangles, counter-clockwise in front.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.fixed")]
 pub struct Fixed {
     pub blend: Blend,
     pub depth: Depth,
     pub cull: Cull,
 }
 
-impl Kind for Fixed {
-    const NAME: KindName = KindName::new("aether.render.fixed");
-}
-
 /// How a program's colour is laid over what is drawn already.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.blend")]
 pub enum Blend {
     /// It replaces it.
     Opaque,
@@ -123,12 +106,9 @@ pub enum Blend {
     Multiply,
 }
 
-impl Kind for Blend {
-    const NAME: KindName = KindName::new("aether.render.blend");
-}
-
 /// How a program tests and writes depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.depth")]
 pub enum Depth {
     /// It neither tests nor writes it.
     Off,
@@ -138,57 +118,42 @@ pub enum Depth {
     TestWrite,
 }
 
-impl Kind for Depth {
-    const NAME: KindName = KindName::new("aether.render.depth");
-}
-
 /// Which faces of its triangles a program does not draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.cull")]
 pub enum Cull {
     None,
     Back,
     Front,
 }
 
-impl Kind for Cull {
-    const NAME: KindName = KindName::new("aether.render.cull");
-}
-
 /// A program the renderer made, which any actor handed it may draw with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.program_id")]
 pub struct ProgramId {
     pub(crate) id: u64,
 }
 
-impl Kind for ProgramId {
-    const NAME: KindName = KindName::new("aether.render.program_id");
-}
-
 /// What the renderer answers [`CreateProgram`] with.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.programmed")]
 pub enum Programmed {
     Made(ProgramId),
     Refused(ProgramRefused),
 }
 
-impl Kind for Programmed {
-    const NAME: KindName = KindName::new("aether.render.programmed");
-}
-
 /// One of a program's two stages, or a compute program's one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.stage")]
 pub enum Stage {
     Vertex,
     Fragment,
     Compute,
 }
 
-impl Kind for Stage {
-    const NAME: KindName = KindName::new("aether.render.stage");
-}
-
 /// Why a program was not made.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.program_refused")]
 pub enum ProgramRefused {
     /// The WGSL's bytes are not UTF-8: the first `valid` of them are.
     Utf8 { valid: u64 },
@@ -245,10 +210,6 @@ pub enum ProgramRefused {
     Workgroup { size: [u32; 3] },
     /// A compute program's workgroup memory, `bytes` as WebGPU counts it, is more than the GPU gives a workgroup.
     WorkgroupMemory { bytes: u64 },
-}
-
-impl Kind for ProgramRefused {
-    const NAME: KindName = KindName::new("aether.render.program_refused");
 }
 
 /// The WGSL a request's blob holds, `bytes`, as text: refused when they are not UTF-8.

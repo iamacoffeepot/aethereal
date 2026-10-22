@@ -4,7 +4,7 @@
 use crate::event::{Event, Subscribe, Surface, Unsubscribe};
 use crate::windows::Windows;
 use aethereal_actor::{Actor, Beginning, ChildOf, Ended, Ending, Fault, Handles, Level, Subscribers, ToAny, Turn};
-use aethereal_data::{Bound, KeyName, Kind, KindName, Plain, TypedKey};
+use aethereal_data::{Bound, KeyName, Plain, TypedKey};
 use core::mem;
 
 /// A window, by the number the window capability gave it as its host opened it: the first `0`, the next `1`. It is
@@ -32,26 +32,20 @@ impl TypedKey for WindowId {
 
 /// How a window stands as its actor is made: its surface, and whether it has the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
+#[kind(name = "aether.window.config")]
 pub struct WindowConfig {
     pub surface: Surface,
     pub focused: bool,
 }
 
-impl Kind for WindowConfig {
-    const NAME: KindName = KindName::new("aether.window.config");
-}
-
 /// A window's actor: it sends each event its window heard to the actors subscribed to it, and sends a new subscriber
 /// the window's surface and focus as they stand before anything else.
 #[derive(Bound)]
+#[kind(name = "aether.window")]
 pub struct Window {
     listeners: Subscribers<(Event,)>,
     surface: Surface,
     focused: bool,
-}
-
-impl Kind for Window {
-    const NAME: KindName = KindName::new("aether.window");
 }
 
 /// Each window's actor stands beneath the window root, which makes it as its host opens the window.

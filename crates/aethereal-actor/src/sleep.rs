@@ -1,7 +1,7 @@
 //! Time a job waits for: the host's timer, which a running job is handed, and the job that only waits (ADR-0018).
 
 use crate::{Fault, Job, Runner, Running, Time};
-use aethereal_data::{Kind, KindName, Plain};
+use aethereal_data::Plain;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
@@ -65,21 +65,15 @@ impl Future for Until<'_> {
 /// // in the handler of Answer<Slept, GiveUp>: turn.cancel(on)
 /// ```
 #[derive(Plain)]
+#[kind(name = "aether.job.sleep")]
 pub struct Sleep {
     pub until: Time,
 }
 
-impl Kind for Sleep {
-    const NAME: KindName = KindName::new("aether.job.sleep");
-}
-
 /// What a sleep answers with, once its time has come.
 #[derive(Plain)]
+#[kind(name = "aether.job.slept")]
 pub struct Slept;
-
-impl Kind for Slept {
-    const NAME: KindName = KindName::new("aether.job.slept");
-}
 
 impl Job for Sleep {
     type Done = Slept;

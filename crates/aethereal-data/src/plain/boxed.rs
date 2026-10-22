@@ -26,28 +26,22 @@ impl<T: Plain> Plain for Box<T> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Budget, Kind, KindId, KindName, from_bytes, to_bytes};
+    use crate::{Budget, KindId, from_bytes, to_bytes};
     use alloc::vec::Vec;
 
     #[derive(Debug, PartialEq, Plain)]
+    #[kind(name = "aethereal.test.note")]
     struct Inline {
         id: u32,
         tags: Vec<u8>,
     }
 
-    impl Kind for Inline {
-        const NAME: KindName = KindName::new("aethereal.test.note");
-    }
-
     #[derive(Debug, PartialEq, Plain)]
+    #[kind(name = "aethereal.test.note")]
     #[allow(clippy::vec_box, reason = "the test is that a boxed byte keeps its sequence `Bytes`")]
     struct Boxed {
         id: Box<u32>,
         tags: Vec<Box<u8>>,
-    }
-
-    impl Kind for Boxed {
-        const NAME: KindName = KindName::new("aethereal.test.note");
     }
 
     #[test]

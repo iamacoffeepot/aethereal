@@ -2,24 +2,18 @@
 
 use super::Engine;
 use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToType, Top, Turn};
-use aethereal_data::{Kind, KindName, Plain};
+use aethereal_data::Plain;
 use std::num::NonZeroUsize;
 
 /// What each actor of a rehearsal sends itself, every step.
 #[derive(Plain)]
+#[kind(name = "aether.rehearsal.again")]
 struct Again;
-
-impl Kind for Again {
-    const NAME: KindName = KindName::new("aether.rehearsal.again");
-}
 
 /// An actor of a rehearsal: it sends itself [`Again`] as it begins, and again on each it is sent.
 #[derive(Plain)]
+#[kind(name = "aether.rehearsal.echo")]
 struct Echo;
-
-impl Kind for Echo {
-    const NAME: KindName = KindName::new("aether.rehearsal.echo");
-}
 
 impl ChildOf for Echo {
     type Parent = Top;

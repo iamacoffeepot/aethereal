@@ -5,62 +5,47 @@
 mod tests;
 
 use aethereal_actor::BlobRef;
-use aethereal_data::{Bound, Kind, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 
 /// Asks the renderer for storage holding `bytes`, whose size is fixed from then. Answered with [`Stored`].
 #[derive(Bound)]
+#[kind(name = "aether.render.create_storage")]
 pub struct CreateStorage {
     pub bytes: BlobRef,
-}
-
-impl Kind for CreateStorage {
-    const NAME: KindName = KindName::new("aether.render.create_storage");
 }
 
 /// Writes `bytes` over the bytes of `storage` from the byte `first`. Only its maker may write it, and nothing is
 /// answered: a write that does not fit is logged, and the bytes are left as they were.
 #[derive(Bound)]
+#[kind(name = "aether.render.write_storage")]
 pub struct WriteStorage {
     pub storage: StorageId,
     pub first: u32,
     pub bytes: BlobRef,
 }
 
-impl Kind for WriteStorage {
-    const NAME: KindName = KindName::new("aether.render.write_storage");
-}
-
 /// Storage the renderer made, which any actor handed it may bind or read back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.storage_id")]
 pub struct StorageId {
     pub(crate) id: u64,
 }
 
-impl Kind for StorageId {
-    const NAME: KindName = KindName::new("aether.render.storage_id");
-}
-
 /// What the renderer answers [`CreateStorage`] with.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.stored")]
 pub enum Stored {
     Made(StorageId),
     Refused(StorageRefused),
 }
 
-impl Kind for Stored {
-    const NAME: KindName = KindName::new("aether.render.stored");
-}
-
 /// Why storage was not made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.storage_refused")]
 pub enum StorageRefused {
     /// There are no bytes, or they are no whole number of four, or more than the `most` the GPU binds as one storage
     /// buffer.
     Size { bytes: u64, most: u64 },
-}
-
-impl Kind for StorageRefused {
-    const NAME: KindName = KindName::new("aether.render.storage_refused");
 }
 
 /// Checks storage before it is made: that its bytes are whole words, and as many as the GPU binds as one storage

@@ -5,7 +5,7 @@ use crate::BlobRef;
 use crate::declared::{Carries, DeclaredBy, Handled, Handles, Kinds, Last, Listed, Marker, Protocol, RepliesTo};
 use crate::declared::{RepliesWith, ReplyWithin, Role, Sending, Target};
 use crate::{Actors, ChildOf, Item, Path, PathTo, ProtocolRef, Within, Written};
-use aethereal_data::{Decode, Kind, KindId, KindName, Plain};
+use aethereal_data::{Decode, Kind, KindId, Plain};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -18,35 +18,23 @@ use core::marker::PhantomData;
 ///
 /// ```compile_fail
 /// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, Declared, Ending, Fault, Handles, Protocol, Turn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.which_tile")]
 /// # struct WhichTile;
 /// #
-/// # impl Kind for WhichTile {
-/// #     const NAME: KindName = KindName::new("aether.example.which_tile");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.tile_is")]
 /// # struct TileIs;
 /// #
-/// # impl Kind for TileIs {
-/// #     const NAME: KindName = KindName::new("aether.example.tile_is");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.looking")]
 /// # struct Looking;
 /// #
-/// # impl Kind for Looking {
-/// #     const NAME: KindName = KindName::new("aether.example.looking");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.glancing")]
 /// # struct Glancing;
-/// #
-/// # impl Kind for Glancing {
-/// #     const NAME: KindName = KindName::new("aether.example.glancing");
-/// # }
 /// #
 /// # struct Tiles;
 /// #
@@ -59,11 +47,8 @@ use core::marker::PhantomData;
 /// # }
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.pointer")]
 /// # struct Pointer;
-/// #
-/// # impl Kind for Pointer {
-/// #     const NAME: KindName = KindName::new("aether.example.pointer");
-/// # }
 /// #
 /// impl Actor for Pointer {
 ///     type Config = Pointer;
@@ -94,35 +79,23 @@ type Of<P, K, C> = fn() -> (P, K, C);
 ///
 /// ```compile_fail
 /// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, Declared, Ending, Fault, Handles, Protocol, Turn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.which_tile")]
 /// # struct WhichTile;
 /// #
-/// # impl Kind for WhichTile {
-/// #     const NAME: KindName = KindName::new("aether.example.which_tile");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.tile_is")]
 /// # struct TileIs;
 /// #
-/// # impl Kind for TileIs {
-/// #     const NAME: KindName = KindName::new("aether.example.tile_is");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.looking")]
 /// # struct Looking;
 /// #
-/// # impl Kind for Looking {
-/// #     const NAME: KindName = KindName::new("aether.example.looking");
-/// # }
-/// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.glancing")]
 /// # struct Glancing;
-/// #
-/// # impl Kind for Glancing {
-/// #     const NAME: KindName = KindName::new("aether.example.glancing");
-/// # }
 /// #
 /// # struct Tiles;
 /// #
@@ -135,11 +108,8 @@ type Of<P, K, C> = fn() -> (P, K, C);
 /// # }
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.pointer")]
 /// # struct Pointer;
-/// #
-/// # impl Kind for Pointer {
-/// #     const NAME: KindName = KindName::new("aether.example.pointer");
-/// # }
 /// #
 /// impl Actor for Pointer {
 ///     type Config = Pointer;
@@ -192,6 +162,7 @@ pub enum Answered<A> {
 /// as only the engine ties mail ([`Tie::unanswered`](crate::Tie::unanswered)), so no actor can say it in the engine's
 /// place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.actor.unanswered")]
 pub enum Unanswered {
     /// The receiver had ended, or was gone, when the request was to be handed to it, or it ended owing the answer.
     Ended,
@@ -202,10 +173,6 @@ pub enum Unanswered {
     Unreplied,
     /// The job returned a fault, which is in the asker's log, or its host lost it to a panic (ADR-0018).
     Faulted,
-}
-
-impl Kind for Unanswered {
-    const NAME: KindName = KindName::new("aether.actor.unanswered");
 }
 
 /// A request a turn asked, or a job it ran, and the context its asker keeps until it is answered, as the engine files
@@ -232,24 +199,26 @@ pub struct Asking {
 /// ```
 /// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path};
 /// # use aethereal_actor::{ToSender, Top, Turn, path};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
-/// # macro_rules! kind {
-/// #     ($name:ident, $named:literal) => {
-/// #         #[derive(Plain)]
-/// #         struct $name;
-/// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new($named);
-/// #         }
-/// #     };
-/// # }
-/// # kind!(Hello, "aether.example.hello");
-/// # kind!(Hi, "aether.example.hi");
-/// # kind!(Bye, "aether.example.bye");
-/// # kind!(Waiting, "aether.example.waiting");
-/// # kind!(Greeter, "aether.example.greeter");
-/// # kind!(Visitor, "aether.example.visitor");
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.hello")]
+/// # struct Hello;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.hi")]
+/// # struct Hi;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.bye")]
+/// # struct Bye;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.waiting")]
+/// # struct Waiting;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.greeter")]
+/// # struct Greeter;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.visitor")]
+/// # struct Visitor;
 /// #
 /// # impl ChildOf for Greeter {
 /// #     type Parent = Top;
@@ -319,24 +288,26 @@ pub struct Asking {
 /// ```compile_fail
 /// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path};
 /// # use aethereal_actor::{ToSender, Top, Turn, path};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
-/// # macro_rules! kind {
-/// #     ($name:ident, $named:literal) => {
-/// #         #[derive(Plain)]
-/// #         struct $name;
-/// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new($named);
-/// #         }
-/// #     };
-/// # }
-/// # kind!(Hello, "aether.example.hello");
-/// # kind!(Hi, "aether.example.hi");
-/// # kind!(Bye, "aether.example.bye");
-/// # kind!(Waiting, "aether.example.waiting");
-/// # kind!(Greeter, "aether.example.greeter");
-/// # kind!(Visitor, "aether.example.visitor");
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.hello")]
+/// # struct Hello;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.hi")]
+/// # struct Hi;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.bye")]
+/// # struct Bye;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.waiting")]
+/// # struct Waiting;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.greeter")]
+/// # struct Greeter;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.visitor")]
+/// # struct Visitor;
 /// #
 /// # impl ChildOf for Greeter {
 /// #     type Parent = Top;
@@ -404,24 +375,26 @@ pub struct Asking {
 /// ```compile_fail
 /// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path};
 /// # use aethereal_actor::{ToSender, Top, Turn, path};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// # use aethereal_data::Plain;
 /// #
-/// # macro_rules! kind {
-/// #     ($name:ident, $named:literal) => {
-/// #         #[derive(Plain)]
-/// #         struct $name;
-/// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new($named);
-/// #         }
-/// #     };
-/// # }
-/// # kind!(Hello, "aether.example.hello");
-/// # kind!(Hi, "aether.example.hi");
-/// # kind!(Bye, "aether.example.bye");
-/// # kind!(Waiting, "aether.example.waiting");
-/// # kind!(Greeter, "aether.example.greeter");
-/// # kind!(Visitor, "aether.example.visitor");
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.hello")]
+/// # struct Hello;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.hi")]
+/// # struct Hi;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.bye")]
+/// # struct Bye;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.waiting")]
+/// # struct Waiting;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.greeter")]
+/// # struct Greeter;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.visitor")]
+/// # struct Visitor;
 /// #
 /// # impl ChildOf for Greeter {
 /// #     type Parent = Top;
