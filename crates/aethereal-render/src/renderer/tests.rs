@@ -104,7 +104,7 @@ fn an_effect_binding_a_sampler_none_has_made_is_made_and_drawn() {
         },
     };
     let frame = CreateFrame {
-        ends: Ends::Texture(Size { width: 4, height: 4 }),
+        ends: Ends::Texture { size: Size { width: 4, height: 4 }, format: TextureFormat::Rgba8 },
         targets: vec![TargetSpec::Float],
         passes: vec![glow, composite],
     };
@@ -203,8 +203,11 @@ fn a_frame_begun_by_an_effect_that_reads_nothing_is_made_and_drawn_from_black() 
             bindings: vec![Bind { group: 1, binding: 0, to: Resource::Uniforms(UniformsId { id: horizon }) }],
         },
     };
-    let frame =
-        CreateFrame { ends: Ends::Texture(Size { width: 4, height: 4 }), targets: Vec::new(), passes: vec![sky] };
+    let frame = CreateFrame {
+        ends: Ends::Texture { size: Size { width: 4, height: 4 }, format: TextureFormat::Rgba8 },
+        targets: Vec::new(),
+        passes: vec![sky],
+    };
     assert_eq!(frame::check(&frame, &kept), Ok(()));
 
     let framed = kept.frame(&device, frame, MAKER);
@@ -226,4 +229,112 @@ fn a_frame_begun_by_an_effect_that_reads_nothing_is_made_and_drawn_from_black() 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     kept.run_all(&mut encoder, &surface(&device), None);
     queue.submit([encoder.finish()]);
+}
+
+/// An effect that reads nothing and writes a glow past one, as a bloom kept between frames does.
+const GLOW: &str = "
+@fragment
+fn glow(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    return vec4<f32>(2.5, 2.5, 2.5, 1.0);
+}
+";
+
+/// An effect that samples a texture another frame ends on, smoothly, and darkens it by a quarter.
+const DARKENED: &str = "
+@group(1) @binding(0) var glow: texture_2d<f32>;
+@group(1) @binding(1) var smoothly: sampler;
+
+@fragment
+fn composite(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    return textureSample(glow, smoothly, uv) / 4.0;
+}
+";
+
+/// The effect `fragment` of `wgsl`, reading no target of its frame, binding `bindings`, made for `shape` and kept
+/// in `kept`.
+fn effect_of(
+    device: &wgpu::Device,
+    kept: &mut Kept,
+    (wgsl, fragment): (&str, &str),
+    bindings: Vec<Binding>,
+    shape: Shape,
+) -> ProgramId {
+    let create = CreateEffect {
+        wgsl: blob(),
+        fragment: String::from(fragment),
+        reads: Vec::new(),
+        bindings,
+        blend: Blend::Opaque,
+        shape,
+    };
+    assert_eq!(effect::check(&create, wgsl, &device.limits()), Ok(()));
+    let program = kept.ids.next();
+    kept.programs.keep(program, MAKER, effect_pipeline(device, &create, wgsl));
+
+    ProgramId { id: program }
+}
+
+/// A frame onto a texture 4 by 4 of `format`, of the one effect pass `does`.
+fn onto(format: TextureFormat, does: Does) -> CreateFrame {
+    let pass = PassSpec { name: PassName::of::<Composite>(), does };
+
+    CreateFrame {
+        ends: Ends::Texture { size: Size { width: 4, height: 4 }, format },
+        targets: Vec::new(),
+        passes: vec![pass],
+    }
+}
+
+#[test]
+fn a_frame_ending_in_floats_is_sampled_by_another_frame_s_effect_and_read_back_in_floats() {
+    // Catches a texture end made in bytes whatever format it was asked in, which an effect made for floats is
+    // refused to draw into as WebGPU draws it; its passes shaped as bytes, so a program made for them joins none
+    // and one made for bytes is drawn into floats; and one kept under another format than it was made in, which is
+    // read back as bytes it does not hold.
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let mut kept = kept(&device);
+
+    let glow = effect_of(&device, &mut kept, (GLOW, "glow"), Vec::new(), Shape::flat(ColourFormat::Rgba16Float));
+    let glow = Does::Effect { program: glow, reads: Vec::new(), into: Target::End, bindings: Vec::new() };
+    let glowing = onto(TextureFormat::Rgba16Float, glow);
+    assert_eq!(frame::check(&glowing, &kept), Ok(()));
+    let framed = kept.frame(&device, glowing, MAKER);
+    let Ok(Framed::Texture { frame, texture }) = framed else {
+        panic!("the frame is refused: {framed:?}");
+    };
+    let shaped = kept.pass(Frame::Texture(frame), PassName::of::<Composite>());
+    assert_eq!(shaped, Ok(Shape::flat(ColourFormat::Rgba16Float)));
+
+    let bindings = vec![
+        Binding { group: 1, binding: 0, kind: BindingKind::Texture },
+        Binding { group: 1, binding: 1, kind: BindingKind::Sampler },
+    ];
+    let darken = effect_of(&device, &mut kept, (DARKENED, "composite"), bindings, Shape::flat(ColourFormat::Rgba8));
+    let smooth = Sampling { filter: Filter::Linear, wrap: Wrap::Clamp };
+    let darken = Does::Effect {
+        program: darken,
+        reads: Vec::new(),
+        into: Target::End,
+        bindings: vec![
+            Bind { group: 1, binding: 0, to: Resource::Texture(texture) },
+            Bind { group: 1, binding: 1, to: Resource::Sampler(smooth) },
+        ],
+    };
+    let darkened = onto(TextureFormat::Rgba8, darken);
+    assert_eq!(frame::check(&darkened, &kept), Ok(()));
+    let framed = kept.frame(&device, darkened, MAKER);
+    assert!(matches!(framed, Ok(Framed::Texture { .. })), "the frame is refused: {framed:?}");
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    kept.run_all(&mut encoder, &surface(&device), None);
+    let Some(glowed) = kept.textures.get(texture.id) else {
+        panic!("the texture the frame ends on is kept");
+    };
+    let reading = copy_texture(&device, &mut encoder, &glowed.made, glowed.format, Order::Kept);
+    queue.submit([encoder.finish()]);
+
+    let Reading::Pixels { copied, format, .. } = reading else {
+        panic!("a texture is read back as pixels");
+    };
+    assert_eq!((format, copied.pixel), (TextureFormat::Rgba16Float, 8));
 }

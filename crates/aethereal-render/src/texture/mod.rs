@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests;
 
+use crate::shape::ColourFormat;
 use aethereal_actor::BlobRef;
 use aethereal_data::{Bound, Kind, KindName, Plain};
 
@@ -20,7 +21,8 @@ impl Kind for CreateTexture {
     const NAME: KindName = KindName::new("aether.render.create_texture");
 }
 
-/// The format of a texture's pixels.
+/// The format of a texture's pixels. Every one is read by a program as filtered floats, `texture_2d<f32>`, and every
+/// one is drawn into by a frame that ends on a texture of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum TextureFormat {
     /// Red, green, blue, and alpha, a byte each, read as they are.
@@ -29,6 +31,9 @@ pub enum TextureFormat {
     Rgba8Srgb,
     /// One byte, read as a fraction from zero to one.
     R8,
+    /// Red, green, blue, and alpha, a 16-bit float each, little-endian: values past one are kept, as a glow kept
+    /// between frames needs.
+    Rgba16Float,
 }
 
 impl Kind for TextureFormat {
@@ -42,6 +47,7 @@ impl TextureFormat {
         match self {
             Self::Rgba8 | Self::Rgba8Srgb => 4,
             Self::R8 => 1,
+            Self::Rgba16Float => 8,
         }
     }
 
@@ -52,6 +58,18 @@ impl TextureFormat {
             Self::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
             Self::Rgba8Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
             Self::R8 => wgpu::TextureFormat::R8Unorm,
+            Self::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
+        }
+    }
+
+    /// The colour format a pass draws a texture of this format in, as a frame that ends on one does.
+    #[must_use]
+    pub const fn colour(self) -> ColourFormat {
+        match self {
+            Self::Rgba8 => ColourFormat::Rgba8,
+            Self::Rgba8Srgb => ColourFormat::Rgba8Srgb,
+            Self::R8 => ColourFormat::R8,
+            Self::Rgba16Float => ColourFormat::Rgba16Float,
         }
     }
 }

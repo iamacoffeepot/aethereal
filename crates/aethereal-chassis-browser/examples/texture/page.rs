@@ -1,5 +1,6 @@
 //! The page's entry points, an actor that draws a map into a texture frame and shows it in the window's main frame it
-//! makes, and an actor that asks to replace that main frame.
+//! makes, an actor that asks to replace that main frame, and an actor that keeps a glow past one in a frame that ends
+//! in floats and darkens it into another.
 
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, BlobRef, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells,
@@ -7,7 +8,8 @@ use aethereal_actor::{
 };
 use aethereal_chassis_browser::{Browser, Performance, open, renderer};
 use aethereal_data::{Bound, Kind, KindName, Plain};
-use aethereal_render::frame::builder::{FrameBuilder, Onto, depth};
+use aethereal_render::effect::{CreateEffect, EffectId, Effected};
+use aethereal_render::frame::builder::{Effect, FrameBuilder, Onto, depth};
 use aethereal_render::frame::{CreateFrame, Ends, Frame, FrameId, FrameRefused, Framed, ShapeOf, Shaped, Size};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::{Main, Pass};
@@ -17,7 +19,7 @@ use aethereal_render::program::{
 };
 use aethereal_render::readback::{Pixels, ReadBack, Readable};
 use aethereal_render::shape::{ColourFormat, Shape};
-use aethereal_render::texture::TextureId;
+use aethereal_render::texture::{TextureFormat, TextureId};
 use aethereal_render::{Release, Renderer};
 use aethereal_substrate::Engine;
 use aethereal_window::{Heard, Opening, WindowId, Windows};
@@ -45,7 +47,7 @@ pub struct Program {
 }
 
 /// Opens `canvas` as the one window and WebGPU on it, then makes the engine with the window root, the renderer, handed
-/// the GPU, the claimer, and the mapper as its roots. Its blobs hold a frame of a large canvas.
+/// the GPU, the claimer, the mapper, and the glower as its roots. Its blobs hold a frame of a large canvas.
 ///
 /// # Errors
 ///
@@ -69,6 +71,8 @@ pub async fn start(canvas: HtmlCanvasElement) -> Result<Program, JsError> {
         .map_err(|refused| JsError::new(&format!("the claimer did not begin: {refused:?}")))?
         .add_root::<Mapper>(&(), Shows { window: shown.window() })
         .map_err(|refused| JsError::new(&format!("the mapper did not begin: {refused:?}")))?
+        .add_root::<Glower>(&(), Nothing)
+        .map_err(|refused| JsError::new(&format!("the glower did not begin: {refused:?}")))?
         .ready();
 
     Ok(Program { browser: Browser::new(engine, Performance, mappings) })
@@ -402,7 +406,9 @@ impl Handles<Answer<Programmed, Making>> for Mapper {
             }
             Making::Show { mesh, map } => (mesh, map),
         };
-        let create = match FrameBuilder::on(Ends::Texture(MAP_SIZE)).finish(Mapping, Onto(depth::Off)) {
+        let create = match FrameBuilder::on(Ends::Texture { size: MAP_SIZE, format: TextureFormat::Rgba8 })
+            .finish(Mapping, Onto(depth::Off))
+        {
             Ok(create) => create,
             Err(why) => {
                 say(format!("the map's frame was not built: {why:?}"));
@@ -631,6 +637,283 @@ impl Handles<Answer<Framed, Told>> for Claimer {
                 format!("refused claim owned_by_mapper={named}")
             }
             answered => format!("claim answered={answered:?}"),
+        };
+        say(said);
+
+        Ok(())
+    }
+}
+
+/// The one pass of the glow's frame.
+#[derive(Plain)]
+#[kind(name = "aether.example.lighting")]
+struct Lighting;
+
+impl Pass for Lighting {}
+
+/// The one pass of the frame that darkens the glow.
+#[derive(Plain)]
+#[kind(name = "aether.example.darkening")]
+struct Darkening;
+
+impl Pass for Darkening {}
+
+/// An effect that reads nothing and writes a glow of 2.5, past what a byte holds.
+const GLOW: &str = "
+@fragment
+fn glow(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    return vec4(2.5, 2.5, 2.5, 1.0);
+}
+";
+
+/// An effect that samples the glow smoothly and darkens it by a quarter, to 0.625, which a byte holds.
+const DARKEN: &str = "
+@group(1) @binding(0) var glow: texture_2d<f32>;
+@group(1) @binding(1) var smoothly: sampler;
+
+@fragment
+fn darken(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    return textureSample(glow, smoothly, uv) / 4.0;
+}
+";
+
+/// The size of the glow's frame and of the frame that darkens it: a side of 8 pixels.
+const GLOW_SIZE: Size = Size { width: 8, height: 8 };
+
+/// What a byte of 0.625 reads, 0.625 of 255 rounded.
+const DARKENED: u8 = 159;
+
+/// The glower: it makes a frame that ends in floats, holding a glow past one, and a frame whose effect samples that
+/// texture and darkens it into bytes. Once a few frames are drawn it reads both back.
+#[derive(Bound)]
+#[kind(name = "aether.example.glower")]
+enum Glower {
+    /// Its asks are under way.
+    Making,
+    /// Both frames are made: `drawn` frames have passed since.
+    Drawing { glow: TextureId, darkened: TextureId, drawn: u32 },
+    /// It has read back both.
+    Done,
+}
+
+impl ChildOf for Glower {
+    type Parent = Top;
+}
+
+/// Which effect, and then which frame, was asked for, with what was made before it.
+#[derive(Plain)]
+#[kind(name = "aether.example.glowing")]
+enum Glowing {
+    /// The glow's.
+    Glow,
+    /// The darkening's, once the glow's frame ended on `glow`.
+    Darken { glow: TextureId },
+}
+
+/// Which texture was asked to be read back.
+#[derive(Plain)]
+#[kind(name = "aether.example.glowed")]
+enum Glowed {
+    /// The glow, of floats.
+    Glow,
+    /// The glow darkened, of bytes.
+    Darkened,
+}
+
+impl Actor for Glower {
+    type Config = Nothing;
+    type Key = ();
+    type Handles = (On<Start>, On<Tick>, Answer<Effected, Glowing>, Answer<Framed, Glowing>, Answer<Pixels, Glowed>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.subscribe::<Start>();
+        turn.subscribe::<Tick>();
+
+        Ok(Self::Making)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// An effect of the WGSL the blob `wgsl` holds, its fragment stage `fragment`, reading no target, binding `bindings`,
+/// and drawing into `colour`.
+fn effect(wgsl: BlobRef, fragment: &str, bindings: Vec<Binding>, colour: ColourFormat) -> CreateEffect {
+    CreateEffect {
+        wgsl,
+        fragment: String::from(fragment),
+        reads: Vec::new(),
+        bindings,
+        blend: Blend::Opaque,
+        shape: Shape::flat(colour),
+    }
+}
+
+impl Handles<On<Start>> for Glower {
+    type Sends = (Asks<Path<Renderer>, CreateEffect, Glowing>,);
+
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let wgsl = match turn.put(Vec::from(GLOW)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no glow asked: {why}"));
+                return Ok(());
+            }
+        };
+        let glow = effect(wgsl, "glow", Vec::new(), ColourFormat::Rgba16Float);
+        turn.to(path::<Renderer>(())).ask(&glow, &Glowing::Glow)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Effected, Glowing>> for Glower {
+    type Sends = (Asks<Path<Renderer>, CreateFrame, Glowing>,);
+
+    fn handle(
+        &mut self,
+        (answered, glowing): (Answered<Effected>, Glowing),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Effected::Made(made)) = answered else {
+            say(format!("an effect was not made: {answered:?}"));
+            return Ok(());
+        };
+        let Some(made) = EffectId::<()>::of(&made) else {
+            say(format!("an effect reads what it was not asked to: {:?}", made.reads()));
+            return Ok(());
+        };
+        let built = match glowing {
+            Glowing::Glow => {
+                let ends = Ends::Texture { size: GLOW_SIZE, format: TextureFormat::Rgba16Float };
+                FrameBuilder::on(ends).finish(Lighting, Effect::new(&made, ()))
+            }
+            Glowing::Darken { glow } => {
+                let smoothly = Sampling { filter: Filter::Linear, wrap: Wrap::Clamp };
+                let bindings = vec![
+                    Bind { group: 1, binding: 0, to: Resource::Texture(glow) },
+                    Bind { group: 1, binding: 1, to: Resource::Sampler(smoothly) },
+                ];
+                let ends = Ends::Texture { size: GLOW_SIZE, format: TextureFormat::Rgba8 };
+                FrameBuilder::on(ends).finish(Darkening, Effect::new(&made, ()).bound(bindings))
+            }
+        };
+        let create = match built {
+            Ok(create) => create,
+            Err(why) => {
+                say(format!("a glow frame was not built: {why:?}"));
+                return Ok(());
+            }
+        };
+        turn.to(path::<Renderer>(())).ask(&create, &glowing)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Framed, Glowing>> for Glower {
+    type Sends = (Asks<Path<Renderer>, CreateEffect, Glowing>,);
+
+    fn handle(
+        &mut self,
+        (answered, glowing): (Answered<Framed>, Glowing),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Framed::Texture { texture, .. }) = answered else {
+            say(format!("a glow frame was not made: {answered:?}"));
+            return Ok(());
+        };
+        let glow = match glowing {
+            Glowing::Glow => texture,
+            Glowing::Darken { glow } => {
+                say(format!("made darkened {texture:?}"));
+                *self = Self::Drawing { glow, darkened: texture, drawn: 0 };
+                return Ok(());
+            }
+        };
+        say(format!("made glow {glow:?}"));
+        let wgsl = match turn.put(Vec::from(DARKEN)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no darkening asked: {why}"));
+                return Ok(());
+            }
+        };
+        let bindings = vec![
+            Binding { group: 1, binding: 0, kind: BindingKind::Texture },
+            Binding { group: 1, binding: 1, kind: BindingKind::Sampler },
+        ];
+        let darken = effect(wgsl, "darken", bindings, ColourFormat::Rgba8);
+        turn.to(path::<Renderer>(())).ask(&darken, &Glowing::Darken { glow })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<On<Tick>> for Glower {
+    type Sends = (Asks<Path<Renderer>, ReadBack, Glowed>,);
+
+    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        match *self {
+            Self::Drawing { glow, darkened, drawn } if drawn < SETTLED => {
+                *self = Self::Drawing { glow, darkened, drawn: drawn + 1 };
+            }
+            Self::Drawing { glow, darkened, .. } => {
+                turn.to(path::<Renderer>(()))
+                    .ask(&ReadBack { of: Readable::Texture(glow) }, &Glowed::Glow)?
+                    .ask(&ReadBack { of: Readable::Texture(darkened) }, &Glowed::Darkened)?;
+                *self = Self::Done;
+            }
+            Self::Making | Self::Done => {}
+        }
+
+        Ok(())
+    }
+}
+
+/// The finite float the first two bytes of `pixels` hold, a 16-bit float, little-endian: the red of a pixel of
+/// `Rgba16Float`.
+fn half(pixels: &[u8]) -> f32 {
+    let bits = pixels.first_chunk::<2>().map_or(0, |bytes| u16::from_le_bytes(*bytes));
+    let exponent = i32::from((bits >> 10) & 0x1f);
+    let fraction = f32::from(bits & 0x3ff) / 1024.0;
+    let magnitude = if exponent == 0 {
+        fraction * 2.0_f32.powi(-14)
+    } else {
+        (1.0 + fraction) * 2.0_f32.powi(exponent - 15)
+    };
+    let negative = bits >> 15 == 1;
+
+    if negative {
+        -magnitude
+    } else {
+        magnitude
+    }
+}
+
+impl Handles<Answer<Pixels, Glowed>> for Glower {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, glowed): (Answered<Pixels>, Glowed),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Pixels::Read { format, pixels, .. }) = answered else {
+            say(format!("unread glow={answered:?}"));
+            return Ok(());
+        };
+        let read = turn.read(&pixels);
+        let said = match glowed {
+            Glowed::Glow => format!("glow format={format:?} bytes={} red={}", read.len(), half(read)),
+            Glowed::Darkened => {
+                let byte = read.first().copied().unwrap_or_default();
+                let near = byte.abs_diff(DARKENED) <= 1;
+                format!("darkened format={format:?} red={byte} expected={DARKENED} near={near}")
+            }
         };
         say(said);
 

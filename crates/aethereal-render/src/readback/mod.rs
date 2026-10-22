@@ -36,7 +36,8 @@ impl Kind for Readable {
 /// What the renderer answers [`ReadBack`] with.
 #[derive(Debug, Bound)]
 pub enum Pixels {
-    /// The pixels, `width` by `height` of `format`, row by row from the top, each row packed tight.
+    /// The pixels, `width` by `height` of `format`, row by row from the top, each row packed tight: a pixel of
+    /// `Rgba16Float` is its four 16-bit floats, little-endian, as the GPU holds them.
     Read {
         width: u32,
         height: u32,

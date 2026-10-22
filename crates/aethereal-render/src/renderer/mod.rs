@@ -10,7 +10,7 @@ use crate::compute::{self, Array, ComputeId, Computed, CreateCompute};
 use crate::dispatch::{self, Computes, CreateDispatch, DispatchId, DispatchRefused, Dispatched, Dispatches, Runs, Use};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
 use crate::frame::{
-    self, CreateFrame, DepthUse, Does, ENDS_IN, EffectReads, Ends, Frame, FrameId, FrameRefused, Framed, Holds, Load,
+    self, CreateFrame, DepthUse, Does, EffectReads, Ends, Frame, FrameId, FrameRefused, Framed, Holds, Load,
     PassRefused, ShapeOf, Shaped, Size, Target,
 };
 use crate::instances::{self, CreateInstances, Instanced, InstancesId, WriteInstances};
@@ -1574,7 +1574,7 @@ impl Kept {
     fn may_make(&self, ends: Ends, by: ActorId) -> Result<(), FrameRefused> {
         match ends {
             Ends::Window(window) => frame::may_replace(self.owner(window), by),
-            Ends::Texture(_) => Ok(()),
+            Ends::Texture { .. } => Ok(()),
         }
     }
 
@@ -1584,7 +1584,7 @@ impl Kept {
         let id = self.ids.next();
         let (end, format, size) = match create.ends {
             Ends::Window(_) => (End::Window, self.format, (1, 1)),
-            Ends::Texture(Size { width, height }) => {
+            Ends::Texture { size: Size { width, height }, format } => {
                 let texture = self.ids.next();
                 let made = device.create_texture(&wgpu::TextureDescriptor {
                     label: None,
@@ -1592,7 +1592,7 @@ impl Kept {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    format: ENDS_IN.wgpu(),
+                    format: format.wgpu(),
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                         | wgpu::TextureUsages::TEXTURE_BINDING
                         | wgpu::TextureUsages::COPY_SRC,
@@ -1600,9 +1600,8 @@ impl Kept {
                 });
                 let view = made.create_view(&wgpu::TextureViewDescriptor::default());
                 let origin = Origin::Frame(id);
-                self.textures.keep(texture, maker, Texture { made, view: view.clone(), format: ENDS_IN, origin });
-                // What `ENDS_IN` is drawn in.
-                (End::Texture { texture, view }, ColourFormat::Rgba8, (width, height))
+                self.textures.keep(texture, maker, Texture { made, view: view.clone(), format, origin });
+                (End::Texture { texture, view }, format.colour(), (width, height))
             }
         };
         let texture = match end {
