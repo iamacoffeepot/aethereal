@@ -13,6 +13,10 @@
 //! ([`canvas`], ADR-0024), and the controls the page marks onto the
 //! [`controls`] root's.
 //!
+//! The jobs its turns run, it runs on the page's own event loop, each a task of
+//! its own, with `EventLoop` handed to the engine's setup: their answers are
+//! brought in a later frame (ADR-0018).
+//!
 //! A page exports an async `start` that opens the GPU, and `#[wasm_bindgen]`
 //! on an async function writes code that names `wasm_bindgen_futures`. The
 //! chassis re-exports that crate, so a page points the macro at it through
@@ -32,6 +36,8 @@ mod clock;
 pub mod controls;
 #[cfg(target_arch = "wasm32")]
 mod gpu;
+#[cfg(any(target_arch = "wasm32", test))]
+mod jobs;
 #[cfg(target_arch = "wasm32")]
 mod listening;
 mod mappings;
@@ -42,6 +48,8 @@ mod tests;
 pub use clock::Performance;
 #[cfg(target_arch = "wasm32")]
 pub use gpu::open;
+#[cfg(target_arch = "wasm32")]
+pub use jobs::EventLoop;
 #[cfg(target_arch = "wasm32")]
 pub use listening::Listening;
 pub use mappings::{Mappings, renderer};

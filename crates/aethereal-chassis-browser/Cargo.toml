@@ -85,5 +85,10 @@ name = "indirect"
 path = "examples/indirect/lib.rs"
 crate-type = ["cdylib"]
 
+[[example]]
+name = "jobs"
+path = "examples/jobs/lib.rs"
+crate-type = ["cdylib"]
+
 [lints]
 workspace = true
