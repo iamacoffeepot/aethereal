@@ -89,6 +89,11 @@ impl Headless {
 
         self.pool.park();
     }
+
+    /// Parks every worker: for a host that steps the engine itself, as it waits on something else between steps.
+    pub fn park(&mut self) {
+        self.pool.park();
+    }
 }
 
 /// How long a step took, in nanoseconds, how long its plan expected its turns to take, and how many workers it was
