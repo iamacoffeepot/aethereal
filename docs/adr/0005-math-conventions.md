@@ -60,6 +60,21 @@ It is the order a free-look camera wants: turning left and right never tilts the
 
 **A ray is an origin and a direction.** `ray.at(t)` is `origin + direction * t`, and a ray covers `t` at or above zero. The direction need not be a unit vector; a function that returns a ray says whether it is.
 
+**A segment is two points, and a line or an area in a plane is a view over a slice of `Vec2`.** `Segment` holds `start` and `end` and travels like any other math type. A curve, a polyline, and a polygon are as long as their points, and the crate allocates nothing, so each is a borrowed view over the caller's points that answers questions about them and does not travel; a piece that sends one sends its points.
+
+```rust
+pub struct Segment { pub start: Vec2, pub end: Vec2 }
+pub struct Polyline<'a> { pub points: &'a [Vec2], pub ends: Ends }   // Ends::Open or Ends::Closed
+pub struct Polygon<'a> { pub points: &'a [Vec2] }
+pub struct CatmullRom<'a> { pub points: &'a [Vec2], pub steps: NonZeroU16 }
+```
+
+These carry no axis names, as `Rect2` does not: a plane is screen space, or the ground taken as two of the three axes, and the piece that uses it says which. A turn is named by its sign, `perp_dot`: positive is counter-clockwise when the second axis is a quarter turn counter-clockwise from the first. So a polygon's signed area is positive when its points wind that way, and `Side::Positive` is the side a quarter turn that way from a segment's direction. `Side` and `Ends` hold no float, so they are `Eq`.
+
+The curve is a centripetal Catmull–Rom: knots spaced by the square root of the distance between points, which keeps a span from looping or forming a cusp where points bunch up. It passes through every point, and each end's missing neighbour is the next point in reflected through the end, so the curve leaves along its first span and arrives along its last. It yields its samples as an iterator, `steps` to a span and then the last point.
+
+Touching is not crossing. Two segments cross when each passes strictly from one side of the other's line to the other, or when they lie on one line and share a stretch; a shared end, or an end resting on the other segment, is a touch. A polygon holds the points of its boundary, as a box does, and inside it is decided by crossings (the even-odd rule). The length along a polyline at a point is taken at the point's foot on the nearest segment's whole line, not clipped to the segment, so that collinear segments give one answer.
+
 **Every bit pattern is a value.** No math type holds an invariant between its fields: an unnormalised quaternion, a singular matrix, and a box with `min` above `max` are all values with a stated meaning. This is what lets every type derive `Plain` with nothing to check on decode.
 
 | Type | Shape | Bytes |
@@ -72,6 +87,7 @@ It is the order a free-look camera wants: turning left and right never tilts the
 | `Aabb` | Struct of `min`, `max`, each a `Vec3` | 24 |
 | `Rect2` | Struct of `min`, `max`, each a `Vec2` | 16 |
 | `Ray` | Struct of `origin`, `direction`, each a `Vec3` | 24 |
+| `Segment` | Struct of `start`, `end`, each a `Vec2` | 16 |
 
 By ADR-0002 an array has no count and a struct no tags, so the 64 bytes of a `Mat4` are its sixteen floats in column-major order, little-endian: the encoded matrix is the uniform.
 
