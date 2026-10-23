@@ -7,7 +7,7 @@ mod tests;
 use super::{Engine, ROOTS, parity};
 use crate::{lives, log};
 use aethereal_actor::{
-    BlobId, Copied, Fault, JobId, JobType, Lending, MailId, Mailed, Never, Outcome, Pinning, Produced, Seated, Sleep,
+    BlobId, Copied, Fault, JobCode, JobId, JobType, Lending, MailId, Mailed, Never, Outcome, Pinning, Produced, Seated,
     Storage, Submitted, Tie, Timer, Unanswered,
 };
 use aethereal_data::{Kind, KindId, Plain};
@@ -19,9 +19,10 @@ use std::task::{Context, Poll, Waker};
 /// What runs the jobs the engine hands out, which each host implements: a pool of threads natively, Web Workers in a
 /// browser, or inline between steps where there is one thread (ADR-0018).
 pub trait Jobs: Send + Sync {
-    /// Runs the job `id`, of the kind `kind`, as `job` holds it: its bytes, and where its outcome goes once it has
-    /// run.
-    fn start(&self, id: JobId, kind: KindId, job: Taken);
+    /// Runs the job `id` with the code of its type `of`, as `job` holds it: its bytes, and where its outcome goes once
+    /// it has run. A native turn's job carries its own type, and a guest's is found among the types the program lets
+    /// its guests run, so a runner runs every job it is handed and needs no list of its own (ADR-0015).
+    fn start(&self, id: JobId, of: JobType, job: Taken);
 
     /// The most jobs it lets be in flight at once: handed out, and their [`Finish`] not yet done or dropped. The engine
     /// keeps the rest waiting, in the order they were run, and hands each out as one in flight finishes.
@@ -85,29 +86,24 @@ pub(super) struct Finished {
 ///
 /// It has no thread to wait on, so its timer is [`Never`]: a [`Sleep`] for any time past the first answers with
 /// [`Waits`]. Its jobs read files from the storage it is made with (ADR-0032).
+///
+/// [`Sleep`]: aethereal_actor::Sleep
 pub struct Inline {
-    types: Vec<JobType>,
     timer: Arc<dyn Timer>,
     storage: Arc<dyn Storage>,
 }
 
 impl Inline {
-    /// Runs jobs of `types` and [`Sleep`], reading files from `storage`, and answers any other with [`NoRunner`].
+    /// Runs jobs reading files from `storage`.
     #[must_use]
-    pub fn new(mut types: Vec<JobType>, storage: Arc<dyn Storage>) -> Self {
-        types.push(JobType::of::<Sleep>());
-
-        Self { types, timer: Arc::new(Never), storage }
+    pub fn new(storage: Arc<dyn Storage>) -> Self {
+        Self { timer: Arc::new(Never), storage }
     }
 }
 
 impl Jobs for Inline {
-    fn start(&self, _: JobId, kind: KindId, job: Taken) {
+    fn start(&self, _: JobId, of: JobType, job: Taken) {
         let Taken { bytes, lent, limit, finish } = job;
-        let Some(of) = self.types.iter().find(|of| of.kind() == kind) else {
-            finish.done(Err(fault::<NoRunner>()));
-            return;
-        };
         let mut future = of.drive(bytes, lent, limit, Arc::clone(&self.timer), Arc::clone(&self.storage));
         let mut context = Context::from_waker(Waker::noop());
         let polled = panic::catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(&mut context)));
@@ -133,7 +129,7 @@ fn fault<K: Kind>() -> Fault {
     Fault::of_parts(KindId::of::<K>(), Vec::new())
 }
 
-/// The reason of a job no runner the host holds runs: its type was not handed to the host.
+/// The reason of a guest's job no runner runs: the program does not let its guests run its type (ADR-0015).
 #[derive(Debug, PartialEq, Eq, Plain)]
 #[kind(name = "aether.job.no_runner")]
 pub struct NoRunner;
@@ -166,6 +162,13 @@ impl Engine {
     /// The engine, its jobs run by `jobs` (ADR-0018).
     pub(super) fn with_jobs(mut self, jobs: Arc<dyn Jobs>) -> Self {
         self.runner = Runner::Made(jobs);
+
+        self
+    }
+
+    /// The engine, letting its guests run the jobs of `types` as well (ADR-0015).
+    pub(super) fn with_guest_jobs(mut self, types: Vec<JobType>) -> Self {
+        self.guest_jobs.extend(types);
 
         self
     }
@@ -203,16 +206,31 @@ impl Engine {
         }
     }
 
-    /// Hands `job` to the host to run, with a copy of each blob it refers to, once for each blob. Each is held: the
-    /// context the job's actor keeps pins it, and the blobs a step put are taken in before its jobs are handed out.
+    /// Hands `job` to the host to run, with the code of its type and a copy of each blob it refers to, once for each
+    /// blob. Each is held: the context the job's actor keeps pins it, and the blobs a step put are taken in before its
+    /// jobs are handed out. A guest's job whose type the program does not let its guests run is answered with
+    /// [`NoRunner`], and never handed out (ADR-0015).
     fn hand_out(&self, job: Submitted) {
         let id = job.id();
-        let Submitted { by, count, kind, answer, bytes, refers } = job;
-        let lent = Lending::new(self.number.0, self.copied(refers), Arc::clone(&self.job_pins));
+        let Submitted { by, count, code, answer, bytes, refers } = job;
         let feed = Arc::clone(&self.finished);
         let finish = Finish { by, count, answer, feed, _in_flight: Arc::clone(&self.in_flight) };
+        let Some(of) = self.code_of(code) else {
+            finish.done(Err(fault::<NoRunner>()));
+            return;
+        };
+        let lent = Lending::new(self.number.0, self.copied(refers), Arc::clone(&self.job_pins));
         if let Runner::Made(jobs) = &self.runner {
-            jobs.start(id, kind, Taken { bytes, lent, limit: self.read_limit, finish });
+            jobs.start(id, of, Taken { bytes, lent, limit: self.read_limit, finish });
+        }
+    }
+
+    /// The type a job is run with: a native turn's own, or the one of a guest's job's kind the program lets its guests
+    /// run, when it lets them run one.
+    fn code_of(&self, code: JobCode) -> Option<JobType> {
+        match code {
+            JobCode::Native(of) => Some(of),
+            JobCode::Guest(kind) => self.guest_jobs.iter().find(|of| of.kind() == kind).copied(),
         }
     }
 

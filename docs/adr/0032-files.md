@@ -80,13 +80,13 @@ impl Bootstrap<Headless> for Files {
     type Provides = ();
 
     async fn bootstrap(roots: FileRoots, (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.serve(FileHosting::new(Directories::new(&roots)));    // the storage, and `JobType::of::<Load>()`
+        cx.serve(FileHosting::new(Directories::new(&roots)));    // the storage its host's runners read from
         cx.begin(&(), FilesConfig)
     }
 }
 ```
 
-- **A program lists `Files` once,** `.root::<Files>()`, and its job comes with it: the host makes its runners with the job types its program lists and those its roots served (`Serving` natively, the browser's `Paging`). A program does not list `Load` among its jobs.
+- **A program lists `Files` once,** `.root::<Files>()`: `Files` is native, so its `Load` carries its own code (ADR-0018), and the host makes its runners with the storage its roots served (`Serving` natively, the browser's `Paging`). A program does not list `Load` among its jobs.
 - **The browser's settings name a URL,** `FileUrls { assets }`, `assets` by default, relative to the page, and its storage, `Fetching`, fetches each file beneath it. The native settings, `FileRoots { assets, readers }`, name a directory and how many threads read.
 - **A host that does not bootstrap `Files` cannot list it** (ADR-0029), so a program that reads files builds only for the hosts that can read them.
 
@@ -105,7 +105,7 @@ impl Bootstrap<Headless> for Files {
 - A file larger than the engine's budget for blobs cannot be read whole: its job's put does not fit, and its read is answered `Failed`, as the job is answered `Faulted` (ADR-0018). Reading such a file waits for ranged reads.
 - `Running` holds a second service of its host. `JobType::drive` and each host's runners hand it on beside the timer, and a runner made for a test with no files is made with `NoStorage`.
 - The native storage holds a few threads of its own beside the runners' (its setting `readers`, four by default), which park when there is nothing to read.
-- A host makes its runners once its roots have bootstrapped (ADR-0029), so they are made with the storage and the job types the roots served, and no runner changes after it is made.
+- A host makes its runners once its roots have bootstrapped (ADR-0029), so they are made with the storage the roots served, and no runner changes after it is made.
 - Two engines on one host share nothing through `Files`: each reads its namespaces' roots, and two that write one file write it as two programs would.
 - A browser's assets are fetched relative to the page, so a page served beside its assets, an artifact among them, reads them with no setting.
 
@@ -115,4 +115,4 @@ impl Bootstrap<Headless> for Files {
 - **A job any actor may run, with a path to a file.** No capability. Every actor could then read any path the host can, which is what the namespaces exist to stop.
 - **Each host's code in the job, chosen by `target_arch`.** No storage on `Running`. The browser's fetch would then be built into a crate every guest builds, and a guest built for the browser's machine would carry it.
 - **A job type for each host,** chosen by each host's bootstrap. Two job types for one read, and `Files` generic over which it runs.
-- **The program listing `Load` among its jobs.** Nothing served. A program would list one capability in two places, and one listed without its job would answer every read `Faulted`, found only as the program runs.
+- **The program listing `Load` among its jobs.** A program would list one capability in two places. A native turn's job carries its code, so there is nothing to list (ADR-0018).

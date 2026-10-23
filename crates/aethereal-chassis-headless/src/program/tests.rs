@@ -121,7 +121,7 @@ fn a_program_s_jobs_run_on_the_runners_its_host_makes() {
     // Catches a host that makes no runners, or makes them without the job types its program lists: the count is
     // answered faulted, or never, and the counter gives up. Its `begin` runs the count as the program bootstraps,
     // before the host has made its runners, so the count waits for them.
-    let built = Headless::program().with_jobs::<(Count,)>().with_cycle::<(Tick,)>().root::<Counter>().build();
+    let built = Headless::program().with_cycle::<(Tick,)>().root::<Counter>().build();
     let Ok(headless) = built else {
         panic!("the program builds");
     };

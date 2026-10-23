@@ -99,7 +99,7 @@ fn each_job_runs_on_a_thread_of_its_own_and_those_past_its_threads_wait_their_tu
     // left waiting for good. One thread runs three jobs, so two wait in the engine. Dropping the runners stops their
     // thread, or this never returns.
     let one = NonZeroUsize::MIN;
-    let runners = Arc::new(Runners::new(vec![JobType::of::<Where>()], one, Arc::new(NoStorage)));
+    let runners = Arc::new(Runners::new(one, Arc::new(NoStorage)));
     let mut engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(Arc::clone(&runners) as Arc<dyn Jobs>).ready();
     let Ok(_) = engine.add_root::<Asker>(&(), Nothing) else {
         panic!("the asker begins");
@@ -224,7 +224,7 @@ fn a_sleep_wakes_once_its_time_has_come_and_a_job_given_up_on_is_dropped() {
     // Catches a sleep answered before its time, or never; two sleeps answered out of the order of their times; a
     // timer on another clock than the steps' time; and a job that waits, cancelled, left running. The job that waits
     // for good is given up on once the later sleep wakes.
-    let runners = Arc::new(Runners::new(vec![JobType::of::<Forever>()], NonZeroUsize::MIN, Arc::new(NoStorage)));
+    let runners = Arc::new(Runners::new(NonZeroUsize::MIN, Arc::new(NoStorage)));
     let one = NonZeroUsize::MIN;
     let mut engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(Arc::clone(&runners) as Arc<dyn Jobs>).ready();
     let clock = Monotonic::new();

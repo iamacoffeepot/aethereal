@@ -31,12 +31,8 @@ use wasm_bindgen::prelude::wasm_bindgen;
 /// When the canvas or WebGPU on it will not open, the page will not be listened to, or a root does not begin.
 #[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
 pub async fn start() -> Result<Program, JsError> {
-    let program = Browser::program()
-        .with_jobs::<(Sum,)>()
-        .with_cycle::<(Tick, Render)>()
-        .root::<Windows>()
-        .root::<Renderer>()
-        .root::<Prober>();
+    let program =
+        Browser::program().with_cycle::<(Tick, Render)>().root::<Windows>().root::<Renderer>().root::<Prober>();
 
     Ok(Program::from(program.run()?.await?))
 }

@@ -3502,15 +3502,14 @@ mod tests {
     struct Holding {
         inline: Inline,
         holds: bool,
-        held: Mutex<Vec<(JobId, KindId, Taken)>>,
+        held: Mutex<Vec<(JobId, JobType, Taken)>>,
         stopped: Mutex<Vec<JobId>>,
     }
 
     impl Holding {
         /// Runs the foreman's jobs, holding each until it is let go of when `holds`.
         fn new(holds: bool) -> Arc<Self> {
-            let inline =
-                Inline::new(vec![JobType::of::<echo::Chore>(), JobType::of::<echo::Measure>()], Arc::new(NoStorage));
+            let inline = Inline::new(Arc::new(NoStorage));
 
             Arc::new(Self { inline, holds, held: Mutex::default(), stopped: Mutex::default() })
         }
@@ -3518,8 +3517,8 @@ mod tests {
         /// Runs each job it holds.
         fn let_go(&self) {
             let held = self.held.lock().map(|mut held| mem::take(&mut *held)).unwrap_or_default();
-            for (id, kind, job) in held {
-                self.inline.start(id, kind, job);
+            for (id, of, job) in held {
+                self.inline.start(id, of, job);
             }
         }
 
@@ -3532,13 +3531,13 @@ mod tests {
     }
 
     impl Jobs for Holding {
-        fn start(&self, id: JobId, kind: KindId, job: Taken) {
+        fn start(&self, id: JobId, of: JobType, job: Taken) {
             if !self.holds {
-                self.inline.start(id, kind, job);
+                self.inline.start(id, of, job);
                 return;
             }
             if let Ok(mut held) = self.held.lock() {
-                held.push((id, kind, job));
+                held.push((id, of, job));
             }
         }
 
@@ -3553,13 +3552,28 @@ mod tests {
         }
     }
 
-    /// An engine of `parts` parts and `hops` hops whose jobs `jobs` runs, the foreman guest begun in it, and the bosses
-    /// of each of `orders`, by their keys and orders, begun after it together, each settled before the next.
+    /// An engine of `parts` parts and `hops` hops whose jobs `jobs` runs, letting its guests run the foreman's jobs, the
+    /// foreman guest begun in it, and the bosses of each of `orders`, by their keys and orders, begun after it
+    /// together, each settled before the next.
     fn foreman(parts: usize, hops: usize, jobs: Arc<Holding>, orders: &[&[(u64, u64)]]) -> (Engine, ActorId) {
+        let foremans = vec![JobType::of::<echo::Chore>(), JobType::of::<echo::Measure>()];
+
+        foreman_letting(foremans, parts, hops, jobs, orders)
+    }
+
+    /// As [`foreman`], letting its guests run the jobs of `types`.
+    fn foreman_letting(
+        types: Vec<JobType>,
+        parts: usize,
+        hops: usize,
+        jobs: Arc<Holding>,
+        orders: &[&[(u64, u64)]],
+    ) -> (Engine, ActorId) {
         let Some(parts) = NonZeroUsize::new(parts) else {
             panic!("no engine has no parts");
         };
-        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, hops).with_jobs(jobs));
+        let setup = Engine::new(parts, 1024, 0, 1 << 20, hops).with_jobs(jobs).with_guest_jobs(types);
+        let (mut engine, code) = with_echo(setup);
         let Ok(foreman) = engine.add_root_from::<echo::Foreman>(&code, &(), &echo::EchoConfig) else {
             panic!("the foreman begins");
         };
@@ -3592,6 +3606,32 @@ mod tests {
             assert_eq!(ran, answered[..2], "nothing is answered before a bring: {parts} parts, {hops} hops");
             assert_eq!(lines(&engine, foreman), answered, "{parts} parts, {hops} hops");
         }
+    }
+
+    #[test]
+    fn a_guest_s_job_of_a_type_its_engine_does_not_let_guests_run_is_answered_that_no_runner_runs_it() {
+        // Catches a guest's job run with no code to run it, or handed its runner to answer, and one of a type the
+        // engine lets guests run answered so: a guest cannot hand its host code, so its host runs only the types the
+        // program lists. The foreman's engine lets its guests run measures and no chores.
+        let measures = vec![JobType::of::<echo::Measure>()];
+        let (mut engine, foreman) = foreman_letting(measures, 1, 0, Holding::new(false), &[&[(1, 0)]]);
+        engine.bring();
+        settle(&mut engine);
+
+        let answered = ["ran 1", "ran 3 and 4", "0 answered 3", "5 unanswered: Faulted", "6 unanswered: Faulted"];
+        assert_eq!(lines(&engine, foreman), answered);
+        let Some(seat) = engine.table().seat(foreman) else {
+            panic!("the foreman is seated");
+        };
+        let faulted: Vec<KindId> = engine
+            .log(Seated { id: foreman, seat })
+            .filter_map(|entry| match entry {
+                aethereal_substrate::Entry::JobFaulted(fault) => Some(fault.kind()),
+                _ => None,
+            })
+            .collect();
+        let no_runner = KindId::of::<aethereal_substrate::NoRunner>();
+        assert_eq!(faulted, [no_runner, no_runner]);
     }
 
     #[test]

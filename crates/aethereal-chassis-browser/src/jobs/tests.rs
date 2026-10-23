@@ -2,8 +2,8 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Handles, Job, NoStorage, Running, Seated, Slept, Time, Top,
-    Turn, Unanswered,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Handles, Job, NoStorage, Running, Seated, Sleep, Slept, Time,
+    Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Clock, Engine, Entry, Waits};
@@ -262,12 +262,7 @@ fn a_stopped_job_is_dropped_whether_or_not_it_was_polled_and_a_sleep_wakes_once_
     // whose task a stop must wake to drop it, and one stopped before its task was first polled, which must never begin
     // to run.
     let hands = Arc::new(Hands::default());
-    let jobs = Arc::new(EventLoop::on(
-        vec![JobType::of::<Forever>()],
-        Arc::clone(&hands) as Arc<dyn Timer>,
-        Arc::new(NoStorage),
-        spawn,
-    ));
+    let jobs = Arc::new(EventLoop::on(Arc::clone(&hands) as Arc<dyn Timer>, Arc::new(NoStorage), spawn));
     let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_jobs(jobs).ready();
     let Ok(_) = engine.add_root::<Quitter>(&(), Nothing) else {
         panic!("the quitter begins");
@@ -335,7 +330,7 @@ fn a_job_for_computing_runs_in_a_task_of_its_own_and_one_that_waits_is_answered_
     // Catches a job for computing run inside the step that handed it out, rather than as a task of its own, and one
     // that waits run as a job that waits is, polled again for good and never answered.
     let hands: Arc<dyn Timer> = Arc::new(Hands::default());
-    let jobs = Arc::new(EventLoop::on(vec![JobType::of::<Stalls>()], hands, Arc::new(NoStorage), spawn));
+    let jobs = Arc::new(EventLoop::on(hands, Arc::new(NoStorage), spawn));
     let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_jobs(jobs).ready();
     let Ok(id) = engine.add_root::<Staller>(&(), Nothing) else {
         panic!("the staller begins");
