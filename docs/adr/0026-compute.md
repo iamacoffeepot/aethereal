@@ -82,7 +82,7 @@ enum Invocations {
 
 **A storage's maker writes it from the CPU as well.** A `WriteStorage` handled before a `Render` lands before that `Render`'s frames run, so an actor seeds a field from the CPU and moves it on the GPU, and what the GPU writes later overwrites it.
 
-**Dispatches of one pass run in no order an actor may rely on.** The render root runs them grouped by program, each program's pipeline set once, as it draws a pass's placements (ADR-0025). A dispatch that needs another's output is in a later pass. **Order is declared where drawing is described, and nowhere else**: the frame's passes, which their author writes, and, within one dispatch, the order its own shader gives.
+**Dispatches of one pass run in no order an actor may rely on.** The render root runs them grouped by program, each program's pipeline set once, as it draws a pass's loose placements (ADR-0025, ADR-0031). A dispatch that needs another's output is in a later pass. **Order is declared where drawing is described, and nowhere else**: the frame's passes, which their author writes, and, within one dispatch, the order its own shader gives.
 
 **Storage can be read back,** as a texture is (ADR-0023: `ReadBack`), by an ask of its own:
 

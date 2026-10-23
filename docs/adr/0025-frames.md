@@ -129,14 +129,15 @@ enum Read { Float, Uint, Depth }   // texture_2d<f32>, texture_2d<u32>, texture_
 Place {
     mesh: MeshId,
     instances: Drawn,
-    joins: Vec<Join>,          // Join::to::<Splats>(frame, program, bindings): the pass by its type's id
+    joins: Vec<Join>,          // Join::to::<Splats>(frame, program, bindings): the pass by its type's id;
+                               // Join::listed::<Splats>(..) draws only as its maker lists it (ADR-0031)
 }                                                                    -> Made<PlacementId> | Refused
 ```
 
 - Each join is checked as ADR-0023 checks a placement: the program's shape is the pass's, and the mesh, the instances, and the bindings are what the program reads. A placement that joins nothing, or one pass of one frame twice, is refused, and a refused join is named by its place in `joins`.
 - **A join names a window's main frame by the window, `Frame::Main(WindowId)`**, whichever frame is that window's main frame at each `Render`, so the placements that joined it follow it when it is replaced. A frame that ends on a texture is never replaced, as its texture is another texture once it is made again, and is joined by its id.
 - **An actor learns the shape a join's program is made against by asking**, `ShapeOf { frame, pass } -> Shaped::Shape(Shape) | Shaped::Refused(JoinRefused)`, refused when there is no such frame or it has no such pass. A program written for a window's main frame cannot know the window's format, which is the host's: a browser's canvas prefers one laid out blue first. **This departs from the record, which said nothing of how a shape is learned.**
-- A placement is drawn in every pass it joins, once in each.
+- A placement is drawn in every pass it joins, once in each: a loose join in every frame, and a listed one in each frame its maker lists it in (ADR-0031: `Order::Listed`).
 - When a frame is replaced by one with a pass of the same type and shape, the placements that joined it draw in the new one. One whose pass the new frame has not, or has in another shape, is not drawn, and is logged, until a frame has that pass again.
 
 **There are many frames, and each window shows one: its main frame.**
@@ -152,7 +153,7 @@ Place {
 
 **Frames meet only through textures, and their order follows from what reads what.** No frame writes into another's targets: it reads another's finished texture. A frame names another's texture only once that frame is made and has answered with it, so a frame reads only frames made before it, and no two frames read each other. **A frame reads what its effects bind and what the placements that join it bind**, and a placement made later can join an earlier frame and bind a later one's texture, so the render root refuses a placement whose joins would have frames read each other round, or a frame read its own texture (`JoinRefused::Round`), and the order is worked out again whenever a frame or a placement comes or goes, not at `Render`. Frames that do not read each other run in the order of their ids. At each `Render` the render root runs every frame that ends on a texture before the frames that read it, then each window's main frame, and then shows each window. A frame read in the same `Render` is read as drawn in that `Render`. Two frames that do not read each other run in no order an actor may rely on, as neither touches what the other draws.
 
-**Order is declared where drawing is described, and nowhere else.** It is the order of a frame's passes, which their author writes, and the order of one placement's records, which one actor writes (ADR-0023). Within one pass, the placements of different actors are drawn in no order: grouped by program, each program's pipeline set once. Order is never taken from where actors stand, when they were made, or when their mail came. **This departs from the earlier engine's order of its tree of actors**, which made what was drawn on top hang on where and when actors were made, and joined the renderer to the tree of actors, which need nothing of each other.
+**Order is declared where drawing is described, and nowhere else.** It is the order of a frame's passes, which their author writes, the order of one placement's records, which one actor writes (ADR-0023), and the order of one actor's list of its own placements in a pass, which it sends for each frame (ADR-0031: `DrawList`). Within one pass, the placements of different actors are drawn in no order: loose placements grouped by program, each program's pipeline set once, and each actor's list back to back. Order is never taken from where actors stand, when they were made, or when their mail came. **This departs from the earlier engine's order of its tree of actors**, which made what was drawn on top hang on where and when actors were made, and joined the renderer to the tree of actors, which need nothing of each other.
 
 **A frame keeps what it reads, as a placement does** (ADR-0023). A texture frame's maker ending, or its release, takes back its ids, and the frames and placements that read its texture read it as it was last drawn, until they are released themselves.
 
