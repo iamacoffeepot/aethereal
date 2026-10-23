@@ -189,14 +189,13 @@ impl ApplicationHandler for App {
 
 impl App {
     /// Bootstraps `settled` on the screen of `event_loop`, blocking this thread on each root's bootstrap, which opens
-    /// its windows and the GPU on them, makes its runners for the job types the program runs and its roots served, on
-    /// the cores its workers leave free (ADR-0029), puts its engine on its workers, this thread the first, and starts it, asking
-    /// for the first frame. Its frames are paced as the renderer's settings present them, a capped grid starting now.
+    /// its windows and the GPU on them, makes its runners with what its roots served, on the cores its workers leave
+    /// free (ADR-0029), puts its engine on its workers, this thread the first, and starts it, asking for the first
+    /// frame. Its frames are paced as the renderer's settings present them, a capped grid starting now.
     fn open(&self, event_loop: &ActiveEventLoop, settled: Settled<Desktop>) -> Result<Running, Failed> {
-        let jobs = settled.jobs().to_vec();
         let (mut engine, screen) = pollster::block_on(settled.bootstrap(Screen::new(event_loop)))?;
         let (drawing, windowing, runners) = screen.into_served().map_err(Failed::Unserved)?;
-        engine.set_jobs(Arc::new(runners.runners(jobs, self.workers)));
+        engine.set_jobs(Arc::new(runners.runners(self.workers)));
         let mut headless = Headless::new(engine, self.workers);
         headless.engine_mut().start();
         let pacing = Pacing::new(drawing.presenting(), self.clock.nanos());

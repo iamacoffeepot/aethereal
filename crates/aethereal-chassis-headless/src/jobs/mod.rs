@@ -6,8 +6,7 @@ mod io;
 mod tests;
 
 use crate::Monotonic;
-use aethereal_actor::{JobId, JobType, Runner, Sleep, Storage};
-use aethereal_data::KindId;
+use aethereal_actor::{JobId, JobType, Runner, Storage};
 use aethereal_substrate::{Inline, Jobs, Taken};
 use crossbeam_queue::SegQueue;
 use io::Io;
@@ -20,14 +19,14 @@ use std::thread::{self, JoinHandle, Thread};
 /// takes by polling it once, as [`Inline`] does; and one thread for waiting, which runs each `Io` job, [`Sleep`] among
 /// them, polling it whenever it is woken, on a timer read from the clock the host's steps are timed by.
 ///
+/// [`Sleep`]: aethereal_actor::Sleep
+///
 /// A thread with nothing to take parks until a job is handed out. It lets
 /// any number of jobs be in flight: a job that waits holds no thread, so a cap
 /// on them would only keep a computation waiting behind a sleep. Dropping it
 /// stops its threads once each has finished what it was running, and drops
 /// the jobs not finished: they go unanswered.
 pub struct Runners {
-    /// What each job type runs on, [`Sleep`] among them.
-    types: Vec<JobType>,
     shared: Arc<Shared>,
     /// The threads for computing, which the jobs handed out wake in turn.
     computing: Vec<Thread>,
@@ -38,24 +37,22 @@ pub struct Runners {
     threads: Vec<JoinHandle<()>>,
 }
 
-/// What the threads share: how to run each job type, the jobs handed out and not yet taken, and whether to stop.
+/// What the threads share: what runs each job, the jobs handed out and not yet taken, and whether to stop.
 struct Shared {
     inline: Inline,
-    queue: SegQueue<(JobId, KindId, Taken)>,
+    queue: SegQueue<(JobId, JobType, Taken)>,
     stopping: AtomicBool,
 }
 
 impl Runners {
-    /// Runners of the job types `types` on `threads` threads of their own, their jobs reading files from `storage`
-    /// (ADR-0032).
+    /// Runners on `threads` threads of their own, their jobs reading files from `storage` (ADR-0032).
     ///
     /// # Panics
     ///
     /// Panics when the host cannot make a thread.
     #[must_use]
-    pub fn new(mut types: Vec<JobType>, threads: NonZeroUsize, storage: Arc<dyn Storage>) -> Self {
-        types.push(JobType::of::<Sleep>());
-        let inline = Inline::new(types.clone(), Arc::clone(&storage));
+    pub fn new(threads: NonZeroUsize, storage: Arc<dyn Storage>) -> Self {
+        let inline = Inline::new(Arc::clone(&storage));
         let shared = Arc::new(Shared { inline, queue: SegQueue::new(), stopping: AtomicBool::new(false) });
         let mut threads: Vec<JoinHandle<()>> = (0..threads.get())
             .map(|number| {
@@ -70,32 +67,32 @@ impl Runners {
             })
             .collect();
         let computing = threads.iter().map(|thread| thread.thread().clone()).collect();
-        let (io, waiting) = Io::new(types.clone(), Monotonic::new(), storage);
+        let (io, waiting) = Io::new(Monotonic::new(), storage);
         threads.push(waiting);
 
-        Self { types, shared, computing, next: AtomicUsize::new(0), io, threads }
+        Self { shared, computing, next: AtomicUsize::new(0), io, threads }
     }
 
-    /// Runners of the job types `types` on the cores an engine run on `workers` workers leaves free, one at the least,
-    /// their jobs reading files from `storage`.
+    /// Runners on the cores an engine run on `workers` workers leaves free, one at the least, their jobs reading files
+    /// from `storage`.
     ///
     /// # Panics
     ///
     /// Panics when the host cannot make a thread.
     #[must_use]
-    pub fn beside(types: Vec<JobType>, workers: NonZeroUsize, storage: Arc<dyn Storage>) -> Self {
+    pub fn beside(workers: NonZeroUsize, storage: Arc<dyn Storage>) -> Self {
         let cores = thread::available_parallelism().map_or(1, NonZeroUsize::get);
         let free = NonZeroUsize::new(cores.saturating_sub(workers.get())).unwrap_or(NonZeroUsize::MIN);
 
-        Self::new(types, free, storage)
+        Self::new(free, storage)
     }
 }
 
 /// Takes jobs and runs each until it is told to stop, parking whenever there is none to take.
 fn run(shared: &Shared) {
     loop {
-        while let Some((id, kind, job)) = shared.queue.pop() {
-            shared.inline.start(id, kind, job);
+        while let Some((id, of, job)) = shared.queue.pop() {
+            shared.inline.start(id, of, job);
         }
         if shared.stopping.load(Ordering::Acquire) {
             return;
@@ -106,15 +103,13 @@ fn run(shared: &Shared) {
 }
 
 impl Jobs for Runners {
-    fn start(&self, id: JobId, kind: KindId, job: Taken) {
-        let runner = self.types.iter().find(|of| of.kind() == kind).map(JobType::runner);
-        let waits = runner == Some(Runner::Io);
+    fn start(&self, id: JobId, of: JobType, job: Taken) {
+        let waits = of.runner() == Runner::Io;
         if waits {
-            self.io.start(id, kind, job);
+            self.io.start(id, of, job);
             return;
         }
-        // A job of a type it was not handed is answered on a thread for computing, as `Inline` answers it.
-        self.shared.queue.push((id, kind, job));
+        self.shared.queue.push((id, of, job));
         let next = self.next.fetch_add(1, Ordering::Relaxed) % self.computing.len();
         if let Some(thread) = self.computing.get(next) {
             thread.unpark();

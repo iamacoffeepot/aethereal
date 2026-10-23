@@ -6,7 +6,7 @@ mod tests;
 #[cfg(target_arch = "wasm32")]
 mod timeouts;
 
-use aethereal_actor::{Driven, Fault, JobId, JobType, Outcome, Runner, Sleep, Storage, Timer};
+use aethereal_actor::{Driven, Fault, JobId, JobType, Outcome, Runner, Storage, Timer};
 use aethereal_data::{Kind, KindId};
 use aethereal_substrate::{Inline, Jobs, Panicked, Taken};
 use std::collections::HashMap;
@@ -24,16 +24,14 @@ type Task = Pin<Box<dyn Future<Output = ()>>>;
 /// so its answer comes at the bring of a later frame (ADR-0018).
 ///
 /// A job for computing runs once, as [`Inline`] runs it: its future is ready the first time it is polled, and one that
-/// waits is answered with [`Waits`](aethereal_substrate::Waits). A job that waits, [`Sleep`] among them, is polled
-/// again whenever it is woken, on the page's timer, `setTimeout`, read from the clock the page's frames are timed by.
-/// A job of a type it was not handed is answered with [`NoRunner`](aethereal_substrate::NoRunner).
+/// waits is answered with [`Waits`](aethereal_substrate::Waits). A job that waits, [`Sleep`](aethereal_actor::Sleep)
+/// among them, is polled again whenever it is woken, on the page's timer, `setTimeout`, read from the clock the page's
+/// frames are timed by.
 ///
 /// It lets any number of jobs be in flight: a job that waits holds nothing a computation could use. It holds only what
 /// may be shared: what each task needs that may not, it makes inside the task. A page built to abort on a panic loses
 /// itself to a job's panic, as to any other: nothing is caught there.
 pub struct EventLoop {
-    /// What each job type runs on, [`Sleep`] among them.
-    types: Vec<JobType>,
     /// How each job for computing is run, in a task of its own.
     inline: Arc<Inline>,
     /// The timer the jobs that wait wait on.
@@ -77,21 +75,18 @@ enum Ended {
 }
 
 impl EventLoop {
-    /// Runs jobs of `types` and [`Sleep`] on the page's event loop, waiting on the page's timer and reading files from
-    /// `storage`, and answers any other with [`NoRunner`](aethereal_substrate::NoRunner).
+    /// Runs jobs on the page's event loop, waiting on the page's timer and reading files from `storage`.
     #[cfg(target_arch = "wasm32")]
     #[must_use]
-    pub fn new(types: Vec<JobType>, storage: Arc<dyn Storage>) -> Self {
-        Self::on(types, Arc::new(timeouts::Timeouts), storage, wasm_bindgen_futures::spawn_local::<Task>)
+    pub fn new(storage: Arc<dyn Storage>) -> Self {
+        Self::on(Arc::new(timeouts::Timeouts), storage, wasm_bindgen_futures::spawn_local::<Task>)
     }
 
-    /// Runs jobs of `types` and [`Sleep`] as tasks `spawn` puts on an event loop, waiting on `timer` and reading files
-    /// from `storage`.
-    fn on(mut types: Vec<JobType>, timer: Arc<dyn Timer>, storage: Arc<dyn Storage>, spawn: fn(Task)) -> Self {
-        types.push(JobType::of::<Sleep>());
-        let inline = Arc::new(Inline::new(types.clone(), Arc::clone(&storage)));
+    /// Runs jobs as tasks `spawn` puts on an event loop, waiting on `timer` and reading files from `storage`.
+    fn on(timer: Arc<dyn Timer>, storage: Arc<dyn Storage>, spawn: fn(Task)) -> Self {
+        let inline = Arc::new(Inline::new(Arc::clone(&storage)));
 
-        Self { types, inline, timer, storage, spawn, held: Arc::default() }
+        Self { inline, timer, storage, spawn, held: Arc::default() }
     }
 
     /// Puts the job `id` of the type `of`, which waits, on the event loop as a task polled whenever it is woken, until
@@ -150,18 +145,14 @@ fn poll(stage: &Mutex<Stage>, running: &mut Driven, context: &mut Context<'_>) -
 }
 
 impl Jobs for EventLoop {
-    fn start(&self, id: JobId, kind: KindId, job: Taken) {
-        let of = self.types.iter().find(|of| of.kind() == kind).copied();
-        if let Some(of) = of {
-            let waits = of.runner() == Runner::Io;
-            if waits {
-                self.wait(id, of, job);
-                return;
-            }
+    fn start(&self, id: JobId, of: JobType, job: Taken) {
+        let waits = of.runner() == Runner::Io;
+        if waits {
+            self.wait(id, of, job);
+            return;
         }
-        // A job of a type it was not handed is answered in a task of its own, as `Inline` answers it.
         let inline = Arc::clone(&self.inline);
-        (self.spawn)(Box::pin(async move { inline.start(id, kind, job) }));
+        (self.spawn)(Box::pin(async move { inline.start(id, of, job) }));
     }
 
     /// A job that waits is dropped at its task's next poll, which the stop wakes it for. One for computing runs once,

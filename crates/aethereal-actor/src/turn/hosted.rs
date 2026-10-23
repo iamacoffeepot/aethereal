@@ -4,8 +4,8 @@ use super::{Closing, Owing, Seat, Stood, Turning, Why};
 use crate::records::Staging;
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Effect, ErasedActorRef, Fault, Gift, Giver, Instances,
-    JobId, Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Role, Runs,
-    SeatNumber, Seated, Seats, Sending, Submitted, Table, Target, Tie, What, Written, carry, take_claimed,
+    JobCode, JobId, Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Role,
+    Runs, SeatNumber, Seated, Seats, Sending, Submitted, Table, Target, Tie, What, Written, carry, take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -477,7 +477,7 @@ impl<'a> Hosted<'a> {
             child.sent
         };
         let refers = lent.iter().map(crate::BlobRef::id).collect();
-        self.seat.asked.buffers.jobs.push(Submitted { by, count, kind, answer, bytes, refers });
+        self.seat.asked.buffers.jobs.push(Submitted { by, count, code: JobCode::Guest(kind), answer, bytes, refers });
         self.seat.asked.asks.push((by, Asking { count, answer, context, lent }));
 
         Ok(())

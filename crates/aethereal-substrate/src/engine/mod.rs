@@ -40,9 +40,10 @@ use crate::{
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Carried, Chain, Closing, Code,
-    Cycling, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, JobId, Keeping, Keeps, Links,
-    Mail, MailId, Mailed, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Root, Runs, SeatNumber,
-    Seated, Seats, Stood, Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    Cycling, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, JobId, JobType, Keeping,
+    Keeps, Links, Mail, MailId, Mailed, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Root, Runs,
+    SeatNumber, Seated, Seats, Sleep, Stood, Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why,
+    config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -165,6 +166,9 @@ pub struct Engine {
     sources: Vec<bring::Bringing>,
     /// What runs the jobs turns run (ADR-0018): none until its host makes it.
     runner: jobs::Runner,
+    /// The job types the program's guests may run, with [`Sleep`]: the code a guest's job is run with, found by its
+    /// kind (ADR-0015, ADR-0018).
+    guest_jobs: Vec<JobType>,
     /// The jobs that have run, pushed by whatever ran them, to bring in at the next bring.
     finished: Arc<SegQueue<jobs::Finished>>,
     /// The token each job in flight holds a copy of in its finish, so the copies beside this one count them.
@@ -445,6 +449,7 @@ impl Engine {
             handed: Vec::new(),
             sources: Vec::new(),
             runner: jobs::Runner::Unmade,
+            guest_jobs: vec![JobType::of::<Sleep>()],
             finished: Arc::new(SegQueue::new()),
             in_flight: Arc::new(()),
             waiting_jobs: VecDeque::new(),

@@ -25,6 +25,8 @@ use crate::{
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
+#[cfg(feature = "std")]
+use crate::{JobCode, JobType};
 use aethereal_data::{ActorId, ActorPath, Decode, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -742,7 +744,8 @@ impl Seat<'_> {
         let id = JobId::new(MailId { sender: self.me.id, count });
         let answer = KindId::of::<J::Done>();
         let refers = lent.iter().map(BlobRef::id).collect();
-        let submitted = Submitted { by: self.me, count, kind: KindId::of::<J>(), answer, bytes, refers };
+        let submitted =
+            Submitted { by: self.me, count, code: JobCode::Native(JobType::of::<J>()), answer, bytes, refers };
         self.asked.buffers.jobs.push(submitted);
         self.asked.asks.push((self.me, Asking { count, answer, context, lent }));
 

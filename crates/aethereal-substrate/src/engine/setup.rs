@@ -4,7 +4,8 @@ use super::bring::Feed;
 use super::jobs::Jobs;
 use super::{CodeRefused, Engine};
 use aethereal_actor::{
-    Actors, BlobRef, Controller, Cycle, Given, Guests, Links, Ordered, Refused, Requests, Resource, Root, Source,
+    Actors, BlobRef, Controller, Cycle, Given, Guests, JobType, Links, Ordered, Refused, Requests, Resource, Root,
+    Source,
 };
 use aethereal_data::{Encode, Kind};
 use core::marker::PhantomData;
@@ -162,6 +163,15 @@ impl Setup<()> {
     /// The engine, its jobs run by `jobs`, which with none set answers every job that no runner runs it (ADR-0018).
     pub fn with_jobs(self, jobs: Arc<dyn Jobs>) -> Self {
         Self::of(self.engine.with_jobs(jobs))
+    }
+
+    /// The engine, letting its guests run the jobs of `types` as well as those let already, and [`Sleep`], which
+    /// every guest may run: a guest's job is run with the code of its type here, and is answered that no runner runs
+    /// it when its type is not here. A native turn's job carries its own code (ADR-0015, ADR-0018).
+    ///
+    /// [`Sleep`]: aethereal_actor::Sleep
+    pub fn with_guest_jobs(self, types: Vec<JobType>) -> Self {
+        Self::of(self.engine.with_guest_jobs(types))
     }
 
     /// The engine, running the cycle `C` between `Start` and `Stop`: its stages in order, each a barrier (ADR-0020).

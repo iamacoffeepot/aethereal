@@ -827,7 +827,7 @@ fn write_jobs(out: &mut Vec<u8>, asked: &Asked, asks: &[Lying], ran: impl Iterat
         // A context that does not lie there reads back as none, and its host finds the call garbled.
         let context = kept.map_or(Span { at: 0, len: 0 }, |lying| lying.context);
         let record =
-            JobRecord { by: job.by, count: job.count, kind: job.kind, answer: job.answer, job: bytes, context };
+            JobRecord { by: job.by, count: job.count, kind: job.code.kind(), answer: job.answer, job: bytes, context };
         out.extend_from_slice(&record.to_bytes());
     }
     for job in asked.cancelled() {

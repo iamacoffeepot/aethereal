@@ -4,7 +4,7 @@
 use crate::Monotonic;
 use aethereal_actor::{Driven, Fault, JobId, JobType, Storage, Time, Timer};
 use aethereal_data::{Kind, KindId};
-use aethereal_substrate::{Clock, Finish, NoRunner, Panicked, Taken};
+use aethereal_substrate::{Clock, Finish, Panicked, Taken};
 use crossbeam_queue::SegQueue;
 use std::collections::{BTreeMap, HashMap};
 use std::panic::{self, AssertUnwindSafe};
@@ -26,10 +26,9 @@ pub(super) struct Io {
 
 /// What the thread shares with the engine's side, and with the wakers of its jobs.
 struct Shared {
-    types: Vec<JobType>,
     /// The host's storage, which its jobs read files from (ADR-0032).
     storage: Arc<dyn Storage>,
-    handed: SegQueue<(JobId, KindId, Taken)>,
+    handed: SegQueue<(JobId, JobType, Taken)>,
     stopped: SegQueue<JobId>,
     /// The jobs woken, by their keys.
     woken: Arc<SegQueue<Key>>,
@@ -82,12 +81,11 @@ impl Wake for Wakes {
 }
 
 impl Io {
-    /// The runner of the job types among `types` that wait, its timer on `clock`, its jobs reading files from
-    /// `storage`, and its thread, to join once it is told to stop.
-    pub(super) fn new(types: Vec<JobType>, clock: Monotonic, storage: Arc<dyn Storage>) -> (Self, JoinHandle<()>) {
+    /// The runner of the jobs that wait, its timer on `clock`, its jobs reading files from `storage`, and its thread,
+    /// to join once it is told to stop.
+    pub(super) fn new(clock: Monotonic, storage: Arc<dyn Storage>) -> (Self, JoinHandle<()>) {
         let timer = Arc::new(Timers { clock, asked: SegQueue::new() });
         let shared = Arc::new(Shared {
-            types,
             storage,
             handed: SegQueue::new(),
             stopped: SegQueue::new(),
@@ -105,9 +103,9 @@ impl Io {
         (Self { shared, thread: joined.thread().clone() }, joined)
     }
 
-    /// Hands it the job `id`, of the kind `kind`.
-    pub(super) fn start(&self, id: JobId, kind: KindId, job: Taken) {
-        self.shared.handed.push((id, kind, job));
+    /// Hands it the job `id`, of the type `of`.
+    pub(super) fn start(&self, id: JobId, of: JobType, job: Taken) {
+        self.shared.handed.push((id, of, job));
         self.thread.unpark();
     }
 
@@ -141,8 +139,8 @@ fn run(shared: &Arc<Shared>) {
         if shared.stopping.load(Ordering::Acquire) {
             return;
         }
-        while let Some((id, kind, job)) = shared.handed.pop() {
-            hold(shared, &mut held, id, kind, job);
+        while let Some((id, of, job)) = shared.handed.pop() {
+            hold(shared, &mut held, id, of, job);
         }
         while let Some(id) = shared.stopped.pop() {
             drop(held.remove(&key(id)));
@@ -174,14 +172,9 @@ fn run(shared: &Arc<Shared>) {
     }
 }
 
-/// Holds the job `id` of the kind `kind`, to be polled first now: or answers it at once when no type it runs is that
-/// kind.
-fn hold(shared: &Arc<Shared>, held: &mut HashMap<Key, Held>, id: JobId, kind: KindId, job: Taken) {
+/// Holds the job `id` of the type `of`, to be polled first now.
+fn hold(shared: &Arc<Shared>, held: &mut HashMap<Key, Held>, id: JobId, of: JobType, job: Taken) {
     let Taken { bytes, lent, limit, finish } = job;
-    let Some(of) = shared.types.iter().find(|of| of.kind() == kind) else {
-        finish.done(Err(fault::<NoRunner>()));
-        return;
-    };
     let timer: Arc<dyn Timer> = Arc::clone(&shared.timer) as Arc<dyn Timer>;
     let running = of.drive(bytes, lent, limit, timer, Arc::clone(&shared.storage));
     let waker =

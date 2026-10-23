@@ -15,7 +15,7 @@ pub use windows::WindowsSettings;
 use crate::canvas::Shown;
 use crate::serving::{Drawing, Serving};
 use crate::{Browser, EventLoop, Hosted, Listening, Performance};
-use aethereal_actor::{JobType, NoStorage, Storage};
+use aethereal_actor::{NoStorage, Storage};
 use aethereal_data::Plain;
 use aethereal_files::FileHosting;
 use aethereal_substrate::{Engine, Host, ProgramError, Serves, Settled, Unbuilt};
@@ -43,8 +43,6 @@ pub struct Paging {
     listening: Vec<Listening>,
     /// The storage the runner's jobs read files from: [`NoStorage`] until the file capability serves one.
     storage: Arc<dyn Storage>,
-    /// The job types the roots run, beside those the program lists.
-    jobs: Vec<JobType>,
 }
 
 /// A canvas opened as a window, as the window root's bootstrap opened it.
@@ -62,16 +60,12 @@ impl Paging {
             hosted: Hosted::Nothing,
             listening: Vec::new(),
             storage: Arc::new(NoStorage),
-            jobs: Vec::new(),
         }
     }
 
-    /// The runner of the job types `listed` and those the roots served, on the page's event loop, its jobs reading
-    /// files from the storage served (ADR-0029).
-    fn runner(&mut self, mut listed: Vec<JobType>) -> EventLoop {
-        listed.append(&mut self.jobs);
-
-        EventLoop::new(listed, Arc::clone(&self.storage))
+    /// The runner on the page's event loop, its jobs reading files from the storage served (ADR-0029).
+    fn runner(&self) -> EventLoop {
+        EventLoop::new(Arc::clone(&self.storage))
     }
 
     /// Keeps `canvas`, opened as a window, `shown`, for the renderer to draw to.
@@ -127,15 +121,13 @@ impl Host for Browser<Performance> {
     type Exit = Starting;
     type Error = ProgramError;
 
-    /// Bootstraps the program on the page, each root's bootstrap awaited before the next begins, makes its runner for
-    /// the job types the program runs, on the page's event loop (ADR-0029), then starts it: its `Start` runs in the
-    /// first frame the page calls (ADR-0020).
+    /// Bootstraps the program on the page, each root's bootstrap awaited before the next begins, makes its runner on
+    /// the page's event loop (ADR-0029), then starts it: its `Start` runs in the first frame the page calls
+    /// (ADR-0020).
     fn run(settled: Settled<Self>) -> Result<Starting, ProgramError> {
-        let jobs = settled.jobs().to_vec();
-
         Ok(Box::pin(async move {
-            let (mut engine, mut paging) = settled.bootstrap(Paging::new()).await?;
-            engine.set_jobs(Arc::new(paging.runner(jobs)));
+            let (mut engine, paging) = settled.bootstrap(Paging::new()).await?;
+            engine.set_jobs(Arc::new(paging.runner()));
 
             Ok(paging.start(engine))
         }))
@@ -156,9 +148,7 @@ impl Serves<Drawing> for Browser<Performance> {
 
 impl Serves<FileHosting> for Browser<Performance> {
     fn serve(paging: &mut Paging, files: FileHosting) {
-        let (storage, job) = files.into_parts();
-        paging.storage = storage;
-        paging.jobs.push(job);
+        paging.storage = files.into_storage();
     }
 }
 

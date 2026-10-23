@@ -17,6 +17,7 @@ use aethereal_data::{
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::fmt;
 use core::future::{self, Future};
 use core::mem;
 use core::pin::Pin;
@@ -237,20 +238,43 @@ impl From<Unrun> for Fault {
 }
 
 /// A job a turn ran, as the engine takes it out to its host once the turn has run (ADR-0018).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Submitted {
     /// The actor that ran it.
     pub by: Seated,
     /// The count it took among what the actor sends.
     pub count: u64,
-    /// The kind of the job, which its host runs it by.
-    pub kind: KindId,
+    /// The code that runs it.
+    pub code: JobCode,
     /// The kind it is answered with.
     pub answer: KindId,
     /// Its bytes, written at [`Actors`].
     pub bytes: Vec<u8>,
     /// Each blob it refers to, as often as it refers to it: kept by the context the actor keeps until it is answered.
     pub refers: Vec<BlobId>,
+}
+
+/// The code that runs a job a turn ran (ADR-0018).
+#[derive(Debug, Clone, Copy)]
+pub enum JobCode {
+    /// A native turn's: the code of the type it ran, which it names as it runs it, so its host runs it with no lookup
+    /// and runs every job a native turn runs.
+    Native(JobType),
+    /// A guest's: the kind of the job alone, as a guest cannot hand its host code. The engine runs it with the code of
+    /// the job type of that kind the program lists for its guests, and answers it that no runner runs it when the
+    /// program lists none (ADR-0015).
+    Guest(KindId),
+}
+
+impl JobCode {
+    /// The kind of the job.
+    #[must_use]
+    pub const fn kind(&self) -> KindId {
+        match self {
+            Self::Native(of) => of.kind(),
+            Self::Guest(kind) => *kind,
+        }
+    }
 }
 
 /// What a job a host runs comes to: what it made, or its fault.
@@ -265,14 +289,26 @@ pub type Driven = Pin<Box<dyn Future<Output = Outcome>>>;
 #[cfg(feature = "std")]
 type Drive = fn(Vec<u8>, Lending, usize, Arc<dyn Timer>, Arc<dyn Storage>) -> Driven;
 
-/// A job type, as a host runs it, whatever the type: what a host is handed of each job type the program runs, as the
-/// engine is made (ADR-0018).
+/// A job type, as a host runs it, whatever the type: what a native turn hands its host with each job it runs, and what
+/// a program lists of each job type its guests may run (ADR-0015, ADR-0018).
 #[cfg(feature = "std")]
 #[derive(Clone, Copy)]
 pub struct JobType {
     kind: KindId,
     runner: Runner,
     drive: Drive,
+}
+
+/// A job type shows its kind and where it runs: its code is a function's address.
+#[cfg(feature = "std")]
+impl fmt::Debug for JobType {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("JobType")
+            .field("kind", &self.kind)
+            .field("runner", &self.runner)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(feature = "std")]
@@ -311,8 +347,8 @@ impl JobType {
     }
 }
 
-/// The job types a program runs, listed as a tuple, `(Fetch, Decode)`: what its host's runners are made to run
-/// (ADR-0029).
+/// The job types a program's guests may run, listed as a tuple, `(Fetch, Decode)`: the code the engine runs a guest's
+/// job with, as a guest cannot hand its host code (ADR-0015, ADR-0029).
 #[cfg(feature = "std")]
 pub trait JobList {
     /// Each type listed, in order.

@@ -28,7 +28,7 @@ pub struct Screen<'a> {
     windows: Vec<OnScreen>,
     windowing: Served<Hosting>,
     drawing: Served<Box<Drawing>>,
-    /// What the roots served for the host's runners: the file capability's storage and job (ADR-0029, ADR-0032).
+    /// What the roots served for the host's runners: the file capability's storage (ADR-0029, ADR-0032).
     runners: Serving,
 }
 
