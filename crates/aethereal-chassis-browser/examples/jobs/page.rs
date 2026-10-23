@@ -3,10 +3,10 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Job, JobId, JobType, On, Path, Render,
-    Runner, Running, Sleep, Slept, Start, Tick, Time, Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Job, JobId, On, Path, Render, Runner,
+    Running, Sleep, Slept, Start, Tick, Time, Top, Turn, path,
 };
-use aethereal_chassis_browser::{Browser, EventLoop};
+use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -20,7 +20,6 @@ use aethereal_render::shape::Shape;
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_window::{InitialWindows, WindowId, Windows};
 use core::time::Duration;
-use std::sync::Arc;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -33,7 +32,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 #[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
 pub async fn start() -> Result<Program, JsError> {
     let program = Browser::program()
-        .with_jobs(Arc::new(EventLoop::new(vec![JobType::of::<Sum>()])))
+        .with_jobs::<(Sum,)>()
         .with_cycle::<(Tick, Render)>()
         .root::<Windows>()
         .root::<Renderer>()

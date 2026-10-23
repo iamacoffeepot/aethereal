@@ -615,6 +615,28 @@ fn a_job_is_answered_at_a_bring_with_the_context_its_turn_kept() {
 }
 
 #[test]
+fn a_job_run_before_its_host_makes_its_runner_waits_for_it() {
+    // Catches a job a root's `begin` runs as its program bootstraps, before the host has made its runners, handed to
+    // no runner and lost, or answered faulted: a host makes its runners only once its roots have bootstrapped.
+    let Some(parts) = NonZeroUsize::new(4) else {
+        panic!("four is not zero");
+    };
+    let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
+    let Ok(_) = engine.add_root::<Worker>(&(), Which { at: 0 }) else {
+        panic!("the worker begins");
+    };
+    engine.bring();
+    settle(&mut engine);
+    assert_eq!(said(), ["ran 0 as 1"], "nothing runs the job before there is a runner");
+
+    engine.set_jobs(Arc::new(Inline::new(vec![JobType::of::<Double>()])));
+    engine.bring();
+    settle(&mut engine);
+
+    assert_eq!(said(), ["0 doubled 2"]);
+}
+
+#[test]
 fn a_job_that_fails_panics_waits_or_has_no_runner_is_answered_faulted_and_logged() {
     // Catches a job's fault, a panic, a job that waits where nothing polls it again, and one of a type its host was
     // not handed, left unanswered or answered as if it had run, and a fault kept out of the actor's log.

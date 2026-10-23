@@ -10,7 +10,7 @@ mod windowing;
 use crate::gpu::Screen;
 use crate::serving::Drawing;
 use aethereal_actor::Time;
-use aethereal_chassis_headless::{Exit, Headless, Monotonic};
+use aethereal_chassis_headless::{Exit, Headless, Monotonic, Runners};
 use aethereal_substrate::{Clock, Lifecycle, ProgramError, Settled};
 use aethereal_window::Hosting;
 use core::error::Error;
@@ -19,6 +19,7 @@ use core::mem;
 use core::num::NonZeroUsize;
 use core::time::Duration;
 use pacing::{Due, Pacing};
+use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
@@ -188,10 +189,13 @@ impl ApplicationHandler for App {
 
 impl App {
     /// Bootstraps `settled` on the screen of `event_loop`, blocking this thread on each root's bootstrap, which opens
-    /// its windows and the GPU on them, puts its engine on its workers, this thread the first, and starts it, asking
+    /// its windows and the GPU on them, makes its runners for the job types the program runs, on the cores its
+    /// workers leave free (ADR-0029), puts its engine on its workers, this thread the first, and starts it, asking
     /// for the first frame. Its frames are paced as the renderer's settings present them, a capped grid starting now.
     fn open(&self, event_loop: &ActiveEventLoop, settled: Settled<Desktop>) -> Result<Running, Failed> {
-        let (engine, screen) = pollster::block_on(settled.bootstrap(Screen::new(event_loop)))?;
+        let jobs = settled.jobs().to_vec();
+        let (mut engine, screen) = pollster::block_on(settled.bootstrap(Screen::new(event_loop)))?;
+        engine.set_jobs(Arc::new(Runners::beside(jobs, self.workers)));
         let (drawing, windowing) = screen.into_served().map_err(Failed::Unserved)?;
         let mut headless = Headless::new(engine, self.workers);
         headless.engine_mut().start();

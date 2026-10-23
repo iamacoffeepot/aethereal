@@ -21,8 +21,8 @@ pub use listed::{Bootstraps, Composing, Stage};
 pub use provided::{Gathers, Provided, Provision};
 pub use settings::{ENGINE, EngineSettings, RUNNING};
 
-use crate::{Engine, Jobs, Setup};
-use aethereal_actor::{Cycle, Guests, Links, Ordered};
+use crate::{Engine, Setup};
+use aethereal_actor::{Cycle, Guests, JobList, JobType, Links, Ordered};
 use aethereal_data::Budget;
 use aethereal_data::config::{Configuration, FlagTable, Flags, Overlay, Parts, RootSettings};
 use core::marker::PhantomData;
@@ -300,6 +300,8 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 pub struct Program<H: Host, R> {
     /// The engine's options, applied in the order they were set.
     options: Vec<EngineOption>,
+    /// The job types the program runs, in the order listed.
+    jobs: Vec<JobType>,
     /// The program's defaults for the engine's section, beneath every layer: `EngineSettings`'s `Default` until the
     /// program gives its own (ADR-0028).
     engine: EngineSettings,
@@ -320,6 +322,7 @@ impl<H: Host> Program<H, ()> {
     pub(super) fn new() -> Self {
         Self {
             options: Vec::new(),
+            jobs: Vec::new(),
             engine: EngineSettings::default(),
             running: H::Running::default(),
             sections: Vec::new(),
@@ -361,9 +364,11 @@ impl<H: Host> Program<H, ()> {
         self.with(Box::new(move |setup| setup.with_links(links)))
     }
 
-    /// The engine, its jobs run by `jobs`, as [`Setup::with_jobs`] does.
-    pub fn with_jobs(self, jobs: Arc<dyn Jobs>) -> Self {
-        self.with(Box::new(move |setup| setup.with_jobs(jobs)))
+    /// The program, running the jobs of the types `J` lists, `.with_jobs::<(Fetch, Decode)>()`, beside those every
+    /// host runs: its host makes the runners that run them (ADR-0018, ADR-0029).
+    pub fn with_jobs<J: JobList>(mut self) -> Self {
+        self.jobs.extend(J::types());
+        self
     }
 
     /// The engine, running the cycle `C` between `Start` and `Stop`, as [`Setup::with_cycle`] does: a cycle out of its
@@ -461,10 +466,10 @@ impl<H: Host, R> Program<H, R> {
     ///
     /// `.root_with::<Counter>(Counters { children, ..Default::default() })` gives the fields it has opinions on.
     pub fn root_with<A: Bootstrap<H>>(self, settings: A::Settings) -> Program<H, (A, R)> {
-        let Self { options, engine, running, mut sections, layers, flags, listed: _ } = self;
+        let Self { options, jobs, engine, running, mut sections, layers, flags, listed: _ } = self;
         sections.push(Box::new(move |composing| composing.add(A::SECTION, Reader::Root(A::NAME), &settings)));
 
-        Program { options, engine, running, sections, layers, flags, listed: PhantomData }
+        Program { options, jobs, engine, running, sections, layers, flags, listed: PhantomData }
     }
 
     /// The program with the layer `overlay` beneath those given already: an earlier layer wins, and every layer wins
@@ -546,7 +551,9 @@ impl<H: Host, R> Program<H, R> {
         let engine = EngineSettings::take(&mut configuration, ENGINE)?;
         let running = H::Running::take(&mut configuration, RUNNING)?;
 
-        Ok(Settled { engine, running, options: self.options, configuration, roots: bootstrap_roots::<H, R, I> })
+        let roots = bootstrap_roots::<H, R, I>;
+
+        Ok(Settled { engine, running, options: self.options, jobs: self.jobs, configuration, roots })
     }
 }
 
@@ -565,6 +572,7 @@ pub struct Settled<H: Host> {
     engine: EngineSettings,
     running: H::Running,
     options: Vec<EngineOption>,
+    jobs: Vec<JobType>,
     configuration: Configuration,
     roots: for<'host> fn(Stage<'host, H>) -> Booting<'host, H>,
 }
@@ -580,6 +588,13 @@ impl<H: Host> Settled<H> {
     #[must_use]
     pub const fn running(&self) -> &H::Running {
         &self.running
+    }
+
+    /// The job types the program runs, for the host to make its runners for once the program's roots have
+    /// bootstrapped (ADR-0029): [`Engine::set_jobs`].
+    #[must_use]
+    pub fn jobs(&self) -> &[JobType] {
+        &self.jobs
     }
 
     /// The second phase: the engine made from its settings and options, then each root bootstrapped in order on

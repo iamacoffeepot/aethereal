@@ -152,12 +152,29 @@ pub struct NoRoom;
 #[kind(name = "aether.job.panicked")]
 pub struct Panicked;
 
+/// What runs an engine's jobs (ADR-0018, ADR-0029).
+pub(super) enum Runner {
+    /// None yet: the host makes it once its program's roots have bootstrapped, and the jobs their `begin`s run wait
+    /// until then.
+    Unmade,
+    /// What the host made.
+    Made(Arc<dyn Jobs>),
+}
+
 impl Engine {
-    /// The engine, its jobs run by `jobs`, which with none set answers every job that no runner runs it (ADR-0018).
+    /// The engine, its jobs run by `jobs` (ADR-0018).
     pub(super) fn with_jobs(mut self, jobs: Arc<dyn Jobs>) -> Self {
-        self.jobs = jobs;
+        self.runner = Runner::Made(jobs);
 
         self
+    }
+
+    /// Runs this engine's jobs on `jobs` from now on, and hands it the jobs waiting, as many as it lets be in flight
+    /// (ADR-0029): a host makes its runners once its program's roots have bootstrapped, so the jobs their `begin`s
+    /// ran wait for it. Jobs another runner was handed finish there, and are answered as ever.
+    pub fn set_jobs(&mut self, jobs: Arc<dyn Jobs>) {
+        self.runner = Runner::Made(jobs);
+        self.start_waiting();
     }
 
     /// Queues each of `submitted`, once the turns that ran them have, behind those already waiting, and hands out as
@@ -193,24 +210,31 @@ impl Engine {
         let lent = Lending::new(self.number.0, self.copied(refers), Arc::clone(&self.job_pins));
         let feed = Arc::clone(&self.finished);
         let finish = Finish { by, count, answer, feed, _in_flight: Arc::clone(&self.in_flight) };
-        self.jobs.start(id, kind, Taken { bytes, lent, limit: self.read_limit, finish });
+        if let Runner::Made(jobs) = &self.runner {
+            jobs.start(id, kind, Taken { bytes, lent, limit: self.read_limit, finish });
+        }
     }
 
     /// Stops the job `job` an actor cancelled: one still waiting is dropped, never handed out, and the host is asked
     /// to stop one it was handed.
     pub(super) fn stop_job(&mut self, job: JobId) {
         let waiting = self.waiting_jobs.iter().position(|waiting| waiting.id() == job);
-        match waiting {
-            Some(at) => drop(self.waiting_jobs.remove(at)),
-            None => self.jobs.stop(job),
+        match (waiting, &self.runner) {
+            (Some(at), _) => drop(self.waiting_jobs.remove(at)),
+            (None, Runner::Made(jobs)) => jobs.stop(job),
+            (None, Runner::Unmade) => {}
         }
     }
 
-    /// How many more jobs the host lets be in flight: as many as it lets be, less those its runners hold the finish of.
+    /// How many more jobs the host lets be in flight: as many as it lets be, less those its runners hold the finish of,
+    /// and none before it has made its runners.
     fn jobs_left(&self) -> usize {
+        let Runner::Made(jobs) = &self.runner else {
+            return 0;
+        };
         let in_flight = Arc::strong_count(&self.in_flight) - 1;
 
-        self.jobs.most().saturating_sub(in_flight)
+        jobs.most().saturating_sub(in_flight)
     }
 
     /// A copy of each blob among `refers`, once each.
