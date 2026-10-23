@@ -2298,12 +2298,22 @@ impl Finds for Kept {
             })
             .flat_map(|(frame, textures)| textures.iter().map(move |texture| (frame, *texture)))
             .filter_map(|(frame, texture)| Some((frame, self.drawn_by(TextureId { id: texture })?)));
-        let mut uses: HashMap<u64, Vec<Use>> = HashMap::new();
-        for (storage, used) in self.storage_uses() {
-            uses.entry(storage).or_default().push(used);
+        // Only a use in a frame that ends on a texture makes a pair, and only a read with a write: each storage's
+        // readers and writers there are paired, not every use with every other, which a storage bound by every
+        // placement of a window's frame would make millions of.
+        let mut uses: HashMap<u64, (Vec<Use>, Vec<Use>)> = HashMap::new();
+        for (storage, used) in self.storage_uses().filter(|(_, used)| matches!(used.frame, Frame::Texture(_))) {
+            let (readers, writers) = uses.entry(storage).or_default();
+            match used.access {
+                Access::Read => readers.push(used),
+                Access::Write => writers.push(used),
+            }
         }
-        let stored = uses.into_values().flat_map(|uses| {
-            uses.iter().flat_map(|one| uses.iter().filter_map(|other| one.reads_from(*other))).collect::<Vec<_>>()
+        let stored = uses.into_values().flat_map(|(readers, writers)| {
+            readers
+                .iter()
+                .flat_map(|reader| writers.iter().filter_map(|writer| reader.reads_from(*writer)))
+                .collect::<Vec<_>>()
         });
         let mut reads: Vec<(u64, u64)> = textures.chain(stored).collect();
         reads.sort_unstable();
