@@ -28,7 +28,7 @@ use crate::program::{
 };
 use crate::readback::{self, Bytes, Copied, Order, Pixels, ReadBack, ReadRefused, ReadStorage, Readable};
 use crate::shape::{ColourFormat, DepthFormat, Shape};
-use crate::storage::{self, CreateStorage, StorageId, Stored, WriteStorage};
+use crate::storage::{self, CreateStorage, CreateZeroedStorage, StorageId, Stored, WriteStorage};
 use crate::surface::{Front, Present, Surfaced, WindowFormat};
 use crate::texture::{self, CreateTexture, TextureFormat, TextureId, Textured};
 use crate::timing::{self, TimeFrame, Timed, TimingRefused};
@@ -110,6 +110,10 @@ impl Carries<CreateStorage> for Renderer {
     type Answers = (Stored,);
 }
 
+impl Carries<CreateZeroedStorage> for Renderer {
+    type Answers = (Stored,);
+}
+
 impl Carries<Place> for Renderer {
     type Answers = (Placed,);
 }
@@ -174,6 +178,7 @@ impl Protocol for Rendering {
         CreateUniforms,
         WriteUniforms,
         CreateStorage,
+        CreateZeroedStorage,
         WriteStorage,
         Place,
         CreateDispatch,
@@ -225,6 +230,10 @@ impl Carries<WriteUniforms> for Rendering {
 }
 
 impl Carries<CreateStorage> for Rendering {
+    type Answers = (Stored,);
+}
+
+impl Carries<CreateZeroedStorage> for Rendering {
     type Answers = (Stored,);
 }
 
@@ -513,6 +522,7 @@ impl Actor for Renderer {
         CreateUniforms,
         WriteUniforms,
         CreateStorage,
+        CreateZeroedStorage,
         WriteStorage,
         Place,
         CreateDispatch,
@@ -1069,24 +1079,23 @@ impl Handles<CreateStorage> for Renderer {
 
     fn handle(&mut self, create: CreateStorage, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let bytes = turn.read(&create.bytes).to_vec();
-        let most = turn.open(&mut self.gpu)?.device().limits().max_storage_buffer_binding_size;
-        let size = match storage::check(&bytes, most) {
-            Ok(size) => size,
-            Err(why) => {
-                turn.reply(&Stored::Refused(why))?;
-                return Ok(());
-            }
-        };
+        self.store(turn, bytes.len() as u64, |gpu| upload(gpu, &bytes, STORAGE_USAGE))
+    }
+}
 
-        let gpu = turn.open(&mut self.gpu)?;
-        // Copied from as it is read back, and read as a draw's or a dispatch's arguments by any that asks to.
-        let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC;
-        let buffer = upload(gpu, &bytes, usage);
-        let made = Storage { buffer, size };
-        let id = self.made(turn, |kept, id, maker| kept.storage.keep(id, maker, made))?;
-        turn.reply(&Stored::Made(StorageId { id }))?;
+impl Handles<CreateZeroedStorage> for Renderer {
+    type Sends = (ToSender<Stored>,);
 
-        Ok(())
+    fn handle(&mut self, create: CreateZeroedStorage, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        // WebGPU makes a buffer with every byte zero.
+        self.store(turn, u64::from(create.bytes), |gpu| {
+            gpu.device().create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: u64::from(create.bytes),
+                usage: STORAGE_USAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        })
     }
 }
 
@@ -2471,6 +2480,31 @@ fn sampler(device: &wgpu::Device, sampling: Sampling) -> wgpu::Sampler {
 }
 
 impl Renderer {
+    /// Makes storage of `size` bytes from the buffer `buffer` makes, once they are checked, answering with it or why
+    /// it was refused.
+    fn store(
+        &mut self,
+        turn: &mut Turn<'_, Self, (ToSender<Stored>,)>,
+        size: u64,
+        buffer: impl FnOnce(&Gpu) -> wgpu::Buffer,
+    ) -> Result<(), Fault> {
+        let most = turn.open(&mut self.gpu)?.device().limits().max_storage_buffer_binding_size;
+        let size = match storage::check(size, most) {
+            Ok(size) => size,
+            Err(why) => {
+                turn.reply(&Stored::Refused(why))?;
+                return Ok(());
+            }
+        };
+
+        let buffer = buffer(turn.open(&mut self.gpu)?);
+        let made = Storage { buffer, size };
+        let id = self.made(turn, |kept, id, maker| kept.storage.keep(id, maker, made))?;
+        turn.reply(&Stored::Made(StorageId { id }))?;
+
+        Ok(())
+    }
+
     /// Keeps what was just made for the sender of the mail being handled, under a new id, and watches the sender
     /// when it is the first thing it has made, so what it made is released when it ends. Answers the id.
     fn made<S>(
@@ -2503,6 +2537,11 @@ impl Renderer {
         Ok(made)
     }
 }
+
+/// What storage is used for besides being bound: copied from as it is read back, and read as a draw's or a dispatch's
+/// arguments by any that asks to.
+const STORAGE_USAGE: wgpu::BufferUsages =
+    wgpu::BufferUsages::STORAGE.union(wgpu::BufferUsages::INDIRECT).union(wgpu::BufferUsages::COPY_SRC);
 
 /// A buffer of `usage` on the GPU, holding `bytes`.
 fn upload(gpu: &Gpu, bytes: &[u8], usage: wgpu::BufferUsages) -> wgpu::Buffer {

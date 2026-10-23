@@ -6,10 +6,10 @@ use super::*;
 fn storage_is_whole_words_as_many_as_one_buffer_binds() {
     // Catches empty storage, which WebGPU binds as nothing, bytes no whole number of words, which it cannot write,
     // or more than one storage buffer binds.
-    let made = check(&[0; 64], 64);
-    let empty = check(&[], 64);
-    let torn = check(&[0; 6], 64);
-    let past = check(&[0; 68], 64);
+    let made = check(64, 64);
+    let empty = check(0, 64);
+    let torn = check(6, 64);
+    let past = check(68, 64);
 
     assert_eq!(made, Ok(64));
     assert_eq!(empty, Err(StorageRefused::Size { bytes: 0, most: 64 }));

@@ -45,9 +45,12 @@ Their size is fixed when they are made, a write lies inside it or is refused and
 **Storage holds the bytes a program's read-only storage buffer is bound to,** as uniforms hold a uniform block's: a field of splats, particles, or a skeleton's bones, read by index where a record per instance is read in order. It is made and written as uniforms are:
 
 ```rust
-CreateStorage { bytes: BlobRef }                                    -> Made<StorageId> | Refused
-WriteStorage  { storage: StorageId, first: u32, bytes: BlobRef }    // no answer
+CreateStorage       { bytes: BlobRef }                                    -> Made<StorageId> | Refused
+CreateZeroedStorage { bytes: u32 }                                        -> Made<StorageId> | Refused
+WriteStorage        { storage: StorageId, first: u32, bytes: BlobRef }    // no answer
 ```
+
+Storage a compute pass fills is made by its size, every byte zero, as WebGPU makes a buffer: its zeros would otherwise cross as a blob as large as the storage, held against the step's budget for blobs (ADR-0014), and many slots of a streamed world each want storage of tens of megabytes.
 
 - Its bytes are a whole number of words, and at most what the GPU binds as one storage buffer (`max_storage_buffer_binding_size`). Its size is fixed when it is made, a write lies inside it on whole words or is refused and logged, and only its maker writes or releases it.
 - A program binds it as `BindingKind::Storage { bytes }`: a storage buffer its shader only reads, `var<storage, read>`, which both stages see. A shader that writes it is refused: storage is written on the GPU only by compute (ADR-0026: `Access::Write`).

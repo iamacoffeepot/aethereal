@@ -14,6 +14,14 @@ pub struct CreateStorage {
     pub bytes: BlobRef,
 }
 
+/// Asks the renderer for storage of `bytes` bytes, every one zero, whose size is fixed from then: storage a compute
+/// pass fills, made without its zeros crossing as a blob. Answered with [`Stored`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.create_zeroed_storage")]
+pub struct CreateZeroedStorage {
+    pub bytes: u32,
+}
+
 /// Writes `bytes` over the bytes of `storage` from the byte `first`. Only its maker may write it, and nothing is
 /// answered: a write that does not fit is logged, and the bytes are left as they were.
 #[derive(Bound)]
@@ -48,14 +56,13 @@ pub enum StorageRefused {
     Size { bytes: u64, most: u64 },
 }
 
-/// Checks storage before it is made: that its bytes are whole words, and as many as the GPU binds as one storage
-/// buffer, the `most`. Answers its size.
+/// Checks storage of `size` bytes before it is made: that they are whole words, and as many as the GPU binds as one
+/// storage buffer, the `most`. Answers its size.
 ///
 /// # Errors
 ///
 /// Why it would not be made as asked.
-pub fn check(bytes: &[u8], most: u64) -> Result<u32, StorageRefused> {
-    let size = bytes.len() as u64;
+pub fn check(size: u64, most: u64) -> Result<u32, StorageRefused> {
     let bound = size > 0 && size.is_multiple_of(4) && size <= most;
     let (true, Ok(sized)) = (bound, u32::try_from(size)) else {
         return Err(StorageRefused::Size { bytes: size, most });
