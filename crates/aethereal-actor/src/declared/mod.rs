@@ -206,8 +206,9 @@ impl<A: ChildOf> Of<A> {
 
 impl Declared {
     /// It, when what it declares holds together: each send it declares to a protocol is of one of the protocol's
-    /// kinds, as nothing that takes the protocol need take another (ADR-0016), and it handles each kind of answer with
-    /// one kind of context (ADR-0017).
+    /// kinds, as nothing that takes the protocol need take another (ADR-0016), it handles each kind of answer with
+    /// one kind of context (ADR-0017), and each kind with one handler, as mail is handed to a handler by its kind's
+    /// id alone: two types of one name and layout are one kind (ADR-0006).
     ///
     /// # Panics
     ///
@@ -215,13 +216,16 @@ impl Declared {
     const fn checked(self) -> Self {
         let mut sends_in_protocols = in_protocols(self.begins) && in_protocols(self.ends);
         let mut answers_once = true;
+        let mut handles_once = true;
         let mut index = 0;
         while index < self.handlers.len() {
             let handler = &self.handlers[index];
             sends_in_protocols = sends_in_protocols && in_protocols(handler.sends);
             answers_once = answers_once && !answered_after(self.handlers, index);
+            handles_once = handles_once && !handled_after(self.handlers, index);
             index += 1;
         }
+        assert!(handles_once, "false declaration: a type handles one kind with two handlers");
         assert!(answers_once, "false declaration: a type handles one kind of answer with two kinds of context");
         assert!(
             sends_in_protocols,
@@ -241,6 +245,25 @@ const fn answered_after(handlers: &[Handler], index: usize) -> bool {
     let mut later = index + 1;
     while later < handlers.len() {
         if let Role::Answer(other) = handlers[later].role
+            && other.same(kind)
+        {
+            return true;
+        }
+        later += 1;
+    }
+
+    false
+}
+
+/// Whether the handler at `index` of `handlers` is of a kind a later one handles too: two types of one name and layout,
+/// whose mail the engine could hand to only one of them.
+const fn handled_after(handlers: &[Handler], index: usize) -> bool {
+    let Role::Kind(kind) = handlers[index].role else {
+        return false;
+    };
+    let mut later = index + 1;
+    while later < handlers.len() {
+        if let Role::Kind(other) = handlers[later].role
             && other.same(kind)
         {
             return true;

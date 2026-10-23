@@ -88,30 +88,38 @@ turn.answer(held, &Fetched::Got(blob))?;          // in a later turn
 What the engine does not give a stream is the protocol's: which open stream a part belongs to, how fast parts come, and stopping early. Every stream writes these one way, through the stream library in `aethereal-actor`:
 
 ```rust
-pub trait Stream: Protocol {        // the protocol a stream is opened through
-    type Open: Kind;                // the request that opens it, answered with `Done`
-    type Part: Streamed;            // what each part carries
+pub trait Stream: 'static {
+    type Open: Kind;                // what the asker opens a stream with: `Open<Self>` goes by its name
+    type Part: Kind;                // what each part carries: `Part<Self>` goes by its name
     type Done: Kind;                // the answer that ends it
 }
 
-pub trait Streamed: Kind {
-    const PART: KindName;           // the name its parts go by
-}
+pub struct Streamed<S> { .. }       // the protocol: `Open<S>` answered with `S::Done`, `More`, and `Enough`
 
-pub struct Part<K> { .. }           // receiver to asker: which stream, and one value
+pub struct Open<S> { .. }           // asker to receiver: the stream's number, and what it opens with
+pub struct Part<S> { .. }           // receiver to asker: the stream's number, and one value
 pub struct More { .. }              // asker to receiver: how many more parts it takes
-pub struct Stop { .. }              // asker to receiver: it takes no more
+pub struct Enough { .. }            // asker to receiver: it takes no more
 
-pub struct Streaming<S> { .. }      // the receiver's, one for each stream it serves
-pub struct Streams<S, C> { .. }     // the asker's: what it keeps for each stream it opened
+pub struct Streams<S, C> { .. }     // the asker's: the streams it opened, with what it keeps for each
+pub struct Serving<S> { .. }        // the receiver's: the streams it serves
+pub struct Streaming<S> { .. }      // one stream it serves
 ```
 
-- **Which stream** is a number the asker's `Streams` gives each stream it opens, unique among that asker's, and the receiver keys its streams by the asker and the number. A `Part`, a `More`, and a `Stop` each carry it. It names a stream and proves nothing, since who sent a piece of mail is proven already. Its fields are private, so no author writes it, and only `Streaming` makes a `Part`. A `More` and a `Stop` carry the id of the protocol's `Open` kind beside the number, which the library reads with `KindId::of`, and the receiver keys by the asker, that id, and the number. An actor handles each answer kind with one kind of context (above), so it keeps one `Streams` for each protocol, and two of its streams never meet under one key: streams of two protocols differ by their `Open`, and streams of one protocol take their numbers from one count. A part names its protocol by its own kind and carries the number alone. Two `Streams` of one protocol in one actor would share their numbers, and their answers one handler that cannot tell them apart; the library's documentation says so, and nothing more prevents it.
-- **Pace is credit.** The asker grants the receiver a number of parts with `More`, and each part spends one. `Streaming::send` with none left is refused, `NoCredit`, and the receiver keeps what it would have sent where it came from. Mail is never refused and nothing blocks an actor (ADR-0001), so the receiver of the parts says how many it will take, as a TCP window and Reactive Streams' `request(n)` do.
-- **Stopping** is a `Stop`. The asker's `Streams` passes over parts that arrive after it, as an asker passes over an answer it no longer waits for (below), and the receiver ends the stream with its answer.
-- **Ending** is `Streaming::finish(self, &done)`, which takes the stream by value and answers the request it holds, so no part is sent after the answer, which the build checks. A `Streaming` dropped without finishing drops its `Held`, and the engine answers `Unreplied`.
-- **A part is named by what it carries.** A kind's id is its name and its layout with every name inside removed (ADR-0006), so one name for every `Part` would give parts of one layout one id, and a file's chunk could be read as an audio frame. A kind that is streamed names its parts in `Streamed::PART`, and `Part<K>` takes that name: `impl<K: Streamed> Kind for Part<K>`, written by hand, the longhand ADR-0006 keeps for where the derive cannot write a kind, as a name taken from a type parameter.
-- The library enters with the first program that streams, as every piece enters (ADR-0001).
+```rust
+let number = self.files.open(turn, library.protocol(), Read { path }, Loading { tile })?;     // asker
+let (key, read) = self.serving.open(turn, open)?;                                             // receiver, on `Open<Files>`
+self.serving.get_mut(key).map(|stream| stream.send(turn, chunk));                             // as credit allows
+self.serving.take(key).map(|stream| stream.finish(turn, &ReadDone::Ok));                      // the answer
+```
+
+- **Which stream** is a number the asker's `Streams` gives each stream it opens, unique among that asker's streams of one protocol. The request carries it, `Open<S>`, so the receiver has it as the stream opens, and keys its streams by the asker and the number. A `Part`, a `More`, and an `Enough` each carry it. It names a stream and proves nothing, since who sent a piece of mail is proven already. Its fields are private, so no author writes it: only `Streams` makes an `Open`, and only `Streaming` a `Part`. A `More` and an `Enough` carry the id of the protocol's `Open` kind beside the number, which the library reads with `KindId::of`, and `Serving<S>` takes only those of its own protocol. An actor handles each answer kind with one kind of context (above), so it keeps one `Streams` for each protocol, and two of its streams never meet under one key: streams of two protocols differ by their `Open`, and streams of one protocol take their numbers from one count. A part names its protocol by its own kind and carries the number alone. Two `Streams` of one protocol in one actor would share their numbers, and their answers one handler that cannot tell them apart; the library's documentation says so, and a `Streams` takes a part only from the stream's receiver.
+- **What the engine keeps for a stream's request is its number**, `Number`, so an asker handles `Answer<S::Done, Number>`, and what it keeps for the stream, the `C`, stays in its `Streams` until `answered(number)` hands it back. Opening a stream builds only when the asker handles the stream's parts and that answer.
+- **Pace is credit.** The asker grants the receiver a number of parts with `More`, and each part spends one. A `Streams` keeps each stream's receiver at most its window ahead: it grants the window as the stream opens, sent after the request so it arrives after it, and one more for each part the asker takes. `Streaming::send` with none left is refused, `Unsent::NoCredit`, which hands the value back, and the receiver keeps what it would have sent where it came from. Mail is never refused and nothing blocks an actor (ADR-0001), so the receiver of the parts says how many it will take, as a TCP window and Reactive Streams' `request(n)` do.
+- **Stopping** is an `Enough`. The asker's `Streams` passes over parts that arrive after it, granting nothing for them, as an asker passes over an answer it no longer waits for (below). The receiver's `Serving::stop` takes the stream out, and the receiver ends it with its answer.
+- **Ending** is `Streaming::finish(self, &done)`, which takes the stream by value and answers the request it holds. A stream is reached to send through `Serving::get_mut` and taken out to finish, so no part is sent after the answer, which the build checks. A `Streaming` dropped without finishing drops its `Held`, and the engine answers `Unreplied`.
+- **A receiver watches each asker** as its first stream opens, and `Serving::ended` hands back the streams of one that has ended. Their parts would reach no one, and dropping them lets go of their requests, where a receiver would otherwise keep them, and whatever it keeps beside them, for as long as it lives.
+- **A stream's request and parts go by the names of what they carry.** `Open<S>` takes the name of `S::Open`, and `Part<S>` of `S::Part`: `impl<S: Stream> Kind for Part<S>`, written by hand, the longhand ADR-0006 keeps for where the derive cannot write a kind, as a name taken from a type parameter. Beside the value each carries the stream's number, so its layout is not the value's, and an `Open<Files>` is never read as the `Read` it carries. A kind's id is its name and its layout with every name inside removed (ADR-0006), so a kind is the request or the part of one stream: two streams whose parts are one kind have parts of one id. **A type that handles two kinds of one id does not build**, as its declaration is checked when the program is built, beside the check that it handles each answer kind with one kind of context: mail is handed to a handler by its kind's id alone, so the engine could hand both to only one handler. The check holds for every kind, not streams alone: any two types of one name and layout are one kind. The stop is `Enough`, as the lifecycle's last stage is already `Stop` (ADR-0020).
 
 **What an asker keeps for an answer is kept by the engine; what it keeps for other mail stays its own.** ADR-0012's root and depth still name a piece of mail's chain, for tracing and for mail that is not a request.
 
@@ -136,10 +144,11 @@ pub struct Streams<S, C> { .. }     // the asker's: what it keeps for each strea
 - **Matching by root and depth (ADR-0012).** Nothing new. It cannot tell two asks of one turn apart, or follow an answer given in a later turn.
 - **The context kept in the asker's own state, keyed by the request's id.** No engine table. The asker files and finds it by hand, and the engine cannot answer for a receiver that ended without running the asker's code.
 - **Parts tied to the request by the engine**, each carrying the request's tie and handed to the asker with a copy of its context, as the answer is. The receiver's held request would then be the stream, with no number and no cast. It needs a case of the tie, a handler for parts, parts in a protocol's declaration and in a guest's records, and contexts found without being taken. And the asker still keeps in its own state whatever a stream builds up, since what the engine keeps is handed out as a copy, so it still needs something to find that state by.
-- **A number in each protocol's own kinds**, a `Token` only the library makes. No trait for naming parts, but every author writes the field again, and nothing checks that a streamed kind has one.
+- **A number in each protocol's own kinds**, a `Token` only the library makes. No wrapper kinds, but every author writes the field again, and nothing checks that a streamed kind has one.
+- **Names for a stream's request and parts declared on the stream**, `Stream::OPEN` and `Stream::PART`. One kind could then be the part of two streams. But a stream would name two kinds beside the kinds it carries, which already have names.
 - **The request's own id as the number.** It is unique already. But `ask` would have to hand it back, and since the context is passed in the same call, the answer would have to carry the id too: a change to `Answer` for one use.
 - **One count for every `Streams` an actor keeps.** Its numbers are then unique across protocols, but every stream opened has to be handed the count, and nothing stops an author handing it another.
-- **A `More` and a `Stop` for each protocol**, `More<S>` and `Stop<S>`. They would need names of their own, as a `Part` does, two more for each protocol, for what eight bytes of a computed id say.
+- **A `More` and an `Enough` for each protocol**, `More<S>` and `Enough<S>`. They would need names of their own, as a `Part` does, two more for each protocol, for what eight bytes of a computed id say.
 - **Parts kept by the library when credit runs out.** Easier to write against, but nothing bounds what it keeps, and the pile only moves from the asker to the receiver.
 - **An answer of any kind the protocol lists.** Requests answered by a status and then a result. The engine could not say which answer ends the request, nor which kind to answer with when none comes.
 - **Answers only when the receiver gives one.** Less engine work. A caller whose answerer ended or failed waits forever, and what it kept is never freed.
