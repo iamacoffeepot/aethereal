@@ -6,6 +6,7 @@
 mod asked;
 pub mod compute;
 pub mod dispatch;
+pub mod draw_list;
 pub mod effect;
 pub mod frame;
 mod gpu;

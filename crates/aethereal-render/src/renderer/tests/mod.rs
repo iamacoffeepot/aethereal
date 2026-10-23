@@ -1,6 +1,8 @@
 //! What the renderer makes, made and drawn on a device that draws nothing but checks all it is handed, as WebGPU
 //! does.
 
+mod lists;
+
 use super::*;
 use crate::asked::blob;
 use crate::frame::{PassSpec, Scale, TargetKind, TargetSpec};

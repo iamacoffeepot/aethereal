@@ -29,7 +29,7 @@ pub struct Place {
 }
 
 /// One pass a placement draws in: the pass `pass` of `frame`, drawn with `program`, binding what `bindings` names at
-/// each place the program binds.
+/// each place the program binds, in every frame or only while its maker's list holds it, as `order` says (ADR-0031).
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.join")]
 pub struct Join {
@@ -37,14 +37,32 @@ pub struct Join {
     pub pass: PassName,
     pub program: ProgramId,
     pub bindings: Vec<Bind>,
+    pub order: Order,
 }
 
 impl Join {
-    /// The pass `P` of `frame`, drawn with `program`, binding `bindings`: the pass named by its type.
+    /// The pass `P` of `frame`, drawn with `program`, binding `bindings`, in every frame: the pass named by its type.
     #[must_use]
     pub const fn to<P: Pass>(frame: Frame, program: ProgramId, bindings: Vec<Bind>) -> Self {
-        Self { frame, pass: PassName::of::<P>(), program, bindings }
+        Self { frame, pass: PassName::of::<P>(), program, bindings, order: Order::Loose }
     }
+
+    /// The pass `P` of `frame`, drawn with `program`, binding `bindings`, while its maker's last
+    /// [`DrawList`](crate::draw_list::DrawList) for the pass holds it, in that list's order.
+    #[must_use]
+    pub const fn listed<P: Pass>(frame: Frame, program: ProgramId, bindings: Vec<Bind>) -> Self {
+        Self { frame, pass: PassName::of::<P>(), program, bindings, order: Order::Listed }
+    }
+}
+
+/// When a join is drawn, and in what order among its pass's placements (ADR-0031).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.order")]
+pub enum Order {
+    /// In every frame, among the pass's placements in no order an actor may rely on.
+    Loose,
+    /// While its maker's last list for the pass holds it, in that list's order.
+    Listed,
 }
 
 /// How many times a placement is drawn.
