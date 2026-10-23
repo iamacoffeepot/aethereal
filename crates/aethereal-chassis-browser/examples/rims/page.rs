@@ -2,11 +2,12 @@
 //! at four samples with their alpha as their coverage, reading the floor's depth and a depth of their own, and an
 //! effect that lays the rims on the floor onto the canvas, then places the floor and five rims in it.
 
+use crate::said::{Program, say};
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, BlobRef, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
     Top, Turn, path,
 };
-use aethereal_chassis_browser::{Browser, Started};
+use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::effect::{CreateEffect, EffectId, Effected, Read};
@@ -21,26 +22,8 @@ use aethereal_render::program::{
 use aethereal_render::shape::{ColourFormat, DepthFormat, Samples, Shape};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_window::{InitialWindows, WindowId, Windows};
-use core::cell::RefCell;
-use core::mem;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
-
-thread_local! {
-    /// What the rimmer was answered, for the page to show.
-    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Notes what the rimmer was answered.
-fn say(line: String) {
-    SAID.with_borrow_mut(|said| said.push(line));
-}
-
-/// The program the page runs, for its `requestAnimationFrame` to call.
-#[wasm_bindgen]
-pub struct Program {
-    started: Started,
-}
 
 /// Bootstraps the program on the page with the window root, which opens the page's canvas as the one window,
 /// the renderer, which opens WebGPU on it, and the rimmer.
@@ -60,22 +43,7 @@ pub async fn start() -> Result<Program, JsError> {
         .run()?
         .await?;
 
-    Ok(Program { started })
-}
-
-#[wasm_bindgen]
-impl Program {
-    /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
-    pub fn frame(&mut self, timestamp_millis: f64) {
-        self.started.frame(timestamp_millis);
-    }
-
-    /// What the rimmer was answered since this was last asked, a line each.
-    #[must_use]
-    #[expect(clippy::unused_self, reason = "the page asks it of the program it started")]
-    pub fn said(&self) -> Vec<String> {
-        SAID.with_borrow_mut(mem::take)
-    }
+    Ok(Program::from(started))
 }
 
 /// The rimmer draws on the one window the window root opened.

@@ -2,11 +2,12 @@
 //! makes, an actor that asks to replace that main frame, and an actor that keeps a glow past one in a frame that ends
 //! in floats and darkens it into another.
 
+use crate::said::{Program, say};
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, BlobRef, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
-use aethereal_chassis_browser::{Browser, Started};
+use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::effect::{CreateEffect, EffectId, Effected};
 use aethereal_render::frame::builder::{Effect, FrameBuilder, Onto, depth};
@@ -23,26 +24,8 @@ use aethereal_render::texture::{TextureFormat, TextureId};
 use aethereal_render::{Release, Renderer};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_window::{InitialWindows, WindowId, Windows};
-use core::cell::RefCell;
-use core::mem;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
-
-thread_local! {
-    /// What the actors were answered, for the page to show.
-    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Notes what an actor was answered.
-fn say(line: String) {
-    SAID.with_borrow_mut(|said| said.push(line));
-}
-
-/// The program the page runs, for its `requestAnimationFrame` to call.
-#[wasm_bindgen]
-pub struct Program {
-    started: Started,
-}
 
 /// Bootstraps the program on the page with the window root, which opens the page's canvas as the one window,
 /// the renderer, which opens WebGPU on it, and the claimer, the mapper, and the glower.
@@ -64,22 +47,7 @@ pub async fn start() -> Result<Program, JsError> {
         .run()?
         .await?;
 
-    Ok(Program { started })
-}
-
-#[wasm_bindgen]
-impl Program {
-    /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
-    pub fn frame(&mut self, timestamp_millis: f64) {
-        self.started.frame(timestamp_millis);
-    }
-
-    /// What the actors were answered since this was last asked, a line each.
-    #[must_use]
-    #[expect(clippy::unused_self, reason = "the page asks it of the program it started")]
-    pub fn said(&self) -> Vec<String> {
-        SAID.with_borrow_mut(mem::take)
-    }
+    Ok(Program::from(started))
 }
 
 /// The claimer needs no window and has no settings.

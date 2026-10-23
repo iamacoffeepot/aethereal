@@ -1,10 +1,11 @@
 //! The page's entry points, and a scene for each of two canvases, each its own window, drawing its own main frame.
 
+use crate::said::{Program, say};
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells, Tick,
     Top, Turn, path,
 };
-use aethereal_chassis_browser::{Browser, Started, WindowsSettings};
+use aethereal_chassis_browser::{Browser, WindowsSettings};
 use aethereal_data::{Bound, Plain, TypedKey};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
@@ -21,27 +22,9 @@ use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_window::{
     self as window, Event, InitialWindows, Logical, OpenWindow, Opened, Surface, Window, WindowId, Windows,
 };
-use core::cell::RefCell;
 use core::f32::consts::TAU;
-use core::mem;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
-
-thread_local! {
-    /// What the scenes said, for the page to show.
-    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Notes what a scene said.
-fn say(line: String) {
-    SAID.with_borrow_mut(|said| said.push(line));
-}
-
-/// The program the page runs, for its `requestAnimationFrame` to call.
-#[wasm_bindgen]
-pub struct Program {
-    started: Started,
-}
 
 /// Bootstraps the program on the page with the window root, which opens the canvases `first` and `second` as windows
 /// `0` and `1`, the renderer, which opens WebGPU on them, and a scene for each window.
@@ -62,22 +45,7 @@ pub async fn start() -> Result<Program, JsError> {
         .run()?
         .await?;
 
-    Ok(Program { started })
-}
-
-#[wasm_bindgen]
-impl Program {
-    /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
-    pub fn frame(&mut self, timestamp_millis: f64) {
-        self.started.frame(timestamp_millis);
-    }
-
-    /// What the scenes said since this was last asked, a line each.
-    #[must_use]
-    #[expect(clippy::unused_self, reason = "the page asks it of the program it started")]
-    pub fn said(&self) -> Vec<String> {
-        SAID.with_borrow_mut(mem::take)
-    }
+    Ok(Program::from(started))
 }
 
 /// The most triangles in a ring.

@@ -1,27 +1,15 @@
 //! The page's entry points, and an actor that subscribes to the canvas's window and to the controls, and notes each
 //! event and control it is sent.
 
+use crate::said::{Program, say};
 use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Path, Tells, Top, Turn, path};
+use aethereal_chassis_browser::Browser;
 use aethereal_chassis_browser::controls::{self, Control, Controls};
-use aethereal_chassis_browser::{Browser, Started};
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_window::{self as window, Event, InitialWindows, Window, WindowId, Windows};
-use core::cell::RefCell;
-use core::mem;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
-
-thread_local! {
-    /// What the reporter was sent, for the page to show.
-    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
-
-/// The program the page runs, for its `requestAnimationFrame` to call.
-#[wasm_bindgen]
-pub struct Program {
-    started: Started,
-}
 
 /// Bootstraps the program on the page with the window root, which opens the page's canvas as the one window, the
 /// controls root, and the reporter, the browser listening to the page for what each is fed: the pointer and the wheel
@@ -34,22 +22,7 @@ pub struct Program {
 pub async fn start() -> Result<Program, JsError> {
     let program = Browser::program().with_cycle::<()>().root::<Windows>().root::<Controls>().root::<Reporter>();
 
-    Ok(Program { started: program.run()?.await? })
-}
-
-#[wasm_bindgen]
-impl Program {
-    /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
-    pub fn frame(&mut self, timestamp_millis: f64) {
-        self.started.frame(timestamp_millis);
-    }
-
-    /// What the reporter was sent since this was last asked, a line each.
-    #[must_use]
-    #[expect(clippy::unused_self, reason = "the page asks it of the program it started")]
-    pub fn said(&self) -> Vec<String> {
-        SAID.with_borrow_mut(mem::take)
-    }
+    Ok(Program::from(program.run()?.await?))
 }
 
 /// What the reporter watches: the window it subscribes to.
@@ -108,7 +81,7 @@ impl Handles<Event> for Reporter {
     type Sends = ();
 
     fn handle(&mut self, event: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        SAID.with_borrow_mut(|said| said.push(format!("window {event:?}")));
+        say(format!("window {event:?}"));
 
         Ok(())
     }
@@ -118,7 +91,7 @@ impl Handles<Control> for Reporter {
     type Sends = ();
 
     fn handle(&mut self, control: Control, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        SAID.with_borrow_mut(|said| said.push(format!("control {control:?}")));
+        say(format!("control {control:?}"));
 
         Ok(())
     }
