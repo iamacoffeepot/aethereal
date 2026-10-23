@@ -83,6 +83,36 @@ turn.answer(held, &Fetched::Got(blob))?;          // in a later turn
 
 **An answer belongs to the chain of the turn that sends it.** A reply in the turn of the request is on the request's chain. A held answer is on the chain of the later turn that gives it. What the engine says of an unanswered request is on the request's chain. Requests and answers are mail, so they fuse as mail does (ADR-0013).
 
+**A stream is a request held open, with parts sent to the asker before its answer.** Nothing in the engine is a stream. The asker asks, the receiver holds the request (above) and sends the asker parts as plain mail, and its answer ends the stream. ADR-0009's promise for one sender's mail keeps every part ahead of the answer, and the held request makes a stream end exactly once: answered, or `Answered::No(Ended)` or `Unreplied` when the receiver ends or lets it go.
+
+What the engine does not give a stream is the protocol's: which open stream a part belongs to, how fast parts come, and stopping early. Every stream writes these one way, through the stream library in `aethereal-actor`:
+
+```rust
+pub trait Stream: Protocol {        // the protocol a stream is opened through
+    type Open: Kind;                // the request that opens it, answered with `Done`
+    type Part: Streamed;            // what each part carries
+    type Done: Kind;                // the answer that ends it
+}
+
+pub trait Streamed: Kind {
+    const PART: KindName;           // the name its parts go by
+}
+
+pub struct Part<K> { .. }           // receiver to asker: which stream, and one value
+pub struct More { .. }              // asker to receiver: how many more parts it takes
+pub struct Stop { .. }              // asker to receiver: it takes no more
+
+pub struct Streaming<S> { .. }      // the receiver's, one for each stream it serves
+pub struct Streams<S, C> { .. }     // the asker's: what it keeps for each stream it opened
+```
+
+- **Which stream** is a number the asker's `Streams` gives each stream it opens, unique among that asker's, and the receiver keys its streams by the asker and the number. A `Part`, a `More`, and a `Stop` each carry it. It names a stream and proves nothing, since who sent a piece of mail is proven already. Its fields are private, so no author writes it, and only `Streaming` makes a `Part`.
+- **Pace is credit.** The asker grants the receiver a number of parts with `More`, and each part spends one. `Streaming::send` with none left is refused, `NoCredit`, and the receiver keeps what it would have sent where it came from. Mail is never refused and nothing blocks an actor (ADR-0001), so the receiver of the parts says how many it will take, as a TCP window and Reactive Streams' `request(n)` do.
+- **Stopping** is a `Stop`. The asker's `Streams` passes over parts that arrive after it, as an asker passes over an answer it no longer waits for (below), and the receiver ends the stream with its answer.
+- **Ending** is `Streaming::finish(self, &done)`, which takes the stream by value and answers the request it holds, so no part is sent after the answer, which the build checks. A `Streaming` dropped without finishing drops its `Held`, and the engine answers `Unreplied`.
+- **A part is named by what it carries.** A kind's id is its name and its layout with every name inside removed (ADR-0006), so one name for every `Part` would give parts of one layout one id, and a file's chunk could be read as an audio frame. A kind that is streamed names its parts in `Streamed::PART`, and `Part<K>` takes that name: `impl<K: Streamed> Kind for Part<K>`, written by hand, the longhand ADR-0006 keeps for where the derive cannot write a kind, as a name taken from a type parameter.
+- The library enters with the first program that streams, as every piece enters (ADR-0001).
+
 **What an asker keeps for an answer is kept by the engine; what it keeps for other mail stays its own.** ADR-0012's root and depth still name a piece of mail's chain, for tracing and for mail that is not a request.
 
 ## Consequences
@@ -96,13 +126,19 @@ turn.answer(held, &Fetched::Got(blob))?;          // in a later turn
 - The reply through a tuple of kinds that nothing checks (ADR-0016) is unchanged for plain replies. A request cannot be sent through a tuple, so it cannot reach an asker that does not handle its answer.
 - A request that times out is its asker's to decide: the engine sets no deadline, as it sets none on a job, and the asker measures time with a `Sleep` job and `turn.now()` (ADR-0018).
 - **A request is not cancelled.** An asker that stops waiting notes the request in its own state and passes over the answer when it comes. Every request is answered exactly once, so the note goes when the answer does. The context, and the pins on the blobs it refers to, stay in the asker's seat until then: until the receiver answers, ends, or lets the request go. A receiver that should stop the work it was asked for is told so by mail of a kind its protocol carries, as it is told anything else.
-- **Not decided here:** giving a held request to another actor; and a request answered more than once, such as a status and then a result, which stays plain mail through a protocol that answers with more than one kind.
+- A stream costs the engine nothing new. Its parts are mail, so they fuse (ADR-0013) and join a run of sends as any mail does, and a held request keeps no stage but `Stop` from finishing (ADR-0020), so a long stream holds back no frame.
+- Every stream is paced, and an asker that grants no credit stalls its own stream. Whoever opened it decides when to give up, as with any request.
+- **Not decided here:** giving a held request to another actor.
 
 ## Alternatives considered
 
 - **A number in every request kind, kept by the asker.** No engine change. Every ask has steps to forget, a number made and not filed turns a true answer stale, and nothing answers a request whose answerer ended.
 - **Matching by root and depth (ADR-0012).** Nothing new. It cannot tell two asks of one turn apart, or follow an answer given in a later turn.
 - **The context kept in the asker's own state, keyed by the request's id.** No engine table. The asker files and finds it by hand, and the engine cannot answer for a receiver that ended without running the asker's code.
+- **Parts tied to the request by the engine**, each carrying the request's tie and handed to the asker with a copy of its context, as the answer is. The receiver's held request would then be the stream, with no number and no cast. It needs a case of the tie, a handler for parts, parts in a protocol's declaration and in a guest's records, and contexts found without being taken. And the asker still keeps in its own state whatever a stream builds up, since what the engine keeps is handed out as a copy, so it still needs something to find that state by.
+- **A number in each protocol's own kinds**, a `Token` only the library makes. No trait for naming parts, but every author writes the field again, and nothing checks that a streamed kind has one.
+- **The request's own id as the number.** It is unique already. But `ask` would have to hand it back, and since the context is passed in the same call, the answer would have to carry the id too: a change to `Answer` for one use.
+- **Parts kept by the library when credit runs out.** Easier to write against, but nothing bounds what it keeps, and the pile only moves from the asker to the receiver.
 - **An answer of any kind the protocol lists.** Requests answered by a status and then a result. The engine could not say which answer ends the request, nor which kind to answer with when none comes.
 - **Answers only when the receiver gives one.** Less engine work. A caller whose answerer ended or failed waits forever, and what it kept is never freed.
 - **Cancelling a request, so the engine drops its context before an answer comes.** The asker's seat lets go of what it kept sooner. It saves the receiver no work, since the receiver is not told. An answer already on its way when the cancel is applied must still be dropped as it arrives, the same check the asker makes when it passes over one. And a request could then end without its handler running, or with a case more, `Cancelled`, that every answer handler handles: a second way for a request to end beside answered-exactly-once, and the state to track it, to save the memory a context holds until its answer comes. A job is cancelled because its work runs on the host, which mail does not reach (ADR-0018); a receiver is an actor, and mail reaches it.
