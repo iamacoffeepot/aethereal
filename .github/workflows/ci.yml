@@ -43,6 +43,9 @@ jobs:
           fi
           echo "label=$label" >> "$GITHUB_OUTPUT"
 
+  # Each job runs its part of `cargo xtask check` (`xtask/src/check.rs`), the one list of what CI runs, which a bare
+  # `cargo xtask check` runs locally in full.
+  #
   # The toolchain comes from `rust-toolchain.toml`, never from a channel named
   # here: `rustup toolchain install` with no argument reads the file, with its
   # components and targets, so CI and a local run use the same compiler.
@@ -53,7 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
-      - run: cargo fmt --all -- --check
+      - run: cargo xtask check fmt
 
   clippy:
     name: Clippy
@@ -65,7 +68,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo xtask check clippy
 
   test:
     name: Test
@@ -80,10 +83,10 @@ jobs:
       - uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
         with:
           tool: cargo-nextest@0.9.146
-      # nextest runs each test in a process of its own, and runs no doctests: the doctests, which hold the
-      # `compile_fail` checks of what a declaration refuses, run after it under `cargo test`.
-      - run: cargo nextest run --workspace --all-features --profile ci
-      - run: cargo test --workspace --all-features --doc
+      # nextest, then the doctests, which it does not run; nextest reads its profile from `NEXTEST_PROFILE`.
+      - run: cargo xtask check test
+        env:
+          NEXTEST_PROFILE: ci
 
   # ADR-0001: every piece builds for a browser host. In a browser the host
   # itself is wasm32, so the whole workspace is checked and linted for that
@@ -100,9 +103,7 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: wasm32
-      - run: cargo clippy --workspace --all-features --target wasm32-unknown-unknown -- -D warnings
-      # The browser chassis's example is the page itself, which a native build compiles empty.
-      - run: cargo clippy -p aethereal-chassis-browser --all-targets --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo xtask check browser
 
   # The one verdict to wait on.
   ci-pass:
