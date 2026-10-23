@@ -53,4 +53,5 @@ Every commit is public. No personal names, no absolute home paths, no host, moun
 - **No reaching through another type's fields**: the owning type gets a named method.
 - **Printed output is an interface**: a printed `key=value` value stays one token and a status goes before the key.
 - **Module structure**: break a crate into submodules by concept, tests beside the code they exercise, so the file listing reads as the design. A new sibling mirrors the shape of its siblings unless it honestly does not fit.
+- **Streams** go through `aethereal-actor`'s stream library (ADR-0017): a protocol implements `Stream`, the asker opens through `Streams`, and the receiver serves through `Serving`. Never a hand-written part, credit, stop, or stream-number kind.
 - **Locks and atomics** each say why one-mail-at-a-time does not already cover them.

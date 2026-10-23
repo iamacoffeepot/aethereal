@@ -1,6 +1,6 @@
 //! The asker's side of its streams: opening them, taking their parts, stopping them, and their answers (ADR-0017).
 
-use super::{More, Number, Open, Part, Enough, Stream, Streamed};
+use super::{Enough, More, Number, Open, Part, Stream, Streamed};
 use crate::{Allows, Answer, Asks, Handles, ProtocolRef, ToAny, Turn};
 use aethereal_data::{ActorId, Bound, EncodeError, Plain};
 use alloc::collections::BTreeMap;
@@ -18,6 +18,16 @@ pub struct Streams<S: Stream, C> {
     window: u32,
     next: u64,
     open: BTreeMap<u64, Opened<S, C>>,
+}
+
+/// A part an actor took: the stream it belongs to, what it carries, and what the actor keeps for the stream.
+pub struct Taken<'s, S: Stream, C> {
+    /// The stream's number, to stop it by.
+    pub number: Number,
+    /// What the part carries.
+    pub value: S::Part,
+    /// What the actor keeps for the stream.
+    pub kept: &'s mut C,
 }
 
 /// One stream opened: whom it was asked of, whether parts are still taken, and what the asker keeps for it.
@@ -83,9 +93,8 @@ impl<S: Stream, C> Streams<S, C> {
         Ok(number)
     }
 
-    /// The number of the stream `part` belongs to, the value it carries, and what the actor keeps for the stream,
-    /// granting the receiver one more part: none, and no credit, when the part is of no stream open, of one stopped,
-    /// or from an actor that is not its receiver.
+    /// What `part` carries, taken for its stream, granting the receiver one more part: none, and no credit, when the
+    /// part is of no stream open, of one stopped, or from an actor that is not its receiver.
     ///
     /// # Errors
     ///
@@ -94,7 +103,7 @@ impl<S: Stream, C> Streams<S, C> {
         &mut self,
         turn: &mut Turn<'_, A, Sends>,
         part: Part<S>,
-    ) -> Result<Option<(Number, S::Part, &mut C)>, EncodeError>
+    ) -> Result<Option<Taken<'_, S, C>>, EncodeError>
     where
         Sends: Allows<ToAny<Streamed<S>, More>, IM>,
     {
@@ -109,7 +118,7 @@ impl<S: Stream, C> Streams<S, C> {
 
         turn.to(opened.receiver).send::<_, IM>(&More::new::<S>(number, 1))?;
 
-        Ok(Some((Number::new(number), value, &mut opened.kept)))
+        Ok(Some(Taken { number: Number::new(number), value, kept: &mut opened.kept }))
     }
 
     /// Stops the stream `number`: its receiver is told, and its parts that arrive after are passed over. Its answer

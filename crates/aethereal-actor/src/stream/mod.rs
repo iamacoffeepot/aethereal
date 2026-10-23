@@ -13,9 +13,9 @@ mod kinds;
 mod serving;
 mod streams;
 
-pub use kinds::{More, Number, Open, Part, Enough, StreamKey, Unreachable};
+pub use kinds::{Enough, More, Number, Open, Part, StreamKey, Unreachable};
 pub use serving::{Serving, Streaming, Unsent};
-pub use streams::Streams;
+pub use streams::{Streams, Taken};
 
 use crate::{Actors, Carries, Protocol};
 use aethereal_data::{Decode, Encode, Kind, KindName, Schema};

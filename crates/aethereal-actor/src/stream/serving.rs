@@ -1,7 +1,7 @@
 //! The receiver's side of the streams it serves: the requests that open them, the credit and stops that reach them,
 //! their parts, and their answers (ADR-0017).
 
-use super::{More, Open, Part, Enough, StreamKey, Stream, Unreachable};
+use super::{Enough, More, Open, Part, Stream, StreamKey, Unreachable};
 use crate::{Allows, Ended, Fault, Handles, Held, ProtocolRef, ToAny, ToSender, Turn};
 use aethereal_data::{Bound, EncodeError};
 use alloc::collections::BTreeMap;

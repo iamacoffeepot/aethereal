@@ -97,7 +97,8 @@ pub use stage::{
     Stop, Tick, Unshared,
 };
 pub use stream::{
-    Enough, More, Number, Open, Part, Serving, Stream, StreamKey, Streamed, Streaming, Streams, Unreachable, Unsent,
+    Enough, More, Number, Open, Part, Serving, Stream, StreamKey, Streamed, Streaming, Streams, Taken, Unreachable,
+    Unsent,
 };
 pub use subscribers::Subscribers;
 pub use time::Time;

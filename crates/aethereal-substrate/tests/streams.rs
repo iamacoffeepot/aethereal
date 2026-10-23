@@ -2,14 +2,15 @@
 //! each part, credit, stop, and answer goes as mail through the engine (ADR-0017).
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, More,
-    Number, Open, Part, Serving, Stream, StreamKey, Streamed, Streams, Time, ToAny, ToSender, ToType, Top, Turn,
-    Unanswered, Unsent,
+    Actor, ActorRef, Allows, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ended, Ending, Enough, Fault,
+    Handles, More, Number, Open, Part, Serving, Stream, StreamKey, Streamed, Streams, Taken, Time, ToAny, ToSender,
+    ToType, Top, Turn, Unanswered, Unsent,
 };
 use aethereal_data::{Bound, KindName, Plain};
 use aethereal_substrate::{Clock, Engine};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::mem;
 use std::num::{NonZeroU32, NonZeroUsize};
 
@@ -156,7 +157,7 @@ fn serve<S: Ends<Open = Read>, Sends, I>(
     open: Open<S>,
 ) -> Result<(), Fault>
 where
-    Sends: aethereal_actor::Allows<ToSender<S::Done>, I>,
+    Sends: Allows<ToSender<S::Done>, I>,
 {
     let (key, read) = serving.open::<_, _, I>(turn, open)?;
     left.push(Left { key, next: 0, chunks: read.chunks, close_after: read.close_after });
@@ -173,7 +174,7 @@ fn pump<S: Ends, Sends, I>(
     key: StreamKey,
 ) -> Result<(), Fault>
 where
-    Sends: aethereal_actor::Allows<ToAny<(Part<S>,), Part<S>>, I>,
+    Sends: Allows<ToAny<(Part<S>,), Part<S>>, I>,
 {
     let Some(place) = left.iter().position(|stream| stream.key == key) else {
         return Ok(());
@@ -390,9 +391,9 @@ fn take<S: Stream<Part = Chunk>, Sends, IM, IE>(
     part: Part<S>,
 ) -> Result<(), Fault>
 where
-    Sends: aethereal_actor::Allows<ToAny<Streamed<S>, More>, IM> + aethereal_actor::Allows<ToAny<Streamed<S>, Enough>, IE>,
+    Sends: Allows<ToAny<Streamed<S>, More>, IM> + Allows<ToAny<Streamed<S>, Enough>, IE>,
 {
-    let Some((number, chunk, tag)) = streams.part::<_, _, IM>(turn, part)? else {
+    let Some(Taken { number, value: chunk, kept: tag }) = streams.part::<_, _, IM>(turn, part)? else {
         return Ok(());
     };
     say("reader", format!("{} {}", tag.name, chunk.index));
@@ -426,7 +427,7 @@ impl Handles<Part<Logs>> for Reader {
 }
 
 /// Says how the stream kept as `tag` ended.
-fn ended<D: std::fmt::Debug>(tag: Option<Tag>, answered: Answered<D>) {
+fn ended<D: Debug>(tag: Option<Tag>, answered: Answered<D>) {
     let name = tag.map_or_else(|| String::from("unknown"), |tag| tag.name);
     let how = match answered {
         Answered::Yes(done) => format!("{done:?}"),
@@ -452,7 +453,11 @@ impl Handles<Answer<ReadDone, Number>> for Reader {
 impl Handles<Answer<LogDone, Number>> for Reader {
     type Sends = ();
 
-    fn handle(&mut self, (answered, number): (Answered<LogDone>, Number), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(
+        &mut self,
+        (answered, number): (Answered<LogDone>, Number),
+        _: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
         ended(self.logs.answered(number), answered);
 
         Ok(())
