@@ -30,6 +30,9 @@ pub enum Event {
     /// The window's surface is now this size, or its screen this scale; or this is how it stands, sent as the actor
     /// subscribed.
     Resized(Surface),
+    /// The window is now shown in this mode, as the program asked or the person at it chose; or this is how it is
+    /// shown, sent as the actor subscribed (ADR-0027: `SetMode`).
+    Moded(Mode),
     /// The window has the keyboard; or it has it as the actor subscribed.
     FocusGained,
     /// The window no longer has the keyboard; or it has not as the actor subscribed.
@@ -48,6 +51,17 @@ pub struct Surface {
     pub width: u32,
     pub height: u32,
     pub scale: f64,
+}
+
+/// How a window is shown on its screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Mode {
+    /// At its own size, framed: returning to it from another mode gives back the size it had.
+    Windowed,
+    /// Filling the screen's work area, with its frame and title bar.
+    Maximized,
+    /// Borderless, over the whole of the monitor it is on.
+    Fullscreen,
 }
 
 /// A button of the pointer.

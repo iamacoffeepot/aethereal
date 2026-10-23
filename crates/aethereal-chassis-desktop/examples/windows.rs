@@ -2,7 +2,8 @@
 //! colours, turning, following the pointer over that window, and turning the other way while a key is held in that
 //! window, with the frames each was handed timed. The program opens one window as it is set up; `N` in any window asks
 //! the window root for another, and the director that asked makes a scene for each window it is answered with, keyed
-//! by the window, which hears only its own window (ADR-0027).
+//! by the window, which hears only its own window; F11 in a window asks the window root to show it fullscreen, or
+//! windowed when it last heard it was fullscreen (ADR-0027).
 //!
 //! Run with `cargo run --release -p aethereal-chassis-desktop --example windows -- --runs for:3`. With `--runs for:N`
 //! the director asks for a second window as the program starts, and the program quits itself after N seconds; each
@@ -10,8 +11,9 @@
 //! milliseconds: their mean, median, 99th percentile, and longest. Each answer to a window asked for is printed as it
 //! comes. A window's close button closes that window alone, and its scene prints its frames as it closes; the program
 //! ends once the last window has closed, or Escape is pressed in any. Each key, button, and turn of the wheel a window
-//! hears is printed as it comes, beside the window, and each resize. `--size 1280x720` sizes the first window. `--help`
-//! lists every flag the program reads, each also read from its `WINDOWS_` variable.
+//! hears is printed as it comes, beside the window, and each resize and mode, and each answer to a mode asked for.
+//! `--size 1280x720` sizes the first window, and `--mode fullscreen` or `--mode maximized` shows it so as it opens.
+//! `--help` lists every flag the program reads, each also read from its `WINDOWS_` variable.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
@@ -36,7 +38,8 @@ use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_window::{
-    self as window, Event, InitialWindows, Logical, OpenWindow, Opened, Surface, Window, WindowId, Windows,
+    self as window, Event, InitialWindows, Logical, Mode, ModeSet, OpenWindow, Opened, SetMode, Surface, Window,
+    WindowId, Windows,
 };
 use core::error::Error;
 use core::f32::consts::TAU;
@@ -95,7 +98,7 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
     let workers = NonZeroU32::try_from(
         thread::available_parallelism().map_or(NonZeroUsize::MIN, |cores| cores.min(MOST_WORKERS)),
     )?;
-    let first = WindowSettings { title: String::from("aethereal: first"), size: [640, 480] };
+    let first = WindowSettings { title: String::from("aethereal: first"), size: [640, 480], mode: Mode::Windowed };
 
     Ok(Desktop::program()
         .with_cycle::<(Tick, Render)>()
@@ -103,7 +106,9 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root_with::<Windows>(WindowsSettings(vec![first]))
         .root::<Renderer>()
         .root::<Director>()
-        .flags(|flags| flags.flag("size", 's', WindowsSettings::FIRST_SIZE))
+        .flags(|flags| {
+            flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE)
+        })
         .launch("windows")?)
 }
 
@@ -299,8 +304,8 @@ struct Shows {
 
 /// A scene, keyed by the window it draws in: it asks the shape of its window's main pass as it begins, makes what it
 /// draws one ask after another, each answer carrying what was made so far, places it, and from then writes the ring at
-/// each `Tick`, about the pointer. It subscribes to its window, prints what it hears, and keeps the time between each
-/// `Tick` and the last, which it prints as its window closes, and ends.
+/// each `Tick`, about the pointer. It subscribes to its window, prints what it hears, toggles the window's mode on
+/// F11, and keeps the time between each `Tick` and the last, which it prints as its window closes, and ends.
 #[derive(Bound)]
 #[kind(name = "aether.example.scene")]
 struct Scene {
@@ -312,6 +317,8 @@ struct Scene {
     /// The window's surface, in its pixels, as it was last heard.
     width: u32,
     height: u32,
+    /// The mode the window is shown in, as it was last heard.
+    mode: Mode,
     /// The ring's middle, in clip space.
     middle_x: f32,
     middle_y: f32,
@@ -388,6 +395,7 @@ impl Actor for Scene {
         Answer<Instanced, MadeProgram>,
         Answer<Uniformed, MadeInstances>,
         Answer<Placed, MadeAll>,
+        Answer<ModeSet, Nothing>,
     );
     type BeginSends = (Tells<Path<Window>, window::Subscribe>, Asks<Path<Renderer>, ShapeOf, Nothing>);
     type EndSends = ();
@@ -405,6 +413,7 @@ impl Actor for Scene {
             ring: Ring::Making,
             width: 1,
             height: 1,
+            mode: Mode::Windowed,
             middle_x: 0.0,
             middle_y: 0.0,
             held: 0,
@@ -475,10 +484,20 @@ impl Scene {
     }
 }
 
-impl Handles<Event> for Scene {
-    type Sends = ();
+impl Scene {
+    /// The mode F11 asks for: windowed when the window is fullscreen, and fullscreen otherwise.
+    const fn toggled(&self) -> Mode {
+        match self.mode {
+            Mode::Fullscreen => Mode::Windowed,
+            Mode::Windowed | Mode::Maximized => Mode::Fullscreen,
+        }
+    }
+}
 
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+impl Handles<Event> for Scene {
+    type Sends = (Asks<Path<Windows>, SetMode, Nothing>,);
+
+    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let window = self.window.to_name();
         match event {
             Event::PointerMoved { x, y } => {
@@ -500,6 +519,11 @@ impl Handles<Event> for Scene {
                 if !repeat {
                     self.held += 1;
                 }
+                let toggles = code == "F11" && !repeat;
+                if toggles {
+                    let set = SetMode { window: self.window, mode: self.toggled() };
+                    turn.to(path::<Windows>(())).ask(&set, &Nothing)?;
+                }
             }
             Event::KeyUp { code, key } => {
                 println!("key_up window={window} code={code} key={key:?}");
@@ -509,6 +533,10 @@ impl Handles<Event> for Scene {
                 let Surface { width, height, scale } = surface;
                 println!("resized window={window} width={width} height={height} scale={scale}");
                 (self.width, self.height) = (surface.width, surface.height);
+            }
+            Event::Moded(mode) => {
+                println!("moded window={window} mode={mode:?}");
+                self.mode = mode;
             }
             Event::FocusGained => println!("focus=gained window={window}"),
             Event::FocusLost => {
@@ -680,6 +708,25 @@ impl Handles<Answer<Placed, MadeAll>> for Scene {
                 turn.log(Level::Error, format_args!("the ring was not placed: {why:?}"));
             }
             Answered::No(why) => turn.log(Level::Error, format_args!("the ring was not placed: {why:?}")),
+        }
+
+        Ok(())
+    }
+}
+
+/// The mode asked for on F11, printed as it is answered.
+impl Handles<Answer<ModeSet, Nothing>> for Scene {
+    type Sends = ();
+
+    fn handle(&mut self, (answered, _): (Answered<ModeSet>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let window = self.window.to_name();
+        match answered {
+            Answered::Yes(ModeSet::Set { surface }) => {
+                let Surface { width, height, scale } = surface;
+                println!("mode_set window={window} width={width} height={height} scale={scale}");
+            }
+            Answered::Yes(ModeSet::Refused(why)) => println!("refused mode window={window} why={why:?}"),
+            Answered::No(why) => println!("unanswered mode window={window} why={why:?}"),
         }
 
         Ok(())

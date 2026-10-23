@@ -1,10 +1,10 @@
 //! The window root's tests: what a host pushes for a window reaches that window's subscribers alone, in order, once it
-//! says something new, after how the window stood, and nothing another actor sent reaches them; and a window asked
-//! for while the program runs is given the next id, is answered once its host has said, and closes as the root is
-//! asked, or as its close button says.
+//! says something new, after how the window stood, and nothing another actor sent reaches them; a window asked for
+//! while the program runs is given the next id, is answered once its host has said, and closes as the root is asked,
+//! or as its close button says; and a mode asked for is set once its host has, or at once when the window has it.
 
 use super::*;
-use crate::event::{Button, Subscribe, Surface};
+use crate::event::{Button, Mode, Subscribe, Surface};
 use crate::host::{Hosting, Opening, WindowFeed};
 use aethereal_actor::{Answer, Answered, Asks, Path, Tells, Time, path};
 use aethereal_substrate::{Clock, Engine, Setup};
@@ -95,16 +95,16 @@ const fn window(nth: u64) -> WindowId {
 #[test]
 fn a_subscriber_hears_its_window_as_it_stood_then_what_its_host_pushed_that_says_something_new() {
     // Catches the window root sending an event to the wrong window's actor or to every window's, an event another actor
-    // sent the root or the window sent on as though the host heard it, a subscriber not sent how the window stood or
-    // sent it twice for subscribing twice, a resize to the size the window has or a focus it has sent on, a turn of the
-    // wheel dropped as though it said nothing new, and a window's actor not made before a root made after the window
-    // root begins, so a subscription in its `begin` is lost.
+    // sent the root or the window sent on as though the host heard it, a subscriber not sent how the window stood,
+    // its mode among it, or sent it twice for subscribing twice, a resize to the size the window has, a mode it is
+    // shown in, or a focus it has sent on, a turn of the wheel dropped as though it said nothing new, and a window's
+    // actor not made before a root made after the window root begins, so a subscription in its `begin` is lost.
     let mut setup = setup();
     let small = Surface { width: 640, height: 480, scale: 1.0 };
     let large = Surface { width: 1280, height: 960, scale: 2.0 };
     let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
-    let first = opening.open(small, true);
-    let second = opening.open(small, false);
+    let first = opening.open(small, Mode::Windowed, true);
+    let second = opening.open(small, Mode::Maximized, false);
     let (mut config, _hosting) = opening.config();
     config.closing = Closing::ByProgram;
     let Ok(mut engine) = setup
@@ -121,6 +121,9 @@ fn a_subscriber_hears_its_window_as_it_stood_then_what_its_host_pushed_that_says
         second.push(Event::Resized(small)),
         second.push(Event::Resized(large)),
         second.push(Event::Resized(large)),
+        second.push(Event::Moded(Mode::Maximized)),
+        second.push(Event::Moded(Mode::Fullscreen)),
+        second.push(Event::Moded(Mode::Fullscreen)),
         second.push(Event::FocusLost),
         second.push(Event::FocusGained),
         second.push(Event::FocusGained),
@@ -138,9 +141,11 @@ fn a_subscriber_hears_its_window_as_it_stood_then_what_its_host_pushed_that_says
     };
     let expected = [
         Event::Resized(small),
+        Event::Moded(Mode::Maximized),
         Event::FocusLost,
         Event::PointerMoved { x: 1.0, y: 2.0 },
         Event::Resized(large),
+        Event::Moded(Mode::Fullscreen),
         Event::FocusGained,
         Event::FocusLost,
         Event::PointerDown { x: 1.0, y: 2.0, button: Button::Main },
@@ -153,11 +158,12 @@ fn a_subscriber_hears_its_window_as_it_stood_then_what_its_host_pushed_that_says
 /// What an asker noted, beside the test it is of.
 static NOTED: Mutex<Vec<(u64, Noted)>> = Mutex::new(Vec::new());
 
-/// What an asker noted: an answer to what it asked, or an event of a window it was answered with.
+/// What an asker noted: an answer to what it asked, or an event of a window it was answered with or listens to.
 #[derive(Debug, Clone, PartialEq)]
 enum Noted {
     Opened(Opened),
     Closed(Closed),
+    ModeSet(ModeSet),
     Heard(Event),
 }
 
@@ -170,13 +176,15 @@ fn noted(test: u64) -> Vec<Noted> {
     noted.iter().filter(|(of, _)| *of == test).map(|(_, noted)| noted.clone()).collect()
 }
 
-/// What the asker of `test` asks the window root as it begins: to open `opens` windows, then to close each of
-/// `closes`.
-#[derive(Plain)]
+/// What the asker of `test` does as it begins: subscribes to each window of `listens`, then asks the window root to
+/// open `opens` windows, to set each mode of `sets`, then to close each of `closes`.
+#[derive(Plain, Default)]
 #[kind(name = "aether.test.script")]
 struct Script {
     test: u64,
+    listens: Vec<WindowId>,
     opens: u8,
+    sets: Vec<SetMode>,
     closes: Vec<WindowId>,
 }
 
@@ -186,7 +194,7 @@ struct Script {
 struct Asked;
 
 /// An actor, keyed by the test it is of, that asks the window root what its script says, notes each answer, and
-/// subscribes to each window it is answered with, noting what it hears.
+/// subscribes to each window it listens to or is answered with, noting what it hears.
 #[derive(Bound)]
 #[kind(name = "aether.test.asker")]
 struct Asker {
@@ -207,14 +215,25 @@ impl Asker {
 impl Actor for Asker {
     type Config = Script;
     type Key = u64;
-    type Handles = (Answer<Opened, Asked>, Answer<Closed, Asked>, Event);
-    type BeginSends = (Asks<Path<Windows>, OpenWindow, Asked>, Asks<Path<Windows>, CloseWindow, Asked>);
+    type Handles = (Answer<Opened, Asked>, Answer<Closed, Asked>, Answer<ModeSet, Asked>, Event);
+    type BeginSends = (
+        Tells<Path<Window>, Subscribe>,
+        Asks<Path<Windows>, OpenWindow, Asked>,
+        Asks<Path<Windows>, SetMode, Asked>,
+        Asks<Path<Windows>, CloseWindow, Asked>,
+    );
     type EndSends = ();
 
     fn begin(script: Script, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        for window in script.listens {
+            turn.to(path::<Window>(window)).send(&Subscribe)?;
+        }
         let open = OpenWindow { title: String::from("asked"), size: Logical { width: 640.0, height: 480.0 } };
         for _ in 0..script.opens {
             turn.to(path::<Windows>(())).ask(&open, &Asked)?;
+        }
+        for set in script.sets {
+            turn.to(path::<Windows>(())).ask(&set, &Asked)?;
         }
         for window in script.closes {
             turn.to(path::<Windows>(())).ask(&CloseWindow { window }, &Asked)?;
@@ -261,6 +280,19 @@ impl Handles<Answer<Closed, Asked>> for Asker {
     }
 }
 
+impl Handles<Answer<ModeSet, Asked>> for Asker {
+    type Sends = ();
+
+    fn handle(&mut self, (answered, _): (Answered<ModeSet>, Asked), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let Answered::Yes(set) = answered else {
+            panic!("the window root answers every mode asked for: {answered:?}");
+        };
+        self.note(Noted::ModeSet(set));
+
+        Ok(())
+    }
+}
+
 impl Handles<Event> for Asker {
     type Sends = ();
 
@@ -276,7 +308,7 @@ impl Handles<Event> for Asker {
 fn windowed(setup: u64, surface: Surface, closing: Closing) -> (Engine, Hosting, Vec<WindowFeed>) {
     let mut made = self::setup();
     let mut opening = Opening::new(made.source::<Heard>(), made.controller::<Windowing>());
-    let feeds = (0..setup).map(|_| opening.open(surface, false)).collect();
+    let feeds = (0..setup).map(|_| opening.open(surface, Mode::Windowed, false)).collect();
     let (mut config, hosting) = opening.config();
     config.closing = closing;
     let Ok(engine) = made.add_root::<Windows>(&(), config).map(Setup::ready) else {
@@ -288,18 +320,33 @@ fn windowed(setup: u64, surface: Surface, closing: Closing) -> (Engine, Hosting,
 
 /// Adds the asker of `test`, which asks to open `opens` windows, then to close each of `closes`.
 fn ask(engine: &mut Engine, test: u64, opens: u8, closes: Vec<WindowId>) {
-    let Ok(_) = engine.add_root::<Asker>(&test, Script { test, opens, closes }) else {
+    script(engine, Script { test, opens, closes, ..Script::default() });
+}
+
+/// Adds the asker of the test `script` is of, which does as it says.
+fn script(engine: &mut Engine, script: Script) {
+    let test = script.test;
+    let Ok(_) = engine.add_root::<Asker>(&test, script) else {
         panic!("the asker begins");
     };
 }
 
-/// The window each request taken opens, or closes.
-fn windows_of(requests: &[Windowing]) -> Vec<(bool, WindowId)> {
+/// What a request taken asks of a window, without the title and size of one opened.
+#[derive(Debug, PartialEq)]
+enum Took {
+    Open(WindowId),
+    Close(WindowId),
+    SetMode(WindowId, Mode),
+}
+
+/// What each request taken asks of its window.
+fn windows_of(requests: &[Windowing]) -> Vec<Took> {
     requests
         .iter()
         .map(|request| match request {
-            Windowing::Open { window, .. } => (true, *window),
-            Windowing::Close { window } => (false, *window),
+            Windowing::Open { window, .. } => Took::Open(*window),
+            Windowing::Close { window } => Took::Close(*window),
+            Windowing::SetMode { window, mode } => Took::SetMode(*window, *mode),
         })
         .collect()
 }
@@ -315,7 +362,7 @@ fn windows_asked_for_are_given_ids_after_those_set_up_in_the_order_asked_and_nev
     run(&mut engine);
 
     let asked = hosting.take();
-    assert_eq!(windows_of(&asked), [(true, window(2)), (true, window(3)), (true, window(4))]);
+    assert_eq!(windows_of(&asked), [Took::Open(window(2)), Took::Open(window(3)), Took::Open(window(4))]);
     let failed = Unopened::Failed(String::from("no window"));
     let answered = [
         hosting.unopened(window(3), failed.clone()),
@@ -327,7 +374,7 @@ fn windows_asked_for_are_given_ids_after_those_set_up_in_the_order_asked_and_nev
     ask(&mut engine, 2, 1, Vec::new());
     run(&mut engine);
 
-    assert_eq!(windows_of(&hosting.take()), [(true, window(5))]);
+    assert_eq!(windows_of(&hosting.take()), [Took::Open(window(5))]);
     let opened = noted(1).into_iter().filter(|noted| matches!(noted, Noted::Opened(_))).collect::<Vec<_>>();
     assert_eq!(
         opened,
@@ -360,6 +407,7 @@ fn a_window_opened_on_request_has_its_actor_before_anything_it_heard_reaches_it(
     let expected = [
         Noted::Opened(Opened::Window { window: window(1), surface: small }),
         Noted::Heard(Event::Resized(large)),
+        Noted::Heard(Event::Moded(Mode::Windowed)),
         Noted::Heard(Event::FocusLost),
     ];
     assert_eq!(noted(3), expected);
@@ -375,7 +423,7 @@ fn closing_a_window_not_open_is_refused_and_one_open_closes_once_its_host_has() 
     let (mut engine, hosting, feeds) = windowed(1, surface, Closing::ByButton);
     ask(&mut engine, 4, 1, vec![window(1), window(9)]);
     run(&mut engine);
-    assert_eq!(windows_of(&hosting.take()), [(true, window(1))]);
+    assert_eq!(windows_of(&hosting.take()), [Took::Open(window(1))]);
     let Ok(feed) = hosting.opened(window(1), surface, true) else {
         panic!("the window root holds its source");
     };
@@ -383,7 +431,7 @@ fn closing_a_window_not_open_is_refused_and_one_open_closes_once_its_host_has() 
 
     ask(&mut engine, 5, 0, vec![window(1), window(1)]);
     run(&mut engine);
-    assert_eq!(windows_of(&hosting.take()), [(false, window(1))]);
+    assert_eq!(windows_of(&hosting.take()), [Took::Close(window(1))]);
     assert!(noted(5).is_empty(), "no close is answered before the host has closed the window");
     let pushed = [hosting.closed(window(1)), feed.push(Event::FocusLost)];
     assert!(pushed.iter().all(Result::is_ok), "the window root holds its source");
@@ -398,10 +446,11 @@ fn closing_a_window_not_open_is_refused_and_one_open_closes_once_its_host_has() 
         refused.clone(),
         opened,
         Noted::Heard(Event::Resized(surface)),
+        Noted::Heard(Event::Moded(Mode::Windowed)),
         Noted::Heard(Event::FocusGained),
     ];
-    assert_eq!(noted(4)[..5], expected);
-    assert_eq!(noted(4)[5..], [Noted::Heard(Event::Closed)]);
+    assert_eq!(noted(4)[..6], expected);
+    assert_eq!(noted(4)[6..], [Noted::Heard(Event::Closed)]);
     assert_eq!(noted(5), [Noted::Closed(Closed::Closed), Noted::Closed(Closed::Closed)]);
     assert_eq!(noted(6), [refused]);
     assert!(hosting.take().is_empty(), "a window closed is asked to close no more");
@@ -414,7 +463,7 @@ fn the_close_button_closes_its_window_by_button_and_only_asks_by_program() {
     // `ByButton` not closing it, which would leave a program that handles nothing unclosable; and a window closed by
     // its button asked to close again as the program asks too.
     let surface = Surface { width: 640, height: 480, scale: 1.0 };
-    for (closing, expected) in [(Closing::ByProgram, Vec::new()), (Closing::ByButton, vec![(false, window(0))])] {
+    for (closing, expected) in [(Closing::ByProgram, Vec::new()), (Closing::ByButton, vec![Took::Close(window(0))])] {
         let (mut engine, hosting, feeds) = windowed(1, surface, closing);
         let Some(feed) = feeds.first() else {
             panic!("one window was opened");
@@ -425,4 +474,101 @@ fn the_close_button_closes_its_window_by_button_and_only_asks_by_program() {
 
         assert_eq!(windows_of(&hosting.take()), expected, "{closing:?}");
     }
+}
+
+/// What the asker of `test` was answered to the modes it asked for, in order.
+fn modes_set(test: u64) -> Vec<ModeSet> {
+    noted(test)
+        .into_iter()
+        .filter_map(|noted| match noted {
+            Noted::ModeSet(set) => Some(set),
+            Noted::Opened(_) | Noted::Closed(_) | Noted::Heard(_) => None,
+        })
+        .collect()
+}
+
+/// What the asker of `test` heard of the windows it subscribed to, in order.
+fn heard_by(test: u64) -> Vec<Event> {
+    noted(test)
+        .into_iter()
+        .filter_map(|noted| match noted {
+            Noted::Heard(event) => Some(event),
+            Noted::Opened(_) | Noted::Closed(_) | Noted::ModeSet(_) => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_mode_asked_for_is_set_once_its_host_has_and_one_the_window_has_is_answered_at_once() {
+    // Catches a mode the window is shown in pushed to the host, or answered with an event, when nothing would change;
+    // a mode asked of a window not open pushed to the host; a request answered before the host has said, or matched
+    // to the wrong one of two the host answers in order; a second request answered at once from the mode the window
+    // had while the first, which changes it, is unanswered; and the root answering from the mode and surface the
+    // window opened with rather than those its host has since pushed.
+    let small = Surface { width: 640, height: 480, scale: 1.0 };
+    let large = Surface { width: 1920, height: 1080, scale: 1.0 };
+    let (mut engine, hosting, feeds) = windowed(1, small, Closing::ByButton);
+    let fullscreen = SetMode { window: window(0), mode: Mode::Fullscreen };
+    let sets = vec![
+        SetMode { window: window(0), mode: Mode::Windowed },
+        fullscreen,
+        SetMode { window: window(0), mode: Mode::Windowed },
+        SetMode { window: window(9), mode: Mode::Fullscreen },
+    ];
+    script(&mut engine, Script { test: 7, listens: vec![window(0)], sets, ..Script::default() });
+    run(&mut engine);
+
+    let expected = [Took::SetMode(window(0), Mode::Fullscreen), Took::SetMode(window(0), Mode::Windowed)];
+    assert_eq!(windows_of(&hosting.take()), expected);
+    let at_once = [ModeSet::Set { surface: small }, ModeSet::Refused(Unset::NotOpen)];
+    assert_eq!(modes_set(7), at_once, "no request is answered before the host has said");
+    let Some(feed) = feeds.first() else {
+        panic!("one window was opened");
+    };
+    let pushed = [
+        feed.push(Event::Moded(Mode::Fullscreen)),
+        feed.push(Event::Resized(large)),
+        hosting.set(window(0), large),
+        hosting.unset(window(0), Unset::NoHost),
+    ];
+    assert!(pushed.iter().all(Result::is_ok), "the window root holds its source");
+    run(&mut engine);
+    script(&mut engine, Script { test: 8, sets: vec![fullscreen], ..Script::default() });
+    run(&mut engine);
+
+    let answered = [ModeSet::Set { surface: large }, ModeSet::Refused(Unset::NoHost)];
+    assert_eq!(modes_set(7), [&at_once[..], &answered[..]].concat());
+    let heard = [
+        Event::Resized(small),
+        Event::Moded(Mode::Windowed),
+        Event::FocusLost,
+        Event::Moded(Mode::Fullscreen),
+        Event::Resized(large),
+    ];
+    assert_eq!(heard_by(7), heard);
+    assert_eq!(modes_set(8), [ModeSet::Set { surface: large }]);
+    assert!(hosting.take().is_empty(), "a mode the window has is asked of the host no more");
+}
+
+#[test]
+fn a_window_that_closes_refuses_the_modes_asked_of_it_as_not_open() {
+    // Catches a mode asked of a window that is closing pushed to the host, which would show a window about to close;
+    // and a request to set the mode of a window that closed before its host answered it dropped, so its asker hears
+    // only that it went unanswered, or answered as set.
+    let surface = Surface { width: 640, height: 480, scale: 1.0 };
+    let (mut engine, hosting, _feeds) = windowed(1, surface, Closing::ByButton);
+    let maximized = SetMode { window: window(0), mode: Mode::Maximized };
+    script(&mut engine, Script { test: 9, sets: vec![maximized], closes: vec![window(0)], ..Script::default() });
+    run(&mut engine);
+    script(&mut engine, Script { test: 10, sets: vec![maximized], ..Script::default() });
+    run(&mut engine);
+
+    let expected = [Took::SetMode(window(0), Mode::Maximized), Took::Close(window(0))];
+    assert_eq!(windows_of(&hosting.take()), expected);
+    assert_eq!(modes_set(10), [ModeSet::Refused(Unset::NotOpen)]);
+    assert_eq!(hosting.closed(window(0)), Ok(()));
+    run(&mut engine);
+
+    let expected = [Noted::ModeSet(ModeSet::Refused(Unset::NotOpen)), Noted::Closed(Closed::Closed)];
+    assert_eq!(noted(9), expected);
 }

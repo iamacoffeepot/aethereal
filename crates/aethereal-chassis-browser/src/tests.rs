@@ -1,5 +1,5 @@
 //! The chassis's tests: a frame runs its cycle through to its end, brings in what the page pushed before it, and answers
-//! each window asked to open or close `NoHost`.
+//! each window asked to open, to close, or to be shown in a mode `NoHost`.
 
 use super::*;
 use aethereal_actor::{
@@ -9,8 +9,8 @@ use aethereal_actor::{
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Inline, Jobs, Setup};
 use aethereal_window::{
-    CloseWindow, Closed, Heard, Logical, OpenWindow, Opened, Opening, Surface, Unclosed, Unopened, WindowId, Windowing,
-    Windows,
+    CloseWindow, Closed, Heard, Logical, Mode, ModeSet, OpenWindow, Opened, Opening, SetMode, Surface, Unclosed,
+    Unopened, Unset, WindowId, Windowing, Windows,
 };
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -224,8 +224,8 @@ struct Closes {
     window: WindowId,
 }
 
-/// An actor that asks the window root for a window, and to close the one it is given, as it begins, and notes each
-/// answer.
+/// An actor that asks the window root for a window, to show the one it is given fullscreen, and to close it, as it
+/// begins, and notes each answer.
 #[derive(Bound)]
 #[kind(name = "aether.test.asker")]
 struct Asker;
@@ -237,14 +237,21 @@ impl ChildOf for Asker {
 impl Actor for Asker {
     type Config = Closes;
     type Key = ();
-    type Handles = (Answer<Opened, Nothing>, Answer<Closed, Nothing>);
-    type BeginSends = (Asks<Path<Windows>, OpenWindow, Nothing>, Asks<Path<Windows>, CloseWindow, Nothing>);
+    type Handles = (Answer<Opened, Nothing>, Answer<ModeSet, Nothing>, Answer<Closed, Nothing>);
+    type BeginSends = (
+        Asks<Path<Windows>, OpenWindow, Nothing>,
+        Asks<Path<Windows>, SetMode, Nothing>,
+        Asks<Path<Windows>, CloseWindow, Nothing>,
+    );
     type EndSends = ();
 
     fn begin(closes: Closes, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let open = OpenWindow { title: String::from("another"), size: Logical { width: 640.0, height: 480.0 } };
-        turn.to(path::<Windows>(())).ask(&open, &Nothing)?;
-        turn.to(path::<Windows>(())).ask(&CloseWindow { window: closes.window }, &Nothing)?;
+        let fullscreen = SetMode { window: closes.window, mode: Mode::Fullscreen };
+        turn.to(path::<Windows>(()))
+            .ask(&open, &Nothing)?
+            .ask(&fullscreen, &Nothing)?
+            .ask(&CloseWindow { window: closes.window }, &Nothing)?;
 
         Ok(Self)
     }
@@ -264,6 +271,16 @@ impl Handles<Answer<Opened, Nothing>> for Asker {
     }
 }
 
+impl Handles<Answer<ModeSet, Nothing>> for Asker {
+    type Sends = ();
+
+    fn handle(&mut self, (set, _): (Answered<ModeSet>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        ANSWERED.lock().map(|mut answered| answered.push(format!("{set:?}"))).ok();
+
+        Ok(())
+    }
+}
+
 impl Handles<Answer<Closed, Nothing>> for Asker {
     type Sends = ();
 
@@ -275,13 +292,13 @@ impl Handles<Answer<Closed, Nothing>> for Asker {
 }
 
 #[test]
-fn a_window_asked_to_open_or_close_is_answered_no_host_within_the_frame() {
+fn a_window_asked_to_open_close_or_show_in_a_mode_is_answered_no_host_within_the_frame() {
     // Catches a page that never takes what the window root asks, so an actor that asks for a window waits on an
-    // answer that never comes and a program written for both hosts cannot fall back; and a canvas asked to close
-    // answered as closed, or refused as not open, though the page still shows it.
+    // answer that never comes and a program written for both hosts cannot fall back; and a canvas asked to close, or
+    // to be shown fullscreen, answered as done, or refused as not open, though the page still shows it as it was.
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>();
     let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
-    let canvas = opening.open(Surface { width: 640, height: 480, scale: 1.0 }, true);
+    let canvas = opening.open(Surface { width: 640, height: 480, scale: 1.0 }, Mode::Windowed, true);
     let (windows, hosting) = opening.config();
     let Ok(engine) = setup
         .add_root::<Windows>(&(), windows)
@@ -298,6 +315,7 @@ fn a_window_asked_to_open_or_close_is_answered_no_host_within_the_frame() {
     };
     let expected = [
         format!("{:?}", Answered::Yes(Opened::Refused(Unopened::NoHost))),
+        format!("{:?}", Answered::Yes(ModeSet::Refused(Unset::NoHost))),
         format!("{:?}", Answered::Yes(Closed::Refused(Unclosed::NoHost))),
     ];
     assert_eq!(answered, expected);

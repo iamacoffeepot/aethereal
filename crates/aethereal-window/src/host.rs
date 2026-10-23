@@ -2,9 +2,9 @@
 //! here; the feed each one's events are pushed onto; and what the chassis keeps once the program runs, to take the
 //! window root's requests and say what it did with each (ADR-0024, ADR-0027).
 
-use crate::event::{Event, Surface};
+use crate::event::{Event, Mode, Surface};
 use crate::window::{WindowConfig, WindowId};
-use crate::windows::{Closing, Heard, Initial, Unclosed, Unopened, Windowing, WindowsConfig};
+use crate::windows::{Closing, Heard, Initial, Unclosed, Unopened, Unset, Windowing, WindowsConfig};
 use aethereal_actor::{Controller, Given, Requests, Source};
 use aethereal_substrate::{Closed, Feed};
 use core::iter;
@@ -32,12 +32,12 @@ impl Opening {
         Self { source, feed, control, requests, windows: Vec::new() }
     }
 
-    /// Opens a window whose `surface` and `focused` stand as given, under the next id, and answers with the feed its
-    /// events are pushed onto.
-    pub fn open(&mut self, surface: Surface, focused: bool) -> WindowFeed {
+    /// Opens a window whose `surface`, `mode`, and `focused` stand as given, under the next id, and answers with the
+    /// feed its events are pushed onto.
+    pub fn open(&mut self, surface: Surface, mode: Mode, focused: bool) -> WindowFeed {
         // A host opens some windows, never more than a `u64` counts.
         let window = WindowId::nth(self.windows.len() as u64);
-        self.windows.push(Initial { window, config: WindowConfig { surface, focused } });
+        self.windows.push(Initial { window, config: WindowConfig { surface, mode, focused } });
 
         WindowFeed { window, feed: self.feed.clone() }
     }
@@ -69,8 +69,9 @@ impl Hosting {
         self.requests.take()
     }
 
-    /// Pushes that the host opened `window`, as the root asked, its `surface` and `focused` standing as given, and
-    /// answers with the feed its events are pushed onto: the root hears that it opened before anything it heard.
+    /// Pushes that the host opened `window`, as the root asked, shown windowed, its `surface` and `focused` standing as
+    /// given, and answers with the feed its events are pushed onto: the root hears that it opened before anything it
+    /// heard.
     ///
     /// # Errors
     ///
@@ -109,8 +110,27 @@ impl Hosting {
         self.feed.push(Heard::Unclosed { window, why })
     }
 
-    /// Answers each request the window root asked since the last take as a host that opens and closes no window
-    /// does, as a page does: [`Unopened::NoHost`] and [`Unclosed::NoHost`].
+    /// Pushes that the host shows `window` in the mode the root asked, its `surface` as it draws it now. The window's
+    /// `Moded`, when its mode changed, is pushed onto its feed first.
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn set(&self, window: WindowId, surface: Surface) -> Result<(), Closed> {
+        self.feed.push(Heard::Set { window, surface })
+    }
+
+    /// Pushes that the host did not show `window` in the mode the root asked, and why.
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn unset(&self, window: WindowId, why: Unset) -> Result<(), Closed> {
+        self.feed.push(Heard::Unset { window, why })
+    }
+
+    /// Answers each request the window root asked since the last take as a host that opens, closes, and sets the mode
+    /// of no window does, as a page does: [`Unopened::NoHost`], [`Unclosed::NoHost`], and [`Unset::NoHost`].
     ///
     /// # Errors
     ///
@@ -120,6 +140,7 @@ impl Hosting {
             match request {
                 Windowing::Open { window, .. } => self.unopened(window, Unopened::NoHost)?,
                 Windowing::Close { window } => self.unclosed(window, Unclosed::NoHost)?,
+                Windowing::SetMode { window, .. } => self.unset(window, Unset::NoHost)?,
             }
         }
 

@@ -41,6 +41,7 @@ pub enum Event {
     KeyDown { code: String, key: String, repeat: bool },  // "KeyW", "w": the W3C UI Events code, and the key's text
     KeyUp { code: String, key: String },
     Resized(Surface),                                     // Surface { width: u32, height: u32, scale: f64 }
+    Moded(Mode),                                          // Windowed | Maximized | Fullscreen (ADR-0027)
     FocusGained,
     FocusLost,
     CloseRequested,
@@ -57,8 +58,8 @@ pub enum Event {
 
 ### A window's actor keeps how its window stands
 
-- **A new subscriber is sent the window's surface and focus first**, `Resized` and `FocusGained` or `FocusLost`, so an actor made at any time knows the size it draws at without waiting for it to change. A second `Subscribe` from an actor already subscribed sends nothing.
-- **A window sends on only an event that says something new.** A resize to the surface it has, or a focus it has, is dropped: a host may report either again with nothing changed, as a page's `resize` does whenever the page is laid out again.
+- **A new subscriber is sent the window's surface, mode, and focus first**, `Resized`, `Moded`, and `FocusGained` or `FocusLost`, so an actor made at any time knows the size it draws at, and whether the window is fullscreen, without waiting for either to change. A second `Subscribe` from an actor already subscribed sends nothing.
+- **A window sends on only an event that says something new.** A resize to the surface it has, a mode it is shown in, or a focus it has, is dropped: a host may report any of them again with nothing changed, as a page's `resize` does whenever the page is laid out again.
 - `Subscribers` is written in its holder's state as the references it holds, in order, and read back with each found where it is held; the watches that take an ended subscriber off are the engine's, and are not written. **This departs from building the subscriptions on the engine's stage subscriptions** (ADR-0020): those carry only a stage, which holds nothing, from the engine, and an event holds what the host heard and comes from a window.
 
 ### One source for every window, routed by the root
@@ -83,7 +84,7 @@ impl Handles<Heard> for Windows {                      // brought from the sourc
 
 ```rust
 let mut opening = Opening::new(setup.source::<Heard>());
-let canvas: WindowFeed = opening.open(surface, focused);     // the next WindowId, and its feed
+let canvas: WindowFeed = opening.open(surface, mode, focused); // the next WindowId, and its feed
 let setup = setup.add_root::<Windows>(&(), opening.config())?;
 canvas.push(Event::PointerMoved { x, y })?;                  // from the host's callbacks
 ```
@@ -101,7 +102,7 @@ let setup = setup.add_root::<Windows>(&(), opening.config())?;
 let listening = canvas::listen(&one, &first, Density::at_most(2.0))?;  // the page's callbacks, kept while it listens
 ```
 
-- **The browser chassis opens each canvas the page hands it as a window**, `0`, `1`, … in the order given, and WebGPU on them, an adapter that draws to the first. `canvas::open` opens one standing as the page has it, its backing store as its surface, the page's `devicePixelRatio` as its scale, and focused when `document.hasFocus()`. What is the page's stays in `aethereal-chassis-browser`. Each canvas is listened to for its own resizes.
+- **The browser chassis opens each canvas the page hands it as a window**, `0`, `1`, … in the order given, and WebGPU on them, an adapter that draws to the first. `canvas::open` opens one standing as the page has it, its backing store as its surface, the page's `devicePixelRatio` as its scale, `Windowed`, and focused when `document.hasFocus()`. What is the page's stays in `aethereal-chassis-browser`. Each canvas is listened to for its own resizes.
 - **`canvas::listen` registers the page's listeners**, as callbacks the page runs as it hears each event: `pointermove`, `pointerdown`, `pointerup`, and `wheel` on the canvas; `keydown`, `keyup`, `focus`, `blur`, and `resize` on the page's window; and an observer of the size the page lays the canvas out at. Each callback pushes one event onto the window's feed and returns, and the next frame brings in what was pushed, in the order it was pushed. Nothing waits: a callback never touches the engine, and a push to a feed whose source has gone is refused and dropped. Dropping what `listen` returns takes every callback off.
 - **The pointer's place is in the canvas's pixels**: its place on the page less the canvas's box, scaled on each axis by the window's size, as it was last pushed, over the size the canvas is shown at. A canvas shown at 400 by 300 CSS pixels and drawn at 800 by 600 reads a point 100 pixels across the page as 200. The size last pushed is the one the window's actors were told, which the backing store reaches as the chassis's next frame begins. A press or release the page numbers below zero is no button, and is not pushed.
 - **The wheel over the canvas is the program's, not the page's**: its listener is registered as not passive and calls `preventDefault`, so the page does not scroll while the wheel turns over the canvas, and scrolls as ever over the rest of it. Its deltas are the page's, read in the `deltaMode` it gives, pixels as they are and lines and pages by the fixed factors above in CSS pixels, then scaled to the canvas's pixels on each axis as the pointer's place is. A `deltaMode` the page has no name for is not pushed.
@@ -115,12 +116,12 @@ let listening = canvas::listen(&one, &first, Density::at_most(2.0))?;  // the pa
 ### The desktop: the windows the program asks for
 
 ```rust
-let first = screen.open_window(&mut opening, "first", (640, 480))?;   // a native window, and the GPU on it
-let second = screen.open_window(&mut opening, "second", (480, 480))?; // the next, on the same GPU
+let first = screen.open_window(&mut opening, "first", (640, 480), Mode::Windowed)?;    // a native window, and the GPU on it
+let second = screen.open_window(&mut opening, "second", (480, 480), Mode::Windowed)?;  // the next, on the same GPU
 let (rendering, drawing) = renderer(&mut setup, screen)?;
 ```
 
-- **The desktop chassis opens the windows the program asks for as it is set up**, each with its title and size, each the next `WindowId`. The first opens the GPU on its surface.
+- **The desktop chassis opens the windows the program asks for as it is set up**, each with its title, size, and mode (ADR-0027), each the next `WindowId`. The first opens the GPU on its surface.
 - **It routes what winit says of a window by a map from winit's `WindowId` to the capability's**, and pushes it onto that window's feed. A frame winit asks of any window draws the cycle, and the chassis asks for the next frame of the first window shown.
 - **It quits when the last window closes, or as the program says.** `CloseRequested` still only asks: a window is not closed while the program runs, so the close button of a program's one window asks it to stop, and with several the program decides.
 

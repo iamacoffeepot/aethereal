@@ -1,7 +1,7 @@
-//! What an actor asks the window root, to open or close a window while the program runs, and how it is answered
-//! (ADR-0027).
+//! What an actor asks the window root, to open or close a window or set the mode it is shown in while the program
+//! runs, and how it is answered (ADR-0027).
 
-use crate::event::Surface;
+use crate::event::{Mode, Surface};
 use crate::window::WindowId;
 use aethereal_data::Plain;
 
@@ -67,5 +67,36 @@ pub enum Unclosed {
     /// The window is not open: it never was, it is still opening, or it has closed.
     NotOpen,
     /// The host closes no window on request, as a page does not.
+    NoHost,
+}
+
+/// Asks the window root to show the window `window` in `mode`: answered with [`ModeSet`] once the host has, or would
+/// not. A window shown in `mode` already is answered at once, and its subscribers hear nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.windows.set_mode")]
+pub struct SetMode {
+    pub window: WindowId,
+    pub mode: Mode,
+}
+
+/// What became of a window asked to be shown in a mode.
+#[derive(Debug, Clone, Copy, PartialEq, Plain)]
+#[kind(name = "aether.windows.mode_set")]
+pub enum ModeSet {
+    /// It is shown in the mode asked: this is its surface as the host draws it now, so the asker draws at it without
+    /// waiting. Its subscribers hear `Moded` when the mode changed, and `Resized` when the surface did, as for any
+    /// resize.
+    Set { surface: Surface },
+    /// Its mode was not set, for this reason.
+    Refused(Unset),
+}
+
+/// Why a window asked to be shown in a mode was not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Unset {
+    /// The window is not open: it never was, it is still opening, it is closing, or it closed before its mode was set.
+    NotOpen,
+    /// The host sets no window's mode on request, as a page does not: a page enters fullscreen only while it handles a
+    /// person's click or key.
     NoHost,
 }

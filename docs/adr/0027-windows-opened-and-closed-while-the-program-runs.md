@@ -5,7 +5,7 @@
 
 ## Context
 
-A chassis opens its windows as it sets the program up (ADR-0024: `Opening::open`, `WindowsConfig`), and since #253 it may open several, each with a surface of its own that the render root draws each frame through (ADR-0021: `WindowSurface`, `Front`, `Present`). No actor can ask for a window once the program runs, nor close one. ADR-0024 left both for a record of their own: "an `OpenWindow` asked of the root, a controller to the host, the host's answer pushed onto the source with the window's id, and the window's actor ended when its window closes". ADR-0019 sketches the same road for every resource the host makes (`Controller`, `Requests`, `Engine::hand`).
+A chassis opens its windows as it sets the program up (ADR-0024: `Opening::open`, `WindowsConfig`), and since #253 it may open several, each with a surface of its own that the render root draws each frame through (ADR-0021: `WindowSurface`, `Front`, `Present`). No actor can ask for a window once the program runs, nor close one, nor show one fullscreen. ADR-0024 left both for a record of their own: "an `OpenWindow` asked of the root, a controller to the host, the host's answer pushed onto the source with the window's id, and the window's actor ended when its window closes". ADR-0019 sketches the same road for every resource the host makes (`Controller`, `Requests`, `Engine::hand`).
 
 What the engine already has to build on:
 
@@ -28,6 +28,9 @@ impl Handles<Answer<Opened, Inventory>> for Hud { .. }        // Opened::Window 
 
 turn.to(path::<Windows>(())).ask(&CloseWindow { window }, &Inventory)?;
 impl Handles<Answer<Closed, Inventory>> for Hud { .. }        // Closed::Closed | Closed::Refused(Unclosed)
+
+turn.to(path::<Windows>(())).ask(&SetMode { window, mode: Mode::Fullscreen }, &Toggle)?;
+impl Handles<Answer<ModeSet, Toggle>> for Game { .. }         // ModeSet::Set { surface } | ModeSet::Refused(Unset)
 ```
 
 - **A window is opened at a size in the host's logical pixels**, the size a person sees whatever the screen, since its scale is the host's to know only once the window is on a screen. Its answer carries the surface as it was opened, its size in its pixels and its scale (ADR-0024: `Surface`), so the asker draws at the size the window is, as a subscriber learns from `Resized`.
@@ -40,6 +43,7 @@ impl Handles<Answer<Closed, Inventory>> for Hud { .. }        // Closed::Closed 
 pub enum Windowing {                                   // what the root pushes to the host
     Open { window: WindowId, title: String, size: Logical },
     Close { window: WindowId },
+    SetMode { window: WindowId, mode: Mode },
 }
 
 pub enum Heard {                                       // what the root's one source brings
@@ -48,6 +52,8 @@ pub enum Heard {                                       // what the root's one so
     Unopened { window: WindowId, why: Unopened },
     Closed { window: WindowId },
     Unclosed { window: WindowId, why: Unclosed },
+    Set { window: WindowId, surface: Surface },
+    Unset { window: WindowId, why: Unset },
 }
 ```
 
@@ -88,22 +94,45 @@ WindowsConfig { .., closing: Closing::ByButton }      // the default; or Closing
 - **A desktop chassis asks the program to stop once its last window has closed.** This replaces the rule, since #253, that the close button of a program's only window quits it. A program with several windows needs no code of its own to be closed one window at a time.
 - **This departs from ADR-0024's "`CloseRequested` asks; it closes nothing"**: a program that draws one window and handles nothing would otherwise never close. A program that confirms before closing says so once, in its config.
 
+**A window is shown in a mode: chosen at setup, asked of the root while the program runs, and heard when it changes.**
+
+```rust
+pub enum Mode {
+    Windowed,      // a window at its size; returning to it gives back the size it had
+    Maximized,     // fills the screen's work area, with its frame and title bar
+    Fullscreen,    // borderless, over the monitor the window is on
+}
+
+WindowSettings { title, size: [1280, 720], mode: Mode::Fullscreen }   // at setup, each window's settings name its mode
+--mode fullscreen                                                      // the first window's, WindowsSettings::FIRST_MODE
+```
+
+- **At setup, each window opens in the mode its settings name**, and its actor is made standing in that mode (`WindowConfig::mode`), as it stands at its surface and focus; the first window's mode is a flag, as its size is (ADR-0028). A window asked for while the program runs opens `Windowed`; a mode given in `OpenWindow` is left for later.
+- **While the program runs, `SetMode` is asked of the root**, as `OpenWindow` and `CloseWindow` are: the root holds the request, pushes `Windowing::SetMode`, and answers once its source brings `Heard::Set` or `Heard::Unset` for the window. The host answers the requests in the order it was asked them, so the root answers what it holds for a window in that order.
+- **The answer carries the surface as the host draws the window now**, so the asker draws at it without waiting; the window's subscribers hear `Resized` as for any resize. No size rides on the request: resizing a window is its own request, left for later.
+- **Subscribers hear `Event::Moded(Mode)` when the mode changes**, whether the program asked or the person at the window changed it, through the platform's own fullscreen control or by leaving fullscreen. A new subscriber is sent the mode first, with the surface and focus (ADR-0024), and the window's actor drops a `Moded` that says nothing new, as it drops a resize to the size it has.
+- **Asking for the mode a window has answers `Set` with its surface at once**, and sends no event: the root keeps each open window's surface and mode as its source brings them, and asks the host nothing. While another request to set the window's mode is unanswered the root asks the host all the same, as only the host knows the mode that one leaves.
+- **`SetMode` for a window that is not open, as one still opening or closing, is answered `Unset::NotOpen`** by the root, as `CloseWindow` is. A request the host has not answered when the window closes is answered `Unset::NotOpen` too.
+- **The desktop reads the window's mode back on each resize**, as winit says it, fullscreen whether or not it is maximized beneath, and pushes `Moded` only when it differs from the mode it last pushed for that window, which it keeps beside the window. A mode changes the window's size, so every change the person makes reaches the program through the resize winit reports for it. It reads the mode again once it has set one, so a platform that applies it at once is heard before the answer, and one that applies it later is heard as it resizes.
+- **The browser answers `Unset::NoHost`**, as it does `OpenWindow`: a page enters fullscreen only while it handles a person's click or key, and the engine's turns run from `requestAnimationFrame`, outside any.
+
 **What each host does.**
 
-| | `Open` | `Close` | the close button |
-|---|---|---|---|
-| desktop | a native window, its surface, a front slot | all three dropped | `Closing` decides |
-| browser | `Unopened::NoHost` | `Unclosed::NoHost` | none: a canvas has none |
+| | `Open` | `Close` | `SetMode` | the close button |
+|---|---|---|---|---|
+| desktop | a native window, its surface, a front slot | all three dropped | winit's borderless fullscreen, or maximized, and back | `Closing` decides |
+| browser | `Unopened::NoHost` | `Unclosed::NoHost` | `Unset::NoHost` | none: a canvas has none |
 
 ## Consequences
 
-- An actor opens and closes windows by asking, from any turn, and a window opened while the program runs is reached, subscribed to, and drawn to exactly as one opened at setup.
-- The window capability gains a controller and two requests; its source's kind becomes `Heard`, an enum of an event in a window and of what the host did. The render root gains a source, `Source<Surfaced>`, and the front's slots come and go between steps.
+- An actor opens and closes windows, and shows one windowed, maximized, or fullscreen, by asking, from any turn, and a window opened while the program runs is reached, subscribed to, and drawn to exactly as one opened at setup.
+- The window capability gains a controller and three requests; its source's kind becomes `Heard`, an enum of an event in a window and of what the host did. A window's events gain `Moded`, and its actor's config its mode. The render root gains a source, `Source<Surfaced>`, and the front's slots come and go between steps.
 - The host's `Opening` still opens the windows of setup and gives their ids; after setup the root gives them. The chassis keeps the host's end of the controller and a way to make a window's feed for an id the root gave.
 - Every window opened costs the program a step before its asker is answered, and one more before the asker's first frame reaches the render root. A window's first `Render` may come a frame later than the request.
 - A window on a slower display still paces every window to its rate when the windows are presented `fifo` (ADR-0021). A window opened while the program runs is presented as the renderer's settings present every window, as one opened at setup is; a presentation of its own, given in `OpenWindow`, is left for later.
-- The browser opens no window on request, and a program written for both hosts handles `Unopened::NoHost`.
-- **Left for later:** who owns a window; moving, resizing, retitling, hiding, or making a window fullscreen, each a request of the same controller; and a window opened by the host alone, such as a dialog the platform makes.
+- The browser opens no window on request and sets no window's mode, and a program written for both hosts handles `Unopened::NoHost` and `Unset::NoHost`.
+- A mode set on a platform that applies it later is heard as `Moded` once the window resizes, after its asker was answered with the surface as it stood.
+- **Left for later:** who owns a window; moving, resizing, retitling, or hiding a window, each a request of the same controller; a mode given in `OpenWindow`; exclusive fullscreen at a chosen video mode, which Wayland does not offer and which brings a video-mode match and a refusal on each platform; choosing the monitor a window is fullscreen on; and a window opened by the host alone, such as a dialog the platform makes.
 
 ## Alternatives considered
 
@@ -113,3 +142,6 @@ WindowsConfig { .., closing: Closing::ByButton }      // the default; or Closing
 - **A source of its own for the window root's openings and closings.** Two sources keep no order between them (ADR-0010), so a window's first events could reach the root before it had made the window's actor.
 - **`CloseRequested` only ever asks.** ADR-0024's rule, unchanged. A program that handles nothing could not be closed by its button, and every program would carry the same few lines to close it.
 - **The opener alone may close.** Simple to state, and wrong for a window opened by an actor that has since ended: no one could close it but its button. Ownership enters when a program needs it.
+- **Every `SetMode` asked of the host**, the root keeping no mode. The host would answer a mode the window has as well, but the root would forward a request it can answer, and a host that sets no mode, the browser, would refuse a request for the mode its canvas is always in.
+- **`Moded` only for a mode the program asked for.** A person who leaves fullscreen with the platform's own control would leave the program believing the window fullscreen, and a toggle would ask for the mode the window already has.
+- **A mode pushed as winit reports it, without the host keeping the last.** winit has no event for a mode, and reading it on each resize would push one for every resize; the window's actor would drop them, at a mail each through the root.

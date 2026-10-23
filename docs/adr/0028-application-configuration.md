@@ -40,7 +40,7 @@ What this engine already has:
 {
   "engine":   { "workers": 4, "parts": 4, "read_limit": 1024, "mail_bytes": 1048576, "blob_bytes": 1048576, "hops": 0 },
   "running":  { "every_millis": 16, "stop_within_millis": 1000 },
-  "windows":  [{ "title": "aethereal", "size": [800, 600] }],
+  "windows":  [{ "title": "aethereal", "size": [800, 600], "mode": "Windowed" }],
   "game":     { "difficulty": "hard" }
 }
 ```
@@ -66,7 +66,7 @@ What this engine already has:
 **People use flags. The flags are a layer in front of the document, never the document.**
 
 ```
---workers 4  -w 4  --size 1280x720  --fullscreen  --stop-within-millis 500  --present capped:60  --set renderer.present=uncapped
+--workers 4  -w 4  --size 1280x720  --mode fullscreen  --stop-within-millis 500  --present capped:60  --set renderer.present=uncapped
 ```
 
 - **A section's author suggests the flags for its fields**, beside the field, as they declare the field's doc comment. **The program decides**: it takes a suggestion, renames it, hides it, or adds a flag of its own for any field of any section.
@@ -84,7 +84,7 @@ What this engine already has:
       .flag("size", 's', WindowsSettings::FIRST_SIZE)
   ```
 - **A field is named by a handle the derive emits**, `EngineSettings::WORKERS: Field<EngineSettings, NonZeroUsize>`, beside the schema it already emits. So a program's flags name fields that exist, checked when it is built.
-- **A field of one element of a sequence is named by a handle made from its element's,** `WindowSettings::SIZE.in_element(0)`, which names `windows[0].size`. The section is then the sequence itself, `WindowsSettings(Vec<WindowSettings>)`, written as the sequence alone, so its path names it once; the derive marks such settings, and settings of named fields, so the element's type and the sequence's are checked when the program is built. The desktop's windows give it as `WindowsSettings::FIRST_SIZE`, and a program offers it as `--size`. An element the section does not have refuses what a layer sets there, naming its path, as any index past the end is.
+- **A field of one element of a sequence is named by a handle made from its element's,** `WindowSettings::SIZE.in_element(0)`, which names `windows[0].size`. The section is then the sequence itself, `WindowsSettings(Vec<WindowSettings>)`, written as the sequence alone, so its path names it once; the derive marks such settings, and settings of named fields, so the element's type and the sequence's are checked when the program is built. The desktop's windows give it as `WindowsSettings::FIRST_SIZE`, and a program offers it as `--size`; the first window's mode, `windows[0].mode`, is `WindowsSettings::FIRST_MODE`, offered as `--mode`. An element the section does not have refuses what a layer sets there, naming its path, as any index past the end is.
 - **Two flags of one name, left so by the program, are an error as the program is put together**, naming both fields. Neither wins.
 - **A field's type picks how its flag's value is read:**
   - a size is `1280x720`;

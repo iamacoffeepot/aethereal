@@ -1,7 +1,7 @@
 //! A window's actor: beneath the window root, keyed by the window's id, it sends what its window heard to the actors
 //! that subscribed, and keeps how the window stands for a new one.
 
-use crate::event::{Event, Subscribe, Surface, Unsubscribe};
+use crate::event::{Event, Mode, Subscribe, Surface, Unsubscribe};
 use crate::windows::Windows;
 use aethereal_actor::{Actor, Beginning, ChildOf, Ended, Ending, Fault, Handles, Level, Subscribers, ToAny, Turn};
 use aethereal_data::{Bound, Key, KeyName, Plain, TypedKey};
@@ -31,21 +31,23 @@ impl TypedKey for WindowId {
     }
 }
 
-/// How a window stands as its actor is made: its surface, and whether it has the keyboard.
+/// How a window stands as its actor is made: its surface, the mode it is shown in, and whether it has the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
 #[kind(name = "aether.window.config")]
 pub struct WindowConfig {
     pub surface: Surface,
+    pub mode: Mode,
     pub focused: bool,
 }
 
 /// A window's actor: it sends each event its window heard to the actors subscribed to it, and sends a new subscriber
-/// the window's surface and focus as they stand before anything else.
+/// the window's surface, mode, and focus as they stand before anything else.
 #[derive(Bound)]
 #[kind(name = "aether.window")]
 pub struct Window {
     listeners: Subscribers<(Event,)>,
     surface: Surface,
+    mode: Mode,
     focused: bool,
 }
 
@@ -63,7 +65,9 @@ impl Actor for Window {
     type EndSends = ();
 
     fn begin(config: WindowConfig, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        Ok(Self { listeners: Subscribers::new(), surface: config.surface, focused: config.focused })
+        let WindowConfig { surface, mode, focused } = config;
+
+        Ok(Self { listeners: Subscribers::new(), surface, mode, focused })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -72,8 +76,8 @@ impl Actor for Window {
 }
 
 impl Window {
-    /// Takes in `event`, and answers whether it says anything new: a resize to the surface the window has, or the
-    /// focus it has, does not, as a host may say either again with nothing changed.
+    /// Takes in `event`, and answers whether it says anything new: a resize to the surface the window has, the mode it
+    /// is shown in, or the focus it has, does not, as a host may say any of them again with nothing changed.
     fn heard(&mut self, event: &Event) -> bool {
         match event {
             Event::Resized(surface) => {
@@ -81,6 +85,7 @@ impl Window {
                 self.surface = *surface;
                 is_new
             }
+            Event::Moded(mode) => mem::replace(&mut self.mode, *mode) != *mode,
             Event::FocusGained => !mem::replace(&mut self.focused, true),
             Event::FocusLost => mem::replace(&mut self.focused, false),
             Event::PointerMoved { .. }
@@ -104,7 +109,7 @@ impl Window {
     }
 }
 
-/// Adds the sender, and sends it the surface and focus as they stand: nothing, when it is subscribed already.
+/// Adds the sender, and sends it the surface, mode, and focus as they stand: nothing, when it is subscribed already.
 impl Handles<Subscribe> for Window {
     type Sends = (ToAny<(Event,), Event>,);
 
@@ -118,7 +123,7 @@ impl Handles<Subscribe> for Window {
         if !added {
             return Ok(());
         }
-        turn.to(listener).send(&Event::Resized(self.surface))?.send(&self.focus())?;
+        turn.to(listener).send(&Event::Resized(self.surface))?.send(&Event::Moded(self.mode))?.send(&self.focus())?;
 
         Ok(())
     }
