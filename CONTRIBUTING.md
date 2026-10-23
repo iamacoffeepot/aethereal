@@ -26,13 +26,13 @@ and `browser`; `Lint title` checks that the pull request title is a
 Conventional Commit (`type(scope): subject`). `main`
 squash-merges with the title as the commit subject.
 
+A change enters under the rules in
+[ADR-0001](docs/adr/0001-pieces-enter-in-final-shape-for-two-hosts.md). A
+load-bearing design decision is its own ADR, started from
+[`docs/adr/TEMPLATE.md`](docs/adr/TEMPLATE.md) and reviewed as a pull request.
+
 ## Browser examples
 
 `cargo xtask example <example> --serve` builds one of the browser chassis's
 examples into its `pkg/` and serves it on localhost, printing the address to
 open; without `--serve` it only builds.
-
-A change enters under the rules in
-[ADR-0001](docs/adr/0001-pieces-enter-in-final-shape-for-two-hosts.md). A
-load-bearing design decision is its own ADR, started from
-[`docs/adr/TEMPLATE.md`](docs/adr/TEMPLATE.md) and reviewed as a pull request.
