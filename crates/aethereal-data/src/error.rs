@@ -58,6 +58,8 @@ pub enum DecodeError {
     InvalidKeyName,
     /// Text decoded as an actor path does not conform or is too deep (ADR-0008).
     InvalidActorPath,
+    /// Text decoded as a file's path does not conform (ADR-0032).
+    InvalidFilePath,
     /// An enum selector names no variant.
     InvalidSelector {
         /// The enum's name, for error messages.
@@ -111,6 +113,7 @@ impl fmt::Display for DecodeError {
             Self::InvalidKindName => f.write_str("plain data: kind name does not conform"),
             Self::InvalidKeyName => f.write_str("plain data: key name does not conform"),
             Self::InvalidActorPath => f.write_str("plain data: actor path does not conform"),
+            Self::InvalidFilePath => f.write_str("plain data: file path does not conform"),
             Self::InvalidSelector { name, selector } => {
                 write!(f, "plain data: invalid selector {selector} for enum {name}")
             }

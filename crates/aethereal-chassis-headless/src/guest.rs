@@ -2264,8 +2264,8 @@ mod tests {
     use super::*;
     use crate::Monotonic;
     use aethereal_actor::{
-        Actor, ActorRef, Answer, Answered, Beginning, BlobRef, Carries, Ending, Forged, Handles, Links, Protocol,
-        Seated, ToAny, ToSender, ToType, Trapped, Turn, Unanswered,
+        Actor, ActorRef, Answer, Answered, Beginning, BlobRef, Carries, Ending, Forged, Handles, Links, NoStorage,
+        Protocol, Seated, ToAny, ToSender, ToType, Trapped, Turn, Unanswered,
     };
     use aethereal_actor::{Anywhere, ChildOf, Level, Tick, Time, Top};
     use aethereal_actor::{JobId, JobType};
@@ -3509,7 +3509,8 @@ mod tests {
     impl Holding {
         /// Runs the foreman's jobs, holding each until it is let go of when `holds`.
         fn new(holds: bool) -> Arc<Self> {
-            let inline = Inline::new(vec![JobType::of::<echo::Chore>(), JobType::of::<echo::Measure>()]);
+            let inline =
+                Inline::new(vec![JobType::of::<echo::Chore>(), JobType::of::<echo::Measure>()], Arc::new(NoStorage));
 
             Arc::new(Self { inline, holds, held: Mutex::default(), stopped: Mutex::default() })
         }

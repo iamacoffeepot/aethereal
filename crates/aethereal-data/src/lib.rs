@@ -16,6 +16,7 @@ mod boundary;
 mod budget;
 pub mod config;
 mod error;
+mod file_path;
 mod fnv;
 #[cfg(feature = "json")]
 mod json;
@@ -28,6 +29,7 @@ mod schema;
 pub use boundary::{Bare, Boundary, Decode, Encode, Reader, Writer};
 pub use budget::Budget;
 pub use error::{DecodeError, EncodeError};
+pub use file_path::FilePath;
 pub use fnv::Fnv;
 #[cfg(feature = "json")]
 pub use json::{JsonError, JsonFault, JsonForm, JsonPath, JsonStep, TextFault, from_json, to_json};

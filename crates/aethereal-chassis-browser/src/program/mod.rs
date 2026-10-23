@@ -6,6 +6,7 @@
 //! page awaits, and which comes to the program [`Started`] on the page.
 
 mod controls;
+mod files;
 mod renderer;
 mod windows;
 
@@ -14,7 +15,9 @@ pub use windows::WindowsSettings;
 use crate::canvas::Shown;
 use crate::serving::{Drawing, Serving};
 use crate::{Browser, EventLoop, Hosted, Listening, Performance};
+use aethereal_actor::{JobType, NoStorage, Storage};
 use aethereal_data::Plain;
+use aethereal_files::FileHosting;
 use aethereal_substrate::{Engine, Host, ProgramError, Serves, Settled, Unbuilt};
 use aethereal_window::Hosting;
 use core::pin::Pin;
@@ -31,12 +34,17 @@ pub struct RunningSettings {}
 
 /// The page, as the program is bootstrapped on it: the browser's hosting (ADR-0029). It keeps each canvas the window
 /// root's bootstrap opened as a window, which the renderer's reaches through the host to open WebGPU on, and the ends
-/// the roots give the browser: the window root's, the renderer's, and the page's listeners.
+/// the roots give the browser: the window root's, the renderer's, the page's listeners, and what its runner is made
+/// with, the file capability's storage and job.
 pub struct Paging {
     canvases: Vec<ShownCanvas>,
     serving: Serving,
     hosted: Hosted,
     listening: Vec<Listening>,
+    /// The storage the runner's jobs read files from: [`NoStorage`] until the file capability serves one.
+    storage: Arc<dyn Storage>,
+    /// The job types the roots run, beside those the program lists.
+    jobs: Vec<JobType>,
 }
 
 /// A canvas opened as a window, as the window root's bootstrap opened it.
@@ -47,8 +55,23 @@ pub struct ShownCanvas {
 
 impl Paging {
     /// The page with no canvas opened and no end kept.
-    const fn new() -> Self {
-        Self { canvases: Vec::new(), serving: Serving::Nothing, hosted: Hosted::Nothing, listening: Vec::new() }
+    fn new() -> Self {
+        Self {
+            canvases: Vec::new(),
+            serving: Serving::Nothing,
+            hosted: Hosted::Nothing,
+            listening: Vec::new(),
+            storage: Arc::new(NoStorage),
+            jobs: Vec::new(),
+        }
+    }
+
+    /// The runner of the job types `listed` and those the roots served, on the page's event loop, its jobs reading
+    /// files from the storage served (ADR-0029).
+    fn runner(&mut self, mut listed: Vec<JobType>) -> EventLoop {
+        listed.append(&mut self.jobs);
+
+        EventLoop::new(listed, Arc::clone(&self.storage))
     }
 
     /// Keeps `canvas`, opened as a window, `shown`, for the renderer to draw to.
@@ -111,8 +134,8 @@ impl Host for Browser<Performance> {
         let jobs = settled.jobs().to_vec();
 
         Ok(Box::pin(async move {
-            let (mut engine, paging) = settled.bootstrap(Paging::new()).await?;
-            engine.set_jobs(Arc::new(EventLoop::new(jobs)));
+            let (mut engine, mut paging) = settled.bootstrap(Paging::new()).await?;
+            engine.set_jobs(Arc::new(paging.runner(jobs)));
 
             Ok(paging.start(engine))
         }))
@@ -128,6 +151,14 @@ impl Serves<Hosting> for Browser<Performance> {
 impl Serves<Drawing> for Browser<Performance> {
     fn serve(paging: &mut Paging, drawing: Drawing) {
         paging.serving = Serving::Drawing(Box::new(drawing));
+    }
+}
+
+impl Serves<FileHosting> for Browser<Performance> {
+    fn serve(paging: &mut Paging, files: FileHosting) {
+        let (storage, job) = files.into_parts();
+        paging.storage = storage;
+        paging.jobs.push(job);
     }
 }
 

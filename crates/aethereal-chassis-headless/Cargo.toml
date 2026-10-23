@@ -9,6 +9,7 @@ description = "The headless chassis: the native host with nothing but the engine
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
+aethereal-files = { path = "../aethereal-files" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 # The native host's command line (ADR-0028); nothing else depends on it.
 clap = { version = "4.6", default-features = false, features = ["std", "help", "usage", "error-context", "suggestions", "string"] }

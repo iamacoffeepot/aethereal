@@ -10,6 +10,7 @@
 //! plan says (ADR-0011).
 
 mod clock;
+mod files;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod guest;
 mod jobs;
@@ -24,12 +25,13 @@ mod tests;
 mod waiting;
 
 pub use clock::Monotonic;
+pub use files::{Directories, FileRoots};
 pub use jobs::Runners;
 
 use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Engine, Split, SplitCost, Workers};
 pub use pool::Measured;
-pub use program::RunningSettings;
+pub use program::{RunningSettings, Serving};
 pub use running::{Exit, Timer};
 
 use pool::Pool;

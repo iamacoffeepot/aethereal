@@ -42,6 +42,7 @@ version = "0.1.0"
 dependencies = [
  "aethereal-actor",
  "aethereal-data",
+ "aethereal-files",
  "aethereal-render",
  "aethereal-substrate",
  "aethereal-window",
@@ -60,6 +61,7 @@ dependencies = [
  "aethereal-actor",
  "aethereal-chassis-headless",
  "aethereal-data",
+ "aethereal-files",
  "aethereal-render",
  "aethereal-substrate",
  "aethereal-window",
@@ -74,6 +76,7 @@ version = "0.1.0"
 dependencies = [
  "aethereal-actor",
  "aethereal-data",
+ "aethereal-files",
  "aethereal-guest-echo",
  "aethereal-substrate",
  "clap",
@@ -99,6 +102,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "aethereal-files"
+version = "0.1.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
 ]
 
 [[package]]

@@ -5,8 +5,8 @@ use super::super::*;
 use super::*;
 use crate::Entry;
 use aethereal_actor::{
-    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Handles, Job, JobType, Path, Runner, Running, Tells, Time, Top,
-    Turn, path,
+    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Handles, Job, JobType, NoStorage, Path, Runner, Running, Tells,
+    Time, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use std::cell::RefCell;
@@ -494,7 +494,10 @@ impl Holding {
     /// Runs [`Double`]s and [`Ring`]s, and holds [`Sleeps`] and [`Measure`]s.
     fn new() -> Self {
         Self {
-            inline: Inline::new(vec![JobType::of::<Double>(), JobType::of::<Ring>(), JobType::of::<Measure>()]),
+            inline: Inline::new(
+                vec![JobType::of::<Double>(), JobType::of::<Ring>(), JobType::of::<Measure>()],
+                Arc::new(NoStorage),
+            ),
             held: Mutex::default(),
             stopped: Mutex::default(),
             most: usize::MAX,
@@ -603,7 +606,7 @@ fn a_job_is_answered_at_a_bring_with_the_context_its_turn_kept() {
     // two steps after run one each.
     // Each job takes the next count of what the worker sends: none is taken twice, as its `begin`'s first, then a
     // turn's, then two of one turn.
-    let (mut engine, _) = engine(Arc::new(Inline::new(vec![JobType::of::<Double>()])));
+    let (mut engine, _) = engine(Arc::new(Inline::new(vec![JobType::of::<Double>()], Arc::new(NoStorage))));
     poke(&mut engine, 1, "double");
     poke(&mut engine, 2, "twice");
     assert_eq!(said(), ["ran 0 as 1", "ran 1 as 2", "ran 2 as 3", "ran 2 as 4"], "nothing is answered before a bring");
@@ -629,7 +632,7 @@ fn a_job_run_before_its_host_makes_its_runner_waits_for_it() {
     settle(&mut engine);
     assert_eq!(said(), ["ran 0 as 1"], "nothing runs the job before there is a runner");
 
-    engine.set_jobs(Arc::new(Inline::new(vec![JobType::of::<Double>()])));
+    engine.set_jobs(Arc::new(Inline::new(vec![JobType::of::<Double>()], Arc::new(NoStorage))));
     engine.bring();
     settle(&mut engine);
 
@@ -641,7 +644,7 @@ fn a_job_that_fails_panics_waits_or_has_no_runner_is_answered_faulted_and_logged
     // Catches a job's fault, a panic, a job that waits where nothing polls it again, and one of a type its host was
     // not handed, left unanswered or answered as if it had run, and a fault kept out of the actor's log.
     let types = vec![JobType::of::<Fails>(), JobType::of::<Panics>(), JobType::of::<Sleeps>()];
-    let (mut engine, worker) = engine(Arc::new(Inline::new(types)));
+    let (mut engine, worker) = engine(Arc::new(Inline::new(types, Arc::new(NoStorage))));
     for (key, what) in [(1, "fails"), (2, "panics"), (3, "sleeps"), (4, "unlinked")] {
         poke(&mut engine, key, what);
     }
@@ -666,7 +669,8 @@ fn a_job_that_fails_panics_waits_or_has_no_runner_is_answered_faulted_and_logged
 fn a_turn_that_fails_runs_no_job() {
     // Catches the job of a turn that failed handed to the host, as the mail of one is never sent, and the job of a
     // child whose `begin` failed, which was never live.
-    let noting = Arc::new(Noting { inline: Inline::new(Vec::new()), started: Mutex::new(Vec::new()) });
+    let noting =
+        Arc::new(Noting { inline: Inline::new(Vec::new(), Arc::new(NoStorage)), started: Mutex::new(Vec::new()) });
     let (mut engine, _) = engine(Arc::clone(&noting) as Arc<dyn Jobs>);
     poke(&mut engine, 1, "fail the turn");
     let (mut nesting, _) = self::engine(Arc::clone(&noting) as Arc<dyn Jobs>);
@@ -724,7 +728,7 @@ fn a_job_reads_a_copy_of_each_blob_it_refers_to() {
     // job refused for holding no pin, so the job faults, and a reference read as another blob's bytes. It refers to one
     // blob twice, and another once.
     let types = vec![JobType::of::<Double>(), JobType::of::<Measure>()];
-    let (mut engine, _) = engine(Arc::new(Inline::new(types)));
+    let (mut engine, _) = engine(Arc::new(Inline::new(types, Arc::new(NoStorage))));
     poke(&mut engine, 1, "measure");
     engine.bring();
     settle(&mut engine);
@@ -781,7 +785,7 @@ fn a_job_changes_its_engines_pins_on_the_engines_queue_as_it_runs_and_as_it_is_d
         } else {
             JobType::of::<Hangs>()
         };
-        let mut running = of.drive(bytes, lent, limit, Arc::new(Never));
+        let mut running = of.drive(bytes, lent, limit, Arc::new(Never), Arc::new(NoStorage));
         let polled = running.as_mut().poll(&mut context);
         assert_eq!(polled.is_ready(), measures, "the measure finishes, and the hang waits");
     }
@@ -806,7 +810,7 @@ fn a_job_answers_with_the_blobs_it_put_once_the_engine_has_put_them() {
     // answer's own, and a blob kept once nothing refers to it. The job puts two, and answers with the one it was
     // handed between them.
     let types = vec![JobType::of::<Double>(), JobType::of::<Shrink>()];
-    let (mut engine, _) = engine(Arc::new(Inline::new(types)));
+    let (mut engine, _) = engine(Arc::new(Inline::new(types, Arc::new(NoStorage))));
     poke(&mut engine, 1, "shrink");
     engine.bring();
     settle(&mut engine);
@@ -823,7 +827,7 @@ fn a_job_whose_blob_does_not_fit_is_answered_faulted_and_puts_none() {
     // Catches a blob past the budget for blobs put anyway, or the job answered as if it fit, and the blob it put
     // before it kept once the job is answered.
     let types = vec![JobType::of::<Double>(), JobType::of::<Shrink>()];
-    let (mut engine, worker) = engine(Arc::new(Inline::new(types)));
+    let (mut engine, worker) = engine(Arc::new(Inline::new(types, Arc::new(NoStorage))));
     poke(&mut engine, 1, "shrink big");
     engine.bring();
     settle(&mut engine);

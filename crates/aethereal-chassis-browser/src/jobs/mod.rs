@@ -6,7 +6,7 @@ mod tests;
 #[cfg(target_arch = "wasm32")]
 mod timeouts;
 
-use aethereal_actor::{Driven, Fault, JobId, JobType, Outcome, Runner, Sleep, Timer};
+use aethereal_actor::{Driven, Fault, JobId, JobType, Outcome, Runner, Sleep, Storage, Timer};
 use aethereal_data::{Kind, KindId};
 use aethereal_substrate::{Inline, Jobs, Panicked, Taken};
 use std::collections::HashMap;
@@ -38,6 +38,8 @@ pub struct EventLoop {
     inline: Arc<Inline>,
     /// The timer the jobs that wait wait on.
     timer: Arc<dyn Timer>,
+    /// The storage the jobs that wait read files from (ADR-0032).
+    storage: Arc<dyn Storage>,
     /// How a task is put on the event loop.
     spawn: fn(Task),
     /// The jobs that wait it holds, by their keys, so it can stop them.
@@ -75,20 +77,21 @@ enum Ended {
 }
 
 impl EventLoop {
-    /// Runs jobs of `types` and [`Sleep`] on the page's event loop, waiting on the page's timer, and answers any other
-    /// with [`NoRunner`](aethereal_substrate::NoRunner).
+    /// Runs jobs of `types` and [`Sleep`] on the page's event loop, waiting on the page's timer and reading files from
+    /// `storage`, and answers any other with [`NoRunner`](aethereal_substrate::NoRunner).
     #[cfg(target_arch = "wasm32")]
     #[must_use]
-    pub fn new(types: Vec<JobType>) -> Self {
-        Self::on(types, Arc::new(timeouts::Timeouts), wasm_bindgen_futures::spawn_local::<Task>)
+    pub fn new(types: Vec<JobType>, storage: Arc<dyn Storage>) -> Self {
+        Self::on(types, Arc::new(timeouts::Timeouts), storage, wasm_bindgen_futures::spawn_local::<Task>)
     }
 
-    /// Runs jobs of `types` and [`Sleep`] as tasks `spawn` puts on an event loop, waiting on `timer`.
-    fn on(mut types: Vec<JobType>, timer: Arc<dyn Timer>, spawn: fn(Task)) -> Self {
+    /// Runs jobs of `types` and [`Sleep`] as tasks `spawn` puts on an event loop, waiting on `timer` and reading files
+    /// from `storage`.
+    fn on(mut types: Vec<JobType>, timer: Arc<dyn Timer>, storage: Arc<dyn Storage>, spawn: fn(Task)) -> Self {
         types.push(JobType::of::<Sleep>());
-        let inline = Arc::new(Inline::new(types.clone()));
+        let inline = Arc::new(Inline::new(types.clone(), Arc::clone(&storage)));
 
-        Self { types, inline, timer, spawn, held: Arc::default() }
+        Self { types, inline, timer, storage, spawn, held: Arc::default() }
     }
 
     /// Puts the job `id` of the type `of`, which waits, on the event loop as a task polled whenever it is woken, until
@@ -99,9 +102,10 @@ impl EventLoop {
         self.held.lock().insert(key, Arc::clone(&stage));
         let held = Arc::clone(&self.held);
         let timer = Arc::clone(&self.timer);
+        let storage = Arc::clone(&self.storage);
         (self.spawn)(Box::pin(async move {
             let Taken { bytes, lent, limit, finish } = job;
-            let mut running = of.drive(bytes, lent, limit, timer);
+            let mut running = of.drive(bytes, lent, limit, timer, storage);
             let ended = future::poll_fn(|context| poll(&stage, &mut running, context)).await;
             // Dropped before it is answered, so the pins its future holds are let go of first.
             drop(running);

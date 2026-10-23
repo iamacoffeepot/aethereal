@@ -42,6 +42,7 @@ pub mod section;
 mod sleep;
 mod source;
 mod stage;
+mod storage;
 mod stream;
 mod subscribers;
 mod time;
@@ -96,6 +97,7 @@ pub use stage::{
     Cycle, Cycled, Cycling, Drained, End, Follows, InCycle, On, Own, Place, Present, Render, Stage, StandsAfter, Start,
     Stop, Tick, Unshared,
 };
+pub use storage::{Namespace, NoStorage, Reading, Storage, Unread};
 pub use stream::{
     Enough, More, Number, Open, Part, Serving, Stream, StreamKey, Streamed, Streaming, Streams, Taken, Unreachable,
     Unsent,
