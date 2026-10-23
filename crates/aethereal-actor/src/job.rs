@@ -291,6 +291,48 @@ impl JobType {
     }
 }
 
+/// The job types a program runs, listed as a tuple, `(Fetch, Decode)`: what its host's runners are made to run
+/// (ADR-0029).
+#[cfg(feature = "std")]
+pub trait JobList {
+    /// Each type listed, in order.
+    fn types() -> Vec<JobType>;
+}
+
+#[cfg(feature = "std")]
+impl JobList for () {
+    fn types() -> Vec<JobType> {
+        Vec::new()
+    }
+}
+
+#[cfg(feature = "std")]
+macro_rules! job_lists {
+    ($( [$($job:ident)*] )*) => {$(
+        impl<$($job: Job),*> JobList for ($($job,)*) {
+            fn types() -> Vec<JobType> {
+                alloc::vec![$(JobType::of::<$job>()),*]
+            }
+        }
+    )*};
+}
+
+#[cfg(feature = "std")]
+job_lists! {
+    [A]
+    [A B]
+    [A B C]
+    [A B C D]
+    [A B C D E]
+    [A B C D E F]
+    [A B C D E F G]
+    [A B C D E F G H]
+    [A B C D E F G H I]
+    [A B C D E F G H I J]
+    [A B C D E F G H I J K]
+    [A B C D E F G H I J K L]
+}
+
 /// The future that reads the job `J` of `bytes`, which is lent `lent`, within `limit` bytes, runs it on `timer`, and
 /// writes what it answers with. Each reference read out of the job is a pin of its own, and each change to a pin made as it is polled
 /// or dropped goes onto the queue it was lent.

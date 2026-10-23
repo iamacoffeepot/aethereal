@@ -13,11 +13,12 @@ pub use windows::WindowsSettings;
 
 use crate::canvas::Shown;
 use crate::serving::{Drawing, Serving};
-use crate::{Browser, Hosted, Listening, Performance};
+use crate::{Browser, EventLoop, Hosted, Listening, Performance};
 use aethereal_data::Plain;
 use aethereal_substrate::{Engine, Host, ProgramError, Serves, Settled, Unbuilt};
 use aethereal_window::Hosting;
 use core::pin::Pin;
+use std::sync::Arc;
 use wasm_bindgen::{JsCast, JsError, JsValue};
 use web_sys::HtmlCanvasElement;
 
@@ -103,11 +104,15 @@ impl Host for Browser<Performance> {
     type Exit = Starting;
     type Error = ProgramError;
 
-    /// Bootstraps the program on the page, each root's bootstrap awaited before the next begins, then starts it: its
-    /// `Start` runs in the first frame the page calls (ADR-0020).
+    /// Bootstraps the program on the page, each root's bootstrap awaited before the next begins, makes its runner for
+    /// the job types the program runs, on the page's event loop (ADR-0029), then starts it: its `Start` runs in the
+    /// first frame the page calls (ADR-0020).
     fn run(settled: Settled<Self>) -> Result<Starting, ProgramError> {
+        let jobs = settled.jobs().to_vec();
+
         Ok(Box::pin(async move {
-            let (engine, paging) = settled.bootstrap(Paging::new()).await?;
+            let (mut engine, paging) = settled.bootstrap(Paging::new()).await?;
+            engine.set_jobs(Arc::new(EventLoop::new(jobs)));
 
             Ok(paging.start(engine))
         }))

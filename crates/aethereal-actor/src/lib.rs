@@ -77,7 +77,7 @@ pub use instances::{Instances, Lent};
 pub use item::Item;
 pub use job::{Copied, Driven, Job, JobId, Runner, Running, Submitted, Unrun};
 #[cfg(feature = "std")]
-pub use job::{JobType, Lending, Outcome, Produced};
+pub use job::{JobList, JobType, Lending, Outcome, Produced};
 pub use mail::{Mail, MailId};
 pub use path::{
     Beneath, Child, HandlersNeedIn, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Parent, Path, PathTo, Placed, There,

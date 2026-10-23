@@ -163,8 +163,8 @@ pub struct Engine {
     handed: Vec<Gift>,
     /// The sources the chassis has made, to bring what it pushes onto their feeds in (ADR-0010).
     sources: Vec<bring::Bringing>,
-    /// What runs the jobs turns run (ADR-0018).
-    jobs: Arc<dyn Jobs>,
+    /// What runs the jobs turns run (ADR-0018): none until its host makes it.
+    runner: jobs::Runner,
     /// The jobs that have run, pushed by whatever ran them, to bring in at the next bring.
     finished: Arc<SegQueue<jobs::Finished>>,
     /// The token each job in flight holds a copy of in its finish, so the copies beside this one count them.
@@ -444,7 +444,7 @@ impl Engine {
             unbuffered: Vec::new(),
             handed: Vec::new(),
             sources: Vec::new(),
-            jobs: Arc::new(Inline::new(Vec::new())),
+            runner: jobs::Runner::Unmade,
             finished: Arc::new(SegQueue::new()),
             in_flight: Arc::new(()),
             waiting_jobs: VecDeque::new(),

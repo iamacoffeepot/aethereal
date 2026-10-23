@@ -1,9 +1,13 @@
 //! The headless host as a program's host: its own section, and how it bootstraps and runs a program (ADR-0029).
 
-use crate::{Exit, Headless};
+#[cfg(test)]
+mod tests;
+
+use crate::{Exit, Headless, Runners};
 use aethereal_data::Plain;
 use aethereal_substrate::{Builds, Host, ProgramError, Settled};
 use core::time::Duration;
+use std::sync::Arc;
 
 /// How the headless host runs a program: its section, `running` (ADR-0028).
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
@@ -41,12 +45,15 @@ impl Host for Headless {
 }
 
 impl Builds for Headless {
-    /// Bootstraps the program, blocking this thread on each root's bootstrap, and the host holding its engine on as
-    /// many workers as its settings say.
+    /// Bootstraps the program, blocking this thread on each root's bootstrap, then makes its runners for the job
+    /// types the program runs, on the cores its workers leave free (ADR-0029): the host holding its engine on as many
+    /// workers as its settings say.
     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
         let workers = settled.engine().worker_threads();
+        let jobs = settled.jobs().to_vec();
 
-        let (engine, ()) = pollster::block_on(settled.bootstrap(()))?;
+        let (mut engine, ()) = pollster::block_on(settled.bootstrap(()))?;
+        engine.set_jobs(Arc::new(Runners::beside(jobs, workers)));
 
         Ok(Self::new(engine, workers))
     }
