@@ -8,6 +8,7 @@ mod walk;
 use crate::Gpu;
 use crate::compute::{self, Array, ComputeId, Computed, CreateCompute};
 use crate::dispatch::{self, Computes, CreateDispatch, DispatchId, DispatchRefused, Dispatched, Dispatches, Runs, Use};
+use crate::draw_list::{DrawList, EntryRefused, ListRefused, Listing, Lists, Placements};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
 use crate::frame::{
     self, CreateFrame, DepthUse, Does, EffectReads, Ends, Frame, FrameId, FrameRefused, Framed, Holds, Load,
@@ -158,8 +159,8 @@ pub struct RendererConfig {
 
 /// What an actor asks the renderer: to make a mesh, a texture, a program, a compute program, an effect, instances,
 /// uniforms, storage, or a frame, to write instances, uniforms, or storage it made, to place what is drawn or dispatch
-/// what is computed, the shape of a pass it joins, to release what it made, to read back what it draws or storage, or to
-/// time what it draws.
+/// what is computed, to list its placements in a pass in order, the shape of a pass it joins, to release what it made,
+/// to read back what it draws or storage, or to time what it draws.
 pub struct Rendering;
 
 impl Protocol for Rendering {
@@ -176,6 +177,7 @@ impl Protocol for Rendering {
         WriteStorage,
         Place,
         CreateDispatch,
+        DrawList,
         ShapeOf,
         CreateEffect,
         CreateFrame,
@@ -234,6 +236,10 @@ impl Carries<Place> for Rendering {
     type Answers = (Placed,);
 }
 
+impl Carries<DrawList> for Rendering {
+    type Answers = ();
+}
+
 impl Carries<ShapeOf> for Rendering {
     type Answers = (Shaped,);
 }
@@ -279,8 +285,9 @@ pub enum Release {
 }
 
 /// What the renderer has made, and who made each, with the samplers its placements, dispatches, and effects share, the
-/// frames that end on textures in the order they run, `order`, the longest side of a texture and the most workgroups
-/// along one dimension the GPU makes and dispatches, and each window it draws to, in the order its chassis opened them.
+/// lists each actor drew its placements in a pass by, the frames that end on textures in the order they run, `order`,
+/// the longest side of a texture and the most workgroups along one dimension the GPU makes and dispatches, and each
+/// window it draws to, in the order its chassis opened them.
 struct Kept {
     ids: Ids,
     makers: Makers,
@@ -293,6 +300,7 @@ struct Kept {
     storage: Made<Storage>,
     placements: Made<Placement>,
     dispatches: Made<Dispatching>,
+    lists: Lists,
     reads: HashMap<u64, Reading>,
     samplers: HashMap<Sampling, wgpu::Sampler>,
     frames: Made<Walk>,
@@ -421,13 +429,14 @@ struct Placement {
     joins: Vec<Joined>,
 }
 
-/// One pass a placement draws in, with what it draws there with: the program's id, which a pass draws placements
-/// together by, its pipeline and what it was made against, the bind groups made for it, from group 1 when the program
-/// reads targets of the pass and from group 0 when it reads none, and the textures and storage they bind, by their
-/// ids, with the storage the placement reads its counts from.
+/// One pass a placement draws in, with what it draws there with: whether it is drawn loose or by its maker's list, the
+/// program's id, which a pass draws loose placements together by, its pipeline and what it was made against, the bind
+/// groups made for it, from group 1 when the program reads targets of the pass and from group 0 when it reads none,
+/// and the textures and storage they bind, by their ids, with the storage the placement reads its counts from.
 struct Joined {
     frame: Frame,
     pass: PassName,
+    listing: Listing,
     fits: Fits,
     program: u64,
     pipeline: wgpu::RenderPipeline,
@@ -507,6 +516,7 @@ impl Actor for Renderer {
         WriteStorage,
         Place,
         CreateDispatch,
+        DrawList,
         ShapeOf,
         CreateEffect,
         CreateFrame,
@@ -1162,6 +1172,23 @@ impl Handles<CreateDispatch> for Renderer {
     }
 }
 
+/// A list of the sender's own placements in a pass, checked whole and kept in place of its last for the pass, or
+/// refused and logged, the last standing (ADR-0031). The sender is watched from the first list it sends, as from the
+/// first thing it made, so its lists go when it ends.
+impl Handles<DrawList> for Renderer {
+    type Sends = ();
+
+    fn handle(&mut self, list: DrawList, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let listed = self.kept_for(turn, |kept, by| kept.listed(&list, by))?;
+        if let Err(why) = listed {
+            let DrawList { frame, pass, .. } = list;
+            turn.log(Level::Warn, format_args!("the list for {pass:?} of {frame:?} was refused: {why:?}"));
+        }
+
+        Ok(())
+    }
+}
+
 impl Handles<ShapeOf> for Renderer {
     type Sends = (ToSender<Shaped>,);
 
@@ -1260,7 +1287,7 @@ impl Handles<Release> for Renderer {
             }
             Release::Uniforms(uniforms) => kept.uniforms.release(uniforms.id, by).map(drop),
             Release::Storage(storage) => kept.storage.release(storage.id, by).map(drop),
-            Release::Placement(placement) => kept.placements.release(placement.id, by).map(drop),
+            Release::Placement(placement) => kept.release_placement(placement.id, by),
             Release::Dispatch(dispatch) => kept.dispatches.release(dispatch.id, by).map(drop),
             Release::Frame(frame) => {
                 let released = kept.frames.release(frame.id, by);
@@ -1301,21 +1328,7 @@ impl Handles<Ended> for Renderer {
         let kept = turn.open(&mut self.kept)?;
         let watched = kept.makers.ended(maker);
         if watched {
-            kept.meshes.release_all(maker);
-            kept.textures.release_all(maker);
-            kept.programs.release_all(maker);
-            kept.computes.release_all(maker);
-            for (id, made) in kept.instances.release_all(maker) {
-                kept.last_drawn(id, made.held.length);
-            }
-            kept.uniforms.release_all(maker);
-            kept.storage.release_all(maker);
-            kept.placements.release_all(maker);
-            kept.dispatches.release_all(maker);
-            let frames: Vec<(u64, Option<u64>)> =
-                kept.frames.release_all(maker).into_iter().map(|(id, walk)| (id, walk.texture())).collect();
-            kept.unframed(frames);
-            let held = kept.reorder_after_release();
+            let held = kept.ended(maker);
             log_held(turn, &held);
         }
 
@@ -1338,6 +1351,7 @@ impl Kept {
             storage: Made::default(),
             placements: Made::default(),
             dispatches: Made::default(),
+            lists: Lists::default(),
             reads: HashMap::new(),
             samplers: HashMap::new(),
             frames: Made::default(),
@@ -1347,6 +1361,38 @@ impl Kept {
             most_workgroups: device.limits().max_compute_workgroups_per_dimension,
             windows,
         }
+    }
+
+    /// Releases the placement `placement`, when `by` made it, taking it out of `by`'s lists in this turn (ADR-0031).
+    fn release_placement(&mut self, placement: u64, by: ActorId) -> Owned<()> {
+        let released = self.placements.release(placement, by);
+        if let Owned::Mine(made) = &released {
+            self.lists.released(placement, by, made.listed());
+        }
+
+        released.map(drop)
+    }
+
+    /// Releases everything `maker`, which ended, made, with its lists, and answers each dispatch that ran before and
+    /// is held now.
+    fn ended(&mut self, maker: ActorId) -> Vec<u64> {
+        self.meshes.release_all(maker);
+        self.textures.release_all(maker);
+        self.programs.release_all(maker);
+        self.computes.release_all(maker);
+        for (id, made) in self.instances.release_all(maker) {
+            self.last_drawn(id, made.held.length);
+        }
+        self.uniforms.release_all(maker);
+        self.storage.release_all(maker);
+        self.placements.release_all(maker);
+        self.lists.ended(maker);
+        self.dispatches.release_all(maker);
+        let frames: Vec<(u64, Option<u64>)> =
+            self.frames.release_all(maker).into_iter().map(|(id, walk)| (id, walk.texture())).collect();
+        self.unframed(frames);
+
+        self.reorder_after_release()
     }
 
     /// Notes that the instances `instances` were released holding `length` records: what is placed of them draws
@@ -1402,9 +1448,15 @@ impl Kept {
         // A program that reads targets binds them in its first group, which the pass binds.
         let first = u32::from(!reads.is_empty());
 
+        let listing = match join.order {
+            placement::Order::Loose => Listing::Loose,
+            placement::Order::Listed => Listing::Listed { stamp: 0 },
+        };
+
         Ok(Joined {
             frame: join.frame,
             pass: join.pass,
+            listing,
             fits: Fits { shape: program.shape, reads: reads.clone() },
             program: join.program.id,
             pipeline: program.pipeline.clone(),
@@ -1601,7 +1653,8 @@ impl Kept {
     }
 
     /// Drops what the renderer draws to `window` with, which has closed: its own main frame of it, and the frame an
-    /// actor made in its place, with what each made for it. Answers whether it drew to the window.
+    /// actor made in its place, with what each made for it, and the lists for it, as no window's id is given again.
+    /// Answers whether it drew to the window.
     fn closed(&mut self, window: WindowId) -> bool {
         let Some(at) = self.windows.iter().position(|windowed| windowed.window == window) else {
             return false;
@@ -1610,6 +1663,7 @@ impl Kept {
         if let Main::Made(id) = closed.main {
             self.frames.forget(id);
         }
+        self.lists.unframed(Frame::Main(window));
 
         true
     }
@@ -1660,8 +1714,9 @@ impl Kept {
     }
 
     /// Notes that the frames `released` are gone, each with the texture it ends on, if any: a window's main frame is
-    /// the renderer's own again when it was one of them, and the id of each texture is taken back, as the frames and
-    /// placements that read it keep it as it was last drawn (ADR-0025).
+    /// the renderer's own again when it was one of them, with the lists for it, and the id of each texture is taken
+    /// back, as the frames and placements that read it keep it as it was last drawn, with the lists for the frame that
+    /// ended on it dropped (ADR-0025, ADR-0031).
     fn unframed(&mut self, released: impl IntoIterator<Item = (u64, Option<u64>)>) {
         for (id, texture) in released {
             for windowed in &mut self.windows {
@@ -1671,8 +1726,23 @@ impl Kept {
             }
             if let Some(texture) = texture {
                 self.textures.forget(texture);
+                self.lists.unframed(Frame::Texture(FrameId { id }));
             }
         }
+    }
+
+    /// Checks `list`, sent by `by`, whole, and keeps it in place of `by`'s last list for its pass: refused when its
+    /// frame is not kept, or as [`Lists::check`] refuses it.
+    fn listed(&mut self, list: &DrawList, by: ActorId) -> Result<(), ListRefused> {
+        let framed = match list.frame {
+            Frame::Main(window) => self.windowed(window).is_some(),
+            Frame::Texture(frame) => self.frames.get(frame.id).is_some_and(|walk| walk.texture().is_some()),
+        };
+        if !framed {
+            return Err(ListRefused::Frame);
+        }
+
+        self.lists.check(list, by, &mut self.placements)
     }
 
     /// Who owns the main frame of `window`: the maker of the frame that is it, none while it is the renderer's own or
@@ -1919,9 +1989,9 @@ impl Kept {
         }
     }
 
-    /// Records into `recording` every placement that joins the pass `pass` of `frame`, whose programs are made against
-    /// `fits`, each program's together, setting each pipeline once, with the targets the pass reads bound at group 0
-    /// through `read` when it reads any. A join of another shape, or reading other targets, is not drawn.
+    /// Records into `recording` every placement drawn in the pass `pass` of `frame`, whose programs are made against
+    /// `fits`, in the order [`drawn`](Self::drawn) answers, setting a pipeline only where the placement drawn before
+    /// used another program, with the targets the pass reads bound at group 0 through `read` when it reads any.
     fn draw(
         &self,
         recording: &mut wgpu::RenderPass<'_>,
@@ -1929,21 +1999,14 @@ impl Kept {
         fits: &Fits,
         read: &ReadGroup,
     ) {
-        let mut joined: Vec<(&Placement, &Joined)> = self
-            .placements
-            .values()
-            .flat_map(|placement| placement.joins.iter().map(move |join| (placement, join)))
-            .filter(|(_, join)| join.draws_in(frame, pass, fits))
-            .collect();
         // The targets it reads are bound once, for every program that joins it, which lists nothing in group 0.
         let reads = !fits.reads.is_empty();
         if reads {
             recording.set_bind_group(0, &read.group, &[]);
         }
         let first = u32::from(reads);
-        joined.sort_unstable_by_key(|(_, join)| join.program);
         let mut pipeline = 0;
-        for (placement, join) in joined {
+        for (_, placement, join) in self.drawn((frame, pass), fits) {
             let count = match &placement.drawing {
                 Drawing::Count(count) => Count::Given(*count),
                 Drawing::Records { instances, length: Length::Live, .. } => {
@@ -1974,6 +2037,33 @@ impl Kept {
             }
         }
     }
+
+    /// Each placement drawn in the pass `pass` of `frame`, whose programs are made against `fits`, under its id, with
+    /// its join of the pass, in the order it is drawn: those joined loose, each program's together, then each actor's
+    /// list back to back, in its order (ADR-0031). A join of another shape, or reading other targets, is not drawn,
+    /// and neither is one joined listed that no list holds.
+    fn drawn(&self, (frame, pass): (Frame, PassName), fits: &Fits) -> Vec<(u64, &Placement, &Joined)> {
+        let mut drawn: Vec<(u64, &Placement, &Joined)> = self
+            .placements
+            .iter()
+            .flat_map(|(id, placement)| placement.joins.iter().map(move |join| (id, placement, join)))
+            .filter(|(_, _, join)| {
+                let draws = join.draws_in(frame, pass, fits);
+                let unlisted = join.listing == Listing::Loose;
+                draws && unlisted
+            })
+            .collect();
+        drawn.sort_unstable_by_key(|(_, _, join)| join.program);
+        let listed = self.lists.of(frame, pass).flatten().filter_map(|entry| {
+            // Neither misses: a release takes its placement out of its maker's lists in the release's turn.
+            let placement = self.placements.get(entry.placement)?;
+            let join = placement.joins.get(entry.join)?;
+            join.draws_in(frame, pass, fits).then_some((entry.placement, placement, join))
+        });
+        drawn.extend(listed);
+
+        drawn
+    }
 }
 
 /// How many instances a placement draws at a frame: a count known to the CPU, or as many as the five words of
@@ -1987,7 +2077,38 @@ impl Joined {
     /// Whether it draws in the pass `pass` of `frame`, whose programs are made against `fits`: the pass it joined, of
     /// the shape it was made against, reading what it was made to read.
     fn draws_in(&self, frame: Frame, pass: PassName, fits: &Fits) -> bool {
-        self.frame == frame && self.pass == pass && self.fits == *fits
+        self.joins(frame, pass) && self.fits == *fits
+    }
+
+    /// Whether it is the join of the pass `pass` of `frame`, whatever that pass is made against now.
+    fn joins(&self, frame: Frame, pass: PassName) -> bool {
+        self.frame == frame && self.pass == pass
+    }
+}
+
+impl Placement {
+    /// The passes it joins listed, each of its frame.
+    fn listed(&self) -> impl Iterator<Item = (Frame, PassName)> {
+        self.joins.iter().filter(|join| join.listing != Listing::Loose).map(|join| (join.frame, join.pass))
+    }
+}
+
+/// What a list's check finds of the placements kept.
+impl Placements for Made<Placement> {
+    fn listing(
+        &mut self,
+        placement: u64,
+        by: ActorId,
+        (frame, pass): (Frame, PassName),
+    ) -> Result<(usize, &mut Listing), EntryRefused> {
+        let joins = match self.owned(placement, by) {
+            Owned::Mine(made) => &mut made.joins,
+            Owned::NotOwner => return Err(EntryRefused::NotOwner),
+            Owned::Unknown => return Err(EntryRefused::Placement),
+        };
+        let at = joins.iter().position(|join| join.joins(frame, pass)).ok_or(EntryRefused::Unjoined)?;
+
+        Ok((at, &mut joins[at].listing))
     }
 }
 
