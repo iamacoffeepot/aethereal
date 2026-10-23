@@ -89,11 +89,9 @@ What the engine does not give a stream is the protocol's: which open stream a pa
 
 ```rust
 pub trait Stream: 'static {
-    type Open;                      // what the asker opens a stream with
-    type Part;                      // what each part carries
+    type Open: Kind;                // what the asker opens a stream with: `Open<Self>` goes by its name
+    type Part: Kind;                // what each part carries: `Part<Self>` goes by its name
     type Done: Kind;                // the answer that ends it
-    const OPEN: KindName;           // the name of its request, `Open<Self>`
-    const PART: KindName;           // the name of its parts, `Part<Self>`
 }
 
 pub struct Streamed<S> { .. }       // the protocol: `Open<S>` answered with `S::Done`, `More`, and `Enough`
@@ -121,7 +119,7 @@ self.serving.take(key).map(|stream| stream.finish(turn, &ReadDone::Ok));        
 - **Stopping** is an `Enough`. The asker's `Streams` passes over parts that arrive after it, granting nothing for them, as an asker passes over an answer it no longer waits for (below). The receiver's `Serving::stop` takes the stream out, and the receiver ends it with its answer.
 - **Ending** is `Streaming::finish(self, &done)`, which takes the stream by value and answers the request it holds. A stream is reached to send through `Serving::get_mut` and taken out to finish, so no part is sent after the answer, which the build checks. A `Streaming` dropped without finishing drops its `Held`, and the engine answers `Unreplied`.
 - **A receiver watches each asker** as its first stream opens, and `Serving::ended` hands back the streams of one that has ended. Their parts would reach no one, and dropping them lets go of their requests, where a receiver would otherwise keep them, and whatever it keeps beside them, for as long as it lives.
-- **A stream's request and parts are named by the stream.** A kind's id is its name and its layout with every name inside removed (ADR-0006), so one name for every `Part` would give the parts of two streams of one layout one id, and a file's chunk could be read as a log's line. A stream names its own in `Stream::OPEN` and `Stream::PART`, and `Open<S>` and `Part<S>` take them: `impl<S: Stream> Kind for Part<S>`, written by hand, the longhand ADR-0006 keeps for where the derive cannot write a kind, as a name taken from a type parameter. The stop is `Enough`, as the lifecycle's last stage is already `Stop` (ADR-0020).
+- **A stream's request and parts go by the names of what they carry.** `Open<S>` takes the name of `S::Open`, and `Part<S>` of `S::Part`: `impl<S: Stream> Kind for Part<S>`, written by hand, the longhand ADR-0006 keeps for where the derive cannot write a kind, as a name taken from a type parameter. Beside the value each carries the stream's number, so its layout is not the value's, and an `Open<Files>` is never read as the `Read` it carries. A kind's id is its name and its layout with every name inside removed (ADR-0006), so a kind is the request or the part of one stream: two streams whose parts are one kind have parts of one id. **A type that handles two kinds of one id does not build**, as its declaration is checked when the program is built, beside the check that it handles each answer kind with one kind of context: mail is handed to a handler by its kind's id alone, so the engine could hand both to only one handler. The check holds for every kind, not streams alone: any two types of one name and layout are one kind. The stop is `Enough`, as the lifecycle's last stage is already `Stop` (ADR-0020).
 
 **What an asker keeps for an answer is kept by the engine; what it keeps for other mail stays its own.** ADR-0012's root and depth still name a piece of mail's chain, for tracing and for mail that is not a request.
 
@@ -146,7 +144,8 @@ self.serving.take(key).map(|stream| stream.finish(turn, &ReadDone::Ok));        
 - **Matching by root and depth (ADR-0012).** Nothing new. It cannot tell two asks of one turn apart, or follow an answer given in a later turn.
 - **The context kept in the asker's own state, keyed by the request's id.** No engine table. The asker files and finds it by hand, and the engine cannot answer for a receiver that ended without running the asker's code.
 - **Parts tied to the request by the engine**, each carrying the request's tie and handed to the asker with a copy of its context, as the answer is. The receiver's held request would then be the stream, with no number and no cast. It needs a case of the tie, a handler for parts, parts in a protocol's declaration and in a guest's records, and contexts found without being taken. And the asker still keeps in its own state whatever a stream builds up, since what the engine keeps is handed out as a copy, so it still needs something to find that state by.
-- **A number in each protocol's own kinds**, a `Token` only the library makes. No trait for naming parts, but every author writes the field again, and nothing checks that a streamed kind has one.
+- **A number in each protocol's own kinds**, a `Token` only the library makes. No wrapper kinds, but every author writes the field again, and nothing checks that a streamed kind has one.
+- **Names for a stream's request and parts declared on the stream**, `Stream::OPEN` and `Stream::PART`. One kind could then be the part of two streams. But a stream would name two kinds beside the kinds it carries, which already have names.
 - **The request's own id as the number.** It is unique already. But `ask` would have to hand it back, and since the context is passed in the same call, the answer would have to carry the id too: a change to `Answer` for one use.
 - **One count for every `Streams` an actor keeps.** Its numbers are then unique across protocols, but every stream opened has to be handed the count, and nothing stops an author handing it another.
 - **A `More` and an `Enough` for each protocol**, `More<S>` and `Enough<S>`. They would need names of their own, as a `Part` does, two more for each protocol, for what eight bytes of a computed id say.

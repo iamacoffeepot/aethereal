@@ -23,9 +23,9 @@ impl<S: Stream> Open<S> {
     }
 }
 
-/// Named by its stream, as `S::OPEN`.
+/// Named as what it opens with is.
 impl<S: Stream> Kind for Open<S> {
-    const NAME: KindName = S::OPEN;
+    const NAME: KindName = <S::Open as Kind>::NAME;
 }
 
 /// One part of a stream of `S`, with the number of the stream it belongs to. Only a
@@ -47,9 +47,9 @@ impl<S: Stream> Part<S> {
     }
 }
 
-/// Named by its stream, as `S::PART`.
+/// Named as what it carries is.
 impl<S: Stream> Kind for Part<S> {
-    const NAME: KindName = S::PART;
+    const NAME: KindName = <S::Part as Kind>::NAME;
 }
 
 /// The asker lets the receiver send `credit` more parts of one stream.

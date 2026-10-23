@@ -6,7 +6,7 @@ use aethereal_actor::{
     Handles, More, Number, Open, Part, Serving, Stream, StreamKey, Streamed, Streams, Taken, Time, ToAny, ToSender,
     ToType, Top, Turn, Unanswered, Unsent,
 };
-use aethereal_data::{Bound, KindName, Plain};
+use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Clock, Engine};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -29,7 +29,7 @@ fn said() -> BTreeMap<&'static str, Vec<String>> {
     SAID.with_borrow_mut(mem::take)
 }
 
-/// What a stream is opened with: how many chunks to send, and after how many sent its receiver closes.
+/// What a file stream is opened with: how many chunks to send, and after how many sent its receiver closes.
 #[derive(Plain)]
 #[kind(name = "aether.test.stream.read")]
 struct Read {
@@ -37,7 +37,7 @@ struct Read {
     close_after: Option<u32>,
 }
 
-/// One part: the chunk's place in its stream.
+/// One part of a file stream: the chunk's place in its stream.
 #[derive(Plain)]
 #[kind(name = "aether.test.stream.chunk")]
 struct Chunk {
@@ -52,7 +52,23 @@ enum ReadDone {
     Stopped,
 }
 
-/// How a log stream ended: a second protocol, whose parts have the same layout as a file's.
+/// What a log stream is opened with, as a file stream is: a second protocol, its kinds of the same layouts as a
+/// file stream's.
+#[derive(Plain)]
+#[kind(name = "aether.test.stream.tail")]
+struct Tail {
+    lines: u32,
+    close_after: Option<u32>,
+}
+
+/// One part of a log stream.
+#[derive(Plain)]
+#[kind(name = "aether.test.stream.line")]
+struct Line {
+    index: u32,
+}
+
+/// How a log stream ended.
 #[derive(Debug, Plain)]
 #[kind(name = "aether.test.stream.log_done")]
 enum LogDone {
@@ -67,40 +83,75 @@ impl Stream for Files {
     type Open = Read;
     type Part = Chunk;
     type Done = ReadDone;
-
-    const OPEN: KindName = KindName::new("aether.test.stream.files.open");
-    const PART: KindName = KindName::new("aether.test.stream.files.part");
 }
 
 /// Log streams.
 struct Logs;
 
 impl Stream for Logs {
-    type Open = Read;
-    type Part = Chunk;
+    type Open = Tail;
+    type Part = Line;
     type Done = LogDone;
-
-    const OPEN: KindName = KindName::new("aether.test.stream.logs.open");
-    const PART: KindName = KindName::new("aether.test.stream.logs.part");
 }
 
-/// What a stream's answers are, for a receiver that serves both protocols with one pump.
-trait Ends: Stream<Part = Chunk> {
+/// What the test's two streams share, so one receiver and one asker serve both the same way: how many parts a
+/// request asks for and after how many its receiver closes, a part at a place, and the answers.
+trait Ends: Stream {
     const NAME: &'static str;
     const SENT: Self::Done;
     const STOPPED: Self::Done;
+
+    fn asked(open: Self::Open) -> (u32, Option<u32>);
+
+    fn asking(parts: u32, close_after: Option<u32>) -> Self::Open;
+
+    fn part(index: u32) -> Self::Part;
+
+    fn index(part: &Self::Part) -> u32;
 }
 
 impl Ends for Files {
     const NAME: &'static str = "files";
     const SENT: ReadDone = ReadDone::Sent;
     const STOPPED: ReadDone = ReadDone::Stopped;
+
+    fn asked(read: Read) -> (u32, Option<u32>) {
+        (read.chunks, read.close_after)
+    }
+
+    fn asking(chunks: u32, close_after: Option<u32>) -> Read {
+        Read { chunks, close_after }
+    }
+
+    fn part(index: u32) -> Chunk {
+        Chunk { index }
+    }
+
+    fn index(chunk: &Chunk) -> u32 {
+        chunk.index
+    }
 }
 
 impl Ends for Logs {
     const NAME: &'static str = "logs";
     const SENT: LogDone = LogDone::Sent;
     const STOPPED: LogDone = LogDone::Stopped;
+
+    fn asked(tail: Tail) -> (u32, Option<u32>) {
+        (tail.lines, tail.close_after)
+    }
+
+    fn asking(lines: u32, close_after: Option<u32>) -> Tail {
+        Tail { lines, close_after }
+    }
+
+    fn part(index: u32) -> Line {
+        Line { index }
+    }
+
+    fn index(line: &Line) -> u32 {
+        line.index
+    }
 }
 
 /// What a library still has to send of one stream.
@@ -150,7 +201,7 @@ impl Actor for Library {
 }
 
 /// Opens the stream `open` asks for, to send once credit comes.
-fn serve<S: Ends<Open = Read>, Sends, I>(
+fn serve<S: Ends, Sends, I>(
     serving: &mut Serving<S>,
     left: &mut Vec<Left>,
     turn: &mut Turn<'_, Library, Sends>,
@@ -159,8 +210,9 @@ fn serve<S: Ends<Open = Read>, Sends, I>(
 where
     Sends: Allows<ToSender<S::Done>, I>,
 {
-    let (key, read) = serving.open::<_, _, I>(turn, open)?;
-    left.push(Left { key, next: 0, chunks: read.chunks, close_after: read.close_after });
+    let (key, asked) = serving.open::<_, _, I>(turn, open)?;
+    let (chunks, close_after) = S::asked(asked);
+    left.push(Left { key, next: 0, chunks, close_after });
 
     Ok(())
 }
@@ -185,7 +237,7 @@ where
     let stream = &mut left[place];
     let mut sent = 0;
     while stream.next < stream.chunks {
-        match streaming.send::<_, _, I>(turn, Chunk { index: stream.next }) {
+        match streaming.send::<_, _, I>(turn, S::part(stream.next)) {
             Ok(()) => {}
             Err(Unsent::NoCredit(_)) => break,
             Err(Unsent::Unwritable(error)) => return Err(error.into()),
@@ -352,16 +404,16 @@ impl Actor for Reader {
 }
 
 /// What an order asks to open: the stream's name, the request, and what to keep for it.
-fn opening(words: &[&str]) -> (Read, Tag) {
+fn opening<S: Ends>(words: &[&str]) -> (S::Open, Tag) {
     let name = String::from(words[1]);
-    let chunks = words[2].parse().unwrap_or_default();
+    let parts = words[2].parse().unwrap_or_default();
     let count = words.get(4).and_then(|count| count.parse().ok());
     let then = words.get(3).copied();
     let stop_after = count.filter(|_| then == Some("stop"));
     let close_after = count.filter(|_| then == Some("close"));
     let close_after_first = then == Some("leave");
 
-    (Read { chunks, close_after }, Tag { name, taken: 0, stop_after, close_after_first })
+    (S::asking(parts, close_after), Tag { name, taken: 0, stop_after, close_after_first })
 }
 
 impl Handles<Order> for Reader {
@@ -374,18 +426,21 @@ impl Handles<Order> for Reader {
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let words: Vec<&str> = order.text.split(' ').collect();
-        let (read, tag) = opening(&words);
-        match words[0] {
-            "files" => self.files.open(turn, self.library.protocol(), read, tag)?,
-            _ => self.logs.open(turn, self.library.protocol(), read, tag)?,
-        };
+        let is_files = words[0] == "files";
+        if is_files {
+            let (read, tag) = opening::<Files>(&words);
+            self.files.open(turn, self.library.protocol(), read, tag)?;
+        } else {
+            let (tail, tag) = opening::<Logs>(&words);
+            self.logs.open(turn, self.library.protocol(), tail, tag)?;
+        }
 
         Ok(())
     }
 }
 
 /// Takes `part`, saying it, and stops its stream or closes the reader when what it kept says to.
-fn take<S: Stream<Part = Chunk>, Sends, IM, IE>(
+fn take<S: Ends, Sends, IM, IE>(
     streams: &mut Streams<S, Tag>,
     turn: &mut Turn<'_, Reader, Sends>,
     part: Part<S>,
@@ -396,7 +451,7 @@ where
     let Some(Taken { number, value: chunk, kept: tag }) = streams.part::<_, _, IM>(turn, part)? else {
         return Ok(());
     };
-    say("reader", format!("{} {}", tag.name, chunk.index));
+    say("reader", format!("{} {}", tag.name, S::index(&chunk)));
     tag.taken += 1;
     let stops = tag.stop_after == Some(tag.taken);
     let leaves = tag.close_after_first;
@@ -528,7 +583,7 @@ fn two_streams_to_one_receiver_stay_apart() {
 #[test]
 fn streams_of_two_protocols_to_one_receiver_stay_apart() {
     // Catches credit or a stop for one protocol's stream taken by another's of the same number, and two protocols'
-    // parts of one layout given one kind id.
+    // requests or parts of one layout given one kind id.
     for engine in ENGINES {
         let heard = heard(engine, 1, &["files a 3", "logs l 3"]);
 

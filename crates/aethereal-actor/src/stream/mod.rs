@@ -18,18 +18,19 @@ pub use serving::{Serving, Streaming, Unsent};
 pub use streams::{Streams, Taken};
 
 use crate::{Actors, Carries, Protocol};
-use aethereal_data::{Decode, Encode, Kind, KindName, Schema};
+use aethereal_data::{Decode, Encode, Kind};
 use core::marker::PhantomData;
 
-/// What a stream is opened with, what each of its parts carries, and what ends it, with the names its request and its
-/// parts go by (ADR-0017).
+/// What a stream is opened with, what each of its parts carries, and what ends it (ADR-0017).
 ///
-/// A kind's id is its name and its layout with every name inside it removed (ADR-0006), so one name for every
-/// stream's parts would give the parts of two streams of one layout one id. Each stream names its own:
+/// Its request, [`Open<Self>`], goes by the name of `Open`, and its parts, [`Part<Self>`], by the name of `Part`, each
+/// with the stream's number beside the value. A kind's id is its name and its layout (ADR-0006), so a kind is the
+/// request or the part of one stream: two streams that share one would share a kind id, and a type that handles both
+/// does not build.
 ///
 /// ```
 /// use aethereal_actor::Stream;
-/// use aethereal_data::{KindName, Plain};
+/// use aethereal_data::Plain;
 ///
 /// #[derive(Plain)]
 /// #[kind(name = "aether.doc.read")]
@@ -56,23 +57,92 @@ use core::marker::PhantomData;
 ///     type Open = Read;
 ///     type Part = Chunk;
 ///     type Done = ReadDone;
-///
-///     const OPEN: KindName = KindName::new("aether.doc.files.open");
-///     const PART: KindName = KindName::new("aether.doc.files.part");
 /// }
+/// ```
+///
+/// Two streams whose parts are one kind, taken by one actor, do not build:
+///
+/// ```compile_fail
+/// # use aethereal_actor::{Actor, Beginning, ChildOf, Declared, Ending, Fault, Handles, Part, Stream, Top, Turn};
+/// # use aethereal_data::Plain;
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.doc.read")]
+/// # struct Read;
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.doc.chunk")]
+/// # struct Chunk;
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.doc.done")]
+/// # struct Done;
+/// #
+/// struct Files;
+///
+/// impl Stream for Files {
+///     type Open = Read;
+///     type Part = Chunk;
+///     type Done = Done;
+/// }
+///
+/// struct Logs;
+///
+/// impl Stream for Logs {
+///     type Open = Read;
+///     type Part = Chunk;
+///     type Done = Done;
+/// }
+///
+/// #[derive(Plain)]
+/// #[kind(name = "aether.doc.reader")]
+/// struct Reader;
+///
+/// impl ChildOf for Reader {
+///     type Parent = Top;
+/// }
+///
+/// impl Actor for Reader {
+///     type Config = Reader;
+///     type Key = ();
+///     type Handles = (Part<Files>, Part<Logs>);
+///     type BeginSends = ();
+///     type EndSends = ();
+///
+///     fn begin(reader: Reader, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+///         Ok(reader)
+///     }
+///
+///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+///         Ok(())
+///     }
+/// }
+///
+/// impl Handles<Part<Files>> for Reader {
+///     type Sends = ();
+///
+///     fn handle(&mut self, _: Part<Files>, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+///         Ok(())
+///     }
+/// }
+///
+/// impl Handles<Part<Logs>> for Reader {
+///     type Sends = ();
+///
+///     fn handle(&mut self, _: Part<Logs>, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+///         Ok(())
+///     }
+/// }
+///
+/// const DECLARED: &Declared = Declared::of::<Reader>();
 /// ```
 pub trait Stream: 'static {
     /// What the asker asks to open a stream with.
-    type Open: Schema + Encode<Actors> + Decode<Actors> + 'static;
+    type Open: Kind + Encode<Actors> + Decode<Actors> + 'static;
     /// What each part carries.
-    type Part: Schema + Encode<Actors> + Decode<Actors> + 'static;
+    type Part: Kind + Encode<Actors> + Decode<Actors> + 'static;
     /// The answer that ends a stream.
     type Done: Kind + Encode<Actors> + Decode<Actors> + 'static;
-
-    /// The name of this stream's request, [`Open<Self>`].
-    const OPEN: KindName;
-    /// The name of this stream's parts, [`Part<Self>`].
-    const PART: KindName;
 }
 
 /// The protocol a stream of `S` is opened through: its request, answered with `S::Done`, and the asker's [`More`] and
