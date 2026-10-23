@@ -1,0 +1,4 @@
+[alias]
+# The workspace's commands: `cargo xtask example <example>`, `cargo xtask check`, and the rest `xtask/src/main.rs`
+# lists.
+xtask = "run --package xtask --"

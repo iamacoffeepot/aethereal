@@ -4,8 +4,8 @@
 //! storage, in the items' order, and how many into the instance count of a draw's arguments, held by a third; a
 //! placement in the frame's pass that draws draws as many as the arguments hold, each the item its index names. The
 //! root reads the arguments and the list back and shows the count the GPU wrote beside the count it expects, whether
-//! the list holds the kept items in order, and how long each of the frame's passes took. `build.sh indirect` beside the
-//! examples builds the page.
+//! the list holds the kept items in order, and how long each of the frame's passes took.
+//! `cargo xtask example indirect --serve` builds the page and serves it.
 
 #[cfg(target_arch = "wasm32")]
 mod page;

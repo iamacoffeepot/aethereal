@@ -11,6 +11,21 @@ members = [
     "crates/aethereal-render",
     "crates/aethereal-substrate",
     "crates/aethereal-window",
+    "xtask",
+]
+# Every member but `xtask`, the workspace's commands, which a plain `cargo build` or `cargo test` never compiles: it is
+# run as `cargo xtask`, and linted and tested with the rest by `--workspace`.
+default-members = [
+    "crates/aethereal-actor",
+    "crates/aethereal-chassis-browser",
+    "crates/aethereal-chassis-desktop",
+    "crates/aethereal-chassis-headless",
+    "crates/aethereal-data",
+    "crates/aethereal-data-derive",
+    "crates/aethereal-math",
+    "crates/aethereal-render",
+    "crates/aethereal-substrate",
+    "crates/aethereal-window",
 ]
 # The guest the headless chassis's tests run: built for wasm32 apart from the workspace by the chassis's build script,
 # and a path dependency of its tests, for its types.

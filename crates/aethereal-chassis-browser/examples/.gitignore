@@ -1,2 +1,2 @@
-# What build.sh writes: each example's page, its bindings, and its module.
+# What `cargo xtask example` writes: each example's page, its bindings, and its module.
 /*/pkg/

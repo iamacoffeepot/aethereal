@@ -1,0 +1,17 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The workspace's commands, run as `cargo xtask`: a browser example built and served, and the check CI runs"
+
+# A native-only tool (ADR-0001): it runs cargo and serves files on the machine it is run on. A build for wasm32 compiles
+# it empty.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+serde_json = "1"
+# The bindings' version is the one the browser chassis depends on, so the glue matches the module it binds.
+wasm-bindgen-cli-support = "=0.2.129"
+
+[lints]
+workspace = true
