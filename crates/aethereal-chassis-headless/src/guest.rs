@@ -16,9 +16,9 @@
 //! back to it is refused.
 
 use aethereal_actor::records::{
-    self, Born, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, Kept, Keying, LineRecord, Naming, Other,
-    OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord, Spawning, StageRecord,
-    StoodRecord, Stopped, TurnEnds, WatchRecord, blob_at, refusal,
+    self, Born, CancelRecord, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, JobRecord, Kept, Keying,
+    LineRecord, Naming, Other, OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord,
+    Spawning, StageRecord, StoodRecord, Stopped, TurnEnds, WatchRecord, blob_at, refusal,
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
@@ -98,7 +98,7 @@ struct Instance {
     begin: TypedFunc<(u32, u64, u64, u32), u32>,
     take_in: TypedFunc<(u32, u64, u64, u32), u32>,
     take_out: TypedFunc<u32, u64>,
-    turns: TypedFunc<(u32, u32, u32), u64>,
+    turns: TypedFunc<(u32, u32, u32, u64), u64>,
     pins: TypedFunc<(), u64>,
     holders: TypedFunc<(), u64>,
     end: TypedFunc<(u32, u32), u64>,
@@ -1124,7 +1124,7 @@ impl Runs for Guest {
     /// fails or closes it, as the engine does. An actor taken out of the instance it began in, another part's, is
     /// first taken into this part's.
     fn prepare(&mut self, preparing: Preparing<'_>) {
-        let (batch, instances, reads) = preparing.hosted();
+        let (batch, instances, reads, sent) = preparing.hosted();
         // The engine prepares no batch while a call into a guest is under way, so the instance is never lent out here.
         let read_limit = instances.read_limit();
         let Ok(mut held) = instances.lend(self.running.code.key, || Instance::load(&self.running.code, read_limit))
@@ -1146,7 +1146,7 @@ impl Runs for Guest {
         let lent = Reads { table, made, seats: &mut *seats, puts, holds };
         let mut answering = Answering::of(lent, &mut *instances, &self.running.code.codes, &mut self.given, &holdings);
         let Instance { store, turns, .. } = &mut *held;
-        let called = lending(store, &mut answering, |store| turns.call(store, (handle, items, len)));
+        let called = lending(store, &mut answering, |store| turns.call(store, (handle, items, len, sent)));
         let wrote = called.map_err(|_| Broke::Trapped).and_then(|out| held.out_head(out));
         // The references a child taken out of the instance in the call holds go with it, so their pins are offered
         // to its turn before the call's own changes, which drop the instance's references to them, are taken in.
@@ -1684,7 +1684,13 @@ fn replay_records(
     if holds && !held(data, head, before, hosted)? {
         return Ok((Err(NotOwed.into()), ends));
     }
+    // A job takes a count among what its runner sends, so each is filed between the sends it ran between (ADR-0018).
+    let mut jobs = Unfiled::of(data, head, before, ends)?;
     for index in before.sends..ends.sends {
+        let honest = jobs.file_due(data, holdings, given, hosted)?;
+        if let Err(fault) = honest {
+            return Ok((Err(fault), ends));
+        }
         let send =
             record(data, head.sends_at, index, SendRecord::BYTES).and_then(SendRecord::read).ok_or(Broke::Garbled)?;
         let bytes = lying(data, send.bytes).ok_or(Broke::Garbled)?;
@@ -1704,6 +1710,11 @@ fn replay_records(
             return Ok((Err(Fault::new(&FalseSend).unwrap_or_else(|_| Broke::Garbled.fault())), ends));
         }
     }
+    let honest = jobs.file_rest(data, holdings, given, hosted)?;
+    if let Err(fault) = honest {
+        return Ok((Err(fault), ends));
+    }
+    cancels(data, head, before, ends, hosted)?;
     for index in before.lines..ends.lines {
         let line =
             record(data, head.lines_at, index, LineRecord::BYTES).and_then(LineRecord::read).ok_or(Broke::Garbled)?;
@@ -2041,6 +2052,169 @@ fn hold_to_stages(
     Ok(Ok(()))
 }
 
+/// The jobs one of a guest's turns ran, as its host files them among the turn's sends: each at the count it took among
+/// what its runner sends, in the order they ran (ADR-0018).
+enum Unfiled {
+    /// The turn ran none.
+    None,
+    /// Its job records lie from `at`, and the `next`th to the `end`th are still to be filed.
+    Left { at: u32, next: u32, end: u32 },
+}
+
+impl Unfiled {
+    /// The jobs of the turn after `before` among the call's that `head` heads in `data`, up to `ends`.
+    ///
+    /// # Errors
+    ///
+    /// [`Broke::Garbled`] when where they lie does not read back.
+    fn of(data: &[u8], head: &OutHead, before: TurnEnds, ends: TurnEnds) -> Result<Self, Broke> {
+        // Most turns run no job.
+        let runs = ends.jobs > before.jobs;
+        if !runs {
+            return Ok(Self::None);
+        }
+        let last = head.ran.checked_sub(1).ok_or(Broke::Garbled)?;
+        let all = record(data, head.turns_at, last, TurnEnds::BYTES).and_then(TurnEnds::read).ok_or(Broke::Garbled)?;
+        let at = head.jobs_at(all).ok_or(Broke::Garbled)?;
+
+        Ok(Self::Left { at, next: before.jobs, end: ends.jobs })
+    }
+
+    /// Whether any is still to be filed.
+    const fn is_left(&self) -> bool {
+        matches!(self, Self::Left { .. })
+    }
+
+    /// As [`Self::run_due`], for a turn that may have no job left to file.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::run_due`].
+    #[inline]
+    fn file_due(
+        &mut self,
+        data: &[u8],
+        holdings: &Holdings,
+        given: &Given,
+        hosted: &mut Hosted<'_>,
+    ) -> Result<Result<(), Fault>, Broke> {
+        // Most turns run no job.
+        if !self.is_left() {
+            return Ok(Ok(()));
+        }
+        self.run_due(data, holdings, given, hosted)
+    }
+
+    /// Files every job left once the turn's sends are handed in, as [`Self::run_due`] does: each must be due by then.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::run_due`], and [`Broke::Garbled`] when a job is left that is not due, as it takes a count no send of
+    /// its runner leaves it.
+    #[inline]
+    fn file_rest(
+        &mut self,
+        data: &[u8],
+        holdings: &Holdings,
+        given: &Given,
+        hosted: &mut Hosted<'_>,
+    ) -> Result<Result<(), Fault>, Broke> {
+        let honest = self.file_due(data, holdings, given, hosted)?;
+        if self.is_left() {
+            return Err(Broke::Garbled);
+        }
+
+        Ok(honest)
+    }
+
+    /// Files in `hosted`, in the order they ran, each job whose count is the next its runner takes: the jobs it ran
+    /// before the next piece of mail it sends. Each refers to blobs `holdings` hold a reference to or `given` offered,
+    /// and its context too. Answers with the fault the turn fails with when one is false. Kept out of line, as most
+    /// turns run no job.
+    ///
+    /// # Errors
+    ///
+    /// [`Broke::Forged`] when a job or its context refers to a blob that is neither, and [`Broke::Garbled`] when a
+    /// record does not read back.
+    #[cold]
+    #[inline(never)]
+    fn run_due(
+        &mut self,
+        data: &[u8],
+        holdings: &Holdings,
+        given: &Given,
+        hosted: &mut Hosted<'_>,
+    ) -> Result<Result<(), Fault>, Broke> {
+        while let Self::Left { at, next, end } = *self {
+            let job = record(data, at, next, JobRecord::BYTES).and_then(JobRecord::read).ok_or(Broke::Garbled)?;
+            let is_due = hosted.next_count(job.by) == Some(job.count);
+            if !is_due {
+                break;
+            }
+            let carried = lying(data, job.job).ok_or(Broke::Garbled)?;
+            let lent = carried_pins(carried, holdings, &given.offered)?;
+            let (bytes, _) = records::carried(carried).ok_or(Broke::Garbled)?;
+            let Request::Asks { context, .. } = asks(data, job.answer, job.context, holdings, given)? else {
+                return Err(Broke::Garbled);
+            };
+            let is_false = hosted.run(job.by, job.kind, job.answer, bytes.to_vec(), lent, context).is_err();
+            if is_false {
+                return Ok(Err(Fault::new(&FalseSend).unwrap_or_else(|_| Broke::Garbled.fault())));
+            }
+            let is_last = next + 1 == end;
+            *self = if is_last {
+                Self::None
+            } else {
+                Self::Left { at, next: next + 1, end }
+            };
+        }
+
+        Ok(Ok(()))
+    }
+}
+
+/// As [`cancel`], for a turn that may cancel no job.
+///
+/// # Errors
+///
+/// As [`cancel`].
+#[inline]
+fn cancels(
+    data: &[u8],
+    head: &OutHead,
+    before: TurnEnds,
+    ends: TurnEnds,
+    hosted: &mut Hosted<'_>,
+) -> Result<(), Broke> {
+    // Most turns cancel no job.
+    let cancels = ends.cancels > before.cancels;
+    if !cancels {
+        return Ok(());
+    }
+    cancel(data, head, before, ends, hosted)
+}
+
+/// Cancels in `hosted` each job the turn after `before` among the call's that `head` heads in `data` cancelled, up to
+/// `ends`, as its guest's code cancelled it (ADR-0018). Kept out of line, as most turns cancel none.
+///
+/// # Errors
+///
+/// [`Broke::Garbled`] when a record does not read back.
+#[cold]
+#[inline(never)]
+fn cancel(data: &[u8], head: &OutHead, before: TurnEnds, ends: TurnEnds, hosted: &mut Hosted<'_>) -> Result<(), Broke> {
+    let last = head.ran.checked_sub(1).ok_or(Broke::Garbled)?;
+    let all = record(data, head.turns_at, last, TurnEnds::BYTES).and_then(TurnEnds::read).ok_or(Broke::Garbled)?;
+    let cancels_at = head.cancels_at(all).ok_or(Broke::Garbled)?;
+    for index in before.cancels..ends.cancels {
+        let cancelled = record(data, cancels_at, index, CancelRecord::BYTES).and_then(CancelRecord::read);
+        let CancelRecord { job } = cancelled.ok_or(Broke::Garbled)?;
+        hosted.cancel(job);
+    }
+
+    Ok(())
+}
+
 /// What mail of `kind` tied as `tie` is handed into a guest as: mail that asks a request, which its turn may reply
 /// to or hold, or mail as it came (ADR-0017).
 fn handed_mail(kind: KindId, tie: Tie) -> Handed {
@@ -2094,9 +2268,10 @@ mod tests {
         Seated, ToAny, ToSender, ToType, Trapped, Turn, Unanswered,
     };
     use aethereal_actor::{Anywhere, ChildOf, Level, Tick, Time, Top};
+    use aethereal_actor::{JobId, JobType};
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
     use aethereal_guest_echo as echo;
-    use aethereal_substrate::{Engine, Setup};
+    use aethereal_substrate::{Engine, Inline, Jobs, Setup, Taken};
     use std::num::NonZeroUsize;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -3258,19 +3433,228 @@ mod tests {
         assert_eq!(said(Engine::new(parts, 1024, 0, 1 << 20, 0)), refused);
     }
 
+    /// What a boss tells the foreman guest, as it begins.
+    #[derive(Plain)]
+    #[kind(name = "aether.test.order")]
+    struct Order {
+        what: u64,
+    }
+
+    /// A native actor that tells the foreman guest, as it begins, to run a chore of five, to call off its jobs, or to
+    /// close: as its order is nought, one, or anything else.
+    #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.boss")]
+    struct Boss;
+
+    impl ChildOf for Boss {
+        type Parent = Top;
+    }
+
+    impl Actor for Boss {
+        type Config = Order;
+        type Key = u64;
+        type Handles = (Pong,);
+        type BeginSends =
+            (ToAny<(echo::Go,), echo::Go>, ToAny<(echo::CallOff,), echo::CallOff>, ToAny<(echo::Shut,), echo::Shut>);
+        type EndSends = ();
+
+        fn begin(order: Order, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+            let foreman = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.foreman"), &()));
+            let Some(found) = turn.resolve(&foreman) else {
+                return Err(Fault::new(&Doom)?);
+            };
+            match order.what {
+                0 => {
+                    if let Some(foreman) = turn.cast::<(echo::Go,)>(found) {
+                        turn.to(foreman).send(&echo::Go { n: 5 })?;
+                    }
+                }
+                1 => {
+                    if let Some(foreman) = turn.cast::<(echo::CallOff,)>(found) {
+                        turn.to(foreman).send(&echo::CallOff)?;
+                    }
+                }
+                _ => {
+                    if let Some(foreman) = turn.cast::<(echo::Shut,)>(found) {
+                        turn.to(foreman).send(&echo::Shut)?;
+                    }
+                }
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Pong> for Boss {
+        type Sends = ();
+
+        fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    /// Runs the foreman's jobs as [`Inline`] does, or holds each until it is let go of, and notes each job it is asked
+    /// to stop.
+    struct Holding {
+        inline: Inline,
+        holds: bool,
+        held: Mutex<Vec<(JobId, KindId, Taken)>>,
+        stopped: Mutex<Vec<JobId>>,
+    }
+
+    impl Holding {
+        /// Runs the foreman's jobs, holding each until it is let go of when `holds`.
+        fn new(holds: bool) -> Arc<Self> {
+            let inline = Inline::new(vec![JobType::of::<echo::Chore>(), JobType::of::<echo::Measure>()]);
+
+            Arc::new(Self { inline, holds, held: Mutex::default(), stopped: Mutex::default() })
+        }
+
+        /// Runs each job it holds.
+        fn let_go(&self) {
+            let held = self.held.lock().map(|mut held| mem::take(&mut *held)).unwrap_or_default();
+            for (id, kind, job) in held {
+                self.inline.start(id, kind, job);
+            }
+        }
+
+        /// The jobs it was asked to stop, by their counts.
+        fn stopped(&self) -> Vec<u64> {
+            let stopped = self.stopped.lock().map(|stopped| stopped.clone()).unwrap_or_default();
+
+            stopped.iter().map(|id| id.mail().count).collect()
+        }
+    }
+
+    impl Jobs for Holding {
+        fn start(&self, id: JobId, kind: KindId, job: Taken) {
+            if !self.holds {
+                self.inline.start(id, kind, job);
+                return;
+            }
+            if let Ok(mut held) = self.held.lock() {
+                held.push((id, kind, job));
+            }
+        }
+
+        fn stop(&self, id: JobId) {
+            if let Ok(mut stopped) = self.stopped.lock() {
+                stopped.push(id);
+            }
+        }
+
+        fn most(&self) -> usize {
+            usize::MAX
+        }
+    }
+
+    /// An engine of `parts` parts and `hops` hops whose jobs `jobs` runs, the foreman guest begun in it, and the bosses
+    /// of each of `orders`, by their keys and orders, begun after it together, each settled before the next.
+    fn foreman(parts: usize, hops: usize, jobs: Arc<Holding>, orders: &[&[(u64, u64)]]) -> (Engine, ActorId) {
+        let Some(parts) = NonZeroUsize::new(parts) else {
+            panic!("no engine has no parts");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, hops).with_jobs(jobs));
+        let Ok(foreman) = engine.add_root_from::<echo::Foreman>(&code, &(), &echo::EchoConfig) else {
+            panic!("the foreman begins");
+        };
+        for together in orders {
+            for &(key, what) in *together {
+                let Ok(_) = engine.add_root::<Boss>(&key, Order { what }) else {
+                    panic!("the boss begins");
+                };
+            }
+            settle(&mut engine);
+        }
+
+        (engine, foreman)
+    }
+
     #[test]
-    fn a_guest_s_turn_refuses_a_job_its_host_would_not_read() {
-        // Catches a job a guest's turn runs and its host never reads: the guest would wait for good on an answer that
-        // never comes.
+    fn a_guest_runs_jobs_and_is_answered_with_what_it_kept_for_each() {
+        // Catches a guest's job its host never reads, or reads and files with no context, so no answer runs a turn;
+        // one filed at another count than its guest's id names, among the replies its turn sends either side of it, or
+        // filed without taking a count, so the job after it is never due; a context handed back with another job's
+        // answer; and a blob the job refers to not handed out with it, so it measures nothing. The foreman's `begin`
+        // measures a blob of three bytes, and a turn of a later step runs chores of five and six between two replies.
+        for (parts, hops) in [(1, 0), (1, 64), (4, 0), (4, 64)] {
+            let (mut engine, foreman) = foreman(parts, hops, Holding::new(false), &[&[(1, 0)]]);
+            let ran = lines(&engine, foreman);
+            engine.bring();
+            settle(&mut engine);
+
+            let answered = ["ran 1", "ran 3 and 4", "0 answered 3", "5 answered 6", "6 answered 7"];
+            assert_eq!(ran, answered[..2], "nothing is answered before a bring: {parts} parts, {hops} hops");
+            assert_eq!(lines(&engine, foreman), answered, "{parts} parts, {hops} hops");
+        }
+    }
+
+    #[test]
+    fn a_guest_s_cancelled_jobs_are_never_answered_and_its_host_is_asked_to_stop_them() {
+        // Catches a guest's cancel its host never reads, so a job it called off is answered; and a job id a guest's
+        // turn reckons from the count its own turn began at rather than its actor's, or a job its host files without
+        // counting it, so its cancel names a job it did not run, or a later turn of the batch counts from a count its
+        // host does not. The foreman calls off its `begin`'s job and those of two turns of one batch, held by their
+        // host, in a turn after them.
+        let holding = Holding::new(true);
+        let (mut engine, foreman) = foreman(1, 0, Arc::clone(&holding), &[&[(1, 0), (2, 0)], &[(3, 1)]]);
+        holding.let_go();
+        engine.bring();
+        settle(&mut engine);
+
+        assert_eq!(lines(&engine, foreman), ["ran 1", "ran 3 and 4", "ran 7 and 8", "called off"]);
+        assert_eq!(holding.stopped(), [1, 3, 4, 7, 8]);
+    }
+
+    #[test]
+    fn a_guest_s_job_keeps_its_blob_until_its_actor_ends_and_is_answered_to_no_one() {
+        // Catches a blob a guest's job refers to that its host pins nothing for, freed while the job is in flight once
+        // the guest lets go of its own reference, and one its host keeps once the actor that ran the job has ended. The
+        // foreman's `begin` measures a blob it keeps nowhere else, held by its host, and it closes before the job is let
+        // go of.
+        let holding = Holding::new(true);
+        let (mut engine, _) = foreman(1, 0, Arc::clone(&holding), &[&[(1, 0)]]);
+        let in_flight = engine.blobs_held().0;
+        let Ok(_) = engine.add_root::<Boss>(&2, Order { what: 2 }) else {
+            panic!("the boss begins");
+        };
+        settle(&mut engine);
+        holding.let_go();
+        engine.bring();
+        settle(&mut engine);
+
+        assert_eq!((in_flight, engine.blobs_held().0), (2, 0), "the code's blob and the job's, then neither");
+    }
+
+    #[test]
+    fn a_job_a_native_child_of_a_guest_runs_as_its_host_begins_it_is_answered() {
+        // Catches the jobs of a child of other code that its host begins apart from the guest's call dropped as what
+        // its `begin` asked for is taken into the turn that spawned it, while the context it kept is filed: the child
+        // would wait for good on an answer that never comes.
         let Some(parts) = NonZeroUsize::new(1) else {
             panic!("one is not zero");
         };
-        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
-        let Ok(errand) = engine.add_root_from::<echo::Errand>(&code, &(), &echo::EchoConfig) else {
-            panic!("the errand begins");
+        let setup = Engine::new(parts, 1024, 0, 1 << 20, 0).with_links(Links::default().with::<echo::Apprentice>());
+        let (mut engine, code) = with_echo(setup.with_jobs(Holding::new(false)));
+        let Ok(_) = engine.add_root_from::<echo::Overseer>(&code, &(), &echo::EchoConfig) else {
+            panic!("the overseer begins");
         };
+        engine.bring();
+        settle(&mut engine);
 
-        assert_eq!(lines(&engine, errand), ["chore refused in a guest"]);
+        let overseer = PathSegment::new(KindName::new("aether.guest.overseer"), &());
+        let apprentice = PathSegment::new(KindName::new("aether.guest.apprentice"), &());
+        let Ok(path) = ActorPath::from_root(&overseer).child(&apprentice) else {
+            panic!("the path is not too deep");
+        };
+        let Some(apprentice) = engine.table().resolve(&path) else {
+            panic!("the apprentice began");
+        };
+        assert_eq!(lines(&engine, apprentice), ["7 answered 8"]);
     }
 
     #[test]
