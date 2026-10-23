@@ -6,7 +6,7 @@ mod io;
 mod tests;
 
 use crate::Monotonic;
-use aethereal_actor::{JobId, JobType, Runner, Sleep};
+use aethereal_actor::{JobId, JobType, Runner, Sleep, Storage};
 use aethereal_data::KindId;
 use aethereal_substrate::{Inline, Jobs, Taken};
 use crossbeam_queue::SegQueue;
@@ -46,15 +46,16 @@ struct Shared {
 }
 
 impl Runners {
-    /// Runners of the job types `types` on `threads` threads of their own.
+    /// Runners of the job types `types` on `threads` threads of their own, their jobs reading files from `storage`
+    /// (ADR-0032).
     ///
     /// # Panics
     ///
     /// Panics when the host cannot make a thread.
     #[must_use]
-    pub fn new(mut types: Vec<JobType>, threads: NonZeroUsize) -> Self {
+    pub fn new(mut types: Vec<JobType>, threads: NonZeroUsize, storage: Arc<dyn Storage>) -> Self {
         types.push(JobType::of::<Sleep>());
-        let inline = Inline::new(types.clone());
+        let inline = Inline::new(types.clone(), Arc::clone(&storage));
         let shared = Arc::new(Shared { inline, queue: SegQueue::new(), stopping: AtomicBool::new(false) });
         let mut threads: Vec<JoinHandle<()>> = (0..threads.get())
             .map(|number| {
@@ -69,23 +70,24 @@ impl Runners {
             })
             .collect();
         let computing = threads.iter().map(|thread| thread.thread().clone()).collect();
-        let (io, waiting) = Io::new(types.clone(), Monotonic::new());
+        let (io, waiting) = Io::new(types.clone(), Monotonic::new(), storage);
         threads.push(waiting);
 
         Self { types, shared, computing, next: AtomicUsize::new(0), io, threads }
     }
 
-    /// Runners of the job types `types` on the cores an engine run on `workers` workers leaves free, one at the least.
+    /// Runners of the job types `types` on the cores an engine run on `workers` workers leaves free, one at the least,
+    /// their jobs reading files from `storage`.
     ///
     /// # Panics
     ///
     /// Panics when the host cannot make a thread.
     #[must_use]
-    pub fn beside(types: Vec<JobType>, workers: NonZeroUsize) -> Self {
+    pub fn beside(types: Vec<JobType>, workers: NonZeroUsize, storage: Arc<dyn Storage>) -> Self {
         let cores = thread::available_parallelism().map_or(1, NonZeroUsize::get);
         let free = NonZeroUsize::new(cores.saturating_sub(workers.get())).unwrap_or(NonZeroUsize::MIN);
 
-        Self::new(types, free)
+        Self::new(types, free, storage)
     }
 }
 

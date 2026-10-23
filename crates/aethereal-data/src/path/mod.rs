@@ -5,7 +5,7 @@ mod cut;
 mod id;
 mod key;
 #[cfg(test)]
-mod samples;
+pub mod samples;
 mod segment;
 mod typed;
 

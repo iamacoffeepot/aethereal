@@ -6,6 +6,8 @@ use crate::Presenting;
 use crate::moding;
 use crate::presenting::Unoffered;
 use crate::serving::Drawing;
+use aethereal_chassis_headless::Serving;
+use aethereal_files::FileHosting;
 use aethereal_render::Gpu;
 use aethereal_substrate::Unbuilt;
 use aethereal_window::{Hosting, Mode, Opening, Surface, WindowFeed, WindowId};
@@ -26,6 +28,8 @@ pub struct Screen<'a> {
     windows: Vec<OnScreen>,
     windowing: Served<Hosting>,
     drawing: Served<Box<Drawing>>,
+    /// What the roots served for the host's runners: the file capability's storage and job (ADR-0029, ADR-0032).
+    runners: Serving,
 }
 
 /// An end the host keeps, as the roots have given it.
@@ -99,7 +103,16 @@ impl<'a> Screen<'a> {
             ..wgpu::InstanceDescriptor::new_with_display_handle_from_env(display)
         });
 
-        Self { event_loop, instance, windows: Vec::new(), windowing: Served::Unserved, drawing: Served::Unserved }
+        let windows = Vec::new();
+
+        Self {
+            event_loop,
+            instance,
+            windows,
+            windowing: Served::Unserved,
+            drawing: Served::Unserved,
+            runners: Serving::new(),
+        }
     }
 
     /// Opens a native window titled `title`, its inner size `width` by `height` logical pixels, the screen's scale
@@ -146,15 +159,20 @@ impl<'a> Screen<'a> {
         self.drawing = Served::Served(Box::new(drawing));
     }
 
-    /// What the roots served: the renderer's end, and the window root's.
+    /// Keeps what the file capability's bootstrap served, for the runners the host makes (ADR-0032).
+    pub(crate) fn serve_files(&mut self, files: FileHosting) {
+        self.runners.files(files);
+    }
+
+    /// What the roots served: the renderer's end, the window root's, and what the host's runners are made with.
     ///
     /// # Errors
     ///
     /// The end no root served, by name: the desktop draws each window it opens through the renderer, and opens and
     /// closes them as the window root asks.
-    pub(crate) fn into_served(self) -> Result<(Box<Drawing>, Hosting), &'static str> {
+    pub(crate) fn into_served(self) -> Result<(Box<Drawing>, Hosting, Serving), &'static str> {
         match (self.drawing, self.windowing) {
-            (Served::Served(drawing), Served::Served(windowing)) => Ok((drawing, windowing)),
+            (Served::Served(drawing), Served::Served(windowing)) => Ok((drawing, windowing, self.runners)),
             (Served::Unserved, _) => Err("the renderer's drawing"),
             (Served::Served(_), Served::Unserved) => Err("the window root's hosting"),
         }

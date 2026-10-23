@@ -4,8 +4,11 @@
 mod tests;
 
 use crate::{Exit, Headless, Runners};
+use aethereal_actor::{JobType, NoStorage, Storage};
 use aethereal_data::Plain;
-use aethereal_substrate::{Builds, Host, ProgramError, Settled};
+use aethereal_files::FileHosting;
+use aethereal_substrate::{Builds, Host, ProgramError, Serves, Settled};
+use core::num::NonZeroUsize;
 use core::time::Duration;
 use std::sync::Arc;
 
@@ -28,9 +31,47 @@ impl Default for RunningSettings {
     }
 }
 
+/// What a native host keeps as its program bootstraps, for the runners it makes once its roots have (ADR-0029): the
+/// storage a root serves it, and the job types a root runs beside those its program lists. With no root serving it, its
+/// storage is [`NoStorage`], and every read is unavailable.
+pub struct Serving {
+    storage: Arc<dyn Storage>,
+    jobs: Vec<JobType>,
+}
+
+impl Serving {
+    /// Nothing served yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { storage: Arc::new(NoStorage), jobs: Vec::new() }
+    }
+
+    /// Keeps what the file capability's bootstrap served (ADR-0032): its storage, and the job it runs.
+    pub fn files(&mut self, files: FileHosting) {
+        let (storage, job) = files.into_parts();
+        self.storage = storage;
+        self.jobs.push(job);
+    }
+
+    /// The runners of the job types `listed` and those served, on the cores an engine on `workers` workers leaves
+    /// free, their jobs reading files from the storage served.
+    #[must_use]
+    pub fn runners(self, mut listed: Vec<JobType>, workers: NonZeroUsize) -> Runners {
+        listed.extend(self.jobs);
+
+        Runners::beside(listed, workers, self.storage)
+    }
+}
+
+impl Default for Serving {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Host for Headless {
     type Running = RunningSettings;
-    type Hosting<'host> = ();
+    type Hosting<'host> = Serving;
     type Exit = Exit;
     type Error = ProgramError;
 
@@ -44,16 +85,22 @@ impl Host for Headless {
     }
 }
 
+impl Serves<FileHosting> for Headless {
+    fn serve(serving: &mut Serving, files: FileHosting) {
+        serving.files(files);
+    }
+}
+
 impl Builds for Headless {
     /// Bootstraps the program, blocking this thread on each root's bootstrap, then makes its runners for the job
-    /// types the program runs, on the cores its workers leave free (ADR-0029): the host holding its engine on as many
-    /// workers as its settings say.
+    /// types the program runs and its roots served, on the cores its workers leave free (ADR-0029): the host holding
+    /// its engine on as many workers as its settings say.
     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
         let workers = settled.engine().worker_threads();
         let jobs = settled.jobs().to_vec();
 
-        let (mut engine, ()) = pollster::block_on(settled.bootstrap(()))?;
-        engine.set_jobs(Arc::new(Runners::beside(jobs, workers)));
+        let (mut engine, serving) = pollster::block_on(settled.bootstrap(Serving::new()))?;
+        engine.set_jobs(Arc::new(serving.runners(jobs, workers)));
 
         Ok(Self::new(engine, workers))
     }

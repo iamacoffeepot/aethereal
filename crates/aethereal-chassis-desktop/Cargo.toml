@@ -12,6 +12,7 @@ description = "The desktop chassis: the native host with windows, on winit, draw
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-chassis-headless = { path = "../aethereal-chassis-headless" }
 aethereal-data = { path = "../aethereal-data" }
+aethereal-files = { path = "../aethereal-files" }
 aethereal-render = { path = "../aethereal-render" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 aethereal-window = { path = "../aethereal-window" }

@@ -2,8 +2,8 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Drained, Ending, Fault, Handles, Held, On, Sleep, Slept, Start, Stop,
-    Tick, ToSender, Top, Turn,
+    Actor, Answer, Answered, Beginning, ChildOf, Drained, Ending, Fault, Handles, Held, NoStorage, On, Sleep, Slept,
+    Start, Stop, Tick, ToSender, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Engine, Jobs};
@@ -302,7 +302,7 @@ fn a_program_is_answered_for_its_jobs_while_it_runs() {
     // Catches a host that never brings in what its jobs finished as it runs: the napper is never answered, and gives
     // up once fifty ticks of five milliseconds have gone by.
     let one = NonZeroUsize::MIN;
-    let runners: Arc<dyn Jobs> = Arc::new(crate::Runners::new(Vec::new(), one));
+    let runners: Arc<dyn Jobs> = Arc::new(crate::Runners::new(Vec::new(), one, Arc::new(NoStorage)));
     let engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(runners).with_cycle::<(Tick,)>().ready();
     let mut headless = Headless::new(engine, one);
     let Ok(_) = headless.engine_mut().add_root::<Napper>(&(), Nothing) else {

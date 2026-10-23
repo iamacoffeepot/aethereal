@@ -2,7 +2,7 @@
 //! those jobs wait on (ADR-0018).
 
 use crate::Monotonic;
-use aethereal_actor::{Driven, Fault, JobId, JobType, Time, Timer};
+use aethereal_actor::{Driven, Fault, JobId, JobType, Storage, Time, Timer};
 use aethereal_data::{Kind, KindId};
 use aethereal_substrate::{Clock, Finish, NoRunner, Panicked, Taken};
 use crossbeam_queue::SegQueue;
@@ -27,6 +27,8 @@ pub(super) struct Io {
 /// What the thread shares with the engine's side, and with the wakers of its jobs.
 struct Shared {
     types: Vec<JobType>,
+    /// The host's storage, which its jobs read files from (ADR-0032).
+    storage: Arc<dyn Storage>,
     handed: SegQueue<(JobId, KindId, Taken)>,
     stopped: SegQueue<JobId>,
     /// The jobs woken, by their keys.
@@ -80,12 +82,13 @@ impl Wake for Wakes {
 }
 
 impl Io {
-    /// The runner of the job types among `types` that wait, its timer on `clock`, and its thread, to join once it is
-    /// told to stop.
-    pub(super) fn new(types: Vec<JobType>, clock: Monotonic) -> (Self, JoinHandle<()>) {
+    /// The runner of the job types among `types` that wait, its timer on `clock`, its jobs reading files from
+    /// `storage`, and its thread, to join once it is told to stop.
+    pub(super) fn new(types: Vec<JobType>, clock: Monotonic, storage: Arc<dyn Storage>) -> (Self, JoinHandle<()>) {
         let timer = Arc::new(Timers { clock, asked: SegQueue::new() });
         let shared = Arc::new(Shared {
             types,
+            storage,
             handed: SegQueue::new(),
             stopped: SegQueue::new(),
             woken: Arc::new(SegQueue::new()),
@@ -180,7 +183,7 @@ fn hold(shared: &Arc<Shared>, held: &mut HashMap<Key, Held>, id: JobId, kind: Ki
         return;
     };
     let timer: Arc<dyn Timer> = Arc::clone(&shared.timer) as Arc<dyn Timer>;
-    let running = of.drive(bytes, lent, limit, timer);
+    let running = of.drive(bytes, lent, limit, timer, Arc::clone(&shared.storage));
     let waker =
         Waker::from(Arc::new(Wakes { key: key(id), woken: Arc::clone(&shared.woken), thread: thread::current() }));
     held.insert(key(id), Held { running, finish, waker });

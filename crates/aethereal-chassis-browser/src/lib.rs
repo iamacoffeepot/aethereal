@@ -47,6 +47,8 @@ mod canvas;
 mod clock;
 pub mod controls;
 #[cfg(target_arch = "wasm32")]
+mod files;
+#[cfg(target_arch = "wasm32")]
 mod gpu;
 mod hosted;
 #[cfg(any(target_arch = "wasm32", test))]
@@ -63,6 +65,8 @@ mod tests;
 pub use canvas::Density;
 #[cfg(target_arch = "wasm32")]
 pub use clock::Performance;
+#[cfg(target_arch = "wasm32")]
+pub use files::{Fetching, FileUrls};
 pub use hosted::Hosted;
 #[cfg(target_arch = "wasm32")]
 pub use jobs::EventLoop;

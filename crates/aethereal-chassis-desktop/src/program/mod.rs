@@ -1,6 +1,7 @@
 //! The desktop as a program's host: its own section, the screen its roots bootstrap on, the ends it serves, and the
 //! window root and the renderer bootstrapped on it (ADR-0029).
 
+mod files;
 mod renderer;
 mod windows;
 
@@ -12,6 +13,7 @@ use crate::running::{Desktop, Failed};
 use crate::serving::Drawing;
 use aethereal_chassis_headless::Exit;
 use aethereal_data::Plain;
+use aethereal_files::FileHosting;
 use aethereal_substrate::{Host, Serves, Settled};
 use aethereal_window::Hosting;
 
@@ -65,5 +67,11 @@ impl Serves<Hosting> for Desktop {
 impl Serves<Drawing> for Desktop {
     fn serve(screen: &mut Screen<'_>, drawing: Drawing) {
         screen.serve_drawing(drawing);
+    }
+}
+
+impl Serves<FileHosting> for Desktop {
+    fn serve(screen: &mut Screen<'_>, files: FileHosting) {
+        screen.serve_files(files);
     }
 }

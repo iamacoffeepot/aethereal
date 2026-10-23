@@ -25,13 +25,12 @@ impl Handles<Answer<FileRead, Loading>> for Tiles { .. }
 pub enum FileRead {
     Read { bytes: BlobRef },     // the whole file, as a blob (ADR-0014)
     Missing,                     // no file at that path
-    Refused,                     // a request the namespace does not allow
     Unavailable,                 // the host has nowhere to read it from
-    Failed,                      // the host could not read it
+    Failed,                      // the host could not read it, or it did not fit the budget for blobs
 }
 ```
 
-- **A namespace is a name, never a place.** `Namespace` is an enum the engine fixes, `Assets` first: read-only, the files the program ships with. Its root is a setting of `Files` on each host (ADR-0028: `#[settings]`), and an actor never learns where a namespace's files are.
+- **A namespace is a name, never a place.** `Namespace` is an enum the engine fixes, `Assets` first: read-only, the files the program ships with. With only reads, no request is refused; a request a namespace does not allow, such as a write to `Assets`, comes with writing, and its answer with it. Its root is a setting of `Files` on each host (ADR-0028: `#[settings]`), and an actor never learns where a namespace's files are.
 - **A path is checked when it is read.** `FilePath` is plain data whose decoder refuses a path that is not one or more segments joined by single `/`, each of `a`–`z`, `0`–`9`, `.`, `_`, and `-`, none `.` or `..`, at most 255 bytes a segment and 1024 a path (ADR-0004: a type's decoder holds the rules it adds to its shape). So no path climbs out of its namespace, and a path names one file on a host that ignores case and on one that does not.
 - **The whole file comes back as a blob,** put by the job (ADR-0018: `Running::put`), so its bytes are written once, and a guest's code is a read away from `spawn_from`.
 
@@ -42,49 +41,53 @@ pub struct Load { namespace: Namespace, path: FilePath }   // fields private: on
 
 impl Job for Load {
     type Done = FileRead;
-    const RUNNER: Runner = Runner::Compute;
+    const RUNNER: Runner = Runner::Io;
 
     async fn run(self, job: &mut Running) -> Result<FileRead, Fault> {
-        job.storage().read(self.namespace, &self.path).await   // the host's storage, as its timer is
+        let read = job.storage().read(self.namespace, &self.path).await;   // the host's storage, as its timer is
+        // its bytes put as a blob, `FileRead::Read { bytes: job.put(bytes) }`, or why it was not read
     }
 }
 ```
 
-- **It runs on `Compute`.** A native read blocks the thread it is on, and the `Io` thread is one thread every timer waits on (ADR-0018). In a browser every job runs on the page's event loop, whichever runner it names.
+- **It runs on `Io`, and the native storage reads on threads of its own.** A read waits on the disk or the network, so it runs where waiting is polled: a browser polls a job for computing once, as `Inline` does, and a fetch is a promise no single poll finishes. The native `Io` thread is one thread every timer waits on (ADR-0018), so the native storage never blocks it: it hands each read to one of a few threads of its own, which block on the disk and wake the read once its bytes are in. This is the reactor for files ADR-0018 left for the first `Io` job that needed one. **It departs from this record as first written, which ran the read on `Compute`** and took a browser to run every job on its event loop whatever its runner; a browser polls a computation once, and a fetch there would always be answered that it waited.
 
 **The host's storage reaches a job as its timer does.** ADR-0018 hands every running job its host's timer (`Running::until`, `Timer`). The host hands it its storage beside it:
 
 ```rust
 pub trait Storage: Send + Sync {
-    fn read(&self, namespace: Namespace, path: &FilePath) -> Pin<Box<dyn Future<Output = Result<FileRead, Fault>> + '_>>;
+    fn read<'a>(&'a self, namespace: Namespace, path: &'a FilePath) -> Reading<'a>;   // the bytes, or `Unread`
 }
+
+pub enum Unread { Missing, Unavailable, Failed }
 
 impl Running {
     pub fn storage(&self) -> &dyn Storage;
 }
 ```
 
-- `Storage` and `Running::storage` are in `aethereal-actor`, beside `Timer`. `Namespace`, `FilePath`, and `FileRead` are plain data there too, since a storage answers with them.
+- `Storage`, `Unread`, `Namespace`, and `Running::storage` are in `aethereal-actor`, beside `Timer`. `FilePath` is in `aethereal-data`, beside the other checked names (`KeyName`, `KindName`), refused at decode with `DecodeError::InvalidFilePath`. A storage answers bytes, and the job puts them; `FileRead`, which holds the blob, is in `aethereal-files`, as a blob's reference is native code's.
 - **A host with no storage hands `NoStorage`,** which answers every read `Unavailable`, as a host with no thread to wait on hands `Never` for its timer.
 
-**Each host's crate bootstraps `Files`, and hands its storage to its runners.** ADR-0029 has a host's crate write the bootstrap of a root that needs the host (`Bootstrap<H>`). The headless and desktop hosts' storage reads a directory for each namespace; the browser's fetches each asset from a URL relative to the page. The bootstrap begins `Files` and serves the host its storage and the job type it runs (ADR-0029: `cx.serve`), and the host adds both to its runners before its first step:
+**Each host's crate bootstraps `Files`, and hands its storage to its runners.** ADR-0029 has a host's crate write the bootstrap of a root that needs the host (`Bootstrap<H>`). The headless and desktop hosts' storage reads a directory for each namespace; the browser's fetches each asset from a URL relative to the page. The bootstrap begins `Files` and serves the host its storage and the job type it runs (ADR-0029: `cx.serve`), and the host makes its runners with both once its roots have bootstrapped (ADR-0029: `Engine::set_jobs`):
 
 ```rust
 // aethereal-chassis-headless, and the desktop's beside it
 impl Bootstrap<Headless> for Files {
     const SECTION: &'static str = "files";
-    type Settings = FileRoots;                       // assets = "assets", beside the program
+    type Settings = FileRoots;                       // assets = "assets", beside the program; readers = 4
     type Needs = ();
     type Provides = ();
 
     async fn bootstrap(roots: FileRoots, (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.serve(FileHosting::new(Directories::new(roots)));     // the storage, and `JobType::of::<Load>()`
-        cx.begin(&(), ())
+        cx.serve(FileHosting::new(Directories::new(&roots)));    // the storage, and `JobType::of::<Load>()`
+        cx.begin(&(), FilesConfig)
     }
 }
 ```
 
-- **A program lists `Files` once,** `.root::<Files>()`, and its job comes with it: the runners are handed it as they are handed `Sleep`, which every host runs. A program does not list `Load` among its jobs.
+- **A program lists `Files` once,** `.root::<Files>()`, and its job comes with it: the host makes its runners with the job types its program lists and those its roots served (`Serving` natively, the browser's `Paging`). A program does not list `Load` among its jobs.
+- **The browser's settings name a URL,** `FileUrls { assets }`, `assets` by default, relative to the page, and its storage, `Fetching`, fetches each file beneath it. The native settings, `FileRoots { assets, readers }`, name a directory and how many threads read.
 - **A host that does not bootstrap `Files` cannot list it** (ADR-0029), so a program that reads files builds only for the hosts that can read them.
 
 **What a host cannot do is an answer, never a difference an actor must know of.** Each host answers every request in the same `FileRead`. A native host's storage answers `Missing` for a file that is not there and `Failed` for a read the disk refused; a browser's answers `Missing` for a fetch the server answered 404, and `Failed` for one it could not make.
@@ -100,8 +103,9 @@ impl Bootstrap<Headless> for Files {
 - An actor reads a file one way on every host, and what it may read is what the program's namespaces hold.
 - A read costs a job and an ask: its bytes are copied once out of the host into the blob store, and the asker is answered a step or more after it asked.
 - A file larger than the engine's budget for blobs cannot be read whole: its job's put does not fit, and its read is answered `Failed`, as the job is answered `Faulted` (ADR-0018). Reading such a file waits for ranged reads.
-- `Running` holds a second service of its host. `JobType::drive` and each host's runners hand it on beside the timer.
-- Runners take a job type and a storage after they are made, before the first step. A host's runners already add `Sleep` to the types they are handed; this adds what the bootstraps serve.
+- `Running` holds a second service of its host. `JobType::drive` and each host's runners hand it on beside the timer, and a runner made for a test with no files is made with `NoStorage`.
+- The native storage holds a few threads of its own beside the runners' (its setting `readers`, four by default), which park when there is nothing to read.
+- A host makes its runners once its roots have bootstrapped (ADR-0029), so they are made with the storage and the job types the roots served, and no runner changes after it is made.
 - Two engines on one host share nothing through `Files`: each reads its namespaces' roots, and two that write one file write it as two programs would.
 - A browser's assets are fetched relative to the page, so a page served beside its assets, an artifact among them, reads them with no setting.
 
