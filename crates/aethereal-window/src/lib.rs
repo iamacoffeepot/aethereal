@@ -6,8 +6,8 @@
 //! and pushes what each hears onto its [`WindowFeed`], in the window's surface pixels and the W3C UI Events' names
 //! for the keys.
 //!
-//! Once the program runs, an actor asks the root for a window, [`OpenWindow`], and to close one, [`CloseWindow`]
-//! (ADR-0027). The root gives the window its id, asks its host through its controller, [`Windowing`], and answers
+//! Once the program runs, an actor asks the root for a window, [`OpenWindow`], to close one, [`CloseWindow`], and to
+//! show one in a [`Mode`], [`SetMode`] (ADR-0027). The root gives the window its id, asks its host through its controller, [`Windowing`], and answers
 //! once the host has said, through the root's one source, what it did; the chassis takes the requests and says so
 //! with the [`Hosting`] it kept.
 
@@ -16,10 +16,10 @@ mod host;
 mod window;
 mod windows;
 
-pub use event::{Button, Event, Subscribe, Surface, Unsubscribe};
+pub use event::{Button, Event, Mode, Subscribe, Surface, Unsubscribe};
 pub use host::{Hosting, InitialWindows, Opening, WindowFeed};
 pub use window::{Window, WindowConfig, WindowId};
 pub use windows::{
-    CloseWindow, Closed, Closing, Heard, Initial, Logical, OpenWindow, Opened, Unclosed, Unmade, Unopened, Windowing,
-    Windows, WindowsConfig,
+    CloseWindow, Closed, Closing, Heard, Initial, Logical, ModeSet, OpenWindow, Opened, SetMode, Unclosed, Unmade,
+    Unopened, Unset, Windowing, Windows, WindowsConfig,
 };

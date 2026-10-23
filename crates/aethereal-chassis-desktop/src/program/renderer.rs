@@ -55,11 +55,11 @@ impl Bootstrap<Desktop> for Renderer {
         let (adapter, gpu) = gpu::opened_on(&instance, first)?;
         let (front, fronting) = Front::new();
         let mut windows = Vec::with_capacity(surfaced.len());
-        for (OnScreen { native, feed }, surface) in surfaced {
+        for (OnScreen { native, feed, mode }, surface) in surfaced {
             let config = gpu::configured(&adapter, &surface, &native, present)?;
             let surface =
                 WindowSurface::new(surface, &gpu, feed.window(), config, &fronting).map_err(Unopened::Format)?;
-            windows.push(Kept::new(native, feed, surface));
+            windows.push(Kept::new(native, feed, surface, mode));
         }
 
         let polled = Gpu::new(gpu.device().clone(), gpu.queue().clone());

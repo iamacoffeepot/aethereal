@@ -6,12 +6,14 @@
 
 use crate::Presenting;
 use crate::gpu::{self, Unopened};
+use crate::moding;
 use aethereal_actor::Requests;
 use aethereal_render::Gpu;
 use aethereal_render::mapping::{Mapped, Mapping};
 use aethereal_render::surface::{Fronting, Present, Surfaced, WindowSurface};
 use aethereal_substrate::Feed;
-use aethereal_window::{self as window, Hosting, Logical, WindowFeed, WindowId};
+use aethereal_window::{self as window, Event, Hosting, Logical, Mode, WindowFeed, WindowId};
+use core::mem;
 use std::collections::HashMap;
 use std::sync::Arc;
 use winit::dpi::LogicalSize;
@@ -40,13 +42,15 @@ pub struct Drawing {
 }
 
 /// A window the chassis opened: the native window, the feed of what it hears, its surface, where the pointer was last
-/// heard over it, in its surface pixels, its top left until it is heard, and whether it is shown.
+/// heard over it, in its surface pixels, its top left until it is heard, whether it is shown, and the mode it is shown
+/// in as last pushed onto its feed, the mode it opened in until another is.
 pub struct Kept {
     pub(crate) native: Arc<Window>,
     pub(crate) feed: WindowFeed,
     pub(crate) surface: WindowSurface,
     pub(crate) pointer: (f32, f32),
     pub(crate) visible: Visible,
+    pub(crate) mode: Mode,
 }
 
 /// Whether a window is shown, as winit last said.
@@ -59,9 +63,22 @@ pub enum Visible {
 }
 
 impl Kept {
-    /// The window `native`, fed through `feed`, drawn to through `surface`: shown, the pointer at its top left.
-    pub(crate) const fn new(native: Arc<Window>, feed: WindowFeed, surface: WindowSurface) -> Self {
-        Self { native, feed, surface, pointer: (0.0, 0.0), visible: Visible::Shown }
+    /// The window `native`, fed through `feed`, drawn to through `surface`, opened in `mode`: shown, the pointer at its
+    /// top left.
+    pub(crate) const fn new(native: Arc<Window>, feed: WindowFeed, surface: WindowSurface, mode: Mode) -> Self {
+        Self { native, feed, surface, pointer: (0.0, 0.0), visible: Visible::Shown, mode }
+    }
+
+    /// Reads the mode winit shows the window in, and pushes it onto its feed as `Moded` when it differs from the mode
+    /// last pushed: as the window resizes, which it does whenever its mode changes, whether the program or the person at
+    /// it changed it, and as the program sets it.
+    pub(crate) fn moded(&mut self) {
+        let mode = moding::shown(&self.native);
+        let changed = mem::replace(&mut self.mode, mode) != mode;
+        if changed {
+            // Refused only once the window root has gone, and nothing then hears of it.
+            let _ = self.feed.push(Event::Moded(mode));
+        }
     }
 
     /// Whether it is drawn this frame: shown, at a size.
@@ -135,7 +152,7 @@ impl Drawing {
     }
 
     /// Between steps, inside one of `event_loop`'s callbacks, where a native window is made: opens `window`, as the
-    /// window root asked, titled `title`, at `size` in logical pixels. It makes the native window, its surface on the
+    /// window root asked, titled `title`, at `size` in logical pixels, windowed. It makes the native window, its surface on the
     /// renderer's GPU, and the window's slot in the renderer's front, then tells the renderer of it, then the window
     /// root through `hosting`, which so hears of it in the same bring and answers its asker a step after, so the
     /// renderer knows the window before any actor can name it. A window or surface not made is answered `Failed`, with
@@ -166,7 +183,7 @@ impl Drawing {
             return;
         };
         self.routes.insert(native.id(), window);
-        self.windows.push(Kept::new(native, feed, surface));
+        self.windows.push(Kept::new(native, feed, surface, Mode::Windowed));
     }
 
     /// The native window `window`, titled `title`, at `size` in logical pixels, and its surface, its slot added to
@@ -178,7 +195,7 @@ impl Drawing {
         title: &str,
         size: Logical,
     ) -> Result<(Arc<Window>, WindowSurface), Unopened> {
-        let native = gpu::native(event_loop, title, LogicalSize::new(size.width, size.height))?;
+        let native = gpu::native(event_loop, title, LogicalSize::new(size.width, size.height), Mode::Windowed)?;
         let surface = self.instance.create_surface(Arc::clone(&native)).map_err(Unopened::Surface)?;
         let config = gpu::configured(&self.adapter, &surface, &native, self.present)?;
         let surface =

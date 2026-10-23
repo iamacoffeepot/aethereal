@@ -35,7 +35,9 @@
 //! Between steps it takes what the window root asked for, and opens each
 //! window asked for, its surface on the same GPU and its slot in the
 //! renderer's front, or closes it, telling the renderer and then the window
-//! root (ADR-0027). A window's close button closes it unless the program says
+//! root, or shows it windowed, maximized, or fullscreen (ADR-0027). It reads
+//! each window's mode back as the window resizes, and pushes it when it
+//! changed, so a mode the person at the window chose is heard. A window's close button closes it unless the program says
 //! it only asks, and once its last window has closed the program is asked to
 //! stop, as `quit` does, and `Stop` is given the time the host gives it to
 //! finish.
@@ -44,6 +46,8 @@
 mod gpu;
 #[cfg(not(target_arch = "wasm32"))]
 mod input;
+#[cfg(not(target_arch = "wasm32"))]
+mod moding;
 #[cfg(not(target_arch = "wasm32"))]
 mod presenting;
 #[cfg(not(target_arch = "wasm32"))]

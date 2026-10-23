@@ -3,11 +3,12 @@
 //! ADR-0029).
 
 use crate::Presenting;
+use crate::moding;
 use crate::presenting::Unoffered;
 use crate::serving::Drawing;
 use aethereal_render::Gpu;
 use aethereal_substrate::Unbuilt;
-use aethereal_window::{Hosting, Opening, Surface, WindowFeed, WindowId};
+use aethereal_window::{Hosting, Mode, Opening, Surface, WindowFeed, WindowId};
 use core::error::Error;
 use core::fmt;
 use std::sync::Arc;
@@ -35,12 +36,13 @@ enum Served<E> {
     Unserved,
 }
 
-/// A native window opened as the program is set up, and the feed of what it hears: the screen's, which the renderer's
-/// bootstrap shares to make the window's surface on the GPU it opens and to draw it.
+/// A native window opened as the program is set up, the feed of what it hears, and the mode it was opened in: the
+/// screen's, which the renderer's bootstrap shares to make the window's surface on the GPU it opens and to draw it.
 #[derive(Clone)]
 pub struct OnScreen {
     pub(crate) native: Arc<Window>,
     pub(crate) feed: WindowFeed,
+    pub(crate) mode: Mode,
 }
 
 /// Why a window or the GPU on it did not open.
@@ -101,9 +103,10 @@ impl<'a> Screen<'a> {
     }
 
     /// Opens a native window titled `title`, its inner size `width` by `height` logical pixels, the screen's scale
-    /// giving its surface's pixels, keeps it, and opens it as the next window of the window capability with `opening`,
-    /// standing as it does now: its inner size in its pixels as its surface, the screen's pixels to each logical one as
-    /// its scale, and focused when it has the keyboard. Answers the capability's id for it.
+    /// giving its surface's pixels, shown in `mode`, keeps it, and opens it as the next window of the window capability
+    /// with `opening`, standing as it does now: its inner size in its pixels as its surface, the screen's pixels to
+    /// each logical one as its scale, the mode it was opened in, and focused when it has the keyboard. Answers the
+    /// capability's id for it.
     ///
     /// # Errors
     ///
@@ -113,11 +116,12 @@ impl<'a> Screen<'a> {
         opening: &mut Opening,
         title: &str,
         (width, height): (u32, u32),
+        mode: Mode,
     ) -> Result<WindowId, Unopened> {
-        let native = native(self.event_loop, title, LogicalSize::new(f64::from(width), f64::from(height)))?;
-        let feed = opening.open(standing(&native), native.has_focus());
+        let native = native(self.event_loop, title, LogicalSize::new(f64::from(width), f64::from(height)), mode)?;
+        let feed = opening.open(standing(&native), mode, native.has_focus());
         let window = feed.window();
-        self.windows.push(OnScreen { native, feed });
+        self.windows.push(OnScreen { native, feed, mode });
 
         Ok(window)
     }
@@ -157,9 +161,14 @@ impl<'a> Screen<'a> {
     }
 }
 
-/// A native window titled `title`, its inner size `size` in logical pixels, made on `event_loop`.
-pub fn native(event_loop: &ActiveEventLoop, title: &str, size: LogicalSize<f64>) -> Result<Arc<Window>, Unopened> {
-    let attributes = Window::default_attributes().with_title(title).with_inner_size(size);
+/// A native window titled `title`, its inner size `size` in logical pixels, shown in `mode`, made on `event_loop`.
+pub fn native(
+    event_loop: &ActiveEventLoop,
+    title: &str,
+    size: LogicalSize<f64>,
+    mode: Mode,
+) -> Result<Arc<Window>, Unopened> {
+    let attributes = moding::opened_in(Window::default_attributes().with_title(title).with_inner_size(size), mode);
 
     Ok(Arc::new(event_loop.create_window(attributes).map_err(Unopened::Window)?))
 }

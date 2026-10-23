@@ -19,9 +19,11 @@
 //! [`controls`] root's.
 //!
 //! A page owns its canvases, and the engine in it cannot make one: each window
-//! an actor asks for while the program runs, and each it asks to close, is
-//! answered `NoHost`, between steps ([`Hosted`], ADR-0027). A page that wants
-//! another window names another canvas in the window root's settings.
+//! an actor asks for while the program runs, each it asks to close, and each
+//! it asks to show in another mode, is answered `NoHost`, between steps
+//! ([`Hosted`], ADR-0027): a page enters fullscreen only while it handles a
+//! person's click or key. A page that wants another window names another
+//! canvas in the window root's settings.
 //!
 //! The jobs its turns run, it runs on the page's own event loop, each a task of
 //! its own, with `EventLoop` handed to the program (ADR-0018): their answers are

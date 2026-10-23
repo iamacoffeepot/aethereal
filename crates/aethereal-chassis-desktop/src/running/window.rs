@@ -1,6 +1,6 @@
 //! What a window hears, as winit tells the loop: each pushed onto that window's feed in the window capability's
-//! vocabulary, for the engine's next bring, and what the chassis itself does with a resize, the window shown or hidden,
-//! and the window destroyed (ADR-0024, ADR-0027).
+//! vocabulary, for the engine's next bring, and what the chassis itself does with a resize, the mode read back as it
+//! resizes, the window shown or hidden, and the window destroyed (ADR-0024, ADR-0027).
 
 use super::Running;
 use crate::input;
@@ -14,6 +14,9 @@ impl Running {
     /// platforms do for the keys held as the window gains or loses the keyboard, is not pushed, as a page hears none.
     /// What is pushed once the window root has gone reaches nothing, and is refused, which the loop has no use for.
     ///
+    /// A resize is pushed, then the mode winit shows the window in, when it differs from the mode last pushed: a mode
+    /// changed by the person at the window, through the platform's own control, resizes it as one the program set does.
+    ///
     /// The close button is pushed as it is heard, and the window root closes the window or not, as its config says. A
     /// window the platform destroyed is closed, as one the root asked to close is.
     pub(super) fn heard(&mut self, window: WindowId, event: WindowEvent) {
@@ -25,7 +28,10 @@ impl Running {
             WindowEvent::Resized(size) => {
                 opened.surface.resized(size.width, size.height);
                 native.request_redraw();
-                Event::Resized(Surface { width: size.width, height: size.height, scale: native.scale_factor() })
+                let surface = Surface { width: size.width, height: size.height, scale: native.scale_factor() };
+                opened.feed.push(Event::Resized(surface)).ok();
+                opened.moded();
+                return;
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let size = native.inner_size();

@@ -4,9 +4,10 @@
 //! Run with `cargo run --release -p aethereal-chassis-desktop --example window -- --runs for:3`. With `--runs for:N`
 //! the program quits itself after N seconds, and prints the time between the frames it was handed, from one `Tick` to
 //! the next, as `key=value` in milliseconds: their mean, median, 99th percentile, and longest. With `--runs forever`,
-//! as without it, it runs until its window is closed or Escape is pressed. `--size 1280x720` sizes its window. Each
-//! key, button, and turn of the wheel it hears is printed as it comes, and each resize. `--help` lists every flag the
-//! program reads, each also read from its `WINDOW_` variable.
+//! as without it, it runs until its window is closed or Escape is pressed. `--size 1280x720` sizes its window, and
+//! `--mode fullscreen` or `--mode maximized` shows it so as it opens. Each key, button, and turn of the wheel it hears
+//! is printed as it comes, and each resize and mode. `--help` lists every flag the program reads, each also read from
+//! its `WINDOW_` variable.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
@@ -95,7 +96,9 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root::<Windows>()
         .root::<Renderer>()
         .root::<Scene>()
-        .flags(|flags| flags.flag("size", 's', WindowsSettings::FIRST_SIZE))
+        .flags(|flags| {
+            flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE)
+        })
         .launch("window")?)
 }
 
@@ -370,6 +373,7 @@ impl Handles<Event> for Scene {
                 println!("resized width={} height={} scale={}", surface.width, surface.height, surface.scale);
                 (self.width, self.height) = (surface.width, surface.height);
             }
+            Event::Moded(mode) => println!("moded mode={mode:?}"),
             Event::FocusGained => println!("focus=gained"),
             Event::FocusLost => {
                 println!("focus=lost");
