@@ -85,16 +85,19 @@ impl Stream for Logs {
 
 /// What a stream's answers are, for a receiver that serves both protocols with one pump.
 trait Ends: Stream<Part = Chunk> {
+    const NAME: &'static str;
     const SENT: Self::Done;
     const STOPPED: Self::Done;
 }
 
 impl Ends for Files {
+    const NAME: &'static str = "files";
     const SENT: ReadDone = ReadDone::Sent;
     const STOPPED: ReadDone = ReadDone::Stopped;
 }
 
 impl Ends for Logs {
+    const NAME: &'static str = "logs";
     const SENT: LogDone = LogDone::Sent;
     const STOPPED: LogDone = LogDone::Stopped;
 }
@@ -190,12 +193,12 @@ where
         sent += 1;
         let closes = stream.close_after == Some(stream.next);
         if closes {
-            say("library", format!("sent {sent}, closing"));
+            say("library", format!("{} sent {sent}, closing", S::NAME));
             turn.close();
             return Ok(());
         }
     }
-    say("library", format!("sent {sent}"));
+    say("library", format!("{} sent {sent}", S::NAME));
 
     let all_sent = stream.next == stream.chunks;
     if all_sent {
@@ -221,7 +224,7 @@ fn stop<S: Ends, Sends>(
     let key = streaming.key();
     left.retain(|stream| stream.key != key);
     streaming.finish(turn, &S::STOPPED)?;
-    say("library", String::from("stopped"));
+    say("library", format!("{} stopped", S::NAME));
 
     Ok(true)
 }
@@ -501,7 +504,7 @@ fn a_stream_sends_its_parts_as_credit_comes_and_then_its_answer() {
         let heard = heard(engine, 2, &["files a 5"]);
 
         assert_eq!(heard["reader"], ["a 0", "a 1", "a 2", "a 3", "a 4", "a done Sent"], "{engine:?}");
-        assert_eq!(heard["library"], ["sent 2", "sent 1", "sent 1", "sent 1"], "{engine:?}");
+        assert_eq!(heard["library"], ["files sent 2", "files sent 1", "files sent 1", "files sent 1"], "{engine:?}");
     }
 }
 
@@ -526,6 +529,7 @@ fn streams_of_two_protocols_to_one_receiver_stay_apart() {
 
         assert_eq!(of(&heard, "reader", "a"), ["a 0", "a 1", "a 2", "a done Sent"], "{engine:?}");
         assert_eq!(of(&heard, "reader", "l"), ["l 0", "l 1", "l 2", "l done Sent"], "{engine:?}");
+        assert_eq!(heard["library"], ["files sent 1", "logs sent 1"].repeat(3), "{engine:?}");
     }
 }
 
@@ -537,7 +541,7 @@ fn a_stopped_stream_passes_over_its_late_parts_and_is_answered() {
         let heard = heard(engine, 4, &["files a 10 stop 1"]);
 
         assert_eq!(heard["reader"], ["a 0", "a done Stopped"], "{engine:?}");
-        assert_eq!(heard["library"], ["sent 4", "sent 1", "stopped"], "{engine:?}");
+        assert_eq!(heard["library"], ["files sent 4", "files sent 1", "files stopped"], "{engine:?}");
     }
 }
 
@@ -561,6 +565,6 @@ fn a_receiver_lets_go_of_the_streams_of_an_asker_that_ended() {
     for engine in ENGINES {
         let heard = heard(engine, 4, &["files a 10 leave"]);
 
-        assert_eq!(heard["library"], ["sent 4", "sent 1", "asker gone with 1 open"], "{engine:?}");
+        assert_eq!(heard["library"], ["files sent 4", "files sent 1", "asker gone with 1 open"], "{engine:?}");
     }
 }
