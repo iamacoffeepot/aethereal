@@ -237,11 +237,12 @@ impl Asked {
         self.owes.drain(..)
     }
 
-    /// The requests the turns of a guest's call asked, and the `begin`s of the children they stood up, each with its
-    /// context, in the order asked: for its host to file beside the mail that asks each (ADR-0015, ADR-0017).
+    /// The requests the turns of a guest's call asked and the jobs they ran, and those of the `begin`s of the children
+    /// they stood up, each by its asker with its context, in the order asked: for its host to file beside the mail that
+    /// asks each, or the job (ADR-0015, ADR-0017, ADR-0018).
     #[cfg(feature = "guest")]
-    pub(crate) fn asks(&self) -> impl Iterator<Item = &Asking> {
-        self.asks.iter().map(|(_, asking)| asking)
+    pub(crate) fn asks(&self) -> &[(Seated, Asking)] {
+        &self.asks
     }
 
     /// Takes every request the turn running asked, and the `begin`s of the children it stood up asked, each with its
@@ -344,6 +345,8 @@ impl Asked {
         self.asks.extend(asks);
         self.buffers.effects.extend(buffers.effects);
         self.buffers.gifts.extend(buffers.gifts);
+        self.buffers.jobs.extend(buffers.jobs);
+        self.buffers.cancelled.extend(buffers.cancelled);
         self.stood.extend(stood);
         self.stood_seats.extend(stood_seats);
     }
@@ -389,6 +392,18 @@ impl Asked {
     #[must_use]
     pub fn mailed(&self) -> &[Mailed] {
         &self.buffers.mailed
+    }
+
+    /// The jobs this turn ran, in the order run (ADR-0018).
+    #[must_use]
+    pub fn jobs(&self) -> &[Submitted] {
+        &self.buffers.jobs
+    }
+
+    /// The jobs this turn cancelled, in the order cancelled (ADR-0018).
+    #[must_use]
+    pub fn cancelled(&self) -> &[JobId] {
+        &self.buffers.cancelled
     }
 
     /// The lines this turn logged, in the order logged.
@@ -519,8 +534,12 @@ struct Seat<'a> {
     asked: &'a mut Asked,
     /// What the actor keeps, which its resource calls reach (ADR-0010).
     keeps: Keeps<'a>,
-    /// How many pieces of mail this actor has sent, this turn's included.
+    /// How many pieces of mail this actor has sent, this turn's included, and jobs it has run, which each take a
+    /// count among what it sends (ADR-0018).
     sent: u64,
+    /// How many it had sent as the turn began. Mail it sent before is no turn's of this one, which joins none of it into
+    /// a run: a guest's turns of a batch all add to the same buffers, counted on from each other (ADR-0015).
+    sent_before: u64,
     /// What the actor's type declares (ADR-0013).
     declared: &'static Declared,
     /// What the turn owes the source of the item it handles (ADR-0017).
@@ -665,8 +684,10 @@ impl Seat<'_> {
     fn last_send(&self) -> Option<(Seated, KindId)> {
         let last = self.asked.buffers.mailed.last()?;
         let is_mine = last.by.id == self.me.id;
+        let is_this_turns = last.count > self.sent_before;
+        let is_own = is_mine && is_this_turns;
 
-        is_mine.then_some((last.to, last.kind))
+        is_own.then_some((last.to, last.kind))
     }
 
     /// Encodes `mail` and adds the effect that sends it to the actor `to`, which this actor reaches as it is: one a
@@ -710,13 +731,10 @@ impl Seat<'_> {
     }
 
     /// Runs `job`, keeping `context` until it is answered with a `J::Done` (ADR-0018): it takes the next count of what
-    /// this actor sends, as a piece of mail would, which with the actor is the job's id. Refused in a guest's code,
-    /// whose host reads no job yet.
+    /// this actor sends, as a piece of mail would, which with the actor is the job's id. In a guest's code, its host
+    /// reads the job from its records and files it as it is filed here (ADR-0015).
     #[cfg(feature = "std")]
     fn run<J: Job, C: Encode<Within>>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun> {
-        if matches!(self.keeps, Keeps::Claimed) {
-            return Err(Unrun::InGuest);
-        }
         let (bytes, lent) = lending(job).map_err(Unrun::Unwritten)?;
         let context = Written::of(context).map_err(Unrun::Unwritten)?;
         self.sent += 1;
@@ -731,11 +749,10 @@ impl Seat<'_> {
         Ok(id)
     }
 
-    /// Cancels the job `job`, when this actor ran it (ADR-0018). Nothing in a guest's code, which runs no job.
+    /// Cancels the job `job`, when this actor ran it (ADR-0018).
     fn cancel(&mut self, job: JobId) {
         let is_own = job.mail().sender == self.me.id;
-        let is_native = !matches!(self.keeps, Keeps::Claimed);
-        if is_own && is_native {
+        if is_own {
             self.asked.buffers.cancelled.push(job);
         }
     }
@@ -1028,8 +1045,19 @@ impl Seat<'_> {
             Keeps::Here(_) => Keeps::Here(&mut keeping),
             Keeps::Claimed => Keeps::Claimed,
         };
-        let child =
-            Seat { me, path: &path, above, table, made: &(), asked, keeps, sent: 0, declared, owing: Owing::NOTHING };
+        let child = Seat {
+            me,
+            path: &path,
+            above,
+            table,
+            made: &(),
+            asked,
+            keeps,
+            sent: 0,
+            sent_before: 0,
+            declared,
+            owing: Owing::NOTHING,
+        };
         let began = C::begin(config, &mut Beginning { seat: child, instances, of: PhantomData });
         match began {
             Ok(actor) => {
@@ -1296,7 +1324,19 @@ impl<'a> Turning<'a> {
     /// The turn of the handler of `A`, whose type declares `declared`, which may send `S`.
     pub(crate) fn declaring<A: Actor, S: Sends>(self, declared: &'static Declared) -> Turn<'a, A, S> {
         let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie } = self;
-        let seat = Seat { me, path, above, table, made, asked, keeps, sent, declared, owing: Owing::Item(tie) };
+        let seat = Seat {
+            me,
+            path,
+            above,
+            table,
+            made,
+            asked,
+            keeps,
+            sent,
+            sent_before: sent,
+            declared,
+            owing: Owing::Item(tie),
+        };
 
         Turn { seat, instances, source, chain, of: PhantomData }
     }
@@ -1632,7 +1672,7 @@ impl<Me, S> Turn<'_, Me, S> {
     ///
     /// # Errors
     ///
-    /// [`Unrun`] when the job or its context could not be written, or the turn runs in a guest.
+    /// [`Unrun`] when the job or its context could not be written.
     #[cfg(feature = "std")]
     pub fn run<J, C>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun>
     where
@@ -1943,6 +1983,7 @@ impl<'a, Me: ChildOf> Beginning<'a, Me, Me::BeginSends> {
             asked,
             keeps,
             sent: 0,
+            sent_before: 0,
             declared,
             owing: Owing::NOTHING,
         };
@@ -2048,7 +2089,7 @@ impl<Me, S> Beginning<'_, Me, S> {
     ///
     /// # Errors
     ///
-    /// [`Unrun`] when the job or its context could not be written, or the `begin` runs in a guest.
+    /// [`Unrun`] when the job or its context could not be written.
     #[cfg(feature = "std")]
     pub fn run<J, C>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun>
     where
@@ -2331,7 +2372,19 @@ impl<'a> Closing<'a> {
     pub(crate) fn declaring<A: ChildOf>(self) -> Ending<'a, A, A::EndSends> {
         let Self { me, path, above, table, asked, keeps, sent, why, .. } = self;
         let declared = Declared::of::<A>();
-        let seat = Seat { me, path, above, table, made: &(), asked, keeps, sent, declared, owing: Owing::NOTHING };
+        let seat = Seat {
+            me,
+            path,
+            above,
+            table,
+            made: &(),
+            asked,
+            keeps,
+            sent,
+            sent_before: sent,
+            declared,
+            owing: Owing::NOTHING,
+        };
 
         Ending { seat, why, of: PhantomData }
     }

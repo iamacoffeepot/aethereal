@@ -2,9 +2,9 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, BlobRef, Carries, ChildOf, Ended, Ending,
-    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, Level, On, Path, Protocol, ProtocolRef, Recursive,
-    Refused, Resource, Runner, Running, Start, Stop, Tells, Tick, ToAny, ToSender, ToType, Top, Turn, Unanswered,
-    Unrun, parent, path,
+    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, JobId, Level, On, Path, Protocol, ProtocolRef,
+    Recursive, Refused, Resource, Runner, Running, Start, Stop, Tells, Tick, ToAny, ToSender, ToType, Top, Turn,
+    Unanswered, parent, path,
 };
 use aethereal_data::{ActorPath, Bound, KindId, KindName, Plain};
 use core::mem;
@@ -277,44 +277,164 @@ impl Actor for Metronome {
     }
 }
 
-/// A job a guest cannot run yet: its host reads no job (ADR-0018).
+/// A job a guest runs, which answers with a pong of one more than its number (ADR-0018).
 #[derive(Plain)]
 #[kind(name = "aether.guest.chore")]
-pub struct Chore;
+pub struct Chore {
+    pub n: u64,
+}
 
 impl Job for Chore {
     type Done = Pong;
     const RUNNER: Runner = Runner::Compute;
 
     async fn run(self, _: &mut Running) -> Result<Pong, Fault> {
-        Ok(Pong { n: 0 })
+        Ok(Pong { n: self.n + 1 })
     }
 }
 
-/// An actor that runs a chore as it begins, and logs that its turn refused it, as a guest's does.
+/// A job a guest runs, which answers with a pong of how many bytes the blob it refers to holds (ADR-0014, ADR-0018).
 #[derive(Bound)]
-#[kind(name = "aether.guest.errand")]
-pub struct Errand;
+#[kind(name = "aether.guest.measure")]
+pub struct Measure {
+    pub blob: BlobRef,
+}
 
-impl ChildOf for Errand {
+impl Job for Measure {
+    type Done = Pong;
+    const RUNNER: Runner = Runner::Compute;
+
+    async fn run(self, job: &mut Running) -> Result<Pong, Fault> {
+        Ok(Pong { n: job.read(&self.blob).len() as u64 })
+    }
+}
+
+/// The word to a foreman to run chores of the number and of one more, back to back, between two pongs to its sender.
+#[derive(Plain)]
+#[kind(name = "aether.guest.go")]
+pub struct Go {
+    pub n: u64,
+}
+
+/// The word to a foreman to cancel every job it has run.
+#[derive(Plain)]
+#[kind(name = "aether.guest.call_off")]
+pub struct CallOff;
+
+/// What a foreman keeps for a job until it is answered: the number of the order that ran it, nought for its `begin`'s.
+#[derive(Plain)]
+#[kind(name = "aether.guest.shift")]
+pub struct Shift {
+    pub at: u64,
+}
+
+/// An actor that runs jobs: as it begins, one that measures a blob it puts and keeps nowhere else, and on each order to,
+/// two chores between two pongs to the order's sender. It logs the count each job took among what it sends, cancels them
+/// all on the word to, logs what each job it did not cancel was answered with, and closes on the word to (ADR-0018).
+#[derive(Bound)]
+#[kind(name = "aether.guest.foreman")]
+pub struct Foreman {
+    ran: Vec<JobId>,
+}
+
+impl ChildOf for Foreman {
     type Parent = Top;
 }
 
-impl Actor for Errand {
+impl Actor for Foreman {
     type Config = EchoConfig;
     type Key = ();
-    type Handles = (Answer<Pong, EchoConfig>,);
+    type Handles = (Go, CallOff, Shut, Answer<Pong, Shift>);
     type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let ran = turn.run(&Chore, &EchoConfig);
-        let said = match ran {
-            Ok(_) => "chore run",
-            Err(Unrun::InGuest) => "chore refused in a guest",
-            Err(Unrun::Unwritten(_)) => "chore unwritten",
+        let blob = turn.put(vec![7; 3]).map_err(|why| unhatched(&why))?;
+        let job = turn.run(&Measure { blob }, &Shift { at: 0 })?;
+        turn.log(Level::Info, format!("ran {}", job.mail().count));
+
+        Ok(Self { ran: vec![job] })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Go> for Foreman {
+    type Sends = (ToSender<Pong>,);
+
+    fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        turn.reply(&Pong { n: go.n })?;
+        let first = turn.run(&Chore { n: go.n }, &Shift { at: go.n })?;
+        let second = turn.run(&Chore { n: go.n + 1 }, &Shift { at: go.n + 1 })?;
+        turn.reply(&Pong { n: go.n })?;
+        turn.log(Level::Info, format!("ran {} and {}", first.mail().count, second.mail().count));
+        self.ran.extend([first, second]);
+
+        Ok(())
+    }
+}
+
+impl Handles<CallOff> for Foreman {
+    type Sends = ();
+
+    fn handle(&mut self, _: CallOff, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        for job in self.ran.drain(..) {
+            turn.cancel(job);
+        }
+        turn.log(Level::Info, "called off");
+
+        Ok(())
+    }
+}
+
+impl Handles<Shut> for Foreman {
+    type Sends = ();
+
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        turn.close();
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Pong, Shift>> for Foreman {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (done, shift): (Answered<Pong>, Shift),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let said = match done {
+            Answered::Yes(pong) => format!("{} answered {}", shift.at, pong.n),
+            Answered::No(why) => format!("{} unanswered: {why:?}", shift.at),
         };
-        turn.log(Level::Info, said);
+        turn.log(Level::Info, &said);
+
+        Ok(())
+    }
+}
+
+/// An actor whose `begin` stands up an apprentice, which its host begins apart from the guest's call (ADR-0015).
+#[derive(Bound)]
+#[kind(name = "aether.guest.overseer")]
+pub struct Overseer;
+
+impl ChildOf for Overseer {
+    type Parent = Top;
+}
+
+impl Actor for Overseer {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.spawn::<Apprentice>(&(), Chore { n: 7 }).map_err(|why| unhatched(&why))?;
 
         Ok(Self)
     }
@@ -324,10 +444,49 @@ impl Actor for Errand {
     }
 }
 
-impl Handles<Answer<Pong, EchoConfig>> for Errand {
+/// A native actor the guest's crate holds but its blob does not make, begun by its host apart from the guest's call:
+/// its `begin` runs the chore it was made from, and it logs what the chore was answered with (ADR-0018).
+#[derive(Bound)]
+#[kind(name = "aether.guest.apprentice")]
+pub struct Apprentice;
+
+impl ChildOf for Apprentice {
+    type Parent = Overseer;
+}
+
+impl Actor for Apprentice {
+    type Config = Chore;
+    type Key = ();
+    type Handles = (Answer<Pong, Shift>,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(chore: Chore, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        let at = chore.n;
+        turn.run(&chore, &Shift { at })?;
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Pong, Shift>> for Apprentice {
     type Sends = ();
 
-    fn handle(&mut self, _: (Answered<Pong>, EchoConfig), _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(
+        &mut self,
+        (done, shift): (Answered<Pong>, Shift),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let said = match done {
+            Answered::Yes(pong) => format!("{} answered {}", shift.at, pong.n),
+            Answered::No(why) => format!("{} unanswered: {why:?}", shift.at),
+        };
+        turn.log(Level::Info, &said);
+
         Ok(())
     }
 }
@@ -2366,7 +2525,8 @@ aethereal_actor::guest!(
     Starter,
     Ticker,
     Metronome,
-    Errand,
+    Foreman,
+    Overseer,
     Bell,
     Ringer,
     Steeple,

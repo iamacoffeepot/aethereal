@@ -9,7 +9,8 @@
 //! logged, a [`SpawnRecord`] for each child they spawned, a [`StoodRecord`]
 //! for each child that began, a [`WatchRecord`] for each actor they
 //! watched, a [`ClaimRecord`] for each claim they made of a resource, a [`HoldRecord`] for each request they held,
-//! and a [`StageRecord`] for each thing they asked of the program's lifecycle; and, for the call as a whole, a [`PinRecord`] for each blob whose
+//! a [`StageRecord`] for each thing they asked of the program's lifecycle, a [`JobRecord`] for each job they ran,
+//! and a [`CancelRecord`] for each job they cancelled; and, for the call as a whole, a [`PinRecord`] for each blob whose
 //! pins it changed, a [`RefRecord`] for each reference in what it sent, and a [`HolderRecord`] for each debt whose holders it changed. A send's bytes, a line's text, a key and a moved
 //! child's state are not copied out: each record says where they lie in the
 //! guest's memory, and the host reads them there. Sends and lines say who made
@@ -23,7 +24,7 @@
 //! Every number is little-endian, and every address is one in the guest's
 //! 32-bit memory.
 
-use crate::{BlobId, Chain, Claim, Claimed, Fault, Level, MailId, Owed, Refused, SeatNumber, Seated, Why};
+use crate::{BlobId, Chain, Claim, Claimed, Fault, JobId, Level, MailId, Owed, Refused, SeatNumber, Seated, Why};
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
 use alloc::vec::Vec;
 
@@ -277,10 +278,29 @@ impl OutHead {
 
         self.holds_at(watches, claims)?.checked_add(span)
     }
+
+    /// Where the call's [`JobRecord`]s begin, right after its stage records, which follow its held requests, claims and
+    /// watches: as many of each as `all`, its last turn's [`TurnEnds`], counts. A job is seldom run, so the head keeps
+    /// no room for where they lie (ADR-0018).
+    #[must_use]
+    pub fn jobs_at(&self, all: TurnEnds) -> Option<u32> {
+        let span = all.stages.checked_mul(u32::try_from(StageRecord::BYTES).ok()?)?;
+
+        self.stages_at(all.watches, all.claims, all.holds)?.checked_add(span)
+    }
+
+    /// Where the call's [`CancelRecord`]s begin, right after its job records: as many as `all`, its last turn's
+    /// [`TurnEnds`], counts, of them and of what comes before them (ADR-0018).
+    #[must_use]
+    pub fn cancels_at(&self, all: TurnEnds) -> Option<u32> {
+        let span = all.jobs.checked_mul(u32::try_from(JobRecord::BYTES).ok()?)?;
+
+        self.jobs_at(all)?.checked_add(span)
+    }
 }
 
-/// Where one turn's records end: how many sends, lines, spawns, children stood up, watches, claims and holds the turns
-/// up to and including it asked for.
+/// Where one turn's records end: how many sends, lines, spawns, children stood up, watches, claims, holds, stages,
+/// jobs run and jobs cancelled the turns up to and including it asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TurnEnds {
     pub sends: u32,
@@ -291,11 +311,13 @@ pub struct TurnEnds {
     pub claims: u32,
     pub holds: u32,
     pub stages: u32,
+    pub jobs: u32,
+    pub cancels: u32,
 }
 
 impl TurnEnds {
     /// How many bytes it is.
-    pub const BYTES: usize = 32;
+    pub const BYTES: usize = 40;
 
     /// It, as the out buffer holds it.
     #[must_use]
@@ -308,7 +330,9 @@ impl TurnEnds {
         out[16..20].copy_from_slice(&self.watches.to_le_bytes());
         out[20..24].copy_from_slice(&self.claims.to_le_bytes());
         out[24..28].copy_from_slice(&self.holds.to_le_bytes());
-        out[28..].copy_from_slice(&self.stages.to_le_bytes());
+        out[28..32].copy_from_slice(&self.stages.to_le_bytes());
+        out[32..36].copy_from_slice(&self.jobs.to_le_bytes());
+        out[36..].copy_from_slice(&self.cancels.to_le_bytes());
 
         out
     }
@@ -325,6 +349,8 @@ impl TurnEnds {
             claims: u32_at(bytes, 20)?,
             holds: u32_at(bytes, 24)?,
             stages: u32_at(bytes, 28)?,
+            jobs: u32_at(bytes, 32)?,
+            cancels: u32_at(bytes, 36)?,
         })
     }
 }
@@ -826,6 +852,84 @@ impl StageRecord {
         };
 
         Some(Self { by: seated_at(bytes, 0)?, asked })
+    }
+}
+
+/// A job a turn ran, or the `begin` of a child it spawned, as its asks are recorded with the mail that asks them: by
+/// whom, the count it took among what they send, its kind and the kind it is answered with, and where its bytes and
+/// the context kept for it lie, each with the blob of each reference it holds, as [`carried`] reads them (ADR-0018).
+/// Its host files it as a native turn's, giving it the count it would give mail sent there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JobRecord {
+    pub by: Seated,
+    pub count: u64,
+    pub kind: KindId,
+    pub answer: KindId,
+    pub job: Span,
+    pub context: Span,
+}
+
+impl JobRecord {
+    /// How many bytes it is.
+    pub const BYTES: usize = 56;
+
+    /// It, as the out buffer holds it.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::BYTES] {
+        let mut out = [0; Self::BYTES];
+        out[..16].copy_from_slice(&seated_bytes(self.by));
+        out[16..24].copy_from_slice(&self.count.to_le_bytes());
+        out[24..32].copy_from_slice(&self.kind.plain_bytes());
+        out[32..40].copy_from_slice(&self.answer.plain_bytes());
+        out[40..44].copy_from_slice(&self.job.at.to_le_bytes());
+        out[44..48].copy_from_slice(&self.job.len.to_le_bytes());
+        out[48..52].copy_from_slice(&self.context.at.to_le_bytes());
+        out[52..].copy_from_slice(&self.context.len.to_le_bytes());
+
+        out
+    }
+
+    /// The record `bytes` begin with: nothing when they are too few, or name no kind.
+    #[must_use]
+    pub fn read(bytes: &[u8]) -> Option<Self> {
+        Some(Self {
+            by: seated_at(bytes, 0)?,
+            count: u64_at(bytes, 16)?,
+            kind: kind_at(bytes, 24)?,
+            answer: kind_at(bytes, 32)?,
+            job: Span { at: u32_at(bytes, 40)?, len: u32_at(bytes, 44)? },
+            context: Span { at: u32_at(bytes, 48)?, len: u32_at(bytes, 52)? },
+        })
+    }
+}
+
+/// A job a turn cancelled, by its id (ADR-0018).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CancelRecord {
+    pub job: JobId,
+}
+
+impl CancelRecord {
+    /// How many bytes it is.
+    pub const BYTES: usize = 16;
+
+    /// It, as the out buffer holds it.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::BYTES] {
+        let MailId { sender, count } = self.job.mail();
+        let mut out = [0; Self::BYTES];
+        out[..8].copy_from_slice(&sender.bits().to_le_bytes());
+        out[8..].copy_from_slice(&count.to_le_bytes());
+
+        out
+    }
+
+    /// The record `bytes` begin with: nothing when they are too few.
+    #[must_use]
+    pub fn read(bytes: &[u8]) -> Option<Self> {
+        let job = JobId::new(MailId { sender: ActorId::new(u64_at(bytes, 0)?), count: u64_at(bytes, 8)? });
+
+        Some(Self { job })
     }
 }
 

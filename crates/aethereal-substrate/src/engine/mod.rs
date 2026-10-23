@@ -1611,7 +1611,7 @@ impl Reading<'_> {
                         let (seats, puts, _, gifts) = asked.lent_gifts();
                         let holds = Holds { keeping: &mut *keeping, gifts };
                         let reads = Reads { table: &table, made: &seat.made, seats, puts, holds };
-                        actor.prepare(Preparing::new(&batch, instances, reads));
+                        actor.prepare(Preparing::new(&batch, instances, reads, stepped.sent));
                     }
                     // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
                     // worker, beyond what the actor's code takes.
@@ -1797,7 +1797,7 @@ impl Reading<'_> {
             let holds = Holds { keeping: &mut *keeping, gifts };
             let reads = Reads { table: &table, made: &seat.made, seats, puts, holds };
             let batch = batch::OneHop { reading: self, waits: waiting, hop: &hop, lists, arena };
-            actor.prepare(Preparing::new(&batch, instances, reads));
+            actor.prepare(Preparing::new(&batch, instances, reads, stepped.sent));
         }
         let sent_before = stepped.sent;
         let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };

@@ -22,9 +22,9 @@
 //! blob, its hash, and a put are calls out.
 
 use crate::records::{
-    self, Born, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, Kept, Keying, LineRecord, Naming, Other,
-    OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord, Spawning, StageRecord, Staging,
-    StoodRecord, Stopped, TurnEnds, WatchRecord,
+    self, Born, CancelRecord, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, JobRecord, Kept, Keying,
+    LineRecord, Naming, Other, OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord,
+    Spawning, StageRecord, Staging, StoodRecord, Stopped, TurnEnds, WatchRecord,
 };
 use crate::section;
 use crate::{
@@ -376,10 +376,11 @@ pub fn take_out_at(types: &[Type], handle: u32) -> u64 {
 }
 
 /// Runs the actor `handle` names on the `items` items written into the first `len` bytes of the inbox, each an
-/// [`ItemHead`] and then its bytes, one turn for each until one fails or closes the actor. Answers where what the turns
-/// asked for lies, as [`out`] does.
+/// [`ItemHead`] and then its bytes, one turn for each until one fails or closes the actor. The actor had sent `sent`
+/// pieces of mail and jobs before the first, which its turns count on from, as the engine counts them, so a job's id is
+/// the one its host files it under (ADR-0018). Answers where what the turns asked for lies, as [`out`] does.
 #[must_use]
-pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len: u32) -> u64 {
+pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len: u32, sent: u64) -> u64 {
     GUEST.with_borrow_mut(|guest| {
         // What the last call asked for has been read by now, so its buffers are emptied for this batch, whose turns
         // all add to them.
@@ -399,6 +400,7 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         let mut last = Last::Ran;
         let mut stood_before = 0;
         let mut counted = Counted::default();
+        let mut sent = sent;
         for _ in 0..items {
             let Some((read, ItemHead { source, chain, handed, .. }, after)) = read_item(rest, read_limit) else {
                 break;
@@ -427,8 +429,10 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
             stood_before = asked.stood_count();
             let Standing { path, above } = &*standing;
             let keeps = Keeps::Claimed;
-            let turning = Turning::new(*me, path, *above, &host, &host, asked, instances, keeps, 0, source, chain, tie);
+            let turning =
+                Turning::new(*me, path, *above, &host, &host, asked, instances, keeps, sent, source, chain, tie);
             let result = runs.turn(item, turning);
+            sent = asked.last_sent(*me).unwrap_or(sent);
             write_ends(out, asked, &mut counted);
             ran += 1;
             last = match result {
@@ -628,6 +632,7 @@ impl Guest {
                 self.held.extend_from_slice(&key);
             }
         }
+        let job_bytes = jobs(&mut self.held, &self.asked);
         let asks = contexts(&mut self.held, &self.asked);
 
         let Self { out, asked, held, changes, holder_changes, .. } = self;
@@ -668,6 +673,7 @@ impl Guest {
             out.extend_from_slice(&watch.to_bytes());
         }
         write_claims(out, asked);
+        jobs_out(out, asked, &asks, job_bytes.into_iter().map(in_held));
         // Where its mail's references lie is written, and its host pins them itself, so the guest's own pins go now and
         // count among the call's changes.
         if refers {
@@ -728,9 +734,18 @@ fn room_for_head(out: &mut Vec<u8>) {
     }
 }
 
+/// Where the context a request or a job keeps lies, as its host is told: who asked it or ran it, the count it took
+/// among what they send, the kind it is answered with, and where the context lies (ADR-0017, ADR-0018).
+struct Lying {
+    by: Seated,
+    count: u64,
+    answer: KindId,
+    context: Span,
+}
+
 /// As [`write_contexts`], for a call that may ask nothing.
 #[inline]
-fn contexts(held: &mut Vec<u8>, asked: &Asked) -> Vec<(KindId, Span)> {
+fn contexts(held: &mut Vec<u8>, asked: &Asked) -> Vec<Lying> {
     // Most calls ask nothing.
     if !asked.has_asked() {
         return Vec::new();
@@ -738,23 +753,86 @@ fn contexts(held: &mut Vec<u8>, asked: &Asked) -> Vec<(KindId, Span)> {
     write_contexts(held, asked)
 }
 
-/// Writes the context of each request in `asked` after `held`, with the blob of each reference it holds, as a state
-/// taken out is, for its host to pin them itself; and answers with the answer each waits for and where its context
-/// lies, in the order asked. Kept out of line, as most calls ask nothing.
+/// Writes the context of each request and job in `asked` after `held`, with the blob of each reference it holds, as a
+/// state taken out is, for its host to pin them itself; and answers with where each lies, in the order asked. Nothing
+/// is written after them, as their addresses are taken once they are written and the buffer moves when it grows. Kept
+/// out of line, as most calls ask nothing.
 #[cold]
 #[inline(never)]
-fn write_contexts(held: &mut Vec<u8>, asked: &Asked) -> Vec<(KindId, Span)> {
+fn write_contexts(held: &mut Vec<u8>, asked: &Asked) -> Vec<Lying> {
     let mut lying = Vec::new();
-    for asking in asked.asks() {
+    for (by, asking) in asked.asks() {
         let at = held.len();
         records::write_carried(held, asking.context.bytes(), asking.context.pins().iter().map(BlobRef::id));
-        lying.push((asking.answer, at, held.len() - at));
+        lying.push((*by, asking.count, asking.answer, at, held.len() - at));
     }
     // Every address is taken once the buffer is written, as it moves when it grows.
     let base = address(held.as_ptr());
-    let asks = lying.into_iter().map(|(answer, at, len)| (answer, Span { at: base + count(at), len: count(len) }));
+    let asks = lying.into_iter().map(|(by, request, answer, at, len)| {
+        let context = Span { at: base + count(at), len: count(len) };
+        Lying { by, count: request, answer, context }
+    });
 
     asks.collect()
+}
+
+/// As [`write_ran`], for a call that may run no job.
+#[inline]
+fn jobs(held: &mut Vec<u8>, asked: &Asked) -> Vec<(usize, usize)> {
+    // Most calls run no job.
+    if asked.jobs().is_empty() {
+        return Vec::new();
+    }
+    write_ran(held, asked)
+}
+
+/// Writes the bytes of each job in `asked` after `held`, with the blob of each reference they hold, as [`records::carried`]
+/// reads them, for its host to pin them itself; and answers with where each lies in `held`, in the order run. Kept out
+/// of line, as most calls run none (ADR-0018).
+#[cold]
+#[inline(never)]
+fn write_ran(held: &mut Vec<u8>, asked: &Asked) -> Vec<(usize, usize)> {
+    let mut ran = Vec::new();
+    for job in asked.jobs() {
+        let at = held.len();
+        records::write_carried(held, &job.bytes, job.refers.iter().copied());
+        ran.push((at, held.len() - at));
+    }
+
+    ran
+}
+
+/// As [`write_jobs`], for a call that may run and cancel no job.
+#[inline]
+fn jobs_out(out: &mut Vec<u8>, asked: &Asked, asks: &[Lying], ran: impl Iterator<Item = Span>) {
+    let runs = !asked.jobs().is_empty();
+    let cancels = !asked.cancelled().is_empty();
+    let runs_or_cancels = runs || cancels;
+    if runs_or_cancels {
+        write_jobs(out, asked, asks, ran);
+    }
+}
+
+/// Writes after `out` a [`JobRecord`] for each job the turns of `asked` ran, its bytes where the next of `ran` says and
+/// its context where `asks` says it lies, and then a [`CancelRecord`] for each job they cancelled: right after what they
+/// asked of the program's lifecycle, where its host finds them. Kept out of line, as most calls run and cancel none
+/// (ADR-0018).
+#[cold]
+#[inline(never)]
+fn write_jobs(out: &mut Vec<u8>, asked: &Asked, asks: &[Lying], ran: impl Iterator<Item = Span>) {
+    // Each job's context was filed as it ran, so the contexts are in the order of the jobs.
+    let mut asks = asks.iter();
+    for (job, bytes) in asked.jobs().iter().zip(ran) {
+        let kept = asks.find(|lying| lying.by == job.by && lying.count == job.count);
+        // A context that does not lie there reads back as none, and its host finds the call garbled.
+        let context = kept.map_or(Span { at: 0, len: 0 }, |lying| lying.context);
+        let record =
+            JobRecord { by: job.by, count: job.count, kind: job.kind, answer: job.answer, job: bytes, context };
+        out.extend_from_slice(&record.to_bytes());
+    }
+    for job in asked.cancelled() {
+        out.extend_from_slice(&CancelRecord { job: *job }.to_bytes());
+    }
 }
 
 /// Whether `what` is the spawn of a child.
@@ -763,14 +841,14 @@ const fn is_spawn(what: &What) -> bool {
 }
 
 /// Writes a [`SendRecord`] after `out` for each piece of mail in `asked`, from `sends_at`, each that asks a request
-/// with the next of `asks`, the answer it waits for and where its context lies, and answers with where each reference
+/// with its own of `asks`, the answer it waits for and where its context lies, and answers with where each reference
 /// in them lies, and whether any piece holds a pin.
-fn write_sends(out: &mut Vec<u8>, asked: &Asked, asks: &[(KindId, Span)], sends_at: usize) -> (Vec<RefRecord>, bool) {
+fn write_sends(out: &mut Vec<u8>, asked: &Asked, asks: &[Lying], sends_at: usize) -> (Vec<RefRecord>, bool) {
     let mut refs = Vec::new();
     // Most calls send no reference to a blob, and their mail holds no pin.
     let refers = asked.arena().holds_pins();
-    // Each request is filed as the mail that asks it is written, so the requests are in the order of that mail; and so
-    // is each answer to a held request.
+    // Each request is filed as the mail that asks it is written, so the requests are in the order of that mail, among
+    // the jobs run between them; and so is each answer to a held request.
     let mut asks = asks.iter();
     let mut answers = asked.owes().iter().filter_map(Owes::answered).peekable();
     for mailed in asked.mailed() {
@@ -791,16 +869,20 @@ fn write_sends(out: &mut Vec<u8>, asked: &Asked, asks: &[(KindId, Span)], sends_
     (refs, refers)
 }
 
-/// What the piece of mail `mailed` is to a request, as its host is told: the next of `asks` when it asks one, and the
-/// next of `answers`, the debts the turns answered, when it answers that one. A reply to the request a turn handles is
-/// no such answer: its host tells it from what the turn's handler declares.
+/// What the piece of mail `mailed` is to a request, as its host is told: its own of `asks`, the next that its sender
+/// asked of that count, when it asks one, and the next of `answers`, the debts the turns answered, when it answers that
+/// one. A reply to the request a turn handles is no such answer: its host tells it from what the turn's handler
+/// declares.
 fn requesting(
     mailed: &crate::Mailed,
-    asks: &mut slice::Iter<'_, (KindId, Span)>,
+    asks: &mut slice::Iter<'_, Lying>,
     answers: &mut Peekable<impl Iterator<Item = Owed>>,
 ) -> Requesting {
     match mailed.tie.read() {
-        Tied::Asks(_) => asks.next().map_or(Requesting::Not, |&(answer, context)| Requesting::Asks { answer, context }),
+        Tied::Asks(request) => {
+            let asking = asks.find(|lying| lying.by == mailed.by && lying.count == request);
+            asking.map_or(Requesting::Not, |lying| Requesting::Asks { answer: lying.answer, context: lying.context })
+        }
         Tied::Answers(request) => {
             let is_held = answers.next_if(|owed| owed.asker == mailed.to && owed.request == request).is_some();
             if is_held {
@@ -1064,6 +1146,8 @@ fn write_ends(out: &mut Vec<u8>, asked: &Asked, counted: &mut Counted) {
     ends.lines = count(asked.lines().len());
     ends.stood = count(asked.stood_count());
     ends.claims = count(asked.claims().len());
+    ends.jobs = count(asked.jobs().len());
+    ends.cancels = count(asked.cancelled().len());
     out.extend_from_slice(&ends.to_bytes());
 }
 
@@ -1522,8 +1606,8 @@ macro_rules! guest {
             }
 
             #[unsafe(no_mangle)]
-            extern "C" fn aethereal_turns(handle: u32, items: u32, len: u32) -> u64 {
-                $crate::guest::turns(MADE, &CALLS, handle, items, len)
+            extern "C" fn aethereal_turns(handle: u32, items: u32, len: u32, sent: u64) -> u64 {
+                $crate::guest::turns(MADE, &CALLS, handle, items, len, sent)
             }
         };
     };

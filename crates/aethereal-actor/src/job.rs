@@ -12,8 +12,7 @@ use crate::{
     Actors, ActorsReader, ActorsWriter, BlobId, Fault, MailId, Seated, Time, Timer, Until, Unwritable, Within,
 };
 use aethereal_data::{
-    ActorId, Budget, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, Plain, Reader, Schema, Shape,
-    Writer,
+    ActorId, Budget, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, Reader, Schema, Shape, Writer,
 };
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -219,20 +218,12 @@ impl Decode<Within> for JobId {
 pub enum Unrun {
     /// The job could not be written: it holds a resource, or a collection too long to count.
     Unwritten(EncodeError),
-    /// The turn runs in a guest, whose host reads no job yet.
-    InGuest,
 }
-
-/// The reason of a turn whose job its turn could not run, as `?` makes of an [`Unrun`].
-#[derive(Debug, PartialEq, Eq, Plain)]
-#[kind(name = "aether.actor.not_run")]
-pub struct NotRun;
 
 impl From<Unrun> for Fault {
     fn from(unrun: Unrun) -> Self {
         match unrun {
             Unrun::Unwritten(_) => Self::bare::<Unwritable>(),
-            Unrun::InGuest => Self::bare::<NotRun>(),
         }
     }
 }

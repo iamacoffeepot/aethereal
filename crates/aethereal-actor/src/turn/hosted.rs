@@ -4,8 +4,8 @@ use super::{Closing, Owing, Seat, Stood, Turning, Why};
 use crate::records::Staging;
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Effect, ErasedActorRef, Fault, Gift, Giver, Instances,
-    Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Role, Runs, SeatNumber,
-    Seated, Seats, Sending, Table, Target, Tie, What, Written, carry, take_claimed,
+    JobId, Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Role, Runs,
+    SeatNumber, Seated, Seats, Sending, Submitted, Table, Target, Tie, What, Written, carry, take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -158,7 +158,7 @@ impl<'a> Turning<'a> {
         let handler = declared.handlers().iter().find(|handler| handler.role() == role);
         let sends = handler.map_or(&[][..], |handler| handler.sends());
         let owing = Owing::Item(tie);
-        let seat = Seat { me, path, above, table, made, asked, keeps, sent, declared, owing };
+        let seat = Seat { me, path, above, table, made, asked, keeps, sent, sent_before: sent, declared, owing };
 
         (
             Hosted { seat, sends, source: Source::Item(source), chain, spawned: Vec::new(), sent: Sent::Nothing },
@@ -175,7 +175,7 @@ impl<'a> Closing<'a> {
     pub fn hosted(self, declared: &'static Declared) -> (Hosted<'a>, Why, &'a mut Instances) {
         let Self { me, path, above, table, asked, instances, keeps, sent, why } = self;
         let owing = Owing::NOTHING;
-        let seat = Seat { me, path, above, table, made: &(), asked, keeps, sent, declared, owing };
+        let seat = Seat { me, path, above, table, made: &(), asked, keeps, sent, sent_before: sent, declared, owing };
         let chain = Chain { root: MailId { sender: me.id, count: sent }, depth: 0 };
         let hosted = Hosted {
             seat,
@@ -213,6 +213,7 @@ impl<'a> Hosted<'a> {
             asked,
             keeps: Keeps::Here(keeping),
             sent: 0,
+            sent_before: 0,
             declared,
             owing: Owing::NOTHING,
         };
@@ -422,6 +423,76 @@ impl<'a> Hosted<'a> {
         self.seat.asked.owes.push(Owes::Answers { owed, answer: kind });
 
         Ok(Tie::answers(request))
+    }
+
+    /// The count the next piece of mail `by` sends takes, or the next job it runs: the actor whose turn this is, or a
+    /// child it spawned, in its `begin`. Nothing when the turn spawned no such child.
+    #[must_use]
+    pub fn next_count(&self, by: Seated) -> Option<u64> {
+        if by == self.seat.me {
+            return Some(self.seat.sent + 1);
+        }
+        let child = self.spawned.iter().find(|child| child.me == by)?;
+
+        Some(child.sent + 1)
+    }
+
+    /// Runs the job of `kind` written as `bytes`, by `by`, the actor whose turn this is or a child it spawned, in its
+    /// `begin`, keeping `context` until it is answered with a kind `answer` names: it takes the next count of what `by`
+    /// sends, and is filed as a native turn's job is, with `lent`, a pin on each blob it refers to, as often as it
+    /// refers to it (ADR-0018).
+    ///
+    /// # Errors
+    ///
+    /// [`FalseSend`] when the turn spawned no such child, it is the actor's closing turn, which runs no job, or the
+    /// runner's type does not handle the answer: what a guest's library would not have built (ADR-0013).
+    #[cfg(feature = "std")]
+    pub fn run(
+        &mut self,
+        by: Seated,
+        kind: KindId,
+        answer: KindId,
+        bytes: Vec<u8>,
+        lent: Vec<crate::BlobRef>,
+        context: Written,
+    ) -> Result<(), FalseSend> {
+        let is_mine = by == self.seat.me;
+        let declared = if is_mine {
+            self.seat.declared
+        } else {
+            self.spawned.iter().find(|child| child.me == by).ok_or(FalseSend)?.declared
+        };
+        let is_closing = is_mine && matches!(self.source, Source::End);
+        let handles = declared.handles_answer(answer);
+        let runs = !is_closing && handles;
+        if !runs {
+            return Err(FalseSend);
+        }
+        let count = if is_mine {
+            self.seat.sent += 1;
+            self.seat.sent
+        } else {
+            let child = self.spawned.iter_mut().find(|child| child.me == by).ok_or(FalseSend)?;
+            child.sent += 1;
+            child.sent
+        };
+        let refers = lent.iter().map(crate::BlobRef::id).collect();
+        self.seat.asked.buffers.jobs.push(Submitted { by, count, kind, answer, bytes, refers });
+        self.seat.asked.asks.push((by, Asking { count, answer, context, lent }));
+
+        Ok(())
+    }
+
+    /// Cancels the job `job`, as its guest's code cancelled it: when the actor whose turn this is ran it, or a child it
+    /// spawned, as a native turn's cancel of a job another actor ran does nothing (ADR-0018).
+    pub fn cancel(&mut self, job: JobId) {
+        let sender = job.mail().sender;
+        let is_mine = sender == self.seat.me.id;
+        let is_child = self.spawned.iter().any(|child| child.me.id == sender);
+        let is_own = is_mine || is_child;
+        if is_own {
+            self.seat.asked.buffers.cancelled.push(job);
+        }
     }
 
     /// Holds the request the turn handles, as its guest's code held it, to be answered with a kind `answer` names in a

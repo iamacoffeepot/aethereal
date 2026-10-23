@@ -117,6 +117,9 @@ pub struct Preparing<'a> {
     batch: &'a dyn Batch,
     instances: &'a mut Instances,
     reads: Reads<'a>,
+    /// How many pieces of mail the actor had sent before the batch's first turn, and jobs it had run, which its turns
+    /// count on from (ADR-0012, ADR-0018).
+    sent: u64,
 }
 
 /// What a batch's turns read of the engine, the seats their children are given, and where the blobs they put go,
@@ -136,11 +139,11 @@ pub struct Reads<'a> {
 }
 
 impl<'a> Preparing<'a> {
-    /// The preparing of `batch`, by an actor lent its part's `instances` and what its turns read, `reads`: for the
-    /// engine.
+    /// The preparing of `batch`, by an actor lent its part's `instances` and what its turns read, `reads`, which had
+    /// sent `sent` pieces of mail and jobs before it: for the engine.
     #[must_use]
-    pub const fn new(batch: &'a dyn Batch, instances: &'a mut Instances, reads: Reads<'a>) -> Self {
-        Self { batch, instances, reads }
+    pub const fn new(batch: &'a dyn Batch, instances: &'a mut Instances, reads: Reads<'a>, sent: u64) -> Self {
+        Self { batch, instances, reads, sent }
     }
 
     /// Shows `visit` each item of the batch, in the order their turns will be asked for.
@@ -148,11 +151,12 @@ impl<'a> Preparing<'a> {
         self.batch.each(visit);
     }
 
-    /// The batch, the instances of the part, and what the batch's turns read, as a host prepares it: for code that
-    /// runs in an instance, which it takes from them while it hands the batch's items in, and answers the reads of.
+    /// The batch, the instances of the part, what the batch's turns read, and how many pieces of mail and jobs the
+    /// actor had sent before it, as a host prepares it: for code that runs in an instance, which it takes from them
+    /// while it hands the batch's items in, and answers the reads of.
     #[must_use]
-    pub fn hosted(self) -> (&'a dyn Batch, &'a mut Instances, Reads<'a>) {
-        (self.batch, self.instances, self.reads)
+    pub fn hosted(self) -> (&'a dyn Batch, &'a mut Instances, Reads<'a>, u64) {
+        (self.batch, self.instances, self.reads, self.sent)
     }
 }
 
