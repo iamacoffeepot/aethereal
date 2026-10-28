@@ -5,7 +5,7 @@ mod parse;
 mod write;
 
 use crate::server::Parsed;
-use crate::{Limits, Method, Request, Response, Server};
+use crate::{Limits, Method, Request, Response, Server, Status};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, More, Number,
     On, Open, Part, Streamed, Streams, Taken, Tick, Time, ToAny, ToType, Turn,
@@ -219,8 +219,11 @@ impl Handles<On<Tick>> for Exchange {
             return Ok(());
         }
         if let Phase::Answering { head_only, .. } = self.phase {
-            let timed_out =
-                Response::new(504, "text/plain; charset=utf-8", b"the handler did not respond in time".to_vec());
+            let timed_out = Response::new(
+                Status::GatewayTimeout,
+                "text/plain; charset=utf-8",
+                b"the handler did not respond in time".to_vec(),
+            );
             return self.respond(turn, timed_out, true, head_only);
         }
         // A request that did not come, or came too slowly, is owed no response.

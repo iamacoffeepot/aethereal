@@ -16,9 +16,11 @@ mod http;
 mod message;
 mod server;
 mod settings;
+mod status;
 
 pub use exchange::{Exchange, ExchangeConfig, Respond, Sending};
 pub use http::{Binding, Http, Serve, Served};
 pub use message::{Header, Method, Request, Response};
 pub use server::{Incoming, Parsed, Requests, Server, ServerConfig, Stopped, Take};
 pub use settings::{HttpSettings, Limits};
+pub use status::Status;

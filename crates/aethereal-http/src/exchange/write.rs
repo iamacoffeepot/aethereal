@@ -17,19 +17,13 @@ pub struct Written {
 }
 
 /// `response` as bytes: its status line, its headers, `Content-Length` and, when the connection `closes`, `Connection:
-/// close`, then its body, unless it answers a `HEAD`, which is `head_only`. A status a response cannot have is written
-/// `500`.
+/// close`, then its body, unless it answers a `HEAD`, which is `head_only`.
 pub fn written(response: Response, closes: bool, head_only: bool) -> Written {
     let Response { status, headers, body } = response;
-    let is_final = (200..=599).contains(&status);
-    let status = if is_final {
-        status
-    } else {
-        500
-    };
-    let has_body = status != 204 && status != 304;
+    let has_body = status.has_body();
+    let (code, reason) = status.line();
 
-    let mut bytes = format!("HTTP/1.1 {status} {}\r\n", reason(status)).into_bytes();
+    let mut bytes = format!("HTTP/1.1 {code} {reason}\r\n").into_bytes();
     let mut dropped = Vec::new();
     for header in headers {
         let writes = writes(&header.name, &header.value);
@@ -63,36 +57,4 @@ fn writes(name: &str, value: &str) -> bool {
     let is_clean = value.bytes().all(|byte| byte == b'\t' || !byte.is_ascii_control());
 
     is_token && !is_framing && is_clean
-}
-
-/// The reason phrase written beside `status`: empty for one not listed, which HTTP allows (RFC 9112 §4).
-const fn reason(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        201 => "Created",
-        202 => "Accepted",
-        204 => "No Content",
-        301 => "Moved Permanently",
-        302 => "Found",
-        304 => "Not Modified",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        406 => "Not Acceptable",
-        409 => "Conflict",
-        413 => "Content Too Large",
-        415 => "Unsupported Media Type",
-        422 => "Unprocessable Content",
-        429 => "Too Many Requests",
-        431 => "Request Header Fields Too Large",
-        500 => "Internal Server Error",
-        501 => "Not Implemented",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        504 => "Gateway Timeout",
-        505 => "HTTP Version Not Supported",
-        _ => "",
-    }
 }

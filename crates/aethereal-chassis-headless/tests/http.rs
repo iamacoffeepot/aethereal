@@ -7,7 +7,7 @@ use aethereal_actor::{
 use aethereal_chassis_headless::{Exit, Headless};
 use aethereal_data::{Bound, Plain};
 use aethereal_http::{
-    Exchange, Header, Http, HttpSettings, Incoming, Requests, Respond, Response, Serve, Served, Stopped, Take,
+    Exchange, Header, Http, HttpSettings, Incoming, Requests, Respond, Response, Serve, Served, Status, Stopped, Take,
 };
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::Tcp;
@@ -83,7 +83,7 @@ impl Handles<On<Tick>> for Handler {
         let (due, later): (Vec<_>, Vec<_>) = self.waiting.drain(..).partition(|&(_, on)| on <= self.ticks);
         self.waiting = later;
         for (incoming, _) in due {
-            let mut response = Response::new(200, "text/plain", incoming.request.body);
+            let mut response = Response::new(Status::Ok, "text/plain", incoming.request.body);
             response.headers.push(Header::new("x-method", &format!("{:?}", incoming.request.method)));
             turn.to(incoming.exchange).send(&Respond { response })?;
         }
