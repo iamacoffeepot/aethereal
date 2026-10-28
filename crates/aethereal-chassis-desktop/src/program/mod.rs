@@ -3,6 +3,7 @@
 
 mod files;
 mod renderer;
+mod tcp;
 mod windows;
 
 pub use renderer::RendererSettings;

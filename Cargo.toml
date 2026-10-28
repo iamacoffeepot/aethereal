@@ -11,6 +11,7 @@ members = [
     "crates/aethereal-math",
     "crates/aethereal-render",
     "crates/aethereal-substrate",
+    "crates/aethereal-tcp",
     "crates/aethereal-window",
     "xtask",
 ]
@@ -27,6 +28,7 @@ default-members = [
     "crates/aethereal-math",
     "crates/aethereal-render",
     "crates/aethereal-substrate",
+    "crates/aethereal-tcp",
     "crates/aethereal-window",
 ]
 # The guest the headless chassis's tests run: built for wasm32 apart from the workspace by the chassis's build script,

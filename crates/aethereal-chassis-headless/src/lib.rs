@@ -19,6 +19,7 @@ mod pool;
 mod program;
 mod rehearsal;
 mod running;
+mod tcp;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -33,6 +34,7 @@ use aethereal_substrate::{Clock, Engine, Split, SplitCost, Workers};
 pub use pool::Measured;
 pub use program::{RunningSettings, Serving};
 pub use running::{Exit, Timer};
+pub use tcp::Dialers;
 
 use pool::Pool;
 use std::num::NonZeroUsize;
