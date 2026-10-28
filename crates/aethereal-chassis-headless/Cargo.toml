@@ -30,6 +30,7 @@ libc = "0.2.190"
 [dev-dependencies]
 # The guest the tests run, for its types: its blob is built for wasm32 by the build script.
 aethereal-guest-echo = { path = "guests/echo" }
+aethereal-http = { path = "../aethereal-http" }
 
 [lints]
 workspace = true

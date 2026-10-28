@@ -121,6 +121,48 @@ impl<S: Stream, C> Streams<S, C> {
         Ok(Some(Taken { number: Number::new(number), value, kept: &mut opened.kept }))
     }
 
+    /// What `part` carries, taken for its stream as [`part`](Self::part) takes it, but granting the receiver nothing
+    /// for it: the actor grants it later, with [`grant`](Self::grant), once it can take more. Its receiver is kept
+    /// that many parts nearer the window's end, and stops at it.
+    pub fn part_held<A, Sends>(&mut self, turn: &Turn<'_, A, Sends>, part: Part<S>) -> Option<Taken<'_, S, C>> {
+        let sender = turn.sender().id();
+        let (number, value) = part.into_parts();
+        let opened = self.open.get_mut(&number)?;
+        if !opened.takes_from(sender) {
+            return None;
+        }
+
+        Some(Taken { number: Number::new(number), value, kept: &mut opened.kept })
+    }
+
+    /// Grants the receiver of the stream `number` `parts` more: the parts the actor took with
+    /// [`part_held`](Self::part_held) and now can take again. Answers false, and sends nothing, when the stream is not
+    /// open or is stopped.
+    ///
+    /// # Errors
+    ///
+    /// Why the credit could not be written.
+    pub fn grant<A, Sends, IM>(
+        &mut self,
+        turn: &mut Turn<'_, A, Sends>,
+        number: Number,
+        parts: NonZeroU32,
+    ) -> Result<bool, EncodeError>
+    where
+        Sends: Allows<ToAny<Streamed<S>, More>, IM>,
+    {
+        let Some(opened) = self.open.get(&number.get()) else {
+            return Ok(false);
+        };
+        if opened.flow == Flow::Stopped {
+            return Ok(false);
+        }
+
+        turn.to(opened.receiver).send::<_, IM>(&More::new::<S>(number.get(), parts.get()))?;
+
+        Ok(true)
+    }
+
     /// Stops the stream `number`: its receiver is told, and its parts that arrive after are passed over. Its answer
     /// still comes, and [`answered`](Self::answered) hands back what the actor kept. Answers false, and sends
     /// nothing, when the stream is not open or is stopped already.
