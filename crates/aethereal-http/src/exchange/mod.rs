@@ -1,14 +1,13 @@
-//! An exchange: the server's side of one accepted connection, which parses each request as its chunks arrive, sends
-//! it to the server, and writes the response the handler sends back (ADR-0035).
+//! An exchange: the server's side of one accepted connection, which parses each request as its chunks arrive, asks
+//! it of the server's handler, and writes the response the handler answers with (ADR-0035).
 
 mod parse;
 mod write;
 
-use crate::server::Parsed;
-use crate::{Limits, Method, Request, Response, Server, Status};
+use crate::{Handling, Limits, Method, Request, Response, Server, Status};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, More, Number,
-    On, Open, Part, Streamed, Streams, Taken, Tick, Time, ToAny, ToType, Turn,
+    On, Open, Part, ProtocolRef, Streamed, Streams, Taken, Tick, Time, ToAny, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Accepted, HungUp, Read, Reading, Shut, SocketAddress, Write, Writing, Wrote};
@@ -17,21 +16,21 @@ use core::time::Duration;
 use parse::{Head, Parsed as Front, Refusal};
 use std::num::NonZeroU32;
 
-/// What a handler sends the exchange a request came on: its response.
-#[derive(Debug, Plain)]
-#[kind(name = "aether.http.respond")]
-pub struct Respond {
-    pub response: Response,
-}
-
-/// What an exchange is made from: the connection it reads, where it came from, and the limits on each request.
+/// What an exchange is made from: the connection it reads, where it came from, the handler it asks each request
+/// of, and the limits on each request.
 #[derive(Debug, Bound)]
 #[kind(name = "aether.http.exchange_config")]
 pub struct ExchangeConfig {
     pub connection: ActorRef<Accepted>,
     pub peer: SocketAddress,
+    pub handler: ProtocolRef<Handling>,
     pub limits: Limits,
 }
+
+/// What an exchange keeps for a request it asked of the handler: nothing, since it has one out at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.http.asking")]
+pub struct Asking;
 
 /// What an exchange keeps for a write: whether the connection closes once it is sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
@@ -57,7 +56,7 @@ enum Phase {
     Head { since: Time },
     /// A head is parsed, and its body is coming; the request's first byte came at `since`.
     Body { head: Head, body: Vec<u8>, since: Time },
-    /// The request is sent on, and its response is waited for since `since`. The connection then closes when it
+    /// The request is asked of the handler, and its answer is waited for since `since`. The connection then closes when it
     /// `closes`, and a response to a `HEAD` is written with no body.
     Answering { since: Time, closes: bool, head_only: bool },
     /// A last response is written: the exchange closes once it is sent.
@@ -65,7 +64,7 @@ enum Phase {
 }
 
 /// The server's side of one accepted connection, beneath the server, keyed by its count (ADR-0035): reads it through
-/// a [`Reading`] stream, parses each request, sends it to the server, and writes the [`Respond`] that comes back. It
+/// a [`Reading`] stream, parses each request, asks it of the handler, and writes the [`Response`] answered. It
 /// takes one request at a time: while one is out it grants its connection no credit, so requests sent ahead wait in
 /// the kernel.
 #[derive(Bound)]
@@ -73,6 +72,7 @@ enum Phase {
 pub struct Exchange {
     connection: ActorRef<Accepted>,
     peer: SocketAddress,
+    handler: ProtocolRef<Handling>,
     limits: Limits,
     reading: Streams<Reading, ()>,
     reader: Reader,
@@ -90,7 +90,8 @@ impl ChildOf for Exchange {
 impl Actor for Exchange {
     type Config = ExchangeConfig;
     type Key = u64;
-    type Handles = (Part<Reading>, Answer<HungUp, Number>, Answer<Wrote, Sending>, Respond, Shut, On<Tick>);
+    type Handles =
+        (Part<Reading>, Answer<HungUp, Number>, Answer<Wrote, Sending>, Answer<Response, Asking>, Shut, On<Tick>);
     type BeginSends = ();
     type EndSends = ();
 
@@ -101,6 +102,7 @@ impl Actor for Exchange {
         Ok(Self {
             connection: config.connection,
             peer: config.peer,
+            handler: config.handler,
             limits: config.limits,
             reading: Streams::new(window),
             reader: Reader::Unopened,
@@ -116,7 +118,7 @@ impl Actor for Exchange {
 }
 
 impl Handles<Part<Reading>> for Exchange {
-    type Sends = (ToAny<Streamed<Reading>, More>, Asks<Writing, Write, Sending>, ToType<Server, Parsed>);
+    type Sends = (ToAny<Streamed<Reading>, More>, Asks<Writing, Write, Sending>, Asks<Handling, Request, Asking>);
 
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let is_out = matches!(self.phase, Phase::Answering { .. } | Phase::Closing);
@@ -166,15 +168,28 @@ impl Handles<Answer<Wrote, Sending>> for Exchange {
     }
 }
 
-impl Handles<Respond> for Exchange {
-    type Sends = (ToAny<Streamed<Reading>, More>, Asks<Writing, Write, Sending>, ToType<Server, Parsed>);
+impl Handles<Answer<Response, Asking>> for Exchange {
+    type Sends = (ToAny<Streamed<Reading>, More>, Asks<Writing, Write, Sending>, Asks<Handling, Request, Asking>);
 
-    fn handle(&mut self, respond: Respond, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(
+        &mut self,
+        (answered, Asking): (Answered<Response>, Asking),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
         let Phase::Answering { closes, head_only, .. } = self.phase else {
-            turn.log(Level::Warn, "a response came when none was waited for, and was dropped");
+            // Answered after its deadline, which the exchange already answered `504`.
+            turn.log(Level::Info, "an answer came after its request's deadline, and was passed over");
             return Ok(());
         };
-        self.respond(turn, respond.response, closes, head_only)?;
+        let response = match answered {
+            Answered::Yes(response) => response,
+            Answered::No(Unanswered::Ended) => unanswered(Status::ServiceUnavailable, "the handler has ended"),
+            Answered::No(why) => {
+                turn.log(Level::Warn, format!("the handler did not answer a request: {why:?}"));
+                unanswered(Status::InternalServerError, "the handler did not answer")
+            }
+        };
+        self.respond(turn, response, closes, head_only)?;
         if closes {
             return Ok(());
         }
@@ -234,11 +249,11 @@ impl Handles<On<Tick>> for Exchange {
 }
 
 impl Exchange {
-    /// Parses what the buffer holds, as far as it goes: a head, then its body, then the request sent to the server.
+    /// Parses what the buffer holds, as far as it goes: a head, then its body, then the request asked of the handler.
     /// A request refused is answered, and the exchange closes once the answer is sent.
     fn advance<S, IW, IP>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
-        S: Allows<Asks<Writing, Write, Sending>, IW> + Allows<ToType<Server, Parsed>, IP>,
+        S: Allows<Asks<Writing, Write, Sending>, IW> + Allows<Asks<Handling, Request, Asking>, IP>,
     {
         loop {
             match self.phase {
@@ -275,17 +290,17 @@ impl Exchange {
                     if !is_whole {
                         return Ok(());
                     }
-                    return self.send_on::<_, IP>(turn);
+                    return self.ask::<_, IP>(turn);
                 }
                 Phase::Answering { .. } | Phase::Closing => return Ok(()),
             }
         }
     }
 
-    /// Sends the server the request whose body is whole, and waits for its response.
-    fn send_on<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
+    /// Asks the handler the request whose body is whole, and waits for its answer.
+    fn ask<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
-        S: Allows<ToType<Server, Parsed>, I>,
+        S: Allows<Asks<Handling, Request, Asking>, I>,
     {
         let answering = Phase::Answering { since: turn.now(), closes: true, head_only: false };
         let Phase::Body { head, body, .. } = mem::replace(&mut self.phase, answering) else {
@@ -294,12 +309,12 @@ impl Exchange {
         let Head { method, path, query, headers, closes, .. } = head;
         self.phase = Phase::Answering { since: turn.now(), closes, head_only: method == Method::Head };
         let request = Request { method, path, query, headers, body, peer: self.peer };
-        turn.to(turn.parent()).send::<_, I>(&Parsed { request })?;
+        turn.to(self.handler).ask::<_, _, I>(&request, &Asking)?;
 
         Ok(())
     }
 
-    /// Answers a request refused before it reached the server, and closes once the answer is sent.
+    /// Answers a request refused before it reached the handler, and closes once the answer is sent.
     fn refuse<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, refusal: Refusal) -> Result<(), Fault>
     where
         S: Allows<Asks<Writing, Write, Sending>, I>,
@@ -340,4 +355,9 @@ impl Exchange {
 
         Ok(())
     }
+}
+
+/// The response written for a request its handler did not answer: `status`, saying `why`.
+fn unanswered(status: Status, why: &str) -> Response {
+    Response::new(status, "text/plain; charset=utf-8", why.as_bytes().to_vec())
 }

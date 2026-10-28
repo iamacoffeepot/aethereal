@@ -1,19 +1,16 @@
 //! The HTTP capability served on the native host, to a client on a thread of its own (ADR-0035).
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, On, Open, Part, Path,
-    Streamed, Streams, Tick, ToAny, ToType, Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, On, Path, Tick, ToSender, Top,
+    Turn, path,
 };
 use aethereal_chassis_headless::{Exit, Headless};
 use aethereal_data::{Bound, Plain};
-use aethereal_http::{
-    Exchange, Header, Http, HttpSettings, Incoming, Requests, Respond, Response, Serve, Served, Status, Stopped, Take,
-};
+use aethereal_http::{Header, Http, HttpSettings, Request, Response, Serve, Served, Status};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::Tcp;
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
-use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -29,15 +26,24 @@ static DONE: AtomicBool = AtomicBool::new(false);
 #[kind(name = "aether.test.http.asked")]
 struct Asked;
 
-/// A root that serves a port the host picks and answers each request two ticks after it came, so the connection
-/// reads on while the request is out: on `/echo`, `200` with the request's body and its method in `x-method`; on `/silent`, never. It stops the
-/// program once the client is done, or after a thousand ticks.
+/// A request the handler holds, the response it will answer it with, and the tick it answers on.
+#[derive(Bound)]
+struct Pending {
+    held: Held<Response>,
+    response: Response,
+    on: u64,
+}
+
+/// A root that serves a port the host picks, as its own handler, and holds each request, answering it two ticks after
+/// it came, so the connection reads on while the request is out: on `/echo`, `200` with the request's body and its
+/// method in `x-method`; on `/silent`, never. It stops the program once the client is done, or after a thousand
+/// ticks.
 #[derive(Bound)]
 #[kind(name = "aether.test.http.handler")]
 struct Handler {
-    requests: Streams<Requests, ()>,
-    /// The requests to answer, each with the tick it is answered on.
-    waiting: Vec<(Incoming, u64)>,
+    pending: Vec<Pending>,
+    /// The `/silent` requests, held and never answered.
+    silent: Vec<Held<Response>>,
     ticks: u64,
 }
 
@@ -48,15 +54,16 @@ impl ChildOf for Handler {
 impl Actor for Handler {
     type Config = Asked;
     type Key = ();
-    type Handles = (On<Tick>, Answer<Served, Asked>, Part<Requests>, Answer<Stopped, Number>);
+    type Handles = (On<Tick>, Answer<Served, Asked>, Request);
     type BeginSends = (Asks<Path<Http>, Serve, Asked>,);
     type EndSends = ();
 
     fn begin(_: Asked, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();
-        turn.to(path::<Http>(())).ask(&Serve { port: 0 }, &Asked)?;
+        let serve = Serve { port: 0, handler: turn.me().protocol() };
+        turn.to(path::<Http>(())).ask(&serve, &Asked)?;
 
-        Ok(Self { requests: Streams::new(NonZeroU32::MIN.saturating_add(3)), waiting: Vec::new(), ticks: 0 })
+        Ok(Self { pending: Vec::new(), silent: Vec::new(), ticks: 0 })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -76,16 +83,15 @@ impl Bootstrap<Headless> for Handler {
 }
 
 impl Handles<On<Tick>> for Handler {
-    type Sends = (ToType<Exchange, Respond>,);
+    type Sends = ();
 
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.ticks += 1;
-        let (due, later): (Vec<_>, Vec<_>) = self.waiting.drain(..).partition(|&(_, on)| on <= self.ticks);
-        self.waiting = later;
-        for (incoming, _) in due {
-            let mut response = Response::new(Status::Ok, "text/plain", incoming.request.body);
-            response.headers.push(Header::new("x-method", &format!("{:?}", incoming.request.method)));
-            turn.to(incoming.exchange).send(&Respond { response })?;
+        let (due, later): (Vec<Pending>, Vec<Pending>) =
+            self.pending.drain(..).partition(|pending| pending.on <= self.ticks);
+        self.pending = later;
+        for Pending { held, response, .. } in due {
+            turn.answer(held, &response)?;
         }
         let is_done = DONE.load(Ordering::SeqCst);
         let is_long = self.ticks == 1000;
@@ -99,46 +105,32 @@ impl Handles<On<Tick>> for Handler {
 }
 
 impl Handles<Answer<Served, Asked>> for Handler {
-    type Sends = (Asks<Streamed<Requests>, Open<Requests>, Number>, ToAny<Streamed<Requests>, More>);
+    type Sends = ();
 
-    fn handle(
-        &mut self,
-        (answered, _): (Answered<Served>, Asked),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Served::Bound { server, port }) = answered else {
+    fn handle(&mut self, (answered, _): (Answered<Served>, Asked), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let Answered::Yes(Served::Bound { port, .. }) = answered else {
             turn.quit();
             return Ok(());
         };
-        self.requests.open(turn, server.protocol(), Take, ())?;
         PORT.store(port, Ordering::SeqCst);
 
         Ok(())
     }
 }
 
-impl Handles<Part<Requests>> for Handler {
-    type Sends = (ToAny<Streamed<Requests>, More>,);
+impl Handles<Request> for Handler {
+    type Sends = (ToSender<Response>,);
 
-    fn handle(&mut self, part: Part<Requests>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let Some(taken) = self.requests.part(turn, part)? else {
+    fn handle(&mut self, request: Request, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let held = turn.hold()?;
+        let is_silent = request.path == "/silent";
+        if is_silent {
+            self.silent.push(held);
             return Ok(());
-        };
-        let incoming = taken.value;
-        let is_silent = incoming.request.path == "/silent";
-        if !is_silent {
-            self.waiting.push((incoming, self.ticks + 2));
         }
-
-        Ok(())
-    }
-}
-
-impl Handles<Answer<Stopped, Number>> for Handler {
-    type Sends = ();
-
-    fn handle(&mut self, (_, number): (Answered<Stopped>, Number), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        self.requests.answered(number);
+        let mut response = Response::new(Status::Ok, "text/plain", request.body);
+        response.headers.push(Header::new("x-method", &format!("{:?}", request.method)));
+        self.pending.push(Pending { held, response, on: self.ticks + 2 });
 
         Ok(())
     }

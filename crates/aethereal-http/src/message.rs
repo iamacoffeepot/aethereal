@@ -1,6 +1,7 @@
 //! A request and its response, as plain data (ADR-0035).
 
 use crate::Status;
+use aethereal_actor::{Carries, Protocol};
 use aethereal_data::Plain;
 use aethereal_tcp::SocketAddress;
 
@@ -74,6 +75,18 @@ impl Request {
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.iter().find(|header| header.name == name).map(|header| header.value.as_str())
     }
+}
+
+/// What a server's handler takes: each [`Request`] an exchange parsed, asked of it and answered with a [`Response`]
+/// (ADR-0035). A handler is named in [`Serve`](crate::Serve) by a reference to it of this protocol.
+pub struct Handling;
+
+impl Protocol for Handling {
+    type Kinds = (Request,);
+}
+
+impl Carries<Request> for Handling {
+    type Answers = (Response,);
 }
 
 /// What a handler answers a request with. The exchange writes `Content-Length` and `Connection` itself.

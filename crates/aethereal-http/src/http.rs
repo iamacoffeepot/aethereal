@@ -1,27 +1,29 @@
 //! The HTTP capability's root (ADR-0035).
 
-use crate::{HttpSettings, Server, ServerConfig};
+use crate::{Handling, HttpSettings, Server, ServerConfig};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held,
-    Path, ToSender, ToType, Top, Turn, path,
+    Path, ProtocolRef, ToSender, ToType, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::Bootstrap;
 use aethereal_tcp::{Framing, Listen, Listener, Listening, Shut, Tcp};
 use std::collections::BTreeMap;
 
-/// What an actor asks the root to serve on: a port, 0 for any the host picks.
-#[derive(Debug, Plain)]
+/// What an actor asks the root to serve on: a port, 0 for any the host picks, and the handler each request is asked
+/// of, usually the asker itself (`turn.me().protocol()`).
+#[derive(Debug, Bound)]
 #[kind(name = "aether.http.serve")]
 pub struct Serve {
     pub port: u16,
+    pub handler: ProtocolRef<Handling>,
 }
 
 /// What a serve came to.
 #[derive(Debug, Bound)]
 #[kind(name = "aether.http.served")]
 pub enum Served {
-    /// Bound: the server beneath the root, and the port bound, which is its key. Its handler opens `Requests` on it.
+    /// Bound: the server beneath the root, and the port bound, which is its key.
     Bound { server: ActorRef<Server>, port: u16 },
     /// Something holds the port.
     Taken,
@@ -40,10 +42,20 @@ pub struct Binding {
     number: u64,
 }
 
-/// A serve the root holds until `Tcp` answers its listen, and the actor that asked it.
+/// A serve the root holds until `Tcp` answers its listen, the handler it names, and the actor that asked it.
 #[derive(Bound)]
 struct Waiting {
     held: Held<Served>,
+    handler: ProtocolRef<Handling>,
+    asker: u64,
+}
+
+/// A listener `Tcp` bound, its port, and the serve's handler and asker: what a server is stood up from.
+#[derive(Clone, Copy)]
+struct Opening {
+    listener: ActorRef<Listener>,
+    port: u16,
+    handler: ProtocolRef<Handling>,
     asker: u64,
 }
 
@@ -55,7 +67,7 @@ struct Opened {
 }
 
 /// The HTTP capability: serves HTTP/1.1 on `Tcp` for every other actor (ADR-0035). An actor asks it to [`Serve`] at
-/// its typed path, `path::<Http>(())`, and opens [`Requests`](crate::Requests) on the server it is answered.
+/// its typed path, `path::<Http>(())`, naming the handler each request is asked of.
 ///
 /// It watches each actor that asks, and when one ends, shuts every server it stood up for it.
 #[derive(Bound, Bootstrap)]
@@ -110,7 +122,7 @@ impl Handles<Serve> for Http {
         self.next += 1;
         let listen = Listen { port: serve.port, framing: Framing::Chunks { most_bytes: self.settings.chunk_bytes } };
         turn.to(path::<Tcp>(())).ask(&listen, &Binding { number })?;
-        self.waiting.insert(number, Waiting { held, asker });
+        self.waiting.insert(number, Waiting { held, handler: serve.handler, asker });
 
         Ok(())
     }
@@ -124,11 +136,13 @@ impl Handles<Answer<Listening, Binding>> for Http {
         (answered, binding): (Answered<Listening>, Binding),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let Some(Waiting { held, asker }) = self.waiting.remove(&binding.number) else {
+        let Some(Waiting { held, handler, asker }) = self.waiting.remove(&binding.number) else {
             return Ok(());
         };
         let served = match answered {
-            Answered::Yes(Listening::Bound { listener, port }) => self.stand_up(turn, listener, port, asker)?,
+            Answered::Yes(Listening::Bound { listener, port }) => {
+                self.stand_up(turn, Opening { listener, port, handler, asker })?
+            }
             Answered::Yes(Listening::Taken) => Served::Taken,
             Answered::Yes(Listening::Full | Listening::Refused) => Served::Refused,
             Answered::No(_) => Served::Unavailable,
@@ -159,25 +173,24 @@ impl Handles<Ended> for Http {
 }
 
 impl Http {
-    /// Stands a server up on the listener `Tcp` bound at `port` for `asker`, or shuts the listener and says why not.
-    fn stand_up<S, I>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        listener: ActorRef<Listener>,
-        port: u16,
-        asker: u64,
-    ) -> Result<Served, Fault>
+    /// Stands a server up on the listener `Tcp` bound, or shuts the listener and says why not.
+    fn stand_up<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, opening: Opening) -> Result<Served, Fault>
     where
         S: Allows<ToType<Listener, Shut>, I>,
     {
+        let Opening { listener, port, handler, asker } = opening;
         let is_asked = self.askers.contains(&asker);
         if !is_asked {
             // Its asker has ended: no one is left to handle what the server would take.
             turn.to(listener).send::<_, I>(&Shut)?;
             return Ok(Served::Refused);
         }
-        let config =
-            ServerConfig { listener, most_exchanges: self.settings.most_exchanges, limits: self.settings.limits() };
+        let config = ServerConfig {
+            listener,
+            handler,
+            most_exchanges: self.settings.most_exchanges,
+            limits: self.settings.limits(),
+        };
         let Ok(server) = turn.spawn::<Server>(&u64::from(port), config) else {
             turn.to(listener).send::<_, I>(&Shut)?;
             return Ok(Served::Refused);

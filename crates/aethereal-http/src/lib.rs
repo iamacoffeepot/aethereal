@@ -1,12 +1,12 @@
 //! The HTTP capability (ADR-0035): one root, [`Http`], an HTTP/1.1 server on the TCP capability.
 //!
 //! An actor asks the root to [`Serve`] a port, at its typed path,
-//! `path::<Http>(())`, and is answered with a [`Server`] beneath the root.
-//! It opens a [`Requests`] stream on that server, whose credit is how many
-//! requests it takes at once, and answers each [`Incoming`] request by
-//! sending [`Respond`] to the [`Exchange`] it came on. Each exchange reads one
-//! connection `Tcp` accepted, parses its requests, checking every limit
-//! before a request goes further, and writes the responses.
+//! `path::<Http>(())`, naming a handler that takes [`Handling`], usually
+//! itself, and is answered with a [`Server`] beneath the root. Each
+//! [`Exchange`] beneath the server reads one connection `Tcp` accepted,
+//! parses its requests, checking every limit before a request goes further,
+//! asks the handler each [`Request`], and writes the [`Response`] it is
+//! answered with.
 //!
 //! The root needs nothing of its host but `Tcp`, so it is bootstrapped for
 //! every host. Its settings, the section `http`, are its config.
@@ -18,9 +18,9 @@ mod server;
 mod settings;
 mod status;
 
-pub use exchange::{Exchange, ExchangeConfig, Respond, Sending};
+pub use exchange::{Asking, Exchange, ExchangeConfig, Sending};
 pub use http::{Binding, Http, Serve, Served};
-pub use message::{Header, Method, Request, Response};
-pub use server::{Incoming, Parsed, Requests, Server, ServerConfig, Stopped, Take};
+pub use message::{Handling, Header, Method, Request, Response};
+pub use server::{Server, ServerConfig};
 pub use settings::{HttpSettings, Limits};
 pub use status::Status;
