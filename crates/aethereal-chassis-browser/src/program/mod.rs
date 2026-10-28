@@ -15,9 +15,8 @@ pub use windows::WindowsSettings;
 use crate::canvas::Shown;
 use crate::serving::{Drawing, Serving};
 use crate::{Browser, EventLoop, Hosted, Listening, Performance};
-use aethereal_actor::{NoStorage, Storage};
+use aethereal_actor::{Service, Services};
 use aethereal_data::Plain;
-use aethereal_files::FileHosting;
 use aethereal_substrate::{Engine, Host, ProgramError, Serves, Settled, Unbuilt};
 use aethereal_window::Hosting;
 use core::pin::Pin;
@@ -35,14 +34,14 @@ pub struct RunningSettings {}
 /// The page, as the program is bootstrapped on it: the browser's hosting (ADR-0029). It keeps each canvas the window
 /// root's bootstrap opened as a window, which the renderer's reaches through the host to open WebGPU on, and the ends
 /// the roots give the browser: the window root's, the renderer's, the page's listeners, and what its runner is made
-/// with, the file capability's storage and job.
+/// with, the services the roots serve its jobs (ADR-0034).
 pub struct Paging {
     canvases: Vec<ShownCanvas>,
     serving: Serving,
     hosted: Hosted,
     listening: Vec<Listening>,
-    /// The storage the runner's jobs read files from: [`NoStorage`] until the file capability serves one.
-    storage: Arc<dyn Storage>,
+    /// The services the runner's jobs reach: none until a root serves one.
+    services: Services,
 }
 
 /// A canvas opened as a window, as the window root's bootstrap opened it.
@@ -59,13 +58,13 @@ impl Paging {
             serving: Serving::Nothing,
             hosted: Hosted::Nothing,
             listening: Vec::new(),
-            storage: Arc::new(NoStorage),
+            services: Services::none(),
         }
     }
 
-    /// The runner on the page's event loop, its jobs reading files from the storage served (ADR-0029).
+    /// The runner on the page's event loop, its jobs reaching the services served (ADR-0029).
     fn runner(&self) -> EventLoop {
-        EventLoop::new(Arc::clone(&self.storage))
+        EventLoop::new(Arc::new(self.services.clone()))
     }
 
     /// Keeps `canvas`, opened as a window, `shown`, for the renderer to draw to.
@@ -146,9 +145,10 @@ impl Serves<Drawing> for Browser<Performance> {
     }
 }
 
-impl Serves<FileHosting> for Browser<Performance> {
-    fn serve(paging: &mut Paging, files: FileHosting) {
-        paging.storage = files.into_storage();
+/// Every service of every capability is kept the same way, so the host names none (ADR-0034).
+impl<S: ?Sized + Send + Sync + 'static> Serves<Service<S>> for Browser<Performance> {
+    fn serve(paging: &mut Paging, service: Service<S>) {
+        paging.services = service.added_to(paging.services.clone());
     }
 }
 

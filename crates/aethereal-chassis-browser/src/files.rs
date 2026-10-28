@@ -1,7 +1,7 @@
 //! The browser's storage: the program's assets fetched relative to the page (ADR-0032).
 
-use aethereal_actor::{Namespace, Reading, Storage, Unread};
 use aethereal_data::{FilePath, Plain};
+use aethereal_files::{Namespace, Reading, Storage, Unread};
 use js_sys::Uint8Array;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;

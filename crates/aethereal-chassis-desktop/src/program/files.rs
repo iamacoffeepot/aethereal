@@ -2,9 +2,11 @@
 //! (ADR-0029, ADR-0032).
 
 use crate::running::Desktop;
+use aethereal_actor::Service;
 use aethereal_chassis_headless::{Directories, FileRoots};
-use aethereal_files::{FileHosting, Files, FilesConfig};
+use aethereal_files::{Files, FilesConfig, Storage};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
+use std::sync::Arc;
 
 /// The file capability on the desktop, as on the headless host: its storage the directories its settings name.
 impl Bootstrap<Desktop> for Files {
@@ -14,7 +16,7 @@ impl Bootstrap<Desktop> for Files {
     type Provides = ();
 
     async fn bootstrap(roots: FileRoots, (): (), cx: &mut Bootstrapping<'_, Desktop, Self>) -> Result<(), Unbuilt> {
-        cx.serve(FileHosting::new(Directories::new(&roots)));
+        cx.serve(Service::<dyn Storage>::of(Arc::new(Directories::new(&roots))));
         cx.begin(&(), FilesConfig)
     }
 }

@@ -6,8 +6,8 @@ use crate::Presenting;
 use crate::moding;
 use crate::presenting::Unoffered;
 use crate::serving::Drawing;
+use aethereal_actor::Service;
 use aethereal_chassis_headless::Serving;
-use aethereal_files::FileHosting;
 use aethereal_render::Gpu;
 use aethereal_substrate::Unbuilt;
 use aethereal_window::{Hosting, Mode, Opening, Surface, WindowFeed, WindowId};
@@ -159,9 +159,9 @@ impl<'a> Screen<'a> {
         self.drawing = Served::Served(Box::new(drawing));
     }
 
-    /// Keeps what the file capability's bootstrap served, for the runners the host makes (ADR-0032).
-    pub(crate) fn serve_files(&mut self, files: FileHosting) {
-        self.runners.files(files);
+    /// Keeps a service a root's bootstrap served, for the runners the host makes (ADR-0034).
+    pub(crate) fn serve_service<S: ?Sized + Send + Sync + 'static>(&mut self, service: Service<S>) {
+        self.runners.serve(service);
     }
 
     /// What the roots served: the renderer's end, the window root's, and what the host's runners are made with.

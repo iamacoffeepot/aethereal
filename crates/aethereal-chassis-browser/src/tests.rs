@@ -3,8 +3,8 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, NoStorage, On, Path,
-    Render, Sleep, Slept, Source, Tick, Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, On, Path, Render,
+    Services, Sleep, Slept, Source, Tick, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Inline, Jobs, Setup};
@@ -106,7 +106,7 @@ fn a_frame_runs_its_cycle_through_to_its_end_and_is_answered_for_the_jobs_it_ran
     // in what its jobs finished only before its first step: a frame would end before its `Render`, or before the
     // sleep its `Tick` ran was answered, and the next would begin with what the last left.
     let one = NonZeroUsize::MIN;
-    let jobs: Arc<dyn Jobs> = Arc::new(Inline::new(Arc::new(NoStorage)));
+    let jobs: Arc<dyn Jobs> = Arc::new(Inline::new(Arc::new(Services::none())));
     let mut engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(jobs).with_cycle::<(Tick, Render)>().ready();
     let Ok(_) = engine.add_root::<Painter>(&(), Nothing) else {
         panic!("the painter begins");

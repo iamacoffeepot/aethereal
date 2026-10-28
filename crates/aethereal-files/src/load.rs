@@ -1,7 +1,8 @@
 //! The job that reads a file: made by the file capability alone (ADR-0032).
 
 use crate::FileRead;
-use aethereal_actor::{Fault, Job, Namespace, Runner, Running, Unread};
+use crate::{Namespace, Storage, Unread};
+use aethereal_actor::{Fault, Job, Runner, Running};
 use aethereal_data::{FilePath, Plain};
 
 /// Reads the whole file at `path` in `namespace` from the host's storage, and puts its bytes as a blob. It is private
@@ -27,7 +28,10 @@ impl Job for Load {
     const RUNNER: Runner = Runner::Io;
 
     async fn run(self, job: &mut Running) -> Result<FileRead, Fault> {
-        let read = job.storage().read(self.namespace, &self.path).await;
+        let Some(storage) = job.service::<dyn Storage>() else {
+            return Ok(FileRead::Unavailable);
+        };
+        let read = storage.read(self.namespace, &self.path).await;
         let done = match read {
             Ok(bytes) => FileRead::Read { bytes: job.put(bytes) },
             Err(Unread::Missing) => FileRead::Missing,

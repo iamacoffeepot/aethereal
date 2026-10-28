@@ -1,6 +1,7 @@
 //! What an actor asks the file capability, and what it is answered (ADR-0032).
 
-use aethereal_actor::{BlobRef, Namespace};
+use crate::Namespace;
+use aethereal_actor::BlobRef;
 use aethereal_data::{Bound, FilePath, Plain};
 
 /// Read the whole file at `path` in `namespace`: asked of [`Files`](crate::Files), and answered a [`FileRead`].
