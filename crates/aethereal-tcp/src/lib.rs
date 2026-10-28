@@ -28,4 +28,4 @@ pub use framing::Framing;
 pub use listener::{Accept, Accepting, Incoming, Listener, ListenerConfig, Unbound};
 pub use settings::TcpSettings;
 pub use socket::{BoundSocket, Socket};
-pub use tcp::{Connect, Connected, Dialing as DialingContext, Listen, Listening, Tcp, TcpConfig};
+pub use tcp::{Connect, Connected, Listen, Listening, Tcp, TcpConfig};
