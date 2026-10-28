@@ -11,9 +11,9 @@ pub use windows::{WindowSettings, WindowsSettings};
 use crate::gpu::Screen;
 use crate::running::{Desktop, Failed};
 use crate::serving::Drawing;
+use aethereal_actor::Service;
 use aethereal_chassis_headless::Exit;
 use aethereal_data::Plain;
-use aethereal_files::FileHosting;
 use aethereal_substrate::{Host, Serves, Settled};
 use aethereal_window::Hosting;
 
@@ -70,8 +70,9 @@ impl Serves<Drawing> for Desktop {
     }
 }
 
-impl Serves<FileHosting> for Desktop {
-    fn serve(screen: &mut Screen<'_>, files: FileHosting) {
-        screen.serve_files(files);
+/// Every service of every capability is kept the same way, so the host names none (ADR-0034).
+impl<S: ?Sized + Send + Sync + 'static> Serves<Service<S>> for Desktop {
+    fn serve(screen: &mut Screen<'_>, service: Service<S>) {
+        screen.serve_service(service);
     }
 }

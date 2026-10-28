@@ -9,7 +9,7 @@ use super::{Engine, ROOTS, parity};
 use crate::{lives, log};
 use aethereal_actor::{
     BlobId, Copied, Fault, JobCode, JobId, JobType, Kept, Lending, MailId, Mailed, Never, Outcome, Pinning, Produced,
-    Seated, Storage, Submitted, Tie, Timer, Unanswered,
+    Seated, Services, Submitted, Tie, Timer, Unanswered,
 };
 use aethereal_data::{Kind, KindId, Plain};
 use crossbeam_queue::SegQueue;
@@ -94,26 +94,26 @@ struct Answering {
 /// poll it again.
 ///
 /// It has no thread to wait on, so its timer is [`Never`]: a [`Sleep`] for any time past the first answers with
-/// [`Waits`]. Its jobs read files from the storage it is made with (ADR-0032).
+/// [`Waits`]. Its jobs reach the host services it is made with (ADR-0034).
 ///
 /// [`Sleep`]: aethereal_actor::Sleep
 pub struct Inline {
     timer: Arc<dyn Timer>,
-    storage: Arc<dyn Storage>,
+    services: Arc<Services>,
 }
 
 impl Inline {
-    /// Runs jobs reading files from `storage`.
+    /// Runs jobs that reach `services`.
     #[must_use]
-    pub fn new(storage: Arc<dyn Storage>) -> Self {
-        Self { timer: Arc::new(Never), storage }
+    pub fn new(services: Arc<Services>) -> Self {
+        Self { timer: Arc::new(Never), services }
     }
 }
 
 impl Jobs for Inline {
     fn start(&self, _: JobId, of: JobType, job: Taken) {
         let Taken { bytes, lent, limit, finish } = job;
-        let mut future = of.drive(bytes, lent, limit, Arc::clone(&self.timer), Arc::clone(&self.storage));
+        let mut future = of.drive(bytes, lent, limit, Arc::clone(&self.timer), Arc::clone(&self.services));
         let mut context = Context::from_waker(Waker::noop());
         let polled = panic::catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(&mut context)));
         let outcome = match polled {

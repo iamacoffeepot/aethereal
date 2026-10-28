@@ -9,11 +9,10 @@
 #[cfg(feature = "std")]
 use crate::blob::handed_ticket;
 use crate::{
-    Actors, ActorsReader, ActorsWriter, BlobId, Fault, Kept, MailId, Seated, Storage, Time, Timer, Until, Unwritable,
-    Within,
+    Actors, ActorsReader, ActorsWriter, BlobId, Fault, Kept, MailId, Seated, Time, Timer, Until, Unwritable, Within,
 };
 #[cfg(feature = "std")]
-use crate::{Given, Resource, pins};
+use crate::{Given, Resource, Services, pins};
 use aethereal_data::{
     ActorId, Budget, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, Reader, Schema, Shape, Writer,
 };
@@ -66,8 +65,9 @@ pub struct Running {
     handed: Vec<Kept>,
     /// Its host's timer.
     timer: Arc<dyn Timer>,
-    /// Its host's storage.
-    storage: Arc<dyn Storage>,
+    /// The services its host serves its jobs (ADR-0034).
+    #[cfg(feature = "std")]
+    services: Arc<Services>,
 }
 
 #[cfg(feature = "std")]
@@ -93,10 +93,11 @@ impl Running {
         Until::new(at, &*self.timer)
     }
 
-    /// The host's storage, which a job reads files from (ADR-0032).
+    /// The host's service of type `S`, such as `dyn Storage`, when the host serves one (ADR-0034): defined by the
+    /// capability whose jobs need it, and served by the host's bootstrap of that capability.
     #[must_use]
-    pub fn storage(&self) -> &dyn Storage {
-        &*self.storage
+    pub fn service<S: ?Sized + 'static>(&self) -> Option<&S> {
+        self.services.get::<S>()
     }
 
     /// Puts `bytes` as a blob, which nobody changes from then on, and answers with a reference to it, to hold in what
@@ -324,9 +325,9 @@ pub type Outcome = Result<Produced, Fault>;
 pub type Driven = Pin<Box<dyn Future<Output = Outcome>>>;
 
 /// How a host runs a job of one type: from its bytes, what it is lent, the most bytes it is read within, the host's
-/// timer, and its storage, to the future its host drives.
+/// timer, and the services it serves its jobs, to the future its host drives.
 #[cfg(feature = "std")]
-type Drive = fn(Vec<u8>, Lending, usize, Arc<dyn Timer>, Arc<dyn Storage>) -> Driven;
+type Drive = fn(Vec<u8>, Lending, usize, Arc<dyn Timer>, Arc<Services>) -> Driven;
 
 /// A job type, as a host runs it, whatever the type: what a native turn hands its host with each job it runs, and what
 /// a program lists of each job type its guests may run (ADR-0015, ADR-0018).
@@ -371,8 +372,8 @@ impl JobType {
     }
 
     /// The future that runs the job of `bytes`, which is lent `lent`, read within `limit` bytes, waits on `timer`, and
-    /// reads files from `storage`, where it is driven: so the job's value is read on the thread or worker that runs
-    /// it, and never moves (ADR-0018, ADR-0032).
+    /// reaches the host's `services`, where it is driven: so the job's value is read on the thread or worker that runs
+    /// it, and never moves (ADR-0018, ADR-0034).
     #[must_use]
     pub fn drive(
         &self,
@@ -380,9 +381,9 @@ impl JobType {
         lent: Lending,
         limit: usize,
         timer: Arc<dyn Timer>,
-        storage: Arc<dyn Storage>,
+        services: Arc<Services>,
     ) -> Driven {
-        (self.drive)(bytes, lent, limit, timer, storage)
+        (self.drive)(bytes, lent, limit, timer, services)
     }
 }
 
@@ -429,7 +430,7 @@ job_lists! {
 }
 
 /// The future that reads the job `J` of `bytes`, which is lent `lent`, within `limit` bytes, runs it on `timer` and
-/// `storage`, and
+/// `services`, and
 /// writes what it answers with. Each reference read out of the job is a pin of its own, and each change to a pin made as it is polled
 /// or dropped goes onto the queue it was lent.
 #[cfg(feature = "std")]
@@ -438,14 +439,14 @@ fn drive<J: Job>(
     lent: Lending,
     limit: usize,
     timer: Arc<dyn Timer>,
-    storage: Arc<dyn Storage>,
+    services: Arc<Services>,
 ) -> Driven {
     let Lending { blobs, engine, queue } = lent;
     let running = Box::pin(async move {
         let mut budget = Budget::new(limit);
         let pins = crate::PinSource::job(&blobs);
         let job = J::decode(&mut Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::of(&pins)))?;
-        let mut running = Running { blobs, engine, put: Vec::new(), handed: Vec::new(), timer, storage };
+        let mut running = Running { blobs, engine, put: Vec::new(), handed: Vec::new(), timer, services };
         let done = job.run(&mut running).await?;
         let Running { put, handed, .. } = running;
         let produced = Produced::handing(&done, handed)?;

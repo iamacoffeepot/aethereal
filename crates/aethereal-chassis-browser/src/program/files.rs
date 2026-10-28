@@ -3,8 +3,10 @@
 
 use crate::files::{Fetching, FileUrls};
 use crate::{Browser, Performance};
-use aethereal_files::{FileHosting, Files, FilesConfig};
+use aethereal_actor::Service;
+use aethereal_files::{Files, FilesConfig, Storage};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
+use std::sync::Arc;
 
 /// Begins the file capability, and gives the browser its storage: fetches beneath the URLs its settings name.
 impl Bootstrap<Browser<Performance>> for Files {
@@ -18,7 +20,7 @@ impl Bootstrap<Browser<Performance>> for Files {
         (): (),
         cx: &mut Bootstrapping<'_, Browser<Performance>, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.serve(FileHosting::new(Fetching::new(&urls)));
+        cx.serve(Service::<dyn Storage>::of(Arc::new(Fetching::new(&urls))));
         cx.begin(&(), FilesConfig)
     }
 }

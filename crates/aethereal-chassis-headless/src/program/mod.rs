@@ -4,12 +4,12 @@
 mod tests;
 
 use crate::{Exit, Headless, Runners};
-use aethereal_actor::{NoStorage, Storage};
+use aethereal_actor::{Service, Services};
 use aethereal_data::Plain;
-use aethereal_files::FileHosting;
 use aethereal_substrate::{Builds, Host, ProgramError, Serves, Settled};
 use core::num::NonZeroUsize;
 use core::time::Duration;
+use std::mem;
 use std::sync::Arc;
 
 /// How the headless host runs a program: its section, `running` (ADR-0028).
@@ -32,28 +32,27 @@ impl Default for RunningSettings {
 }
 
 /// What a native host keeps as its program bootstraps, for the runners it makes once its roots have (ADR-0029): the
-/// storage a root serves it. With no root serving it, its storage is [`NoStorage`], and every read is unavailable.
+/// services its roots serve its jobs, whatever they are (ADR-0034).
 pub struct Serving {
-    storage: Arc<dyn Storage>,
+    services: Services,
 }
 
 impl Serving {
     /// Nothing served yet.
     #[must_use]
     pub fn new() -> Self {
-        Self { storage: Arc::new(NoStorage) }
+        Self { services: Services::none() }
     }
 
-    /// Keeps the storage the file capability's bootstrap served (ADR-0032).
-    pub fn files(&mut self, files: FileHosting) {
-        self.storage = files.into_storage();
+    /// Keeps `service`, which a root's bootstrap served.
+    pub fn serve<S: ?Sized + Send + Sync + 'static>(&mut self, service: Service<S>) {
+        self.services = service.added_to(mem::take(&mut self.services));
     }
 
-    /// The runners on the cores an engine on `workers` workers leaves free, their jobs reading files from the storage
-    /// served.
+    /// The runners on the cores an engine on `workers` workers leaves free, their jobs reaching the services served.
     #[must_use]
     pub fn runners(self, workers: NonZeroUsize) -> Runners {
-        Runners::beside(workers, self.storage)
+        Runners::beside(workers, Arc::new(self.services))
     }
 }
 
@@ -79,9 +78,10 @@ impl Host for Headless {
     }
 }
 
-impl Serves<FileHosting> for Headless {
-    fn serve(serving: &mut Serving, files: FileHosting) {
-        serving.files(files);
+/// Every service of every capability is kept the same way, so the host names none (ADR-0034).
+impl<S: ?Sized + Send + Sync + 'static> Serves<Service<S>> for Headless {
+    fn serve(serving: &mut Serving, service: Service<S>) {
+        serving.serve(service);
     }
 }
 

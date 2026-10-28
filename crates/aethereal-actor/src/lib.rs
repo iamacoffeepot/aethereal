@@ -39,10 +39,11 @@ mod reference;
 mod resource;
 mod seat;
 pub mod section;
+#[cfg(feature = "std")]
+mod services;
 mod sleep;
 mod source;
 mod stage;
-mod storage;
 mod stream;
 mod subscribers;
 mod time;
@@ -91,13 +92,14 @@ pub use resource::{
     Was, carry, is_loose_claim, take_claimed, take_loose_ticket,
 };
 pub use seat::{SeatNumber, Seated, Seats};
+#[cfg(feature = "std")]
+pub use services::{Service, Services};
 pub use sleep::{Never, Sleep, Slept, Timer, Until};
 pub use source::Source;
 pub use stage::{
     Cycle, Cycled, Cycling, Drained, End, Follows, InCycle, On, Own, Place, Present, Render, Stage, StandsAfter, Start,
     Stop, Tick, Unshared,
 };
-pub use storage::{Namespace, NoStorage, Reading, Storage, Unread};
 pub use stream::{
     Enough, More, Number, Open, Part, Serving, Stream, StreamKey, Streamed, Streaming, Streams, Taken, Unreachable,
     Unsent,

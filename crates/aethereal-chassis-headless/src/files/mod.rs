@@ -4,9 +4,9 @@
 mod tests;
 
 use crate::Headless;
-use aethereal_actor::{Namespace, Reading, Storage, Unread};
+use aethereal_actor::Service;
 use aethereal_data::{FilePath, Plain};
-use aethereal_files::{FileHosting, Files, FilesConfig};
+use aethereal_files::{Files, FilesConfig, Namespace, Reading, Storage, Unread};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
 use crossbeam_queue::SegQueue;
 use std::fs;
@@ -151,7 +151,7 @@ impl Bootstrap<Headless> for Files {
     type Provides = ();
 
     async fn bootstrap(roots: FileRoots, (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.serve(FileHosting::new(Directories::new(&roots)));
+        cx.serve(Service::<dyn Storage>::of(Arc::new(Directories::new(&roots))));
         cx.begin(&(), FilesConfig)
     }
 }
