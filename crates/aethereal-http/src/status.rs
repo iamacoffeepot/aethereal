@@ -28,6 +28,8 @@ pub enum Status {
     Conflict,
     Gone,
     ContentTooLarge,
+    /// The joke of RFC 2324, which RFC 9110 §15.5.19 keeps reserved so that no one gives it another meaning.
+    ImATeapot,
     UnsupportedMediaType,
     UnprocessableContent,
     TooManyRequests,
@@ -65,6 +67,7 @@ impl Status {
             Self::Conflict => (409, "Conflict"),
             Self::Gone => (410, "Gone"),
             Self::ContentTooLarge => (413, "Content Too Large"),
+            Self::ImATeapot => (418, "I'm a teapot"),
             Self::UnsupportedMediaType => (415, "Unsupported Media Type"),
             Self::UnprocessableContent => (422, "Unprocessable Content"),
             Self::TooManyRequests => (429, "Too Many Requests"),
