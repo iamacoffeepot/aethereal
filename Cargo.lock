@@ -64,6 +64,7 @@ dependencies = [
  "aethereal-files",
  "aethereal-render",
  "aethereal-substrate",
+ "aethereal-tcp",
  "aethereal-window",
  "pollster",
  "wgpu",
@@ -79,6 +80,7 @@ dependencies = [
  "aethereal-files",
  "aethereal-guest-echo",
  "aethereal-substrate",
+ "aethereal-tcp",
  "clap",
  "core_affinity",
  "crossbeam-queue",
@@ -153,6 +155,14 @@ dependencies = [
  "aethereal-data-derive",
  "crossbeam-queue",
  "pollster",
+]
+
+[[package]]
+name = "aethereal-tcp"
+version = "0.1.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
 ]
 
 [[package]]
