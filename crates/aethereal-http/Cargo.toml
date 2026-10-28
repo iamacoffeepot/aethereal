@@ -1,0 +1,16 @@
+[package]
+name = "aethereal-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The HTTP capability: an HTTP/1.1 server on TCP whose handler takes requests as a stream paced by its credit (ADR-0035)"
+
+[dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-data = { path = "../aethereal-data" }
+aethereal-substrate = { path = "../aethereal-substrate" }
+aethereal-tcp = { path = "../aethereal-tcp" }
+
+[lints]
+workspace = true
