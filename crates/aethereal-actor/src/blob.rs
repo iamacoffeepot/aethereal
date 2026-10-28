@@ -84,8 +84,26 @@ impl BlobHash {
 /// How many bits of a blob's id count the puts of its writer: the bits above them name the writer.
 const PUT_BITS: u32 = 48;
 
-/// The writer a job's own blobs are numbered under, which no engine's writers reach (ADR-0018).
+/// The writer a job's own blobs and resources are numbered under, which no engine's writers reach (ADR-0018).
 const MADE: u64 = (1 << (u64::BITS - PUT_BITS)) - 1;
+
+/// The ticket a job gives the `index`th resource it hands: under the writer its blobs are numbered under, so it names
+/// no resource the engine keeps until the engine writes the resource's own ticket over it (ADR-0018).
+#[must_use]
+pub const fn handed_ticket(index: u64) -> u64 {
+    MADE << PUT_BITS | index
+}
+
+/// Which of the resources a job handed `ticket` names, when a job gave it.
+#[must_use]
+pub const fn handed_index(ticket: u64) -> Option<u64> {
+    let is_handed = ticket >> PUT_BITS == MADE;
+    if is_handed {
+        Some(ticket & ((1 << PUT_BITS) - 1))
+    } else {
+        None
+    }
+}
 
 /// The blobs one writer has put in a step, held until the step folds, the hashes its turns computed in the step, and
 /// the room it has left in the step's share of the budget for blobs (ADR-0014); and how many resources its turns have

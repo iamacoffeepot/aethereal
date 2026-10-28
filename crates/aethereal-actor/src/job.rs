@@ -7,10 +7,13 @@
 //! the context.
 
 #[cfg(feature = "std")]
-use crate::pins;
+use crate::blob::handed_ticket;
 use crate::{
-    Actors, ActorsReader, ActorsWriter, BlobId, Fault, MailId, Seated, Storage, Time, Timer, Until, Unwritable, Within,
+    Actors, ActorsReader, ActorsWriter, BlobId, Fault, Kept, MailId, Seated, Storage, Time, Timer, Until, Unwritable,
+    Within,
 };
+#[cfg(feature = "std")]
+use crate::{Given, Resource, pins};
 use aethereal_data::{
     ActorId, Budget, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, Reader, Schema, Shape, Writer,
 };
@@ -24,7 +27,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 /// Work the host runs outside the steps: bytes in, bytes out (ADR-0018). It touches no engine state while it runs and
-/// holds no resource, so it runs wherever its host can run it.
+/// is given no resource, so it runs wherever its host can run it. It may answer with a resource it made.
 #[allow(async_fn_in_trait, reason = "a job's future is made and driven where it runs, and never moves between threads")]
 pub trait Job: Kind + Encode<Actors> + Decode<Actors> + 'static {
     /// What it answers with.
@@ -51,14 +54,16 @@ pub enum Runner {
     Io,
 }
 
-/// What a running job reads and makes beside its own bytes: a copy of each blob it refers to, and the blobs it puts
-/// (ADR-0018).
+/// What a running job reads and makes beside its own bytes: a copy of each blob it refers to, the blobs it puts, and
+/// the resources it hands (ADR-0018).
 pub struct Running {
     blobs: Vec<Copied>,
     /// The engine that ran it, which the blobs it puts are numbered for.
     engine: u32,
     /// The bytes of each blob it has put, in the order put.
     put: Vec<Vec<u8>>,
+    /// Each resource it has handed, in the order handed, under the ticket the job gave it.
+    handed: Vec<Kept>,
     /// Its host's timer.
     timer: Arc<dyn Timer>,
     /// Its host's storage.
@@ -105,13 +110,25 @@ impl Running {
 
         crate::BlobRef::pin(BlobId::made(self.engine, index))
     }
+
+    /// Hands `value`, a resource the job made, and answers with it given, to hold in what the job answers with. The
+    /// engine keeps it when the job is answered, and writes its own ticket over this one where it lies in the answer,
+    /// so the actor answered takes it in the handler of the answer, as it takes a resource in any mail (ADR-0010). One
+    /// the answer does not hold is dropped with the job, as is every one when the job is cancelled or faults.
+    pub fn hand<R: Resource>(&mut self, value: R) -> Given<R> {
+        let index = u64::try_from(self.handed.len()).unwrap_or(u64::MAX);
+        let ticket = handed_ticket(index);
+        self.handed.push(Kept::new(ticket, value));
+
+        Given::new(ticket)
+    }
 }
 
 /// What a job a host ran made: its result's bytes, written at [`Actors`], a pin on each blob it refers to, at where
-/// its reference begins in them, and the bytes of each blob it put, which the references among them to those blobs
-/// name by the order they were put in (ADR-0018).
+/// its reference begins in them, the bytes of each blob it put, which the references among them to those blobs name by
+/// the order they were put in, and each resource it handed that its result holds, at where its ticket lies (ADR-0018).
 #[cfg(feature = "std")]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Produced {
     /// Its result's bytes.
     pub bytes: Vec<u8>,
@@ -119,6 +136,9 @@ pub struct Produced {
     pub held: Vec<crate::Pinning>,
     /// The bytes of each blob it put, in the order put.
     pub put: Vec<Vec<u8>>,
+    /// Each resource it handed that its result holds, with where its ticket lies in the result's bytes, in the order
+    /// handed.
+    pub handed: Vec<(u32, Kept)>,
 }
 
 #[cfg(feature = "std")]
@@ -133,7 +153,26 @@ impl Produced {
         let mut out = Writer::<Actors>::appending(Vec::new(), ActorsWriter::new(&mut held));
         done.encode(&mut out)?;
 
-        Ok(Self { bytes: out.into_bytes(), held, put: Vec::new() })
+        Ok(Self { bytes: out.into_bytes(), held, put: Vec::new(), handed: Vec::new() })
+    }
+
+    /// `done`, a job's result, written at [`Actors`] with the pins on the blobs it refers to, and with each of
+    /// `handed`, what the job handed, that it holds. A resource handed and not held is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Why it could not be written: it holds a resource the job did not hand, or one twice.
+    fn handing<K: Encode<Actors>>(done: &K, handed: Vec<Kept>) -> Result<Self, EncodeError> {
+        let mut held = Vec::new();
+        let mut tickets = Vec::new();
+        let writer = ActorsWriter::handed(&mut held, handed.len(), &mut tickets);
+        let mut out = Writer::<Actors>::appending(Vec::new(), writer);
+        done.encode(&mut out)?;
+        let bytes = out.into_bytes();
+        let written_at = |kept: &Kept| tickets.iter().find(|&&(_, ticket)| ticket == kept.ticket()).map(|&(at, _)| at);
+        let handed = handed.into_iter().filter_map(|kept| written_at(&kept).map(|at| (at, kept))).collect();
+
+        Ok(Self { bytes, held, put: Vec::new(), handed })
     }
 }
 
@@ -406,11 +445,12 @@ fn drive<J: Job>(
         let mut budget = Budget::new(limit);
         let pins = crate::PinSource::job(&blobs);
         let job = J::decode(&mut Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::of(&pins)))?;
-        let mut running = Running { blobs, engine, put: Vec::new(), timer, storage };
+        let mut running = Running { blobs, engine, put: Vec::new(), handed: Vec::new(), timer, storage };
         let done = job.run(&mut running).await?;
-        let produced = Produced::of(&done)?;
+        let Running { put, handed, .. } = running;
+        let produced = Produced::handing(&done, handed)?;
 
-        Ok(Produced { put: running.put, ..produced })
+        Ok(Produced { put, ..produced })
     });
 
     Box::pin(Queued { running, engine, queue })

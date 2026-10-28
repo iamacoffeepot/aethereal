@@ -1,5 +1,7 @@
 //! The boundaries an actor's values cross: `Within` and `Actors` (ADR-0004).
 
+#[cfg(feature = "std")]
+use crate::blob::handed_index;
 use crate::{BlobHash, BlobId, Declared, SeatNumber, Seated, Time};
 use aethereal_data::{ActorId, ActorPath, Boundary, EncodeError, KindId, PathSegment};
 #[cfg(feature = "std")]
@@ -117,6 +119,9 @@ enum Carrying<'a> {
     Nothing,
     /// It notes the ticket of each into this list, for the turn that writes to carry it with the mail.
     Into(&'a mut Vec<u64>),
+    /// It writes a job's result, and takes only the resources that job handed, `count` of them, each once: it notes
+    /// where each ticket lies and the ticket, for the engine to write the resource's own over it (ADR-0018).
+    Handed { count: usize, tickets: &'a mut Vec<(u32, u64)> },
 }
 
 #[cfg(feature = "std")]
@@ -134,16 +139,35 @@ impl<'a> ActorsWriter<'a> {
         Self { held, carrying: Carrying::Into(tickets) }
     }
 
+    /// A writer at [`Actors`] of a job's result, which keeps the pins of what it writes in `held`, and takes only the
+    /// `count` resources the job handed, each once, noting in `tickets` where each lies and its ticket (ADR-0018).
+    #[must_use]
+    pub const fn handed(held: &'a mut Vec<crate::Pinning>, count: usize, tickets: &'a mut Vec<(u32, u64)>) -> Self {
+        Self { held, carrying: Carrying::Handed { count, tickets } }
+    }
+
     /// Keeps `pin`, for a reference whose bytes begin at `at`.
     pub(crate) fn hold(&mut self, at: u32, pin: crate::BlobRef) {
         self.held.push((at, pin));
     }
 
-    /// Notes that the resource `ticket` names is written, to carry on: refused by a writer that carries nothing.
-    pub(crate) fn carry(&mut self, ticket: u64) -> Result<(), EncodeError> {
+    /// Notes that the resource `ticket` names is written, its ticket at `at`, to carry on: refused by a writer that
+    /// carries nothing, and by a job's result for a resource the job did not hand, or one written twice.
+    pub(crate) fn carry(&mut self, at: u32, ticket: u64) -> Result<(), EncodeError> {
         match &mut self.carrying {
             Carrying::Into(tickets) => {
                 tickets.push(ticket);
+                Ok(())
+            }
+            Carrying::Handed { count, tickets } => {
+                let index = handed_index(ticket).and_then(|index| usize::try_from(index).ok());
+                let was_handed = index.is_some_and(|index| index < *count);
+                let is_written = tickets.iter().any(|&(_, written)| written == ticket);
+                let takes = was_handed && !is_written;
+                if !takes {
+                    return Err(EncodeError::NotCarried { name: "Given" });
+                }
+                tickets.push((at, ticket));
                 Ok(())
             }
             Carrying::Nothing => Err(EncodeError::NotCarried { name: "Given" }),
@@ -169,7 +193,7 @@ impl ActorsWriter<'_> {
 
     /// Refuses the resource `ticket` names: without `std` nothing carries one.
     #[expect(clippy::unused_self, reason = "the same call as the writer that carries resources")]
-    pub(crate) const fn carry(&mut self, _: u64) -> Result<(), EncodeError> {
+    pub(crate) const fn carry(&mut self, _: u32, _: u64) -> Result<(), EncodeError> {
         Err(EncodeError::NotCarried { name: "Given" })
     }
 }

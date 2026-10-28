@@ -5,8 +5,8 @@ use super::super::*;
 use super::*;
 use crate::Entry;
 use aethereal_actor::{
-    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Handles, Job, JobType, NoStorage, Path, Runner, Running, Tells,
-    Time, Top, Turn, path,
+    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Given, Handles, Job, JobType, NoStorage, Path, Resource, Runner,
+    Running, Tells, Time, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use std::cell::RefCell;
@@ -191,6 +191,40 @@ impl Job for Shrink {
     }
 }
 
+/// A resource a job makes: a value that is not data.
+struct Lantern {
+    light: u64,
+}
+
+impl Resource for Lantern {}
+
+/// A job that makes three lanterns and answers with the second and the third, in the other order: the first it hands
+/// and does not answer with.
+#[derive(Plain)]
+#[kind(name = "aether.test.light")]
+struct Light;
+
+/// What a light answers with.
+#[derive(Bound)]
+#[kind(name = "aether.test.lit")]
+struct Lit {
+    first: Given<Lantern>,
+    second: Given<Lantern>,
+}
+
+impl Job for Light {
+    type Done = Lit;
+    const RUNNER: Runner = Runner::Io;
+
+    async fn run(self, job: &mut Running) -> Result<Lit, Fault> {
+        let _unheld = job.hand(Lantern { light: 1 });
+        let second = job.hand(Lantern { light: 2 });
+        let first = job.hand(Lantern { light: 3 });
+
+        Ok(Lit { first, second })
+    }
+}
+
 /// A job no program lists: a native turn's job carries its own code.
 #[derive(Plain)]
 #[kind(name = "aether.test.unlinked")]
@@ -242,7 +276,7 @@ impl ChildOf for Worker {
 impl Actor for Worker {
     type Config = Which;
     type Key = ();
-    type Handles = (Go, Answer<Doubled, Which>, Answer<Rang, GiveUp>, Answer<Shrunk, Which>);
+    type Handles = (Go, Answer<Doubled, Which>, Answer<Rang, GiveUp>, Answer<Shrunk, Which>, Answer<Lit, Which>);
     type BeginSends = ();
     type EndSends = ();
 
@@ -326,6 +360,7 @@ impl Handles<Go> for Worker {
                 say(format!("nest {:?}", spawned.err().is_some()));
                 return Ok(());
             }
+            "light" => turn.run(&Light, &which)?,
             "fails" => turn.run(&Fails, &which)?,
             "panics" => turn.run(&Panics, &which)?,
             "sleeps" => turn.run(&Sleeps, &which)?,
@@ -373,6 +408,23 @@ impl Handles<Answer<Shrunk, Which>> for Worker {
             Answered::Yes(Shrunk { first, kept, second }) => {
                 let (first, kept, second) = (turn.read(&first), turn.read(&kept), turn.read(&second));
                 say(format!("{} put {first:?} {second:?} kept {kept:?}", which.at));
+            }
+            Answered::No(why) => say(format!("{} {why:?}", which.at)),
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Lit, Which>> for Worker {
+    type Sends = ();
+
+    fn handle(&mut self, (done, which): (Answered<Lit>, Which), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        match done {
+            Answered::Yes(Lit { first, second }) => {
+                let (mut first, mut second) = (turn.take(first)?, turn.take(second)?);
+                let lights = (turn.open(&mut first)?.light, turn.open(&mut second)?.light);
+                say(format!("{} lit {lights:?}", which.at));
             }
             Answered::No(why) => say(format!("{} {why:?}", which.at)),
         }
@@ -838,6 +890,21 @@ fn a_job_whose_blob_does_not_fit_is_answered_faulted_and_puts_none() {
         .any(|entry| matches!(entry, Entry::JobFaulted(fault) if fault.kind() == KindId::of::<NoRoom>()));
     assert!(faulted, "the fault is the budget's");
     assert_eq!(engine.blobs.held().0, 0);
+}
+
+#[test]
+fn a_job_answers_with_the_resources_it_handed_and_its_actor_takes_them() {
+    // Catches a ticket left naming the job's own number, so the take finds nothing; two tickets written at each
+    // other's place, or both at one, so the lanterns are swapped or one is lost; a resource kept for mail other than
+    // the answer that holds it, so the take is refused; and a resource handed and not answered with carried anyway.
+    let (mut engine, worker) = engine(Arc::new(Inline::new(Arc::new(NoStorage))));
+    poke(&mut engine, 1, "light");
+    engine.bring();
+    settle(&mut engine);
+
+    assert_eq!(said(), ["0 doubled 2", "1 lit (3, 2)", "ran 0 as 1", "ran 1 as 2"]);
+    let dropped = engine.log(worker).any(|entry| matches!(entry, Entry::Dropped(_)));
+    assert!(!dropped, "the lantern not answered with never reached the worker, so nothing of it is dropped there");
 }
 
 #[test]
