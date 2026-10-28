@@ -10,6 +10,7 @@
 //! plan says (ADR-0011).
 
 mod clock;
+mod dialing;
 mod files;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod guest;
@@ -25,6 +26,7 @@ mod tests;
 mod waiting;
 
 pub use clock::Monotonic;
+pub use dialing::Dialers;
 pub use files::{Directories, FileRoots};
 pub use jobs::Runners;
 

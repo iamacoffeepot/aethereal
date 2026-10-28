@@ -6,7 +6,7 @@ mod io;
 mod tests;
 
 use crate::Monotonic;
-use aethereal_actor::{JobId, JobType, Runner, Storage};
+use aethereal_actor::{Dialer, JobId, JobType, Runner, Storage};
 use aethereal_substrate::{Inline, Jobs, Taken};
 use crossbeam_queue::SegQueue;
 use io::Io;
@@ -45,13 +45,14 @@ struct Shared {
 }
 
 impl Runners {
-    /// Runners on `threads` threads of their own, their jobs reading files from `storage` (ADR-0032).
+    /// Runners on `threads` threads of their own, their jobs reading files from `storage` (ADR-0032) and connecting
+    /// through `dialer` (ADR-0033). A job for computing is polled once, so only the jobs that wait connect.
     ///
     /// # Panics
     ///
     /// Panics when the host cannot make a thread.
     #[must_use]
-    pub fn new(threads: NonZeroUsize, storage: Arc<dyn Storage>) -> Self {
+    pub fn new(threads: NonZeroUsize, storage: Arc<dyn Storage>, dialer: Arc<dyn Dialer>) -> Self {
         let inline = Inline::new(Arc::clone(&storage));
         let shared = Arc::new(Shared { inline, queue: SegQueue::new(), stopping: AtomicBool::new(false) });
         let mut threads: Vec<JoinHandle<()>> = (0..threads.get())
@@ -67,24 +68,24 @@ impl Runners {
             })
             .collect();
         let computing = threads.iter().map(|thread| thread.thread().clone()).collect();
-        let (io, waiting) = Io::new(Monotonic::new(), storage);
+        let (io, waiting) = Io::new(Monotonic::new(), storage, dialer);
         threads.push(waiting);
 
         Self { shared, computing, next: AtomicUsize::new(0), io, threads }
     }
 
     /// Runners on the cores an engine run on `workers` workers leaves free, one at the least, their jobs reading files
-    /// from `storage`.
+    /// from `storage` and connecting through `dialer`.
     ///
     /// # Panics
     ///
     /// Panics when the host cannot make a thread.
     #[must_use]
-    pub fn beside(workers: NonZeroUsize, storage: Arc<dyn Storage>) -> Self {
+    pub fn beside(workers: NonZeroUsize, storage: Arc<dyn Storage>, dialer: Arc<dyn Dialer>) -> Self {
         let cores = thread::available_parallelism().map_or(1, NonZeroUsize::get);
         let free = NonZeroUsize::new(cores.saturating_sub(workers.get())).unwrap_or(NonZeroUsize::MIN);
 
-        Self::new(free, storage)
+        Self::new(free, storage, dialer)
     }
 }
 

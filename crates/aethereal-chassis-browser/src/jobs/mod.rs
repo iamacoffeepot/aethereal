@@ -6,7 +6,7 @@ mod tests;
 #[cfg(target_arch = "wasm32")]
 mod timeouts;
 
-use aethereal_actor::{Driven, Fault, JobId, JobType, Outcome, Runner, Storage, Timer};
+use aethereal_actor::{Dialer, Driven, Fault, JobId, JobType, NoDialer, Outcome, Runner, Storage, Timer};
 use aethereal_data::{Kind, KindId};
 use aethereal_substrate::{Inline, Jobs, Panicked, Taken};
 use std::collections::HashMap;
@@ -38,6 +38,8 @@ pub struct EventLoop {
     timer: Arc<dyn Timer>,
     /// The storage the jobs that wait read files from (ADR-0032).
     storage: Arc<dyn Storage>,
+    /// The dialer the jobs that wait connect through: none, as a page cannot open a socket (ADR-0033).
+    dialer: Arc<dyn Dialer>,
     /// How a task is put on the event loop.
     spawn: fn(Task),
     /// The jobs that wait it holds, by their keys, so it can stop them.
@@ -86,7 +88,7 @@ impl EventLoop {
     fn on(timer: Arc<dyn Timer>, storage: Arc<dyn Storage>, spawn: fn(Task)) -> Self {
         let inline = Arc::new(Inline::new(Arc::clone(&storage)));
 
-        Self { inline, timer, storage, spawn, held: Arc::default() }
+        Self { inline, timer, storage, dialer: Arc::new(NoDialer), spawn, held: Arc::default() }
     }
 
     /// Puts the job `id` of the type `of`, which waits, on the event loop as a task polled whenever it is woken, until
@@ -98,9 +100,10 @@ impl EventLoop {
         let held = Arc::clone(&self.held);
         let timer = Arc::clone(&self.timer);
         let storage = Arc::clone(&self.storage);
+        let dialer = Arc::clone(&self.dialer);
         (self.spawn)(Box::pin(async move {
             let Taken { bytes, lent, limit, finish } = job;
-            let mut running = of.drive(bytes, lent, limit, timer, storage);
+            let mut running = of.drive(bytes, lent, limit, timer, storage, dialer);
             let ended = future::poll_fn(|context| poll(&stage, &mut running, context)).await;
             // Dropped before it is answered, so the pins its future holds are let go of first.
             drop(running);

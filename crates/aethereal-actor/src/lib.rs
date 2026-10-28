@@ -21,6 +21,8 @@ mod boundary;
 #[cfg(feature = "std")]
 mod controller;
 mod declared;
+#[cfg(feature = "std")]
+mod dialer;
 mod effect;
 mod ended;
 mod fault;
@@ -65,6 +67,8 @@ pub use declared::{
     HandledList, Handler, Handles, Kinds, Listed, Marker, Others, Protocol, RepliesTo, RepliesWith, RepliesWithin,
     ReplyWithin, Role, Sending, Sends, Target, Tells, ToAny, ToSender, ToType,
 };
+#[cfg(feature = "std")]
+pub use dialer::{Dialer, Dialing, NoDialer, Undialed};
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};

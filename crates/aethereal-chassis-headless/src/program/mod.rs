@@ -4,7 +4,7 @@
 mod tests;
 
 use crate::{Exit, Headless, Runners};
-use aethereal_actor::{NoStorage, Storage};
+use aethereal_actor::{NoDialer, NoStorage, Storage};
 use aethereal_data::Plain;
 use aethereal_files::FileHosting;
 use aethereal_substrate::{Builds, Host, ProgramError, Serves, Settled};
@@ -53,7 +53,7 @@ impl Serving {
     /// served.
     #[must_use]
     pub fn runners(self, workers: NonZeroUsize) -> Runners {
-        Runners::beside(workers, self.storage)
+        Runners::beside(workers, self.storage, Arc::new(NoDialer))
     }
 }
 

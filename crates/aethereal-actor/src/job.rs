@@ -13,7 +13,7 @@ use crate::{
     Within,
 };
 #[cfg(feature = "std")]
-use crate::{Given, Resource, pins};
+use crate::{Dialer, Given, Resource, pins};
 use aethereal_data::{
     ActorId, Budget, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, Reader, Schema, Shape, Writer,
 };
@@ -68,6 +68,9 @@ pub struct Running {
     timer: Arc<dyn Timer>,
     /// Its host's storage.
     storage: Arc<dyn Storage>,
+    /// Its host's dialer.
+    #[cfg(feature = "std")]
+    dialer: Arc<dyn Dialer>,
 }
 
 #[cfg(feature = "std")]
@@ -97,6 +100,12 @@ impl Running {
     #[must_use]
     pub fn storage(&self) -> &dyn Storage {
         &*self.storage
+    }
+
+    /// The host's dialer, which a job connects to another machine through (ADR-0033).
+    #[must_use]
+    pub fn dialer(&self) -> &dyn Dialer {
+        &*self.dialer
     }
 
     /// Puts `bytes` as a blob, which nobody changes from then on, and answers with a reference to it, to hold in what
@@ -324,9 +333,9 @@ pub type Outcome = Result<Produced, Fault>;
 pub type Driven = Pin<Box<dyn Future<Output = Outcome>>>;
 
 /// How a host runs a job of one type: from its bytes, what it is lent, the most bytes it is read within, the host's
-/// timer, and its storage, to the future its host drives.
+/// timer, its storage, and its dialer, to the future its host drives.
 #[cfg(feature = "std")]
-type Drive = fn(Vec<u8>, Lending, usize, Arc<dyn Timer>, Arc<dyn Storage>) -> Driven;
+type Drive = fn(Vec<u8>, Lending, usize, Arc<dyn Timer>, Arc<dyn Storage>, Arc<dyn Dialer>) -> Driven;
 
 /// A job type, as a host runs it, whatever the type: what a native turn hands its host with each job it runs, and what
 /// a program lists of each job type its guests may run (ADR-0015, ADR-0018).
@@ -370,9 +379,9 @@ impl JobType {
         self.runner
     }
 
-    /// The future that runs the job of `bytes`, which is lent `lent`, read within `limit` bytes, waits on `timer`, and
-    /// reads files from `storage`, where it is driven: so the job's value is read on the thread or worker that runs
-    /// it, and never moves (ADR-0018, ADR-0032).
+    /// The future that runs the job of `bytes`, which is lent `lent`, read within `limit` bytes, waits on `timer`,
+    /// reads files from `storage`, and connects through `dialer`, where it is driven: so the job's value is read on the
+    /// thread or worker that runs it, and never moves (ADR-0018, ADR-0032, ADR-0033).
     #[must_use]
     pub fn drive(
         &self,
@@ -381,8 +390,9 @@ impl JobType {
         limit: usize,
         timer: Arc<dyn Timer>,
         storage: Arc<dyn Storage>,
+        dialer: Arc<dyn Dialer>,
     ) -> Driven {
-        (self.drive)(bytes, lent, limit, timer, storage)
+        (self.drive)(bytes, lent, limit, timer, storage, dialer)
     }
 }
 
@@ -428,8 +438,8 @@ job_lists! {
     [A B C D E F G H I J K L]
 }
 
-/// The future that reads the job `J` of `bytes`, which is lent `lent`, within `limit` bytes, runs it on `timer` and
-/// `storage`, and
+/// The future that reads the job `J` of `bytes`, which is lent `lent`, within `limit` bytes, runs it on `timer`,
+/// `storage`, and `dialer`, and
 /// writes what it answers with. Each reference read out of the job is a pin of its own, and each change to a pin made as it is polled
 /// or dropped goes onto the queue it was lent.
 #[cfg(feature = "std")]
@@ -439,13 +449,14 @@ fn drive<J: Job>(
     limit: usize,
     timer: Arc<dyn Timer>,
     storage: Arc<dyn Storage>,
+    dialer: Arc<dyn Dialer>,
 ) -> Driven {
     let Lending { blobs, engine, queue } = lent;
     let running = Box::pin(async move {
         let mut budget = Budget::new(limit);
         let pins = crate::PinSource::job(&blobs);
         let job = J::decode(&mut Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::of(&pins)))?;
-        let mut running = Running { blobs, engine, put: Vec::new(), handed: Vec::new(), timer, storage };
+        let mut running = Running { blobs, engine, put: Vec::new(), handed: Vec::new(), timer, storage, dialer };
         let done = job.run(&mut running).await?;
         let Running { put, handed, .. } = running;
         let produced = Produced::handing(&done, handed)?;

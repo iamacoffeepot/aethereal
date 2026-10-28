@@ -5,8 +5,8 @@ use super::super::*;
 use super::*;
 use crate::Entry;
 use aethereal_actor::{
-    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Given, Handles, Job, JobType, NoStorage, Path, Resource, Runner,
-    Running, Tells, Time, Top, Turn, path,
+    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Given, Handles, Job, JobType, NoDialer, NoStorage, Path,
+    Resource, Runner, Running, Tells, Time, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use std::cell::RefCell;
@@ -839,7 +839,7 @@ fn a_job_changes_its_engines_pins_on_the_engines_queue_as_it_runs_and_as_it_is_d
     pins::open(engine.number.0, Vec::new());
     for (_, of, Taken { bytes, lent, limit, .. }) in holding.take() {
         let measures = of.kind() == KindId::of::<Measure>();
-        let mut running = of.drive(bytes, lent, limit, Arc::new(Never), Arc::new(NoStorage));
+        let mut running = of.drive(bytes, lent, limit, Arc::new(Never), Arc::new(NoStorage), Arc::new(NoDialer));
         let polled = running.as_mut().poll(&mut context);
         assert_eq!(polled.is_ready(), measures, "the measure finishes, and the hang waits");
     }
