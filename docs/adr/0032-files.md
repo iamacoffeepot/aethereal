@@ -52,7 +52,7 @@ impl Job for Load {
 
 - **It runs on `Io`, and the native storage reads on threads of its own.** A read waits on the disk or the network, so it runs where waiting is polled: a browser polls a job for computing once, as `Inline` does, and a fetch is a promise no single poll finishes. The native `Io` thread is one thread every timer waits on (ADR-0018), so the native storage never blocks it: it hands each read to one of a few threads of its own, which block on the disk and wake the read once its bytes are in. This is the reactor for files ADR-0018 left for the first `Io` job that needed one. **It departs from this record as first written, which ran the read on `Compute`** and took a browser to run every job on its event loop whatever its runner; a browser polls a computation once, and a fetch there would always be answered that it waited.
 
-**The host's storage reaches a job as its timer does.** ADR-0018 hands every running job its host's timer (`Running::until`, `Timer`). The host hands it its storage beside it:
+**The host's storage reaches a job as one of its host's services** (ADR-0034: `Services`, `Running::service`). **This departs from this record as first written**, which handed it to a job as the timer is, through a field of `Running` and an argument of every runner, and put the trait in `aethereal-actor`; the storage is the file capability's own, so the trait is this crate's:
 
 ```rust
 pub trait Storage: Send + Sync {
@@ -61,13 +61,11 @@ pub trait Storage: Send + Sync {
 
 pub enum Unread { Missing, Unavailable, Failed }
 
-impl Running {
-    pub fn storage(&self) -> &dyn Storage;
-}
+let storage = job.service::<dyn Storage>();   // none when the host serves no storage
 ```
 
-- `Storage`, `Unread`, `Namespace`, and `Running::storage` are in `aethereal-actor`, beside `Timer`. `FilePath` is in `aethereal-data`, beside the other checked names (`KeyName`, `KindName`), refused at decode with `DecodeError::InvalidFilePath`. A storage answers bytes, and the job puts them; `FileRead`, which holds the blob, is in `aethereal-files`, as a blob's reference is native code's.
-- **A host with no storage hands `NoStorage`,** which answers every read `Unavailable`, as a host with no thread to wait on hands `Never` for its timer.
+- `Storage`, `Reading`, `Unread`, and `Namespace` are in `aethereal-files`. `FilePath` is in `aethereal-data`, beside the other checked names (`KeyName`, `KindName`), refused at decode with `DecodeError::InvalidFilePath`. A storage answers bytes, and the job puts them; `FileRead`, which holds the blob, is in `aethereal-files`, as a blob's reference is native code's.
+- **A host with no storage serves none,** and `Load` answers every read `Unavailable`.
 
 **Each host's crate bootstraps `Files`, and hands its storage to its runners.** ADR-0029 has a host's crate write the bootstrap of a root that needs the host (`Bootstrap<H>`). The headless and desktop hosts' storage reads a directory for each namespace; the browser's fetches each asset from a URL relative to the page. The bootstrap begins `Files` and serves the host its storage and the job type it runs (ADR-0029: `cx.serve`), and the host makes its runners with both once its roots have bootstrapped (ADR-0029: `Engine::set_jobs`):
 
@@ -80,7 +78,7 @@ impl Bootstrap<Headless> for Files {
     type Provides = ();
 
     async fn bootstrap(roots: FileRoots, (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.serve(FileHosting::new(Directories::new(&roots)));    // the storage its host's runners read from
+        cx.serve(Service::<dyn Storage>::of(Arc::new(Directories::new(&roots))));    // into the set its runners hand jobs
         cx.begin(&(), FilesConfig)
     }
 }
@@ -103,7 +101,7 @@ impl Bootstrap<Headless> for Files {
 - An actor reads a file one way on every host, and what it may read is what the program's namespaces hold.
 - A read costs a job and an ask: its bytes are copied once out of the host into the blob store, and the asker is answered a step or more after it asked.
 - A file larger than the engine's budget for blobs cannot be read whole: its job's put does not fit, and its read is answered `Failed`, as the job is answered `Faulted` (ADR-0018). Reading such a file waits for ranged reads.
-- `Running` holds a second service of its host. `JobType::drive` and each host's runners hand it on beside the timer, and a runner made for a test with no files is made with `NoStorage`.
+- The storage is one entry in the host's set of services (ADR-0034), which every runner hands every job; a runner made for a test with no files serves none.
 - The native storage holds a few threads of its own beside the runners' (its setting `readers`, four by default), which park when there is nothing to read.
 - A host makes its runners once its roots have bootstrapped (ADR-0029), so they are made with the storage the roots served, and no runner changes after it is made.
 - Two engines on one host share nothing through `Files`: each reads its namespaces' roots, and two that write one file write it as two programs would.
