@@ -4,11 +4,12 @@
 #[cfg(test)]
 mod tests;
 
+use super::gift::{self, Arrival};
 use super::{Engine, ROOTS, parity};
 use crate::{lives, log};
 use aethereal_actor::{
-    BlobId, Copied, Fault, JobCode, JobId, JobType, Lending, MailId, Mailed, Never, Outcome, Pinning, Produced, Seated,
-    Storage, Submitted, Tie, Timer, Unanswered,
+    BlobId, Copied, Fault, JobCode, JobId, JobType, Kept, Lending, MailId, Mailed, Never, Outcome, Pinning, Produced,
+    Seated, Storage, Submitted, Tie, Timer, Unanswered,
 };
 use aethereal_data::{Kind, KindId, Plain};
 use crossbeam_queue::SegQueue;
@@ -78,6 +79,14 @@ pub(super) struct Finished {
     /// The kind of its result.
     answer: KindId,
     outcome: Outcome,
+}
+
+/// What a job made, as the engine answers its actor with it: the result's bytes, the pins on the blobs it refers to,
+/// and each resource it carries, under the engine's ticket (ADR-0018).
+struct Answering {
+    bytes: Vec<u8>,
+    held: Vec<Pinning>,
+    kept: Vec<Kept>,
 }
 
 /// Runs each job inline, as it is handed out between steps: for a host with one thread, and for tests. A job whose
@@ -274,8 +283,10 @@ impl Engine {
     /// Brings in each job finished before this bring began, between steps: its outcome as mail from the actor that ran it
     /// to itself, tied to the job, the root of a chain of its own, which its handler of what the job answers with is
     /// handed with the context it kept (ADR-0018). A fault is written into the actor's log too. The outcome of a job
-    /// whose actor has ended is dropped. What finishes while it brings waits for the next, so a bring is bounded
-    /// however fast the runners push.
+    /// whose actor has ended is dropped. A resource the job handed goes with its answer, which its actor takes in the
+    /// handler of the answer, or it is dropped and recorded in its log, as a resource in any mail is (ADR-0010); the
+    /// resources of a job that faulted, or whose actor has ended, are dropped. What finishes while it brings waits for
+    /// the next, so a bring is bounded however fast the runners push.
     pub(super) fn bring_jobs(&mut self) {
         let ready = self.finished.len();
         // Most brings find no job finished.
@@ -287,41 +298,88 @@ impl Engine {
         let mut arena = self.arena(parity, ROOTS, 0);
         let mut mailed = Vec::new();
         let mut faults = Vec::new();
+        let mut arrivals = Vec::new();
         for Finished { by, count, answer, outcome } in (0..ready).map_while(|_| feed.pop()) {
             let Some(life) = self.lives.shard(by.seat.number()).life(by) else {
                 continue;
             };
             let sent = life.sent() + 1;
             let written = match outcome.and_then(|produced| self.put_produced(produced)) {
-                Ok((bytes, held)) => {
+                Ok(Answering { bytes, held, kept }) => {
                     let written = arena.write_holding_bytes(&bytes, held);
-                    written.map(|bytes| (answer, bytes, Tie::answers(count)))
+                    written.map(|bytes| (answer, bytes, Tie::answers(count), kept))
                 }
                 Err(fault) => {
                     faults.push(log::job_faulted(by, fault));
                     let bytes = arena.write_mail(&Unanswered::Faulted);
-                    bytes.map(|bytes| (KindId::of::<Unanswered>(), bytes, Tie::unanswered(count)))
+                    bytes.map(|bytes| (KindId::of::<Unanswered>(), bytes, Tie::unanswered(count), Vec::new()))
                 }
             };
-            let Ok((kind, bytes, tie)) = written else {
+            let Ok((kind, bytes, tie, kept)) = written else {
                 continue;
             };
             self.lives.fold_records([lives::sent(by, sent)], &[]);
+            let mail = MailId { sender: by.id, count: sent };
+            arrivals.extend(kept.into_iter().map(|kept| Arrival { to: by, by, mail, kept }));
             mailed.push(Mailed { by, to: by, count: sent, kind, bytes, tie });
         }
         self.arenas[parity][ROOTS] = arena;
+        // Most jobs hand no resource.
+        if !arrivals.is_empty() {
+            self.carry_handed(arrivals);
+        }
         // Each answer is the first of its chain: nothing the actor did in the step it is brought in caused it.
         self.fold_brought(mailed, faults, parity, |mailed| MailId { sender: mailed.by.id, count: mailed.count });
     }
 
+    /// Puts each resource a job handed on its way to the actor that ran it, with the answer that holds it (ADR-0018).
+    #[cold]
+    fn carry_handed(&mut self, arrivals: Vec<Arrival>) {
+        let mut lost = Vec::new();
+        for arrival in arrivals {
+            let part = self.part(arrival.to.seat);
+            gift::arrive_all(&mut self.actors[part], &mut vec![arrival], &mut lost);
+        }
+        self.log.fold_records(lost.into_iter().map(|(by, name)| log::dropped(by, name)), &[]);
+    }
+
     /// Puts each blob a job put, between steps, out of the budget for blobs, and writes over each reference to one
-    /// in its result the blob's own: the result's bytes, and the pins on the blobs it refers to (ADR-0018).
+    /// in its result the blob's own; then keeps each resource it handed, under a ticket of the engine's, written over
+    /// the job's own where it lies in the result: the result's bytes, the pins on the blobs it refers to, and the
+    /// resources it carries (ADR-0018).
+    ///
+    /// # Errors
+    ///
+    /// A fault of [`NoRoom`] when a blob did not fit, and then none is kept, nor any resource.
+    fn put_produced(&mut self, produced: Produced) -> Result<Answering, Fault> {
+        let Produced { bytes, held, put, handed } = produced;
+        let (mut bytes, held) = self.put_blobs(bytes, held, put)?;
+        let mut kept = Vec::with_capacity(handed.len());
+        for (at, resource) in handed {
+            let ticket = self.ticket();
+            let begins = usize::try_from(at).unwrap_or(usize::MAX);
+            let written = bytes.get_mut(begins..begins.saturating_add(8));
+            if let Some(written) = written {
+                written.copy_from_slice(&ticket.to_le_bytes());
+            }
+            kept.push(resource.ticketed(ticket));
+        }
+
+        Ok(Answering { bytes, held, kept })
+    }
+
+    /// Puts each of `put`, the blobs a job put, out of the budget for blobs, and writes over each reference to one in
+    /// `bytes`, its result, the blob's own: the result's bytes, and the pins on the blobs it refers to.
     ///
     /// # Errors
     ///
     /// A fault of [`NoRoom`] when a blob did not fit, and then none is kept.
-    fn put_produced(&mut self, produced: Produced) -> Result<(Vec<u8>, Vec<Pinning>), Fault> {
-        let Produced { mut bytes, held, put } = produced;
+    fn put_blobs(
+        &mut self,
+        mut bytes: Vec<u8>,
+        held: Vec<Pinning>,
+        put: Vec<Vec<u8>>,
+    ) -> Result<(Vec<u8>, Vec<Pinning>), Fault> {
         // Most jobs put no blob.
         if put.is_empty() {
             return Ok((bytes, held));

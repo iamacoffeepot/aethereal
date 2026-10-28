@@ -99,7 +99,8 @@ impl<R: Resource> Decode<Within> for Handle<R> {
 /// written into: refused by a writer that carries nothing.
 impl<R: Resource> Encode<Actors> for Given<R> {
     fn encode(&self, out: &mut Writer<'_, Actors>) -> Result<(), EncodeError> {
-        out.offers().carry(self.ticket)?;
+        let at = u32::try_from(out.bytes().len()).unwrap_or(u32::MAX);
+        out.offers().carry(at, self.ticket)?;
         self.ticket.encode(out)
     }
 }
@@ -131,10 +132,24 @@ pub struct Kept {
     value: Box<dyn Any + Send>,
 }
 
+/// A resource shows its ticket and what it is called: its value is not data.
+impl fmt::Debug for Kept {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Kept<{}>({})", self.name, self.ticket)
+    }
+}
+
 impl Kept {
     /// `value`, under the ticket `ticket`.
     pub(crate) fn new<R: Resource>(ticket: u64, value: R) -> Self {
         Self { ticket, name: any::type_name::<R>(), value: Box::new(value) }
+    }
+
+    /// The same resource under the ticket `ticket`: one a job handed, under the ticket the engine gives it as it keeps
+    /// it (ADR-0018).
+    #[must_use]
+    pub fn ticketed(self, ticket: u64) -> Self {
+        Self { ticket, ..self }
     }
 
     /// Whether it is a resource of type `R`.
