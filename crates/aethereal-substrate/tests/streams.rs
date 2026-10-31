@@ -3,31 +3,12 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ended, Ending, Enough, Fault,
-    Handles, More, Number, Open, Part, Serving, Stream, StreamKey, Streamed, Streams, Taken, Time, ToAny, ToSender,
-    ToType, Top, Turn, Unanswered, Unsent,
+    Handles, More, Number, Open, Part, Seated, Serving, Stream, StreamKey, Streamed, Streams, Taken, Time, ToAny,
+    ToSender, ToType, Top, Turn, Unanswered, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Clock, Engine};
-use std::cell::RefCell;
-use std::collections::BTreeMap;
-use std::fmt::Debug;
-use std::mem;
 use std::num::{NonZeroU32, NonZeroUsize};
-
-thread_local! {
-    /// What each actor of this thread has said, in order, by who said it.
-    static SAID: RefCell<BTreeMap<&'static str, Vec<String>>> = const { RefCell::new(BTreeMap::new()) };
-}
-
-/// Notes what `who` did.
-fn say(who: &'static str, line: String) {
-    SAID.with_borrow_mut(|said| said.entry(who).or_default().push(line));
-}
-
-/// What has been said since this was last asked, by who said it.
-fn said() -> BTreeMap<&'static str, Vec<String>> {
-    SAID.with_borrow_mut(mem::take)
-}
 
 /// What a file stream is opened with: how many chunks to send, and after how many sent its receiver closes.
 #[derive(Plain)]
@@ -94,12 +75,63 @@ impl Stream for Logs {
     type Done = LogDone;
 }
 
+/// Which of the test's two protocols a stream is of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum Which {
+    Files,
+    Logs,
+}
+
+/// How a stream ended, as its asker keeps it, whichever protocol it is of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum Finished {
+    /// Its receiver sent it all.
+    Sent,
+    /// It was stopped.
+    Stopped,
+    /// It went unanswered for this.
+    No(Unanswered),
+}
+
+/// What a library did of its streams, as it keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum Served {
+    /// It sent a stream of `which` this many chunks in one turn, and stopped for want of credit or having sent them all.
+    Sent { which: Which, chunks: u32 },
+    /// It sent a stream of `which` this many chunks in one turn, and closed.
+    Closing { which: Which, chunks: u32 },
+    /// It stopped a stream of `which`, as its asker said to.
+    Stopped(Which),
+    /// An asker went, with this many streams open.
+    AskerGone(u64),
+}
+
+/// What a reader took of a stream, as it keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+enum Took {
+    /// The part at `index` of the stream `name`.
+    Part { name: String, index: u32 },
+    /// The answer to the stream `name`.
+    Done { name: String, how: Finished },
+}
+
+impl Took {
+    /// Whether it is of the stream `name`.
+    fn is_of(&self, stream: &str) -> bool {
+        let (Self::Part { name, .. } | Self::Done { name, .. }) = self;
+
+        name == stream
+    }
+}
+
 /// What the test's two streams share, so one receiver and one asker serve both the same way: how many parts a
 /// request asks for and after how many its receiver closes, a part at a place, and the answers.
 trait Ends: Stream {
-    const NAME: &'static str;
+    const WHICH: Which;
     const SENT: Self::Done;
     const STOPPED: Self::Done;
+
+    fn ended(done: Self::Done) -> Finished;
 
     fn asked(open: Self::Open) -> (u32, Option<u32>);
 
@@ -111,9 +143,16 @@ trait Ends: Stream {
 }
 
 impl Ends for Files {
-    const NAME: &'static str = "files";
+    const WHICH: Which = Which::Files;
     const SENT: ReadDone = ReadDone::Sent;
     const STOPPED: ReadDone = ReadDone::Stopped;
+
+    fn ended(done: ReadDone) -> Finished {
+        match done {
+            ReadDone::Sent => Finished::Sent,
+            ReadDone::Stopped => Finished::Stopped,
+        }
+    }
 
     fn asked(read: Read) -> (u32, Option<u32>) {
         (read.chunks, read.close_after)
@@ -133,9 +172,16 @@ impl Ends for Files {
 }
 
 impl Ends for Logs {
-    const NAME: &'static str = "logs";
+    const WHICH: Which = Which::Logs;
     const SENT: LogDone = LogDone::Sent;
     const STOPPED: LogDone = LogDone::Stopped;
+
+    fn ended(done: LogDone) -> Finished {
+        match done {
+            LogDone::Sent => Finished::Sent,
+            LogDone::Stopped => Finished::Stopped,
+        }
+    }
 
     fn asked(tail: Tail) -> (u32, Option<u32>) {
         (tail.lines, tail.close_after)
@@ -173,6 +219,8 @@ struct Library {
     logs: Serving<Logs>,
     files_left: Vec<Left>,
     logs_left: Vec<Left>,
+    /// What it did of its streams, in order.
+    served: Vec<Served>,
 }
 
 /// What a library is made from: nothing.
@@ -192,7 +240,13 @@ impl Actor for Library {
     type EndSends = ();
 
     fn begin(_: Blank, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-        Ok(Self { files: Serving::new(), logs: Serving::new(), files_left: Vec::new(), logs_left: Vec::new() })
+        Ok(Self {
+            files: Serving::new(),
+            logs: Serving::new(),
+            files_left: Vec::new(),
+            logs_left: Vec::new(),
+            served: Vec::new(),
+        })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -222,6 +276,7 @@ where
 fn pump<S: Ends, Sends, I>(
     serving: &mut Serving<S>,
     left: &mut Vec<Left>,
+    served: &mut Vec<Served>,
     turn: &mut Turn<'_, Library, Sends>,
     key: StreamKey,
 ) -> Result<(), Fault>
@@ -246,12 +301,12 @@ where
         sent += 1;
         let closes = stream.close_after == Some(stream.next);
         if closes {
-            say("library", format!("{} sent {sent}, closing", S::NAME));
+            served.push(Served::Closing { which: S::WHICH, chunks: sent });
             turn.close();
             return Ok(());
         }
     }
-    say("library", format!("{} sent {sent}", S::NAME));
+    served.push(Served::Sent { which: S::WHICH, chunks: sent });
 
     let all_sent = stream.next == stream.chunks;
     if all_sent {
@@ -268,6 +323,7 @@ where
 fn stop<S: Ends, Sends>(
     serving: &mut Serving<S>,
     left: &mut Vec<Left>,
+    served: &mut Vec<Served>,
     turn: &mut Turn<'_, Library, Sends>,
     enough: &Enough,
 ) -> Result<bool, Fault> {
@@ -277,7 +333,7 @@ fn stop<S: Ends, Sends>(
     let key = streaming.key();
     left.retain(|stream| stream.key != key);
     streaming.finish(turn, &S::STOPPED)?;
-    say("library", format!("{} stopped", S::NAME));
+    served.push(Served::Stopped(S::WHICH));
 
     Ok(true)
 }
@@ -303,10 +359,10 @@ impl Handles<More> for Library {
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if let Some(key) = self.files.more(turn, &more) {
-            return pump(&mut self.files, &mut self.files_left, turn, key);
+            return pump(&mut self.files, &mut self.files_left, &mut self.served, turn, key);
         }
         if let Some(key) = self.logs.more(turn, &more) {
-            return pump(&mut self.logs, &mut self.logs_left, turn, key);
+            return pump(&mut self.logs, &mut self.logs_left, &mut self.served, turn, key);
         }
 
         Ok(())
@@ -317,9 +373,9 @@ impl Handles<Enough> for Library {
     type Sends = ();
 
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        let stopped = stop(&mut self.files, &mut self.files_left, turn, &enough)?;
+        let stopped = stop(&mut self.files, &mut self.files_left, &mut self.served, turn, &enough)?;
         if !stopped {
-            stop(&mut self.logs, &mut self.logs_left, turn, &enough)?;
+            stop(&mut self.logs, &mut self.logs_left, &mut self.served, turn, &enough)?;
         }
 
         Ok(())
@@ -331,7 +387,7 @@ impl Handles<Ended> for Library {
 
     fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let gone = self.files.ended(&ended).len() + self.logs.ended(&ended).len();
-        say("library", format!("asker gone with {gone} open"));
+        self.served.push(Served::AskerGone(u64::try_from(gone).unwrap_or(u64::MAX)));
 
         Ok(())
     }
@@ -364,13 +420,15 @@ struct ReaderConfig {
     orders: Vec<String>,
 }
 
-/// An asker: it spawns a library as it begins, opens the streams its orders name, and says each part and each answer.
+/// An asker: it spawns a library as it begins, opens the streams its orders name, and keeps each part and each answer.
 #[derive(Bound)]
 #[kind(name = "aether.test.stream.reader")]
 struct Reader {
     library: ActorRef<Library>,
     files: Streams<Files, Tag>,
     logs: Streams<Logs, Tag>,
+    /// What it took, in order.
+    took: Vec<Took>,
 }
 
 impl ChildOf for Reader {
@@ -395,7 +453,7 @@ impl Actor for Reader {
             turn.to(turn.me()).send(&Order { text })?;
         }
 
-        Ok(Self { library, files: Streams::new(window), logs: Streams::new(window) })
+        Ok(Self { library, files: Streams::new(window), logs: Streams::new(window), took: Vec::new() })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -439,9 +497,10 @@ impl Handles<Order> for Reader {
     }
 }
 
-/// Takes `part`, saying it, and stops its stream or closes the reader when what it kept says to.
+/// Takes `part`, keeping it, and stops its stream or closes the reader when what it kept says to.
 fn take<S: Ends, Sends, IM, IE>(
     streams: &mut Streams<S, Tag>,
+    took: &mut Vec<Took>,
     turn: &mut Turn<'_, Reader, Sends>,
     part: Part<S>,
 ) -> Result<(), Fault>
@@ -451,7 +510,7 @@ where
     let Some(Taken { number, value: chunk, kept: tag }) = streams.part::<_, _, IM>(turn, part)? else {
         return Ok(());
     };
-    say("reader", format!("{} {}", tag.name, S::index(&chunk)));
+    took.push(Took::Part { name: tag.name.clone(), index: S::index(&chunk) });
     tag.taken += 1;
     let stops = tag.stop_after == Some(tag.taken);
     let leaves = tag.close_after_first;
@@ -469,7 +528,7 @@ impl Handles<Part<Files>> for Reader {
     type Sends = (ToAny<Streamed<Files>, More>, ToAny<Streamed<Files>, Enough>);
 
     fn handle(&mut self, part: Part<Files>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        take(&mut self.files, turn, part)
+        take(&mut self.files, &mut self.took, turn, part)
     }
 }
 
@@ -477,18 +536,19 @@ impl Handles<Part<Logs>> for Reader {
     type Sends = (ToAny<Streamed<Logs>, More>, ToAny<Streamed<Logs>, Enough>);
 
     fn handle(&mut self, part: Part<Logs>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        take(&mut self.logs, turn, part)
+        take(&mut self.logs, &mut self.took, turn, part)
     }
 }
 
-/// Says how the stream kept as `tag` ended.
-fn ended<D: Debug>(tag: Option<Tag>, answered: Answered<D>) {
+/// How the stream kept as `tag` ended.
+fn ended<S: Ends>(tag: Option<Tag>, answered: Answered<S::Done>) -> Took {
     let name = tag.map_or_else(|| String::from("unknown"), |tag| tag.name);
     let how = match answered {
-        Answered::Yes(done) => format!("{done:?}"),
-        Answered::No(why) => format!("no {why:?}"),
+        Answered::Yes(done) => S::ended(done),
+        Answered::No(why) => Finished::No(why),
     };
-    say("reader", format!("{name} done {how}"));
+
+    Took::Done { name, how }
 }
 
 impl Handles<Answer<ReadDone, Number>> for Reader {
@@ -499,7 +559,7 @@ impl Handles<Answer<ReadDone, Number>> for Reader {
         (answered, number): (Answered<ReadDone>, Number),
         _: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
-        ended(self.files.answered(number), answered);
+        self.took.push(ended::<Files>(self.files.answered(number), answered));
 
         Ok(())
     }
@@ -513,7 +573,7 @@ impl Handles<Answer<LogDone, Number>> for Reader {
         (answered, number): (Answered<LogDone>, Number),
         _: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
-        ended(self.logs.answered(number), answered);
+        self.took.push(ended::<Logs>(self.logs.answered(number), answered));
 
         Ok(())
     }
@@ -531,29 +591,71 @@ impl Clock for Stopped {
 /// Each engine the tests run in: how many parts, and how many fused hops each part runs at most in a step.
 const ENGINES: [(usize, usize); 4] = [(1, 0), (1, 64), (4, 0), (4, 64)];
 
-/// What a reader that follows `orders`, with streams `window` parts ahead, and its library said, in an engine in
+/// What a reader and its library came to.
+struct Run {
+    /// What the reader took, as of the last step it was live.
+    reader: Vec<Took>,
+    /// What the library did, as of the last step it was live.
+    library: Vec<Served>,
+}
+
+/// What came of a reader that follows `orders`, with streams `window` parts ahead, and its library, in an engine in
 /// `parts` parts that each run at most `hops` fused hops a step.
-fn heard((parts, hops): (usize, usize), window: u32, orders: &[&str]) -> BTreeMap<&'static str, Vec<String>> {
+fn run((parts, hops): (usize, usize), window: u32, orders: &[&str]) -> Run {
     let Some(parts) = NonZeroUsize::new(parts) else {
         panic!("an engine has parts");
     };
     let mut engine = Engine::new(parts, 1024, 1 << 20, 1 << 20, hops).ready();
     let orders = orders.iter().map(|text| String::from(*text)).collect();
-    let made = engine.add_root::<Reader>(&(), ReaderConfig { window, orders });
-    assert!(made.is_ok(), "the reader begins");
-    said();
+    let Ok(id) = engine.add_root::<Reader>(&(), ReaderConfig { window, orders }) else {
+        panic!("the reader begins");
+    };
+    let Some(seat) = engine.table().seat(id) else {
+        panic!("the reader is seated");
+    };
+    let reader = Seated { id, seat };
+    let Some(library) = engine.state::<Reader>(reader).map(|reader| reader.library.seated()) else {
+        panic!("the reader's state is here");
+    };
+
+    // Either may close, so what each kept is read after each step it was live for.
+    let mut run = Run { reader: Vec::new(), library: Vec::new() };
     for _ in 0..64 {
         engine.step(Time::ZERO, &Stopped);
+        if let Some(state) = engine.state::<Reader>(reader) {
+            run.reader.clone_from(&state.took);
+        }
+        if let Some(state) = engine.state::<Library>(library) {
+            run.library.clone_from(&state.served);
+        }
     }
 
-    said()
+    run
 }
 
-/// The lines of `said` that begin with `name`, in order.
-fn of(said: &BTreeMap<&'static str, Vec<String>>, who: &str, name: &str) -> Vec<String> {
-    let lines = said.get(who).map(Vec::as_slice).unwrap_or_default();
+/// What of `took` is of the stream `name`, in order.
+fn of(took: &[Took], name: &str) -> Vec<Took> {
+    took.iter().filter(|took| took.is_of(name)).cloned().collect()
+}
 
-    lines.iter().filter(|line| line.starts_with(name)).cloned().collect()
+/// The part at `index` of the stream `name`.
+fn part(name: &str, index: u32) -> Took {
+    Took::Part { name: String::from(name), index }
+}
+
+/// The answer to the stream `name`.
+fn done(name: &str, how: Finished) -> Took {
+    Took::Done { name: String::from(name), how }
+}
+
+/// The library sent a file stream this many chunks in a turn.
+const fn files(chunks: u32) -> Served {
+    Served::Sent { which: Which::Files, chunks }
+}
+
+/// The library sent a log stream this many chunks in a turn.
+const fn logs(chunks: u32) -> Served {
+    Served::Sent { which: Which::Logs, chunks }
 }
 
 #[test]
@@ -561,10 +663,12 @@ fn a_stream_sends_its_parts_as_credit_comes_and_then_its_answer() {
     // Catches parts sent past the credit granted, credit not spent as parts go, a part taken without granting one back
     // (the stream would stall and never be answered), and an answer that overtakes its parts.
     for engine in ENGINES {
-        let heard = heard(engine, 2, &["files a 5"]);
+        let run = run(engine, 2, &["files a 5"]);
 
-        assert_eq!(heard["reader"], ["a 0", "a 1", "a 2", "a 3", "a 4", "a done Sent"], "{engine:?}");
-        assert_eq!(heard["library"], ["files sent 2", "files sent 1", "files sent 1", "files sent 1"], "{engine:?}");
+        let parts = [part("a", 0), part("a", 1), part("a", 2), part("a", 3), part("a", 4)];
+        assert_eq!(run.reader[..5], parts, "{engine:?}");
+        assert_eq!(run.reader[5..], [done("a", Finished::Sent)], "{engine:?}");
+        assert_eq!(run.library, [files(2), files(1), files(1), files(1)], "{engine:?}");
     }
 }
 
@@ -573,10 +677,11 @@ fn two_streams_to_one_receiver_stay_apart() {
     // Catches two streams of one asker given one number, a part handed what was kept for another stream, and an
     // answer that hands back another stream's.
     for engine in ENGINES {
-        let heard = heard(engine, 1, &["files a 3", "files b 2"]);
+        let run = run(engine, 1, &["files a 3", "files b 2"]);
 
-        assert_eq!(of(&heard, "reader", "a"), ["a 0", "a 1", "a 2", "a done Sent"], "{engine:?}");
-        assert_eq!(of(&heard, "reader", "b"), ["b 0", "b 1", "b done Sent"], "{engine:?}");
+        let first = [part("a", 0), part("a", 1), part("a", 2), done("a", Finished::Sent)];
+        assert_eq!(of(&run.reader, "a"), first, "{engine:?}");
+        assert_eq!(of(&run.reader, "b"), [part("b", 0), part("b", 1), done("b", Finished::Sent)], "{engine:?}");
     }
 }
 
@@ -585,11 +690,13 @@ fn streams_of_two_protocols_to_one_receiver_stay_apart() {
     // Catches credit or a stop for one protocol's stream taken by another's of the same number, and two protocols'
     // requests or parts of one layout given one kind id.
     for engine in ENGINES {
-        let heard = heard(engine, 1, &["files a 3", "logs l 3"]);
+        let run = run(engine, 1, &["files a 3", "logs l 3"]);
 
-        assert_eq!(of(&heard, "reader", "a"), ["a 0", "a 1", "a 2", "a done Sent"], "{engine:?}");
-        assert_eq!(of(&heard, "reader", "l"), ["l 0", "l 1", "l 2", "l done Sent"], "{engine:?}");
-        assert_eq!(heard["library"], ["files sent 1", "logs sent 1"].repeat(3), "{engine:?}");
+        let first = [part("a", 0), part("a", 1), part("a", 2), done("a", Finished::Sent)];
+        assert_eq!(of(&run.reader, "a"), first, "{engine:?}");
+        let second = [part("l", 0), part("l", 1), part("l", 2), done("l", Finished::Sent)];
+        assert_eq!(of(&run.reader, "l"), second, "{engine:?}");
+        assert_eq!(run.library, [files(1), logs(1)].repeat(3), "{engine:?}");
     }
 }
 
@@ -598,10 +705,10 @@ fn a_stopped_stream_passes_over_its_late_parts_and_is_answered() {
     // Catches parts already on their way taken after a stop, credit granted for them, and a stopped stream that the
     // receiver never answers, which would keep what its asker kept forever.
     for engine in ENGINES {
-        let heard = heard(engine, 4, &["files a 10 stop 1"]);
+        let run = run(engine, 4, &["files a 10 stop 1"]);
 
-        assert_eq!(heard["reader"], ["a 0", "a done Stopped"], "{engine:?}");
-        assert_eq!(heard["library"], ["files sent 4", "files sent 1", "files stopped"], "{engine:?}");
+        assert_eq!(run.reader, [part("a", 0), done("a", Finished::Stopped)], "{engine:?}");
+        assert_eq!(run.library, [files(4), files(1), Served::Stopped(Which::Files)], "{engine:?}");
     }
 }
 
@@ -610,11 +717,10 @@ fn a_stream_whose_receiver_ends_is_answered_that_it_ended() {
     // Catches the request a receiver holds for a stream let go of unanswered as its receiver ends, which would leave
     // the asker keeping what it kept for good.
     for engine in ENGINES {
-        let heard = heard(engine, 4, &["files a 5 close 2"]);
+        let run = run(engine, 4, &["files a 5 close 2"]);
 
-        let ended = format!("a done no {:?}", Unanswered::Ended);
-
-        assert_eq!(heard["reader"], ["a 0", "a 1", ended.as_str()], "{engine:?}");
+        let ended = done("a", Finished::No(Unanswered::Ended));
+        assert_eq!(run.reader, [part("a", 0), part("a", 1), ended], "{engine:?}");
     }
 }
 
@@ -623,8 +729,8 @@ fn a_receiver_lets_go_of_the_streams_of_an_asker_that_ended() {
     // Catches an asker left unwatched, so the streams of one that ended are kept, with what they hold, for as long as
     // their receiver lives.
     for engine in ENGINES {
-        let heard = heard(engine, 4, &["files a 10 leave"]);
+        let run = run(engine, 4, &["files a 10 leave"]);
 
-        assert_eq!(heard["library"], ["files sent 4", "files sent 1", "asker gone with 1 open"], "{engine:?}");
+        assert_eq!(run.library, [files(4), files(1), Served::AskerGone(1)], "{engine:?}");
     }
 }

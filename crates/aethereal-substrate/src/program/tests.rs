@@ -2,34 +2,42 @@
 
 use super::*;
 use crate::Bootstrap;
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Root, Seated, Top};
 use aethereal_data::config::{ConfigError, ConfigFault};
-use aethereal_data::{ActorPath, JsonFault, Kind, PathSegment, Plain};
+use aethereal_data::{ActorPath, JsonFault, Kind, KindName, PathSegment, Plain};
 use core::error::Error;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::cell::RefCell;
-use std::mem;
+use std::rc::Rc;
 
-thread_local! {
-    /// What the roots of this thread's test have said as they began, in order.
-    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+/// What a bench's hosting holds of what its roots served it, which a test can read as they bootstrap, and after one
+/// fails, when the engine is dropped.
+#[derive(Default)]
+struct Served {
+    lights: Vec<Lit>,
+    began: Vec<Began>,
 }
 
-/// Notes that a root began.
-fn say(line: String) {
-    SAID.with_borrow_mut(|said| said.push(line));
+/// A bench's hosting, shared with the test that holds it: for this test's own bench alone.
+type Hosted = Rc<RefCell<Served>>;
+
+/// A root that began, by its name, with the values its config carried, given the host as an end once it has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Began {
+    root: KindName,
+    values: Vec<u32>,
 }
 
-/// What has been said since this was last asked.
-fn said() -> Vec<String> {
-    SAID.with_borrow_mut(mem::take)
+/// The root `T` began with `values`.
+fn began<T: Kind>(values: &[u32]) -> Began {
+    Began { root: T::NAME, values: values.to_vec() }
 }
 
 /// A host that keeps the engine, the ends its roots serve it, and the settings it read, and runs nothing.
 struct Bench {
     engine: Engine,
-    served: Vec<Lit>,
+    served: Hosted,
     pace: u32,
     hops: u32,
 }
@@ -44,7 +52,7 @@ struct BenchRunning {
 
 impl Host for Bench {
     type Running = BenchRunning;
-    type Hosting<'host> = Vec<Lit>;
+    type Hosting<'host> = Hosted;
     type Exit = Self;
     type Error = ProgramError;
 
@@ -57,7 +65,7 @@ impl Builds for Bench {
     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
         let pace = settled.running().pace;
         let hops = settled.engine().hops;
-        let (engine, served) = pollster::block_on(settled.bootstrap(Vec::new()))?;
+        let (engine, served) = pollster::block_on(settled.bootstrap(Hosted::default()))?;
 
         Ok(Self { engine, served, pace, hops })
     }
@@ -68,8 +76,14 @@ impl Builds for Bench {
 struct Lit(u32);
 
 impl Serves<Lit> for Bench {
-    fn serve(hosting: &mut Vec<Lit>, end: Lit) {
-        hosting.push(end);
+    fn serve(hosting: &mut Hosted, end: Lit) {
+        hosting.borrow_mut().lights.push(end);
+    }
+}
+
+impl Serves<Began> for Bench {
+    fn serve(hosting: &mut Hosted, end: Began) {
+        hosting.borrow_mut().began.push(end);
     }
 }
 
@@ -77,12 +91,25 @@ impl Serves<Lit> for Bench {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Counted(u32);
 
-/// A root's config: what it says as it begins, and whether it faults instead.
+/// A root's config: what it keeps as it begins, and whether it faults instead.
 #[derive(Plain)]
 #[kind(name = "test.program.line")]
 struct Line {
-    text: String,
+    values: Vec<u32>,
     faults: bool,
+}
+
+/// Begins the root `A` from `line`, and gives the host its name and values once it has.
+fn begin<H, A>(cx: &mut Bootstrapping<'_, H, A>, line: Line) -> Result<(), Unbuilt>
+where
+    H: Host + Serves<Began>,
+    A: Root<Config = Line, Key = ()> + Kind,
+{
+    let values = line.values.clone();
+    cx.begin(&(), line)?;
+    cx.serve(Began { root: A::NAME, values });
+
+    Ok(())
 }
 
 /// The lamp's settings.
@@ -101,12 +128,14 @@ struct SceneSettings {
     seconds: u32,
 }
 
-/// A root that says its config's text as it begins, or faults.
+/// A root that keeps its config's values as it begins, or faults.
 macro_rules! root {
     ($name:ident, $named:literal) => {
         #[derive(Plain)]
         #[kind(name = $named)]
-        struct $name;
+        struct $name {
+            values: Vec<u32>,
+        }
 
         impl ChildOf for $name {
             type Parent = Top;
@@ -123,9 +152,8 @@ macro_rules! root {
                 if line.faults {
                     return Err(Fault::new(&line)?);
                 }
-                say(line.text);
 
-                Ok(Self)
+                Ok(Self { values: line.values })
             }
 
             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -144,7 +172,9 @@ root!(Waiter, "test.program.waiter");
 /// A root whose config is its settings, read from `scene`.
 #[derive(Plain, Bootstrap)]
 #[kind(name = "test.program.scene")]
-struct Scene;
+struct Scene {
+    seconds: u32,
+}
 
 impl ChildOf for Scene {
     type Parent = Top;
@@ -158,9 +188,7 @@ impl Actor for Scene {
     type EndSends = ();
 
     fn begin(settings: SceneSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-        say(format!("scene {}", settings.seconds));
-
-        Ok(Self)
+        Ok(Self { seconds: settings.seconds })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -168,7 +196,7 @@ impl Actor for Scene {
     }
 }
 
-impl<H: Host + Serves<Lit>> Bootstrap<H> for Lamp {
+impl<H: Host + Serves<Lit> + Serves<Began>> Bootstrap<H> for Lamp {
     const SECTION: &'static str = "lamp";
     type Settings = LampSettings;
     type Needs = ();
@@ -176,27 +204,27 @@ impl<H: Host + Serves<Lit>> Bootstrap<H> for Lamp {
 
     async fn bootstrap(settings: LampSettings, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(Lit,), Unbuilt> {
         let lit = Lit(settings.brightness);
-        cx.begin(&(), Line { text: format!("lamp {}", lit.0), faults: false })?;
+        begin(cx, Line { values: vec![lit.0], faults: false })?;
         cx.serve(lit);
 
         Ok((lit,))
     }
 }
 
-impl<H: Host> Bootstrap<H> for Counter {
+impl<H: Host + Serves<Began>> Bootstrap<H> for Counter {
     const SECTION: &'static str = "counter";
     type Settings = ();
     type Needs = ();
     type Provides = (Counted,);
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(Counted,), Unbuilt> {
-        cx.begin(&(), Line { text: String::from("counter"), faults: false })?;
+        begin(cx, Line { values: Vec::new(), faults: false })?;
 
         Ok((Counted(2),))
     }
 }
 
-impl<H: Host> Bootstrap<H> for Keeper {
+impl<H: Host + Serves<Began>> Bootstrap<H> for Keeper {
     // It names the lamp's section, but reads none, so the name is not repeated.
     const SECTION: &'static str = "lamp";
     type Settings = ();
@@ -209,18 +237,18 @@ impl<H: Host> Bootstrap<H> for Keeper {
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
         let faults = lit.0 == 0;
-        cx.begin(&(), Line { text: format!("keeper {} {}", counted.0, lit.0), faults })
+        begin(cx, Line { values: vec![counted.0, lit.0], faults })
     }
 }
 
-impl<H: Host> Bootstrap<H> for Dimmer {
+impl<H: Host + Serves<Began>> Bootstrap<H> for Dimmer {
     const SECTION: &'static str = "lamp";
     type Settings = SceneSettings;
     type Needs = ();
     type Provides = ();
 
     async fn bootstrap(_: SceneSettings, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Line { text: String::from("dimmer"), faults: false })
+        begin(cx, Line { values: Vec::new(), faults: false })
     }
 }
 
@@ -244,7 +272,7 @@ impl Future for Opening {
     }
 }
 
-impl<H: Host> Bootstrap<H> for Waiter {
+impl<H: Host + Serves<Began>> Bootstrap<H> for Waiter {
     const SECTION: &'static str = "waiter";
     type Settings = ();
     type Needs = (Lit,);
@@ -252,7 +280,7 @@ impl<H: Host> Bootstrap<H> for Waiter {
 
     async fn bootstrap((): (), (lit,): (Lit,), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
         Opening { polled: false }.await;
-        cx.begin(&(), Line { text: format!("waiter {}", lit.0), faults: false })
+        begin(cx, Line { values: vec![lit.0], faults: false })
     }
 }
 
@@ -275,6 +303,13 @@ fn layer<R>(program: &Program<Bench, R>, sets: &[&str]) -> Result<Overlay, Box<d
     Ok(overlay)
 }
 
+/// The state of the root `T` of `engine`, a singleton.
+fn root<T: Actor + Kind>(engine: &Engine) -> Option<&T> {
+    let id = crate::path_id(&ActorPath::from_root(&PathSegment::new(T::NAME, &())));
+
+    engine.state(Seated { id, seat: engine.table().seat(id)? })
+}
+
 type Outcome = Result<(), Box<dyn Error>>;
 
 #[test]
@@ -286,8 +321,12 @@ fn each_root_bootstraps_in_order_from_its_settings_and_what_earlier_roots_provid
 
     let bench = program.layer(code).build()?;
 
-    assert_eq!(said(), ["lamp 7", "counter", "keeper 2 7", "scene 3"]);
-    assert_eq!(bench.served, [Lit(7)]);
+    let expected = [began::<Lamp>(&[7]), began::<Counter>(&[]), began::<Keeper>(&[2, 7])];
+    assert_eq!(bench.served.borrow().began, expected);
+    assert_eq!(root::<Lamp>(&bench.engine).map(|lamp| lamp.values.as_slice()), Some(&[7][..]));
+    assert_eq!(root::<Keeper>(&bench.engine).map(|keeper| keeper.values.as_slice()), Some(&[2, 7][..]));
+    assert_eq!(root::<Scene>(&bench.engine).map(|scene| scene.seconds), Some(3));
+    assert_eq!(bench.served.borrow().lights, [Lit(7)]);
     let scene = ActorPath::from_root(&PathSegment::new(Scene::NAME, &()));
     assert!(bench.engine.table().resolve(&scene).is_some());
     Ok(())
@@ -299,14 +338,14 @@ fn a_repeated_section_is_refused_naming_both_roots_before_any_begins() -> Outcom
     // found only once roots have begun.
     let program = Bench::program().root::<Lamp>().root::<Counter>().root::<Keeper>().root::<Dimmer>();
 
-    let refused = program.build();
+    // Refused as it settles, before there is an engine for a root to begin on.
+    let refused = program.settle();
 
     let Err(ProgramError::Repeated { name, readers }) = refused else {
         return Err("two sections named lamp are refused".into());
     };
     assert_eq!(name, "lamp");
     assert_eq!(readers, [Reader::Root(Lamp::NAME), Reader::Root(Dimmer::NAME)]);
-    assert!(said().is_empty());
     Ok(())
 }
 
@@ -316,27 +355,30 @@ fn a_setting_that_does_not_exist_stops_the_program_before_any_root_begins() -> O
     let program = program();
     let code = layer(&program, &["scene.bogus=1"])?;
 
-    let refused = program.layer(code).build();
+    // Refused as it settles, before there is an engine for a root to begin on.
+    let refused = program.layer(code).settle();
 
     let Err(ProgramError::Configuration(error)) = refused else {
         return Err("an unknown setting is refused".into());
     };
     let unknown = ConfigFault::Json(JsonFault::UnknownField);
     assert!(matches!(error, ConfigError::Layer { fault, .. } if fault == unknown));
-    assert!(said().is_empty());
     Ok(())
 }
 
 #[test]
 fn a_failed_bootstrap_names_its_root() -> Outcome {
     // Catches a failure blamed on another root, or one that lets the roots after it bootstrap.
-    let refused = program().build();
+    // The waiter comes after the keeper, and serves what it began as the derived scene cannot.
+    let hosted = Hosted::default();
+
+    let refused = pollster::block_on(program().root::<Waiter>().settle()?.bootstrap(Rc::clone(&hosted)));
 
     let Err(ProgramError::Root { root, why: Unbuilt::Refused(_) }) = refused else {
         return Err("the keeper is refused as it begins".into());
     };
     assert_eq!(root, Keeper::NAME);
-    assert_eq!(said(), ["lamp 0", "counter"]);
+    assert_eq!(hosted.borrow().began, [began::<Lamp>(&[0]), began::<Counter>(&[])]);
     Ok(())
 }
 
@@ -355,20 +397,23 @@ fn the_host_reads_its_own_sections() -> Outcome {
 #[test]
 fn a_host_that_waits_bootstraps_each_root_after_the_one_it_awaits() -> Outcome {
     // Catches roots after a waiting one bootstrapped before it is done, or an end given before the wait lost after it.
-    let settled = Bench::program().root::<Lamp>().root::<Waiter>().root::<Scene>().settle()?;
-    let mut booting = Box::pin(settled.bootstrap(Vec::new()));
+    // The counter comes after the waiter, and serves what it began as the derived scene cannot.
+    let settled = Bench::program().root::<Lamp>().root::<Waiter>().root::<Counter>().root::<Scene>().settle()?;
+    let hosted = Hosted::default();
+    let mut booting = Box::pin(settled.bootstrap(Rc::clone(&hosted)));
     let mut cx = Context::from_waker(Waker::noop());
 
     let first = booting.as_mut().poll(&mut cx);
     assert!(first.is_pending());
-    assert_eq!(said(), ["lamp 0"]);
+    assert_eq!(hosted.borrow().began, [began::<Lamp>(&[0])]);
     let Poll::Ready(made) = booting.as_mut().poll(&mut cx) else {
         return Err("the bootstrap is done once what it awaited is".into());
     };
 
     let (engine, served) = made?;
-    assert_eq!(said(), ["waiter 0", "scene 0"]);
-    assert_eq!(served, [Lit(0)]);
+    assert_eq!(served.borrow().began, [began::<Lamp>(&[0]), began::<Waiter>(&[0]), began::<Counter>(&[])]);
+    assert_eq!(root::<Scene>(&engine).map(|scene| scene.seconds), Some(0));
+    assert_eq!(served.borrow().lights, [Lit(0)]);
     let scene = ActorPath::from_root(&PathSegment::new(Scene::NAME, &()));
     assert!(engine.table().resolve(&scene).is_some());
     Ok(())
@@ -389,7 +434,9 @@ fn the_programs_defaults_reach_their_sections_beneath_every_layer() -> Outcome {
 
     let bench = program.layer(file).build()?;
 
-    assert_eq!(said(), ["lamp 7", "counter", "keeper 2 7", "scene 4"]);
+    let expected = [began::<Lamp>(&[7]), began::<Counter>(&[]), began::<Keeper>(&[2, 7])];
+    assert_eq!(bench.served.borrow().began, expected);
+    assert_eq!(root::<Scene>(&bench.engine).map(|scene| scene.seconds), Some(4));
     assert_eq!((bench.pace, bench.hops), (5, 1));
     Ok(())
 }

@@ -6,55 +6,46 @@ use aethereal_actor::Time;
 use aethereal_actor::{Actor, ChildOf, Ending, Fault, Handle, Handles, Recursive, ToAny, ToType, Turn, child};
 use aethereal_data::{Bound, Kind, Plain};
 use std::any;
-use std::cell::{Cell, RefCell};
 use std::mem;
+use std::sync::{Arc, Weak};
 
-thread_local! {
-    /// What this thread's keepers have said they did, in order.
-    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    /// How many lamps have been dropped on this thread.
-    static OUT: Cell<u64> = const { Cell::new(0) };
-}
-
-/// Notes that a keeper did something.
-fn say(line: String) {
-    SAID.with_borrow_mut(|said| said.push(line));
-}
-
-/// What has been said since this was last asked.
-fn said() -> Vec<String> {
-    SAID.with_borrow_mut(mem::take)
-}
-
-/// How many lamps have been dropped on this thread.
-fn out() -> u64 {
-    OUT.get()
-}
-
-/// A resource: a value that is not data, which counts its drops on the thread that drops it.
+/// A resource: a value that is not data, which holds a test's witness for as long as it is not dropped.
 struct Lamp {
     light: u64,
+    _witness: Arc<()>,
 }
 
 impl Resource for Lamp {}
+
+/// A lamp of light `light`, held to by `witness`.
+fn lit(witness: &Arc<()>, light: u64) -> Lamp {
+    Lamp { light, _witness: Arc::clone(witness) }
+}
+
+/// How many lamps held to by `witness` have not been dropped.
+fn lamps(witness: &Arc<()>) -> usize {
+    Arc::strong_count(witness) - 1
+}
+
+/// What makes a keeper's lamps: a resource the chassis hands a root, which holds no lamp's place in the count.
+struct Maker {
+    witness: Weak<()>,
+}
+
+impl Resource for Maker {}
 
 /// What the log records a dropped lamp as.
 fn lamp() -> &'static str {
     any::type_name::<Lamp>()
 }
 
-impl Drop for Lamp {
-    fn drop(&mut self) {
-        OUT.set(OUT.get() + 1);
-    }
-}
-
-/// A keeper's number, the lamps it is given, and the orders it sends itself as it begins.
+/// A keeper's number, the lamps it is given, what makes its lamps, and the orders it sends itself as it begins.
 #[derive(Bound)]
 #[kind(name = "aether.test.keeper_config")]
 struct KeeperConfig {
     number: u64,
     lamps: Vec<Given<Lamp>>,
+    makers: Vec<Given<Maker>>,
     orders: Vec<String>,
 }
 
@@ -72,15 +63,44 @@ struct Pass {
     lamps: Vec<Given<Lamp>>,
 }
 
+/// The light of a lamp the keeper `number` still kept in its closing turn, told to its parent: its state goes with it.
+#[derive(Plain)]
+#[kind(name = "aether.test.last")]
+struct Last {
+    number: u64,
+    light: u64,
+}
+
+/// What a keeper did, as it keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+enum Did {
+    /// It began, and took this many lamps.
+    Began(u64),
+    /// A lamp it keeps shone with this light.
+    Shone(u64),
+    /// Mail carried this many lamps, which it left.
+    Left(u64),
+    /// It holds this many lamps, once mail brought it more.
+    Holds(u64),
+    /// Whether the first send of its lamps, and then the second, went.
+    Sent(bool, bool),
+    /// Whether the send of its lamps to two receivers went.
+    Fanned(bool),
+    /// The keeper beneath it closed with a lamp of this light.
+    Last { number: u64, light: u64 },
+}
+
 /// An actor that keeps lamps, as its orders say:
 ///
-/// - `make L` makes a lamp of light `L` and keeps it, and `shine` says the light of each it keeps;
+/// - `make L` makes a lamp of light `L` and keeps it, and `shine` keeps the light of each it keeps;
 /// - `spawn N` gives every lamp to the keeper `N` it spawns beneath it, in its config;
+/// - `heir N` gives what makes its lamps to the keeper `N` it spawns beneath it, which makes a lamp of light `5` and
+///   closes;
 /// - `pass N` mails every lamp to the keeper `N` beneath it, and `root N` to the root keeper `N`;
 /// - `loose` gives every lamp and sends none, and `slip N` mails every lamp to the root keeper `N` and fails;
-/// - `twice` mails every lamp to itself twice, and `fan` to the keeper `50` it spawns, twice in one send, saying what
+/// - `twice` mails every lamp to itself twice, and `fan` to the keeper `50` it spawns, twice in one send, keeping what
 ///   was refused;
-/// - `close` closes it, and its closing turn says the light of each lamp it still keeps.
+/// - `close` closes it, and its closing turn tells its parent the light of each lamp it still keeps.
 ///
 /// It takes every lamp it is given, in its config or in mail, but for the keeper `99`, which takes none.
 #[derive(Bound)]
@@ -88,6 +108,9 @@ struct Pass {
 struct Keeper {
     number: u64,
     lamps: Vec<Handle<Lamp>>,
+    makers: Vec<Handle<Maker>>,
+    /// What it did, in order.
+    did: Vec<Did>,
 }
 
 impl Keeper {
@@ -109,29 +132,34 @@ impl ChildOf for Keeper {
 impl Actor for Keeper {
     type Config = KeeperConfig;
     type Key = u64;
-    type Handles = (Order, Pass);
+    type Handles = (Order, Pass, Last);
     type BeginSends = (ToType<Self, Order>,);
-    type EndSends = ();
+    type EndSends = (ToType<Self, Last>,);
 
     fn begin(config: KeeperConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let KeeperConfig { number, lamps, orders } = config;
+        let KeeperConfig { number, lamps, makers, orders } = config;
         let refuses = number == 99;
         let taken = if refuses {
             Vec::new()
         } else {
             lamps.into_iter().map(|lamp| turn.take(lamp)).collect::<Result<_, _>>()?
         };
-        say(format!("{number} began with {}", taken.len()));
+        let makers = makers.into_iter().map(|maker| turn.take(maker)).collect::<Result<_, _>>()?;
+        let did = vec![Did::Began(taken.len().try_into().unwrap_or(u64::MAX))];
         for text in orders {
             turn.to(turn.me()).send(&Order { text })?;
         }
 
-        Ok(Self { number, lamps: taken })
+        Ok(Self { number, lamps: taken, makers, did })
     }
 
     fn end(mut self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        let number = self.number;
         for lamp in &mut self.lamps {
-            say(format!("{} last {}", self.number, turn.open(lamp)?.light));
+            let light = turn.open(lamp)?.light;
+            if let Some(parent) = turn.parent() {
+                turn.to(parent).send(&Last { number, light })?;
+            }
         }
 
         Ok(())
@@ -146,17 +174,30 @@ impl Handles<Order> for Keeper {
         match words[..] {
             ["make", light] => {
                 let light = light.parse().unwrap_or_default();
-                self.lamps.push(turn.keep(Lamp { light })?);
+                let mut witnesses = Vec::new();
+                for maker in &mut self.makers {
+                    witnesses.extend(turn.open(maker)?.witness.upgrade());
+                }
+                for witness in witnesses {
+                    self.lamps.push(turn.keep(lit(&witness, light))?);
+                }
             }
             ["shine"] => {
                 for lamp in &mut self.lamps {
-                    say(format!("{} shines {}", self.number, turn.open(lamp)?.light));
+                    self.did.push(Did::Shone(turn.open(lamp)?.light));
                 }
+            }
+            ["heir", number] => {
+                let number = number.parse().unwrap_or_default();
+                let given = mem::take(&mut self.makers).into_iter().map(|maker| turn.give(maker));
+                let makers = given.collect::<Result<_, _>>()?;
+                let orders = vec![String::from("make 5"), String::from("close")];
+                let _ = turn.spawn::<Self>(&number, KeeperConfig { number, lamps: Vec::new(), makers, orders });
             }
             ["spawn", number] => {
                 let number = number.parse().unwrap_or_default();
                 let lamps = self.give_all(turn)?;
-                let config = KeeperConfig { number, lamps, orders: vec![String::from("shine")] };
+                let config = KeeperConfig { number, lamps, makers: Vec::new(), orders: vec![String::from("shine")] };
                 let _ = turn.spawn::<Self>(&number, config);
             }
             ["pass", number] => {
@@ -191,16 +232,16 @@ impl Handles<Order> for Keeper {
                 let me = turn.me();
                 let first = turn.to(me).send(&pass).is_ok();
                 let second = turn.to(me).send(&pass).is_ok();
-                say(format!("{} sent {first} then {second}", self.number));
+                self.did.push(Did::Sent(first, second));
             }
             ["fan"] => {
                 let lamps = self.give_all(turn)?;
-                let config = KeeperConfig { number: 50, lamps: Vec::new(), orders: Vec::new() };
+                let config = KeeperConfig { number: 50, lamps: Vec::new(), makers: Vec::new(), orders: Vec::new() };
                 let Ok(child) = turn.spawn(&50, config) else {
                     return Err(Fault::new(&Self::order("unborn"))?);
                 };
                 let sent = turn.to(&[child, child]).send(&Pass { lamps }).is_ok();
-                say(format!("{} fanned {sent}", self.number));
+                self.did.push(Did::Fanned(sent));
             }
             ["close"] => turn.close(),
             _ => {}
@@ -216,13 +257,23 @@ impl Handles<Pass> for Keeper {
     fn handle(&mut self, pass: Pass, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let refuses = self.number == 99;
         if refuses {
-            say(format!("{} left {}", self.number, pass.lamps.len()));
+            self.did.push(Did::Left(pass.lamps.len().try_into().unwrap_or(u64::MAX)));
             return Ok(());
         }
         for lamp in pass.lamps {
             self.lamps.push(turn.take(lamp)?);
         }
-        say(format!("{} holds {}", self.number, self.lamps.len()));
+        self.did.push(Did::Holds(self.lamps.len().try_into().unwrap_or(u64::MAX)));
+
+        Ok(())
+    }
+}
+
+impl Handles<Last> for Keeper {
+    type Sends = ();
+
+    fn handle(&mut self, last: Last, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        self.did.push(Did::Last { number: last.number, light: last.light });
 
         Ok(())
     }
@@ -246,10 +297,12 @@ fn engine(hops: usize) -> Engine {
     Engine::new(parts, 1024, 1 << 20, 1 << 20, hops).ready()
 }
 
-/// Adds the root keeper `number`, given `lamps` by the chassis, which sends itself `orders`.
-fn add(engine: &mut Engine, number: u64, lamps: Vec<Given<Lamp>>, orders: &[&str]) -> Seated {
+/// Adds the root keeper `number`, given `lamps` by the chassis and what makes lamps held to by `witness`, which sends
+/// itself `orders`.
+fn add(engine: &mut Engine, witness: &Arc<()>, number: u64, lamps: Vec<Given<Lamp>>, orders: &[&str]) -> Seated {
     let orders = orders.iter().map(|text| String::from(*text)).collect();
-    let Ok(id) = engine.add_root::<Keeper>(&number, KeeperConfig { number, lamps, orders }) else {
+    let makers = vec![engine.hand(Maker { witness: Arc::downgrade(witness) })];
+    let Ok(id) = engine.add_root::<Keeper>(&number, KeeperConfig { number, lamps, makers, orders }) else {
         panic!("the keeper begins");
     };
     let Some(seat) = engine.table().seat(id) else {
@@ -259,15 +312,30 @@ fn add(engine: &mut Engine, number: u64, lamps: Vec<Given<Lamp>>, orders: &[&str
     Seated { id, seat }
 }
 
-/// Steps the engine until it is idle, and answers with everything said.
-fn settle(engine: &mut Engine) -> Vec<String> {
-    let mut heard = Vec::new();
+/// Steps the engine until it is idle.
+fn settle(engine: &mut Engine) {
     for _ in 0..16 {
         engine.step(Time::ZERO, &Stopped);
-        heard.extend(said());
     }
+}
 
-    heard
+/// What the live keeper `keeper` has done, as of the last step.
+fn did(engine: &Engine, keeper: Seated) -> &[Did] {
+    let Some(state) = engine.state::<Keeper>(keeper) else {
+        panic!("the keeper is live");
+    };
+
+    &state.did
+}
+
+/// The live keeper `number` beneath `parent`.
+fn beneath(engine: &Engine, parent: Seated, number: u64) -> Seated {
+    let id = crate::child_id(parent.id, &PathSegment::new(Keeper::NAME, &number));
+    let Some(seat) = engine.table().seat(id) else {
+        panic!("the keeper is live");
+    };
+
+    Seated { id, seat }
 }
 
 /// The names of the resources the log of `actor` records as dropped.
@@ -287,80 +355,78 @@ fn a_resource_the_chassis_hands_a_root_goes_with_mail_to_an_actor_in_another_par
     // receiver before or after the wrong mail, one a fused hop overtakes, and the chassis's resources handed to the
     // wrong root.
     for hops in [0, 64] {
-        OUT.set(0);
+        let witness = Arc::new(());
         let mut engine = engine(hops);
-        let lamp = engine.hand(Lamp { light: 7 });
-        let other = engine.hand(Lamp { light: 8 });
-        let giver = add(&mut engine, 1, vec![lamp], &["root 2", "shine"]);
-        let taker = add(&mut engine, 2, vec![other], &[]);
+        let lamp = engine.hand(lit(&witness, 7));
+        let other = engine.hand(lit(&witness, 8));
+        let giver = add(&mut engine, &witness, 1, vec![lamp], &["root 2", "shine"]);
+        let taker = add(&mut engine, &witness, 2, vec![other], &[]);
         assert_ne!(giver.seat.index() % 4, taker.seat.index() % 4, "the roots sit in two parts");
-        said();
 
-        let heard = settle(&mut engine);
-        let heard: Vec<&str> = heard.iter().map(String::as_str).collect();
-        assert_eq!(heard, ["2 holds 2"], "hops={hops}");
-        assert_eq!(out(), 0, "hops={hops}");
+        settle(&mut engine);
+
+        assert_eq!(did(&engine, giver), [Did::Began(1)], "hops={hops}");
+        assert_eq!(did(&engine, taker), [Did::Began(1), Did::Holds(2)], "hops={hops}");
+        assert_eq!(lamps(&witness), 2, "hops={hops}");
     }
 }
 
 #[test]
 fn a_resource_is_dropped_after_its_owners_closing_turn() {
     // Catches what an actor kept dropped before its closing turn can use it, or never dropped once it has gone.
+    let witness = Arc::new(());
     let mut engine = engine(0);
-    add(&mut engine, 1, Vec::new(), &["make 5", "close"]);
-    said();
+    let parent = add(&mut engine, &witness, 1, Vec::new(), &["heir 2"]);
 
-    let heard = settle(&mut engine);
+    settle(&mut engine);
 
-    assert_eq!(heard, ["1 last 5"]);
-    assert_eq!(out(), 1);
+    assert_eq!(did(&engine, parent), [Did::Began(0), Did::Last { number: 2, light: 5 }]);
+    assert_eq!(lamps(&witness), 0);
 }
 
 #[test]
 fn a_child_takes_from_its_config_what_its_parent_gave_it_and_what_it_leaves_is_dropped() {
     // Catches a resource in a child's config the child cannot take as it begins, one taken by a child it was not
     // given to, and one the child leaves that is kept, or dropped with no record in the parent's log.
+    let witness = Arc::new(());
     let mut engine = engine(0);
-    let parent = add(&mut engine, 1, Vec::new(), &["make 3", "spawn 2", "make 4", "spawn 99"]);
-    said();
+    let parent = add(&mut engine, &witness, 1, Vec::new(), &["make 3", "spawn 2", "make 4", "spawn 99"]);
 
-    let heard = settle(&mut engine);
+    settle(&mut engine);
 
-    assert_eq!(heard, ["2 began with 1", "99 began with 0", "2 shines 3"]);
-    assert_eq!(out(), 1, "the lamp the keeper 99 left is dropped");
+    assert_eq!(did(&engine, beneath(&engine, parent, 2)), [Did::Began(1), Did::Shone(3)]);
+    assert_eq!(did(&engine, beneath(&engine, parent, 99)), [Did::Began(0)]);
+    assert_eq!(lamps(&witness), 1, "the lamp the keeper 99 left is dropped");
     assert_eq!(dropped(&engine, parent), [lamp()]);
 }
 
 #[test]
 fn a_resource_its_receiver_does_not_take_is_dropped_as_its_log_records() {
     // Catches a resource left beside its receiver for good when the turn of its mail does not take it.
+    let witness = Arc::new(());
     let mut engine = engine(0);
-    let parent = add(&mut engine, 1, Vec::new(), &["spawn 99", "make 6", "pass 99"]);
-    said();
+    let parent = add(&mut engine, &witness, 1, Vec::new(), &["spawn 99", "make 6", "pass 99"]);
 
-    let heard = settle(&mut engine);
+    settle(&mut engine);
 
-    assert_eq!(heard, ["99 began with 0", "99 left 1"]);
-    assert_eq!(out(), 1);
-    let id = crate::child_id(parent.id, &PathSegment::new(Keeper::NAME, &99));
-    let Some(seat) = engine.table().seat(id) else {
-        panic!("the keeper 99 is live");
-    };
-    assert_eq!(dropped(&engine, Seated { id, seat }), [lamp()]);
+    let receiver = beneath(&engine, parent, 99);
+    assert_eq!(did(&engine, receiver), [Did::Began(0), Did::Left(1)]);
+    assert_eq!(lamps(&witness), 0);
+    assert_eq!(dropped(&engine, receiver), [lamp()]);
 }
 
 #[test]
 fn a_resource_no_mail_carries_or_whose_receiver_has_gone_is_dropped_as_its_givers_log_records() {
     // Catches a resource given and sent nowhere kept for good, and one sent to an actor that closed before the mail
     // was handed to it kept beside an empty seat.
+    let witness = Arc::new(());
     let mut engine = engine(0);
-    let giver = add(&mut engine, 1, Vec::new(), &["make 1", "loose", "make 2", "root 2"]);
-    add(&mut engine, 2, Vec::new(), &["close"]);
-    said();
+    let giver = add(&mut engine, &witness, 1, Vec::new(), &["make 1", "loose", "make 2", "root 2"]);
+    add(&mut engine, &witness, 2, Vec::new(), &["close"]);
 
     settle(&mut engine);
 
-    assert_eq!(out(), 2);
+    assert_eq!(lamps(&witness), 0);
     assert_eq!(dropped(&engine, giver), [lamp(), lamp()]);
 }
 
@@ -369,30 +435,31 @@ fn a_resource_goes_with_one_piece_of_mail_and_no_more() {
     // Catches one resource carried by two pieces of mail, which two receivers would both take, and mail that carries
     // one fused, so its turn runs before the resource has reached its receiver.
     for hops in [0, 64] {
-        OUT.set(0);
+        let witness = Arc::new(());
         let mut engine = engine(hops);
-        add(&mut engine, 1, Vec::new(), &["make 1", "twice", "make 2", "fan"]);
-        said();
+        let keeper = add(&mut engine, &witness, 1, Vec::new(), &["make 1", "twice", "make 2", "fan"]);
 
-        let heard = settle(&mut engine);
+        settle(&mut engine);
 
-        assert_eq!(heard, ["1 sent true then false", "50 began with 0", "1 fanned false", "1 holds 1"], "hops={hops}");
-        assert_eq!(out(), 1, "the lamp no send carried is dropped, hops={hops}");
+        let expected = [Did::Began(0), Did::Sent(true, false), Did::Fanned(false), Did::Holds(1)];
+        assert_eq!(did(&engine, keeper), expected, "hops={hops}");
+        assert_eq!(did(&engine, beneath(&engine, keeper, 50)), [Did::Began(0)], "hops={hops}");
+        assert_eq!(lamps(&witness), 1, "the lamp no send carried is dropped, hops={hops}");
     }
 }
 
 #[test]
 fn a_resource_given_in_a_turn_that_fails_is_dropped_as_its_givers_log_records() {
     // Catches what a failed turn gave handed to its receiver, though the mail that carried it is dropped.
+    let witness = Arc::new(());
     let mut engine = engine(0);
-    let giver = add(&mut engine, 1, Vec::new(), &["make 1", "slip 2"]);
-    add(&mut engine, 2, Vec::new(), &[]);
-    said();
+    let giver = add(&mut engine, &witness, 1, Vec::new(), &["make 1", "slip 2"]);
+    let receiver = add(&mut engine, &witness, 2, Vec::new(), &[]);
 
-    let heard = settle(&mut engine);
+    settle(&mut engine);
 
-    assert_eq!(heard, [""; 0]);
-    assert_eq!(out(), 1);
+    assert_eq!(did(&engine, receiver), [Did::Began(0)]);
+    assert_eq!(lamps(&witness), 0);
     assert_eq!(dropped(&engine, giver), [lamp()]);
 }
 
@@ -400,12 +467,12 @@ fn a_resource_given_in_a_turn_that_fails_is_dropped_as_its_givers_log_records() 
 fn every_resource_has_a_ticket_no_other_resource_of_the_engine_has() {
     // Catches tickets each writer counts alike, so a resource the chassis handed in and one kept in a turn share a
     // ticket, and the owner of both opens one through the handle to the other.
+    let witness = Arc::new(());
     let mut engine = engine(0);
-    let lamp = engine.hand(Lamp { light: 8 });
-    add(&mut engine, 1, vec![lamp], &["make 5", "shine"]);
-    said();
+    let lamp = engine.hand(lit(&witness, 8));
+    let keeper = add(&mut engine, &witness, 1, vec![lamp], &["make 5", "shine"]);
 
-    let heard = settle(&mut engine);
+    settle(&mut engine);
 
-    assert_eq!(heard, ["1 shines 8", "1 shines 5"]);
+    assert_eq!(did(&engine, keeper), [Did::Began(1), Did::Shone(8), Did::Shone(5)]);
 }

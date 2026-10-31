@@ -19,6 +19,8 @@ crossbeam-queue = { workspace = true }
 [dev-dependencies]
 # The tests' hosts block on a program's bootstrap, as the native hosts do (ADR-0029).
 pollster = { workspace = true }
+# An integration test reads actors' state through the engine, which only this feature opens (ADR-0036).
+aethereal-substrate = { path = ".", features = ["harness"] }
 
 [lints]
 workspace = true

@@ -7,26 +7,45 @@ use aethereal_actor::Time;
 use aethereal_actor::Written;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asking, Asks, BlobRef, Carries, ChildOf, Ending, Fault, Handles, Held,
-    Protocol, Tie, ToSender, ToType, Top, Turn, Unanswered, child,
+    Protocol, Tie, ToAny, ToSender, ToType, Top, Turn, Unanswered, child,
 };
-use aethereal_data::{Bound, EncodeError, Plain};
-use std::cell::RefCell;
+use aethereal_data::{Bound, EncodeError, Kind, Plain};
 use std::iter;
 use std::mem;
 
-thread_local! {
-    /// What this thread's actors have said, in order.
-    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+/// What became of a request, as the actor that asked it keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum Heard {
+    /// It was answered with `tile`, and what was kept for it is `at`.
+    Tile { tile: u64, at: u64 },
+    /// It went unanswered for `why`, and what was kept for it is `at`.
+    No { why: Unanswered, at: u64 },
 }
 
-/// Notes what an actor did.
-fn say(line: String) {
-    SAID.with_borrow_mut(|said| said.push(line));
+/// An answer of `tile` to the request that kept `at`.
+const fn tile(tile: u64, at: u64) -> Heard {
+    Heard::Tile { tile, at }
 }
 
-/// What has been said since this was last asked.
-fn said() -> Vec<String> {
-    SAID.with_borrow_mut(mem::take)
+/// The engine's word that the request that kept `at` went unanswered for `why`.
+const fn no(why: Unanswered, at: u64) -> Heard {
+    Heard::No { why, at }
+}
+
+/// What a request's or a reply's receiver answered with, kept as a [`Heard`].
+fn heard_of(answered: Answered<TileIs>, looking: &Looking) -> Heard {
+    match answered {
+        Answered::Yes(answer) => tile(answer.tile, looking.at),
+        Answered::No(why) => no(why, looking.at),
+    }
+}
+
+/// Whether a reply in the turn that held a request was refused as answered, told to the asker: a board that closes on
+/// what it holds may go within the step, as a hop, so a read of its state between steps would miss it.
+#[derive(Plain)]
+#[kind(name = "aether.test.held_reply")]
+struct HeldReply {
+    refused: bool,
 }
 
 /// Which tile is at `x`: what a board is asked.
@@ -70,6 +89,8 @@ impl Carries<WhichTile> for Tiles {
 struct Board {
     held: Vec<Held<TileIs>>,
     closed_on: u64,
+    /// Whether each second reply to a request it had answered was refused, in order.
+    again: Vec<bool>,
 }
 
 /// What a board is made from: nothing.
@@ -98,7 +119,7 @@ impl Actor for Board {
     type EndSends = ();
 
     fn begin(_: Blank, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-        Ok(Self { held: Vec::new(), closed_on: 0 })
+        Ok(Self { held: Vec::new(), closed_on: 0, again: Vec::new() })
     }
 
     fn end(self, turn: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -121,7 +142,7 @@ impl Actor for Board {
 }
 
 impl Handles<WhichTile> for Board {
-    type Sends = (ToSender<TileIs>,);
+    type Sends = (ToSender<TileIs>, ToAny<(HeldReply,), HeldReply>);
 
     fn handle(&mut self, which: WhichTile, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         match which.x {
@@ -131,7 +152,10 @@ impl Handles<WhichTile> for Board {
             6 => {
                 self.held.push(turn.hold()?);
                 let again = turn.reply(&TileIs { tile: 0 });
-                say(format!("held {}", again == Err(EncodeError::Answered)));
+                let refused = again == Err(EncodeError::Answered);
+                if let Some(asker) = turn.cast(turn.sender()) {
+                    turn.to(asker).send(&HeldReply { refused })?;
+                }
                 return Ok(());
             }
             100.. => {
@@ -146,7 +170,7 @@ impl Handles<WhichTile> for Board {
         let twice = which.x == 7;
         if twice {
             let again = turn.reply(&TileIs { tile: 0 });
-            say(format!("again {}", again == Err(EncodeError::Answered)));
+            self.again.push(again == Err(EncodeError::Answered));
         }
 
         Ok(())
@@ -201,12 +225,20 @@ struct PointerConfig {
 /// asks which tile is at each `X`, keeping its place among them, `tell X…` sends the question as plain mail, `both X
 /// Y` asks at `X` and then names the board to send it the question at `Y` as plain mail, `again X` asks at `X`
 /// keeping `9`, `seek X` and `fail X` spawn a seeker that asks at `X`, and `later ORDER` sends itself `ORDER`. Its
-/// `begin` asks at `X` itself for `first X`, keeping `100`, and spawns the seeker for `begin seek X`. It says each
-/// answer with what it kept, each tile it was told, and each seeker refused.
+/// `begin` asks at `X` itself for `first X`, keeping `100`, and spawns the seeker for `begin seek X`. It keeps each
+/// answer with what it kept, each tile it was told, and whether each seeker stood up.
 #[derive(Bound)]
 #[kind(name = "aether.test.pointer")]
 struct Pointer {
     board: ActorRef<Board>,
+    /// What became of each of its requests, in the order it heard.
+    heard: Vec<Heard>,
+    /// Each tile it was told as plain mail, in order.
+    told: Vec<u64>,
+    /// Whether each seeker it spawned stood up, in order.
+    seekers: Vec<bool>,
+    /// Whether each reply in the turn that held its request was refused, in order.
+    held: Vec<bool>,
 }
 
 impl ChildOf for Pointer {
@@ -216,7 +248,7 @@ impl ChildOf for Pointer {
 impl Actor for Pointer {
     type Config = PointerConfig;
     type Key = ();
-    type Handles = (Order, Answer<TileIs, Looking>, TileIs);
+    type Handles = (Order, Answer<TileIs, Looking>, TileIs, HeldReply);
     type BeginSends = (ToType<Self, Order>, Asks<Tiles, WhichTile, Looking>);
     type EndSends = ();
 
@@ -224,6 +256,7 @@ impl Actor for Pointer {
         let Ok(board) = turn.spawn(&1, Blank) else {
             return Err(Fault::new(&Order { text: String::from("no board") })?);
         };
+        let mut seekers = Vec::new();
         for text in config.orders {
             if let Some(x) = text.strip_prefix("first ") {
                 let x = x.parse().unwrap_or_default();
@@ -231,13 +264,13 @@ impl Actor for Pointer {
             } else if let Some(x) = text.strip_prefix("begin seek ") {
                 let x = x.parse().unwrap_or_default();
                 let spawned: Result<ActorRef<Seeker>, _> = turn.spawn(&x, Seeking { x, fails: 0 });
-                say(format!("seeker {}", spawned.is_ok()));
+                seekers.push(spawned.is_ok());
             } else {
                 turn.to(turn.me()).send(&Order { text })?;
             }
         }
 
-        Ok(Self { board })
+        Ok(Self { board, heard: Vec::new(), told: Vec::new(), seekers, held: Vec::new() })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -279,7 +312,7 @@ impl Handles<Order> for Pointer {
                 let x = xs.first().copied().unwrap_or_default();
                 let fails = u64::from(verb == "fail");
                 let spawned = turn.spawn::<Seeker>(&x, Seeking { x, fails });
-                say(format!("seeker {}", spawned.is_ok()));
+                self.seekers.push(spawned.is_ok());
             }
             "both" => {
                 let (asked, told) = (xs.first().copied().unwrap_or_default(), xs.last().copied().unwrap_or_default());
@@ -301,10 +334,7 @@ impl Handles<Answer<TileIs, Looking>> for Pointer {
         (answered, looking): (Answered<TileIs>, Looking),
         _: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
-        match answered {
-            Answered::Yes(tile) => say(format!("{} for {}", tile.tile, looking.at)),
-            Answered::No(why) => say(format!("{why:?} for {}", looking.at)),
-        }
+        self.heard.push(heard_of(answered, &looking));
 
         Ok(())
     }
@@ -314,7 +344,17 @@ impl Handles<TileIs> for Pointer {
     type Sends = ();
 
     fn handle(&mut self, tile: TileIs, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        say(format!("told {}", tile.tile));
+        self.told.push(tile.tile);
+
+        Ok(())
+    }
+}
+
+impl Handles<HeldReply> for Pointer {
+    type Sends = ();
+
+    fn handle(&mut self, reply: HeldReply, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        self.held.push(reply.refused);
 
         Ok(())
     }
@@ -329,10 +369,13 @@ struct Seeking {
 }
 
 /// A child whose `begin` spawns a board of its own and asks it which tile is at `x`, keeping `200`, and then fails if
-/// it was told to: it says each answer with what it kept.
+/// it was told to: it keeps each answer with what it kept.
 #[derive(Bound)]
 #[kind(name = "aether.test.seeker")]
-struct Seeker;
+struct Seeker {
+    /// What became of its request.
+    heard: Vec<Heard>,
+}
 
 impl ChildOf for Seeker {
     type Parent = Pointer;
@@ -355,7 +398,7 @@ impl Actor for Seeker {
             return Err(Fault::new(&seeking)?);
         }
 
-        Ok(Self)
+        Ok(Self { heard: Vec::new() })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -371,10 +414,7 @@ impl Handles<Answer<TileIs, Looking>> for Seeker {
         (answered, looking): (Answered<TileIs>, Looking),
         _: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
-        match answered {
-            Answered::Yes(tile) => say(format!("seeker heard {} for {}", tile.tile, looking.at)),
-            Answered::No(why) => say(format!("seeker heard {why:?} for {}", looking.at)),
-        }
+        self.heard.push(heard_of(answered, &looking));
 
         Ok(())
     }
@@ -388,11 +428,13 @@ struct Kept {
 }
 
 /// An actor that asks a board it spawns as it begins, keeping a blob of three bytes it puts and refers to nowhere
-/// else, and says how many bytes the blob holds once it is answered.
+/// else, and keeps how many bytes the blob holds once it is answered.
 #[derive(Bound)]
 #[kind(name = "aether.test.keeper")]
 struct Keeper {
     board: ActorRef<Board>,
+    /// How many bytes the blob held, for each answer.
+    kept: Vec<u64>,
 }
 
 impl ChildOf for Keeper {
@@ -412,7 +454,7 @@ impl Actor for Keeper {
         };
         turn.to(turn.me()).send(&Order { text: String::from("ask") })?;
 
-        Ok(Self { board })
+        Ok(Self { board, kept: Vec::new() })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -438,7 +480,7 @@ impl Handles<Answer<TileIs, Kept>> for Keeper {
     type Sends = ();
 
     fn handle(&mut self, (_, kept): (Answered<TileIs>, Kept), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        say(format!("kept {}", turn.read(&kept.blob).len()));
+        self.kept.push(u64::try_from(turn.read(&kept.blob).len()).unwrap_or(u64::MAX));
 
         Ok(())
     }
@@ -457,22 +499,67 @@ impl Clock for Stopped {
 /// the pointer and its board fuse.
 const ENGINES: [(usize, usize); 4] = [(1, 0), (1, 64), (4, 0), (4, 64)];
 
-/// What a pointer that follows `orders` hears, in an engine in `parts` parts that each run at most `hops` fused hops a
-/// step.
-fn heard((parts, hops): (usize, usize), orders: &[&str]) -> Vec<String> {
+/// What one run of a pointer came to.
+struct Run {
+    /// What the pointer heard of its requests, in order.
+    heard: Vec<Heard>,
+    /// The tiles it was told as plain mail, in order.
+    told: Vec<u64>,
+    /// Whether each seeker stood up, in order.
+    seekers: Vec<bool>,
+    /// What each seeker it stood up heard, by the place it asked at.
+    sought: Vec<(u64, Vec<Heard>)>,
+    /// Whether each reply in the turn that held its request was refused, in order.
+    held: Vec<bool>,
+    /// Whether each second reply its board tried was refused, for a board live at the end.
+    again: Vec<bool>,
+}
+
+/// The state of the live actor `id` stands for in `engine`, when one of type `T` sits there.
+fn live<T: 'static>(engine: &Engine, id: ActorId) -> Option<&T> {
+    let seat = engine.table().seat(id)?;
+
+    engine.state(Seated { id, seat })
+}
+
+/// What came of a pointer that follows `orders`, in an engine in `parts` parts that each run at most `hops` fused hops a
+/// step, with seekers at each of `seeking`.
+fn run((parts, hops): (usize, usize), orders: &[&str], seeking: &[u64]) -> Run {
     let Some(parts) = NonZeroUsize::new(parts) else {
         panic!("an engine has parts");
     };
     let mut engine = Engine::new(parts, 1024, 1 << 20, 1 << 20, hops).ready();
     let orders = orders.iter().map(|text| String::from(*text)).collect();
-    let made = engine.add_root::<Pointer>(&(), PointerConfig { orders });
-    assert!(made.is_ok(), "the pointer begins");
-    said();
+    let Ok(pointer) = engine.add_root::<Pointer>(&(), PointerConfig { orders }) else {
+        panic!("the pointer begins");
+    };
+    let board = crate::child_id(pointer, &PathSegment::new(Board::NAME, &1u64));
+
     for _ in 0..16 {
         engine.step(Time::ZERO, &Stopped);
     }
 
-    said()
+    let sought = |x: &u64| {
+        let id = crate::child_id(pointer, &PathSegment::new(Seeker::NAME, x));
+        let Some(seeker) = live::<Seeker>(&engine, id) else {
+            panic!("the seeker is live");
+        };
+
+        (*x, seeker.heard.clone())
+    };
+    let sought = seeking.iter().map(sought).collect();
+    let again = live::<Board>(&engine, board).map_or_else(Vec::new, |board| board.again.clone());
+    let Some(pointer) = live::<Pointer>(&engine, pointer) else {
+        panic!("the pointer is live");
+    };
+    let Pointer { heard, told, seekers, held, .. } = pointer;
+
+    Run { heard: heard.clone(), told: told.clone(), seekers: seekers.clone(), sought, held: held.clone(), again }
+}
+
+/// What a pointer that follows `orders` hears of its requests.
+fn heard(engine: (usize, usize), orders: &[&str]) -> Vec<Heard> {
+    run(engine, orders, &[]).heard
 }
 
 #[test]
@@ -480,9 +567,7 @@ fn each_answer_reaches_its_asker_with_what_it_kept_for_that_request() {
     // Catches answers matched to the wrong request where two asks of one turn are alike, as root and depth would
     // leave them; a context lost or handed back twice; and an answer fused back within the step that finds nothing kept.
     for engine in ENGINES {
-        let heard = heard(engine, &["ask 3 3 5"]);
-
-        assert_eq!(heard, ["30 for 0", "30 for 1", "50 for 2"], "{engine:?}");
+        assert_eq!(heard(engine, &["ask 3 3 5"]), [tile(30, 0), tile(30, 1), tile(50, 2)], "{engine:?}");
     }
 }
 
@@ -490,9 +575,10 @@ fn each_answer_reaches_its_asker_with_what_it_kept_for_that_request() {
 fn a_request_is_answered_once() {
     // Catches a second reply to a request taken as a second answer, or sent on as mail the asker cannot place.
     for engine in ENGINES {
-        let heard = heard(engine, &["ask 7"]);
+        let run = run(engine, &["ask 7"], &[]);
 
-        assert_eq!(heard, ["again true", "70 for 0"], "{engine:?}");
+        assert_eq!(run.again, [true], "{engine:?}");
+        assert_eq!(run.heard, [tile(70, 0)], "{engine:?}");
     }
 }
 
@@ -501,9 +587,10 @@ fn a_reply_to_plain_mail_stays_plain_mail() {
     // Catches a reply to mail that asked nothing tied as an answer, which its sender would drop as answering nothing
     // it asked.
     for engine in ENGINES {
-        let heard = heard(engine, &["tell 4"]);
+        let run = run(engine, &["tell 4"], &[]);
 
-        assert_eq!(heard, ["told 40"], "{engine:?}");
+        assert_eq!(run.told, [40], "{engine:?}");
+        assert_eq!(run.heard, [], "{engine:?}");
     }
 }
 
@@ -512,9 +599,10 @@ fn plain_mail_sent_straight_after_a_request_stays_apart_from_it() {
     // Catches plain mail of the request's kind to the same receiver joined into the request's run, which would make it
     // a second request tied to the first's count.
     for engine in ENGINES {
-        let heard = heard(engine, &["both 4 5"]);
+        let run = run(engine, &["both 4 5"], &[]);
 
-        assert_eq!(heard, ["40 for 0", "told 50"], "{engine:?}");
+        assert_eq!(run.heard, [tile(40, 0)], "{engine:?}");
+        assert_eq!(run.told, [50], "{engine:?}");
     }
 }
 
@@ -567,9 +655,7 @@ fn a_request_whose_turn_fails_is_answered_that_it_failed() {
     // Catches a failed turn's request left unanswered, its asker's context kept for as long as it lives; and the
     // engine's answer dropped with the failed turn's mail.
     for engine in ENGINES {
-        let heard = heard(engine, &["ask 0"]);
-
-        assert_eq!(heard, [format!("{:?} for 0", Unanswered::Failed)], "{engine:?}");
+        assert_eq!(heard(engine, &["ask 0"]), [no(Unanswered::Failed, 0)], "{engine:?}");
     }
 }
 
@@ -578,16 +664,14 @@ fn a_request_whose_turn_does_not_reply_is_answered_that_it_was_not() {
     // As a hop as well, where the pointer and its board fuse.
     for engine in ENGINES {
         let failed = heard(engine, &["ask 4", "later again 0"]);
-        assert_eq!(failed, ["40 for 0".to_owned(), format!("{:?} for 9", Unanswered::Failed)], "{engine:?}");
+        assert_eq!(failed, [tile(40, 0), no(Unanswered::Failed, 9)], "{engine:?}");
         let unreplied = heard(engine, &["ask 4", "later again 1"]);
-        assert_eq!(unreplied, ["40 for 0".to_owned(), format!("{:?} for 9", Unanswered::Unreplied)], "{engine:?}");
+        assert_eq!(unreplied, [tile(40, 0), no(Unanswered::Unreplied, 9)], "{engine:?}");
     }
     // Catches a turn that replies nothing leaving its request unanswered; and the engine's answer counted out of
     // order with what the receiver sends next, which would hand the asker the later answer first.
     for engine in ENGINES {
-        let heard = heard(engine, &["ask 1 4"]);
-
-        assert_eq!(heard, [format!("{:?} for 0", Unanswered::Unreplied), String::from("40 for 1")], "{engine:?}");
+        assert_eq!(heard(engine, &["ask 1 4"]), [no(Unanswered::Unreplied, 0), tile(40, 1)], "{engine:?}");
     }
 }
 
@@ -595,17 +679,14 @@ fn a_request_whose_turn_does_not_reply_is_answered_that_it_was_not() {
 fn a_request_to_an_actor_that_ends_before_it_is_handed_is_answered_that_it_ended() {
     // Catches a request dropped unanswered where it was not handed to its receiver: behind the turn that ended it in
     // the same step, as a hop or mail to an actor that is ending, or as mail to one that has gone.
-    let ended = format!("{:?}", Unanswered::Ended);
+    let ended = Unanswered::Ended;
     for engine in ENGINES {
-        assert_eq!(heard(engine, &["ask 2 3"]), ["20 for 0".to_owned(), format!("{ended} for 1")], "{engine:?}");
-        let failed = heard(engine, &["ask 0 3"]);
-        assert_eq!(failed, [format!("{:?} for 0", Unanswered::Failed), format!("{ended} for 1")], "{engine:?}");
-        let hopped = heard(engine, &["ask 2", "again 3"]);
-        assert_eq!(hopped, ["20 for 0".to_owned(), format!("{ended} for 9")], "{engine:?}");
-        let ending = heard(engine, &["ask 2", "later again 3"]);
-        assert_eq!(ending, ["20 for 0".to_owned(), format!("{ended} for 9")], "{engine:?}");
+        assert_eq!(heard(engine, &["ask 2 3"]), [tile(20, 0), no(ended, 1)], "{engine:?}");
+        assert_eq!(heard(engine, &["ask 0 3"]), [no(Unanswered::Failed, 0), no(ended, 1)], "{engine:?}");
+        assert_eq!(heard(engine, &["ask 2", "again 3"]), [tile(20, 0), no(ended, 9)], "{engine:?}");
+        assert_eq!(heard(engine, &["ask 2", "later again 3"]), [tile(20, 0), no(ended, 9)], "{engine:?}");
         let gone = heard(engine, &["ask 2", "later later later again 3"]);
-        assert_eq!(gone, ["20 for 0".to_owned(), format!("{ended} for 9")], "{engine:?}");
+        assert_eq!(gone, [tile(20, 0), no(ended, 9)], "{engine:?}");
     }
 }
 
@@ -638,14 +719,11 @@ fn the_engine_answers_after_what_the_turn_sent_and_only_a_request_the_turn_left_
 fn what_the_engine_says_of_a_request_to_an_ended_actor_comes_after_all_that_actor_sent() {
     // Catches the engine's answer ordered by the asker's count among the receiver's own mail, which would hand it
     // before what the receiver sent first, or drop that mail as the same item where the two counts meet.
-    let told = String::from("told 110");
     for engine in ENGINES {
-        let heard = heard(engine, &["ask 4", "later tell 110", "later again 2", "later again 3"]);
+        let run = run(engine, &["ask 4", "later tell 110", "later again 2", "later again 3"], &[]);
 
-        let mut expected = vec!["40 for 0".to_owned()];
-        expected.extend(vec![told.clone(); 10]);
-        expected.extend(["20 for 9".to_owned(), format!("{:?} for 9", Unanswered::Ended)]);
-        assert_eq!(heard, expected, "{engine:?}");
+        assert_eq!(run.heard, [tile(40, 0), tile(20, 9), no(Unanswered::Ended, 9)], "{engine:?}");
+        assert_eq!(run.told, [110; 10], "{engine:?}");
     }
 }
 
@@ -653,13 +731,13 @@ fn what_the_engine_says_of_a_request_to_an_ended_actor_comes_after_all_that_acto
 fn a_request_asked_in_a_begin_is_answered_to_the_actor_that_asked_it() {
     // Catches a request a `begin` asked filed beside no one, or beside the actor whose turn stood the asker up, which
     // would hand the answer to an actor that never asked or to none: for a root's own `begin`, a child its `begin`
-    // stood up, and a child a later turn stood up. What the root's `begin` says is said before the pointer listens.
+    // stood up, and a child a later turn stood up.
     for engine in ENGINES {
-        let mut heard = heard(engine, &["first 3", "begin seek 4", "seek 5"]);
-        heard.sort();
+        let run = run(engine, &["first 3", "begin seek 4", "seek 5"], &[4, 5]);
 
-        let expected = ["30 for 100", "seeker heard 40 for 200", "seeker heard 50 for 200", "seeker true"];
-        assert_eq!(heard, expected, "{engine:?}");
+        assert_eq!(run.heard, [tile(30, 100)], "{engine:?}");
+        assert_eq!(run.seekers, [true, true], "{engine:?}");
+        assert_eq!(run.sought, [(4, vec![tile(40, 200)]), (5, vec![tile(50, 200)])], "{engine:?}");
     }
 }
 
@@ -668,9 +746,10 @@ fn a_request_asked_in_a_begin_that_fails_is_never_asked() {
     // Catches the request of a `begin` that failed kept once its mail is dropped: filed beside the actor whose turn
     // stood it up, or left over for the next turn, which the engine checks it never is.
     for engine in ENGINES {
-        let heard = heard(engine, &["fail 4", "later ask 3"]);
+        let run = run(engine, &["fail 4", "later ask 3"], &[]);
 
-        assert_eq!(heard, ["seeker false", "30 for 0"], "{engine:?}");
+        assert_eq!(run.seekers, [false], "{engine:?}");
+        assert_eq!(run.heard, [tile(30, 0)], "{engine:?}");
     }
 }
 
@@ -679,9 +758,10 @@ fn a_held_request_is_answered_in_a_later_turn() {
     // Catches a held request answered as if it were not, or not at all: the reply in the turn that held it refused,
     // and the answer from a later turn handed to the asker with what it kept.
     for engine in ENGINES {
-        let heard = heard(engine, &["ask 6", "later release 0"]);
+        let run = run(engine, &["ask 6", "later release 0"], &[]);
 
-        assert_eq!(heard, ["held true", "50 for 0"], "{engine:?}");
+        assert_eq!(run.held, [true], "{engine:?}");
+        assert_eq!(run.heard, [tile(50, 0)], "{engine:?}");
     }
 }
 
@@ -690,9 +770,10 @@ fn a_held_request_let_go_of_is_answered_that_it_was_not() {
     // Catches a dropped held request left unanswered until its holder ends, which would keep its asker waiting for as
     // long as the holder lives.
     for engine in ENGINES {
-        let heard = heard(engine, &["ask 6", "later release 1"]);
+        let run = run(engine, &["ask 6", "later release 1"], &[]);
 
-        assert_eq!(heard, ["held true".to_owned(), format!("{:?} for 0", Unanswered::Unreplied)], "{engine:?}");
+        assert_eq!(run.held, [true], "{engine:?}");
+        assert_eq!(run.heard, [no(Unanswered::Unreplied, 0)], "{engine:?}");
     }
 }
 
@@ -701,9 +782,10 @@ fn a_held_request_whose_holder_ends_is_answered_that_it_ended() {
     // Catches a request its holder still held as it ended left unanswered, or answered twice: once that it ended and
     // once more as its held request is dropped with the holder.
     for engine in ENGINES {
-        let heard = heard(engine, &["ask 6", "later release 2"]);
+        let run = run(engine, &["ask 6", "later release 2"], &[]);
 
-        assert_eq!(heard, ["held true".to_owned(), format!("{:?} for 0", Unanswered::Ended)], "{engine:?}");
+        assert_eq!(run.held, [true], "{engine:?}");
+        assert_eq!(run.heard, [no(Unanswered::Ended, 0)], "{engine:?}");
     }
 }
 
@@ -712,9 +794,10 @@ fn a_held_request_is_answered_in_its_holder_s_closing_turn() {
     // Catches a closing turn's answer dropped or never filed: the asker would be told the holder ended owing it, after
     // or instead of the answer it was given.
     for engine in ENGINES {
-        let heard = heard(engine, &["ask 6", "later release 4"]);
+        let run = run(engine, &["ask 6", "later release 4"], &[]);
 
-        assert_eq!(heard, ["held true", "60 for 0"], "{engine:?}");
+        assert_eq!(run.held, [true], "{engine:?}");
+        assert_eq!(run.heard, [tile(60, 0)], "{engine:?}");
     }
 }
 
@@ -724,13 +807,10 @@ fn a_closing_turn_that_answers_what_it_does_not_hold_or_fails_after_answering_is
     // that failed sent or filed: the asker is told only that its holder ended owing it.
     for engine in ENGINES {
         for release in ["later release 5", "later release 6"] {
-            let heard = heard(engine, &["ask 6", release]);
+            let run = run(engine, &["ask 6", release], &[]);
 
-            assert_eq!(
-                heard,
-                ["held true".to_owned(), format!("{:?} for 0", Unanswered::Ended)],
-                "{engine:?} {release}"
-            );
+            assert_eq!(run.held, [true], "{engine:?} {release}");
+            assert_eq!(run.heard, [no(Unanswered::Ended, 0)], "{engine:?} {release}");
         }
     }
 }
@@ -740,9 +820,10 @@ fn a_turn_that_answers_a_request_it_does_not_hold_fails() {
     // Catches a second answer, through a copy of a held request read back from bytes, sent as if it were owed: the
     // turn fails instead, what it sent is dropped, and the asker is told the holder ended still owing it.
     for engine in ENGINES {
-        let heard = heard(engine, &["ask 6", "later release 3"]);
+        let run = run(engine, &["ask 6", "later release 3"], &[]);
 
-        assert_eq!(heard, ["held true".to_owned(), format!("{:?} for 0", Unanswered::Ended)], "{engine:?}");
+        assert_eq!(run.held, [true], "{engine:?}");
+        assert_eq!(run.heard, [no(Unanswered::Ended, 0)], "{engine:?}");
     }
 }
 
@@ -755,13 +836,16 @@ fn a_blob_a_context_refers_to_is_kept_until_its_answer_is_handled() {
             panic!("an engine has parts");
         };
         let mut engine = Engine::new(parts, 1024, 1 << 20, 1 << 20, hops).ready();
-        let made = engine.add_root::<Keeper>(&(), Blank);
-        assert!(made.is_ok(), "the keeper begins");
-        said();
+        let Ok(keeper) = engine.add_root::<Keeper>(&(), Blank) else {
+            panic!("the keeper begins");
+        };
         for _ in 0..16 {
             engine.step(Time::ZERO, &Stopped);
         }
 
-        assert_eq!(said(), ["kept 3"], "{:?}", (parts, hops));
+        let Some(keeper) = live::<Keeper>(&engine, keeper) else {
+            panic!("the keeper is live");
+        };
+        assert_eq!(keeper.kept, [3], "{:?}", (parts, hops));
     }
 }
