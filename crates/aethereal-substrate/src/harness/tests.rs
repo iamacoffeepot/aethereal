@@ -231,6 +231,31 @@ fn what_an_actor_tells_is_heard_and_nothing_else_came() -> Result<(), Unheard> {
 }
 
 #[test]
+fn what_arrived_is_read_whole_in_the_order_it_came_and_is_gone() -> Result<(), Unheard> {
+    // Catches arrivals handed over from the back of the queue, which would turn the order of an answer among events
+    // around, and a queue left holding them, which would hand each out twice.
+    let mut harness = harness();
+    let report = harness.protocol::<Listening>();
+    harness.add_root::<Relay>(&(), Report { to: report })?;
+    let (doubler, relay) = (harness.root::<Doubler>(), harness.root::<Relay>());
+
+    let _ = harness.ask(doubler, &Ping(4))?;
+    harness.settle();
+    harness.tell(relay, &Note(7))?;
+    harness.settle();
+
+    let arrived = harness.arrived();
+    let [answer, told] = &arrived[..] else {
+        panic!("two pieces of mail came: {}", arrived.len());
+    };
+    assert_eq!(answer.read::<Pong>(), Ok(Some(Pong(8))));
+    assert_eq!(told.read::<Note>(), Ok(Some(Note(7))));
+    assert_eq!(harness.arrived().len(), 0);
+
+    Ok(())
+}
+
+#[test]
 fn a_request_of_the_outside_is_held_and_replied_to() -> Result<(), Unheard> {
     let mut harness = harness();
     let report = harness.protocol::<Listening>();
@@ -464,6 +489,57 @@ fn settling_answers_with_every_turn_of_every_step_in_order() -> Result<(), Unhea
     assert_eq!(handed, [Pass(2), Pass(1), Pass(0)]);
     assert_eq!(turns.last().map(|turn| turn.ran), Some(Ran::Closing));
     assert!(turns.iter().map(|turn| turn.step).is_sorted());
+
+    Ok(())
+}
+
+/// A root that casts whoever tells it a `Note` to the protocol that takes one, and tells them back through the cast.
+#[derive(Plain)]
+#[kind(name = "aether.test.outside.caster")]
+struct Caster;
+
+impl ChildOf for Caster {
+    type Parent = Top;
+}
+
+impl Actor for Caster {
+    type Config = Self;
+    type Key = ();
+    type Handles = (Note,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(caster: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(caster)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Note> for Caster {
+    type Sends = (ToAny<(Note,), Note>,);
+
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        if let Some(sender) = turn.cast(turn.sender()) {
+            turn.to(sender).send(&note)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[test]
+fn the_outside_passes_a_cast_as_it_takes_every_kind() -> Result<(), Unheard> {
+    // Catches a subscriber's cast refused for the outside, which lists no kind, so a test could not subscribe.
+    let mut harness = harness();
+    harness.add_root::<Caster>(&(), Caster)?;
+    let caster = harness.root::<Caster>();
+
+    harness.tell(caster, &Note(9))?;
+
+    assert_eq!(harness.heard::<Note>(), Ok(Note(9)));
 
     Ok(())
 }
