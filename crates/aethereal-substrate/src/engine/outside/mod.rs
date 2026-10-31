@@ -5,7 +5,7 @@ use super::{Engine, Holding, ROOTS, parity};
 use crate::{Life, lives, table};
 use aethereal_actor::{
     Actor, Actors, Asking, Beginning, ChildOf, Closing, Code, Declared, Ended, Ending, Fault, Item, Mail, MailId,
-    Mailed, Owed, PinSource, Pinning, Preparing, Refused, Role, Runs, Seated, Tie, Tied, Top, Turning, Unanswered,
+    Mailed, Owed, PinSource, Pinning, Preparing, Refused, Role, Runs, Seated, Tie, Tied, Top, Turning, Unanswered, Why,
     Written,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment, Plain};
@@ -164,15 +164,18 @@ pub enum Handed {
     Mail(Arrival),
     /// The ending of an actor it watches.
     Ended(Ended),
-    /// Nothing: a closing turn.
-    Nothing,
+    /// Nothing: a closing turn, and why it runs.
+    Closing(Why),
 }
 
 /// One turn the engine ran, as it recorded it: nothing is sent or counted for it, so a turn runs the same whether it is
 /// recorded or not (ADR-0036).
 pub struct Turned {
     pub actor: Seated,
+    pub path: ActorPath,
     pub step: u64,
+    /// How far down its chain what the turn handled lies.
+    pub depth: u32,
     pub ran: Ran,
     pub handed: Handed,
     pub outcome: Result<(), Fault>,
@@ -203,7 +206,7 @@ pub enum Recording {
 /// A turn's item, noted before it runs.
 pub enum Noted {
     Unrecorded,
-    Recorded { step: u64, handed: Handed },
+    Recorded { step: u64, depth: u32, handed: Handed },
 }
 
 impl Recording {
@@ -217,7 +220,7 @@ impl Recording {
     }
 
     /// `item`, as the turn of `me` from `source`, tied as `tie`, is about to be handed it.
-    pub(super) fn note(self, item: &Item<'_>, me: Seated, source: Seated, tie: Tie, limit: usize) -> Noted {
+    pub(super) fn note(self, item: &Item<'_>, me: Seated, source: Seated, tie: Tie, depth: u32, limit: usize) -> Noted {
         let Self::At(step) = self else {
             return Noted::Unrecorded;
         };
@@ -237,23 +240,38 @@ impl Recording {
             Item::Ended(ended) => Handed::Ended(ended.clone()),
         };
 
-        Noted::Recorded { step, handed }
+        Noted::Recorded { step, depth, handed }
     }
 
-    /// Records the closing turn of `me`, which ended as `outcome` says.
-    pub(super) fn closing(self, me: Seated, outcome: &Result<(), Fault>, turned: &mut Vec<Turned>) {
+    /// Records the closing turn of `me`, at `path` and `depth`, which runs for `why` and ended as `outcome` says.
+    pub(super) fn closing(
+        self,
+        me: Seated,
+        (path, depth): (&ActorPath, u32),
+        why: Why,
+        outcome: &Result<(), Fault>,
+        turned: &mut Vec<Turned>,
+    ) {
         if let Self::At(step) = self {
-            let (ran, handed, outcome) = (Ran::Closing, Handed::Nothing, outcome.clone());
-            turned.push(Turned { actor: me, step, ran, handed, outcome });
+            let (ran, handed, outcome, path) = (Ran::Closing, Handed::Closing(why), outcome.clone(), path.clone());
+            turned.push(Turned { actor: me, path, step, depth, ran, handed, outcome });
         }
     }
 }
 
 impl Noted {
-    /// Records the turn of `me` it was noted for, which ran as `ran` and ended as `outcome` says.
-    pub(super) fn finish(self, me: Seated, ran: Ran, outcome: &Result<(), Fault>, turned: &mut Vec<Turned>) {
-        if let Self::Recorded { step, handed } = self {
-            turned.push(Turned { actor: me, step, ran, handed, outcome: outcome.clone() });
+    /// Records the turn of `me`, at `path`, it was noted for, which ran as `ran` and ended as `outcome` says.
+    pub(super) fn finish(
+        self,
+        me: Seated,
+        path: &ActorPath,
+        ran: Ran,
+        outcome: &Result<(), Fault>,
+        turned: &mut Vec<Turned>,
+    ) {
+        if let Self::Recorded { step, depth, handed } = self {
+            let (path, outcome) = (path.clone(), outcome.clone());
+            turned.push(Turned { actor: me, path, step, depth, ran, handed, outcome });
         }
     }
 }
@@ -279,6 +297,12 @@ impl Engine {
         let seated = table::reach(&self.table, &ActorPath::from_root(&segment), declared.id());
 
         Ok((seated, arrivals))
+    }
+
+    /// Records the turns of every step from now on, without seating the outside: for a test of the engine's mechanics,
+    /// whose seats are its own to place.
+    pub fn record_turns(&mut self) {
+        self.recording = true;
     }
 
     /// How many pieces of mail the actor `seated` names has sent, as of the last step.

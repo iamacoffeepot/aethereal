@@ -1679,7 +1679,7 @@ impl Reading<'_> {
                             tie,
                         );
                         #[cfg(any(test, feature = "harness"))]
-                        let noted = self.recording.note(&item, me, source, tie, self.read_limit);
+                        let noted = self.recording.note(&item, me, source, tie, chain.depth, self.read_limit);
                         let mut outcome = actor.turn(item, turning);
                         // Most turns are of plain mail, and ask and hold nothing.
                         let is_tied = !tie.is_tell() || asked.is_tied();
@@ -1687,7 +1687,7 @@ impl Reading<'_> {
                             tied(me, (source, tie, context, stepped.sent), (waiting, debts), asked, &mut outcome);
                         }
                         #[cfg(any(test, feature = "harness"))]
-                        noted.finish(me, outside::Ran::Waiting, &outcome, &mut lists.turned);
+                        noted.finish(me, &seat.path, outside::Ran::Waiting, &outcome, &mut lists.turned);
                         lists.drop_untaken(me, keeping, handed);
                         let ran = Ran::of(me, outcome, asked, context);
 
@@ -1766,7 +1766,7 @@ impl Reading<'_> {
                 debts.settle_closing(me, *context, asked, &mut ended);
             }
             #[cfg(any(test, feature = "harness"))]
-            self.recording.closing(me, &ended, &mut lists.turned);
+            self.recording.closing(me, (&sitting.path, context.depth), why, &ended, &mut lists.turned);
             let buffers = asked.buffers_mut();
             // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds
             // its fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after
@@ -1877,7 +1877,7 @@ impl Reading<'_> {
                 );
 
                 #[cfg(any(test, feature = "harness"))]
-                let noted = self.recording.note(&item, me, hop.from, hop.tie, self.read_limit);
+                let noted = self.recording.note(&item, me, hop.from, hop.tie, chain.depth, self.read_limit);
                 let mut outcome = actor.turn(item, turning);
                 let is_tied = !hop.tie.is_tell() || asked.is_tied();
                 if is_tied {
@@ -1885,7 +1885,7 @@ impl Reading<'_> {
                     tied(me, (hop.from, hop.tie, chain, sent_before), (waiting, debts), asked, &mut outcome);
                 }
                 #[cfg(any(test, feature = "harness"))]
-                noted.finish(me, outside::Ran::Hop, &outcome, &mut lists.turned);
+                noted.finish(me, &seat.path, outside::Ran::Hop, &outcome, &mut lists.turned);
 
                 outcome
             };
