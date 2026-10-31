@@ -40,6 +40,10 @@ impl Actor for OutsideSeat {
     }
 }
 
+/// What the table knows the outside by: a type that handles nothing, and that every kind may be cast to, as its code
+/// takes whatever it is handed.
+static DECLARED: Declared = Declared::taking_every_kind(OutsideSeat::NAME, KindId::of::<OutsideSeat>());
+
 /// What a piece of mail that reached the outside is to a request (ADR-0017).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reached {
@@ -109,7 +113,7 @@ impl Taking {
 
 impl Runs for Taking {
     fn declared(&self) -> &'static Declared {
-        Declared::of::<OutsideSeat>()
+        &DECLARED
     }
 
     fn prepares(&self) -> bool {
@@ -291,7 +295,7 @@ impl Engine {
         let arrivals = Arc::new(SegQueue::new());
         let taking = Taking { arrivals: Arc::clone(&arrivals), limit: self.read_limit };
         let segment = PathSegment::new(OutsideSeat::NAME, &());
-        let declared = Declared::of::<OutsideSeat>();
+        let declared = &DECLARED;
         self.recording = true;
         self.add_root_made(&segment, Code::Linked(declared), Vec::new(), |_, _, _, _, _, _| Ok(Box::new(taking)))?;
         let seated = table::reach(&self.table, &ActorPath::from_root(&segment), declared.id());

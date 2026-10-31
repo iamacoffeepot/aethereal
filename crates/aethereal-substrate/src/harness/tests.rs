@@ -467,3 +467,54 @@ fn settling_answers_with_every_turn_of_every_step_in_order() -> Result<(), Unhea
 
     Ok(())
 }
+
+/// A root that casts whoever tells it a `Note` to the protocol that takes one, and tells them back through the cast.
+#[derive(Plain)]
+#[kind(name = "aether.test.outside.caster")]
+struct Caster;
+
+impl ChildOf for Caster {
+    type Parent = Top;
+}
+
+impl Actor for Caster {
+    type Config = Self;
+    type Key = ();
+    type Handles = (Note,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(caster: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(caster)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Note> for Caster {
+    type Sends = (ToAny<(Note,), Note>,);
+
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        if let Some(sender) = turn.cast(turn.sender()) {
+            turn.to(sender).send(&note)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[test]
+fn the_outside_passes_a_cast_as_it_takes_every_kind() -> Result<(), Unheard> {
+    // Catches a subscriber's cast refused for the outside, which lists no kind, so a test could not subscribe.
+    let mut harness = harness();
+    harness.add_root::<Caster>(&(), Caster)?;
+    let caster = harness.root::<Caster>();
+
+    harness.tell(caster, &Note(9))?;
+
+    assert_eq!(harness.heard::<Note>(), Ok(Note(9)));
+
+    Ok(())
+}
