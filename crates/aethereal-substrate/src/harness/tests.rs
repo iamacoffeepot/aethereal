@@ -1,10 +1,10 @@
 //! The outside asked of, asking, and hearing, over a bare engine (ADR-0036).
 
-use super::{Harness, Unheard};
+use super::{Harness, Ran, Unheard};
 use crate::Engine;
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Protocol, ProtocolRef, ToAny,
-    ToSender, Top, Turn, Unanswered,
+    ToSender, ToType, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use std::num::NonZeroUsize;
@@ -309,6 +309,106 @@ fn the_outside_is_asked_across_parts_and_through_hops() -> Result<(), Unheard> {
     harness.reply(held, &Pong(40))?;
     assert_eq!(harness.heard::<Note>(), Ok(Note(40)));
     assert_eq!(harness.answer(asked), Ok(Answered::Yes(Pong(6))));
+
+    Ok(())
+}
+
+/// A hop down from `Pass(n)` to `Pass(0)`.
+#[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.test.outside.pass")]
+struct Pass(u32);
+
+/// A root that keeps what it is passed, passes one less on to itself, and fails on `Pass(0)`.
+#[derive(Plain)]
+#[kind(name = "aether.test.outside.passer")]
+struct Passer {
+    seen: Vec<u32>,
+}
+
+impl ChildOf for Passer {
+    type Parent = Top;
+}
+
+impl Actor for Passer {
+    type Config = Self;
+    type Key = ();
+    type Handles = (Pass,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(passer: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(passer)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Pass> for Passer {
+    type Sends = (ToType<Self, Pass>,);
+
+    fn handle(&mut self, Pass(left): Pass, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.seen.push(left);
+        if left == 0 {
+            return Err(Fault::new(&Pass(left))?);
+        }
+        turn.to(turn.me()).send(&Pass(left - 1))?;
+
+        Ok(())
+    }
+}
+
+#[test]
+fn a_step_is_read_turn_by_turn_with_its_hops_and_its_failure() -> Result<(), Unheard> {
+    // Catches a hop not told from a turn of a waiting item, and a failed turn left out of the record, which is what a
+    // report by mail could not show.
+    let mut harness = harness_of(NonZeroUsize::MIN, 64);
+    harness.add_root::<Passer>(&(), Passer { seen: Vec::new() })?;
+    let passer = harness.root::<Passer>();
+    harness.tell(passer, &Pass(2))?;
+
+    let turns = harness.step_turns();
+
+    assert_eq!(turns.len(), 3);
+    assert_eq!(turns[0].read::<Pass>()?, Pass(2));
+    assert_eq!(turns[0].ran, Ran::Waiting);
+    assert!(turns[1].is_hop());
+    assert_eq!(turns[2].read::<Pass>()?, Pass(0));
+    assert!(turns[2].failed());
+    assert!(!turns[1].failed());
+
+    Ok(())
+}
+
+#[test]
+fn a_closing_turn_is_recorded() -> Result<(), Unheard> {
+    // Catches a closing turn left out of the record, so a test could not see an actor end.
+    let mut harness = harness_of(NonZeroUsize::MIN, 0);
+    harness.add_root::<Passer>(&(), Passer { seen: Vec::new() })?;
+    let passer = harness.root::<Passer>();
+    harness.tell(passer, &Pass(0))?;
+
+    assert!(harness.step_turns()[0].failed());
+
+    assert_eq!(harness.step_turns()[0].ran, Ran::Closing);
+
+    Ok(())
+}
+
+#[test]
+fn an_actor_s_state_is_read_between_steps_and_recording_sends_nothing() -> Result<(), Unheard> {
+    // Catches a read of the wrong seat, and a record that counts as a send, which would change what a test measures.
+    let mut harness = harness_of(NonZeroUsize::MIN, 0);
+    harness.add_root::<Passer>(&(), Passer { seen: Vec::new() })?;
+    let passer = harness.root::<Passer>();
+    harness.tell(passer, &Pass(1))?;
+
+    let _ = harness.step_turns();
+
+    assert_eq!(harness.state(passer)?.seen, [1]);
+    let sent = harness.host().engine.sent(passer.seated());
+    assert_eq!(sent, 1, "the one piece it passed on, and nothing for the record");
 
     Ok(())
 }

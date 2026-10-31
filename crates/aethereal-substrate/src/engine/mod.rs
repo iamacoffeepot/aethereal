@@ -146,6 +146,12 @@ pub struct Engine {
     /// (ADR-0011, ADR-0018).
     now: Time,
     /// The most bytes one read of a piece of mail may allocate.
+    /// Whether its turns are recorded: from when a harness seats the outside (ADR-0036).
+    #[cfg(any(test, feature = "harness"))]
+    recording: bool,
+    /// The turns recorded and not yet taken.
+    #[cfg(any(test, feature = "harness"))]
+    turned: Vec<outside::Turned>,
     read_limit: usize,
     /// The most fused hops one part runs in one step (ADR-0013).
     hops: usize,
@@ -272,6 +278,9 @@ pub struct Reading<'a> {
     blobs: &'a Blobs,
     /// The arenas the last step's mail was written to, by writer.
     mail: &'a [Arena],
+    /// Whether its turns are recorded, and the step they run in (ADR-0036).
+    #[cfg(any(test, feature = "harness"))]
+    recording: outside::Recording,
     read_limit: usize,
     /// The most fused hops one part runs in the step.
     hops: usize,
@@ -364,6 +373,9 @@ pub struct Lists {
     /// The changes to how many values hold each debt the part running's turns made, noted on the worker's thread as
     /// they ran, and settled once the part has run (ADR-0017).
     holders: Vec<holders::Change>,
+    /// The turns the worker ran, recorded for a harness (ADR-0036).
+    #[cfg(any(test, feature = "harness"))]
+    turned: Vec<outside::Turned>,
 }
 
 /// One writer's row of buckets for each view, and for the children its turns stood up, to seat.
@@ -440,6 +452,10 @@ impl Engine {
             recent: 0,
             step: 0,
             now: Time::ZERO,
+            #[cfg(any(test, feature = "harness"))]
+            recording: false,
+            #[cfg(any(test, feature = "harness"))]
+            turned: Vec::new(),
             read_limit,
             hops,
             slice: u64::MAX,
@@ -861,6 +877,8 @@ impl Engine {
             table: &self.table,
             blobs: &self.blobs,
             mail,
+            #[cfg(any(test, feature = "harness"))]
+            recording: outside::Recording::of(self.recording, self.step),
             read_limit: self.read_limit,
             hops: self.hops,
             slice: self.slice,
@@ -1020,6 +1038,8 @@ impl Engine {
     /// it did not give out; and keeps its lists in their place. The children its turns stood up are seated when their
     /// parts are folded.
     fn take_in(&mut self, mut lists: Lists, arena: Arena, mut puts: Puts) {
+        #[cfg(any(test, feature = "harness"))]
+        self.turned.append(&mut lists.turned);
         self.costs.merge(&mut lists.tally);
         self.blobs.take_in(&mut puts);
         self.blobs.change(&mut lists.pins);
@@ -1066,6 +1086,8 @@ impl Engine {
             table: &self.table,
             blobs: &self.blobs,
             mail,
+            #[cfg(any(test, feature = "harness"))]
+            recording: outside::Recording::of(self.recording, self.step),
             read_limit: self.read_limit,
             hops: self.hops,
             slice: self.slice,
@@ -1656,12 +1678,16 @@ impl Reading<'_> {
                             chain,
                             tie,
                         );
+                        #[cfg(any(test, feature = "harness"))]
+                        let noted = self.recording.note(&item, me, source, tie, self.read_limit);
                         let mut outcome = actor.turn(item, turning);
                         // Most turns are of plain mail, and ask and hold nothing.
                         let is_tied = !tie.is_tell() || asked.is_tied();
                         if is_tied {
                             tied(me, (source, tie, context, stepped.sent), (waiting, debts), asked, &mut outcome);
                         }
+                        #[cfg(any(test, feature = "harness"))]
+                        noted.finish(me, outside::Ran::Waiting, &outcome, &mut lists.turned);
                         lists.drop_untaken(me, keeping, handed);
                         let ran = Ran::of(me, outcome, asked, context);
 
@@ -1739,6 +1765,8 @@ impl Reading<'_> {
             if asked.has_owes() {
                 debts.settle_closing(me, *context, asked, &mut ended);
             }
+            #[cfg(any(test, feature = "harness"))]
+            self.recording.closing(me, &ended, &mut lists.turned);
             let buffers = asked.buffers_mut();
             // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds
             // its fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after
@@ -1848,12 +1876,16 @@ impl Reading<'_> {
                     hop.tie,
                 );
 
+                #[cfg(any(test, feature = "harness"))]
+                let noted = self.recording.note(&item, me, hop.from, hop.tie, self.read_limit);
                 let mut outcome = actor.turn(item, turning);
                 let is_tied = !hop.tie.is_tell() || asked.is_tied();
                 if is_tied {
                     let chain = Context { root: hop.root, depth: hop.depth + 1 };
                     tied(me, (hop.from, hop.tie, chain, sent_before), (waiting, debts), asked, &mut outcome);
                 }
+                #[cfg(any(test, feature = "harness"))]
+                noted.finish(me, outside::Ran::Hop, &outcome, &mut lists.turned);
 
                 outcome
             };

@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod tests;
 
+pub use crate::engine::outside::{Handed, Ran, Turned};
+
 use crate::engine::outside::{Arrival, Reached, Unsent};
 use crate::program::{Bootstraps, Builds, Program, ProgramError};
 use crate::{Clock, Engine, table};
@@ -84,6 +86,10 @@ pub enum Unheard {
     Spent { wanted: &'static str, steps: u64, waiting: usize },
     /// Mail of `found` is what came where mail of `wanted` was waited on.
     OtherKind { wanted: KindId, found: KindId },
+    /// The actor has no state here: it has ended, or its state lies in a guest's instance.
+    NoState,
+    /// The turn was handed no mail.
+    NoMail,
     /// The asker waits on an answer of `wanted`, and was answered with `found`.
     OtherAnswer { wanted: KindId, found: KindId },
 }
@@ -356,6 +362,26 @@ impl<H: Steps> Harness<H> {
         self.drain();
     }
 
+    /// Runs one step, and answers with the turns it ran, but those of the outside.
+    pub fn step_turns(&mut self) -> Vec<Turned> {
+        let _ = self.host.engine().take_turned();
+        self.step();
+        let outside = self.outside;
+        let mut turned = self.host.engine().take_turned();
+        turned.retain(|turn| turn.actor != outside);
+
+        turned
+    }
+
+    /// The state of the actor `actor` refers to, as of the last step.
+    ///
+    /// # Errors
+    ///
+    /// [`Unheard::NoState`] when it has ended, or its state lies in a guest's instance.
+    pub fn state<T: 'static>(&mut self, actor: ActorRef<T>) -> Result<&T, Unheard> {
+        self.host.engine().state(actor.seated()).ok_or(Unheard::NoState)
+    }
+
     /// Steps until the engine has nothing to run.
     pub fn settle(&mut self) {
         self.step();
@@ -415,6 +441,22 @@ impl<H: Steps> Harness<H> {
         while let Some(arrival) = self.arrivals.pop() {
             self.queue.push_back(arrival);
         }
+    }
+}
+
+impl Turned {
+    /// The mail it was handed, read as `K`.
+    ///
+    /// # Errors
+    ///
+    /// [`Unheard::NoMail`] when it was handed none, [`Unheard::OtherKind`] when the mail is of another kind, and why it
+    /// does not decode.
+    pub fn read<K: Kind + Decode<Actors>>(&self) -> Result<K, Unheard> {
+        let Handed::Mail(arrival) = &self.handed else {
+            return Err(Unheard::NoMail);
+        };
+
+        read_as(arrival)
     }
 }
 
