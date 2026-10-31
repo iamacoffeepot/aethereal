@@ -11,5 +11,9 @@ aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 
+[dev-dependencies]
+# The tests read the turns the engine recorded, which only this feature opens (ADR-0036).
+aethereal-substrate = { path = "../aethereal-substrate", features = ["harness"] }
+
 [lints]
 workspace = true
