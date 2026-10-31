@@ -1,15 +1,18 @@
 //! The outside: the seat the host speaks through, which takes whatever it is handed onto a queue the host reads between
 //! steps, and sends between steps as a source's events are brought (ADR-0036).
 
-use super::{Engine, ROOTS, parity};
+use super::{Engine, Holding, ROOTS, parity};
 use crate::{Life, lives, table};
 use aethereal_actor::{
-    Actor, Actors, Asking, Beginning, ChildOf, Closing, Code, Declared, Ending, Fault, Item, Mail, MailId, Mailed,
-    Owed, PinSource, Pinning, Preparing, Refused, Role, Runs, Seated, Tie, Tied, Top, Turning, Unanswered, Written,
+    Actor, Actors, Asking, Beginning, ChildOf, Closing, Code, Declared, Ended, Ending, Fault, Item, Mail, MailId,
+    Mailed, Owed, PinSource, Pinning, Preparing, Refused, Role, Runs, Seated, Tie, Tied, Top, Turning, Unanswered,
+    Written,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment, Plain};
+use core::any::Any;
 use crossbeam_queue::SegQueue;
 use std::iter;
+use std::mem;
 use std::sync::Arc;
 
 /// The outside's type, which declares that it handles nothing: what the table knows it by. Its code is [`Taking`].
@@ -63,6 +66,16 @@ pub struct Arrival {
 }
 
 impl Arrival {
+    /// `mail`, copied out with the pins its bytes hold, which is to a request what `reached` says.
+    fn of(mail: Mail<'_>, reached: Reached, limit: usize) -> Self {
+        let mut pins = Vec::new();
+        mail.pinned().each(|at, pin| pins.push((at, pin.clone())));
+        let (kind, sender, root, depth) = (mail.kind(), mail.sender_seated(), mail.root(), mail.depth());
+        let bytes = mail.bytes().to_vec();
+
+        Self { kind, bytes, pins, sender, root, depth, reached, limit }
+    }
+
     /// The id of its kind.
     pub const fn kind(&self) -> KindId {
         self.kind
@@ -90,11 +103,7 @@ struct Taking {
 impl Taking {
     /// Notes `mail`, which is to a request what `reached` says.
     fn take(&self, mail: Mail<'_>, reached: Reached) {
-        let mut pins = Vec::new();
-        mail.pinned().each(|at, pin| pins.push((at, pin.clone())));
-        let (kind, sender, root, depth) = (mail.kind(), mail.sender_seated(), mail.root(), mail.depth());
-        let bytes = mail.bytes().to_vec();
-        self.arrivals.push(Arrival { kind, bytes, pins, sender, root, depth, reached, limit: self.limit });
+        self.arrivals.push(Arrival::of(mail, reached, self.limit));
     }
 }
 
@@ -138,6 +147,117 @@ impl Runs for Taking {
     }
 }
 
+/// How a turn came to run (ADR-0013).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ran {
+    /// Of an item that was waiting as its step began.
+    Waiting,
+    /// Of mail handed straight to its receiver within the step.
+    Hop,
+    /// As its actor's closing turn.
+    Closing,
+}
+
+/// What a turn was handed.
+pub enum Handed {
+    /// A piece of mail.
+    Mail(Arrival),
+    /// The ending of an actor it watches.
+    Ended(Ended),
+    /// Nothing: a closing turn.
+    Nothing,
+}
+
+/// One turn the engine ran, as it recorded it: nothing is sent or counted for it, so a turn runs the same whether it is
+/// recorded or not (ADR-0036).
+pub struct Turned {
+    pub actor: Seated,
+    pub step: u64,
+    pub ran: Ran,
+    pub handed: Handed,
+    pub outcome: Result<(), Fault>,
+}
+
+impl Turned {
+    /// Whether it ran as a hop.
+    #[must_use]
+    pub fn is_hop(&self) -> bool {
+        self.ran == Ran::Hop
+    }
+
+    /// Whether it failed.
+    #[must_use]
+    pub const fn failed(&self) -> bool {
+        self.outcome.is_err()
+    }
+}
+
+/// Whether a step's turns are recorded.
+#[derive(Clone, Copy)]
+pub enum Recording {
+    Off,
+    /// They are, and the step is this one.
+    At(u64),
+}
+
+/// A turn's item, noted before it runs.
+pub enum Noted {
+    Unrecorded,
+    Recorded { step: u64, handed: Handed },
+}
+
+impl Recording {
+    /// The recording of the step `step`, when the engine `is_on`.
+    pub(super) const fn of(is_on: bool, step: u64) -> Self {
+        if is_on {
+            Self::At(step)
+        } else {
+            Self::Off
+        }
+    }
+
+    /// `item`, as the turn of `me` from `source`, tied as `tie`, is about to be handed it.
+    pub(super) fn note(self, item: &Item<'_>, me: Seated, source: Seated, tie: Tie, limit: usize) -> Noted {
+        let Self::At(step) = self else {
+            return Noted::Unrecorded;
+        };
+        let handed = match item {
+            Item::Mail(mail) => {
+                let reached = match tie.read() {
+                    Tied::Asks(request) => Reached::Asked(Owed { holder: me, asker: source, request }),
+                    Tied::Tell | Tied::Answers(_) | Tied::Unanswered(_) => Reached::Told,
+                };
+
+                Handed::Mail(Arrival::of(*mail, reached, limit))
+            }
+            Item::Answer { mail, asking } => Handed::Mail(Arrival::of(*mail, Reached::Answered(asking.count), limit)),
+            Item::Unanswered { mail, asking } => {
+                Handed::Mail(Arrival::of(*mail, Reached::Unanswered(asking.count), limit))
+            }
+            Item::Ended(ended) => Handed::Ended(ended.clone()),
+        };
+
+        Noted::Recorded { step, handed }
+    }
+
+    /// Records the closing turn of `me`, which ended as `outcome` says.
+    pub(super) fn closing(self, me: Seated, outcome: &Result<(), Fault>, turned: &mut Vec<Turned>) {
+        if let Self::At(step) = self {
+            let (ran, handed, outcome) = (Ran::Closing, Handed::Nothing, outcome.clone());
+            turned.push(Turned { actor: me, step, ran, handed, outcome });
+        }
+    }
+}
+
+impl Noted {
+    /// Records the turn of `me` it was noted for, which ran as `ran` and ended as `outcome` says.
+    pub(super) fn finish(self, me: Seated, ran: Ran, outcome: &Result<(), Fault>, turned: &mut Vec<Turned>) {
+        if let Self::Recorded { step, handed } = self {
+            turned.push(Turned { actor: me, step, ran, handed, outcome: outcome.clone() });
+        }
+    }
+}
+
 /// Why a reply from the outside was not sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unsent {
@@ -154,10 +274,37 @@ impl Engine {
         let taking = Taking { arrivals: Arc::clone(&arrivals), limit: self.read_limit };
         let segment = PathSegment::new(OutsideSeat::NAME, &());
         let declared = Declared::of::<OutsideSeat>();
+        self.recording = true;
         self.add_root_made(&segment, Code::Linked(declared), Vec::new(), |_, _, _, _, _, _| Ok(Box::new(taking)))?;
         let seated = table::reach(&self.table, &ActorPath::from_root(&segment), declared.id());
 
         Ok((seated, arrivals))
+    }
+
+    /// How many pieces of mail the actor `seated` names has sent, as of the last step.
+    #[must_use]
+    pub fn sent(&self, seated: Seated) -> u64 {
+        self.lives.shard(seated.seat.number()).life(seated).map_or(0, Life::sent)
+    }
+
+    /// Takes the turns recorded since this was last asked, each part's in the order they ran, the parts in order.
+    pub fn take_turned(&mut self) -> Vec<Turned> {
+        let mut turned = mem::take(&mut self.turned);
+        turned.sort_by_key(|turn| (turn.step, self.part(turn.actor.seat)));
+
+        turned
+    }
+
+    /// The state of the actor `seated` names, as of the last step, when one of type `T` sits there and its code is here.
+    #[must_use]
+    pub fn state<T: 'static>(&self, seated: Seated) -> Option<&T> {
+        let held = self.actors[self.part(seated.seat)].get(seated)?;
+        let Holding::Here(actor) = &held.actor else {
+            return None;
+        };
+        let actor: &dyn Any = actor.as_ref();
+
+        actor.downcast_ref()
     }
 
     /// Sends `mail` from the outside `by` to `to`, tied as `tie` says of its count, the root of a chain of its own, and
@@ -174,8 +321,7 @@ impl Engine {
         let bytes = arena.write_mail(mail);
         self.arenas[parity][ROOTS] = arena;
         let bytes = bytes?;
-        let sent = self.lives.shard(by.seat.number()).life(by).map_or(0, Life::sent);
-        let count = sent + 1;
+        let count = self.sent(by) + 1;
         self.lives.fold_records([lives::sent(by, count)], &[]);
         let mailed = Mailed { by, to, count, kind: KindId::of::<K>(), bytes, tie: tie(count) };
         self.fold_brought(vec![mailed], Vec::new(), parity, |mailed| MailId {
