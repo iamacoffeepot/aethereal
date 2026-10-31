@@ -96,11 +96,13 @@ fn an_actor_reads_an_asset_through_the_file_capability() -> Result<(), Unheard> 
     let grass = harness.ask(files, &asset("tiles/grass.png"))?;
     let stone = harness.ask(files, &asset("tiles/stone.png"))?;
 
-    let Answered::Yes(FileRead::Read { bytes }) = harness.answer(grass)? else {
+    let (grass, stone) = harness.answers((grass, stone))?;
+
+    let Answered::Yes(FileRead::Read { bytes }) = grass else {
         panic!("the file there is read");
     };
     assert_eq!(harness.host().engine().blob(&bytes), Some(&b"grass"[..]));
-    let Answered::Yes(FileRead::Missing) = harness.answer(stone)? else {
+    let Answered::Yes(FileRead::Missing) = stone else {
         panic!("the file not there is missing");
     };
 
