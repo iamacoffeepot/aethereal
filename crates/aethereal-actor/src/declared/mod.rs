@@ -42,6 +42,18 @@ pub struct Declared {
     handlers: &'static [Handler],
     /// What its closing turn may send.
     ends: &'static [Sending],
+    /// Which kinds a reference to it may be cast to.
+    takes: Takes,
+}
+
+/// Which kinds a type answers a cast for (ADR-0016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Takes {
+    /// Those it lists.
+    Listed,
+    /// Every kind: the outside, whose code takes whatever it is handed (ADR-0036). A guest's section has no way to say
+    /// it, so no guest does.
+    Every,
 }
 
 impl Declared {
@@ -57,7 +69,16 @@ impl Declared {
         handlers: &'static [Handler],
         ends: &'static [Sending],
     ) -> Self {
-        Self { name, id, keyed, spawner, begins, handlers, ends }
+        Self { name, id, keyed, spawner, begins, handlers, ends, takes: Takes::Listed }
+    }
+
+    /// The declaration of the root type named `name`, of id `id`, that handles and sends nothing, and that every kind
+    /// may be cast to: for the engine's outside (ADR-0036).
+    #[must_use]
+    pub const fn taking_every_kind(name: KindName, id: KindId) -> Self {
+        let (keyed, spawner, takes) = (Keyed::Singleton, Spawner::Nobody, Takes::Every);
+
+        Self { name, id, keyed, spawner, begins: &[], handlers: &[], ends: &[], takes }
     }
 
     /// The declaration of the actor type `A`, made when the program is built.
@@ -119,10 +140,10 @@ impl Declared {
         self.ends
     }
 
-    /// Whether the type lists `kind` among the kinds it handles. A fallback does not count.
+    /// Whether the type lists `kind` among the kinds it handles, or takes every kind. A fallback does not count.
     #[must_use]
     pub fn lists(&self, kind: KindId) -> bool {
-        self.handles(Role::Kind(kind))
+        self.takes == Takes::Every || self.handles(Role::Kind(kind))
     }
 
     /// Whether the type lists every one of `kinds`: the kinds of a protocol it takes (ADR-0016).

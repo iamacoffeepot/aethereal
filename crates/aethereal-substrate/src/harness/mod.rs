@@ -3,9 +3,9 @@
 #[cfg(test)]
 mod tests;
 
-pub use crate::engine::outside::{Handed, Ran, Turned};
+pub use crate::engine::outside::{Arrival, Handed, Ran, Turned};
 
-use crate::engine::outside::{Arrival, Reached, Unsent};
+use crate::engine::outside::{Reached, Unsent};
 use crate::program::{Bootstraps, Builds, Program, ProgramError};
 use crate::{Clock, Engine, table};
 use aethereal_actor::{
@@ -474,6 +474,14 @@ impl<H: Steps> Harness<H> {
         self.drain();
 
         self.queue.drain(..).map(|arrival| arrival.kind()).collect()
+    }
+
+    /// What has arrived and no verb has taken, whole, in the order it arrived, emptying it: for a test that reads the
+    /// order of mail of several kinds, as answers among events, which a verb that takes one kind would lose.
+    pub fn arrived(&mut self) -> Vec<Arrival> {
+        self.drain();
+
+        self.queue.drain(..).collect()
     }
 
     /// Runs one step.
