@@ -165,6 +165,7 @@ dependencies = [
  "aethereal-actor",
  "aethereal-data",
  "aethereal-data-derive",
+ "aethereal-substrate",
  "crossbeam-queue",
  "pollster",
 ]

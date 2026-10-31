@@ -1,6 +1,7 @@
 //! The lifecycle the engine runs: each stage sent to its subscribers, and the next only once it has finished
 //! (ADR-0020).
 
+use super::super::outside::{Handed, Turned};
 use super::super::*;
 use crate::stages::key;
 use aethereal_actor::{
@@ -9,22 +10,71 @@ use aethereal_actor::{
 };
 use aethereal_data::{Bound, Kind, KindId, KindName, Plain};
 use core::time::Duration;
-use std::cell::RefCell;
-use std::mem;
 
-thread_local! {
-    /// What this thread's actors have said they did, in order.
-    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+/// What a test reads of one turn from the engine's record (ADR-0036). A number is the key of the actor, and an actor
+/// with no key reads as nought. In order by actor first, so a step's turns sort as these tests read them.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Seen {
+    /// The actor was handed this note.
+    Got(u64, String),
+    /// The actor was sent `Start`.
+    Started(u64),
+    /// The actor was sent `Stop`.
+    Stopping(u64),
+    /// A cycler was sent its chassis's own stage.
+    Received,
+    /// A cycler was sent `Tick`, with its delta and the time elapsed.
+    Ticked(u64, u64),
+    /// A cycler was sent `Render`.
+    Rendered,
+    /// A cycler was sent `Present`.
+    Presented,
 }
 
-/// Notes what an actor did.
-fn say(line: String) {
-    SAID.with_borrow_mut(|said| said.push(line));
+impl Seen {
+    /// What `turned`, which did not fail, shows: nothing for a turn over no stage and no note.
+    fn of(turned: &Turned) -> Option<Self> {
+        assert!(!turned.failed(), "no turn of these tests fails");
+        let Handed::Mail(_) = turned.handed else {
+            return None;
+        };
+        let last = turned.path.last();
+        let number = last.key().and_then(|key| key.to_string().parse().ok()).unwrap_or_default();
+
+        if let Ok(Note { text }) = turned.read() {
+            return Some(Self::Got(number, text));
+        }
+        if turned.read::<Start>().is_ok() {
+            return Some(Self::Started(number));
+        }
+        if turned.read::<Stop>().is_ok() {
+            return Some(Self::Stopping(number));
+        }
+        if turned.read::<Receive>().is_ok() {
+            return Some(Self::Received);
+        }
+        if let Ok(tick) = turned.read::<Tick>() {
+            return Some(Self::Ticked(tick.delta_nanos, tick.elapsed_nanos));
+        }
+        if turned.read::<Render>().is_ok() {
+            return Some(Self::Rendered);
+        }
+        if turned.read::<Present>().is_ok() {
+            return Some(Self::Presented);
+        }
+
+        None
+    }
 }
 
-/// What has been said since this was last asked.
-fn said() -> Vec<String> {
-    SAID.with_borrow_mut(mem::take)
+/// The actor `number` was handed the note `text`.
+fn got(number: u64, text: &str) -> Seen {
+    Seen::Got(number, String::from(text))
+}
+
+/// What the turns recorded since this was last asked show.
+fn seen(engine: &mut Engine) -> Vec<Seen> {
+    engine.take_turned().iter().filter_map(Seen::of).collect()
 }
 
 /// A note an actor sends itself.
@@ -42,7 +92,7 @@ struct StagedConfig {
     to_self: Vec<String>,
 }
 
-/// An actor that subscribes to `Start` and `Stop` as it begins, and says each it is sent. On `Start` it sends itself
+/// An actor that subscribes to `Start` and `Stop` as it begins. On `Start` it sends itself
 /// `pass 2`, and the actor `2` sends itself `quit` after it. It acts on the notes it is sent:
 ///
 /// - `pass N` sends itself `pass N-1` until `N` is zero, so a stage's chain runs on for a few steps;
@@ -83,7 +133,6 @@ impl Handles<On<Start>> for Staged {
     type Sends = (ToType<Self, Note>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        say(format!("{} started", self.number));
         turn.to(turn.me()).send(&Note { text: String::from("pass 2") })?;
         // The second asks to stop in a turn of `Start`'s chain, before the chain has finished.
         let quits = self.number == 2;
@@ -99,8 +148,6 @@ impl Handles<On<Stop>> for Staged {
     type Sends = ();
 
     fn handle(&mut self, _: Stop, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        say(format!("{} stopping", self.number));
-
         Ok(())
     }
 }
@@ -110,7 +157,6 @@ impl Handles<Note> for Staged {
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Note { text } = note;
-        say(format!("{} got {text}", self.number));
         let words: Vec<&str> = text.split(' ').collect();
         match words[..] {
             ["pass", left] => {
@@ -144,6 +190,7 @@ fn engine(roots: &[(u64, &[&str])]) -> Engine {
         panic!("four is not zero");
     };
     let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
+    engine.record_turns();
     for (number, to_self) in roots {
         let to_self = to_self.iter().map(|text| String::from(*text)).collect();
         let Ok(_) = engine.add_root::<Staged>(number, StagedConfig { number: *number, to_self }) else {
@@ -154,13 +201,13 @@ fn engine(roots: &[(u64, &[&str])]) -> Engine {
     engine
 }
 
-/// Runs one step and answers with what its turns said, sorted: turns of one step run in no order these tests read.
-fn step(engine: &mut Engine) -> Vec<String> {
+/// Runs one step and answers with what its turns show, sorted: turns of one step run in no order these tests read.
+fn step(engine: &mut Engine) -> Vec<Seen> {
     engine.step(Time::ZERO, &Stopped);
-    let mut heard = said();
-    heard.sort();
+    let mut shown = seen(engine);
+    shown.sort();
 
-    heard
+    shown
 }
 
 #[test]
@@ -173,12 +220,12 @@ fn stop_is_sent_only_once_every_turn_start_set_off_has_run() {
     engine.quit();
     assert_eq!(engine.lifecycle(), Lifecycle::Stopping);
 
-    assert_eq!(step(&mut engine), ["1 started"]);
-    assert_eq!(step(&mut engine), ["1 got pass 2"]);
-    assert_eq!(step(&mut engine), ["1 got pass 1"]);
-    assert_eq!(step(&mut engine), ["1 got pass 0"]);
+    assert_eq!(step(&mut engine), [Seen::Started(1)]);
+    assert_eq!(step(&mut engine), [got(1, "pass 2")]);
+    assert_eq!(step(&mut engine), [got(1, "pass 1")]);
+    assert_eq!(step(&mut engine), [got(1, "pass 0")]);
     assert_eq!(engine.lifecycle(), Lifecycle::Stopping);
-    assert_eq!(step(&mut engine), ["1 stopping"]);
+    assert_eq!(step(&mut engine), [Seen::Stopping(1)]);
     assert_eq!(engine.lifecycle(), Lifecycle::Stopping, "what the engine says of `Stop` left unanswered is to come");
     assert!(step(&mut engine).is_empty());
     assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
@@ -191,17 +238,17 @@ fn an_actor_that_asks_to_stop_stops_the_program_once_its_stage_has_finished() {
     // the second root asks in a turn of `Start`'s chain, which runs on two steps more. One asked before the host
     // started the lifecycle stops it as well.
     let mut early = engine(&[(1, &["quit"])]);
-    assert_eq!(step(&mut early), ["1 got quit"]);
+    assert_eq!(step(&mut early), [got(1, "quit")]);
     assert_eq!(early.lifecycle(), Lifecycle::Stopping, "asked before the host started it");
 
     let mut engine = engine(&[(1, &[]), (2, &[])]);
     engine.start();
-    assert_eq!(step(&mut engine), ["1 started", "2 started"]);
-    assert_eq!(step(&mut engine), ["1 got pass 2", "2 got pass 2", "2 got quit"]);
+    assert_eq!(step(&mut engine), [Seen::Started(1), Seen::Started(2)]);
+    assert_eq!(step(&mut engine), [got(1, "pass 2"), got(2, "pass 2"), got(2, "quit")]);
     assert_eq!(engine.lifecycle(), Lifecycle::Stopping);
-    assert_eq!(step(&mut engine), ["1 got pass 1", "2 got pass 1"]);
-    assert_eq!(step(&mut engine), ["1 got pass 0", "2 got pass 0"]);
-    assert_eq!(step(&mut engine), ["1 stopping", "2 stopping"]);
+    assert_eq!(step(&mut engine), [got(1, "pass 1"), got(2, "pass 1")]);
+    assert_eq!(step(&mut engine), [got(1, "pass 0"), got(2, "pass 0")]);
+    assert_eq!(step(&mut engine), [Seen::Stopping(1), Seen::Stopping(2)]);
     assert!(step(&mut engine).is_empty());
     assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
 }
@@ -212,11 +259,11 @@ fn a_stage_goes_only_to_the_live_actors_subscribed_to_it() {
     // in a `begin` that never takes, `Stop` sent once a stage has finished when nothing asked for it, and one that has
     // gone kept among the subscribers for good.
     let mut engine = engine(&[(1, &[]), (2, &["close"]), (3, &["leave"])]);
-    assert_eq!(step(&mut engine), ["2 got close", "3 got leave"]);
+    assert_eq!(step(&mut engine), [got(2, "close"), got(3, "leave")]);
     step(&mut engine);
     engine.start();
 
-    assert_eq!(step(&mut engine), ["1 started"]);
+    assert_eq!(step(&mut engine), [Seen::Started(1)]);
     let start = KindId::of::<Start>();
     let subscribed = engine.stages.shard(key(start)).subscribers(start).count();
     assert_eq!(subscribed, 1, "the actor that had gone is taken out as the stage passes it over");
@@ -224,7 +271,7 @@ fn a_stage_goes_only_to_the_live_actors_subscribed_to_it() {
     while !engine.is_idle() {
         heard.extend(step(&mut engine));
     }
-    assert_eq!(heard, ["1 got pass 2", "1 got pass 1", "1 got pass 0"]);
+    assert_eq!(heard, [got(1, "pass 2"), got(1, "pass 1"), got(1, "pass 0")]);
     assert_eq!(engine.lifecycle(), Lifecycle::Running, "nothing asked to stop");
 }
 
@@ -274,8 +321,8 @@ impl Stage for Receive {
     type Place = Own;
 }
 
-/// An actor that subscribes to every stage of a cycle and to `Stop` as it begins, and says each it is sent, `Tick`
-/// with its delta and the time elapsed. On `Tick` it sends itself `pass 1`, so the stage's chain runs a step longer.
+/// An actor that subscribes to every stage of a cycle and to `Stop` as it begins. On `Tick` it sends itself `pass 1`,
+/// so the stage's chain runs a step longer.
 #[derive(Bound)]
 #[kind(name = "aether.test.cycler")]
 struct Cycler;
@@ -309,8 +356,7 @@ impl Actor for Cycler {
 impl Handles<On<Tick>> for Cycler {
     type Sends = (ToType<Self, Note>,);
 
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        say(format!("tick {} {}", tick.delta_nanos, tick.elapsed_nanos));
+    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.to(turn.me()).send(&Note { text: String::from("pass 1") })?;
 
         Ok(())
@@ -320,23 +366,19 @@ impl Handles<On<Tick>> for Cycler {
 impl Handles<Note> for Cycler {
     type Sends = ();
 
-    fn handle(&mut self, note: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        say(note.text);
-
+    fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
-/// Says the stage it is sent, by name.
-macro_rules! says {
-    ($($stage:ident => $said:literal),+) => {
+/// Takes the stage it is sent, which the record shows.
+macro_rules! takes {
+    ($($stage:ident),+) => {
         $(
             impl Handles<On<$stage>> for Cycler {
                 type Sends = ();
 
                 fn handle(&mut self, _: $stage, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-                    say(String::from($said));
-
                     Ok(())
                 }
             }
@@ -344,7 +386,7 @@ macro_rules! says {
     };
 }
 
-says!(Receive => "receive", Render => "render", Present => "present", Stop => "stopping");
+takes!(Receive, Render, Present, Stop);
 
 /// The cycle a cycler is made on: every stage it subscribes to, a chassis's own first.
 type Full = (Receive, Tick, Render, Present);
@@ -355,6 +397,7 @@ fn cycling<C: Cycle>(limit: Duration) -> Engine {
         panic!("four is not zero");
     };
     let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_delta_limit(limit).with_cycle::<C>().ready();
+    engine.record_turns();
     let Ok(_) = engine.add_root::<Cycler>(&(), Note { text: String::new() }) else {
         panic!("the cycler begins");
     };
@@ -363,11 +406,11 @@ fn cycling<C: Cycle>(limit: Duration) -> Engine {
     engine
 }
 
-/// Runs one step at `nanos` and answers with what its turns said.
-fn step_at(engine: &mut Engine, nanos: u64) -> Vec<String> {
+/// Runs one step at `nanos` and answers with what its turns show.
+fn step_at(engine: &mut Engine, nanos: u64) -> Vec<Seen> {
     engine.step(Time::from_nanos(nanos), &Stopped);
 
-    said()
+    seen(engine)
 }
 
 #[test]
@@ -378,18 +421,18 @@ fn a_cycle_runs_its_stages_in_order_each_once_the_last_has_finished() {
     // of the first cycle said due while one ran rather than the last.
     let mut engine = cycling::<Full>(Duration::from_secs(1));
     engine.cycle(Time::ZERO);
-    assert_eq!(step_at(&mut engine, 10), ["receive"]);
+    assert_eq!(step_at(&mut engine, 10), [Seen::Received]);
     engine.cycle(Time::from_nanos(15));
     engine.cycle(Time::from_nanos(25));
-    assert_eq!(step_at(&mut engine, 20), ["tick 0 0"]);
-    assert_eq!(step_at(&mut engine, 30), ["pass 1"]);
-    assert_eq!(step_at(&mut engine, 40), ["render"]);
-    assert_eq!(step_at(&mut engine, 50), ["present"]);
-    assert_eq!(step_at(&mut engine, 60), ["receive"], "the cycles due while one ran are one cycle");
-    assert_eq!(step_at(&mut engine, 70), ["tick 25 25"]);
-    assert_eq!(step_at(&mut engine, 80), ["pass 1"]);
-    assert_eq!(step_at(&mut engine, 90), ["render"]);
-    assert_eq!(step_at(&mut engine, 100), ["present"]);
+    assert_eq!(step_at(&mut engine, 20), [Seen::Ticked(0, 0)]);
+    assert_eq!(step_at(&mut engine, 30), [got(0, "pass 1")]);
+    assert_eq!(step_at(&mut engine, 40), [Seen::Rendered]);
+    assert_eq!(step_at(&mut engine, 50), [Seen::Presented]);
+    assert_eq!(step_at(&mut engine, 60), [Seen::Received], "the cycles due while one ran are one cycle");
+    assert_eq!(step_at(&mut engine, 70), [Seen::Ticked(25, 25)]);
+    assert_eq!(step_at(&mut engine, 80), [got(0, "pass 1")]);
+    assert_eq!(step_at(&mut engine, 90), [Seen::Rendered]);
+    assert_eq!(step_at(&mut engine, 100), [Seen::Presented]);
     assert!(engine.is_idle(), "no cycle is due");
 }
 
@@ -399,22 +442,22 @@ fn a_tick_s_delta_is_limited_and_its_stage_of_a_chassis_s_own_comes_first() {
     // not its cycle's first stage given no time at all.
     let mut engine = cycling::<Full>(Duration::from_nanos(25));
     engine.cycle(Time::ZERO);
-    assert_eq!(step_at(&mut engine, 10), ["receive"]);
-    assert_eq!(step_at(&mut engine, 20), ["tick 0 0"]);
-    assert_eq!(step_at(&mut engine, 30), ["pass 1"]);
-    assert_eq!(step_at(&mut engine, 40), ["render"]);
-    assert_eq!(step_at(&mut engine, 50), ["present"]);
+    assert_eq!(step_at(&mut engine, 10), [Seen::Received]);
+    assert_eq!(step_at(&mut engine, 20), [Seen::Ticked(0, 0)]);
+    assert_eq!(step_at(&mut engine, 30), [got(0, "pass 1")]);
+    assert_eq!(step_at(&mut engine, 40), [Seen::Rendered]);
+    assert_eq!(step_at(&mut engine, 50), [Seen::Presented]);
 
     // 50 since the last cycle began, limited to 25.
     engine.cycle(Time::from_nanos(50));
-    assert_eq!(step_at(&mut engine, 60), ["receive"]);
-    assert_eq!(step_at(&mut engine, 70), ["tick 25 25"]);
-    assert_eq!(step_at(&mut engine, 80), ["pass 1"]);
-    assert_eq!(step_at(&mut engine, 90), ["render"]);
-    assert_eq!(step_at(&mut engine, 100), ["present"]);
+    assert_eq!(step_at(&mut engine, 60), [Seen::Received]);
+    assert_eq!(step_at(&mut engine, 70), [Seen::Ticked(25, 25)]);
+    assert_eq!(step_at(&mut engine, 80), [got(0, "pass 1")]);
+    assert_eq!(step_at(&mut engine, 90), [Seen::Rendered]);
+    assert_eq!(step_at(&mut engine, 100), [Seen::Presented]);
     engine.cycle(Time::from_nanos(100));
-    assert_eq!(step_at(&mut engine, 110), ["receive"]);
-    assert_eq!(step_at(&mut engine, 120), ["tick 25 50"]);
+    assert_eq!(step_at(&mut engine, 110), [Seen::Received]);
+    assert_eq!(step_at(&mut engine, 120), [Seen::Ticked(25, 50)]);
 }
 
 #[test]
@@ -422,25 +465,50 @@ fn a_program_asked_to_stop_mid_cycle_finishes_the_cycle_first() {
     // Catches `Stop` sent in the middle of a cycle, so an actor stops between drawing and showing.
     let mut engine = cycling::<Full>(Duration::from_secs(1));
     engine.cycle(Time::ZERO);
-    assert_eq!(step_at(&mut engine, 10), ["receive"]);
+    assert_eq!(step_at(&mut engine, 10), [Seen::Received]);
     engine.quit();
     engine.cycle(Time::from_nanos(15));
-    assert_eq!(step_at(&mut engine, 20), ["tick 0 0"]);
-    assert_eq!(step_at(&mut engine, 30), ["pass 1"]);
-    assert_eq!(step_at(&mut engine, 40), ["render"]);
-    assert_eq!(step_at(&mut engine, 50), ["present"]);
-    assert_eq!(step_at(&mut engine, 60), ["stopping"], "no cycle begins once asked to stop");
+    assert_eq!(step_at(&mut engine, 20), [Seen::Ticked(0, 0)]);
+    assert_eq!(step_at(&mut engine, 30), [got(0, "pass 1")]);
+    assert_eq!(step_at(&mut engine, 40), [Seen::Rendered]);
+    assert_eq!(step_at(&mut engine, 50), [Seen::Presented]);
+    assert_eq!(step_at(&mut engine, 60), [Seen::Stopping(0)], "no cycle begins once asked to stop");
     // The cycler neither answered `Stop` nor held it, and what the engine says of that comes back to it, and is
     // dropped, in the next step.
     assert!(step_at(&mut engine, 70).is_empty());
     assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
 }
 
+/// What became of a spawn, as a nest can keep it: [`Refused`] does not encode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum Spawned {
+    /// It stood up.
+    Stood,
+    /// It was refused for subscribing to a stage of this kind, which its engine does not run.
+    Unstaged(KindId),
+    /// It was refused for anything else, which these tests never expect.
+    Other,
+}
+
+impl Spawned {
+    /// What `spawned` came to.
+    fn of<T>(spawned: &Result<T, Refused>) -> Self {
+        match spawned {
+            Ok(_) => Self::Stood,
+            Err(Refused::Unstaged(kind)) => Self::Unstaged(*kind),
+            Err(_) => Self::Other,
+        }
+    }
+}
+
 /// An actor that spawns a cycler beneath it as it begins, and a latecomer in a step, on the note it sends itself, and
-/// says why each was refused, if it was.
+/// keeps what became of each.
 #[derive(Bound)]
 #[kind(name = "aether.test.nest")]
-struct Nest;
+struct Nest {
+    /// What became of each spawn, in order.
+    spawned: Vec<Spawned>,
+}
 
 impl ChildOf for Nest {
     type Parent = Top;
@@ -455,10 +523,9 @@ impl Actor for Nest {
 
     fn begin(_: Note, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let spawned = turn.spawn::<Cycler>(&(), Note { text: String::new() });
-        say(format!("{:?}", spawned.err()));
         turn.to(turn.me()).send(&Note { text: String::new() })?;
 
-        Ok(Self)
+        Ok(Self { spawned: vec![Spawned::of(&spawned)] })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -471,7 +538,7 @@ impl Handles<Note> for Nest {
 
     fn handle(&mut self, _: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let spawned = turn.spawn::<Latecomer>(&(), Note { text: String::new() });
-        say(format!("{:?}", spawned.err()));
+        self.spawned.push(Spawned::of(&spawned));
 
         Ok(())
     }
@@ -495,14 +562,19 @@ fn an_actor_that_subscribes_to_a_stage_its_engine_does_not_run_is_refused_where_
 
     assert!(full.add_root::<Cycler>(&(), Note { text: String::new() }).is_ok());
     assert_eq!(drawing.add_root::<Cycler>(&(), Note { text: String::new() }), Err(unstaged.clone()));
+    let mut spawned = Vec::new();
     for engine in [&mut full, &mut drawing] {
-        let Ok(_) = engine.add_root::<Nest>(&(), Note { text: String::new() }) else {
+        let Ok(id) = engine.add_root::<Nest>(&(), Note { text: String::new() }) else {
             panic!("the nest begins");
         };
         engine.step(Time::ZERO, &Stopped);
+        let Some(nest) = engine.table().seat(id).and_then(|seat| engine.state::<Nest>(Seated { id, seat })) else {
+            panic!("the nest is live");
+        };
+        spawned.push(nest.spawned.clone());
     }
-    let refused = format!("{:?}", Some(unstaged.clone()));
-    assert_eq!(said(), [String::from("None"), String::from("None"), refused.clone(), refused]);
+    let refused = Spawned::Unstaged(KindId::of::<Receive>());
+    assert_eq!(spawned, [[Spawned::Stood, Spawned::Stood], [refused, refused]]);
     let late = drawing.add_root::<Latecomer>(&(), Note { text: String::new() });
     assert_eq!(late, Err(unstaged), "a subscription its handlers declare counts as its `begin`'s does");
 }
@@ -585,7 +657,6 @@ impl Handles<On<Stop>> for Drainer {
     type Sends = (ToSender<Drained>,);
 
     fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        say(String::from("holding"));
         self.held.push(turn.hold()?);
 
         Ok(())
@@ -596,7 +667,6 @@ impl Handles<Note> for Drainer {
     type Sends = ();
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        say(note.text.clone());
         match note.text.as_str() {
             "answer" => {
                 for held in self.held.drain(..) {
@@ -646,12 +716,13 @@ fn drained(told: &str) -> (Lifecycle, Lifecycle) {
         panic!("four is not zero");
     };
     let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
+    engine.record_turns();
     let Ok(_) = engine.add_root::<Drainer>(&(), Note { text: String::new() }) else {
         panic!("the drainer begins");
     };
     engine.start();
     engine.quit();
-    assert_eq!(step(&mut engine), ["holding"]);
+    assert_eq!(step(&mut engine), [Seen::Stopping(0)]);
     for _ in 0..4 {
         step(&mut engine);
     }
@@ -660,7 +731,7 @@ fn drained(told: &str) -> (Lifecycle, Lifecycle) {
     let Ok(_) = engine.add_root::<Waker>(&(), Note { text: String::from(told) }) else {
         panic!("the waker begins");
     };
-    assert_eq!(step(&mut engine), [told]);
+    assert_eq!(step(&mut engine), [got(0, told)]);
     for _ in 0..4 {
         step(&mut engine);
     }

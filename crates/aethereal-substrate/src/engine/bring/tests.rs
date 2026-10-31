@@ -6,24 +6,8 @@ use aethereal_actor::Time;
 use aethereal_actor::{
     Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Recursive, Source, ToType, Top, Turn,
 };
-use aethereal_data::{Bound, Plain};
-use std::cell::RefCell;
+use aethereal_data::{Bound, Kind, Plain};
 use std::mem;
-
-thread_local! {
-    /// What this thread's windows have said they heard, in order.
-    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Notes what a window heard.
-fn say(line: String) {
-    SAID.with_borrow_mut(|said| said.push(line));
-}
-
-/// What has been said since this was last asked.
-fn said() -> Vec<String> {
-    SAID.with_borrow_mut(mem::take)
-}
 
 /// The pointer moved: what the chassis brings a window.
 #[derive(Plain)]
@@ -62,14 +46,29 @@ struct Order {
     text: String,
 }
 
-/// An actor that holds sources and says what each brings it, whether it came from itself, and whether it is the first
-/// of its chain. `spawn N` gives every pointer source to the window `N` it spawns beneath it, and `close` closes it.
+/// What a window keeps of what its sources brought it.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+enum Heard {
+    /// A move to `x`, whether it came from the window itself, and whether it is the first of its chain.
+    Moved { x: u64, from_me: bool, first: bool },
+    /// A lamp, and whether the window took it.
+    Lit { took: bool },
+}
+
+/// A move to `x` that came from the window itself, the first of its chain: what every event is.
+const fn moved(x: u64) -> Heard {
+    Heard::Moved { x, from_me: true, first: true }
+}
+
+/// An actor that holds sources and keeps what each brings it. `spawn N` gives every pointer source to the window `N` it
+/// spawns beneath it, and `close` closes it.
 #[derive(Bound)]
 #[kind(name = "aether.test.window")]
 struct Window {
-    number: u64,
     pointers: Vec<Handle<Source<Moved>>>,
     lights: Vec<Handle<Source<Lit>>>,
+    /// What its sources brought it, in order.
+    heard: Vec<Heard>,
 }
 
 impl ChildOf for Window {
@@ -84,14 +83,14 @@ impl Actor for Window {
     type EndSends = ();
 
     fn begin(config: WindowConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let WindowConfig { number, pointers, lights, orders } = config;
+        let WindowConfig { pointers, lights, orders, .. } = config;
         let pointers = pointers.into_iter().map(|pointer| turn.take(pointer)).collect::<Result<_, _>>()?;
         let lights = lights.into_iter().map(|light| turn.take(light)).collect::<Result<_, _>>()?;
         for text in orders {
             turn.to(turn.me()).send(&Order { text })?;
         }
 
-        Ok(Self { number, pointers, lights })
+        Ok(Self { pointers, lights, heard: Vec::new() })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -106,7 +105,7 @@ impl Handles<Moved> for Window {
         let is_from_me = turn.sender() == turn.me().erase();
         let chain = turn.chain();
         let is_first = chain.depth == 0 && chain.root.sender == turn.me().id();
-        say(format!("{} moved {} from me {is_from_me} first {is_first}", self.number, moved.x));
+        self.heard.push(Heard::Moved { x: moved.x, from_me: is_from_me, first: is_first });
 
         Ok(())
     }
@@ -138,7 +137,7 @@ impl Handles<Lit> for Window {
 
     fn handle(&mut self, lit: Lit, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let took = lit.take && turn.take(lit.lamp).is_ok();
-        say(format!("{} lit, and took the lamp: {took}", self.number));
+        self.heard.push(Heard::Lit { took });
 
         Ok(())
     }
@@ -181,15 +180,30 @@ fn add(
     Seated { id, seat }
 }
 
-/// Steps the engine until it is idle, and answers with everything said.
-fn settle(engine: &mut Engine) -> Vec<String> {
-    let mut heard = Vec::new();
+/// Steps the engine until it is idle.
+fn settle(engine: &mut Engine) {
     for _ in 0..16 {
         engine.step(Time::ZERO, &Stopped);
-        heard.extend(said());
     }
+}
 
-    heard
+/// What the live window `window` has heard, as of the last step.
+fn heard(engine: &Engine, window: Seated) -> &[Heard] {
+    let Some(state) = engine.state::<Window>(window) else {
+        panic!("the window is live");
+    };
+
+    &state.heard
+}
+
+/// The live window `number` beneath `parent`.
+fn beneath(engine: &Engine, parent: Seated, number: u64) -> Seated {
+    let id = crate::child_id(parent.id, &PathSegment::new(Window::NAME, &number));
+    let Some(seat) = engine.table().seat(id) else {
+        panic!("the child is live");
+    };
+
+    Seated { id, seat }
 }
 
 /// Pushes a move to each of `xs` onto `feed`.
@@ -212,25 +226,16 @@ fn what_the_chassis_pushes_reaches_the_sources_owner_from_itself_in_order_once_b
         let (other, second) = engine.source::<Moved>();
         push(&feed, &[1]);
         engine.bring();
-        add(&mut engine, 1, vec![pointer, other], Vec::new(), &[]);
+        let window = add(&mut engine, 1, vec![pointer, other], Vec::new(), &[]);
         push(&feed, &[2, 3]);
         push(&second, &[9]);
-        let early = settle(&mut engine);
+        settle(&mut engine);
+        assert_eq!(heard(&engine, window), [], "hops={hops}");
 
         engine.bring();
-        let heard = settle(&mut engine);
+        settle(&mut engine);
 
-        assert_eq!(early, Vec::<String>::new(), "hops={hops}");
-        assert_eq!(
-            heard,
-            [
-                "1 moved 1 from me true first true",
-                "1 moved 2 from me true first true",
-                "1 moved 3 from me true first true",
-                "1 moved 9 from me true first true",
-            ],
-            "hops={hops}"
-        );
+        assert_eq!(heard(&engine, window), [moved(1), moved(2), moved(3), moved(9)], "hops={hops}");
     }
 }
 
@@ -241,17 +246,21 @@ fn what_is_brought_goes_to_whoever_holds_the_source_as_it_is_brought() {
     for hops in [0, 64] {
         let mut engine = engine(hops);
         let (pointer, feed) = engine.source::<Moved>();
-        add(&mut engine, 1, vec![pointer], Vec::new(), &["spawn 2"]);
+        let first = add(&mut engine, 1, vec![pointer], Vec::new(), &["spawn 2"]);
         push(&feed, &[1]);
         engine.bring();
-        let before = settle(&mut engine);
+        settle(&mut engine);
+        let second = beneath(&engine, first, 2);
+
+        assert_eq!(heard(&engine, first), [moved(1)], "hops={hops}");
+        assert_eq!(heard(&engine, second), [], "hops={hops}");
 
         push(&feed, &[2]);
         engine.bring();
-        let after = settle(&mut engine);
+        settle(&mut engine);
 
-        assert_eq!(before, ["1 moved 1 from me true first true"], "hops={hops}");
-        assert_eq!(after, ["2 moved 2 from me true first true"], "hops={hops}");
+        assert_eq!(heard(&engine, first), [moved(1)], "hops={hops}");
+        assert_eq!(heard(&engine, second), [moved(2)], "hops={hops}");
     }
 }
 
@@ -266,12 +275,12 @@ fn a_feed_closes_once_its_source_is_dropped_with_its_owner() {
     push(&feed, &[1]);
 
     engine.bring();
-    add(&mut engine, 2, Vec::new(), Vec::new(), &[]);
-    let heard = settle(&mut engine);
+    let next = add(&mut engine, 2, Vec::new(), Vec::new(), &[]);
+    settle(&mut engine);
 
     assert!(feed.is_closed());
     assert_eq!(feed.push(Moved { x: 2 }), Err(Closed));
-    assert_eq!(heard, Vec::<String>::new());
+    assert_eq!(heard(&engine, next), []);
 }
 
 #[test]
@@ -294,12 +303,12 @@ fn an_event_carries_a_resource_the_chassis_handed_in_to_the_sources_owner() {
     }
 
     engine.bring();
-    let heard = settle(&mut engine);
+    settle(&mut engine);
 
     let logged = |is: fn(&Entry) -> bool| engine.log(window).filter(|entry| is(entry)).count();
     let unbrought = logged(|entry| matches!(entry, Entry::Unbrought(_)));
     let dropped = logged(|entry| matches!(entry, Entry::Dropped(_)));
-    assert_eq!(heard[..2], ["1 lit, and took the lamp: false", "1 lit, and took the lamp: true"]);
+    assert_eq!(heard(&engine, window)[..2], [Heard::Lit { took: false }, Heard::Lit { took: true }]);
     assert_eq!((unbrought, dropped), (0, 1), "the lamp not taken is dropped and recorded");
 }
 
