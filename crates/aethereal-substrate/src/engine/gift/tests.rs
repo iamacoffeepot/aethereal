@@ -46,14 +46,57 @@ struct KeeperConfig {
     number: u64,
     lamps: Vec<Given<Lamp>>,
     makers: Vec<Given<Maker>>,
-    orders: Vec<String>,
+    orders: Vec<Order>,
+    takes: Takes,
+}
+
+/// What a keeper does with a lamp it is given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum Takes {
+    /// It takes every lamp, in its config or in mail.
+    Every,
+    /// It takes none.
+    None,
 }
 
 /// An order a keeper sends itself.
-#[derive(Plain)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.test.order")]
-struct Order {
-    text: String,
+enum Order {
+    /// Makes a lamp of this light and keeps it.
+    Make(u64),
+    /// Keeps the light of each lamp it keeps.
+    Shine,
+    /// Gives what makes its lamps to this keeper, which it spawns beneath it, and which makes a lamp of light `5` and
+    /// closes.
+    Heir(u64),
+    /// Gives every lamp to this keeper, which it spawns beneath it, in its config.
+    Spawn(u64),
+    /// Spawns this keeper beneath it, which takes no lamp, giving it every lamp in its config.
+    SpawnRefusing(u64),
+    /// Mails every lamp to this keeper beneath it.
+    Pass(u64),
+    /// Mails every lamp to this root keeper.
+    Root(u64),
+    /// Gives every lamp and sends none.
+    Loose,
+    /// Mails every lamp to this root keeper, and fails.
+    Slip(u64),
+    /// Mails every lamp to itself twice, keeping what was refused.
+    Twice,
+    /// Mails every lamp to the keeper `50` it spawns, twice in one send, keeping what was refused.
+    Fan,
+    /// Closes it, and its closing turn tells its parent the light of each lamp it still keeps.
+    Close,
+}
+
+/// Why a keeper's turn failed.
+#[derive(Plain)]
+#[kind(name = "aether.test.keeper_trouble")]
+enum Trouble {
+    NoSuchRoot,
+    Slipped,
+    Unborn,
 }
 
 /// Lamps passed from one keeper to another in mail.
@@ -90,23 +133,12 @@ enum Did {
     Last { number: u64, light: u64 },
 }
 
-/// An actor that keeps lamps, as its orders say:
-///
-/// - `make L` makes a lamp of light `L` and keeps it, and `shine` keeps the light of each it keeps;
-/// - `spawn N` gives every lamp to the keeper `N` it spawns beneath it, in its config;
-/// - `heir N` gives what makes its lamps to the keeper `N` it spawns beneath it, which makes a lamp of light `5` and
-///   closes;
-/// - `pass N` mails every lamp to the keeper `N` beneath it, and `root N` to the root keeper `N`;
-/// - `loose` gives every lamp and sends none, and `slip N` mails every lamp to the root keeper `N` and fails;
-/// - `twice` mails every lamp to itself twice, and `fan` to the keeper `50` it spawns, twice in one send, keeping what
-///   was refused;
-/// - `close` closes it, and its closing turn tells its parent the light of each lamp it still keeps.
-///
-/// It takes every lamp it is given, in its config or in mail, but for the keeper `99`, which takes none.
+/// An actor that keeps lamps, as each [`Order`] says, and takes what it is given as [`Takes`] says.
 #[derive(Bound)]
 #[kind(name = "aether.test.keeper")]
 struct Keeper {
     number: u64,
+    takes: Takes,
     lamps: Vec<Handle<Lamp>>,
     makers: Vec<Handle<Maker>>,
     /// What it did, in order.
@@ -119,9 +151,13 @@ impl Keeper {
         mem::take(&mut self.lamps).into_iter().map(|lamp| turn.give(lamp)).collect()
     }
 
-    /// The order `text` sent to itself.
-    fn order(text: &str) -> Order {
-        Order { text: String::from(text) }
+    /// Spawns the keeper `number` beneath it with every lamp in its config, taking them as `takes` says.
+    fn spawn_with_lamps<S>(&mut self, turn: &mut Turn<'_, Self, S>, number: u64, takes: Takes) -> Result<(), Fault> {
+        let lamps = self.give_all(turn)?;
+        let config = KeeperConfig { number, lamps, makers: Vec::new(), orders: vec![Order::Shine], takes };
+        let _ = turn.spawn::<Self>(&number, config);
+
+        Ok(())
     }
 }
 
@@ -137,8 +173,8 @@ impl Actor for Keeper {
     type EndSends = (ToType<Self, Last>,);
 
     fn begin(config: KeeperConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let KeeperConfig { number, lamps, makers, orders } = config;
-        let refuses = number == 99;
+        let KeeperConfig { number, lamps, makers, orders, takes } = config;
+        let refuses = takes == Takes::None;
         let taken = if refuses {
             Vec::new()
         } else {
@@ -146,11 +182,11 @@ impl Actor for Keeper {
         };
         let makers = makers.into_iter().map(|maker| turn.take(maker)).collect::<Result<_, _>>()?;
         let did = vec![Did::Began(taken.len().try_into().unwrap_or(u64::MAX))];
-        for text in orders {
-            turn.to(turn.me()).send(&Order { text })?;
+        for order in orders {
+            turn.to(turn.me()).send(&order)?;
         }
 
-        Ok(Self { number, lamps: taken, makers, did })
+        Ok(Self { number, takes, lamps: taken, makers, did })
     }
 
     fn end(mut self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -170,10 +206,8 @@ impl Handles<Order> for Keeper {
     type Sends = (ToType<Self, Order>, ToType<Self, Pass>, ToAny<(Pass,), Pass>);
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let words: Vec<&str> = order.text.split(' ').collect();
-        match words[..] {
-            ["make", light] => {
-                let light = light.parse().unwrap_or_default();
+        match order {
+            Order::Make(light) => {
                 let mut witnesses = Vec::new();
                 for maker in &mut self.makers {
                     witnesses.extend(turn.open(maker)?.witness.upgrade());
@@ -182,51 +216,44 @@ impl Handles<Order> for Keeper {
                     self.lamps.push(turn.keep(lit(&witness, light))?);
                 }
             }
-            ["shine"] => {
+            Order::Shine => {
                 for lamp in &mut self.lamps {
                     self.did.push(Did::Shone(turn.open(lamp)?.light));
                 }
             }
-            ["heir", number] => {
-                let number = number.parse().unwrap_or_default();
+            Order::Heir(number) => {
                 let given = mem::take(&mut self.makers).into_iter().map(|maker| turn.give(maker));
                 let makers = given.collect::<Result<_, _>>()?;
-                let orders = vec![String::from("make 5"), String::from("close")];
-                let _ = turn.spawn::<Self>(&number, KeeperConfig { number, lamps: Vec::new(), makers, orders });
-            }
-            ["spawn", number] => {
-                let number = number.parse().unwrap_or_default();
-                let lamps = self.give_all(turn)?;
-                let config = KeeperConfig { number, lamps, makers: Vec::new(), orders: vec![String::from("shine")] };
+                let orders = vec![Order::Make(5), Order::Close];
+                let config = KeeperConfig { number, lamps: Vec::new(), makers, orders, takes: Takes::Every };
                 let _ = turn.spawn::<Self>(&number, config);
             }
-            ["pass", number] => {
-                let number: u64 = number.parse().unwrap_or_default();
+            Order::Spawn(number) => self.spawn_with_lamps(turn, number, Takes::Every)?,
+            Order::SpawnRefusing(number) => self.spawn_with_lamps(turn, number, Takes::None)?,
+            Order::Pass(number) => {
                 let lamps = self.give_all(turn)?;
                 turn.to(child::<Self>(number)).send(&Pass { lamps })?;
             }
-            ["root", number] => {
-                let number: u64 = number.parse().unwrap_or_default();
+            Order::Root(number) => {
                 let lamps = self.give_all(turn)?;
                 let path = ActorPath::from_root(&PathSegment::new(Self::NAME, &number));
                 let Some(root) = turn.resolve(&path).and_then(|found| turn.cast(found)) else {
-                    return Err(Fault::new(&Self::order("no such root"))?);
+                    return Err(Fault::new(&Trouble::NoSuchRoot)?);
                 };
                 turn.to(root).send(&Pass { lamps })?;
             }
-            ["slip", number] => {
-                let number: u64 = number.parse().unwrap_or_default();
+            Order::Slip(number) => {
                 let lamps = self.give_all(turn)?;
                 let path = ActorPath::from_root(&PathSegment::new(Self::NAME, &number));
                 if let Some(root) = turn.resolve(&path).and_then(|found| turn.cast(found)) {
                     turn.to(root).send(&Pass { lamps })?;
                 }
-                return Err(Fault::new(&Self::order("slipped"))?);
+                return Err(Fault::new(&Trouble::Slipped)?);
             }
-            ["loose"] => {
+            Order::Loose => {
                 self.give_all(turn)?;
             }
-            ["twice"] => {
+            Order::Twice => {
                 let lamps = self.give_all(turn)?;
                 let pass = Pass { lamps };
                 let me = turn.me();
@@ -234,17 +261,22 @@ impl Handles<Order> for Keeper {
                 let second = turn.to(me).send(&pass).is_ok();
                 self.did.push(Did::Sent(first, second));
             }
-            ["fan"] => {
+            Order::Fan => {
                 let lamps = self.give_all(turn)?;
-                let config = KeeperConfig { number: 50, lamps: Vec::new(), makers: Vec::new(), orders: Vec::new() };
+                let config = KeeperConfig {
+                    number: 50,
+                    lamps: Vec::new(),
+                    makers: Vec::new(),
+                    orders: Vec::new(),
+                    takes: Takes::Every,
+                };
                 let Ok(child) = turn.spawn(&50, config) else {
-                    return Err(Fault::new(&Self::order("unborn"))?);
+                    return Err(Fault::new(&Trouble::Unborn)?);
                 };
                 let sent = turn.to(&[child, child]).send(&Pass { lamps }).is_ok();
                 self.did.push(Did::Fanned(sent));
             }
-            ["close"] => turn.close(),
-            _ => {}
+            Order::Close => turn.close(),
         }
 
         Ok(())
@@ -255,7 +287,7 @@ impl Handles<Pass> for Keeper {
     type Sends = ();
 
     fn handle(&mut self, pass: Pass, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        let refuses = self.number == 99;
+        let refuses = self.takes == Takes::None;
         if refuses {
             self.did.push(Did::Left(pass.lamps.len().try_into().unwrap_or(u64::MAX)));
             return Ok(());
@@ -299,10 +331,11 @@ fn engine(hops: usize) -> Engine {
 
 /// Adds the root keeper `number`, given `lamps` by the chassis and what makes lamps held to by `witness`, which sends
 /// itself `orders`.
-fn add(engine: &mut Engine, witness: &Arc<()>, number: u64, lamps: Vec<Given<Lamp>>, orders: &[&str]) -> Seated {
-    let orders = orders.iter().map(|text| String::from(*text)).collect();
+fn add(engine: &mut Engine, witness: &Arc<()>, number: u64, lamps: Vec<Given<Lamp>>, orders: &[Order]) -> Seated {
+    let orders = orders.to_vec();
     let makers = vec![engine.hand(Maker { witness: Arc::downgrade(witness) })];
-    let Ok(id) = engine.add_root::<Keeper>(&number, KeeperConfig { number, lamps, makers, orders }) else {
+    let config = KeeperConfig { number, lamps, makers, orders, takes: Takes::Every };
+    let Ok(id) = engine.add_root::<Keeper>(&number, config) else {
         panic!("the keeper begins");
     };
     let Some(seat) = engine.table().seat(id) else {
@@ -359,7 +392,7 @@ fn a_resource_the_chassis_hands_a_root_goes_with_mail_to_an_actor_in_another_par
         let mut engine = engine(hops);
         let lamp = engine.hand(lit(&witness, 7));
         let other = engine.hand(lit(&witness, 8));
-        let giver = add(&mut engine, &witness, 1, vec![lamp], &["root 2", "shine"]);
+        let giver = add(&mut engine, &witness, 1, vec![lamp], &[Order::Root(2), Order::Shine]);
         let taker = add(&mut engine, &witness, 2, vec![other], &[]);
         assert_ne!(giver.seat.index() % 4, taker.seat.index() % 4, "the roots sit in two parts");
 
@@ -376,7 +409,7 @@ fn a_resource_is_dropped_after_its_owners_closing_turn() {
     // Catches what an actor kept dropped before its closing turn can use it, or never dropped once it has gone.
     let witness = Arc::new(());
     let mut engine = engine(0);
-    let parent = add(&mut engine, &witness, 1, Vec::new(), &["heir 2"]);
+    let parent = add(&mut engine, &witness, 1, Vec::new(), &[Order::Heir(2)]);
 
     settle(&mut engine);
 
@@ -390,7 +423,13 @@ fn a_child_takes_from_its_config_what_its_parent_gave_it_and_what_it_leaves_is_d
     // given to, and one the child leaves that is kept, or dropped with no record in the parent's log.
     let witness = Arc::new(());
     let mut engine = engine(0);
-    let parent = add(&mut engine, &witness, 1, Vec::new(), &["make 3", "spawn 2", "make 4", "spawn 99"]);
+    let parent = add(
+        &mut engine,
+        &witness,
+        1,
+        Vec::new(),
+        &[Order::Make(3), Order::Spawn(2), Order::Make(4), Order::SpawnRefusing(99)],
+    );
 
     settle(&mut engine);
 
@@ -405,7 +444,8 @@ fn a_resource_its_receiver_does_not_take_is_dropped_as_its_log_records() {
     // Catches a resource left beside its receiver for good when the turn of its mail does not take it.
     let witness = Arc::new(());
     let mut engine = engine(0);
-    let parent = add(&mut engine, &witness, 1, Vec::new(), &["spawn 99", "make 6", "pass 99"]);
+    let parent =
+        add(&mut engine, &witness, 1, Vec::new(), &[Order::SpawnRefusing(99), Order::Make(6), Order::Pass(99)]);
 
     settle(&mut engine);
 
@@ -421,8 +461,9 @@ fn a_resource_no_mail_carries_or_whose_receiver_has_gone_is_dropped_as_its_giver
     // was handed to it kept beside an empty seat.
     let witness = Arc::new(());
     let mut engine = engine(0);
-    let giver = add(&mut engine, &witness, 1, Vec::new(), &["make 1", "loose", "make 2", "root 2"]);
-    add(&mut engine, &witness, 2, Vec::new(), &["close"]);
+    let giver =
+        add(&mut engine, &witness, 1, Vec::new(), &[Order::Make(1), Order::Loose, Order::Make(2), Order::Root(2)]);
+    add(&mut engine, &witness, 2, Vec::new(), &[Order::Close]);
 
     settle(&mut engine);
 
@@ -437,7 +478,8 @@ fn a_resource_goes_with_one_piece_of_mail_and_no_more() {
     for hops in [0, 64] {
         let witness = Arc::new(());
         let mut engine = engine(hops);
-        let keeper = add(&mut engine, &witness, 1, Vec::new(), &["make 1", "twice", "make 2", "fan"]);
+        let keeper =
+            add(&mut engine, &witness, 1, Vec::new(), &[Order::Make(1), Order::Twice, Order::Make(2), Order::Fan]);
 
         settle(&mut engine);
 
@@ -453,7 +495,7 @@ fn a_resource_given_in_a_turn_that_fails_is_dropped_as_its_givers_log_records() 
     // Catches what a failed turn gave handed to its receiver, though the mail that carried it is dropped.
     let witness = Arc::new(());
     let mut engine = engine(0);
-    let giver = add(&mut engine, &witness, 1, Vec::new(), &["make 1", "slip 2"]);
+    let giver = add(&mut engine, &witness, 1, Vec::new(), &[Order::Make(1), Order::Slip(2)]);
     let receiver = add(&mut engine, &witness, 2, Vec::new(), &[]);
 
     settle(&mut engine);
@@ -470,7 +512,7 @@ fn every_resource_has_a_ticket_no_other_resource_of_the_engine_has() {
     let witness = Arc::new(());
     let mut engine = engine(0);
     let lamp = engine.hand(lit(&witness, 8));
-    let keeper = add(&mut engine, &witness, 1, vec![lamp], &["make 5", "shine"]);
+    let keeper = add(&mut engine, &witness, 1, vec![lamp], &[Order::Make(5), Order::Shine]);
 
     settle(&mut engine);
 

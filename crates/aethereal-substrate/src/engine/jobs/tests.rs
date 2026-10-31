@@ -247,11 +247,63 @@ struct GiveUp {
     on: JobId,
 }
 
-/// What a worker is told to run: a job of `what`, numbered `at`.
+/// What a worker is told to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum What {
+    /// Runs a [`Double`] of ten times its place.
+    Double,
+    /// Runs a [`Double`] of ten times its place, and another of one more, a hundred places on.
+    Twice,
+    /// Runs a [`Double`] and cancels it in the same turn.
+    Cancel,
+    /// Runs a [`Sleeps`], and a [`Ring`] that gives up on it.
+    GiveUp,
+    /// Runs a [`Sleeps`] and keeps it, to cancel later.
+    Hold,
+    /// Puts two blobs, runs a [`Measure`] of them, and keeps it, to cancel later.
+    Measure,
+    /// Puts a blob and runs a [`Hangs`] of it.
+    Hang,
+    /// Puts a blob and runs a [`Shrink`] of it.
+    Shrink,
+    /// Puts a blob and runs a [`Shrink`] of it past any budget.
+    ShrinkBig,
+    /// Closes the worker.
+    Close,
+    /// Cancels each job it kept.
+    LetGo,
+    /// Cancels each job it kept, and fails its turn.
+    LetGoAndFail,
+    /// Spawns a [`Failing`] child.
+    Nest,
+    /// Runs a [`Light`].
+    Light,
+    /// Runs a [`Fails`].
+    Fails,
+    /// Runs a [`Panics`].
+    Panics,
+    /// Runs a [`Sleeps`].
+    Sleeps,
+    /// Runs an [`Unlinked`].
+    Unlinked,
+    /// Runs a job, and fails its turn.
+    FailTheTurn,
+}
+
+/// How a job a test holds comes to an end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Finishes {
+    /// Its host lets it go, and it is answered.
+    Answered,
+    /// Its worker is told this.
+    Told(What),
+}
+
+/// What a worker is told to run: `what`, numbered `at`.
 #[derive(Plain)]
 #[kind(name = "aether.test.go")]
 struct Go {
-    what: String,
+    what: What,
     at: u64,
 }
 
@@ -304,29 +356,29 @@ impl Handles<Go> for Worker {
 
     fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let which = Which { at: go.at };
-        let id = match go.what.as_str() {
-            "double" => turn.run(&Double { n: 10 * go.at }, &which)?,
-            "twice" => {
+        let id = match go.what {
+            What::Double => turn.run(&Double { n: 10 * go.at }, &which)?,
+            What::Twice => {
                 let first = turn.run(&Double { n: 10 * go.at }, &which)?;
                 self.ran.push((go.at, first.mail().count));
                 turn.run(&Double { n: 10 * go.at + 1 }, &Which { at: go.at + 100 })?
             }
-            "cancel" => {
+            What::Cancel => {
                 let id = turn.run(&Double { n: 10 * go.at }, &which)?;
                 turn.cancel(id);
                 id
             }
-            "give up" => {
+            What::GiveUp => {
                 let sleeping = turn.run(&Sleeps, &which)?;
                 turn.run(&Ring, &GiveUp { on: sleeping })?;
                 sleeping
             }
-            "hold" => {
+            What::Hold => {
                 let id = turn.run(&Sleeps, &which)?;
                 self.kept.push(id);
                 id
             }
-            "measure" => {
+            What::Measure => {
                 let (Ok(blob), Ok(other)) = (turn.put(vec![1, 2, 3, 4]), turn.put(vec![100])) else {
                     return Err(Fault::of_parts(KindId::of::<Measure>(), Vec::new()));
                 };
@@ -334,45 +386,45 @@ impl Handles<Go> for Worker {
                 self.kept.push(id);
                 id
             }
-            "hang" => {
+            What::Hang => {
                 let Ok(blob) = turn.put(vec![1]) else {
                     return Err(Fault::of_parts(KindId::of::<Hangs>(), Vec::new()));
                 };
                 turn.run(&Hangs { blob }, &which)?
             }
-            "shrink" | "shrink big" => {
+            What::Shrink | What::ShrinkBig => {
                 let Ok(blob) = turn.put(vec![1, 2, 3, 4]) else {
                     return Err(Fault::of_parts(KindId::of::<Shrink>(), Vec::new()));
                 };
-                turn.run(&Shrink { blob, big: go.what == "shrink big" }, &which)?
+                turn.run(&Shrink { blob, big: go.what == What::ShrinkBig }, &which)?
             }
-            "close" => {
+            What::Close => {
                 turn.close();
                 return Ok(());
             }
-            "let go" => {
+            What::LetGo => {
                 for id in self.kept.drain(..) {
                     turn.cancel(id);
                 }
                 return Ok(());
             }
-            "let go and fail" => {
+            What::LetGoAndFail => {
                 for id in self.kept.drain(..) {
                     turn.cancel(id);
                 }
                 return Err(Fault::of_parts(KindId::of::<Go>(), Vec::new()));
             }
-            "nest" => {
+            What::Nest => {
                 let spawned = turn.spawn::<Failing>(&(), Which { at: go.at });
                 self.refused.push(spawned.is_err());
                 return Ok(());
             }
-            "light" => turn.run(&Light, &which)?,
-            "fails" => turn.run(&Fails, &which)?,
-            "panics" => turn.run(&Panics, &which)?,
-            "sleeps" => turn.run(&Sleeps, &which)?,
-            "unlinked" => turn.run(&Unlinked, &which)?,
-            _ => {
+            What::Light => turn.run(&Light, &which)?,
+            What::Fails => turn.run(&Fails, &which)?,
+            What::Panics => turn.run(&Panics, &which)?,
+            What::Sleeps => turn.run(&Sleeps, &which)?,
+            What::Unlinked => turn.run(&Unlinked, &which)?,
+            What::FailTheTurn => {
                 turn.run(&Double { n: 0 }, &which)?;
                 return Err(Fault::of_parts(KindId::of::<Go>(), Vec::new()));
             }
@@ -651,8 +703,8 @@ fn engine(jobs: Arc<dyn Jobs>) -> (Engine, Seated) {
 }
 
 /// Has a poker of `key` tell the worker in `engine` to run `what`, numbered `key`, and steps until it has.
-fn poke(engine: &mut Engine, key: u64, what: &str) {
-    let Ok(_) = engine.add_root::<Poker>(&key, Go { what: String::from(what), at: key }) else {
+fn poke(engine: &mut Engine, key: u64, what: What) {
+    let Ok(_) = engine.add_root::<Poker>(&key, Go { what, at: key }) else {
         panic!("the poker begins");
     };
     settle(engine);
@@ -694,8 +746,8 @@ fn a_job_is_answered_at_a_bring_with_the_context_its_turn_kept() {
     // Each job takes the next count of what the worker sends: none is taken twice, as its `begin`'s first, then a
     // turn's, then two of one turn.
     let (mut engine, seated) = engine(Arc::new(Inline::new(Arc::new(Services::none()))));
-    poke(&mut engine, 1, "double");
-    poke(&mut engine, 2, "twice");
+    poke(&mut engine, 1, What::Double);
+    poke(&mut engine, 2, What::Twice);
     assert_eq!(worker(&engine, seated).ran, [(0, 1), (1, 2), (2, 3), (2, 4)]);
     assert_eq!(done(&engine, seated), [], "nothing is answered before a bring");
 
@@ -737,7 +789,7 @@ fn a_job_that_fails_panics_or_waits_is_answered_faulted_and_logged() {
     // Catches a job's fault, a panic, and a job that waits where nothing polls it again, left unanswered or answered
     // as if it had run, and a fault kept out of the actor's log.
     let (mut engine, seated) = engine(Arc::new(Inline::new(Arc::new(Services::none()))));
-    for (key, what) in [(1, "fails"), (2, "panics"), (3, "sleeps")] {
+    for (key, what) in [(1, What::Fails), (2, What::Panics), (3, What::Sleeps)] {
         poke(&mut engine, key, what);
     }
     engine.bring();
@@ -760,7 +812,7 @@ fn a_native_turn_s_job_runs_with_its_own_code_though_no_program_lists_its_type()
     // answered that no runner runs it: an engine that lists none runs it, and its runner is handed its type.
     let noting = Arc::new(Noting { inline: Inline::new(Arc::new(Services::none())), started: Mutex::new(Vec::new()) });
     let (mut engine, seated) = engine(Arc::clone(&noting) as Arc<dyn Jobs>);
-    poke(&mut engine, 4, "unlinked");
+    poke(&mut engine, 4, What::Unlinked);
     engine.bring();
     settle(&mut engine);
 
@@ -778,10 +830,10 @@ fn a_turn_that_fails_runs_no_job() {
     let (mut engine, seated) = engine(Arc::clone(&noting) as Arc<dyn Jobs>);
     // The turn that fails ends the worker, so what it ran is read before.
     assert_eq!(worker(&engine, seated).ran, [(0, 1)]);
-    poke(&mut engine, 1, "fail the turn");
+    poke(&mut engine, 1, What::FailTheTurn);
     assert!(!engine.table().is_live(seated.id), "the turn failed");
     let (mut nesting, nester) = self::engine(Arc::clone(&noting) as Arc<dyn Jobs>);
-    poke(&mut nesting, 2, "nest");
+    poke(&mut nesting, 2, What::Nest);
     assert_eq!(worker(&nesting, nester).ran, [(0, 1)]);
     assert_eq!(worker(&nesting, nester).refused, [true]);
 
@@ -800,11 +852,11 @@ fn a_cancelled_job_is_never_answered_and_its_host_is_asked_to_stop() {
     // is answered when it is let go of.
     let holding = Arc::new(Holding::new());
     let (mut engine, seated) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
-    poke(&mut engine, 1, "cancel");
-    poke(&mut engine, 2, "give up");
-    poke(&mut engine, 3, "hold");
-    poke(&mut engine, 4, "let go");
-    poke(&mut engine, 5, "sleeps");
+    poke(&mut engine, 1, What::Cancel);
+    poke(&mut engine, 2, What::GiveUp);
+    poke(&mut engine, 3, What::Hold);
+    poke(&mut engine, 4, What::LetGo);
+    poke(&mut engine, 5, What::Sleeps);
     engine.bring();
     settle(&mut engine);
     assert_eq!(worker(&engine, seated).ran, [(0, 1), (1, 2), (2, 3), (3, 5), (5, 6)]);
@@ -825,10 +877,10 @@ fn a_turn_that_fails_cancels_nothing() {
     // Catches the cancels of a failed turn sent to the host, as the mail of one is never sent.
     let holding = Arc::new(Holding::new());
     let (mut engine, seated) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
-    poke(&mut engine, 1, "hold");
+    poke(&mut engine, 1, What::Hold);
     // The turn that fails ends the worker, so what it ran is read before.
     assert_eq!(worker(&engine, seated).ran, [(0, 1), (1, 2)]);
-    poke(&mut engine, 2, "let go and fail");
+    poke(&mut engine, 2, What::LetGoAndFail);
 
     assert!(!engine.table().is_live(seated.id), "the turn failed");
     assert_eq!(holding.stopped(), Vec::<u64>::new());
@@ -840,7 +892,7 @@ fn a_job_reads_a_copy_of_each_blob_it_refers_to() {
     // job refused for holding no pin, so the job faults, and a reference read as another blob's bytes. It refers to one
     // blob twice, and another once.
     let (mut engine, seated) = engine(Arc::new(Inline::new(Arc::new(Services::none()))));
-    poke(&mut engine, 1, "measure");
+    poke(&mut engine, 1, What::Measure);
     engine.bring();
     settle(&mut engine);
 
@@ -855,17 +907,19 @@ fn a_job_keeps_the_blobs_it_refers_to_until_it_is_answered_cancelled_or_its_acto
     // job of two blobs, held by its host: the first's is answered, the second's cancelled, and the third worker closes.
     // Catches too the changes to pins the runner made left on the engine's queue, which would grow for good.
     let mut held = Vec::new();
-    for (key, end) in [(1, "answered"), (2, "let go"), (3, "close")] {
+    let ends = [(1, Finishes::Answered), (2, Finishes::Told(What::LetGo)), (3, Finishes::Told(What::Close))];
+    for (key, end) in ends {
         let holding = Arc::new(Holding::new());
         let (mut engine, _) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
-        poke(&mut engine, key, "measure");
+        poke(&mut engine, key, What::Measure);
         let in_flight = engine.blobs.held().0;
-        if end == "answered" {
-            holding.let_go();
-            engine.bring();
-            settle(&mut engine);
-        } else {
-            poke(&mut engine, key + 10, end);
+        match end {
+            Finishes::Answered => {
+                holding.let_go();
+                engine.bring();
+                settle(&mut engine);
+            }
+            Finishes::Told(what) => poke(&mut engine, key + 10, what),
         }
         held.push((in_flight, engine.blobs.held().0, engine.job_pins.len()));
     }
@@ -880,8 +934,8 @@ fn a_job_changes_its_engines_pins_on_the_engines_queue_as_it_runs_and_as_it_is_d
     // thread's own buffer not put back once a job has run on it. Both jobs run on this thread, with a buffer open.
     let holding = Arc::new(Holding::new());
     let (mut engine, _) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
-    poke(&mut engine, 1, "measure");
-    poke(&mut engine, 2, "hang");
+    poke(&mut engine, 1, What::Measure);
+    poke(&mut engine, 2, What::Hang);
     let Ok(probe) = engine.put_blob(vec![9]) else {
         panic!("a blob is put");
     };
@@ -915,7 +969,7 @@ fn a_job_answers_with_the_blobs_it_put_once_the_engine_has_put_them() {
     // answer's own, and a blob kept once nothing refers to it. The job puts two, and answers with the one it was
     // handed between them.
     let (mut engine, seated) = engine(Arc::new(Inline::new(Arc::new(Services::none()))));
-    poke(&mut engine, 1, "shrink");
+    poke(&mut engine, 1, What::Shrink);
     engine.bring();
     settle(&mut engine);
 
@@ -933,7 +987,7 @@ fn a_job_whose_blob_does_not_fit_is_answered_faulted_and_puts_none() {
     // Catches a blob past the budget for blobs put anyway, or the job answered as if it fit, and the blob it put
     // before it kept once the job is answered.
     let (mut engine, seated) = engine(Arc::new(Inline::new(Arc::new(Services::none()))));
-    poke(&mut engine, 1, "shrink big");
+    poke(&mut engine, 1, What::ShrinkBig);
     engine.bring();
     settle(&mut engine);
 
@@ -952,7 +1006,7 @@ fn a_job_answers_with_the_resources_it_handed_and_its_actor_takes_them() {
     // other's place, or both at one, so the lanterns are swapped or one is lost; a resource kept for mail other than
     // the answer that holds it, so the take is refused; and a resource handed and not answered with carried anyway.
     let (mut engine, seated) = engine(Arc::new(Inline::new(Arc::new(Services::none()))));
-    poke(&mut engine, 1, "light");
+    poke(&mut engine, 1, What::Light);
     engine.bring();
     settle(&mut engine);
 
@@ -970,7 +1024,7 @@ fn past_the_jobs_its_host_lets_be_in_flight_a_job_waits_in_order_until_one_finis
     let holding = Arc::new(Holding { most: 1, ..Holding::new() });
     let (mut engine, seated) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
     for key in 1..=3 {
-        poke(&mut engine, key, "hold");
+        poke(&mut engine, key, What::Hold);
     }
     let mut holds = vec![holding.holding()];
 
@@ -991,11 +1045,11 @@ fn a_waiting_job_cancelled_or_of_an_actor_that_ended_is_never_handed_out() {
     // Catches a job cancelled while it waits handed out later, or the host asked to stop one it was never handed, and
     // the waiting job of an actor that has ended handed out, to be answered to no one. The host lets one be in flight.
     let mut handed = Vec::new();
-    for end in ["let go", "close"] {
+    for end in [What::LetGo, What::Close] {
         let holding = Arc::new(Holding { most: 1, ..Holding::new() });
         let (mut engine, _) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
-        poke(&mut engine, 1, "hold");
-        poke(&mut engine, 2, "hold");
+        poke(&mut engine, 1, What::Hold);
+        poke(&mut engine, 2, What::Hold);
         poke(&mut engine, 3, end);
         holding.let_go();
         engine.bring();

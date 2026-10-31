@@ -1,6 +1,7 @@
 //! Streams as a program runs them: an asker opens them through `Streams`, a receiver serves them through `Serving`, and
 //! each part, credit, stop, and answer goes as mail through the engine (ADR-0017).
 
+use Name::{A, B, L};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ended, Ending, Enough, Fault,
     Handles, More, Number, Open, Part, Seated, Serving, Stream, StreamKey, Streamed, Streams, Taken, Time, ToAny,
@@ -82,6 +83,19 @@ enum Which {
     Logs,
 }
 
+/// Which stream of a reader's a thing is of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum Name {
+    /// The first of its file streams.
+    A,
+    /// The second of its file streams.
+    B,
+    /// Its log stream.
+    L,
+    /// One it kept nothing for.
+    Unknown,
+}
+
 /// How a stream ended, as its asker keeps it, whichever protocol it is of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 enum Finished {
@@ -110,17 +124,17 @@ enum Served {
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 enum Took {
     /// The part at `index` of the stream `name`.
-    Part { name: String, index: u32 },
+    Part { name: Name, index: u32 },
     /// The answer to the stream `name`.
-    Done { name: String, how: Finished },
+    Done { name: Name, how: Finished },
 }
 
 impl Took {
     /// Whether it is of the stream `name`.
-    fn is_of(&self, stream: &str) -> bool {
+    fn is_of(&self, stream: Name) -> bool {
         let (Self::Part { name, .. } | Self::Done { name, .. }) = self;
 
-        name == stream
+        *name == stream
     }
 }
 
@@ -398,18 +412,68 @@ impl Handles<Ended> for Library {
 #[derive(Plain)]
 #[kind(name = "aether.test.stream.tag")]
 struct Tag {
-    name: String,
+    name: Name,
     taken: u32,
     stop_after: Option<u32>,
     close_after_first: bool,
 }
 
-/// An order a reader sends itself: `files NAME CHUNKS`, `logs NAME CHUNKS`, each followed by `stop N`, `close N`
-/// (its library closes after N chunks), or `leave` (it closes itself after its first part).
-#[derive(Plain)]
+/// What comes of a stream a reader opens, past its parts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum Then {
+    /// It reads it to the end.
+    Reads,
+    /// It stops the stream after this many parts.
+    StopsAfter(u32),
+    /// Its library closes after this many chunks.
+    ClosesAfter(u32),
+    /// It closes itself after its first part.
+    LeavesAfterFirst,
+}
+
+/// An order a reader sends itself: to open the stream `name` of the protocol `which`, of `parts` parts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.test.stream.order")]
 struct Order {
-    text: String,
+    which: Which,
+    name: Name,
+    parts: u32,
+    then: Then,
+}
+
+impl Order {
+    /// The order, stopping the stream after `parts` parts.
+    const fn stopping_after(self, parts: u32) -> Self {
+        Self { then: Then::StopsAfter(parts), ..self }
+    }
+
+    /// The order, its library closing after `chunks` chunks.
+    const fn closing_after(self, chunks: u32) -> Self {
+        Self { then: Then::ClosesAfter(chunks), ..self }
+    }
+
+    /// The order, the reader closing itself after its first part.
+    const fn leaving(self) -> Self {
+        Self { then: Then::LeavesAfterFirst, ..self }
+    }
+}
+
+/// An order to read the file stream `name` of `parts` chunks.
+const fn read(name: Name, parts: u32) -> Order {
+    Order { which: Which::Files, name, parts, then: Then::Reads }
+}
+
+/// An order to read the log stream `name` of `parts` lines.
+const fn tail(name: Name, parts: u32) -> Order {
+    Order { which: Which::Logs, name, parts, then: Then::Reads }
+}
+
+/// Why a reader could not begin.
+#[derive(Plain)]
+#[kind(name = "aether.test.stream.trouble")]
+enum Trouble {
+    NoLibrary,
+    NoWindow,
 }
 
 /// A reader's orders, and how many parts each of its streams may be ahead.
@@ -417,7 +481,7 @@ struct Order {
 #[kind(name = "aether.test.stream.reader_config")]
 struct ReaderConfig {
     window: u32,
-    orders: Vec<String>,
+    orders: Vec<Order>,
 }
 
 /// An asker: it spawns a library as it begins, opens the streams its orders name, and keeps each part and each answer.
@@ -444,13 +508,13 @@ impl Actor for Reader {
 
     fn begin(config: ReaderConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let Ok(library) = turn.spawn(&1, Blank) else {
-            return Err(Fault::new(&Order { text: String::from("no library") })?);
+            return Err(Fault::new(&Trouble::NoLibrary)?);
         };
         let Some(window) = NonZeroU32::new(config.window) else {
-            return Err(Fault::new(&Order { text: String::from("no window") })?);
+            return Err(Fault::new(&Trouble::NoWindow)?);
         };
-        for text in config.orders {
-            turn.to(turn.me()).send(&Order { text })?;
+        for order in config.orders {
+            turn.to(turn.me()).send(&order)?;
         }
 
         Ok(Self { library, files: Streams::new(window), logs: Streams::new(window), took: Vec::new() })
@@ -461,15 +525,15 @@ impl Actor for Reader {
     }
 }
 
-/// What an order asks to open: the stream's name, the request, and what to keep for it.
-fn opening<S: Ends>(words: &[&str]) -> (S::Open, Tag) {
-    let name = String::from(words[1]);
-    let parts = words[2].parse().unwrap_or_default();
-    let count = words.get(4).and_then(|count| count.parse().ok());
-    let then = words.get(3).copied();
-    let stop_after = count.filter(|_| then == Some("stop"));
-    let close_after = count.filter(|_| then == Some("close"));
-    let close_after_first = then == Some("leave");
+/// What `order` asks to open: the request, and what to keep for it.
+fn opening<S: Ends>(order: Order) -> (S::Open, Tag) {
+    let Order { name, parts, then, .. } = order;
+    let (stop_after, close_after) = match then {
+        Then::StopsAfter(parts) => (Some(parts), None),
+        Then::ClosesAfter(chunks) => (None, Some(chunks)),
+        Then::Reads | Then::LeavesAfterFirst => (None, None),
+    };
+    let close_after_first = then == Then::LeavesAfterFirst;
 
     (S::asking(parts, close_after), Tag { name, taken: 0, stop_after, close_after_first })
 }
@@ -483,14 +547,15 @@ impl Handles<Order> for Reader {
     );
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let words: Vec<&str> = order.text.split(' ').collect();
-        let is_files = words[0] == "files";
-        if is_files {
-            let (read, tag) = opening::<Files>(&words);
-            self.files.open(turn, self.library.protocol(), read, tag)?;
-        } else {
-            let (tail, tag) = opening::<Logs>(&words);
-            self.logs.open(turn, self.library.protocol(), tail, tag)?;
+        match order.which {
+            Which::Files => {
+                let (read, tag) = opening::<Files>(order);
+                self.files.open(turn, self.library.protocol(), read, tag)?;
+            }
+            Which::Logs => {
+                let (tail, tag) = opening::<Logs>(order);
+                self.logs.open(turn, self.library.protocol(), tail, tag)?;
+            }
         }
 
         Ok(())
@@ -510,7 +575,7 @@ where
     let Some(Taken { number, value: chunk, kept: tag }) = streams.part::<_, _, IM>(turn, part)? else {
         return Ok(());
     };
-    took.push(Took::Part { name: tag.name.clone(), index: S::index(&chunk) });
+    took.push(Took::Part { name: tag.name, index: S::index(&chunk) });
     tag.taken += 1;
     let stops = tag.stop_after == Some(tag.taken);
     let leaves = tag.close_after_first;
@@ -542,7 +607,7 @@ impl Handles<Part<Logs>> for Reader {
 
 /// How the stream kept as `tag` ended.
 fn ended<S: Ends>(tag: Option<Tag>, answered: Answered<S::Done>) -> Took {
-    let name = tag.map_or_else(|| String::from("unknown"), |tag| tag.name);
+    let name = tag.map_or(Name::Unknown, |tag| tag.name);
     let how = match answered {
         Answered::Yes(done) => S::ended(done),
         Answered::No(why) => Finished::No(why),
@@ -601,13 +666,12 @@ struct Run {
 
 /// What came of a reader that follows `orders`, with streams `window` parts ahead, and its library, in an engine in
 /// `parts` parts that each run at most `hops` fused hops a step.
-fn run((parts, hops): (usize, usize), window: u32, orders: &[&str]) -> Run {
+fn run((parts, hops): (usize, usize), window: u32, orders: &[Order]) -> Run {
     let Some(parts) = NonZeroUsize::new(parts) else {
         panic!("an engine has parts");
     };
     let mut engine = Engine::new(parts, 1024, 1 << 20, 1 << 20, hops).ready();
-    let orders = orders.iter().map(|text| String::from(*text)).collect();
-    let Ok(id) = engine.add_root::<Reader>(&(), ReaderConfig { window, orders }) else {
+    let Ok(id) = engine.add_root::<Reader>(&(), ReaderConfig { window, orders: orders.to_vec() }) else {
         panic!("the reader begins");
     };
     let Some(seat) = engine.table().seat(id) else {
@@ -634,18 +698,18 @@ fn run((parts, hops): (usize, usize), window: u32, orders: &[&str]) -> Run {
 }
 
 /// What of `took` is of the stream `name`, in order.
-fn of(took: &[Took], name: &str) -> Vec<Took> {
+fn of(took: &[Took], name: Name) -> Vec<Took> {
     took.iter().filter(|took| took.is_of(name)).cloned().collect()
 }
 
 /// The part at `index` of the stream `name`.
-fn part(name: &str, index: u32) -> Took {
-    Took::Part { name: String::from(name), index }
+const fn part(name: Name, index: u32) -> Took {
+    Took::Part { name, index }
 }
 
 /// The answer to the stream `name`.
-fn done(name: &str, how: Finished) -> Took {
-    Took::Done { name: String::from(name), how }
+const fn done(name: Name, how: Finished) -> Took {
+    Took::Done { name, how }
 }
 
 /// The library sent a file stream this many chunks in a turn.
@@ -663,11 +727,11 @@ fn a_stream_sends_its_parts_as_credit_comes_and_then_its_answer() {
     // Catches parts sent past the credit granted, credit not spent as parts go, a part taken without granting one back
     // (the stream would stall and never be answered), and an answer that overtakes its parts.
     for engine in ENGINES {
-        let run = run(engine, 2, &["files a 5"]);
+        let run = run(engine, 2, &[read(A, 5)]);
 
-        let parts = [part("a", 0), part("a", 1), part("a", 2), part("a", 3), part("a", 4)];
+        let parts = [part(A, 0), part(A, 1), part(A, 2), part(A, 3), part(A, 4)];
         assert_eq!(run.reader[..5], parts, "{engine:?}");
-        assert_eq!(run.reader[5..], [done("a", Finished::Sent)], "{engine:?}");
+        assert_eq!(run.reader[5..], [done(A, Finished::Sent)], "{engine:?}");
         assert_eq!(run.library, [files(2), files(1), files(1), files(1)], "{engine:?}");
     }
 }
@@ -677,11 +741,11 @@ fn two_streams_to_one_receiver_stay_apart() {
     // Catches two streams of one asker given one number, a part handed what was kept for another stream, and an
     // answer that hands back another stream's.
     for engine in ENGINES {
-        let run = run(engine, 1, &["files a 3", "files b 2"]);
+        let run = run(engine, 1, &[read(A, 3), read(B, 2)]);
 
-        let first = [part("a", 0), part("a", 1), part("a", 2), done("a", Finished::Sent)];
-        assert_eq!(of(&run.reader, "a"), first, "{engine:?}");
-        assert_eq!(of(&run.reader, "b"), [part("b", 0), part("b", 1), done("b", Finished::Sent)], "{engine:?}");
+        let first = [part(A, 0), part(A, 1), part(A, 2), done(A, Finished::Sent)];
+        assert_eq!(of(&run.reader, A), first, "{engine:?}");
+        assert_eq!(of(&run.reader, B), [part(B, 0), part(B, 1), done(B, Finished::Sent)], "{engine:?}");
     }
 }
 
@@ -690,12 +754,12 @@ fn streams_of_two_protocols_to_one_receiver_stay_apart() {
     // Catches credit or a stop for one protocol's stream taken by another's of the same number, and two protocols'
     // requests or parts of one layout given one kind id.
     for engine in ENGINES {
-        let run = run(engine, 1, &["files a 3", "logs l 3"]);
+        let run = run(engine, 1, &[read(A, 3), tail(L, 3)]);
 
-        let first = [part("a", 0), part("a", 1), part("a", 2), done("a", Finished::Sent)];
-        assert_eq!(of(&run.reader, "a"), first, "{engine:?}");
-        let second = [part("l", 0), part("l", 1), part("l", 2), done("l", Finished::Sent)];
-        assert_eq!(of(&run.reader, "l"), second, "{engine:?}");
+        let first = [part(A, 0), part(A, 1), part(A, 2), done(A, Finished::Sent)];
+        assert_eq!(of(&run.reader, A), first, "{engine:?}");
+        let second = [part(L, 0), part(L, 1), part(L, 2), done(L, Finished::Sent)];
+        assert_eq!(of(&run.reader, L), second, "{engine:?}");
         assert_eq!(run.library, [files(1), logs(1)].repeat(3), "{engine:?}");
     }
 }
@@ -705,9 +769,9 @@ fn a_stopped_stream_passes_over_its_late_parts_and_is_answered() {
     // Catches parts already on their way taken after a stop, credit granted for them, and a stopped stream that the
     // receiver never answers, which would keep what its asker kept forever.
     for engine in ENGINES {
-        let run = run(engine, 4, &["files a 10 stop 1"]);
+        let run = run(engine, 4, &[read(A, 10).stopping_after(1)]);
 
-        assert_eq!(run.reader, [part("a", 0), done("a", Finished::Stopped)], "{engine:?}");
+        assert_eq!(run.reader, [part(A, 0), done(A, Finished::Stopped)], "{engine:?}");
         assert_eq!(run.library, [files(4), files(1), Served::Stopped(Which::Files)], "{engine:?}");
     }
 }
@@ -717,10 +781,10 @@ fn a_stream_whose_receiver_ends_is_answered_that_it_ended() {
     // Catches the request a receiver holds for a stream let go of unanswered as its receiver ends, which would leave
     // the asker keeping what it kept for good.
     for engine in ENGINES {
-        let run = run(engine, 4, &["files a 5 close 2"]);
+        let run = run(engine, 4, &[read(A, 5).closing_after(2)]);
 
-        let ended = done("a", Finished::No(Unanswered::Ended));
-        assert_eq!(run.reader, [part("a", 0), part("a", 1), ended], "{engine:?}");
+        let ended = done(A, Finished::No(Unanswered::Ended));
+        assert_eq!(run.reader, [part(A, 0), part(A, 1), ended], "{engine:?}");
     }
 }
 
@@ -729,7 +793,7 @@ fn a_receiver_lets_go_of_the_streams_of_an_asker_that_ended() {
     // Catches an asker left unwatched, so the streams of one that ended are kept, with what they hold, for as long as
     // their receiver lives.
     for engine in ENGINES {
-        let run = run(engine, 4, &["files a 10 leave"]);
+        let run = run(engine, 4, &[read(A, 10).leaving()]);
 
         assert_eq!(run.library, [files(4), files(1), Served::AskerGone(1)], "{engine:?}");
     }
