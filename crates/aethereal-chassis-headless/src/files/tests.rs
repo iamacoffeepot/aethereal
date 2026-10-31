@@ -1,14 +1,10 @@
 //! The native host's storage, and the file capability on the headless host (ADR-0032).
 
 use super::*;
-use crate::Exit;
-use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Tick, Top, Turn, path,
-};
-use aethereal_data::Bound;
+use aethereal_actor::{Answered, Tick};
 use aethereal_files::{FileRead, ReadFile};
 use aethereal_substrate::Host;
-use core::time::Duration;
+use aethereal_substrate::harness::{Harness, Unheard};
 use std::env;
 use std::process;
 
@@ -79,131 +75,34 @@ fn a_file_that_is_not_there_is_missing() {
     assert_eq!(read(&storage, "tiles"), Err(Unread::Missing));
 }
 
-/// What the reader said became of each read.
-static READ: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// A request for the asset at `path`.
+fn asset(path: &str) -> ReadFile {
+    let Ok(path) = FilePath::parse(path) else {
+        panic!("the test's path conforms");
+    };
 
-/// What a reader keeps for a read: the name it asked for.
-#[derive(Plain)]
-#[kind(name = "aether.test.files.asked")]
-struct Asked {
-    path: String,
-}
-
-/// What a reader is made from: the paths it asks for.
-#[derive(Plain)]
-#[kind(name = "aether.test.files.reader_config")]
-struct ReaderConfig {
-    paths: Vec<String>,
-}
-
-/// A root that asks the file capability for each of its paths as it begins, says what became of each, and asks the
-/// program to stop once all are answered; or, if fifty ticks go by first, gives up and asks it to stop.
-#[derive(Bound)]
-#[kind(name = "aether.test.files.reader")]
-struct Reader {
-    waiting: u64,
-    ticks: u64,
-}
-
-impl ChildOf for Reader {
-    type Parent = Top;
-}
-
-impl Actor for Reader {
-    type Config = ReaderConfig;
-    type Key = ();
-    type Handles = (On<Tick>, Answer<FileRead, Asked>);
-    type BeginSends = (Asks<Path<Files>, ReadFile, Asked>,);
-    type EndSends = ();
-
-    fn begin(config: ReaderConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Tick>();
-        let waiting = u64::try_from(config.paths.len()).unwrap_or(u64::MAX);
-        for name in config.paths {
-            let file = FilePath::parse(name.as_str())?;
-            let read = ReadFile { namespace: Namespace::Assets, path: file };
-            turn.to(path::<Files>(())).ask(&read, &Asked { path: name })?;
-        }
-
-        Ok(Self { waiting, ticks: 0 })
-    }
-
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Bootstrap<Headless> for Reader {
-    const SECTION: &'static str = "reader";
-    type Settings = ();
-    type Needs = ();
-    type Provides = ();
-
-    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        let paths = vec![String::from("tiles/grass.png"), String::from("tiles/stone.png")];
-        cx.begin(&(), ReaderConfig { paths })
-    }
-}
-
-impl Handles<On<Tick>> for Reader {
-    type Sends = ();
-
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        self.ticks += 1;
-        let is_long = self.ticks == 50;
-        if is_long {
-            READ.lock().map(|mut read| read.push(String::from("gave up"))).ok();
-            turn.quit();
-        }
-
-        Ok(())
-    }
-}
-
-impl Handles<Answer<FileRead, Asked>> for Reader {
-    type Sends = ();
-
-    fn handle(
-        &mut self,
-        (answered, asked): (Answered<FileRead>, Asked),
-        turn: &mut Turn<'_, Self, ()>,
-    ) -> Result<(), Fault> {
-        let said = match answered {
-            Answered::Yes(FileRead::Read { bytes }) => String::from_utf8_lossy(turn.read(&bytes)).into_owned(),
-            Answered::Yes(FileRead::Missing) => String::from("missing"),
-            Answered::Yes(FileRead::Unavailable) => String::from("unavailable"),
-            Answered::Yes(FileRead::Failed) => String::from("failed"),
-            Answered::No(why) => format!("{why:?}"),
-        };
-        READ.lock().map(|mut read| read.push(format!("{}: {said}", asked.path))).ok();
-        self.waiting -= 1;
-        let is_done = self.waiting == 0;
-        if is_done {
-            turn.quit();
-        }
-
-        Ok(())
-    }
+    ReadFile { namespace: Namespace::Assets, path }
 }
 
 #[test]
-fn an_actor_reads_an_asset_through_the_file_capability() {
+fn an_actor_reads_an_asset_through_the_file_capability() -> Result<(), Unheard> {
     // Catches a host that serves its runners no storage (every read unavailable) or not the capability's job (every
     // read failed), a read answered to no one or to the wrong request, and a missing file answered as anything but
     // missing. The program lists the capability once, and never its job.
     let dir = Dir::new("capability", &[("tiles/grass.png", b"grass")]);
-    let built = Headless::program().with_cycle::<(Tick,)>().root_with::<Files>(dir.roots(2)).root::<Reader>().build();
-    let Ok(headless) = built else {
-        panic!("the program builds");
+    let mut harness = Harness::of(Headless::program().with_cycle::<(Tick,)>().root_with::<Files>(dir.roots(2)))?;
+    let files = harness.root::<Files>();
+
+    let grass = harness.ask(files, &asset("tiles/grass.png"))?;
+    let stone = harness.ask(files, &asset("tiles/stone.png"))?;
+
+    let Answered::Yes(FileRead::Read { bytes }) = harness.answer(grass)? else {
+        panic!("the file there is read");
+    };
+    assert_eq!(harness.host().engine().blob(&bytes), Some(&b"grass"[..]));
+    let Answered::Yes(FileRead::Missing) = harness.answer(stone)? else {
+        panic!("the file not there is missing");
     };
 
-    let exit = headless.run(Duration::from_millis(5), Duration::from_secs(30));
-
-    assert_eq!(exit, Exit::Stopped);
-    let Ok(read) = READ.lock() else {
-        panic!("what was said is not poisoned");
-    };
-    let mut read = read.clone();
-    read.sort();
-    assert_eq!(read, ["tiles/grass.png: grass", "tiles/stone.png: missing"]);
+    Ok(())
 }

@@ -1,16 +1,13 @@
 //! The headless host making its runners for the job types its program lists (ADR-0029).
 
-use crate::{Exit, Headless};
+use crate::Headless;
+use crate::waiting::{self, BUDGET};
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Handles, Job, On, Runner, Running, Tick, Top, Turn,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Handles, Job, Runner, Running, Tick, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
+use aethereal_substrate::harness::{Harness, Turned, Unheard};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
-use core::time::Duration;
-use std::sync::Mutex;
-
-/// What the counter said became of its job.
-static COUNTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// A job that answers with one more than `n`.
 #[derive(Plain)]
@@ -20,7 +17,7 @@ struct Count {
 }
 
 /// What a count answers with.
-#[derive(Plain)]
+#[derive(Debug, PartialEq, Eq, Plain)]
 #[kind(name = "aether.test.counted")]
 struct Counted {
     n: u64,
@@ -40,13 +37,11 @@ impl Job for Count {
 #[kind(name = "aether.test.nothing_kept")]
 struct NothingKept;
 
-/// A root that runs a count as it begins, while its program bootstraps, and asks the program to stop once it is
-/// answered; or, if fifty ticks go by first, gives up and asks it to stop.
+/// A root that runs a count as it begins, while its program bootstraps: the test reads its answer from the turn it
+/// was handed.
 #[derive(Bound)]
 #[kind(name = "aether.test.counter")]
-struct Counter {
-    ticks: u64,
-}
+struct Counter;
 
 impl ChildOf for Counter {
     type Parent = Top;
@@ -55,15 +50,14 @@ impl ChildOf for Counter {
 impl Actor for Counter {
     type Config = NothingKept;
     type Key = ();
-    type Handles = (On<Tick>, Answer<Counted, NothingKept>);
+    type Handles = (Answer<Counted, NothingKept>,);
     type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: NothingKept, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Tick>();
         turn.run(&Count { n: 1 }, &NothingKept)?;
 
-        Ok(Self { ticks: 0 })
+        Ok(Self)
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -82,55 +76,29 @@ impl<H: Host> Bootstrap<H> for Counter {
     }
 }
 
-impl Handles<On<Tick>> for Counter {
-    type Sends = ();
-
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        self.ticks += 1;
-        let is_long = self.ticks == 50;
-        if is_long {
-            COUNTED.lock().map(|mut counted| counted.push(String::from("gave up"))).ok();
-            turn.quit();
-        }
-
-        Ok(())
-    }
-}
-
 impl Handles<Answer<Counted, NothingKept>> for Counter {
     type Sends = ();
 
-    fn handle(
-        &mut self,
-        (counted, _): (Answered<Counted>, NothingKept),
-        turn: &mut Turn<'_, Self, ()>,
-    ) -> Result<(), Fault> {
-        let said = match counted {
-            Answered::Yes(counted) => format!("counted {}", counted.n),
-            Answered::No(why) => format!("not counted: {why:?}"),
-        };
-        COUNTED.lock().map(|mut counted| counted.push(said)).ok();
-        turn.quit();
-
+    fn handle(&mut self, _: (Answered<Counted>, NothingKept), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 #[test]
-fn a_program_s_jobs_run_on_the_runners_its_host_makes() {
+fn a_program_s_jobs_run_on_the_runners_its_host_makes() -> Result<(), Unheard> {
     // Catches a host that makes no runners, or makes them without the job types its program lists: the count is
-    // answered faulted, or never, and the counter gives up. Its `begin` runs the count as the program bootstraps,
+    // answered faulted, or never, and the test's wait is spent. Its `begin` runs the count as the program bootstraps,
     // before the host has made its runners, so the count waits for them.
-    let built = Headless::program().with_cycle::<(Tick,)>().root::<Counter>().build();
-    let Ok(headless) = built else {
-        panic!("the program builds");
-    };
+    let mut harness = Harness::of(Headless::program().with_cycle::<(Tick,)>().root::<Counter>())?;
+    let mut turned = Vec::new();
 
-    let exit = headless.run(Duration::from_millis(5), Duration::from_secs(30));
+    waiting::until(BUDGET, || {
+        turned.extend(harness.step_turns());
+        !turned.is_empty()
+    });
 
-    assert_eq!(exit, Exit::Stopped);
-    let Ok(counted) = COUNTED.lock() else {
-        panic!("what was said is not poisoned");
-    };
-    assert_eq!(*counted, ["counted 2"]);
+    let counted: Vec<Result<Counted, Unheard>> = turned.iter().map(Turned::read).collect();
+    assert_eq!(counted, [Ok(Counted { n: 2 })]);
+
+    Ok(())
 }
