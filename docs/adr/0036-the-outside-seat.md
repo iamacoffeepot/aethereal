@@ -46,18 +46,36 @@ harness.reply(request, &Response::new(Status::Ok, "text/plain", b"hi".to_vec()))
 
 - **Asking.** `Harness::ask(target, &kind)` builds only when the target's protocol answers the kind with one kind (ADR-0016: `Carries<K>::Answers`, `DeclaredBy`), the same check a turn's ask makes. It answers with `Asked<O>`, which holds the request's mail id and is typed by the answer. `Harness::answer(asked)` steps until that request's answer is on the queue and decodes it as `Answered<O>`, so a test sees `Unanswered::Ended`, `Failed`, `Unreplied`, and `Faulted` as the asker would. `Harness::tell` sends mail that asks for nothing.
 - **Being asked.** `Harness::protocol::<P>()` makes a `ProtocolRef<P>` to the outside. The outside takes every kind, so the reference is as true for it as `ActorRef::protocol` is for a type that handles each of `P`'s kinds. `Harness::asked::<K>()` steps until mail of kind `K` asked of the outside is on the queue and answers with `Held<K>`: the request, and what `Harness::reply` answers it with. A held request the test never answers waits, since the outside never ends.
-- **Hearing.** A test's own actor that must report what it did takes a `ProtocolRef<P>` to the outside in its config and tells it, and `Harness::heard::<K>()` takes what it told, decoded. That is the road that replaces every static log.
+- **Hearing.** A test's own actor that talks to the test as a peer takes a `ProtocolRef<P>` to the outside in its config and tells it, and `Harness::heard::<K>()` takes what it told, decoded. It is for mail that is part of what the test exercises, never for an actor to report on itself: see the turn record and state reads below.
 - **Reading the queue.** The queue keeps what arrived in order. `asked`, `answer`, and `heard` each take the first entry that matches what they ask for and leave the rest, and `Harness::rest` answers with what is left, so a test can assert that nothing else came. Mail of a kind other than the one asked for is a typed refusal naming both kinds, never a panic inside the harness.
 - **Stepping.** `Harness::step` runs one step. Every verb that waits steps until what it waits for has arrived or its budget is spent, and refuses with where it stood. Over a bare `Engine` the budget is a count of steps and the clock is one the test moves (`Harness::advance`), so a run is the same every time. Over a host whose own threads do work the test waits on, such as the headless host's sockets and jobs, the budget is real time, as the tests' `waiting::until` reads it today.
+
+**What a test observes of a turn, it reads from outside the turn.** Mail to the outside is mail: a failed turn's is dropped, each piece takes a count, and a turn's first send may fuse. A test of those mechanics that had its actors report by mail would change what it measures, and would never hear from a turn that failed. So no actor reports on itself. A test reads two things, neither of which an actor takes part in.
+
+- **The turn record.** Behind the `harness` feature, the engine records each turn it runs, of a waiting item or a hop, and each closing turn: the actor, the step, how the turn came to run, the item still written, and how it ended. Nothing is sent or counted, so a turn runs the same whether it is recorded or not, and a turn that failed is recorded as one that did not. Each part records its own turns, gathered in the order of the parts, so a run reads the same every time, though across parts it is no single timeline. `Harness::step_turns` steps once and answers with that step's turns, each read as the mail its actor was handed.
+
+  ```rust
+  let turns = harness.step_turns();
+  assert_eq!(turns[0].read::<Note>()?, Note::new("fail"));
+  assert!(turns[0].failed());
+  assert!(turns[2].is_hop());
+  ```
+
+- **State reads.** What only an actor knows, such as whether a lookup found a child, it keeps in a typed field of its own state. `Harness::state(reference)` reads that state between steps, by downcasting the `Runs` in its seat. An actor that has ended has no state left to read, so a test of one reads the turn record; a guest's state lies in its instance, so a test of a guest reads the turn record too.
+
+  ```rust
+  assert_eq!(harness.state(node)?.found, [true]);
+  ```
 
 **The harness lives in `aethereal-substrate`, behind a `harness` feature.** The outside is engine code, and the substrate's own tests use the harness under `cfg(test)`. Any other crate turns the feature on in its dev-dependencies. A host the harness steps implements one trait there, which gives the harness its engine between steps and runs a step; the headless host implements it.
 
 ## Consequences
 
-- Tests assert on the values the engine delivered, decoded by the type the test asked for, not on lines a stand-in formatted.
+- Tests assert on the values the engine delivered, decoded by the type the test asked for, not on lines a stand-in formatted, and tests of the engine's mechanics assert on the turns it ran, hops and failures among them, where they could once only infer them from the order of lines.
 - No test keeps a static. Each harness owns its engine and its queue, so tests are independent of the thread they run on and of each other.
 - A test needs an actor of its own only for the behaviour under test. One that only stood in for a caller goes away.
 - HTTP's unanswered cases become ordinary assertions: the harness, as the handler, can end, fail, or stay silent, and the test reads the status the client got.
+- The engine grows recording points where turns run, compiled out unless the `harness` feature is on, so a program pays nothing for them.
 - The engine grows one seat it makes for itself, and between-steps sends from it on the path `bring` already takes. Nothing a program runs can reach the outside except through a reference the host handed in, and a program not run by a harness has no outside.
 - `ProtocolRef` gains a second maker outside a turn, `Harness::protocol`. It is the one reference in the engine whose truth rests on the receiver taking every kind rather than on its declared handlers.
 - Follow-on work, in order: the outside seat and the harness, then the tests replaced crate by crate (`aethereal-substrate`, `aethereal-actor`, `aethereal-chassis-headless`, `aethereal-chassis-browser`, `aethereal-window`), adding the HTTP cases no test covers today, and then MCP.
@@ -67,4 +85,6 @@ harness.reply(request, &Response::new(Status::Ok, "text/plain", b"hi".to_vec()))
 - **One harness actor that runs the test's orders.** An actor handles each answer kind through an impl fixed at compile time, so a generic one cannot receive whatever a test asks for without an erased handler hook in the engine, which is the outside under another name and with a handler table in the way.
 - **A source in and a controller out.** A controller's requests are plain values, not mail, so nothing could answer them and no protocol types them; the test would still read what an actor chose to push.
 - **A stand-in actor per test, reporting through a channel instead of a static.** It removes the sharing between tests but keeps the formatted lines and the new actor for every answer kind.
+- **Actors that report by mail to the outside.** The first form of this decision. It holds for an actor that only stands in for a caller, and fails for a test of the engine's mechanics: a failed turn's report is dropped with its mail, each report takes a count, and the first of a turn's sends fuses to the outside in place of the send under test.
+- **Actors that report through the engine's log.** A line is no send and a failed turn keeps its lines, but a test would still assert on text an actor formatted, which this decision exists to end, and a log is kept per actor, so the order across actors is lost.
 - **An outside that is not seated, its mail taken off the stream before it is run.** Every view would need to know of an actor that is not in the table, and the requests it asks would have nowhere to be kept.
