@@ -84,7 +84,7 @@ pub enum Unheard {
     Unread(DecodeError),
     /// The budget was spent with nothing of `wanted` arrived, after `steps` steps, and `waiting` pieces of mail left.
     Spent { wanted: &'static str, steps: u64, waiting: usize },
-    /// Mail of `found` is what came where mail of `wanted` was waited on.
+    /// Mail of `found` is what came where mail of `wanted` was spent on.
     OtherKind { wanted: KindId, found: KindId },
     /// The actor has no state here: it has ended, or its state lies in a guest's instance.
     NoState,
@@ -152,6 +152,92 @@ where
     type Answer = A;
 }
 
+/// What a wait has spent of its budget.
+struct Waited {
+    began: Instant,
+    steps: u64,
+}
+
+impl Waited {
+    /// A wait beginning now.
+    fn begun() -> Self {
+        #[allow(clippy::disallowed_methods)] // A wait on a host's own threads runs on real time.
+        let began = Instant::now();
+
+        Self { began, steps: 0 }
+    }
+}
+
+/// `Harness::answers` takes a shape of tickets and gives back the same shape of answers: an [`Asked`], a tuple of what is
+/// [`Tickets`], or a `Vec` of `Asked` of one type.
+pub trait Tickets {
+    /// What each comes to, in the same shape.
+    type Answers;
+
+    /// Shows `visit` each request's count, and the name of what it is answered with.
+    fn each(&self, visit: &mut dyn FnMut(u64, &'static str));
+
+    /// Reads each, every one of which has arrived.
+    ///
+    /// # Errors
+    ///
+    /// Why what came does not read.
+    fn read<H: Steps>(self, harness: &mut Harness<H>) -> Result<Self::Answers, Unheard>;
+}
+
+impl<O: Kind + Decode<Actors>> Tickets for Asked<O> {
+    type Answers = Answered<O>;
+
+    fn each(&self, visit: &mut dyn FnMut(u64, &'static str)) {
+        visit(self.count, any::type_name::<O>());
+    }
+
+    fn read<H: Steps>(self, harness: &mut Harness<H>) -> Result<Answered<O>, Unheard> {
+        harness.answer(self)
+    }
+}
+
+impl<O: Kind + Decode<Actors>> Tickets for Vec<Asked<O>> {
+    type Answers = Vec<Answered<O>>;
+
+    fn each(&self, visit: &mut dyn FnMut(u64, &'static str)) {
+        for asked in self {
+            asked.each(visit);
+        }
+    }
+
+    fn read<H: Steps>(self, harness: &mut Harness<H>) -> Result<Vec<Answered<O>>, Unheard> {
+        self.into_iter().map(|asked| harness.answer(asked)).collect()
+    }
+}
+
+macro_rules! tickets {
+    ($($ticket:ident),+) => {
+        impl<$($ticket: Tickets),+> Tickets for ($($ticket,)+) {
+            type Answers = ($($ticket::Answers,)+);
+
+            #[allow(non_snake_case, reason = "each binding is named for its type")]
+            fn each(&self, visit: &mut dyn FnMut(u64, &'static str)) {
+                let ($($ticket,)+) = self;
+                $($ticket.each(visit);)+
+            }
+
+            #[allow(non_snake_case, reason = "each binding is named for its type")]
+            fn read<H: Steps>(self, harness: &mut Harness<H>) -> Result<Self::Answers, Unheard> {
+                let ($($ticket,)+) = self;
+
+                Ok(($($ticket.read(harness)?,)+))
+            }
+        }
+    };
+}
+
+tickets!(A, B);
+tickets!(A, B, C);
+tickets!(A, B, C, D);
+tickets!(A, B, C, D, E);
+tickets!(A, B, C, D, E, F);
+
 /// A host and its outside (ADR-0036).
 pub struct Harness<H> {
     host: H,
@@ -177,6 +263,18 @@ impl Harness<Bench> {
         self.host.now = Time::from_nanos(self.host.now.nanos().saturating_add(nanos));
         let now = self.host.now;
         self.host.engine.cycle(now);
+    }
+}
+
+impl Harness<Bench> {
+    /// Steps until the engine has nothing to run, and answers with every turn that ran, but those of the outside, step
+    /// by step. Only over a bare engine, which nothing moves between steps: a host's own threads may bring work to an
+    /// idle engine, so there idle is no end.
+    pub fn settle_turns(&mut self) -> Vec<Turned> {
+        let _ = self.host.engine().take_turned();
+        self.settle();
+
+        self.turns()
     }
 }
 
@@ -282,17 +380,39 @@ impl<H: Steps> Harness<H> {
     /// [`Unheard::Spent`] when nothing came, and why what came does not read as `O`.
     #[allow(clippy::needless_pass_by_value, reason = "an answer is read once, so it is taken")]
     pub fn answer<O: Kind + Decode<Actors>>(&mut self, asked: Asked<O>) -> Result<Answered<O>, Unheard> {
-        let count = asked.count;
-        let settles = |arrival: &Arrival| matches!(arrival.reached(), Reached::Answered(of) | Reached::Unanswered(of) if of == count);
-        let at = self.wait(any::type_name::<O>(), settles)?;
+        let found = self.wait(&mut Waited::begun(), any::type_name::<O>(), settles(asked.count))?;
+
+        self.read_answer(found)
+    }
+
+    /// Steps until what became of each of `asked` has arrived, and reads each as [`Self::answer`] does, in the shape
+    /// they were given in: a tuple of tickets answers a tuple of answers, each of its own type, and a `Vec` of tickets of
+    /// one type a `Vec` of answers. The budget covers the whole wait.
+    ///
+    /// # Errors
+    ///
+    /// [`Unheard::Spent`] naming the first that has not come, and why what came does not read.
+    #[allow(clippy::needless_pass_by_value, reason = "an answer is read once, so its ticket is taken")]
+    pub fn answers<T: Tickets>(&mut self, asked: T) -> Result<T::Answers, Unheard> {
+        let mut spent = Waited::begun();
+        let mut wanted = Vec::new();
+        asked.each(&mut |count, name| wanted.push((count, name)));
+        for (count, name) in wanted {
+            self.wait(&mut spent, name, settles(count))?;
+        }
+
+        asked.read(self)
+    }
+
+    /// The answer at `at` in the queue, taken and read as `O`.
+    fn read_answer<O: Kind + Decode<Actors>>(&mut self, at: usize) -> Result<Answered<O>, Unheard> {
         let Some(arrival) = self.queue.remove(at) else {
             unreachable!("what was found is still there");
         };
         if let Reached::Unanswered(_) = arrival.reached() {
-            let why = read_as::<Unanswered>(&arrival)?;
-
-            return Ok(Answered::No(why));
+            return read_as::<Unanswered>(&arrival).map(Answered::No);
         }
+
         read_as(&arrival).map(Answered::Yes)
     }
 
@@ -303,11 +423,11 @@ impl<H: Steps> Harness<H> {
     /// [`Unheard::OtherKind`] when another request came and none of `K`, and [`Unheard::Spent`] when none did.
     pub fn asked<K: Kind + Decode<Actors>>(&mut self) -> Result<Held<K>, Unheard> {
         let is_request = |arrival: &Arrival| matches!(arrival.reached(), Reached::Asked(_));
-        let arrival = self.take::<K>(is_request)?;
-        let Reached::Asked(owed) = arrival.reached() else {
+        let taken = self.take::<K>(is_request)?;
+        let Reached::Asked(owed) = taken.reached() else {
             unreachable!("only a request is taken");
         };
-        let request = read_as(&arrival)?;
+        let request = read_as(&taken)?;
 
         Ok(Held { request, owed })
     }
@@ -366,6 +486,12 @@ impl<H: Steps> Harness<H> {
     pub fn step_turns(&mut self) -> Vec<Turned> {
         let _ = self.host.engine().take_turned();
         self.step();
+
+        self.turns()
+    }
+
+    /// The turns recorded since they were last taken, but those of the outside.
+    fn turns(&mut self) -> Vec<Turned> {
         let outside = self.outside;
         let mut turned = self.host.engine().take_turned();
         turned.retain(|turn| turn.actor != outside);
@@ -393,8 +519,8 @@ impl<H: Steps> Harness<H> {
     /// The first mail of `K` that `is_it`, once it has arrived.
     fn take<K: Kind>(&mut self, is_it: impl Fn(&Arrival) -> bool) -> Result<Arrival, Unheard> {
         let kind = KindId::of::<K>();
-        let matches = |arrival: &Arrival| is_it(arrival) && arrival.kind() == kind;
-        let found = self.wait(any::type_name::<K>(), matches);
+        let is_kind = |arrival: &Arrival| is_it(arrival) && arrival.kind() == kind;
+        let found = self.wait(&mut Waited::begun(), any::type_name::<K>(), is_kind);
         let at = match found {
             Ok(at) => at,
             Err(spent) => {
@@ -411,25 +537,27 @@ impl<H: Steps> Harness<H> {
         Ok(arrival)
     }
 
-    /// Steps until an arrival `is_it`, and answers with where it lies in the queue.
-    fn wait(&mut self, wanted: &'static str, is_it: impl Fn(&Arrival) -> bool) -> Result<usize, Unheard> {
-        #[allow(clippy::disallowed_methods)] // A wait on a host's own threads runs on real time.
-        let began = Instant::now();
-        let mut steps = 0;
+    /// Steps until an arrival `is_it`, and answers with where it lies in the queue, counting what it spends in `spent`.
+    fn wait(
+        &mut self,
+        spent: &mut Waited,
+        wanted: &'static str,
+        is_it: impl Fn(&Arrival) -> bool,
+    ) -> Result<usize, Unheard> {
         loop {
             self.drain();
             if let Some(at) = self.queue.iter().position(&is_it) {
                 return Ok(at);
             }
             let is_spent = match H::BUDGET {
-                Budget::Steps(most) => steps >= most,
-                Budget::Real(most) => began.elapsed() >= most,
+                Budget::Steps(most) => spent.steps >= most,
+                Budget::Real(most) => spent.began.elapsed() >= most,
             };
             if is_spent {
-                return Err(Unheard::Spent { wanted, steps, waiting: self.queue.len() });
+                return Err(Unheard::Spent { wanted, steps: spent.steps, waiting: self.queue.len() });
             }
             self.host.run_step();
-            steps += 1;
+            spent.steps += 1;
             if matches!(H::BUDGET, Budget::Real(_)) {
                 thread::yield_now();
             }
@@ -458,6 +586,11 @@ impl Turned {
 
         read_as(arrival)
     }
+}
+
+/// Whether an arrival says what became of the request of the count `count`.
+const fn settles(count: u64) -> impl Fn(&Arrival) -> bool {
+    move |arrival| matches!(arrival.reached(), Reached::Answered(of) | Reached::Unanswered(of) if of == count)
 }
 
 /// `arrival`, known to be of kind `K`, read.
