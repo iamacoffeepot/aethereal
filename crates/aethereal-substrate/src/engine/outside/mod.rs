@@ -81,11 +81,13 @@ impl Arrival {
     }
 
     /// The id of its kind.
+    #[must_use]
     pub const fn kind(&self) -> KindId {
         self.kind
     }
 
     /// What it is to a request.
+    #[must_use]
     pub const fn reached(&self) -> Reached {
         self.reached
     }

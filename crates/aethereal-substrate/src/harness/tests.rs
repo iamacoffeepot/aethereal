@@ -231,6 +231,31 @@ fn what_an_actor_tells_is_heard_and_nothing_else_came() -> Result<(), Unheard> {
 }
 
 #[test]
+fn what_arrived_is_read_whole_in_the_order_it_came_and_is_gone() -> Result<(), Unheard> {
+    // Catches arrivals handed over from the back of the queue, which would turn the order of an answer among events
+    // around, and a queue left holding them, which would hand each out twice.
+    let mut harness = harness();
+    let report = harness.protocol::<Listening>();
+    harness.add_root::<Relay>(&(), Report { to: report })?;
+    let (doubler, relay) = (harness.root::<Doubler>(), harness.root::<Relay>());
+
+    let _ = harness.ask(doubler, &Ping(4))?;
+    harness.settle();
+    harness.tell(relay, &Note(7))?;
+    harness.settle();
+
+    let arrived = harness.arrived();
+    let [answer, told] = &arrived[..] else {
+        panic!("two pieces of mail came: {}", arrived.len());
+    };
+    assert_eq!(answer.read::<Pong>(), Ok(Some(Pong(8))));
+    assert_eq!(told.read::<Note>(), Ok(Some(Note(7))));
+    assert_eq!(harness.arrived().len(), 0);
+
+    Ok(())
+}
+
+#[test]
 fn a_request_of_the_outside_is_held_and_replied_to() -> Result<(), Unheard> {
     let mut harness = harness();
     let report = harness.protocol::<Listening>();
