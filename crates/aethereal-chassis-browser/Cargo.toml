@@ -53,6 +53,11 @@ web-sys = { version = "0.3.106", features = [
 aethereal-render = { path = "../aethereal-render" }
 wesl = "=0.6.0"
 
+# The tests read the turns the engine recorded, which only this feature opens (ADR-0036). A dev-dependency alone, so a
+# page's build never has it.
+[dev-dependencies]
+aethereal-substrate = { path = "../aethereal-substrate", features = ["harness"] }
+
 [[example]]
 name = "make"
 path = "examples/make/lib.rs"

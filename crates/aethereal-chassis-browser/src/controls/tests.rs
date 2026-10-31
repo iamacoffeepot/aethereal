@@ -5,9 +5,9 @@ use super::read::value_of;
 use super::*;
 use crate::{Browser, Hosted, Serving};
 use aethereal_actor::{Path, Tells, path};
+use aethereal_data::{ActorPath, PathSegment};
 use aethereal_substrate::{Clock, Engine, Setup};
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
 
 #[test]
 fn a_control_holds_a_number_a_check_or_its_text_by_its_type() {
@@ -42,10 +42,14 @@ fn number(name: &str, value: f64) -> Control {
 #[kind(name = "aether.test.listener_config")]
 struct Nothing;
 
-/// What the listener was sent, in order.
-static HEARD: Mutex<Vec<Control>> = Mutex::new(Vec::new());
+/// The controls the singleton `T` was handed in the turns the engine recorded (ADR-0036), in order.
+fn heard_by<T: Actor<Key = ()>>(engine: &mut Engine) -> Vec<Control> {
+    let listener = ActorPath::from_root(&PathSegment::new(T::NAME, &()));
 
-/// An actor that subscribes to the controls root, sends it a control of its own, and notes each control it is sent.
+    engine.take_turned().iter().filter(|turn| turn.path == listener).filter_map(|turn| turn.read().ok()).collect()
+}
+
+/// An actor that subscribes to the controls root, and sends it a control of its own.
 #[derive(Bound)]
 #[kind(name = "aether.test.listener")]
 struct Listener;
@@ -75,9 +79,7 @@ impl Actor for Listener {
 impl Handles<Control> for Listener {
     type Sends = ();
 
-    fn handle(&mut self, control: Control, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        HEARD.lock().map(|mut heard| heard.push(control)).ok();
-
+    fn handle(&mut self, _: Control, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -89,13 +91,14 @@ fn a_subscriber_is_sent_what_the_page_pushed_in_the_order_pushed_and_nothing_ano
     // read before its listener subscribed never heard by it.
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>();
     let (source, feed) = setup.source::<Control>();
-    let Ok(engine) = setup
+    let Ok(mut engine) = setup
         .add_root::<Controls>(&(), ControlsConfig { source })
         .and_then(|setup| setup.add_root::<Listener>(&(), Nothing))
         .map(Setup::ready)
     else {
         panic!("the controls root and its listener begin");
     };
+    engine.record_turns();
     let read = number("speed", 0.25);
     assert_eq!(feed.push(read.clone()), Ok(()));
     let mut browser = Browser::new(engine, Still, Serving::Nothing, Hosted::Nothing);
@@ -107,12 +110,9 @@ fn a_subscriber_is_sent_what_the_page_pushed_in_the_order_pushed_and_nothing_ano
     }
     browser.frame(32.0);
 
-    let Ok(heard) = HEARD.lock().map(|heard| heard.clone()) else {
-        panic!("what was heard is not poisoned");
-    };
     // The control read before the listener subscribed is heard first, once, whichever the controls root handled first.
     let [moved, shown] = pushed;
-    assert_eq!(heard, [read, moved, shown]);
+    assert_eq!(heard_by::<Listener>(&mut browser.engine), [read, moved, shown]);
 }
 
 /// What tells the late listener to subscribe, brought from its own source.
@@ -127,10 +127,7 @@ struct LateConfig {
     nudges: Given<Source<Nudge>>,
 }
 
-/// What the late listener was sent, in order.
-static HEARD_LATE: Mutex<Vec<Control>> = Mutex::new(Vec::new());
-
-/// An actor that subscribes to the controls root twice when it is nudged, and notes each control it is sent.
+/// An actor that subscribes to the controls root twice when it is nudged.
 #[derive(Bound)]
 #[kind(name = "aether.test.late")]
 struct Late {
@@ -172,9 +169,7 @@ impl Handles<Nudge> for Late {
 impl Handles<Control> for Late {
     type Sends = ();
 
-    fn handle(&mut self, control: Control, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        HEARD_LATE.lock().map(|mut heard| heard.push(control)).ok();
-
+    fn handle(&mut self, _: Control, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -187,13 +182,14 @@ fn an_actor_that_subscribes_after_a_control_last_moved_is_sent_it_as_it_stands_o
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>();
     let (source, feed) = setup.source::<Control>();
     let (nudges, nudge) = setup.source::<Nudge>();
-    let Ok(engine) = setup
+    let Ok(mut engine) = setup
         .add_root::<Controls>(&(), ControlsConfig { source })
         .and_then(|setup| setup.add_root::<Late>(&(), LateConfig { nudges }))
         .map(Setup::ready)
     else {
         panic!("the controls root and the late listener begin");
     };
+    engine.record_turns();
     let mut browser = Browser::new(engine, Still, Serving::Nothing, Hosted::Nothing);
     let moved = number("speed", 0.75);
     let later = number("speed", 1.0);
@@ -206,8 +202,5 @@ fn an_actor_that_subscribes_after_a_control_last_moved_is_sent_it_as_it_stands_o
     assert_eq!(feed.push(later.clone()), Ok(()));
     browser.frame(80.0);
 
-    let Ok(heard) = HEARD_LATE.lock().map(|heard| heard.clone()) else {
-        panic!("what was heard is not poisoned");
-    };
-    assert_eq!(heard, [moved, later]);
+    assert_eq!(heard_by::<Late>(&mut browser.engine), [moved, later]);
 }

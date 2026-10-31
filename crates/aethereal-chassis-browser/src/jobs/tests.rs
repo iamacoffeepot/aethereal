@@ -6,6 +6,7 @@ use aethereal_actor::{
     Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
+use aethereal_substrate::harness::Turned;
 use aethereal_substrate::{Clock, Engine, Entry, Waits};
 use std::cell::RefCell;
 use std::mem;
@@ -14,10 +15,10 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::task::Wake;
 
 thread_local! {
-    /// The tasks put on this thread's event loop and not yet pumped.
+    /// The tasks put on this thread's event loop and not yet pumped. This is the fake event loop's own machinery, and
+    /// no report: [`EventLoop`] puts a task on its loop through a bare `fn(Task)`, as `spawn_local` is one, which
+    /// captures nothing, so the only way from it to a test's own [`Pump`] is a place it can name.
     static SPAWNED: RefCell<Vec<Task>> = const { RefCell::new(Vec::new()) };
-    /// What this thread's actors have said they were answered with, in order.
-    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Puts `task` on this thread's event loop.
@@ -123,16 +124,20 @@ impl Clock for Still {
 #[kind(name = "aether.test.nothing")]
 struct Nothing;
 
-/// How many times a job that waits for good began to run, and how many of those were dropped.
-static BEGAN: AtomicUsize = AtomicUsize::new(0);
-static DROPPED: AtomicUsize = AtomicUsize::new(0);
+/// A test's own count of the jobs that wait for good, served to them: how many began to run, and how many of those were
+/// dropped. It says more than an `Arc`'s count could, which reads the same for a job dropped and one that never began.
+#[derive(Default)]
+struct Forevers {
+    began: AtomicUsize,
+    dropped: AtomicUsize,
+}
 
 /// What a job that waits for good holds: it notes when it is dropped.
-struct Guard;
+struct Guard<'job>(&'job Forevers);
 
-impl Drop for Guard {
+impl Drop for Guard<'_> {
     fn drop(&mut self) {
-        DROPPED.fetch_add(1, Ordering::AcqRel);
+        self.0.dropped.fetch_add(1, Ordering::AcqRel);
     }
 }
 
@@ -150,9 +155,12 @@ impl Job for Forever {
     type Done = Ran;
     const RUNNER: Runner = Runner::Io;
 
-    async fn run(self, _: &mut Running) -> Result<Ran, Fault> {
-        BEGAN.fetch_add(1, Ordering::AcqRel);
-        let _guard = Guard;
+    async fn run(self, job: &mut Running) -> Result<Ran, Fault> {
+        let Some(forevers) = job.service::<Forevers>() else {
+            return Ok(Ran);
+        };
+        forevers.began.fetch_add(1, Ordering::AcqRel);
+        let _guard = Guard(forevers);
         future::pending::<()>().await;
 
         Ok(Ran)
@@ -211,21 +219,38 @@ impl Actor for Quitter {
     }
 }
 
-/// Says what `done` was answered with.
-fn say(done: &Answered<Ran>) {
-    let line = match done {
-        Answered::Yes(Ran) => String::from("ran"),
-        Answered::No(why) => format!("{why:?}"),
-    };
-    SAID.with_borrow_mut(|said| said.push(line));
+/// What a turn was answered with, as a test reads it from the engine's record (ADR-0036).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seen {
+    Ran,
+    Slept,
+    /// What it asked went unanswered, for this reason.
+    Unanswered(Unanswered),
+}
+
+impl Seen {
+    /// What `turned` was answered with: nothing for mail no test reads.
+    fn of(turned: &Turned) -> Option<Self> {
+        if turned.read::<Ran>().is_ok() {
+            return Some(Self::Ran);
+        }
+        if turned.read::<Slept>().is_ok() {
+            return Some(Self::Slept);
+        }
+
+        turned.read().ok().map(Self::Unanswered)
+    }
+}
+
+/// What the turns recorded since this was last asked were answered with, in order.
+fn seen(engine: &mut Engine) -> Vec<Seen> {
+    engine.take_turned().iter().filter_map(Seen::of).collect()
 }
 
 impl Handles<Answer<Ran, Nothing>> for Quitter {
     type Sends = ();
 
-    fn handle(&mut self, (done, _): (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        say(&done);
-
+    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -238,7 +263,6 @@ impl Handles<Answer<Slept, GivesUp>> for Quitter {
         (_, gives_up): (Answered<Slept>, GivesUp),
         turn: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
-        SAID.with_borrow_mut(|said| said.push(String::from("slept")));
         turn.cancel(gives_up.on);
         let unpolled = turn.run(&Forever, &Nothing)?;
         turn.cancel(unpolled);
@@ -262,8 +286,11 @@ fn a_stopped_job_is_dropped_whether_or_not_it_was_polled_and_a_sleep_wakes_once_
     // whose task a stop must wake to drop it, and one stopped before its task was first polled, which must never begin
     // to run.
     let hands = Arc::new(Hands::default());
-    let jobs = Arc::new(EventLoop::on(Arc::clone(&hands) as Arc<dyn Timer>, Arc::new(Services::none()), spawn));
+    let forevers = Arc::new(Forevers::default());
+    let services = Arc::new(Services::none().with(Arc::clone(&forevers)));
+    let jobs = Arc::new(EventLoop::on(Arc::clone(&hands) as Arc<dyn Timer>, services, spawn));
     let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_jobs(jobs).ready();
+    engine.record_turns();
     let Ok(_) = engine.add_root::<Quitter>(&(), Nothing) else {
         panic!("the quitter begins");
     };
@@ -273,7 +300,7 @@ fn a_stopped_job_is_dropped_whether_or_not_it_was_polled_and_a_sleep_wakes_once_
     hands.set(5);
     pump.pump();
     frame(&mut engine);
-    let early = SAID.with_borrow_mut(mem::take);
+    let early = seen(&mut engine);
 
     hands.set(10);
     pump.pump();
@@ -282,13 +309,13 @@ fn a_stopped_job_is_dropped_whether_or_not_it_was_polled_and_a_sleep_wakes_once_
     frame(&mut engine);
 
     assert!(early.is_empty(), "nothing is answered before the sleep's time: {early:?}");
-    assert_eq!(SAID.with_borrow_mut(mem::take), ["slept"]);
-    assert_eq!(BEGAN.load(Ordering::Acquire), 1, "the job stopped before it was polled never began");
-    assert_eq!(DROPPED.load(Ordering::Acquire), 1, "the job stopped while it waited is dropped");
+    assert_eq!(seen(&mut engine), [Seen::Slept]);
+    assert_eq!(forevers.began.load(Ordering::Acquire), 1, "the job stopped before it was polled never began");
+    assert_eq!(forevers.dropped.load(Ordering::Acquire), 1, "the job stopped while it waited is dropped");
     assert_eq!(pump.pending(), 0, "no task is left on the loop");
 }
 
-/// An actor that runs a job for computing that waits, and says what it was answered with.
+/// An actor that runs a job for computing that waits.
 #[derive(Bound)]
 #[kind(name = "aether.test.staller")]
 struct Staller;
@@ -318,9 +345,7 @@ impl Actor for Staller {
 impl Handles<Answer<Ran, Nothing>> for Staller {
     type Sends = ();
 
-    fn handle(&mut self, (done, _): (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        say(&done);
-
+    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -332,6 +357,7 @@ fn a_job_for_computing_runs_in_a_task_of_its_own_and_one_that_waits_is_answered_
     let hands: Arc<dyn Timer> = Arc::new(Hands::default());
     let jobs = Arc::new(EventLoop::on(hands, Arc::new(Services::none()), spawn));
     let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_jobs(jobs).ready();
+    engine.record_turns();
     let Ok(id) = engine.add_root::<Staller>(&(), Nothing) else {
         panic!("the staller begins");
     };
@@ -339,14 +365,14 @@ fn a_job_for_computing_runs_in_a_task_of_its_own_and_one_that_waits_is_answered_
         panic!("the staller is seated");
     };
     frame(&mut engine);
-    let unpumped = SAID.with_borrow_mut(mem::take);
+    let unpumped = seen(&mut engine);
 
     let mut pump = Pump::default();
     pump.pump();
     frame(&mut engine);
 
     assert!(unpumped.is_empty(), "nothing runs before the loop runs its task: {unpumped:?}");
-    assert_eq!(SAID.with_borrow_mut(mem::take), [format!("{:?}", Unanswered::Faulted)]);
+    assert_eq!(seen(&mut engine), [Seen::Unanswered(Unanswered::Faulted)]);
     let faulted: Vec<KindId> = engine
         .log(Seated { id, seat })
         .filter_map(|entry| match entry {
