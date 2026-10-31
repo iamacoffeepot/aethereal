@@ -13,6 +13,8 @@ mod jobs;
 pub use jobs::{Finish, Inline, Jobs, NoRoom, NoRunner, Panicked, Taken, Waits};
 mod lifecycle;
 mod made;
+#[cfg(any(test, feature = "harness"))]
+pub mod outside;
 mod plan;
 mod rehearsal;
 mod setup;

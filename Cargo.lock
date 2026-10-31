@@ -76,6 +76,7 @@ name = "aethereal-chassis-headless"
 version = "0.1.0"
 dependencies = [
  "aethereal-actor",
+ "aethereal-chassis-headless",
  "aethereal-data",
  "aethereal-files",
  "aethereal-guest-echo",

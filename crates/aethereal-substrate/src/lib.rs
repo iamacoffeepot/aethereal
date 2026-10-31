@@ -19,6 +19,8 @@ mod by_seat;
 mod clock;
 mod context;
 mod engine;
+#[cfg(any(test, feature = "harness"))]
+pub mod harness;
 mod id;
 mod lives;
 mod log;

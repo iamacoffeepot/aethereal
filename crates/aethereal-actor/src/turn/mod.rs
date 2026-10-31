@@ -1324,6 +1324,18 @@ impl<'a> Turning<'a> {
         self.chain
     }
 
+    /// The actor whose turn it is.
+    #[must_use]
+    pub const fn me(&self) -> Seated {
+        self.me
+    }
+
+    /// What the item the turn handles is to a request (ADR-0017).
+    #[must_use]
+    pub const fn tie(&self) -> Tie {
+        self.tie
+    }
+
     /// The turn of the handler of `A`, whose type declares `declared`, which may send `S`.
     pub(crate) fn declaring<A: Actor, S: Sends>(self, declared: &'static Declared) -> Turn<'a, A, S> {
         let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie } = self;
