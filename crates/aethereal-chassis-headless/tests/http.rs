@@ -1,140 +1,16 @@
-//! The HTTP capability served on the native host, to a client on a thread of its own (ADR-0035).
+//! The HTTP capability served on the native host, the test its handler, to clients on threads of their own (ADR-0035,
+//! ADR-0036).
 
-use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, On, Path, Tick, ToSender, Top,
-    Turn, path,
-};
-use aethereal_chassis_headless::{Exit, Headless};
-use aethereal_data::{Bound, Plain};
-use aethereal_http::{Header, Http, HttpSettings, Request, Response, Serve, Served, Status};
-use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
+use aethereal_actor::{Answered, Tick, Unanswered};
+use aethereal_chassis_headless::Headless;
+use aethereal_http::{Handling, Header, Http, HttpSettings, Request, Response, Serve, Served, Status};
+use aethereal_substrate::Host;
+use aethereal_substrate::harness::{Harness, Held, Unheard};
 use aethereal_tcp::Tcp;
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
-
-/// The port the handler was served on, once it was: 0 until then.
-static PORT: AtomicU16 = AtomicU16::new(0);
-
-/// Whether the client is done, so the handler stops the program.
-static DONE: AtomicBool = AtomicBool::new(false);
-
-/// What the handler keeps for its serve: nothing.
-#[derive(Plain)]
-#[kind(name = "aether.test.http.asked")]
-struct Asked;
-
-/// A request the handler holds, the response it will answer it with, and the tick it answers on.
-#[derive(Bound)]
-struct Pending {
-    held: Held<Response>,
-    response: Response,
-    on: u64,
-}
-
-/// A root that serves a port the host picks, as its own handler, and holds each request, answering it two ticks after
-/// it came, so the connection reads on while the request is out: on `/echo`, `200` with the request's body and its
-/// method in `x-method`; on `/silent`, never. It stops the program once the client is done, or after a thousand
-/// ticks.
-#[derive(Bound)]
-#[kind(name = "aether.test.http.handler")]
-struct Handler {
-    pending: Vec<Pending>,
-    /// The `/silent` requests, held and never answered.
-    silent: Vec<Held<Response>>,
-    ticks: u64,
-}
-
-impl ChildOf for Handler {
-    type Parent = Top;
-}
-
-impl Actor for Handler {
-    type Config = Asked;
-    type Key = ();
-    type Handles = (On<Tick>, Answer<Served, Asked>, Request);
-    type BeginSends = (Asks<Path<Http>, Serve, Asked>,);
-    type EndSends = ();
-
-    fn begin(_: Asked, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Tick>();
-        let serve = Serve { port: 0, handler: turn.me().protocol() };
-        turn.to(path::<Http>(())).ask(&serve, &Asked)?;
-
-        Ok(Self { pending: Vec::new(), silent: Vec::new(), ticks: 0 })
-    }
-
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Bootstrap<Headless> for Handler {
-    const SECTION: &'static str = "handler";
-    type Settings = ();
-    type Needs = ();
-    type Provides = ();
-
-    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Asked)
-    }
-}
-
-impl Handles<On<Tick>> for Handler {
-    type Sends = ();
-
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        self.ticks += 1;
-        let (due, later): (Vec<Pending>, Vec<Pending>) =
-            self.pending.drain(..).partition(|pending| pending.on <= self.ticks);
-        self.pending = later;
-        for Pending { held, response, .. } in due {
-            turn.answer(held, &response)?;
-        }
-        let is_done = DONE.load(Ordering::SeqCst);
-        let is_long = self.ticks == 1000;
-        let stops = is_done || is_long;
-        if stops {
-            turn.quit();
-        }
-
-        Ok(())
-    }
-}
-
-impl Handles<Answer<Served, Asked>> for Handler {
-    type Sends = ();
-
-    fn handle(&mut self, (answered, _): (Answered<Served>, Asked), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        let Answered::Yes(Served::Bound { port, .. }) = answered else {
-            turn.quit();
-            return Ok(());
-        };
-        PORT.store(port, Ordering::SeqCst);
-
-        Ok(())
-    }
-}
-
-impl Handles<Request> for Handler {
-    type Sends = (ToSender<Response>,);
-
-    fn handle(&mut self, request: Request, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let held = turn.hold()?;
-        let is_silent = request.path == "/silent";
-        if is_silent {
-            self.silent.push(held);
-            return Ok(());
-        }
-        let mut response = Response::new(Status::Ok, "text/plain", request.body);
-        response.headers.push(Header::new("x-method", &format!("{:?}", request.method)));
-        self.pending.push(Pending { held, response, on: self.ticks + 2 });
-
-        Ok(())
-    }
-}
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 /// A response as the client read it: its head's text and its body.
 #[derive(Debug)]
@@ -143,19 +19,22 @@ struct Read {
     body: Vec<u8>,
 }
 
-/// A connection to the served port, which gives up on a read after ten seconds.
-fn connect() -> TcpStream {
-    #[allow(clippy::disallowed_methods)] // The client waits on the host's real threads, which run on real time.
-    let started = Instant::now();
-    let port = loop {
-        let port = PORT.load(Ordering::SeqCst);
-        if port != 0 {
-            break port;
-        }
-        assert!(started.elapsed() < Duration::from_secs(30), "the handler is served within 30 seconds");
-        #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
-        thread::sleep(Duration::from_millis(5));
+/// A host running `settings`, the test the handler of the port it serves.
+fn served(settings: HttpSettings) -> Result<(Harness<Headless>, u16), Unheard> {
+    let mut harness =
+        Harness::of(Headless::program().with_cycle::<(Tick,)>().root::<Tcp>().root_with::<Http>(settings))?;
+    let http = harness.root::<Http>();
+    let handler = harness.protocol::<Handling>();
+    let serving = harness.ask(http, &Serve { port: 0, handler })?;
+    let Answered::Yes(Served::Bound { port, .. }) = harness.answer(serving)? else {
+        panic!("the port is bound");
     };
+
+    Ok((harness, port))
+}
+
+/// A connection to `port`, which gives up on a read after ten seconds.
+fn connect(port: u16) -> TcpStream {
     let Ok(stream) = TcpStream::connect(("127.0.0.1", port)) else {
         panic!("the client connects");
     };
@@ -198,66 +77,124 @@ fn closes(stream: &mut TcpStream) -> bool {
     stream.read(&mut byte).is_ok_and(|count| count == 0)
 }
 
-/// The client's three conversations: two requests sent ahead in one write on a connection kept alive, a request
-/// that must be refused, and a request its handler never answers.
-fn converse() -> (Vec<Read>, Read, bool, Read, bool) {
-    let mut kept = connect();
-    let ahead = b"POST /echo HTTP/1.1\r\nContent-Length: 5\r\n\r\nhelloGET /echo HTTP/1.1\r\nConnection: close\r\n\r\n";
-    assert!(kept.write_all(ahead).is_ok(), "the client writes");
-    let mut buffer = Vec::new();
-    let answered = vec![response(&mut kept, &mut buffer), response(&mut kept, &mut buffer)];
-    let kept_closes = closes(&mut kept);
+/// A client on a thread of its own, outside the engine, which sends `sent` to `port` and reads `responses` responses,
+/// and whether the server then closed.
+fn client(port: u16, sent: &'static [u8], responses: usize) -> JoinHandle<(Vec<Read>, bool)> {
+    #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
+    thread::spawn(move || {
+        let mut stream = connect(port);
+        assert!(stream.write_all(sent).is_ok(), "the client writes");
+        let mut buffer = Vec::new();
+        let read = (0..responses).map(|_| response(&mut stream, &mut buffer)).collect();
+        let closed = closes(&mut stream);
 
-    let mut smuggled = connect();
-    assert!(
-        smuggled.write_all(b"POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").is_ok(),
-        "the client writes"
-    );
-    let refused = response(&mut smuggled, &mut Vec::new());
-    let refused_closes = closes(&mut smuggled);
-
-    let mut silent = connect();
-    assert!(silent.write_all(b"GET /silent HTTP/1.1\r\n\r\n").is_ok(), "the client writes");
-    let timed_out = response(&mut silent, &mut Vec::new());
-
-    (answered, refused, refused_closes, timed_out, kept_closes)
+        (read, closed)
+    })
 }
 
-#[test]
-fn a_server_answers_requests_sent_ahead_in_order_and_refuses_or_times_out_what_it_must() {
-    // Catches a body framed past its `Content-Length` into the next request, bytes read past a request lost, credit
-    // withheld while a request is out and never granted back so the second request is never read, responses written
-    // out of order or with the wrong length, `Connection: close` not honoured, a refused request closed before its
-    // response is sent or never closed, and a handler that never responds left waiting without a `504`.
-    // Chunks of 16 bytes, one granted at a time, so the second request sent ahead is read only once the credit
-    // withheld while the first was out is granted back.
-    let settings = HttpSettings { chunk_bytes: 16, window: 1, answer_within_millis: 200, ..HttpSettings::default() };
-    let built =
-        Headless::program().with_cycle::<(Tick,)>().root::<Tcp>().root_with::<Http>(settings).root::<Handler>().build();
-    let Ok(headless) = built else {
-        panic!("the program builds");
-    };
-    #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
-    let client = thread::spawn(|| {
-        let conversed = converse();
-        DONE.store(true, Ordering::SeqCst);
-        conversed
-    });
-
-    let exit = headless.run(Duration::from_millis(2), Duration::from_mins(1));
-    let Ok((answered, refused, refused_closes, timed_out, kept_closes)) = client.join() else {
+/// What `client` read, the harness stepping the host until it has.
+fn heard(harness: &mut Harness<Headless>, client: JoinHandle<(Vec<Read>, bool)>) -> (Vec<Read>, bool) {
+    while !client.is_finished() {
+        harness.step();
+    }
+    let Ok(read) = client.join() else {
         panic!("the client finished");
     };
 
-    assert_eq!(exit, Exit::Stopped);
-    let heads: Vec<&str> = answered.iter().map(|read| read.head.as_str()).collect();
-    assert!(heads[0].starts_with("HTTP/1.1 200 OK") && heads[0].contains("x-method: Post"), "{heads:?}");
-    assert!(heads[1].starts_with("HTTP/1.1 200 OK") && heads[1].contains("x-method: Get"), "{heads:?}");
-    assert!(heads[1].contains("connection: close"), "{heads:?}");
+    read
+}
+
+/// `request` echoed: `200` with its body, and its method in `x-method`.
+fn echoed(request: &Held<Request>) -> Response {
+    let mut response = Response::new(Status::Ok, "text/plain", request.request.body.clone());
+    response.headers.push(Header::new("x-method", &format!("{:?}", request.request.method)));
+
+    response
+}
+
+#[test]
+fn requests_sent_ahead_are_answered_in_order() -> Result<(), Unheard> {
+    // Catches a body framed past its `Content-Length` into the next request, bytes read past a request lost, credit
+    // withheld while a request is out and never granted back so the second request is never read, responses written
+    // out of order or with the wrong length, and `Connection: close` not honoured.
+    // Chunks of 16 bytes, one granted at a time, so the second request is read only once the credit withheld while the
+    // first was out is granted back.
+    let settings = HttpSettings { chunk_bytes: 16, window: 1, ..HttpSettings::default() };
+    let (mut harness, port) = served(settings)?;
+    let ahead = b"POST /echo HTTP/1.1\r\nContent-Length: 5\r\n\r\nhelloGET /echo HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let client = client(port, ahead, 2);
+
+    let first = harness.asked::<Request>()?;
+    assert_eq!(first.request.body, b"hello");
+    let answer = echoed(&first);
+    harness.reply(first, &answer)?;
+    let second = harness.asked::<Request>()?;
+    let answer = echoed(&second);
+    harness.reply(second, &answer)?;
+
+    let (answered, closed) = heard(&mut harness, client);
+    assert!(answered[0].head.starts_with("HTTP/1.1 200 OK"), "{answered:?}");
+    assert!(answered[0].head.contains("x-method: Post"), "{answered:?}");
+    assert!(answered[1].head.starts_with("HTTP/1.1 200 OK"), "{answered:?}");
+    assert!(answered[1].head.contains("x-method: Get"), "{answered:?}");
+    assert!(answered[1].head.contains("connection: close"), "{answered:?}");
     assert_eq!(answered[0].body, b"hello");
     assert!(answered[1].body.is_empty());
-    assert!(kept_closes, "a request that asked to close is closed once answered");
-    assert!(refused.head.starts_with("HTTP/1.1 501"), "{refused:?}");
-    assert!(refused_closes, "a refused request's connection closes once its response is sent");
-    assert!(timed_out.head.starts_with("HTTP/1.1 504"), "{timed_out:?}");
+    assert!(closed, "a request that asked to close is closed once answered");
+
+    Ok(())
+}
+
+#[test]
+fn a_refused_request_reaches_no_handler_and_closes_once_its_response_is_sent() -> Result<(), Unheard> {
+    // Catches a request that must be refused handed on to the handler, and a refused request closed before its response
+    // is sent or never closed.
+    let (mut harness, port) = served(HttpSettings::default())?;
+    let client = client(port, b"POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n", 1);
+
+    let (refused, closed) = heard(&mut harness, client);
+
+    assert!(refused[0].head.starts_with("HTTP/1.1 501"), "{refused:?}");
+    assert!(closed, "a refused request's connection closes once its response is sent");
+    assert_eq!(harness.rest(), Vec::new());
+
+    Ok(())
+}
+
+#[test]
+fn a_handler_that_never_responds_is_timed_out() -> Result<(), Unheard> {
+    // Catches a handler that never responds left waiting without a `504`.
+    let settings = HttpSettings { answer_within_millis: 200, ..HttpSettings::default() };
+    let (mut harness, port) = served(settings)?;
+    let client = client(port, b"GET /silent HTTP/1.1\r\n\r\n", 1);
+
+    let _silent = harness.asked::<Request>()?;
+
+    let (timed_out, _) = heard(&mut harness, client);
+    assert!(timed_out[0].head.starts_with("HTTP/1.1 504"), "{timed_out:?}");
+
+    Ok(())
+}
+
+#[test]
+fn a_handler_that_ended_is_a_503_and_one_that_failed_a_500() -> Result<(), Unheard> {
+    // Catches an exchange that mistakes why its handler did not answer, or hangs on it, since a test's stand-in could
+    // only ever answer.
+    let cases = [
+        (Unanswered::Ended, "HTTP/1.1 503"),
+        (Unanswered::Failed, "HTTP/1.1 500"),
+        (Unanswered::Unreplied, "HTTP/1.1 500"),
+    ];
+    for (why, status) in cases {
+        let (mut harness, port) = served(HttpSettings::default())?;
+        let client = client(port, b"GET /gone HTTP/1.1\r\nConnection: close\r\n\r\n", 1);
+
+        let request = harness.asked::<Request>()?;
+        harness.unanswered(request, why)?;
+
+        let (read, _) = heard(&mut harness, client);
+        assert!(read[0].head.starts_with(status), "{why:?}: {read:?}");
+    }
+
+    Ok(())
 }
