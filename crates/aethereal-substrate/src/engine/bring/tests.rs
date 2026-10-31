@@ -36,14 +36,17 @@ struct WindowConfig {
     number: u64,
     pointers: Vec<Given<Source<Moved>>>,
     lights: Vec<Given<Source<Lit>>>,
-    orders: Vec<String>,
+    orders: Vec<Order>,
 }
 
 /// An order a window sends itself.
-#[derive(Plain)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.test.window_order")]
-struct Order {
-    text: String,
+enum Order {
+    /// Gives every pointer source to this window, which it spawns beneath it.
+    Spawn(u64),
+    /// Closes it.
+    Close,
 }
 
 /// What a window keeps of what its sources brought it.
@@ -60,8 +63,7 @@ const fn moved(x: u64) -> Heard {
     Heard::Moved { x, from_me: true, first: true }
 }
 
-/// An actor that holds sources and keeps what each brings it. `spawn N` gives every pointer source to the window `N` it
-/// spawns beneath it, and `close` closes it.
+/// An actor that holds sources and keeps what each brings it, and does as each [`Order`] says.
 #[derive(Bound)]
 #[kind(name = "aether.test.window")]
 struct Window {
@@ -86,8 +88,8 @@ impl Actor for Window {
         let WindowConfig { pointers, lights, orders, .. } = config;
         let pointers = pointers.into_iter().map(|pointer| turn.take(pointer)).collect::<Result<_, _>>()?;
         let lights = lights.into_iter().map(|light| turn.take(light)).collect::<Result<_, _>>()?;
-        for text in orders {
-            turn.to(turn.me()).send(&Order { text })?;
+        for order in orders {
+            turn.to(turn.me()).send(&order)?;
         }
 
         Ok(Self { pointers, lights, heard: Vec::new() })
@@ -115,17 +117,14 @@ impl Handles<Order> for Window {
     type Sends = ();
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let words: Vec<&str> = order.text.split(' ').collect();
-        match words[..] {
-            ["spawn", number] => {
-                let number = number.parse().unwrap_or_default();
+        match order {
+            Order::Spawn(number) => {
                 let given = mem::take(&mut self.pointers).into_iter().map(|pointer| turn.give(pointer));
                 let pointers = given.collect::<Result<_, _>>()?;
                 let config = WindowConfig { number, pointers, lights: Vec::new(), orders: Vec::new() };
                 let _ = turn.spawn::<Self>(&number, config);
             }
-            ["close"] => turn.close(),
-            _ => {}
+            Order::Close => turn.close(),
         }
 
         Ok(())
@@ -167,9 +166,9 @@ fn add(
     number: u64,
     pointers: Vec<Given<Source<Moved>>>,
     lights: Vec<Given<Source<Lit>>>,
-    orders: &[&str],
+    orders: &[Order],
 ) -> Seated {
-    let orders = orders.iter().map(|text| String::from(*text)).collect();
+    let orders = orders.to_vec();
     let Ok(id) = engine.add_root::<Window>(&number, WindowConfig { number, pointers, lights, orders }) else {
         panic!("the window begins");
     };
@@ -246,7 +245,7 @@ fn what_is_brought_goes_to_whoever_holds_the_source_as_it_is_brought() {
     for hops in [0, 64] {
         let mut engine = engine(hops);
         let (pointer, feed) = engine.source::<Moved>();
-        let first = add(&mut engine, 1, vec![pointer], Vec::new(), &["spawn 2"]);
+        let first = add(&mut engine, 1, vec![pointer], Vec::new(), &[Order::Spawn(2)]);
         push(&feed, &[1]);
         engine.bring();
         settle(&mut engine);
@@ -270,7 +269,7 @@ fn a_feed_closes_once_its_source_is_dropped_with_its_owner() {
     // pushed for a gone owner delivered to the actor that sits in its seat next.
     let mut engine = engine(0);
     let (pointer, feed) = engine.source::<Moved>();
-    add(&mut engine, 1, vec![pointer], Vec::new(), &["close"]);
+    add(&mut engine, 1, vec![pointer], Vec::new(), &[Order::Close]);
     settle(&mut engine);
     push(&feed, &[1]);
 
@@ -315,7 +314,18 @@ fn an_event_carries_a_resource_the_chassis_handed_in_to_the_sources_owner() {
 /// What a capability asks its host for.
 #[derive(Debug, PartialEq, Eq)]
 enum Make {
-    Window(String),
+    /// The window of this number.
+    Window(u64),
+}
+
+/// An order a windows capability sends itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.test.windows_order")]
+enum Asking {
+    /// Asks its host for the window of this number.
+    Window(u64),
+    /// Closes it.
+    Close,
 }
 
 /// What a windows capability is made from: its controller, and the orders it sends itself as it begins.
@@ -323,11 +333,10 @@ enum Make {
 #[kind(name = "aether.test.windows_config")]
 struct WindowsConfig {
     control: Given<Controller<Make>>,
-    orders: Vec<String>,
+    orders: Vec<Asking>,
 }
 
-/// A capability that asks its host for the windows `a` and `b` as it begins, and for one more on each order it sends
-/// itself, but `close`, which closes it.
+/// A capability that asks its host for the windows `1` and `2` as it begins, and does as each [`Asking`] says.
 #[derive(Bound)]
 #[kind(name = "aether.test.windows")]
 struct Windows {
@@ -341,18 +350,18 @@ impl ChildOf for Windows {
 impl Actor for Windows {
     type Config = WindowsConfig;
     type Key = ();
-    type Handles = (Order,);
-    type BeginSends = (ToType<Self, Order>,);
+    type Handles = (Asking,);
+    type BeginSends = (ToType<Self, Asking>,);
     type EndSends = ();
 
     fn begin(config: WindowsConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let WindowsConfig { control, orders } = config;
         let mut control = turn.take(control)?;
         let controller = turn.open(&mut control)?;
-        controller.push(Make::Window(String::from("a")));
-        controller.push(Make::Window(String::from("b")));
-        for text in orders {
-            turn.to(turn.me()).send(&Order { text })?;
+        controller.push(Make::Window(1));
+        controller.push(Make::Window(2));
+        for order in orders {
+            turn.to(turn.me()).send(&order)?;
         }
 
         Ok(Self { control })
@@ -363,15 +372,14 @@ impl Actor for Windows {
     }
 }
 
-impl Handles<Order> for Windows {
+impl Handles<Asking> for Windows {
     type Sends = ();
 
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        if order.text == "close" {
-            turn.close();
-            return Ok(());
+    fn handle(&mut self, asking: Asking, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        match asking {
+            Asking::Window(number) => turn.open(&mut self.control)?.push(Make::Window(number)),
+            Asking::Close => turn.close(),
         }
-        turn.open(&mut self.control)?.push(Make::Window(order.text));
 
         Ok(())
     }
@@ -383,16 +391,15 @@ fn the_host_takes_what_a_capability_asks_through_its_controller_in_the_order_ask
     // pushed them ran; and a host never told the controller is gone once its capability has ended.
     let mut engine = engine(0);
     let (control, requests) = engine.controller::<Make>();
-    let orders = vec![String::from("c"), String::from("close")];
+    let orders = vec![Asking::Window(3), Asking::Close];
     let Ok(_) = engine.add_root::<Windows>(&(), WindowsConfig { control, orders }) else {
         panic!("the capability begins");
     };
-    let window = |title: &str| Make::Window(String::from(title));
 
     let as_it_began = (requests.take(), requests.is_dropped());
     settle(&mut engine);
     let once_it_ended = (requests.take(), requests.is_dropped());
 
-    assert_eq!(as_it_began, (vec![window("a"), window("b")], false));
-    assert_eq!(once_it_ended, (vec![window("c")], true));
+    assert_eq!(as_it_began, (vec![Make::Window(1), Make::Window(2)], false));
+    assert_eq!(once_it_ended, (vec![Make::Window(3)], true));
 }

@@ -75,6 +75,13 @@ impl Builds for Bench {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Lit(u32);
 
+impl Lit {
+    /// Whether it gives no light, which a keeper does not begin from.
+    const fn is_dark(self) -> bool {
+        self.0 == 0
+    }
+}
+
 impl Serves<Lit> for Bench {
     fn serve(hosting: &mut Hosted, end: Lit) {
         hosting.borrow_mut().lights.push(end);
@@ -236,7 +243,7 @@ impl<H: Host + Serves<Began>> Bootstrap<H> for Keeper {
         (counted, lit): (Counted, Lit),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        let faults = lit.0 == 0;
+        let faults = lit.is_dark();
         begin(cx, Line { values: vec![counted.0, lit.0], faults })
     }
 }
