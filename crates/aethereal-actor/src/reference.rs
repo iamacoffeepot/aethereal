@@ -134,6 +134,12 @@ impl<T> ActorRef<T> {
         Self { seated, of: PhantomData }
     }
 
+    /// The reference to the actor of type `T` the engine found at `seated`: for a host, outside any turn (ADR-0036).
+    #[must_use]
+    pub const fn found(seated: Seated) -> Self {
+        Self::new(seated)
+    }
+
     /// The id of the actor referred to.
     #[must_use]
     pub const fn id(self) -> ActorId {
@@ -254,6 +260,12 @@ impl<P> ProtocolRef<P> {
     /// The reference to the actor `seated` names, whose type the caller has established takes every kind of `P`.
     pub(crate) const fn new(seated: Seated) -> Self {
         Self { seated, of: PhantomData }
+    }
+
+    /// The reference to the actor at `seated`, which takes `P`: for a host, outside any turn (ADR-0036).
+    #[must_use]
+    pub const fn found(seated: Seated) -> Self {
+        Self::new(seated)
     }
 
     /// The id of the actor referred to.

@@ -30,12 +30,16 @@ pub use files::{Directories, FileRoots};
 pub use jobs::Runners;
 
 use aethereal_actor::Time;
+#[cfg(feature = "harness")]
+use aethereal_substrate::harness::{Budget, Steps};
 use aethereal_substrate::{Clock, Engine, Split, SplitCost, Workers};
 pub use pool::Measured;
 pub use program::{RunningSettings, Serving};
 pub use running::{Exit, Timer};
 pub use tcp::Dialers;
 
+#[cfg(feature = "harness")]
+use core::time::Duration;
 use pool::Pool;
 use std::num::NonZeroUsize;
 
@@ -104,6 +108,27 @@ impl Headless {
     /// Parks every worker: for a host that steps the engine itself, as it waits on something else between steps.
     pub fn park(&mut self) {
         self.pool.park();
+    }
+}
+
+/// A harness steps the host as [`Headless::run`] does, on its own thread, on real time: its sockets and jobs run on
+/// threads the test waits on (ADR-0036).
+#[cfg(feature = "harness")]
+impl Steps for Headless {
+    const BUDGET: Budget = Budget::Real(Duration::from_secs(30));
+
+    fn engine(&mut self) -> &mut Engine {
+        &mut self.engine
+    }
+
+    fn run_step(&mut self) {
+        self.engine.cycle(Time::from_nanos(self.clock.nanos()));
+        self.engine.bring();
+        if self.engine.is_idle() {
+            self.pool.park();
+        } else {
+            self.step();
+        }
     }
 }
 

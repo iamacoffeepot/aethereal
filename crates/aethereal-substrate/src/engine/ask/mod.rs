@@ -100,7 +100,7 @@ impl Waiting {
     }
 
     /// Files the requests a turn asked, each with its context.
-    fn file(&mut self, asks: impl Iterator<Item = Asking>) {
+    pub(super) fn file(&mut self, asks: impl Iterator<Item = Asking>) {
         let mut asks = asks.peekable();
         // Most turns ask nothing.
         if asks.peek().is_none() {
@@ -112,6 +112,16 @@ impl Waiting {
         if let Asks::Waits(filed) = &mut self.asks {
             filed.asks.extend(asks);
         }
+    }
+
+    /// The kind it waits on the request of the count `count` to be answered with, when it still waits on it.
+    #[cfg(any(test, feature = "harness"))]
+    pub(super) fn answer_of(&self, count: u64) -> Option<aethereal_data::KindId> {
+        let Asks::Waits(filed) = &self.asks else {
+            return None;
+        };
+
+        filed.asks.iter().find(|asking| asking.count == count).map(|asking| asking.answer)
     }
 
     /// What mail tied as `tie` is to the actor: when it is an answer, the context it kept for the request it answers,
