@@ -460,8 +460,8 @@ fn settling_answers_with_every_turn_of_every_step_in_order() -> Result<(), Unhea
 
     let turns = harness.settle_turns();
 
-    let passed: Vec<Pass> = turns.iter().filter_map(|turn| turn.read().ok()).collect();
-    assert_eq!(passed, [Pass(2), Pass(1), Pass(0)]);
+    let handed: Vec<Pass> = turns.iter().filter_map(|turn| turn.read().ok()).collect();
+    assert_eq!(handed, [Pass(2), Pass(1), Pass(0)]);
     assert_eq!(turns.last().map(|turn| turn.ran), Some(Ran::Closing));
     assert!(turns.iter().map(|turn| turn.step).is_sorted());
 
