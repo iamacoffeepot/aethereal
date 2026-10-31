@@ -412,3 +412,58 @@ fn an_actor_s_state_is_read_between_steps_and_recording_sends_nothing() -> Resul
 
     Ok(())
 }
+
+#[test]
+fn a_tuple_of_requests_is_answered_each_in_its_own_type_whatever_order_they_settle_in() -> Result<(), Unheard> {
+    // Catches answers read in the order they arrived rather than the order given, one wait spending the budget of the
+    // next, and an unanswered request read as an answer: the silent request settles in the same step as the others.
+    let mut harness = harness();
+    let doubler = harness.root::<Doubler>();
+
+    let silent = harness.ask(doubler, &Silence)?;
+    let ping = harness.ask(doubler, &Ping(4))?;
+
+    let answers = harness.answers((ping, silent))?;
+
+    assert_eq!(answers, (Answered::Yes(Pong(8)), Answered::No(Unanswered::Unreplied)));
+    assert_eq!(harness.rest(), Vec::new());
+
+    Ok(())
+}
+
+#[test]
+fn a_list_of_requests_is_answered_in_the_order_given() -> Result<(), Unheard> {
+    // Catches a list read in the order its answers arrived.
+    let mut harness = harness();
+    let doubler = harness.root::<Doubler>();
+    let mut asked = Vec::new();
+    for value in [3, 1, 2] {
+        asked.push(harness.ask(doubler, &Ping(value))?);
+    }
+    asked.reverse();
+
+    let answers = harness.answers(asked)?;
+
+    assert_eq!(answers, [Answered::Yes(Pong(4)), Answered::Yes(Pong(2)), Answered::Yes(Pong(6))]);
+
+    Ok(())
+}
+
+#[test]
+fn settling_answers_with_every_turn_of_every_step_in_order() -> Result<(), Unheard> {
+    // Catches turns of earlier steps thrown away, and turns recorded before the settle reported as part of it.
+    let mut harness = harness();
+    harness.add_root::<Passer>(&(), Passer { seen: Vec::new() })?;
+    let passer = harness.root::<Passer>();
+    harness.tell(passer, &Pass(3))?;
+    harness.step();
+
+    let turns = harness.settle_turns();
+
+    let handed: Vec<Pass> = turns.iter().filter_map(|turn| turn.read().ok()).collect();
+    assert_eq!(handed, [Pass(2), Pass(1), Pass(0)]);
+    assert_eq!(turns.last().map(|turn| turn.ran), Some(Ran::Closing));
+    assert!(turns.iter().map(|turn| turn.step).is_sorted());
+
+    Ok(())
+}
