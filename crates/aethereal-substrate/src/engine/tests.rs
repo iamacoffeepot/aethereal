@@ -1,31 +1,160 @@
 //! The engine's tests: what a step runs, and what is there for the next one.
 
+use super::outside::{Handed, Turned};
 use super::*;
 use crate::watch::Notice;
 use crate::{ByActor, Entry, child_id, path_id};
 use aethereal_actor::Time;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Carries, ChildOf, Ended, Ending, Fault, Handles, How, Level,
-    Path, Recursive, Table, Tells, ToAny, ToSender, ToType, Top, Turn, child, path,
+    Path, Recursive, Table, Tells, ToAny, ToSender, ToType, Top, Turn, Unanswered, Why, child, path,
 };
-use aethereal_data::{Bound, Budget, Kind, KindName, Plain};
-use std::cell::RefCell;
-use std::mem;
+use aethereal_data::{Bound, Kind, KindName, Plain};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-thread_local! {
-    /// What the actors of this thread's test have said they did, in order.
-    static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+/// What a test reads of one turn from the engine's record (ADR-0036). A number is the last key of the actor's path,
+/// and an actor with no key reads as nought.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Seen {
+    /// The actor was handed this note.
+    Got(u64, String),
+    /// The note it was just handed, a `where`, lies this deep in its chain.
+    At(u64, u32),
+    /// The actor ran its closing turn, for this reason.
+    Ended(u64, Why),
+    /// The actor was shown that one it watches ended in this way.
+    Saw(u64, How),
+    /// A seer was answered with this text.
+    Told(String),
+    /// A seer was told why its question went unanswered.
+    Unanswered(Unanswered),
+    /// A clocked actor's parent was told what its child read.
+    Finished(Finished),
 }
 
-/// Notes that an actor did something.
-fn say(line: String) {
-    SAID.with_borrow_mut(|said| said.push(line));
+impl Seen {
+    /// What `turned` shows: nothing for a turn over mail no test reads.
+    fn of(turned: &Turned) -> Vec<Self> {
+        let number = numbered(turned);
+        match &turned.handed {
+            Handed::Closing(why) => vec![Self::Ended(number, *why)],
+            Handed::Ended(ended) => vec![Self::Saw(number, ended.how().clone())],
+            Handed::Mail(_) => Self::of_mail(turned, number),
+        }
+    }
+
+    /// What `turned`, a turn of the actor `number` over mail, shows.
+    fn of_mail(turned: &Turned, number: u64) -> Vec<Self> {
+        if let Ok(Note { text }) = turned.read() {
+            let asks_where = text.split(' ').next() == Some("where");
+            let got = Self::Got(number, text);
+            if asks_where {
+                return vec![got, Self::At(number, turned.depth)];
+            }
+
+            return vec![got];
+        }
+        if let Ok(Reply { text }) = turned.read() {
+            return vec![Self::Told(text)];
+        }
+        if let Ok(why) = turned.read() {
+            return vec![Self::Unanswered(why)];
+        }
+        if let Ok(finished) = turned.read() {
+            return vec![Self::Finished(finished)];
+        }
+
+        Vec::new()
+    }
+
+    /// The number of the actor it is of, and nought for what a seer heard.
+    const fn number(&self) -> u64 {
+        match self {
+            Self::Got(number, _) | Self::At(number, _) | Self::Ended(number, _) | Self::Saw(number, _) => *number,
+            Self::Told(_) | Self::Unanswered(_) => 0,
+            Self::Finished(finished) => finished.number,
+        }
+    }
+
+    /// The note the actor `number` was handed, when this is one.
+    fn text_of(&self, number: u64) -> Option<&str> {
+        match self {
+            Self::Got(of, text) if *of == number => Some(text),
+            _ => None,
+        }
+    }
 }
 
-/// What has been said since this was last asked.
-fn said() -> Vec<String> {
-    SAID.with_borrow_mut(mem::take)
+/// The last key of the path of the actor that ran `turned`, read as a number, and nought for an actor with no key.
+fn numbered(turned: &Turned) -> u64 {
+    let last = turned.path.last();
+
+    last.key().and_then(|key| key.to_string().parse().ok()).unwrap_or_default()
+}
+
+/// The actor `number` was handed the note `text`.
+fn got(number: u64, text: &str) -> Seen {
+    Seen::Got(number, String::from(text))
+}
+
+/// The note the actor `number` was handed lies `depth` deep in its chain.
+const fn at(number: u64, depth: u32) -> Seen {
+    Seen::At(number, depth)
+}
+
+/// The actor `number` ran its closing turn because it asked to close.
+const fn closed(number: u64) -> Seen {
+    Seen::Ended(number, Why::Closed)
+}
+
+/// The actor `number` ran its closing turn because a turn of its own failed.
+const fn faulted(number: u64) -> Seen {
+    Seen::Ended(number, Why::Faulted)
+}
+
+/// The actor `number` was shown that one it watches ended as `how` says.
+const fn saw(number: u64, how: How) -> Seen {
+    Seen::Saw(number, how)
+}
+
+/// A seer was answered with `text`.
+fn told(text: &str) -> Seen {
+    Seen::Told(String::from(text))
+}
+
+/// An ending by a failed turn, over the note `text`.
+fn failed_over(text: &str) -> How {
+    let Ok(fault) = Fault::new(&Note { text: String::from(text) }) else {
+        panic!("a short note encodes");
+    };
+
+    How::Failed(fault)
+}
+
+/// What the turns recorded since this was last asked show.
+fn seen(engine: &mut Engine) -> Vec<Seen> {
+    engine.take_turned().iter().flat_map(Seen::of).collect()
+}
+
+/// Why a spawn or a put was refused, as an actor's state can hold it: [`Refused`] does not encode.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+enum Refusal {
+    /// A blob had no room.
+    NoRoom,
+    /// A typed path of singletons held no live actor of the type of this name.
+    Missing(String),
+    /// Anything else, which these tests never expect.
+    Other,
+}
+
+impl From<Refused> for Refusal {
+    fn from(refused: Refused) -> Self {
+        match refused {
+            Refused::NoRoom => Self::NoRoom,
+            Refused::Missing(name) => Self::Missing(name.to_string()),
+            _ => Self::Other,
+        }
+    }
 }
 
 /// A line of text one node sends another. A node acts on the text it is sent.
@@ -45,7 +174,7 @@ struct NodeConfig {
     spawns: Vec<u64>,
 }
 
-/// An actor that says what it is sent, and acts on it:
+/// An actor that acts on what it is sent:
 ///
 /// - `close` closes it, and `fail` fails its turn, and `fail text` logs `text` and sends its parent `never`
 ///   first;
@@ -57,31 +186,33 @@ struct NodeConfig {
 /// - `up text` sends its parent `text from <number>`, and `reply` answers the sender with `re`;
 /// - the node `13` fails its closing turn, so what it sends there is dropped;
 /// - `bye 5` has it watch the sender as well;
-/// - `where` has it say how deep in its chain that note is;
+/// - `where` does nothing, and the record says how deep in its chain that note is;
 /// - `bye N`, which a child sends as it ends, has it send that child `late`;
 /// - `bounce N` answers the sender `bounce N-1` until `N` is zero, and `pair` answers it `bounce 2`, then `last`;
 /// - `keep` sends the sender `late` through the reference to it, as an actor of its own type;
 /// - `many N text` sends itself `textI` for each `I` below `N`, a single digit: notes of one length, back to back;
 /// - `fan N,M,.. text` spawns each node `N`, `M` and so on beneath it, and sends them all `text` in one send;
-/// - `sibling N` says whether it finds the node `N` beneath its parent;
-/// - `birth N` spawns the node `N`, and says whether it finds it beneath itself in the same turn.
+/// - `sibling N` keeps whether it finds the node `N` beneath its parent;
+/// - `birth N` spawns the node `N`, and keeps whether it finds it beneath itself in the same turn.
 #[derive(Plain)]
 #[kind(name = "aether.test.node")]
 struct Node {
     number: u64,
+    /// Each node it looked for, and whether it found it, in order.
+    found: Vec<(u64, bool)>,
 }
 
 impl Node {
-    /// Says whether it finds the node `number`: beneath its parent for `sibling`, and for `birth` beneath itself, once
+    /// Keeps whether it finds the node `number`: beneath its parent for `sibling`, and for `birth` beneath itself, once
     /// it has spawned it in this turn.
-    fn look<S>(&self, turn: &mut Turn<'_, Self, S>, word: &str, number: u64) {
+    fn look<S>(&mut self, turn: &mut Turn<'_, Self, S>, word: &str, number: u64) {
         let found = if word == "birth" {
             let _ = turn.spawn::<Self>(&number, NodeConfig { number, to_self: Vec::new(), spawns: Vec::new() });
             turn.child::<Self>(turn.me(), &number)
         } else {
             turn.parent().and_then(|parent| turn.child::<Self>(parent, &number))
         };
-        say(format!("{} {} {number}", self.number, finding(found)));
+        self.found.push((number, found.is_some()));
     }
 }
 
@@ -105,11 +236,10 @@ impl Actor for Node {
             turn.to(turn.me()).send(&Note { text })?;
         }
 
-        Ok(Self { number: config.number })
+        Ok(Self { number: config.number, found: Vec::new() })
     }
 
     fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
-        say(format!("{} ended {:?}", self.number, turn.why()));
         if let Some(parent) = turn.parent() {
             turn.to(parent).send(&Note { text: format!("bye {}", self.number) })?;
         }
@@ -127,8 +257,6 @@ impl Handles<Note> for Node {
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Note { text } = note;
-        say(format!("{} got {text}", self.number));
-
         let words: Vec<&str> = text.splitn(3, ' ').collect();
         match words[..] {
             ["close"] => turn.close(),
@@ -212,7 +340,6 @@ impl Handles<Note> for Node {
                     .collect();
                 turn.to(&children).send(&Note { text: String::from(text) })?;
             }
-            ["where", ..] => say(format!("{} at depth {}", self.number, turn.chain().depth)),
             ["birth" | "sibling", number] => self.look(turn, words[0], number.parse().unwrap_or_default()),
             ["bye", number] => {
                 let watches = number == "5";
@@ -233,30 +360,8 @@ impl Handles<Note> for Node {
 impl Handles<Ended> for Node {
     type Sends = ();
 
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        say(format!("{} saw {}", self.number, how(ended.how())));
-
+    fn handle(&mut self, _: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
-    }
-}
-
-/// Whether a node looked for was found, in words.
-fn finding(found: Option<ActorRef<Node>>) -> &'static str {
-    match found {
-        Some(_) => "found",
-        None => "found no",
-    }
-}
-
-/// How a watched node ended, in a word, with the note it failed over.
-fn how(how: &How) -> String {
-    match how {
-        How::Closed => String::from("closed"),
-        How::Earlier => String::from("earlier"),
-        How::Failed(fault) => match fault.read::<Note>(&mut Budget::new(64)) {
-            Ok(Some(Note { text })) => format!("failed over {text}"),
-            _ => String::from("failed"),
-        },
     }
 }
 
@@ -281,6 +386,7 @@ fn fusing(hops: usize, to_self: &[&str]) -> (Engine, ActorId) {
         panic!("four is not zero");
     };
     let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops).ready();
+    engine.record_turns();
     let to_self = to_self.iter().map(|text| String::from(*text)).collect();
     let Ok(root) = engine.add_root::<Node>(&1, NodeConfig { number: 1, to_self, spawns: Vec::new() }) else {
         panic!("the root begins");
@@ -289,11 +395,11 @@ fn fusing(hops: usize, to_self: &[&str]) -> (Engine, ActorId) {
     (engine, root)
 }
 
-/// Runs one step and answers with what its turns said.
-fn step(engine: &mut Engine) -> Vec<String> {
+/// Runs one step and answers with what its turns show.
+fn step(engine: &mut Engine) -> Vec<Seen> {
     engine.step(Time::ZERO, &Stopped);
 
-    said()
+    seen(engine)
 }
 
 /// The live actor `id` stands for, in its seat.
@@ -303,6 +409,20 @@ fn seated(engine: &Engine, id: ActorId) -> Seated {
     };
 
     Seated { id, seat }
+}
+
+/// The state of the live actor `id` stands for, which is a `T`.
+fn state<T: 'static>(engine: &Engine, id: ActorId) -> &T {
+    let Some(state) = engine.state(seated(engine, id)) else {
+        panic!("the actor's state is here, and of the type asked for");
+    };
+
+    state
+}
+
+/// The id of the root of the singleton type `T`.
+fn root_of<T: Kind>() -> ActorId {
+    path_id(&ActorPath::from_root(&PathSegment::new(T::NAME, &())))
 }
 
 /// The id of the node `number` beneath `parent`.
@@ -315,11 +435,11 @@ fn mail_is_handled_in_a_step_after_it_is_sent() {
     // Catches mail handled as it is sent, inside the turn or the step that sent it, and a reply sent to anyone
     // but the sender.
     let (mut engine, _) = engine(&["reply"]);
-    assert_eq!(said(), [""; 0]);
+    assert!(engine.take_turned().is_empty());
     assert!(!engine.is_idle());
 
-    assert_eq!(step(&mut engine), ["1 got reply"]);
-    assert_eq!(step(&mut engine), ["1 got re"]);
+    assert_eq!(step(&mut engine), [got(1, "reply")]);
+    assert_eq!(step(&mut engine), [got(1, "re")]);
     assert!(engine.is_idle());
     assert_eq!(engine.step_number(), 2);
 }
@@ -329,10 +449,10 @@ fn child_takes_mail_sent_in_the_step_that_spawned_it() {
     // Catches mail delivered before its step's spawns are folded: the child would not be there for it.
     let (mut engine, root) = engine(&["spawn 2 up hello"]);
 
-    assert_eq!(step(&mut engine), ["1 got spawn 2 up hello"]);
+    assert_eq!(step(&mut engine), [got(1, "spawn 2 up hello")]);
     assert!(engine.table().is_live(node(root, 2)));
-    assert_eq!(step(&mut engine), ["2 got up hello"]);
-    assert_eq!(step(&mut engine), ["1 got hello from 2"]);
+    assert_eq!(step(&mut engine), [got(2, "up hello")]);
+    assert_eq!(step(&mut engine), [got(1, "hello from 2")]);
 }
 
 #[test]
@@ -340,19 +460,17 @@ fn closed_actor_handles_no_more_mail_and_ends_in_the_next_step() {
     // Catches mail queued behind a close being handled, a closing turn run in the step that closed, and mail
     // delivered to an actor that has ended.
     let (mut engine, root) = engine(&["spawn 2 close", "spawn 3 up hi"]);
-    assert_eq!(step(&mut engine), ["1 got spawn 2 close", "1 got spawn 3 up hi"]);
+    assert_eq!(step(&mut engine), [got(1, "spawn 2 close"), got(1, "spawn 3 up hi")]);
 
     // The two children run in the order of their ids, which nothing here depends on.
-    let mut second = step(&mut engine);
-    second.sort();
-    assert_eq!(second, ["2 got close", "3 got up hi"]);
+    let second = sorted(step(&mut engine));
+    assert_eq!(second, [got(2, "close"), got(3, "up hi")]);
     assert!(!engine.table().is_live(node(root, 2)));
 
-    let mut third = step(&mut engine);
-    third.sort();
-    assert_eq!(third, ["1 got hi from 3", "2 ended Closed"]);
-    assert_eq!(step(&mut engine), ["1 got bye 2"]);
-    assert_eq!(step(&mut engine), [""; 0]);
+    let third = sorted(step(&mut engine));
+    assert_eq!(third, [got(1, "hi from 3"), closed(2)]);
+    assert_eq!(step(&mut engine), [got(1, "bye 2")]);
+    assert!(step(&mut engine).is_empty());
     assert!(engine.is_idle());
 }
 
@@ -361,9 +479,9 @@ fn mail_queued_behind_a_close_is_dropped() {
     // Catches an ended actor handling what it was sent before it ended.
     let (mut engine, _) = engine(&["close", "reply"]);
 
-    assert_eq!(step(&mut engine), ["1 got close"]);
-    assert_eq!(step(&mut engine), ["1 ended Closed"]);
-    assert_eq!(step(&mut engine), [""; 0]);
+    assert_eq!(step(&mut engine), [got(1, "close")]);
+    assert_eq!(step(&mut engine), [closed(1)]);
+    assert!(step(&mut engine).is_empty());
     assert!(engine.is_idle());
 }
 
@@ -374,10 +492,10 @@ fn failed_turn_ends_its_actor_and_sends_nothing() {
     let (mut engine, root) = engine(&["spawn 2 fail"]);
     step(&mut engine);
 
-    assert_eq!(step(&mut engine), ["2 got fail"]);
+    assert_eq!(step(&mut engine), [got(2, "fail")]);
     assert!(!engine.table().is_live(node(root, 2)));
-    assert_eq!(step(&mut engine), ["2 ended Faulted"]);
-    assert_eq!(step(&mut engine), ["1 got bye 2"]);
+    assert_eq!(step(&mut engine), [faulted(2)]);
+    assert_eq!(step(&mut engine), [got(1, "bye 2")]);
 }
 
 #[test]
@@ -386,13 +504,12 @@ fn send_through_a_reference_to_an_actor_that_has_ended_is_dropped() {
     // over mail that is only to be dropped, and mail handed to an actor that has ended.
     let (mut engine, _) = engine(&["spawn 2 up keep", "tell 2 close"]);
     step(&mut engine);
-    assert_eq!(step(&mut engine), ["2 got up keep", "2 got close"]);
+    assert_eq!(step(&mut engine), [got(2, "up keep"), got(2, "close")]);
 
-    let mut third = step(&mut engine);
-    third.sort();
-    assert_eq!(third, ["1 got keep from 2", "2 ended Closed"]);
-    assert_eq!(step(&mut engine), ["1 got bye 2"]);
-    assert_eq!(step(&mut engine), [""; 0]);
+    let third = sorted(step(&mut engine));
+    assert_eq!(third, [got(1, "keep from 2"), closed(2)]);
+    assert_eq!(step(&mut engine), [got(1, "bye 2")]);
+    assert!(step(&mut engine).is_empty());
 }
 
 #[test]
@@ -401,7 +518,7 @@ fn a_child_is_found_beneath_a_reference_held_while_it_is_live() {
     // no child holds, finding a child that has ended, and missing one its own turn stood up beneath the reference it
     // holds to itself (ADR-0022). Node 2 looks for its siblings beneath its parent, and the root for the child it
     // just stood up.
-    let (mut engine, _) = engine(&[
+    let (mut engine, root) = engine(&[
         "spawn 3 x",
         "spawn 2 sibling 3",
         "self tell 2 sibling 5",
@@ -409,9 +526,12 @@ fn a_child_is_found_beneath_a_reference_held_while_it_is_live() {
         "self self self tell 2 sibling 3",
         "birth 4",
     ]);
-    let found: Vec<String> = (0..5).flat_map(|_| step(&mut engine)).filter(|line| line.contains(" found ")).collect();
+    for _ in 0..5 {
+        step(&mut engine);
+    }
 
-    assert_eq!(found, ["1 found 4", "2 found 3", "2 found no 5", "2 found no 3"]);
+    assert_eq!(state::<Node>(&engine, root).found, [(4, true)]);
+    assert_eq!(state::<Node>(&engine, node(root, 2)).found, [(3, true), (5, false), (3, false)]);
 }
 
 #[test]
@@ -437,11 +557,10 @@ fn key_stays_taken_after_its_child_has_ended() {
     step(&mut engine);
     step(&mut engine);
 
-    let mut third = step(&mut engine);
-    third.sort();
-    assert_eq!(third, ["1 got spawn 2 up again", "2 ended Closed"]);
-    assert_eq!(step(&mut engine), ["1 got bye 2"]);
-    assert_eq!(step(&mut engine), [""; 0]);
+    let third = sorted(step(&mut engine));
+    assert_eq!(third, [got(1, "spawn 2 up again"), closed(2)]);
+    assert_eq!(step(&mut engine), [got(1, "bye 2")]);
+    assert!(step(&mut engine).is_empty());
 }
 
 #[test]
@@ -450,17 +569,14 @@ fn key_a_child_used_as_it_began_stays_taken() {
     // parent has a seat to note it in.
     let (mut engine, _) = engine(&["nest 2 3", "self self tell 2 spawn 3 up again"]);
     step(&mut engine);
-    let mut second = step(&mut engine);
-    second.sort();
-    assert_eq!(second, ["1 got self tell 2 spawn 3 up again", "3 got close"]);
+    let second = sorted(step(&mut engine));
+    assert_eq!(second, [got(1, "self tell 2 spawn 3 up again"), got(3, "close")]);
 
-    let mut third = step(&mut engine);
-    third.sort();
-    assert_eq!(third, ["1 got tell 2 spawn 3 up again", "3 ended Closed"]);
-    let mut fourth = step(&mut engine);
-    fourth.sort();
-    assert_eq!(fourth, ["2 got bye 3", "2 got spawn 3 up again"]);
-    assert_eq!(step(&mut engine), [""; 0]);
+    let third = sorted(step(&mut engine));
+    assert_eq!(third, [got(1, "tell 2 spawn 3 up again"), closed(3)]);
+    let fourth = sorted(step(&mut engine));
+    assert_eq!(fourth, [got(2, "bye 3"), got(2, "spawn 3 up again")]);
+    assert!(step(&mut engine).is_empty());
 }
 
 #[test]
@@ -484,7 +600,7 @@ fn mail_from_two_senders_arrives_in_the_order_of_their_ids() {
 
     let mut numbers = [2, 3, 4];
     numbers.sort_by_key(|number| node(root, *number).bits());
-    assert_eq!(step(&mut engine), numbers.map(|number| format!("1 got x from {number}")));
+    assert_eq!(step(&mut engine), numbers.map(|number| got(1, &format!("x from {number}"))));
 }
 
 #[test]
@@ -494,7 +610,7 @@ fn key_spawned_earlier_in_the_step_is_taken() {
     let (mut engine, _) = engine(&["spawn 2 up first", "spawn 2 up second"]);
     step(&mut engine);
 
-    assert_eq!(step(&mut engine), ["2 got up first"]);
+    assert_eq!(step(&mut engine), [got(2, "up first")]);
 }
 
 #[test]
@@ -505,9 +621,9 @@ fn watcher_reacts_to_an_ending_once_with_its_fault_after_its_last_mail() {
     step(&mut engine);
     step(&mut engine);
 
-    assert_eq!(step(&mut engine), ["2 ended Faulted"]);
-    assert_eq!(step(&mut engine), ["1 got bye 2", "1 saw failed over fail"]);
-    assert_eq!(step(&mut engine), [""; 0]);
+    assert_eq!(step(&mut engine), [faulted(2)]);
+    assert_eq!(step(&mut engine), [got(1, "bye 2"), saw(1, failed_over("fail"))]);
+    assert!(step(&mut engine).is_empty());
     assert!(engine.is_idle());
 }
 
@@ -518,9 +634,9 @@ fn watcher_with_no_mail_is_run_for_an_ending() {
     let (mut engine, _) = engine(&["watch 13 close"]);
     step(&mut engine);
     step(&mut engine);
-    assert_eq!(step(&mut engine), ["13 ended Closed"]);
+    assert_eq!(step(&mut engine), [closed(13)]);
 
-    assert_eq!(step(&mut engine), ["1 saw closed"]);
+    assert_eq!(step(&mut engine), [saw(1, How::Closed)]);
 }
 
 #[test]
@@ -531,11 +647,10 @@ fn watch_asked_for_in_the_step_its_actor_ends_is_shown() {
     step(&mut engine);
     step(&mut engine);
 
-    let mut third = step(&mut engine);
-    third.sort();
-    assert_eq!(third, ["1 got watchme", "2 got close"]);
-    assert_eq!(step(&mut engine), ["2 ended Closed"]);
-    assert_eq!(step(&mut engine), ["1 got bye 2", "1 saw closed"]);
+    let third = sorted(step(&mut engine));
+    assert_eq!(third, [got(1, "watchme"), got(2, "close")]);
+    assert_eq!(step(&mut engine), [closed(2)]);
+    assert_eq!(step(&mut engine), [got(1, "bye 2"), saw(1, How::Closed)]);
 }
 
 #[test]
@@ -544,12 +659,11 @@ fn watch_asked_for_before_the_closing_turn_has_run_is_shown_how() {
     // ended earlier, when how it ended is still to come.
     let (mut engine, _) = engine(&["spawn 2 up watchme", "tell 2 close"]);
     step(&mut engine);
-    assert_eq!(step(&mut engine), ["2 got up watchme", "2 got close"]);
+    assert_eq!(step(&mut engine), [got(2, "up watchme"), got(2, "close")]);
 
-    let mut third = step(&mut engine);
-    third.sort();
-    assert_eq!(third, ["1 got watchme from 2", "2 ended Closed"]);
-    assert_eq!(step(&mut engine), ["1 got bye 2", "1 saw closed"]);
+    let third = sorted(step(&mut engine));
+    assert_eq!(third, [got(1, "watchme from 2"), closed(2)]);
+    assert_eq!(step(&mut engine), [got(1, "bye 2"), saw(1, How::Closed)]);
 }
 
 #[test]
@@ -558,10 +672,10 @@ fn watch_of_an_actor_whose_life_is_over_is_shown() {
     let (mut engine, _) = engine(&["spawn 5 close"]);
     step(&mut engine);
     step(&mut engine);
-    assert_eq!(step(&mut engine), ["5 ended Closed"]);
+    assert_eq!(step(&mut engine), [closed(5)]);
 
-    assert_eq!(step(&mut engine), ["1 got bye 5"]);
-    assert_eq!(step(&mut engine), ["1 saw earlier"]);
+    assert_eq!(step(&mut engine), [got(1, "bye 5")]);
+    assert_eq!(step(&mut engine), [saw(1, How::Earlier)]);
 }
 
 #[test]
@@ -578,8 +692,8 @@ fn failed_turn_keeps_its_log_lines_and_leaves_its_fault() {
 
     let kept: Vec<&Entry> = engine.log(child).collect();
     assert_eq!(kept, [&Entry::Line { level: Level::Warn, text: String::from("low") }, &Entry::Failed(fault)]);
-    assert_eq!(step(&mut engine), ["2 ended Faulted"]);
-    assert_eq!(step(&mut engine), ["1 got bye 2"]);
+    assert_eq!(step(&mut engine), [faulted(2)]);
+    assert_eq!(step(&mut engine), [got(1, "bye 2")]);
 }
 
 #[test]
@@ -593,9 +707,9 @@ fn failed_closing_turn_leaves_its_fault_and_sends_nothing() {
         panic!("a short note encodes");
     };
 
-    assert_eq!(step(&mut engine), ["13 ended Closed"]);
+    assert_eq!(step(&mut engine), [closed(13)]);
     assert_eq!(engine.log(child).collect::<Vec<_>>(), [&Entry::EndFailed(fault)]);
-    assert_eq!(step(&mut engine), [""; 0]);
+    assert!(step(&mut engine).is_empty());
 }
 
 #[test]
@@ -603,9 +717,9 @@ fn an_actor_counts_what_it_sends_across_its_begin_and_its_steps() {
     // Catches a count of mail sent that is lost between steps, or not kept from a root's `begin`, so the actor
     // starts counting again and gives a later piece of mail the id of an earlier one.
     let (mut engine, root) = engine(&["spawn 2 reply"]);
-    assert_eq!(step(&mut engine), ["1 got spawn 2 reply"]);
-    assert_eq!(step(&mut engine), ["2 got reply"]);
-    assert_eq!(step(&mut engine), ["1 got re"]);
+    assert_eq!(step(&mut engine), [got(1, "spawn 2 reply")]);
+    assert_eq!(step(&mut engine), [got(2, "reply")]);
+    assert_eq!(step(&mut engine), [got(1, "re")]);
 
     let sent = |actor: ActorId| {
         let seat = engine.table.seat(actor).unwrap_or(SeatNumber::new(u64::MAX));
@@ -623,9 +737,9 @@ fn depth_counts_each_send_down_a_chain() {
     // a root's first mail is at depth one.
     let (mut engine, _) = engine(&["where", "spawn 2 up where"]);
 
-    assert_eq!(step(&mut engine), ["1 got where", "1 at depth 1", "1 got spawn 2 up where"]);
+    assert_eq!(step(&mut engine), [got(1, "where"), at(1, 1), got(1, "spawn 2 up where")]);
     step(&mut engine);
-    assert_eq!(step(&mut engine), ["1 got where from 2", "1 at depth 3"]);
+    assert_eq!(step(&mut engine), [got(1, "where from 2"), at(1, 3)]);
 }
 
 #[test]
@@ -643,9 +757,9 @@ fn item_placed_under_a_seat_reaches_only_the_actor_it_was_placed_for() {
     };
 
     place(&mut engine, node(root, 3));
-    assert_eq!(step(&mut engine), [""; 0]);
+    assert!(step(&mut engine).is_empty());
     place(&mut engine, root);
-    assert_eq!(step(&mut engine), ["1 saw closed"]);
+    assert_eq!(step(&mut engine), [saw(1, How::Closed)]);
 }
 
 /// A clock that moves a microsecond each time it is read, so every turn is measured to cost something.
@@ -665,7 +779,7 @@ fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
     let (mut engine, root) = engine(&["spawn 2 spawn 4 up a", "spawn 3 spawn 5 up b", "tell 3 spawn 6 up c"]);
     let clock = Ticking::default();
     engine.step(Time::ZERO, &clock);
-    said();
+    let _ = engine.take_turned();
 
     let workers = Workers { active: 2, max: 2, wake_nanos: 0, split: SplitCost::NONE };
     let Split::Shares(shares) = engine.plan(workers, Time::ZERO).into_split() else {
@@ -675,11 +789,10 @@ fn children_spawned_on_two_workers_each_take_a_seat_of_their_own() {
     let reading = engine.reading();
     let done = shares.into_iter().map(|share| reading.run(share, &clock)).collect();
     engine.apply(done);
-    said();
+    let _ = engine.take_turned();
 
-    let mut third = step(&mut engine);
-    third.sort();
-    assert_eq!(third, ["4 got up a", "5 got up b", "6 got up c"]);
+    let third = sorted(step(&mut engine));
+    assert_eq!(third, [got(4, "up a"), got(5, "up b"), got(6, "up c")]);
     let (two, three) = (node(root, 2), node(root, 3));
     let actors = [root, two, three, node(two, 4), node(three, 5), node(three, 6)];
     let taken: Vec<u64> = actors.iter().filter_map(|id| engine.table().seat(*id)).map(SeatNumber::number).collect();
@@ -699,7 +812,7 @@ fn keys_used_on_two_workers_stay_taken_after_their_children_have_ended() {
     let (mut engine, _) = engine(&[notes[0], notes[1], notes[2], "self self self tell 3 spawn 30 up again"]);
     let clock = Ticking::default();
     engine.step(Time::ZERO, &clock);
-    said();
+    let _ = engine.take_turned();
 
     let workers = Workers { active: 2, max: 2, wake_nanos: 0, split: SplitCost::NONE };
     let Split::Shares(shares) = engine.plan(workers, Time::ZERO).into_split() else {
@@ -708,14 +821,14 @@ fn keys_used_on_two_workers_stay_taken_after_their_children_have_ended() {
     let reading = engine.reading();
     let done = shares.into_iter().map(|share| reading.run(share, &clock)).collect();
     engine.apply(done);
-    let mut heard = said();
+    let mut heard = seen(&mut engine);
     while !engine.is_idle() {
         heard.extend(step(&mut engine));
     }
 
-    assert!(heard.contains(&String::from("2 got spawn 20 up again")));
-    assert!(heard.contains(&String::from("3 got spawn 30 up again")));
-    let respawned = heard.iter().any(|line| line.contains("again from"));
+    assert!(heard.contains(&got(2, "spawn 20 up again")));
+    assert!(heard.contains(&got(3, "spawn 30 up again")));
+    let respawned = heard.iter().any(|seen| matches!(seen, Seen::Got(_, text) if text.contains("again from")));
     assert!(!respawned, "{heard:?}");
 }
 
@@ -729,7 +842,7 @@ fn children_seated_in_a_part_another_worker_ran_are_kept() {
     let (mut engine, root) = engine(&[notes[0], notes[1], notes[2], notes[3], "spawn 3 spawn 30 up hi"]);
     let clock = Ticking::default();
     engine.step(Time::ZERO, &clock);
-    said();
+    let _ = engine.take_turned();
 
     let workers = Workers { active: 2, max: 2, wake_nanos: 0, split: SplitCost::NONE };
     let Split::Shares(shares) = engine.plan(workers, Time::ZERO).into_split() else {
@@ -738,11 +851,10 @@ fn children_seated_in_a_part_another_worker_ran_are_kept() {
     let reading = engine.reading();
     let done = shares.into_iter().map(|share| reading.run(share, &clock)).collect();
     engine.apply(done);
-    said();
+    let _ = engine.take_turned();
 
-    let mut third = step(&mut engine);
-    third.sort();
-    assert_eq!(third, ["20 got up hi", "21 got up hi", "22 got up hi", "23 got up hi", "30 got up hi"]);
+    let third = sorted(step(&mut engine));
+    assert_eq!(third, [got(20, "up hi"), got(21, "up hi"), got(22, "up hi"), got(23, "up hi"), got(30, "up hi")]);
     let (two, three) = (node(root, 2), node(root, 3));
     let grandchildren = [node(two, 20), node(two, 21), node(two, 22), node(two, 23), node(three, 30)];
     let kept = grandchildren.iter().all(|id| engine.table().seat(*id).is_some());
@@ -754,14 +866,14 @@ fn chain_between_actors_in_one_part_runs_within_the_step() {
     // Catches a chain not fused between actors in one part, a fused send also delivered as mail, and a child not
     // seated in its parent's part while that part has room.
     let (mut fused, _) = fusing(8, &["spawn 2 up hi"]);
-    assert_eq!(step(&mut fused), ["1 got spawn 2 up hi"]);
-    assert_eq!(step(&mut fused), ["2 got up hi", "1 got hi from 2"]);
+    assert_eq!(step(&mut fused), [got(1, "spawn 2 up hi")]);
+    assert_eq!(step(&mut fused), [got(2, "up hi"), got(1, "hi from 2")]);
     assert!(fused.is_idle());
 
     let (mut unfused, _) = engine(&["spawn 2 up hi"]);
-    assert_eq!(step(&mut unfused), ["1 got spawn 2 up hi"]);
-    assert_eq!(step(&mut unfused), ["2 got up hi"]);
-    assert_eq!(step(&mut unfused), ["1 got hi from 2"]);
+    assert_eq!(step(&mut unfused), [got(1, "spawn 2 up hi")]);
+    assert_eq!(step(&mut unfused), [got(2, "up hi")]);
+    assert_eq!(step(&mut unfused), [got(1, "hi from 2")]);
 }
 
 #[test]
@@ -775,8 +887,8 @@ fn chain_runs_at_most_the_budget_of_hops_in_a_step() {
         steps.push(step(&mut engine));
     }
     // Each step runs the items waiting, then three hops.
-    let second = ["2 got bounce 0", "2 got bounce 7", "1 got bounce 6", "2 got bounce 5", "1 got bounce 4"];
-    let third = ["2 got bounce 3", "1 got bounce 2", "2 got bounce 1", "1 got bounce 0"];
+    let second = [got(2, "bounce 0"), got(2, "bounce 7"), got(1, "bounce 6"), got(2, "bounce 5"), got(1, "bounce 4")];
+    let third = [got(2, "bounce 3"), got(1, "bounce 2"), got(2, "bounce 1"), got(1, "bounce 0")];
     assert_eq!(steps, [second.to_vec(), third.to_vec()]);
 }
 
@@ -788,7 +900,7 @@ fn chains_begun_by_different_items_all_run_in_the_step_in_the_order_their_hops_w
     step(&mut engine);
 
     let second =
-        ["2 got self self where", "2 got reply", "2 got self where", "1 got re", "2 got where", "2 at depth 4"];
+        [got(2, "self self where"), got(2, "reply"), got(2, "self where"), got(1, "re"), got(2, "where"), at(2, 4)];
     assert_eq!(step(&mut engine), second);
     assert!(engine.is_idle());
 }
@@ -827,8 +939,8 @@ fn hop_never_overtakes_mail_its_sender_sent_as_mail() {
     let (mut engine, _) = fusing(8, &["spawn 2 up pair"]);
     step(&mut engine);
 
-    assert_eq!(step(&mut engine), ["2 got up pair", "1 got pair from 2", "2 got bounce 2", "1 got bounce 1"]);
-    assert_eq!(step(&mut engine), ["2 got last", "2 got bounce 0"]);
+    assert_eq!(step(&mut engine), [got(2, "up pair"), got(1, "pair from 2"), got(2, "bounce 2"), got(1, "bounce 1")]);
+    assert_eq!(step(&mut engine), [got(2, "last"), got(2, "bounce 0")]);
 }
 
 #[test]
@@ -931,7 +1043,7 @@ fn back_to_back_mail_to_one_actor_is_one_run_handed_out_piece_by_piece() {
     // Catches a run that loses or repeats a piece, hands its pieces out of another order than they were sent, is
     // kept as an item for each piece, or counts its sender's mail short, so a later piece of mail reuses an id.
     let (mut engine, root) = engine(&["many 3 a"]);
-    assert_eq!(step(&mut engine), ["1 got many 3 a"]);
+    assert_eq!(step(&mut engine), [got(1, "many 3 a")]);
 
     let me = seated(&engine, root);
     let pieces: Vec<u32> = engine.streams.shard(me.seat.number()).arrived().map(|(_, _, pieces)| pieces).collect();
@@ -939,7 +1051,7 @@ fn back_to_back_mail_to_one_actor_is_one_run_handed_out_piece_by_piece() {
     let count = engine.lives.shard(me.seat.number()).life(me).map(lives::Life::sent);
     assert_eq!(count, Some(4), "one piece from its begin, three from its first turn");
 
-    assert_eq!(step(&mut engine), ["1 got a0", "1 got a1", "1 got a2"]);
+    assert_eq!(step(&mut engine), [got(1, "a0"), got(1, "a1"), got(1, "a2")]);
 }
 
 #[test]
@@ -947,14 +1059,14 @@ fn run_fuses_its_first_piece_and_mails_the_rest() {
     // Catches a fused run whose rest is dropped, handed over twice, or run in the step ahead of the piece fused.
     let (mut engine, _) = fusing(8, &["many 3 a"]);
 
-    assert_eq!(step(&mut engine), ["1 got many 3 a", "1 got a0"]);
-    assert_eq!(step(&mut engine), ["1 got a1", "1 got a2"]);
+    assert_eq!(step(&mut engine), [got(1, "many 3 a"), got(1, "a0")]);
+    assert_eq!(step(&mut engine), [got(1, "a1"), got(1, "a2")]);
     assert!(engine.is_idle());
 }
 
 /// Runs one step planned for `workers` workers on this thread, shared or whole as the plan says, timed by `clock`,
-/// and answers with what its turns said.
-fn step_on(engine: &mut Engine, workers: usize, clock: &Ticking) -> Vec<String> {
+/// and answers with what its turns show.
+fn step_on(engine: &mut Engine, workers: usize, clock: &Ticking) -> Vec<Seen> {
     let workers = Workers { active: workers, max: workers, wake_nanos: 0, split: SplitCost::NONE };
     match engine.plan(workers, Time::ZERO).into_split() {
         Split::Whole(whole) => {
@@ -968,7 +1080,7 @@ fn step_on(engine: &mut Engine, workers: usize, clock: &Ticking) -> Vec<String> 
         }
     }
 
-    said()
+    seen(engine)
 }
 
 #[test]
@@ -1006,13 +1118,14 @@ fn sliced(name: impl Fn(u64) -> String) {
             steps.push(step_on(&mut engine, 2, &clock));
         }
 
-        let told: Vec<&str> = steps.iter().flatten().filter_map(|line| line.strip_prefix("2 got up ")).collect();
+        let told: Vec<&str> = steps.iter().flatten().filter_map(|seen| seen.text_of(2)?.strip_prefix("up ")).collect();
         let answered: Vec<&str> =
-            steps.iter().flatten().filter_map(|line| line.strip_prefix("1 got ")?.strip_suffix(" from 2")).collect();
+            steps.iter().flatten().filter_map(|seen| seen.text_of(1)?.strip_suffix(" from 2")).collect();
         let sent: Vec<String> = (0..3000).map(&name).collect();
         assert_eq!(told, sent, "hops={hops}");
         assert_eq!(answered, sent, "hops={hops}");
-        let telling = steps.iter().filter(|said| said.iter().any(|line| line.starts_with("1 got tell"))).count();
+        let tells = |seen: &Seen| seen.text_of(1).is_some_and(|text| text.starts_with("tell"));
+        let telling = steps.iter().filter(|step| step.iter().any(tells)).count();
         assert!(telling > 1, "the root is cut off at its slice, hops={hops}");
     }
 }
@@ -1022,7 +1135,7 @@ fn a_child_stood_up_in_a_turn_counts_what_it_sent_from_its_begin() {
     // Catches the count of a child's `begin` routed ahead of the spawn that makes its life, and dropped, so its next
     // turn numbers its mail from nought and gives a later piece the id of one its `begin` sent.
     let (mut engine, root) = engine(&["nest 2 3"]);
-    assert_eq!(step(&mut engine), ["1 got nest 2 3"]);
+    assert_eq!(step(&mut engine), [got(1, "nest 2 3")]);
     let grandchild = node(node(root, 2), 3);
     let me = seated(&engine, grandchild);
     let count = engine.lives.shard(me.seat.number()).life(me).map(lives::Life::sent);
@@ -1048,22 +1161,30 @@ struct Given {
 
 /// An actor that puts, keeps, reads, and lets go of blobs as its notes say (ADR-0014):
 ///
-/// - `put N` puts a blob of `N` bytes and keeps it, or says why it was refused;
-/// - `read` says how many bytes each blob it keeps holds;
-/// - `hash` says the hash of each blob it keeps;
+/// - `put N` puts a blob of `N` bytes and keeps it, or keeps why it was refused;
+/// - `read` keeps how many bytes each blob it keeps holds;
+/// - `hash` keeps the hash of each blob it keeps;
 /// - `drop` lets go of the blob it kept last;
 /// - `fail` fails its turn;
 /// - `later text` sends itself `text`, for the next step;
 /// - `send` mails itself the blob it kept last, keeping none of it, and `send close` closes as well;
 ///
-/// and keeps a blob it is given, saying how many bytes it holds, but for one it gave itself as it began, which it
-/// reads, gives itself on while it has more times to go, and lets go of.
+/// and keeps a blob it is given, with how many bytes it holds, but for one it gave itself as it began, which it reads,
+/// gives itself on while it has more times to go, and lets go of.
 #[derive(Bound)]
 #[kind(name = "aether.test.holder")]
 struct Holder {
     held: Vec<BlobRef>,
     /// Whether it gave itself a blob as it began.
     gave: bool,
+    /// How many bytes each blob held, each time it read them, in order.
+    sizes: Vec<u64>,
+    /// The hash of each blob, each time it hashed them, in order.
+    hashes: Vec<[u8; 32]>,
+    /// Why each put it was refused was refused, in order.
+    refused: Vec<Refusal>,
+    /// How many bytes each blob it was given held, in order.
+    given: Vec<u64>,
 }
 
 impl ChildOf for Holder {
@@ -1092,7 +1213,14 @@ impl Actor for Holder {
             turn.to(me).send(&Note { text: String::from("between") })?;
         }
 
-        Ok(Self { held: Vec::new(), gave: config.gives > 0 })
+        Ok(Self {
+            held: Vec::new(),
+            gave: config.gives > 0,
+            sizes: Vec::new(),
+            hashes: Vec::new(),
+            refused: Vec::new(),
+            given: Vec::new(),
+        })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -1109,16 +1237,16 @@ impl Handles<Note> for Holder {
         match words[..] {
             ["put", bytes] => match turn.put(vec![7; bytes.parse().unwrap_or_default()]) {
                 Ok(blob) => self.held.push(blob),
-                Err(refused) => say(format!("refused {refused:?}")),
+                Err(refused) => self.refused.push(Refusal::from(refused)),
             },
             ["read"] => {
                 for blob in &self.held {
-                    say(format!("read {}", turn.read(blob).len()));
+                    self.sizes.push(length(turn.read(blob)));
                 }
             }
             ["hash"] => {
                 for blob in &self.held {
-                    say(hashed(turn.hash(blob)));
+                    self.hashes.push(hashed(turn.hash(blob)));
                 }
             }
             ["drop"] => drop(self.held.pop()),
@@ -1145,14 +1273,14 @@ impl Handles<Given> for Holder {
     type Sends = (ToType<Self, Given>,);
 
     fn handle(&mut self, given: Given, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let held = turn.read(&given.blob).len();
+        let held = length(turn.read(&given.blob));
         if self.gave {
             let Given { blob, left } = given;
             if left > 0 {
                 turn.to(turn.me()).send(&Given { blob, left: left - 1 })?;
             }
         } else {
-            say(format!("given {held}"));
+            self.given.push(held);
             self.held.push(given.blob);
         }
 
@@ -1160,7 +1288,8 @@ impl Handles<Given> for Holder {
     }
 }
 
-/// An engine whose blobs hold at most `blob_bytes`, with a holder that sends itself `to_self` as it begins.
+/// An engine whose blobs hold at most `blob_bytes`, with a holder that sends itself `to_self` as it begins. It records
+/// no turns: a recorded piece of mail keeps its pins, which would hold the blobs these tests watch go.
 fn holding(blob_bytes: usize, to_self: &[&str]) -> Engine {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
@@ -1174,9 +1303,19 @@ fn holding(blob_bytes: usize, to_self: &[&str]) -> Engine {
     engine
 }
 
-/// What a holder says of a blob with the hash `hash`.
-fn hashed(hash: BlobHash) -> String {
-    format!("hash {:?}", hash.bytes())
+/// How many bytes `blob` holds.
+fn length(blob: &[u8]) -> u64 {
+    u64::try_from(blob.len()).unwrap_or(u64::MAX)
+}
+
+/// What a holder keeps of a blob with the hash `hash`.
+fn hashed(hash: BlobHash) -> [u8; 32] {
+    hash.bytes()
+}
+
+/// The state of the holder of `engine`.
+fn holder(engine: &Engine) -> &Holder {
+    state(engine, root_of::<Holder>())
 }
 
 #[test]
@@ -1186,11 +1325,13 @@ fn a_hash_asked_for_in_a_turn_is_kept_at_the_fold() {
     // hash of should never pay for.
     let three = BlobHash::of(&[7; 3]);
     let mut engine = holding(1 << 20, &["put 3", "hash", "put 4", "later hash"]);
-    assert_eq!(step(&mut engine), [hashed(three)]);
+    step(&mut engine);
+    assert_eq!(holder(&engine).hashes, [hashed(three)]);
     assert_eq!(engine.blobs.kept_hashes(), [three], "only the blob asked for is hashed");
 
     let four = BlobHash::of(&[7; 4]);
-    assert_eq!(step(&mut engine), [hashed(three), hashed(four)]);
+    step(&mut engine);
+    assert_eq!(holder(&engine).hashes, [hashed(three), hashed(three), hashed(four)]);
     let mut kept = engine.blobs.kept_hashes();
     kept.sort();
     let mut both = [three, four];
@@ -1227,13 +1368,11 @@ fn a_blob_mailed_and_kept_by_no_one_else_reaches_its_receiver_as_a_hop_or_as_it_
         let Ok(_) = engine.add_root::<Holder>(&(), HolderConfig { to_self, gives: 0 }) else {
             panic!("the holder begins");
         };
-        said();
-        let mut heard = Vec::new();
         while !engine.is_idle() {
-            heard.extend(step(&mut engine));
+            step(&mut engine);
         }
 
-        assert_eq!(heard, ["given 3"], "{parts} parts, {hops} hops");
+        assert_eq!(holder(&engine).given, [3], "{parts} parts, {hops} hops");
     }
 }
 
@@ -1242,10 +1381,12 @@ fn a_blob_put_in_a_turn_is_read_in_that_step_and_the_ones_after() {
     // Catches a read that looks only in the store and misses what its worker put in the step, and a store that never
     // takes in what was put.
     let mut engine = holding(1 << 20, &["put 3", "read", "later read"]);
-    assert_eq!(step(&mut engine), ["read 3"]);
+    step(&mut engine);
+    assert_eq!(holder(&engine).sizes, [3]);
     assert_eq!(engine.blobs_held(), (1, 3));
 
-    assert_eq!(step(&mut engine), ["read 3"]);
+    step(&mut engine);
+    assert_eq!(holder(&engine).sizes, [3, 3]);
 }
 
 #[test]
@@ -1263,12 +1404,14 @@ fn a_blob_is_freed_at_the_fold_after_its_last_reference_goes() {
 fn a_put_past_the_budget_is_refused_until_a_blob_is_freed() {
     // Catches a put that goes past the budget, a refusal the actor is not told of, and freed bytes never given back.
     let mut engine = holding(8, &["put 6", "put 6", "later drop", "later later put 6"]);
-    assert_eq!(step(&mut engine), ["refused NoRoom"]);
+    step(&mut engine);
+    assert_eq!(holder(&engine).refused, [Refusal::NoRoom]);
     assert_eq!(engine.blobs_held(), (1, 6));
 
     step(&mut engine);
     assert_eq!(engine.blobs_held(), (0, 0));
-    assert_eq!(step(&mut engine), [""; 0]);
+    step(&mut engine);
+    assert_eq!(holder(&engine).refused, [Refusal::NoRoom], "the put after the blob is freed is not refused");
     assert_eq!(engine.blobs_held(), (1, 6));
 }
 
@@ -1335,10 +1478,12 @@ fn a_blob_sent_in_mail_lives_until_its_receiver_holds_it() {
     // that reads a reference back with no pin of its own, so the blob goes once the mail's arena is emptied.
     let mut engine = holding(1 << 20, &["put 3", "later send"]);
     step(&mut engine);
-    assert_eq!(step(&mut engine), [""; 0]);
+    step(&mut engine);
+    assert!(holder(&engine).given.is_empty());
     assert_eq!(engine.blobs_held(), (1, 3), "only the mail refers to it");
 
-    assert_eq!(step(&mut engine), ["given 3"]);
+    step(&mut engine);
+    assert_eq!(holder(&engine).given, [3]);
     for _ in 0..3 {
         step(&mut engine);
     }
@@ -1367,14 +1512,14 @@ fn mail_sent_to_all_reaches_each_receiver_once_wherever_it_is_seated() {
         while !engine.is_idle() {
             heard.extend(step(&mut engine));
         }
-        heard.sort();
         let part = |id: ActorId| seated(&engine, id).seat.index() % 4;
         let elsewhere = (2..=9).filter(|number| part(node(root, *number)) != part(root)).count();
         assert!(elsewhere > 0, "some receiver is seated in another part than its sender, hops={hops}");
 
-        let expected: Vec<String> = (2..=9).map(|number| format!("{number} got hello")).collect();
-        let got: Vec<String> = heard.into_iter().filter(|line| line.ends_with("got hello")).collect();
-        assert_eq!(got, expected, "hops={hops}");
+        let expected: Vec<Seen> = (2..=9).map(|number| got(number, "hello")).collect();
+        let hello: Vec<Seen> =
+            sorted(heard).into_iter().filter(|seen| matches!(seen, Seen::Got(_, text) if text == "hello")).collect();
+        assert_eq!(hello, expected, "hops={hops}");
     }
 }
 
@@ -1415,14 +1560,30 @@ struct ClockedConfig {
     to_self: String,
 }
 
-/// An actor that says the time each of its turns reads, and puts a blob of three bytes as it begins, which its
-/// closing turn reads (ADR-0014, ADR-0018): `spawn` spawns the actors `2` and `3` beneath it, which each send
-/// themselves `close`.
+/// What a clocked actor's closing turn tells its parent, since its state ends with it: the times it read, and how many
+/// bytes the blob it put as it began holds.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.test.finished")]
+struct Finished {
+    number: u64,
+    began: u64,
+    turns: Vec<u64>,
+    ended: u64,
+    bytes: u64,
+}
+
+/// An actor that keeps the time each of its turns reads, and puts a blob of three bytes as it begins, which its closing
+/// turn reads (ADR-0014, ADR-0018): `spawn` spawns the actors `2` and `3` beneath it, which each send themselves
+/// `close`.
 #[derive(Bound)]
 #[kind(name = "aether.test.clocked")]
 struct Clocked {
     number: u64,
     blob: BlobRef,
+    /// The time its `begin` read, in nanoseconds.
+    began: u64,
+    /// The time each turn over a note read, in nanoseconds, in order.
+    turns: Vec<u64>,
 }
 
 impl ChildOf for Clocked {
@@ -1432,24 +1593,28 @@ impl ChildOf for Clocked {
 impl Actor for Clocked {
     type Config = ClockedConfig;
     type Key = u64;
-    type Handles = (Note,);
+    type Handles = (Note, Finished);
     type BeginSends = (ToType<Self, Note>,);
-    type EndSends = ();
+    type EndSends = (ToType<Self, Finished>,);
 
     fn begin(config: ClockedConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let ClockedConfig { number, to_self } = config;
-        say(format!("{number} began at {}", turn.now().nanos()));
+        let began = turn.now().nanos();
         let Ok(blob) = turn.put(vec![7; 3]) else {
             return Err(Fault::new(&Note { text: String::from("no room") })?);
         };
         turn.to(turn.me()).send(&Note { text: to_self })?;
 
-        Ok(Self { number, blob })
+        Ok(Self { number, blob, began, turns: Vec::new() })
     }
 
     fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
-        let bytes = turn.read(&self.blob).len();
-        say(format!("{} ended at {} holding {bytes}", self.number, turn.now().nanos()));
+        let bytes = length(turn.read(&self.blob));
+        let Self { number, began, turns, .. } = self;
+        let finished = Finished { number, began, turns, ended: turn.now().nanos(), bytes };
+        if let Some(parent) = turn.parent() {
+            turn.to(parent).send(&finished)?;
+        }
 
         Ok(())
     }
@@ -1459,9 +1624,8 @@ impl Handles<Note> for Clocked {
     type Sends = ();
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let Note { text } = note;
-        say(format!("{} got {text} at {}", self.number, turn.now().nanos()));
-        match text.as_str() {
+        self.turns.push(turn.now().nanos());
+        match note.text.as_str() {
             "spawn" => {
                 for number in [2, 3] {
                     let config = ClockedConfig { number, to_self: String::from("close") };
@@ -1476,6 +1640,19 @@ impl Handles<Note> for Clocked {
     }
 }
 
+impl Handles<Finished> for Clocked {
+    type Sends = ();
+
+    fn handle(&mut self, _: Finished, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// What the clocked actor `number` tells its parent, having begun at 5, turned at 9, and closed at 12.
+fn finished(number: u64) -> Seen {
+    Seen::Finished(Finished { number, began: 5, turns: vec![9], ended: 12, bytes: 3 })
+}
+
 #[test]
 fn every_turn_reads_the_time_its_step_was_given_and_a_closing_turn_reads_blobs() {
     // Catches a turn, a `begin` run inside one, or a closing turn reading a time other than its step's: one kept from
@@ -1485,18 +1662,22 @@ fn every_turn_reads_the_time_its_step_was_given_and_a_closing_turn_reads_blobs()
         panic!("four is not zero");
     };
     let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
+    engine.record_turns();
     let config = ClockedConfig { number: 1, to_self: String::from("spawn") };
-    let Ok(_) = engine.add_root::<Clocked>(&1, config) else {
+    let Ok(root) = engine.add_root::<Clocked>(&1, config) else {
         panic!("the root begins");
     };
-    assert_eq!(said(), ["1 began at 0"]);
+    assert_eq!(state::<Clocked>(&engine, root).began, 0);
 
     engine.step(Time::from_nanos(5), &Stopped);
-    assert_eq!(said(), ["1 got spawn at 5", "2 began at 5", "3 began at 5"]);
+    assert_eq!(seen(&mut engine), [got(1, "spawn")]);
+    assert_eq!(state::<Clocked>(&engine, root).turns, [5]);
     engine.step(Time::from_nanos(9), &Stopped);
-    assert_eq!(sorted(said()), ["2 got close at 9", "3 got close at 9"]);
+    assert_eq!(sorted(seen(&mut engine)), [got(2, "close"), got(3, "close")]);
     engine.step(Time::from_nanos(12), &Stopped);
-    assert_eq!(sorted(said()), ["2 ended at 12 holding 3", "3 ended at 12 holding 3"]);
+    assert_eq!(sorted(seen(&mut engine)), [closed(2), closed(3)]);
+    engine.step(Time::from_nanos(15), &Stopped);
+    assert_eq!(sorted(seen(&mut engine)), [finished(2), finished(3)]);
 }
 
 #[test]
@@ -1507,13 +1688,14 @@ fn the_workers_of_a_shared_step_read_the_time_it_was_planned_with() {
     };
     let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).ready();
     // Each root sits in the part with fewest actors, so the two are in parts of their own.
-    for number in [1, 2] {
+    let roots = [1, 2].map(|number| {
         let config = ClockedConfig { number, to_self: String::from("tick") };
-        let Ok(_) = engine.add_root::<Clocked>(&number, config) else {
+        let Ok(root) = engine.add_root::<Clocked>(&number, config) else {
             panic!("the root begins");
         };
-    }
-    said();
+
+        root
+    });
 
     let workers = Workers { active: 2, max: 2, wake_nanos: 0, split: SplitCost::NONE };
     let Split::Shares(shares) = engine.plan(workers, Time::from_nanos(7)).into_split() else {
@@ -1522,14 +1704,16 @@ fn the_workers_of_a_shared_step_read_the_time_it_was_planned_with() {
     let reading = engine.reading();
     let done = shares.into_iter().map(|share| reading.run(share, &Stopped)).collect();
     engine.apply(done);
-    assert_eq!(sorted(said()), ["1 got tick at 7", "2 got tick at 7"]);
+    for root in roots {
+        assert_eq!(state::<Clocked>(&engine, root).turns, [7]);
+    }
 }
 
-/// `said`, in order: for turns of one step, which run in no order the tests depend on.
-fn sorted(mut said: Vec<String>) -> Vec<String> {
-    said.sort();
+/// `seen`, in order of the actors' numbers: for turns of one step, which run in no order the tests depend on.
+fn sorted(mut seen: Vec<Seen>) -> Vec<Seen> {
+    seen.sort_by_key(|seen| (seen.number(), format!("{seen:?}")));
 
-    said
+    seen
 }
 
 /// The chain the `begin` of the root `root` set off (ADR-0012).
@@ -1602,7 +1786,7 @@ fn one_chain_finishes_while_another_runs_on() {
     assert!(!engine.has_finished(begun(first)), "3 has yet to say hello");
 }
 
-/// A root that says what it is told, at the listener's name.
+/// A root that takes what it is told, at the listener's name.
 #[derive(Plain)]
 struct Listener;
 
@@ -1612,9 +1796,9 @@ struct Impostor {
     at: u64,
 }
 
-/// What a root at the listener's name is: one that says what it is told.
+/// What a root at the listener's name is: one that takes what it is told.
 macro_rules! listening {
-    ($name:ident, $says:literal) => {
+    ($name:ident) => {
         impl Kind for $name {
             const NAME: KindName = KindName::new("aether.test.listener");
         }
@@ -1642,17 +1826,15 @@ macro_rules! listening {
         impl Handles<Note> for $name {
             type Sends = ();
 
-            fn handle(&mut self, note: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-                say(format!("{} got {}", $says, note.text));
-
+            fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
                 Ok(())
             }
         }
     };
 }
 
-listening!(Listener, "the listener");
-listening!(Impostor, "the impostor");
+listening!(Listener);
+listening!(Impostor);
 
 /// A root that, as it begins, tells the listener of key zero at its typed path what it is made from: a keyed path,
 /// which its spawn does not check, so it may hold anything as the caller sends.
@@ -1685,8 +1867,9 @@ impl Actor for Caller {
 }
 
 /// An engine with whichever root `listening` makes at the listener's name, and a caller that tells it `text`.
-fn calling(listening: impl FnOnce(&mut Engine), text: &str) -> Vec<String> {
+fn calling(listening: impl FnOnce(&mut Engine), text: &str) -> Vec<Seen> {
     let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).ready();
+    engine.record_turns();
     listening(&mut engine);
     let Ok(_) = engine.add_root::<Caller>(&(), Caller { text: String::from(text) }) else {
         panic!("the caller begins");
@@ -1717,9 +1900,9 @@ fn a_send_at_a_typed_path_reaches_only_a_live_actor_of_the_paths_type() {
     );
     let nobody = calling(|_| {}, "hello");
 
-    assert_eq!(listener, ["the listener got hello"]);
-    assert_eq!(impostor, Vec::<String>::new(), "an actor of another kind at the path is not reached");
-    assert_eq!(nobody, Vec::<String>::new());
+    assert_eq!(listener, [got(0, "hello")]);
+    assert!(impostor.is_empty(), "an actor of another kind at the path is not reached");
+    assert!(nobody.is_empty());
 }
 
 /// A question an oracle answers.
@@ -1793,8 +1976,8 @@ macro_rules! answering {
 answering!(Oracle, "the truth");
 answering!(FalseOracle, "a lie");
 
-/// A root that, as it begins, asks the oracle of key zero at its typed path a question and watches it, and says what it
-/// hears: a keyed path, which its spawn does not check.
+/// A root that, as it begins, asks the oracle of key zero at its typed path a question and watches it, and takes what
+/// it hears: a keyed path, which its spawn does not check.
 #[derive(Plain)]
 #[kind(name = "aether.test.seer")]
 struct Seer;
@@ -1825,12 +2008,7 @@ impl Actor for Seer {
 impl Handles<Answer<Reply, Wondering>> for Seer {
     type Sends = ();
 
-    fn handle(&mut self, (answered, _): (Answered<Reply>, Wondering), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        match answered {
-            Answered::Yes(reply) => say(format!("the seer was told {}", reply.text)),
-            Answered::No(why) => say(format!("the seer went unanswered, {why:?}")),
-        }
-
+    fn handle(&mut self, _: (Answered<Reply>, Wondering), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1838,24 +2016,29 @@ impl Handles<Answer<Reply, Wondering>> for Seer {
 impl Handles<Ended> for Seer {
     type Sends = ();
 
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        say(format!("the seer saw the oracle end {}", how(ended.how())));
-
+    fn handle(&mut self, _: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
-/// What a seer says over a few steps, beside whichever root `oracle` makes at the oracle's name, in order.
-fn seeing(oracle: impl FnOnce(&mut Engine)) -> Vec<String> {
+/// What a seer hears over a few steps, beside whichever root `oracle` makes at the oracle's name, in order.
+fn seeing(oracle: impl FnOnce(&mut Engine)) -> Vec<Seen> {
     let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).ready();
+    engine.record_turns();
     oracle(&mut engine);
     let Ok(_) = engine.add_root::<Seer>(&(), Seer) else {
         panic!("the seer begins");
     };
-    let mut said: Vec<String> = (0..3).flat_map(|_| step(&mut engine)).collect();
-    said.sort();
+    for _ in 0..3 {
+        engine.step(Time::ZERO, &Stopped);
+    }
 
-    said
+    // The record notes an item before it is decoded, so a turn that heard it is one that did not fail.
+    let turns = engine.take_turned();
+    let all_ran = turns.iter().all(|turn| !turn.failed());
+    assert!(all_ran);
+
+    sorted(turns.iter().flat_map(Seen::of).collect())
 }
 
 #[test]
@@ -1875,8 +2058,8 @@ fn an_ask_and_a_watch_at_a_typed_path_reach_only_a_live_actor_of_the_paths_type(
     });
     let nobody = seeing(|_| {});
 
-    let gone = ["the seer saw the oracle end earlier", "the seer went unanswered, Ended"];
-    assert_eq!(oracle, ["the seer was told the truth"], "a live oracle is not shown as ended");
+    let gone = [saw(0, How::Earlier), Seen::Unanswered(Unanswered::Ended)];
+    assert_eq!(oracle, [told("the truth")], "a live oracle is not shown as ended");
     assert_eq!(false_oracle, gone, "an actor of another kind at the path is not reached");
     assert_eq!(nobody, gone);
 }
@@ -2011,10 +2194,15 @@ fn a_root_that_reaches_a_typed_path_of_singletons_is_refused_while_no_actor_of_i
 }
 
 /// A root that, as it begins, spawns a pilot, which reaches it back at its typed path, and a smuggler, which reaches
-/// the lighthouse, and says what became of each.
+/// the lighthouse, and keeps what became of each.
 #[derive(Plain)]
 #[kind(name = "aether.test.harbor")]
-struct Harbor;
+struct Harbor {
+    /// What became of its pilot: as a config, nothing yet.
+    pilot: Result<(), Refusal>,
+    /// What became of its smuggler: as a config, nothing yet.
+    smuggler: Result<(), Refusal>,
+}
 
 impl ChildOf for Harbor {
     type Parent = Top;
@@ -2027,12 +2215,14 @@ impl Actor for Harbor {
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(harbor: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let pilot: Result<ActorRef<Pilot>, _> = turn.spawn(&(), Pilot);
         let smuggler: Result<ActorRef<Smuggler>, _> = turn.spawn(&(), Smuggler);
-        say(format!("pilot {:?}, smuggler {:?}", pilot.err(), smuggler.err()));
 
-        Ok(harbor)
+        Ok(Self {
+            pilot: pilot.map(|_| ()).map_err(Refusal::from),
+            smuggler: smuggler.map(|_| ()).map_err(Refusal::from),
+        })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -2093,11 +2283,13 @@ fn a_child_that_reaches_a_typed_path_of_singletons_is_refused_while_no_actor_is_
     // Catches a turn's spawn that does not check the paths its child reaches, and one that refuses a child reaching
     // back the actor whose `begin` spawns it, which is not yet in the table (ADR-0022).
     let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).ready();
-    let Ok(_) = engine.add_root::<Harbor>(&(), Harbor) else {
+    let Ok(root) = engine.add_root::<Harbor>(&(), Harbor { pilot: Ok(()), smuggler: Ok(()) }) else {
         panic!("the harbor begins");
     };
 
-    assert_eq!(said(), ["pilot None, smuggler Some(Missing(KindName(\"aether.test.lighthouse\")))"]);
+    let harbor = state::<Harbor>(&engine, root);
+    assert_eq!(harbor.pilot, Ok(()));
+    assert_eq!(harbor.smuggler, Err(Refusal::Missing(String::from("aether.test.lighthouse"))));
 }
 
 #[test]
@@ -2115,7 +2307,7 @@ fn a_setup_makes_each_root_of_an_instanced_type_it_is_handed_at_once() {
 }
 
 /// A root that, as it begins, spawns a squad beneath it, which tells it of its parent, and a scout and a cell, which
-/// may stand anywhere and beneath their own type, and says what each tells it.
+/// may stand anywhere and beneath their own type, and takes what each tells it.
 #[derive(Plain)]
 #[kind(name = "aether.test.barracks")]
 struct Barracks;
@@ -2133,7 +2325,7 @@ impl Actor for Barracks {
 
     fn begin(barracks: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let squad: Result<ActorRef<Squad>, _> = turn.spawn(&(), Squad);
-        let scout: Result<ActorRef<Scout>, _> = turn.spawn(&(), Scout);
+        let scout: Result<ActorRef<Scout>, _> = turn.spawn(&(), Scout { is_root: false });
         let (Ok(squad), Ok(_)) = (squad, scout) else {
             return Err(Fault::new(&Note { text: String::from("a child did not begin") })?);
         };
@@ -2150,9 +2342,7 @@ impl Actor for Barracks {
 impl Handles<Note> for Barracks {
     type Sends = ();
 
-    fn handle(&mut self, note: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        say(format!("the barracks got {}", note.text));
-
+    fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -2195,10 +2385,13 @@ impl Handles<Note> for Squad {
 }
 
 /// An actor that may stand anywhere: as it begins, it tells its parent, when it has one, that it stands beneath it, and
-/// says whether it is a root.
+/// keeps whether it is a root.
 #[derive(Plain)]
 #[kind(name = "aether.test.scout")]
-struct Scout;
+struct Scout {
+    /// Whether it began with no parent: as a config, false.
+    is_root: bool,
+}
 
 impl ChildOf for Scout {
     type Parent = Anywhere;
@@ -2211,16 +2404,14 @@ impl Actor for Scout {
     type BeginSends = (ToAny<(Note,), Note>,);
     type EndSends = ();
 
-    fn begin(scout: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let parent = turn.parent().and_then(|parent| turn.cast::<(Note,)>(parent));
-        match parent {
-            Some(parent) => {
-                turn.to(parent).send(&Note { text: String::from("the scout") })?;
-            }
-            None => say(String::from("the scout is a root")),
+        let is_root = parent.is_none();
+        if let Some(parent) = parent {
+            turn.to(parent).send(&Note { text: String::from("the scout") })?;
         }
 
-        Ok(scout)
+        Ok(Self { is_root })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -2228,12 +2419,14 @@ impl Actor for Scout {
     }
 }
 
-/// An actor of a tree of its own type: one of depth zero, a root, spawns one beneath it, and each says whether it has
+/// An actor of a tree of its own type: one of depth zero, a root, spawns one beneath it, and each keeps whether it has
 /// a parent of its own type.
 #[derive(Plain)]
 #[kind(name = "aether.test.cell")]
 struct Cell {
     depth: u64,
+    /// Whether it began with a parent: as a config, false.
+    has_parent: bool,
 }
 
 impl ChildOf for Cell {
@@ -2249,15 +2442,14 @@ impl Actor for Cell {
 
     fn begin(cell: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let parent: Option<ActorRef<Self>> = turn.parent();
-        say(format!("cell {} has a parent: {}", cell.depth, parent.is_some()));
         if cell.depth == 0 {
-            let child: Result<ActorRef<Self>, _> = turn.spawn(&(), Self { depth: 1 });
+            let child: Result<ActorRef<Self>, _> = turn.spawn(&(), Self { depth: 1, has_parent: false });
             if child.is_err() {
                 return Err(Fault::new(&Note { text: String::from("the cell did not divide") })?);
             }
         }
 
-        Ok(cell)
+        Ok(Self { has_parent: parent.is_some(), ..cell })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -2271,24 +2463,27 @@ fn a_turn_is_handed_its_parent_typed_by_where_its_type_stands() {
     // beneath its own handed a parent it does not have, and one beneath its own type handed none (ADR-0022).
     let made = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0)
         .add_root::<Barracks>(&(), Barracks)
-        .and_then(|setup| setup.add_root::<Scout>(&(), Scout))
-        .and_then(|setup| setup.add_root::<Cell>(&(), Cell { depth: 0 }));
+        .and_then(|setup| setup.add_root::<Scout>(&(), Scout { is_root: false }))
+        .and_then(|setup| setup.add_root::<Cell>(&(), Cell { depth: 0, has_parent: false }));
     let Ok(setup) = made else {
         panic!("the roots begin");
     };
     let mut engine = setup.ready();
-    let mut heard = said();
-    heard.extend(step(&mut engine));
-    heard.extend(step(&mut engine));
-    heard.sort();
+    engine.record_turns();
+    for _ in 0..2 {
+        engine.step(Time::ZERO, &Stopped);
+    }
 
-    let told = [
-        "cell 0 has a parent: false",
-        "cell 1 has a parent: true",
-        "the barracks got the scout",
-        "the barracks got the squad",
-        "the barracks got the squad's report",
-        "the scout is a root",
-    ];
-    assert_eq!(heard, told);
+    // Every actor here has no key, so only the path says a note reached the barracks and not the squad itself.
+    let turns = engine.take_turned();
+    let at_barracks = |turn: &&Turned| turn.path.last().kind() == &Barracks::NAME;
+    let heard: Vec<Seen> = turns.iter().filter(at_barracks).flat_map(Seen::of).collect();
+    let reported = [got(0, "the scout"), got(0, "the squad"), got(0, "the squad's report")];
+    assert_eq!(sorted(heard), reported);
+    assert!(state::<Scout>(&engine, root_of::<Scout>()).is_root);
+    let scout = child_id(root_of::<Barracks>(), &PathSegment::new(Scout::NAME, &()));
+    assert!(!state::<Scout>(&engine, scout).is_root);
+    assert!(!state::<Cell>(&engine, root_of::<Cell>()).has_parent);
+    let cell = child_id(root_of::<Cell>(), &PathSegment::new(Cell::NAME, &()));
+    assert!(state::<Cell>(&engine, cell).has_parent);
 }
