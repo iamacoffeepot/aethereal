@@ -35,6 +35,7 @@ libc = "0.2.190"
 # The guest the tests run, for its types: its blob is built for wasm32 by the build script.
 aethereal-guest-echo = { path = "guests/echo" }
 aethereal-chassis-headless = { path = ".", features = ["harness"] }
+aethereal-files = { path = "../aethereal-files", features = ["tools"] }
 aethereal-http = { path = "../aethereal-http" }
 aethereal-mcp = { path = "../aethereal-mcp" }
 
