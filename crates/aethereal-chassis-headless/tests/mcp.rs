@@ -1,14 +1,17 @@
 //! The MCP capability served on the native host over real HTTP, the test its tools' worker (ADR-0037, ADR-0036).
 
 use aethereal_actor::{
-    Actor, ActorRef, Answered, Beginning, ChildOf, Ending, Fault, Handles, Tick, ToSender, Top, Turn, Unanswered,
+    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path,
+    ProtocolRef, Tick, ToSender, Top, Turn, Unanswered, path,
 };
 use aethereal_chassis_headless::Headless;
-use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_json, to_json};
+use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, from_json, to_bytes, to_json};
 use aethereal_http::{Http, HttpSettings};
-use aethereal_mcp::{Call, Called, Mcp, McpSettings, Offer, Offered, ToolSheet, Tooling, Withdraw};
+use aethereal_mcp::{
+    Call, Called, Mcp, McpSettings, Offer, Offered, Tool, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw,
+};
 use aethereal_substrate::harness::{Harness, Unheard};
-use aethereal_substrate::{EngineSettings, Host};
+use aethereal_substrate::{EngineSettings, Host, Program};
 use aethereal_tcp::Tcp;
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
@@ -527,12 +530,30 @@ fn a_tool_withdrawn_is_no_longer_held_and_its_name_is_free() -> Result<(), Unhea
     let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say")], worker })?;
     assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
 
-    harness.tell(mcp, &Withdraw { tool: String::from("say") })?;
+    harness.tell(mcp, &Withdraw { tool: String::from("say"), worker })?;
 
     let read = answered(&mut harness, port, &Post::of(Rpc::CallSay));
     assert!(read.body.contains("-32602"), "{read:?}");
     let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say")], worker })?;
     assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
+
+    Ok(())
+}
+
+#[test]
+fn another_workers_withdraw_leaves_a_tool_held() -> Result<(), Unheard> {
+    // Catches a withdraw by name alone, with which a failed toolbox would take a name that was never its own.
+    let (mut harness, mcp, port) = served(McpSettings::default())?;
+    harness.add_root::<Once>(&(), OnceConfig)?;
+    let worker = harness.protocol::<Tooling>();
+    let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say")], worker })?;
+    assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
+
+    let other = harness.root::<Once>().protocol::<Tooling, _>();
+    harness.tell(mcp, &Withdraw { tool: String::from("say"), worker: other })?;
+
+    let read = answered(&mut harness, port, &Post::of(Rpc::List));
+    assert!(read.body.contains("\"name\":\"say\""), "{read:?}");
 
     Ok(())
 }
@@ -597,6 +618,248 @@ fn the_largest_request_http_takes_is_read_within_the_limit_it_asks_for() -> Resu
     assert_eq!(read.status, 405, "{read:?}");
     let read = answered(&mut harness, port, &Post::of(Rpc::List));
     assert_eq!(read.status, 200, "{read:?}");
+
+    Ok(())
+}
+
+/// What a listed tool is made from: nothing.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "aether.test.listed_config")]
+struct ListedConfig;
+
+/// A tool to list, of the kind `$kind`, that offers each of `$name` and says how long a text is.
+macro_rules! listed {
+    ($actor:ident, $kind:literal, $( $name:literal ),+) => {
+        #[derive(Debug, Plain)]
+        #[kind(name = $kind)]
+        struct $actor;
+
+        impl ChildOf for $actor {
+            type Parent = Anywhere;
+        }
+
+        impl Actor for $actor {
+            type Config = ListedConfig;
+            type Key = ();
+            type Handles = (Call,);
+            type BeginSends = ();
+            type EndSends = ();
+
+            fn begin(_: ListedConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+                Ok(Self)
+            }
+
+            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+                Ok(())
+            }
+        }
+
+        impl Handles<Call> for $actor {
+            type Sends = (ToSender<Called>,);
+
+            fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+                let say = from_bytes::<Say>(&call.input, &mut Budget::new(1024))?;
+                let length = u32::try_from(say.text.len()).unwrap_or(u32::MAX);
+                turn.reply(&Called::Output(to_bytes(&Said { length })?))?;
+
+                Ok(())
+            }
+        }
+
+        impl Tool for $actor {
+            fn sheets() -> Vec<ToolSheet> {
+                vec![$(sheet($name)),+]
+            }
+
+            fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
+                me.protocol()
+            }
+        }
+    };
+}
+
+listed!(Say1, "aether.test.say1", "say");
+listed!(Say2, "aether.test.say2", "say");
+listed!(Other, "aether.test.other", "other");
+
+/// A root with no place in any program of this test, for a tool to reach.
+#[derive(Debug, Plain)]
+#[kind(name = "aether.test.absent")]
+struct Absent;
+
+/// What is asked of [`Absent`].
+#[derive(Debug, Plain)]
+#[kind(name = "aether.test.absent_ask")]
+struct AbsentAsk;
+
+impl ChildOf for Absent {
+    type Parent = Top;
+}
+
+impl Carries<AbsentAsk> for Absent {
+    type Answers = (AbsentAsk,);
+}
+
+impl Actor for Absent {
+    type Config = ListedConfig;
+    type Key = ();
+    type Handles = (AbsentAsk,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: ListedConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<AbsentAsk> for Absent {
+    type Sends = (ToSender<AbsentAsk>,);
+
+    fn handle(&mut self, _: AbsentAsk, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        turn.reply(&AbsentAsk)?;
+
+        Ok(())
+    }
+}
+
+/// A tool that reaches a root the program does not have.
+#[derive(Debug, Plain)]
+#[kind(name = "aether.test.reaching")]
+struct Reaching;
+
+impl ChildOf for Reaching {
+    type Parent = Anywhere;
+}
+
+impl Actor for Reaching {
+    type Config = ListedConfig;
+    type Key = ();
+    type Handles = (Call, Answer<AbsentAsk, ListedConfig>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: ListedConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Call> for Reaching {
+    type Sends = (Asks<Path<Absent>, AbsentAsk, ListedConfig>, ToSender<Called>);
+
+    fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        turn.to(path::<Absent>(())).ask(&AbsentAsk, &ListedConfig)?;
+        turn.reply(&Called::Refused(String::new()))?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<AbsentAsk, ListedConfig>> for Reaching {
+    type Sends = ();
+
+    fn handle(&mut self, _: (Answered<AbsentAsk>, ListedConfig), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Tool for Reaching {
+    fn sheets() -> Vec<ToolSheet> {
+        vec![sheet("reaching")]
+    }
+
+    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
+        me.protocol()
+    }
+}
+
+/// The roots of every toolbox test's program, the last made first.
+type Served = (Mcp, (Http, (Tcp, ())));
+
+/// The program every toolbox test starts from: `Mcp` served, on a port of its choosing.
+fn program() -> Program<Headless, Served> {
+    let http = HttpSettings::default();
+
+    Headless::program()
+        .with_engine(engine_for(&http))
+        .with_cycle::<(Tick,)>()
+        .root::<Tcp>()
+        .root_with::<Http>(http)
+        .root_with::<Mcp>(McpSettings { port: 0, ..McpSettings::default() })
+}
+
+/// The port `harness` serves on, once `Http` has bound it.
+fn port_of(harness: &mut Harness<Headless>) -> Result<u16, Unheard> {
+    let mcp = harness.root::<Mcp>();
+    for _ in 0..1000 {
+        if let Some(port) = harness.state(mcp)?.port() {
+            return Ok(port);
+        }
+        harness.step();
+    }
+    panic!("`Mcp` is served");
+}
+
+#[test]
+fn a_toolbox_stands_up_each_tool_and_a_call_reaches_it() -> Result<(), Unheard> {
+    // Catches a tool not spawned, not offered, or offered under the wrong worker, and a generic actor's seat or mail
+    // going astray, which no other test can as it is the first of them.
+    let mut harness = Harness::of(program().root::<Toolbox<(Say1, Other)>>())?;
+    let port = port_of(&mut harness)?;
+    for _ in 0..16 {
+        harness.step();
+    }
+
+    let read = answered(&mut harness, port, &Post::of(Rpc::List));
+    assert!(read.body.contains("\"name\":\"say\""), "{read:?}");
+    assert!(read.body.contains("\"name\":\"other\""), "{read:?}");
+
+    let read = answered(&mut harness, port, &Post::of(Rpc::CallSay));
+    assert!(read.body.contains("\"structuredContent\":{\"length\":5}"), "{read:?}");
+
+    Ok(())
+}
+
+#[test]
+fn a_name_listed_twice_stops_the_program_as_it_starts() {
+    // Catches two tools of one name found only by `Mcp`, whose refusal comes too late to stop anything.
+    let started = Harness::of(program().root::<Toolbox<(Say1, Say2)>>());
+
+    assert!(matches!(started, Err(Unheard::Program(_))));
+}
+
+#[test]
+fn a_tool_that_reaches_what_the_program_lacks_stops_it_as_it_starts() {
+    // Catches a refused spawn passed over, which leaves a tool missing with nothing said.
+    let started = Harness::of(program().root::<Toolbox<(Reaching,)>>());
+
+    assert!(matches!(started, Err(Unheard::Program(_))));
+}
+
+#[test]
+fn a_name_held_already_ends_the_toolbox_and_the_program_runs_on() -> Result<(), Unheard> {
+    // Catches a refused offer ignored, and part of a list left standing when another part was refused.
+    let mut harness = Harness::of(program())?;
+    let port = port_of(&mut harness)?;
+    let (mcp, worker) = (harness.root::<Mcp>(), harness.protocol::<Tooling>());
+    let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say")], worker })?;
+    assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
+
+    harness.add_root::<Toolbox<(Other, Say1)>>(&(), ToolboxConfig)?;
+    for _ in 0..16 {
+        harness.step();
+    }
+
+    let read = answered(&mut harness, port, &Post::of(Rpc::List));
+    assert!(read.body.contains("\"name\":\"say\""), "{read:?}");
+    assert!(!read.body.contains("\"name\":\"other\""), "{read:?}");
 
     Ok(())
 }

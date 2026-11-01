@@ -68,9 +68,10 @@ pub enum Offered {
     Unwritable,
 }
 
-/// A tool to stop holding.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+/// A tool to stop holding, when `worker` is the worker that holds it: another's of the same name stays.
+#[derive(Debug, Clone, Bound)]
 #[kind(name = "aether.mcp.withdraw")]
 pub struct Withdraw {
     pub tool: String,
+    pub worker: ProtocolRef<Tooling>,
 }
