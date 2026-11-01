@@ -4,8 +4,9 @@ use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path,
     ProtocolRef, Tick, ToSender, Top, Turn, Unanswered, path,
 };
-use aethereal_chassis_headless::Headless;
+use aethereal_chassis_headless::{FileRoots, Headless};
 use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, from_json, to_bytes, to_json};
+use aethereal_files::{Files, ReadTool};
 use aethereal_http::{Http, HttpSettings};
 use aethereal_mcp::{
     Call, Called, Mcp, McpSettings, Offer, Offered, Tool, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw,
@@ -15,8 +16,10 @@ use aethereal_substrate::{EngineSettings, Host, Program};
 use aethereal_tcp::Tcp;
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
+use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use std::{env, fs, process};
 
 /// What the test's tools read.
 #[derive(Debug, Plain)]
@@ -860,6 +863,78 @@ fn a_name_held_already_ends_the_toolbox_and_the_program_runs_on() -> Result<(), 
     let read = answered(&mut harness, port, &Post::of(Rpc::List));
     assert!(read.body.contains("\"name\":\"say\""), "{read:?}");
     assert!(!read.body.contains("\"name\":\"other\""), "{read:?}");
+
+    Ok(())
+}
+
+/// A directory of files, named for `test`, removed when dropped.
+struct Assets(PathBuf);
+
+impl Assets {
+    /// A directory holding `files`, each a name in it and its bytes.
+    fn new(test: &str, files: &[(&str, &[u8])]) -> Self {
+        let root = env::temp_dir().join(format!("aethereal-mcp-{}-{test}", process::id()));
+        assert!(fs::create_dir_all(&root).is_ok(), "the directory is made");
+        for (name, bytes) in files {
+            assert!(fs::write(root.join(name), bytes).is_ok(), "the file is written");
+        }
+
+        Self(root)
+    }
+}
+
+impl Drop for Assets {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A POST calling `read_file` for `path`.
+fn read_file(path: &'static str) -> Post {
+    let body = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{{\"name\":\"read_file\",\
+         \"arguments\":{{\"namespace\":\"Assets\",\"path\":\"{path}\"}},\"_meta\":{}}}}}",
+        Meta::Whole.text()
+    );
+    let body: &'static str = Box::leak(body.into_boxed_str());
+
+    Post { body: Some(body), method: Some("tools/call"), name: Some("read_file"), ..Post::of(Rpc::CallSay) }
+}
+
+#[test]
+fn read_tool_answers_a_file_over_mcp_and_says_what_it_could_not_read() -> Result<(), Unheard> {
+    // Catches the tool's decode, hold, ask, and encode each going wrong, a path past the namespace taken, a read that
+    // ends `Mcp` by answering more than it can read, and a blob answered as text it is not. `large` is past the
+    // tool's limit, which a tool that did not hold to it would answer whole.
+    let large = vec![b'a'; 256 * 1024 + 1];
+    let assets =
+        Assets::new("read", &[("a.txt", b"hello \"there\"\n"), ("b.bin", &[0xFF, 0xFE]), ("large.txt", &large)]);
+    let roots = FileRoots { assets: assets.0.display().to_string(), readers: 2 };
+    let program = program().root_with::<Files>(roots).root::<Toolbox<(ReadTool,)>>();
+    let mut harness = Harness::of(program)?;
+    let port = port_of(&mut harness)?;
+    for _ in 0..16 {
+        harness.step();
+    }
+
+    let read = answered(&mut harness, port, &read_file("a.txt"));
+    assert!(read.body.contains("\"structuredContent\":{\"text\":\"hello \\\"there\\\"\\n\"}"), "{read:?}");
+
+    let cases = [
+        ("missing.txt", "no file is at that path"),
+        ("b.bin", "not text"),
+        ("large.txt", "too large"),
+        ("../a.txt", "no path"),
+    ];
+    for (path, says) in cases {
+        let read = answered(&mut harness, port, &read_file(path));
+
+        assert!(read.body.contains(says), "{path}: {read:?}");
+        assert!(read.body.contains("\"isError\":true"), "{path}: {read:?}");
+    }
+
+    let read = answered(&mut harness, port, &Post::of(Rpc::List));
+    assert!(read.body.contains("\"name\":\"read_file\""), "{read:?}");
 
     Ok(())
 }

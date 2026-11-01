@@ -12,7 +12,11 @@ mod files;
 mod load;
 mod read;
 mod storage;
+#[cfg(feature = "tools")]
+mod tool;
 
 pub use files::{Files, FilesConfig};
 pub use read::{FileRead, ReadFile};
 pub use storage::{Namespace, Reading, Storage, Unread};
+#[cfg(feature = "tools")]
+pub use tool::{Calling, FileContents, ReadTool, ReadToolConfig};
