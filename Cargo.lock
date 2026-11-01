@@ -151,6 +151,7 @@ dependencies = [
  "aethereal-data",
  "aethereal-http",
  "aethereal-substrate",
+ "aethereal-tcp",
 ]
 
 [[package]]

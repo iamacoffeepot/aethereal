@@ -75,9 +75,12 @@ impl Table {
         Offered::Yes
     }
 
-    /// Stops holding the tool named `name`.
-    pub fn withdraw(&mut self, name: &str) {
-        self.tools.remove(name);
+    /// Stops holding the tool named `name`, when `worker` holds it.
+    pub fn withdraw(&mut self, name: &str, worker: ProtocolRef<Tooling>) {
+        let held = self.tools.get(name).is_some_and(|tool| tool.worker.id() == worker.id());
+        if held {
+            self.tools.remove(name);
+        }
     }
 
     /// Stops holding every tool of a worker that has ended.

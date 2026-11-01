@@ -150,7 +150,7 @@ impl Handles<Withdraw> for Mcp {
     type Sends = ();
 
     fn handle(&mut self, withdraw: Withdraw, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        self.table.withdraw(&withdraw.tool);
+        self.table.withdraw(&withdraw.tool, withdraw.worker);
 
         Ok(())
     }
