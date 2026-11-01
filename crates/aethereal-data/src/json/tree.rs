@@ -98,23 +98,27 @@ pub struct Tree<'json> {
 
 impl<'json> Tree<'json> {
     /// The root value.
+    #[must_use]
     pub fn root(&self) -> &Value<'json> {
         &self.root
     }
 
     /// The elements an array holds.
+    #[must_use]
     pub fn elements(&self, span: Span) -> &[Value<'json>] {
         let end = span.start.saturating_add(span.count);
         self.values.get(span.start..end).unwrap_or_default()
     }
 
     /// The members an object holds, sorted by name.
+    #[must_use]
     pub fn members(&self, span: Span) -> &[Member<'json>] {
         let end = span.start.saturating_add(span.count);
         self.members.get(span.start..end).unwrap_or_default()
     }
 
     /// The member named `name`, by binary search.
+    #[must_use]
     pub fn member(&self, span: Span, name: &str) -> Option<&Value<'json>> {
         let members = self.members(span);
         let found = members.binary_search_by(|member| member.name.as_str().cmp(name));

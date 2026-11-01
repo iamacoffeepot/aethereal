@@ -20,6 +20,6 @@ mod to_json;
 pub mod tree;
 
 pub use error::{JsonError, JsonFault, JsonForm, JsonPath, JsonStep, TextFault};
-pub use from_json::from_json;
-pub use schema::json_schema;
+pub use from_json::{from_json, from_value};
+pub use schema::{is_object, json_schema};
 pub use to_json::to_json;

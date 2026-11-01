@@ -27,6 +27,14 @@ pub fn from_json(schema: &SchemaNodes, json: &str, budget: &mut Budget) -> Resul
     Ok(out)
 }
 
+/// The bytes of `value`, a part of `tree`, for `schema`: `from_json` for a value read without a schema.
+pub fn from_value(schema: &SchemaNodes, tree: &Tree<'_>, value: &Value<'_>) -> Result<Vec<u8>, JsonError> {
+    let walk = Walk { tree };
+    let mut out = Vec::new();
+    walk.value(At::root(schema), value, &mut out)?;
+    Ok(out)
+}
+
 impl Walk<'_, '_> {
     /// Reads the value at `at` from `value` into `out`.
     ///
