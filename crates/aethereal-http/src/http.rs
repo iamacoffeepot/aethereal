@@ -1,12 +1,12 @@
 //! The HTTP capability's root (ADR-0035).
 
-use crate::{Handling, HttpSettings, Server, ServerConfig};
+use crate::{Handling, HttpSettings, ReadLimitTooLow, Server, ServerConfig};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held,
     Path, ProtocolRef, ToSender, ToType, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
-use aethereal_substrate::Bootstrap;
+use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::{Framing, Listen, Listener, Listening, Shut, Tcp};
 use std::collections::BTreeMap;
 
@@ -70,7 +70,7 @@ struct Opened {
 /// its typed path, `path::<Http>(())`, naming the handler each request is asked of.
 ///
 /// It watches each actor that asks, and when one ends, shuts every server it stood up for it.
-#[derive(Bound, Bootstrap)]
+#[derive(Bound)]
 #[kind(name = "aether.http")]
 pub struct Http {
     settings: HttpSettings,
@@ -79,6 +79,25 @@ pub struct Http {
     /// The actors watched for having asked.
     askers: Vec<u64>,
     next: u64,
+}
+
+/// It stands up on every host, and refuses to where a request it would take could not be read, which would fail the
+/// turn of the handler it was sent to and end it.
+impl<H: Host> Bootstrap<H> for Http {
+    const SECTION: &'static str = "http";
+    type Settings = HttpSettings;
+    type Needs = ();
+    type Provides = ();
+
+    async fn bootstrap(settings: HttpSettings, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
+        let read_limit = cx.read_limit();
+        let needed = settings.most_read_bytes();
+        if read_limit < needed {
+            return Err(Unbuilt::Failed(Box::new(ReadLimitTooLow { read_limit, needed })));
+        }
+
+        cx.begin(&(), settings)
+    }
 }
 
 impl ChildOf for Http {

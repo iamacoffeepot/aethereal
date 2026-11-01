@@ -528,6 +528,12 @@ impl Engine {
         self.hopped
     }
 
+    /// The most bytes a turn reads into any one piece of mail.
+    #[must_use]
+    pub const fn read_limit(&self) -> usize {
+        self.read_limit
+    }
+
     /// Whether a step would run no turn: no actor has anything to react to, and none has a closing turn to run.
     #[must_use]
     pub fn is_idle(&self) -> bool {

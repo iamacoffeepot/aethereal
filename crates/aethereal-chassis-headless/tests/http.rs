@@ -3,9 +3,9 @@
 
 use aethereal_actor::{Answered, Tick, Unanswered};
 use aethereal_chassis_headless::Headless;
-use aethereal_http::{Handling, Header, Http, HttpSettings, Request, Response, Serve, Served, Status};
-use aethereal_substrate::Host;
+use aethereal_http::{Handling, Header, Http, HttpSettings, ReadLimitTooLow, Request, Response, Serve, Served, Status};
 use aethereal_substrate::harness::{Harness, Held, Unheard};
+use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
@@ -21,8 +21,13 @@ struct Read {
 
 /// A host running `settings`, the test the handler of the port it serves.
 fn served(settings: HttpSettings) -> Result<(Harness<Headless>, u16), Unheard> {
-    let mut harness =
-        Harness::of(Headless::program().with_cycle::<(Tick,)>().root::<Tcp>().root_with::<Http>(settings))?;
+    let engine = EngineSettings {
+        read_limit: settings.most_read_bytes().try_into().unwrap_or(u32::MAX),
+        ..EngineSettings::default()
+    };
+    let mut harness = Harness::of(
+        Headless::program().with_engine(engine).with_cycle::<(Tick,)>().root::<Tcp>().root_with::<Http>(settings),
+    )?;
     let http = harness.root::<Http>();
     let handler = harness.protocol::<Handling>();
     let serving = harness.ask(http, &Serve { port: 0, handler })?;
@@ -197,4 +202,20 @@ fn a_handler_that_ended_is_a_503_and_one_that_failed_a_500() -> Result<(), Unhea
     }
 
     Ok(())
+}
+
+#[test]
+fn http_does_not_start_where_a_request_could_not_be_read() {
+    // Catches the check dropped, which lets one client end a handler with a request sent in small writes.
+    let settings = HttpSettings::default();
+    let needed = settings.most_read_bytes();
+    let engine = EngineSettings::default();
+    let program =
+        Headless::program().with_engine(engine).with_cycle::<(Tick,)>().root::<Tcp>().root_with::<Http>(settings);
+
+    let Err(Unheard::Program(why)) = Harness::of(program) else {
+        panic!("the program does not start");
+    };
+
+    assert!(why.contains(&ReadLimitTooLow { read_limit: 1024, needed }.to_string()), "{why}");
 }

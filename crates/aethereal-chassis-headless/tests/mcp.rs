@@ -85,20 +85,27 @@ fn sheet(name: &str) -> ToolSheet {
     }
 }
 
-/// The engine an MCP server needs: mail as large as a request or an offer, which the default's would fail to read.
-fn roomy() -> EngineSettings {
-    EngineSettings { read_limit: 1 << 20, mail_bytes: 1 << 23, ..EngineSettings::default() }
-}
-
 /// A host serving MCP on a port of its choosing, and that port.
 fn served(settings: McpSettings) -> Result<(Harness<Headless>, ActorRef<Mcp>, u16), Unheard> {
+    served_over(HttpSettings::default(), settings)
+}
+
+/// The engine `http` needs and no more: what `Http` itself says of it.
+fn engine_for(http: &HttpSettings) -> EngineSettings {
+    let read_limit = http.most_read_bytes().try_into().unwrap_or(u32::MAX);
+
+    EngineSettings { read_limit, mail_bytes: 1 << 24, ..EngineSettings::default() }
+}
+
+/// A host serving MCP over `http` on a port of its choosing, and that port.
+fn served_over(http: HttpSettings, settings: McpSettings) -> Result<(Harness<Headless>, ActorRef<Mcp>, u16), Unheard> {
     let settings = McpSettings { port: 0, ..settings };
     let mut harness = Harness::of(
         Headless::program()
-            .with_engine(roomy())
+            .with_engine(engine_for(&http))
             .with_cycle::<(Tick,)>()
             .root::<Tcp>()
-            .root_with::<Http>(HttpSettings::default())
+            .root_with::<Http>(http)
             .root_with::<Mcp>(settings),
     )?;
     let mcp = harness.root::<Mcp>();
@@ -206,6 +213,10 @@ struct Post {
     origin: Option<&'static str>,
     /// A body in place of the request's own.
     body: Option<&'static str>,
+    /// How many empty headers to send, of the fewest bytes one can be.
+    fillers: usize,
+    /// The most bytes of each write.
+    write_bytes: usize,
 }
 
 impl Post {
@@ -221,6 +232,8 @@ impl Post {
             name: rpc.tool(),
             origin: None,
             body: None,
+            fillers: 0,
+            write_bytes: usize::MAX,
         }
     }
 
@@ -247,6 +260,7 @@ impl Post {
         ];
         let lines = headers.iter().filter_map(|(name, value)| value.map(|value| format!("{name}: {value}\r\n")));
         text.extend(lines);
+        text.push_str(&"a:\r\n".repeat(self.fillers));
         text.push_str("\r\n");
         text.push_str(&body);
 
@@ -264,13 +278,18 @@ struct Read {
 /// A client on a thread of its own, outside the engine, which sends `request` to `port` and reads to the close.
 fn client(port: u16, request: &Post) -> JoinHandle<Read> {
     let sent = request.bytes();
+    let write_bytes = request.write_bytes;
     #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
     thread::spawn(move || {
         let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
             panic!("the client connects");
         };
         assert!(stream.set_read_timeout(Some(Duration::from_secs(10))).is_ok(), "the read timeout sets");
-        assert!(stream.write_all(&sent).is_ok(), "the client writes");
+        assert!(stream.set_nodelay(true).is_ok(), "each write goes as it is made");
+        for piece in sent.chunks(write_bytes) {
+            assert!(stream.write_all(piece).is_ok(), "the client writes");
+            thread::sleep(Duration::from_millis(u64::from(write_bytes < sent.len()) * 5));
+        }
         let mut whole = Vec::new();
         assert!(stream.read_to_end(&mut whole).is_ok(), "a response comes within ten seconds");
         let text = String::from_utf8_lossy(&whole).into_owned();
@@ -560,6 +579,24 @@ fn a_call_past_the_most_out_is_a_result_and_a_slot_comes_back() -> Result<(), Un
     harness.reply(call, &Called::Refused(String::from("again")))?;
     let read = heard(&mut harness, again);
     assert!(read.body.contains("again"), "{read:?}");
+
+    Ok(())
+}
+
+#[test]
+fn the_largest_request_http_takes_is_read_within_the_limit_it_asks_for() -> Result<(), Unheard> {
+    // Catches `most_read_bytes` counting a head by its bytes alone, as a list charges each element whole: a head of the
+    // most headers that fit would be mail `Mcp` cannot read, which ends it, however it is written.
+    let http =
+        HttpSettings { most_head_bytes: 2048, most_body_bytes: 256, chunk_bytes: 256, ..HttpSettings::default() };
+    let (mut harness, _, port) = served_over(http, McpSettings::default())?;
+    let largest = Post { verb: "GET", fillers: 480, write_bytes: 200, ..Post::of(Rpc::List) };
+
+    let read = answered(&mut harness, port, &largest);
+
+    assert_eq!(read.status, 405, "{read:?}");
+    let read = answered(&mut harness, port, &Post::of(Rpc::List));
+    assert_eq!(read.status, 200, "{read:?}");
 
     Ok(())
 }

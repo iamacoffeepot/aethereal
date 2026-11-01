@@ -48,8 +48,8 @@ enum Port {
 /// The MCP capability: forwards each call of a tool to the worker that offered it (ADR-0037). An actor asks it to
 /// [`Offer`] at its typed path, `path::<Mcp>(())`.
 ///
-/// Mail it cannot read fails its turn, which ends it, so a program sets the engine's `read_limit` above `Http`'s
-/// `most_head_bytes` and `most_body_bytes` together, above what its offers hold, and above what its tools answer.
+/// Mail it cannot read fails its turn, which ends it. `Http` will not start where a request could be such mail, and a
+/// program sets the engine's `read_limit` above what its offers hold and what its tools answer too.
 #[derive(Bound, Bootstrap)]
 #[kind(name = "aether.mcp")]
 pub struct Mcp {
