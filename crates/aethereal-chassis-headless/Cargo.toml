@@ -36,6 +36,7 @@ libc = "0.2.190"
 aethereal-guest-echo = { path = "guests/echo" }
 aethereal-chassis-headless = { path = ".", features = ["harness"] }
 aethereal-http = { path = "../aethereal-http" }
+aethereal-mcp = { path = "../aethereal-mcp" }
 
 [lints]
 workspace = true

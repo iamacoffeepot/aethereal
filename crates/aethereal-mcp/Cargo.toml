@@ -1,0 +1,16 @@
+[package]
+name = "aethereal-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The MCP capability: a server on HTTP that forwards each tool call to the worker that offered it (ADR-0037)"
+
+[dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-data = { path = "../aethereal-data", features = ["json"] }
+aethereal-http = { path = "../aethereal-http" }
+aethereal-substrate = { path = "../aethereal-substrate" }
+
+[lints]
+workspace = true

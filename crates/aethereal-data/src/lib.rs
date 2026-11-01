@@ -32,7 +32,16 @@ pub use error::{DecodeError, EncodeError};
 pub use file_path::FilePath;
 pub use fnv::Fnv;
 #[cfg(feature = "json")]
-pub use json::{JsonError, JsonFault, JsonForm, JsonPath, JsonStep, TextFault, from_json, json_schema, to_json};
+pub use json::escape::write as write_json_string;
+#[cfg(feature = "json")]
+pub use json::reader::read as read_json;
+#[cfg(feature = "json")]
+pub use json::tree::{Tree as JsonTree, Value as JsonValue};
+#[cfg(feature = "json")]
+pub use json::{
+    JsonError, JsonFault, JsonForm, JsonPath, JsonStep, TextFault, from_json, from_value, is_object, json_schema,
+    to_json,
+};
 pub use key::Key;
 pub use kind::{Kind, KindId, KindName};
 pub use path::{

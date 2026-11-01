@@ -60,6 +60,12 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
         self.stage
     }
 
+    /// The most bytes a turn reads into any one piece of mail: past it, the turn fails, which ends the actor.
+    #[must_use]
+    pub const fn read_limit(&self) -> usize {
+        self.stage.engine.read_limit()
+    }
+
     /// Begins the root under `key`, from `config`, after the roots begun before it.
     ///
     /// # Errors

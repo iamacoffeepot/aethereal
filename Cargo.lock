@@ -81,6 +81,7 @@ dependencies = [
  "aethereal-files",
  "aethereal-guest-echo",
  "aethereal-http",
+ "aethereal-mcp",
  "aethereal-substrate",
  "aethereal-tcp",
  "clap",
@@ -140,6 +141,16 @@ version = "0.1.0"
 dependencies = [
  "aethereal-data",
  "libm",
+]
+
+[[package]]
+name = "aethereal-mcp"
+version = "0.1.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
+ "aethereal-http",
+ "aethereal-substrate",
 ]
 
 [[package]]

@@ -1,6 +1,10 @@
 //! The HTTP capability's settings (ADR-0028, ADR-0035).
 
+use crate::Header;
 use aethereal_data::Plain;
+use core::error::Error;
+use core::fmt;
+use core::mem::size_of;
 
 /// The HTTP capability's section, `http`: its limits on servers and on what each request may hold, and how long each
 /// part of an exchange may take (ADR-0035). They are the root's config. Where listeners bind is `Tcp`'s setting.
@@ -52,6 +56,41 @@ impl Default for HttpSettings {
         }
     }
 }
+
+/// The fewest bytes of a head that hold a header: `a:`, and its line's end.
+const LEAST_HEADER_BYTES: usize = 4;
+
+impl HttpSettings {
+    /// The most bytes a turn reads into one piece of mail of a server of these settings: the larger of a chunk and a
+    /// whole request, its head as the most headers that fit, as reading a list charges each of its elements whole.
+    #[must_use]
+    pub fn most_read_bytes(&self) -> usize {
+        let size = |bytes: u32| usize::try_from(bytes).unwrap_or(usize::MAX);
+        let head = size(self.most_head_bytes);
+        let headers = (head / LEAST_HEADER_BYTES).saturating_mul(size_of::<Header>());
+        let request = head.saturating_add(headers).saturating_add(size(self.most_body_bytes));
+
+        request.max(size(self.chunk_bytes))
+    }
+}
+
+/// Why `Http` did not start: mail it would send could not be read, which would let a client end its handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadLimitTooLow {
+    /// The most bytes a turn reads into one piece of mail.
+    pub read_limit: usize,
+    /// What the settings need of it.
+    pub needed: usize,
+}
+
+impl fmt::Display for ReadLimitTooLow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self { read_limit, needed } = self;
+        write!(f, "the engine's `read_limit` is {read_limit}, and `http`'s settings need {needed}")
+    }
+}
+
+impl Error for ReadLimitTooLow {}
 
 /// What every exchange of a server holds to: the settings that bound one request (ADR-0035).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]

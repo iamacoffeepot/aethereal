@@ -45,6 +45,16 @@ pub fn json_schema(schema: &SchemaNodes, budget: &mut Budget) -> Result<String, 
     Ok(walk.out)
 }
 
+/// Whether a value of `schema` is written as a JSON object for certain: a struct with named fields or none.
+#[must_use]
+pub fn is_object(schema: &SchemaNodes) -> bool {
+    let SchemaNode::Struct { fields, .. } = At::root(schema).node() else {
+        return false;
+    };
+
+    matches!(Layout::of_struct(fields), Layout::Empty | Layout::Named(_))
+}
+
 impl Walk<'_> {
     /// Charges the text written since the last call.
     fn settle(&mut self) -> Result<(), JsonError> {
