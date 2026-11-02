@@ -4,17 +4,17 @@ use super::*;
 use crate::waiting;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open, Part,
-    Streamed, Streams, Tick, ToAny, Top, Turn,
+    Streamed, Streams, ToAny, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::Host;
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_tcp::{
     Accept, Accepted, Accepting, Connect, Connected, Dialed, Framing, HungUp, Listen, Listener, Listening, Read,
-    Reading, Unbound, Write, Writing, Wrote,
+    Reading, Shut, Unbound, Write, Writing, Wrote,
 };
 use std::io::{ErrorKind, Read as _, Write as _};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::num::NonZeroU32;
 
 /// A dialer on `threads` threads, giving each address a second.
@@ -264,10 +264,11 @@ fn frame(side: Side, bytes: &[u8]) -> Heard {
 
 #[test]
 fn a_frame_dialed_to_a_listener_is_accepted_read_and_echoed_back() -> Result<(), Unheard> {
-    // Catches a host that serves its runners no dialer (every connect unavailable), a listener that never accepts or a
-    // connection never read on `Tick`, a length prefix written or read wrong so the frame is cut or never whole, a
-    // write never answered once sent, and a part handed to the wrong stream. The program lists the capability once.
-    let mut harness = Harness::of(Headless::program().with_cycle::<(Tick,)>().root::<Tcp>().root::<Streamer>())?;
+    // Catches a host that serves its runners no dialer (every connect unavailable) or no poller (every connection
+    // hung up), a listener that never accepts or a connection never read, a length prefix written or read wrong so the
+    // frame is cut or never whole, a write never answered once sent, and a part handed to the wrong stream. The program
+    // runs no cycle, so a socket call that waited on `Tick` would never be made. It lists the capability once.
+    let mut harness = Harness::of(Headless::program().root::<Tcp>().root::<Streamer>())?;
     let (tcp, streamer) = (harness.root::<Tcp>(), harness.root::<Streamer>());
 
     let listening = harness.ask(tcp, &Listen { port: 0, framing: FRAMING })?;
@@ -292,6 +293,53 @@ fn a_frame_dialed_to_a_listener_is_accepted_read_and_echoed_back() -> Result<(),
     let echoed = harness.ask(accepted.protocol::<Writing, _>(), &Write { bytes: b"ping".to_vec() })?;
     assert_eq!(harness.answer(echoed)?, Answered::Yes(Wrote::Sent));
     assert_eq!(heard(&mut harness, streamer, 2)?, [frame(Side::Server, b"ping"), frame(Side::Client, b"ping")]);
+
+    Ok(())
+}
+
+/// The connections `streamer` has been handed, the harness stepping the host until there are `count` of them or the
+/// wait is spent.
+fn accepted(
+    harness: &mut Harness<Headless>,
+    streamer: ActorRef<Streamer>,
+    count: usize,
+) -> Result<Vec<ActorRef<Accepted>>, Unheard> {
+    waiting::until(waiting::BUDGET, || {
+        harness.step();
+
+        harness.state(streamer).is_ok_and(|state| state.accepted.len() >= count)
+    });
+
+    Ok(harness.state(streamer)?.accepted.clone())
+}
+
+#[test]
+fn a_listener_at_its_most_connections_accepts_the_next_once_one_ends() -> Result<(), Unheard> {
+    // Catches a listener that stops at its limit and accepts again only when its acceptor grants more: the acceptor
+    // still has credit, so nothing would grant any, and the second peer would wait in the backlog for good.
+    let settings = TcpSettings { most_connections: 1, ..TcpSettings::default() };
+    let mut harness = Harness::of(Headless::program().root_with::<Tcp>(settings).root::<Streamer>())?;
+    let (tcp, streamer) = (harness.root::<Tcp>(), harness.root::<Streamer>());
+    let listening = harness.ask(tcp, &Listen { port: 0, framing: FRAMING })?;
+    let Answered::Yes(Listening::Bound { listener, port }) = harness.answer(listening)? else {
+        panic!("the port is bound");
+    };
+    harness.tell(streamer, &Follow::Accepting(listener))?;
+    // Both peers stay open for the test: the second waits in the kernel's backlog.
+    let (Ok(_first_peer), Ok(_second_peer)) =
+        (TcpStream::connect(("127.0.0.1", port)), TcpStream::connect(("127.0.0.1", port)))
+    else {
+        panic!("both peers connect");
+    };
+
+    let first = accepted(&mut harness, streamer, 1)?;
+    let &[connection] = first.as_slice() else {
+        panic!("the listener accepted the first peer");
+    };
+    harness.tell(connection.protocol::<Writing, _>(), &Shut)?;
+    let both = accepted(&mut harness, streamer, 2)?;
+
+    assert_eq!(both.len(), 2, "the second peer is accepted once the first connection ends");
 
     Ok(())
 }
