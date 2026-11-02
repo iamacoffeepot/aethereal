@@ -1,7 +1,7 @@
 //! The asker's side of its streams: opening them, taking their parts, stopping them, and their answers (ADR-0017).
 
 use super::{Enough, More, Number, Open, Part, Stream, Streamed};
-use crate::{Allows, Answer, Asks, Handles, ProtocolRef, ToAny, Turn};
+use crate::{Allows, Answer, Asks, Handles, Mailing, ProtocolRef, ToAny, Turn};
 use aethereal_data::{ActorId, Bound, EncodeError, Plain};
 use alloc::collections::BTreeMap;
 use core::num::NonZeroU32;
@@ -63,29 +63,30 @@ impl<S: Stream, C> Streams<S, C> {
     }
 
     /// Opens a stream of `S` asked of `receiver` with `request`, keeping `kept` for it, and grants the receiver its
-    /// first `window` parts. Answers the stream's number.
+    /// first `window` parts, from a turn or a `begin`. Answers the stream's number.
     ///
-    /// It builds only when the actor handles the stream's parts and its answer, and the turn's sends list the request
-    /// and the credit.
+    /// It builds only when the actor handles the stream's parts and its answer, and the turn's or the `begin`'s sends
+    /// list the request and the credit.
     ///
     /// # Errors
     ///
     /// Why the request or the credit could not be written. Nothing is opened.
-    pub fn open<A, Sends, IA, IM>(
+    pub fn open<'a, T, A, Sends, IA, IM>(
         &mut self,
-        turn: &mut Turn<'_, A, Sends>,
+        turn: &mut T,
         receiver: ProtocolRef<Streamed<S>>,
         request: S::Open,
         kept: C,
     ) -> Result<Number, EncodeError>
     where
+        T: Mailing<'a, A, Sends>,
         A: Handles<Part<S>> + Handles<Answer<S::Done, Number>>,
         Sends: Allows<Asks<Streamed<S>, Open<S>, Number>, IA> + Allows<ToAny<Streamed<S>, More>, IM>,
     {
         let number = Number::new(self.next);
         let credit = More::new::<S>(number.get(), self.window);
 
-        turn.to(receiver).ask::<_, _, IA>(&Open::new(number.get(), request), &number)?.send::<_, IM>(&credit)?;
+        turn.toward(receiver).ask::<_, _, IA>(&Open::new(number.get(), request), &number)?.send::<_, IM>(&credit)?;
 
         self.next += 1;
         self.open.insert(number.get(), Opened { receiver, flow: Flow::Flowing, kept });

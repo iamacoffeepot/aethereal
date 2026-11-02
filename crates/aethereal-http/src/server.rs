@@ -4,9 +4,9 @@
 use crate::{Exchange, ExchangeConfig, Handling, Http, Limits};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Ended, Ending, Fault, Handles, More, Number,
-    On, Open, Part, ProtocolRef, Streamed, Streams, Tick, ToAny, ToType, Turn,
+    Open, Part, ProtocolRef, Streamed, Streams, ToAny, ToType, Turn,
 };
-use aethereal_data::{Bound, Plain};
+use aethereal_data::Bound;
 use aethereal_tcp::{Accept, Accepted, Accepting, Listener, Shut, Unbound};
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
@@ -21,14 +21,6 @@ pub struct ServerConfig {
     pub limits: Limits,
 }
 
-/// Whether a server has opened its listener's stream: it does on its first `Tick`, since a stream is opened in a
-/// turn and not in a beginning.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-enum Start {
-    Starting,
-    Accepting,
-}
-
 /// A server on one port, beneath the root, keyed by its port (ADR-0035): an [`Exchange`] beneath it for each
 /// connection its listener accepts, each asking the handler its requests. It stops when sent [`Shut`], when its
 /// handler ends, or when its listener stops, shutting its listener and every exchange.
@@ -39,7 +31,6 @@ pub struct Server {
     handler: ProtocolRef<Handling>,
     most_exchanges: u32,
     limits: Limits,
-    start: Start,
     accepting: Streams<Accepting, ()>,
     /// Each exchange standing, by the bits of its id.
     exchanges: BTreeMap<u64, ActorRef<Exchange>>,
@@ -56,41 +47,28 @@ const ACCEPTING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 impl Actor for Server {
     type Config = ServerConfig;
     type Key = u64;
-    type Handles = (Ended, Shut, Part<Accepting>, Answer<Unbound, Number>, On<Tick>);
-    type BeginSends = ();
+    type Handles = (Ended, Shut, Part<Accepting>, Answer<Unbound, Number>);
+    type BeginSends = (Asks<Streamed<Accepting>, Open<Accepting>, Number>, ToAny<Streamed<Accepting>, More>);
     type EndSends = ();
 
-    fn begin(config: ServerConfig, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-        turn.subscribe::<Tick>();
+    /// Watches its handler, and opens its listener's stream of what it accepts.
+    fn begin(config: ServerConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.watch(config.handler);
+        let mut accepting = Streams::new(ACCEPTING_WINDOW);
+        accepting.open(turn, config.listener.protocol(), Accept, ())?;
 
         Ok(Self {
             listener: config.listener,
             handler: config.handler,
             most_exchanges: config.most_exchanges,
             limits: config.limits,
-            start: Start::Starting,
-            accepting: Streams::new(ACCEPTING_WINDOW),
+            accepting,
             exchanges: BTreeMap::new(),
             next: 0,
         })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<On<Tick>> for Server {
-    type Sends = (Asks<Streamed<Accepting>, Open<Accepting>, Number>, ToAny<Streamed<Accepting>, More>);
-
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        if self.start == Start::Starting {
-            self.accepting.open(turn, self.listener.protocol(), Accept, ())?;
-            self.start = Start::Accepting;
-        }
-        turn.unsubscribe::<Tick>();
-
         Ok(())
     }
 }

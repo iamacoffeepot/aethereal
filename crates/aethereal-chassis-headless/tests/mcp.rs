@@ -2,7 +2,7 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path,
-    ProtocolRef, Tick, ToSender, Top, Turn, Unanswered, path,
+    ProtocolRef, ToSender, Top, Turn, Unanswered, path,
 };
 use aethereal_chassis_headless::{FileRoots, Headless};
 use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, from_json, to_bytes, to_json};
@@ -109,7 +109,6 @@ fn served_over(http: HttpSettings, settings: McpSettings) -> Result<(Harness<Hea
     let mut harness = Harness::of(
         Headless::program()
             .with_engine(engine_for(&http))
-            .with_cycle::<(Tick,)>()
             .root::<Tcp>()
             .root_with::<Http>(http)
             .root_with::<Mcp>(settings),
@@ -792,7 +791,6 @@ fn program() -> Program<Headless, Served> {
 
     Headless::program()
         .with_engine(engine_for(&http))
-        .with_cycle::<(Tick,)>()
         .root::<Tcp>()
         .root_with::<Http>(http)
         .root_with::<Mcp>(McpSettings { port: 0, ..McpSettings::default() })

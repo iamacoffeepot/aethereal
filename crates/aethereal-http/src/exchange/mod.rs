@@ -6,8 +6,8 @@ mod write;
 
 use crate::{Handling, Limits, Method, Request, Response, Server, Status};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, More, Number,
-    On, Open, Part, ProtocolRef, Streamed, Streams, Taken, Tick, Time, ToAny, Turn, Unanswered,
+    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, JobId, Level, More,
+    Number, Open, Part, ProtocolRef, Sleep, Slept, Streamed, Streams, Taken, Time, ToAny, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Accepted, HungUp, Read, Reading, Shut, SocketAddress, Write, Writing, Wrote};
@@ -39,12 +39,30 @@ pub struct Sending {
     closes: bool,
 }
 
-/// Whether an exchange reads its connection: it opens the stream on its first `Tick`, since a stream is opened in a
-/// turn and not in a beginning.
+/// What an exchange keeps for the sleep that times a phase: the number of the phase it was run for, so a sleep for a
+/// phase the exchange has left is passed over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-enum Reader {
-    Unopened,
-    Reading(Number),
+#[kind(name = "aether.http.deadline")]
+pub struct Deadline {
+    phase: u64,
+}
+
+/// Whether an exchange's phase has a deadline it sleeps until.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
+enum Sleeping {
+    /// It has none: the exchange is closing.
+    Not,
+    /// The [`Sleep`] it ran until the phase's deadline, not yet answered.
+    On(JobId),
+}
+
+/// When an exchange's phase is late.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Due {
+    /// At this time.
+    At(Time),
+    /// Never: the exchange is closing.
+    Never,
 }
 
 /// Where an exchange is in its connection's requests.
@@ -75,12 +93,16 @@ pub struct Exchange {
     handler: ProtocolRef<Handling>,
     limits: Limits,
     reading: Streams<Reading, ()>,
-    reader: Reader,
+    /// The stream it reads its connection through, opened as it begins.
+    reader: Number,
     /// What has been read and not yet parsed.
     buffer: Vec<u8>,
     /// The chunks taken while a request was out, whose credit is granted once it is answered.
     withheld: u32,
     phase: Phase,
+    /// How many phases with a deadline it has entered: the number of the one it is in.
+    phases: u64,
+    sleeping: Sleeping,
 }
 
 impl ChildOf for Exchange {
@@ -90,25 +112,40 @@ impl ChildOf for Exchange {
 impl Actor for Exchange {
     type Config = ExchangeConfig;
     type Key = u64;
-    type Handles =
-        (Part<Reading>, Answer<HungUp, Number>, Answer<Wrote, Sending>, Answer<Response, Asking>, Shut, On<Tick>);
-    type BeginSends = ();
+    type Handles = (
+        Part<Reading>,
+        Answer<HungUp, Number>,
+        Answer<Wrote, Sending>,
+        Answer<Response, Asking>,
+        Answer<Slept, Deadline>,
+        Shut,
+    );
+    type BeginSends = (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>);
     type EndSends = ();
 
-    fn begin(config: ExchangeConfig, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-        turn.subscribe::<Tick>();
+    /// Opens its connection's stream, and sleeps until the first request is late.
+    fn begin(config: ExchangeConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let window = NonZeroU32::new(config.limits.window).unwrap_or(NonZeroU32::MIN);
+        let mut reading = Streams::new(window);
+        let reader = reading.open(turn, config.connection.protocol(), Read, ())?;
+        let phase = Phase::Idle { since: turn.now() };
+        let sleeping = match due(&phase, &config.limits) {
+            Due::At(until) => Sleeping::On(turn.run(&Sleep { until }, &Deadline { phase: 0 })?),
+            Due::Never => Sleeping::Not,
+        };
 
         Ok(Self {
             connection: config.connection,
             peer: config.peer,
             handler: config.handler,
             limits: config.limits,
-            reading: Streams::new(window),
-            reader: Reader::Unopened,
+            reading,
+            reader,
             buffer: Vec::new(),
             withheld: 0,
-            phase: Phase::Idle { since: turn.now() },
+            phase,
+            phases: 0,
+            sleeping,
         })
     }
 
@@ -194,8 +231,9 @@ impl Handles<Answer<Response, Asking>> for Exchange {
             return Ok(());
         }
         self.phase = Phase::Idle { since: turn.now() };
-        if let (Reader::Reading(number), Some(withheld)) = (self.reader, NonZeroU32::new(self.withheld)) {
-            self.reading.grant(turn, number, withheld)?;
+        self.time(turn)?;
+        if let Some(withheld) = NonZeroU32::new(self.withheld) {
+            self.reading.grant(turn, self.reader, withheld)?;
         }
         self.withheld = 0;
 
@@ -213,42 +251,59 @@ impl Handles<Shut> for Exchange {
     }
 }
 
-impl Handles<On<Tick>> for Exchange {
-    type Sends =
-        (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>, Asks<Writing, Write, Sending>);
+impl Handles<Answer<Slept, Deadline>> for Exchange {
+    type Sends = (Asks<Writing, Write, Sending>,);
 
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        if self.reader == Reader::Unopened {
-            let number = self.reading.open(turn, self.connection.protocol(), Read, ())?;
-            self.reader = Reader::Reading(number);
-        }
-        let now = turn.now();
-        let (since, within) = match self.phase {
-            Phase::Idle { since } => (since, self.limits.idle_within_millis),
-            Phase::Head { since } | Phase::Body { since, .. } => (since, self.limits.request_within_millis),
-            Phase::Answering { since, .. } => (since, self.limits.answer_within_millis),
-            Phase::Closing => return Ok(()),
-        };
-        let is_late = since + Duration::from_millis(u64::from(within)) <= now;
-        if !is_late {
+    /// The phase it slept for is late, when it still stands: a request waiting on the handler is answered `504`, and
+    /// one that did not come, or came too slowly, is owed no response.
+    fn handle(
+        &mut self,
+        (slept, deadline): (Answered<Slept>, Deadline),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let is_current = deadline.phase == self.phases;
+        if !is_current {
             return Ok(());
         }
-        if let Phase::Answering { head_only, .. } = self.phase {
-            let timed_out = Response::new(
-                Status::GatewayTimeout,
-                "text/plain; charset=utf-8",
-                b"the handler did not respond in time".to_vec(),
-            );
-            return self.respond(turn, timed_out, true, head_only);
+        self.sleeping = Sleeping::Not;
+        if let Answered::No(why) = slept {
+            turn.log(Level::Warn, format!("a deadline's sleep was not answered: {why:?}"));
+            return Ok(());
         }
-        // A request that did not come, or came too slowly, is owed no response.
-        turn.close();
-
-        Ok(())
+        match self.phase {
+            Phase::Answering { head_only, .. } => {
+                let timed_out = Response::new(
+                    Status::GatewayTimeout,
+                    "text/plain; charset=utf-8",
+                    b"the handler did not respond in time".to_vec(),
+                );
+                self.respond(turn, timed_out, true, head_only)
+            }
+            Phase::Idle { .. } | Phase::Head { .. } | Phase::Body { .. } => {
+                turn.close();
+                Ok(())
+            }
+            Phase::Closing => Ok(()),
+        }
     }
 }
 
 impl Exchange {
+    /// Sleeps until the deadline of the phase it has entered, in place of the last phase's sleep, which it cancels: a
+    /// closing exchange sleeps for none.
+    fn time<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
+        if let Sleeping::On(job) = self.sleeping {
+            turn.cancel(job);
+        }
+        self.phases += 1;
+        self.sleeping = match due(&self.phase, &self.limits) {
+            Due::At(until) => Sleeping::On(turn.run(&Sleep { until }, &Deadline { phase: self.phases })?),
+            Due::Never => Sleeping::Not,
+        };
+
+        Ok(())
+    }
+
     /// Parses what the buffer holds, as far as it goes: a head, then its body, then the request asked of the handler.
     /// A request refused is answered, and the exchange closes once the answer is sent.
     fn advance<S, IW, IP>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
@@ -264,6 +319,7 @@ impl Exchange {
                             let started = matches!(self.phase, Phase::Idle { .. }) && !self.buffer.is_empty();
                             if started {
                                 self.phase = Phase::Head { since: turn.now() };
+                                self.time(turn)?;
                             }
                             return Ok(());
                         }
@@ -308,6 +364,7 @@ impl Exchange {
         };
         let Head { method, path, query, headers, closes, .. } = head;
         self.phase = Phase::Answering { since: turn.now(), closes, head_only: method == Method::Head };
+        self.time(turn)?;
         let request = Request { method, path, query, headers, body, peer: self.peer };
         turn.to(self.handler).ask::<_, _, I>(&request, &Asking)?;
 
@@ -341,6 +398,7 @@ impl Exchange {
         }
         if closes {
             self.phase = Phase::Closing;
+            self.time(turn)?;
         }
 
         self.write::<_, I>(turn, written.bytes, closes)
@@ -355,6 +413,18 @@ impl Exchange {
 
         Ok(())
     }
+}
+
+/// When `phase` is late under `limits`: a request's head and body share the deadline of its first byte.
+fn due(phase: &Phase, limits: &Limits) -> Due {
+    let (since, within) = match phase {
+        Phase::Idle { since } => (*since, limits.idle_within_millis),
+        Phase::Head { since } | Phase::Body { since, .. } => (*since, limits.request_within_millis),
+        Phase::Answering { since, .. } => (*since, limits.answer_within_millis),
+        Phase::Closing => return Due::Never,
+    };
+
+    Due::At(since + Duration::from_millis(u64::from(within)))
 }
 
 /// The response written for a request its handler did not answer: `status`, saying `why`.
