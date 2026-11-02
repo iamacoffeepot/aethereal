@@ -2,8 +2,10 @@
 
 use super::{Connection, ConnectionConfig, HungUp, Reading, Shut, Write, Wrote};
 use crate::Listener;
+use crate::{Interest, Readied};
 use aethereal_actor::{
-    Actor, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, More, On, Open, Part, Tick, ToAny, ToSender, Turn,
+    Actor, Answer, Answered, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, More, Open, Part, ToAny,
+    ToSender, Turn,
 };
 use aethereal_data::Bound;
 
@@ -22,7 +24,7 @@ impl ChildOf for Accepted {
 impl Actor for Accepted {
     type Config = ConnectionConfig;
     type Key = u64;
-    type Handles = (Open<Reading>, More, Enough, Ended, Write, Shut, On<Tick>);
+    type Handles = (Open<Reading>, More, Enough, Ended, Write, Shut, Answer<Readied, Interest>);
     type BeginSends = ();
     type EndSends = ();
 
@@ -44,12 +46,10 @@ impl Handles<Open<Reading>> for Accepted {
 }
 
 impl Handles<More> for Accepted {
-    type Sends = ();
+    type Sends = (ToAny<(Part<Reading>,), Part<Reading>>,);
 
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        self.connection.more(turn, &more);
-
-        Ok(())
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.connection.more(turn, &more)
     }
 }
 
@@ -85,10 +85,14 @@ impl Handles<Shut> for Accepted {
     }
 }
 
-impl Handles<On<Tick>> for Accepted {
+impl Handles<Answer<Readied, Interest>> for Accepted {
     type Sends = (ToAny<(Part<Reading>,), Part<Reading>>,);
 
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        self.connection.tick(turn)
+    fn handle(
+        &mut self,
+        readied: (Answered<Readied>, Interest),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        self.connection.readied(turn, readied)
     }
 }
