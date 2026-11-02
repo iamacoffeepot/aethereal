@@ -99,6 +99,8 @@ pub enum Down {                                      // hub to engine
 }
 ```
 
+*Amended by ADR-0041: `Call` carries `within`, the time the call has left, and `REVISION` is `2`.*
+
 - **The link speaks only `Tooling`.** Anything else an engine shows an agent (its logs, its actors, a frame it drew) is a tool, written in the crate it belongs to, and crosses as one.
 - **A frame that does not decode ends the connection.** On the hub, that ends the `Engine`; on the engine, `Link` dials again. A frame past `most_bytes` ends it the same way (ADR-0033: `HungUp::TooLarge`), which the writer's own check keeps from happening between a hub and engine that agree on the limit.
 - *Replaced by ADR-0040: on the engine, a frame that does not decode ends the link, and `Link` ends its program.*
