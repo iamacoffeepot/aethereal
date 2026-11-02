@@ -3,6 +3,7 @@
 
 mod files;
 mod renderer;
+mod store;
 mod tcp;
 mod windows;
 
