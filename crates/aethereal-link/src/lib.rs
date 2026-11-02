@@ -9,6 +9,10 @@
 //! id. The hub's tools ask `Engines` to [`ListEngines`], and ask an engine at `path::<Engine>(id)` to
 //! [`DescribeEngine`] or to [`CallEngine`].
 //!
+//! Behind the `tools` feature, `EngineTools` is the hub's three tools for the agent: `list_engines`,
+//! `describe_engine`, and `call_tool`, which a hub lists in its toolbox after `Engines`. It converts JSON to an
+//! engine's bytes with the sheets the engine sent, so the hub needs no kind of the engine's.
+//!
 //! Only tools cross the link: each frame is one plain kind's bytes in a `LengthPrefixed` frame of `Tcp`'s, an [`Up`]
 //! from the engine or a [`Down`] from the hub. A connection opens with [`Up::Hello`], which names the [`REVISION`] the
 //! engine speaks, and then [`Up::Sheets`], every tool the engine holds, which it writes again whole after every
@@ -45,6 +49,8 @@ mod engines;
 mod frames;
 mod link;
 mod read_limit;
+#[cfg(feature = "tools")]
+mod tools;
 
 pub use engines::{
     Binding, CallEngine, DescribeEngine, Described, Engine, EngineConfig, EngineList, EngineListing, Engines,
@@ -53,3 +59,8 @@ pub use engines::{
 pub use frames::{Down, PORT, REVISION, Up};
 pub use link::{Calling, Connecting, Link, LinkSettings, Sending, Woken};
 pub use read_limit::ReadLimitTooLow;
+#[cfg(feature = "tools")]
+pub use tools::{
+    Asking, CallToolInput, CallToolOutput, DescribeEngineInput, EngineDescribed, EngineListed, EngineTools,
+    EngineToolsConfig, EnginesListed, ListEnginesInput, ToolDescribed,
+};

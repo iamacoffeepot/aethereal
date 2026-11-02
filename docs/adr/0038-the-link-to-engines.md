@@ -108,10 +108,12 @@ The engines' tools are not offered to `Mcp` one by one. The hub's tool list does
 
 ```rust
 // aethereal-link, behind its `tools` feature; a hub lists them in its toolbox
-list_engines {}                                          -> { engines: [{ engine: u64, name: String, tools: u32 }] }
-describe_engine { engine: u64 }                          -> { tools: [{ name, description, input: Json, output: Json }] }
-call_tool { engine: u64, tool: String, input: Json }     -> { output: Json }
+list_engines {}                                          -> { engines: [{ engine: u32, name: String, tools: u32 }] }
+describe_engine { engine: u32 }                          -> { tools: [{ name, description, input: Json, output: Json }] }
+call_tool { engine: u32, tool: String, input: Json }     -> { output: Json }
 ```
+
+- **An engine's id is a `u32` to the agent,** where the link counts in `u64`. A 64-bit integer's JSON form is a string (ADR-0007), and an agent writes the `3` it was listed, not `"3"`. An engine whose id is past `u32::MAX` cannot be named, and is not listed.
 
 - **`describe_engine` writes each tool's input and output as JSON Schema**, as `tools/list` does for the hub's own (ADR-0037).
 - **`call_tool` turns `input` into bytes of the tool's input schema** (`from_json`, ADR-0007), with the sheet the `Engine` keeps, and the output bytes back into JSON (`to_json`). Input that does not fit the schema is refused before anything is sent. So the engine receives only bytes its schema reads, and the hub needs no kind of the engine's.
