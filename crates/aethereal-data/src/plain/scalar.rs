@@ -1,21 +1,14 @@
 //! `bool`, the integers, the floats, `char`, and the `NonZero` integers (ADR-0004).
 
-use crate::plain::read_array;
+use crate::plain::{read_array, take_bytes};
 use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Float, Integer, Plain, Reader, Schema, Shape, Writer};
+use alloc::vec::Vec;
 use core::num::{NonZeroI8, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroU8, NonZeroU16, NonZeroU32, NonZeroU64};
 
 macro_rules! integer {
     ($t:ty, $kind:expr) => {
         impl Schema for $t {
             const SHAPE: Shape = Shape::Integer($kind);
-        }
-
-        integer_codec!($t);
-    };
-    ($t:ty, $kind:expr, $sequence:expr) => {
-        impl Schema for $t {
-            const SHAPE: Shape = Shape::Integer($kind);
-            const SEQUENCE: Shape = $sequence;
         }
 
         integer_codec!($t);
@@ -41,7 +34,37 @@ macro_rules! integer_codec {
     };
 }
 
-integer!(u8, Integer::U8, Shape::Bytes);
+impl Schema for u8 {
+    const SHAPE: Shape = Shape::Integer(Integer::U8);
+    const SEQUENCE: Shape = Shape::Bytes;
+}
+
+/// A byte is its own memory, so a sequence of bytes is copied in one go.
+impl<B: Boundary> Encode<B> for u8 {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+        out.bytes().push(*self);
+        Ok(())
+    }
+
+    fn encode_each(items: &[Self], out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+        out.bytes().extend_from_slice(items);
+        Ok(())
+    }
+}
+
+impl<B: Boundary> Decode<B> for u8 {
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        let [byte] = read_array(input.input())?;
+        Ok(byte)
+    }
+
+    fn decode_each(input: &mut Reader<'_, B>, length: usize) -> Result<Vec<Self>, DecodeError> {
+        Ok(take_bytes(input.input(), length)?.to_vec())
+    }
+}
+
+impl Plain for u8 {}
+
 integer!(u16, Integer::U16);
 integer!(u32, Integer::U32);
 integer!(u64, Integer::U64);
