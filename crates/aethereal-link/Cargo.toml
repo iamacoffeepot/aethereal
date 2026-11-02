@@ -6,6 +6,10 @@ license.workspace = true
 publish.workspace = true
 description = "The link to engines: an engine's tools handed to its hub over TCP, and the hub's actor for each engine (ADR-0038)"
 
+[features]
+# The hub's tools for the agent (ADR-0038): types only, as a program lists what it serves and nothing is spawned for it.
+tools = ["aethereal-data/json"]
+
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
