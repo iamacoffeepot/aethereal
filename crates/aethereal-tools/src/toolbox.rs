@@ -2,7 +2,8 @@
 
 use crate::{Holder, Offer, Offered, Tool, ToolList, ToolSheet, Withdraw};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, Path, Tells, Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, Path, RepliesTo, Tells, Top,
+    Turn, path,
 };
 use aethereal_data::{
     Boundary, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindName, Plain, Reader, Schema, Shape, Writer,
@@ -76,11 +77,17 @@ where
     }
 }
 
-impl<L: ToolList, R: Holder> ChildOf for Toolbox<L, R> {
+impl<L: ToolList, R: Holder> ChildOf for Toolbox<L, R>
+where
+    <R as Handles<Withdraw>>::Sends: RepliesTo<Self>,
+{
     type Parent = Top;
 }
 
-impl<L: ToolList, R: Holder> Actor for Toolbox<L, R> {
+impl<L: ToolList, R: Holder> Actor for Toolbox<L, R>
+where
+    <R as Handles<Withdraw>>::Sends: RepliesTo<Self>,
+{
     type Config = ToolboxConfig;
     type Key = ();
     type Handles = (Answer<Offered, Offering>,);
@@ -114,7 +121,10 @@ impl<L: ToolList, R: Holder> Actor for Toolbox<L, R> {
     }
 }
 
-impl<L: ToolList, R: Holder> Handles<Answer<Offered, Offering>> for Toolbox<L, R> {
+impl<L: ToolList, R: Holder> Handles<Answer<Offered, Offering>> for Toolbox<L, R>
+where
+    <R as Handles<Withdraw>>::Sends: RepliesTo<Self>,
+{
     type Sends = ();
 
     fn handle(
@@ -132,7 +142,10 @@ impl<L: ToolList, R: Holder> Handles<Answer<Offered, Offering>> for Toolbox<L, R
 }
 
 /// It stands up on every host, its list in its type and no settings of its own.
-impl<H: Host, L: ToolList, R: Holder> Bootstrap<H> for Toolbox<L, R> {
+impl<H: Host, L: ToolList, R: Holder> Bootstrap<H> for Toolbox<L, R>
+where
+    <R as Handles<Withdraw>>::Sends: RepliesTo<Self>,
+{
     const SECTION: &'static str = "toolbox";
     type Settings = ();
     type Needs = ();
@@ -144,7 +157,10 @@ impl<H: Host, L: ToolList, R: Holder> Bootstrap<H> for Toolbox<L, R> {
 }
 
 /// One tool of a list: spawned, and offered.
-fn stood_up<T: Tool, L: ToolList, R: Holder, S>(turn: &mut Beginning<'_, Toolbox<L, R>, S>) -> Result<Offer, Fault> {
+fn stood_up<T: Tool, L: ToolList, R: Holder, S>(turn: &mut Beginning<'_, Toolbox<L, R>, S>) -> Result<Offer, Fault>
+where
+    <R as Handles<Withdraw>>::Sends: RepliesTo<Toolbox<L, R>>,
+{
     let Ok(me) = turn.spawn::<T>(&(), T::Config::default()) else {
         return Err(Fault::new(&Unlisted::Unspawned(T::NAME.to_string()))?);
     };
@@ -162,7 +178,10 @@ macro_rules! tools {
             }
 
             #[allow(unused_variables)] // An empty list spawns nothing.
-            fn stand_up<L: ToolList, R: Holder, S>(turn: &mut Beginning<'_, Toolbox<L, R>, S>) -> Result<Vec<Offer>, Fault> {
+            fn stand_up<L: ToolList, R: Holder, S>(turn: &mut Beginning<'_, Toolbox<L, R>, S>) -> Result<Vec<Offer>, Fault>
+            where
+                <R as Handles<Withdraw>>::Sends: RepliesTo<Toolbox<L, R>>,
+            {
                 Ok(vec![$(stood_up::<$name, L, R, S>(turn)?),*])
             }
         }

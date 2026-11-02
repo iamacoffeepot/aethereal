@@ -22,8 +22,9 @@ mod running;
 mod tcp;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod waiting;
+// A test of this crate, or one that steps it through the harness, waits on the host's threads through it.
+#[cfg(any(test, feature = "harness"))]
+pub mod waiting;
 
 pub use clock::Monotonic;
 pub use files::{Directories, FileRoots};

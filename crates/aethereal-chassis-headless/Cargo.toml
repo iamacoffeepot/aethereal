@@ -38,6 +38,7 @@ aethereal-guest-echo = { path = "guests/echo" }
 aethereal-chassis-headless = { path = ".", features = ["harness"] }
 aethereal-files = { path = "../aethereal-files", features = ["tools"] }
 aethereal-http = { path = "../aethereal-http" }
+aethereal-link = { path = "../aethereal-link" }
 aethereal-mcp = { path = "../aethereal-mcp" }
 aethereal-tools = { path = "../aethereal-tools" }
 
