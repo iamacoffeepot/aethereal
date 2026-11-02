@@ -47,8 +47,6 @@ pub struct Calling {
 pub enum Woken {
     /// The wait before dialing again is over.
     Redial,
-    /// A withdrawal changed what it holds in a turn that could send nothing: the set is written now.
-    Resend,
 }
 
 /// Where the root is in reaching its hub.
@@ -195,16 +193,16 @@ impl Handles<Offer> for Link {
 }
 
 impl Handles<Withdraw> for Link {
-    type Sends = ();
+    type Sends = (Asks<Writing, Write, Sending>,);
 
-    /// Stops holding the tool, and, since this turn sends nothing, wakes at once to write the set.
-    fn handle(&mut self, withdraw: Withdraw, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    /// Stops holding the tool, and writes the set without it.
+    fn handle(&mut self, withdraw: Withdraw, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let held = self.table.len();
         self.table.withdraw(&withdraw.tool, withdraw.worker);
         let changed = self.table.len() < held;
         if changed {
             self.revision += 1;
-            turn.run(&Sleep { until: turn.now() }, &Woken::Resend)?;
+            self.write_sheets(turn)?;
         }
 
         Ok(())
@@ -347,9 +345,9 @@ impl Handles<Answer<Called, Calling>> for Link {
 }
 
 impl Handles<Answer<Slept, Woken>> for Link {
-    type Sends = (Asks<Path<Tcp>, Connect, Connecting>, Asks<Writing, Write, Sending>);
+    type Sends = (Asks<Path<Tcp>, Connect, Connecting>,);
 
-    /// Dials again once its wait is over, or writes the set a withdrawal changed.
+    /// Dials again once its wait is over.
     fn handle(
         &mut self,
         (slept, woken): (Answered<Slept>, Woken),
@@ -359,17 +357,13 @@ impl Handles<Answer<Slept, Woken>> for Link {
             turn.log(Level::Error, format_args!("a sleep was not answered, for {woken:?}: {why:?}"));
             return Ok(());
         }
-        match woken {
-            Woken::Redial => {
-                let Line::Waiting = self.line else {
-                    return Ok(());
-                };
-                turn.to(path::<Tcp>(())).ask(&connect(&self.settings), &Connecting)?;
-                self.line = Line::Dialing;
-                Ok(())
-            }
-            Woken::Resend => self.write_sheets(turn),
-        }
+        let Line::Waiting = self.line else {
+            return Ok(());
+        };
+        turn.to(path::<Tcp>(())).ask(&connect(&self.settings), &Connecting)?;
+        self.line = Line::Dialing;
+
+        Ok(())
     }
 }
 
