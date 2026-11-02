@@ -1,11 +1,11 @@
-//! The file capability's tool (ADR-0037).
+//! The file capability's tools (ADR-0037, ADR-0039).
 
-use crate::{FileRead, Files, ReadFile};
+use crate::{FileRead, FileWritten, Files, Namespace, ReadFile, WriteFile};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
     ProtocolRef, ToSender, Turn, path,
 };
-use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
+use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 
@@ -14,6 +14,10 @@ use std::collections::BTreeMap;
 const MOST_BYTES: usize = 256 * 1024;
 /// The most bytes reading an input may take. A path is short.
 const INPUT_BYTES: usize = 8 * 1024;
+/// The most bytes of text the write tool writes, which bounds its input as a file's answer bounds the read tool's.
+const MOST_WRITE_BYTES: usize = MOST_BYTES;
+/// The most bytes reading the write tool's input may take: its text and its path.
+const WRITE_INPUT_BYTES: usize = MOST_WRITE_BYTES + INPUT_BYTES;
 
 /// What an agent reads of a file: its text. A `FileRead` holds a blob, which has no JSON form.
 #[derive(Debug, PartialEq, Eq, Plain)]
@@ -22,7 +26,24 @@ pub struct FileContents {
     pub text: String,
 }
 
-/// What the tool keeps for a read it asked: which it was.
+/// What an agent writes of a file: its text, at `path` in `namespace`.
+#[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.files.write_text")]
+pub struct WriteText {
+    /// The namespace the file is in, one that is written.
+    pub namespace: Namespace,
+    /// Where it is in the namespace.
+    pub path: FilePath,
+    /// The whole file.
+    pub text: String,
+}
+
+/// What the write tool answers of a file it wrote: nothing more than that it did.
+#[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.files.text_written")]
+pub struct TextWritten {}
+
+/// What a tool keeps for a request it asked: which it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.files.tool_calling")]
 pub struct Calling {
@@ -137,4 +158,106 @@ fn contents(bytes: &[u8]) -> Result<Called, Fault> {
     };
 
     Ok(Called::Output(to_bytes(&FileContents { text: String::from(text) })?))
+}
+
+/// What the write tool is made from: nothing.
+#[derive(Debug, Default, PartialEq, Eq, Plain)]
+#[kind(name = "aether.files.write_tool_config")]
+pub struct WriteToolConfig;
+
+/// The tool `write_file`: asks [`Files`] to write its input's text as the whole file at its path, and answers that it
+/// did. A write to a namespace that is not written, as `Assets` is not, is refused, as is each write the host could
+/// not do, with the reason.
+#[derive(Bound)]
+#[kind(name = "aether.files.write_tool")]
+pub struct WriteTool {
+    /// The calls it holds, each by the number of the write it asked for it.
+    calls: BTreeMap<u64, Held<Called>>,
+    next: u64,
+}
+
+impl ChildOf for WriteTool {
+    type Parent = Anywhere;
+}
+
+impl Actor for WriteTool {
+    type Config = WriteToolConfig;
+    type Key = ();
+    type Handles = (Call, Answer<FileWritten, Calling>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: WriteToolConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self { calls: BTreeMap::new(), next: 0 })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Tool for WriteTool {
+    fn sheets() -> Vec<ToolSheet> {
+        vec![ToolSheet {
+            name: String::from("write_file"),
+            description: format!(
+                "Writes a text file of the program's own, up to {MOST_WRITE_BYTES} bytes, whole, in a namespace that is \
+                 written: `Save`."
+            ),
+            input: SchemaNodes::of(&WriteText::SHAPE),
+            output: SchemaNodes::of(&TextWritten::SHAPE),
+        }]
+    }
+
+    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
+        me.protocol()
+    }
+}
+
+impl Handles<Call> for WriteTool {
+    type Sends = (Asks<Path<Files>, WriteFile, Calling>, ToSender<Called>);
+
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        if call.input.len() > WRITE_INPUT_BYTES {
+            turn.reply(&refused("the text is too large"))?;
+            return Ok(());
+        }
+        let Ok(text) = from_bytes::<WriteText>(&call.input, &mut Budget::new(WRITE_INPUT_BYTES)) else {
+            // The schema says a string of any spelling, and a path is narrower.
+            turn.reply(&refused("that is no path"))?;
+            return Ok(());
+        };
+        let held = turn.hold()?;
+        let number = self.next;
+        self.next += 1;
+        let write = WriteFile { namespace: text.namespace, path: text.path, bytes: text.text.into_bytes() };
+        turn.to(path::<Files>(())).ask(&write, &Calling { number })?;
+        self.calls.insert(number, held);
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<FileWritten, Calling>> for WriteTool {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, Calling { number }): (Answered<FileWritten>, Calling),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let Some(held) = self.calls.remove(&number) else {
+            return Ok(());
+        };
+        let called = match answered {
+            Answered::Yes(FileWritten::Written) => Called::Output(to_bytes(&TextWritten {})?),
+            Answered::Yes(FileWritten::ReadOnly) => refused("that namespace is read-only"),
+            Answered::Yes(FileWritten::Unavailable) => refused("this host has nowhere to write files"),
+            Answered::Yes(FileWritten::Failed) => refused("the file could not be written"),
+            Answered::No(_) => refused("`Files` did not answer"),
+        };
+        turn.answer(held, &called)?;
+
+        Ok(())
+    }
 }
