@@ -56,7 +56,7 @@ Processes      root, singleton, asked at path::<Processes>(()); native hosts onl
 ```rust
 impl Carries<Start> for Processes { type Answers = (Started,); }
 
-pub struct Start { pub program: String, pub args: Vec<String> }    // a path on the host's machine
+pub struct Start { pub program: String, pub args: Vec<String>, pub starter: ProtocolRef<Exits> }  // `program`: a path on the host's machine
 pub enum Started {
     Running { process: ActorRef<Process> },
     Refused,                                                       // the host would not start it
@@ -67,7 +67,7 @@ pub enum ExitStatus { Code(i32), Signal(i32) }
 pub struct Stop;                                                   // asks a process to end
 ```
 
-- **A process is an actor that owns nothing the engine keeps.** The host's service (`Launcher`, a service of this crate's) starts the program in a process group of its own, with no stdin and its stdout discarded, and keeps the last few kilobytes of its stderr. A job, `Wait`, run by the `Process` as it begins and only by it, answers once the program has exited, with its status and that stderr. The `Process` then tells `Exited` to the actor that asked `Start`, and ends.
+- **A process is an actor that owns nothing the engine keeps.** The host's service (`Launcher`, a service of this crate's) starts the program in a process group of its own, with no stdin and its stdout discarded, and keeps the last few kilobytes of its stderr. A job, `Wait`, run by the `Process` as it begins and only by it, answers once the program has exited, with its status and that stderr. The `Process` then tells `Exited` to the starter, and ends. `Start` names the starter, usually its asker, by a reference of the protocol `Exits`, as `Serve` names its handler (ADR-0035), so an actor that cannot take `Exited` cannot start a program.
 - **`Stop` is asked of the `Process`,** which signals its group to end (SIGTERM), runs a `Sleep` for the setting `stop_within_millis`, and kills the group (SIGKILL) if it is still running when the sleep is answered. Either way, `Exited` follows, from `Wait`.
 - **A `Process` whose starter ends stops its program.** It watches the starter, as `Tcp`'s root watches who asked it (ADR-0033), so a program never outlives the actor that wanted it.
 - **`Processes` starts any program it is asked to.** It is a capability a program lists, as `Tcp` is; what a hub lets an agent start is `Engines`' rule, below, not this crate's.
