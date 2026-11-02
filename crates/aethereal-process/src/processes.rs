@@ -33,7 +33,7 @@ pub enum Started {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.process.config")]
 pub struct ProcessesConfig {
-    pub stop_within_millis: u32,
+    pub kill_after_millis: u32,
 }
 
 /// A start the root holds until its launch is answered, and the actor its process is to tell.
@@ -111,7 +111,7 @@ impl Handles<Answer<Launched, Launching>> for Processes {
         let started = match answered {
             Answered::Yes(Launched::Started) => {
                 let config =
-                    ProcessConfig { number: process, starter, stop_within_millis: self.config.stop_within_millis };
+                    ProcessConfig { number: process, starter, kill_after_millis: self.config.kill_after_millis };
                 match turn.spawn::<Process>(&process, config) {
                     Ok(process) => Started::Running { process },
                     Err(refused) => {

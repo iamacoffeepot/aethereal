@@ -218,7 +218,7 @@ fn args(behaviour: Behaviour, dir: &Dir) -> Vec<String> {
 /// hash this binary was stored by.
 fn hub(dir: &Dir, link_within_millis: u64) -> Result<(Harness<Headless>, u16, StoreHash), Unheard> {
     let engines = EnginesSettings { port: 0, most_bytes: MOST_BYTES, link_within_millis, ..EnginesSettings::default() };
-    let processes = ProcessesSettings { stop_within_millis: 60_000, most_stderr_bytes: 4096 };
+    let processes = ProcessesSettings { kill_after_millis: 60_000, most_stderr_bytes: 4096 };
     let program = Headless::program()
         .with_engine(engine())
         .root::<Tcp>()

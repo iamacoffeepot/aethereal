@@ -147,9 +147,9 @@ fn processes(settings: ProcessesSettings) -> Result<Harness<Headless>, Unheard> 
     Harness::of(Headless::program().root_with::<Processes>(settings))
 }
 
-/// The settings that give a program asked to stop `stop_within_millis`, keeping `most_stderr_bytes` of its stderr.
-const fn settings(stop_within_millis: u32, most_stderr_bytes: u32) -> ProcessesSettings {
-    ProcessesSettings { stop_within_millis, most_stderr_bytes }
+/// The settings that give a program asked to stop `kill_after_millis`, keeping `most_stderr_bytes` of its stderr.
+const fn settings(kill_after_millis: u32, most_stderr_bytes: u32) -> ProcessesSettings {
+    ProcessesSettings { kill_after_millis, most_stderr_bytes }
 }
 
 /// What starting `program` with `args` comes to, its exit told to `starter`.
@@ -236,7 +236,7 @@ fn a_program_that_ignores_sigterm_is_killed_once_its_time_has_passed() -> Result
     // and a kill passed over as though the program had exited.
     let dir = Dir::new("ignores");
     let ready = dir.path("ready");
-    let stop_within = Duration::from_millis(200);
+    let kill_after = Duration::from_millis(200);
     let mut harness = processes(settings(200, 4096))?;
     let process = running(&mut harness, Behaviour::IgnoresTerm, &[format!("{READY}{}", ready.display())])?;
     waiting::until(BUDGET, || Path::exists(&ready));
@@ -248,7 +248,7 @@ fn a_program_that_ignores_sigterm_is_killed_once_its_time_has_passed() -> Result
     let exited = harness.heard::<Exited>()?;
 
     assert_eq!(exited.status, ExitStatus::Signal(libc::SIGKILL));
-    assert!(stopped.elapsed() >= stop_within, "it was given its time before it was killed");
+    assert!(stopped.elapsed() >= kill_after, "it was given its time before it was killed");
 
     Ok(())
 }
@@ -342,4 +342,13 @@ fn a_missing_program_is_refused() -> Result<(), Unheard> {
     assert!(matches!(started, Started::Refused), "a missing program is refused: {started:?}");
 
     Ok(())
+}
+
+#[test]
+fn a_headless_program_listing_processes_names_each_flag_once() {
+    // Catches a setting of the process capability whose flag the headless host's own section already names, as
+    // `--stop-within-millis` once was: every program listing `Processes` would then stop before it started.
+    let flags = Headless::program().root::<Processes>().flag_table();
+
+    assert!(flags.is_ok(), "the program's flags are read: {flags:?}");
 }
