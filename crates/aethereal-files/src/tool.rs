@@ -6,7 +6,7 @@ use aethereal_actor::{
     ProtocolRef, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
-use aethereal_mcp::{Call, Called, Tool, ToolSheet, Tooling};
+use aethereal_tools::{Call, Called, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 
 /// The most bytes of a file the tool answers with. Its answer is one piece of mail, and mail its reader cannot read

@@ -8,12 +8,13 @@ description = "The file capability: a root that reads files for every other acto
 
 [features]
 # The tools of this capability (ADR-0037): types only, as a program lists what it serves and nothing is spawned for it.
-tools = ["dep:aethereal-mcp"]
+# It brings in no HTTP (ADR-0038).
+tools = ["dep:aethereal-tools"]
 
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
-aethereal-mcp = { path = "../aethereal-mcp", optional = true }
+aethereal-tools = { path = "../aethereal-tools", optional = true }
 
 [lints]
 workspace = true

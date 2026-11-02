@@ -1,4 +1,4 @@
-//! What crosses between the root and a tool's worker (ADR-0037).
+//! What crosses between a holder and a tool's worker (ADR-0037).
 
 use aethereal_actor::{Carries, Protocol, ProtocolRef};
 use aethereal_data::{Bound, Plain, SchemaNodes};
@@ -16,7 +16,7 @@ impl Carries<Call> for Tooling {
 
 /// A call of `tool`, named as one worker may serve many, with `input` a value of the tool's input schema.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
-#[kind(name = "aether.mcp.call")]
+#[kind(name = "aether.tools.call")]
 pub struct Call {
     pub tool: String,
     pub input: Vec<u8>,
@@ -24,7 +24,7 @@ pub struct Call {
 
 /// What a call came to.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
-#[kind(name = "aether.mcp.called")]
+#[kind(name = "aether.tools.called")]
 pub enum Called {
     /// A value of the tool's output schema.
     Output(Vec<u8>),
@@ -34,7 +34,7 @@ pub enum Called {
 
 /// One tool as a worker offers it.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
-#[kind(name = "aether.mcp.tool_sheet")]
+#[kind(name = "aether.tools.tool_sheet")]
 pub struct ToolSheet {
     pub name: String,
     pub description: String,
@@ -44,7 +44,7 @@ pub struct ToolSheet {
 
 /// Tools to hold, all or none, and the worker each call of them is asked of.
 #[derive(Debug, Bound)]
-#[kind(name = "aether.mcp.offer")]
+#[kind(name = "aether.tools.offer")]
 pub struct Offer {
     pub tools: Vec<ToolSheet>,
     pub worker: ProtocolRef<Tooling>,
@@ -52,13 +52,13 @@ pub struct Offer {
 
 /// What an offer came to. Anything but `Yes` holds none of its tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-#[kind(name = "aether.mcp.offered")]
+#[kind(name = "aether.tools.offered")]
 pub enum Offered {
     /// Held.
     Yes,
     /// A name is already held, or is in the offer twice.
     Taken,
-    /// It would take the root past its most tools.
+    /// It would take the holder past its most tools.
     Full,
     /// An input's JSON form is not an object, as a call's arguments are.
     NotAnObject,
@@ -70,7 +70,7 @@ pub enum Offered {
 
 /// A tool to stop holding, when `worker` is the worker that holds it: another's of the same name stays.
 #[derive(Debug, Clone, Bound)]
-#[kind(name = "aether.mcp.withdraw")]
+#[kind(name = "aether.tools.withdraw")]
 pub struct Withdraw {
     pub tool: String,
     pub worker: ProtocolRef<Tooling>,

@@ -84,6 +84,7 @@ dependencies = [
  "aethereal-mcp",
  "aethereal-substrate",
  "aethereal-tcp",
+ "aethereal-tools",
  "clap",
  "core_affinity",
  "crossbeam-queue",
@@ -115,7 +116,7 @@ version = "0.1.0"
 dependencies = [
  "aethereal-actor",
  "aethereal-data",
- "aethereal-mcp",
+ "aethereal-tools",
 ]
 
 [[package]]
@@ -153,6 +154,7 @@ dependencies = [
  "aethereal-http",
  "aethereal-substrate",
  "aethereal-tcp",
+ "aethereal-tools",
 ]
 
 [[package]]
@@ -189,6 +191,15 @@ version = "0.1.0"
 dependencies = [
  "aethereal-actor",
  "aethereal-data",
+]
+
+[[package]]
+name = "aethereal-tools"
+version = "0.1.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
+ "aethereal-substrate",
 ]
 
 [[package]]

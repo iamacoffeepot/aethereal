@@ -1,6 +1,5 @@
-//! The tools the root holds (ADR-0037).
+//! The tools a holder holds, and what it checks of each as it is offered (ADR-0037, ADR-0038).
 
-use super::reply;
 use crate::{Offered, ToolSheet, Tooling};
 use aethereal_actor::{ErasedActorRef, ProtocolRef};
 use aethereal_data::{Bound, Budget, SchemaNodes, is_object, json_schema};
@@ -13,34 +12,51 @@ const MOST_NAME: usize = 128;
 
 /// A tool held.
 #[derive(Bound)]
-pub struct Tool {
+pub struct HeldTool {
     pub worker: ProtocolRef<Tooling>,
+    pub description: String,
     pub input: SchemaNodes,
     pub output: SchemaNodes,
-    /// Its entry in `tools/list`, written when it was offered.
-    pub listed: String,
+    /// `input` as JSON Schema, written when it was offered.
+    pub input_schema: String,
+    /// `output` as JSON Schema, written when it was offered.
+    pub output_schema: String,
 }
 
-/// The tools held, by name, which is the order `tools/list` gives them in.
-#[derive(Bound)]
+/// The tools held, by name, in the order of their names.
+#[derive(Bound, Default)]
 pub struct Table {
-    tools: BTreeMap<String, Tool>,
+    tools: BTreeMap<String, HeldTool>,
 }
 
 impl Table {
     /// No tools.
+    #[must_use]
     pub const fn new() -> Self {
         Self { tools: BTreeMap::new() }
     }
 
     /// The tool named `name`: none when it is not held.
-    pub fn tool(&self, name: &str) -> Option<&Tool> {
+    #[must_use]
+    pub fn tool(&self, name: &str) -> Option<&HeldTool> {
         self.tools.get(name)
     }
 
-    /// Each tool's entry in `tools/list`, in order.
-    pub fn listed(&self) -> impl Iterator<Item = &str> {
-        self.tools.values().map(|tool| tool.listed.as_str())
+    /// Each tool held, with its name, in order.
+    pub fn tools(&self) -> impl Iterator<Item = (&str, &HeldTool)> {
+        self.tools.iter().map(|(name, held)| (name.as_str(), held))
+    }
+
+    /// How many tools are held.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
+    /// Whether no tool is held.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
     }
 
     /// Holds all of `sheets` for `worker`, or none, with `room` the most tools to hold, and says which.
@@ -65,10 +81,10 @@ impl Table {
         }
         let mut written = Vec::with_capacity(sheets.len());
         for sheet in sheets {
-            let Some(tool) = written_tool(&sheet, worker) else {
+            let Some(tool) = written_tool(sheet, worker) else {
                 return Offered::Unwritable;
             };
-            written.push((sheet.name, tool));
+            written.push(tool);
         }
         self.tools.extend(written);
 
@@ -99,10 +115,10 @@ fn is_well_named(name: &str) -> bool {
 }
 
 /// The tool `sheet` offers: none when one of its schemas has no JSON Schema.
-fn written_tool(sheet: &ToolSheet, worker: ProtocolRef<Tooling>) -> Option<Tool> {
-    let input = json_schema(&sheet.input, &mut Budget::new(SCHEMA_BYTES)).ok()?;
-    let output = json_schema(&sheet.output, &mut Budget::new(SCHEMA_BYTES)).ok()?;
-    let listed = reply::listed(&sheet.name, &sheet.description, &input, &output);
+fn written_tool(sheet: ToolSheet, worker: ProtocolRef<Tooling>) -> Option<(String, HeldTool)> {
+    let input_schema = json_schema(&sheet.input, &mut Budget::new(SCHEMA_BYTES)).ok()?;
+    let output_schema = json_schema(&sheet.output, &mut Budget::new(SCHEMA_BYTES)).ok()?;
+    let ToolSheet { name, description, input, output } = sheet;
 
-    Some(Tool { worker, input: sheet.input.clone(), output: sheet.output.clone(), listed })
+    Some((name, HeldTool { worker, description, input, output, input_schema, output_schema }))
 }

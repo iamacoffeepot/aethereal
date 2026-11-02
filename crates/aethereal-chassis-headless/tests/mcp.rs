@@ -8,12 +8,11 @@ use aethereal_chassis_headless::{FileRoots, Headless};
 use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, from_json, to_bytes, to_json};
 use aethereal_files::{Files, ReadTool};
 use aethereal_http::{Http, HttpSettings};
-use aethereal_mcp::{
-    Call, Called, Mcp, McpSettings, Offer, Offered, Tool, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw,
-};
+use aethereal_mcp::{Mcp, McpSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Program};
 use aethereal_tcp::Tcp;
+use aethereal_tools::{Call, Called, Offer, Offered, Tool, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw};
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -812,7 +811,7 @@ fn port_of(harness: &mut Harness<Headless>) -> Result<u16, Unheard> {
 fn a_toolbox_stands_up_each_tool_and_a_call_reaches_it() -> Result<(), Unheard> {
     // Catches a tool not spawned, not offered, or offered under the wrong worker, and a generic actor's seat or mail
     // going astray, which no other test can as it is the first of them.
-    let mut harness = Harness::of(program().root::<Toolbox<(Say1, Other)>>())?;
+    let mut harness = Harness::of(program().root::<Toolbox<(Say1, Other), Mcp>>())?;
     let port = port_of(&mut harness)?;
     for _ in 0..16 {
         harness.step();
@@ -831,7 +830,7 @@ fn a_toolbox_stands_up_each_tool_and_a_call_reaches_it() -> Result<(), Unheard> 
 #[test]
 fn a_name_listed_twice_stops_the_program_as_it_starts() {
     // Catches two tools of one name found only by `Mcp`, whose refusal comes too late to stop anything.
-    let started = Harness::of(program().root::<Toolbox<(Say1, Say2)>>());
+    let started = Harness::of(program().root::<Toolbox<(Say1, Say2), Mcp>>());
 
     assert!(matches!(started, Err(Unheard::Program(_))));
 }
@@ -839,7 +838,7 @@ fn a_name_listed_twice_stops_the_program_as_it_starts() {
 #[test]
 fn a_tool_that_reaches_what_the_program_lacks_stops_it_as_it_starts() {
     // Catches a refused spawn passed over, which leaves a tool missing with nothing said.
-    let started = Harness::of(program().root::<Toolbox<(Reaching,)>>());
+    let started = Harness::of(program().root::<Toolbox<(Reaching,), Mcp>>());
 
     assert!(matches!(started, Err(Unheard::Program(_))));
 }
@@ -853,7 +852,7 @@ fn a_name_held_already_ends_the_toolbox_and_the_program_runs_on() -> Result<(), 
     let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say")], worker })?;
     assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
 
-    harness.add_root::<Toolbox<(Other, Say1)>>(&(), ToolboxConfig)?;
+    harness.add_root::<Toolbox<(Other, Say1), Mcp>>(&(), ToolboxConfig)?;
     for _ in 0..16 {
         harness.step();
     }
@@ -908,7 +907,7 @@ fn read_tool_answers_a_file_over_mcp_and_says_what_it_could_not_read() -> Result
     let assets =
         Assets::new("read", &[("a.txt", b"hello \"there\"\n"), ("b.bin", &[0xFF, 0xFE]), ("large.txt", &large)]);
     let roots = FileRoots { assets: assets.0.display().to_string(), readers: 2 };
-    let program = program().root_with::<Files>(roots).root::<Toolbox<(ReadTool,)>>();
+    let program = program().root_with::<Files>(roots).root::<Toolbox<(ReadTool,), Mcp>>();
     let mut harness = Harness::of(program)?;
     let port = port_of(&mut harness)?;
     for _ in 0..16 {

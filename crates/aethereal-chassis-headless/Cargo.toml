@@ -39,6 +39,7 @@ aethereal-chassis-headless = { path = ".", features = ["harness"] }
 aethereal-files = { path = "../aethereal-files", features = ["tools"] }
 aethereal-http = { path = "../aethereal-http" }
 aethereal-mcp = { path = "../aethereal-mcp" }
+aethereal-tools = { path = "../aethereal-tools" }
 
 [lints]
 workspace = true
