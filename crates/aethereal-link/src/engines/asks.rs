@@ -21,7 +21,7 @@ pub struct EngineList {
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.engine_listing")]
 pub struct EngineListing {
-    pub engine: u64,
+    pub engine: u32,
     pub name: String,
     pub tools: u32,
 }

@@ -60,7 +60,4 @@ pub use frames::{Down, PORT, REVISION, Up};
 pub use link::{Calling, Connecting, Link, LinkSettings, Sending, Woken};
 pub use read_limit::ReadLimitTooLow;
 #[cfg(feature = "tools")]
-pub use tools::{
-    Asking, CallToolInput, CallToolOutput, DescribeEngineInput, EngineDescribed, EngineListed, EngineTools,
-    EngineToolsConfig, EnginesListed, ListEnginesInput, ToolDescribed,
-};
+pub use tools::{Asking, EngineAnswer, EngineCall, EngineId, EngineSheets, EngineTools, EngineToolsConfig, JsonSheet};
