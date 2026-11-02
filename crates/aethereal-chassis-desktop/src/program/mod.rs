@@ -3,6 +3,7 @@
 
 mod files;
 mod link;
+mod processes;
 mod renderer;
 mod store;
 mod tcp;

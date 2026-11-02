@@ -15,6 +15,7 @@ aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 aethereal-files = { path = "../aethereal-files" }
 aethereal-link = { path = "../aethereal-link" }
+aethereal-process = { path = "../aethereal-process" }
 aethereal-store = { path = "../aethereal-store" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 aethereal-tcp = { path = "../aethereal-tcp" }
@@ -32,7 +33,7 @@ pollster = { workspace = true }
 wasmparser = { version = "=0.246.2", default-features = false }
 wasmtime = { version = "=44.0.3", default-features = false, features = ["cranelift", "runtime"] }
 
-# Cores and the poller on Linux (epoll); the poller on macOS (kqueue).
+# Cores and the poller on Linux (epoll); the poller on macOS (kqueue); process groups and their signals on both.
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))'.dependencies]
 libc = "0.2.190"
 

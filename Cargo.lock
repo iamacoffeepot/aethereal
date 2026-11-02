@@ -63,6 +63,7 @@ dependencies = [
  "aethereal-data",
  "aethereal-files",
  "aethereal-link",
+ "aethereal-process",
  "aethereal-render",
  "aethereal-store",
  "aethereal-substrate",
@@ -85,6 +86,7 @@ dependencies = [
  "aethereal-http",
  "aethereal-link",
  "aethereal-mcp",
+ "aethereal-process",
  "aethereal-store",
  "aethereal-substrate",
  "aethereal-tcp",
@@ -171,6 +173,14 @@ dependencies = [
  "aethereal-substrate",
  "aethereal-tcp",
  "aethereal-tools",
+]
+
+[[package]]
+name = "aethereal-process"
+version = "0.1.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
 ]
 
 [[package]]

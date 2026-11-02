@@ -1,0 +1,14 @@
+[package]
+name = "aethereal-process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The process capability: a root that starts programs on the host's machine, each in a process group of its own, stops them, and says how each exited (ADR-0040)"
+
+[dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-data = { path = "../aethereal-data" }
+
+[lints]
+workspace = true

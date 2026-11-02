@@ -65,9 +65,11 @@ pub type Copying<'a> = Pin<Box<dyn Future<Output = Result<Copied, Uncopied>> + '
 pub type Recounting<'a> = Pin<Box<dyn Future<Output = Result<Shelf, Unkept>> + 'a>>;
 /// A write or a removal in the stockroom, as it does it.
 pub type Keeping<'a> = Pin<Box<dyn Future<Output = Result<(), Unkept>> + 'a>>;
+/// A launch copy, as the stockroom makes it: its absolute path once made.
+pub type Launching<'a> = Pin<Box<dyn Future<Output = Result<String, Unkept>> + 'a>>;
 
-/// The host's stockroom, where the store keeps each entry's bytes, its record, and the names file (ADR-0039): a
-/// directory natively. A host serves it into the services its runners hand every job (ADR-0034); a browser serves
+/// The host's stockroom, where the store keeps each entry's bytes, its record, and the names file (ADR-0039), and the
+/// launch copies it hands out to run (ADR-0040): a directory natively. A host serves it into the services its runners hand every job (ADR-0034); a browser serves
 /// none, and bootstraps no store.
 ///
 /// Nothing it does blocks the thread that polls it: a host whose disk blocks works on threads of its own, and wakes
@@ -78,7 +80,8 @@ pub trait Stockroom: Send + Sync {
     fn copy(&self, path: String, most_bytes: u64) -> Copying<'_>;
 
     /// Reads every record and the names file. On the way it removes what a check-in or a write cut short left: an
-    /// entry without its record, a record without its entry, and a copy or a write never finished.
+    /// entry without its record, a record without its entry, and a copy or a write never finished; and every launch
+    /// copy, as nothing the store began before runs from one.
     fn count(&self) -> Recounting<'_>;
 
     /// Writes each of `records` and then the names file, each whole: each is written beside itself and renamed over
@@ -87,4 +90,12 @@ pub trait Stockroom: Send + Sync {
 
     /// Removes the entries `hashes` name, their bytes and their records. One already gone is not missed.
     fn prune(&self, hashes: Vec<StoreHash>) -> Keeping<'_>;
+
+    /// Copies the entry `hash` to the launch copy named `copy`, marked executable where the host marks files so, and
+    /// answers its absolute path. `copy` is one plain file name, which the store makes unique among the launch copies
+    /// it has not removed; a file already of that name, which a removal missed, is replaced.
+    fn launch(&self, hash: StoreHash, copy: String) -> Launching<'_>;
+
+    /// Removes the launch copies `copies` name. One already gone, or never made, is not missed.
+    fn unlaunch(&self, copies: Vec<String>) -> Keeping<'_>;
 }
