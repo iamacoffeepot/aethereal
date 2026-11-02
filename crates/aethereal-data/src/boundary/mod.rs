@@ -11,6 +11,7 @@ mod tests;
 mod writer;
 
 use crate::{DecodeError, EncodeError};
+use alloc::vec::Vec;
 
 pub use bare::Bare;
 pub use reader::Reader;
@@ -35,6 +36,19 @@ pub trait Boundary {
 pub trait Encode<B: Boundary> {
     /// Appends this value's bytes to `out` (ADR-0002).
     fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError>;
+
+    /// Appends the bytes of each of `items` in turn, as a sequence's elements are written (ADR-0002). A type whose
+    /// bytes are its memory writes them all at once.
+    #[doc(hidden)]
+    fn encode_each(items: &[Self], out: &mut Writer<'_, B>) -> Result<(), EncodeError>
+    where
+        Self: Sized,
+    {
+        for item in items {
+            item.encode(out)?;
+        }
+        Ok(())
+    }
 }
 
 /// A value that can be read at the boundary `B` (ADR-0004).
@@ -43,4 +57,11 @@ pub trait Encode<B: Boundary> {
 pub trait Decode<B: Boundary>: Sized {
     /// Reads one value from the front of `input`, advancing it past the bytes read (ADR-0002).
     fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError>;
+
+    /// Reads `length` values in turn, as a sequence's elements are read, once the budget is charged for them
+    /// (ADR-0002). A type whose bytes are its memory reads them all at once.
+    #[doc(hidden)]
+    fn decode_each(input: &mut Reader<'_, B>, length: usize) -> Result<Vec<Self>, DecodeError> {
+        (0..length).map(|_| Self::decode(input)).collect()
+    }
 }

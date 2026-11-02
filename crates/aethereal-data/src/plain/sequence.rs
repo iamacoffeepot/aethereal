@@ -12,10 +12,7 @@ impl<T: Schema> Schema for Vec<T> {
 impl<B: Boundary, T: Encode<B>> Encode<B> for Vec<T> {
     fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         write_count(out.bytes(), self.len())?;
-        for item in self {
-            item.encode(out)?;
-        }
-        Ok(())
+        T::encode_each(self, out)
     }
 }
 
@@ -23,7 +20,7 @@ impl<B: Boundary, T: Decode<B>> Decode<B> for Vec<T> {
     fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let count = read_count(input.input())?;
         let length = charge_count::<T>(input.budget(), count)?;
-        (0..length).map(|_| T::decode(input)).collect()
+        T::decode_each(input, length)
     }
 }
 
@@ -36,10 +33,9 @@ impl<T: Schema> Schema for VecDeque<T> {
 impl<B: Boundary, T: Encode<B>> Encode<B> for VecDeque<T> {
     fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         write_count(out.bytes(), self.len())?;
-        for item in self {
-            item.encode(out)?;
-        }
-        Ok(())
+        let (front, back) = self.as_slices();
+        T::encode_each(front, out)?;
+        T::encode_each(back, out)
     }
 }
 
@@ -47,7 +43,7 @@ impl<B: Boundary, T: Decode<B>> Decode<B> for VecDeque<T> {
     fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let count = read_count(input.input())?;
         let length = charge_count::<T>(input.budget(), count)?;
-        (0..length).map(|_| T::decode(input)).collect()
+        Ok(T::decode_each(input, length)?.into())
     }
 }
 
@@ -63,10 +59,7 @@ impl<T: Schema, const LENGTH: usize> Schema for [T; LENGTH] {
 
 impl<B: Boundary, T: Encode<B>, const LENGTH: usize> Encode<B> for [T; LENGTH] {
     fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
-        for item in self {
-            item.encode(out)?;
-        }
-        Ok(())
+        T::encode_each(self, out)
     }
 }
 
@@ -80,12 +73,7 @@ impl<B: Boundary, T: Decode<B>, const LENGTH: usize> Decode<B> for [T; LENGTH] {
             let remaining = input.budget().remaining();
             return Err(DecodeError::BudgetExceeded { requested: usize::MAX, remaining });
         }
-        let mut items = Vec::new();
-        for _ in 0..LENGTH {
-            let item = T::decode(input)?;
-            items.push(item);
-        }
-        from_vec(items)
+        from_vec(T::decode_each(input, LENGTH)?)
     }
 }
 
@@ -144,6 +132,25 @@ mod tests {
             Err(DecodeError::BudgetExceeded { .. }) => {}
             other => panic!("expected a budget refusal, found {other:?}"),
         }
+    }
+
+    #[test]
+    fn wrapped_deque_is_written_front_first() {
+        // Catches a deque whose two halves are written in the wrong order once its ring wraps.
+        let mut values = VecDeque::from(alloc::vec![1u8, 2, 3]);
+        values.pop_front();
+        values.push_back(4);
+        values.push_front(9);
+        assert_eq!(to_bytes(&values), Ok(alloc::vec![0x04, 0x00, 0x00, 0x00, 9, 2, 3, 4]));
+    }
+
+    #[test]
+    fn short_bytes_are_refused() {
+        // Catches a bulk byte read that pads or truncates input that ends early.
+        assert_eq!(
+            from_bytes::<Vec<u8>>(&[0x03, 0x00, 0x00, 0x00, 0x01, 0x02], &mut Budget::new(16)),
+            Err(DecodeError::UnexpectedEnd)
+        );
     }
 
     #[test]
