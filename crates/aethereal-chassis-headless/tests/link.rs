@@ -8,7 +8,7 @@ use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_link::{
     CallEngine, DescribeEngine, Described, Down, EngineList, EngineListing, Engines, EnginesSettings, Link,
-    LinkSettings, ListEngines, MintToken, Minted, REVISION, Refusal, Token, Up,
+    LinkSettings, ListEngines, MintToken, Minted, Origin, REVISION, Refusal, Token, Up,
 };
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Lifecycle};
@@ -241,7 +241,10 @@ fn an_engines_hello_with_a_minted_token_and_latest_set_are_listed_and_described(
     send(&mut stream, &Up::Sheets { revision: 7, tools: vec![sheet("say"), sheet("look")] });
 
     let list = listed_once(&mut harness, |list| holds_one_with(list, 2))?;
-    assert_eq!(list.engines, vec![EngineListing { engine: 0, name: String::from("scene"), tools: 2 }]);
+    assert_eq!(
+        list.engines,
+        vec![EngineListing { engine: 0, name: String::from("scene"), tools: 2, origin: Origin::External }]
+    );
 
     let engines = harness.root::<Engines>();
     let Some(engine) = harness.state(engines)?.engine(0) else {
@@ -341,7 +344,10 @@ fn a_token_is_good_for_one_hello_and_refused_the_second_time() -> Result<(), Unh
 
     assert_eq!(down, Down::Refused(Refusal::Token));
     assert!(closed, "the hub hangs up once its refusal is sent");
-    assert_eq!(listed(&mut harness)?.engines, vec![EngineListing { engine: 0, name: String::from("scene"), tools: 1 }]);
+    assert_eq!(
+        listed(&mut harness)?.engines,
+        vec![EngineListing { engine: 0, name: String::from("scene"), tools: 1, origin: Origin::External }]
+    );
 
     Ok(())
 }

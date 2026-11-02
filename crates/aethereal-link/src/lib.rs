@@ -8,12 +8,14 @@
 //!
 //! In a hub, [`Engines`] listens for engines, mints the tokens they link with, and keeps an [`Engine`] beneath itself
 //! for each one linked, keyed by its id. A token is good for one `Hello`: an engine is listed only once `Engines` has
-//! taken the token its `Hello` brought. The hub's tools ask `Engines` to [`ListEngines`] or to [`MintToken`], and ask
-//! an engine at `path::<Engine>(id)` to [`DescribeEngine`] or to [`CallEngine`].
+//! taken the token its `Hello` brought. It spawns engines from the hub's store too, a [`Spawned`] beneath itself for
+//! each, which launches its binary from the `Store` and starts it through `Processes`, so a hub that spawns lists
+//! both. The hub's tools ask `Engines` to [`ListEngines`], to [`MintToken`], to [`SpawnEngine`], or to
+//! [`TerminateEngine`], and ask an engine at `path::<Engine>(id)` to [`DescribeEngine`] or to [`CallEngine`].
 //!
 //! Behind the `tools` feature, `EngineTools` is the hub's tools for the agent: `list_engines`, `describe_engine`,
-//! `call_tool`, and `mint_token`, which a hub lists in its toolbox after `Engines`. It converts JSON to an engine's
-//! bytes with the sheets the engine sent, so the hub needs no kind of the engine's.
+//! `call_tool`, `mint_token`, `spawn_engine`, and `terminate_engine`, which a hub lists in its toolbox after `Engines`.
+//! It converts JSON to an engine's bytes with the sheets the engine sent, so the hub needs no kind of the engine's.
 //!
 //! Only tools cross the link: each frame is one plain kind's bytes in a `LengthPrefixed` frame of `Tcp`'s, an [`Up`]
 //! from the engine or a [`Down`] from the hub. A connection opens with [`Up::Hello`], which names the [`REVISION`] the
@@ -57,13 +59,16 @@ mod token;
 mod tools;
 
 pub use engines::{
-    Binding, CallEngine, DescribeEngine, Described, Engine, EngineConfig, EngineList, EngineListing, Engines,
-    EnginesSettings, ListEngines, MintToken, Minted, Minting, Randomness, Sent, Shown, TakeToken, TokenFor, Unfilled,
-    Unlistened, Vouching,
+    Binding, Booting, CallEngine, DescribeEngine, Described, Engine, EngineConfig, EngineList, EngineListing, Engines,
+    EnginesSettings, ExitedEngine, Fetching, LinkedAs, ListEngines, MintToken, Minted, Minting, Origin, Patience,
+    Randomness, Runs, Sent, Shown, Spawn, SpawnEngine, Spawned, SpawnedConfig, TakeToken, TerminateEngine, Terminated,
+    TokenFor, Unfilled, Unlistened, Vouching,
 };
 pub use frames::{Down, PORT, REVISION, Refusal, Up};
 pub use link::{Calling, Connecting, Link, LinkConfig, LinkSettings, NoToken, Sending};
 pub use read_limit::ReadLimitTooLow;
 pub use token::Token;
 #[cfg(feature = "tools")]
-pub use tools::{Asking, EngineAnswer, EngineCall, EngineId, EngineSheets, EngineTools, EngineToolsConfig, JsonSheet};
+pub use tools::{
+    Asking, EngineAnswer, EngineCall, EngineId, EngineSheets, EngineTools, EngineToolsConfig, JsonSheet, SpawnedEngine,
+};

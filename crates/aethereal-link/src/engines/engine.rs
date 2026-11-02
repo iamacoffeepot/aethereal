@@ -62,7 +62,8 @@ const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// does not speak is, and the connection shut.
 ///
 /// Its end is its connection's: it closes when the connection hangs up, or sends a frame that does not read, or that
-/// is out of turn, and each call it holds is then answered `No`.
+/// is out of turn, and each call it holds is then answered `No`. Asked to [`Shut`] by `Engines`, it shuts the
+/// connection and closes.
 #[derive(Bound)]
 #[kind(name = "aether.link.engine")]
 pub struct Engine {
@@ -100,6 +101,7 @@ impl Actor for Engine {
         Answer<TokenFor, Vouching>,
         DescribeEngine,
         CallEngine,
+        Shut,
     );
     type BeginSends = (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>);
     type EndSends = ();
@@ -222,7 +224,7 @@ impl Handles<Answer<TokenFor, Vouching>> for Engine {
             self.said = said;
             return Ok(());
         };
-        let Answered::Yes(TokenFor::External) = answered else {
+        let Answered::Yes(TokenFor::External | TokenFor::Spawned) = answered else {
             turn.log(Level::Info, format_args!("an engine's token was refused: {answered:?}"));
             return self.write(turn, to_bytes(&Down::Refused(Refusal::Token))?, true);
         };
@@ -267,6 +269,22 @@ impl Handles<CallEngine> for Engine {
         self.next += 1;
 
         self.write(turn, call, false)
+    }
+}
+
+impl Handles<Shut> for Engine {
+    type Sends = (ToType<Accepted, Shut>,);
+
+    /// `Engines` asks it to end its link, as the agent terminates an engine started outside the hub: its connection is
+    /// shut, and the engine at its other end ends by the rule that no engine outlives its link (ADR-0040). From any
+    /// other actor, it is passed over.
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let is_from_parent = turn.sender().id() == turn.parent().id();
+        if !is_from_parent {
+            return Ok(());
+        }
+
+        self.shut(turn)
     }
 }
 

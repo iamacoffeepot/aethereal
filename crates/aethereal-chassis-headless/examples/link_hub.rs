@@ -1,6 +1,7 @@
 //! A hub on this machine: an MCP server whose tools list the engines linked to it, describe an engine's tools, call
-//! one, and mint a token for an engine started by hand (ADR-0037, ADR-0038, ADR-0040), and check binaries into its
-//! store, list them, and pin them (ADR-0039). It runs no cycle: its sockets wake it as they are ready (ADR-0033).
+//! one, mint a token for an engine started by hand, spawn an engine from its store, and terminate one (ADR-0037,
+//! ADR-0038, ADR-0040), and check binaries into its store, list them, and pin them (ADR-0039). It lists `Processes`,
+//! which starts each engine it spawns. It runs no cycle: its sockets wake it as they are ready (ADR-0033).
 //!
 //! `Mcp` and `Engines` each suggest `--port` and `--most-calls`, and `Engines` and `Store` each suggest
 //! `--most-bytes`, so this program names them apart: `--mcp-port` and `--mcp-most-calls` for MCP, `--link-port`,
@@ -9,14 +10,16 @@
 //! `AETHEREAL_HUB_LINK_PORT=8892`.
 //!
 //! Run with `cargo run --release -p aethereal-chassis-headless --example link_hub -- --mcp-port 8890 --link-port 8892
-//! --root store`, then an engine with the `link_engine` example and the arguments `mint_token` answers. The store is
-//! kept in the directory `--root` names.
+//! --root store`. The store is kept in the directory `--root` names. Then check an engine's binary in, such as the
+//! `link_engine` example's, and spawn it with `spawn_engine`, or start one by hand with the arguments `mint_token`
+//! answers.
 
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::NativeLayers;
 use aethereal_http::{Http, HttpSettings};
 use aethereal_link::{EngineTools, Engines, EnginesSettings};
 use aethereal_mcp::{Mcp, McpSettings};
+use aethereal_process::Processes;
 use aethereal_store::{Store, StoreSettings, StoreTools};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
@@ -34,6 +37,7 @@ fn main() {
         .root::<Mcp>()
         .root_with::<Engines>(engines)
         .root::<Store>()
+        .root::<Processes>()
         .root::<Toolbox<(EngineTools, StoreTools), Mcp>>()
         .flags(|flags| {
             flags

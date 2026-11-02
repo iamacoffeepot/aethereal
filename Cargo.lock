@@ -150,6 +150,8 @@ version = "0.1.0"
 dependencies = [
  "aethereal-actor",
  "aethereal-data",
+ "aethereal-process",
+ "aethereal-store",
  "aethereal-substrate",
  "aethereal-tcp",
  "aethereal-tools",

@@ -4,7 +4,8 @@ use crate::read_limit;
 use crate::{PORT, ReadLimitTooLow};
 use aethereal_data::Plain;
 
-/// The hub end's section, `engines`: the port engines dial, the host they dial it on, its tokens, and its limits
+/// The hub end's section, `engines`: the port engines dial, the host they dial it on, its tokens, its spawns, and its
+/// limits
 /// (ADR-0038, ADR-0040). They are the root's config. Where it listens is `Tcp`'s setting, loopback unless set
 /// otherwise.
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,14 @@ pub struct EnginesSettings {
     /// minted.
     #[flag]
     pub most_tokens: u32,
+    /// The milliseconds an engine the hub spawned is given to link, from when its program starts; past it, its spawn
+    /// is answered `Unlinked`, and its program stopped.
+    #[flag]
+    pub link_within_millis: u64,
+    /// The most engines the hub spawned that have ended kept to list, with how each exited; past it, the oldest is
+    /// dropped as another ends.
+    #[flag]
+    pub most_exited: u32,
 }
 
 impl Default for EnginesSettings {
@@ -46,6 +55,8 @@ impl Default for EnginesSettings {
             most_bytes: 1 << 20,
             token_within_millis: 600_000,
             most_tokens: 64,
+            link_within_millis: 30_000,
+            most_exited: 16,
         }
     }
 }

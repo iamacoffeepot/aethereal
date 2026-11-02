@@ -1,6 +1,7 @@
 //! What the agent writes to the hub's tools, and what it reads back, where the link's own kinds will not do
-//! (ADR-0037, ADR-0038): `list_engines` takes and answers the link's own `ListEngines` and `EngineList`, and
-//! `mint_token` its `MintToken` and `Minted` (ADR-0040).
+//! (ADR-0037, ADR-0038): `list_engines` takes and answers the link's own `ListEngines` and `EngineList`, `mint_token`
+//! its `MintToken` and `Minted`, `spawn_engine` its `SpawnEngine`, and `terminate_engine` its `TerminateEngine`
+//! (ADR-0040).
 
 use aethereal_data::{Json, Plain};
 
@@ -43,4 +44,11 @@ pub struct EngineCall {
 #[kind(name = "aether.link.engine_answer")]
 pub struct EngineAnswer {
     pub output: Json,
+}
+
+/// An engine the hub spawned, linked: its id, as `list_engines` shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.link.spawned_engine")]
+pub struct SpawnedEngine {
+    pub engine: u32,
 }
