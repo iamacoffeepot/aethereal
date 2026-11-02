@@ -16,12 +16,12 @@ impl StoreName {
     ///
     /// # Errors
     ///
-    /// [`DecodeError::InvalidStoreName`] when `text` does not conform.
+    /// [`DecodeError::Refused`], naming `StoreName`, when `text` does not conform.
     pub fn parse(text: impl Into<String>) -> Result<Self, DecodeError> {
         let text = text.into();
         let is_name = spells(&text);
         if !is_name {
-            return Err(DecodeError::InvalidStoreName);
+            return Err(DecodeError::Refused { name: "StoreName" });
         }
 
         Ok(Self(text))
@@ -94,7 +94,7 @@ mod tests {
         }
         let too_long = "a".repeat(MOST_BYTES + 1);
         for bad in ["", "a/b", "../hub", "a b", "é", too_long.as_str()] {
-            assert_eq!(decoded(bad), Err(DecodeError::InvalidStoreName), "the name `{bad}`");
+            assert_eq!(decoded(bad), Err(DecodeError::Refused { name: "StoreName" }), "the name `{bad}`");
         }
     }
 }
