@@ -9,8 +9,8 @@ use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Budget, Json, Plain, Schema, SchemaNodes, from_bytes, json_schema, to_bytes, to_json};
 use aethereal_link::{
-    CallToolInput, CallToolOutput, DescribeEngineInput, Down, EngineDescribed, EngineList, EngineListed, EngineTools,
-    Engines, EnginesListed, EnginesSettings, ListEngines, ListEnginesInput, REVISION, ToolDescribed, Up,
+    Down, EngineAnswer, EngineCall, EngineId, EngineList, EngineListing, EngineSheets, EngineTools, Engines,
+    EnginesSettings, JsonSheet, ListEngines, REVISION, Up,
 };
 use aethereal_substrate::harness::{Asked, Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
@@ -307,8 +307,8 @@ fn linked_engine(harness: &mut Harness<Headless>, port: u16, tools: Vec<ToolShee
 }
 
 /// The input of `call_tool` that calls `say` on engine 0 with `input`.
-fn call_say(input: Json) -> CallToolInput {
-    CallToolInput { engine: 0, tool: String::from("say"), input }
+fn call_say(input: Json) -> EngineCall {
+    EngineCall { engine: 0, tool: String::from("say"), input }
 }
 
 #[test]
@@ -318,9 +318,9 @@ fn list_engines_shows_each_engine_by_its_id_name_and_count_of_tools() -> Result<
     let (mut harness, port, worker) = hub()?;
     let _stream = linked_engine(&mut harness, port, vec![sheet()]);
 
-    let listed: EnginesListed = output(called(&mut harness, worker, "list_engines", &ListEnginesInput)?);
+    let listed: EngineList = output(called(&mut harness, worker, "list_engines", &ListEngines)?);
 
-    assert_eq!(listed.engines, vec![EngineListed { engine: 0, name: String::from("scene"), tools: 1 }]);
+    assert_eq!(listed.engines, vec![EngineListing { engine: 0, name: String::from("scene"), tools: 1 }]);
 
     Ok(())
 }
@@ -332,10 +332,9 @@ fn describe_engine_writes_each_tools_input_and_output_as_json_schema() -> Result
     let (mut harness, port, worker) = hub()?;
     let _stream = linked_engine(&mut harness, port, vec![sheet()]);
 
-    let described: EngineDescribed =
-        output(called(&mut harness, worker, "describe_engine", &DescribeEngineInput { engine: 0 })?);
+    let described: EngineSheets = output(called(&mut harness, worker, "describe_engine", &EngineId { engine: 0 })?);
 
-    let say = ToolDescribed {
+    let say = JsonSheet {
         name: String::from("say"),
         description: String::from("Says how long a text is"),
         input: schema_of::<Say>(),
@@ -357,10 +356,10 @@ fn call_tool_sends_the_bytes_its_json_input_is_and_answers_the_engines_bytes_as_
 
     let calling = ask(&mut harness, worker, "call_tool", &call_say(json_of(&say)))?;
     let (down, _stream) = answered_call(&mut harness, stream, Called::Output(bytes_of(&said)));
-    let answer: CallToolOutput = output(harness.answer(calling)?);
+    let answer: EngineAnswer = output(harness.answer(calling)?);
 
     assert_eq!(down, Down::Call { call: 0, revision: 3, tool: String::from("say"), input: bytes_of(&say) });
-    assert_eq!(answer, CallToolOutput { output: json_of(&said) });
+    assert_eq!(answer, EngineAnswer { output: json_of(&said) });
 
     Ok(())
 }
@@ -381,7 +380,7 @@ fn input_not_of_the_tools_schema_is_refused_and_never_written() -> Result<(), Un
     let say = Say { text: String::from("hello") };
     let calling = ask(&mut harness, worker, "call_tool", &call_say(json_of(&say)))?;
     let (down, _stream) = answered_call(&mut harness, stream, Called::Output(bytes_of(&Said { length: 5 })));
-    let _: CallToolOutput = output(harness.answer(calling)?);
+    let _: EngineAnswer = output(harness.answer(calling)?);
 
     assert_eq!(down, Down::Call { call: 0, revision: 3, tool: String::from("say"), input: bytes_of(&say) });
 
@@ -399,15 +398,15 @@ fn an_unknown_engine_one_with_no_tools_yet_and_an_unknown_tool_are_each_refused_
     waiting::until(BUDGET, || listed(&mut harness).is_ok_and(|list| holds(&list, 2, 1)));
     let say = json_of(&Say { text: String::from("hello") });
 
-    let gone = called(&mut harness, worker, "describe_engine", &DescribeEngineInput { engine: 7 })?;
+    let gone = called(&mut harness, worker, "describe_engine", &EngineId { engine: 7 })?;
     assert!(refuses(&gone, "no engine 7"), "{gone:?}");
-    let gone = called(&mut harness, worker, "call_tool", &CallToolInput { engine: 7, ..call_say(say.clone()) })?;
+    let gone = called(&mut harness, worker, "call_tool", &EngineCall { engine: 7, ..call_say(say.clone()) })?;
     assert!(refuses(&gone, "no engine 7"), "{gone:?}");
 
-    let not_yet = called(&mut harness, worker, "describe_engine", &DescribeEngineInput { engine: 1 })?;
+    let not_yet = called(&mut harness, worker, "describe_engine", &EngineId { engine: 1 })?;
     assert!(refuses(&not_yet, "not sent its tools"), "{not_yet:?}");
 
-    let nothing = CallToolInput { tool: String::from("nothing"), ..call_say(say) };
+    let nothing = EngineCall { tool: String::from("nothing"), ..call_say(say) };
     let unknown = called(&mut harness, worker, "call_tool", &nothing)?;
     assert!(refuses(&unknown, "no tool `nothing`"), "{unknown:?}");
 

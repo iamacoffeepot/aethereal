@@ -6,7 +6,7 @@ use aethereal_actor::{
     ProtocolRef, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
-use aethereal_tools::{Call, Called, Tool, ToolSheet, Tooling};
+use aethereal_tools::{Call, Called, Done, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 
 /// The most bytes of a file the tool answers with. Its answer is one piece of mail, and mail its reader cannot read
@@ -26,10 +26,11 @@ pub struct FileContents {
     pub text: String,
 }
 
-/// What an agent writes of a file: its text, at `path` in `namespace`.
+/// A file of text at `path` in `namespace`, as the agent writes it: a `WriteFile`'s bytes have a hexadecimal JSON form,
+/// and an agent writes text.
 #[derive(Debug, PartialEq, Eq, Plain)]
-#[kind(name = "aether.files.write_text")]
-pub struct WriteText {
+#[kind(name = "aether.files.text_file")]
+pub struct TextFile {
     /// The namespace the file is in, one that is written.
     pub namespace: Namespace,
     /// Where it is in the namespace.
@@ -37,11 +38,6 @@ pub struct WriteText {
     /// The whole file.
     pub text: String,
 }
-
-/// What the write tool answers of a file it wrote: nothing more than that it did.
-#[derive(Debug, PartialEq, Eq, Plain)]
-#[kind(name = "aether.files.text_written")]
-pub struct TextWritten {}
 
 /// What a tool keeps for a request it asked: which it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
@@ -204,8 +200,8 @@ impl Tool for WriteTool {
                 "Writes a text file of the program's own, up to {MOST_WRITE_BYTES} bytes, whole, in a namespace that is \
                  written: `Save`."
             ),
-            input: SchemaNodes::of(&WriteText::SHAPE),
-            output: SchemaNodes::of(&TextWritten::SHAPE),
+            input: SchemaNodes::of(&TextFile::SHAPE),
+            output: SchemaNodes::of(&Done::SHAPE),
         }]
     }
 
@@ -222,10 +218,13 @@ impl Handles<Call> for WriteTool {
             turn.reply(&refused("the text is too large"))?;
             return Ok(());
         }
-        let Ok(text) = from_bytes::<WriteText>(&call.input, &mut Budget::new(WRITE_INPUT_BYTES)) else {
-            // The schema says a string of any spelling, and a path is narrower.
-            turn.reply(&refused("that is no path"))?;
-            return Ok(());
+        let text = match from_bytes::<TextFile>(&call.input, &mut Budget::new(WRITE_INPUT_BYTES)) {
+            Ok(text) => text,
+            // The schema says a string of any spelling, and a path is narrower: the fault says which rule it broke.
+            Err(fault) => {
+                turn.reply(&refused(&format!("the input of `write_file`: {fault}")))?;
+                return Ok(());
+            }
         };
         let held = turn.hold()?;
         let number = self.next;
@@ -250,7 +249,7 @@ impl Handles<Answer<FileWritten, Calling>> for WriteTool {
             return Ok(());
         };
         let called = match answered {
-            Answered::Yes(FileWritten::Written) => Called::Output(to_bytes(&TextWritten {})?),
+            Answered::Yes(FileWritten::Written) => Called::Output(to_bytes(&Done {})?),
             Answered::Yes(FileWritten::ReadOnly) => refused("that namespace is read-only"),
             Answered::Yes(FileWritten::Unavailable) => refused("this host has nowhere to write files"),
             Answered::Yes(FileWritten::Failed) => refused("the file could not be written"),

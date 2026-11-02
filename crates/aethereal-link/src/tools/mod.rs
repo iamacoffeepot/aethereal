@@ -2,10 +2,7 @@
 
 mod kinds;
 
-pub use kinds::{
-    CallToolInput, CallToolOutput, DescribeEngineInput, EngineDescribed, EngineListed, EnginesListed, ListEnginesInput,
-    ToolDescribed,
-};
+pub use kinds::{EngineAnswer, EngineCall, EngineId, EngineSheets, JsonSheet};
 
 use crate::{CallEngine, DescribeEngine, Described, Engine, EngineList, Engines, ListEngines};
 use aethereal_actor::{
@@ -69,7 +66,7 @@ impl Pending {
 enum Order {
     List,
     Describe { engine: u32 },
-    Call(CallToolInput),
+    Call(EngineCall),
 }
 
 /// A call of an engine's tool, ready to ask: the set it was converted with, the input's bytes, and the output schema.
@@ -85,9 +82,8 @@ struct Converted {
 /// and converts the bytes it answers back to JSON by the tool's output schema. Input that is not of the schema is
 /// refused before anything is sent, so an engine receives only bytes its schema reads.
 ///
-/// An engine's id is a `u32` in these tools, where the link counts in `u64`, since a 64-bit integer's JSON form is a
-/// string (ADR-0007) and an agent writes the `3` it was shown. An engine whose id is past `u32::MAX` cannot be named,
-/// and is not listed.
+/// An engine's id is a `u32`, as `Engines` counts them: a 64-bit integer's JSON form is a string (ADR-0007), and an
+/// agent writes the `3` it was shown. `list_engines` takes and answers the link's own `ListEngines` and `EngineList`.
 ///
 /// `describe_engine` does not show the set's revision. The agent never passes one: `call_tool` reads the engine's
 /// latest set when it is called, and converts by it.
@@ -127,8 +123,8 @@ impl Tool for EngineTools {
                 description: String::from(
                     "Lists the engines linked to this hub: each one's id, name, and count of tools.",
                 ),
-                input: SchemaNodes::of(&ListEnginesInput::SHAPE),
-                output: SchemaNodes::of(&EnginesListed::SHAPE),
+                input: SchemaNodes::of(&ListEngines::SHAPE),
+                output: SchemaNodes::of(&EngineList::SHAPE),
             },
             ToolSheet {
                 name: String::from(DESCRIBE_ENGINE),
@@ -136,8 +132,8 @@ impl Tool for EngineTools {
                     "Describes an engine's tools: each one's name, what it does, and its input and output as JSON \
                      Schema.",
                 ),
-                input: SchemaNodes::of(&DescribeEngineInput::SHAPE),
-                output: SchemaNodes::of(&EngineDescribed::SHAPE),
+                input: SchemaNodes::of(&EngineId::SHAPE),
+                output: SchemaNodes::of(&EngineSheets::SHAPE),
             },
             ToolSheet {
                 name: String::from(CALL_TOOL),
@@ -145,8 +141,8 @@ impl Tool for EngineTools {
                     "Calls an engine's tool with input of its input schema, and answers its output. Describe the \
                      engine again when a call is refused because its tools changed.",
                 ),
-                input: SchemaNodes::of(&CallToolInput::SHAPE),
-                output: SchemaNodes::of(&CallToolOutput::SHAPE),
+                input: SchemaNodes::of(&EngineCall::SHAPE),
+                output: SchemaNodes::of(&EngineAnswer::SHAPE),
             },
         ]
     }
@@ -181,7 +177,7 @@ impl Handles<Call> for EngineTools {
                 turn.to(path::<Engine>(u64::from(engine))).ask(&DescribeEngine, &asking)?;
                 Pending::Describing { held, engine }
             }
-            Order::Call(CallToolInput { engine, tool, input }) => {
+            Order::Call(EngineCall { engine, tool, input }) => {
                 turn.to(path::<Engine>(u64::from(engine))).ask(&DescribeEngine, &asking)?;
                 Pending::Finding { held, engine, tool, input }
             }
@@ -204,7 +200,7 @@ impl Handles<Answer<EngineList, Asking>> for EngineTools {
             return Ok(());
         };
         let (held, called) = match (pending, answered) {
-            (Pending::Listing { held }, Answered::Yes(list)) => (held, listed(list)?),
+            (Pending::Listing { held }, Answered::Yes(list)) => (held, listed(&list)?),
             (Pending::Listing { held }, Answered::No(_)) => (held, refused("`Engines` did not answer")),
             (other @ (Pending::Describing { .. } | Pending::Finding { .. } | Pending::Calling { .. }), _) => {
                 (other.into_held(), lost())
@@ -286,29 +282,20 @@ fn refused(why: impl Into<String>) -> Called {
 fn order(call: &Call) -> Result<Order, Called> {
     let budget = &mut Budget::new(WALK_BYTES);
     let read = match call.tool.as_str() {
-        LIST_ENGINES => from_bytes::<ListEnginesInput>(&call.input, budget).map(|_| Order::List),
+        LIST_ENGINES => from_bytes::<ListEngines>(&call.input, budget).map(|_| Order::List),
         DESCRIBE_ENGINE => {
-            from_bytes::<DescribeEngineInput>(&call.input, budget).map(|input| Order::Describe { engine: input.engine })
+            from_bytes::<EngineId>(&call.input, budget).map(|EngineId { engine }| Order::Describe { engine })
         }
-        CALL_TOOL => from_bytes::<CallToolInput>(&call.input, budget).map(Order::Call),
+        CALL_TOOL => from_bytes::<EngineCall>(&call.input, budget).map(Order::Call),
         other => return Err(refused(format!("there is no tool `{other}` here"))),
     };
 
-    read.map_err(|_| refused(format!("that is no input of `{}`", call.tool)))
+    read.map_err(|fault| refused(format!("the input of `{}`: {fault}", call.tool)))
 }
 
-/// What `list_engines` answers of `list`.
-fn listed(list: EngineList) -> Result<Called, Fault> {
-    let engines = list
-        .engines
-        .into_iter()
-        .filter_map(|listing| {
-            let engine = u32::try_from(listing.engine).ok()?;
-            Some(EngineListed { engine, name: listing.name, tools: listing.tools })
-        })
-        .collect();
-
-    Ok(Called::Output(to_bytes(&EnginesListed { engines })?))
+/// What `list_engines` answers of `list`: the list itself.
+fn listed(list: &EngineList) -> Result<Called, Fault> {
+    Ok(Called::Output(to_bytes(list)?))
 }
 
 /// The refusal of an engine's tools that could not be read: no such engine, or one that has not sent them.
@@ -326,21 +313,21 @@ fn described(answered: Answered<Described>, engine: u32) -> Result<Called, Fault
         Ok((_, tools)) => tools,
         Err(refusal) => return Ok(refusal),
     };
-    let described: Result<Vec<ToolDescribed>, JsonError> = tools.into_iter().map(tool_described).collect();
+    let described: Result<Vec<JsonSheet>, JsonError> = tools.into_iter().map(json_sheet).collect();
     let Ok(tools) = described else {
         return Ok(refused("a tool's schema has no JSON Schema"));
     };
 
-    Ok(Called::Output(to_bytes(&EngineDescribed { tools })?))
+    Ok(Called::Output(to_bytes(&EngineSheets { tools })?))
 }
 
 /// `sheet` as `describe_engine` shows it.
-fn tool_described(sheet: ToolSheet) -> Result<ToolDescribed, JsonError> {
+fn json_sheet(sheet: ToolSheet) -> Result<JsonSheet, JsonError> {
     let input = schema_json(&sheet.input)?;
     let output = schema_json(&sheet.output)?;
     let ToolSheet { name, description, .. } = sheet;
 
-    Ok(ToolDescribed { name, description, input, output })
+    Ok(JsonSheet { name, description, input, output })
 }
 
 /// `schema` written as JSON Schema.
@@ -376,5 +363,5 @@ fn output_of(answered: Answered<Called>, tool: &str, output: &SchemaNodes) -> Re
         return Ok(refused(format!("the engine's output is not of `{tool}`'s output schema")));
     };
 
-    Ok(Called::Output(to_bytes(&CallToolOutput { output })?))
+    Ok(Called::Output(to_bytes(&EngineAnswer { output })?))
 }

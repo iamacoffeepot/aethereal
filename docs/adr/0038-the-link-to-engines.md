@@ -113,7 +113,7 @@ describe_engine { engine: u32 }                          -> { tools: [{ name, de
 call_tool { engine: u32, tool: String, input: Json }     -> { output: Json }
 ```
 
-- **An engine's id is a `u32` to the agent,** where the link counts in `u64`. A 64-bit integer's JSON form is a string (ADR-0007), and an agent writes the `3` it was listed, not `"3"`. An engine whose id is past `u32::MAX` cannot be named, and is not listed.
+- **An engine's id is a `u32`,** as `Engines` counts them, and an engine's key is that id. A 64-bit integer's JSON form is a string (ADR-0007), and an agent writes the `3` it was listed, not `"3"`. Once every id is given, `Engines` shuts each new connection.
 
 - **`describe_engine` writes each tool's input and output as JSON Schema**, as `tools/list` does for the hub's own (ADR-0037).
 - **`call_tool` turns `input` into bytes of the tool's input schema** (`from_json`, ADR-0007), with the sheet the `Engine` keeps, and the output bytes back into JSON (`to_json`). Input that does not fit the schema is refused before anything is sent. So the engine receives only bytes its schema reads, and the hub needs no kind of the engine's.

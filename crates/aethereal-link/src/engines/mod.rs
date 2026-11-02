@@ -58,7 +58,8 @@ struct Linked {
 const ACCEPTING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 
 /// The hub's end of the link (ADR-0038): listens on its port through `Tcp`, and for each connection accepted, spawns an
-/// [`Engine`] beneath itself, keyed by a count it keeps, which is the engine's id for the agent. An actor asks it to
+/// [`Engine`] beneath itself, keyed by a count it keeps, which is the engine's id for the agent. An id is a `u32`,
+/// whose JSON form is a number an agent writes as it reads it (ADR-0007, ADR-0038), and an engine's key is that id. An actor asks it to
 /// [`ListEngines`] at its typed path, `path::<Engines>(())`, and asks an engine itself at `path::<Engine>(id)`.
 ///
 /// Each engine tells it the name it gave and how many tools it holds as they change, so its list is answered at once,
@@ -70,8 +71,8 @@ pub struct Engines {
     port: Port,
     accepting: Streams<Accepting, ()>,
     /// Each engine linked, by its id.
-    linked: BTreeMap<u64, Linked>,
-    next: u64,
+    linked: BTreeMap<u32, Linked>,
+    next: u32,
 }
 
 impl Engines {
@@ -86,7 +87,7 @@ impl Engines {
 
     /// The engine of id `engine`: none when no such engine is linked.
     #[must_use]
-    pub fn engine(&self, engine: u64) -> Option<ActorRef<Engine>> {
+    pub fn engine(&self, engine: u32) -> Option<ActorRef<Engine>> {
         self.linked.get(&engine).map(|linked| linked.engine)
     }
 }
@@ -180,8 +181,13 @@ impl Handles<Part<Accepting>> for Engines {
         let config =
             EngineConfig { connection, most_calls: self.settings.most_calls, most_bytes: self.settings.most_bytes };
         let id = self.next;
-        self.next += 1;
-        let Ok(engine) = turn.spawn::<Engine>(&id, config) else {
+        let Some(following) = id.checked_add(1) else {
+            // Every id has been given: no engine links again.
+            turn.to(connection).send(&Shut)?;
+            return Ok(());
+        };
+        self.next = following;
+        let Ok(engine) = turn.spawn::<Engine>(&u64::from(id), config) else {
             turn.to(connection).send(&Shut)?;
             return Ok(());
         };

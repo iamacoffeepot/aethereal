@@ -981,7 +981,7 @@ fn write_tool_writes_a_save_over_mcp_that_read_file_reads_back() -> Result<(), U
 
     let cases = [
         ("Assets", "a.txt", "read-only"),
-        ("Save", "../a.txt", "no path"),
+        ("Save", "../a.txt", "file path does not conform"),
         ("Save", "slots/game.sav/inner.sav", "could not be written"),
     ];
     for (namespace, path, says) in cases {
