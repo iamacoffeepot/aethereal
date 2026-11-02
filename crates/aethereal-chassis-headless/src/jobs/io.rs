@@ -1,6 +1,7 @@
-//! The native host's runner for waiting: one thread that polls each job it holds whenever it is woken, and the timer
-//! those jobs wait on (ADR-0018).
+//! The native host's runner for waiting: one thread that polls each job it holds whenever it is woken, the timer those
+//! jobs wait on, and the poller it sleeps in (ADR-0018, ADR-0033).
 
+use super::poller::{Poller, Sleep};
 use crate::Monotonic;
 use aethereal_actor::{Driven, Fault, JobId, JobType, Services, Time, Timer};
 use aethereal_data::{Kind, KindId};
@@ -11,17 +12,16 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
-use std::thread::{self, JoinHandle, Thread};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-/// One thread that runs the jobs that wait, so a job waiting on time holds no thread a computation could use. Each is
-/// polled when it is handed out and whenever its waker wakes, and the thread parks until the next is woken or the
-/// next time a job waits for comes.
+/// One thread that runs the jobs that wait, so a job waiting on time or a socket holds no thread a computation could
+/// use. Each is polled when it is handed out and whenever its waker wakes, and the thread sleeps in its poller until
+/// the next is woken, a socket a job waits on is ready, or the next time a job waits for comes.
 ///
-/// What it is handed, asked to stop, and woken for comes to it on queues no one waits on.
+/// What it is handed, asked to stop, and woken for comes to it on queues no one waits on, and the poller is notified.
 pub(super) struct Io {
     shared: Arc<Shared>,
-    thread: Thread,
 }
 
 /// What the thread shares with the engine's side, and with the wakers of its jobs.
@@ -33,6 +33,8 @@ struct Shared {
     /// The jobs woken, by their keys.
     woken: Arc<SegQueue<Key>>,
     timer: Arc<Timers>,
+    /// What the thread sleeps in, and what wakes it.
+    poller: Arc<Poller>,
     stopping: AtomicBool,
 }
 
@@ -62,11 +64,11 @@ struct Held {
     waker: Waker,
 }
 
-/// What wakes a job: its key, put on the queue of those woken, and the thread unparked to poll it.
+/// What wakes a job: its key, put on the queue of those woken, and the thread's poller notified, to poll it.
 struct Wakes {
     key: Key,
     woken: Arc<SegQueue<Key>>,
-    thread: Thread,
+    poller: Arc<Poller>,
 }
 
 impl Wake for Wakes {
@@ -76,14 +78,14 @@ impl Wake for Wakes {
 
     fn wake_by_ref(self: &Arc<Self>) {
         self.woken.push(self.key);
-        self.thread.unpark();
+        self.poller.notify();
     }
 }
 
 impl Io {
-    /// The runner of the jobs that wait, its timer on `clock`, its jobs reaching the host's `services`, and its thread,
-    /// to join once it is told to stop.
-    pub(super) fn new(clock: Monotonic, services: Arc<Services>) -> (Self, JoinHandle<()>) {
+    /// The runner of the jobs that wait, its timer on `clock`, its jobs reaching the host's `services`, sleeping in
+    /// `poller`, and its thread, to join once it is told to stop.
+    pub(super) fn new(clock: Monotonic, services: Arc<Services>, poller: Arc<Poller>) -> (Self, JoinHandle<()>) {
         let timer = Arc::new(Timers { clock, asked: SegQueue::new() });
         let shared = Arc::new(Shared {
             services,
@@ -91,6 +93,7 @@ impl Io {
             stopped: SegQueue::new(),
             woken: Arc::new(SegQueue::new()),
             timer,
+            poller,
             stopping: AtomicBool::new(false),
         });
         let running = Arc::clone(&shared);
@@ -100,25 +103,25 @@ impl Io {
             panic!("the host makes a thread for jobs that wait");
         };
 
-        (Self { shared, thread: joined.thread().clone() }, joined)
+        (Self { shared }, joined)
     }
 
     /// Hands it the job `id`, of the type `of`.
     pub(super) fn start(&self, id: JobId, of: JobType, job: Taken) {
         self.shared.handed.push((id, of, job));
-        self.thread.unpark();
+        self.shared.poller.notify();
     }
 
     /// Drops the job `id`, when it holds it: its future is dropped, and it goes unanswered.
     pub(super) fn stop(&self, id: JobId) {
         self.shared.stopped.push(id);
-        self.thread.unpark();
+        self.shared.poller.notify();
     }
 
     /// Tells the thread to stop, dropping the jobs it holds, which go unanswered.
     pub(super) fn end(&self) {
         self.shared.stopping.store(true, Ordering::Release);
-        self.thread.unpark();
+        self.shared.poller.notify();
     }
 }
 
@@ -164,11 +167,11 @@ fn run(shared: &Arc<Shared>) {
         if is_woken {
             continue;
         }
-        // Anything handed, stopped, or woken from now unparks this thread, and then this returns at once.
-        match waits.first_key_value() {
-            Some(((at, _), _)) => thread::park_timeout(Duration::from_nanos(at.nanos().saturating_sub(now.nanos()))),
-            None => thread::park(),
-        }
+        // Anything handed, stopped, or woken from now notifies the poller, and then this returns at once.
+        let sleep = waits.first_key_value().map_or(Sleep::Forever, |((at, _), _)| {
+            Sleep::Within(Duration::from_nanos(at.nanos().saturating_sub(now.nanos())))
+        });
+        shared.poller.sleep(sleep);
     }
 }
 
@@ -177,8 +180,11 @@ fn hold(shared: &Arc<Shared>, held: &mut HashMap<Key, Held>, id: JobId, of: JobT
     let Taken { bytes, lent, limit, finish } = job;
     let timer: Arc<dyn Timer> = Arc::clone(&shared.timer) as Arc<dyn Timer>;
     let running = of.drive(bytes, lent, limit, timer, Arc::clone(&shared.services));
-    let waker =
-        Waker::from(Arc::new(Wakes { key: key(id), woken: Arc::clone(&shared.woken), thread: thread::current() }));
+    let waker = Waker::from(Arc::new(Wakes {
+        key: key(id),
+        woken: Arc::clone(&shared.woken),
+        poller: Arc::clone(&shared.poller),
+    }));
     held.insert(key(id), Held { running, finish, waker });
     shared.woken.push(key(id));
 }

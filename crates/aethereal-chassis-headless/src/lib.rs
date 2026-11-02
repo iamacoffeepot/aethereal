@@ -27,7 +27,7 @@ mod waiting;
 
 pub use clock::Monotonic;
 pub use files::{Directories, FileRoots};
-pub use jobs::Runners;
+pub use jobs::{Poller, Runners};
 
 use aethereal_actor::Time;
 #[cfg(feature = "harness")]

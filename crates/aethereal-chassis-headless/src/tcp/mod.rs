@@ -1,10 +1,10 @@
 //! The TCP capability on the native host: its dialer, names looked up and connected to on threads of its own, and its
-//! bootstrap (ADR-0033, ADR-0034).
+//! bootstrap, which serves the dialer and the host's poller (ADR-0033, ADR-0034).
 
 #[cfg(test)]
 mod tests;
 
-use crate::Headless;
+use crate::{Headless, Poller};
 use aethereal_actor::Service;
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
 use aethereal_tcp::{Dialer, Dialing, Tcp, TcpSettings, Undialed};
@@ -115,8 +115,9 @@ impl Dialer for Dialers {
     }
 }
 
-/// The TCP capability on the native host: its dials on threads of the host's own, served into the services its runners
-/// hand every job (ADR-0034).
+/// The TCP capability on the native host: its dials on threads of the host's own, and its waits for sockets in the
+/// poller its thread for waiting sleeps in, each served into the services its runners hand every job (ADR-0034). A
+/// host with no system poller serves no `Readiness`.
 impl Bootstrap<Headless> for Tcp {
     const SECTION: &'static str = "tcp";
     type Settings = TcpSettings;
@@ -129,6 +130,10 @@ impl Bootstrap<Headless> for Tcp {
         cx: &mut Bootstrapping<'_, Headless, Self>,
     ) -> Result<(), Unbuilt> {
         cx.serve(Service::<dyn Dialer>::of(Arc::new(Dialers::of(&settings))));
+        if Poller::WATCHES_SOCKETS {
+            let readiness = cx.host().readiness();
+            cx.serve(readiness);
+        }
         cx.begin(&(), settings.config())
     }
 }

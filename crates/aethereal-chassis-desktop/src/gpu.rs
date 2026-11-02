@@ -10,6 +10,7 @@ use aethereal_actor::Service;
 use aethereal_chassis_headless::Serving;
 use aethereal_render::Gpu;
 use aethereal_substrate::Unbuilt;
+use aethereal_tcp::Readiness;
 use aethereal_window::{Hosting, Mode, Opening, Surface, WindowFeed, WindowId};
 use core::error::Error;
 use core::fmt;
@@ -157,6 +158,11 @@ impl<'a> Screen<'a> {
     /// Keeps the renderer's end, `drawing`, in place of any kept before.
     pub(crate) fn serve_drawing(&mut self, drawing: Drawing) {
         self.drawing = Served::Served(Box::new(drawing));
+    }
+
+    /// The poller the host's runners will sleep in, as the service that tells a job when a socket is ready (ADR-0033).
+    pub(crate) fn readiness(&self) -> Service<dyn Readiness> {
+        self.runners.readiness()
     }
 
     /// Keeps a service a root's bootstrap served, for the runners the host makes (ADR-0034).
