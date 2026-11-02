@@ -3,6 +3,7 @@
 
 use super::{Interests, Report, Sleep};
 use core::ffi::c_int;
+use core::ptr;
 use std::io;
 
 /// How many reports one wait takes at the most: the rest wait for the next.
@@ -53,7 +54,7 @@ impl System {
         let is_wanted = wanted.readable || wanted.writable;
         if !is_wanted {
             // SAFETY: the instance is open; a socket not registered is refused, which is no failure here.
-            let _ = unsafe { libc::epoll_ctl(self.epoll, libc::EPOLL_CTL_DEL, socket, core::ptr::null_mut()) };
+            let _ = unsafe { libc::epoll_ctl(self.epoll, libc::EPOLL_CTL_DEL, socket, ptr::null_mut()) };
             return Ok(());
         }
         let readable = if wanted.readable {
