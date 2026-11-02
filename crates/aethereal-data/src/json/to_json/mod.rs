@@ -5,7 +5,7 @@ mod fields;
 mod tests;
 
 use super::layout::At;
-use super::{JsonError, JsonStep, escape, float, hex, integer, key};
+use super::{JsonError, JsonStep, escape, float, hex, integer, key, text};
 use crate::plain::{read_count, take_bytes};
 use crate::{Budget, DecodeError, Float, Integer, SchemaNode, SchemaNodes};
 use alloc::string::{String, ToString};
@@ -74,6 +74,7 @@ impl Walk<'_, '_> {
             }
             SchemaNode::String => self.string(),
             SchemaNode::Bytes => self.bytes(),
+            SchemaNode::Json => self.json(),
             SchemaNode::Option(child) => {
                 let child_index = *child;
                 self.option(at, child_index)
@@ -157,6 +158,17 @@ impl Walk<'_, '_> {
         self.out.push('"');
         hex::write(data, &mut self.out);
         self.out.push('"');
+        Ok(())
+    }
+
+    /// Writes a JSON value's text as it is, refusing text that is not one JSON value.
+    fn json(&mut self) -> Result<(), JsonError> {
+        let count = read_count(&mut self.input)?;
+        let length = count as usize;
+        let data = take_bytes(&mut self.input, length)?;
+        let value = from_utf8(data).map_err(|_| DecodeError::InvalidUtf8)?;
+        text::check(value, self.budget)?;
+        self.out.push_str(value);
         Ok(())
     }
 

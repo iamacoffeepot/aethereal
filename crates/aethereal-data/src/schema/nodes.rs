@@ -25,18 +25,34 @@ pub enum SchemaNode {
     Bytes,
     Option(u32),
     Sequence(u32),
-    Array { element: u32, length: u32 },
-    Map { key: u32, value: u32 },
-    Struct { name: String, fields: Vec<FieldNode> },
-    Tuple { elements: Vec<u32> },
-    Enum { name: String, variants: Vec<VariantNode> },
+    Array {
+        element: u32,
+        length: u32,
+    },
+    Map {
+        key: u32,
+        value: u32,
+    },
+    Struct {
+        name: String,
+        fields: Vec<FieldNode>,
+    },
+    Tuple {
+        elements: Vec<u32>,
+    },
+    Enum {
+        name: String,
+        variants: Vec<VariantNode>,
+    },
+    /// Last, so the variants before it keep their selectors (ADR-0038).
+    Json,
 }
 
 impl SchemaNode {
     /// Every index this node names.
     fn children(&self) -> Vec<u32> {
         match self {
-            Self::Boolean | Self::Integer(_) | Self::Float(_) | Self::String | Self::Bytes => Vec::new(),
+            Self::Boolean | Self::Integer(_) | Self::Float(_) | Self::String | Self::Bytes | Self::Json => Vec::new(),
             Self::Option(child) | Self::Sequence(child) => Vec::from([*child]),
             Self::Array { element, .. } => Vec::from([*element]),
             Self::Map { key, value } => Vec::from([*key, *value]),
@@ -234,6 +250,7 @@ fn node_of(shape: &Shape, earlier: &mut Vec<SchemaNode>) -> SchemaNode {
         Shape::Float(kind) => SchemaNode::Float(kind),
         Shape::String => SchemaNode::String,
         Shape::Bytes => SchemaNode::Bytes,
+        Shape::Json => SchemaNode::Json,
         Shape::Option(inner) => {
             let child = intern(inner, earlier);
             SchemaNode::Option(child)
@@ -396,6 +413,7 @@ fn is_key_shape(nodes: &[SchemaNode], mut index: u32) -> bool {
             }
             SchemaNode::Boolean
             | SchemaNode::Float(_)
+            | SchemaNode::Json
             | SchemaNode::Option(_)
             | SchemaNode::Sequence(_)
             | SchemaNode::Map { .. }

@@ -2,7 +2,7 @@
 
 use super::from_json;
 use crate::json::rows::rows;
-use crate::{Budget, DecodeError, JsonFault, JsonForm, Plain, Schema, SchemaNodes, TextFault};
+use crate::{Budget, DecodeError, Json, JsonFault, JsonForm, Plain, Schema, SchemaNodes, TextFault, from_bytes};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -347,4 +347,27 @@ fn empty_budget_refuses_any_text() {
     assert!(matches!(refused, Err(JsonFault::Decode(DecodeError::BudgetExceeded { .. }))));
     let text = "1".to_string();
     let _ = text;
+}
+
+#[test]
+fn json_takes_any_value_and_keeps_it_compact() {
+    // Catches a reader that takes only some forms of value where any is a JSON value, or keeps whitespace and input
+    // member order, which makes one value's bytes differ by how it was typed.
+    let schema = SchemaNodes::of(&<Json as Schema>::SHAPE);
+    let samples = [
+        ("null", "null"),
+        (" 7 ", "7"),
+        ("\"t\\u0041\"", "\"tA\""),
+        ("[ 1 , { } ]", "[1,{}]"),
+        ("{ \"z\" : { \"y\" : [ ] } , \"a\" : false }", "{\"a\":false,\"z\":{\"y\":[]}}"),
+    ];
+    for (typed, kept) in samples {
+        let mut budget = Budget::new(1024);
+        let Ok(bytes) = from_json(&schema, typed, &mut budget) else {
+            panic!("`{typed}` is a JSON value");
+        };
+        let mut budget = Budget::new(1024);
+        let read = from_bytes::<Json>(&bytes, &mut budget).map(|value| String::from(value.as_str()));
+        assert_eq!(read, Ok(String::from(kept)), "`{typed}`");
+    }
 }

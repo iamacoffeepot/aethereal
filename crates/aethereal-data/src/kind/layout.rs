@@ -16,6 +16,7 @@ const MAP: u8 = 8;
 const STRUCT: u8 = 9;
 const TUPLE: u8 = 10;
 const ENUM: u8 = 11;
+const JSON: u8 = 12;
 
 /// The tag byte of an integer width: `0` to `7` for `U8`, `U16`, `U32`, `U64`, `I8`, `I16`, `I32`, `I64`.
 pub const fn integer_code(kind: Integer) -> u8 {
@@ -47,6 +48,7 @@ pub(super) const fn shape_layout(shape: &Shape) -> u64 {
         Shape::Float(kind) => Fnv::new().byte(FLOAT).byte(float_code(kind)).finish(),
         Shape::String => Fnv::new().byte(STRING).finish(),
         Shape::Bytes => Fnv::new().byte(BYTES).finish(),
+        Shape::Json => Fnv::new().byte(JSON).finish(),
         Shape::Option(inner) => Fnv::new().byte(OPTION).hash(shape_layout(inner)).finish(),
         Shape::Sequence(inner) => Fnv::new().byte(SEQUENCE).hash(shape_layout(inner)).finish(),
         Shape::Array { element, length } => Fnv::new().byte(ARRAY).hash(shape_layout(element)).number(length).finish(),
@@ -116,6 +118,7 @@ fn node_layout(node: &SchemaNode, earlier: &[u64]) -> u64 {
         SchemaNode::Float(kind) => Fnv::new().byte(FLOAT).byte(float_code(*kind)).finish(),
         SchemaNode::String => Fnv::new().byte(STRING).finish(),
         SchemaNode::Bytes => Fnv::new().byte(BYTES).finish(),
+        SchemaNode::Json => Fnv::new().byte(JSON).finish(),
         SchemaNode::Option(child) => Fnv::new().byte(OPTION).hash(hash_at(earlier, *child)).finish(),
         SchemaNode::Sequence(child) => Fnv::new().byte(SEQUENCE).hash(hash_at(earlier, *child)).finish(),
         SchemaNode::Array { element, length } => {
@@ -189,6 +192,16 @@ mod tests {
         assert_eq!(nodes_layout(&SchemaNodes::of(&Path::SHAPE)), shape_layout(&Path::SHAPE));
         assert_eq!(nodes_layout(&SchemaNodes::of(&Command::SHAPE)), shape_layout(&Command::SHAPE));
         assert_eq!(nodes_layout(&SchemaNodes::of(&Ledger::SHAPE)), shape_layout(&Ledger::SHAPE));
+    }
+
+    #[test]
+    fn json_and_string_share_no_layout() {
+        // Catches a JSON value hashed with the string tag: their bytes agree, but a kind that changes a field from one
+        // to the other is a different kind (ADR-0038).
+        let json = shape_layout(&Shape::Json);
+        let string = shape_layout(&Shape::String);
+        assert_ne!(json, string);
+        assert_eq!(nodes_layout(&SchemaNodes::of(&Shape::Json)), json);
     }
 
     #[test]

@@ -50,7 +50,7 @@ impl<'schema> At<'schema> {
         let mut current = self;
         loop {
             match current.node {
-                SchemaNode::Option(_) => {
+                SchemaNode::Option(_) | SchemaNode::Json => {
                     return Ok(true);
                 }
                 SchemaNode::Struct { fields, .. } => {

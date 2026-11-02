@@ -50,6 +50,8 @@ pub enum Shape {
     String,
     /// A count, then that many bytes (ADR-0002).
     Bytes,
+    /// A JSON value, carried as its text: a string's bytes, a count then that many bytes of UTF-8 (ADR-0038).
+    Json,
     /// One byte, `0` or `1`; then the value if `1` (ADR-0002).
     Option(&'static Self),
     /// A count, then that many elements (ADR-0002).

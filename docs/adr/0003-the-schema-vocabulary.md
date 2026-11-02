@@ -50,6 +50,8 @@ pub enum Fields {
 }
 ```
 
+`Json`, a JSON value carried as its text, was added to the vocabulary by ADR-0038.
+
 A struct with unnamed fields (`struct Pair(u32, u32)`) is `Struct` with fields named by position, `"0"` and `"1"`. A variant with no fields is `Unnamed(&[])`.
 
 A `Map`'s key is one of the key shapes ADR-0002 lists: an integer, a string, bytes, an array of bytes, or a struct of exactly one such field. A schema with any other key is not a schema.

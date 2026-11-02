@@ -100,6 +100,8 @@ A shape's **layout hash** is the hash of one tag byte followed by the shape's pa
 | Tuple | `10` | the element count, then each element's layout hash in order |
 | Enum | `11` | the variant count, then for each variant in declared order: its selector, its field count, and each field's layout hash |
 
+`Json` was added by ADR-0038 with the tag `12` and nothing after it, so it never hashes as String does.
+
 Whether a struct's or a variant's fields are named or unnamed is a matter of names, and does not appear.
 
 **A kind id is the hash of the name's UTF-8 bytes followed by the layout hash of its schema,** eight bytes little-endian.

@@ -7,9 +7,10 @@ mod tests;
 use super::layout::At;
 use super::reader;
 use super::tree::{Tree, Value};
-use super::{JsonError, JsonFault, JsonForm, JsonStep, float, hex, integer, key};
-use crate::plain::write_count;
+use super::{JsonError, JsonFault, JsonForm, JsonStep, compact, float, hex, integer, key};
+use crate::plain::{write_count, write_text};
 use crate::{Budget, Float, Integer, SchemaNode, SchemaNodes};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// The walk from JSON to bytes.
@@ -57,6 +58,7 @@ impl Walk<'_, '_> {
             }
             SchemaNode::String => Self::string(value, out),
             SchemaNode::Bytes => Self::bytes(value, out),
+            SchemaNode::Json => self.json(value, out),
             SchemaNode::Option(child) => {
                 let child_index = *child;
                 self.option(at, child_index, value, out)
@@ -146,6 +148,14 @@ impl Walk<'_, '_> {
         hex::read(text, &mut data)?;
         write_count(out, data.len())?;
         out.extend_from_slice(&data);
+        Ok(())
+    }
+
+    /// Reads any JSON value as its text, written compact, in a string's bytes.
+    fn json(&self, value: &Value<'_>, out: &mut Vec<u8>) -> Result<(), JsonError> {
+        let mut text = String::new();
+        compact::write(self.tree, value, &mut text);
+        write_text(out, &text)?;
         Ok(())
     }
 

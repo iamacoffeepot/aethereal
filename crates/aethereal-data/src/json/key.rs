@@ -82,6 +82,7 @@ pub(super) fn shape(mut at: At<'_>) -> Result<KeyShape, JsonError> {
             }
             SchemaNode::Boolean
             | SchemaNode::Float(_)
+            | SchemaNode::Json
             | SchemaNode::Option(_)
             | SchemaNode::Sequence(_)
             | SchemaNode::Map { .. }
