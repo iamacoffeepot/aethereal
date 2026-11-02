@@ -46,7 +46,7 @@ agent ── mint_token {} ──> Engines ── answers a token, and the argum
 - **`LinkSettings` gains `token`,** read from `--hub-token`, required: an engine started without one fails as it begins, naming the setting.
 - **A `Link` ends its program when its connection ends,** when its dial is refused, or when the hub refuses its `Hello` (`turn.quit`, ADR-0020). Its token is spent, and a hub that restarted has none of its own to take, so it could never link again. One rule holds for every engine, spawned or started outside the hub: no engine outlives its link, on every host, with no signal from a parent that may have died first.
 - **This replaces ADR-0038's redial.** `Link` dials once, as it begins; its `Sleep`, its waits between dials, and `redial_millis` go. ADR-0038's links with no token, and the token its "Who dialed" planned for spawned engines alone, are replaced by this section.
-- `Up::Hello` is `{ revision, name, token }`, and `REVISION` is `2`.
+- `Up::Hello` is `{ revision, name, token }`, and `REVISION` stays `1`: no build that speaks the first link's frames is kept anywhere, so there is nothing to tell apart.
 
 ### Processes
 
@@ -142,7 +142,7 @@ list_engines {}                                   -> { engines: [{ engine, name,
 - **The hub knows every connection,** and every engine follows one rule: it links once, with a token, and ends when its link ends. An engine started by hand needs a token first, and is started again with a fresh one after its hub goes.
 - **`Link` loses its redial,** which a spent token could not use.
 - **`Processes` can start any program a program asks it to.** A hub lists it, and only `Engines` asks it there; an engine has no reason to list it.
-- **`Hello` changes,** so an engine and a hub of different revisions refuse each other (ADR-0038), as they should.
+- **`Hello` changes without a new revision,** since nothing outside this repository speaks the first. From here the store keeps builds, so an engine checked in before a change can meet a hub built after it, and a change an older side would misread takes the next revision (ADR-0038).
 - **ADR-0039's names lose the 64-hex-digit spelling.**
 - **Each spawn copies its binary.** Copies go as each engine ends, and a crash leaves them in `running/`, which the store clears as it begins.
 

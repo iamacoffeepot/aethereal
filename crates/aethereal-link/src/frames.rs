@@ -5,8 +5,8 @@ use aethereal_data::{Budget, DecodeError, EncodeError, Plain, from_bytes, to_byt
 use aethereal_tools::{Called, ToolSheet};
 
 /// The revision of the link this crate speaks. A change to [`Up`] or [`Down`] that an older side would misread is the
-/// next: `2` brought the token in [`Up::Hello`] (ADR-0040).
-pub const REVISION: u32 = 2;
+/// next.
+pub const REVISION: u32 = 1;
 
 /// The port a hub listens for engines on, and an engine dials, unless set otherwise.
 pub const PORT: u16 = 8892;
