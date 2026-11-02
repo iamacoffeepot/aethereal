@@ -1,6 +1,8 @@
-//! What the hub's tools ask of its engines, and what an engine tells its root (ADR-0038).
+//! What the hub's tools ask of its engines, and what an engine tells its root (ADR-0038, ADR-0040).
 
 use aethereal_data::Plain;
+use aethereal_process::ExitStatus;
+use aethereal_store::{Binary, StoreHash};
 use aethereal_tools::ToolSheet;
 
 /// Asks `Engines`, at `path::<Engines>(())`, for every engine linked that has said `Hello`, answered with an
@@ -9,21 +11,44 @@ use aethereal_tools::ToolSheet;
 #[kind(name = "aether.link.list_engines")]
 pub struct ListEngines;
 
-/// Every engine linked that has said `Hello`, in the order of their ids.
+/// Every engine linked that has said `Hello`, in the order of their ids, and the last engines the hub spawned that
+/// have ended, the latest last (ADR-0040).
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.engine_list")]
 pub struct EngineList {
     pub engines: Vec<EngineListing>,
+    pub exited: Vec<ExitedEngine>,
 }
 
-/// One engine linked: its id, which is its `Engine`'s key, the name it gave, which two engines may share, and how many
-/// tools it holds.
+/// One engine linked: its id, which is its `Engine`'s key, the name it gave, which two engines may share, how many
+/// tools it holds, and where it came from.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.engine_listing")]
 pub struct EngineListing {
     pub engine: u32,
     pub name: String,
     pub tools: u32,
+    pub origin: Origin,
+}
+
+/// Where an engine linked came from (ADR-0040).
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.link.origin")]
+pub enum Origin {
+    /// The hub spawned it from its store: the binary as the spawn named it, and the hash of the build it runs.
+    Spawned { binary: Binary, hash: StoreHash },
+    /// It was started outside the hub, with a token from `MintToken`.
+    External,
+}
+
+/// An engine the hub spawned that has ended: the binary as its spawn named it, how its program exited, and the last
+/// bytes of its stderr.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.link.exited_engine")]
+pub struct ExitedEngine {
+    pub binary: Binary,
+    pub status: ExitStatus,
+    pub stderr: String,
 }
 
 /// Asks an engine, at `path::<Engine>(engine)`, for its tools, answered with [`Described`]. An engine that has gone is

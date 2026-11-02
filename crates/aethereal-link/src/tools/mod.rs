@@ -1,11 +1,14 @@
-//! The hub's tools: the agent lists engines, reads an engine's tools, calls one, and mints a token for an engine it
-//! starts itself (ADR-0038, ADR-0040).
+//! The hub's tools: the agent lists engines, reads an engine's tools, calls one, mints a token for an engine it starts
+//! itself, spawns an engine from the store, and terminates one (ADR-0038, ADR-0040).
 
 mod kinds;
 
-pub use kinds::{EngineAnswer, EngineCall, EngineId, EngineSheets, JsonSheet};
+pub use kinds::{EngineAnswer, EngineCall, EngineId, EngineSheets, JsonSheet, SpawnedEngine};
 
-use crate::{CallEngine, DescribeEngine, Described, Engine, EngineList, Engines, ListEngines, MintToken, Minted};
+use crate::{
+    CallEngine, DescribeEngine, Described, Engine, EngineList, Engines, ListEngines, MintToken, Minted, Spawn,
+    SpawnEngine, TerminateEngine, Terminated,
+};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
     ProtocolRef, ToSender, Turn, path,
@@ -13,7 +16,8 @@ use aethereal_actor::{
 use aethereal_data::{
     Bound, Budget, Json, JsonError, Plain, Schema, SchemaNodes, from_bytes, from_json, json_schema, to_bytes, to_json,
 };
-use aethereal_tools::{Call, Called, Tool, ToolSheet, Tooling};
+use aethereal_process::ExitStatus;
+use aethereal_tools::{Call, Called, Done, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 
 /// The tool that lists engines.
@@ -24,6 +28,10 @@ const DESCRIBE_ENGINE: &str = "describe_engine";
 const CALL_TOOL: &str = "call_tool";
 /// The tool that mints a token for an engine started outside the hub.
 const MINT_TOKEN: &str = "mint_token";
+/// The tool that spawns an engine from the store.
+const SPAWN_ENGINE: &str = "spawn_engine";
+/// The tool that terminates an engine.
+const TERMINATE_ENGINE: &str = "terminate_engine";
 
 /// The most bytes one decode of an input, or one walk between JSON and bytes or a schema and JSON Schema, may take.
 const WALK_BYTES: usize = 16 * 1024 * 1024;
@@ -53,6 +61,10 @@ enum Pending {
     Calling { held: Held<Called>, tool: String, output: SchemaNodes },
     /// `mint_token`: `Engines` is asked for a token.
     Minting { held: Held<Called> },
+    /// `spawn_engine`: `Engines` is asked to spawn an engine.
+    Spawning { held: Held<Called> },
+    /// `terminate_engine`: `Engines` is asked to terminate engine `engine`.
+    Terminating { held: Held<Called>, engine: u32 },
 }
 
 impl Pending {
@@ -63,7 +75,9 @@ impl Pending {
             | Self::Describing { held, .. }
             | Self::Finding { held, .. }
             | Self::Calling { held, .. }
-            | Self::Minting { held } => held,
+            | Self::Minting { held }
+            | Self::Spawning { held }
+            | Self::Terminating { held, .. } => held,
         }
     }
 }
@@ -74,6 +88,8 @@ enum Order {
     Describe { engine: u32 },
     Call(EngineCall),
     Mint,
+    Spawn(SpawnEngine),
+    Terminate(TerminateEngine),
 }
 
 /// A call of an engine's tool, ready to ask: the set it was converted with, the input's bytes, and the output schema.
@@ -89,10 +105,14 @@ struct Converted {
 /// and converts the bytes it answers back to JSON by the tool's output schema. Input that is not of the schema is
 /// refused before anything is sent, so an engine receives only bytes its schema reads. `mint_token` asks `Engines`
 /// for a token, and answers it with the arguments to start an engine with, for an engine the agent starts itself.
+/// `spawn_engine` asks `Engines` to spawn an engine from the store, and answers its id once it has linked, or refuses
+/// saying how the spawn failed; `terminate_engine` asks `Engines` to terminate an engine, spawned or not.
 ///
 /// An engine's id is a `u32`, as `Engines` counts them: a 64-bit integer's JSON form is a string (ADR-0007), and an
 /// agent writes the `3` it was shown. `list_engines` takes and answers the link's own `ListEngines` and `EngineList`,
-/// and `mint_token` its `MintToken` and `Minted`, whose token JSON writes as 32 hexadecimal digits.
+/// `mint_token` its `MintToken` and `Minted`, whose token JSON writes as 32 hexadecimal digits, `spawn_engine` takes
+/// its `SpawnEngine`, whose binary is one string, a hash when it spells one and a name otherwise, and
+/// `terminate_engine` takes its `TerminateEngine`. Each case short of done is refused with a reason the agent reads.
 ///
 /// `describe_engine` does not show the set's revision. The agent never passes one: `call_tool` reads the engine's
 /// latest set when it is called, and converts by it.
@@ -111,8 +131,15 @@ impl ChildOf for EngineTools {
 impl Actor for EngineTools {
     type Config = EngineToolsConfig;
     type Key = ();
-    type Handles =
-        (Call, Answer<EngineList, Asking>, Answer<Described, Asking>, Answer<Called, Asking>, Answer<Minted, Asking>);
+    type Handles = (
+        Call,
+        Answer<EngineList, Asking>,
+        Answer<Described, Asking>,
+        Answer<Called, Asking>,
+        Answer<Minted, Asking>,
+        Answer<Spawn, Asking>,
+        Answer<Terminated, Asking>,
+    );
     type BeginSends = ();
     type EndSends = ();
 
@@ -131,7 +158,10 @@ impl Tool for EngineTools {
             ToolSheet {
                 name: String::from(LIST_ENGINES),
                 description: String::from(
-                    "Lists the engines linked to this hub: each one's id, name, and count of tools.",
+                    "Lists the engines linked to this hub: each one's id, name, count of tools, and origin, the \
+                     binary and hash it was spawned from or `External` for one started by hand. Also lists the last \
+                     engines the hub spawned that have ended, each with its binary, exit status, and the end of its \
+                     stderr.",
                 ),
                 input: SchemaNodes::of(&ListEngines::SHAPE),
                 output: SchemaNodes::of(&EngineList::SHAPE),
@@ -163,6 +193,27 @@ impl Tool for EngineTools {
                 input: SchemaNodes::of(&MintToken::SHAPE),
                 output: SchemaNodes::of(&Minted::SHAPE),
             },
+            ToolSheet {
+                name: String::from(SPAWN_ENGINE),
+                description: String::from(
+                    "Spawns an engine from a binary checked into the store, named by a name or by its 64-digit hash, \
+                     started with `args` and then the arguments that link it to this hub. Answers the engine's id \
+                     once it has linked; refused if nothing is stored by that binary, the hub would not start it, it \
+                     exited before linking (with its exit status and the end of its stderr), or it did not link in \
+                     time, when it is stopped.",
+                ),
+                input: SchemaNodes::of(&SpawnEngine::SHAPE),
+                output: SchemaNodes::of(&SpawnedEngine::SHAPE),
+            },
+            ToolSheet {
+                name: String::from(TERMINATE_ENGINE),
+                description: String::from(
+                    "Terminates an engine: a spawned engine's process is stopped, and an engine started by hand has \
+                     its link shut, so it ends. Refused if no engine of that id is linked.",
+                ),
+                input: SchemaNodes::of(&TerminateEngine::SHAPE),
+                output: SchemaNodes::of(&Done::SHAPE),
+            },
         ]
     }
 
@@ -176,6 +227,8 @@ impl Handles<Call> for EngineTools {
         Asks<Path<Engines>, ListEngines, Asking>,
         Asks<Path<Engine>, DescribeEngine, Asking>,
         Asks<Path<Engines>, MintToken, Asking>,
+        Asks<Path<Engines>, SpawnEngine, Asking>,
+        Asks<Path<Engines>, TerminateEngine, Asking>,
         ToSender<Called>,
     );
 
@@ -208,6 +261,14 @@ impl Handles<Call> for EngineTools {
                 turn.to(path::<Engines>(())).ask(&MintToken, &asking)?;
                 Pending::Minting { held }
             }
+            Order::Spawn(spawn) => {
+                turn.to(path::<Engines>(())).ask(&spawn, &asking)?;
+                Pending::Spawning { held }
+            }
+            Order::Terminate(terminate) => {
+                turn.to(path::<Engines>(())).ask(&terminate, &asking)?;
+                Pending::Terminating { held, engine: terminate.engine }
+            }
         };
         self.calls.insert(asking.number, pending);
 
@@ -233,7 +294,9 @@ impl Handles<Answer<EngineList, Asking>> for EngineTools {
                 other @ (Pending::Describing { .. }
                 | Pending::Finding { .. }
                 | Pending::Calling { .. }
-                | Pending::Minting { .. }),
+                | Pending::Minting { .. }
+                | Pending::Spawning { .. }
+                | Pending::Terminating { .. }),
                 _,
             ) => (other.into_held(), lost()),
         };
@@ -267,9 +330,11 @@ impl Handles<Answer<Described, Asking>> for EngineTools {
                 }
                 Err(refusal) => (held, refusal),
             },
-            other @ (Pending::Listing { .. } | Pending::Calling { .. } | Pending::Minting { .. }) => {
-                (other.into_held(), lost())
-            }
+            other @ (Pending::Listing { .. }
+            | Pending::Calling { .. }
+            | Pending::Minting { .. }
+            | Pending::Spawning { .. }
+            | Pending::Terminating { .. }) => (other.into_held(), lost()),
         };
         turn.answer(held, &called)?;
 
@@ -294,7 +359,9 @@ impl Handles<Answer<Called, Asking>> for EngineTools {
             other @ (Pending::Listing { .. }
             | Pending::Describing { .. }
             | Pending::Finding { .. }
-            | Pending::Minting { .. }) => (other.into_held(), lost()),
+            | Pending::Minting { .. }
+            | Pending::Spawning { .. }
+            | Pending::Terminating { .. }) => (other.into_held(), lost()),
         };
         turn.answer(held, &called)?;
 
@@ -321,7 +388,72 @@ impl Handles<Answer<Minted, Asking>> for EngineTools {
                 other @ (Pending::Listing { .. }
                 | Pending::Describing { .. }
                 | Pending::Finding { .. }
-                | Pending::Calling { .. }),
+                | Pending::Calling { .. }
+                | Pending::Spawning { .. }
+                | Pending::Terminating { .. }),
+                _,
+            ) => (other.into_held(), lost()),
+        };
+        turn.answer(held, &called)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Spawn, Asking>> for EngineTools {
+    type Sends = ();
+
+    /// The spawned engine's id once it has linked, or the refusal saying how the spawn failed.
+    fn handle(
+        &mut self,
+        (answered, Asking { number }): (Answered<Spawn>, Asking),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let Some(pending) = self.calls.remove(&number) else {
+            return Ok(());
+        };
+        let (held, called) = match pending {
+            Pending::Spawning { held } => (held, spawned(answered)?),
+            other @ (Pending::Listing { .. }
+            | Pending::Describing { .. }
+            | Pending::Finding { .. }
+            | Pending::Calling { .. }
+            | Pending::Minting { .. }
+            | Pending::Terminating { .. }) => (other.into_held(), lost()),
+        };
+        turn.answer(held, &called)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Terminated, Asking>> for EngineTools {
+    type Sends = ();
+
+    /// That the engine is being stopped, or the refusal of an id no engine is linked under.
+    fn handle(
+        &mut self,
+        (answered, Asking { number }): (Answered<Terminated>, Asking),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let Some(pending) = self.calls.remove(&number) else {
+            return Ok(());
+        };
+        let (held, called) = match (pending, answered) {
+            (Pending::Terminating { held, .. }, Answered::Yes(Terminated::Stopping)) => {
+                (held, Called::Output(to_bytes(&Done {})?))
+            }
+            (Pending::Terminating { held, engine }, Answered::Yes(Terminated::NotLinked)) => {
+                (held, refused(format!("no engine {engine} is linked")))
+            }
+            (Pending::Terminating { held, .. }, Answered::No(_)) => (held, refused("`Engines` did not answer")),
+            (
+                other @ (Pending::Listing { .. }
+                | Pending::Describing { .. }
+                | Pending::Finding { .. }
+                | Pending::Calling { .. }
+                | Pending::Minting { .. }
+                | Pending::Spawning { .. }),
                 _,
             ) => (other.into_held(), lost()),
         };
@@ -351,10 +483,37 @@ fn order(call: &Call) -> Result<Order, Called> {
         }
         CALL_TOOL => from_bytes::<EngineCall>(&call.input, budget).map(Order::Call),
         MINT_TOKEN => from_bytes::<MintToken>(&call.input, budget).map(|_| Order::Mint),
+        SPAWN_ENGINE => from_bytes(&call.input, budget).map(Order::Spawn),
+        TERMINATE_ENGINE => from_bytes(&call.input, budget).map(Order::Terminate),
         other => return Err(refused(format!("there is no tool `{other}` here"))),
     };
 
     read.map_err(|fault| refused(format!("the input of `{}`: {fault}", call.tool)))
+}
+
+/// What `spawn_engine` answers of what the spawn came to: the engine's id once it has linked, and otherwise a refusal
+/// saying how it failed.
+fn spawned(answered: Answered<Spawn>) -> Result<Called, Fault> {
+    let called = match answered {
+        Answered::Yes(Spawn::Linked { engine }) => Called::Output(to_bytes(&SpawnedEngine { engine })?),
+        Answered::Yes(Spawn::NotStored) => refused("no binary of that name or hash is stored"),
+        Answered::Yes(Spawn::Refused) => refused("the hub would not start the binary"),
+        Answered::Yes(Spawn::Exited { status, stderr }) => {
+            refused(format!("the engine exited before it linked, {}; its stderr ended: {stderr}", ended(status)))
+        }
+        Answered::Yes(Spawn::Unlinked) => refused("the engine did not link in time, and was stopped"),
+        Answered::No(_) => refused("`Engines` did not answer"),
+    };
+
+    Ok(called)
+}
+
+/// How a program ended, as a refusal says it.
+fn ended(status: ExitStatus) -> String {
+    match status {
+        ExitStatus::Code(code) => format!("with code {code}"),
+        ExitStatus::Signal(signal) => format!("ended by signal {signal}"),
+    }
 }
 
 /// What `list_engines` answers of `list`: the list itself.

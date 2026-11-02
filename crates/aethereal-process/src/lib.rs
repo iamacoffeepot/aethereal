@@ -7,7 +7,7 @@
 //! exit, tells that actor [`Exited`] with its status and the tail of its
 //! stderr, and ends. A process is asked to [`Stop`]: it signals its program's
 //! group to end, and kills the group if it has not within the setting
-//! `stop_within_millis`. It stops its program too when the actor it tells
+//! `kill_after_millis`. It stops its program too when the actor it tells
 //! ends, so no program outlives the actor that wanted it.
 //!
 //! What starts, waits on, and signals a program is the host's [`Launcher`],

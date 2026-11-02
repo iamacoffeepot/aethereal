@@ -70,7 +70,7 @@ pub struct Stop;                                                   // asks a pro
 ```
 
 - **A process is an actor that owns nothing the engine keeps.** The host's service (`Launcher`, a service of this crate's) starts the program in a process group of its own, with no stdin and its stdout discarded, and keeps the last few kilobytes of its stderr. A job, `Wait`, run by the `Process` as it begins and only by it, answers once the program has exited, with its status and that stderr. The `Process` then tells `Exited` to the starter, and ends. `Start` names the starter, usually its asker, by a reference of the protocol `Exits`, as `Serve` names its handler (ADR-0035), so an actor that cannot take `Exited` cannot start a program.
-- **`Stop` is asked of the `Process`,** which signals its group to end (SIGTERM), runs a `Sleep` for the setting `stop_within_millis`, and kills the group (SIGKILL) if it is still running when the sleep is answered. Either way, `Exited` follows, from `Wait`.
+- **`Stop` is asked of the `Process`,** which signals its group to end (SIGTERM), runs a `Sleep` for the setting `kill_after_millis`, and kills the group (SIGKILL) if it is still running when the sleep is answered. Either way, `Exited` follows, from `Wait`.
 - **A `Process` whose starter ends stops its program.** It watches the starter, as `Tcp`'s root watches who asked it (ADR-0033), so a program never outlives the actor that wanted it.
 - **`Processes` starts any program it is asked to.** It is a capability a program lists, as `Tcp` is; what a hub lets an agent start is `Engines`' rule, below, not this crate's.
 
@@ -113,14 +113,14 @@ pub struct Minted { pub token: [u8; 16], pub args: Vec<String> }   // `args`: --
 
 impl Carries<TerminateEngine> for Engines { type Answers = (Terminated,); }
 pub struct TerminateEngine { pub engine: u32 }
-pub enum Terminated { Stopping, External, NotLinked }
+pub enum Terminated { Stopping, NotLinked }                      // `NotLinked`: no engine of that id is linked
 ```
 
-- **`Engines` spawns a `Spawned` for each `SpawnEngine`,** handing it the held request and a token it mints for it. The `Spawned` asks the store to `Launch`, so the build is held while it lives, then asks `Processes` to `Start` the copy with the agent's arguments and the link's own: `--hub`, `--port`, and `--hub-token`.
+- **`Engines` spawns a `Spawned` for each `SpawnEngine`,** handing it a token it mints for it. `Engines` keeps the held request, as only the actor that holds a request can answer it, and answers it with the `Spawn` the `Spawned` tells it. The `Spawned` asks the store to `Launch`, so the build is held while it lives, then asks `Processes` to `Start` the copy with the agent's arguments and the link's own: `--hub`, `--port`, and `--hub-token`.
 - **The `Hello` that brings its token is its link:** `Engines` tells the `Spawned` its engine's id, and the `Spawned` answers `Linked`.
 - **The agent is answered once the engine is usable:** `Linked` when it has said `Hello`, `Exited` with its status and the tail of its stderr if it ended first, `Unlinked` if it did not link within `link_within_millis` (the process is then stopped), and `NotStored` and `Refused` at once.
-- **A `Spawned` lives as long as its process,** and ends when told `Exited`, so the store's hold and the launch copy go with it. `TerminateEngine` asks the engine's `Spawned` to `Stop` its process.
-- **An engine started outside the hub** links with a token from `MintToken`, whose `args` are what to start it with: `--hub` names the setting `EnginesSettings.host`, where the hub listens. The hub holds no process of it, so `TerminateEngine` answers `External`; the hub can shut its connection, and the engine then ends by the rule above.
+- **A `Spawned` lives as long as its process,** and ends when told `Exited`, so the store's hold and the launch copy go with it. `TerminateEngine` asks the engine's `Spawned` to `Stop` its process, and answers `Stopping`.
+- **An engine started outside the hub** links with a token from `MintToken`, whose `args` are what to start it with: `--hub` names the setting `EnginesSettings.host`, where the hub listens. The hub holds no process of it, so `TerminateEngine` shuts its link and answers `Stopping`, and the engine then ends by the rule above.
 
 ### What the agent sees
 
@@ -129,7 +129,7 @@ pub enum Terminated { Stopping, External, NotLinked }
 ```
 spawn_engine { binary: String, args: [String] }   -> { engine }        // refused with how it failed
 mint_token {}                                     -> { token, args }   // to start an engine by hand
-terminate_engine { engine }                       -> {}
+terminate_engine { engine }                       -> {}                // refused if no engine of that id is linked
 list_engines {}                                   -> { engines: [{ engine, name, tools, origin }], exited: [{ binary, status, stderr }] }
                                                   // origin: { Spawned: { binary, hash } } | "External"
 ```

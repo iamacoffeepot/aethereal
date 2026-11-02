@@ -11,7 +11,7 @@ use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Budget, Json, Plain, Schema, SchemaNodes, from_bytes, json_schema, to_bytes, to_json};
 use aethereal_link::{
     Down, EngineAnswer, EngineCall, EngineId, EngineList, EngineListing, EngineSheets, EngineTools, Engines,
-    EnginesSettings, JsonSheet, Link, LinkSettings, ListEngines, MintToken, Minted, REVISION, Token, Up,
+    EnginesSettings, JsonSheet, Link, LinkSettings, ListEngines, MintToken, Minted, Origin, REVISION, Token, Up,
 };
 use aethereal_substrate::harness::{Asked, Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
@@ -233,14 +233,14 @@ fn hub() -> Result<(Harness<Headless>, u16, ProtocolRef<Tooling>), Unheard> {
     waiting::until(BUDGET, || {
         harness.step();
         let listens = harness.state(engines).is_ok_and(|engines| engines.port().is_some());
-        let holds = harness.state(stand).is_ok_and(|stand| stand.table.len() == 4);
+        let holds = harness.state(stand).is_ok_and(|stand| stand.table.len() == 6);
         listens && holds
     });
     let Some(port) = harness.state(engines)?.port() else {
         panic!("`Engines` listens");
     };
     let Some(worker) = harness.state(stand)?.table.tool("call_tool").map(|held| held.worker) else {
-        panic!("the toolbox offers the hub's four tools, and the holder takes them");
+        panic!("the toolbox offers the hub's six tools, and the holder takes them");
     };
 
     Ok((harness, port, worker))
@@ -339,7 +339,10 @@ fn list_engines_shows_each_engine_by_its_id_name_and_count_of_tools() -> Result<
 
     let listed: EngineList = output(called(&mut harness, worker, "list_engines", &ListEngines)?);
 
-    assert_eq!(listed.engines, vec![EngineListing { engine: 0, name: String::from("scene"), tools: 1 }]);
+    assert_eq!(
+        listed.engines,
+        vec![EngineListing { engine: 0, name: String::from("scene"), tools: 1, origin: Origin::External }]
+    );
 
     Ok(())
 }
@@ -489,7 +492,10 @@ fn mint_token_answers_the_arguments_that_start_an_engine_that_links() -> Result<
         engine.step();
         listed(&mut hub).is_ok_and(|list| list.engines.len() == 1)
     });
-    assert_eq!(listed(&mut hub)?.engines, vec![EngineListing { engine: 0, name: String::from("engine"), tools: 0 }]);
+    assert_eq!(
+        listed(&mut hub)?.engines,
+        vec![EngineListing { engine: 0, name: String::from("engine"), tools: 0, origin: Origin::External }]
+    );
 
     Ok(())
 }

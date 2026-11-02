@@ -29,7 +29,7 @@ pub struct Exited {
 }
 
 /// Asks a process to stop its program: its group is sent SIGTERM, then SIGKILL if it still runs once the setting
-/// `stop_within_millis` has passed. [`Exited`] follows either way. Asking again changes nothing.
+/// `kill_after_millis` has passed. [`Exited`] follows either way. Asking again changes nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.process.stop")]
 pub struct Stop;
@@ -53,7 +53,7 @@ impl Carries<Exited> for Exits {
 pub struct ProcessConfig {
     pub number: u64,
     pub starter: ProtocolRef<Exits>,
-    pub stop_within_millis: u32,
+    pub kill_after_millis: u32,
 }
 
 /// What a process keeps for the sleep that gives its program its time to end: nothing, as it runs one.
@@ -75,13 +75,13 @@ enum Stopping {
 ///
 /// As it begins it watches its starter and waits for its program to exit; once it has, it tells the starter
 /// [`Exited`] and ends. Asked to [`Stop`], or once its starter ends, it signals its program's group to end, and kills
-/// the group if it still runs once `stop_within_millis` has passed.
+/// the group if it still runs once `kill_after_millis` has passed.
 #[derive(Bound)]
 #[kind(name = "aether.process.process")]
 pub struct Process {
     number: u64,
     starter: ProtocolRef<Exits>,
-    stop_within_millis: u32,
+    kill_after_millis: u32,
     stopping: Stopping,
 }
 
@@ -103,7 +103,7 @@ impl Actor for Process {
         Ok(Self {
             number: config.number,
             starter: config.starter,
-            stop_within_millis: config.stop_within_millis,
+            kill_after_millis: config.kill_after_millis,
             stopping: Stopping::Unasked,
         })
     }
@@ -186,7 +186,7 @@ impl Process {
             return Ok(());
         };
         turn.run(&Raise { process: self.number, signal: Signal::Terminate }, &Raising)?;
-        let until = turn.now() + Duration::from_millis(u64::from(self.stop_within_millis));
+        let until = turn.now() + Duration::from_millis(u64::from(self.kill_after_millis));
         self.stopping = Stopping::Asked(turn.run(&Sleep { until }, &Grace)?);
 
         Ok(())
