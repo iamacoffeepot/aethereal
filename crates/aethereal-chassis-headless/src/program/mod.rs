@@ -3,10 +3,11 @@
 #[cfg(test)]
 mod tests;
 
-use crate::{Exit, Headless, Runners};
+use crate::{Exit, Headless, Poller, Runners};
 use aethereal_actor::{Service, Services};
 use aethereal_data::Plain;
 use aethereal_substrate::{Builds, Host, ProgramError, Serves, Settled};
+use aethereal_tcp::Readiness;
 use core::num::NonZeroUsize;
 use core::time::Duration;
 use std::mem;
@@ -32,16 +33,28 @@ impl Default for RunningSettings {
 }
 
 /// What a native host keeps as its program bootstraps, for the runners it makes once its roots have (ADR-0029): the
-/// services its roots serve its jobs, whatever they are (ADR-0034).
+/// services its roots serve its jobs, whatever they are (ADR-0034), and the poller the runners' thread for waiting
+/// sleeps in, which a root may serve its jobs before the runners are made (ADR-0033).
 pub struct Serving {
     services: Services,
+    poller: Arc<Poller>,
 }
 
 impl Serving {
-    /// Nothing served yet.
+    /// Nothing served yet, and a poller with nothing armed.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the host cannot make its poller.
     #[must_use]
     pub fn new() -> Self {
-        Self { services: Services::none() }
+        Self { services: Services::none(), poller: Arc::new(Poller::new()) }
+    }
+
+    /// The poller the runners will sleep in, as the service that tells a job when a socket is ready (ADR-0033).
+    #[must_use]
+    pub fn readiness(&self) -> Service<dyn Readiness> {
+        Service::of(Arc::clone(&self.poller) as Arc<dyn Readiness>)
     }
 
     /// Keeps `service`, which a root's bootstrap served.
@@ -49,10 +62,11 @@ impl Serving {
         self.services = service.added_to(mem::take(&mut self.services));
     }
 
-    /// The runners on the cores an engine on `workers` workers leaves free, their jobs reaching the services served.
+    /// The runners on the cores an engine on `workers` workers leaves free, their jobs reaching the services served,
+    /// their thread for waiting sleeping in the poller.
     #[must_use]
     pub fn runners(self, workers: NonZeroUsize) -> Runners {
-        Runners::beside(workers, Arc::new(self.services))
+        Runners::beside(workers, Arc::new(self.services), self.poller)
     }
 }
 

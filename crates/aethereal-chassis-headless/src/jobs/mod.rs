@@ -2,6 +2,7 @@
 //! thread that takes it (ADR-0018).
 
 mod io;
+mod poller;
 #[cfg(test)]
 mod tests;
 
@@ -10,6 +11,7 @@ use aethereal_actor::{JobId, JobType, Runner, Services};
 use aethereal_substrate::{Inline, Jobs, Taken};
 use crossbeam_queue::SegQueue;
 use io::Io;
+pub use poller::Poller;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -17,7 +19,8 @@ use std::thread::{self, JoinHandle, Thread};
 
 /// The native host's runners (ADR-0018): threads for computing, as many as it is made with, each running a job it
 /// takes by polling it once, as [`Inline`] does; and one thread for waiting, which runs each `Io` job, [`Sleep`] among
-/// them, polling it whenever it is woken, on a timer read from the clock the host's steps are timed by.
+/// them, polling it whenever it is woken, on a timer read from the clock the host's steps are timed by, sleeping in a
+/// [`Poller`] that the sockets its jobs wait on wake (ADR-0033).
 ///
 /// [`Sleep`]: aethereal_actor::Sleep
 ///
@@ -45,13 +48,25 @@ struct Shared {
 }
 
 impl Runners {
-    /// Runners on `threads` threads of their own, their jobs reaching the host's `services` (ADR-0034).
+    /// Runners on `threads` threads of their own, their jobs reaching the host's `services` (ADR-0034), the thread for
+    /// waiting sleeping in a poller of its own.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the host cannot make a thread, or its poller.
+    #[must_use]
+    pub fn new(threads: NonZeroUsize, services: Arc<Services>) -> Self {
+        Self::polling(threads, services, Arc::new(Poller::new()))
+    }
+
+    /// Runners on `threads` threads of their own, their jobs reaching the host's `services` (ADR-0034), the thread for
+    /// waiting sleeping in `poller`, which the host serves its jobs as their `Readiness` (ADR-0033).
     ///
     /// # Panics
     ///
     /// Panics when the host cannot make a thread.
     #[must_use]
-    pub fn new(threads: NonZeroUsize, services: Arc<Services>) -> Self {
+    pub fn polling(threads: NonZeroUsize, services: Arc<Services>, poller: Arc<Poller>) -> Self {
         let inline = Inline::new(Arc::clone(&services));
         let shared = Arc::new(Shared { inline, queue: SegQueue::new(), stopping: AtomicBool::new(false) });
         let mut threads: Vec<JoinHandle<()>> = (0..threads.get())
@@ -67,24 +82,24 @@ impl Runners {
             })
             .collect();
         let computing = threads.iter().map(|thread| thread.thread().clone()).collect();
-        let (io, waiting) = Io::new(Monotonic::new(), services);
+        let (io, waiting) = Io::new(Monotonic::new(), services, poller);
         threads.push(waiting);
 
         Self { shared, computing, next: AtomicUsize::new(0), io, threads }
     }
 
     /// Runners on the cores an engine run on `workers` workers leaves free, one at the least, their jobs reaching the
-    /// host's `services`.
+    /// host's `services`, the thread for waiting sleeping in `poller`.
     ///
     /// # Panics
     ///
     /// Panics when the host cannot make a thread.
     #[must_use]
-    pub fn beside(workers: NonZeroUsize, services: Arc<Services>) -> Self {
+    pub fn beside(workers: NonZeroUsize, services: Arc<Services>, poller: Arc<Poller>) -> Self {
         let cores = thread::available_parallelism().map_or(1, NonZeroUsize::get);
         let free = NonZeroUsize::new(cores.saturating_sub(workers.get())).unwrap_or(NonZeroUsize::MIN);
 
-        Self::new(free, services)
+        Self::polling(free, services, poller)
     }
 }
 

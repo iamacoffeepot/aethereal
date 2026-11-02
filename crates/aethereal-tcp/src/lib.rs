@@ -17,6 +17,7 @@ mod dial;
 mod dialer;
 mod framing;
 mod listener;
+mod readiness;
 mod settings;
 mod socket;
 mod tcp;
@@ -26,6 +27,7 @@ pub use connection::{Accepted, ConnectionConfig, Dialed, Frame, HungUp, Read, Re
 pub use dialer::{Dialer, Dialing, Undialed};
 pub use framing::Framing;
 pub use listener::{Accept, Accepting, Incoming, Listener, ListenerConfig, Unbound};
+pub use readiness::{Interest, Readiness, Readying};
 pub use settings::TcpSettings;
 pub use socket::{BoundSocket, Socket};
 pub use tcp::{Connect, Connected, Listen, Listening, Tcp, TcpConfig};
