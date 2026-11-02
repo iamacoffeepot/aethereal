@@ -1,5 +1,6 @@
-//! The link served on the native host (ADR-0038, ADR-0036): each end driven by the harness, and the other played by a
-//! real socket speaking the link's own typed frames, on a thread of its own where it waits on the end it plays to.
+//! The link served on the native host (ADR-0038, ADR-0040, ADR-0036): each end driven by the harness, and the other
+//! played by a real socket speaking the link's own typed frames, on a thread of its own where it waits on the end it
+//! plays to.
 
 use aethereal_actor::{Answered, Unanswered};
 use aethereal_chassis_headless::Headless;
@@ -7,10 +8,10 @@ use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_link::{
     CallEngine, DescribeEngine, Described, Down, EngineList, EngineListing, Engines, EnginesSettings, Link,
-    LinkSettings, ListEngines, REVISION, Up,
+    LinkSettings, ListEngines, MintToken, Minted, REVISION, Refusal, Token, Up,
 };
 use aethereal_substrate::harness::{Harness, Unheard};
-use aethereal_substrate::{EngineSettings, Host};
+use aethereal_substrate::{EngineSettings, Host, Lifecycle};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{Call, Called, Offer, Offered, ToolSheet, Tooling, Withdraw};
 use std::io::{Read as _, Write as _};
@@ -127,7 +128,12 @@ fn frames<T: Plain + Send + 'static>(
 
 /// A hub listening for engines on a port of its choosing, and that port.
 fn hub() -> Result<(Harness<Headless>, u16), Unheard> {
-    let settings = EnginesSettings { port: 0, most_bytes: MOST_BYTES, ..EnginesSettings::default() };
+    hub_with(EnginesSettings::default())
+}
+
+/// A hub with `settings`, listening for engines on a port of its choosing, and that port.
+fn hub_with(settings: EnginesSettings) -> Result<(Harness<Headless>, u16), Unheard> {
+    let settings = EnginesSettings { port: 0, most_bytes: MOST_BYTES, ..settings };
     let program = Headless::program().with_engine(engine()).root::<Tcp>().root_with::<Engines>(settings);
     let mut harness = Harness::of(program)?;
     let engines = harness.root::<Engines>();
@@ -149,6 +155,34 @@ fn dialed(port: u16) -> TcpStream {
     };
 
     timed(stream)
+}
+
+/// A token `Engines` minted for an engine started outside the hub.
+fn minted(harness: &mut Harness<Headless>) -> Result<Token, Unheard> {
+    let engines = harness.root::<Engines>();
+    let minting = harness.ask(engines, &MintToken)?;
+    let Answered::Yes(Minted { token, .. }) = harness.answer(minting)? else {
+        panic!("`Engines` mints a token");
+    };
+
+    Ok(token)
+}
+
+/// The `Hello` of an engine named `name`, of this crate's revision, bringing `token`.
+fn hello(name: &str, token: Token) -> Up {
+    Up::Hello { revision: REVISION, name: String::from(name), token }
+}
+
+/// The frame the hub answers on `stream`, and whether it then hangs up, the harness stepping the host until it has.
+fn refusal(harness: &mut Harness<Headless>, mut stream: TcpStream) -> (Down, bool) {
+    #[allow(clippy::disallowed_methods)] // The engine's side is a native thread of its own, outside the engine.
+    let peer = thread::spawn(move || {
+        let down: Down = receive(&mut stream);
+
+        (down, closes(&mut stream))
+    });
+
+    heard(harness, peer)
 }
 
 /// What `Engines` lists.
@@ -185,8 +219,9 @@ fn linked_engine(
     tools: Vec<ToolSheet>,
 ) -> Result<TcpStream, Unheard> {
     let count = u32::try_from(tools.len()).unwrap_or(u32::MAX);
+    let token = minted(harness)?;
     let mut stream = dialed(port);
-    send(&mut stream, &Up::Hello { revision: REVISION, name: String::from("scene") });
+    send(&mut stream, &hello("scene", token));
     send(&mut stream, &Up::Sheets { revision, tools });
     listed_once(harness, |list| holds_one_with(list, count))?;
 
@@ -194,12 +229,14 @@ fn linked_engine(
 }
 
 #[test]
-fn an_engines_hello_and_latest_set_are_listed_and_described() -> Result<(), Unheard> {
-    // Catches a `Hello`'s name or a set not kept, a tool count never told to `Engines`, an engine listed under another
-    // id, and a description that is not the latest set with its revision.
+fn an_engines_hello_with_a_minted_token_and_latest_set_are_listed_and_described() -> Result<(), Unheard> {
+    // Catches a minted token not kept, so no engine could link, a `Hello`'s name or a set not kept, a set sent while
+    // the token is taken lost, a tool count never told to `Engines`, an engine listed under another id, and a
+    // description that is not the latest set with its revision.
     let (mut harness, port) = hub()?;
+    let token = minted(&mut harness)?;
     let mut stream = dialed(port);
-    send(&mut stream, &Up::Hello { revision: REVISION, name: String::from("scene") });
+    send(&mut stream, &hello("scene", token));
     send(&mut stream, &Up::Sheets { revision: 3, tools: vec![sheet("say")] });
     send(&mut stream, &Up::Sheets { revision: 7, tools: vec![sheet("say"), sheet("look")] });
 
@@ -256,20 +293,72 @@ fn an_engine_of_another_revision_is_refused_and_hung_up_on() -> Result<(), Unhea
     // Catches a revision not checked, a refusal that does not name the hub's revision, a connection left open after
     // it, and a refused engine listed.
     let (mut harness, port) = hub()?;
+    let token = minted(&mut harness)?;
     let mut stream = dialed(port);
-    send(&mut stream, &Up::Hello { revision: REVISION + 1, name: String::from("future") });
+    send(&mut stream, &Up::Hello { revision: REVISION + 1, name: String::from("future"), token });
 
-    #[allow(clippy::disallowed_methods)] // The engine's side is a native thread of its own, outside the engine.
-    let peer = thread::spawn(move || {
-        let down: Down = receive(&mut stream);
+    let (down, closed) = refusal(&mut harness, stream);
 
-        (down, closes(&mut stream))
-    });
-    let (down, closed) = heard(&mut harness, peer);
-
-    assert_eq!(down, Down::Refused { revision: REVISION });
+    assert_eq!(down, Down::Refused(Refusal::Revision { revision: REVISION }));
     assert!(closed, "the hub hangs up once its refusal is sent");
     assert_eq!(listed(&mut harness)?.engines, Vec::new());
+
+    Ok(())
+}
+
+#[test]
+fn a_token_the_hub_never_minted_is_refused_and_hung_up_on() -> Result<(), Unheard> {
+    // Catches a token not checked, which lets any process on the machine link, a refusal that does not say it was the
+    // token, a connection left open after it, and an engine listed before its token was taken.
+    let (mut harness, port) = hub()?;
+    let mut stream = dialed(port);
+    send(&mut stream, &hello("stranger", Token([7; 16])));
+    send(&mut stream, &Up::Sheets { revision: 1, tools: vec![sheet("say")] });
+
+    let (down, closed) = refusal(&mut harness, stream);
+
+    assert_eq!(down, Down::Refused(Refusal::Token));
+    assert!(closed, "the hub hangs up once its refusal is sent");
+    assert_eq!(listed(&mut harness)?.engines, Vec::new());
+
+    Ok(())
+}
+
+#[test]
+fn a_token_is_good_for_one_hello_and_refused_the_second_time() -> Result<(), Unheard> {
+    // Catches a token left in the table once a `Hello` brought it, which a process that read it from the process list
+    // after the engine linked could link with.
+    let (mut harness, port) = hub()?;
+    let token = minted(&mut harness)?;
+    let mut first = dialed(port);
+    send(&mut first, &hello("scene", token));
+    send(&mut first, &Up::Sheets { revision: 1, tools: vec![sheet("say")] });
+    listed_once(&mut harness, |list| holds_one_with(list, 1))?;
+
+    let mut second = dialed(port);
+    send(&mut second, &hello("copy", token));
+    let (down, closed) = refusal(&mut harness, second);
+
+    assert_eq!(down, Down::Refused(Refusal::Token));
+    assert!(closed, "the hub hangs up once its refusal is sent");
+    assert_eq!(listed(&mut harness)?.engines, vec![EngineListing { engine: 0, name: String::from("scene"), tools: 1 }]);
+
+    Ok(())
+}
+
+#[test]
+fn a_token_brought_once_its_time_has_passed_is_refused() -> Result<(), Unheard> {
+    // Catches a token that never expires, so one minted for an engine never started stays good for good. The hub's
+    // tokens are good for no time at all, so the `Hello` comes after its time whatever the machine's speed.
+    let (mut harness, port) = hub_with(EnginesSettings { token_within_millis: 0, ..EnginesSettings::default() })?;
+    let token = minted(&mut harness)?;
+    let mut stream = dialed(port);
+    send(&mut stream, &hello("late", token));
+
+    let (down, closed) = refusal(&mut harness, stream);
+
+    assert_eq!(down, Down::Refused(Refusal::Token));
+    assert!(closed, "the hub hangs up once its refusal is sent");
 
     Ok(())
 }
@@ -316,9 +405,18 @@ fn hub_socket() -> (TcpListener, u16) {
     (listener, address.port())
 }
 
-/// An engine linking to the hub at `port` with `settings`.
+/// The token the tests' engines link with.
+const TOKEN: Token = Token([0xA5; 16]);
+
+/// An engine linking to the hub at `port` with `settings`, and the tests' token.
 fn linking(port: u16, settings: LinkSettings) -> Result<Harness<Headless>, Unheard> {
-    let settings = LinkSettings { hub: String::from("127.0.0.1"), port, most_bytes: MOST_BYTES, ..settings };
+    let settings = LinkSettings {
+        hub: String::from("127.0.0.1"),
+        port,
+        token: Vec::from(TOKEN.0),
+        most_bytes: MOST_BYTES,
+        ..settings
+    };
 
     Harness::of(Headless::program().with_engine(engine()).root::<Tcp>().root_with::<Link>(settings))
 }
@@ -350,15 +448,25 @@ fn offer_say(harness: &mut Harness<Headless>) -> Result<(), Unheard> {
     Ok(())
 }
 
-/// The frames of a connection's start: `Hello` from `name`, then the set `tools` of `revision`.
+/// The frames of a connection's start: `Hello` from `name` with the tests' token, then the set `tools` of `revision`.
 fn start(name: &str, revision: u64, tools: Vec<ToolSheet>) -> Vec<Up> {
-    vec![Up::Hello { revision: REVISION, name: String::from(name) }, Up::Sheets { revision, tools }]
+    vec![hello(name, TOKEN), Up::Sheets { revision, tools }]
+}
+
+/// Whether the program `harness` steps has stopped, once it has, the harness stepping the host until then.
+fn stops(harness: &mut Harness<Headless>) -> bool {
+    waiting::until(BUDGET, || {
+        harness.step();
+        harness.host().engine().lifecycle() == Lifecycle::Stopped
+    });
+
+    harness.host().engine().lifecycle() == Lifecycle::Stopped
 }
 
 #[test]
-fn link_dials_its_hub_and_says_hello_then_its_set() -> Result<(), Unheard> {
-    // Catches a dial not made as `Link` begins, `Hello` not first or naming another revision or name, and a set not
-    // written once linked.
+fn link_dials_its_hub_and_says_hello_with_its_token_then_its_set() -> Result<(), Unheard> {
+    // Catches a dial not made as `Link` begins, `Hello` not first or naming another revision or name, a `Hello` that
+    // does not bring the token the engine was started with, and a set not written once linked.
     let (listener, port) = hub_socket();
     let mut harness = linking(port, LinkSettings { name: String::from("scene"), ..LinkSettings::default() })?;
 
@@ -442,21 +550,48 @@ fn a_call_of_a_changed_set_or_no_tool_is_refused_without_reaching_a_worker() -> 
 }
 
 #[test]
-fn when_the_hub_hangs_up_link_dials_again_and_writes_hello_and_its_set_again() -> Result<(), Unheard> {
-    // Catches a hang-up that leaves `Link` dialing no more, tools dropped with the connection, and a revision reset,
-    // with which a hub could convert a call by a set of the same number that is not the one held.
+fn when_the_hub_hangs_up_link_ends_its_program() -> Result<(), Unheard> {
+    // Catches an engine that outlives its link: one left running with a spent token, which no hub can take, and so
+    // linked to nothing for good.
     let (listener, port) = hub_socket();
-    let mut harness = linking(port, LinkSettings { redial_millis: (10, 40), ..LinkSettings::default() })?;
+    let mut harness = linking(port, LinkSettings::default())?;
     let stream = accepted(&mut harness, &listener);
     let (_, stream) = frames::<Up>(&mut harness, stream, 2);
-    offer_say(&mut harness)?;
-    let (_, stream) = frames::<Up>(&mut harness, stream, 1);
 
     drop(stream);
-    let again = accepted(&mut harness, &listener);
-    let (frames, _again) = frames::<Up>(&mut harness, again, 2);
 
-    assert_eq!(frames, start("engine", 1, vec![sheet("say")]));
+    assert!(stops(&mut harness), "the program stops once the hub hangs up");
 
     Ok(())
+}
+
+#[test]
+fn when_the_hub_refuses_its_token_link_ends_its_program() -> Result<(), Unheard> {
+    // Catches a refusal read and passed over, which leaves the engine running unlinked, waiting for a hub that will
+    // never take it.
+    let (listener, port) = hub_socket();
+    let mut harness = linking(port, LinkSettings::default())?;
+    let stream = accepted(&mut harness, &listener);
+    let (_, mut stream) = frames::<Up>(&mut harness, stream, 2);
+
+    send(&mut stream, &Down::Refused(Refusal::Token));
+
+    assert!(stops(&mut harness), "the program stops once the hub refuses it");
+
+    Ok(())
+}
+
+#[test]
+fn an_engine_started_without_a_token_fails_as_it_begins_naming_the_setting() {
+    // Catches an engine that starts with no token and dials a hub that can only refuse it, and a failure that does
+    // not say which setting to give.
+    let link = LinkSettings { most_bytes: MOST_BYTES, ..LinkSettings::default() };
+    let program = Headless::program().with_engine(engine()).root::<Tcp>().root_with::<Link>(link);
+
+    let built = Harness::of(program);
+
+    let Err(Unheard::Program(why)) = built else {
+        panic!("the program does not start");
+    };
+    assert!(why.contains("--hub-token"), "{why}");
 }

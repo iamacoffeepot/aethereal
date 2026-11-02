@@ -1,23 +1,21 @@
-//! The engine's end of the link: the root that holds the engine's tools, dials its hub, and hands the hub the whole set
-//! after each change (ADR-0038).
+//! The engine's end of the link: the root that holds the engine's tools, dials its hub once, and hands the hub the
+//! whole set after each change, and ends its program when the link ends (ADR-0038, ADR-0040).
 
 mod settings;
 
-pub use settings::LinkSettings;
+pub use settings::{LinkConfig, LinkSettings, NoToken};
 
 use crate::frames::{self, Written};
 use crate::read_limit;
-use crate::{Down, REVISION, Up};
+use crate::{Down, REVISION, Refusal, Up};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Level,
-    More, Number, Open, Part, Path, ProtocolRef, Sleep, Slept, Streamed, Streams, Taken, ToAny, ToSender, ToType, Top,
-    Turn, path,
+    More, Number, Open, Part, Path, ProtocolRef, Streamed, Streams, Taken, ToAny, ToSender, ToType, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::{Connect, Connected, Dialed, Framing, HungUp, Read, Reading, Shut, Tcp, Write, Writing, Wrote};
 use aethereal_tools::{Call, Called, Holder, Offer, Offered, Table, ToolSheet, Tooling, Withdraw};
-use core::time::Duration;
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
@@ -26,8 +24,8 @@ use std::num::NonZeroU32;
 #[kind(name = "aether.link.connecting")]
 pub struct Connecting;
 
-/// What the root keeps for a write: the stream of the connection it was written to, so the answer of a write to a
-/// connection that has gone is passed over.
+/// What the root keeps for a write: the stream of the connection it was written to, so the answer of a write once the
+/// link has ended is passed over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.sending")]
 pub struct Sending {
@@ -41,23 +39,15 @@ pub struct Calling {
     number: u64,
 }
 
-/// What a sleep the root runs is for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-#[kind(name = "aether.link.woken")]
-pub enum Woken {
-    /// The wait before dialing again is over.
-    Redial,
-}
-
 /// Where the root is in reaching its hub.
 #[derive(Debug, Bound)]
 enum Line {
-    /// A dial is out.
+    /// Its one dial is out.
     Dialing,
     /// Connected: the connection, and the number of the stream it is read through.
     Open { connection: ActorRef<Dialed>, reader: Number },
-    /// A dial came to nothing, or the connection ended: a sleep runs until the next dial.
-    Waiting,
+    /// The dial came to nothing, or the connection ended: the root has asked its program to stop, and writes nothing.
+    Ended,
 }
 
 impl Line {
@@ -65,7 +55,7 @@ impl Line {
     fn is_read_by(&self, number: Number) -> bool {
         match self {
             Self::Open { reader, .. } => *reader == number,
-            Self::Dialing | Self::Waiting => false,
+            Self::Dialing | Self::Ended => false,
         }
     }
 }
@@ -73,23 +63,22 @@ impl Line {
 /// The frames of its connection the root is sent ahead of reading them.
 const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 
-/// The engine's end of the link (ADR-0038): a tools [`Holder`], which any actor may [`Offer`] tools at its typed path,
-/// `path::<Link>(())`, naming a worker that speaks [`Tooling`]. It dials its hub as it begins, writes [`Up::Hello`]
-/// and then [`Up::Sheets`] on each connection, and writes the whole set again after every change to what it holds.
-/// Each [`Down::Call`] is asked of the tool's worker and its answer written back as [`Up::Called`].
+/// The engine's end of the link (ADR-0038, ADR-0040): a tools [`Holder`], which any actor may [`Offer`] tools at its
+/// typed path, `path::<Link>(())`, naming a worker that speaks [`Tooling`]. It dials its hub once, as it begins,
+/// writes [`Up::Hello`] with the token its hub minted and then [`Up::Sheets`], and writes the whole set again after
+/// every change to what it holds. Each [`Down::Call`] is asked of the tool's worker and its answer written back as
+/// [`Up::Called`]. A tool's offer never waits on the hub.
 ///
-/// A tool's offer never waits on the hub: the root holds its tools through every connection, and nothing in the
-/// engine sees the hub go. When a dial comes to nothing, or a connection ends, it waits and dials again, each wait
-/// twice the last, from the first of its setting `redial_millis` to the longest. The wait goes back to the first when
-/// the hub sends its first call on a connection, which shows the hub took the engine's `Hello`: a hub that refuses
-/// the engine, or hangs up at once, is dialed less and less often.
+/// No engine outlives its link: when the dial comes to nothing, the connection ends, a frame from the hub does not
+/// read, or the hub refuses the engine, the root asks its program to stop (`turn.quit`, ADR-0020). Its token is spent,
+/// and a hub that restarted holds none of its own to take, so it could never link again.
 ///
 /// Mail it cannot read fails its turn, which ends it: it will not start where a frame could be such mail, and a
 /// program sets the engine's `read_limit` above what its tools answer too.
 #[derive(Bound)]
 #[kind(name = "aether.link")]
 pub struct Link {
-    settings: LinkSettings,
+    config: LinkConfig,
     table: Table,
     /// The revision of what it holds: raised with every change, and never reset, across connections too.
     revision: u64,
@@ -98,8 +87,6 @@ pub struct Link {
     /// Each call of the open connection asked of a worker, by the root's own number, with the hub's number for it.
     calls: BTreeMap<u64, u64>,
     next: u64,
-    /// The milliseconds of the next wait before dialing again.
-    wait_millis: u64,
 }
 
 impl ChildOf for Link {
@@ -114,7 +101,8 @@ impl Carries<Offer> for Link {
     type Answers = (Offered,);
 }
 
-/// It stands up on every host, and refuses to where a frame it would read could not be read.
+/// It stands up on every host, and refuses to where a frame it would read could not be read, or where its settings
+/// hold no token.
 impl<H: Host> Bootstrap<H> for Link {
     const SECTION: &'static str = "link";
     type Settings = LinkSettings;
@@ -124,13 +112,14 @@ impl<H: Host> Bootstrap<H> for Link {
     async fn bootstrap(settings: LinkSettings, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
         let checked = read_limit::check("link", cx.read_limit(), settings.most_bytes);
         checked.map_err(|why| Unbuilt::Failed(Box::new(why)))?;
+        let config = settings.config().map_err(|why| Unbuilt::Failed(Box::new(why)))?;
 
-        cx.begin(&(), settings)
+        cx.begin(&(), config)
     }
 }
 
 impl Actor for Link {
-    type Config = LinkSettings;
+    type Config = LinkConfig;
     type Key = ();
     type Handles = (
         Offer,
@@ -141,25 +130,22 @@ impl Actor for Link {
         Answer<HungUp, Number>,
         Answer<Wrote, Sending>,
         Answer<Called, Calling>,
-        Answer<Slept, Woken>,
     );
     type BeginSends = (Asks<Path<Tcp>, Connect, Connecting>,);
     type EndSends = ();
 
     /// Dials its hub.
-    fn begin(settings: LinkSettings, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.to(path::<Tcp>(())).ask(&connect(&settings), &Connecting)?;
-        let wait_millis = settings.redial_millis.0;
+    fn begin(config: LinkConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.to(path::<Tcp>(())).ask(&connect(&config), &Connecting)?;
 
         Ok(Self {
-            settings,
+            config,
             table: Table::new(),
             revision: 0,
             line: Line::Dialing,
             reading: Streams::new(READING_WINDOW),
             calls: BTreeMap::new(),
             next: 0,
-            wait_millis,
         })
     }
 
@@ -173,7 +159,7 @@ impl Handles<Offer> for Link {
 
     /// Holds the offer, when its tools fit in the table and the set with them in a frame, and writes the set.
     fn handle(&mut self, offer: Offer, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let room = usize::try_from(self.settings.most_tools).unwrap_or(usize::MAX);
+        let room = usize::try_from(self.config.most_tools).unwrap_or(usize::MAX);
         let names: Vec<String> = offer.tools.iter().map(|sheet| sheet.name.clone()).collect();
         let worker = offer.worker;
         let taken = self.table.take(offer.tools, worker, room);
@@ -230,19 +216,21 @@ impl Handles<Answer<Connected, Connecting>> for Link {
     type Sends =
         (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>, Asks<Writing, Write, Sending>);
 
-    /// Connected, it reads the connection and writes `Hello` and the set; otherwise it waits to dial again.
+    /// Connected, it reads the connection and writes `Hello`, with its token, and the set; otherwise the link has
+    /// ended.
     fn handle(
         &mut self,
         (answered, Connecting): (Answered<Connected>, Connecting),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Connected::Open { connection, .. }) = answered else {
-            turn.log(Level::Info, format_args!("the hub was not reached: {answered:?}"));
-            return self.wait(turn);
+            turn.log(Level::Warn, format_args!("the hub was not reached: {answered:?}"));
+            self.end_link(turn);
+            return Ok(());
         };
         let reader = self.reading.open(turn, connection.protocol(), Read, ())?;
         self.line = Line::Open { connection, reader };
-        let hello = Up::Hello { revision: REVISION, name: self.settings.name.clone() };
+        let hello = Up::Hello { revision: REVISION, name: self.config.name.clone(), token: self.config.token };
         self.write(turn, to_bytes(&hello)?)?;
 
         self.write_sheets(turn)
@@ -257,8 +245,8 @@ impl Handles<Part<Reading>> for Link {
         ToType<Dialed, Shut>,
     );
 
-    /// A frame from the hub: a call, asked of its worker, or a refusal, which ends the connection, as a frame that
-    /// does not read does.
+    /// A frame from the hub: a call, asked of its worker, or a refusal, which ends the link, as a frame that does not
+    /// read does.
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(Taken { number, value, .. }) = self.reading.part(turn, part)? else {
             return Ok(());
@@ -266,7 +254,7 @@ impl Handles<Part<Reading>> for Link {
         if !self.line.is_read_by(number) {
             return Ok(());
         }
-        let down = match frames::read::<Down>(&value.bytes, self.settings.most_bytes) {
+        let down = match frames::read::<Down>(&value.bytes, self.config.most_bytes) {
             Ok(down) => down,
             Err(why) => {
                 turn.log(Level::Warn, format_args!("a frame from the hub did not read: {why:?}"));
@@ -274,8 +262,12 @@ impl Handles<Part<Reading>> for Link {
             }
         };
         match down {
-            Down::Refused { revision } => {
+            Down::Refused(Refusal::Revision { revision }) => {
                 turn.log(Level::Warn, format_args!("the hub speaks revision {revision}, and this engine {REVISION}"));
+                self.hang_up(turn)
+            }
+            Down::Refused(Refusal::Token) => {
+                turn.log(Level::Warn, "the hub refused this engine's token: it holds no such token");
                 self.hang_up(turn)
             }
             Down::Call { call, revision, tool, input } => self.call(turn, call, revision, &Call { tool, input }),
@@ -286,7 +278,7 @@ impl Handles<Part<Reading>> for Link {
 impl Handles<Answer<HungUp, Number>> for Link {
     type Sends = ();
 
-    /// The connection's stream has ended: when it is the open connection's, the root waits to dial again.
+    /// The connection's stream has ended: when it is the open connection's, the link has ended.
     fn handle(
         &mut self,
         (answered, number): (Answered<HungUp>, Number),
@@ -297,15 +289,16 @@ impl Handles<Answer<HungUp, Number>> for Link {
             return Ok(());
         }
         turn.log(Level::Info, format_args!("the hub's connection ended: {answered:?}"));
+        self.end_link(turn);
 
-        self.wait(turn)
+        Ok(())
     }
 }
 
 impl Handles<Answer<Wrote, Sending>> for Link {
     type Sends = (ToType<Dialed, Shut>,);
 
-    /// A write to the open connection that was not sent ends it.
+    /// A write to the open connection that was not sent ends the link.
     fn handle(
         &mut self,
         (answered, sending): (Answered<Wrote>, Sending),
@@ -326,7 +319,7 @@ impl Handles<Answer<Wrote, Sending>> for Link {
 impl Handles<Answer<Called, Calling>> for Link {
     type Sends = (Asks<Writing, Write, Sending>,);
 
-    /// A worker's answer, written to the hub: one for a connection that has gone is dropped.
+    /// A worker's answer, written to the hub: one that comes once the link has ended is dropped.
     fn handle(
         &mut self,
         (answered, Calling { number }): (Answered<Called>, Calling),
@@ -344,34 +337,11 @@ impl Handles<Answer<Called, Calling>> for Link {
     }
 }
 
-impl Handles<Answer<Slept, Woken>> for Link {
-    type Sends = (Asks<Path<Tcp>, Connect, Connecting>,);
-
-    /// Dials again once its wait is over.
-    fn handle(
-        &mut self,
-        (slept, woken): (Answered<Slept>, Woken),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
-        if let Answered::No(why) = slept {
-            turn.log(Level::Error, format_args!("a sleep was not answered, for {woken:?}: {why:?}"));
-            return Ok(());
-        }
-        let Line::Waiting = self.line else {
-            return Ok(());
-        };
-        turn.to(path::<Tcp>(())).ask(&connect(&self.settings), &Connecting)?;
-        self.line = Line::Dialing;
-
-        Ok(())
-    }
-}
-
 impl Link {
     /// The offer just taken, of `names` for `worker`, when the set with it fits in a frame: otherwise it is taken back,
     /// and refused as `Full`.
     fn fitted(&mut self, names: &[String], worker: ProtocolRef<Tooling>) -> Result<Offered, Fault> {
-        let written = frames::written(&self.sheets(self.revision + 1), self.settings.most_bytes)?;
+        let written = frames::written(&self.sheets(self.revision + 1), self.config.most_bytes)?;
         let Written::TooLarge = written else {
             return Ok(Offered::Yes);
         };
@@ -399,8 +369,7 @@ impl Link {
     }
 
     /// The hub's call `call` of `revision`: refused when the set has changed since or holds no such tool, and asked of
-    /// the tool's worker otherwise. A call shows the hub took the engine's `Hello`, so the wait before dialing again
-    /// goes back to the first.
+    /// the tool's worker otherwise.
     fn call<S, IW, IC>(
         &mut self,
         turn: &mut Turn<'_, Self, S>,
@@ -411,7 +380,6 @@ impl Link {
     where
         S: Allows<Asks<Writing, Write, Sending>, IW> + Allows<Asks<Tooling, Call, Calling>, IC>,
     {
-        self.wait_millis = self.settings.redial_millis.0;
         let is_stale = revision != self.revision;
         if is_stale {
             let changed = Called::Refused(String::from("the engine's tools have changed: describe it again"));
@@ -435,7 +403,7 @@ impl Link {
     where
         S: Allows<Asks<Writing, Write, Sending>, I>,
     {
-        let written = frames::written(&Up::Called { call, called }, self.settings.most_bytes)?;
+        let written = frames::written(&Up::Called { call, called }, self.config.most_bytes)?;
         let bytes = match written {
             Written::Fits(bytes) => bytes,
             Written::TooLarge => {
@@ -452,7 +420,7 @@ impl Link {
     where
         S: Allows<Asks<Writing, Write, Sending>, I>,
     {
-        let written = frames::written(&self.sheets(self.revision), self.settings.most_bytes)?;
+        let written = frames::written(&self.sheets(self.revision), self.config.most_bytes)?;
         let Written::Fits(bytes) = written else {
             turn.log(Level::Error, "the tools held do not fit in a frame, and were not written");
             return Ok(());
@@ -461,8 +429,8 @@ impl Link {
         self.write::<_, I>(turn, bytes)
     }
 
-    /// Writes the frame `bytes` to the open connection: with none open, nothing is written, and the next connection is
-    /// written the whole set.
+    /// Writes the frame `bytes` to the open connection: with none open, nothing is written. Before the dial is
+    /// answered, the connection is written the whole set once it opens; after the link has ended, nothing is.
     fn write<S, I>(&self, turn: &mut Turn<'_, Self, S>, bytes: Vec<u8>) -> Result<(), Fault>
     where
         S: Allows<Asks<Writing, Write, Sending>, I>,
@@ -475,7 +443,7 @@ impl Link {
         Ok(())
     }
 
-    /// Shuts the open connection, and waits to dial again.
+    /// Shuts the open connection, and ends the link.
     fn hang_up<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<ToType<Dialed, Shut>, I>,
@@ -483,28 +451,25 @@ impl Link {
         if let Line::Open { connection, .. } = self.line {
             turn.to(connection).send::<_, I>(&Shut)?;
         }
-
-        self.wait(turn)
-    }
-
-    /// Forgets the calls of the connection that ended, whose answers are then dropped, and sleeps for the next wait,
-    /// doubling the one after, up to the longest.
-    fn wait<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
-        self.calls.clear();
-        let until = turn.now() + Duration::from_millis(self.wait_millis);
-        turn.run(&Sleep { until }, &Woken::Redial)?;
-        self.wait_millis = self.wait_millis.saturating_mul(2).min(self.settings.redial_millis.1);
-        self.line = Line::Waiting;
+        self.end_link(turn);
 
         Ok(())
     }
+
+    /// Ends the link: asks the program to stop, and forgets the calls of the connection, whose answers are then
+    /// dropped.
+    fn end_link<S>(&mut self, turn: &mut Turn<'_, Self, S>) {
+        turn.quit();
+        self.line = Line::Ended;
+        self.calls.clear();
+    }
 }
 
-/// What dials the hub `settings` name.
-fn connect(settings: &LinkSettings) -> Connect {
+/// What dials the hub `config` names.
+fn connect(config: &LinkConfig) -> Connect {
     Connect {
-        host: settings.hub.clone(),
-        port: settings.port,
-        framing: Framing::LengthPrefixed { most_bytes: settings.most_bytes },
+        host: config.hub.clone(),
+        port: config.port,
+        framing: Framing::LengthPrefixed { most_bytes: config.most_bytes },
     }
 }

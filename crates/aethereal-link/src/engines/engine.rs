@@ -1,15 +1,16 @@
-//! One engine linked: the hub's actor for one connection `Engines` accepted (ADR-0038).
+//! One engine linked: the hub's actor for one connection `Engines` accepted (ADR-0038, ADR-0040).
 
-use super::{CallEngine, DescribeEngine, Described, Engines, Shown};
+use super::{CallEngine, DescribeEngine, Described, Engines, Shown, TakeToken, TokenFor};
 use crate::frames::{self, Written};
-use crate::{Down, REVISION, Up};
+use crate::{Down, REVISION, Refusal, Token, Up};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Level,
-    More, Number, Open, Part, Streamed, Streams, Taken, ToAny, ToSender, ToType, Turn,
+    More, Number, Open, Part, Path, Streamed, Streams, Taken, ToAny, ToSender, ToType, Turn, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
 use aethereal_tcp::{Accepted, HungUp, Read, Reading, Shut, Write, Writing, Wrote};
-use aethereal_tools::{Called, ToolSheet};
+use aethereal_tools::Called;
+use core::mem;
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
@@ -29,15 +30,21 @@ pub struct Sent {
     closes: bool,
 }
 
+/// What an engine keeps for the take of its token: nothing, as it asks one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.link.vouching")]
+pub struct Vouching;
+
 /// What an engine has said on its connection.
 #[derive(Debug, Plain)]
 enum Said {
     /// Nothing: its first frame must be `Hello`.
     Nothing,
-    /// `Hello`, naming itself, and no set yet.
-    Hello { name: String },
-    /// `Hello`, and the set of `revision` last.
-    Sheets { name: String, revision: u64, tools: Vec<ToolSheet> },
+    /// `Hello`, naming itself, whose token `Engines` is asked to take, and the set it has sent since, kept until it
+    /// answers.
+    Vouching { name: String, tools: Described },
+    /// `Hello`, its token taken, and the set it has sent last.
+    Linked { name: String, tools: Described },
     /// It was refused: the refusal is being written, and what it sends is passed over.
     Refused,
 }
@@ -45,10 +52,14 @@ enum Said {
 /// The frames of its connection an engine is sent ahead of reading them.
 const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 
-/// One engine linked, beneath `Engines`, keyed by its count, which is the engine's id for the agent (ADR-0038): reads
-/// its connection, whose first frame must be [`Up::Hello`] of this crate's revision, keeps the latest
+/// One engine linked, beneath `Engines`, keyed by its count, which is the engine's id for the agent (ADR-0038,
+/// ADR-0040): reads its connection, whose first frame must be [`Up::Hello`] of this crate's revision, keeps the latest
 /// [`Up::Sheets`], and asks each [`CallEngine`] of the engine as a [`Down::Call`] with a number of its own, answering
 /// it when [`Up::Called`] comes back.
+///
+/// It asks `Engines` to take the token its `Hello` brings, and tells `Engines` what it shows only once the token is
+/// taken, so it is listed only then. A token `Engines` does not hold is refused ([`Refusal::Token`]), as a revision it
+/// does not speak is, and the connection shut.
 ///
 /// Its end is its connection's: it closes when the connection hangs up, or sends a frame that does not read, or that
 /// is out of turn, and each call it holds is then answered `No`.
@@ -82,7 +93,14 @@ impl Carries<CallEngine> for Engine {
 impl Actor for Engine {
     type Config = EngineConfig;
     type Key = u64;
-    type Handles = (Part<Reading>, Answer<HungUp, Number>, Answer<Wrote, Sent>, DescribeEngine, CallEngine);
+    type Handles = (
+        Part<Reading>,
+        Answer<HungUp, Number>,
+        Answer<Wrote, Sent>,
+        Answer<TokenFor, Vouching>,
+        DescribeEngine,
+        CallEngine,
+    );
     type BeginSends = (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>);
     type EndSends = ();
 
@@ -108,10 +126,16 @@ impl Actor for Engine {
 }
 
 impl Handles<Part<Reading>> for Engine {
-    type Sends =
-        (ToAny<Streamed<Reading>, More>, Asks<Writing, Write, Sent>, ToType<Accepted, Shut>, ToType<Engines, Shown>);
+    type Sends = (
+        ToAny<Streamed<Reading>, More>,
+        Asks<Writing, Write, Sent>,
+        ToType<Accepted, Shut>,
+        ToType<Engines, Shown>,
+        Asks<Path<Engines>, TakeToken, Vouching>,
+    );
 
-    /// A frame from the engine, in the order the link has them: `Hello` first, then sets and answers.
+    /// A frame from the engine, in the order the link has them: `Hello` first, then sets and answers. A set that comes
+    /// while its token is being taken is kept, and told once it is.
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(Taken { value, .. }) = self.reading.part(turn, part)? else {
             return Ok(());
@@ -126,16 +150,19 @@ impl Handles<Part<Reading>> for Engine {
                 return self.shut(turn);
             }
         };
-        match (up, &self.said) {
-            (Up::Hello { revision, name }, Said::Nothing) => self.greeted(turn, revision, name),
-            (Up::Sheets { revision, tools }, Said::Hello { name } | Said::Sheets { name, .. }) => {
-                let name = name.clone();
-                let shown = Shown { name: name.clone(), tools: u32::try_from(tools.len()).unwrap_or(u32::MAX) };
-                self.said = Said::Sheets { name, revision, tools };
+        match (up, &mut self.said) {
+            (Up::Hello { revision, name, token }, Said::Nothing) => self.greeted(turn, revision, name, token),
+            (Up::Sheets { revision, tools }, Said::Vouching { tools: kept, .. }) => {
+                *kept = Described::Tools { revision, tools };
+                Ok(())
+            }
+            (Up::Sheets { revision, tools }, Said::Linked { name, tools: kept }) => {
+                *kept = Described::Tools { revision, tools };
+                let shown = shown(name, kept);
                 turn.to(turn.parent()).send(&shown)?;
                 Ok(())
             }
-            (Up::Called { call, called }, Said::Hello { .. } | Said::Sheets { .. }) => {
+            (Up::Called { call, called }, Said::Linked { .. }) => {
                 if let Some(held) = self.calls.remove(&call) {
                     turn.answer(held, &called)?;
                 }
@@ -180,13 +207,40 @@ impl Handles<Answer<Wrote, Sent>> for Engine {
     }
 }
 
+impl Handles<Answer<TokenFor, Vouching>> for Engine {
+    type Sends = (Asks<Writing, Write, Sent>, ToType<Engines, Shown>);
+
+    /// Its token taken, the engine is linked, and `Engines` told what it shows; a token `Engines` does not hold is
+    /// refused, and the connection shut once the refusal is sent.
+    fn handle(
+        &mut self,
+        (answered, Vouching): (Answered<TokenFor>, Vouching),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let said = mem::replace(&mut self.said, Said::Refused);
+        let Said::Vouching { name, tools } = said else {
+            self.said = said;
+            return Ok(());
+        };
+        let Answered::Yes(TokenFor::External) = answered else {
+            turn.log(Level::Info, format_args!("an engine's token was refused: {answered:?}"));
+            return self.write(turn, to_bytes(&Down::Refused(Refusal::Token))?, true);
+        };
+        let shown = shown(&name, &tools);
+        self.said = Said::Linked { name, tools };
+        turn.to(turn.parent()).send(&shown)?;
+
+        Ok(())
+    }
+}
+
 impl Handles<DescribeEngine> for Engine {
     type Sends = (ToSender<Described>,);
 
     fn handle(&mut self, _: DescribeEngine, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let described = match &self.said {
-            Said::Sheets { revision, tools, .. } => Described::Tools { revision: *revision, tools: tools.clone() },
-            Said::Nothing | Said::Hello { .. } | Said::Refused => Described::NotYet,
+            Said::Linked { tools, .. } => tools.clone(),
+            Said::Nothing | Said::Vouching { .. } | Said::Refused => Described::NotYet,
         };
         turn.reply(&described)?;
 
@@ -200,10 +254,10 @@ impl Handles<CallEngine> for Engine {
     /// Holds the call and writes it, or refuses it at once: before the engine has sent its tools, past the most calls
     /// out, or when it would not fit in a frame.
     fn handle(&mut self, asked: CallEngine, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let refusal = self.refusal(asked)?;
-        let call = match refusal {
-            Refusal::Writes(call) => call,
-            Refusal::Refused(why) => {
+        let fate = self.fate(asked)?;
+        let call = match fate {
+            Fate::Writes(call) => call,
+            Fate::Refused(why) => {
                 turn.reply(&Called::Refused(String::from(why)))?;
                 return Ok(());
             }
@@ -217,46 +271,52 @@ impl Handles<CallEngine> for Engine {
 }
 
 /// What becomes of a call asked: the frame written for it, or why it is refused.
-enum Refusal {
+enum Fate {
     Writes(Vec<u8>),
     Refused(&'static str),
 }
 
 impl Engine {
     /// What becomes of `asked`, numbered as the next call.
-    fn refusal(&self, asked: CallEngine) -> Result<Refusal, Fault> {
-        let Said::Sheets { .. } = self.said else {
-            return Ok(Refusal::Refused("the engine has not sent its tools"));
+    fn fate(&self, asked: CallEngine) -> Result<Fate, Fault> {
+        let Said::Linked { tools: Described::Tools { .. }, .. } = self.said else {
+            return Ok(Fate::Refused("the engine has not sent its tools"));
         };
         let room = usize::try_from(self.most_calls).unwrap_or(usize::MAX);
         let is_full = self.calls.len() >= room;
         if is_full {
-            return Ok(Refusal::Refused("too many calls of the engine are out"));
+            return Ok(Fate::Refused("too many calls of the engine are out"));
         }
         let CallEngine { revision, tool, input } = asked;
         let call = Down::Call { call: self.next, revision, tool, input };
-        let refusal = match frames::written(&call, self.most_bytes)? {
-            Written::Fits(bytes) => Refusal::Writes(bytes),
-            Written::TooLarge => Refusal::Refused("the call is too large for the link"),
+        let fate = match frames::written(&call, self.most_bytes)? {
+            Written::Fits(bytes) => Fate::Writes(bytes),
+            Written::TooLarge => Fate::Refused("the call is too large for the link"),
         };
 
-        Ok(refusal)
+        Ok(fate)
     }
 
     /// Takes the engine's `Hello`: one of another revision is refused, and the connection shut once the refusal is
-    /// sent.
-    fn greeted<S, IW, IP>(&mut self, turn: &mut Turn<'_, Self, S>, revision: u32, name: String) -> Result<(), Fault>
+    /// sent; otherwise `Engines` is asked to take its token.
+    fn greeted<S, IW, IT>(
+        &mut self,
+        turn: &mut Turn<'_, Self, S>,
+        revision: u32,
+        name: String,
+        token: Token,
+    ) -> Result<(), Fault>
     where
-        S: Allows<Asks<Writing, Write, Sent>, IW> + Allows<ToType<Engines, Shown>, IP>,
+        S: Allows<Asks<Writing, Write, Sent>, IW> + Allows<Asks<Path<Engines>, TakeToken, Vouching>, IT>,
     {
         if revision != REVISION {
             turn.log(Level::Info, format_args!("an engine of revision {revision} was refused"));
             self.said = Said::Refused;
-            return self.write::<_, IW>(turn, to_bytes(&Down::Refused { revision: REVISION })?, true);
+            let refused = Down::Refused(Refusal::Revision { revision: REVISION });
+            return self.write::<_, IW>(turn, to_bytes(&refused)?, true);
         }
-        let shown = Shown { name: name.clone(), tools: 0 };
-        self.said = Said::Hello { name };
-        turn.to(turn.parent()).send::<_, IP>(&shown)?;
+        turn.to(path::<Engines>(())).ask::<_, _, IT>(&TakeToken { token }, &Vouching)?;
+        self.said = Said::Vouching { name, tools: Described::NotYet };
 
         Ok(())
     }
@@ -281,4 +341,14 @@ impl Engine {
 
         Ok(())
     }
+}
+
+/// What an engine named `name`, holding `tools`, shows the agent.
+fn shown(name: &str, tools: &Described) -> Shown {
+    let count = match tools {
+        Described::Tools { tools, .. } => u32::try_from(tools.len()).unwrap_or(u32::MAX),
+        Described::NotYet => 0,
+    };
+
+    Shown { name: String::from(name), tools: count }
 }

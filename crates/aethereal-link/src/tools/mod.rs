@@ -1,10 +1,11 @@
-//! The hub's tools: the agent lists engines, reads an engine's tools, and calls one (ADR-0038).
+//! The hub's tools: the agent lists engines, reads an engine's tools, calls one, and mints a token for an engine it
+//! starts itself (ADR-0038, ADR-0040).
 
 mod kinds;
 
 pub use kinds::{EngineAnswer, EngineCall, EngineId, EngineSheets, JsonSheet};
 
-use crate::{CallEngine, DescribeEngine, Described, Engine, EngineList, Engines, ListEngines};
+use crate::{CallEngine, DescribeEngine, Described, Engine, EngineList, Engines, ListEngines, MintToken, Minted};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
     ProtocolRef, ToSender, Turn, path,
@@ -21,6 +22,8 @@ const LIST_ENGINES: &str = "list_engines";
 const DESCRIBE_ENGINE: &str = "describe_engine";
 /// The tool that calls an engine's tool.
 const CALL_TOOL: &str = "call_tool";
+/// The tool that mints a token for an engine started outside the hub.
+const MINT_TOKEN: &str = "mint_token";
 
 /// The most bytes one decode of an input, or one walk between JSON and bytes or a schema and JSON Schema, may take.
 const WALK_BYTES: usize = 16 * 1024 * 1024;
@@ -48,6 +51,8 @@ enum Pending {
     Finding { held: Held<Called>, engine: u32, tool: String, input: Json },
     /// `call_tool`: the engine is asked to call `tool`, whose output is of `output`.
     Calling { held: Held<Called>, tool: String, output: SchemaNodes },
+    /// `mint_token`: `Engines` is asked for a token.
+    Minting { held: Held<Called> },
 }
 
 impl Pending {
@@ -57,7 +62,8 @@ impl Pending {
             Self::Listing { held }
             | Self::Describing { held, .. }
             | Self::Finding { held, .. }
-            | Self::Calling { held, .. } => held,
+            | Self::Calling { held, .. }
+            | Self::Minting { held } => held,
         }
     }
 }
@@ -67,6 +73,7 @@ enum Order {
     List,
     Describe { engine: u32 },
     Call(EngineCall),
+    Mint,
 }
 
 /// A call of an engine's tool, ready to ask: the set it was converted with, the input's bytes, and the output schema.
@@ -76,14 +83,16 @@ struct Converted {
     output: SchemaNodes,
 }
 
-/// The hub's three tools for the agent (ADR-0038), served by one worker: `list_engines` asks [`Engines`] for every
+/// The hub's tools for the agent (ADR-0038, ADR-0040), served by one worker: `list_engines` asks [`Engines`] for every
 /// engine linked, `describe_engine` asks an [`Engine`] for its tools and writes each one's input and output as JSON
 /// Schema, and `call_tool` converts its JSON input to bytes by the tool's input schema, asks the engine to call it,
 /// and converts the bytes it answers back to JSON by the tool's output schema. Input that is not of the schema is
-/// refused before anything is sent, so an engine receives only bytes its schema reads.
+/// refused before anything is sent, so an engine receives only bytes its schema reads. `mint_token` asks `Engines`
+/// for a token, and answers it with the arguments to start an engine with, for an engine the agent starts itself.
 ///
 /// An engine's id is a `u32`, as `Engines` counts them: a 64-bit integer's JSON form is a string (ADR-0007), and an
-/// agent writes the `3` it was shown. `list_engines` takes and answers the link's own `ListEngines` and `EngineList`.
+/// agent writes the `3` it was shown. `list_engines` takes and answers the link's own `ListEngines` and `EngineList`,
+/// and `mint_token` its `MintToken` and `Minted`, whose token JSON writes as 32 hexadecimal digits.
 ///
 /// `describe_engine` does not show the set's revision. The agent never passes one: `call_tool` reads the engine's
 /// latest set when it is called, and converts by it.
@@ -102,7 +111,8 @@ impl ChildOf for EngineTools {
 impl Actor for EngineTools {
     type Config = EngineToolsConfig;
     type Key = ();
-    type Handles = (Call, Answer<EngineList, Asking>, Answer<Described, Asking>, Answer<Called, Asking>);
+    type Handles =
+        (Call, Answer<EngineList, Asking>, Answer<Described, Asking>, Answer<Called, Asking>, Answer<Minted, Asking>);
     type BeginSends = ();
     type EndSends = ();
 
@@ -144,6 +154,15 @@ impl Tool for EngineTools {
                 input: SchemaNodes::of(&EngineCall::SHAPE),
                 output: SchemaNodes::of(&EngineAnswer::SHAPE),
             },
+            ToolSheet {
+                name: String::from(MINT_TOKEN),
+                description: String::from(
+                    "Mints a token for an engine started outside the hub, and answers the arguments to start it with. \
+                     The token links one engine once, and expires if it goes unused.",
+                ),
+                input: SchemaNodes::of(&MintToken::SHAPE),
+                output: SchemaNodes::of(&Minted::SHAPE),
+            },
         ]
     }
 
@@ -153,8 +172,12 @@ impl Tool for EngineTools {
 }
 
 impl Handles<Call> for EngineTools {
-    type Sends =
-        (Asks<Path<Engines>, ListEngines, Asking>, Asks<Path<Engine>, DescribeEngine, Asking>, ToSender<Called>);
+    type Sends = (
+        Asks<Path<Engines>, ListEngines, Asking>,
+        Asks<Path<Engine>, DescribeEngine, Asking>,
+        Asks<Path<Engines>, MintToken, Asking>,
+        ToSender<Called>,
+    );
 
     /// Reads the call's input, or refuses it; holds the call, and asks `Engines` or the engine named.
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -181,6 +204,10 @@ impl Handles<Call> for EngineTools {
                 turn.to(path::<Engine>(u64::from(engine))).ask(&DescribeEngine, &asking)?;
                 Pending::Finding { held, engine, tool, input }
             }
+            Order::Mint => {
+                turn.to(path::<Engines>(())).ask(&MintToken, &asking)?;
+                Pending::Minting { held }
+            }
         };
         self.calls.insert(asking.number, pending);
 
@@ -202,9 +229,13 @@ impl Handles<Answer<EngineList, Asking>> for EngineTools {
         let (held, called) = match (pending, answered) {
             (Pending::Listing { held }, Answered::Yes(list)) => (held, listed(&list)?),
             (Pending::Listing { held }, Answered::No(_)) => (held, refused("`Engines` did not answer")),
-            (other @ (Pending::Describing { .. } | Pending::Finding { .. } | Pending::Calling { .. }), _) => {
-                (other.into_held(), lost())
-            }
+            (
+                other @ (Pending::Describing { .. }
+                | Pending::Finding { .. }
+                | Pending::Calling { .. }
+                | Pending::Minting { .. }),
+                _,
+            ) => (other.into_held(), lost()),
         };
         turn.answer(held, &called)?;
 
@@ -236,7 +267,9 @@ impl Handles<Answer<Described, Asking>> for EngineTools {
                 }
                 Err(refusal) => (held, refusal),
             },
-            other @ (Pending::Listing { .. } | Pending::Calling { .. }) => (other.into_held(), lost()),
+            other @ (Pending::Listing { .. } | Pending::Calling { .. } | Pending::Minting { .. }) => {
+                (other.into_held(), lost())
+            }
         };
         turn.answer(held, &called)?;
 
@@ -258,9 +291,39 @@ impl Handles<Answer<Called, Asking>> for EngineTools {
         };
         let (held, called) = match pending {
             Pending::Calling { held, tool, output } => (held, output_of(answered, &tool, &output)?),
-            other @ (Pending::Listing { .. } | Pending::Describing { .. } | Pending::Finding { .. }) => {
-                (other.into_held(), lost())
-            }
+            other @ (Pending::Listing { .. }
+            | Pending::Describing { .. }
+            | Pending::Finding { .. }
+            | Pending::Minting { .. }) => (other.into_held(), lost()),
+        };
+        turn.answer(held, &called)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Minted, Asking>> for EngineTools {
+    type Sends = ();
+
+    /// `Engines`' token, answered as it gave it.
+    fn handle(
+        &mut self,
+        (answered, Asking { number }): (Answered<Minted>, Asking),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let Some(pending) = self.calls.remove(&number) else {
+            return Ok(());
+        };
+        let (held, called) = match (pending, answered) {
+            (Pending::Minting { held }, Answered::Yes(minted)) => (held, Called::Output(to_bytes(&minted)?)),
+            (Pending::Minting { held }, Answered::No(_)) => (held, refused("`Engines` minted no token")),
+            (
+                other @ (Pending::Listing { .. }
+                | Pending::Describing { .. }
+                | Pending::Finding { .. }
+                | Pending::Calling { .. }),
+                _,
+            ) => (other.into_held(), lost()),
         };
         turn.answer(held, &called)?;
 
@@ -287,6 +350,7 @@ fn order(call: &Call) -> Result<Order, Called> {
             from_bytes::<EngineId>(&call.input, budget).map(|EngineId { engine }| Order::Describe { engine })
         }
         CALL_TOOL => from_bytes::<EngineCall>(&call.input, budget).map(Order::Call),
+        MINT_TOKEN => from_bytes::<MintToken>(&call.input, budget).map(|_| Order::Mint),
         other => return Err(refused(format!("there is no tool `{other}` here"))),
     };
 

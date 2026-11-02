@@ -1,23 +1,31 @@
-//! The hub's end of the link: the root that listens for engines, and keeps one actor for each linked (ADR-0038).
+//! The hub's end of the link: the root that listens for engines, mints the tokens they link with, and keeps one actor
+//! for each linked (ADR-0038, ADR-0040).
 
 mod asks;
 mod engine;
+mod randomness;
 mod settings;
+mod tokens;
 
 pub use asks::{CallEngine, DescribeEngine, Described, EngineList, EngineListing, ListEngines, Shown};
-pub use engine::{Engine, EngineConfig, Sent};
+pub use engine::{Engine, EngineConfig, Sent, Vouching};
+pub use randomness::{Randomness, Unfilled};
 pub use settings::EnginesSettings;
+pub use tokens::{MintToken, Minted, Minting, TakeToken, TokenFor};
 
-use crate::read_limit;
+use crate::Token;
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Level, More,
-    Number, Open, Part, Path, Streamed, Streams, Taken, ToAny, ToSender, ToType, Top, Turn, path,
+    Actor, ActorRef, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Level,
+    More, Number, Open, Part, Path, Streamed, Streams, Taken, ToAny, ToSender, ToType, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
-use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::{Accept, Accepted, Accepting, Framing, Listen, Listening, Shut, Tcp, Unbound};
+use core::mem;
+use core::time::Duration;
+use randomness::{Draw, Drawn};
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
+use tokens::Tokens;
 
 /// What the root keeps for its listen: nothing, since it asks one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
@@ -30,12 +38,19 @@ pub struct Binding;
 pub struct Unlistened;
 
 /// Where the root is in listening.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[derive(Debug, Bound)]
 enum Port {
-    /// `Tcp` has not answered.
-    Asked,
+    /// `Tcp` has not answered: each token minted meanwhile waits, with its request, to be answered with the port.
+    Asked { minted: Vec<Waiting> },
     /// `Tcp` bound this port.
     Bound(u16),
+}
+
+/// A token minted before the root listens, and the request it answers once it does.
+#[derive(Debug, Bound)]
+struct Waiting {
+    held: Held<Minted>,
+    token: Token,
 }
 
 /// What the agent is shown of one engine.
@@ -57,13 +72,23 @@ struct Linked {
 /// The connections the root's listener may accept ahead of the root spawning their engines.
 const ACCEPTING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 
-/// The hub's end of the link (ADR-0038): listens on its port through `Tcp`, and for each connection accepted, spawns an
-/// [`Engine`] beneath itself, keyed by a count it keeps, which is the engine's id for the agent. An id is a `u32`,
-/// whose JSON form is a number an agent writes as it reads it (ADR-0007, ADR-0038), and an engine's key is that id. An actor asks it to
-/// [`ListEngines`] at its typed path, `path::<Engines>(())`, and asks an engine itself at `path::<Engine>(id)`.
+/// The hub's end of the link (ADR-0038, ADR-0040): listens on its port through `Tcp`, and for each connection accepted,
+/// spawns an [`Engine`] beneath itself, keyed by a count it keeps, which is the engine's id for the agent. An id is a
+/// `u32`, whose JSON form is a number an agent writes as it reads it (ADR-0007, ADR-0038), and an engine's key is that
+/// id. An actor asks it to [`ListEngines`] or to [`MintToken`] at its typed path, `path::<Engines>(())`, and asks an
+/// engine itself at `path::<Engine>(id)`.
+///
+/// Every engine links with a token it minted, good for one `Hello`: an engine reading a `Hello` asks it to
+/// [`TakeToken`], and is listed only once it has. A token for an engine started outside the hub is 16 bytes of the
+/// host's [`Randomness`], drawn by a job, and lasts `token_within_millis`, measured on the engine's clock; at most
+/// `most_tokens` are kept, the oldest dropped as another is minted. A token asked for before the hub listens is
+/// answered once it does, with the port bound.
 ///
 /// Each engine tells it the name it gave and how many tools it holds as they change, so its list is answered at once,
 /// and it watches each, dropping one from its list when it ends.
+///
+/// It stands up on a host that serves it randomness: each native host's crate bootstraps it, serving the system's,
+/// and checks its settings with [`EnginesSettings::check_read_limit`].
 #[derive(Bound)]
 #[kind(name = "aether.link.engines")]
 pub struct Engines {
@@ -73,6 +98,7 @@ pub struct Engines {
     /// Each engine linked, by its id.
     linked: BTreeMap<u32, Linked>,
     next: u32,
+    tokens: Tokens,
 }
 
 impl Engines {
@@ -80,7 +106,7 @@ impl Engines {
     #[must_use]
     pub const fn port(&self) -> Option<u16> {
         match self.port {
-            Port::Asked => None,
+            Port::Asked { .. } => None,
             Port::Bound(port) => Some(port),
         }
     }
@@ -101,25 +127,30 @@ impl Carries<ListEngines> for Engines {
     type Answers = (EngineList,);
 }
 
-/// It stands up on every host, and refuses to where a frame its engines would read could not be read.
-impl<H: Host> Bootstrap<H> for Engines {
-    const SECTION: &'static str = "engines";
-    type Settings = EnginesSettings;
-    type Needs = ();
-    type Provides = ();
+/// Asked at its typed path, it answers once a token is drawn and it listens.
+impl Carries<MintToken> for Engines {
+    type Answers = (Minted,);
+}
 
-    async fn bootstrap(settings: EnginesSettings, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
-        let checked = read_limit::check("engines", cx.read_limit(), settings.most_bytes);
-        checked.map_err(|why| Unbuilt::Failed(Box::new(why)))?;
-
-        cx.begin(&(), settings)
-    }
+/// Asked at its typed path, it answers at once.
+impl Carries<TakeToken> for Engines {
+    type Answers = (TokenFor,);
 }
 
 impl Actor for Engines {
     type Config = EnginesSettings;
     type Key = ();
-    type Handles = (Answer<Listening, Binding>, Part<Accepting>, Answer<Unbound, Number>, Ended, Shown, ListEngines);
+    type Handles = (
+        Answer<Listening, Binding>,
+        Part<Accepting>,
+        Answer<Unbound, Number>,
+        Ended,
+        Shown,
+        ListEngines,
+        MintToken,
+        Answer<Drawn, Minting>,
+        TakeToken,
+    );
     type BeginSends = (Asks<Path<Tcp>, Listen, Binding>,);
     type EndSends = ();
 
@@ -131,10 +162,11 @@ impl Actor for Engines {
 
         Ok(Self {
             settings,
-            port: Port::Asked,
+            port: Port::Asked { minted: Vec::new() },
             accepting: Streams::new(ACCEPTING_WINDOW),
             linked: BTreeMap::new(),
             next: 0,
+            tokens: Tokens::default(),
         })
     }
 
@@ -146,7 +178,8 @@ impl Actor for Engines {
 impl Handles<Answer<Listening, Binding>> for Engines {
     type Sends = (Asks<Streamed<Accepting>, Open<Accepting>, Number>, ToAny<Streamed<Accepting>, More>);
 
-    /// Bound, it accepts on its listener; otherwise it fails.
+    /// Bound, it accepts on its listener, and answers each token minted meanwhile; otherwise it fails, and each is
+    /// answered that it went unanswered.
     fn handle(
         &mut self,
         (answered, Binding): (Answered<Listening>, Binding),
@@ -157,7 +190,12 @@ impl Handles<Answer<Listening, Binding>> for Engines {
             return Err(Fault::new(&Unlistened)?);
         };
         self.accepting.open(turn, listener.protocol(), Accept, ())?;
-        self.port = Port::Bound(port);
+        let Port::Asked { minted } = mem::replace(&mut self.port, Port::Bound(port)) else {
+            return Ok(());
+        };
+        for Waiting { held, token } in minted {
+            turn.answer(held, &self.minted(token, port))?;
+        }
 
         Ok(())
     }
@@ -255,5 +293,77 @@ impl Handles<ListEngines> for Engines {
         turn.reply(&EngineList { engines })?;
 
         Ok(())
+    }
+}
+
+impl Handles<MintToken> for Engines {
+    type Sends = (ToSender<Minted>,);
+
+    /// Holds the request, and draws a token for it from the host's randomness.
+    fn handle(&mut self, _: MintToken, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let held = turn.hold()?;
+        turn.run(&Draw, &Minting { held })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Drawn, Minting>> for Engines {
+    type Sends = ();
+
+    /// A token drawn: kept in the table, and answered with the arguments to start an engine with, or kept waiting for
+    /// the port. A draw that came to nothing answers nothing, and the engine tells the asker its request went
+    /// unanswered.
+    fn handle(
+        &mut self,
+        (answered, Minting { held }): (Answered<Drawn>, Minting),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Drawn::Token(token)) = answered else {
+            turn.log(Level::Error, format_args!("no token was drawn: {answered:?}"));
+            drop(held);
+            return Ok(());
+        };
+        let within = Duration::from_millis(self.settings.token_within_millis);
+        let most = usize::try_from(self.settings.most_tokens).unwrap_or(usize::MAX);
+        self.tokens.mint_external(token, turn.now(), within, most);
+        let port = match &mut self.port {
+            Port::Bound(port) => *port,
+            Port::Asked { minted } => {
+                minted.push(Waiting { held, token });
+                return Ok(());
+            }
+        };
+        turn.answer(held, &self.minted(token, port))?;
+
+        Ok(())
+    }
+}
+
+impl Handles<TakeToken> for Engines {
+    type Sends = (ToSender<TokenFor>,);
+
+    /// Takes the token out of the table: what it was for, or that it is unknown, once used or expired too.
+    fn handle(&mut self, take: TakeToken, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let taken = self.tokens.take(take.token, turn.now());
+        turn.reply(&taken)?;
+
+        Ok(())
+    }
+}
+
+impl Engines {
+    /// The token `token` minted, with the arguments that start an engine linking to this hub at `port` with it.
+    fn minted(&self, token: Token, port: u16) -> Minted {
+        let args = vec![
+            String::from("--hub"),
+            self.settings.host.clone(),
+            String::from("--port"),
+            port.to_string(),
+            String::from("--hub-token"),
+            token.to_string(),
+        ];
+
+        Minted { token, args }
     }
 }

@@ -37,6 +37,8 @@ agent ── mint_token {} ──> Engines ── answers a token, and the argum
 - **A token is 16 bytes of the host's randomness,** minted by `Engines` and kept in its table with what it is for: a spawn (`Spawned:n`) or an engine started outside the hub.
 - **It is good for one `Hello`.** An `Engine` whose `Hello` brings a token asks `Engines` whose it is, and `Engines` takes it out of its table. A token it never minted, or one used, is refused, as a wrong revision is (`Down::Refused`), and that connection is shut. A `Hello` with no token cannot be read: the field is required.
 - **A token minted for an engine outside the hub lasts `token_within_millis`** (ten minutes by default), long enough to start an engine by hand, and the table keeps at most `most_tokens` of them; past that, the oldest goes. A spawn's token lasts as long as its `Spawned`.
+- **The host's randomness is a service the link crate defines,** `Randomness`, which the headless and desktop hosts serve from the kernel's generator as they bootstrap `Engines`, and which a `Draw` job reads (ADR-0034). So `Engines` runs on native hosts only, as the store does.
+- **A refusal names its reason:** `Down::Refused(Refusal::Revision { revision })` for a revision the hub does not speak, and `Down::Refused(Refusal::Token)` for a token it does not hold.
 - So the hub knows what every connection is: the spawn it belongs to, or an engine started outside it, and ADR-0038's links that bring no proof are gone.
 
 ### Every engine ends when its link ends
@@ -44,7 +46,7 @@ agent ── mint_token {} ──> Engines ── answers a token, and the argum
 - **`LinkSettings` gains `token`,** read from `--hub-token`, required: an engine started without one fails as it begins, naming the setting.
 - **A `Link` ends its program when its connection ends,** when its dial is refused, or when the hub refuses its `Hello` (`turn.quit`, ADR-0020). Its token is spent, and a hub that restarted has none of its own to take, so it could never link again. One rule holds for every engine, spawned or started outside the hub: no engine outlives its link, on every host, with no signal from a parent that may have died first.
 - **This replaces ADR-0038's redial.** `Link` dials once, as it begins; its `Sleep`, its waits between dials, and `redial_millis` go. ADR-0038's links with no token, and the token its "Who dialed" planned for spawned engines alone, are replaced by this section.
-- `Up::Hello` is `{ revision, name, token }`, and `REVISION` is `2`.
+- `Up::Hello` is `{ revision, name, token }`, and `REVISION` stays `1`: no build that speaks the first link's frames is kept anywhere, so there is nothing to tell apart.
 
 ### Processes
 
@@ -118,7 +120,7 @@ pub enum Terminated { Stopping, External, NotLinked }
 - **The `Hello` that brings its token is its link:** `Engines` tells the `Spawned` its engine's id, and the `Spawned` answers `Linked`.
 - **The agent is answered once the engine is usable:** `Linked` when it has said `Hello`, `Exited` with its status and the tail of its stderr if it ended first, `Unlinked` if it did not link within `link_within_millis` (the process is then stopped), and `NotStored` and `Refused` at once.
 - **A `Spawned` lives as long as its process,** and ends when told `Exited`, so the store's hold and the launch copy go with it. `TerminateEngine` asks the engine's `Spawned` to `Stop` its process.
-- **An engine started outside the hub** links with a token from `MintToken`, whose `args` are what to start it with. The hub holds no process of it, so `TerminateEngine` answers `External`; the hub can shut its connection, and the engine then ends by the rule above.
+- **An engine started outside the hub** links with a token from `MintToken`, whose `args` are what to start it with: `--hub` names the setting `EnginesSettings.host`, where the hub listens. The hub holds no process of it, so `TerminateEngine` answers `External`; the hub can shut its connection, and the engine then ends by the rule above.
 
 ### What the agent sees
 
@@ -140,7 +142,7 @@ list_engines {}                                   -> { engines: [{ engine, name,
 - **The hub knows every connection,** and every engine follows one rule: it links once, with a token, and ends when its link ends. An engine started by hand needs a token first, and is started again with a fresh one after its hub goes.
 - **`Link` loses its redial,** which a spent token could not use.
 - **`Processes` can start any program a program asks it to.** A hub lists it, and only `Engines` asks it there; an engine has no reason to list it.
-- **`Hello` changes,** so an engine and a hub of different revisions refuse each other (ADR-0038), as they should.
+- **`Hello` changes without a new revision,** since nothing outside this repository speaks the first. From here the store keeps builds, so an engine checked in before a change can meet a hub built after it, and a change an older side would misread takes the next revision (ADR-0038).
 - **ADR-0039's names lose the 64-hex-digit spelling.**
 - **Each spawn copies its binary.** Copies go as each engine ends, and a crash leaves them in `running/`, which the store clears as it begins.
 
