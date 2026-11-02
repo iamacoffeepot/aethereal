@@ -19,17 +19,33 @@ use core::mem;
 use core::num::NonZeroUsize;
 use core::time::Duration;
 use pacing::{Due, Pacing};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Wake, Waker};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::WindowId;
 
-/// How often the loop looks again at a program asked to stop while `Stop` has not finished: it draws no frame then,
-/// so nothing else wakes it, and what `Stop`'s chain waits on, a job or a source, may come in at any time.
-const STOPPING_LOOK: Duration = Duration::from_millis(4);
+/// What the engine sends the event loop when a source is pushed or a job finishes, to wake it (ADR-0010, ADR-0018):
+/// it carries nothing, and the loop steps what came in as it next settles.
+struct Woken;
+
+/// What the engine wakes the event loop by: its proxy, through which any thread sends it [`Woken`]. A proxy is not
+/// shared between threads on every platform, so it is behind a lock, held only to send.
+struct Proxy(Mutex<EventLoopProxy<Woken>>);
+
+impl Wake for Proxy {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        // A loop that has ended has nothing left to wake.
+        let _ = self.0.lock().unwrap_or_else(PoisonError::into_inner).send_event(Woken);
+    }
+}
 
 /// The desktop host: a program's host by its type alone (ADR-0029). Its program is written
 /// `Desktop::program().root::<Windows>().root::<Renderer>()…`, and run with
@@ -76,8 +92,10 @@ impl Desktop {
     pub(crate) fn run_settled(settled: Settled<Self>) -> Result<Exit, Failed> {
         let workers = settled.engine().worker_threads();
         let stop_within = Duration::from_millis(settled.running().stop_within_millis);
-        let event_loop = EventLoop::new().map_err(Failed::EventLoop)?;
-        let mut app = App { workers, stop_within, clock: Monotonic::new(), stage: Stage::Settled(Box::new(settled)) };
+        let event_loop = EventLoop::<Woken>::with_user_event().build().map_err(Failed::EventLoop)?;
+        let proxy = event_loop.create_proxy();
+        let mut app =
+            App { workers, stop_within, clock: Monotonic::new(), proxy, stage: Stage::Settled(Box::new(settled)) };
         event_loop.run_app(&mut app).map_err(Failed::EventLoop)?;
 
         match app.stage {
@@ -92,6 +110,8 @@ struct App {
     workers: NonZeroUsize,
     stop_within: Duration,
     clock: Monotonic,
+    /// What the engine wakes the loop by once the program runs.
+    proxy: EventLoopProxy<Woken>,
     stage: Stage,
 }
 
@@ -130,13 +150,13 @@ enum Next {
     /// Waits on the windows' events, and the frame it asked for.
     Wait,
     /// Waits on the windows' events until this time on the host's clock, in nanoseconds, then looks again: when a
-    /// capped frame is next due, or when to look again at a program asked to stop.
+    /// capped frame is next due, or when the time a program asked to stop gives `Stop` has passed.
     LookAt(u64),
     /// Ends, the program having ended as this says.
     End(Exit),
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<Woken> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let stage = mem::replace(&mut self.stage, Stage::Opening);
         self.stage = match stage {
@@ -165,6 +185,9 @@ impl ApplicationHandler for App {
             heard => running.heard(window, heard),
         }
     }
+
+    /// The engine was sent something while the loop waited: the loop steps it as it next settles, which follows.
+    fn user_event(&mut self, _: &ActiveEventLoop, _: Woken) {}
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let Stage::Running(running) = &mut self.stage else {
@@ -196,6 +219,7 @@ impl App {
         let (mut engine, screen) = pollster::block_on(settled.bootstrap(Screen::new(event_loop)))?;
         let (drawing, windowing, runners) = screen.into_served().map_err(Failed::Unserved)?;
         engine.set_jobs(Arc::new(runners.runners(self.workers)));
+        engine.set_wake(Waker::from(Arc::new(Proxy(Mutex::new(self.proxy.clone())))));
         let mut headless = Headless::new(engine, self.workers);
         headless.engine_mut().start();
         let pacing = Pacing::new(drawing.presenting(), self.clock.nanos());
@@ -250,24 +274,24 @@ impl Running {
         self.headless.park();
     }
 
-    /// Between the loop's events, at `now`: polls the device, steps what the windows' events and the jobs brought,
-    /// and says what the loop does next, as the program's lifecycle stands. While it runs capped, the loop waits until
-    /// the next frame is due, and asks for it once it is. Once it is asked to stop, `Stop` has `stop_within` to
-    /// finish, and the loop looks again every [`STOPPING_LOOK`] until it has or the time has passed.
+    /// Between the loop's events, at `now`: polls the device, steps what the windows' events, the sources, and the
+    /// jobs brought, and says what the loop does next, as the program's lifecycle stands. While it runs capped, the
+    /// loop waits until the next frame is due, and asks for it once it is. Once it is asked to stop, `Stop` has
+    /// `stop_within` to finish: the loop waits until that time has passed, woken by what `Stop`'s chain waits on as
+    /// it comes in.
     fn settle(&mut self, event_loop: &ActiveEventLoop, now: u64, stop_within: Duration) -> Next {
         self.drawing.poll();
         self.step_until_idle(event_loop);
         let within = u64::try_from(stop_within.as_nanos()).unwrap_or(u64::MAX);
-        let look = u64::try_from(STOPPING_LOOK.as_nanos()).unwrap_or(u64::MAX);
         match (self.headless.engine().lifecycle(), self.stopping) {
             (Lifecycle::Stopped, _) => Next::End(Exit::Stopped),
             (Lifecycle::Stopping, Stopping::Not) => {
                 let by = now.saturating_add(within);
                 self.stopping = Stopping::By(by);
-                Next::LookAt(by.min(now.saturating_add(look)))
+                Next::LookAt(by)
             }
             (Lifecycle::Stopping, Stopping::By(by)) if now >= by => Next::End(Exit::OutOfTime),
-            (Lifecycle::Stopping, Stopping::By(by)) => Next::LookAt(by.min(now.saturating_add(look))),
+            (Lifecycle::Stopping, Stopping::By(by)) => Next::LookAt(by),
             (Lifecycle::Running, _) => self.paced(now),
             (Lifecycle::Waiting, _) => Next::Wait,
         }

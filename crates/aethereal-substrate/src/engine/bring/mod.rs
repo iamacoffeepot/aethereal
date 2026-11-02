@@ -10,6 +10,7 @@
 mod tests;
 
 use super::gift::{self, Arrival};
+use super::wake::Bell;
 use super::{Engine, ROOTS, parity};
 use crate::{Context, lives, log, stream};
 use aethereal_actor::{Actors, Arena, Controller, Gift, Given, MailId, Mailed, Requests, Seated, Source, Tie};
@@ -26,9 +27,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// It is cloned for each place the chassis hears of such events, and every
 /// clone pushes onto the one feed. It is closed once its source is dropped.
 /// The feed is a queue no one waits on: a push never waits for another, nor
-/// for the engine, and the engine never waits for a push.
+/// for the engine, and the engine never waits for a push. Each push wakes the
+/// host (ADR-0010).
 pub struct Feed<K> {
     fed: Arc<Fed<K>>,
+    bell: Bell,
 }
 
 /// What a feed holds between two brings.
@@ -44,8 +47,8 @@ struct Fed<K> {
 pub struct Closed;
 
 impl<K> Feed<K> {
-    /// Pushes `event`, for the engine to bring to the source's owner at the next bring: refused once the source has
-    /// been dropped.
+    /// Pushes `event`, for the engine to bring to the source's owner at the next bring, and wakes the host: refused
+    /// once the source has been dropped.
     ///
     /// # Errors
     ///
@@ -56,6 +59,7 @@ impl<K> Feed<K> {
         }
         // An event pushed as the feed closes is dropped with it, as one pushed and not yet brought is.
         self.fed.events.push(event);
+        self.bell.ring();
 
         Ok(())
     }
@@ -69,7 +73,7 @@ impl<K> Feed<K> {
 
 impl<K> Clone for Feed<K> {
     fn clone(&self) -> Self {
-        Self { fed: Arc::clone(&self.fed) }
+        Self { fed: Arc::clone(&self.fed), bell: self.bell.clone() }
     }
 }
 
@@ -201,7 +205,7 @@ impl Engine {
         let fed = Arc::new(Fed { events: SegQueue::new(), closed: AtomicBool::new(false) });
         self.sources.push(Bringing { ticket, seen: Seen::Handed, feed: Arc::clone(&fed) as Arc<dyn Brings> });
 
-        (given, Feed { fed })
+        (given, Feed { fed, bell: self.bell.clone() })
     }
 
     /// Brings what the chassis has pushed onto every feed since the last bring into the engine, between steps: each

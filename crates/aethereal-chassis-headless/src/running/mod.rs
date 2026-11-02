@@ -8,7 +8,9 @@ use crate::Headless;
 use aethereal_actor::Time;
 use aethereal_substrate::{Clock, Lifecycle};
 use core::time::Duration;
-use std::thread;
+use std::sync::Arc;
+use std::task::{Wake, Waker};
+use std::thread::{self, Thread};
 pub use timer::Timer;
 
 /// How a program run to its end ended.
@@ -19,6 +21,28 @@ pub enum Exit {
     /// `Stop` had not finished in the time the host gave it once the program was asked to stop: a subscriber still
     /// held it, or its chain still ran.
     OutOfTime,
+}
+
+/// How long the host rests between steps with nothing to run.
+#[derive(Clone, Copy)]
+enum Rest {
+    /// Until this time on the host's clock, in nanoseconds, or until it is woken, whichever comes first.
+    Until(u64),
+    /// Until it is woken: nothing is due.
+    Woken,
+}
+
+/// What the engine wakes the host by: the thread that runs it, unparked (ADR-0010, ADR-0018).
+struct Unpark(Thread);
+
+impl Wake for Unpark {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
+    }
 }
 
 /// Whether the program has been asked to stop, as the host keeps it.
@@ -37,10 +61,10 @@ impl Headless {
     /// [`quit`](aethereal_actor::Turn::quit), waits at most `stop_within` for `Stop` to finish.
     ///
     /// Between steps with nothing to run it parks its workers and sleeps until the next cycle is due, or until the
-    /// time it gives `Stop` has passed. What is pushed, or finishes, while it sleeps is brought in when it wakes, so
-    /// it waits at most `every`. Cycles are due on a grid of `every` from the start, and one missed while the program
-    /// was busy is skipped, not queued: the next `Tick` covers the time. An engine whose cycle holds no stage still
-    /// wakes every `every`, and does nothing.
+    /// time it gives `Stop` has passed. A source pushed, or a job finished, while it sleeps wakes it, and what came in
+    /// is brought in at once (ADR-0010, ADR-0018). Cycles are due on a grid of `every` from the start, and one missed
+    /// while the program was busy is skipped, not queued: the next `Tick` covers the time. An engine whose cycle holds
+    /// no stage has no cycle to wake for, and sleeps until something comes in.
     ///
     /// # Panics
     ///
@@ -49,6 +73,7 @@ impl Headless {
     pub fn run(mut self, every: Duration, stop_within: Duration) -> Exit {
         let every = nanos(every);
         let stop_within = nanos(stop_within);
+        self.engine.set_wake(Waker::from(Arc::new(Unpark(thread::current()))));
         self.engine.start();
         let mut timer = Timer::new(self.clock.nanos(), every);
         let mut stopping = Stopping::Not;
@@ -69,14 +94,17 @@ impl Headless {
                 continue;
             }
             self.pool.park();
-            let wake = match stopping {
-                Stopping::Not => timer.due(),
-                Stopping::By(by) => by,
+            let rest = match stopping {
+                Stopping::By(by) => Rest::Until(by),
+                Stopping::Not if self.engine.has_stages() => Rest::Until(timer.due()),
+                Stopping::Not => Rest::Woken,
             };
-            let rest = Duration::from_nanos(wake.saturating_sub(self.clock.nanos()));
-            // The native host owns its thread, and waits on its own timer between steps (ADR-0001).
-            #[allow(clippy::disallowed_methods)]
-            thread::sleep(rest);
+            // A wake that came since the last bring has left this thread unparked, so the park returns at once, and so
+            // does one a step's own waits woke: either way the loop looks again.
+            match rest {
+                Rest::Until(at) => thread::park_timeout(Duration::from_nanos(at.saturating_sub(self.clock.nanos()))),
+                Rest::Woken => thread::park(),
+            }
         }
     }
 }
