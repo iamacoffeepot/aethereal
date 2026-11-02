@@ -19,6 +19,7 @@ mod pool;
 mod program;
 mod rehearsal;
 mod running;
+mod store;
 mod tcp;
 #[cfg(test)]
 mod tests;
@@ -37,6 +38,7 @@ use aethereal_substrate::{Clock, Engine, Split, SplitCost, Workers};
 pub use pool::Measured;
 pub use program::{RunningSettings, Serving};
 pub use running::{Exit, Timer};
+pub use store::StoreDirectory;
 pub use tcp::Dialers;
 
 #[cfg(feature = "harness")]
