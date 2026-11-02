@@ -1,17 +1,13 @@
 //! The store's tools: the agent checks a binary in, lists what the store holds, and pins an entry or clears its pin
 //! (ADR-0039).
 
-mod kinds;
-
-pub use kinds::{CheckInInput, CheckedInOutput, EntryListed, ListStoredInput, PinInput, PinOutput, StoredListed};
-
-use crate::{CheckIn, CheckedIn, Entry, ListStored, Pin, Pinned, Store, StoreHash, StoreName, Stored, Unpin};
+use crate::{CheckIn, CheckedIn, ListStored, Pin, Pinned, Store, Stored, StoredBinary, Unpin};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
     ProtocolRef, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
-use aethereal_tools::{Call, Called, Tool, ToolSheet, Tooling};
+use aethereal_tools::{Call, Called, Done, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 
 /// The tool that checks a binary in.
@@ -38,18 +34,18 @@ pub struct Asking {
 #[kind(name = "aether.store.store_tools_config")]
 pub struct StoreToolsConfig;
 
-/// What a call asks of the store, read from its input.
+/// What a call asks of the store: its input, which is the store's own ask (ADR-0037).
 enum Order {
     CheckIn(CheckIn),
     List,
-    Pin(StoreHash),
-    Unpin(StoreHash),
+    Pin(Pin),
+    Unpin(Unpin),
 }
 
 /// The store's four tools for the agent (ADR-0039), served by one worker: `check_in` asks [`Store`] to copy the file
 /// at a path on the host's machine in under a name, `list_stored` asks it for every entry, and `pin` and `unpin` ask it
-/// to keep an entry from pruning or to clear that. Each case the store answers short of done is refused with a reason
-/// the agent reads.
+/// to keep an entry from pruning or to clear that. Each takes the store's own ask as its input, and answers what the
+/// store answers, as both are plain (ADR-0037); each case short of done is refused with a reason the agent reads.
 #[derive(Bound)]
 #[kind(name = "aether.store.store_tools")]
 pub struct StoreTools {
@@ -89,8 +85,8 @@ impl Tool for StoreTools {
                      bytes it holds, and whether they were not already stored. A name checked in again moves to the \
                      newer bytes.",
                 ),
-                input: SchemaNodes::of(&CheckInInput::SHAPE),
-                output: SchemaNodes::of(&CheckedInOutput::SHAPE),
+                input: SchemaNodes::of(&CheckIn::SHAPE),
+                output: SchemaNodes::of(&StoredBinary::SHAPE),
             },
             ToolSheet {
                 name: String::from(LIST_STORED),
@@ -98,22 +94,22 @@ impl Tool for StoreTools {
                     "Lists every binary in the store, the last checked in first: each one's hash, the names that \
                      point at it, how many bytes it holds, whether it is pinned, and whether an engine holds it.",
                 ),
-                input: SchemaNodes::of(&ListStoredInput::SHAPE),
-                output: SchemaNodes::of(&StoredListed::SHAPE),
+                input: SchemaNodes::of(&ListStored::SHAPE),
+                output: SchemaNodes::of(&Stored::SHAPE),
             },
             ToolSheet {
                 name: String::from(PIN),
                 description: String::from("Keeps the binary of a hash from being pruned, until it is unpinned."),
-                input: SchemaNodes::of(&PinInput::SHAPE),
-                output: SchemaNodes::of(&PinOutput::SHAPE),
+                input: SchemaNodes::of(&Pin::SHAPE),
+                output: SchemaNodes::of(&Done::SHAPE),
             },
             ToolSheet {
                 name: String::from(UNPIN),
                 description: String::from(
                     "Clears the pin of the binary of a hash. Its names and the engines that hold it still keep it.",
                 ),
-                input: SchemaNodes::of(&PinInput::SHAPE),
-                output: SchemaNodes::of(&PinOutput::SHAPE),
+                input: SchemaNodes::of(&Unpin::SHAPE),
+                output: SchemaNodes::of(&Done::SHAPE),
             },
         ]
     }
@@ -148,8 +144,8 @@ impl Handles<Call> for StoreTools {
         match order {
             Order::CheckIn(check_in) => turn.to(store).ask(&check_in, &asking)?,
             Order::List => turn.to(store).ask(&ListStored, &asking)?,
-            Order::Pin(hash) => turn.to(store).ask(&Pin { hash }, &asking)?,
-            Order::Unpin(hash) => turn.to(store).ask(&Unpin { hash }, &asking)?,
+            Order::Pin(pin) => turn.to(store).ask(&pin, &asking)?,
+            Order::Unpin(unpin) => turn.to(store).ask(&unpin, &asking)?,
         };
         self.calls.insert(asking.number, held);
 
@@ -170,9 +166,7 @@ impl Handles<Answer<CheckedIn, Asking>> for StoreTools {
             return Ok(());
         };
         let called = match answered {
-            Answered::Yes(CheckedIn::Stored { hash, bytes, fresh }) => {
-                Called::Output(to_bytes(&CheckedInOutput { hash: hash.0, bytes, fresh })?)
-            }
+            Answered::Yes(CheckedIn::Stored(stored)) => Called::Output(to_bytes(&stored)?),
             Answered::Yes(CheckedIn::Missing) => refused("nothing is at that path"),
             Answered::Yes(CheckedIn::NotAFile) => refused("that is not a regular file"),
             Answered::Yes(CheckedIn::TooLarge) => refused("the file is larger than the store takes"),
@@ -199,7 +193,7 @@ impl Handles<Answer<Stored, Asking>> for StoreTools {
             return Ok(());
         };
         let called = match answered {
-            Answered::Yes(stored) => Called::Output(to_bytes(&listed(stored))?),
+            Answered::Yes(stored) => Called::Output(to_bytes(&stored)?),
             Answered::No(_) => unanswered(),
         };
         turn.answer(held, &called)?;
@@ -221,7 +215,7 @@ impl Handles<Answer<Pinned, Asking>> for StoreTools {
             return Ok(());
         };
         let called = match answered {
-            Answered::Yes(Pinned::Done) => Called::Output(to_bytes(&PinOutput {})?),
+            Answered::Yes(Pinned::Done) => Called::Output(to_bytes(&Done {})?),
             Answered::Yes(Pinned::NotStored) => refused("no binary of that hash is stored"),
             Answered::No(_) => unanswered(),
         };
@@ -241,38 +235,17 @@ fn unanswered() -> Called {
     refused("the store did not answer")
 }
 
-/// What `call` asks of the store, or its refusal: a tool these are not, input that is not of the tool's, or a name
-/// that does not conform.
+/// What `call` asks of the store, or its refusal: a tool these are not, or input that is not of the tool's, with the
+/// rule it breaks, such as a name's.
 fn order(call: &Call) -> Result<Order, Called> {
     let budget = &mut Budget::new(INPUT_BYTES);
     let read = match call.tool.as_str() {
-        CHECK_IN => from_bytes::<CheckInInput>(&call.input, budget).map(|input| check_in(input).map(Order::CheckIn)),
-        LIST_STORED => from_bytes::<ListStoredInput>(&call.input, budget).map(|_| Ok(Order::List)),
-        PIN => from_bytes::<PinInput>(&call.input, budget).map(|input| Ok(Order::Pin(StoreHash(input.hash)))),
-        UNPIN => from_bytes::<PinInput>(&call.input, budget).map(|input| Ok(Order::Unpin(StoreHash(input.hash)))),
+        CHECK_IN => from_bytes(&call.input, budget).map(Order::CheckIn),
+        LIST_STORED => from_bytes::<ListStored>(&call.input, budget).map(|_| Order::List),
+        PIN => from_bytes(&call.input, budget).map(Order::Pin),
+        UNPIN => from_bytes(&call.input, budget).map(Order::Unpin),
         other => return Err(refused(format!("there is no tool `{other}` here"))),
     };
 
-    read.map_err(|_| refused(format!("that is no input of `{}`", call.tool)))?
-}
-
-/// The check-in `input` asks for, or the refusal of its name.
-fn check_in(input: CheckInInput) -> Result<CheckIn, Called> {
-    let CheckInInput { path, name } = input;
-    let Ok(name) = StoreName::parse(name) else {
-        return Err(refused("a name is 1 to 128 of ASCII letters, digits, `_`, `-`, and `.`"));
-    };
-
-    Ok(CheckIn { path, name })
-}
-
-/// What `list_stored` answers of `stored`.
-fn listed(stored: Stored) -> StoredListed {
-    let entries = stored
-        .entries
-        .into_iter()
-        .map(|Entry { hash, names, bytes, pinned, held }| EntryListed { hash: hash.0, names, bytes, pinned, held })
-        .collect();
-
-    StoredListed { entries }
+    read.map_err(|fault| refused(format!("the input of `{}`: {fault}", call.tool)))
 }

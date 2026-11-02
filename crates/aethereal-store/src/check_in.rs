@@ -19,14 +19,7 @@ pub struct CheckIn {
 #[kind(name = "aether.store.checked_in")]
 pub enum CheckedIn {
     /// The file is in the store, and its name points at it.
-    Stored {
-        /// The hash of its bytes.
-        hash: StoreHash,
-        /// How many bytes it holds.
-        bytes: u64,
-        /// Whether these bytes were not already in the store.
-        fresh: bool,
-    },
+    Stored(StoredBinary),
     /// Nothing is at the path.
     Missing,
     /// What is at the path is not a regular file: a directory, a device, or a pipe.
@@ -37,4 +30,16 @@ pub enum CheckedIn {
     Full,
     /// The host could not read the file or write the store.
     Failed,
+}
+
+/// A binary in the store, as a check-in found it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.store.stored_binary")]
+pub struct StoredBinary {
+    /// The hash of its bytes.
+    pub hash: StoreHash,
+    /// How many bytes it holds.
+    pub bytes: u64,
+    /// Whether these bytes were not already in the store.
+    pub fresh: bool,
 }

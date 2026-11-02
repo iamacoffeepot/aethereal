@@ -3,6 +3,10 @@
 use aethereal_data::{Boundary, Decode, DecodeError, Encode, EncodeError, Key, Plain, Reader, Schema, Shape, Writer};
 use core::fmt;
 
+/// The refusal of text that is not a name, with the rule it breaks.
+const REFUSED: DecodeError =
+    DecodeError::Refused { name: "StoreName", rule: "a name is 1 to 128 of ASCII letters, digits, `_`, `-`, and `.`" };
+
 /// The most bytes a name holds.
 const MOST_BYTES: usize = 128;
 
@@ -16,12 +20,12 @@ impl StoreName {
     ///
     /// # Errors
     ///
-    /// [`DecodeError::Refused`], naming `StoreName`, when `text` does not conform.
+    /// [`DecodeError::Refused`], naming `StoreName` and its rule, when `text` does not conform.
     pub fn parse(text: impl Into<String>) -> Result<Self, DecodeError> {
         let text = text.into();
         let is_name = spells(&text);
         if !is_name {
-            return Err(DecodeError::Refused { name: "StoreName" });
+            return Err(REFUSED);
         }
 
         Ok(Self(text))
@@ -94,7 +98,7 @@ mod tests {
         }
         let too_long = "a".repeat(MOST_BYTES + 1);
         for bad in ["", "a/b", "../hub", "a b", "é", too_long.as_str()] {
-            assert_eq!(decoded(bad), Err(DecodeError::Refused { name: "StoreName" }), "the name `{bad}`");
+            assert_eq!(decoded(bad), Err(REFUSED), "the name `{bad}`");
         }
     }
 }

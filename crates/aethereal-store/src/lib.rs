@@ -26,7 +26,7 @@ mod store;
 #[cfg(feature = "tools")]
 mod tools;
 
-pub use check_in::{CheckIn, CheckedIn};
+pub use check_in::{CheckIn, CheckedIn, StoredBinary};
 pub use hash::StoreHash;
 pub use hold::{Held, Hold};
 pub use list::{Entry, ListStored, Stored};
@@ -36,7 +36,4 @@ pub use settings::{StoreConfig, StoreSettings};
 pub use stockroom::{Copied, Copying, Keeping, NamesFile, RecordFile, Recounting, Shelf, Stockroom, Uncopied, Unkept};
 pub use store::{Store, Uncounted};
 #[cfg(feature = "tools")]
-pub use tools::{
-    Asking, CheckInInput, CheckedInOutput, EntryListed, ListStoredInput, PinInput, PinOutput, StoreTools,
-    StoreToolsConfig, StoredListed,
-};
+pub use tools::{Asking, StoreTools, StoreToolsConfig};

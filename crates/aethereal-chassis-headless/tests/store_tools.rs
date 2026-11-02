@@ -7,12 +7,12 @@ use aethereal_data::{
     Budget, JsonValue, Plain, Schema, SchemaNodes, from_bytes, from_json, read_json, to_bytes, to_json,
 };
 use aethereal_store::{
-    CheckInInput, CheckedInOutput, EntryListed, Held, Hold, ListStoredInput, PinInput, PinOutput, Store, StoreHash,
-    StoreName, StoreSettings, StoreTools, StoreToolsConfig, StoredListed,
+    CheckIn, Entry, Held, Hold, ListStored, Pin, Store, StoreHash, StoreName, StoreSettings, StoreTools,
+    StoreToolsConfig, Stored, StoredBinary, Unpin,
 };
 use aethereal_substrate::Host;
 use aethereal_substrate::harness::{Harness, Unheard};
-use aethereal_tools::{Call, Called, Tool, Tooling};
+use aethereal_tools::{Call, Called, Done, Tool, Tooling};
 use std::path::PathBuf;
 use std::{env, fs, process};
 
@@ -120,9 +120,9 @@ fn refusal(called: Answered<Called>) -> String {
     why
 }
 
-/// The input of `check_in` for `path` under `name`.
-fn check_in_input(path: String, name: &str) -> CheckInInput {
-    CheckInInput { path, name: String::from(name) }
+/// The input of `check_in` for `path` under `under`.
+fn check_in_input(path: String, under: &str) -> CheckIn {
+    CheckIn { path, name: name(under) }
 }
 
 /// What `check_in` answers of `path` under `name`, which the test expects to be stored.
@@ -131,20 +131,20 @@ fn checked_in(
     worker: ProtocolRef<Tooling>,
     path: String,
     name: &str,
-) -> Result<CheckedInOutput, Unheard> {
+) -> Result<StoredBinary, Unheard> {
     Ok(output(called(harness, worker, "check_in", &check_in_input(path, name))?))
 }
 
 /// What `list_stored` answers.
-fn listed(harness: &mut Harness<Headless>, worker: ProtocolRef<Tooling>) -> Result<Vec<EntryListed>, Unheard> {
-    let stored: StoredListed = output(called(harness, worker, "list_stored", &ListStoredInput)?);
+fn listed(harness: &mut Harness<Headless>, worker: ProtocolRef<Tooling>) -> Result<Vec<Entry>, Unheard> {
+    let stored: Stored = output(called(harness, worker, "list_stored", &ListStored)?);
 
     Ok(stored.entries)
 }
 
 /// The BLAKE3 hash of `bytes`, as the test computes it.
-fn hash_of(bytes: &[u8]) -> [u8; 32] {
-    *blake3::hash(bytes).as_bytes()
+fn hash_of(bytes: &[u8]) -> StoreHash {
+    StoreHash(*blake3::hash(bytes).as_bytes())
 }
 
 /// The name `text`.
@@ -183,11 +183,11 @@ fn check_in_answers_the_hash_the_store_holds_as_lowercase_hex_of_its_blake3_in_j
     let answer = checked_in(&mut harness, worker, dir.file("engine", &bytes), "engine")?;
 
     let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    assert_eq!(answer, CheckedInOutput { hash: hash_of(&bytes), bytes: length, fresh: true });
+    assert_eq!(answer, StoredBinary { hash: hash_of(&bytes), bytes: length, fresh: true });
     let listed = listed(&mut harness, worker)?;
-    let hashes: Vec<[u8; 32]> = listed.iter().map(|entry| entry.hash).collect();
+    let hashes: Vec<StoreHash> = listed.iter().map(|entry| entry.hash).collect();
     assert_eq!(hashes, vec![answer.hash], "the store holds the hash the tool answered");
-    let written = to_json(&SchemaNodes::of(&CheckedInOutput::SHAPE), &bytes_of(&answer), &mut Budget::new(WALK_BYTES));
+    let written = to_json(&SchemaNodes::of(&StoredBinary::SHAPE), &bytes_of(&answer), &mut Budget::new(WALK_BYTES));
     let Ok(json) = written else {
         panic!("the output writes as JSON");
     };
@@ -204,17 +204,17 @@ fn list_stored_shows_each_entrys_hash_names_size_pin_and_hold() -> Result<(), Un
     let (mut harness, worker) = store_tools(dir.settings(1 << 20))?;
     let older = checked_in(&mut harness, worker, dir.file("a", b"pinned build"), "tool")?;
     let newer = checked_in(&mut harness, worker, dir.file("b", b"held"), "game")?;
-    let pinned: PinOutput = output(called(&mut harness, worker, "pin", &PinInput { hash: older.hash })?);
-    assert_eq!(pinned, PinOutput {});
+    let pinned: Done = output(called(&mut harness, worker, "pin", &Pin { hash: older.hash })?);
+    assert_eq!(pinned, Done {});
     let store = harness.root::<Store>();
-    let holding = harness.ask(store, &Hold { hash: StoreHash(newer.hash) })?;
+    let holding = harness.ask(store, &Hold { hash: newer.hash })?;
     assert_eq!(harness.answer(holding)?, Answered::Yes(Held::Done));
 
     let entries = listed(&mut harness, worker)?;
 
     let expected = vec![
-        EntryListed { hash: newer.hash, names: vec![name("game")], bytes: 4, pinned: false, held: true },
-        EntryListed { hash: older.hash, names: vec![name("tool")], bytes: 12, pinned: true, held: false },
+        Entry { hash: newer.hash, names: vec![name("game")], bytes: 4, pinned: false, held: true },
+        Entry { hash: older.hash, names: vec![name("tool")], bytes: 12, pinned: true, held: false },
     ];
     assert_eq!(entries, expected);
 
@@ -230,17 +230,18 @@ fn pin_written_as_the_hex_the_agent_read_pins_and_unpin_clears_it() -> Result<()
     let (mut harness, worker) = store_tools(dir.settings(1 << 20))?;
     let stored = checked_in(&mut harness, worker, dir.file("keep", bytes), "keep")?;
     let hex = blake3::hash(bytes).to_hex();
-    let typed =
-        from_json(&SchemaNodes::of(&PinInput::SHAPE), &format!("{{\"hash\":\"{hex}\"}}"), &mut Budget::new(WALK_BYTES));
-    let Ok(input) = typed else {
-        panic!("the hexadecimal hash is `pin`'s input");
+    let written = format!("{{\"hash\":\"{hex}\"}}");
+    let pin = from_json(&SchemaNodes::of(&Pin::SHAPE), &written, &mut Budget::new(WALK_BYTES));
+    let unpin = from_json(&SchemaNodes::of(&Unpin::SHAPE), &written, &mut Budget::new(WALK_BYTES));
+    let (Ok(pin), Ok(unpin)) = (pin, unpin) else {
+        panic!("the hexadecimal hash is the input of `pin` and of `unpin`");
     };
 
-    let _: PinOutput = output(called_with(&mut harness, worker, "pin", input.clone())?);
+    let _: Done = output(called_with(&mut harness, worker, "pin", pin)?);
     let pinned: Vec<bool> = listed(&mut harness, worker)?.iter().map(|entry| entry.pinned).collect();
     assert_eq!(pinned, vec![true], "the entry {:?} is pinned", stored.hash);
 
-    let _: PinOutput = output(called_with(&mut harness, worker, "unpin", input)?);
+    let _: Done = output(called_with(&mut harness, worker, "unpin", unpin)?);
     let pinned: Vec<bool> = listed(&mut harness, worker)?.iter().map(|entry| entry.pinned).collect();
     assert_eq!(pinned, vec![false], "the entry's pin is cleared");
 
@@ -255,19 +256,30 @@ fn each_case_short_of_done_is_refused_with_its_own_reason() -> Result<(), Unhear
     let dir = Dir::new("refused");
     let (mut harness, worker) = store_tools(dir.settings(8))?;
     let directory = dir.0.join("files").display().to_string();
-    let unknown = PinInput { hash: hash_of(b"never checked in") };
+    let unknown = hash_of(b"never checked in");
+    let fits = dir.file("fits", b"8 bytes!").replace('\\', "\\\\");
+    let bad_input = from_json(
+        &SchemaNodes::of(&CheckIn::SHAPE),
+        &format!("{{\"path\":\"{fits}\",\"name\":\"../tool\"}}"),
+        &mut Budget::new(WALK_BYTES),
+    );
+    let Ok(bad_input) = bad_input else {
+        panic!("a name of any text is a string, so the JSON reads as `check_in`'s input");
+    };
 
     let missing = called(&mut harness, worker, "check_in", &check_in_input(dir.path("absent"), "tool"))?;
     let not_a_file = called(&mut harness, worker, "check_in", &check_in_input(directory, "tool"))?;
     let too_large = called(&mut harness, worker, "check_in", &check_in_input(dir.file("large", b"9 bytes!!"), "tool"))?;
-    let bad_name = called(&mut harness, worker, "check_in", &check_in_input(dir.file("fits", b"8 bytes!"), "../tool"))?;
-    let pin_unknown = called(&mut harness, worker, "pin", &unknown)?;
-    let unpin_unknown = called(&mut harness, worker, "unpin", &unknown)?;
+    let bad_name = called_with(&mut harness, worker, "check_in", bad_input)?;
+    let pin_unknown = called(&mut harness, worker, "pin", &Pin { hash: unknown })?;
+    let unpin_unknown = called(&mut harness, worker, "unpin", &Unpin { hash: unknown })?;
 
     assert_eq!(refusal(missing), "nothing is at that path");
     assert_eq!(refusal(not_a_file), "that is not a regular file");
     assert_eq!(refusal(too_large), "the file is larger than the store takes");
-    assert_eq!(refusal(bad_name), "a name is 1 to 128 of ASCII letters, digits, `_`, `-`, and `.`");
+    let expected = "the input of `check_in`: plain data: not a StoreName: a name is 1 to 128 of ASCII letters, digits, \
+                    `_`, `-`, and `.`";
+    assert_eq!(refusal(bad_name), expected);
     assert_eq!(refusal(pin_unknown), "no binary of that hash is stored");
     assert_eq!(refusal(unpin_unknown), "no binary of that hash is stored");
     assert_eq!(listed(&mut harness, worker)?, Vec::new(), "nothing was checked in");

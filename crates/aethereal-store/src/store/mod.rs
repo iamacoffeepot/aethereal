@@ -4,7 +4,8 @@ mod shelves;
 
 use crate::jobs::{Counted, Counting, Recount, Shelve, Shelved, Shelving, Stock, Stocked, Stocking};
 use crate::{
-    CheckIn, CheckedIn, Held, Hold, ListStored, Pin, Pinned, StoreConfig, StoreHash, StoreName, Stored, Unpin,
+    CheckIn, CheckedIn, Held, Hold, ListStored, Pin, Pinned, StoreConfig, StoreHash, StoreName, Stored, StoredBinary,
+    Unpin,
 };
 use aethereal_actor::Held as Debt;
 use aethereal_actor::{
@@ -209,7 +210,7 @@ impl Open {
                 for gone in pruned {
                     self.unwritten.prune(gone);
                 }
-                CheckedIn::Stored { hash, bytes, fresh }
+                CheckedIn::Stored(StoredBinary { hash, bytes, fresh })
             }
             Admitted::Full => {
                 // The copy was new bytes, now in the stockroom and in no entry.

@@ -65,6 +65,8 @@ pub enum DecodeError {
     Refused {
         /// The type that refused it, for error messages.
         name: &'static str,
+        /// The rule the value broke, as a reader is told it.
+        rule: &'static str,
     },
     /// Text decoded as a JSON value is not one (ADR-0038).
     InvalidJson,
@@ -122,7 +124,7 @@ impl fmt::Display for DecodeError {
             Self::InvalidKeyName => f.write_str("plain data: key name does not conform"),
             Self::InvalidActorPath => f.write_str("plain data: actor path does not conform"),
             Self::InvalidFilePath => f.write_str("plain data: file path does not conform"),
-            Self::Refused { name } => write!(f, "plain data: not a {name}"),
+            Self::Refused { name, rule } => write!(f, "plain data: not a {name}: {rule}"),
             Self::InvalidJson => f.write_str("plain data: text is not one JSON value"),
             Self::InvalidSelector { name, selector } => {
                 write!(f, "plain data: invalid selector {selector} for enum {name}")
