@@ -65,6 +65,7 @@ pub struct LinkSettings {
 
 - **`Link` is a `Holder`.** It checks each offer with the shared `Table`, answers `Offered` in the turn that asks, and watches each worker, as `Mcp` does. A tool's offer never waits on the hub.
 - **It dials in `begin`** (`Connect` with `LengthPrefixed { most_bytes }`). Once open, it writes `Hello`, then `Sheets` with every tool it holds. After each offer, withdrawal, or worker's end, it writes `Sheets` again: the whole set, never a change, so the hub never holds a set that missed one. A set is bounded by the table's `most_tools`.
+- **Each set has a revision,** a count `Link` keeps and raises with every change to what it holds, across connections. A `Call` names the revision of the set the hub converted it with, and `Link` answers a call of an older revision `Called::Refused`, saying the tools have changed, without asking the worker. So a tool replaced by one of another schema is never called with bytes written for the first, even where the new schema would read them.
 - **A call is asked of its worker**, `Asks<Tooling, Call, Calling>`, keyed by the call's number, and its answer is written back as `Called`. A worker that ends first is answered `No`, which `Link` writes as `Called::Refused`. A `Called` that would not fit in a frame is written as `Called::Refused` saying so, so an answer too large refuses the call and ends nothing.
 - **When the hub goes, `Link` dials again.** A dial refused or a connection hung up runs a `Sleep` for the next wait, doubling from the first to the longest, and the next connection writes `Hello` and `Sheets` as the first did. Its tools stay held through it, so nothing in the engine sees the hub go. A call in flight when the connection went is answered by its worker into nothing: its `Called` is dropped.
 
@@ -87,13 +88,13 @@ Each frame is one plain kind, its bytes in a `LengthPrefixed` frame. The two dir
 ```rust
 pub enum Up {                                        // engine to hub
     Hello { revision: u32, name: String },
-    Sheets { tools: Vec<ToolSheet> },
+    Sheets { revision: u64, tools: Vec<ToolSheet> },
     Called { call: u64, called: Called },
 }
 
 pub enum Down {                                      // hub to engine
     Refused { revision: u32 },                       // the revision the hub speaks
-    Call { call: u64, tool: String, input: Vec<u8> },
+    Call { call: u64, revision: u64, tool: String, input: Vec<u8> },   // `revision`: the set it was converted with
 }
 ```
 
@@ -114,6 +115,7 @@ call_tool { engine: u64, tool: String, input: Json }     -> { output: Json }
 
 - **`describe_engine` writes each tool's input and output as JSON Schema**, as `tools/list` does for the hub's own (ADR-0037).
 - **`call_tool` turns `input` into bytes of the tool's input schema** (`from_json`, ADR-0007), with the sheet the `Engine` keeps, and the output bytes back into JSON (`to_json`). Input that does not fit the schema is refused before anything is sent. So the engine receives only bytes its schema reads, and the hub needs no kind of the engine's.
+- **Tools come and go while an engine runs, and the agent sees them as data.** `call_tool` finds its tool in the latest set when it is called, so one offered a moment ago is called at once, and one withdrawn is refused as not found. The agent asks `describe_engine` again when a call is refused because the tools changed. The agent never passes a revision: the hub writes the one it converted with.
 - **`Json` is a new shape in `aethereal-data`:** a JSON value, carried as its text. Its JSON Schema is `{}`, any value. `from_json` checks the value is JSON and keeps its text, and `to_json` writes the text as it is. It is plain, and its bytes are a string's (ADR-0002). It is what lets one tool take or answer a value whose schema is known only when it runs.
 
 ### Who dialed
