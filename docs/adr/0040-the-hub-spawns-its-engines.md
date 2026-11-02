@@ -79,10 +79,10 @@ impl Carries<Launch> for Store { type Answers = (Launched,); }
 
 pub struct Launch { pub binary: Binary }
 pub enum Binary { Named(StoreName), Hash(StoreHash) }
-pub enum Launched { Ready { program: String, hash: StoreHash }, NotStored }
+pub enum Launched { Ready { program: String, hash: StoreHash }, NotStored, Failed }   // `Failed`: the host could not copy it
 ```
 
-- **The store copies the entry to a launch copy,** `running/<name>-<n>` beneath its root, marked executable, and answers its path. The copy is named for the binary, so the process is shown by that name (a desktop's menu bar takes the file's), and the store's entries are never executable. Copying a binary of a few megabytes takes milliseconds.
+- **The store copies the entry to a launch copy,** `running/<name>-<n>` beneath its root, marked executable, and answers its absolute path. `<name>` is the name the launch asked by; a launch by hash takes the first name pointing at it, in the order of their bytes, or the hash's first 12 hexadecimal digits when none does. `<n>` counts the store's launches since it began. The copy is named for the binary, so the process is shown by that name (a desktop's menu bar takes the file's), and the store's entries are never executable. Copying a binary of a few megabytes takes milliseconds.
 - **`Launch` holds the build for its asker,** as `Hold` does (ADR-0039), and the store removes the launch copy when the asker ends, and clears `running/` as it begins. Each spawn has its own copy, so a rebuild checked in under the same name changes nothing that is running.
 - **A name that spells a hash is refused at check-in,** 64 lowercase hexadecimal digits, so the agent's `binary`, which is one string, is a hash when it spells one, and a name otherwise. This amends ADR-0039's rule for a name.
 

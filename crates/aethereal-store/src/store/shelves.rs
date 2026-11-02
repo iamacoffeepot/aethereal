@@ -1,7 +1,7 @@
 //! The store's index: its entries, names, and holds, and how a check-in is fitted into its budget (ADR-0039).
 
 use crate::record::{Record, Recorded};
-use crate::{Entry, Held, Pinned, StoreHash, StoreName, Stored};
+use crate::{Binary, Entry, Held, Pinned, StoreHash, StoreName, Stored};
 use aethereal_actor::ErasedActorRef;
 use aethereal_data::Bound;
 use std::cmp::Reverse;
@@ -25,6 +25,22 @@ pub enum Admitted {
     },
     /// It does not fit, even with every entry it may prune gone: nothing changed.
     Full,
+}
+
+/// How many hexadecimal digits of its hash name the launch copy of an entry no name points at.
+const HASH_NAME_DIGITS: usize = 12;
+
+/// What a launch found in the index.
+pub enum Launchable {
+    /// The entry is held for the asker.
+    Held {
+        /// The entry.
+        hash: StoreHash,
+        /// The name its launch copy is given.
+        name: String,
+    },
+    /// No entry of that name or hash: nothing is held.
+    NotStored,
 }
 
 /// The store's index, rebuilt from the records as it begins: each entry's record by its hash, each name's hash, and
@@ -123,6 +139,33 @@ impl Shelves {
         }
 
         Held::Done
+    }
+
+    /// Holds the entry `binary` names for `holder` until it ends, counting it as a use, as [`Shelves::hold`] does, and
+    /// names its launch copy: by the name asked, or for a hash, the first name pointing at it in the order of their
+    /// bytes, or its first 12 hexadecimal digits when none does.
+    pub fn launch(&mut self, binary: &Binary, holder: ErasedActorRef) -> Launchable {
+        let found = match binary {
+            Binary::Named(name) => self.names.get(name).map(|hash| (*hash, name.to_string())),
+            Binary::Hash(hash) => Some((*hash, self.launch_name(*hash))),
+        };
+        let Some((hash, name)) = found else {
+            return Launchable::NotStored;
+        };
+        match self.hold(hash, holder) {
+            Held::Done => Launchable::Held { hash, name },
+            Held::NotStored => Launchable::NotStored,
+        }
+    }
+
+    /// The name of a launch copy of `hash` asked by its hash: the first name pointing at it, or its first 12
+    /// hexadecimal digits when none does.
+    fn launch_name(&self, hash: StoreHash) -> String {
+        let named = self.names.iter().find(|(_, named)| **named == hash);
+        match named {
+            Some((name, _)) => name.to_string(),
+            None => hash.to_string().chars().take(HASH_NAME_DIGITS).collect(),
+        }
     }
 
     /// Lets go of every hold of `holder`, which has ended.

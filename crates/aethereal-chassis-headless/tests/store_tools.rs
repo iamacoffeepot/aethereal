@@ -278,7 +278,7 @@ fn each_case_short_of_done_is_refused_with_its_own_reason() -> Result<(), Unhear
     assert_eq!(refusal(not_a_file), "that is not a regular file");
     assert_eq!(refusal(too_large), "the file is larger than the store takes");
     let expected = "the input of `check_in`: plain data: not a StoreName: a name is 1 to 128 of ASCII letters, digits, \
-                    `_`, `-`, and `.`";
+                    `_`, `-`, and `.`, and not the 64 lowercase hexadecimal digits that spell a hash";
     assert_eq!(refusal(bad_name), expected);
     assert_eq!(refusal(pin_unknown), "no binary of that hash is stored");
     assert_eq!(refusal(unpin_unknown), "no binary of that hash is stored");

@@ -81,9 +81,9 @@ impl Tool for StoreTools {
                 name: String::from(CHECK_IN),
                 description: String::from(
                     "Copies the file at a path on the hub's machine into the store, and points a name at it: 1 to \
-                     128 of ASCII letters, digits, `_`, `-`, and `.`. Answers the BLAKE3 hash of its bytes, how many \
-                     bytes it holds, and whether they were not already stored. A name checked in again moves to the \
-                     newer bytes.",
+                     128 of ASCII letters, digits, `_`, `-`, and `.`, and not the 64 lowercase hexadecimal digits \
+                     that spell a hash. Answers the BLAKE3 hash of its bytes, how many bytes it holds, and whether \
+                     they were not already stored. A name checked in again moves to the newer bytes.",
                 ),
                 input: SchemaNodes::of(&CheckIn::SHAPE),
                 output: SchemaNodes::of(&StoredBinary::SHAPE),

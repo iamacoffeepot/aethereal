@@ -1,11 +1,15 @@
 //! The store's root (ADR-0039).
 
+mod launches;
 mod shelves;
 
-use crate::jobs::{Counted, Counting, Recount, Shelve, Shelved, Shelving, Stock, Stocked, Stocking};
+use crate::jobs::{
+    Counted, Counting, Issue, Issued, Issuing, Recall, Recalled, Recalling, Recount, Shelve, Shelved, Shelving, Stock,
+    Stocked, Stocking,
+};
 use crate::{
-    CheckIn, CheckedIn, Held, Hold, ListStored, Pin, Pinned, StoreConfig, StoreHash, StoreName, Stored, StoredBinary,
-    Unpin,
+    Binary, CheckIn, CheckedIn, Held, Hold, Launch, Launched, ListStored, Pin, Pinned, StoreConfig, StoreHash,
+    StoreName, Stored, StoredBinary, Unpin,
 };
 use aethereal_actor::Held as Debt;
 use aethereal_actor::{
@@ -13,18 +17,20 @@ use aethereal_actor::{
     ToSender, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
-use shelves::{Admitted, Shelves};
+use launches::Launches;
+use shelves::{Admitted, Launchable, Shelves};
 use std::collections::{BTreeSet, VecDeque};
 use std::mem;
 
 /// The store: keeps binaries checked in from a path on the host's machine, each named by the BLAKE3 hash of its bytes,
 /// under names that move to the latest build, pruned to a byte budget (ADR-0039). An actor asks it at its typed path,
-/// `path::<Store>(())`: [`CheckIn`], [`ListStored`], [`Pin`], [`Unpin`], and [`Hold`]. Its bytes are never given back.
+/// `path::<Store>(())`: [`CheckIn`], [`ListStored`], [`Pin`], [`Unpin`], [`Hold`], and [`Launch`] (ADR-0040). Its bytes
+/// are never given back; a launch copy of an entry is, to run, removed when its asker ends.
 ///
 /// It reads its index from its host's stockroom as it begins, holding what it is asked until it has. It runs one job
 /// of its stockroom at a time, so a removal is done before a later copy of the same bytes, and writes land in the
-/// order they were made: check-ins wait their turn, and the records each change dirties are written together once the
-/// job before is done.
+/// order they were made: check-ins, launch copies, and their removals wait their turn, and the records each change
+/// dirties are written together once the job before is done.
 #[derive(Bound)]
 #[kind(name = "aether.store")]
 pub struct Store {
@@ -54,13 +60,18 @@ enum Ask {
     Pin { debt: Debt<Pinned>, hash: StoreHash },
     Unpin { debt: Debt<Pinned>, hash: StoreHash },
     Hold { debt: Debt<Held>, hash: StoreHash, holder: ErasedActorRef },
+    Launch { debt: Debt<Launched>, binary: Binary, asker: ErasedActorRef },
 }
 
-/// A check-in waiting for its copy.
+/// A job of the stockroom waiting for the lane.
 #[derive(Bound)]
-struct Waiting {
-    debt: Debt<CheckedIn>,
-    check_in: CheckIn,
+enum Waiting {
+    /// A check-in, waiting for its copy.
+    CheckIn { debt: Debt<CheckedIn>, check_in: CheckIn },
+    /// A launch of the entry `hash`, held already, waiting for its launch copy `copy`.
+    Launch { debt: Debt<Launched>, hash: StoreHash, copy: String },
+    /// The launch copies of an asker that has ended, waiting to be removed.
+    Recall { copies: Vec<String> },
 }
 
 /// The job of the stockroom the store is running.
@@ -72,6 +83,10 @@ enum Lane {
     Stocking { debt: Debt<CheckedIn>, name: StoreName },
     /// A write.
     Shelving,
+    /// The launch copy of `hash`, which `debt` is answered with.
+    Issuing { debt: Debt<Launched>, hash: StoreHash },
+    /// A removal of launch copies.
+    Recalling,
 }
 
 /// What the store has changed and not yet written.
@@ -111,16 +126,17 @@ impl Unwritten {
 struct Open {
     shelves: Shelves,
     lane: Lane,
-    /// The check-ins waiting for the lane, in the order asked.
+    /// The jobs waiting for the lane, in the order asked.
     queue: VecDeque<Waiting>,
     unwritten: Unwritten,
+    launches: Launches,
 }
 
 impl Open {
     /// Answers `ask`, or queues it for the lane when it is a check-in.
     fn take<S>(&mut self, ask: Ask, turn: &mut Turn<'_, Store, S>) -> Result<(), Fault> {
         match ask {
-            Ask::CheckIn { debt, check_in } => self.queue.push_back(Waiting { debt, check_in }),
+            Ask::CheckIn { debt, check_in } => self.queue.push_back(Waiting::CheckIn { debt, check_in }),
             Ask::List { debt } => turn.answer(debt, &self.shelves.stored())?,
             Ask::Pin { debt, hash } => self.pin(debt, hash, true, turn)?,
             Ask::Unpin { debt, hash } => self.pin(debt, hash, false, turn)?,
@@ -132,9 +148,40 @@ impl Open {
                 }
                 turn.answer(debt, &held)?;
             }
+            Ask::Launch { debt, binary, asker } => self.launch(debt, &binary, asker, turn)?,
         }
 
         Ok(())
+    }
+
+    /// Holds the entry `binary` names for `asker`, and queues its launch copy for the lane; or answers `debt` that
+    /// it is not stored.
+    fn launch<S>(
+        &mut self,
+        debt: Debt<Launched>,
+        binary: &Binary,
+        asker: ErasedActorRef,
+        turn: &mut Turn<'_, Store, S>,
+    ) -> Result<(), Fault> {
+        let Launchable::Held { hash, name } = self.shelves.launch(binary, asker) else {
+            turn.answer(debt, &Launched::NotStored)?;
+            return Ok(());
+        };
+        turn.watch(asker);
+        self.unwritten.record(hash);
+        let copy = self.launches.hand(asker, &name);
+        self.queue.push_back(Waiting::Launch { debt, hash, copy });
+
+        Ok(())
+    }
+
+    /// Lets go of what `actor`, which has ended, held: its holds, and its launch copies, queued for removal.
+    fn ended(&mut self, actor: ErasedActorRef) {
+        self.shelves.ended(actor);
+        let copies = self.launches.ended(actor);
+        if !copies.is_empty() {
+            self.queue.push_back(Waiting::Recall { copies });
+        }
     }
 
     /// Pins `hash`, or clears its pin, and answers `debt`.
@@ -155,7 +202,7 @@ impl Open {
     }
 
     /// Runs the next job of the stockroom when none is running: what is unwritten first, so a removal lands before a
-    /// later copy of the same bytes, then the next check-in.
+    /// later copy of the same bytes, then the next job waiting.
     fn pump<S>(&mut self, config: StoreConfig, turn: &mut Turn<'_, Store, S>) -> Result<(), Fault> {
         let is_busy = !matches!(self.lane, Lane::Idle);
         if is_busy {
@@ -171,11 +218,24 @@ impl Open {
             self.lane = Lane::Shelving;
             return Ok(());
         }
-        let Some(Waiting { debt, check_in: CheckIn { path, name } }) = self.queue.pop_front() else {
+        let Some(waiting) = self.queue.pop_front() else {
             return Ok(());
         };
-        turn.run(&Stock { path, most_file_bytes: config.most_file_bytes }, &Stocking)?;
-        self.lane = Lane::Stocking { debt, name };
+        let lane = match waiting {
+            Waiting::CheckIn { debt, check_in: CheckIn { path, name } } => {
+                turn.run(&Stock { path, most_file_bytes: config.most_file_bytes }, &Stocking)?;
+                Lane::Stocking { debt, name }
+            }
+            Waiting::Launch { debt, hash, copy } => {
+                turn.run(&Issue { hash, copy }, &Issuing)?;
+                Lane::Issuing { debt, hash }
+            }
+            Waiting::Recall { copies } => {
+                turn.run(&Recall { copies }, &Recalling)?;
+                Lane::Recalling
+            }
+        };
+        self.lane = lane;
 
         Ok(())
     }
@@ -185,7 +245,7 @@ impl Open {
         let (debt, name) = match mem::replace(&mut self.lane, Lane::Idle) {
             Lane::Stocking { debt, name } => (debt, name),
             // A copy is answered only while it runs, so this is never another job's lane.
-            running @ (Lane::Idle | Lane::Shelving) => {
+            running @ (Lane::Idle | Lane::Shelving | Lane::Issuing { .. } | Lane::Recalling) => {
                 self.lane = running;
                 return Ok(());
             }
@@ -198,6 +258,25 @@ impl Open {
             Stocked::Failed => CheckedIn::Failed,
         };
         turn.answer(debt, &checked_in)?;
+
+        Ok(())
+    }
+
+    /// Answers the launch whose copy came to `issued`.
+    fn issued<S>(&mut self, issued: Issued, turn: &mut Turn<'_, Store, S>) -> Result<(), Fault> {
+        let (debt, hash) = match mem::replace(&mut self.lane, Lane::Idle) {
+            Lane::Issuing { debt, hash } => (debt, hash),
+            // A launch copy is answered only while it is made, so this is never another job's lane.
+            running @ (Lane::Idle | Lane::Stocking { .. } | Lane::Shelving | Lane::Recalling) => {
+                self.lane = running;
+                return Ok(());
+            }
+        };
+        let launched = match issued {
+            Issued::Ready { program } => Launched::Ready { program, hash },
+            Issued::Failed => Launched::Failed,
+        };
+        turn.answer(debt, &launched)?;
 
         Ok(())
     }
@@ -265,6 +344,11 @@ impl Carries<Hold> for Store {
     type Answers = (Held,);
 }
 
+/// Asked at its typed path, it answers a launch once its launch copy is made.
+impl Carries<Launch> for Store {
+    type Answers = (Launched,);
+}
+
 impl Actor for Store {
     type Config = StoreConfig;
     type Key = ();
@@ -274,10 +358,13 @@ impl Actor for Store {
         Pin,
         Unpin,
         Hold,
+        Launch,
         Ended,
         Answer<Counted, Counting>,
         Answer<Stocked, Stocking>,
         Answer<Shelved, Shelving>,
+        Answer<Issued, Issuing>,
+        Answer<Recalled, Recalling>,
     );
     type BeginSends = ();
     type EndSends = ();
@@ -339,16 +426,27 @@ impl Handles<Hold> for Store {
     }
 }
 
-/// A holder has ended: its holds go. Nothing is held while the index is read, as a hold is taken only once it is.
+impl Handles<Launch> for Store {
+    type Sends = (ToSender<Launched>,);
+
+    fn handle(&mut self, Launch { binary }: Launch, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let debt = turn.hold()?;
+        let asker = turn.sender();
+        self.take(Ask::Launch { debt, binary, asker }, turn)
+    }
+}
+
+/// A holder has ended: its holds go, and its launch copies are removed. Nothing is held and no launch copy handed out
+/// while the index is read, as each is taken only once it is.
 impl Handles<Ended> for Store {
     type Sends = ();
 
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        if let Stage::Open { open } = &mut self.stage {
-            open.shelves.ended(ended.actor());
-        }
-
-        Ok(())
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let Stage::Open { open } = &mut self.stage else {
+            return Ok(());
+        };
+        open.ended(ended.actor());
+        open.pump(self.config, turn)
     }
 }
 
@@ -369,6 +467,7 @@ impl Handles<Answer<Counted, Counting>> for Store {
             lane: Lane::Idle,
             queue: VecDeque::new(),
             unwritten: Unwritten::Clean,
+            launches: Launches::default(),
         };
         let Stage::Counting { asks } = mem::replace(&mut self.stage, Stage::Open { open: Box::new(open) }) else {
             return Ok(());
@@ -418,6 +517,47 @@ impl Handles<Answer<Shelved, Shelving>> for Store {
             // The index stands. A record the stockroom missed is set right by its next write, and an entry it did not
             // remove is found by the recount as the store next begins, unnamed, to be pruned again.
             turn.log(Level::Warn, format_args!("the store's stockroom was not all written: {answered:?}"));
+        }
+        open.pump(self.config, turn)
+    }
+}
+
+impl Handles<Answer<Issued, Issuing>> for Store {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, Issuing): (Answered<Issued>, Issuing),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let Stage::Open { open } = &mut self.stage else {
+            return Ok(());
+        };
+        let issued = match answered {
+            Answered::Yes(issued) => issued,
+            Answered::No(_) => Issued::Failed,
+        };
+        open.issued(issued, turn)?;
+        open.pump(self.config, turn)
+    }
+}
+
+impl Handles<Answer<Recalled, Recalling>> for Store {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, Recalling): (Answered<Recalled>, Recalling),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let Stage::Open { open } = &mut self.stage else {
+            return Ok(());
+        };
+        open.lane = Lane::Idle;
+        let is_done = matches!(answered, Answered::Yes(Recalled::Done));
+        if !is_done {
+            // A launch copy left behind is removed as the store next begins.
+            turn.log(Level::Warn, format_args!("the store's launch copies were not all removed: {answered:?}"));
         }
         open.pump(self.config, turn)
     }

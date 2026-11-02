@@ -5,7 +5,7 @@ mod disk;
 use crate::Headless;
 use aethereal_actor::Service;
 use aethereal_store::{
-    Copying, Keeping, RecordFile, Recounting, Stockroom, Store, StoreHash, StoreSettings, Uncopied, Unkept,
+    Copying, Keeping, Launching, RecordFile, Recounting, Stockroom, Store, StoreHash, StoreSettings, Uncopied, Unkept,
 };
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
 use crossbeam_queue::SegQueue;
@@ -18,8 +18,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
 use std::thread::{self, JoinHandle, Thread};
 
-/// The native host's stockroom (ADR-0039): the store's directory, `entries/` holding each entry's bytes as `<hash>` and
-/// its record as `<hash>.entry`, beside the `names` file. What it is asked is done on a thread of its own, in the order
+/// The native host's stockroom (ADR-0039, ADR-0040): the store's directory, `entries/` holding each entry's bytes as
+/// `<hash>` and its record as `<hash>.entry`, beside the `names` file and `running/`, which holds the launch copies,
+/// each marked executable where the host marks files so. What it is asked is done on a thread of its own, in the order
 /// asked, so the disk never blocks the thread that polls it, and woken once done. One thread is enough: the store asks
 /// one thing at a time. Dropping it stops its thread once it has finished what it was doing.
 pub struct StoreDirectory {
@@ -126,6 +127,20 @@ impl Stockroom for StoreDirectory {
         let pruning = self.ask(move || disk::prune(&root, &hashes));
 
         Box::pin(async move { pruning.await.unwrap_or(Err(Unkept)) })
+    }
+
+    fn launch(&self, hash: StoreHash, copy: String) -> Launching<'_> {
+        let root = self.root.clone();
+        let launching = self.ask(move || disk::launch(&root, hash, &copy));
+
+        Box::pin(async move { launching.await.unwrap_or(Err(Unkept)) })
+    }
+
+    fn unlaunch(&self, copies: Vec<String>) -> Keeping<'_> {
+        let root = self.root.clone();
+        let unlaunching = self.ask(move || disk::unlaunch(&root, &copies));
+
+        Box::pin(async move { unlaunching.await.unwrap_or(Err(Unkept)) })
     }
 }
 

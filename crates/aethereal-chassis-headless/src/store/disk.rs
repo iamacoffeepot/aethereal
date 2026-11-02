@@ -1,16 +1,21 @@
-//! What the native stockroom does to the disk, each blocking on its thread (ADR-0039).
+//! What the native stockroom does to the disk, each blocking on its thread (ADR-0039, ADR-0040).
 
 use aethereal_store::{Copied, NamesFile, RecordFile, Shelf, StoreHash, Uncopied, Unkept};
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, ErrorKind, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{self, Path, PathBuf};
 
 /// The directory beneath the store's that holds each entry's bytes and record.
 const ENTRIES: &str = "entries";
 /// The file beside it that holds every name.
 const NAMES: &str = "names";
+/// The directory beside it that holds the launch copies.
+const RUNNING: &str = "running";
+/// What a launch copy is marked, where the host marks files so: read and run by anyone, written by its owner.
+#[cfg(unix)]
+const EXECUTABLE: u32 = 0o755;
 /// What follows an entry's hash in its record's name.
 const RECORD: &str = ".entry";
 /// What follows a file's name as it is written, until it is renamed into place.
@@ -128,8 +133,11 @@ fn stream(source: &mut File, part: &Path, most_bytes: u64) -> Result<(StoreHash,
 }
 
 /// Reads every record and the names file of the store at `root`, removing on the way an entry without its record, a
-/// record without its entry, and every stray.
+/// record without its entry, every stray, and every launch copy.
 pub fn count(root: &Path) -> Result<Shelf, Unkept> {
+    // Nothing the store began before runs from a launch copy now; one the removal misses is replaced by the launch
+    // that takes its name, or removed at the next recount.
+    let _ = fs::remove_dir_all(root.join(RUNNING));
     let entries = root.join(ENTRIES);
     fs::create_dir_all(&entries).map_err(|_| Unkept)?;
     let mut bytes = BTreeSet::new();
@@ -203,6 +211,58 @@ pub fn prune(root: &Path, hashes: &[StoreHash]) -> Result<(), Unkept> {
             let is_left = removed.is_err_and(|error| error.kind() != ErrorKind::NotFound);
             kept |= is_left;
         }
+    }
+    if kept {
+        return Err(Unkept);
+    }
+
+    Ok(())
+}
+
+/// Copies the entry `hash` of the store at `root` to the launch copy `copy` in `running/`, marked executable, and
+/// answers its absolute path. It is written beside the launch copy and renamed into place once whole and marked, so a
+/// file of that name a removal missed is replaced.
+pub fn launch(root: &Path, hash: StoreHash, copy: &str) -> Result<String, Unkept> {
+    let running = root.join(RUNNING);
+    fs::create_dir_all(&running).map_err(|_| Unkept)?;
+    let program = running.join(copy);
+    let part = running.join(format!("{copy}{PART}"));
+    let made = fs::copy(bytes_file(&root.join(ENTRIES), hash), &part)
+        .and_then(|_| mark_executable(&part))
+        .and_then(|()| fs::rename(&part, &program));
+    if made.is_err() {
+        // One the removal misses is removed with `running/` as the store next begins.
+        let _ = fs::remove_file(&part);
+        return Err(Unkept);
+    }
+
+    path::absolute(&program).map_err(|_| Unkept)?.into_os_string().into_string().map_err(|_| Unkept)
+}
+
+/// Marks `file` executable.
+#[cfg(unix)]
+fn mark_executable(file: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(file, fs::Permissions::from_mode(EXECUTABLE))
+}
+
+/// Marks `file` executable: a host that marks no file so has nothing to do.
+#[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // One signature for every host, as a unix host's marking can fail.
+fn mark_executable(_: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Removes each of the launch copies `copies` from `running/` in the store at `root`. One already gone is not missed;
+/// any other that is not removed is told once all have been tried.
+pub fn unlaunch(root: &Path, copies: &[String]) -> Result<(), Unkept> {
+    let running = root.join(RUNNING);
+    let mut kept = false;
+    for copy in copies {
+        let removed = fs::remove_file(running.join(copy));
+        let is_left = removed.is_err_and(|error| error.kind() != ErrorKind::NotFound);
+        kept |= is_left;
     }
     if kept {
         return Err(Unkept);
