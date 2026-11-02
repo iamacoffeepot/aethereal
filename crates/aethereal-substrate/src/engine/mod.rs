@@ -21,6 +21,7 @@ mod setup;
 mod since;
 #[cfg(test)]
 mod tests;
+mod wake;
 
 pub use bring::{Closed, Feed};
 pub use costs::Tally;
@@ -186,6 +187,9 @@ pub struct Engine {
     /// The changes to blobs' pins the jobs made as they ran, pushed by whatever ran them, summed with the next step's
     /// (ADR-0018).
     job_pins: pins::Queue,
+    /// What every feed and every job handed out rings once what it brings is waiting, to wake the host (ADR-0010,
+    /// ADR-0018).
+    bell: wake::Bell,
     /// Which engine of the process this is, in the id of each blob it holds. Last, so what the engine's actors held
     /// is let go of before the engine is forgotten.
     number: Number,
@@ -472,6 +476,7 @@ impl Engine {
             in_flight: Arc::new(()),
             waiting_jobs: VecDeque::new(),
             job_pins: Arc::new(SegQueue::new()),
+            bell: wake::Bell::new(),
             number,
         }
     }

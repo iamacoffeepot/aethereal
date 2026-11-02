@@ -5,6 +5,7 @@
 mod tests;
 
 use super::gift::{self, Arrival};
+use super::wake::Bell;
 use super::{Engine, ROOTS, parity};
 use crate::{lives, log};
 use aethereal_actor::{
@@ -58,16 +59,20 @@ pub struct Finish {
     count: u64,
     answer: KindId,
     feed: Arc<SegQueue<Finished>>,
+    /// What wakes the host once the outcome is on the feed (ADR-0018).
+    bell: Bell,
     /// One of the engine's tokens of a job in flight, so how many there are is how many jobs are in flight: one is let
     /// go of once its job is done, or its `Finish` dropped.
     _in_flight: Arc<()>,
 }
 
 impl Finish {
-    /// Pushes the job's outcome onto the engine's feed, to answer the actor that ran it at the next bring.
+    /// Pushes the job's outcome onto the engine's feed, to answer the actor that ran it at the next bring, and wakes
+    /// the host.
     pub fn done(self, outcome: Outcome) {
-        let Self { by, count, answer, feed, .. } = self;
+        let Self { by, count, answer, feed, bell, .. } = self;
         feed.push(Finished { by, count, answer, outcome });
+        bell.ring();
     }
 }
 
@@ -223,7 +228,8 @@ impl Engine {
         let id = job.id();
         let Submitted { by, count, code, answer, bytes, refers } = job;
         let feed = Arc::clone(&self.finished);
-        let finish = Finish { by, count, answer, feed, _in_flight: Arc::clone(&self.in_flight) };
+        let finish =
+            Finish { by, count, answer, feed, bell: self.bell.clone(), _in_flight: Arc::clone(&self.in_flight) };
         let Some(of) = self.code_of(code) else {
             finish.done(Err(fault::<NoRunner>()));
             return;

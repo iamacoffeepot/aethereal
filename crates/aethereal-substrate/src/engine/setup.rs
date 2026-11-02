@@ -11,6 +11,7 @@ use aethereal_data::{Encode, Kind};
 use core::marker::PhantomData;
 use core::time::Duration;
 use std::sync::Arc;
+use std::task::Waker;
 
 /// An engine being set up, with the roots `S` made so far: a list, `()` for none and `(R, S)` for the root `R` made
 /// after those of `S` (ADR-0022).
@@ -163,6 +164,11 @@ impl Setup<()> {
     /// The engine, its jobs run by `jobs`, which with none set answers every job that no runner runs it (ADR-0018).
     pub fn with_jobs(self, jobs: Arc<dyn Jobs>) -> Self {
         Self::of(self.engine.with_jobs(jobs))
+    }
+
+    /// The engine, waking `wake` whenever a source is pushed or a job finishes, as [`Engine::set_wake`] does.
+    pub fn with_wake(self, wake: Waker) -> Self {
+        Self::of(self.engine.with_wake(wake))
     }
 
     /// The engine, letting its guests run the jobs of `types` as well as those let already, and [`Sleep`], which

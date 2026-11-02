@@ -188,6 +188,13 @@ impl Engine {
         self.staging.lifecycle
     }
 
+    /// Whether the chassis's cycle holds any stage: a host whose engine's does not has no cycle to wake for, and sleeps
+    /// until something comes in (ADR-0020).
+    #[must_use]
+    pub fn has_stages(&self) -> bool {
+        !self.staging.cycle.is_empty()
+    }
+
     /// Refuses a root of the type `declared` when it subscribes to a stage the lifecycle does not run, before any of
     /// its code runs (ADR-0020).
     pub(super) fn staged(&self, declared: &Declared) -> Result<(), Refused> {

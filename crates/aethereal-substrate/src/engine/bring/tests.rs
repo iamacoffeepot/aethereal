@@ -8,6 +8,9 @@ use aethereal_actor::{
 };
 use aethereal_data::{Bound, Kind, Plain};
 use std::mem;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Wake, Waker};
 
 /// The pointer moved: what the chassis brings a window.
 #[derive(Plain)]
@@ -402,4 +405,34 @@ fn the_host_takes_what_a_capability_asks_through_its_controller_in_the_order_ask
 
     assert_eq!(as_it_began, (vec![Make::Window(1), Make::Window(2)], false));
     assert_eq!(once_it_ended, (vec![Make::Window(3)], true));
+}
+
+/// A waker that counts how often it is woken.
+struct Counted {
+    wakes: AtomicUsize,
+}
+
+impl Wake for Counted {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.wakes.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn every_push_wakes_the_host_even_through_a_feed_made_before_it_gave_its_waker() {
+    // Catches a push that wakes no one, so a host asleep between steps finds it only when it next wakes for its own
+    // reasons; and a feed that kept the waker the engine had when the feed was made, which wakes nothing once a host
+    // gives its own after its roots have bootstrapped, as the native hosts do.
+    let mut engine = engine(0);
+    let (_pointer, feed) = engine.source::<Moved>();
+    let counted = Arc::new(Counted { wakes: AtomicUsize::new(0) });
+    engine.set_wake(Waker::from(Arc::clone(&counted)));
+
+    push(&feed, &[1, 2]);
+
+    assert_eq!(counted.wakes.load(Ordering::Relaxed), 2);
 }

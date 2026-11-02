@@ -8,7 +8,7 @@ use aethereal_actor::{
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Engine, Jobs};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
 /// An actor's empty config.
@@ -334,6 +334,94 @@ fn a_program_is_answered_for_its_jobs_while_it_runs() {
         panic!("the napper begins");
     };
     let (took, exit) = timed(headless, Duration::from_millis(5), Duration::from_secs(30));
+
+    assert_eq!(exit, Exit::Stopped);
+    assert_eq!(naps.take(), [Nap::Slept]);
+    assert!(took >= Duration::from_millis(20), "it slept for its time: {took:?}");
+}
+
+/// What a dozer is made from: what it tells the test through, as a napper does.
+#[derive(Bound)]
+#[kind(name = "aether.test.dozer_config")]
+struct DozerConfig {
+    naps: Given<Controller<Nap>>,
+}
+
+/// An actor that sleeps for twenty milliseconds on `Start`, and asks the program to stop once it has slept: it needs
+/// no cycle.
+#[derive(Bound)]
+#[kind(name = "aether.test.dozer")]
+struct Dozer {
+    naps: Handle<Controller<Nap>>,
+}
+
+impl ChildOf for Dozer {
+    type Parent = Top;
+}
+
+impl Actor for Dozer {
+    type Config = DozerConfig;
+    type Key = ();
+    type Handles = (On<Start>, Answer<Slept, Nothing>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(config: DozerConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        let naps = turn.take(config.naps)?;
+        turn.subscribe::<Start>();
+
+        Ok(Self { naps })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<On<Start>> for Dozer {
+    type Sends = ();
+
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        turn.run(&Sleep { until: turn.now() + Duration::from_millis(20) }, &Nothing)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Slept, Nothing>> for Dozer {
+    type Sends = ();
+
+    fn handle(&mut self, (done, _): (Answered<Slept>, Nothing), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let nap = match done {
+            Answered::Yes(Slept) => Nap::Slept,
+            Answered::No(_) => Nap::NotAnswered,
+        };
+        turn.open(&mut self.naps)?.push(nap);
+        turn.quit();
+
+        Ok(())
+    }
+}
+
+#[test]
+fn a_program_with_no_cycle_is_woken_by_a_job_that_finishes_while_it_sleeps() {
+    // Catches a host that sleeps through a finished job until its timer: with cycles thirty seconds apart, the dozer's
+    // twenty-millisecond sleep would be answered only after thirty seconds.
+    let one = NonZeroUsize::MIN;
+    let runners: Arc<dyn Jobs> = Arc::new(crate::Runners::new(one, Arc::new(Services::none())));
+    let engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(runners).ready();
+    let mut headless = Headless::new(engine, one);
+    let (given, naps) = headless.engine_mut().controller();
+    let Ok(_) = headless.engine_mut().add_root::<Dozer>(&(), DozerConfig { naps: given }) else {
+        panic!("the dozer begins");
+    };
+    // A host that is never woken never returns, so it runs on a thread of its own, and the test gives up on it.
+    let (ran, run) = mpsc::channel();
+    #[allow(clippy::disallowed_methods)] // The test runs the host's own loop on a real thread, to bound it.
+    thread::spawn(move || ran.send(timed(headless, Duration::from_secs(30), Duration::from_secs(30))));
+    let Ok((took, exit)) = run.recv_timeout(Duration::from_secs(10)) else {
+        panic!("the program was not woken when the sleep finished");
+    };
 
     assert_eq!(exit, Exit::Stopped);
     assert_eq!(naps.take(), [Nap::Slept]);
