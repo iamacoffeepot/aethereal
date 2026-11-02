@@ -1,16 +1,17 @@
-//! The hub's tools on the native host (ADR-0038, ADR-0036): `EngineTools` listed in a toolbox, the test asking it
-//! each call as a holder would, and an engine played by a real socket speaking the link's own typed frames, on a thread
-//! of its own where it waits on the hub.
+//! The hub's tools on the native host (ADR-0038, ADR-0040, ADR-0036): `EngineTools` listed in a toolbox, the test
+//! asking it each call as a holder would, and an engine played by a real socket speaking the link's own typed frames,
+//! on a thread of its own where it waits on the hub, or by a real `Link` started with what `mint_token` answers.
 
 use aethereal_actor::{
     Actor, Answered, Beginning, Carries, ChildOf, Ending, Fault, Handles, ProtocolRef, ToSender, Top, Turn,
 };
 use aethereal_chassis_headless::Headless;
+use aethereal_chassis_headless::native::{Invocation, Invoked, NativeLayers};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Budget, Json, Plain, Schema, SchemaNodes, from_bytes, json_schema, to_bytes, to_json};
 use aethereal_link::{
     Down, EngineAnswer, EngineCall, EngineId, EngineList, EngineListing, EngineSheets, EngineTools, Engines,
-    EnginesSettings, JsonSheet, ListEngines, REVISION, Up,
+    EnginesSettings, JsonSheet, Link, LinkSettings, ListEngines, MintToken, Minted, REVISION, Token, Up,
 };
 use aethereal_substrate::harness::{Asked, Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
@@ -19,6 +20,7 @@ use aethereal_tools::{
     Call, Called, Holder, Offer, Offered, Table, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw,
 };
 use std::io::{Read as _, Write as _};
+use std::iter;
 use std::net::TcpStream;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -231,14 +233,14 @@ fn hub() -> Result<(Harness<Headless>, u16, ProtocolRef<Tooling>), Unheard> {
     waiting::until(BUDGET, || {
         harness.step();
         let listens = harness.state(engines).is_ok_and(|engines| engines.port().is_some());
-        let holds = harness.state(stand).is_ok_and(|stand| stand.table.len() == 3);
+        let holds = harness.state(stand).is_ok_and(|stand| stand.table.len() == 4);
         listens && holds
     });
     let Some(port) = harness.state(engines)?.port() else {
         panic!("`Engines` listens");
     };
     let Some(worker) = harness.state(stand)?.table.tool("call_tool").map(|held| held.worker) else {
-        panic!("the toolbox offers the hub's three tools, and the holder takes them");
+        panic!("the toolbox offers the hub's four tools, and the holder takes them");
     };
 
     Ok((harness, port, worker))
@@ -276,6 +278,22 @@ fn dialed(port: u16) -> TcpStream {
     stream
 }
 
+/// A token `Engines` minted for an engine started outside the hub.
+fn minted(harness: &mut Harness<Headless>) -> Token {
+    let engines = harness.root::<Engines>();
+    let minting = harness.ask(engines, &MintToken);
+    let Ok(Answered::Yes(Minted { token, .. })) = minting.and_then(|minting| harness.answer(minting)) else {
+        panic!("`Engines` mints a token");
+    };
+
+    token
+}
+
+/// The `Hello` of an engine named `name`, of this crate's revision, bringing a token `Engines` minted.
+fn hello(harness: &mut Harness<Headless>, name: &str) -> Up {
+    Up::Hello { revision: REVISION, name: String::from(name), token: minted(harness) }
+}
+
 /// What `Engines` lists.
 fn listed(harness: &mut Harness<Headless>) -> Result<EngineList, Unheard> {
     let engines = harness.root::<Engines>();
@@ -298,8 +316,9 @@ fn holds(list: &EngineList, count: usize, tools: u32) -> bool {
 /// An engine linked as `scene`, with `tools` its set of revision 3, once `Engines` lists it, and its connection.
 fn linked_engine(harness: &mut Harness<Headless>, port: u16, tools: Vec<ToolSheet>) -> TcpStream {
     let count = u32::try_from(tools.len()).unwrap_or(u32::MAX);
+    let hello = hello(harness, "scene");
     let mut stream = dialed(port);
-    send(&mut stream, &Up::Hello { revision: REVISION, name: String::from("scene") });
+    send(&mut stream, &hello);
     send(&mut stream, &Up::Sheets { revision: 3, tools });
     waiting::until(BUDGET, || listed(harness).is_ok_and(|list| holds(&list, 1, count)));
 
@@ -393,8 +412,9 @@ fn an_unknown_engine_one_with_no_tools_yet_and_an_unknown_tool_are_each_refused_
     // and a tool not found left unanswered or sent anyway: each refusal says which it is.
     let (mut harness, port, worker) = hub()?;
     let _stream = linked_engine(&mut harness, port, vec![sheet()]);
+    let silent_hello = hello(&mut harness, "silent");
     let mut silent = dialed(port);
-    send(&mut silent, &Up::Hello { revision: REVISION, name: String::from("silent") });
+    send(&mut silent, &silent_hello);
     waiting::until(BUDGET, || listed(&mut harness).is_ok_and(|list| holds(&list, 2, 1)));
     let say = json_of(&Say { text: String::from("hello") });
 
@@ -438,6 +458,38 @@ fn an_output_not_of_the_tools_schema_is_refused() -> Result<(), Unheard> {
     let answer = harness.answer(calling)?;
 
     assert!(refuses(&answer, "output schema"), "{answer:?}");
+
+    Ok(())
+}
+
+/// An engine of a `Link` alone, started with `args` as a person would type them after its name, the engine reading
+/// frames as large as the hub's.
+fn started(args: &[String]) -> Result<Harness<Headless>, Unheard> {
+    let link = LinkSettings { most_bytes: MOST_BYTES, ..LinkSettings::default() };
+    let program = Headless::program().with_engine(engine()).root::<Tcp>().root_with::<Link>(link);
+    let invocation =
+        Invocation::new(iter::once("engine").chain(args.iter().map(String::as_str)), Vec::<(String, String)>::new());
+    let Ok(Invoked::Run(program)) = program.read("engine", invocation) else {
+        panic!("the engine reads the arguments it was started with");
+    };
+
+    Harness::of(program)
+}
+
+#[test]
+fn mint_token_answers_the_arguments_that_start_an_engine_that_links() -> Result<(), Unheard> {
+    // Catches arguments that name the wrong flag, the wrong port or host, or a token written in a form `--hub-token`
+    // does not read, and a token the tool answers that `Engines` does not hold: the engine would never be listed.
+    let (mut hub, _, worker) = hub()?;
+
+    let minted: Minted = output(called(&mut hub, worker, "mint_token", &MintToken)?);
+    let mut engine = started(&minted.args)?;
+
+    waiting::until(BUDGET, || {
+        engine.step();
+        listed(&mut hub).is_ok_and(|list| list.engines.len() == 1)
+    });
+    assert_eq!(listed(&mut hub)?.engines, vec![EngineListing { engine: 0, name: String::from("engine"), tools: 0 }]);
 
     Ok(())
 }

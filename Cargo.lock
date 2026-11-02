@@ -62,6 +62,7 @@ dependencies = [
  "aethereal-chassis-headless",
  "aethereal-data",
  "aethereal-files",
+ "aethereal-link",
  "aethereal-render",
  "aethereal-store",
  "aethereal-substrate",

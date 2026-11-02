@@ -2,6 +2,7 @@
 //! window root and the renderer bootstrapped on it (ADR-0029).
 
 mod files;
+mod link;
 mod renderer;
 mod store;
 mod tcp;

@@ -1,5 +1,6 @@
 //! What the agent writes to the hub's tools, and what it reads back, where the link's own kinds will not do
-//! (ADR-0037, ADR-0038): `list_engines` takes and answers the link's own `ListEngines` and `EngineList`.
+//! (ADR-0037, ADR-0038): `list_engines` takes and answers the link's own `ListEngines` and `EngineList`, and
+//! `mint_token` its `MintToken` and `Minted` (ADR-0040).
 
 use aethereal_data::{Json, Plain};
 

@@ -1,11 +1,12 @@
 //! What crosses the link: each frame one plain kind's bytes, in a `LengthPrefixed` frame (ADR-0038).
 
+use crate::Token;
 use aethereal_data::{Budget, DecodeError, EncodeError, Plain, from_bytes, to_bytes};
 use aethereal_tools::{Called, ToolSheet};
 
 /// The revision of the link this crate speaks. A change to [`Up`] or [`Down`] that an older side would misread is the
-/// next.
-pub const REVISION: u32 = 1;
+/// next: `2` brought the token in [`Up::Hello`] (ADR-0040).
+pub const REVISION: u32 = 2;
 
 /// The port a hub listens for engines on, and an engine dials, unless set otherwise.
 pub const PORT: u16 = 8892;
@@ -14,9 +15,9 @@ pub const PORT: u16 = 8892;
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.up")]
 pub enum Up {
-    /// The first frame of a connection: the revision the engine speaks, and the name the hub shows the agent beside
-    /// it, which is not an identity.
-    Hello { revision: u32, name: String },
+    /// The first frame of a connection: the revision the engine speaks, the name the hub shows the agent beside it,
+    /// which is not an identity, and the token the hub minted for it, which is (ADR-0040).
+    Hello { revision: u32, name: String, token: Token },
     /// Every tool the engine holds, and the revision of the set: a count the engine raises with each change.
     Sheets { revision: u64, tools: Vec<ToolSheet> },
     /// What the hub's call `call` came to.
@@ -27,11 +28,21 @@ pub enum Up {
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.down")]
 pub enum Down {
-    /// The engine's revision is not one the hub speaks: `revision` is the one it does. The hub then hangs up.
-    Refused { revision: u32 },
+    /// The hub refused the engine's `Hello`, saying why. The hub then hangs up.
+    Refused(Refusal),
     /// A call of `tool`, numbered by the hub, with `input` bytes of its input schema in the set of `revision`, the one
     /// the hub converted it with.
     Call { call: u64, revision: u64, tool: String, input: Vec<u8> },
+}
+
+/// Why a hub refused an engine's `Hello`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.link.refusal")]
+pub enum Refusal {
+    /// The engine's revision is not one the hub speaks: `revision` is the one it does.
+    Revision { revision: u32 },
+    /// The hub holds no such token: it never minted it, it expired, or a `Hello` brought it already (ADR-0040).
+    Token,
 }
 
 /// The bytes a frame's decode may allocate for each byte of the frame: a list is charged its elements' size whole,

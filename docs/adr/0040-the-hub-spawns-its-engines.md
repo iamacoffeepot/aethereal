@@ -37,6 +37,8 @@ agent ── mint_token {} ──> Engines ── answers a token, and the argum
 - **A token is 16 bytes of the host's randomness,** minted by `Engines` and kept in its table with what it is for: a spawn (`Spawned:n`) or an engine started outside the hub.
 - **It is good for one `Hello`.** An `Engine` whose `Hello` brings a token asks `Engines` whose it is, and `Engines` takes it out of its table. A token it never minted, or one used, is refused, as a wrong revision is (`Down::Refused`), and that connection is shut. A `Hello` with no token cannot be read: the field is required.
 - **A token minted for an engine outside the hub lasts `token_within_millis`** (ten minutes by default), long enough to start an engine by hand, and the table keeps at most `most_tokens` of them; past that, the oldest goes. A spawn's token lasts as long as its `Spawned`.
+- **The host's randomness is a service the link crate defines,** `Randomness`, which the headless and desktop hosts serve from the kernel's generator as they bootstrap `Engines`, and which a `Draw` job reads (ADR-0034). So `Engines` runs on native hosts only, as the store does.
+- **A refusal names its reason:** `Down::Refused(Refusal::Revision { revision })` for a revision the hub does not speak, and `Down::Refused(Refusal::Token)` for a token it does not hold.
 - So the hub knows what every connection is: the spawn it belongs to, or an engine started outside it, and ADR-0038's links that bring no proof are gone.
 
 ### Every engine ends when its link ends
@@ -118,7 +120,7 @@ pub enum Terminated { Stopping, External, NotLinked }
 - **The `Hello` that brings its token is its link:** `Engines` tells the `Spawned` its engine's id, and the `Spawned` answers `Linked`.
 - **The agent is answered once the engine is usable:** `Linked` when it has said `Hello`, `Exited` with its status and the tail of its stderr if it ended first, `Unlinked` if it did not link within `link_within_millis` (the process is then stopped), and `NotStored` and `Refused` at once.
 - **A `Spawned` lives as long as its process,** and ends when told `Exited`, so the store's hold and the launch copy go with it. `TerminateEngine` asks the engine's `Spawned` to `Stop` its process.
-- **An engine started outside the hub** links with a token from `MintToken`, whose `args` are what to start it with. The hub holds no process of it, so `TerminateEngine` answers `External`; the hub can shut its connection, and the engine then ends by the rule above.
+- **An engine started outside the hub** links with a token from `MintToken`, whose `args` are what to start it with: `--hub` names the setting `EnginesSettings.host`, where the hub listens. The hub holds no process of it, so `TerminateEngine` answers `External`; the hub can shut its connection, and the engine then ends by the rule above.
 
 ### What the agent sees
 

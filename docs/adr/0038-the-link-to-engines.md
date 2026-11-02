@@ -68,6 +68,7 @@ pub struct LinkSettings {
 - **Each set has a revision,** a count `Link` keeps and raises with every change to what it holds, across connections. A `Call` names the revision of the set the hub converted it with, and `Link` answers a call of an older revision `Called::Refused`, saying the tools have changed, without asking the worker. So a tool replaced by one of another schema is never called with bytes written for the first, even where the new schema would read them.
 - **A call is asked of its worker**, `Asks<Tooling, Call, Calling>`, keyed by the call's number, and its answer is written back as `Called`. A worker that ends first is answered `No`, which `Link` writes as `Called::Refused`. A `Called` that would not fit in a frame is written as `Called::Refused` saying so, so an answer too large refuses the call and ends nothing.
 - **When the hub goes, `Link` dials again.** A dial refused or a connection hung up runs a `Sleep` for the next wait, doubling from the first to the longest, and the next connection writes `Hello` and `Sheets` as the first did. Its tools stay held through it, so nothing in the engine sees the hub go. A call in flight when the connection went is answered by its worker into nothing: its `Called` is dropped.
+- *Replaced by ADR-0040: `Link` dials once, and ends its program when its connection ends; it has no redial and no `redial_millis`.*
 
 ### The hub's `Engines`
 
@@ -100,6 +101,7 @@ pub enum Down {                                      // hub to engine
 
 - **The link speaks only `Tooling`.** Anything else an engine shows an agent (its logs, its actors, a frame it drew) is a tool, written in the crate it belongs to, and crosses as one.
 - **A frame that does not decode ends the connection.** On the hub, that ends the `Engine`; on the engine, `Link` dials again. A frame past `most_bytes` ends it the same way (ADR-0033: `HungUp::TooLarge`), which the writer's own check keeps from happening between a hub and engine that agree on the limit.
+- *Replaced by ADR-0040: on the engine, a frame that does not decode ends the link, and `Link` ends its program.*
 - **The revision is `1`.** A change to `Up` or `Down` that an older side would misread is the next revision.
 
 ### The agent's three tools
@@ -124,6 +126,8 @@ call_tool { engine: u32, tool: String, input: Json }     -> { output: Json }
 
 This slice checks no identity. The hub listens on loopback, and whatever dials it and speaks the revision is an engine. The next slice, which spawns engines, has the hub mint a token for each engine it spawns and pass it in the engine's arguments, and `Hello` brings it. The hub refuses a token it did not mint, or one already used. A token is good for one `Hello`, so reading it from the process list after the engine has linked gains nothing. That is also how the hub ties a connection to the process it started.
 
+*Replaced by ADR-0040: every engine links with a token the hub minted, spawned or started by hand, and a `Hello` with none cannot be read.*
+
 ## Consequences
 
 - **Tools are written once, and listed in a hub or an engine.** Neither the tool nor its crate knows which.
@@ -131,6 +135,7 @@ This slice checks no identity. The hub listens on loopback, and whatever dials i
 - **The hub never needs an engine's kinds.** Schemas and bytes cross, and the hub converts JSON with the sheets it was sent.
 - **An agent calls an engine's tool by `call_tool`, not by its name.** It reads the schemas with `describe_engine` first. That is one call more than a tool listed by name, and it is what keeps the list fixed.
 - **An engine started by hand survives a hub restart:** its `Link` dials again and sends its sheets. An engine the hub spawned ends with the hub, which is the next slice's rule.
+- *Replaced by ADR-0040: every engine ends when its link ends, and one started by hand is started again with a fresh token.*
 - **A hung engine holds its calls until the asker gives up.** Nothing here pings. The deadline a call waits for is the hub's to set (#355), and a heartbeat can come once a hub spawns its engines.
 - **An answer too large refuses a call and ends nothing,** on either side, as each writer checks it against the frame limit. In-process, `Mcp` still has #357.
 - `Link` and `Engines` live in one crate, `aethereal-link`, as the two ends of one protocol. A program lists the end it is.

@@ -14,6 +14,7 @@ mod files;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod guest;
 mod jobs;
+mod link;
 pub mod native;
 mod pool;
 mod program;
@@ -30,6 +31,7 @@ pub mod waiting;
 pub use clock::Monotonic;
 pub use files::{Directories, FileRoots};
 pub use jobs::{Poller, Runners};
+pub use link::{NoRandomness, SystemRandomness};
 
 use aethereal_actor::Time;
 #[cfg(feature = "harness")]

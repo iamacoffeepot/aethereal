@@ -1,12 +1,14 @@
 //! An engine that links to its hub and hands it one tool, `read_file`, over the files of a directory (ADR-0038). It
-//! dials the hub as it starts, and again whenever the hub goes.
+//! dials the hub once, as it starts, with the token the hub minted for it, and ends when its link ends (ADR-0040).
 //!
-//! Its flags are the link's (`--hub`, `--port`, `--name`, `--most-tools`, `--most-bytes`) and the files' (`--assets`,
-//! `--readers`); any field is also set by its section and name, `--set link.redial_millis=[100,5000]`, and by the
-//! environment, `AETHEREAL_ENGINE_ASSETS=DIR`.
+//! Its flags are the link's (`--hub`, `--port`, `--hub-token`, `--name`, `--most-tools`, `--most-bytes`) and the
+//! files' (`--assets`, `--readers`); any field is also set by its section and name, `--set link.most_tools=64`, and
+//! by the environment, `AETHEREAL_ENGINE_ASSETS=DIR`. `--hub-token` is required: an engine started without it fails
+//! as it begins.
 //!
-//! Run with `cargo run --release -p aethereal-chassis-headless --example link_engine -- --port 8892 --name scene
-//! --assets DIR`, with a hub from the `link_hub` example listening on that port.
+//! With a hub from the `link_hub` example running, ask its `mint_token` tool for a token, which answers the arguments
+//! to start this engine with, then run `cargo run --release -p aethereal-chassis-headless --example link_engine --
+//! <those arguments> --name scene --assets DIR`.
 
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::NativeLayers;
