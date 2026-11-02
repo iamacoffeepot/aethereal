@@ -92,7 +92,7 @@ impl Bootstrap<Headless> for Files {
 
 **This record builds reading the files a program ships with.** What comes after, each its own piece:
 
-- **Saving**, in the namespaces `Save` and `Config`, which are written: a directory natively, written whole by writing a sibling and renaming it over the file, and OPFS in a browser, whose writable stream replaces a file whole as it is closed. A browser that refuses its storage, as a private window or a sandboxed frame may, answers `Unavailable`.
+- **Saving**, in the namespaces `Save` (built by ADR-0039) and `Config`, which are written: a directory natively, written whole by writing a sibling and renaming it over the file, and OPFS in a browser, whose writable stream replaces a file whole as it is closed. A browser that refuses its storage, as a private window or a sandboxed frame may, answers `Unavailable`.
 - **Listing a directory.** A fetch cannot list, so a browser lists `Assets` from a manifest of the files the program ships, written when the page is built.
 - **Reading a range of a file**, a plain ask whose job reads one range: a seek natively, a slice of an OPFS file, and a fetch with a `Range` header; and, over it, **a streamed read** (ADR-0017: `Stream`), for a file read as it is played or one larger than the engine's budget for blobs.
 
