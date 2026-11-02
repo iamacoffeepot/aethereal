@@ -9,8 +9,8 @@ The last slice of the hub stack. ADR-0038 linked engines to their hub, each star
 
 What is already decided:
 
-- **An engine dials its hub, and `Hello` opens the link** (ADR-0038: `Link`, `Engines`, `Engine`, `Up::Hello`, `REVISION`). A hand-started engine dials with no proof of who it is, and the hub, listening on loopback, takes it.
-- **A token, minted by the hub for the engine it spawns and passed in its arguments, is good for one `Hello`** (ADR-0038, "Who dialed"). Read from the process list after the engine has linked, it gains nothing.
+- **An engine dials its hub, and `Hello` opens the link** (ADR-0038: `Link`, `Engines`, `Engine`, `Up::Hello`, `REVISION`). A hand-started engine dials with no proof of who it is, the hub on loopback takes it, and its `Link` dials again whenever the hub goes.
+- **A token minted by the hub for an engine is good for one `Hello`** (ADR-0038, "Who dialed"), so one read from the process list after the engine has linked gains nothing.
 - **The store keeps a held build, and a hold lasts while its holder lives** (ADR-0039: `Store`, `Hold`, `StoreHash`, `StoreName`). The store never answers a binary's bytes.
 - **No actor ends another; one asks it to end, by mail** (ADR-0009), **and an actor may end its program** (ADR-0020: `turn.quit`).
 - **Work that waits is a job, and what a job needs of its host is a service its capability defines** (ADR-0018, ADR-0034). A blocking service waits on threads of its own (ADR-0032, ADR-0033).
@@ -19,20 +19,37 @@ Nothing in the engine starts a process yet. The earlier engine's hub started its
 
 ## Decision
 
-**A new capability, `Processes`, in `aethereal-process`, starts programs and says when each exits. `Engines` spawns an engine from the store through it: the store hands it a copy to run and holds the build, the engine is started with a token, and the `Hello` that brings the token back is that engine's link. A spawned engine ends with its hub.**
+**Every engine links with a token the hub minted for it, and every engine ends when its link ends. The hub mints one as it spawns an engine from the store, through a new capability, `Processes`, and mints one on request for an engine started outside it.**
 
 ```
-agent ── spawn_engine { binary, args } ──> Engines ── spawns Spawned:n
+agent ── spawn_engine { binary, args } ──> Engines ── spawns Spawned:n, mints its token
   Spawned ── Launch { binary } ──> Store              a launch copy to run; the build held while Spawned lives
   Spawned ── Start { program, args } ──> Processes ── Process:m          the engine's process
   engine  ══ Hello { revision, name, token } ══> Engines ── tells Spawned:n it linked, as engine id k
   Spawned answers spawn_engine: Linked { engine: k }, or how it failed
+
+agent ── mint_token {} ──> Engines ── answers a token, and the arguments to start an engine with
+  the agent starts the engine itself; its Hello brings the token, and it is listed as external
 ```
+
+### Tokens
+
+- **A token is 16 bytes of the host's randomness,** minted by `Engines` and kept in its table with what it is for: a spawn (`Spawned:n`) or an engine started outside the hub.
+- **It is good for one `Hello`.** An `Engine` whose `Hello` brings a token asks `Engines` whose it is, and `Engines` takes it out of its table. A token it never minted, or one used, is refused, as a wrong revision is (`Down::Refused`), and that connection is shut. A `Hello` with no token cannot be read: the field is required.
+- **A token minted for an engine outside the hub lasts `token_within_millis`** (ten minutes by default), long enough to start an engine by hand, and the table keeps at most `most_tokens` of them; past that, the oldest goes. A spawn's token lasts as long as its `Spawned`.
+- So the hub knows what every connection is: the spawn it belongs to, or an engine started outside it, and ADR-0038's links that bring no proof are gone.
+
+### Every engine ends when its link ends
+
+- **`LinkSettings` gains `token`,** read from `--hub-token`, required: an engine started without one fails as it begins, naming the setting.
+- **A `Link` ends its program when its connection ends,** when its dial is refused, or when the hub refuses its `Hello` (`turn.quit`, ADR-0020). Its token is spent, and a hub that restarted has none of its own to take, so it could never link again. One rule holds for every engine, spawned or started outside the hub: no engine outlives its link, on every host, with no signal from a parent that may have died first.
+- **This replaces ADR-0038's redial.** `Link` dials once, as it begins; its `Sleep`, its waits between dials, and `redial_millis` go. ADR-0038's links with no token, and the token its "Who dialed" planned for spawned engines alone, are replaced by this section.
+- `Up::Hello` is `{ revision, name, token }`, and `REVISION` is `2`.
 
 ### Processes
 
 ```
-Processes      root, singleton, asked at path::<Processes>(()); native hosts only
+Processes      root, singleton, asked at path::<Processes>(()); native hosts only, in aethereal-process
  └─ Process:m  one program running, keyed by the root's count
 ```
 
@@ -66,7 +83,7 @@ pub enum Launched { Ready { program: String, hash: StoreHash }, NotStored }
 ```
 
 - **The store copies the entry to a launch copy,** `running/<name>-<n>` beneath its root, marked executable, and answers its path. The copy is named for the binary, so the process is shown by that name (a desktop's menu bar takes the file's), and the store's entries are never executable. Copying a binary of a few megabytes takes milliseconds.
-- **`Launch` holds the build for its asker,** as `Hold` does (ADR-0039), and the store removes the launch copy when the asker ends. Each spawn has its own copy, so a rebuild checked in under the same name changes nothing that is running.
+- **`Launch` holds the build for its asker,** as `Hold` does (ADR-0039), and the store removes the launch copy when the asker ends, and clears `running/` as it begins. Each spawn has its own copy, so a rebuild checked in under the same name changes nothing that is running.
 - **A name that spells a hash is refused at check-in,** 64 lowercase hexadecimal digits, so the agent's `binary`, which is one string, is a hash when it spells one, and a name otherwise. This amends ADR-0039's rule for a name.
 
 ### `Engines` spawns
@@ -79,7 +96,6 @@ Engines
 
 ```rust
 impl Carries<SpawnEngine> for Engines { type Answers = (Spawn,); }
-
 pub struct SpawnEngine { pub binary: Binary, pub args: Vec<String> }
 pub enum Spawn {
     Linked { engine: u32 },                              // started, and linked as engine `engine`
@@ -89,31 +105,31 @@ pub enum Spawn {
     Unlinked,                                            // it ran, and did not link within `link_within_millis`
 }
 
+impl Carries<MintToken> for Engines { type Answers = (Minted,); }
+pub struct MintToken;
+pub struct Minted { pub token: [u8; 16], pub args: Vec<String> }   // `args`: --hub, --port, --hub-token
+
 impl Carries<TerminateEngine> for Engines { type Answers = (Terminated,); }
 pub struct TerminateEngine { pub engine: u32 }
-pub enum Terminated { Stopping, NotSpawned, NotLinked }
+pub enum Terminated { Stopping, External, NotLinked }
 ```
 
-- **`Engines` spawns a `Spawned` for each `SpawnEngine`,** handing it the held request. It asks the store to `Launch`, so the build is held while it lives, then asks `Processes` to `Start` the copy with the agent's arguments and the link's own: `--hub`, `--port`, and `--hub-token`, a token `Engines` mints from the host's randomness and keeps beside the spawn.
-- **The token ties the link to the process.** An `Engine` whose `Hello` brings a token asks `Engines` whose it is; `Engines` takes it out of its table, so it is good once, and tells the `Spawned` its engine's id. A token it never minted, or one used, is refused, as a wrong revision is (`Down::Refused`). The `Spawned` answers `Linked`.
-- **The agent is answered once the engine is usable:** `Linked` when it has said `Hello`, `Exited` with its status and the tail of its stderr if it ended first, `Unlinked` if it did not link within `link_within_millis` (the process is then stopped), `NotStored` and `Refused` at once.
+- **`Engines` spawns a `Spawned` for each `SpawnEngine`,** handing it the held request and a token it mints for it. The `Spawned` asks the store to `Launch`, so the build is held while it lives, then asks `Processes` to `Start` the copy with the agent's arguments and the link's own: `--hub`, `--port`, and `--hub-token`.
+- **The `Hello` that brings its token is its link:** `Engines` tells the `Spawned` its engine's id, and the `Spawned` answers `Linked`.
+- **The agent is answered once the engine is usable:** `Linked` when it has said `Hello`, `Exited` with its status and the tail of its stderr if it ended first, `Unlinked` if it did not link within `link_within_millis` (the process is then stopped), and `NotStored` and `Refused` at once.
 - **A `Spawned` lives as long as its process,** and ends when told `Exited`, so the store's hold and the launch copy go with it. `TerminateEngine` asks the engine's `Spawned` to `Stop` its process.
-- **A hand-started engine still links,** with no token, as in ADR-0038, unless the setting `require_tokens` is on. The hub cannot stop it, as it holds no process of it: `TerminateEngine` answers `NotSpawned`.
-
-### A spawned engine ends with its hub
-
-- **`LinkSettings` gains `token`,** read from `--hub-token`: an enum, `Token::{None, Given(String)}`, not an empty string. `Hello` carries it: `Up::Hello { revision, name, token }`, and `REVISION` is `2`.
-- **A `Link` that was given a token ends its program when its connection ends** (`turn.quit`, ADR-0020), where one with none dials again (ADR-0038). Its token is spent, and a hub that restarted has none of its own to take, so it could never link again. So no engine the hub spawned outlives the hub, on every host, with no signal from a parent that may have died first.
+- **An engine started outside the hub** links with a token from `MintToken`, whose `args` are what to start it with. The hub holds no process of it, so `TerminateEngine` answers `External`; the hub can shut its connection, and the engine then ends by the rule above.
 
 ### What the agent sees
 
-`EngineTools` (ADR-0038) gains two tools, and `list_engines` says where each engine came from:
+`EngineTools` (ADR-0038) gains three tools, and `list_engines` says where each engine came from:
 
 ```
 spawn_engine { binary: String, args: [String] }   -> { engine }        // refused with how it failed
+mint_token {}                                     -> { token, args }   // to start an engine by hand
 terminate_engine { engine }                       -> {}
 list_engines {}                                   -> { engines: [{ engine, name, tools, origin }], exited: [{ binary, status, stderr }] }
-                                                  // origin: { Spawned: { binary, hash } } | "ByHand"
+                                                  // origin: { Spawned: { binary, hash } } | "External"
 ```
 
 - `exited` keeps the last few engines the hub spawned that have ended, with how, bounded by the setting `most_exited`, so an engine that crashed after linking is not just gone from the list.
@@ -121,16 +137,18 @@ list_engines {}                                   -> { engines: [{ engine, name,
 ## Consequences
 
 - **The arc is whole:** an agent checks a build in, spawns it, calls its tools, and terminates it, all through one hub, and the hub runs only what was checked in.
-- **A spawned engine's process is the hub's to stop,** and ends with the hub whatever kills it. A hand-started one is the user's.
-- **`Processes` can start any program a program asks it to.** It is listed by a hub, and only `Engines` asks it there; an engine has no reason to list it.
+- **The hub knows every connection,** and every engine follows one rule: it links once, with a token, and ends when its link ends. An engine started by hand needs a token first, and is started again with a fresh one after its hub goes.
+- **`Link` loses its redial,** which a spent token could not use.
+- **`Processes` can start any program a program asks it to.** A hub lists it, and only `Engines` asks it there; an engine has no reason to list it.
 - **`Hello` changes,** so an engine and a hub of different revisions refuse each other (ADR-0038), as they should.
 - **ADR-0039's names lose the 64-hex-digit spelling.**
-- **Each spawn copies its binary.** A hub spawning many engines of one build writes one copy each; they go as each engine ends, and a crash leaves them in `running/`, which the store clears as it begins.
+- **Each spawn copies its binary.** Copies go as each engine ends, and a crash leaves them in `running/`, which the store clears as it begins.
 
 ## Alternatives considered
 
+- **Links with no token from engines started by hand.** A connection the hub cannot place, and two rules for engines: one ends with its hub, one redials. Minting a token for it on request gives every engine the same rule.
+- **A plain spawn id, not a random token.** It pairs a connection with its spawn as well, but a local process could guess one and take a spawn's place in the list. Sixteen random bytes per engine close that.
+- **Engines redial when the hub goes.** A restarted hub cannot take their spent tokens, so they would wait unlinked for good.
 - **Run the store's entry in place.** No copy, but the entry must be executable, and the process is named by its hash wherever it is shown.
-- **Spawned engines redial when the hub goes.** A restarted hub cannot take their spent tokens, so they would wait unlinked for good, and the hub would have to kill its children as it exits, which no host promises if the hub is killed.
-- **Only spawned engines link.** Tighter, but an engine run by hand while it is written would have to be checked in first. It is a setting, `require_tokens`.
 - **Spawning inside `Engines`, with no `Processes`.** Starting and watching a process is not the link's, and would be written again by the next thing that starts one.
 - **Answer `spawn_engine` as soon as the process starts.** The agent would then poll `list_engines` to learn when it can call the engine's tools, or that it never could.
