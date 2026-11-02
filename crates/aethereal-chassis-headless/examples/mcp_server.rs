@@ -1,11 +1,12 @@
-//! An MCP server on this machine with one tool, `read_file`, for a client or a measure to reach (ADR-0037). It runs
+//! An MCP server on this machine with two tools, `read_file` and `write_file`, for a client or a measure to reach
+//! (ADR-0037, ADR-0039). It runs
 //! no cycle: its sockets wake it as they are ready, and it sleeps between requests (ADR-0033).
 //!
-//! Run with `cargo run --release -p aethereal-chassis-headless --example mcp_server -- --port 8890 --assets DIR`.
+//! Run with `cargo run --release -p aethereal-chassis-headless --example mcp_server -- --port 8890 --assets DIR --save DIR`.
 
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::NativeLayers;
-use aethereal_files::{Files, ReadTool};
+use aethereal_files::{Files, ReadTool, WriteTool};
 use aethereal_http::{Http, HttpSettings};
 use aethereal_mcp::Mcp;
 use aethereal_substrate::{EngineSettings, Host};
@@ -22,7 +23,7 @@ fn main() {
         .root_with::<Http>(http)
         .root::<Mcp>()
         .root::<Files>()
-        .root::<Toolbox<(ReadTool,), Mcp>>()
+        .root::<Toolbox<(ReadTool, WriteTool), Mcp>>()
         .launch("aethereal_mcp");
     assert!(launched.is_ok(), "the server runs: {launched:?}");
 }

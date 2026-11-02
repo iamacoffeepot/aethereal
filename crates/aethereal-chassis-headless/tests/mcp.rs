@@ -6,7 +6,7 @@ use aethereal_actor::{
 };
 use aethereal_chassis_headless::{FileRoots, Headless};
 use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, from_json, to_bytes, to_json};
-use aethereal_files::{Files, ReadTool};
+use aethereal_files::{Files, ReadTool, WriteTool};
 use aethereal_http::{Http, HttpSettings};
 use aethereal_mcp::{Mcp, McpSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
@@ -888,14 +888,33 @@ impl Drop for Assets {
 
 /// A POST calling `read_file` for `path`.
 fn read_file(path: &'static str) -> Post {
+    read_in("Assets", path)
+}
+
+/// A POST calling `read_file` for `path` in `namespace`.
+fn read_in(namespace: &str, path: &str) -> Post {
+    let arguments = format!("{{\"namespace\":\"{namespace}\",\"path\":\"{path}\"}}");
+
+    call_tool("read_file", &arguments)
+}
+
+/// A POST calling `write_file` to write `text`, a JSON string as written, as the file at `path` in `namespace`.
+fn write_file(namespace: &str, path: &str, text: &str) -> Post {
+    let arguments = format!("{{\"namespace\":\"{namespace}\",\"path\":\"{path}\",\"text\":{text}}}");
+
+    call_tool("write_file", &arguments)
+}
+
+/// A POST calling the tool `name` with `arguments`, a JSON object as written.
+fn call_tool(name: &'static str, arguments: &str) -> Post {
     let body = format!(
-        "{{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{{\"name\":\"read_file\",\
-         \"arguments\":{{\"namespace\":\"Assets\",\"path\":\"{path}\"}},\"_meta\":{}}}}}",
+        "{{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{{\"name\":\"{name}\",\
+         \"arguments\":{arguments},\"_meta\":{}}}}}",
         Meta::Whole.text()
     );
     let body: &'static str = Box::leak(body.into_boxed_str());
 
-    Post { body: Some(body), method: Some("tools/call"), name: Some("read_file"), ..Post::of(Rpc::CallSay) }
+    Post { body: Some(body), method: Some("tools/call"), name: Some(name), ..Post::of(Rpc::CallSay) }
 }
 
 #[test]
@@ -906,7 +925,11 @@ fn read_tool_answers_a_file_over_mcp_and_says_what_it_could_not_read() -> Result
     let large = vec![b'a'; 256 * 1024 + 1];
     let assets =
         Assets::new("read", &[("a.txt", b"hello \"there\"\n"), ("b.bin", &[0xFF, 0xFE]), ("large.txt", &large)]);
-    let roots = FileRoots { assets: assets.0.display().to_string(), readers: 2 };
+    let roots = FileRoots {
+        assets: assets.0.display().to_string(),
+        save: assets.0.join("save").display().to_string(),
+        readers: 2,
+    };
     let program = program().root_with::<Files>(roots).root::<Toolbox<(ReadTool,), Mcp>>();
     let mut harness = Harness::of(program)?;
     let port = port_of(&mut harness)?;
@@ -932,6 +955,45 @@ fn read_tool_answers_a_file_over_mcp_and_says_what_it_could_not_read() -> Result
 
     let read = answered(&mut harness, port, &Post::of(Rpc::List));
     assert!(read.body.contains("\"name\":\"read_file\""), "{read:?}");
+
+    Ok(())
+}
+
+#[test]
+fn write_tool_writes_a_save_over_mcp_that_read_file_reads_back() -> Result<(), Unheard> {
+    // Catches the write tool's decode, hold, ask, and encode each going wrong, its text written as anything but its
+    // bytes, a write to `Assets` or past the namespace taken, and a write the disk refused answered as done.
+    let assets = Assets::new("write", &[("a.txt", b"an asset")]);
+    let save = assets.0.join("save");
+    let roots = FileRoots { assets: assets.0.display().to_string(), save: save.display().to_string(), readers: 2 };
+    let program = program().root_with::<Files>(roots).root::<Toolbox<(ReadTool, WriteTool), Mcp>>();
+    let mut harness = Harness::of(program)?;
+    let port = port_of(&mut harness)?;
+    for _ in 0..16 {
+        harness.step();
+    }
+
+    let written = answered(&mut harness, port, &write_file("Save", "slots/game.sav", "\"hello \\\"there\\\"\\n\""));
+    assert!(written.body.contains("\"structuredContent\":{}"), "{written:?}");
+    assert_eq!(fs::read(save.join("slots/game.sav")).ok(), Some(b"hello \"there\"\n".to_vec()));
+    let read = answered(&mut harness, port, &read_in("Save", "slots/game.sav"));
+    assert!(read.body.contains("\"structuredContent\":{\"text\":\"hello \\\"there\\\"\\n\"}"), "{read:?}");
+
+    let cases = [
+        ("Assets", "a.txt", "read-only"),
+        ("Save", "../a.txt", "no path"),
+        ("Save", "slots/game.sav/inner.sav", "could not be written"),
+    ];
+    for (namespace, path, says) in cases {
+        let written = answered(&mut harness, port, &write_file(namespace, path, "\"over\""));
+
+        assert!(written.body.contains(says), "{path}: {written:?}");
+        assert!(written.body.contains("\"isError\":true"), "{path}: {written:?}");
+    }
+    assert_eq!(fs::read(assets.0.join("a.txt")).ok(), Some(b"an asset".to_vec()));
+
+    let listed = answered(&mut harness, port, &Post::of(Rpc::List));
+    assert!(listed.body.contains("\"name\":\"write_file\""), "{listed:?}");
 
     Ok(())
 }
