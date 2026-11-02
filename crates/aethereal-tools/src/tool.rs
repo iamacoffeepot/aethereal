@@ -1,6 +1,6 @@
 //! A tool as a program lists it (ADR-0037).
 
-use crate::{Offer, ToolSheet, Toolbox, Tooling};
+use crate::{Holder, Offer, ToolSheet, Toolbox, Tooling};
 use aethereal_actor::{Actor, ActorRef, Anywhere, Beginning, ChildOf, Fault, ProtocolRef};
 
 /// A worker a program may list in a [`Toolbox`]: a concrete actor, written in the crate that owns the work it fronts.
@@ -22,5 +22,5 @@ pub trait ToolList: Send + 'static {
     /// # Errors
     ///
     /// A fault naming the tool whose spawn was refused.
-    fn stand_up<L: ToolList, S>(turn: &mut Beginning<'_, Toolbox<L>, S>) -> Result<Vec<Offer>, Fault>;
+    fn stand_up<L: ToolList, R: Holder, S>(turn: &mut Beginning<'_, Toolbox<L, R>, S>) -> Result<Vec<Offer>, Fault>;
 }

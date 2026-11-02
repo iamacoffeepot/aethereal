@@ -1,8 +1,9 @@
 //! The JSON a request is answered with (ADR-0037).
 
-use super::{Table, VERSION};
+use super::VERSION;
 use aethereal_data::{Budget, SchemaNodes, to_json, write_json_string};
 use aethereal_http::{Response, Status};
+use aethereal_tools::{HeldTool, Table};
 
 /// `-32022`: the revision asked for is not spoken.
 const UNSUPPORTED_VERSION: i32 = -32022;
@@ -67,14 +68,15 @@ pub fn discover(id: &str) -> Response {
 
 /// The answer to `tools/list`.
 pub fn list(id: &str, table: &Table) -> Response {
-    let tools = table.listed().collect::<Vec<_>>().join(",");
+    let tools = table.tools().map(|(name, held)| listed(name, held)).collect::<Vec<_>>().join(",");
 
     result(id, &format!("\"tools\":[{tools}],{FRESHNESS}"))
 }
 
-/// A tool's entry in `tools/list`, its schemas already JSON Schema.
-pub fn listed(name: &str, description: &str, input: &str, output: &str) -> String {
-    let (name, description) = (quoted(name), quoted(description));
+/// A tool's entry in `tools/list`, from the JSON Schema written as it was offered.
+fn listed(name: &str, held: &HeldTool) -> String {
+    let (name, description) = (quoted(name), quoted(&held.description));
+    let (input, output) = (&held.input_schema, &held.output_schema);
 
     format!("{{\"name\":{name},\"description\":{description},\"inputSchema\":{input},\"outputSchema\":{output}}}")
 }

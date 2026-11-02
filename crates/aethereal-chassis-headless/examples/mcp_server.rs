@@ -7,9 +7,10 @@ use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::NativeLayers;
 use aethereal_files::{Files, ReadTool};
 use aethereal_http::{Http, HttpSettings};
-use aethereal_mcp::{Mcp, Toolbox};
+use aethereal_mcp::Mcp;
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
+use aethereal_tools::Toolbox;
 
 fn main() {
     let http = HttpSettings::default();
@@ -21,7 +22,7 @@ fn main() {
         .root_with::<Http>(http)
         .root::<Mcp>()
         .root::<Files>()
-        .root::<Toolbox<(ReadTool,)>>()
+        .root::<Toolbox<(ReadTool,), Mcp>>()
         .launch("aethereal_mcp");
     assert!(launched.is_ok(), "the server runs: {launched:?}");
 }

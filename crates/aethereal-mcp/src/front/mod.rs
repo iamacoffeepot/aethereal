@@ -3,16 +3,14 @@
 mod base64;
 mod origin;
 mod reply;
-mod table;
 #[cfg(test)]
 mod tests;
 
-pub use reply::{output, refused};
-pub use table::{Table, Tool};
-
 use aethereal_data::{Budget, JsonTree, JsonValue, from_json, from_value, read_json};
 use aethereal_http::{Method, Request, Response, Status};
+use aethereal_tools::Table;
 use core::str;
+pub use reply::{output, refused};
 
 /// The revision spoken, the only one (ADR-0037).
 const VERSION: &str = "2026-07-28";

@@ -1,7 +1,7 @@
 //! The MCP capability's root (ADR-0037).
 
-use crate::front::{self, Routed, Table, Tool};
-use crate::{Call, Called, McpSettings, Offer, Offered, Tooling, Withdraw};
+use crate::McpSettings;
+use crate::front::{self, Routed};
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Level, Path,
     ToSender, Top, Turn, path,
@@ -9,6 +9,7 @@ use aethereal_actor::{
 use aethereal_data::{Bound, Plain, SchemaNodes};
 use aethereal_http::{Handling, Http, Request, Response, Serve, Served};
 use aethereal_substrate::Bootstrap;
+use aethereal_tools::{Call, Called, HeldTool, Holder, Offer, Offered, Table, Tooling, Withdraw};
 use std::collections::BTreeMap;
 
 /// What the root keeps for its serve: nothing, since it asks one.
@@ -75,6 +76,9 @@ impl ChildOf for Mcp {
     type Parent = Top;
 }
 
+/// It holds the tools a hub's own program offers.
+impl Holder for Mcp {}
+
 /// Asked at its typed path, it answers an offer in the same turn.
 impl Carries<Offer> for Mcp {
     type Answers = (Offered,);
@@ -116,7 +120,7 @@ impl Handles<Request> for Mcp {
             turn.reply(&front::refused(&id, "too many calls are out"))?;
             return Ok(());
         }
-        let Some(Tool { worker, output, .. }) = self.table.tool(&tool) else {
+        let Some(HeldTool { worker, output, .. }) = self.table.tool(&tool) else {
             turn.reply(&front::refused(&id, "the tool has gone"))?;
             return Ok(());
         };

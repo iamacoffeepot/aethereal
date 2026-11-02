@@ -11,6 +11,7 @@ aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data", features = ["json"] }
 aethereal-http = { path = "../aethereal-http" }
 aethereal-substrate = { path = "../aethereal-substrate" }
+aethereal-tools = { path = "../aethereal-tools" }
 
 [dev-dependencies]
 aethereal-tcp = { path = "../aethereal-tcp" }
