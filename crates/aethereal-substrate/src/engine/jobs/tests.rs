@@ -276,6 +276,8 @@ enum What {
     LetGoAndFail,
     /// Spawns a [`Failing`] child.
     Nest,
+    /// Spawns a [`Newborn`] child.
+    Bear,
     /// Runs a [`Light`].
     Light,
     /// Runs a [`Fails`].
@@ -419,6 +421,11 @@ impl Handles<Go> for Worker {
                 self.refused.push(spawned.is_err());
                 return Ok(());
             }
+            What::Bear => {
+                let spawned = turn.spawn::<Newborn>(&(), Which { at: go.at });
+                self.refused.push(spawned.is_err());
+                return Ok(());
+            }
             What::Light => turn.run(&Light, &which)?,
             What::Fails => turn.run(&Fails, &which)?,
             What::Panics => turn.run(&Panics, &which)?,
@@ -527,6 +534,49 @@ impl Handles<Answer<Doubled, Which>> for Failing {
     type Sends = ();
 
     fn handle(&mut self, _: (Answered<Doubled>, Which), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// A child that runs a job as it begins, and keeps what became of it.
+#[derive(Bound)]
+#[kind(name = "aether.test.newborn_child")]
+struct Newborn {
+    done: Vec<(u64, Done)>,
+}
+
+impl ChildOf for Newborn {
+    type Parent = Worker;
+}
+
+impl Actor for Newborn {
+    type Config = Which;
+    type Key = ();
+    type Handles = (Answer<Doubled, Which>,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(which: Which, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.run(&Double { n: 10 * which.at }, &which)?;
+
+        Ok(Self { done: Vec::new() })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Doubled, Which>> for Newborn {
+    type Sends = ();
+
+    fn handle(&mut self, (done, which): (Answered<Doubled>, Which), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let done = match done {
+            Answered::Yes(doubled) => Done::Doubled(doubled.n),
+            Answered::No(why) => Done::No(why),
+        };
+        self.done.push((which.at, done));
+
         Ok(())
     }
 }
@@ -845,11 +895,11 @@ fn a_turn_that_fails_runs_no_job() {
 
 #[test]
 fn a_cancelled_job_is_never_answered_and_its_host_is_asked_to_stop() {
-    // Catches a cancelled job's context kept, so its answer runs a turn, whether it finished before the cancel (one
-    // cancelled in the turn that ran it, which `Inline` finishes at once) or after (one held, given up on from the
-    // handler of another job's answer, through an id kept in that job's context, and one held and let go of from a
-    // turn of plain mail that does nothing else); and a host never asked to stop a job. A job held and not cancelled
-    // is answered when it is let go of.
+    // Catches a cancelled job's context kept, so its answer runs a turn (one held, given up on from the handler of
+    // another job's answer, through an id kept in that job's context, and one held and let go of from a turn of plain
+    // mail that does nothing else); a host never asked to stop a job it holds; and a job cancelled in the turn that ran
+    // it handed to the host at all, as a waiting job cancelled is dropped. A job held and not cancelled is answered when
+    // it is let go of.
     let holding = Arc::new(Holding::new());
     let (mut engine, seated) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
     poke(&mut engine, 1, What::Cancel);
@@ -869,7 +919,43 @@ fn a_cancelled_job_is_never_answered_and_its_host_is_asked_to_stop() {
 
     let answered = [doubled(0, 2), doubled(5, 7)];
     assert_eq!(done(&engine, seated), answered, "the jobs given up on and let go of are not answered");
-    assert_eq!(holding.stopped(), [2, 5, 3], "as they were cancelled: the job given up on after the bring");
+    assert_eq!(holding.stopped(), [5, 3], "as they were cancelled: the job given up on after the bring");
+}
+
+#[test]
+fn a_job_that_finished_before_it_was_cancelled_is_never_answered() {
+    // Catches a cancelled job's context kept when its answer was already on the engine's feed as the cancel came: the
+    // answer, brought after, would run a turn of the actor that gave up on it.
+    let holding = Arc::new(Holding::new());
+    let (mut engine, seated) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
+    poke(&mut engine, 1, What::Hold);
+    holding.let_go();
+    poke(&mut engine, 2, What::LetGo);
+
+    engine.bring();
+    settle(&mut engine);
+
+    assert_eq!(done(&engine, seated), [doubled(0, 2)], "the begin's job alone is answered");
+}
+
+#[test]
+fn a_job_a_child_runs_as_it_begins_is_answered_to_that_child() {
+    // Catches the job of a child stood up in a step handed out before the step's children are seated: the child is not
+    // live yet, so its job is dropped as an ended actor's, and never answered.
+    let (mut engine, worker) = engine(Arc::new(Inline::new(Arc::new(Services::none()))));
+    poke(&mut engine, 3, What::Bear);
+    engine.bring();
+    settle(&mut engine);
+
+    let child = crate::child_id(worker.id, &PathSegment::new(Newborn::NAME, &()));
+    let Some(seat) = engine.table().seat(child) else {
+        panic!("the child is live");
+    };
+    let Some(newborn) = engine.state::<Newborn>(Seated { id: child, seat }) else {
+        panic!("the child's state is native");
+    };
+
+    assert_eq!(newborn.done, [doubled(3, 60)]);
 }
 
 #[test]

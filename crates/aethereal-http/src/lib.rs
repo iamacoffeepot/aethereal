@@ -18,7 +18,7 @@ mod server;
 mod settings;
 mod status;
 
-pub use exchange::{Asking, Exchange, ExchangeConfig, Sending};
+pub use exchange::{Asking, Deadline, Exchange, ExchangeConfig, Sending};
 pub use http::{Binding, Http, Serve, Served};
 pub use message::{Handling, Header, Method, Request, Response};
 pub use server::{Server, ServerConfig};

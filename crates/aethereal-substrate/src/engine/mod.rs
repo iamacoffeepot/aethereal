@@ -957,6 +957,7 @@ impl Engine {
         touched.clear();
         self.spare.touched = touched;
         self.hand_on(forward);
+        self.start_waiting();
         self.advance();
     }
 
@@ -1064,10 +1065,9 @@ impl Engine {
             self.actors_seated -= 1;
             self.seats[part].free(seat);
         }
-        // Most steps run no job.
-        if !lists.jobs.is_empty() {
-            self.start_jobs(lists.jobs.drain(..));
-        }
+        // The jobs are handed out once the step's parts are folded: a child stood up in the step, whose `begin` may
+        // have run one, is live only from then (ADR-0018).
+        self.waiting_jobs.extend(lists.jobs.drain(..));
         // Most steps cancel none.
         for job in lists.cancelled.drain(..) {
             self.stop_job(job);
@@ -1195,6 +1195,7 @@ impl Engine {
         }
 
         self.hand_on(forward);
+        self.start_waiting();
         self.advance();
     }
 

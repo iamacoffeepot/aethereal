@@ -2027,6 +2027,27 @@ impl<'a, Me: ChildOf> Beginning<'a, Me, Me::BeginSends> {
     }
 }
 
+/// What sends and asks as a turn does: a turn, or a `begin`, whose mail goes with the mail of the turn it runs in
+/// (ADR-0017: "a `begin` asks as a turn does"). What a library sends for an actor, such as the request and credit that
+/// open a stream, it sends through this, so the actor may send it from either.
+pub trait Mailing<'a, Me, S> {
+    /// The actor `target` refers to, as the target of the sends and asks that chain on what this answers, as
+    /// [`Turn::to`] and [`Beginning::to`] are.
+    fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives>;
+}
+
+impl<'a, Me, S> Mailing<'a, Me, S> for Turn<'a, Me, S> {
+    fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+        self.to(target)
+    }
+}
+
+impl<'a, Me, S> Mailing<'a, Me, S> for Beginning<'a, Me, S> {
+    fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+        self.to(target)
+    }
+}
+
 /// The target of a `begin`'s sends and asks, chosen once.
 impl<'a, Me, S> Beginning<'a, Me, S> {
     /// The actor `target` refers to, at the typed path it is, or the several references it holds, as the target of

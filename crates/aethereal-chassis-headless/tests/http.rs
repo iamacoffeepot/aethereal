@@ -1,7 +1,7 @@
 //! The HTTP capability served on the native host, the test its handler, to clients on threads of their own (ADR-0035,
 //! ADR-0036).
 
-use aethereal_actor::{Answered, Tick, Unanswered};
+use aethereal_actor::{Answered, Unanswered};
 use aethereal_chassis_headless::Headless;
 use aethereal_http::{Handling, Header, Http, HttpSettings, ReadLimitTooLow, Request, Response, Serve, Served, Status};
 use aethereal_substrate::harness::{Harness, Held, Unheard};
@@ -25,9 +25,7 @@ fn served(settings: HttpSettings) -> Result<(Harness<Headless>, u16), Unheard> {
         read_limit: settings.most_read_bytes().try_into().unwrap_or(u32::MAX),
         ..EngineSettings::default()
     };
-    let mut harness = Harness::of(
-        Headless::program().with_engine(engine).with_cycle::<(Tick,)>().root::<Tcp>().root_with::<Http>(settings),
-    )?;
+    let mut harness = Harness::of(Headless::program().with_engine(engine).root::<Tcp>().root_with::<Http>(settings))?;
     let http = harness.root::<Http>();
     let handler = harness.protocol::<Handling>();
     let serving = harness.ask(http, &Serve { port: 0, handler })?;
@@ -182,6 +180,55 @@ fn a_handler_that_never_responds_is_timed_out() -> Result<(), Unheard> {
 }
 
 #[test]
+fn an_idle_connection_is_closed_once_its_wait_for_a_request_runs_out() -> Result<(), Unheard> {
+    // Catches an exchange that never times its first wait: a peer that connects and sends nothing would hold a
+    // connection, and a slot of the server's, for good.
+    let settings = HttpSettings { idle_within_millis: 200, ..HttpSettings::default() };
+    let (mut harness, port) = served(settings)?;
+    let client = client(port, b"", 0);
+
+    let (_, closed) = heard(&mut harness, client);
+
+    assert!(closed, "the server closes a connection that sent nothing in time");
+
+    Ok(())
+}
+
+#[test]
+fn a_deadline_of_a_request_already_answered_does_not_end_the_next() -> Result<(), Unheard> {
+    // Catches a sleep for a phase the exchange has left still acting when it comes: the first request's deadline,
+    // passed while the connection waits between requests, would answer `504` or close it.
+    let settings = HttpSettings { answer_within_millis: 200, ..HttpSettings::default() };
+    let (mut harness, port) = served(settings)?;
+    #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
+    let client = thread::spawn(move || {
+        let mut stream = connect(port);
+        let mut buffer = Vec::new();
+        assert!(stream.write_all(b"GET /first HTTP/1.1\r\n\r\n").is_ok(), "the client writes");
+        let first = response(&mut stream, &mut buffer);
+        // Past the first request's deadline, so a sleep left from it would have come.
+        #[allow(clippy::disallowed_methods)] // The client waits on real time, outside the engine.
+        thread::sleep(Duration::from_millis(400));
+        assert!(stream.write_all(b"GET /second HTTP/1.1\r\nConnection: close\r\n\r\n").is_ok(), "the client writes");
+        let second = response(&mut stream, &mut buffer);
+
+        (vec![first, second], closes(&mut stream))
+    });
+
+    for _ in 0..2 {
+        let request = harness.asked::<Request>()?;
+        let answer = echoed(&request);
+        harness.reply(request, &answer)?;
+    }
+
+    let (answered, _) = heard(&mut harness, client);
+    assert!(answered[0].head.starts_with("HTTP/1.1 200"), "{answered:?}");
+    assert!(answered[1].head.starts_with("HTTP/1.1 200"), "{answered:?}");
+
+    Ok(())
+}
+
+#[test]
 fn a_handler_that_ended_is_a_503_and_one_that_failed_a_500() -> Result<(), Unheard> {
     // Catches an exchange that mistakes why its handler did not answer, or hangs on it, since a test's stand-in could
     // only ever answer.
@@ -210,8 +257,7 @@ fn http_does_not_start_where_a_request_could_not_be_read() {
     let settings = HttpSettings::default();
     let needed = settings.most_read_bytes();
     let engine = EngineSettings::default();
-    let program =
-        Headless::program().with_engine(engine).with_cycle::<(Tick,)>().root::<Tcp>().root_with::<Http>(settings);
+    let program = Headless::program().with_engine(engine).root::<Tcp>().root_with::<Http>(settings);
 
     let Err(Unheard::Program(why)) = Harness::of(program) else {
         panic!("the program does not start");

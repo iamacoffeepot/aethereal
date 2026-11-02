@@ -1,8 +1,8 @@
-//! An MCP server on this machine with one tool, `read_file`, for a client or a measure to reach (ADR-0037).
+//! An MCP server on this machine with one tool, `read_file`, for a client or a measure to reach (ADR-0037). It runs
+//! no cycle: its sockets wake it as they are ready, and it sleeps between requests (ADR-0033).
 //!
 //! Run with `cargo run --release -p aethereal-chassis-headless --example mcp_server -- --port 8890 --assets DIR`.
 
-use aethereal_actor::Tick;
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::NativeLayers;
 use aethereal_files::{Files, ReadTool};
@@ -17,7 +17,6 @@ fn main() {
     let engine = EngineSettings { read_limit, mail_bytes: 1 << 24, ..EngineSettings::default() };
     let launched = Headless::program()
         .with_engine(engine)
-        .with_cycle::<(Tick,)>()
         .root::<Tcp>()
         .root_with::<Http>(http)
         .root::<Mcp>()
