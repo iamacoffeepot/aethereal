@@ -116,7 +116,7 @@ pub struct TerminateEngine { pub engine: u32 }
 pub enum Terminated { Stopping, NotLinked }                      // `NotLinked`: no engine of that id is linked
 ```
 
-- **`Engines` spawns a `Spawned` for each `SpawnEngine`,** handing it the held request and a token it mints for it. The `Spawned` asks the store to `Launch`, so the build is held while it lives, then asks `Processes` to `Start` the copy with the agent's arguments and the link's own: `--hub`, `--port`, and `--hub-token`.
+- **`Engines` spawns a `Spawned` for each `SpawnEngine`,** handing it a token it mints for it. `Engines` keeps the held request, as only the actor that holds a request can answer it, and answers it with the `Spawn` the `Spawned` tells it. The `Spawned` asks the store to `Launch`, so the build is held while it lives, then asks `Processes` to `Start` the copy with the agent's arguments and the link's own: `--hub`, `--port`, and `--hub-token`.
 - **The `Hello` that brings its token is its link:** `Engines` tells the `Spawned` its engine's id, and the `Spawned` answers `Linked`.
 - **The agent is answered once the engine is usable:** `Linked` when it has said `Hello`, `Exited` with its status and the tail of its stderr if it ended first, `Unlinked` if it did not link within `link_within_millis` (the process is then stopped), and `NotStored` and `Refused` at once.
 - **A `Spawned` lives as long as its process,** and ends when told `Exited`, so the store's hold and the launch copy go with it. `TerminateEngine` asks the engine's `Spawned` to `Stop` its process, and answers `Stopping`.
