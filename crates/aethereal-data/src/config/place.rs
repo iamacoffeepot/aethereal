@@ -53,6 +53,7 @@ impl<'schema> Place<'schema> {
             | SchemaNode::Float(_)
             | SchemaNode::String
             | SchemaNode::Bytes
+            | SchemaNode::Json
             | SchemaNode::Option(_)
             | SchemaNode::Sequence(_)
             | SchemaNode::Array { .. }
@@ -82,6 +83,7 @@ impl<'schema> Place<'schema> {
             | SchemaNode::Float(_)
             | SchemaNode::String
             | SchemaNode::Bytes
+            | SchemaNode::Json
             | SchemaNode::Option(_)
             | SchemaNode::Map { .. }
             | SchemaNode::Enum { .. } => return Self::Opaque,
@@ -138,6 +140,7 @@ impl<'schema> Place<'schema> {
                 | SchemaNode::Float(_)
                 | SchemaNode::String
                 | SchemaNode::Bytes
+                | SchemaNode::Json
                 | SchemaNode::Sequence(_)
                 | SchemaNode::Array { .. }
                 | SchemaNode::Map { .. }

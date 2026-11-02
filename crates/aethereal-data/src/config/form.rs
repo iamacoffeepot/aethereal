@@ -136,6 +136,7 @@ impl NumberForm {
             SchemaNode::Boolean
             | SchemaNode::String
             | SchemaNode::Bytes
+            | SchemaNode::Json
             | SchemaNode::Option(_)
             | SchemaNode::Sequence(_)
             | SchemaNode::Array { .. }
@@ -217,6 +218,7 @@ impl Form {
             }
             SchemaNode::Integer(_)
             | SchemaNode::Float(_)
+            | SchemaNode::Json
             | SchemaNode::Option(_)
             | SchemaNode::Sequence(_)
             | SchemaNode::Map { .. } => Self::Json,

@@ -32,6 +32,7 @@ enum Nameless {
     Float(u8),
     String,
     Bytes,
+    Json,
     Option(u32),
     Sequence(u32),
     Array { element: u32, length: u32 },
@@ -86,6 +87,7 @@ fn nameless(node: &SchemaNode, earlier: &[u32]) -> Nameless {
         SchemaNode::Float(kind) => Nameless::Float(float_code(*kind)),
         SchemaNode::String => Nameless::String,
         SchemaNode::Bytes => Nameless::Bytes,
+        SchemaNode::Json => Nameless::Json,
         SchemaNode::Option(child) => Nameless::Option(class_at(earlier, *child)),
         SchemaNode::Sequence(child) => Nameless::Sequence(class_at(earlier, *child)),
         SchemaNode::Array { element, length } => {

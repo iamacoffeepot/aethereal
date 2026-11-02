@@ -60,6 +60,8 @@ pub enum DecodeError {
     InvalidActorPath,
     /// Text decoded as a file's path does not conform (ADR-0032).
     InvalidFilePath,
+    /// Text decoded as a JSON value is not one (ADR-0038).
+    InvalidJson,
     /// An enum selector names no variant.
     InvalidSelector {
         /// The enum's name, for error messages.
@@ -114,6 +116,7 @@ impl fmt::Display for DecodeError {
             Self::InvalidKeyName => f.write_str("plain data: key name does not conform"),
             Self::InvalidActorPath => f.write_str("plain data: actor path does not conform"),
             Self::InvalidFilePath => f.write_str("plain data: file path does not conform"),
+            Self::InvalidJson => f.write_str("plain data: text is not one JSON value"),
             Self::InvalidSelector { name, selector } => {
                 write!(f, "plain data: invalid selector {selector} for enum {name}")
             }

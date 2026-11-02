@@ -42,6 +42,8 @@ Both live in `aethereal-data`, in a `json` module behind the `json` feature, so 
 | Tuple | an array of exactly its elements | a wrong length |
 | Enum | the variant's name as a string when it has no fields; otherwise an object with one member, the variant's name, holding its fields | an unknown variant |
 
+`Json` was added by ADR-0038: any JSON value, kept as its text with no whitespace and its members in name order, and written as that text; it could itself be `null`, so an option of it takes the one-element array form below.
+
 **A 64-bit integer is always a string.** It is a string whatever its value, so a field does not change its JSON type when it grows past 2^53, and a reader that received a number has a parser that may already have changed it. A JavaScript reader passes the string to `BigInt`, or hands it back untouched.
 
 ```rust

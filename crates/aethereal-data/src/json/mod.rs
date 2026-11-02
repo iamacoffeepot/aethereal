@@ -4,6 +4,7 @@
 //! mail between actors stays bytes. Each shape has one JSON form,
 //! 64-bit integers are strings, and both walks follow the schema.
 
+mod compact;
 mod error;
 pub mod escape;
 mod float;
@@ -16,10 +17,12 @@ pub mod reader;
 #[cfg(test)]
 mod rows;
 mod schema;
+mod text;
 mod to_json;
 pub mod tree;
 
 pub use error::{JsonError, JsonFault, JsonForm, JsonPath, JsonStep, TextFault};
 pub use from_json::{from_json, from_value};
 pub use schema::{is_object, json_schema};
+pub use text::Json;
 pub use to_json::to_json;

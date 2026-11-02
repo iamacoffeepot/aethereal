@@ -78,6 +78,7 @@ impl Walk<'_> {
             }
             SchemaNode::String => self.out.push_str("{\"type\":\"string\"}"),
             SchemaNode::Bytes => self.hex(),
+            SchemaNode::Json => self.out.push_str("{}"),
             SchemaNode::Option(child) => self.option(at, *child)?,
             SchemaNode::Sequence(child) => {
                 self.out.push_str("{\"type\":\"array\",\"items\":");

@@ -1,6 +1,6 @@
 //! One table of values both walks are tested against.
 
-use crate::{Key, Plain, Schema, SchemaNodes};
+use crate::{Json, Key, Plain, Schema, SchemaNodes};
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -65,6 +65,7 @@ pub(super) fn rows() -> Vec<Row> {
     all.extend(map_rows());
     all.extend(struct_rows());
     all.extend(enum_rows());
+    all.extend(json_rows());
     all
 }
 
@@ -350,6 +351,37 @@ fn enum_rows() -> Vec<Row> {
             schema: SchemaNodes::of(&<Shape as Schema>::SHAPE),
             bytes: alloc::vec![0x09, 0x00, 0x00, 0x00],
             json: String::from("\"Far\""),
+        },
+    ]
+}
+
+/// `text` laid out as a string: its byte count as four bytes little-endian, then its bytes.
+fn counted(text: &str) -> Vec<u8> {
+    let Ok(count) = u32::try_from(text.len()) else {
+        panic!("a row's text fits a count");
+    };
+    let mut bytes = count.to_le_bytes().to_vec();
+    bytes.extend_from_slice(text.as_bytes());
+
+    bytes
+}
+
+/// JSON values carried as their text: written as they are, never as a string, and wrapped in an option.
+fn json_rows() -> Vec<Row> {
+    let nested = "{\"a\":[1,true,null],\"b\":{\"c\":\"x\\n\"}}";
+    let mut held_null = alloc::vec![0x01];
+    held_null.extend(counted("null"));
+    alloc::vec![
+        Row { schema: SchemaNodes::of(&<Json as Schema>::SHAPE), bytes: counted(nested), json: String::from(nested) },
+        Row {
+            schema: SchemaNodes::of(&<Json as Schema>::SHAPE),
+            bytes: counted("\"a b\""),
+            json: String::from("\"a b\""),
+        },
+        Row {
+            schema: SchemaNodes::of(&<Option<Json> as Schema>::SHAPE),
+            bytes: held_null,
+            json: String::from("[null]"),
         },
     ]
 }

@@ -39,7 +39,7 @@ pub use json::reader::read as read_json;
 pub use json::tree::{Tree as JsonTree, Value as JsonValue};
 #[cfg(feature = "json")]
 pub use json::{
-    JsonError, JsonFault, JsonForm, JsonPath, JsonStep, TextFault, from_json, from_value, is_object, json_schema,
+    Json, JsonError, JsonFault, JsonForm, JsonPath, JsonStep, TextFault, from_json, from_value, is_object, json_schema,
     to_json,
 };
 pub use key::Key;

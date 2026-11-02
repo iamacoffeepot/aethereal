@@ -2,7 +2,7 @@
 
 use super::to_json;
 use crate::json::rows::rows;
-use crate::{Budget, DecodeError, JsonFault, Plain, Schema, SchemaNodes};
+use crate::{Budget, DecodeError, Json, JsonFault, Plain, Schema, SchemaNodes};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -62,6 +62,15 @@ fn bad_bytes_are_refused() {
         to_json(&string, &[0x01, 0x00, 0x00, 0x00, 0xff], &mut budget).map(|_| ()),
         Err(DecodeError::InvalidUtf8.into())
     );
+}
+
+#[test]
+fn json_text_that_is_not_one_value_is_refused() {
+    // Catches a writer that copies a JSON value's text unchecked, so bytes from elsewhere write invalid JSON.
+    let schema = SchemaNodes::of(&<Json as Schema>::SHAPE);
+    let mut budget = Budget::new(1024);
+    let not_json = [0x04, 0x00, 0x00, 0x00, b'[', b'1', b',', b']'];
+    assert_eq!(to_json(&schema, &not_json, &mut budget).map(|_| ()), Err(DecodeError::InvalidJson.into()));
 }
 
 #[test]
