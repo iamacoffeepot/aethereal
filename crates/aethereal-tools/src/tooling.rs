@@ -32,6 +32,11 @@ pub enum Called {
     Refused(String),
 }
 
+/// What a tool answers that has nothing to tell but that it was done.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.tools.done")]
+pub struct Done {}
+
 /// One tool as a worker offers it.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.tools.tool_sheet")]

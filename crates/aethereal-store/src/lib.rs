@@ -8,6 +8,9 @@
 //! [`Stockroom`]: a directory natively. A native host's crate implements it,
 //! bootstraps the root, and serves its stockroom into the services its runners
 //! hand every job (ADR-0034); a browser bootstraps no store.
+//!
+//! Behind the `tools` feature, `StoreTools` is the hub's four tools for the agent: `check_in`, `list_stored`, `pin`,
+//! and `unpin`.
 
 mod check_in;
 mod hash;
@@ -20,8 +23,10 @@ mod record;
 mod settings;
 mod stockroom;
 mod store;
+#[cfg(feature = "tools")]
+mod tools;
 
-pub use check_in::{CheckIn, CheckedIn};
+pub use check_in::{CheckIn, CheckedIn, StoredBinary};
 pub use hash::StoreHash;
 pub use hold::{Held, Hold};
 pub use list::{Entry, ListStored, Stored};
@@ -30,3 +35,5 @@ pub use pin::{Pin, Pinned, Unpin};
 pub use settings::{StoreConfig, StoreSettings};
 pub use stockroom::{Copied, Copying, Keeping, NamesFile, RecordFile, Recounting, Shelf, Stockroom, Uncopied, Unkept};
 pub use store::{Store, Uncounted};
+#[cfg(feature = "tools")]
+pub use tools::{Asking, StoreTools, StoreToolsConfig};

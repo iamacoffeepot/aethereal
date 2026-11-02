@@ -9,6 +9,7 @@ use aethereal_chassis_headless::Headless;
 use aethereal_data::{Bound, Plain};
 use aethereal_store::{
     CheckIn, CheckedIn, Entry, Held, Hold, ListStored, Pin, Pinned, Store, StoreHash, StoreName, StoreSettings,
+    StoredBinary,
 };
 use aethereal_substrate::Host;
 use aethereal_substrate::harness::{Harness, Unheard};
@@ -104,7 +105,7 @@ fn check_in(harness: &mut Harness<Headless>, path: &str, under: &str) -> Result<
 
 /// What checking `path` in under `under` comes to, which the test expects to be stored: its hash and freshness.
 fn stored(harness: &mut Harness<Headless>, path: &str, under: &str) -> Result<(StoreHash, bool), Unheard> {
-    let CheckedIn::Stored { hash, fresh, .. } = check_in(harness, path, under)? else {
+    let CheckedIn::Stored(StoredBinary { hash, fresh, .. }) = check_in(harness, path, under)? else {
         panic!("`{path}` is checked in");
     };
 
@@ -150,7 +151,7 @@ fn a_check_in_keeps_the_bytes_under_their_blake3_hash() -> Result<(), Unheard> {
 
     let hash = hash_of(&bytes);
     let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    assert_eq!(checked_in, CheckedIn::Stored { hash, bytes: length, fresh: true });
+    assert_eq!(checked_in, CheckedIn::Stored(StoredBinary { hash, bytes: length, fresh: true }));
     assert_eq!(fs::read(dir.entries().join(hash.to_string())).ok(), Some(bytes));
     let entry = Entry { hash, names: vec![name("engine")], bytes: length, pinned: false, held: false };
     assert_eq!(entries(&mut harness)?, vec![entry]);

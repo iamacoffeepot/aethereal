@@ -17,4 +17,4 @@ pub use holder::Holder;
 pub use table::{HeldTool, Table};
 pub use tool::{Tool, ToolList};
 pub use toolbox::{Offering, Toolbox, ToolboxConfig, Unlisted};
-pub use tooling::{Call, Called, Offer, Offered, ToolSheet, Tooling, Withdraw};
+pub use tooling::{Call, Called, Done, Offer, Offered, ToolSheet, Tooling, Withdraw};
