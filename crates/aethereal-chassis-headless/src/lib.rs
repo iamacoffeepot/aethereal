@@ -16,6 +16,7 @@ pub mod guest;
 mod jobs;
 pub mod native;
 mod pool;
+mod processes;
 mod program;
 mod rehearsal;
 mod running;
@@ -36,6 +37,8 @@ use aethereal_actor::Time;
 use aethereal_substrate::harness::{Budget, Steps};
 use aethereal_substrate::{Clock, Engine, Split, SplitCost, Workers};
 pub use pool::Measured;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
+pub use processes::ProcessGroups;
 pub use program::{RunningSettings, Serving};
 pub use running::{Exit, Timer};
 pub use store::StoreDirectory;
