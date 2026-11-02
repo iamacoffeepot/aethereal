@@ -43,6 +43,7 @@ aethereal-files = { path = "../aethereal-files", features = ["tools"] }
 aethereal-http = { path = "../aethereal-http" }
 aethereal-link = { path = "../aethereal-link", features = ["tools"] }
 aethereal-mcp = { path = "../aethereal-mcp" }
+aethereal-store = { path = "../aethereal-store", features = ["tools"] }
 aethereal-tools = { path = "../aethereal-tools" }
 
 [lints]
