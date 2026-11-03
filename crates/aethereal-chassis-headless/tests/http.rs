@@ -3,7 +3,9 @@
 
 use aethereal_actor::{Answered, Unanswered};
 use aethereal_chassis_headless::Headless;
-use aethereal_http::{Handling, Header, Http, HttpSettings, ReadLimitTooLow, Request, Response, Serve, Served, Status};
+use aethereal_http::{
+    BlobBytesTooLow, Handling, Header, Http, HttpSettings, ReadLimitTooLow, Request, Response, Serve, Served, Status,
+};
 use aethereal_substrate::harness::{Harness, Held, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
@@ -268,4 +270,20 @@ fn http_does_not_start_where_a_request_could_not_be_read() {
     };
 
     assert!(why.contains(&ReadLimitTooLow { read_limit: 1024, needed }.to_string()), "{why}");
+}
+
+#[test]
+fn http_does_not_start_where_a_requests_body_could_not_be_held() {
+    // Catches the check dropped, which lets every request whose body the blobs cannot hold be answered `503`.
+    let settings = HttpSettings::default();
+    let read_limit = settings.most_read_bytes().try_into().unwrap_or(u32::MAX);
+    let needed = settings.most_blob_bytes();
+    let engine = EngineSettings { read_limit, mail_bytes: 1 << 24, blob_bytes: 1 << 20, ..EngineSettings::default() };
+    let program = Headless::program().with_engine(engine).root::<Tcp>().root_with::<Http>(settings);
+
+    let Err(Unheard::Program(why)) = Harness::of(program) else {
+        panic!("the program does not start");
+    };
+
+    assert!(why.contains(&BlobBytesTooLow { blob_bytes: 1 << 20, needed }.to_string()), "{why}");
 }

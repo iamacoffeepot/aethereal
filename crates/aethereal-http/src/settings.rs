@@ -62,17 +62,28 @@ impl Default for HttpSettings {
 const LEAST_HEADER_BYTES: usize = 4;
 
 impl HttpSettings {
-    /// The most bytes a turn reads into one piece of mail of a server of these settings: the larger of a chunk and a
-    /// whole request, its head as the most headers that fit, as reading a list charges each of its elements whole.
+    /// The most bytes a turn reads into one piece of mail of a server of these settings: a request's head, as the most
+    /// headers that fit, as reading a list charges each of its elements whole. Its body and each chunk read are blobs,
+    /// which no mail's limit weighs (ADR-0042).
     #[must_use]
     pub fn most_read_bytes(&self) -> usize {
-        let size = |bytes: u32| usize::try_from(bytes).unwrap_or(usize::MAX);
         let head = size(self.most_head_bytes);
         let headers = (head / LEAST_HEADER_BYTES).saturating_mul(size_of::<Header>());
-        let request = head.saturating_add(headers).saturating_add(size(self.most_body_bytes));
 
-        request.max(size(self.chunk_bytes))
+        head.saturating_add(headers)
     }
+
+    /// The most bytes of blobs a request of a server of these settings holds at once: its whole body, and the chunk
+    /// read beside it (ADR-0042).
+    #[must_use]
+    pub fn most_blob_bytes(&self) -> usize {
+        size(self.most_body_bytes).saturating_add(size(self.chunk_bytes))
+    }
+}
+
+/// `bytes` as a `usize`, or the most one holds.
+fn size(bytes: u32) -> usize {
+    usize::try_from(bytes).unwrap_or(usize::MAX)
 }
 
 /// Why `Http` did not start: mail it would send could not be read, so a request within its limits would never reach
@@ -93,6 +104,25 @@ impl fmt::Display for ReadLimitTooLow {
 }
 
 impl Error for ReadLimitTooLow {}
+
+/// Why `Http` did not start: the engine's blobs could not hold a request's body, so a request within its limits would be
+/// answered `503` (ADR-0014, ADR-0042).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlobBytesTooLow {
+    /// The most bytes the engine's blobs hold.
+    pub blob_bytes: usize,
+    /// What the settings need of it.
+    pub needed: usize,
+}
+
+impl fmt::Display for BlobBytesTooLow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self { blob_bytes, needed } = self;
+        write!(f, "the engine's `blob_bytes` is {blob_bytes}, and `http`'s settings need {needed}")
+    }
+}
+
+impl Error for BlobBytesTooLow {}
 
 /// What every exchange of a server holds to: the settings that bound one request (ADR-0035).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]

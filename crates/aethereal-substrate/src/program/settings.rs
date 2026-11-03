@@ -26,7 +26,8 @@ pub struct EngineSettings {
     pub read_limit: u32,
     /// The bytes of arenas mail in flight is written to, shared equally among the writers.
     pub mail_bytes: u64,
-    /// The most bytes the engine's blobs hold (ADR-0014).
+    /// The most bytes the engine's blobs hold (ADR-0014): every byte that crosses between actors, as bytes are a blob
+    /// (ADR-0042). A cap on what may be held, not memory set aside.
     pub blob_bytes: u64,
     /// The most bytes of buffers each actor keeps, freed from the blobs it put, to put in again (ADR-0042).
     pub most_kept_bytes: u64,
@@ -42,7 +43,7 @@ impl Default for EngineSettings {
             parts: NonZeroU32::MIN,
             read_limit: 1024,
             mail_bytes: 1 << 20,
-            blob_bytes: 1 << 20,
+            blob_bytes: 1 << 26,
             most_kept_bytes: MOST_KEPT_BYTES as u64,
             hops: 0,
         }
