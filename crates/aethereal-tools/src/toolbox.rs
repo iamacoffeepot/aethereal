@@ -30,7 +30,7 @@ pub enum Unlisted {
     Repeated(String),
     /// A tool of this kind was refused as it began.
     Unspawned(String),
-    /// The holder refused an offer, or did not answer it.
+    /// The holder refused an offer, or did not answer it, which stops the program.
     Refused,
 }
 
@@ -38,9 +38,9 @@ pub enum Unlisted {
 /// ADR-0038): `Mcp` in a hub, `Link` in an engine. It is sugar over [`Offer`], which any actor may ask.
 ///
 /// A list that is not its holder's to take fails in the order a list's failures can be found: a program with no `R`
-/// listed before this does not build, a repeated name or a tool that cannot begin stops the program as it starts, and
-/// a name something else offered first ends the toolbox, which withdraws all it offered, the program running on with
-/// the fault in the log. Its tools outlive it, as any child does its parent, holding nothing and reached by nothing.
+/// listed before this does not build, and a repeated name, a tool that cannot begin, or an offer its holder refuses
+/// stops the program as it starts. A list is fixed when the program is built, so each is a program built wrong, and
+/// none leaves a tool running that nothing reaches.
 ///
 /// A program has one, as `Toolbox<L, R>` has one name whatever `L` and `R` are.
 pub struct Toolbox<L, R> {
@@ -135,9 +135,12 @@ where
         if answered == Answered::Yes(Offered::Yes) {
             return Ok(());
         }
-        turn.log(Level::Error, format_args!("an offer was refused: {answered:?}"));
+        // A list is fixed when the program is built, so a refused offer is a program built wrong, as a repeated name
+        // is: it stops, and leaves none of its tools running unreached.
+        turn.log(Level::Error, format_args!("an offer was refused, so the program stops: {answered:?}"));
+        turn.quit();
 
-        Err(Fault::new(&Unlisted::Refused)?)
+        Ok(())
     }
 }
 

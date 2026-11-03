@@ -14,7 +14,7 @@ use aethereal_link::{
 };
 use aethereal_mcp::{Mcp, McpSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
-use aethereal_substrate::{EngineSettings, Host, Program};
+use aethereal_substrate::{EngineSettings, Host, Lifecycle, Program};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{Call, Called, Offer, Offered, Tool, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw};
 use std::io::{Read as _, Write as _};
@@ -932,22 +932,21 @@ fn a_tool_that_reaches_what_the_program_lacks_stops_it_as_it_starts() {
 }
 
 #[test]
-fn a_name_held_already_ends_the_toolbox_and_the_program_runs_on() -> Result<(), Unheard> {
-    // Catches a refused offer ignored, and part of a list left standing when another part was refused.
+fn a_name_held_already_stops_the_program() -> Result<(), Unheard> {
+    // Catches a refused offer ignored, and one that ends only the toolbox, which left its tools running, reached by
+    // nothing, for as long as the program ran (#356).
     let mut harness = Harness::of(program())?;
-    let port = port_of(&mut harness)?;
     let (mcp, worker) = (harness.root::<Mcp>(), harness.protocol::<Tooling>());
     let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say")], worker })?;
     assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
 
     harness.add_root::<Toolbox<(Other, Say1), Mcp>>(&(), ToolboxConfig)?;
-    for _ in 0..16 {
+    waiting::until(BUDGET, || {
         harness.step();
-    }
+        harness.host().engine().lifecycle() == Lifecycle::Stopped
+    });
 
-    let read = answered(&mut harness, port, &Post::of(Rpc::List));
-    assert!(read.body.contains("\"name\":\"say\""), "{read:?}");
-    assert!(!read.body.contains("\"name\":\"other\""), "{read:?}");
+    assert_eq!(harness.host().engine().lifecycle(), Lifecycle::Stopped, "the program stops");
 
     Ok(())
 }
