@@ -7,8 +7,9 @@ use aethereal_tools::{Called, ToolSheet};
 use core::time::Duration;
 
 /// The revision of the link this crate speaks. A change to [`Up`] or [`Down`] that an older side would misread is the
-/// next. `2` brought [`Down::Call`]'s `within`, the time a call has left (ADR-0041), which a side of `1` misreads.
-pub const REVISION: u32 = 2;
+/// next. `2` brought [`Down::Call`]'s `within`, the time a call has left (ADR-0041), which a side of `1` misreads. `3`
+/// brought [`Outcome::Image`] and each sheet's `Output` (ADR-0043), which a side of `2` misreads.
+pub const REVISION: u32 = 3;
 
 /// The port a hub listens for engines on, and an engine dials, unless set otherwise.
 pub const PORT: u16 = 8892;
@@ -33,6 +34,8 @@ pub enum Up {
 pub enum Outcome {
     /// The bytes of a value of the tool's output schema.
     Output(Vec<u8>),
+    /// A PNG's bytes, and the text the agent reads beside it (ADR-0043).
+    Image { png: Vec<u8>, text: String },
     /// The tool could not do it, and says why, for the agent to read.
     Refused(String),
 }
@@ -43,6 +46,7 @@ impl Outcome {
     pub fn of<A, S>(called: Called, turn: &Turn<'_, A, S>) -> Self {
         match called {
             Called::Output(bytes) => Self::Output(turn.read(&bytes).to_vec()),
+            Called::Image { png, text } => Self::Image { png: turn.read(&png).to_vec(), text },
             Called::Refused(why) => Self::Refused(why),
         }
     }
@@ -51,6 +55,7 @@ impl Outcome {
     pub fn into_called<A, S>(self, turn: &mut Turn<'_, A, S>) -> Called {
         match self {
             Self::Output(bytes) => Called::output(turn, bytes),
+            Self::Image { png, text } => Called::image(turn, png, text),
             Self::Refused(why) => Called::Refused(why),
         }
     }

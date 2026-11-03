@@ -18,7 +18,7 @@ use aethereal_substrate::harness::{Asked, Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{
-    Call, Called, Holder, Offer, Offered, Table, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw,
+    Call, Called, Holder, Offer, Offered, Output, Table, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw,
 };
 use std::io::{Read as _, Write as _};
 use std::iter;
@@ -112,7 +112,7 @@ fn sheet() -> ToolSheet {
         name: String::from("say"),
         description: String::from("Says how long a text is"),
         input: SchemaNodes::of(&Say::SHAPE),
-        output: SchemaNodes::of(&Said::SHAPE),
+        output: Output::Value(SchemaNodes::of(&Said::SHAPE)),
     }
 }
 
@@ -473,6 +473,51 @@ fn an_output_not_of_the_tools_schema_is_refused() -> Result<(), Unheard> {
     let answer = harness.answer(calling)?;
 
     assert!(refuses(&answer, "output schema"), "{answer:?}");
+
+    Ok(())
+}
+
+#[test]
+fn call_tool_answers_an_engines_image_as_it_is_and_describe_engine_shows_it_as_an_image() -> Result<(), Unheard> {
+    // Catches an engine's image written as a value of `EngineAnswer`, dropped, or its text lost on the way, and an
+    // image tool described by a schema it does not have.
+    let (mut harness, port, worker) = hub()?;
+    let looks = ToolSheet { output: Output::Image, ..sheet() };
+    let stream = linked_engine(&mut harness, port, vec![looks]);
+    let say = json_of(&Say { text: String::from("hello") });
+
+    let describing = called(&mut harness, worker, "describe_engine", &EngineId { engine: 0 })?;
+    let described: EngineSheets = output(&mut harness, describing);
+    let Ok(image) = Json::parse("\"image\"", &mut Budget::new(WALK_BYTES)) else {
+        panic!("a string is JSON");
+    };
+    let outputs: Vec<Json> = described.tools.into_iter().map(|sheet| sheet.output).collect();
+    assert_eq!(outputs, vec![image]);
+
+    let calling = ask(&mut harness, worker, "call_tool", &call_say(say))?;
+    let answer = Outcome::Image { png: b"a png".to_vec(), text: String::from("1 by 1") };
+    let (_, _stream) = answered_call(&mut harness, stream, answer);
+    let Answered::Yes(Called::Image { png, text }) = harness.answer(calling)? else {
+        panic!("the image is answered as an image");
+    };
+    assert_eq!(harness.read(&png), Some(&b"a png"[..]));
+    assert_eq!(text, "1 by 1");
+
+    Ok(())
+}
+
+#[test]
+fn an_image_from_a_tool_whose_sheet_says_a_value_is_refused() -> Result<(), Unheard> {
+    // Catches an image passed on as if the tool's sheet allowed one, which the agent's client would be handed for a
+    // tool it was told answers JSON.
+    let (mut harness, port, worker) = hub()?;
+    let stream = linked_engine(&mut harness, port, vec![sheet()]);
+
+    let calling = ask(&mut harness, worker, "call_tool", &call_say(json_of(&Say { text: String::from("hello") })))?;
+    let answer = Outcome::Image { png: b"a png".to_vec(), text: String::new() };
+    let (_, _stream) = answered_call(&mut harness, stream, answer);
+    let answered = harness.answer(calling)?;
+    assert!(refuses(&answered, "its sheet says a value"), "{answered:?}");
 
     Ok(())
 }

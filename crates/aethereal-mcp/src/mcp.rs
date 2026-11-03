@@ -6,10 +6,10 @@ use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Level, Path,
     ToSender, Top, Turn, path,
 };
-use aethereal_data::{Bound, Plain, SchemaNodes};
+use aethereal_data::{Bound, Plain};
 use aethereal_http::{Handling, Http, Request, Response, Serve, Served, Status};
 use aethereal_substrate::Bootstrap;
-use aethereal_tools::{Call, Called, HeldTool, Holder, Offer, Offered, Table, Tooling, Withdraw};
+use aethereal_tools::{Call, Called, HeldTool, Holder, Offer, Offered, Output, Table, Tooling, Withdraw};
 use std::collections::BTreeMap;
 
 /// What the root keeps for its serve: nothing, since it asks one.
@@ -34,12 +34,12 @@ pub struct Unserved;
 #[kind(name = "aether.mcp.unstored")]
 pub struct Unstored;
 
-/// A request the root holds until its worker answers, its JSON-RPC id, and the schema of what is to come.
+/// A request the root holds until its worker answers, its JSON-RPC id, and what the tool's sheet says it answers with.
 #[derive(Bound)]
 struct Waiting {
     held: Held<Response>,
     id: String,
-    output: SchemaNodes,
+    output: Output,
 }
 
 /// Where the root is in being served.
@@ -134,7 +134,7 @@ impl Handles<Request> for Mcp {
             turn.reply(&response)?;
             return Ok(());
         };
-        let (worker, output) = (*worker, output.clone());
+        let (worker, output) = (*worker, output.sheet());
         let Ok(input) = turn.put(input) else {
             let response = response(turn, front::refused(&id, "the engine had no room to hold the arguments"))?;
             turn.reply(&response)?;
@@ -186,16 +186,29 @@ impl Handles<Answer<Called, Calling>> for Mcp {
         let Some(Waiting { held, id, output }) = self.waiting.remove(&number) else {
             return Ok(());
         };
-        let reply = match answered {
-            Answered::Yes(Called::Output(bytes)) => match front::value(&id, &output, turn.read(&bytes)) {
-                Ok(value) => {
-                    let buffer = turn.buffer(front::output_room(&id, &value));
-                    front::output(&id, &value, buffer)
+        let reply = match (answered, output) {
+            (Answered::Yes(Called::Output(bytes)), Output::Value(schema) | Output::ValueOrImage(schema)) => {
+                match front::value(&id, &schema, turn.read(&bytes)) {
+                    Ok(value) => {
+                        let buffer = turn.buffer(front::output_room(&id, &value));
+                        front::output(&id, &value, buffer)
+                    }
+                    Err(refused) => refused,
                 }
-                Err(refused) => refused,
-            },
-            Answered::Yes(Called::Refused(why)) => front::refused(&id, &why),
-            Answered::No(why) => front::refused(&id, &format!("the tool did not answer: {why:?}")),
+            }
+            (Answered::Yes(Called::Image { png, text }), Output::Image | Output::ValueOrImage(_)) => {
+                let length = turn.read(&png).len();
+                let buffer = turn.buffer(front::image_room(&id, length, &text));
+                front::image(&id, turn.read(&png), &text, buffer)
+            }
+            (Answered::Yes(Called::Output(_)), Output::Image) => {
+                front::refused(&id, "the tool answered a value, and its sheet says an image")
+            }
+            (Answered::Yes(Called::Image { .. }), Output::Value(_)) => {
+                front::refused(&id, "the tool answered an image, and its sheet says a value")
+            }
+            (Answered::Yes(Called::Refused(why)), _) => front::refused(&id, &why),
+            (Answered::No(why), _) => front::refused(&id, &format!("the tool did not answer: {why:?}")),
         };
         let response = response(turn, reply)?;
         turn.answer(held, &response)?;
