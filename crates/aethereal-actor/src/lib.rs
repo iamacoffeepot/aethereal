@@ -44,6 +44,7 @@ pub mod section;
 mod services;
 mod sleep;
 mod source;
+mod spares;
 mod stage;
 mod stream;
 mod subscribers;
@@ -56,7 +57,7 @@ pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};
 #[cfg(feature = "std")]
 pub use arena::{PinSource, Pinned};
 pub use ask::{Answer, Answered, Askable, Asking, Asks, Unanswered};
-pub use blob::{BlobHash, BlobId, Puts};
+pub use blob::{BlobHash, BlobId, Maker, Puts};
 #[cfg(feature = "std")]
 pub use blob::{Bytes, Pinning, pins, within};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, Within, WithinReader, WithinWriter};

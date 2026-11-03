@@ -1,7 +1,6 @@
 //! A blob: a buffer of bytes the engine holds and nobody changes, and the references that pin it (ADR-0014).
 
-use crate::Refused;
-use alloc::boxed::Box;
+use crate::{Refused, Seated};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::mem;
@@ -105,6 +104,22 @@ pub const fn handed_index(ticket: u64) -> Option<u64> {
     }
 }
 
+/// Who put a blob: whose buffer it goes back to once the blob is freed (ADR-0042).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Maker {
+    /// The chassis, between steps, which keeps no buffer: the blob's is freed with it.
+    Chassis,
+    /// The actor this names, in one of its turns or by a job it ran, which keeps the buffer to put in again.
+    Actor(Seated),
+}
+
+/// One blob a writer has put in a step: its bytes, in the buffer they were put in, and who put it.
+#[derive(Debug)]
+struct Put {
+    bytes: Vec<u8>,
+    maker: Maker,
+}
+
 /// The blobs one writer has put in a step, held until the step folds, the hashes its turns computed in the step, and
 /// the room it has left in the step's share of the budget for blobs (ADR-0014); and how many resources its turns have
 /// kept (ADR-0010).
@@ -122,10 +137,10 @@ pub struct Puts {
     made: u64,
     /// How many resources the writer's turns have kept, ever.
     kept: u64,
-    /// The bytes the writer may still put in this step.
+    /// The bytes the writer may still put in this step, counted by the capacity of the buffers put.
     room: usize,
     /// What it has put in this step, under its ids' bits.
-    held: BTreeMap<u64, Box<[u8]>>,
+    held: BTreeMap<u64, Put>,
     /// Who takes in what it puts.
     putter: Putter,
     /// The hashes its turns computed in this step, of blobs it put or the store holds, for the store to keep. Two
@@ -184,7 +199,7 @@ impl Puts {
     /// The bytes of the blob `id` names, when this writer put it in this step.
     #[must_use]
     pub fn read(&self, id: BlobId) -> Option<&[u8]> {
-        self.held.get(&id.bits()).map(|bytes| &bytes[..])
+        self.held.get(&id.bits()).map(|put| &put.bytes[..])
     }
 
     /// Notes that the blob `id` names has the hash `hash`, for the store to keep.
@@ -197,34 +212,37 @@ impl Puts {
         self.hashed.drain(..)
     }
 
-    /// Takes the blobs put in this step, each with its id, for the store to take in, leaving none held.
-    pub fn take(&mut self) -> impl Iterator<Item = (BlobId, Box<[u8]>)> + '_ {
+    /// Takes the blobs put in this step, each with its id and who put it, for the store to take in, leaving none held.
+    pub fn take(&mut self) -> impl Iterator<Item = (BlobId, Vec<u8>, Maker)> + '_ {
         let held = mem::take(&mut self.held);
 
         let engine = self.engine;
 
-        held.into_iter().map(move |(bits, bytes)| (BlobId::new(engine, bits), bytes))
+        held.into_iter().map(move |(bits, put)| (BlobId::new(engine, bits), put.bytes, put.maker))
     }
 
-    /// Holds `bytes` as a new blob and answers with its id: refused when they would take the writer past its room.
+    /// Holds `bytes`, put by `maker`, as a new blob, in the buffer they came in, and answers with its id: refused when
+    /// the buffer's capacity would take the writer past its room.
     ///
     /// # Panics
     ///
     /// Panics past `2^48` puts by one writer, which no engine lives to make.
     #[cfg_attr(not(feature = "std"), expect(dead_code, reason = "blobs are put only where their pins can be noted"))]
-    fn put(&mut self, bytes: Vec<u8>) -> Result<BlobId, Refused> {
+    fn put(&mut self, bytes: Vec<u8>, maker: Maker) -> Result<BlobId, Refused> {
         if let Putter::Host(put) = self.putter {
             return put(bytes);
         }
-        let fits = bytes.len() <= self.room;
+        // The buffer is kept whole, so the store holds its capacity, not only the bytes in it.
+        let size = bytes.capacity();
+        let fits = size <= self.room;
         if !fits {
             return Err(Refused::NoRoom);
         }
         assert!(self.made < 1 << PUT_BITS, "no writer puts 2^48 blobs");
-        self.room -= bytes.len();
+        self.room -= size;
         let id = BlobId::new(self.engine, self.writer << PUT_BITS | self.made);
         self.made += 1;
-        self.held.insert(id.bits(), bytes.into_boxed_slice());
+        self.held.insert(id.bits(), Put { bytes, maker });
 
         Ok(id)
     }
@@ -244,7 +262,7 @@ pub use pinned::{Bytes, Pinning, pins, within};
 
 #[cfg(feature = "std")]
 mod pinned {
-    use super::{BlobId, Puts};
+    use super::{BlobId, Maker, Puts};
     use crate::Refused;
     use crate::{Actors, Within};
     use aethereal_data::{Decode, DecodeError, Encode, EncodeError, Field, Reader, Schema, Shape, Writer};
@@ -363,14 +381,14 @@ mod pinned {
     }
 
     impl Puts {
-        /// Puts `bytes` as a new blob and answers with the first pin on it: refused when they would take the writer
-        /// past its room.
+        /// Puts `bytes`, put by `maker`, as a new blob and answers with the first pin on it: refused when they would
+        /// take the writer past its room. The blob's buffer goes back to `maker` once it is freed (ADR-0042).
         ///
         /// # Errors
         ///
         /// [`Refused::NoRoom`] when the bytes would take the writer past its room.
-        pub fn pinned(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
-            self.put(bytes).map(Bytes::pin)
+        pub fn pinned(&mut self, bytes: Vec<u8>, maker: Maker) -> Result<Bytes, Refused> {
+            self.put(bytes, maker).map(Bytes::pin)
         }
     }
 

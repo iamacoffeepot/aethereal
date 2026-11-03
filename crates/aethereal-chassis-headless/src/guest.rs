@@ -23,9 +23,9 @@ use aethereal_actor::records::{
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
     Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobType, Broke, Bytes, Children, Claimed, Declared, Due,
-    FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, NotHeld,
-    NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats, Table,
-    Tie, Tied, Turning, Unfit, Unspawned, Was, Why, Written, holders, take_loose_ticket,
+    FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, Maker,
+    NotHeld, NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats,
+    Table, Tie, Tied, Turning, Unfit, Unspawned, Was, Why, Written, holders, take_loose_ticket,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, from_bytes, to_bytes};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -151,8 +151,10 @@ struct Answering<'a> {
     /// The pins the call's instance holds, as the call began.
     holdings: &'a Holdings,
     /// What the actor whose turns or `begin` the call runs holds of resources, which a child of other code it spawns
-    /// may be handed in its config (ADR-0010).
+    /// may be handed in its config (ADR-0010), and the buffers it keeps, which what it puts is copied into (ADR-0042).
     holds: Holds<'a>,
+    /// The actor whose turns or `begin` the call runs, which makes the blobs the call puts (ADR-0042).
+    me: Seated,
 }
 
 /// What the host gave a call into a guest that is still to be handed to the engine: the seats it gave the guest's
@@ -489,7 +491,7 @@ fn blobs_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
         },
     )?;
     linker.func_wrap("aethereal", "aethereal_put", |mut caller: Caller<'_, Lending>, at: u32, len: u32, id: u32| {
-        let bytes = guest_bytes(&mut caller, Span { at, len });
+        let bytes = guest_bytes_kept(&mut caller, Span { at, len })?;
         let put =
             answer(&mut caller, |answering| bytes.ok_or(Refused::NotMade).and_then(|bytes| answering.put(bytes)))?;
         let put = match put {
@@ -553,17 +555,36 @@ fn guest_bytes(caller: &mut Caller<'_, Lending>, span: Span) -> Option<Vec<u8>> 
     lying(memory.data(&*caller), span).map(<[u8]>::to_vec)
 }
 
+/// The bytes `span` says lie in the memory of the guest that makes a call out, copied into a buffer taken from those
+/// the actor whose call it is keeps, to put: so a guest's buffers are reused as a native actor's are (ADR-0042).
+/// Nothing when they lie outside its memory, and then no buffer is taken.
+fn guest_bytes_kept(caller: &mut Caller<'_, Lending>, span: Span) -> wasmtime::Result<Option<Vec<u8>>> {
+    let Some(memory) = caller.get_export("memory").and_then(Extern::into_memory) else {
+        return Ok(None);
+    };
+    let Some(room) = lying(memory.data(&*caller), span).map(<[u8]>::len) else {
+        return Ok(None);
+    };
+    let mut buffer = answer(caller, |answering| answering.buffer(room))?;
+    if let Some(bytes) = lying(memory.data(&*caller), span) {
+        buffer.extend_from_slice(bytes);
+    }
+
+    Ok(Some(buffer))
+}
+
 impl<'a> Answering<'a> {
-    /// What answers a call's calls out, from what its batch was lent, the instances of its part, and the code its
-    /// runtime holds.
+    /// What answers the calls out of a call that runs the turns or `begin` of the actor `me`, from what its batch was
+    /// lent, the instances of its part, and the code its runtime holds.
     fn of(
         Reads { table, made, seats, puts, holds }: Reads<'a>,
         instances: &'a mut Instances,
         codes: &'a Weak<Codes>,
         given: &'a mut Given,
         holdings: &'a Holdings,
+        me: Seated,
     ) -> Self {
-        Self { table, made, seats, puts, instances, codes, given, holdings, holds }
+        Self { table, made, seats, puts, instances, codes, given, holdings, holds, me }
     }
 
     /// A pin on the blob `blob`, when the call's instance holds one or one was offered to the call: what lets its guest
@@ -592,9 +613,16 @@ impl<'a> Answering<'a> {
         Some(hash)
     }
 
-    /// Puts `bytes` as a blob, into the worker's puts, and offers it to the call: answers with its id.
+    /// A buffer with room for at least `room` bytes, from those the actor whose call it is keeps, to copy what its
+    /// guest puts into (ADR-0042).
+    fn buffer(&mut self, room: usize) -> Vec<u8> {
+        self.holds.keeping.buffer(room)
+    }
+
+    /// Puts `bytes` as a blob made by the actor whose call it is, into the worker's puts, and offers it to the call:
+    /// answers with its id.
     fn put(&mut self, bytes: Vec<u8>) -> Result<BlobId, Refused> {
-        let pin = self.puts.pinned(bytes)?;
+        let pin = self.puts.pinned(bytes, Maker::Actor(self.me))?;
         let id = pin.id();
         self.given.offered.push(pin);
 
@@ -1009,7 +1037,7 @@ impl Guests for Runtime {
         let offered = refers.iter().map(|(_, pin)| pin.clone()).collect();
         let mut given = Given { offered, ..Given::default() };
         let mut holdings = mem::take(&mut held.holdings);
-        let mut answering = Answering::of(reads, instances, &code.codes, &mut given, &holdings);
+        let mut answering = Answering::of(reads, instances, &code.codes, &mut given, &holdings, me);
         let began = held.begin(of, me, &handed, &mut answering);
         let began = began.and_then(|began| held.take_pins(&began.1, &mut holdings, &given).map(|()| began));
         let began = began.and_then(|began| held.take_holders(&began.1, &[me]).map(|()| began));
@@ -1144,7 +1172,8 @@ impl Runs for Guest {
         let mut holdings = mem::take(&mut held.holdings);
         let Reads { table, made, seats, puts, holds } = reads;
         let lent = Reads { table, made, seats: &mut *seats, puts, holds };
-        let mut answering = Answering::of(lent, &mut *instances, &self.running.code.codes, &mut self.given, &holdings);
+        let codes = &self.running.code.codes;
+        let mut answering = Answering::of(lent, &mut *instances, codes, &mut self.given, &holdings, self.me);
         let Instance { store, turns, .. } = &mut *held;
         let called = lending(store, &mut answering, |store| turns.call(store, (handle, items, len, sent)));
         let wrote = called.map_err(|_| Broke::Trapped).and_then(|out| held.out_head(out));
@@ -1255,7 +1284,7 @@ impl Runs for Guest {
         let (mut keeping, mut gifts) = (Keeping::default(), Vec::new());
         let holds = Holds { keeping: &mut keeping, gifts: &mut gifts };
         let reads = Reads { table, made: &(), seats, puts, holds };
-        let mut answering = Answering::of(reads, instances, &self.running.code.codes, &mut given, &holdings);
+        let mut answering = Answering::of(reads, instances, &self.running.code.codes, &mut given, &holdings, self.me);
         let wrote = held.end(handle, why, &mut answering);
         let wrote = wrote.and_then(|wrote| held.take_pins(&wrote, &mut holdings, &given).map(|()| wrote));
         let wrote = wrote.and_then(|wrote| held.take_holders(&wrote, &[]).map(|()| wrote));
@@ -4986,6 +5015,94 @@ mod tests {
         // The blob lent out goes once the mail that carried it is gone, by the time the librarian has closed.
         assert_eq!((kept_by_librarian, after_closing), (2, 1));
         assert!(matches!(forged, Err(Refused::Began(_))));
+    }
+
+    /// What a patron asks the librarian for: a book of `len` bytes, and whether to keep it.
+    #[derive(Plain)]
+    #[kind(name = "aether.test.patron_config")]
+    struct Borrowing {
+        len: u64,
+        keeps: bool,
+    }
+
+    /// A native actor that pings the librarian for a book as it begins, and keeps the book it is sent or drops it, as
+    /// its config says.
+    #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.patron")]
+    struct Patron {
+        keeps: bool,
+        books: Vec<Bytes>,
+    }
+
+    impl ChildOf for Patron {
+        type Parent = Top;
+    }
+
+    impl Actor for Patron {
+        type Config = Borrowing;
+        type Key = u64;
+        type Handles = (echo::Book,);
+        type BeginSends = (ToAny<(Ping,), Ping>,);
+        type EndSends = ();
+
+        fn begin(borrowing: Borrowing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+            if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast(found)) {
+                turn.to(librarian).send(&Ping { n: borrowing.len })?;
+            }
+
+            Ok(Self { keeps: borrowing.keeps, books: Vec::new() })
+        }
+
+        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<echo::Book> for Patron {
+        type Sends = ();
+
+        fn handle(&mut self, book: echo::Book, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+            if self.keeps {
+                self.books.push(book.blob);
+            }
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_guests_put_is_copied_into_a_buffer_its_actor_kept() {
+        // Catches a host that copies what its guest puts into a new buffer each time, so a guest's buffers are never
+        // reused, and one that hands the buffer of a guest's freed blob back to no actor (ADR-0042): the librarian's
+        // book of six hundred is put in the buffer its book of a thousand was, which the store counts by its capacity.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(book) = engine.put_blob(b"hello world".to_vec()) else {
+            panic!("the book is put");
+        };
+        let tell = ActorPath::from_root(&PathSegment::new(Patron::NAME, &0_u64));
+        let Ok(_) = engine.add_root_from::<echo::Librarian>(&code, &(), &echo::Shelf { book, tell }) else {
+            panic!("the librarian begins");
+        };
+        let Ok(_) = engine.add_root::<Patron>(&1, Borrowing { len: 1000, keeps: false }) else {
+            panic!("the first patron begins");
+        };
+        settle(&mut engine);
+        // The mail that carried the first book keeps it until that mail's arena is written again.
+        let clock = Monotonic::new();
+        for _ in 0..3 {
+            engine.step(Time::ZERO, &clock);
+        }
+        let (blobs, bytes) = engine.blobs_held();
+
+        let Ok(_) = engine.add_root::<Patron>(&2, Borrowing { len: 600, keeps: true }) else {
+            panic!("the second patron begins");
+        };
+        settle(&mut engine);
+
+        assert_eq!(engine.blobs_held(), (blobs + 1, bytes + 1000));
     }
 
     #[test]

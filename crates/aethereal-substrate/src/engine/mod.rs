@@ -4,6 +4,7 @@ mod ask;
 mod batch;
 mod birth;
 mod bring;
+mod buffers;
 mod costs;
 mod debts;
 mod due;
@@ -45,8 +46,8 @@ use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, Buffers, Bytes, Carried, Chain, Closing, Code,
     Cycling, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, JobId, JobType, Keeping,
-    Keeps, Links, Mail, MailId, Mailed, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Root, Runs,
-    SeatNumber, Seated, Seats, Sleep, Stood, Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why,
+    Keeps, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Root,
+    Runs, SeatNumber, Seated, Seats, Sleep, Stood, Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why,
     config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
@@ -171,6 +172,8 @@ pub struct Engine {
     puts: Vec<Puts>,
     /// The changes to pins made where no worker's buffer was open, taken at each sweep: kept for its room.
     unbuffered: Vec<Change>,
+    /// The most bytes of buffers each actor keeps, freed from the blobs it put, to put in again (ADR-0042).
+    most_kept_bytes: usize,
     /// The resources the chassis has handed in for the configs of roots it has not made yet (ADR-0010).
     handed: Vec<Gift>,
     /// The sources the chassis has made, to bring what it pushes onto their feeds in (ADR-0010).
@@ -477,6 +480,7 @@ impl Engine {
             blobs: Blobs::new(number.0, blob_bytes),
             puts: Vec::new(),
             unbuffered: Vec::new(),
+            most_kept_bytes: MOST_KEPT_BYTES,
             handed: Vec::new(),
             sources: Vec::new(),
             runner: jobs::Runner::Unmade,
@@ -505,6 +509,13 @@ impl Engine {
     fn with_links(mut self, links: Links) -> Self {
         self.links = Arc::new(links);
         self.carry();
+
+        self
+    }
+
+    /// The engine, each of whose actors keeps at most `bytes` of buffers freed from the blobs it put (ADR-0042).
+    const fn with_most_kept_bytes(mut self, bytes: usize) -> Self {
+        self.most_kept_bytes = bytes;
 
         self
     }
@@ -575,9 +586,15 @@ impl Engine {
     /// Puts `bytes` as a blob, for the chassis, between steps, and answers with the first reference to it
     /// (ADR-0014): refused when they would take the blobs past the host's budget.
     pub fn put_blob(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
+        self.put_made(bytes, Maker::Chassis)
+    }
+
+    /// Puts `bytes` as a blob made by `maker`, between steps, and answers with the first reference to it: refused when
+    /// they would take the blobs past the host's budget (ADR-0014, ADR-0042).
+    fn put_made(&mut self, bytes: Vec<u8>, maker: Maker) -> Result<Bytes, Refused> {
         let room = self.blobs.room();
         let mut puts = self.puts(ROOTS, room);
-        let put = puts.pinned(bytes);
+        let put = puts.pinned(bytes, maker);
         self.blobs.take_in(&mut puts);
         self.puts[ROOTS] = puts;
 
@@ -1374,13 +1391,17 @@ impl Engine {
     }
 
     /// Sums every change to blobs' pins the step made, those made where no worker's buffer was open and those jobs made
-    /// as they ran among them, and frees each blob left with no pin (ADR-0014, ADR-0018).
+    /// as they ran among them, and frees each blob left with no pin (ADR-0014, ADR-0018). A freed blob's buffer goes
+    /// back to the actor that put it while that actor sits, and is dropped otherwise (ADR-0042).
     fn sweep_blobs(&mut self) {
         pins::take_shared(self.number.0, &mut self.unbuffered);
         pins::take_queued(&self.job_pins, &mut self.unbuffered);
         self.blobs.change(&mut self.unbuffered);
-        let guests = &*self.guests;
-        self.blobs.sweep(|freed| guests.unload(freed));
+        let (guests, actors, most_kept_bytes) = (&*self.guests, &mut self.actors, self.most_kept_bytes);
+        self.blobs.sweep(|freed, buffer, maker| {
+            guests.unload(freed);
+            buffers::hand_back(actors, buffer, maker, most_kept_bytes);
+        });
     }
 
     /// The arena of the writer numbered `slot` for steps of `parity`, taken out to write to; made when it is the
@@ -2455,6 +2476,9 @@ const fn new_seat(index: usize) -> u64 {
 
 /// The writer of the mail sent between steps, by the chassis: the first.
 const ROOTS: usize = 0;
+
+/// The most bytes of buffers each actor keeps unless the engine is set otherwise: 16 MiB (ADR-0042).
+pub const MOST_KEPT_BYTES: usize = 16 << 20;
 
 /// How many seats in other parts a part is given in each step it runs, for its children past its room.
 const ASIDE: usize = 8;
