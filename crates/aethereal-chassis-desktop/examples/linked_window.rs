@@ -5,9 +5,12 @@
 //! With a hub from the headless `link_hub` example running, ask its `mint_token` tool for a token, which answers the
 //! arguments to start this engine with, then run `cargo run --release -p aethereal-chassis-desktop --example
 //! linked_window -- <those arguments> --name window`. A link's frames are at most 16 MiB here, so an image of a large
-//! frame fits one; start the hub with `--most-bytes 16777216` to read them. Its other flags are the window example's
-//! (`--size`, `--mode`, `--runs`) and the link's; `--help` lists every flag it reads, each also read from its
-//! `LINKED_WINDOW_` variable.
+//! frame fits one; start the hub with `--link-most-bytes 16777216 --set engine.read_limit=16777216` to read them. Its
+//! other flags are the window example's (`--size`, `--mode`, `--runs`) and the link's; `--help` lists every flag it
+//! reads, each also read from its `LINKED_WINDOW_` variable.
+//!
+//! On a Linux desktop reached over SSH, name its display: `WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/$(id
+//! -u)`.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
