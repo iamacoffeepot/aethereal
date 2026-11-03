@@ -30,8 +30,8 @@ pollster = { workspace = true }
 
 # The native guest host (ADR-0015); a browser runs guests with its own WebAssembly.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-wasmparser = { version = "=0.246.2", default-features = false }
-wasmtime = { version = "=44.0.3", default-features = false, features = ["cranelift", "runtime"] }
+wasmparser = { version = "=0.254.2", default-features = false }
+wasmtime = { version = "=48.0.7", default-features = false, features = ["cranelift", "runtime"] }
 
 # Cores and the poller on Linux (epoll); the poller on macOS (kqueue); process groups and their signals on both.
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))'.dependencies]
