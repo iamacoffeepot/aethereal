@@ -287,6 +287,14 @@ impl Keeping {
         }
     }
 
+    /// What it holds, when it has ever held anything, to look at.
+    fn held_shared(&self) -> Option<&[Keep]> {
+        match &self.holding {
+            Holding::Holds(holdings) => Some(&holdings.held),
+            Holding::Never => None,
+        }
+    }
+
     /// Keeps `value` under `ticket`, a ticket no other resource has had, and answers with the handle to it.
     fn keep<R: Resource>(&mut self, ticket: u64, value: R) -> Handle<R> {
         self.holdings().push(Keep::Mine(Kept::new(ticket, value)));
@@ -306,6 +314,18 @@ impl Keeping {
             .flatten()
             .find_map(|keep| match keep {
                 Keep::Mine(kept) if kept.ticket == handle.ticket => kept.value.downcast_mut::<R>(),
+                _ => None,
+            })
+            .ok_or_else(Fault::bare::<NotHeld>)
+    }
+
+    /// The resource `handle` names, shared.
+    fn resource<R: Resource>(&self, handle: &Handle<R>) -> Result<&R, Fault> {
+        self.held_shared()
+            .into_iter()
+            .flatten()
+            .find_map(|keep| match keep {
+                Keep::Mine(kept) if kept.ticket == handle.ticket => kept.value.downcast_ref::<R>(),
                 _ => None,
             })
             .ok_or_else(Fault::bare::<NotHeld>)
@@ -605,6 +625,14 @@ impl Keeps<'_> {
     pub(crate) fn open<R: Resource>(&mut self, handle: &Handle<R>) -> Result<&mut R, Fault> {
         match self {
             Self::Here(keeping) => keeping.open(handle),
+            Self::Claimed => Err(Fault::bare::<KeepsNothing>()),
+        }
+    }
+
+    /// The resource `handle` names, shared: refused in a guest's code, which opens nothing.
+    pub(crate) fn resource<R: Resource>(&self, handle: &Handle<R>) -> Result<&R, Fault> {
+        match self {
+            Self::Here(keeping) => keeping.resource(handle),
             Self::Claimed => Err(Fault::bare::<KeepsNothing>()),
         }
     }

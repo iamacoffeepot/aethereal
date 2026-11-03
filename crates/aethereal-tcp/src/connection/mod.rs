@@ -15,11 +15,12 @@ use crate::framing::Framed;
 use crate::ready::{Ready, Wait};
 use crate::{Framing, Interest, Readied, Socket};
 use aethereal_actor::{
-    Allows, Answer, Answered, Beginning, Blobs, Bytes, Carries, Ended, Enough, Fault, Given, Handle, Handles, Held,
-    More, Open, Part, Protocol, Serving, Stream, StreamKey, ToAny, ToSender, Turn, Unsent,
+    Allows, Answer, Answered, Beginning, Bytes, Carries, Ended, Enough, Fault, Given, Handle, Handles, Held, More,
+    Open, Part, Protocol, Serving, Stream, StreamKey, ToAny, ToSender, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use std::io::{self, ErrorKind, IoSlice, Read as _};
+use std::net::TcpStream;
 use std::{iter, mem};
 
 /// The most bytes a connection reads from its socket in one call.
@@ -148,8 +149,8 @@ struct Pending {
 
 impl Pending {
     /// Its prefix and the bytes of each of its parts, in the order they are written.
-    fn pieces<'p>(&'p self, blobs: &'p Blobs<'p>) -> impl Iterator<Item = &'p [u8]> {
-        let parts = self.parts.iter().map(|part| blobs.read(part));
+    fn pieces<'p, A, S>(&'p self, turn: &'p Turn<'_, A, S>) -> impl Iterator<Item = &'p [u8]> {
+        let parts = self.parts.iter().map(|part| turn.read(part));
 
         iter::once(&self.prefix[..]).chain(parts)
     }
@@ -407,13 +408,16 @@ impl Connection {
     }
 
     /// Writes unsent bytes until the socket would wait, each write's prefix and parts with gathered writes, noting in
-    /// `sent` each write whose bytes all went.
-    fn write_unsent<A, S>(&mut self, turn: &mut Turn<'_, A, S>, sent: &mut Vec<Held<Wrote>>) -> Result<(), HungUp> {
-        let Ok((Socket(socket), blobs)) = turn.open_reading(&mut self.socket) else {
+    /// `sent` each write whose bytes all went. The socket and the parts' bytes are both shared borrows of the turn, so
+    /// they are held together: the kernel writes a socket through `&` (ADR-0042).
+    fn write_unsent<A, S>(&mut self, turn: &Turn<'_, A, S>, sent: &mut Vec<Held<Wrote>>) -> Result<(), HungUp> {
+        let Ok(Socket(stream)) = turn.resource(&self.socket) else {
             return Err(HungUp::Reset);
         };
+        // `Write` is implemented for `&TcpStream`, and its methods take `&mut self`: the reference is the `self`.
+        let mut stream: &TcpStream = stream;
         while let Some(first) = self.unsent.first() {
-            let gathered = write_gathered(socket, first.pieces(&blobs), &mut self.written)?;
+            let gathered = write_gathered(&mut stream, first.pieces(turn), &mut self.written)?;
             if gathered == Gathered::Blocked {
                 return Ok(());
             }
