@@ -8,7 +8,7 @@
 #![allow(clippy::print_stdout)] // A measure prints its rounds.
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
-use aethereal_actor::BlobRef;
+use aethereal_actor::Bytes;
 use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToSender, Top, Turn};
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_chassis_headless::{Headless, Monotonic};
@@ -153,7 +153,7 @@ enum Responding {
 /// One round's pairs, keyed from `first`: every responder, then every pinger, so each pinger finds its responder as it
 /// begins. A root sits in the part with fewest actors, so with no more pairs than parts the `k`th pinger sits beside
 /// the `k`th responder, and their volley fuses.
-fn start(engine: &mut Engine, code: &BlobRef, responding: Responding, first: u64, pairs: u64) {
+fn start(engine: &mut Engine, code: &Bytes, responding: Responding, first: u64, pairs: u64) {
     let pings = PIECES / 2 / pairs;
     for key in first..first + pairs {
         let began = match responding {

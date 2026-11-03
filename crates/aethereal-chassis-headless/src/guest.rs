@@ -22,7 +22,7 @@ use aethereal_actor::records::{
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Broke, Children, Claimed, Declared, Due,
+    Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobType, Broke, Bytes, Children, Claimed, Declared, Due,
     FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, NotHeld,
     NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats, Table,
     Tie, Tied, Turning, Unfit, Unspawned, Was, Why, Written, holders, take_loose_ticket,
@@ -82,7 +82,7 @@ struct Code {
 struct Running {
     code: Code,
     #[expect(dead_code, reason = "a pin is held for as long as it lives, and never read")]
-    pin: BlobRef,
+    pin: Bytes,
 }
 
 /// The key the next code compiled takes. Atomic, as runtimes serving any engine compile at once, and each code's key
@@ -122,7 +122,7 @@ struct Holdings {
 
 /// How many references to one blob an instance holds, and the pin that keeps the blob for them.
 struct Holding {
-    pin: BlobRef,
+    pin: Bytes,
     count: u64,
 }
 
@@ -164,7 +164,7 @@ struct Given {
     births: VecDeque<(u32, Foreign)>,
     /// The pins on the blobs offered to the call's instance, which it may take references to though it holds none:
     /// what the items handed in, a config, a state taken in, or a put refer to (ADR-0014).
-    offered: Vec<BlobRef>,
+    offered: Vec<Bytes>,
     /// The tickets of the resources the host handed to children of other code in their configs as it began them,
     /// before the call's claims of them are held to: what the guest claims of them is already done (ADR-0010).
     handed: Vec<u64>,
@@ -201,7 +201,7 @@ enum Lives {
     In { handle: u32 },
     /// Taken out of the instance it began in, which is another part's, as its path and state written at `Within`,
     /// with the pins on the blobs they refer to: taken into its own part's instance on its first batch.
-    Out { state: Vec<u8>, carried: Vec<BlobRef> },
+    Out { state: Vec<u8>, carried: Vec<Bytes> },
 }
 
 /// What a guest's batch left to hand back.
@@ -568,7 +568,7 @@ impl<'a> Answering<'a> {
 
     /// A pin on the blob `blob`, when the call's instance holds one or one was offered to the call: what lets its guest
     /// name the blob (ADR-0014).
-    fn knows(&self, blob: BlobId) -> Option<BlobRef> {
+    fn knows(&self, blob: BlobId) -> Option<Bytes> {
         self.holdings.pin(blob).or_else(|| self.given.offer(blob))
     }
 
@@ -737,7 +737,7 @@ impl Given {
     }
 
     /// A pin on the blob `blob`, when one was offered to the call.
-    fn offer(&self, blob: BlobId) -> Option<BlobRef> {
+    fn offer(&self, blob: BlobId) -> Option<Bytes> {
         self.offered.iter().find(|offered| offered.id() == blob).cloned()
     }
 
@@ -774,14 +774,14 @@ impl Given {
 
 impl Holdings {
     /// A pin on the blob `blob`, when the instance holds a reference to it.
-    fn pin(&self, blob: BlobId) -> Option<BlobRef> {
+    fn pin(&self, blob: BlobId) -> Option<Bytes> {
         self.blobs.get(&blob).map(|holding| holding.pin.clone())
     }
 
     /// Takes in `changes`, what a call into the instance changed of its references to blobs, a pin on a blob it held
     /// none of taken from `offered`: false when one names a blob the instance held no reference to and none was
     /// offered, or drops more than it holds, as its code then came by an id it was not given (ADR-0014).
-    fn change(&mut self, changes: impl IntoIterator<Item = PinRecord>, offered: &[BlobRef]) -> bool {
+    fn change(&mut self, changes: impl IntoIterator<Item = PinRecord>, offered: &[Bytes]) -> bool {
         for PinRecord { blob, by } in changes {
             let had = self.blobs.get(&blob).map_or(0, |holding| holding.count);
             let Some(count) = had.checked_add_signed(by) else {
@@ -980,7 +980,7 @@ impl Guests for Runtime {
     /// instance is lent to a call into it that is under way.
     fn begin(
         &self,
-        pin: &BlobRef,
+        pin: &Bytes,
         made: &'static BlobType,
         config: &[u8],
         birth: Birth<'_>,
@@ -1346,7 +1346,7 @@ impl Instance {
     ///
     /// Why the call broke: [`Broke::Garbled`] too when the guest did not take the actor in, as its state did not read
     /// back.
-    fn take_in(&mut self, of: u32, me: Seated, state: &[u8], carried: &[BlobRef]) -> Result<u32, Broke> {
+    fn take_in(&mut self, of: u32, me: Seated, state: &[u8], carried: &[Bytes]) -> Result<u32, Broke> {
         let len = self.write_inbox(state);
         let handle = self.take_in.call(&mut self.store, (of, me.id.bits(), me.seat.number(), len));
         let handle = handle.map_err(|_| Broke::Trapped)?;
@@ -1519,7 +1519,7 @@ impl Instance {
 
     /// Writes the items of `batch` straight into the guest's inbox, each an [`ItemHead`] and then its bytes, adds to
     /// `offered` a pin on each blob an item refers to, and answers with how many items and how many bytes.
-    fn hand_in(&mut self, batch: &dyn Batch, offered: &mut Vec<BlobRef>) -> (u32, u32) {
+    fn hand_in(&mut self, batch: &dyn Batch, offered: &mut Vec<Bytes>) -> (u32, u32) {
         let mut items = 0;
         let mut len = 0;
         batch.each(&mut |peeked| {
@@ -1554,7 +1554,7 @@ impl Instance {
     /// answers with where it ends (ADR-0014, ADR-0017). Kept out of line, as most items are mail.
     #[cold]
     #[inline(never)]
-    fn hand_in_filed(&mut self, peeked: &Peeked<'_>, at: usize, offered: &mut Vec<BlobRef>) -> usize {
+    fn hand_in_filed(&mut self, peeked: &Peeked<'_>, at: usize, offered: &mut Vec<Bytes>) -> usize {
         let (mail, asking) = match &peeked.item {
             Item::Answer { mail, asking } | Item::Unanswered { mail, asking } => (mail, asking),
             Item::Mail(_) | Item::Ended(_) => return at,
@@ -1563,7 +1563,7 @@ impl Instance {
         // offered their pins, as the guest takes references of its own to them.
         let mut context = Vec::new();
         let pins = asking.context.pins();
-        records::write_carried(&mut context, asking.context.bytes(), pins.iter().map(BlobRef::id));
+        records::write_carried(&mut context, asking.context.bytes(), pins.iter().map(Bytes::id));
         offered.extend(pins.iter().cloned());
         let (request, len, due) = (asking.count, count(context.len()), asking.due);
         let handed = match &peeked.item {
@@ -1995,7 +1995,7 @@ fn send_pins(
 /// # Errors
 ///
 /// [`Broke::Forged`] when one is not, and [`Broke::Garbled`] when they do not read back.
-fn carried_pins(bytes: &[u8], holdings: &Holdings, offered: &[BlobRef]) -> Result<Vec<BlobRef>, Broke> {
+fn carried_pins(bytes: &[u8], holdings: &Holdings, offered: &[Bytes]) -> Result<Vec<Bytes>, Broke> {
     let (_, blobs) = records::carried(bytes).ok_or(Broke::Garbled)?;
     let offer = |blob: BlobId| offered.iter().find(|offered| offered.id() == blob).cloned();
     let pins = blobs.into_iter().map(|blob| holdings.pin(blob).or_else(|| offer(blob)));
@@ -2301,8 +2301,8 @@ mod tests {
     use super::*;
     use crate::Monotonic;
     use aethereal_actor::{
-        Actor, ActorRef, Answer, Answered, Beginning, BlobRef, Carries, Ending, Forged, Handles, Links, Protocol,
-        Seated, Services, ToAny, ToSender, ToType, Trapped, Turn, Unanswered,
+        Actor, ActorRef, Answer, Answered, Beginning, Bytes, Carries, Ending, Forged, Handles, Links, Protocol, Seated,
+        Services, ToAny, ToSender, ToType, Trapped, Turn, Unanswered,
     };
     use aethereal_actor::{Anywhere, ChildOf, Level, Tick, Time, Top};
     use aethereal_actor::{JobId, JobType};
@@ -2318,7 +2318,7 @@ mod tests {
     const ECHO: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO"));
 
     /// `engine`, running guests with wasmtime, and the echo guest put into it as code.
-    fn with_echo(setup: Setup<()>) -> (Engine, BlobRef) {
+    fn with_echo(setup: Setup<()>) -> (Engine, Bytes) {
         let mut engine = setup.with_guests(Arc::new(Runtime::default())).ready();
         let Ok(code) = engine.put_code(ECHO.to_vec()) else {
             panic!("the echo guest is fit to run");
@@ -2440,7 +2440,7 @@ mod tests {
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.questioner")]
     struct Questioner {
-        code: BlobRef,
+        code: Bytes,
     }
 
     impl ChildOf for Questioner {
@@ -2530,7 +2530,7 @@ mod tests {
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.petitioning")]
     struct Petitioning {
-        code: BlobRef,
+        code: Bytes,
         how: u64,
     }
 
@@ -2770,7 +2770,7 @@ mod tests {
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.inquiring")]
     struct Inquiring {
-        code: BlobRef,
+        code: Bytes,
     }
 
     impl ChildOf for Inquirer {
@@ -3401,7 +3401,7 @@ mod tests {
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.breeder")]
     struct Breeder {
-        code: BlobRef,
+        code: Bytes,
     }
 
     impl ChildOf for Breeder {
@@ -4183,7 +4183,7 @@ mod tests {
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.vestment")]
     struct Vestment {
-        code: BlobRef,
+        code: Bytes,
     }
 
     /// A native actor that spawns a sexton of the echo guest's blob as it begins, and keeps in the fourteenth of
@@ -4396,7 +4396,7 @@ mod tests {
     }
 
     /// An engine running the echo blob, keeping the bearer for it, with a shiner keeping its lights in tally `tally`.
-    fn lit(tally: u64) -> (Engine, BlobRef, ActorPath) {
+    fn lit(tally: u64) -> (Engine, Bytes, ActorPath) {
         let Some(parts) = NonZeroUsize::new(2) else {
             panic!("two is not zero");
         };
@@ -4527,7 +4527,7 @@ mod tests {
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.nesting")]
     struct Nesting {
-        code: BlobRef,
+        code: Bytes,
         reporters: u64,
     }
 
@@ -4701,8 +4701,8 @@ mod tests {
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.henning")]
     struct Henning {
-        home: BlobRef,
-        other: BlobRef,
+        home: Bytes,
+        other: Bytes,
     }
 
     /// A native actor that spawns a hatcher of the echo guest's blob as it begins, and keeps what it tells it in the
@@ -5323,7 +5323,7 @@ mod tests {
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.prober_config")]
     struct ProberConfig {
-        code: BlobRef,
+        code: Bytes,
     }
 
     /// What became of a request, as a prober keeps it: the pong it was answered with, or why it was not, with which

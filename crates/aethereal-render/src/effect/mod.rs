@@ -11,7 +11,7 @@ use crate::program::{
     check_stages, check_uses, entry, parsed, used,
 };
 use crate::shape::{DepthFormat, Shape};
-use aethereal_actor::BlobRef;
+use aethereal_actor::Bytes;
 use aethereal_data::{Bare, Bound, Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Writer};
 use core::fmt::{self, Debug, Formatter};
 use core::marker::PhantomData;
@@ -33,7 +33,7 @@ use naga::{ImageClass, ScalarKind};
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.render.create_effect")]
 pub struct CreateEffect {
-    pub wgsl: BlobRef,
+    pub wgsl: Bytes,
     pub fragment: String,
     pub reads: Vec<Read>,
     pub bindings: Vec<Binding>,

@@ -240,7 +240,7 @@ enum Putter {
 }
 
 #[cfg(feature = "std")]
-pub use pinned::{BlobRef, Pinning, pins, within};
+pub use pinned::{Bytes, Pinning, pins, within};
 
 #[cfg(feature = "std")]
 mod pinned {
@@ -262,11 +262,11 @@ mod pinned {
     /// does not keep the rules, as a test's does, forges one only by `unsafe`.
     #[derive(Debug, PartialEq, Eq)]
     #[repr(transparent)]
-    pub struct BlobRef {
+    pub struct Bytes {
         id: BlobId,
     }
 
-    impl BlobRef {
+    impl Bytes {
         /// A new pin on the blob `id` names.
         ///
         /// For the engine, which pins a blob as it is put and as a reference to it is read out of bytes that hold
@@ -286,9 +286,9 @@ mod pinned {
     }
 
     /// A reference is its blob's id in bytes.
-    impl Schema for BlobRef {
+    impl Schema for Bytes {
         const SHAPE: Shape = Shape::Struct {
-            name: "BlobRef",
+            name: "Bytes",
             fields: &[Field { name: "engine", shape: u32::SHAPE }, Field { name: "id", shape: u64::SHAPE }],
         };
     }
@@ -296,7 +296,7 @@ mod pinned {
     /// An actor's state holds its references as their ids, and the bytes keep a pin on each one's blob beside them
     /// (ADR-0014). One read back out of them is a copy of the pin they keep, so it is a pin of its own on a blob that
     /// was kept; a reference to a blob they keep no pin on is refused.
-    impl Encode<Within> for BlobRef {
+    impl Encode<Within> for Bytes {
         fn encode(&self, out: &mut Writer<'_, Within>) -> Result<(), EncodeError> {
             out.offers().hold(self.clone());
             self.id.engine().encode(out)?;
@@ -304,7 +304,7 @@ mod pinned {
         }
     }
 
-    impl Decode<Within> for BlobRef {
+    impl Decode<Within> for Bytes {
         fn decode(input: &mut Reader<'_, Within>) -> Result<Self, DecodeError> {
             let engine = u32::decode(input)?;
             let id = BlobId::new(engine, u64::decode(input)?);
@@ -316,7 +316,7 @@ mod pinned {
     /// A reference in mail is its blob's id in bytes, and the mail holds a pin of its own while it is in flight:
     /// the writer keeps it, at where the reference's bytes begin, beside the bytes it writes (ADR-0014). The receiver
     /// that reads it back takes a pin of its own, and the mail's goes with the mail.
-    impl Encode<Actors> for BlobRef {
+    impl Encode<Actors> for Bytes {
         fn encode(&self, out: &mut Writer<'_, Actors>) -> Result<(), EncodeError> {
             let at = u32::try_from(out.bytes().len()).unwrap_or(u32::MAX);
             out.offers().hold(at, self.clone());
@@ -327,7 +327,7 @@ mod pinned {
 
     /// The receiver's reference is a copy of the pin the mail holds at where the reference begins; one with no pin
     /// there is refused.
-    impl Decode<Actors> for BlobRef {
+    impl Decode<Actors> for Bytes {
         fn decode(input: &mut Reader<'_, Actors>) -> Result<Self, DecodeError> {
             let at = input.input().as_ptr().addr();
             let engine = u32::decode(input)?;
@@ -338,7 +338,7 @@ mod pinned {
     }
 
     /// A pin some bytes hold, and where in them the reference it is for begins.
-    pub type Pinning = (u32, BlobRef);
+    pub type Pinning = (u32, Bytes);
 
     /// The pins among `held`, kept in the order of where they lie, that lie within the `len` bytes from `start`.
     #[must_use]
@@ -350,13 +350,13 @@ mod pinned {
         &held[first..past]
     }
 
-    impl Clone for BlobRef {
+    impl Clone for Bytes {
         fn clone(&self) -> Self {
             Self::pin(self.id)
         }
     }
 
-    impl Drop for BlobRef {
+    impl Drop for Bytes {
         fn drop(&mut self) {
             pins::change(self.id, -1);
         }
@@ -369,8 +369,8 @@ mod pinned {
         /// # Errors
         ///
         /// [`Refused::NoRoom`] when the bytes would take the writer past its room.
-        pub fn pinned(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {
-            self.put(bytes).map(BlobRef::pin)
+        pub fn pinned(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
+            self.put(bytes).map(Bytes::pin)
         }
     }
 
@@ -538,19 +538,19 @@ mod tests {
         // is dropped; and a reference read back with no pin of its own, freed once the bytes go.
         let id = BlobId::new(7, 3);
         pins::open(7, Vec::new());
-        let blob = BlobRef::pin(id);
+        let blob = Bytes::pin(id);
         let Ok(written) = Written::of(&blob) else {
             panic!("a reference is written");
         };
         drop(blob);
         let while_kept: i64 = pins::close().iter().map(|(_, by)| by).sum();
         pins::open(7, Vec::new());
-        let read = written.read::<BlobRef>(64);
+        let read = written.read::<Bytes>(64);
         drop(written);
         let changes = pins::close();
 
         assert_eq!(while_kept, 1, "the bytes keep the blob");
-        assert_eq!(read.as_ref().map(BlobRef::id), Ok(id));
+        assert_eq!(read.as_ref().map(Bytes::id), Ok(id));
         assert_eq!(changes.iter().map(|(_, by)| by).sum::<i64>(), 0, "the reference read back keeps its pin");
     }
 
@@ -559,9 +559,9 @@ mod tests {
         // Catches a reference read back from bytes that do not keep its blob, which would pin a blob that may have
         // been freed.
         pins::open(8, Vec::new());
-        let blob = BlobRef::pin(BlobId::new(8, 3));
+        let blob = Bytes::pin(BlobId::new(8, 3));
         let bytes = Written::of(&blob).map(|written| written.bytes().to_vec()).unwrap_or_default();
-        let read = Written::new(bytes, Vec::new()).read::<BlobRef>(64);
+        let read = Written::new(bytes, Vec::new()).read::<Bytes>(64);
         drop(blob);
         let _ = pins::close();
 
@@ -569,7 +569,7 @@ mod tests {
     }
 
     /// `blob` written as mail, and the pins its writer kept beside the bytes, each at where its reference begins.
-    fn mailed(blob: &BlobRef) -> (Vec<u8>, Vec<Pinning>) {
+    fn mailed(blob: &Bytes) -> (Vec<u8>, Vec<Pinning>) {
         let mut held = Vec::new();
         let mut out = Writer::<Actors>::new(ActorsWriter::new(&mut held));
         assert_eq!(blob.encode(&mut out), Ok(()));
@@ -579,7 +579,7 @@ mod tests {
 
     /// The reference read out of mail of `bytes` that hold the pins `held` says: as they lie where they were
     /// written, and as a hop's, copied out of the arena they were written in.
-    fn read_mailed(bytes: &[u8], held: &[Pinning]) -> [Result<BlobRef, DecodeError>; 2] {
+    fn read_mailed(bytes: &[u8], held: &[Pinning]) -> [Result<Bytes, DecodeError>; 2] {
         let sender = Seated { id: ActorId::new(1), seat: SeatNumber::new(0) };
         let root = MailId { sender: sender.id, count: 1 };
         let sources = [PinSource::lying(bytes, held), PinSource::copied(bytes, Pinned::lying(held, 0))];
@@ -592,14 +592,14 @@ mod tests {
         // Catches a receiver's reference taken with no pin of its own, freed once the mail's arena is emptied.
         let id = BlobId::new(9, 3);
         pins::open(9, Vec::new());
-        let blob = BlobRef::pin(id);
+        let blob = Bytes::pin(id);
         let (bytes, held) = mailed(&blob);
         drop(blob);
         let read = read_mailed(&bytes, &held);
         drop(held);
         let changes = pins::close();
 
-        assert_eq!(read.each_ref().map(|read| read.as_ref().map(BlobRef::id)), [Ok(id); 2]);
+        assert_eq!(read.each_ref().map(|read| read.as_ref().map(Bytes::id)), [Ok(id); 2]);
         assert_eq!(changes.iter().map(|(_, by)| by).sum::<i64>(), 2, "each reference read back keeps its pin");
     }
 
@@ -608,7 +608,7 @@ mod tests {
         // Catches a reference read out of mail on its bytes alone: mail that holds no pin, one at another place in
         // the bytes, or one on another blob, would each have it pin a blob that may have been freed.
         pins::open(10, Vec::new());
-        let (blob, other) = (BlobRef::pin(BlobId::new(10, 3)), BlobRef::pin(BlobId::new(10, 4)));
+        let (blob, other) = (Bytes::pin(BlobId::new(10, 3)), Bytes::pin(BlobId::new(10, 4)));
         let (bytes, held) = mailed(&blob);
         let elsewhere = [(4, blob.clone())];
         let another = [(0, other.clone())];

@@ -5,7 +5,7 @@
 
 ## Context
 
-Every draw program, compute program, and effect hands the renderer its whole WGSL text, as a blob (`CreateProgram.wgsl`, `CreateCompute.wgsl`, `CreateEffect.wgsl`, each a `BlobRef`, ADR-0021, ADR-0026). The renderer parses and validates that text with `naga` (`wgsl::parse_str` and `Validator` in `aethereal-render/src/program/mod.rs`) before it makes anything from it.
+Every draw program, compute program, and effect hands the renderer its whole WGSL text, as a blob (`CreateProgram.wgsl`, `CreateCompute.wgsl`, `CreateEffect.wgsl`, each a `Bytes`, ADR-0021, ADR-0026). The renderer parses and validates that text with `naga` (`wgsl::parse_str` and `Validator` in `aethereal-render/src/program/mod.rs`) before it makes anything from it.
 
 Programs that share functions each carry a copy of them. A program on Aethereal that bakes its scene in compute and then draws it repeats the same generic functions across several modules today, and puts each module together by concatenating strings in Rust. The functions shared so far are generic, not that program's own:
 - an integer hash of `(i, j, k, seed)` to a fraction in [0, 1), mixed as JavaScript's `Math.imul` mixes, so a WGSL port of JavaScript can match it bit for bit: the top 24 bits, exact in `f32`;

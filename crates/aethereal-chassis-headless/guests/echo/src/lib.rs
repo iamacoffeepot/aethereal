@@ -1,7 +1,7 @@
 //! A guest that answers each ping it is sent with a pong, to its sender (ADR-0015).
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, BlobRef, Carries, ChildOf, Ended, Ending,
+    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, Bytes, Carries, ChildOf, Ended, Ending,
     ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, JobId, Level, On, Path, Protocol, ProtocolRef,
     Recursive, Refused, Resource, Runner, Running, Start, Stop, Tells, Tick, ToAny, ToSender, ToType, Top, Turn,
     Unanswered, parent, path,
@@ -324,7 +324,7 @@ impl Job for Chore {
 #[derive(Bound)]
 #[kind(name = "aether.guest.measure")]
 pub struct Measure {
-    pub blob: BlobRef,
+    pub blob: Bytes,
 }
 
 impl Job for Measure {
@@ -1047,8 +1047,8 @@ fn unhatched(why: &Refused) -> Fault {
 #[derive(Bound)]
 #[kind(name = "aether.guest.hatch")]
 pub struct Hatch {
-    pub other: BlobRef,
-    pub home: BlobRef,
+    pub other: Bytes,
+    pub home: Bytes,
 }
 
 /// An actor that spawns children of other code and tells its parent each pong they tell it. As it begins it spawns a
@@ -1058,8 +1058,8 @@ pub struct Hatch {
 #[derive(Bound)]
 #[kind(name = "aether.guest.hatcher")]
 pub struct Hatcher {
-    other: BlobRef,
-    home: BlobRef,
+    other: Bytes,
+    home: Bytes,
     grown: u64,
 }
 
@@ -1126,7 +1126,7 @@ impl Handles<Grow> for Hatcher {
 #[derive(Bound)]
 #[kind(name = "aether.guest.home")]
 pub struct Home {
-    pub home: BlobRef,
+    pub home: Bytes,
 }
 
 /// An actor that spawns a reporter of the blob it was spawned from: refused as it begins, as that blob's instance waits
@@ -1135,7 +1135,7 @@ pub struct Home {
 #[derive(Bound)]
 #[kind(name = "aether.guest.boomerang")]
 pub struct Boomerang {
-    home: BlobRef,
+    home: Bytes,
 }
 
 impl ChildOf for Boomerang {
@@ -1178,7 +1178,7 @@ impl Handles<Ping> for Boomerang {
 #[derive(Bound)]
 #[kind(name = "aether.guest.shelf")]
 pub struct Shelf {
-    pub book: BlobRef,
+    pub book: Bytes,
     pub tell: ActorPath,
 }
 
@@ -1186,7 +1186,7 @@ pub struct Shelf {
 #[derive(Bound)]
 #[kind(name = "aether.guest.book")]
 pub struct Book {
-    pub blob: BlobRef,
+    pub blob: Bytes,
 }
 
 /// An actor that keeps a blob and reads it as it begins, telling another a pong of its length; answers a ping of `n`
@@ -1195,7 +1195,7 @@ pub struct Book {
 #[derive(Bound)]
 #[kind(name = "aether.guest.librarian")]
 pub struct Librarian {
-    book: BlobRef,
+    book: Bytes,
 }
 
 impl ChildOf for Librarian {
@@ -1266,10 +1266,10 @@ pub struct Forge {
 
 /// A reference to the blob `id` names, which no one gave: what code that keeps no rules makes, as a guest's code
 /// written by hand may. Its pin is noted, as a clone's is, so its host sees the guest take a reference.
-fn forged(id: BlobId) -> BlobRef {
-    // SAFETY: a `BlobRef` is laid out as its id. The one made holds no pin, and is let go of without its drop,
+fn forged(id: BlobId) -> Bytes {
+    // SAFETY: a `Bytes` is laid out as its id. The one made holds no pin, and is let go of without its drop,
     // which would note one dropped; its clone notes the pin the guest claims.
-    let unpinned = unsafe { core::mem::transmute::<BlobId, BlobRef>(id) };
+    let unpinned = unsafe { core::mem::transmute::<BlobId, Bytes>(id) };
     let forged = unpinned.clone();
     core::mem::forget(unpinned);
 
@@ -1310,7 +1310,7 @@ impl Actor for Forger {
 #[derive(Bound)]
 #[kind(name = "aether.guest.hoarder")]
 pub struct Hoarder {
-    forged: BlobRef,
+    forged: Bytes,
 }
 
 impl ChildOf for Hoarder {
@@ -1447,7 +1447,7 @@ impl Handles<Shut> for Parting {
 #[derive(Bound)]
 #[kind(name = "aether.guest.stacks")]
 pub struct Stacks {
-    pub book: BlobRef,
+    pub book: Bytes,
     pub readers: u64,
 }
 
@@ -1488,7 +1488,7 @@ impl Actor for Archive {
 #[derive(Bound)]
 #[kind(name = "aether.guest.reader")]
 pub struct Reader {
-    book: BlobRef,
+    book: Bytes,
 }
 
 impl ChildOf for Reader {
@@ -2188,7 +2188,7 @@ pub struct Stash {
 #[derive(Bound)]
 #[kind(name = "aether.guest.stashed")]
 pub struct Stashed {
-    pub blob: BlobRef,
+    pub blob: Bytes,
 }
 
 /// An actor that asks an echo it spawns as it begins, keeping only in its context a blob it puts, and tells its parent

@@ -43,7 +43,7 @@ use crate::{
 };
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
-    Above, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, BlobRef, Buffers, Carried, Chain, Closing, Code,
+    Above, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, Buffers, Bytes, Carried, Chain, Closing, Code,
     Cycling, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, JobId, JobType, Keeping,
     Keeps, Links, Mail, MailId, Mailed, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Root, Runs,
     SeatNumber, Seated, Seats, Sleep, Stood, Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why,
@@ -574,7 +574,7 @@ impl Engine {
 
     /// Puts `bytes` as a blob, for the chassis, between steps, and answers with the first reference to it
     /// (ADR-0014): refused when they would take the blobs past the host's budget.
-    pub fn put_blob(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {
+    pub fn put_blob(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
         let room = self.blobs.room();
         let mut puts = self.puts(ROOTS, room);
         let put = puts.pinned(bytes);
@@ -591,7 +591,7 @@ impl Engine {
     /// # Errors
     ///
     /// Why the code was refused.
-    pub fn put_code(&mut self, bytes: Vec<u8>) -> Result<BlobRef, CodeRefused> {
+    pub fn put_code(&mut self, bytes: Vec<u8>) -> Result<Bytes, CodeRefused> {
         let unchecked = bytes.clone();
         let code = self.put_blob(bytes).map_err(|_| CodeRefused::NoRoom)?;
         self.guests.load(code.id(), &unchecked).map_err(CodeRefused::Unfit)?;
@@ -601,13 +601,13 @@ impl Engine {
 
     /// The bytes of the blob `blob` refers to, as the store holds them between steps.
     #[must_use]
-    pub fn blob(&self, blob: &BlobRef) -> Option<&[u8]> {
+    pub fn blob(&self, blob: &Bytes) -> Option<&[u8]> {
         self.blobs.read(blob.id())
     }
 
     /// The content hash of the blob `blob` refers to, as the store holds it between steps: the one kept, or one
     /// computed now and kept (ADR-0014). Nothing when this engine does not hold it.
-    pub fn hash(&mut self, blob: &BlobRef) -> Option<BlobHash> {
+    pub fn hash(&mut self, blob: &Bytes) -> Option<BlobHash> {
         self.blobs.hash_now(blob.id())
     }
 
@@ -697,7 +697,7 @@ impl Engine {
     /// Panics when an actor is made under an id the table already holds for another path (ADR-0008).
     pub fn add_root_from<C: Root>(
         &mut self,
-        code: &BlobRef,
+        code: &Bytes,
         key: &C::Key,
         config: &C::Config,
     ) -> Result<ActorId, Refused> {

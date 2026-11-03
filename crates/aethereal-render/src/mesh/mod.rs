@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod tests;
 
-use aethereal_actor::BlobRef;
+use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
 
 /// Asks the renderer for a mesh: `vertices`, laid out as `layout` says, and the triangles of `indices`, each three
@@ -13,8 +13,8 @@ use aethereal_data::{Bound, Plain};
 #[kind(name = "aether.render.create_mesh")]
 pub struct CreateMesh {
     pub layout: VertexLayout,
-    pub vertices: BlobRef,
-    pub indices: BlobRef,
+    pub vertices: Bytes,
+    pub indices: Bytes,
 }
 
 /// How a mesh's vertices are laid out: how many bytes each takes, and each attribute a program's vertex stage reads

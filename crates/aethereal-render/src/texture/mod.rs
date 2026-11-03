@@ -4,7 +4,7 @@
 mod tests;
 
 use crate::shape::ColourFormat;
-use aethereal_actor::BlobRef;
+use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
 
 /// Asks the renderer for a texture `width` by `height` of `format`, from `pixels`, row by row from the top. Answered
@@ -15,7 +15,7 @@ pub struct CreateTexture {
     pub width: u32,
     pub height: u32,
     pub format: TextureFormat,
-    pub pixels: BlobRef,
+    pub pixels: Bytes,
 }
 
 /// The format of a texture's pixels. Every one is read by a program as filtered floats, `texture_2d<f32>`, and every

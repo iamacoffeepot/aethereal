@@ -457,7 +457,7 @@ impl<'a> Hosted<'a> {
         kind: KindId,
         answer: KindId,
         bytes: Vec<u8>,
-        lent: Vec<crate::BlobRef>,
+        lent: Vec<crate::Bytes>,
         context: Written,
     ) -> Result<(), FalseSend> {
         let is_mine = by == self.seat.me;
@@ -480,7 +480,7 @@ impl<'a> Hosted<'a> {
             child.sent += 1;
             child.sent
         };
-        let refers = lent.iter().map(crate::BlobRef::id).collect();
+        let refers = lent.iter().map(crate::Bytes::id).collect();
         self.seat.asked.buffers.jobs.push(Submitted { by, count, code: JobCode::Guest(kind), answer, bytes, refers });
         // A job is cancelled by its asker, and inherits no deadline (ADR-0041).
         self.seat.asked.asks.push((by, Asking { count, answer, context, lent, due: Due::Never }));

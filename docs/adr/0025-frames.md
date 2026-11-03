@@ -108,7 +108,7 @@ let create = frame.finish(Glaze, Effect::new(&glaze, (glow, ids)))?;            
 **An effect is made by asking for its fragment stage and what it reads,** as a program is (ADR-0021):
 
 ```rust
-CreateEffect { wgsl: BlobRef, fragment: String, reads: Vec<Read>, bindings: Vec<Binding>, blend: Blend, shape: Shape }
+CreateEffect { wgsl: Bytes, fragment: String, reads: Vec<Read>, bindings: Vec<Binding>, blend: Blend, shape: Shape }
     -> Effected::Made(MadeEffect { program: ProgramId, reads: Vec<Read> }) | Effected::Refused(ProgramRefused)
 enum Read { Float, Uint, Depth }   // texture_2d<f32>, texture_2d<u32>, texture_depth_2d, at @group(0) @binding(i); `reads` may be empty
 ```

@@ -4,14 +4,14 @@
 #[cfg(test)]
 mod tests;
 
-use aethereal_actor::BlobRef;
+use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
 
 /// Asks the renderer for uniforms holding `bytes`, whose size is fixed from then. Answered with [`Uniformed`].
 #[derive(Bound)]
 #[kind(name = "aether.render.create_uniforms")]
 pub struct CreateUniforms {
-    pub bytes: BlobRef,
+    pub bytes: Bytes,
 }
 
 /// Writes `bytes` over the bytes of `uniforms` from the byte `first`. Only their maker may write them, and nothing is
@@ -21,7 +21,7 @@ pub struct CreateUniforms {
 pub struct WriteUniforms {
     pub uniforms: UniformsId,
     pub first: u32,
-    pub bytes: BlobRef,
+    pub bytes: Bytes,
 }
 
 /// Uniforms the renderer made, which any actor handed them may bind.

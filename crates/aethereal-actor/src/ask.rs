@@ -1,7 +1,7 @@
 //! Requests and their answers: what an asker declares, what it is handed back, and how it handles it (ADR-0017).
 
 #[cfg(feature = "std")]
-use crate::BlobRef;
+use crate::Bytes;
 use crate::declared::{Carries, DeclaredBy, Handled, Handles, Kinds, Last, Listed, Marker, Protocol, RepliesTo};
 use crate::declared::{RepliesWith, ReplyWithin, Role, Sending, Target, Untaken};
 use crate::{Actors, ChildOf, Due, Item, Path, PathTo, ProtocolRef, Within, Written};
@@ -195,7 +195,7 @@ pub struct Asking {
     /// A pin on each blob a job refers to, so each is kept until the job is answered or cancelled, or its actor ends,
     /// whenever the job runs: none for a request, whose mail holds its own (ADR-0018).
     #[cfg(feature = "std")]
-    pub lent: Vec<BlobRef>,
+    pub lent: Vec<Bytes>,
     /// When the engine stops waiting for its answer, and answers it [`Unanswered::Expired`]: `Never` for a job, which
     /// its asker cancels (ADR-0018, ADR-0041).
     pub due: Due,

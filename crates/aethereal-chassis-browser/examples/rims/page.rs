@@ -4,7 +4,7 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, BlobRef, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
+    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
     Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
@@ -264,7 +264,7 @@ fn corners() -> VertexLayout {
 
 /// A program of the WGSL the blob `wgsl` holds over the quad, testing and writing depth, reading `reads`, with its
 /// alpha as `coverage` says, drawn into a pass of `shape`.
-fn program(wgsl: BlobRef, reads: Vec<Read>, coverage: Coverage, shape: Shape) -> CreateProgram {
+fn program(wgsl: Bytes, reads: Vec<Read>, coverage: Coverage, shape: Shape) -> CreateProgram {
     CreateProgram {
         wgsl,
         vertex: String::from("place"),

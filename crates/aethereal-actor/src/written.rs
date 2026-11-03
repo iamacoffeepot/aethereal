@@ -1,7 +1,7 @@
 //! Bytes written at [`Within`], with a pin on each blob they refer to (ADR-0014).
 
 #[cfg(feature = "std")]
-use crate::BlobRef;
+use crate::Bytes;
 use crate::{Within, WithinReader, WithinWriter};
 use aethereal_data::{Budget, Decode, DecodeError, Encode, EncodeError, Reader, Writer};
 use alloc::vec::Vec;
@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 pub struct Written {
     bytes: Vec<u8>,
     #[cfg(feature = "std")]
-    pins: Vec<BlobRef>,
+    pins: Vec<Bytes>,
 }
 
 impl Written {
@@ -58,7 +58,7 @@ impl Written {
     /// back is a copy of one of `pins`, so a pin they lack is a reference refused, never a blob let go of too soon.
     #[cfg(feature = "std")]
     #[must_use]
-    pub const fn new(bytes: Vec<u8>, pins: Vec<BlobRef>) -> Self {
+    pub const fn new(bytes: Vec<u8>, pins: Vec<Bytes>) -> Self {
         Self { bytes, pins }
     }
 
@@ -117,7 +117,7 @@ impl Written {
     /// The pins the bytes keep: one on the blob of each reference in them.
     #[cfg(feature = "std")]
     #[must_use]
-    pub fn pins(&self) -> &[BlobRef] {
+    pub fn pins(&self) -> &[Bytes] {
         &self.pins
     }
 }

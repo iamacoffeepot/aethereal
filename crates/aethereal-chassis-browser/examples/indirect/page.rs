@@ -22,7 +22,7 @@ use aethereal_render::program::{
     Access, Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId,
     Programmed,
 };
-use aethereal_render::readback::{Bytes, ReadStorage};
+use aethereal_render::readback::{ReadStorage, StorageContents};
 use aethereal_render::shaders::WORKGROUP_SIZE;
 use aethereal_render::shape::Shape;
 use aethereal_render::storage::{CreateStorage, StorageId, Stored};
@@ -293,7 +293,7 @@ impl Actor for Culler {
         Answer<Framed, Made>,
         Answer<Placed, Made>,
         Answer<Dispatched, Dispatching>,
-        Answer<Bytes, Read>,
+        Answer<StorageContents, Read>,
         Answer<Timed, Nothing>,
     );
     type BeginSends = ();
@@ -672,15 +672,15 @@ impl Handles<On<Tick>> for Culler {
     }
 }
 
-impl Handles<Answer<Bytes, Read>> for Culler {
+impl Handles<Answer<StorageContents, Read>> for Culler {
     type Sends = ();
 
     fn handle(
         &mut self,
-        (answered, read): (Answered<Bytes>, Read),
+        (answered, read): (Answered<StorageContents>, Read),
         turn: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
-        let Answered::Yes(Bytes::Read { bytes }) = answered else {
+        let Answered::Yes(StorageContents::Read { bytes }) = answered else {
             say(format!("{read:?} was not read: {answered:?}"));
             return Ok(());
         };

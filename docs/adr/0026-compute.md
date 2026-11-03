@@ -35,7 +35,7 @@ let create = frame.finish(Glaze, Effect::new(&glaze, (scene,)))?;
 **A compute program is made by asking for its WGSL, its entry point, and what it binds,** as a program is (ADR-0021):
 
 ```rust
-CreateCompute { wgsl: BlobRef, entry: String, bindings: Vec<Binding> }  -> Computed::Made(ComputeId) | Computed::Refused(ProgramRefused)
+CreateCompute { wgsl: Bytes, entry: String, bindings: Vec<Binding> }  -> Computed::Made(ComputeId) | Computed::Refused(ProgramRefused)
 ```
 
 - Its WGSL travels as a blob of UTF-8, as a program's does (ADR-0021).
@@ -87,7 +87,7 @@ enum Invocations {
 **Storage can be read back,** as a texture is (ADR-0023: `ReadBack`), by an ask of its own:
 
 ```rust
-ReadStorage { storage: StorageId }  -> Bytes::Read { bytes: BlobRef } | Bytes::Refused(ReadRefused)
+ReadStorage { storage: StorageId }  -> Bytes::Read { bytes: Bytes } | Bytes::Refused(ReadRefused)
 ```
 
 - It is read as it is when the ask is handled, after every `Render` before it, and answered with its bytes, held and answered as a texture's pixels are. Any actor handed the storage may read it. Storage not kept is refused (`Storage`), and storage larger than the store lets one worker put (`Unstored`).

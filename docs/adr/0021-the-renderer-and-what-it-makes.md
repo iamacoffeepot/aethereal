@@ -66,10 +66,10 @@ surface.present(&asked);           // each window: presents the frame it kept if
 **An actor makes a mesh, a texture, or a program by asking for it.** Each is answered with the resource's id or a refusal that says why (ADR-0017: `turn.to(target).ask`, `Answer`):
 
 ```rust
-CreateMesh    { layout: VertexLayout, vertices: BlobRef, indices: BlobRef }           -> Made<MeshId> | Refused
-CreateTexture { width: u32, height: u32, format: TextureFormat, pixels: BlobRef }     -> Made<TextureId> | Refused
+CreateMesh    { layout: VertexLayout, vertices: Bytes, indices: Bytes }           -> Made<MeshId> | Refused
+CreateTexture { width: u32, height: u32, format: TextureFormat, pixels: Bytes }     -> Made<TextureId> | Refused
 CreateProgram {
-    wgsl: BlobRef,                      // the WGSL, as UTF-8
+    wgsl: Bytes,                      // the WGSL, as UTF-8
     vertex: String,                     // the vertex stage's entry point
     fragment: String,                   // the fragment stage's entry point
     layout: VertexLayout,               // the vertex buffer it reads: stride, and each attribute's location, format, offset

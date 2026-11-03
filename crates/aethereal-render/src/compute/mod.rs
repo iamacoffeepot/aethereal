@@ -5,7 +5,7 @@
 mod tests;
 
 use crate::program::{Binding, ProgramRefused, Stage, check_bindings, check_uses, entry, listed, parsed};
-use aethereal_actor::BlobRef;
+use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
 use naga::valid::ModuleInfo;
 use naga::{AddressSpace, ArraySize, Handle, Module, Type, TypeInner};
@@ -18,7 +18,7 @@ use naga::{AddressSpace, ArraySize, Handle, Module, Type, TypeInner};
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.render.create_compute")]
 pub struct CreateCompute {
-    pub wgsl: BlobRef,
+    pub wgsl: Bytes,
     pub entry: String,
     pub bindings: Vec<Binding>,
 }

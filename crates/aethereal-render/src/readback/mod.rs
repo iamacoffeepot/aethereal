@@ -6,7 +6,7 @@ mod tests;
 
 use crate::storage::StorageId;
 use crate::texture::{TextureFormat, TextureId};
-use aethereal_actor::BlobRef;
+use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
 
 /// Asks the renderer for what `of` holds, as bytes. Answered with [`Pixels`] once the GPU has copied it and the host
@@ -38,13 +38,13 @@ pub enum Pixels {
         width: u32,
         height: u32,
         format: TextureFormat,
-        pixels: BlobRef,
+        pixels: Bytes,
     },
     Refused(ReadRefused),
 }
 
 /// Asks the renderer for the bytes `storage` holds, as it is when the ask is handled. Any actor handed it may read it.
-/// Answered with [`Bytes`] once the GPU has copied it and the host has mapped the copy, a frame or more later.
+/// Answered with [`StorageContents`] once the GPU has copied it and the host has mapped the copy, a frame or more later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.read_storage")]
 pub struct ReadStorage {
@@ -53,11 +53,11 @@ pub struct ReadStorage {
 
 /// What the renderer answers [`ReadStorage`] with.
 #[derive(Debug, Bound)]
-#[kind(name = "aether.render.bytes")]
-pub enum Bytes {
+#[kind(name = "aether.render.storage_contents")]
+pub enum StorageContents {
     /// The storage's bytes, all of them, as the GPU holds them.
     Read {
-        bytes: BlobRef,
+        bytes: Bytes,
     },
     Refused(ReadRefused),
 }

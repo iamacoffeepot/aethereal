@@ -24,7 +24,7 @@ use crate::{
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
-use crate::{Birth, BlobHash, BlobRef, Config, config_bytes};
+use crate::{Birth, BlobHash, Bytes, Config, config_bytes};
 #[cfg(feature = "std")]
 use crate::{JobCode, JobType};
 use aethereal_data::{ActorId, ActorPath, Decode, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
@@ -635,7 +635,7 @@ impl Seat<'_> {
     /// Puts `bytes` as a blob and answers with the first pin on it: refused when they would take this worker past
     /// its share of the budget for blobs (ADR-0014).
     #[cfg(feature = "std")]
-    fn put(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {
+    fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
         self.asked.puts.pinned(bytes)
     }
 
@@ -645,7 +645,7 @@ impl Seat<'_> {
     ///
     /// Panics when neither holds it, which a pin rules out.
     #[cfg(feature = "std")]
-    fn read(&self, blob: &BlobRef) -> &[u8] {
+    fn read(&self, blob: &Bytes) -> &[u8] {
         let id = blob.id();
         let Some(bytes) = self.asked.puts.read(id).or_else(|| self.table.blob(id)) else {
             panic!("blob store: the blob {id:?} is pinned and not held");
@@ -657,7 +657,7 @@ impl Seat<'_> {
     /// The content hash of the blob `blob` pins: the one the store kept, or one computed now and noted for the store
     /// to keep at the fold (ADR-0014).
     #[cfg(feature = "std")]
-    fn hash(&mut self, blob: &BlobRef) -> BlobHash {
+    fn hash(&mut self, blob: &Bytes) -> BlobHash {
         let id = blob.id();
         if let Some(kept) = self.table.blob_hash(id) {
             return kept;
@@ -754,7 +754,7 @@ impl Seat<'_> {
         let count = self.sent;
         let id = JobId::new(MailId { sender: self.me.id, count });
         let answer = KindId::of::<J::Done>();
-        let refers = lent.iter().map(BlobRef::id).collect();
+        let refers = lent.iter().map(Bytes::id).collect();
         let submitted =
             Submitted { by: self.me, count, code: JobCode::Native(JobType::of::<J>()), answer, bytes, refers };
         self.asked.buffers.jobs.push(submitted);
@@ -1099,7 +1099,7 @@ impl Seat<'_> {
     fn spawn_from<C: ChildOf>(
         &mut self,
         instances: &mut Instances,
-        code: &BlobRef,
+        code: &Bytes,
         key: &C::Key,
         config: &C::Config,
     ) -> Result<ActorRef<C>, Refused> {
@@ -1860,7 +1860,7 @@ impl<Me, S> Turn<'_, Me, S> {
     /// Stands up a child of type `C` under `key` whose code is the blob `code` pins, running its `begin` here in the
     /// blob, and answers with a reference to it (ADR-0009). Refused when the blob makes no actor of `C`'s type.
     #[cfg(feature = "std")]
-    pub fn spawn_from<C>(&mut self, code: &BlobRef, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
+    pub fn spawn_from<C>(&mut self, code: &Bytes, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
         C::Parent: Admits<Me, C>,
@@ -1939,21 +1939,21 @@ impl<Me, S> Turn<'_, Me, S> {
     /// Puts `bytes` as a blob, which nobody changes from then on, and answers with the first reference to it
     /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs.
     #[cfg(feature = "std")]
-    pub fn put(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {
+    pub fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
         self.seat.put(bytes)
     }
 
     /// The bytes of the blob `blob` refers to.
     #[cfg(feature = "std")]
     #[must_use]
-    pub fn read(&self, blob: &BlobRef) -> &[u8] {
+    pub fn read(&self, blob: &Bytes) -> &[u8] {
         self.seat.read(blob)
     }
 
     /// The content hash of the blob `blob` refers to: BLAKE3 over its bytes, computed the first time it is asked for
     /// and kept with the blob from the step's fold on.
     #[cfg(feature = "std")]
-    pub fn hash(&mut self, blob: &BlobRef) -> BlobHash {
+    pub fn hash(&mut self, blob: &Bytes) -> BlobHash {
         self.seat.hash(blob)
     }
 
@@ -2232,7 +2232,7 @@ impl<Me, S> Beginning<'_, Me, S> {
     /// Stands up a child of type `C` under `key` whose code is the blob `code` pins, running its `begin` here in the
     /// blob, and answers with a reference to it (ADR-0009). Refused when the blob makes no actor of `C`'s type.
     #[cfg(feature = "std")]
-    pub fn spawn_from<C>(&mut self, code: &BlobRef, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
+    pub fn spawn_from<C>(&mut self, code: &Bytes, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
         C::Parent: Admits<Me, C>,
@@ -2351,21 +2351,21 @@ impl<Me, S> Beginning<'_, Me, S> {
     /// Puts `bytes` as a blob, which nobody changes from then on, and answers with the first reference to it
     /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs.
     #[cfg(feature = "std")]
-    pub fn put(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {
+    pub fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
         self.seat.put(bytes)
     }
 
     /// The bytes of the blob `blob` refers to.
     #[cfg(feature = "std")]
     #[must_use]
-    pub fn read(&self, blob: &BlobRef) -> &[u8] {
+    pub fn read(&self, blob: &Bytes) -> &[u8] {
         self.seat.read(blob)
     }
 
     /// The content hash of the blob `blob` refers to: BLAKE3 over its bytes, computed the first time it is asked for
     /// and kept with the blob from the step's fold on.
     #[cfg(feature = "std")]
-    pub fn hash(&mut self, blob: &BlobRef) -> BlobHash {
+    pub fn hash(&mut self, blob: &Bytes) -> BlobHash {
         self.seat.hash(blob)
     }
 
@@ -2658,21 +2658,21 @@ impl<Me, S> Ending<'_, Me, S> {
     /// Puts `bytes` as a blob, which nobody changes from then on, and answers with the first reference to it
     /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs.
     #[cfg(feature = "std")]
-    pub fn put(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {
+    pub fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
         self.seat.put(bytes)
     }
 
     /// The bytes of the blob `blob` refers to.
     #[cfg(feature = "std")]
     #[must_use]
-    pub fn read(&self, blob: &BlobRef) -> &[u8] {
+    pub fn read(&self, blob: &Bytes) -> &[u8] {
         self.seat.read(blob)
     }
 
     /// The content hash of the blob `blob` refers to: BLAKE3 over its bytes, computed the first time it is asked for
     /// and kept with the blob from the step's fold on.
     #[cfg(feature = "std")]
-    pub fn hash(&mut self, blob: &BlobRef) -> BlobHash {
+    pub fn hash(&mut self, blob: &Bytes) -> BlobHash {
         self.seat.hash(blob)
     }
 

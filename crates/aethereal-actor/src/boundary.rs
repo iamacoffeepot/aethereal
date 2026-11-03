@@ -147,7 +147,7 @@ impl<'a> ActorsWriter<'a> {
     }
 
     /// Keeps `pin`, for a reference whose bytes begin at `at`.
-    pub(crate) fn hold(&mut self, at: u32, pin: crate::BlobRef) {
+    pub(crate) fn hold(&mut self, at: u32, pin: crate::Bytes) {
         self.held.push((at, pin));
     }
 
@@ -227,7 +227,7 @@ impl<'a> ActorsReader<'a> {
     /// A copy of the pin on `blob` the bytes hold for the reference whose bytes begin at the address `at`: none when
     /// they hold none there, as the reference does not belong to them.
     #[cfg(feature = "std")]
-    pub(crate) fn pin(&self, at: usize, blob: BlobId) -> Option<crate::BlobRef> {
+    pub(crate) fn pin(&self, at: usize, blob: BlobId) -> Option<crate::Bytes> {
         self.pins.pin(at, blob)
     }
 }
@@ -239,7 +239,7 @@ impl Refers for ActorsReader<'_> {}
 /// written without their pins.
 pub struct WithinWriter<'a> {
     #[cfg(feature = "std")]
-    pins: &'a mut Vec<crate::BlobRef>,
+    pins: &'a mut Vec<crate::Bytes>,
     /// Nothing is pinned without std, where no blob is referred to; the lifetime is kept for the list it would hold.
     #[cfg(not(feature = "std"))]
     pins: PhantomData<&'a ()>,
@@ -248,7 +248,7 @@ pub struct WithinWriter<'a> {
 impl<'a> WithinWriter<'a> {
     /// A writer at [`Within`] that keeps in `pins` a pin on the blob of each reference it writes.
     #[cfg(feature = "std")]
-    pub(crate) const fn holding(pins: &'a mut Vec<crate::BlobRef>) -> Self {
+    pub(crate) const fn holding(pins: &'a mut Vec<crate::Bytes>) -> Self {
         Self { pins }
     }
 
@@ -260,7 +260,7 @@ impl<'a> WithinWriter<'a> {
 
     /// Keeps `pin`, on the blob of a reference written.
     #[cfg(feature = "std")]
-    pub(crate) fn hold(&mut self, pin: crate::BlobRef) {
+    pub(crate) fn hold(&mut self, pin: crate::Bytes) {
         self.pins.push(pin);
     }
 }
@@ -272,7 +272,7 @@ impl Refers for WithinWriter<'_> {}
 /// back only from bytes that keep its blob.
 pub struct WithinReader<'a> {
     #[cfg(feature = "std")]
-    pins: &'a [crate::BlobRef],
+    pins: &'a [crate::Bytes],
     /// Nothing is pinned without std, where no blob is referred to; the lifetime is kept for the pins it would hold.
     #[cfg(not(feature = "std"))]
     pins: PhantomData<&'a ()>,
@@ -281,7 +281,7 @@ pub struct WithinReader<'a> {
 impl<'a> WithinReader<'a> {
     /// A reader at [`Within`] of bytes that keep `pins`.
     #[cfg(feature = "std")]
-    pub(crate) const fn of(pins: &'a [crate::BlobRef]) -> Self {
+    pub(crate) const fn of(pins: &'a [crate::Bytes]) -> Self {
         Self { pins }
     }
 
@@ -294,7 +294,7 @@ impl<'a> WithinReader<'a> {
     /// A copy of the pin the bytes keep on the blob `blob`: none when they keep none, as the reference does not belong
     /// to them.
     #[cfg(feature = "std")]
-    pub(crate) fn pin(&self, blob: BlobId) -> Option<crate::BlobRef> {
+    pub(crate) fn pin(&self, blob: BlobId) -> Option<crate::Bytes> {
         self.pins.iter().find(|pin| pin.id() == blob).cloned()
     }
 }

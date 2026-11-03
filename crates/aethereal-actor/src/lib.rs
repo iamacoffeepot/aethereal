@@ -58,7 +58,7 @@ pub use arena::{PinSource, Pinned};
 pub use ask::{Answer, Answered, Askable, Asking, Asks, Unanswered};
 pub use blob::{BlobHash, BlobId, Puts};
 #[cfg(feature = "std")]
-pub use blob::{BlobRef, Pinning, pins, within};
+pub use blob::{Bytes, Pinning, pins, within};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, Within, WithinReader, WithinWriter};
 #[cfg(feature = "std")]
 pub use controller::{Controller, Requests};

@@ -23,7 +23,7 @@ turn.to(files).ask(&ReadFile { namespace: Namespace::Assets, path: FilePath::new
 impl Handles<Answer<FileRead, Loading>> for Tiles { .. }
 
 pub enum FileRead {
-    Read { bytes: BlobRef },     // the whole file, as a blob (ADR-0014)
+    Read { bytes: Bytes },     // the whole file, as a blob (ADR-0014)
     Missing,                     // no file at that path
     Unavailable,                 // the host has nowhere to read it from
     Failed,                      // the host could not read it, or it did not fit the budget for blobs

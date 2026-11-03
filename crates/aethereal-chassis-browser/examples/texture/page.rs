@@ -4,7 +4,7 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, BlobRef, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells,
+    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
@@ -261,7 +261,7 @@ fn corners() -> VertexLayout {
 }
 
 /// A program of the WGSL the blob `wgsl` holds over the quad, drawing into `shape`, binding `bindings`.
-fn program(wgsl: BlobRef, shape: Shape, bindings: Vec<Binding>) -> CreateProgram {
+fn program(wgsl: Bytes, shape: Shape, bindings: Vec<Binding>) -> CreateProgram {
     CreateProgram {
         wgsl,
         vertex: String::from("place"),
@@ -703,7 +703,7 @@ impl Actor for Glower {
 
 /// An effect of the WGSL the blob `wgsl` holds, its fragment stage `fragment`, reading no target, binding `bindings`,
 /// and drawing into `colour`.
-fn effect(wgsl: BlobRef, fragment: &str, bindings: Vec<Binding>, colour: ColourFormat) -> CreateEffect {
+fn effect(wgsl: Bytes, fragment: &str, bindings: Vec<Binding>, colour: ColourFormat) -> CreateEffect {
     CreateEffect {
         wgsl,
         fragment: String::from(fragment),

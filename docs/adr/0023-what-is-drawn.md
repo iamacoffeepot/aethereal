@@ -24,8 +24,8 @@ A frame's stages arrive at `Render` in order (ADR-0020: `Tick`, `Render`, `Prese
 **Instances hold the records a mesh is drawn once for each of.** They are made, and written, by one actor:
 
 ```rust
-CreateInstances { layout: VertexLayout, capacity: u32, records: BlobRef }  -> Made<InstancesId> | Refused
-WriteInstances  { instances: InstancesId, first: u32, records: BlobRef }   // no answer
+CreateInstances { layout: VertexLayout, capacity: u32, records: Bytes }  -> Made<InstancesId> | Refused
+WriteInstances  { instances: InstancesId, first: u32, records: Bytes }   // no answer
 ```
 
 - A record is laid out by a `VertexLayout`, as a vertex is, and read by the vertex stage once per instance.
@@ -36,8 +36,8 @@ WriteInstances  { instances: InstancesId, first: u32, records: BlobRef }   // no
 **Uniforms hold the bytes a program's uniform block is bound to.** A camera makes one and writes its view each `Tick`:
 
 ```rust
-CreateUniforms { bytes: BlobRef }                                    -> Made<UniformsId> | Refused
-WriteUniforms  { uniforms: UniformsId, first: u32, bytes: BlobRef }  // no answer
+CreateUniforms { bytes: Bytes }                                    -> Made<UniformsId> | Refused
+WriteUniforms  { uniforms: UniformsId, first: u32, bytes: Bytes }  // no answer
 ```
 
 Their size is fixed when they are made, a write lies inside it or is refused and logged, and nothing else of them changes.
@@ -45,9 +45,9 @@ Their size is fixed when they are made, a write lies inside it or is refused and
 **Storage holds the bytes a program's read-only storage buffer is bound to,** as uniforms hold a uniform block's: a field of splats, particles, or a skeleton's bones, read by index where a record per instance is read in order. It is made and written as uniforms are:
 
 ```rust
-CreateStorage       { bytes: BlobRef }                                    -> Made<StorageId> | Refused
+CreateStorage       { bytes: Bytes }                                    -> Made<StorageId> | Refused
 CreateZeroedStorage { bytes: u32 }                                        -> Made<StorageId> | Refused
-WriteStorage        { storage: StorageId, first: u32, bytes: BlobRef }    // no answer
+WriteStorage        { storage: StorageId, first: u32, bytes: Bytes }    // no answer
 ```
 
 Storage a compute pass fills is made by its size, every byte zero, as WebGPU makes a buffer: its zeros would otherwise cross as a blob as large as the storage, held against the step's budget for blobs (ADR-0014), and many slots of a streamed world each want storage of tens of megabytes.
@@ -98,7 +98,7 @@ The placement's bind groups are made then, once, so a frame binds what is made a
 **What is drawn can be read back, and a frame timed.** Each is an ask the render root holds and answers once the GPU has done the work, a frame or more later (ADR-0017: `turn.hold`, `turn.answer`):
 
 ```rust
-ReadBack { of: Readable }  -> Pixels::Read { width: u32, height: u32, format: TextureFormat, pixels: BlobRef } | Pixels::Refused
+ReadBack { of: Readable }  -> Pixels::Read { width: u32, height: u32, format: TextureFormat, pixels: Bytes } | Pixels::Refused
 enum Readable { Frame, Texture(TextureId) }                      // storage is read back by `ReadStorage` (ADR-0026)
 TimeFrame                  -> Timed::Took { passes: Vec<u64> } | Timed::Refused
 ```

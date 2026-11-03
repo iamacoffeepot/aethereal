@@ -3,7 +3,7 @@
 
 use super::{Host, Serves, Stage, Unbuilt};
 use crate::Feed;
-use aethereal_actor::{Actors, BlobRef, Controller, Given, Requests, Resource, Root, Source};
+use aethereal_actor::{Actors, Bytes, Controller, Given, Requests, Resource, Root, Source};
 use aethereal_data::config::RootSettings;
 use aethereal_data::{Encode, Kind};
 use core::marker::PhantomData;
@@ -83,7 +83,7 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
     ///
     /// [`Unbuilt::Refused`] when it was refused as it began, as [`Engine::add_root_from`](crate::Engine::add_root_from)
     /// says.
-    pub fn begin_from(&mut self, code: &BlobRef, key: &A::Key, config: &A::Config) -> Result<(), Unbuilt> {
+    pub fn begin_from(&mut self, code: &Bytes, key: &A::Key, config: &A::Config) -> Result<(), Unbuilt> {
         self.stage.engine.add_root_from::<A>(code, key, config)?;
 
         Ok(())
@@ -112,7 +112,7 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
     /// # Errors
     ///
     /// [`Unbuilt::Code`] when the code was refused.
-    pub fn put_code(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Unbuilt> {
+    pub fn put_code(&mut self, bytes: Vec<u8>) -> Result<Bytes, Unbuilt> {
         Ok(self.stage.engine.put_code(bytes)?)
     }
 
@@ -122,7 +122,7 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
     /// # Errors
     ///
     /// [`Unbuilt::Refused`] when the blob was refused.
-    pub fn put_blob(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Unbuilt> {
+    pub fn put_blob(&mut self, bytes: Vec<u8>) -> Result<Bytes, Unbuilt> {
         Ok(self.stage.engine.put_blob(bytes)?)
     }
 

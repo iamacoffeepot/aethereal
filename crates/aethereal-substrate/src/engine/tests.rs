@@ -1560,7 +1560,7 @@ struct HolderConfig {
 #[derive(Bound)]
 #[kind(name = "aether.test.given")]
 struct Given {
-    blob: BlobRef,
+    blob: Bytes,
     left: u64,
 }
 
@@ -1570,7 +1570,7 @@ struct Given {
 #[derive(Bound)]
 #[kind(name = "aether.test.holder")]
 struct Holder {
-    held: Vec<BlobRef>,
+    held: Vec<Bytes>,
     /// Whether it gave itself a blob as it began.
     gave: bool,
     /// How many bytes each blob held, each time it read them, in order.
@@ -1978,7 +1978,7 @@ struct Finished {
 #[kind(name = "aether.test.clocked")]
 struct Clocked {
     number: u64,
-    blob: BlobRef,
+    blob: Bytes,
     /// The time its `begin` read, in nanoseconds.
     began: u64,
     /// The time each turn over a note read, in nanoseconds, in order.

@@ -4,14 +4,14 @@
 #[cfg(test)]
 mod tests;
 
-use aethereal_actor::BlobRef;
+use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
 
 /// Asks the renderer for storage holding `bytes`, whose size is fixed from then. Answered with [`Stored`].
 #[derive(Bound)]
 #[kind(name = "aether.render.create_storage")]
 pub struct CreateStorage {
-    pub bytes: BlobRef,
+    pub bytes: Bytes,
 }
 
 /// Asks the renderer for storage of `bytes` bytes, every one zero, whose size is fixed from then: storage a compute
@@ -29,7 +29,7 @@ pub struct CreateZeroedStorage {
 pub struct WriteStorage {
     pub storage: StorageId,
     pub first: u32,
-    pub bytes: BlobRef,
+    pub bytes: Bytes,
 }
 
 /// Storage the renderer made, which any actor handed it may bind or read back.
