@@ -75,8 +75,9 @@ const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// read, or the hub refuses the engine, the root asks its program to stop (`turn.quit`, ADR-0020). Its token is spent,
 /// and a hub that restarted holds none of its own to take, so it could never link again.
 ///
-/// Mail it cannot read fails its turn, which ends it: it will not start where a frame could be such mail, and a
-/// program sets the engine's `read_limit` above what its tools answer too.
+/// Mail it cannot read never fails it (ADR-0017): a tool's answer past the engine's `read_limit` is written back
+/// refused. It will not start where a frame could be such mail, which would be dropped unread, and a program sets
+/// `read_limit` above what its tools answer, so that each is served.
 #[derive(Bound)]
 #[kind(name = "aether.link")]
 pub struct Link {

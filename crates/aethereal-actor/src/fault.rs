@@ -63,8 +63,10 @@ impl Fault {
 /// The reason of a turn that read bytes which did not decode as the kind they claimed (ADR-0009).
 ///
 /// It is what `?` makes of a [`DecodeError`] in a handler. A handler that is
-/// to carry on past unreadable mail matches on the error.
-#[derive(Debug, PartialEq, Eq, Plain)]
+/// to carry on past unreadable mail matches on the error. Mail the engine
+/// reads before a handler runs that does not read never fails its receiver: its
+/// log records why, with this reason (ADR-0017).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.actor.unreadable")]
 pub enum Unreadable {
     /// The bytes are not a value of the kind.
@@ -74,19 +76,30 @@ pub enum Unreadable {
     Limit { requested: u64, remaining: u64 },
 }
 
-impl From<DecodeError> for Fault {
+impl From<DecodeError> for Unreadable {
     fn from(error: DecodeError) -> Self {
-        let reason = match error {
-            DecodeError::BudgetExceeded { requested, remaining } => Unreadable::Limit {
+        match error {
+            DecodeError::BudgetExceeded { requested, remaining } => Self::Limit {
                 requested: u64::try_from(requested).unwrap_or(u64::MAX),
                 remaining: u64::try_from(remaining).unwrap_or(u64::MAX),
             },
-            _ => Unreadable::Malformed,
-        };
+            _ => Self::Malformed,
+        }
+    }
+}
+
+impl From<Unreadable> for Fault {
+    fn from(reason: Unreadable) -> Self {
         // A reason that holds no collection always encodes.
         let bytes = to_bytes(&reason).unwrap_or_default();
 
         Self { kind: KindId::of::<Unreadable>(), bytes }
+    }
+}
+
+impl From<DecodeError> for Fault {
+    fn from(error: DecodeError) -> Self {
+        Unreadable::from(error).into()
     }
 }
 

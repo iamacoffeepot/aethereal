@@ -1,7 +1,7 @@
 //! What an actor asks of the engine, in three lists a turn fills as it runs: the mail it sends, the lines it logs,
 //! and the rest, its effects on the lives of actors (ADR-0009).
 
-use crate::{BlobId, Declared, Due, ErasedActorRef, Fault, How, Payload, SeatNumber, Seated};
+use crate::{BlobId, Declared, Due, ErasedActorRef, Fault, How, Payload, SeatNumber, Seated, Unreadable};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
 
 /// One thing an actor asks of the engine, and which actor asked (ADR-0009).
@@ -82,6 +82,22 @@ pub enum What {
     /// The asking actor asks the program to stop: the engine lets a cycle under way finish, and runs the last stage
     /// (ADR-0020).
     Quit,
+    /// The mail the asking actor's turn was handed did not read as its kind, for this reason, and its handler did not
+    /// run: the engine answers it [`Unanswered::Unreadable`](crate::Unanswered::Unreadable) when it asks a request, and
+    /// otherwise drops it, as the actor's log records (ADR-0017). Written by the engine, or by a guest's host as its
+    /// library reports it, since the actor's code asked for nothing.
+    Unread(Unreadable),
+}
+
+impl Effect {
+    /// Whether it says the mail the actor `by`'s turn was handed did not read (ADR-0017).
+    #[must_use]
+    pub const fn is_unread_by(&self, by: Seated) -> bool {
+        let is_unread = matches!(self.what, What::Unread(_));
+        let is_own = self.by.id.bits() == by.id.bits();
+
+        is_unread && is_own
+    }
 }
 
 /// A piece of mail a turn sends, or a run of them (ADR-0009, ADR-0011).

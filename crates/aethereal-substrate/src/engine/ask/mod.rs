@@ -3,6 +3,8 @@
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod unreadable;
 
 use super::due::Expiring;
 use aethereal_actor::{Asked, Asking, Due, Fault, Item, Mail, Seated, Tie, Tied, Unanswered};
@@ -236,8 +238,8 @@ pub(super) const fn item<'a>(mail: Mail<'a>, answering: Answering<'a>) -> Item<'
 
 /// Says to `source`, the asker, what became of its request to `me`, when the mail tied as `tie` is one and the turn that
 /// handled it, which had sent `sent` pieces of mail before it and ended as `outcome` says, did not answer it: `Failed`,
-/// or `Unreplied`. The mail is added to what the turn sent, after it, as `me`'s next; of a failed turn it is all that
-/// is sent (ADR-0017).
+/// `Unreadable` when its handler never ran as the request did not read, or `Unreplied`. The mail is added to what the
+/// turn sent, after it, as `me`'s next; of a failed turn it is all that is sent (ADR-0017).
 #[cold]
 #[inline(never)]
 pub(super) fn owed(me: Seated, source: Seated, tie: Tie, outcome: &Result<(), Fault>, sent: u64, asked: &mut Asked) {
@@ -249,6 +251,8 @@ pub(super) fn owed(me: Seated, source: Seated, tie: Tie, outcome: &Result<(), Fa
         (Unanswered::Failed, sent + 1)
     } else if asked.has_answered(me, source, request) {
         return;
+    } else if asked.was_unread(me) {
+        (Unanswered::Unreadable, sent + 1)
     } else {
         (Unanswered::Unreplied, asked.last_sent(me).unwrap_or(sent) + 1)
     };

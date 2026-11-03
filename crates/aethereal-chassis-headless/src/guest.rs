@@ -18,7 +18,7 @@
 use aethereal_actor::records::{
     self, Born, CancelRecord, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, JobRecord, Kept, Keying,
     LineRecord, Naming, Other, OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord,
-    Spawning, StageRecord, StoodRecord, Stopped, TurnEnds, WatchRecord, blob_at, refusal,
+    Spawning, StageRecord, StoodRecord, Stopped, TurnEnds, UnreadRecord, WatchRecord, blob_at, refusal,
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
@@ -1670,6 +1670,11 @@ fn replay_records(
         return Err(Broke::Garbled);
     }
     let ends = record(data, head.turns_at, next, TurnEnds::BYTES).and_then(TurnEnds::read).ok_or(Broke::Garbled)?;
+    // Most calls read all the mail they are handed.
+    let unread = head.unread > 0;
+    if unread {
+        unread_in(data, head, next, hosted)?;
+    }
     let spawns = ends.spawns > before.spawns;
     if spawns && !spawn(data, &running.code, head, before, ends, given, hosted)? {
         return Ok((Err(Fault::new(&FalseSend).unwrap_or_else(|_| Broke::Garbled.fault())), ends));
@@ -1765,6 +1770,29 @@ fn replay_records(
         }
     };
     Ok((ended, ends))
+}
+
+/// Asks `hosted`'s engine to answer or drop the mail of the call's `turn`th turn, when the guest's library found it did
+/// not read and ran no handler for it: the engine answers a request `Unreadable`, and drops other mail, as the actor's
+/// log records (ADR-0017). Kept out of line, as most mail reads.
+///
+/// # Errors
+///
+/// [`Broke::Garbled`] when a record does not read back, or names a turn that handled no item.
+#[cold]
+#[inline(never)]
+fn unread_in(data: &[u8], head: &OutHead, turn: u32, hosted: &mut Hosted<'_>) -> Result<(), Broke> {
+    for index in 0..head.unread {
+        let record = record(data, head.unread_at, index, UnreadRecord::BYTES)
+            .and_then(UnreadRecord::read)
+            .ok_or(Broke::Garbled)?;
+        let is_turn = record.turn == turn;
+        if is_turn {
+            hosted.unread(record.reason).ok_or(Broke::Garbled)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Holds the guest to what a turn claimed of its resources, from the first claim after those `before` ends at to the
@@ -2280,6 +2308,7 @@ mod tests {
     use aethereal_actor::{JobId, JobType};
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
     use aethereal_guest_echo as echo;
+    use aethereal_substrate::harness::{Harness, Unheard};
     use aethereal_substrate::{Engine, Inline, Jobs, Setup, Taken};
     use std::num::NonZeroUsize;
     use std::sync::Mutex;
@@ -5416,5 +5445,40 @@ mod tests {
         assert_eq!(waiting, (Vec::new(), Vec::new()), "nothing comes before the deadline");
         let expired = Probed::No { at: 7, why: Unanswered::Expired };
         assert_eq!(probed(&engine, prober), (vec![expired], vec![expired]), "the envoy's ask expired with the ping");
+    }
+
+    /// What became of a ping or a parcel asked of the echo: the number its pong held, or why none came.
+    fn pong_of(answered: Answered<echo::Pong>) -> Result<u64, Unanswered> {
+        match answered {
+            Answered::Yes(pong) => Ok(pong.n),
+            Answered::No(why) => Err(why),
+        }
+    }
+
+    #[test]
+    fn a_guest_asked_what_it_cannot_read_lives_on_and_its_asker_hears_unreadable() -> Result<(), Unheard> {
+        // Catches a guest's library that fails the turn of mail it cannot read, which ends the guest, and a host that
+        // does not tell its engine, so the asker hears `Unreplied`, or nothing.
+        for (parts, hops) in [(1, 0), (4, 64)] {
+            let Some(parts) = NonZeroUsize::new(parts) else {
+                panic!("an engine has parts");
+            };
+            let (mut engine, code) = with_echo(Engine::new(parts, 256, 1 << 20, 1 << 20, hops));
+            let Ok(_) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
+                panic!("the echo begins");
+            };
+            let mut harness = Harness::bare(engine)?;
+            let echo = harness.root::<echo::Echo>();
+
+            let past = harness.ask(echo, &echo::Parcel { bytes: vec![7; 1024] })?;
+            let unread = harness.answer(past).map(pong_of)?;
+            let within = harness.ask(echo, &echo::Parcel { bytes: vec![7; 16] })?;
+            let read = harness.answer(within).map(pong_of)?;
+
+            assert_eq!(unread, Err(Unanswered::Unreadable), "{parts} parts, {hops} hops");
+            assert_eq!(read, Ok(16), "{parts} parts, {hops} hops: the echo lived to answer the next");
+        }
+
+        Ok(())
     }
 }

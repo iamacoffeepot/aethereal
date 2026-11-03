@@ -23,6 +23,14 @@ pub struct Pong {
     pub n: u64,
 }
 
+/// Some bytes, which an echo answers with a pong of how many: past the engine's read limit, mail its receiver cannot
+/// read (ADR-0017).
+#[derive(Plain)]
+#[kind(name = "aether.guest.parcel")]
+pub struct Parcel {
+    pub bytes: Vec<u8>,
+}
+
 /// One to count, which an echo counts and does not answer.
 #[derive(Plain)]
 #[kind(name = "aether.guest.increment")]
@@ -58,7 +66,7 @@ impl ChildOf for Echo {
 impl Actor for Echo {
     type Config = EchoConfig;
     type Key = ();
-    type Handles = (Ping, Increment, Shut);
+    type Handles = (Ping, Parcel, Increment, Shut);
     type BeginSends = ();
     type EndSends = ();
 
@@ -79,6 +87,25 @@ impl Handles<Ping> for Echo {
     fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.answered += 1;
         turn.reply(&Pong { n: ping.n })?;
+
+        Ok(())
+    }
+}
+
+impl Carries<Ping> for Echo {
+    type Answers = (Pong,);
+}
+
+impl Carries<Parcel> for Echo {
+    type Answers = (Pong,);
+}
+
+impl Handles<Parcel> for Echo {
+    type Sends = (ToSender<Pong>,);
+
+    fn handle(&mut self, parcel: Parcel, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.answered += 1;
+        turn.reply(&Pong { n: u64::try_from(parcel.bytes.len()).unwrap_or(u64::MAX) })?;
 
         Ok(())
     }

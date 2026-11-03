@@ -143,6 +143,7 @@ enum Rpc {
     List,
     ListFrom,
     CallSay,
+    CallShout,
     CallSayBadly,
     CallNothing,
     Initialize,
@@ -155,7 +156,7 @@ impl Rpc {
         match self {
             Self::Discover => "server/discover",
             Self::List | Self::ListFrom => "tools/list",
-            Self::CallSay | Self::CallSayBadly | Self::CallNothing => "tools/call",
+            Self::CallSay | Self::CallShout | Self::CallSayBadly | Self::CallNothing => "tools/call",
             Self::Initialize => "initialize",
             Self::Ping => "ping",
         }
@@ -165,6 +166,7 @@ impl Rpc {
     const fn fields(self) -> &'static str {
         match self {
             Self::CallSay => "\"name\":\"say\",\"arguments\":{\"text\":\"hello\"},",
+            Self::CallShout => "\"name\":\"shout\",\"arguments\":{\"text\":\"hello\"},",
             Self::CallSayBadly => "\"name\":\"say\",\"arguments\":{\"text\":5},",
             Self::CallNothing => "\"name\":\"nothing\",\"arguments\":{},",
             Self::ListFrom => "\"cursor\":\"more\",",
@@ -177,6 +179,7 @@ impl Rpc {
     const fn tool(self) -> Option<&'static str> {
         match self {
             Self::CallSay | Self::CallSayBadly => Some("say"),
+            Self::CallShout => Some("shout"),
             Self::CallNothing => Some("nothing"),
             Self::Discover | Self::List | Self::ListFrom | Self::Initialize | Self::Ping => None,
         }
@@ -637,10 +640,8 @@ fn a_call_its_tool_never_answers_frees_its_slot_at_the_http_deadline() -> Result
 #[test]
 fn the_largest_request_http_takes_is_read_within_the_limit_it_asks_for() -> Result<(), Unheard> {
     // Catches `most_read_bytes` counting a head by its bytes alone, as a list charges each element whole: a head of the
-    // most headers that fit would be mail `Mcp` cannot read, which ends it, however it is written.
-    let http =
-        HttpSettings { most_head_bytes: 2048, most_body_bytes: 256, chunk_bytes: 256, ..HttpSettings::default() };
-    let (mut harness, _, port) = served_over(http, McpSettings::default())?;
+    // most headers that fit would be mail `Mcp` cannot read, and never handles, however it is written.
+    let (mut harness, _, port) = served_over(modest(), McpSettings::default())?;
     let largest = Post { verb: "GET", fillers: 480, write_bytes: 200, ..Post::of(Rpc::List) };
 
     let read = answered(&mut harness, port, &largest);
@@ -648,6 +649,64 @@ fn the_largest_request_http_takes_is_read_within_the_limit_it_asks_for() -> Resu
     assert_eq!(read.status, 405, "{read:?}");
     let read = answered(&mut harness, port, &Post::of(Rpc::List));
     assert_eq!(read.status, 200, "{read:?}");
+
+    Ok(())
+}
+
+/// An HTTP server of small requests, whose engine's read limit, as [`engine_for`] gives it, is modest.
+fn modest() -> HttpSettings {
+    HttpSettings { most_head_bytes: 2048, most_body_bytes: 256, chunk_bytes: 256, ..HttpSettings::default() }
+}
+
+#[test]
+fn a_tool_answer_past_the_read_limit_refuses_that_call_and_mcp_serves_the_next() -> Result<(), Unheard> {
+    // Catches #357: a tool's answer `Mcp` could not read failed its turn, which ended it, so one large answer took the
+    // whole MCP front down until the program restarted. It reaches `Mcp` as no answer, `Unreadable`, which refuses
+    // that call, and `Mcp` serves the next.
+    let past = modest().most_read_bytes() + 1;
+    let (mut harness, mcp, port) = served_over(modest(), McpSettings::default())?;
+    let worker = harness.protocol::<Tooling>();
+    let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say"), sheet("shout")], worker })?;
+    assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
+
+    let too_large = client(port, &Post::of(Rpc::CallSay));
+    let call = harness.asked::<Call>()?;
+    harness.reply(call, &Called::Output(vec![0; past]))?;
+    let refused = heard(&mut harness, too_large);
+    let next = client(port, &Post::of(Rpc::CallShout));
+    let call = harness.asked::<Call>()?;
+    let tool = call.request.tool.clone();
+    harness.reply(call, &Called::Refused(String::from("served")))?;
+    let served = heard(&mut harness, next);
+
+    assert_eq!(refused.status, 200, "{refused:?}");
+    assert!(refused.body.contains("\"isError\":true"), "{refused:?}");
+    assert!(refused.body.contains("Unreadable"), "{refused:?}");
+    assert_eq!(tool, "shout");
+    assert!(served.body.contains("\"text\":\"served\""), "`Mcp` lived to serve the next call: {served:?}");
+
+    Ok(())
+}
+
+#[test]
+fn an_offer_past_the_read_limit_is_answered_unreadable_and_mcp_takes_the_next() -> Result<(), Unheard> {
+    // Catches #357's other half: an offer whose sheets `Mcp` could not read failed its turn, which ended it. Its
+    // offerer is answered `Unreadable`, nothing of it is held, and `Mcp` takes the next offer.
+    let past = modest().most_read_bytes() + 1;
+    let (mut harness, mcp, port) = served_over(modest(), McpSettings::default())?;
+    let worker = harness.protocol::<Tooling>();
+    let large = ToolSheet { description: "x".repeat(past), ..sheet("large") };
+
+    let offering = harness.ask(mcp, &Offer { tools: vec![large], worker })?;
+    let refused = harness.answer(offering)?;
+    let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say")], worker })?;
+    let taken = harness.answer(offering)?;
+    let read = answered(&mut harness, port, &Post::of(Rpc::List));
+
+    assert_eq!(refused, Answered::No(Unanswered::Unreadable));
+    assert_eq!(taken, Answered::Yes(Offered::Yes));
+    assert!(read.body.contains("\"name\":\"say\""), "{read:?}");
+    assert!(!read.body.contains("\"name\":\"large\""), "{read:?}");
 
     Ok(())
 }

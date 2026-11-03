@@ -81,8 +81,9 @@ pub struct Http {
     next: u64,
 }
 
-/// It stands up on every host, and refuses to where a request it would take could not be read, which would fail the
-/// turn of the handler it was sent to and end it.
+/// It stands up on every host, and refuses to where a request it would take could not be read: the handler it was sent
+/// to would never be handed it, and the engine would answer it `Unreadable` (ADR-0017), so a request within the
+/// server's limits would go unserved.
 impl<H: Host> Bootstrap<H> for Http {
     const SECTION: &'static str = "http";
     type Settings = HttpSettings;

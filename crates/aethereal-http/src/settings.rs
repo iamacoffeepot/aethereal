@@ -75,7 +75,8 @@ impl HttpSettings {
     }
 }
 
-/// Why `Http` did not start: mail it would send could not be read, which would let a client end its handler.
+/// Why `Http` did not start: mail it would send could not be read, so a request within its limits would never reach
+/// its handler (ADR-0017).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadLimitTooLow {
     /// The most bytes a turn reads into one piece of mail.

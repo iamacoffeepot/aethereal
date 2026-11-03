@@ -24,7 +24,7 @@
 use crate::records::{
     self, Born, CancelRecord, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, JobRecord, Kept, Keying,
     LineRecord, Naming, Other, OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord,
-    Spawning, StageRecord, Staging, StoodRecord, Stopped, TurnEnds, WatchRecord,
+    Spawning, StageRecord, Staging, StoodRecord, Stopped, TurnEnds, UnreadRecord, WatchRecord,
 };
 use crate::section;
 use crate::{
@@ -181,6 +181,9 @@ struct Guest {
     let_go: Vec<u8>,
     /// The changes to how many values hold each debt, taken from the guest's buffer, emptied and kept for its room.
     holder_changes: Vec<holders::Change>,
+    /// The call's turns that were handed mail that did not read, for its host to answer or drop: emptied as each call
+    /// opens, and kept for its room (ADR-0017).
+    unread: Vec<UnreadRecord>,
     asked: Asked,
     /// What its actors' turns are lent: a guest's actors are its own code, run in no instance, so it holds no
     /// instance, and it carries the calls out to its host that begin a child of any other code.
@@ -313,7 +316,7 @@ pub fn begin_at(types: &[Type], calls: &'static Calls, of: u32, me: u64, seat: u
             Err(fault) => (NO_HANDLE, Last::Failed(fault)),
         };
         room_for_head(&mut guest.out);
-        write_ends(&mut guest.out, &guest.asked, &mut Counted::default());
+        write_ends(&mut guest.out, &guest.asked, (0, &mut guest.unread), &mut Counted::default());
         guest.write_records(types, 1, 0, last);
 
         handle
@@ -387,7 +390,7 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         guest.open(calls);
         room_for_head(&mut guest.out);
         let host = Host::new(calls);
-        let Guest { actors, inbox, asked, out, instances, read_limit, .. } = &mut *guest;
+        let Guest { actors, inbox, asked, out, instances, read_limit, unread, .. } = &mut *guest;
         let read_limit = *read_limit;
         let Some(Slot::Live { runs, me, standing }) = actors.get_mut(handle as usize) else {
             return 0;
@@ -434,7 +437,7 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
                 Turning::new(*me, path, *above, &host, &host, asked, instances, keeps, sent, source, chain, tie, due);
             let result = runs.turn(item, turning);
             sent = asked.last_sent(*me).unwrap_or(sent);
-            write_ends(out, asked, &mut counted);
+            write_ends(out, asked, (ran, unread), &mut counted);
             ran += 1;
             last = match result {
                 Err(fault) => Last::Failed(fault),
@@ -544,6 +547,7 @@ impl Guest {
             *puts = Puts::of_host(calls.put);
         }
         self.held.clear();
+        self.unread.clear();
         ELSEWHERE.with_borrow_mut(Vec::clear);
         TURN.set(0);
     }
@@ -636,7 +640,7 @@ impl Guest {
         let job_bytes = jobs(&mut self.held, &self.asked);
         let asks = contexts(&mut self.held, &self.asked);
 
-        let Self { out, asked, held, changes, holder_changes, .. } = self;
+        let Self { out, asked, held, changes, holder_changes, unread, .. } = self;
         let held_at = address(held.as_ptr());
         let in_held = |(at, len): (usize, usize)| Span { at: held_at + count(at), len: count(len) };
         let sends_at = out.len();
@@ -666,13 +670,7 @@ impl Guest {
             out.extend_from_slice(&StoodRecord { me, above, held }.to_bytes());
         }
         let watches_at = out.len();
-        let watches = asked.effects().iter().filter_map(|effect| match effect.what() {
-            What::Watch { of, .. } => Some(WatchRecord { by: effect.seated(), of: of.seated() }),
-            _ => None,
-        });
-        for watch in watches {
-            out.extend_from_slice(&watch.to_bytes());
-        }
+        write_watches(out, asked);
         write_claims(out, asked);
         jobs_out(out, asked, &asks, job_bytes.into_iter().map(in_held));
         // Where its mail's references lie is written, and its host pins them itself, so the guest's own pins go now and
@@ -688,6 +686,8 @@ impl Guest {
         }
         let holders_at = out.len();
         let holders = write_holders(out, holder_changes);
+        let unread_at = out.len();
+        out.extend(unread.iter().flat_map(UnreadRecord::to_bytes));
         let fault_at = out.len();
         if let Last::Failed(fault) = &last {
             out.extend_from_slice(fault.bytes());
@@ -718,6 +718,8 @@ impl Guest {
             refs: count(refs.len()),
             holders_at: at(holders_at),
             holders,
+            unread_at: at(unread_at),
+            unread: count(unread.len()),
         };
         head.write_over(out);
     }
@@ -964,6 +966,17 @@ pub fn pins_out() -> u64 {
     })
 }
 
+/// Writes after `out` a [`WatchRecord`] for each actor the turns of `asked` watched, where its host finds them.
+fn write_watches(out: &mut Vec<u8>, asked: &Asked) {
+    let watches = asked.effects().iter().filter_map(|effect| match effect.what() {
+        What::Watch { of, .. } => Some(WatchRecord { by: effect.seated(), of: of.seated() }),
+        _ => None,
+    });
+    for watch in watches {
+        out.extend_from_slice(&watch.to_bytes());
+    }
+}
+
 /// Writes after `out` a [`ClaimRecord`] for each claim the turns of `asked` made, right after the last watch, where
 /// its host finds them (ADR-0015); then the requests they held (ADR-0017); then what they asked of the program's
 /// lifecycle (ADR-0020).
@@ -1065,10 +1078,10 @@ pub fn end_at(types: &[Type], calls: &'static Calls, handle: u32, why: u32) -> u
         guest.open(calls);
         room_for_head(&mut guest.out);
         let host = Host::new(calls);
-        let Guest { asked, instances, out, .. } = &mut *guest;
+        let Guest { asked, instances, out, unread, .. } = &mut *guest;
         let Standing { path, above } = &standing;
         let ended = runs.end(Closing::new(me, path, *above, &host, asked, instances, Keeps::Claimed, 0, why));
-        write_ends(out, asked, &mut Counted::default());
+        write_ends(out, asked, (0, unread), &mut Counted::default());
         let last = match ended {
             Ok(()) => Last::Ran,
             Err(fault) => Last::Failed(fault),
@@ -1124,9 +1137,10 @@ struct Counted {
     closes: bool,
 }
 
-/// Writes where the turn just run ends in `asked`'s buffers, after the ends of the turns before it, which `counted`
-/// says, counting what it added: a send for each piece of mail, as a run's pieces are each a send.
-fn write_ends(out: &mut Vec<u8>, asked: &Asked, counted: &mut Counted) {
+/// Writes where the turn just run, the call's `turn`th, ends in `asked`'s buffers, after the ends of the turns before
+/// it, which `counted` says, counting what it added: a send for each piece of mail, as a run's pieces are each a send.
+/// A turn whose mail did not read is added to `unread`, for its host to answer or drop it (ADR-0017).
+fn write_ends(out: &mut Vec<u8>, asked: &Asked, (turn, unread): (u32, &mut Vec<UnreadRecord>), counted: &mut Counted) {
     let Counted { mailed, effects, owes, ends, closes } = counted;
     for added in &asked.mailed()[*mailed..] {
         ends.sends += added.bytes.pieces();
@@ -1137,6 +1151,7 @@ fn write_ends(out: &mut Vec<u8>, asked: &Asked, counted: &mut Counted) {
             What::Watch { .. } => ends.watches += 1,
             What::Close => *closes = true,
             What::Subscribe(_) | What::Unsubscribe(_) | What::Quit => ends.stages += 1,
+            What::Unread(reason) => unread.push(UnreadRecord { turn, reason: *reason }),
             _ => {}
         }
     }

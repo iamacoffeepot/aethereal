@@ -3,9 +3,9 @@
 #[cfg(feature = "std")]
 use crate::BlobRef;
 use crate::declared::{Carries, DeclaredBy, Handled, Handles, Kinds, Last, Listed, Marker, Protocol, RepliesTo};
-use crate::declared::{RepliesWith, ReplyWithin, Role, Sending, Target};
+use crate::declared::{RepliesWith, ReplyWithin, Role, Sending, Target, Untaken};
 use crate::{Actors, ChildOf, Due, Item, Path, PathTo, ProtocolRef, Within, Written};
-use aethereal_data::{Decode, Kind, KindId, Plain};
+use aethereal_data::{Decode, DecodeError, Kind, KindId, Plain};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -176,6 +176,10 @@ pub enum Unanswered {
     /// The request's deadline came before its answer, and the engine stopped waiting for it: an answer that comes
     /// later is dropped (ADR-0041).
     Expired,
+    /// The receiver could not read the request within the engine's `read_limit`, or its bytes did not decode as its
+    /// kind, so its handler did not run; or the answer came and the asker could not read it, which is its sender's
+    /// fault and not the asker's (ADR-0017).
+    Unreadable,
 }
 
 /// A request a turn asked, or a job it ran, and the context its asker keeps until it is answered, as the engine files
@@ -532,14 +536,29 @@ impl<A: Kind + Decode<Actors> + 'static, C: Kind + Decode<Within> + 'static> Han
     const ROLE: Role = Role::Answer(KindId::of::<A>());
     type Item<'a> = (Answered<A>, C);
 
-    fn take(item: Item<'_>) -> Result<(Answered<A>, C), crate::Fault> {
+    /// An answer that does not read is handed over as no answer, [`Unanswered::Unreadable`], with its context: its
+    /// sender's fault. So is what the engine says of a request that was not answered, which the engine writes and
+    /// always reads, so its handler always runs. A context that does not read fails the turn: the asker wrote it
+    /// (ADR-0017).
+    fn take(item: Item<'_>) -> Result<(Answered<A>, C), Untaken> {
         let (answered, mail, asking) = match item {
-            Item::Answer { mail, asking } => (Answered::Yes(mail.contents()?), mail, asking),
-            Item::Unanswered { mail, asking } => (Answered::No(mail.contents()?), mail, asking),
+            Item::Answer { mail, asking } => (answered(mail.contents()), mail, asking),
+            Item::Unanswered { mail, asking } => (unanswered(mail.contents()), mail, asking),
             Item::Mail(_) | Item::Ended(_) => unreachable!("only what became of a request is handed to its handler"),
         };
-        let context = asking.context.read(mail.limit())?;
+        let context = asking.context.read(mail.limit()).map_err(Untaken::failed)?;
 
         Ok((answered, context))
     }
+}
+
+/// What became of a request whose answer read as `read`: the answer, or none when it did not read (ADR-0017).
+fn answered<A>(read: Result<A, DecodeError>) -> Answered<A> {
+    read.map_or(Answered::No(Unanswered::Unreadable), Answered::Yes)
+}
+
+/// What became of a request the engine says was not answered, as `read` says why: why, or that what it said did not
+/// read, which the engine never writes.
+fn unanswered<A>(read: Result<Unanswered, DecodeError>) -> Answered<A> {
+    Answered::No(read.unwrap_or(Unanswered::Unreadable))
 }
