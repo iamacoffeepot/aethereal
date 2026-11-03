@@ -324,7 +324,8 @@ impl Handles<Answer<Described, Asking>> for EngineTools {
             Pending::Finding { held, engine, tool, input } => match converted(answered, engine, &tool, &input) {
                 Ok(Converted { revision, input, output }) => {
                     let call = CallEngine { revision, tool: tool.clone(), input };
-                    turn.to(path::<Engine>(u64::from(engine))).ask(&call, &asking)?;
+                    // This turn handles the engine's tools, not the call held, so it states the call's deadline.
+                    turn.to(path::<Engine>(u64::from(engine))).within(held.due()).ask(&call, &asking)?;
                     self.calls.insert(asking.number, Pending::Calling { held, tool, output });
                     return Ok(());
                 }

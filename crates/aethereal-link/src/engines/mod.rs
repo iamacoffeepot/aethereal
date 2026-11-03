@@ -12,7 +12,7 @@ mod tokens;
 pub use asks::{
     CallEngine, DescribeEngine, Described, EngineList, EngineListing, ExitedEngine, ListEngines, Origin, Shown,
 };
-pub use engine::{Engine, EngineConfig, Sent, Vouching};
+pub use engine::{Engine, EngineConfig, Lapsing, Sent, Vouching};
 pub use randomness::{Randomness, Unfilled};
 pub use settings::EnginesSettings;
 pub use spawned::{Booting, Fetching, LinkedAs, Patience, Runs, Spawned, SpawnedConfig};
