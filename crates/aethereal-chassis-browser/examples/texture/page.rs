@@ -157,10 +157,10 @@ const SETTLED: u32 = 3;
 enum Mapper {
     /// Its asks are under way, and nothing is placed on `window`.
     Making { window: WindowId },
-    /// The quad is placed: `drawn` frames have passed since.
-    Drawing { map: FrameId, texture: TextureId, drawn: u32 },
+    /// The quad is placed on `window`: `drawn` frames have passed since.
+    Drawing { window: WindowId, map: FrameId, texture: TextureId, drawn: u32 },
     /// The map's frame is released: `drawn` frames have passed since.
-    Released { texture: TextureId, drawn: u32 },
+    Released { window: WindowId, texture: TextureId, drawn: u32 },
     /// It has read back all it reads.
     Done,
 }
@@ -448,7 +448,7 @@ impl Handles<Answer<Placed, Placing>> for Mapper {
             Placing::Map { mesh, show, map, texture } => (mesh, show, map, texture),
             Placing::Show { map, texture } => {
                 say(String::from("placed map show"));
-                *self = Self::Drawing { map, texture, drawn: 0 };
+                *self = Self::Drawing { window, map, texture, drawn: 0 };
                 return Ok(());
             }
         };
@@ -470,22 +470,22 @@ impl Handles<On<Tick>> for Mapper {
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         match *self {
-            Self::Drawing { map, texture, drawn } if drawn < SETTLED => {
-                *self = Self::Drawing { map, texture, drawn: drawn + 1 };
+            Self::Drawing { window, map, texture, drawn } if drawn < SETTLED => {
+                *self = Self::Drawing { window, map, texture, drawn: drawn + 1 };
             }
-            Self::Drawing { map, texture, .. } => {
+            Self::Drawing { window, map, texture, .. } => {
                 turn.to(path::<Renderer>(()))
-                    .ask(&ReadBack { of: Readable::Frame }, &Of::Shown)?
+                    .ask(&ReadBack { of: Readable::Frame(window) }, &Of::Shown)?
                     .ask(&ReadBack { of: Readable::Texture(texture) }, &Of::Map)?
                     .send(&Release::Frame(map))?;
-                *self = Self::Released { texture, drawn: 0 };
+                *self = Self::Released { window, texture, drawn: 0 };
             }
-            Self::Released { texture, drawn } if drawn < SETTLED => {
-                *self = Self::Released { texture, drawn: drawn + 1 };
+            Self::Released { window, texture, drawn } if drawn < SETTLED => {
+                *self = Self::Released { window, texture, drawn: drawn + 1 };
             }
-            Self::Released { texture, .. } => {
+            Self::Released { window, texture, .. } => {
                 turn.to(path::<Renderer>(()))
-                    .ask(&ReadBack { of: Readable::Frame }, &Of::Kept)?
+                    .ask(&ReadBack { of: Readable::Frame(window) }, &Of::Kept)?
                     .ask(&ReadBack { of: Readable::Texture(texture) }, &Of::Released)?;
                 *self = Self::Done;
             }

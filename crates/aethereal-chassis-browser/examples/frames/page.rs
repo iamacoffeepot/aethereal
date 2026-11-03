@@ -187,8 +187,8 @@ const SETTLED: u32 = 3;
 enum Framer {
     /// Its asks are under way, and nothing is placed on `window`.
     Making { window: WindowId },
-    /// Both are placed: `drawn` frames have passed since.
-    Drawing { drawn: u32 },
+    /// Both are placed on `window`: `drawn` frames have passed since.
+    Drawing { window: WindowId, drawn: u32 },
     /// It has asked for what it reads back.
     Asked,
 }
@@ -555,7 +555,7 @@ impl Handles<Answer<Placed, Placing>> for Framer {
         };
         let Placing::Surface { mesh, splat } = placing else {
             say(String::from("placed surface splat"));
-            *self = Self::Drawing { drawn: 0 };
+            *self = Self::Drawing { window, drawn: 0 };
             return Ok(());
         };
         let join = Join::to::<Splats>(Frame::Main(window), splat, Vec::new());
@@ -570,14 +570,16 @@ impl Handles<On<Tick>> for Framer {
     type Sends = (Asks<Path<Renderer>, ReadBack, Nothing>, Asks<Path<Renderer>, TimeFrame, Nothing>);
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let Self::Drawing { drawn } = *self else {
+        let Self::Drawing { window, drawn } = *self else {
             return Ok(());
         };
         if drawn < SETTLED {
-            *self = Self::Drawing { drawn: drawn + 1 };
+            *self = Self::Drawing { window, drawn: drawn + 1 };
             return Ok(());
         }
-        turn.to(path::<Renderer>(())).ask(&ReadBack { of: Readable::Frame }, &Nothing)?.ask(&TimeFrame, &Nothing)?;
+        turn.to(path::<Renderer>(()))
+            .ask(&ReadBack { of: Readable::Frame(window) }, &Nothing)?
+            .ask(&TimeFrame, &Nothing)?;
         *self = Self::Asked;
 
         Ok(())

@@ -137,8 +137,8 @@ const SETTLED: u32 = 3;
 enum Reader {
     /// Its asks are under way, and nothing is placed on `window`.
     Making { window: WindowId },
-    /// Both are placed and the texture made: `drawn` frames have passed since.
-    Drawing { texture: TextureId, storage: StorageId, drawn: u32 },
+    /// Both are placed on `window` and the texture made: `drawn` frames have passed since.
+    Drawing { window: WindowId, texture: TextureId, storage: StorageId, drawn: u32 },
     /// It has asked for what it reads back.
     Asked,
 }
@@ -448,8 +448,11 @@ impl Handles<Answer<Textured, Splatted>> for Reader {
             say(format!("the texture was not made: {answered:?}"));
             return Ok(());
         };
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
         say(String::from("placed splats tint texture"));
-        *self = Self::Drawing { texture, storage: splatted.storage, drawn: 0 };
+        *self = Self::Drawing { window, texture, storage: splatted.storage, drawn: 0 };
 
         Ok(())
     }
@@ -463,15 +466,15 @@ impl Handles<On<Tick>> for Reader {
     );
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let Self::Drawing { texture, storage, drawn } = *self else {
+        let Self::Drawing { window, texture, storage, drawn } = *self else {
             return Ok(());
         };
         if drawn < SETTLED {
-            *self = Self::Drawing { texture, storage, drawn: drawn + 1 };
+            *self = Self::Drawing { window, texture, storage, drawn: drawn + 1 };
             return Ok(());
         }
         turn.to(path::<Renderer>(()))
-            .ask(&ReadBack { of: Readable::Frame }, &Of::Frame)?
+            .ask(&ReadBack { of: Readable::Frame(window) }, &Of::Frame)?
             .ask(&ReadBack { of: Readable::Texture(texture) }, &Of::Texture)?
             .ask(&ReadStorage { storage }, &Nothing)?
             .ask(&TimeFrame, &Nothing)?;

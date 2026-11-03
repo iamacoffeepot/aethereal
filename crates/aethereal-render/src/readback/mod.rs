@@ -8,6 +8,7 @@ use crate::storage::StorageId;
 use crate::texture::{TextureFormat, TextureId};
 use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
+use aethereal_window::WindowId;
 
 /// Asks the renderer for what `of` holds, as bytes. Answered with [`Pixels`] once the GPU has copied it and the host
 /// has mapped the copy, a frame or more later.
@@ -21,9 +22,8 @@ pub struct ReadBack {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.readable")]
 pub enum Readable {
-    /// The next frame drawn onto a window, as it is when its pass ends: of the first window drawn that `Render`, in the
-    /// order its chassis opened them.
-    Frame,
+    /// The next frame drawn onto the window, as it is when its pass ends.
+    Frame(WindowId),
     /// A texture the renderer keeps, as it is when the ask is handled.
     Texture(TextureId),
 }
@@ -70,6 +70,8 @@ pub enum ReadRefused {
     Texture,
     /// No storage is kept under the id: never made, or released.
     Storage,
+    /// No window is drawn to under the id: never opened, or closed, before its frame was drawn.
+    Window,
     /// The canvas is of a format no answer is laid out in: not four channels of a byte each.
     Format,
     /// The canvas was not opened to be copied from, as the chassis opens it when the GPU lets it.
