@@ -1,9 +1,9 @@
 //! The view of what each actor has to react to (ADR-0009, ADR-0011).
 
 use crate::watch::Notice;
-use crate::{Context, Envelope, View};
+use crate::{Context, Envelope, Tying, View};
 use aethereal_actor::{
-    Arena, CARRIED, Effect, Ended, MailId, Mailed, Payload, Pinning, SeatNumber, Seated, Tie, within,
+    Arena, CARRIED, Due, Effect, Ended, MailId, Mailed, Payload, Pinning, SeatNumber, Seated, Tie, within,
 };
 use aethereal_data::ActorId;
 use std::iter;
@@ -662,8 +662,17 @@ impl Handed<'_> {
     #[must_use]
     pub const fn tie(self) -> Tie {
         match self {
-            Self::Mail { envelope, .. } => envelope.tie,
+            Self::Mail { id, envelope, .. } => envelope.tying.tie(id.count),
             Self::Ended { .. } => Tie::TELL,
+        }
+    }
+
+    /// When the request it is stops being waited for: `Never` for an ending, or mail that asks nothing (ADR-0041).
+    #[must_use]
+    pub const fn due(self) -> Due {
+        match self {
+            Self::Mail { envelope, .. } => envelope.tying.due(),
+            Self::Ended { .. } => Due::Never,
         }
     }
 
@@ -732,8 +741,9 @@ impl View for Streams {
 /// envelope.
 #[must_use]
 pub fn entry(mailed: Mailed, context: &Context) -> (u64, Entry) {
-    let Mailed { by, to, count, kind, bytes, tie } = mailed;
-    let envelope = Envelope { sender_seat: by.seat, root: context.root, depth: context.depth, kind, bytes, tie };
+    let Mailed { by, to, count, kind, bytes, tie, due } = mailed;
+    let (root, depth, tying) = (context.root, context.depth, Tying::of(tie, due));
+    let envelope = Envelope { sender_seat: by.seat, root, depth, kind, bytes, tying };
     let entry = Entry { to: to.id.bits(), order: (by.id.bits(), count), item: Stored::Mail(envelope) };
 
     (to.seat.number(), entry)

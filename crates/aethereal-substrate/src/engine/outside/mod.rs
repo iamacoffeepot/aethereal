@@ -4,7 +4,7 @@
 use super::{Engine, Holding, ROOTS, parity};
 use crate::{Life, lives, table};
 use aethereal_actor::{
-    Actor, Actors, Asking, Beginning, ChildOf, Closing, Code, Declared, Ended, Ending, Fault, Item, Mail, MailId,
+    Actor, Actors, Asking, Beginning, ChildOf, Closing, Code, Declared, Due, Ended, Ending, Fault, Item, Mail, MailId,
     Mailed, Owed, PinSource, Pinning, Preparing, Refused, Role, Runs, Seated, Tie, Tied, Top, Turning, Unanswered, Why,
     Written,
 };
@@ -353,7 +353,8 @@ impl Engine {
         let bytes = bytes?;
         let count = self.sent(by) + 1;
         self.lives.fold_records([lives::sent(by, count)], &[]);
-        let mailed = Mailed { by, to, count, kind: KindId::of::<K>(), bytes, tie: tie(count) };
+        // The outside states no deadline (ADR-0041).
+        let mailed = Mailed { by, to, count, kind: KindId::of::<K>(), bytes, tie: tie(count), due: Due::Never };
         self.fold_brought(vec![mailed], Vec::new(), parity, |mailed| MailId {
             sender: mailed.by.id,
             count: mailed.count,
@@ -374,7 +375,8 @@ impl Engine {
         let count = self.send_outside(by, to, mail, Tie::asks)?;
         let part = self.part(by.seat);
         if let Some(held) = self.actors[part].get_mut(by) {
-            held.waiting.file(iter::once(Asking { count, answer, context: Written::default(), lent: Vec::new() }));
+            let asking = Asking { count, answer, context: Written::default(), lent: Vec::new(), due: Due::Never };
+            held.waiting.file(by, iter::once(asking), &mut Vec::new());
         }
 
         Ok(count)

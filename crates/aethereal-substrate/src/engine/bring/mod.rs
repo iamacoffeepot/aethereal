@@ -13,7 +13,7 @@ use super::gift::{self, Arrival};
 use super::wake::Bell;
 use super::{Engine, ROOTS, parity};
 use crate::{Context, lives, log, stream};
-use aethereal_actor::{Actors, Arena, Controller, Gift, Given, MailId, Mailed, Requests, Seated, Source, Tie};
+use aethereal_actor::{Actors, Arena, Controller, Due, Gift, Given, MailId, Mailed, Requests, Seated, Source, Tie};
 use aethereal_data::{ActorId, Encode, Kind, KindId};
 use crossbeam_queue::SegQueue;
 use std::any;
@@ -119,7 +119,8 @@ impl<K: Kind + Encode<Actors> + Send + 'static> Brings for Fed<K> {
                 continue;
             }
             sent += 1;
-            mailed.push(Mailed { by: owner, to: owner, count: sent, kind: KindId::of::<K>(), bytes, tie: Tie::TELL });
+            let kind = KindId::of::<K>();
+            mailed.push(Mailed { by: owner, to: owner, count: sent, kind, bytes, tie: Tie::TELL, due: Due::Never });
         }
 
         Brought { sent, unwritten }

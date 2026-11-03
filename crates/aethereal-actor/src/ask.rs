@@ -4,7 +4,7 @@
 use crate::BlobRef;
 use crate::declared::{Carries, DeclaredBy, Handled, Handles, Kinds, Last, Listed, Marker, Protocol, RepliesTo};
 use crate::declared::{RepliesWith, ReplyWithin, Role, Sending, Target};
-use crate::{Actors, ChildOf, Item, Path, PathTo, ProtocolRef, Within, Written};
+use crate::{Actors, ChildOf, Due, Item, Path, PathTo, ProtocolRef, Within, Written};
 use aethereal_data::{Decode, Kind, KindId, Plain};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
@@ -173,6 +173,9 @@ pub enum Unanswered {
     Unreplied,
     /// The job returned a fault, which is in the asker's log, or its host lost it to a panic (ADR-0018).
     Faulted,
+    /// The request's deadline came before its answer, and the engine stopped waiting for it: an answer that comes
+    /// later is dropped (ADR-0041).
+    Expired,
 }
 
 /// A request a turn asked, or a job it ran, and the context its asker keeps until it is answered, as the engine files
@@ -189,6 +192,9 @@ pub struct Asking {
     /// whenever the job runs: none for a request, whose mail holds its own (ADR-0018).
     #[cfg(feature = "std")]
     pub lent: Vec<BlobRef>,
+    /// When the engine stops waiting for its answer, and answers it [`Unanswered::Expired`]: `Never` for a job, which
+    /// its asker cancels (ADR-0018, ADR-0041).
+    pub due: Due,
 }
 
 /// What a turn asks a request of kind `K` of, keeping a context of kind `C`: a reference to a named protocol, or a

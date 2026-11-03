@@ -1,7 +1,7 @@
 //! What an actor asks of the engine, in three lists a turn fills as it runs: the mail it sends, the lines it logs,
 //! and the rest, its effects on the lives of actors (ADR-0009).
 
-use crate::{BlobId, Declared, ErasedActorRef, Fault, How, Payload, SeatNumber, Seated};
+use crate::{BlobId, Declared, Due, ErasedActorRef, Fault, How, Payload, SeatNumber, Seated};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
 
 /// One thing an actor asks of the engine, and which actor asked (ADR-0009).
@@ -98,6 +98,8 @@ pub struct Mailed {
     pub bytes: Payload,
     /// What it is to a request: none of one, one, or an answer to one (ADR-0017).
     pub tie: Tie,
+    /// When the request it is stops being waited for: `Never` for mail that asks nothing (ADR-0041).
+    pub due: Due,
 }
 
 /// What a piece of mail is to a request, in the eight bytes every piece carries (ADR-0017).

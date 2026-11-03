@@ -46,7 +46,7 @@ pub use engine::{
 pub use id::{child_id, path_id, root_id};
 pub use lives::{Life, Lives, State};
 pub use log::{Entry, Log, RECENT};
-pub use mail::Envelope;
+pub use mail::{Envelope, LAST_DUE, Tying};
 pub use program::{
     Bootstrap, Bootstrapping, Bootstraps, Builds, Composing, ENGINE, EngineSettings, Gathers, Host, Program,
     ProgramError, Provided, Provision, RUNNING, Reader, Serves, Settled, Stage, Unbuilt,

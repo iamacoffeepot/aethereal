@@ -6,8 +6,8 @@ use super::{Answering, Waiting, owed};
 use aethereal_actor::Time;
 use aethereal_actor::Written;
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asking, Asks, BlobRef, Carries, ChildOf, Ending, Fault, Handles, Held,
-    Protocol, Tie, ToAny, ToSender, ToType, Top, Turn, Unanswered, child,
+    Actor, ActorRef, Answer, Answered, Anywhere, Asking, Asks, BlobRef, Carries, ChildOf, Due, Ending, Fault, Handles,
+    Held, Protocol, Tie, ToAny, ToSender, ToType, Top, Turn, Unanswered, child,
 };
 use aethereal_data::{Bound, EncodeError, Kind, Plain};
 use std::iter;
@@ -769,19 +769,16 @@ fn a_context_is_let_go_of_once_its_answer_has_been_handled() {
     // Catches a context kept after its answer's turn, which would stay beside the asker for as long as it lives.
     let mut waiting = Waiting::default();
     let mut asked = Asked::new();
+    let me = Seated { id: ActorId::new(1), seat: SeatNumber::new(0) };
     for answer in [Tie::answers(3), Tie::unanswered(3)] {
-        waiting.file(iter::once(Asking {
-            count: 3,
-            answer: KindId::of::<TileIs>(),
-            context: nine(),
-            lent: Vec::new(),
-        }));
+        let asking =
+            Asking { count: 3, answer: KindId::of::<TileIs>(), context: nine(), lent: Vec::new(), due: Due::Never };
+        waiting.file(me, iter::once(asking), &mut Vec::new());
         let answering = waiting.answering(answer);
         let kept =
             matches!(answering, Answering::Kept(asking) | Answering::Unanswered(asking) if asking.context == nine());
 
-        let me = Seated { id: ActorId::new(1), seat: SeatNumber::new(0) };
-        waiting.settle(me, answer, &mut asked, &Ok(()));
+        waiting.settle(me, answer, &mut asked, &Ok(()), &mut Vec::new());
 
         assert!(kept, "{answer:?}");
         assert!(matches!(waiting.answering(answer), Answering::Stray), "{answer:?}");
@@ -793,7 +790,10 @@ fn what_the_engine_says_of_an_unanswered_request_is_handed_to_the_handler_of_its
     // Catches an unanswered request handed to no handler, or to one that is not its answer's: the engine's mail is of
     // its own kind, and the asker kept which kind it waits for.
     let mut waiting = Waiting::default();
-    waiting.file(iter::once(Asking { count: 3, answer: KindId::of::<TileIs>(), context: nine(), lent: Vec::new() }));
+    let asking =
+        Asking { count: 3, answer: KindId::of::<TileIs>(), context: nine(), lent: Vec::new(), due: Due::Never };
+    let me = Seated { id: ActorId::new(1), seat: SeatNumber::new(0) };
+    waiting.file(me, iter::once(asking), &mut Vec::new());
 
     let answering = waiting.answering(Tie::unanswered(3));
 

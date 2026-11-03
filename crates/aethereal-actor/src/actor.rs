@@ -1,7 +1,7 @@
 //! An actor: the calls the engine makes of it (ADR-0009, ADR-0013).
 
 use crate::{
-    Actors, Beginning, Chain, ChildOf, Children, Closing, Declared, DeclaredBy, Ending, Fault, HandledList, Holds,
+    Actors, Beginning, Chain, ChildOf, Children, Closing, Declared, DeclaredBy, Due, Ending, Fault, HandledList, Holds,
     Instances, Item, Puts, Seated, Seats, Sends, Table, Tie, Turning, Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
@@ -169,6 +169,8 @@ pub struct Peeked<'a> {
     pub chain: Chain,
     /// What the item is to a request: one its turn may reply to, or hold (ADR-0017).
     pub tie: Tie,
+    /// When the request the item is stops being waited for: `Never` for an item that is no request (ADR-0041).
+    pub due: Due,
 }
 
 impl<A: ChildOf> Runs for A {

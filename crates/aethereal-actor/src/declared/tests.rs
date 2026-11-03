@@ -3,8 +3,9 @@
 
 use super::*;
 use crate::{
-    Above, Actor, Anywhere, Asked, Beginning, Chain, ChildOf, Ending, ErasedActorRef, Fault, Instances, Item, Keeps,
-    Level, Mail, MailId, Mailed, Recursive, Runs, SeatNumber, Seated, Spawner, Table, Tie, Turn, Turning, section,
+    Above, Actor, Anywhere, Asked, Beginning, Chain, ChildOf, Due, Ending, ErasedActorRef, Fault, Instances, Item,
+    Keeps, Level, Mail, MailId, Mailed, Recursive, Runs, SeatNumber, Seated, Spawner, Table, Tie, Turn, Turning,
+    section,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -218,6 +219,7 @@ fn handed<A: ChildOf>(actor: A, kind: KindId) -> Vec<String> {
         OTHER,
         CHAIN,
         Tie::TELL,
+        Due::Never,
     );
     let mail = Mail::new(kind, &[], &crate::PinSource::NOTHING, OTHER, CHAIN.root, 1, 0);
     let handled = actor.turn(Item::Mail(mail), turning);
@@ -243,6 +245,7 @@ fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, Keeper, <Keeper as Han
         OTHER,
         CHAIN,
         Tie::TELL,
+        Due::Never,
     );
     then(&mut turning.declaring::<Keeper, <Keeper as Handles<Kept>>::Sends>(Declared::of::<Keeper>()));
 

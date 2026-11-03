@@ -22,7 +22,7 @@ use aethereal_actor::records::{
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Broke, Children, Claimed, Declared,
+    Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobRef, BlobType, Broke, Children, Claimed, Declared, Due,
     FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, NotHeld,
     NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats, Table,
     Tie, Tied, Turning, Unfit, Unspawned, Was, Why, Written, holders, take_loose_ticket,
@@ -1526,7 +1526,7 @@ impl Instance {
             peeked.item.pinned().each(|_, pin| offered.push(pin.clone()));
             items += 1;
             let (handed, bytes) = match &peeked.item {
-                Item::Mail(mail) => (handed_mail(mail.kind(), peeked.tie), mail.bytes()),
+                Item::Mail(mail) => (handed_mail(mail.kind(), peeked.tie, peeked.due), mail.bytes()),
                 Item::Ended(ended) => match ended.how() {
                     How::Closed => (Handed::Ended(Gone::Closed), &[][..]),
                     How::Failed(fault) => (Handed::Ended(Gone::Failed { kind: fault.kind() }), fault.bytes()),
@@ -1565,10 +1565,10 @@ impl Instance {
         let pins = asking.context.pins();
         records::write_carried(&mut context, asking.context.bytes(), pins.iter().map(BlobRef::id));
         offered.extend(pins.iter().cloned());
-        let (request, len) = (asking.count, count(context.len()));
+        let (request, len, due) = (asking.count, count(context.len()), asking.due);
         let handed = match &peeked.item {
-            Item::Answer { .. } => Handed::Answer { kind: mail.kind(), request, context: len },
-            _ => Handed::Unanswered { answer: asking.answer, request, context: len },
+            Item::Answer { .. } => Handed::Answer { kind: mail.kind(), request, context: len, due },
+            _ => Handed::Unanswered { answer: asking.answer, request, context: len, due },
         };
         let bytes = mail.bytes();
         let item_len = bytes.len() + context.len();
@@ -1696,7 +1696,7 @@ fn replay_records(
         let bytes = lying(data, send.bytes).ok_or(Broke::Garbled)?;
         let request = match send.request {
             Requesting::Not => Request::Not,
-            Requesting::Asks { answer, context } => asks(data, answer, context, holdings, given)?,
+            Requesting::Asks { answer, context, due } => asks(data, (answer, due), context, holdings, given)?,
             Requesting::Answers { request } => Request::Answers { request },
         }; // Most mail refers to no blob, and a call whose mail refers to none wrote no reference.
         let pins = if head.refs == 0 {
@@ -2154,7 +2154,9 @@ impl Unfiled {
             let carried = lying(data, job.job).ok_or(Broke::Garbled)?;
             let lent = carried_pins(carried, holdings, &given.offered)?;
             let (bytes, _) = records::carried(carried).ok_or(Broke::Garbled)?;
-            let Request::Asks { context, .. } = asks(data, job.answer, job.context, holdings, given)? else {
+            // A job is cancelled by its asker, and carries no deadline (ADR-0041).
+            let answering = (job.answer, Due::Never);
+            let Request::Asks { context, .. } = asks(data, answering, job.context, holdings, given)? else {
                 return Err(Broke::Garbled);
             };
             let is_false = hosted.run(job.by, job.kind, job.answer, bytes.to_vec(), lent, context).is_err();
@@ -2215,30 +2217,37 @@ fn cancel(data: &[u8], head: &OutHead, before: TurnEnds, ends: TurnEnds, hosted:
     Ok(())
 }
 
-/// What mail of `kind` tied as `tie` is handed into a guest as: mail that asks a request, which its turn may reply
-/// to or hold, or mail as it came (ADR-0017).
-fn handed_mail(kind: KindId, tie: Tie) -> Handed {
+/// What mail of `kind` tied as `tie` is handed into a guest as: mail that asks a request, due as `due` says, which its
+/// turn may reply to or hold, and whose deadline what it asks inherits; or mail as it came (ADR-0017, ADR-0041).
+fn handed_mail(kind: KindId, tie: Tie, due: Due) -> Handed {
     match tie.read() {
-        Tied::Asks(request) => Handed::Asks { kind, request },
+        Tied::Asks(request) => Handed::Asks { kind, request, due },
         Tied::Tell | Tied::Answers(_) | Tied::Unanswered(_) => Handed::Mail { kind },
     }
 }
 
-/// What a guest's send that asks a request is to it, the context it keeps for the request where `context` says in
-/// `data`, as [`records::carried`] reads it, with a pin on each blob it refers to: each a blob `holdings` hold a
-/// reference to, or `given` offered. Kept out of line, as most mail asks nothing.
+/// What a guest's send that asks a request, answered with a kind `answer` names by `due`, is to it, the context it
+/// keeps for the request where `context` says in `data`, as [`records::carried`] reads it, with a pin on each blob it
+/// refers to: each a blob `holdings` hold a reference to, or `given` offered. Kept out of line, as most mail asks
+/// nothing.
 ///
 /// # Errors
 ///
 /// [`Broke::Forged`] when it refers to a blob that is neither, and [`Broke::Garbled`] when it does not read back.
 #[cold]
 #[inline(never)]
-fn asks(data: &[u8], answer: KindId, context: Span, holdings: &Holdings, given: &Given) -> Result<Request, Broke> {
+fn asks(
+    data: &[u8],
+    (answer, due): (KindId, Due),
+    context: Span,
+    holdings: &Holdings,
+    given: &Given,
+) -> Result<Request, Broke> {
     let carried = lying(data, context).ok_or(Broke::Garbled)?;
     let pins = carried_pins(carried, holdings, &given.offered)?;
     let (context, _) = records::carried(carried).ok_or(Broke::Garbled)?;
 
-    Ok(Request::Asks { answer, context: Written::new(context.to_vec(), pins) })
+    Ok(Request::Asks { answer, context: Written::new(context.to_vec(), pins), due })
 }
 
 /// A count the guest's 32-bit memory holds.
@@ -5276,5 +5285,136 @@ mod tests {
         engine.step(Time::ZERO, &Monotonic::new());
 
         assert_eq!((was_made, runtime.made(id, echo).is_some()), (true, false));
+    }
+
+    /// When a prober's ping is due: a millisecond after the start of the test's clock.
+    const PROBE_DUE: Time = Time::from_nanos(1_000_000);
+
+    /// What a prober is made from: the envoy guest's code.
+    #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.prober_config")]
+    struct ProberConfig {
+        code: BlobRef,
+    }
+
+    /// What became of a request, as a prober keeps it: the pong it was answered with, or why it was not, with which
+    /// request it was.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+    enum Probed {
+        Pong { at: u64, n: u64 },
+        No { at: u64, why: Unanswered },
+    }
+
+    impl Probed {
+        /// What the envoy told, kept.
+        const fn of(heard: &echo::Heard) -> Self {
+            match *heard {
+                echo::Heard::Pong { at, n } => Self::Pong { at, n },
+                echo::Heard::No { at, why } => Self::No { at, why },
+            }
+        }
+    }
+
+    /// A native actor that spawns the envoy guest from its code as it begins and asks it a ping of `7` within
+    /// [`PROBE_DUE`], keeping what became of its ping and what the envoy told it of its own ask (ADR-0041).
+    #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.prober")]
+    struct Prober {
+        /// What became of its ping.
+        answered: Vec<Probed>,
+        /// What the envoy told it became of its own ask.
+        told: Vec<Probed>,
+    }
+
+    impl ChildOf for Prober {
+        type Parent = Top;
+    }
+
+    impl Actor for Prober {
+        type Config = ProberConfig;
+        type Key = ();
+        type Handles = (Answer<echo::Pong, Which>, echo::Heard);
+        type BeginSends = (aethereal_actor::Asks<Pings, echo::Ping, Which>,);
+        type EndSends = ();
+
+        fn begin(config: ProberConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+            let Ok(envoy) = turn.spawn_from::<echo::Envoy>(&config.code, &(), &echo::EchoConfig) else {
+                return Err(Fault::new(&echo::Shut)?);
+            };
+            turn.to(envoy.protocol()).within(PROBE_DUE).ask(&echo::Ping { n: 7 }, &Which { at: 7 })?;
+
+            Ok(Self { answered: Vec::new(), told: Vec::new() })
+        }
+
+        fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    impl Handles<Answer<echo::Pong, Which>> for Prober {
+        type Sends = ();
+
+        fn handle(
+            &mut self,
+            (pong, which): (Answered<echo::Pong>, Which),
+            _: &mut Turn<'_, Self, ()>,
+        ) -> Result<(), Fault> {
+            let probed = match pong {
+                Answered::Yes(pong) => Probed::Pong { at: which.at, n: pong.n },
+                Answered::No(why) => Probed::No { at: which.at, why },
+            };
+            self.answered.push(probed);
+
+            Ok(())
+        }
+    }
+
+    impl Handles<echo::Heard> for Prober {
+        type Sends = ();
+
+        fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+            self.told.push(Probed::of(&heard));
+
+            Ok(())
+        }
+    }
+
+    /// What the prober `id` stands for in `engine` was answered and told.
+    fn probed(engine: &Engine, id: ActorId) -> (Vec<Probed>, Vec<Probed>) {
+        let Some(seat) = engine.table().seat(id) else {
+            panic!("the prober is seated");
+        };
+        let Some(prober) = engine.state::<Prober>(Seated { id, seat }) else {
+            panic!("the prober is live");
+        };
+
+        (prober.answered.clone(), prober.told.clone())
+    }
+
+    #[test]
+    fn a_guests_ask_for_a_request_it_holds_inherits_the_requests_deadline() {
+        // Catches a guest's ask that drops the deadline of the request its turn handles, its library or its host
+        // filing it due never: the steward it asks would hold the envoy's request for good once the prober gave up.
+        let Some(parts) = NonZeroUsize::new(4) else {
+            panic!("four is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 64));
+        let Ok(prober) = engine.add_root::<Prober>(&(), ProberConfig { code }) else {
+            panic!("the prober begins");
+        };
+        let clock = Monotonic::new();
+        while !engine.is_idle() {
+            engine.step(Time::ZERO, &clock);
+        }
+        let waiting = probed(&engine, prober);
+
+        engine.step(PROBE_DUE, &clock);
+        while !engine.is_idle() {
+            engine.step(PROBE_DUE, &clock);
+        }
+
+        assert_eq!(waiting, (Vec::new(), Vec::new()), "nothing comes before the deadline");
+        let expired = Probed::No { at: 7, why: Unanswered::Expired };
+        assert_eq!(probed(&engine, prober), (vec![expired], vec![expired]), "the envoy's ask expired with the ping");
     }
 }

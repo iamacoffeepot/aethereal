@@ -36,7 +36,8 @@ pub struct HttpSettings {
     /// The milliseconds a connection may wait between one response and the next request.
     #[flag]
     pub idle_within_millis: u32,
-    /// The milliseconds a handler may take to respond, past which the request is answered `504`.
+    /// The milliseconds a handler may take to respond, past which the request is answered `504`: the deadline of the
+    /// exchange's ask of its handler, which every request made for it inherits, at every hop (ADR-0041).
     #[flag]
     pub answer_within_millis: u32,
 }

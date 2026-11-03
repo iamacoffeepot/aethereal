@@ -17,7 +17,7 @@ use crate::job::lending;
 use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
-    Declared, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handles, Held, Instances, Keeping,
+    Declared, Due, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handles, Held, Instances, Keeping,
     Keeps, Kinds, Level, Line, MailId, Mailed, NotOwed, On, Owed, Owes, ParentOf, Parented, Payload, ProtocolRef, Puts,
     Reachable, Resource, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage, Table, Tie, Tied, Time, ToSender,
     Unanswered, Watchable, What, Within, Written,
@@ -270,7 +270,7 @@ impl Asked {
         };
         let (kind, tie) = (KindId::of::<Unanswered>(), Tie::unanswered(request));
 
-        Mailed { by, to, count, kind, bytes, tie }
+        Mailed { by, to, count, kind, bytes, tie, due: Due::Never }
     }
 
     /// Whether `by` has answered the request of the count `request` of the actor `asker` in the turn running, or held
@@ -546,6 +546,9 @@ struct Seat<'a> {
     declared: &'static Declared,
     /// What the turn owes the source of the item it handles (ADR-0017).
     owing: Owing,
+    /// When the request the turn handles is due, which an ask that states no deadline of its own inherits: `Never`
+    /// when the item is no request, and for a `begin` or a closing turn, which handle none (ADR-0041).
+    due: Due,
 }
 
 /// What a turn owes the source of the item it handles (ADR-0017).
@@ -698,7 +701,7 @@ impl Seat<'_> {
         // Mail of one kind sent back to back to one receiver is one run.
         let is_like_last = self.last_send().is_some_and(|(last, kind)| last == to && kind == KindId::of::<K>());
 
-        self.write_after(to, mail, is_like_last, Tie::TELL)
+        self.write_after(to, mail, is_like_last, Tie::TELL, Due::Never)
     }
 
     /// Replies `mail` to `to`, the source of the item handled: the answer to it, when it is a request this turn has
@@ -709,25 +712,27 @@ impl Seat<'_> {
         let is_tell = tie == Tie::TELL;
         let is_like_last =
             is_tell && self.last_send().is_some_and(|(last, kind)| last == to && kind == KindId::of::<K>());
-        self.write_after(to, mail, is_like_last, tie)?;
+        self.write_after(to, mail, is_like_last, tie, Due::Never)?;
         self.owing = owing;
 
         Ok(())
     }
 
-    /// Asks `mail` of `to`, keeping `context` until it is answered with a kind `answer` names: a request, filed by
-    /// the engine once the turn has run, with a pin on each blob the context refers to (ADR-0014, ADR-0017).
+    /// Asks `mail` of `to`, keeping `context` until it is answered with a kind `answer` names or `due` comes: a
+    /// request, filed by the engine once the turn has run, with a pin on each blob the context refers to (ADR-0014,
+    /// ADR-0017, ADR-0041).
     fn request<K: Kind + Encode<Actors>, C: Encode<Within>>(
         &mut self,
         to: Seated,
         mail: &K,
         answer: KindId,
         context: &C,
+        due: Due,
     ) -> Result<(), EncodeError> {
         let context = Written::of(context)?;
         let count = self.sent + 1;
-        self.write_after(to, mail, false, Tie::asks(count))?;
-        self.asked.asks.push((self.me, Asking { count, answer, context, lent: Vec::new() }));
+        self.write_after(to, mail, false, Tie::asks(count), due)?;
+        self.asked.asks.push((self.me, Asking { count, answer, context, lent: Vec::new(), due }));
 
         Ok(())
     }
@@ -747,7 +752,8 @@ impl Seat<'_> {
         let submitted =
             Submitted { by: self.me, count, code: JobCode::Native(JobType::of::<J>()), answer, bytes, refers };
         self.asked.buffers.jobs.push(submitted);
-        self.asked.asks.push((self.me, Asking { count, answer, context, lent }));
+        // A job is cancelled by its asker, and inherits no deadline (ADR-0041).
+        self.asked.asks.push((self.me, Asking { count, answer, context, lent, due: Due::Never }));
 
         Ok(id)
     }
@@ -774,19 +780,21 @@ impl Seat<'_> {
     /// Answers the debt `owed` with `mail`: on the chain of this turn, checked by the engine once the turn has run to
     /// be one its actor holds, of the kind of `mail` (ADR-0017).
     fn answer<K: Kind + Encode<Actors>>(&mut self, owed: Owed, mail: &K) -> Result<(), EncodeError> {
-        self.write_after(owed.asker, mail, false, Tie::answers(owed.request))?;
+        self.write_after(owed.asker, mail, false, Tie::answers(owed.request), Due::Never)?;
         self.asked.owes.push(Owes::Answers { owed, answer: KindId::of::<K>() });
 
         Ok(())
     }
 
-    /// As [`Self::write`], knowing whether `to` and the kind are those of the turn's last send.
+    /// As [`Self::write`], knowing whether `to` and the kind are those of the turn's last send, tied as `tie` says and
+    /// due as `due` says.
     fn write_after<K: Kind + Encode<Actors>>(
         &mut self,
         to: Seated,
         mail: &K,
         is_like_last: bool,
         tie: Tie,
+        due: Due,
     ) -> Result<(), EncodeError> {
         let bytes = self.encode(mail)?;
         self.carry(to)?;
@@ -803,7 +811,7 @@ impl Seat<'_> {
             last.bytes = joined;
             return Ok(());
         }
-        self.asked.buffers.mailed.push(Mailed { by: self.me, to, count: self.sent, kind, bytes, tie });
+        self.asked.buffers.mailed.push(Mailed { by: self.me, to, count: self.sent, kind, bytes, tie, due });
 
         Ok(())
     }
@@ -829,7 +837,8 @@ impl Seat<'_> {
         let kind = KindId::of::<K>();
         for to in to {
             self.sent += 1;
-            self.asked.buffers.mailed.push(Mailed { by: self.me, to, count: self.sent, kind, bytes, tie: Tie::TELL });
+            let mailed = Mailed { by: self.me, to, count: self.sent, kind, bytes, tie: Tie::TELL, due: Due::Never };
+            self.asked.buffers.mailed.push(mailed);
         }
 
         Ok(())
@@ -1060,6 +1069,7 @@ impl Seat<'_> {
             sent_before: 0,
             declared,
             owing: Owing::NOTHING,
+            due: Due::Never,
         };
         let began = C::begin(config, &mut Beginning { seat: child, instances, of: PhantomData });
         match began {
@@ -1285,12 +1295,15 @@ pub struct Turning<'a> {
     chain: Chain,
     /// What the item is to a request (ADR-0017).
     tie: Tie,
+    /// When the request the item is stops being waited for: `Never` for an item that is no request (ADR-0041).
+    due: Due,
 }
 
 impl<'a> Turning<'a> {
     /// The turn of the actor `me` names, at `path`, reading `table`, adding to `asked`, lent its part's `instances`
     /// and reaching what it keeps through `keeps`, which handles an item from the actor `source` names, at `chain`,
-    /// and has sent `sent` pieces of mail before it, the item being to a request what `tie` says.
+    /// and has sent `sent` pieces of mail before it, the item being to a request what `tie` says, and that request due
+    /// as `due` says.
     ///
     /// For the engine. `table` answers for the step's start and for what this actor has spawned since.
     #[allow(clippy::too_many_arguments, reason = "what a turn is opened with, each fixed by the engine")]
@@ -1308,8 +1321,9 @@ impl<'a> Turning<'a> {
         source: Seated,
         chain: Chain,
         tie: Tie,
+        due: Due,
     ) -> Self {
-        Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie }
+        Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie, due }
     }
 
     /// The source of the item the turn handles.
@@ -1338,7 +1352,7 @@ impl<'a> Turning<'a> {
 
     /// The turn of the handler of `A`, whose type declares `declared`, which may send `S`.
     pub(crate) fn declaring<A: Actor, S: Sends>(self, declared: &'static Declared) -> Turn<'a, A, S> {
-        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie } = self;
+        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie, due } = self;
         let seat = Seat {
             me,
             path,
@@ -1351,6 +1365,7 @@ impl<'a> Turning<'a> {
             sent_before: sent,
             declared,
             owing: Owing::Item(tie),
+            due,
         };
 
         Turn { seat, instances, source, chain, of: PhantomData }
@@ -1720,7 +1735,7 @@ impl<Me, S> Turn<'_, Me, S> {
     {
         let owed = self.seat.hold(self.source, KindId::of::<A>())?;
 
-        Ok(Held::new(owed))
+        Ok(Held::new(owed, self.seat.due))
     }
 
     /// Answers the request `held` holds with `mail`, on this turn's chain (ADR-0017). Its asker held it to be answered
@@ -2001,6 +2016,7 @@ impl<'a, Me: ChildOf> Beginning<'a, Me, Me::BeginSends> {
             sent_before: 0,
             declared,
             owing: Owing::NOTHING,
+            due: Due::Never,
         };
 
         Self { seat, instances, of: PhantomData }
@@ -2420,6 +2436,7 @@ impl<'a> Closing<'a> {
             sent_before: sent,
             declared,
             owing: Owing::NOTHING,
+            due: Due::Never,
         };
 
         Ending { seat, why, of: PhantomData }

@@ -5,12 +5,13 @@
 mod tests;
 
 use super::gift::{self, Arrival};
+use super::lifecycle::lifecycle_id;
 use super::wake::Bell;
 use super::{Engine, ROOTS, parity};
 use crate::{lives, log};
 use aethereal_actor::{
-    BlobId, Copied, Fault, JobCode, JobId, JobType, Kept, Lending, MailId, Mailed, Never, Outcome, Pinning, Produced,
-    Seated, Services, Submitted, Tie, Timer, Unanswered,
+    BlobId, Copied, Due, Fault, JobCode, JobId, JobType, Kept, Lending, MailId, Mailed, Never, Outcome, Pinning,
+    Produced, Seated, Services, Sleep, Submitted, Tie, Time, Timer, Unanswered, lending,
 };
 use aethereal_data::{Kind, KindId, Plain};
 use crossbeam_queue::SegQueue;
@@ -55,35 +56,44 @@ pub struct Taken {
 ///
 /// A host that drops it without [`Finish::done`] leaves its job unanswered.
 pub struct Finish {
-    by: Seated,
-    count: u64,
-    answer: KindId,
+    to: Finishing,
     feed: Arc<SegQueue<Finished>>,
     /// What wakes the host once the outcome is on the feed (ADR-0018).
     bell: Bell,
-    /// One of the engine's tokens of a job in flight, so how many there are is how many jobs are in flight: one is let
-    /// go of once its job is done, or its `Finish` dropped.
-    _in_flight: Arc<()>,
+}
+
+/// Whose a job is, whom its outcome answers.
+enum Finishing {
+    /// An actor's: the one that ran it, the count it took, and the kind of its result; with one of the engine's tokens
+    /// of a job in flight, so how many there are is how many jobs are in flight: one is let go of once its job is done,
+    /// or its `Finish` dropped.
+    Actor { by: Seated, count: u64, answer: KindId, _in_flight: Arc<()> },
+    /// The engine's own: the `Sleep` it runs until its earliest deadline, at this time, to wake its host then
+    /// (ADR-0041).
+    Alarm(Time),
 }
 
 impl Finish {
     /// Pushes the job's outcome onto the engine's feed, to answer the actor that ran it at the next bring, and wakes
     /// the host.
     pub fn done(self, outcome: Outcome) {
-        let Self { by, count, answer, feed, bell, .. } = self;
-        feed.push(Finished { by, count, answer, outcome });
+        let Self { to, feed, bell } = self;
+        let finished = match to {
+            Finishing::Actor { by, count, answer, .. } => Finished::Job { by, count, answer, outcome },
+            Finishing::Alarm(at) => Finished::Alarm { at, rang: outcome.is_ok() },
+        };
+        feed.push(finished);
         bell.ring();
     }
 }
 
 /// A job that has run, as the engine's feed holds it until the next bring.
-pub(super) struct Finished {
-    /// The actor that ran it, and the count it took.
-    by: Seated,
-    count: u64,
-    /// The kind of its result.
-    answer: KindId,
-    outcome: Outcome,
+pub(super) enum Finished {
+    /// An actor's job: the actor that ran it, the count it took, the kind of its result, and its outcome.
+    Job { by: Seated, count: u64, answer: KindId, outcome: Outcome },
+    /// The engine's wake for the deadline at `at`, which `rang` when its time came, and did not when the runner gave up
+    /// on it (ADR-0041).
+    Alarm { at: Time, rang: bool },
 }
 
 /// What a job made, as the engine answers its actor with it: the result's bytes, the pins on the blobs it refers to,
@@ -193,6 +203,7 @@ impl Engine {
     pub fn set_jobs(&mut self, jobs: Arc<dyn Jobs>) {
         self.runner = Runner::Made(jobs);
         self.start_waiting();
+        self.rearm();
     }
 
     /// Queues each of `submitted`, once the turns that ran them have, behind those already waiting, and hands out as
@@ -228,8 +239,8 @@ impl Engine {
         let id = job.id();
         let Submitted { by, count, code, answer, bytes, refers } = job;
         let feed = Arc::clone(&self.finished);
-        let finish =
-            Finish { by, count, answer, feed, bell: self.bell.clone(), _in_flight: Arc::clone(&self.in_flight) };
+        let to = Finishing::Actor { by, count, answer, _in_flight: Arc::clone(&self.in_flight) };
+        let finish = Finish { to, feed, bell: self.bell.clone() };
         let Some(of) = self.code_of(code) else {
             finish.done(Err(fault::<NoRunner>()));
             return;
@@ -305,7 +316,15 @@ impl Engine {
         let mut mailed = Vec::new();
         let mut faults = Vec::new();
         let mut arrivals = Vec::new();
-        for Finished { by, count, answer, outcome } in (0..ready).map_while(|_| feed.pop()) {
+        let mut alarms = Vec::new();
+        for finished in (0..ready).map_while(|_| feed.pop()) {
+            let (by, count, answer, outcome) = match finished {
+                Finished::Job { by, count, answer, outcome } => (by, count, answer, outcome),
+                Finished::Alarm { at, rang } => {
+                    alarms.push((at, rang));
+                    continue;
+                }
+            };
             let Some(life) = self.lives.shard(by.seat.number()).life(by) else {
                 continue;
             };
@@ -327,7 +346,7 @@ impl Engine {
             self.lives.fold_records([lives::sent(by, sent)], &[]);
             let mail = MailId { sender: by.id, count: sent };
             arrivals.extend(kept.into_iter().map(|kept| Arrival { to: by, by, mail, kept }));
-            mailed.push(Mailed { by, to: by, count: sent, kind, bytes, tie });
+            mailed.push(Mailed { by, to: by, count: sent, kind, bytes, tie, due: Due::Never });
         }
         self.arenas[parity][ROOTS] = arena;
         // Most jobs hand no resource.
@@ -336,6 +355,29 @@ impl Engine {
         }
         // Each answer is the first of its chain: nothing the actor did in the step it is brought in caused it.
         self.fold_brought(mailed, faults, parity, |mailed| MailId { sender: mailed.by.id, count: mailed.count });
+        // Most brings take in no wake for a deadline.
+        for (at, rang) in alarms {
+            self.woken(at, rang);
+        }
+    }
+
+    /// Runs a `Sleep` until `at` on the host's runner, on the engine's own behalf, which wakes the host when its time
+    /// comes, as a turn's does (ADR-0041): answers whether a runner took it. It is named by the engine's own id, the
+    /// one its lifecycle's chains begin at, which no actor has, and its time, as two wakes asked at once are for two
+    /// times.
+    pub(super) fn hand_out_alarm(&self, at: Time) -> bool {
+        let Runner::Made(jobs) = &self.runner else {
+            return false;
+        };
+        let Ok((bytes, _)) = lending(&Sleep { until: at }) else {
+            unreachable!("a sleep is a time, and refers to nothing");
+        };
+        let id = JobId::new(MailId { sender: lifecycle_id(), count: at.nanos() });
+        let lent = Lending::new(self.number.0, Vec::new(), Arc::clone(&self.job_pins));
+        let finish = Finish { to: Finishing::Alarm(at), feed: Arc::clone(&self.finished), bell: self.bell.clone() };
+        jobs.start(id, JobType::of::<Sleep>(), Taken { bytes, lent, limit: self.read_limit, finish });
+
+        true
     }
 
     /// Puts each resource a job handed on its way to the actor that ran it, with the answer that holds it (ADR-0018).
