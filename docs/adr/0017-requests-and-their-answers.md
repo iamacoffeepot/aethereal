@@ -40,7 +40,7 @@ pub enum Answered<A> {
     Yes(A),                     // the receiver's answer
     No(Unanswered),             // why none came
 }
-pub enum Unanswered { Ended, Failed, Unreplied }
+pub enum Unanswered { Ended, Failed, Unreplied, Unreadable }
 
 impl Handles<Answer<TileIs, Looking>> for Pointer {
     type Sends = ();
@@ -55,17 +55,26 @@ impl Handles<Answer<TileIs, Looking>> for Pointer {
 
 - An actor handles each answer kind with one kind of context. Asks that keep different things for one answer kind keep an enum.
 - An answer is told apart from other mail of its kind by what the engine wrote in it, so an actor may also handle `TileIs` as plain mail, and each goes to its own handler.
-- A context that does not decode as the handler's kind fails the turn, as mail that does not decode as its kind does.
+- A context that does not decode as the handler's kind fails the turn. The asker wrote it, so the fault is its own. Mail that does not read is not the receiver's fault, and does not fail its turn (below).
 
 **Every request is answered exactly once.** When the receiver does not answer, the engine tells the asker why, as `Answered::No`:
 
 - `Ended`: the receiver had ended, or was gone, when the request was to be handed to it, or it held the request and ended before answering it;
 - `Failed`: the turn that handled the request failed;
-- `Unreplied`: the turn handled the request and neither replied nor held it, or the receiver held it and let it go without answering it.
+- `Unreplied`: the turn handled the request and neither replied nor held it, or the receiver held it and let it go without answering it;
+- `Unreadable`: the receiver could not read the request within the engine's `read_limit`, or its bytes did not decode as its kind, so its handler did not run.
 
 What the engine says is mail too, of the engine's kind `Unanswered`, from the receiver to the asker. It is tied to the request as only the engine ties mail, so no actor can say it in the engine's place, and it is handed to the handler of the answer the asker asked for, whose kind the engine keeps with the context. `Failed` and `Unreplied` come after what the turn sent, as the receiver's next piece of mail. `Ended`, and `Unreplied` for a held request let go of, come after all the receiver sent.
 
 An answer kind is a kind like any other, with nothing to implement for the case where no answer comes. The engine keeps only the request's count and the context, and needs nothing of the asker's code to say a request went unanswered, so it does the same for a guest. What it hands the asker comes from the receiver, the actor the request was sent to, which existed when it was sent (ADR-0009), and belongs to the request's chain. A caller's handler therefore always runs, and what it kept always comes back to it.
+
+**Mail its receiver cannot read never fails the receiver.** The engine reads each piece of mail as its kind, within its `read_limit`, before the handler runs. A kind's id holds its layout (ADR-0006), so mail is never of another kind than it claims, and it fails to read only when it would allocate past the limit or its bytes are malformed, as a guest can write them. Either is its sender's fault, so the receiver is not failed for it:
+
+- **An answer that does not read** is handed to the asker's handler as `Answered::No(Unanswered::Unreadable)`, with its context, as any answer that did not come.
+- **A request that does not read** does not reach its handler. The engine answers its asker `Unanswered::Unreadable`, as it answers `Failed`, and the receiver's turn goes on to its next piece of mail.
+- **Other mail that does not read** is dropped, and the receiver's log says so, with the reason the actor crate gives a read that fails (ADR-0009: `Unreadable`).
+
+**This departs from this record as first written**, in which mail that did not decode as its kind failed the receiver's turn and so ended it: one oversized answer then ended a long-lived actor such as `Mcp` (ADR-0037), which had done nothing wrong.
 
 **An answer that comes later is held.** A receiver that cannot answer in the turn of the request holds it, and answers from any later turn:
 
