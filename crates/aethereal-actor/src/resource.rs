@@ -2,7 +2,9 @@
 
 use crate::Spares;
 use crate::{Above, Actors, Fault, MailId, Seated, Within};
-use aethereal_data::{Decode, DecodeError, Encode, EncodeError, Field, Plain, Reader, Schema, Shape, Writer};
+use aethereal_data::{
+    Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, Plain, Reader, Schema, Shape, Writer,
+};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::any::{self, Any};
@@ -111,6 +113,10 @@ impl<R: Resource> Decode<Actors> for Given<R> {
         Ok(Self::new(u64::decode(input)?))
     }
 }
+
+impl<B: Boundary, R: Resource> Element<B> for Handle<R> {}
+
+impl<B: Boundary, R: Resource> Element<B> for Given<R> {}
 
 /// The reason of a turn that used a handle or a given resource that names nothing of that type it holds, or that has
 /// arrived for it with the mail it handles (ADR-0010).
@@ -281,6 +287,14 @@ impl Keeping {
         }
     }
 
+    /// What it holds, when it has ever held anything, to look at.
+    fn held_shared(&self) -> Option<&[Keep]> {
+        match &self.holding {
+            Holding::Holds(holdings) => Some(&holdings.held),
+            Holding::Never => None,
+        }
+    }
+
     /// Keeps `value` under `ticket`, a ticket no other resource has had, and answers with the handle to it.
     fn keep<R: Resource>(&mut self, ticket: u64, value: R) -> Handle<R> {
         self.holdings().push(Keep::Mine(Kept::new(ticket, value)));
@@ -300,6 +314,18 @@ impl Keeping {
             .flatten()
             .find_map(|keep| match keep {
                 Keep::Mine(kept) if kept.ticket == handle.ticket => kept.value.downcast_mut::<R>(),
+                _ => None,
+            })
+            .ok_or_else(Fault::bare::<NotHeld>)
+    }
+
+    /// The resource `handle` names, shared.
+    fn resource<R: Resource>(&self, handle: &Handle<R>) -> Result<&R, Fault> {
+        self.held_shared()
+            .into_iter()
+            .flatten()
+            .find_map(|keep| match keep {
+                Keep::Mine(kept) if kept.ticket == handle.ticket => kept.value.downcast_ref::<R>(),
                 _ => None,
             })
             .ok_or_else(Fault::bare::<NotHeld>)
@@ -599,6 +625,14 @@ impl Keeps<'_> {
     pub(crate) fn open<R: Resource>(&mut self, handle: &Handle<R>) -> Result<&mut R, Fault> {
         match self {
             Self::Here(keeping) => keeping.open(handle),
+            Self::Claimed => Err(Fault::bare::<KeepsNothing>()),
+        }
+    }
+
+    /// The resource `handle` names, shared: refused in a guest's code, which opens nothing.
+    pub(crate) fn resource<R: Resource>(&self, handle: &Handle<R>) -> Result<&R, Fault> {
+        match self {
+            Self::Here(keeping) => keeping.resource(handle),
             Self::Claimed => Err(Fault::bare::<KeepsNothing>()),
         }
     }

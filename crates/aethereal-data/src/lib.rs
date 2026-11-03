@@ -26,7 +26,7 @@ mod path;
 mod plain;
 mod schema;
 
-pub use boundary::{Bare, Boundary, Decode, Encode, Reader, Writer};
+pub use boundary::{Bare, Boundary, Decode, Element, Encode, Reader, Writer};
 pub use budget::Budget;
 pub use error::{DecodeError, EncodeError};
 pub use file_path::FilePath;

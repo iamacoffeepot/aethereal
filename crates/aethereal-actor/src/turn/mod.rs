@@ -971,6 +971,11 @@ impl Seat<'_> {
         self.keeps.open(handle)
     }
 
+    /// The resource `handle` names, this actor's own, shared.
+    fn resource<R: Resource>(&self, handle: &Handle<R>) -> Result<&R, Fault> {
+        self.keeps.resource(handle)
+    }
+
     /// Gives up the resource `handle` names, and answers with what names it on its way: dropped at the end of the
     /// turn unless mail carries it, or a child this turn stands up takes it from its config.
     fn give<R: Resource>(&mut self, handle: Handle<R>) -> Result<Given<R>, Fault> {
@@ -1890,7 +1895,9 @@ impl<Me, S> Turn<'_, Me, S> {
         self.seat.keep(value)
     }
 
-    /// The resource `handle` names, for this turn to use directly: only this actor holds the handle.
+    /// The resource `handle` names, for this turn to use directly: only this actor holds the handle. It borrows the
+    /// turn whole, so nothing the turn reads, such as a blob, may be held beside it: a resource used through a shared
+    /// reference is reached with [`Self::resource`] instead.
     ///
     /// # Errors
     ///
@@ -1898,6 +1905,18 @@ impl<Me, S> Turn<'_, Me, S> {
     /// [`KeepsNothing`](crate::KeepsNothing) in a guest's code.
     pub fn open<R: Resource>(&mut self, handle: &mut Handle<R>) -> Result<&mut R, Fault> {
         self.seat.open(handle)
+    }
+
+    /// The resource `handle` names, shared, as [`Self::open`] answers it: for a resource used through a shared
+    /// reference, such as a socket, which the kernel writes and reads through `&` (`Write for &TcpStream`). A shared
+    /// borrow of the turn, it may be held beside what the turn reads, so a connection writes blobs' bytes straight to
+    /// its socket (ADR-0010, ADR-0042).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub fn resource<R: Resource>(&self, handle: &Handle<R>) -> Result<&R, Fault> {
+        self.seat.resource(handle)
     }
 
     /// Gives up the resource `handle` names, and answers with what names it on its way to a new owner, to send in

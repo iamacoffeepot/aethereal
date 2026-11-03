@@ -1,7 +1,7 @@
 //! `String` as plain data (ADR-0004).
 
 use crate::plain::{read_count, take_bytes, write_text};
-use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
+use crate::{Boundary, Decode, DecodeError, Element, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
 use alloc::string::String;
 use core::str::from_utf8;
 
@@ -10,6 +10,14 @@ impl Schema for String {
 }
 
 impl<B: Boundary> Encode<B> for String {
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+        self.as_str().encode(out)
+    }
+}
+
+/// Text borrowed is written as the `String` it would be: for writing text that is not held as one, such as a file
+/// read into a blob, without making a `String` of it first.
+impl<B: Boundary> Encode<B> for str {
     fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         write_text(out.bytes(), self)
     }
@@ -27,6 +35,8 @@ impl<B: Boundary> Decode<B> for String {
 }
 
 impl Plain for String {}
+
+impl<B: Boundary> Element<B> for String {}
 
 #[cfg(test)]
 mod tests {

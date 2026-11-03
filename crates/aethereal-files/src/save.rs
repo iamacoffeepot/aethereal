@@ -1,23 +1,23 @@
 //! The job that writes a file: made by the file capability alone (ADR-0039).
 
 use crate::{FileWritten, Namespace, Storage, Unwritten};
-use aethereal_actor::{Fault, Job, Runner, Running};
-use aethereal_data::{FilePath, Plain};
+use aethereal_actor::{Bytes, Fault, Job, Runner, Running};
+use aethereal_data::{Bound, FilePath};
 
 /// Writes `bytes` as the whole file at `path` in `namespace` through the host's storage. It is private to this crate,
 /// so no actor but [`Files`](crate::Files) makes one, and what an actor writes goes through the one actor that checks
 /// it. It is named for what it does, as `Load` is; the namespace it writes is always spelled
 /// [`Namespace::Save`].
-#[derive(Plain)]
+#[derive(Bound)]
 #[kind(name = "aether.files.save")]
 pub struct Save {
     namespace: Namespace,
     path: FilePath,
-    bytes: Vec<u8>,
+    bytes: Bytes,
 }
 
 impl Save {
-    pub const fn new(namespace: Namespace, path: FilePath, bytes: Vec<u8>) -> Self {
+    pub const fn new(namespace: Namespace, path: FilePath, bytes: Bytes) -> Self {
         Self { namespace, path, bytes }
     }
 }
@@ -33,7 +33,8 @@ impl Job for Save {
             return Ok(FileWritten::Unavailable);
         };
         let Self { namespace, path, bytes } = self;
-        let written = storage.write(namespace, &path, bytes).await;
+        // The storage writes on threads of its own, or hands the bytes to the page, so it takes a buffer of its own.
+        let written = storage.write(namespace, &path, job.read(&bytes).to_vec()).await;
         let done = match written {
             Ok(()) => FileWritten::Written,
             Err(Unwritten::ReadOnly) => FileWritten::ReadOnly,

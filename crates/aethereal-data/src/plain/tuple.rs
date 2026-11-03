@@ -1,6 +1,6 @@
 //! `()` and tuples of one to twelve elements as plain data (ADR-0004).
 
-use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
+use crate::{Boundary, Decode, DecodeError, Element, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
 
 impl Schema for () {
     const SHAPE: Shape = Shape::Tuple { elements: &[] };
@@ -19,6 +19,8 @@ impl<B: Boundary> Decode<B> for () {
 }
 
 impl Plain for () {}
+
+impl<B: Boundary> Element<B> for () {}
 
 macro_rules! tuple {
     ($(($t:ident $v:ident)),+) => {
@@ -42,6 +44,8 @@ macro_rules! tuple {
         }
 
         impl<$($t: Plain),+> Plain for ($($t,)+) {}
+
+        impl<B: Boundary, $($t),+> Element<B> for ($($t,)+) {}
     };
 }
 

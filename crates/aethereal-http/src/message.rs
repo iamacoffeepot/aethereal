@@ -1,8 +1,8 @@
-//! A request and its response, as plain data (ADR-0035).
+//! A request and its response (ADR-0035), their bodies blobs (ADR-0042).
 
 use crate::Status;
-use aethereal_actor::{Carries, Protocol};
-use aethereal_data::Plain;
+use aethereal_actor::{Bytes, Carries, Protocol};
+use aethereal_data::{Bound, Plain};
 use aethereal_tcp::SocketAddress;
 
 /// The methods a server takes. A request of any other is answered `501` before it reaches the handler.
@@ -54,7 +54,7 @@ impl Header {
 }
 
 /// A request an exchange parsed: whole, its body read, and every limit checked.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.http.request")]
 pub struct Request {
     pub method: Method,
@@ -64,7 +64,8 @@ pub struct Request {
     pub query: String,
     /// In the order sent, duplicates kept, each name lowercased.
     pub headers: Vec<Header>,
-    pub body: Vec<u8>,
+    /// Put by the exchange that read it, in a buffer it kept.
+    pub body: Bytes,
     /// Where the request came from.
     pub peer: SocketAddress,
 }
@@ -89,25 +90,26 @@ impl Carries<Request> for Handling {
     type Answers = (Response,);
 }
 
-/// What a handler answers a request with. The exchange writes `Content-Length` and `Connection` itself.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+/// What a handler answers a request with. The exchange writes `Content-Length` and `Connection` itself, and passes
+/// the body to its connection without reading it.
+#[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.http.response")]
 pub struct Response {
     pub status: Status,
     pub headers: Vec<Header>,
-    pub body: Vec<u8>,
+    pub body: Bytes,
 }
 
 impl Response {
     /// A response of `status`, whose body is `body`, of the type `content_type`.
     #[must_use]
-    pub fn new(status: Status, content_type: &str, body: Vec<u8>) -> Self {
+    pub fn new(status: Status, content_type: &str, body: Bytes) -> Self {
         Self { status, headers: vec![Header::new("content-type", content_type)], body }
     }
 
-    /// A response of `status` with no body.
+    /// A response of `status` with no header, whose body is `body`: an empty blob for one that says nothing more.
     #[must_use]
-    pub const fn empty(status: Status) -> Self {
-        Self { status, headers: Vec::new(), body: Vec::new() }
+    pub const fn bare(status: Status, body: Bytes) -> Self {
+        Self { status, headers: Vec::new(), body }
     }
 }

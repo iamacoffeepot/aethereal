@@ -1,7 +1,7 @@
 //! `BTreeMap`, `BTreeSet`, and under `std` `HashMap`, `HashSet` (ADR-0004).
 
 use crate::plain::{charge_count, read_count, write_count};
-use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Key, Plain, Reader, Schema, Shape, Writer};
+use crate::{Boundary, Decode, DecodeError, Element, Encode, EncodeError, Key, Plain, Reader, Schema, Shape, Writer};
 use alloc::collections::{BTreeMap, BTreeSet};
 
 /// Whether `next` comes strictly after the previous key, starting any sequence (ADR-0002).
@@ -48,6 +48,8 @@ impl<B: Boundary, K: Decode<B> + Ord, V: Decode<B>> Decode<B> for BTreeMap<K, V>
 
 impl<K: Key, V: Plain> Plain for BTreeMap<K, V> {}
 
+impl<B: Boundary, K, V> Element<B> for BTreeMap<K, V> {}
+
 impl<T: Key> Schema for BTreeSet<T> {
     const SHAPE: Shape = Shape::Sequence(&T::SHAPE);
 }
@@ -81,6 +83,8 @@ impl<B: Boundary, T: Decode<B> + Ord> Decode<B> for BTreeSet<T> {
 }
 
 impl<T: Key> Plain for BTreeSet<T> {}
+
+impl<B: Boundary, T> Element<B> for BTreeSet<T> {}
 
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
@@ -135,6 +139,9 @@ impl<B: Boundary, K: Decode<B> + Ord + Hash, V: Decode<B>, S: BuildHasher + Defa
 impl<K: Key + Hash, V: Plain, S: BuildHasher + Default> Plain for HashMap<K, V, S> {}
 
 #[cfg(feature = "std")]
+impl<B: Boundary, K, V, S> Element<B> for HashMap<K, V, S> {}
+
+#[cfg(feature = "std")]
 impl<T: Key + Hash, S: BuildHasher> Schema for HashSet<T, S> {
     const SHAPE: Shape = Shape::Sequence(&T::SHAPE);
 }
@@ -173,6 +180,9 @@ impl<B: Boundary, T: Decode<B> + Ord + Hash, S: BuildHasher + Default> Decode<B>
 
 #[cfg(feature = "std")]
 impl<T: Key + Hash, S: BuildHasher + Default> Plain for HashSet<T, S> {}
+
+#[cfg(feature = "std")]
+impl<B: Boundary, T, S> Element<B> for HashSet<T, S> {}
 
 #[cfg(test)]
 mod tests {

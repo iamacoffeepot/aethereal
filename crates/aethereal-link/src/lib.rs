@@ -66,7 +66,7 @@ pub use engines::{
     Patience, Randomness, Runs, Sent, Shown, Spawn, SpawnEngine, Spawned, SpawnedConfig, TakeToken, TerminateEngine,
     Terminated, TokenFor, Unfilled, Unlistened, Vouching,
 };
-pub use frames::{Down, PORT, REVISION, Refusal, Up, Within};
+pub use frames::{Down, Outcome, PORT, REVISION, Refusal, Up, Within};
 pub use link::{Calling, Connecting, Link, LinkConfig, LinkSettings, NoToken, Sending};
 pub use read_limit::ReadLimitTooLow;
 pub use token::Token;

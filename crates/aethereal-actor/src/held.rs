@@ -3,7 +3,8 @@
 
 use crate::{Due, Fault, Seated, Within};
 use aethereal_data::{
-    ActorId, Decode, DecodeError, Encode, EncodeError, Field, KindId, Plain, Reader, Schema, Shape, Writer,
+    ActorId, Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, KindId, Plain, Reader, Schema, Shape,
+    Writer,
 };
 use core::any;
 use core::fmt;
@@ -147,6 +148,8 @@ impl<A> Decode<Within> for Held<A> {
         Ok(Self::new(Owed { holder, asker, request }, due))
     }
 }
+
+impl<B: Boundary, A> Element<B> for Held<A> {}
 
 /// An actor and its seat, read as a held request writes them.
 fn seated(input: &mut Reader<'_, Within>) -> Result<Seated, DecodeError> {

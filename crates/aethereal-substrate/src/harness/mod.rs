@@ -9,8 +9,8 @@ use crate::engine::outside::{Reached, Unsent};
 use crate::program::{Bootstraps, Builds, Program, ProgramError};
 use crate::{Clock, Engine, table};
 use aethereal_actor::{
-    Actor, ActorRef, Actors, Answered, Carries, Declared, Handled, Handles, Ordered, Owed, Protocol, ProtocolRef,
-    Proven, Reaches, Refused, Root, SeatNumber, Seated, Tie, Time, Unanswered,
+    Actor, ActorRef, Actors, Answered, Bytes, Carries, Declared, Handled, Handles, Ordered, Owed, Protocol,
+    ProtocolRef, Proven, Reaches, Refused, Root, SeatNumber, Seated, Tie, Time, Unanswered,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment};
 use core::any;
@@ -340,6 +340,22 @@ impl<H: Steps> Harness<H> {
     #[must_use]
     pub const fn protocol<P>(&self) -> ProtocolRef<P> {
         ProtocolRef::found(self.outside)
+    }
+
+    /// Puts `bytes` as a blob, between steps, as the chassis does: for the bytes the test's mail holds, which cross
+    /// between actors only as a blob (ADR-0014, ADR-0042).
+    ///
+    /// # Errors
+    ///
+    /// [`Unheard::Refused`] when they would take the blobs past the host's budget.
+    pub fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Unheard> {
+        Ok(self.host.engine().put_blob(bytes)?)
+    }
+
+    /// The bytes of the blob `blob` refers to, as the store holds them between steps: none when it holds no such
+    /// blob.
+    pub fn read(&mut self, blob: &Bytes) -> Option<&[u8]> {
+        self.host.engine().blob(blob)
     }
 
     /// Asks `kind` of `target`, and answers with what [`Self::answer`] reads its answer through.

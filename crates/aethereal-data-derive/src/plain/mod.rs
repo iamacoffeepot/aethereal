@@ -74,7 +74,8 @@ pub fn expand(input: &DeriveInput, derive: Derive) -> syn::Result<TokenStream2> 
 /// exactly the boundaries all its fields cross. `impl Plain`, which only the
 /// `Plain` derive writes, requires every field to be `Plain`, so a field that
 /// is not is an error at its type. `impl Kind`, written for a named type, is
-/// bounded as `Schema` is.
+/// bounded as `Schema` is. `impl Element` is bounded by nothing: a derived type
+/// may be a sequence's element wherever it crosses (ADR-0042).
 pub fn impls(
     input: &DeriveInput,
     field_types: &[&Type],
@@ -93,6 +94,7 @@ pub fn impls(
     let (encode_impl, _, encode_where) = encode_generics.split_for_impl();
     let (decode_impl, _, decode_where) = decode_generics.split_for_impl();
     let (plain_impl, _, plain_where) = plain_generics.split_for_impl();
+    let (element_impl, _, element_where) = over_boundary.split_for_impl();
     let Codec { shape, encode, decode } = codec;
     let plain = match derive {
         Derive::Plain => quote! {
@@ -127,6 +129,9 @@ pub fn impls(
                 #decode
             }
         }
+
+        #[automatically_derived]
+        impl #element_impl ::aethereal_data::Element<__B> for #name #ty_generics #element_where {}
 
         #plain
 

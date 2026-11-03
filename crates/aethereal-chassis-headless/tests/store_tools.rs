@@ -84,6 +84,7 @@ fn called_with(
     tool: &str,
     input: Vec<u8>,
 ) -> Result<Answered<Called>, Unheard> {
+    let input = harness.put(input)?;
     let asked = harness.ask(worker, &Call { tool: String::from(tool), input })?;
 
     harness.answer(asked)
@@ -99,12 +100,15 @@ fn called<T: Plain>(
     called_with(harness, worker, tool, bytes_of(input))
 }
 
-/// The output `called` holds, read as `T`.
-fn output<T: Plain>(called: Answered<Called>) -> T {
+/// The output `called` holds, read out of its blob in `harness` as `T`.
+fn output<T: Plain>(harness: &mut Harness<Headless>, called: Answered<Called>) -> T {
     let Answered::Yes(Called::Output(bytes)) = called else {
         panic!("the tool answers an output: {called:?}");
     };
-    let Ok(output) = from_bytes(&bytes, &mut Budget::new(WALK_BYTES)) else {
+    let Some(bytes) = harness.read(&bytes) else {
+        panic!("the output's blob is held");
+    };
+    let Ok(output) = from_bytes(bytes, &mut Budget::new(WALK_BYTES)) else {
         panic!("the output reads as the tool's output kind");
     };
 
@@ -132,12 +136,15 @@ fn checked_in(
     path: String,
     name: &str,
 ) -> Result<StoredBinary, Unheard> {
-    Ok(output(called(harness, worker, "check_in", &check_in_input(path, name))?))
+    let called = called(harness, worker, "check_in", &check_in_input(path, name))?;
+
+    Ok(output(harness, called))
 }
 
 /// What `list_stored` answers.
 fn listed(harness: &mut Harness<Headless>, worker: ProtocolRef<Tooling>) -> Result<Vec<Entry>, Unheard> {
-    let stored: Stored = output(called(harness, worker, "list_stored", &ListStored)?);
+    let called = called(harness, worker, "list_stored", &ListStored)?;
+    let stored: Stored = output(harness, called);
 
     Ok(stored.entries)
 }
@@ -204,7 +211,8 @@ fn list_stored_shows_each_entrys_hash_names_size_pin_and_hold() -> Result<(), Un
     let (mut harness, worker) = store_tools(dir.settings(1 << 20))?;
     let older = checked_in(&mut harness, worker, dir.file("a", b"pinned build"), "tool")?;
     let newer = checked_in(&mut harness, worker, dir.file("b", b"held"), "game")?;
-    let pinned: Done = output(called(&mut harness, worker, "pin", &Pin { hash: older.hash })?);
+    let pinning = called(&mut harness, worker, "pin", &Pin { hash: older.hash })?;
+    let pinned: Done = output(&mut harness, pinning);
     assert_eq!(pinned, Done {});
     let store = harness.root::<Store>();
     let holding = harness.ask(store, &Hold { hash: newer.hash })?;
@@ -237,11 +245,13 @@ fn pin_written_as_the_hex_the_agent_read_pins_and_unpin_clears_it() -> Result<()
         panic!("the hexadecimal hash is the input of `pin` and of `unpin`");
     };
 
-    let _: Done = output(called_with(&mut harness, worker, "pin", pin)?);
+    let pinning = called_with(&mut harness, worker, "pin", pin)?;
+    let _: Done = output(&mut harness, pinning);
     let pinned: Vec<bool> = listed(&mut harness, worker)?.iter().map(|entry| entry.pinned).collect();
     assert_eq!(pinned, vec![true], "the entry {:?} is pinned", stored.hash);
 
-    let _: Done = output(called_with(&mut harness, worker, "unpin", unpin)?);
+    let unpinning = called_with(&mut harness, worker, "unpin", unpin)?;
+    let _: Done = output(&mut harness, unpinning);
     let pinned: Vec<bool> = listed(&mut harness, worker)?.iter().map(|entry| entry.pinned).collect();
     assert_eq!(pinned, vec![false], "the entry's pin is cleared");
 

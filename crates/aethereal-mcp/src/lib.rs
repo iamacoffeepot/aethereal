@@ -43,5 +43,5 @@ mod front;
 mod mcp;
 mod settings;
 
-pub use mcp::{Calling, Mcp, Serving, Unserved};
+pub use mcp::{Calling, Mcp, Serving, Unserved, Unstored};
 pub use settings::McpSettings;

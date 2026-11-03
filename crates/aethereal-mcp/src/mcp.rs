@@ -1,13 +1,13 @@
 //! The MCP capability's root (ADR-0037).
 
 use crate::McpSettings;
-use crate::front::{self, Routed};
+use crate::front::{self, Reply, Routed};
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Level, Path,
     ToSender, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain, SchemaNodes};
-use aethereal_http::{Handling, Http, Request, Response, Serve, Served};
+use aethereal_http::{Handling, Http, Request, Response, Serve, Served, Status};
 use aethereal_substrate::Bootstrap;
 use aethereal_tools::{Call, Called, HeldTool, Holder, Offer, Offered, Table, Tooling, Withdraw};
 use std::collections::BTreeMap;
@@ -28,6 +28,11 @@ pub struct Calling {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.mcp.unserved")]
 pub struct Unserved;
+
+/// Why a turn of the root failed: the engine had no room to hold a response's body, not even an empty one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.mcp.unstored")]
+pub struct Unstored;
 
 /// A request the root holds until its worker answers, its JSON-RPC id, and the schema of what is to come.
 #[derive(Bound)]
@@ -108,8 +113,10 @@ impl Handles<Request> for Mcp {
     type Sends = (Asks<Tooling, Call, Calling>, ToSender<Response>);
 
     fn handle(&mut self, request: Request, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let (id, tool, input) = match front::route(&request, &self.settings.origins, &self.table) {
-            Routed::Respond(response) => {
+        let routed = front::route(&request, turn.read(&request.body), &self.settings.origins, &self.table);
+        let (id, tool, input) = match routed {
+            Routed::Respond(reply) => {
+                let response = response(turn, reply)?;
                 turn.reply(&response)?;
                 return Ok(());
             }
@@ -118,14 +125,21 @@ impl Handles<Request> for Mcp {
         let room = usize::try_from(self.settings.most_calls).unwrap_or(usize::MAX);
         let is_full = self.waiting.len() >= room;
         if is_full {
-            turn.reply(&front::refused(&id, "too many calls are out"))?;
+            let response = response(turn, front::refused(&id, "too many calls are out"))?;
+            turn.reply(&response)?;
             return Ok(());
         }
         let Some(HeldTool { worker, output, .. }) = self.table.tool(&tool) else {
-            turn.reply(&front::refused(&id, "the tool has gone"))?;
+            let response = response(turn, front::refused(&id, "the tool has gone"))?;
+            turn.reply(&response)?;
             return Ok(());
         };
         let (worker, output) = (*worker, output.clone());
+        let Ok(input) = turn.put(input) else {
+            let response = response(turn, front::refused(&id, "the engine had no room to hold the arguments"))?;
+            turn.reply(&response)?;
+            return Ok(());
+        };
         let held = turn.hold()?;
         let number = self.next;
         self.next += 1;
@@ -172,11 +186,18 @@ impl Handles<Answer<Called, Calling>> for Mcp {
         let Some(Waiting { held, id, output }) = self.waiting.remove(&number) else {
             return Ok(());
         };
-        let response = match answered {
-            Answered::Yes(Called::Output(bytes)) => front::output(&id, &output, &bytes),
+        let reply = match answered {
+            Answered::Yes(Called::Output(bytes)) => match front::value(&id, &output, turn.read(&bytes)) {
+                Ok(value) => {
+                    let buffer = turn.buffer(front::output_room(&id, &value));
+                    front::output(&id, &value, buffer)
+                }
+                Err(refused) => refused,
+            },
             Answered::Yes(Called::Refused(why)) => front::refused(&id, &why),
             Answered::No(why) => front::refused(&id, &format!("the tool did not answer: {why:?}")),
         };
+        let response = response(turn, reply)?;
         turn.answer(held, &response)?;
 
         Ok(())
@@ -209,4 +230,23 @@ impl Handles<Ended> for Mcp {
 
         Ok(())
     }
+}
+
+/// `reply` as a response, its body put as a blob: one the engine has no room to hold is answered `503` with no body
+/// (ADR-0042).
+fn response<S>(turn: &mut Turn<'_, Mcp, S>, reply: Reply) -> Result<Response, Fault> {
+    let put = match reply {
+        Reply::Empty(status) => turn.put(Vec::new()).map(|body| Response::bare(status, body)),
+        Reply::Json { status, body } => {
+            turn.put(body.into_bytes()).map(|body| Response::new(status, "application/json", body))
+        }
+    };
+    if let Ok(response) = put {
+        return Ok(response);
+    }
+    let Ok(empty) = turn.put(Vec::new()) else {
+        return Err(Fault::new(&Unstored)?);
+    };
+
+    Ok(Response::bare(Status::ServiceUnavailable, empty))
 }

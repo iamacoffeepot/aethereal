@@ -6,8 +6,9 @@ mod write;
 
 use crate::{Handling, Limits, Method, Request, Response, Server, Status};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Due, Ending, Fault, Handles, JobId, Level,
-    More, Number, Open, Part, ProtocolRef, Sleep, Slept, Streamed, Streams, Taken, Time, ToAny, Turn, Unanswered,
+    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Due, Ending, Fault, Handles, JobId,
+    Level, More, Number, Open, Part, ProtocolRef, Refused, Sleep, Slept, Streamed, Streams, Taken, Time, ToAny, Turn,
+    Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Accepted, HungUp, Read, Reading, Shut, SocketAddress, Write, Writing, Wrote};
@@ -64,7 +65,8 @@ enum Phase {
     Idle { since: Time },
     /// Part of a head has come, its first byte at `since`.
     Head { since: Time },
-    /// A head is parsed, and its body is coming; the request's first byte came at `since`.
+    /// A head is parsed, and its body is coming, into a buffer the turn handed out with room for all of it; the
+    /// request's first byte came at `since`.
     Body { head: Head, body: Vec<u8>, since: Time },
     /// The request is asked of the handler, within its deadline, and its answer is waited for. The connection then
     /// closes when it `closes`, and a response to a `HEAD` is written with no body.
@@ -162,7 +164,7 @@ impl Handles<Part<Reading>> for Exchange {
         if is_out {
             self.withheld += 1;
         }
-        self.buffer.extend_from_slice(&value.bytes);
+        self.buffer.extend_from_slice(turn.read(&value.bytes));
 
         self.advance(turn)
     }
@@ -212,18 +214,25 @@ impl Handles<Answer<Response, Asking>> for Exchange {
             return Ok(());
         };
         let response = match answered {
-            Answered::Yes(response) => response,
-            Answered::No(Unanswered::Ended) => unanswered(Status::ServiceUnavailable, "the handler has ended"),
+            Answered::Yes(response) => Ok(response),
+            Answered::No(Unanswered::Ended) => said(turn, Status::ServiceUnavailable, "the handler has ended"),
             // The request's deadline came first: the engine stopped waiting for the handler, and the connection closes
             // once the client is told (ADR-0041).
             Answered::No(Unanswered::Expired) => {
-                let timed_out = unanswered(Status::GatewayTimeout, "the handler did not respond in time");
+                let Ok(timed_out) = said(turn, Status::GatewayTimeout, "the handler did not respond in time") else {
+                    unstored(turn);
+                    return Ok(());
+                };
                 return self.respond(turn, timed_out, true, head_only);
             }
             Answered::No(why) => {
                 turn.log(Level::Warn, format!("the handler did not answer a request: {why:?}"));
-                unanswered(Status::InternalServerError, "the handler did not answer")
+                said(turn, Status::InternalServerError, "the handler did not answer")
             }
+        };
+        let Ok(response) = response else {
+            unstored(turn);
+            return Ok(());
         };
         self.respond(turn, response, closes, head_only)?;
         if closes {
@@ -323,9 +332,14 @@ impl Exchange {
                             };
                             let continues = head.expects_continue && head.length > 0;
                             if continues {
-                                self.write::<_, IW>(turn, write::CONTINUE.to_vec(), false)?;
+                                let Ok(go_on) = put(turn, write::CONTINUE) else {
+                                    unstored(turn);
+                                    return Ok(());
+                                };
+                                self.write::<_, IW>(turn, vec![go_on], false)?;
                             }
-                            self.phase = Phase::Body { head, body: Vec::new(), since };
+                            let body = turn.buffer(usize::try_from(head.length).unwrap_or(usize::MAX));
+                            self.phase = Phase::Body { head, body, since };
                         }
                     }
                 }
@@ -337,30 +351,39 @@ impl Exchange {
                     if !is_whole {
                         return Ok(());
                     }
-                    return self.ask::<_, IP>(turn);
+                    return self.ask::<_, IW, IP>(turn);
                 }
                 Phase::Answering { .. } | Phase::Closing => return Ok(()),
             }
         }
     }
 
-    /// Asks the handler the request whose body is whole, within `answer_within_millis` of now, and waits for its
-    /// answer: the engine answers it `Expired` if that time comes first, as it answers every request made for it
-    /// (ADR-0041).
-    fn ask<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
+    /// Asks the handler the request whose body is whole, put as a blob, within `answer_within_millis` of now, and waits
+    /// for its answer: the engine answers it `Expired` if that time comes first, as it answers every request made for
+    /// it (ADR-0041). A body the engine has no room to hold is answered `503`, and the exchange closes.
+    fn ask<S, IW, IP>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
-        S: Allows<Asks<Handling, Request, Asking>, I>,
+        S: Allows<Asks<Writing, Write, Sending>, IW> + Allows<Asks<Handling, Request, Asking>, IP>,
     {
         let answering = Phase::Answering { closes: true, head_only: false };
         let Phase::Body { head, body, .. } = mem::replace(&mut self.phase, answering) else {
             return Ok(());
         };
         let Head { method, path, query, headers, closes, .. } = head;
-        self.phase = Phase::Answering { closes, head_only: method == Method::Head };
+        let head_only = method == Method::Head;
+        let Ok(body) = turn.put(body) else {
+            let unheld = said(turn, Status::ServiceUnavailable, "the server has no room for the request's body");
+            let Ok(unheld) = unheld else {
+                unstored(turn);
+                return Ok(());
+            };
+            return self.respond::<_, IW>(turn, unheld, true, head_only);
+        };
+        self.phase = Phase::Answering { closes, head_only };
         self.time(turn)?;
         let request = Request { method, path, query, headers, body, peer: self.peer };
         let due = turn.now() + Duration::from_millis(u64::from(self.limits.answer_within_millis));
-        turn.to(self.handler).within(due).ask::<_, _, I>(&request, &Asking)?;
+        turn.to(self.handler).within(due).ask::<_, _, IP>(&request, &Asking)?;
 
         Ok(())
     }
@@ -371,11 +394,17 @@ impl Exchange {
         S: Allows<Asks<Writing, Write, Sending>, I>,
     {
         turn.log(Level::Info, format!("a request was refused: {refusal:?}"));
+        let (status, text) = refusal.said();
+        let Ok(response) = said(turn, status, text) else {
+            unstored(turn);
+            return Ok(());
+        };
 
-        self.respond::<_, I>(turn, refusal.response(), true, false)
+        self.respond::<_, I>(turn, response, true, false)
     }
 
-    /// Writes `response`, and closes once it is sent when the connection `closes`.
+    /// Writes `response`, and closes once it is sent when the connection `closes`: its head, built in a buffer the turn
+    /// hands out and put, and its body after it as a part of its own, passed on without being read (ADR-0042).
     fn respond<S, I>(
         &mut self,
         turn: &mut Turn<'_, Self, S>,
@@ -386,7 +415,10 @@ impl Exchange {
     where
         S: Allows<Asks<Writing, Write, Sending>, I>,
     {
-        let written = write::written(response, closes, head_only);
+        let Response { status, headers, body } = response;
+        let body_length = turn.read(&body).len();
+        let mut head = turn.buffer(write::room(&headers));
+        let written = write::head(status, &headers, body_length, closes, head_only, &mut head);
         for name in &written.dropped {
             turn.log(Level::Warn, format!("the response's header {name} was not written"));
         }
@@ -394,16 +426,25 @@ impl Exchange {
             self.phase = Phase::Closing;
             self.time(turn)?;
         }
+        let Ok(head) = turn.put(head) else {
+            unstored(turn);
+            return Ok(());
+        };
+        let parts = if written.sends_body {
+            vec![head, body]
+        } else {
+            vec![head]
+        };
 
-        self.write::<_, I>(turn, written.bytes, closes)
+        self.write::<_, I>(turn, parts, closes)
     }
 
-    /// Asks the connection to write `bytes`, noting whether it closes once they are sent.
-    fn write<S, I>(&self, turn: &mut Turn<'_, Self, S>, bytes: Vec<u8>, closes: bool) -> Result<(), Fault>
+    /// Asks the connection to write `parts`, in order, noting whether it closes once they are sent.
+    fn write<S, I>(&self, turn: &mut Turn<'_, Self, S>, parts: Vec<Bytes>, closes: bool) -> Result<(), Fault>
     where
         S: Allows<Asks<Writing, Write, Sending>, I>,
     {
-        turn.to(self.connection.protocol::<Writing, _>()).ask::<_, _, I>(&Write { bytes }, &Sending { closes })?;
+        turn.to(self.connection.protocol::<Writing, _>()).ask::<_, _, I>(&Write { parts }, &Sending { closes })?;
 
         Ok(())
     }
@@ -422,7 +463,21 @@ fn due(phase: &Phase, limits: &Limits) -> Due {
     Due::Before(since + Duration::from_millis(u64::from(within)))
 }
 
-/// The response written for a request its handler did not answer: `status`, saying `why`.
-fn unanswered(status: Status, why: &str) -> Response {
-    Response::new(status, "text/plain; charset=utf-8", why.as_bytes().to_vec())
+/// The response an exchange writes of its own: `status`, saying `why`, its body put from a buffer the turn hands out.
+fn said<S>(turn: &mut Turn<'_, Exchange, S>, status: Status, why: &str) -> Result<Response, Refused> {
+    Ok(Response::new(status, "text/plain; charset=utf-8", put(turn, why.as_bytes())?))
+}
+
+/// `bytes`, copied into a buffer the turn hands out, and put.
+fn put<S>(turn: &mut Turn<'_, Exchange, S>, bytes: &[u8]) -> Result<Bytes, Refused> {
+    let mut buffer = turn.buffer(bytes.len());
+    buffer.extend_from_slice(bytes);
+
+    turn.put(buffer)
+}
+
+/// Closes an exchange that had no room to hold what it would write (ADR-0014): the client is told nothing more.
+fn unstored<S>(turn: &mut Turn<'_, Exchange, S>) {
+    turn.log(Level::Warn, "the server had no room to hold a response, and closes the connection");
+    turn.close();
 }

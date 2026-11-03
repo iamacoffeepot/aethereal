@@ -265,7 +265,9 @@ mod pinned {
     use super::{BlobId, Maker, Puts};
     use crate::Refused;
     use crate::{Actors, Within};
-    use aethereal_data::{Decode, DecodeError, Encode, EncodeError, Field, Reader, Schema, Shape, Writer};
+    use aethereal_data::{
+        Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, Reader, Schema, Shape, Writer,
+    };
     use alloc::vec::Vec;
 
     /// A pin on one blob: while any reference to a blob is held, the blob is kept (ADR-0014).
@@ -354,6 +356,8 @@ mod pinned {
             input.offers().pin(at, id).ok_or(DecodeError::Unheld)
         }
     }
+
+    impl<B: Boundary> Element<B> for Bytes {}
 
     /// A pin some bytes hold, and where in them the reference it is for begins.
     pub type Pinning = (u32, Bytes);

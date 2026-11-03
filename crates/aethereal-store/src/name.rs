@@ -1,7 +1,9 @@
 //! The name a binary is checked in under (ADR-0039, ADR-0040).
 
 use crate::StoreHash;
-use aethereal_data::{Boundary, Decode, DecodeError, Encode, EncodeError, Key, Plain, Reader, Schema, Shape, Writer};
+use aethereal_data::{
+    Boundary, Decode, DecodeError, Element, Encode, EncodeError, Key, Plain, Reader, Schema, Shape, Writer,
+};
 use core::fmt;
 
 /// The refusal of text that is not a name, with the rule it breaks.
@@ -77,6 +79,8 @@ impl<B: Boundary> Decode<B> for StoreName {
 }
 
 impl Plain for StoreName {}
+
+impl<B: Boundary> Element<B> for StoreName {}
 
 /// Names are kept in the order of their bytes.
 impl Key for StoreName {}

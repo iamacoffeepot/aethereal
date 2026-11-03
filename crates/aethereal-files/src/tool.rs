@@ -2,16 +2,17 @@
 
 use crate::{FileRead, FileWritten, Files, Namespace, ReadFile, WriteFile};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
+    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, Held, Path,
     ProtocolRef, ToSender, Turn, path,
 };
-use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
+use aethereal_data::{
+    Bare, Bound, Budget, Encode, EncodeError, FilePath, Plain, Schema, SchemaNodes, Writer, from_bytes, to_bytes,
+};
 use aethereal_tools::{Call, Called, Done, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 
-/// The most bytes of a file the tool answers with. Its answer is one piece of mail, and one its asker cannot read
-/// reaches it as no answer, `Unreadable` (ADR-0017), so a program sets `read_limit` above this; past it, the tool
-/// refuses.
+/// The most bytes of a file the tool answers with: past it, the tool refuses. Its answer holds the text in a blob,
+/// which no mail's `read_limit` weighs (ADR-0042).
 const MOST_BYTES: usize = 256 * 1024;
 /// The most bytes reading an input may take. A path is short.
 const INPUT_BYTES: usize = 8 * 1024;
@@ -19,6 +20,8 @@ const INPUT_BYTES: usize = 8 * 1024;
 const MOST_WRITE_BYTES: usize = MOST_BYTES;
 /// The most bytes reading the write tool's input may take: its text and its path.
 const WRITE_INPUT_BYTES: usize = MOST_WRITE_BYTES + INPUT_BYTES;
+/// The bytes of a text's count, written before it (ADR-0002).
+const COUNT_BYTES: usize = 4;
 
 /// What an agent reads of a file: its text. A `FileRead` holds a blob, which has no JSON form.
 #[derive(Debug, PartialEq, Eq, Plain)]
@@ -101,7 +104,7 @@ impl Handles<Call> for ReadTool {
     type Sends = (Asks<Path<Files>, ReadFile, Calling>, ToSender<Called>);
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let Ok(read) = from_bytes::<ReadFile>(&call.input, &mut Budget::new(INPUT_BYTES)) else {
+        let Ok(read) = from_bytes::<ReadFile>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
             // The schema says a string of any spelling, and a path is narrower.
             turn.reply(&Called::Refused(String::from("that is no path")))?;
             return Ok(());
@@ -128,7 +131,7 @@ impl Handles<Answer<FileRead, Calling>> for ReadTool {
             return Ok(());
         };
         let called = match answered {
-            Answered::Yes(FileRead::Read { bytes }) => contents(turn.read(&bytes))?,
+            Answered::Yes(FileRead::Read { bytes }) => contents(turn, &bytes)?,
             Answered::Yes(FileRead::Missing) => refused("no file is at that path"),
             Answered::Yes(FileRead::Unavailable) => refused("this host has no files"),
             Answered::Yes(FileRead::Failed) => refused("the file could not be read"),
@@ -145,16 +148,29 @@ fn refused(why: &str) -> Called {
     Called::Refused(String::from(why))
 }
 
-/// What the tool answers of a file of `bytes`.
-fn contents(bytes: &[u8]) -> Result<Called, Fault> {
-    if bytes.len() > MOST_BYTES {
+/// What the tool answers of a file whose bytes are in the blob `bytes`: its text, as [`FileContents`], built in a buffer
+/// the turn hands out and put (ADR-0042).
+fn contents<S>(turn: &mut Turn<'_, ReadTool, S>, bytes: &Bytes) -> Result<Called, Fault> {
+    let length = turn.read(bytes).len();
+    if length > MOST_BYTES {
         return Ok(refused("the file is too large"));
     }
-    let Ok(text) = str::from_utf8(bytes) else {
+    let buffer = turn.buffer(COUNT_BYTES + length);
+    let Ok(text) = str::from_utf8(turn.read(bytes)) else {
         return Ok(refused("the file is not text"));
     };
+    let written = written(text, buffer)?;
 
-    Ok(Called::Output(to_bytes(&FileContents { text: String::from(text) })?))
+    Ok(Called::output(turn, written))
+}
+
+/// `text` written into `buffer` as the [`FileContents`] that holds it, with no `String` made of it: a struct is its
+/// fields' bytes in order, and a `str` is written as the `String` it would be (ADR-0002).
+fn written(text: &str, buffer: Vec<u8>) -> Result<Vec<u8>, EncodeError> {
+    let mut out = Writer::<Bare>::appending(buffer, ());
+    text.encode(&mut out)?;
+
+    Ok(out.into_bytes())
 }
 
 /// What the write tool is made from: nothing.
@@ -215,11 +231,12 @@ impl Handles<Call> for WriteTool {
     type Sends = (Asks<Path<Files>, WriteFile, Calling>, ToSender<Called>);
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        if call.input.len() > WRITE_INPUT_BYTES {
+        let input = turn.read(&call.input);
+        if input.len() > WRITE_INPUT_BYTES {
             turn.reply(&refused("the text is too large"))?;
             return Ok(());
         }
-        let text = match from_bytes::<TextFile>(&call.input, &mut Budget::new(WRITE_INPUT_BYTES)) {
+        let text = match from_bytes::<TextFile>(input, &mut Budget::new(WRITE_INPUT_BYTES)) {
             Ok(text) => text,
             // The schema says a string of any spelling, and a path is narrower: the fault says which rule it broke.
             Err(fault) => {
@@ -227,10 +244,14 @@ impl Handles<Call> for WriteTool {
                 return Ok(());
             }
         };
+        let Ok(bytes) = turn.put(text.text.into_bytes()) else {
+            turn.reply(&refused("the engine had no room to hold the text"))?;
+            return Ok(());
+        };
         let held = turn.hold()?;
         let number = self.next;
         self.next += 1;
-        let write = WriteFile { namespace: text.namespace, path: text.path, bytes: text.text.into_bytes() };
+        let write = WriteFile { namespace: text.namespace, path: text.path, bytes };
         turn.to(path::<Files>(())).ask(&write, &Calling { number })?;
         self.calls.insert(number, held);
 
@@ -250,7 +271,7 @@ impl Handles<Answer<FileWritten, Calling>> for WriteTool {
             return Ok(());
         };
         let called = match answered {
-            Answered::Yes(FileWritten::Written) => Called::Output(to_bytes(&Done {})?),
+            Answered::Yes(FileWritten::Written) => Called::output(turn, to_bytes(&Done {})?),
             Answered::Yes(FileWritten::ReadOnly) => refused("that namespace is read-only"),
             Answered::Yes(FileWritten::Unavailable) => refused("this host has nowhere to write files"),
             Answered::Yes(FileWritten::Failed) => refused("the file could not be written"),
@@ -259,5 +280,20 @@ impl Handles<Answer<FileWritten, Calling>> for WriteTool {
         turn.answer(held, &called)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FileContents, written};
+    use aethereal_data::to_bytes;
+
+    #[test]
+    fn a_file_is_written_as_the_contents_that_hold_it() {
+        // Catches the read tool's output drifting from `FileContents`, the schema its sheet names, as when the kind
+        // gains a field the tool's own writing of it leaves out.
+        let text = "a file, with é in it";
+
+        assert_eq!(written(text, Vec::new()), to_bytes(&FileContents { text: String::from(text) }));
     }
 }

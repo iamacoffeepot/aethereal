@@ -2,7 +2,7 @@
 
 use crate::plain::{read_array, read_selector, write_selector};
 use crate::{
-    Boundary, Decode, DecodeError, Encode, EncodeError, Fields, Plain, Reader, Schema, Shape, Variant, Writer,
+    Boundary, Decode, DecodeError, Element, Encode, EncodeError, Fields, Plain, Reader, Schema, Shape, Variant, Writer,
 };
 
 impl<T: Schema> Schema for Option<T> {
@@ -39,6 +39,8 @@ impl<B: Boundary, T: Decode<B>> Decode<B> for Option<T> {
 }
 
 impl<T: Plain> Plain for Option<T> {}
+
+impl<B: Boundary, T> Element<B> for Option<T> {}
 
 impl<T: Schema, E: Schema> Schema for Result<T, E> {
     const SHAPE: Shape = Shape::Enum {
@@ -85,6 +87,8 @@ impl<B: Boundary, T: Decode<B>, E: Decode<B>> Decode<B> for Result<T, E> {
 }
 
 impl<T: Plain, E: Plain> Plain for Result<T, E> {}
+
+impl<B: Boundary, T, E> Element<B> for Result<T, E> {}
 
 #[cfg(test)]
 mod tests {

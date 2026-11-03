@@ -1,7 +1,7 @@
 //! A kind's name (ADR-0006).
 
 use crate::plain::write_text;
-use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
+use crate::{Boundary, Decode, DecodeError, Element, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
 use alloc::borrow::Cow;
 use alloc::string::String;
 use core::fmt;
@@ -126,6 +126,8 @@ impl<B: Boundary> Decode<B> for KindName {
 }
 
 impl Plain for KindName {}
+
+impl<B: Boundary> Element<B> for KindName {}
 
 #[cfg(test)]
 mod tests {

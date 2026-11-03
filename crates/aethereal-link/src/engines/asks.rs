@@ -1,6 +1,7 @@
 //! What the hub's tools ask of its engines, and what an engine tells its root (ADR-0038, ADR-0040).
 
-use aethereal_data::Plain;
+use aethereal_actor::Bytes;
+use aethereal_data::{Bound, Plain};
 use aethereal_process::ExitStatus;
 use aethereal_store::{Binary, StoreHash};
 use aethereal_tools::ToolSheet;
@@ -70,12 +71,13 @@ pub enum Described {
 /// Asks an engine, at `path::<Engine>(engine)`, to call its tool `tool` with `input`, bytes of the tool's input schema
 /// in the set of `revision`, answered with the [`Called`](aethereal_tools::Called) the engine sends back. The engine
 /// refuses a call of a set it has changed since.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.link.call_engine")]
 pub struct CallEngine {
     pub revision: u64,
     pub tool: String,
-    pub input: Vec<u8>,
+    /// In a blob (ADR-0042), read into the frame the call is written to.
+    pub input: Bytes,
 }
 
 /// What an engine tells its root it shows the agent, each time it changes: the name it gave, and how many tools it

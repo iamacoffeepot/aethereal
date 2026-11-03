@@ -6,7 +6,7 @@ mod kinds;
 pub use kinds::{EngineAnswer, EngineCall, EngineId, EngineSheets, JsonSheet, SpawnedEngine};
 
 use crate::{
-    CallEngine, DescribeEngine, Described, Engine, EngineList, Engines, ListEngines, MintToken, Minted, Spawn,
+    CallEngine, DescribeEngine, Described, Engine, EngineList, Engines, ListEngines, MintToken, Minted, Outcome, Spawn,
     SpawnEngine, TerminateEngine, Terminated,
 };
 use aethereal_actor::{
@@ -234,9 +234,10 @@ impl Handles<Call> for EngineTools {
 
     /// Reads the call's input, or refuses it; holds the call, and asks `Engines` or the engine named.
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let order = match order(&call) {
+        let order = match order(&call.tool, turn.read(&call.input)) {
             Ok(order) => order,
             Err(refusal) => {
+                let refusal = refusal.into_called(turn);
                 turn.reply(&refusal)?;
                 return Ok(());
             }
@@ -300,6 +301,7 @@ impl Handles<Answer<EngineList, Asking>> for EngineTools {
                 _,
             ) => (other.into_held(), lost()),
         };
+        let called = called.into_called(turn);
         turn.answer(held, &called)?;
 
         Ok(())
@@ -323,6 +325,11 @@ impl Handles<Answer<Described, Asking>> for EngineTools {
             Pending::Describing { held, engine } => (held, described(answered, engine)?),
             Pending::Finding { held, engine, tool, input } => match converted(answered, engine, &tool, &input) {
                 Ok(Converted { revision, input, output }) => {
+                    let Ok(input) = turn.put(input) else {
+                        let unheld = Called::Refused(String::from("the hub had no room to hold the input"));
+                        turn.answer(held, &unheld)?;
+                        return Ok(());
+                    };
                     let call = CallEngine { revision, tool: tool.clone(), input };
                     // This turn handles the engine's tools, not the call held, so it states the call's deadline.
                     turn.to(path::<Engine>(u64::from(engine))).within(held.due()).ask(&call, &asking)?;
@@ -337,6 +344,7 @@ impl Handles<Answer<Described, Asking>> for EngineTools {
             | Pending::Spawning { .. }
             | Pending::Terminating { .. }) => (other.into_held(), lost()),
         };
+        let called = called.into_called(turn);
         turn.answer(held, &called)?;
 
         Ok(())
@@ -356,7 +364,7 @@ impl Handles<Answer<Called, Asking>> for EngineTools {
             return Ok(());
         };
         let (held, called) = match pending {
-            Pending::Calling { held, tool, output } => (held, output_of(answered, &tool, &output)?),
+            Pending::Calling { held, tool, output } => (held, output_of(turn, answered, &tool, &output)?),
             other @ (Pending::Listing { .. }
             | Pending::Describing { .. }
             | Pending::Finding { .. }
@@ -364,6 +372,7 @@ impl Handles<Answer<Called, Asking>> for EngineTools {
             | Pending::Spawning { .. }
             | Pending::Terminating { .. }) => (other.into_held(), lost()),
         };
+        let called = called.into_called(turn);
         turn.answer(held, &called)?;
 
         Ok(())
@@ -383,7 +392,7 @@ impl Handles<Answer<Minted, Asking>> for EngineTools {
             return Ok(());
         };
         let (held, called) = match (pending, answered) {
-            (Pending::Minting { held }, Answered::Yes(minted)) => (held, Called::Output(to_bytes(&minted)?)),
+            (Pending::Minting { held }, Answered::Yes(minted)) => (held, Outcome::Output(to_bytes(&minted)?)),
             (Pending::Minting { held }, Answered::No(_)) => (held, refused("`Engines` minted no token")),
             (
                 other @ (Pending::Listing { .. }
@@ -395,6 +404,7 @@ impl Handles<Answer<Minted, Asking>> for EngineTools {
                 _,
             ) => (other.into_held(), lost()),
         };
+        let called = called.into_called(turn);
         turn.answer(held, &called)?;
 
         Ok(())
@@ -422,6 +432,7 @@ impl Handles<Answer<Spawn, Asking>> for EngineTools {
             | Pending::Minting { .. }
             | Pending::Terminating { .. }) => (other.into_held(), lost()),
         };
+        let called = called.into_called(turn);
         turn.answer(held, &called)?;
 
         Ok(())
@@ -442,7 +453,7 @@ impl Handles<Answer<Terminated, Asking>> for EngineTools {
         };
         let (held, called) = match (pending, answered) {
             (Pending::Terminating { held, .. }, Answered::Yes(Terminated::Stopping)) => {
-                (held, Called::Output(to_bytes(&Done {})?))
+                (held, Outcome::Output(to_bytes(&Done {})?))
             }
             (Pending::Terminating { held, engine }, Answered::Yes(Terminated::NotLinked)) => {
                 (held, refused(format!("no engine {engine} is linked")))
@@ -458,6 +469,7 @@ impl Handles<Answer<Terminated, Asking>> for EngineTools {
                 _,
             ) => (other.into_held(), lost()),
         };
+        let called = called.into_called(turn);
         turn.answer(held, &called)?;
 
         Ok(())
@@ -465,38 +477,37 @@ impl Handles<Answer<Terminated, Asking>> for EngineTools {
 }
 
 /// The refusal of a call whose answer came to it at the wrong stage, which one ask out for each call rules out.
-fn lost() -> Called {
+fn lost() -> Outcome {
     refused("the hub's tools lost track of this call")
 }
 
 /// A refusal saying `why`.
-fn refused(why: impl Into<String>) -> Called {
-    Called::Refused(why.into())
+fn refused(why: impl Into<String>) -> Outcome {
+    Outcome::Refused(why.into())
 }
 
-/// What `call` asks for, or its refusal: a tool these are not, or input that is not of the tool's.
-fn order(call: &Call) -> Result<Order, Called> {
+/// What a call of `tool` with `input`, the bytes of its input, asks for, or its refusal: a tool these are not, or
+/// input that is not of the tool's.
+fn order(tool: &str, input: &[u8]) -> Result<Order, Outcome> {
     let budget = &mut Budget::new(WALK_BYTES);
-    let read = match call.tool.as_str() {
-        LIST_ENGINES => from_bytes::<ListEngines>(&call.input, budget).map(|_| Order::List),
-        DESCRIBE_ENGINE => {
-            from_bytes::<EngineId>(&call.input, budget).map(|EngineId { engine }| Order::Describe { engine })
-        }
-        CALL_TOOL => from_bytes::<EngineCall>(&call.input, budget).map(Order::Call),
-        MINT_TOKEN => from_bytes::<MintToken>(&call.input, budget).map(|_| Order::Mint),
-        SPAWN_ENGINE => from_bytes(&call.input, budget).map(Order::Spawn),
-        TERMINATE_ENGINE => from_bytes(&call.input, budget).map(Order::Terminate),
+    let read = match tool {
+        LIST_ENGINES => from_bytes::<ListEngines>(input, budget).map(|_| Order::List),
+        DESCRIBE_ENGINE => from_bytes::<EngineId>(input, budget).map(|EngineId { engine }| Order::Describe { engine }),
+        CALL_TOOL => from_bytes::<EngineCall>(input, budget).map(Order::Call),
+        MINT_TOKEN => from_bytes::<MintToken>(input, budget).map(|_| Order::Mint),
+        SPAWN_ENGINE => from_bytes(input, budget).map(Order::Spawn),
+        TERMINATE_ENGINE => from_bytes(input, budget).map(Order::Terminate),
         other => return Err(refused(format!("there is no tool `{other}` here"))),
     };
 
-    read.map_err(|fault| refused(format!("the input of `{}`: {fault}", call.tool)))
+    read.map_err(|fault| refused(format!("the input of `{tool}`: {fault}")))
 }
 
 /// What `spawn_engine` answers of what the spawn came to: the engine's id once it has linked, and otherwise a refusal
 /// saying how it failed.
-fn spawned(answered: Answered<Spawn>) -> Result<Called, Fault> {
+fn spawned(answered: Answered<Spawn>) -> Result<Outcome, Fault> {
     let called = match answered {
-        Answered::Yes(Spawn::Linked { engine }) => Called::Output(to_bytes(&SpawnedEngine { engine })?),
+        Answered::Yes(Spawn::Linked { engine }) => Outcome::Output(to_bytes(&SpawnedEngine { engine })?),
         Answered::Yes(Spawn::NotStored) => refused("no binary of that name or hash is stored"),
         Answered::Yes(Spawn::Refused) => refused("the hub would not start the binary"),
         Answered::Yes(Spawn::Exited { status, stderr }) => {
@@ -518,12 +529,12 @@ fn ended(status: ExitStatus) -> String {
 }
 
 /// What `list_engines` answers of `list`: the list itself.
-fn listed(list: &EngineList) -> Result<Called, Fault> {
-    Ok(Called::Output(to_bytes(list)?))
+fn listed(list: &EngineList) -> Result<Outcome, Fault> {
+    Ok(Outcome::Output(to_bytes(list)?))
 }
 
 /// The refusal of an engine's tools that could not be read: no such engine, or one that has not sent them.
-fn unread(answered: Answered<Described>, engine: u32) -> Result<(u64, Vec<ToolSheet>), Called> {
+fn unread(answered: Answered<Described>, engine: u32) -> Result<(u64, Vec<ToolSheet>), Outcome> {
     match answered {
         Answered::Yes(Described::Tools { revision, tools }) => Ok((revision, tools)),
         Answered::Yes(Described::NotYet) => Err(refused(format!("engine {engine} has not sent its tools yet"))),
@@ -532,7 +543,7 @@ fn unread(answered: Answered<Described>, engine: u32) -> Result<(u64, Vec<ToolSh
 }
 
 /// What `describe_engine` answers of the engine's tools.
-fn described(answered: Answered<Described>, engine: u32) -> Result<Called, Fault> {
+fn described(answered: Answered<Described>, engine: u32) -> Result<Outcome, Fault> {
     let tools = match unread(answered, engine) {
         Ok((_, tools)) => tools,
         Err(refusal) => return Ok(refusal),
@@ -542,7 +553,7 @@ fn described(answered: Answered<Described>, engine: u32) -> Result<Called, Fault
         return Ok(refused("a tool's schema has no JSON Schema"));
     };
 
-    Ok(Called::Output(to_bytes(&EngineSheets { tools })?))
+    Ok(Outcome::Output(to_bytes(&EngineSheets { tools })?))
 }
 
 /// `sheet` as `describe_engine` shows it.
@@ -563,7 +574,7 @@ fn schema_json(schema: &SchemaNodes) -> Result<Json, JsonError> {
 
 /// The call of `tool` on `engine` with `input`, converted by the latest set, or its refusal: no such engine, one that
 /// has not sent its tools, no such tool, or input not of its schema.
-fn converted(answered: Answered<Described>, engine: u32, tool: &str, input: &Json) -> Result<Converted, Called> {
+fn converted(answered: Answered<Described>, engine: u32, tool: &str, input: &Json) -> Result<Converted, Outcome> {
     let (revision, tools) = unread(answered, engine)?;
     let Some(sheet) = tools.into_iter().find(|sheet| sheet.name == tool) else {
         return Err(refused(format!("engine {engine} has no tool `{tool}`")));
@@ -574,18 +585,23 @@ fn converted(answered: Answered<Described>, engine: u32, tool: &str, input: &Jso
     Ok(Converted { revision, input, output: sheet.output })
 }
 
-/// What `call_tool` answers of the engine's answer to a call of `tool`, whose output is of `output`.
-fn output_of(answered: Answered<Called>, tool: &str, output: &SchemaNodes) -> Result<Called, Fault> {
+/// What `call_tool` answers of the engine's answer to a call of `tool`, whose output is of `output`, read in `turn`.
+fn output_of<S>(
+    turn: &Turn<'_, EngineTools, S>,
+    answered: Answered<Called>,
+    tool: &str,
+    output: &SchemaNodes,
+) -> Result<Outcome, Fault> {
     let bytes = match answered {
         Answered::Yes(Called::Output(bytes)) => bytes,
-        Answered::Yes(Called::Refused(why)) => return Ok(Called::Refused(why)),
+        Answered::Yes(Called::Refused(why)) => return Ok(Outcome::Refused(why)),
         Answered::No(_) => return Ok(refused("the engine went before it answered")),
     };
     let budget = &mut Budget::new(WALK_BYTES);
-    let written = to_json(output, &bytes, budget).and_then(|text| Json::parse(text, budget));
+    let written = to_json(output, turn.read(&bytes), budget).and_then(|text| Json::parse(text, budget));
     let Ok(output) = written else {
         return Ok(refused(format!("the engine's output is not of `{tool}`'s output schema")));
     };
 
-    Ok(Called::Output(to_bytes(&EngineAnswer { output })?))
+    Ok(Outcome::Output(to_bytes(&EngineAnswer { output })?))
 }

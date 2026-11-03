@@ -3,7 +3,7 @@
 use crate::path::PathSegment;
 use crate::path::cut::cut;
 use crate::plain::write_text;
-use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Key, Plain, Reader, Schema, Shape, Writer};
+use crate::{Boundary, Decode, DecodeError, Element, Encode, EncodeError, Key, Plain, Reader, Schema, Shape, Writer};
 use alloc::borrow::Cow;
 use alloc::string::{String, ToString};
 use core::error::Error;
@@ -180,6 +180,8 @@ impl<B: Boundary> Decode<B> for ActorPath {
 }
 
 impl Plain for ActorPath {}
+
+impl<B: Boundary> Element<B> for ActorPath {}
 
 impl Key for ActorPath {}
 

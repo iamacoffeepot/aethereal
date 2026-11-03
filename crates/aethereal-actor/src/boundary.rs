@@ -3,7 +3,7 @@
 #[cfg(feature = "std")]
 use crate::blob::handed_index;
 use crate::{BlobHash, BlobId, Declared, SeatNumber, Seated, Time};
-use aethereal_data::{ActorId, ActorPath, Boundary, EncodeError, KindId, PathSegment};
+use aethereal_data::{ActorId, ActorPath, Boundary, Element, EncodeError, KindId, PathSegment};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
@@ -88,6 +88,42 @@ impl Children for () {
 pub trait Refers {}
 
 /// The boundary between actors in one engine: what mail and a config cross (ADR-0004).
+///
+/// A byte vector does not cross it, so a kind that holds one is not mail, and says to hold [`Bytes`](crate::Bytes),
+/// a blob, instead (ADR-0042):
+///
+/// ```compile_fail,E0277
+/// use aethereal_actor::Actors;
+/// use aethereal_data::{Encode, Plain};
+///
+/// #[derive(Plain)]
+/// #[kind(name = "aether.doc.parcel")]
+/// struct Parcel {
+///     bytes: Vec<u8>,
+/// }
+///
+/// fn mail<K: Encode<Actors>>() {}
+///
+/// mail::<Parcel>();
+/// ```
+///
+/// A fixed array of bytes, and text, still cross:
+///
+/// ```
+/// use aethereal_actor::Actors;
+/// use aethereal_data::{Encode, Plain};
+///
+/// #[derive(Plain)]
+/// #[kind(name = "aether.doc.stamp")]
+/// struct Stamp {
+///     hash: [u8; 32],
+///     note: String,
+/// }
+///
+/// fn mail<K: Encode<Actors>>() {}
+///
+/// mail::<Stamp>();
+/// ```
 pub struct Actors;
 
 impl Boundary for Actors {
@@ -102,6 +138,10 @@ impl Boundary for Within {
     type WriterOffers<'a> = WithinWriter<'a>;
     type ReaderOffers<'a> = WithinReader<'a>;
 }
+
+/// A byte vector crosses [`Within`], so an actor's state may hold one; it crosses nothing between actors, where bytes
+/// are a blob (ADR-0042).
+impl Element<Within> for u8 {}
 
 /// What a writer at [`Actors`] holds beside the bytes written so far: the pins of the blobs it refers to, each at
 /// where its reference begins (ADR-0014), and where it notes the resources written, when they are carried on

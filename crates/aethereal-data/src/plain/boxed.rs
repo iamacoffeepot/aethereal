@@ -1,6 +1,6 @@
 //! `Box<T>` as plain data: a box is its contents (ADR-0004).
 
-use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
+use crate::{Boundary, Decode, DecodeError, Element, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
 use alloc::boxed::Box;
 
 impl<T: Schema> Schema for Box<T> {
@@ -22,6 +22,8 @@ impl<B: Boundary, T: Decode<B>> Decode<B> for Box<T> {
 }
 
 impl<T: Plain> Plain for Box<T> {}
+
+impl<B: Boundary, T> Element<B> for Box<T> {}
 
 #[cfg(test)]
 mod tests {
