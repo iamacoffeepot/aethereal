@@ -2,13 +2,16 @@
 //! played by a real socket speaking the link's own typed frames, on a thread of its own where it waits on the end it
 //! plays to.
 
-use aethereal_actor::{Answered, Unanswered};
+use aethereal_actor::{
+    Actor, ActorRef, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Path, ToSender,
+    Top, Turn, Unanswered, path,
+};
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
-use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
+use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_link::{
-    CallEngine, DescribeEngine, Described, Down, EngineList, EngineListing, Engines, EnginesSettings, Link,
-    LinkSettings, ListEngines, MintToken, Minted, Origin, REVISION, Refusal, Token, Up,
+    CallEngine, DescribeEngine, Described, Down, Engine, EngineList, EngineListing, Engines, EnginesSettings, Link,
+    LinkSettings, ListEngines, MintToken, Minted, Origin, REVISION, Refusal, Token, Up, Within,
 };
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Lifecycle};
@@ -17,7 +20,7 @@ use aethereal_tools::{Call, Called, Offer, Offered, ToolSheet, Tooling, Withdraw
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The most bytes of a frame, each way, at both ends.
 const MOST_BYTES: u32 = 64 * 1024;
@@ -261,7 +264,7 @@ fn an_engines_hello_with_a_minted_token_and_latest_set_are_listed_and_described(
 #[test]
 fn a_call_is_written_down_and_answered_with_what_the_engine_sends_up() -> Result<(), Unheard> {
     // Catches a call written with the wrong number, revision, tool, or input, a request not held for the engine's
-    // answer, and an answer matched to the wrong call.
+    // answer, an answer matched to the wrong call, and a call asked with no deadline written with a time left.
     let (mut harness, port) = hub()?;
     let stream = linked_engine(&mut harness, port, 3, vec![sheet("say")])?;
     let engines = harness.root::<Engines>();
@@ -285,7 +288,7 @@ fn a_call_is_written_down_and_answered_with_what_the_engine_sends_up() -> Result
     });
     let (down, _stream) = heard(&mut harness, peer);
 
-    assert_eq!(down, Down::Call { call: 0, revision: 3, tool: String::from("say"), input });
+    assert_eq!(down, Down::Call { call: 0, revision: 3, tool: String::from("say"), input, within: Within::Unbounded });
     assert_eq!(harness.answer(calling)?, Answered::Yes(Called::Output(output)));
 
     Ok(())
@@ -305,6 +308,23 @@ fn an_engine_of_another_revision_is_refused_and_hung_up_on() -> Result<(), Unhea
     assert_eq!(down, Down::Refused(Refusal::Revision { revision: REVISION }));
     assert!(closed, "the hub hangs up once its refusal is sent");
     assert_eq!(listed(&mut harness)?.engines, Vec::new());
+
+    Ok(())
+}
+
+#[test]
+fn an_engine_of_the_revision_before_calls_carried_their_time_is_refused() -> Result<(), Unheard> {
+    // Catches `REVISION` left at 1 when `Down::Call` gained `within`: a build of revision 1, which the store keeps,
+    // would be linked and misread every call the hub writes it.
+    let (mut harness, port) = hub()?;
+    let token = minted(&mut harness)?;
+    let mut stream = dialed(port);
+    send(&mut stream, &Up::Hello { revision: 1, name: String::from("stored"), token });
+
+    let (down, closed) = refusal(&mut harness, stream);
+
+    assert_eq!(down, Down::Refused(Refusal::Revision { revision: REVISION }));
+    assert!(closed, "the hub hangs up once its refusal is sent");
 
     Ok(())
 }
@@ -394,6 +414,220 @@ fn an_engine_whose_connection_closes_leaves_the_list_and_its_call_is_answered_no
     assert_eq!(list.engines, Vec::new());
     let describing = harness.ask(engine, &DescribeEngine)?;
     assert_eq!(harness.answer(describing)?, Answered::No(Unanswered::Ended));
+
+    Ok(())
+}
+
+/// What the test asks its asker: to ask engine 0 to call `call`, stating a deadline `within_millis` after it asks.
+#[derive(Debug, Plain)]
+#[kind(name = "aether.test.call_within")]
+struct CallWithin {
+    call: CallEngine,
+    within_millis: u64,
+}
+
+/// What became of the asker's call, as it answers the test.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.test.heard")]
+enum Heard {
+    Called(Called),
+    No(Unanswered),
+}
+
+/// What the asker keeps for its call: the test's request, answered with what became of it.
+#[derive(Debug, Bound)]
+#[kind(name = "aether.test.relaying")]
+struct Relaying {
+    held: Held<Heard>,
+}
+
+/// What the asker is made from: nothing.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "aether.test.asker_config")]
+struct AskerConfig;
+
+/// An asker standing in for the hub's tools, which ask an engine on behalf of a call they hold: it states a deadline of
+/// its own, as HTTP does where a request enters the hub, which the outside cannot.
+#[derive(Debug, Plain)]
+#[kind(name = "aether.test.asker")]
+struct Asker;
+
+impl ChildOf for Asker {
+    type Parent = Top;
+}
+
+impl Carries<CallWithin> for Asker {
+    type Answers = (Heard,);
+}
+
+impl Actor for Asker {
+    type Config = AskerConfig;
+    type Key = ();
+    type Handles = (CallWithin, Answer<Called, Relaying>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: AskerConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<CallWithin> for Asker {
+    type Sends = (ToSender<Heard>, Asks<Path<Engine>, CallEngine, Relaying>);
+
+    fn handle(&mut self, asked: CallWithin, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let held = turn.hold()?;
+        let due = turn.now() + Duration::from_millis(asked.within_millis);
+        turn.to(path::<Engine>(0)).within(due).ask(&asked.call, &Relaying { held })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Called, Relaying>> for Asker {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, Relaying { held }): (Answered<Called>, Relaying),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let heard = match answered {
+            Answered::Yes(called) => Heard::Called(called),
+            Answered::No(why) => Heard::No(why),
+        };
+        turn.answer(held, &heard)?;
+
+        Ok(())
+    }
+}
+
+/// How long the asker gives its call.
+const WITHIN_MILLIS: u64 = 300;
+
+/// The call of `say` the hub-side tests ask, of the set of revision 1.
+fn say_call() -> CallEngine {
+    CallEngine { revision: 1, tool: String::from("say"), input: bytes_of(&Say { text: String::from("hello") }) }
+}
+
+/// The engine linked under id 0.
+fn first_engine(harness: &mut Harness<Headless>) -> Result<ActorRef<Engine>, Unheard> {
+    let engines = harness.root::<Engines>();
+    let Some(engine) = harness.state(engines)?.engine(0) else {
+        panic!("the engine stands under its id");
+    };
+
+    Ok(engine)
+}
+
+/// Whether `heard` says the asker's call ran out of time: the engine's `Expired`, or `Engine`'s refusal, which comes
+/// first when its sleep is handled in a step that began before the deadline.
+fn out_of_time(heard: &Answered<Heard>) -> bool {
+    let expired = matches!(heard, Answered::Yes(Heard::No(Unanswered::Expired)));
+    let refused = matches!(heard, Answered::Yes(Heard::Called(Called::Refused(why))) if why.contains("in time"));
+
+    expired || refused
+}
+
+/// A hub with one call out to each engine and an asker, an engine linked with `say`, and a call the asker gave
+/// `WITHIN_MILLIS` that the engine never answers, once its slot is freed: the frame written for it, the engine's
+/// connection, and the engine.
+fn lapsed() -> Result<(Harness<Headless>, Down, TcpStream, ActorRef<Engine>), Unheard> {
+    let (mut harness, port) = hub_with(EnginesSettings { most_calls: 1, ..EnginesSettings::default() })?;
+    harness.add_root::<Asker>(&(), AskerConfig)?;
+    let stream = linked_engine(&mut harness, port, 1, vec![sheet("say")])?;
+    let (engine, asker) = (first_engine(&mut harness)?, harness.root::<Asker>());
+
+    let asking = harness.ask(asker, &CallWithin { call: say_call(), within_millis: WITHIN_MILLIS })?;
+    let (mut written, stream) = frames::<Down>(&mut harness, stream, 1);
+    let heard = harness.answer(asking)?;
+    assert!(out_of_time(&heard), "{heard:?}");
+    waiting::until(BUDGET, || {
+        harness.step();
+        harness.state(engine).is_ok_and(|engine| engine.calls_out() == 0)
+    });
+    assert_eq!(harness.state(engine)?.calls_out(), 0, "the call's slot is freed at its deadline");
+    let Some(written) = written.pop() else {
+        unreachable!("one frame was read");
+    };
+
+    Ok((harness, written, stream, engine))
+}
+
+/// The next call the hub writes on `stream`, answered with each of `answers` in turn, under the number each names or
+/// the call's own, the harness stepping the host until they are written, and the stream.
+fn answered_call(harness: &mut Harness<Headless>, stream: TcpStream, answers: Vec<Answering>) -> (Down, TcpStream) {
+    #[allow(clippy::disallowed_methods)] // The engine's side is a native thread of its own, outside the engine.
+    let peer = thread::spawn(move || {
+        let mut stream = stream;
+        let down: Down = receive(&mut stream);
+        if let Down::Call { call, .. } = down {
+            for answering in answers {
+                let up = match answering {
+                    Answering::This(called) => Up::Called { call, called },
+                    Answering::Lapsed { call, called } => Up::Called { call, called },
+                };
+                send(&mut stream, &up);
+            }
+        }
+
+        (down, stream)
+    });
+
+    heard(harness, peer)
+}
+
+/// What the engine's side sends once it reads a call.
+enum Answering {
+    /// The call's answer.
+    This(Called),
+    /// An answer of the earlier call `call`, whose deadline has passed.
+    Lapsed { call: u64, called: Called },
+}
+
+#[test]
+fn a_call_the_engine_never_answers_frees_its_slot_at_its_deadline() -> Result<(), Unheard> {
+    // Catches `Engine` keeping a call the engine never answers past its deadline, which with one call out refuses
+    // every call after it, "too many calls of the engine are out", for good: #355 at the link. Catches too a call
+    // written with no time left, or with more than its asker gave it, as a deadline written as the time on the hub's
+    // clock is.
+    let (mut harness, written, stream, engine) = lapsed()?;
+    let Down::Call { call: 0, within: Within::Millis(left), .. } = written else {
+        panic!("the call is written with the time it has left: {written:?}");
+    };
+    assert!(left <= WITHIN_MILLIS, "{left} milliseconds left of {WITHIN_MILLIS}");
+    let output = bytes_of(&Said { length: 5 });
+
+    let calling = harness.ask(engine, &say_call())?;
+    let (down, _stream) = answered_call(&mut harness, stream, vec![Answering::This(Called::Output(output.clone()))]);
+
+    let CallEngine { revision, tool, input } = say_call();
+    assert_eq!(down, Down::Call { call: 1, revision, tool, input, within: Within::Unbounded });
+    assert_eq!(harness.answer(calling)?, Answered::Yes(Called::Output(output)));
+
+    Ok(())
+}
+
+#[test]
+fn a_called_that_comes_once_its_call_has_lapsed_is_passed_over() -> Result<(), Unheard> {
+    // Catches a late `Called` matched to the call out now, which would answer it with the lapsed call's output, a
+    // late frame read as out of turn, which would end the engine's link, and an answer that reaches anyone twice.
+    let (mut harness, _, stream, engine) = lapsed()?;
+    let (late, output) = (bytes_of(&Said { length: 0 }), bytes_of(&Said { length: 5 }));
+
+    let calling = harness.ask(engine, &say_call())?;
+    let answers = vec![
+        Answering::Lapsed { call: 0, called: Called::Output(late) },
+        Answering::This(Called::Output(output.clone())),
+    ];
+    let _ = answered_call(&mut harness, stream, answers);
+
+    assert_eq!(harness.answer(calling)?, Answered::Yes(Called::Output(output)));
+    assert_eq!(harness.rest(), Vec::new());
 
     Ok(())
 }
@@ -519,7 +753,8 @@ fn a_call_from_the_hub_reaches_its_worker_and_the_answer_goes_back_up() -> Resul
     let input = bytes_of(&Say { text: String::from("hello") });
     let output = bytes_of(&Said { length: 5 });
 
-    send(&mut stream, &Down::Call { call: 9, revision: 1, tool: String::from("say"), input: input.clone() });
+    let within = Within::Unbounded;
+    send(&mut stream, &Down::Call { call: 9, revision: 1, tool: String::from("say"), input: input.clone(), within });
     let call = harness.asked::<Call>()?;
     assert_eq!(call.request, Call { tool: String::from("say"), input });
     harness.reply(call, &Called::Output(output.clone()))?;
@@ -542,8 +777,9 @@ fn a_call_of_a_changed_set_or_no_tool_is_refused_without_reaching_a_worker() -> 
     let (_, mut stream) = frames::<Up>(&mut harness, stream, 1);
     let input = bytes_of(&Say { text: String::from("hello") });
 
-    send(&mut stream, &Down::Call { call: 4, revision: 0, tool: String::from("say"), input: input.clone() });
-    send(&mut stream, &Down::Call { call: 5, revision: 1, tool: String::from("nothing"), input });
+    let within = Within::Unbounded;
+    send(&mut stream, &Down::Call { call: 4, revision: 0, tool: String::from("say"), input: input.clone(), within });
+    send(&mut stream, &Down::Call { call: 5, revision: 1, tool: String::from("nothing"), input, within });
     let (answered, _stream) = frames::<Up>(&mut harness, stream, 2);
 
     let refused =
@@ -551,6 +787,46 @@ fn a_call_of_a_changed_set_or_no_tool_is_refused_without_reaching_a_worker() -> 
     assert!(refused(&answered[0], 4), "{answered:?}");
     assert!(refused(&answered[1], 5), "{answered:?}");
     assert_eq!(harness.rest(), Vec::new());
+
+    Ok(())
+}
+
+#[test]
+fn a_call_out_of_time_is_refused_and_an_unbounded_one_waits() -> Result<(), Unheard> {
+    // Catches `Link` asking its worker with no deadline, so a tool that never answers holds the engine's slot and the
+    // hub's for good, a deadline shorter than the time the frame gave, a refusal that does not say the tool ran out of
+    // time, an unbounded call given a deadline of none at all, and an answer that comes once its call was
+    // refused written as a second answer.
+    let (listener, port) = hub_socket();
+    let mut harness = linking(port, LinkSettings::default())?;
+    let stream = accepted(&mut harness, &listener);
+    let (_, stream) = frames::<Up>(&mut harness, stream, 2);
+    offer_say(&mut harness)?;
+    let (_, mut stream) = frames::<Up>(&mut harness, stream, 1);
+    let (quick, patient) =
+        (bytes_of(&Say { text: String::from("quick") }), bytes_of(&Say { text: String::from("patient") }));
+    let (late, output) = (bytes_of(&Said { length: 5 }), bytes_of(&Said { length: 7 }));
+
+    #[allow(clippy::disallowed_methods)] // A lower bound on real time: the refusal comes no sooner than its time.
+    let sent = Instant::now();
+    let within = Within::Millis(WITHIN_MILLIS);
+    send(&mut stream, &Down::Call { call: 9, revision: 1, tool: String::from("say"), input: quick.clone(), within });
+    let within = Within::Unbounded;
+    send(&mut stream, &Down::Call { call: 10, revision: 1, tool: String::from("say"), input: patient.clone(), within });
+    let first = harness.asked::<Call>()?;
+    let second = harness.asked::<Call>()?;
+    assert_eq!((&first.request.input, &second.request.input), (&quick, &patient));
+
+    let (refused, stream) = frames::<Up>(&mut harness, stream, 1);
+    let waited = sent.elapsed();
+    let in_time = Called::Refused(String::from("the tool did not answer in time"));
+    assert_eq!(refused, vec![Up::Called { call: 9, called: in_time }]);
+    assert!(waited >= Duration::from_millis(WITHIN_MILLIS), "refused after {waited:?}");
+
+    harness.reply(first, &Called::Output(late))?;
+    harness.reply(second, &Called::Output(output.clone()))?;
+    let (answered, _stream) = frames::<Up>(&mut harness, stream, 1);
+    assert_eq!(answered, vec![Up::Called { call: 10, called: Called::Output(output) }]);
 
     Ok(())
 }

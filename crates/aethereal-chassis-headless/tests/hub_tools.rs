@@ -12,6 +12,7 @@ use aethereal_data::{Bound, Budget, Json, Plain, Schema, SchemaNodes, from_bytes
 use aethereal_link::{
     Down, EngineAnswer, EngineCall, EngineId, EngineList, EngineListing, EngineSheets, EngineTools, Engines,
     EnginesSettings, JsonSheet, Link, LinkSettings, ListEngines, MintToken, Minted, Origin, REVISION, Token, Up,
+    Within,
 };
 use aethereal_substrate::harness::{Asked, Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
@@ -380,7 +381,8 @@ fn call_tool_sends_the_bytes_its_json_input_is_and_answers_the_engines_bytes_as_
     let (down, _stream) = answered_call(&mut harness, stream, Called::Output(bytes_of(&said)));
     let answer: EngineAnswer = output(harness.answer(calling)?);
 
-    assert_eq!(down, Down::Call { call: 0, revision: 3, tool: String::from("say"), input: bytes_of(&say) });
+    let input = bytes_of(&say);
+    assert_eq!(down, Down::Call { call: 0, revision: 3, tool: String::from("say"), input, within: Within::Unbounded });
     assert_eq!(answer, EngineAnswer { output: json_of(&said) });
 
     Ok(())
@@ -404,7 +406,8 @@ fn input_not_of_the_tools_schema_is_refused_and_never_written() -> Result<(), Un
     let (down, _stream) = answered_call(&mut harness, stream, Called::Output(bytes_of(&Said { length: 5 })));
     let _: EngineAnswer = output(harness.answer(calling)?);
 
-    assert_eq!(down, Down::Call { call: 0, revision: 3, tool: String::from("say"), input: bytes_of(&say) });
+    let input = bytes_of(&say);
+    assert_eq!(down, Down::Call { call: 0, revision: 3, tool: String::from("say"), input, within: Within::Unbounded });
 
     Ok(())
 }

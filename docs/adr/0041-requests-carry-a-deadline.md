@@ -47,15 +47,16 @@ turn.to(target).ask(&kind, &context)?;                           // the deadline
 **Across the link, a call carries the time it has left.** Two engines' clocks are their own, so a deadline crosses as a span.
 
 ```rust
-pub enum Within { Unbounded, Millis(u64) }                       // aethereal-link
+pub enum Within { Unbounded, Millis(u64) }                       // aethereal-link: milliseconds, rounded down
 Down::Call { call: u64, revision: u64, tool: String, input: Vec<u8>, within: Within }
 ```
 
-- **`Engine:k` writes the time left before its held call's `Due`,** and runs one `Sleep` to that `Due`, which frees the call's slot when it fires. This is the one hop that waits on a frame, not an ask.
-- **`Link` asks the tool `within` that span of the frame's arrival,** so a tool that never answers frees the engine's slot too, and its call is answered refused.
+- **`Engine:k` writes the time left before its held call's `Due`,** and runs one `Sleep` to that `Due`, which frees the call's slot when it fires, and is cancelled when the engine answers first. This is the one hop that waits on a frame, not an ask. When the `Sleep` fires it answers the call refused, as a holder answers what it holds: the engine drops that answer once it has expired the request, and should the `Sleep` be handled in a step that began before the deadline, the asker reads why. A `Called` that comes after finds no call, and is passed over.
+- **`Engine:k`'s writes to its connection state `Due::Never`.** A write is the connection's, not the call it carries, and a write not sent ends the link: inherited from the call, an expired write would end the link with every other call on it.
+- **`Link` asks the tool `within` that span of when it reads the frame,** so a tool that never answers frees the engine's slot too, and its call is answered refused, saying the tool did not answer in time.
 - `Down::Call` changes in a way an older engine would misread, and the store keeps builds from before the change, so `REVISION` is `2` (ADR-0040).
 
-**`Mcp`, `EngineTools`, and `Engines` change nothing.** Each asks in the turn that handles the request it holds, so its ask inherits the deadline, and its existing `Answered::No` arm frees the slot.
+**`Mcp` changes nothing,** and `EngineTools` one ask. `Mcp` asks in the turn that handles the request it holds, so its ask inherits the deadline, and its existing `Answered::No` arm frees the slot. `EngineTools` asks the engine at its typed path, `Engine:k`, not through `Engines`: its first ask, for the engine's tools, inherits, but it asks the call from the turn that handles their answer, so it states `within(held.due())` there.
 
 ## Consequences
 

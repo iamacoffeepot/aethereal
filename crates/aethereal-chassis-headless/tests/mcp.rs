@@ -4,10 +4,14 @@ use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path,
     ProtocolRef, ToSender, Top, Turn, Unanswered, path,
 };
+use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_chassis_headless::{FileRoots, Headless};
 use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, from_json, to_bytes, to_json};
 use aethereal_files::{Files, ReadTool, WriteTool};
 use aethereal_http::{Http, HttpSettings};
+use aethereal_link::{
+    Down, EngineList, EngineTools, Engines, EnginesSettings, ListEngines, MintToken, Minted, REVISION, Up, Within,
+};
 use aethereal_mcp::{Mcp, McpSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Program};
@@ -1019,6 +1023,148 @@ fn write_tool_writes_a_save_over_mcp_that_read_file_reads_back() -> Result<(), U
 
     let listed = answered(&mut harness, port, &Post::of(Rpc::List));
     assert!(listed.body.contains("\"name\":\"write_file\""), "{listed:?}");
+
+    Ok(())
+}
+
+/// The most bytes of a frame of the link, each way.
+const LINK_BYTES: u32 = 64 * 1024;
+
+/// Writes `frame` to `stream` as the link frames it: its length, big-endian, then its bytes.
+fn send_frame<T: Plain>(stream: &mut TcpStream, frame: &T) {
+    let Ok(bytes) = to_bytes(frame) else {
+        panic!("the frame encodes");
+    };
+    let Ok(length) = u32::try_from(bytes.len()) else {
+        panic!("the frame has a length");
+    };
+    assert!(stream.write_all(&length.to_be_bytes()).is_ok(), "the length writes");
+    assert!(stream.write_all(&bytes).is_ok(), "the frame writes");
+}
+
+/// The next frame of the link on `stream`, read as `T`.
+fn receive_frame<T: Plain>(stream: &mut TcpStream) -> T {
+    let mut prefix = [0; 4];
+    assert!(stream.read_exact(&mut prefix).is_ok(), "a frame comes within ten seconds");
+    let mut bytes = vec![0; usize::try_from(u32::from_be_bytes(prefix)).unwrap_or(usize::MAX)];
+    assert!(stream.read_exact(&mut bytes).is_ok(), "the frame comes whole");
+    let Ok(frame) = from_bytes(&bytes, &mut Budget::new(1 << 24)) else {
+        panic!("the frame reads as what was expected");
+    };
+
+    frame
+}
+
+/// What `Engines` lists.
+fn engine_list(harness: &mut Harness<Headless>) -> Result<EngineList, Unheard> {
+    let engines = harness.root::<Engines>();
+    let listing = harness.ask(engines, &ListEngines)?;
+    let Answered::Yes(list) = harness.answer(listing)? else {
+        panic!("`Engines` answers its list");
+    };
+
+    Ok(list)
+}
+
+/// A hub over `http`, serving MCP with the hub's tools, with one call out to each engine, and an engine linked to it
+/// holding `say`, played by a socket: the hub, its MCP port, and the engine's connection.
+fn hub_with_an_engine(http: HttpSettings) -> Result<(Harness<Headless>, u16, TcpStream), Unheard> {
+    let engines = EnginesSettings { port: 0, most_calls: 1, most_bytes: LINK_BYTES, ..EnginesSettings::default() };
+    let read_limit = engine_for(&http).read_limit.max(LINK_BYTES);
+    let program = Headless::program()
+        .with_engine(EngineSettings { read_limit, ..engine_for(&http) })
+        .root::<Tcp>()
+        .root_with::<Http>(http)
+        .root_with::<Mcp>(McpSettings { port: 0, ..McpSettings::default() })
+        .root_with::<Engines>(engines)
+        .root::<Toolbox<(EngineTools,), Mcp>>();
+    let mut harness = Harness::of(program)?;
+    let port = port_of(&mut harness)?;
+    let engines = harness.root::<Engines>();
+    waiting::until(BUDGET, || {
+        harness.step();
+        harness.state(engines).is_ok_and(|engines| engines.port().is_some())
+    });
+    let Some(link_port) = harness.state(engines)?.port() else {
+        panic!("`Engines` listens");
+    };
+    harness.settle();
+
+    let minting = harness.ask(engines, &MintToken)?;
+    let Answered::Yes(Minted { token, .. }) = harness.answer(minting)? else {
+        panic!("`Engines` mints a token");
+    };
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", link_port)) else {
+        panic!("the engine's side connects");
+    };
+    assert!(stream.set_read_timeout(Some(Duration::from_secs(10))).is_ok(), "the read timeout sets");
+    send_frame(&mut stream, &Up::Hello { revision: REVISION, name: String::from("scene"), token });
+    send_frame(&mut stream, &Up::Sheets { revision: 1, tools: vec![sheet("say")] });
+    waiting::until(BUDGET, || engine_list(&mut harness).is_ok_and(|list| list.engines.len() == 1));
+    assert_eq!(engine_list(&mut harness)?.engines.len(), 1, "the engine is linked");
+
+    Ok((harness, port, stream))
+}
+
+/// `call_tool` of `say` on engine 0.
+fn call_say_on_the_engine() -> Post {
+    call_tool("call_tool", "{\"engine\":0,\"tool\":\"say\",\"input\":{\"text\":\"hello\"}}")
+}
+
+#[test]
+fn call_tool_of_a_tool_that_never_answers_is_answered_504_and_frees_the_engines_slot() -> Result<(), Unheard> {
+    // Catches the link's hop left out of HTTP's deadline: `EngineTools` asks the engine from the turn that reads its
+    // tools, not the one that holds the call, so an ask there that states no deadline is due never, `Engine` keeps
+    // the call after the client was answered `504`, and with one call out every `call_tool` of the engine after it is
+    // refused. Catches too a call written with no time left, or more than HTTP gave it.
+    let http = HttpSettings { answer_within_millis: 300, ..HttpSettings::default() };
+    let (mut harness, port, stream) = hub_with_an_engine(http)?;
+
+    let first = client(port, &call_say_on_the_engine());
+    #[allow(clippy::disallowed_methods)] // The engine's side is a native thread of its own, outside the engine.
+    let silent = thread::spawn(move || {
+        let mut stream = stream;
+        let down: Down = receive_frame(&mut stream);
+
+        (down, stream)
+    });
+    let read = heard(&mut harness, first);
+    assert_eq!(read.status, 504, "{read:?}");
+    let Ok((written, stream)) = silent.join() else {
+        panic!("the engine's side read the call");
+    };
+    let Down::Call { call: 0, within: Within::Millis(left), .. } = written else {
+        panic!("the call is written with the time it has left: {written:?}");
+    };
+    assert!(left <= 300, "{left} milliseconds left of 300");
+
+    let engines = harness.root::<Engines>();
+    let Some(engine) = harness.state(engines)?.engine(0) else {
+        panic!("the engine stands under its id");
+    };
+    waiting::until(BUDGET, || {
+        harness.step();
+        harness.state(engine).is_ok_and(|engine| engine.calls_out() == 0)
+    });
+    assert_eq!(harness.state(engine)?.calls_out(), 0, "the call's slot is freed at HTTP's deadline");
+
+    let again = client(port, &call_say_on_the_engine());
+    #[allow(clippy::disallowed_methods)] // The engine's side is a native thread of its own, outside the engine.
+    let answering = thread::spawn(move || {
+        let mut stream = stream;
+        let down: Down = receive_frame(&mut stream);
+        let Ok(output) = to_bytes(&Said { length: 5 }) else {
+            panic!("the output encodes");
+        };
+        if let Down::Call { call, .. } = down {
+            send_frame(&mut stream, &Up::Called { call, called: Called::Output(output) });
+        }
+
+        stream
+    });
+    let read = heard(&mut harness, again);
+    assert!(read.body.contains("\"length\":5"), "the engine's slot came back: {read:?}");
+    assert!(answering.join().is_ok(), "the engine's side answered the call");
 
     Ok(())
 }

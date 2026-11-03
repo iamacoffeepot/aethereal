@@ -9,8 +9,9 @@ use crate::frames::{self, Written};
 use crate::read_limit;
 use crate::{Down, REVISION, Refusal, Up};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Level,
-    More, Number, Open, Part, Path, ProtocolRef, Streamed, Streams, Taken, ToAny, ToSender, ToType, Top, Turn, path,
+    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Due, Ended, Ending, Fault, Handles,
+    Level, More, Number, Open, Part, Path, ProtocolRef, Streamed, Streams, Taken, ToAny, ToSender, ToType, Top, Turn,
+    Unanswered, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
@@ -66,8 +67,9 @@ const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// The engine's end of the link (ADR-0038, ADR-0040): a tools [`Holder`], which any actor may [`Offer`] tools at its
 /// typed path, `path::<Link>(())`, naming a worker that speaks [`Tooling`]. It dials its hub once, as it begins,
 /// writes [`Up::Hello`] with the token its hub minted and then [`Up::Sheets`], and writes the whole set again after
-/// every change to what it holds. Each [`Down::Call`] is asked of the tool's worker and its answer written back as
-/// [`Up::Called`]. A tool's offer never waits on the hub.
+/// every change to what it holds. Each [`Down::Call`] is asked of the tool's worker within the time the call has left,
+/// from when its frame is read, and its answer written back as [`Up::Called`]: a call its tool has not answered by
+/// then is written back refused (ADR-0041). A tool's offer never waits on the hub.
 ///
 /// No engine outlives its link: when the dial comes to nothing, the connection ends, a frame from the hub does not
 /// read, or the hub refuses the engine, the root asks its program to stop (`turn.quit`, ADR-0020). Its token is spent,
@@ -270,7 +272,10 @@ impl Handles<Part<Reading>> for Link {
                 turn.log(Level::Warn, "the hub refused this engine's token: it holds no such token");
                 self.hang_up(turn)
             }
-            Down::Call { call, revision, tool, input } => self.call(turn, call, revision, &Call { tool, input }),
+            Down::Call { call, revision, tool, input, within } => {
+                let due = within.due(turn.now());
+                self.call(turn, call, revision, due, &Call { tool, input })
+            }
         }
     }
 }
@@ -330,6 +335,7 @@ impl Handles<Answer<Called, Calling>> for Link {
         };
         let called = match answered {
             Answered::Yes(called) => called,
+            Answered::No(Unanswered::Expired) => Called::Refused(String::from("the tool did not answer in time")),
             Answered::No(why) => Called::Refused(format!("the tool did not answer: {why:?}")),
         };
 
@@ -369,12 +375,14 @@ impl Link {
     }
 
     /// The hub's call `call` of `revision`: refused when the set has changed since or holds no such tool, and asked of
-    /// the tool's worker otherwise.
+    /// the tool's worker otherwise, due as `due` says, so a tool that never answers is refused at the time the hub
+    /// stops waiting (ADR-0041).
     fn call<S, IW, IC>(
         &mut self,
         turn: &mut Turn<'_, Self, S>,
         call: u64,
         revision: u64,
+        due: Due,
         asked: &Call,
     ) -> Result<(), Fault>
     where
@@ -392,7 +400,7 @@ impl Link {
         let worker = held.worker;
         let number = self.next;
         self.next += 1;
-        turn.to(worker).ask::<_, _, IC>(asked, &Calling { number })?;
+        turn.to(worker).within(due).ask::<_, _, IC>(asked, &Calling { number })?;
         self.calls.insert(number, call);
 
         Ok(())

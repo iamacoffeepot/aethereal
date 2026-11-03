@@ -2,10 +2,11 @@
 
 use super::{CallEngine, DescribeEngine, Described, Engines, Shown, TakeToken, TokenFor};
 use crate::frames::{self, Written};
-use crate::{Down, REVISION, Refusal, Token, Up};
+use crate::{Down, REVISION, Refusal, Token, Up, Within};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Level,
-    More, Number, Open, Part, Path, Streamed, Streams, Taken, ToAny, ToSender, ToType, Turn, path,
+    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Due, Ending, Fault, Handles, Held,
+    JobId, Level, More, Number, Open, Part, Path, Sleep, Slept, Streamed, Streams, Taken, Time, ToAny, ToSender,
+    ToType, Turn, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
 use aethereal_tcp::{Accepted, HungUp, Read, Reading, Shut, Write, Writing, Wrote};
@@ -35,6 +36,29 @@ pub struct Sent {
 #[kind(name = "aether.link.vouching")]
 pub struct Vouching;
 
+/// What an engine keeps for the sleep that bounds a call it wrote: the call's number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.link.lapsing")]
+pub struct Lapsing {
+    call: u64,
+}
+
+/// A call written to the engine and not yet answered: the request it answers, and what bounds it.
+#[derive(Bound)]
+struct Out {
+    held: Held<Called>,
+    deadline: Deadline,
+}
+
+/// What bounds a call out (ADR-0041).
+#[derive(Debug, Bound)]
+enum Deadline {
+    /// Nothing: its asker waits until the engine answers.
+    Unbounded,
+    /// The sleep `sleep`, run to the call's deadline, whose answer frees its slot.
+    Sleeping { sleep: JobId },
+}
+
 /// What an engine has said on its connection.
 #[derive(Debug, Plain)]
 enum Said {
@@ -57,6 +81,11 @@ const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// [`Up::Sheets`], and asks each [`CallEngine`] of the engine as a [`Down::Call`] with a number of its own, answering
 /// it when [`Up::Called`] comes back.
 ///
+/// A call carries the time it has left before its request's deadline (ADR-0041), and the engine's `Link` stops waiting
+/// for its tool once that much has passed. This is the one hop that waits on a frame, not an ask, so nothing answers it
+/// `No` at the deadline: it runs a [`Sleep`] to the deadline itself, and frees the call's slot when it is answered. A
+/// `Called` that comes after is passed over, as one of no call out is.
+///
 /// It asks `Engines` to take the token its `Hello` brings, and tells `Engines` what it shows only once the token is
 /// taken, so it is listed only then. A token `Engines` does not hold is refused ([`Refusal::Token`]), as a revision it
 /// does not speak is, and the connection shut.
@@ -72,9 +101,17 @@ pub struct Engine {
     most_bytes: u32,
     reading: Streams<Reading, ()>,
     said: Said,
-    /// Each call written and not yet answered, by its number.
-    calls: BTreeMap<u64, Held<Called>>,
+    /// Each call written and not yet answered, nor its deadline come, by its number.
+    calls: BTreeMap<u64, Out>,
     next: u64,
+}
+
+impl Engine {
+    /// How many calls it has written that the engine has not answered, nor their deadlines come.
+    #[must_use]
+    pub fn calls_out(&self) -> usize {
+        self.calls.len()
+    }
 }
 
 impl ChildOf for Engine {
@@ -99,6 +136,7 @@ impl Actor for Engine {
         Answer<HungUp, Number>,
         Answer<Wrote, Sent>,
         Answer<TokenFor, Vouching>,
+        Answer<Slept, Lapsing>,
         DescribeEngine,
         CallEngine,
         Shut,
@@ -165,9 +203,13 @@ impl Handles<Part<Reading>> for Engine {
                 Ok(())
             }
             (Up::Called { call, called }, Said::Linked { .. }) => {
-                if let Some(held) = self.calls.remove(&call) {
-                    turn.answer(held, &called)?;
+                let Some(Out { held, deadline }) = self.calls.remove(&call) else {
+                    return Ok(());
+                };
+                if let Deadline::Sleeping { sleep } = deadline {
+                    turn.cancel(sleep);
                 }
+                turn.answer(held, &called)?;
                 Ok(())
             }
             (up, _) => {
@@ -236,6 +278,30 @@ impl Handles<Answer<TokenFor, Vouching>> for Engine {
     }
 }
 
+impl Handles<Answer<Slept, Lapsing>> for Engine {
+    type Sends = ();
+
+    /// A call's deadline has come before the engine answered it, or this would have been cancelled: its slot is freed.
+    /// A sleep that came to nothing frees it too, as nothing else would.
+    ///
+    /// Its asker has been answered `Expired` already, or is as its deadline's step runs, and the engine drops an answer
+    /// that comes after that (ADR-0041). The call is answered all the same, not let go of: should this come before the
+    /// engine expires the request, the asker reads why it was not called, where a request let go of would read only
+    /// that it went unanswered.
+    fn handle(
+        &mut self,
+        (_, Lapsing { call }): (Answered<Slept>, Lapsing),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let Some(Out { held, .. }) = self.calls.remove(&call) else {
+            return Ok(());
+        };
+        turn.answer(held, &Called::Refused(String::from("the engine did not answer in time")))?;
+
+        Ok(())
+    }
+}
+
 impl Handles<DescribeEngine> for Engine {
     type Sends = (ToSender<Described>,);
 
@@ -253,19 +319,26 @@ impl Handles<DescribeEngine> for Engine {
 impl Handles<CallEngine> for Engine {
     type Sends = (ToSender<Called>, Asks<Writing, Write, Sent>);
 
-    /// Holds the call and writes it, or refuses it at once: before the engine has sent its tools, past the most calls
-    /// out, or when it would not fit in a frame.
+    /// Holds the call and writes it with the time it has left, running a sleep to its deadline when it has one, or
+    /// refuses it at once: before the engine has sent its tools, past the most calls out, or when it would not fit in
+    /// a frame.
     fn handle(&mut self, asked: CallEngine, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let fate = self.fate(asked)?;
+        let held = turn.hold()?;
+        let fate = self.fate(asked, held.due(), turn.now())?;
         let call = match fate {
             Fate::Writes(call) => call,
             Fate::Refused(why) => {
-                turn.reply(&Called::Refused(String::from(why)))?;
+                turn.answer(held, &Called::Refused(String::from(why)))?;
                 return Ok(());
             }
         };
-        let held = turn.hold()?;
-        self.calls.insert(self.next, held);
+        let deadline = match held.due() {
+            Due::Never => Deadline::Unbounded,
+            Due::Before(until) => {
+                Deadline::Sleeping { sleep: turn.run(&Sleep { until }, &Lapsing { call: self.next })? }
+            }
+        };
+        self.calls.insert(self.next, Out { held, deadline });
         self.next += 1;
 
         self.write(turn, call, false)
@@ -295,8 +368,8 @@ enum Fate {
 }
 
 impl Engine {
-    /// What becomes of `asked`, numbered as the next call.
-    fn fate(&self, asked: CallEngine) -> Result<Fate, Fault> {
+    /// What becomes of `asked`, numbered as the next call, due as `due` says, at `now`.
+    fn fate(&self, asked: CallEngine, due: Due, now: Time) -> Result<Fate, Fault> {
         let Said::Linked { tools: Described::Tools { .. }, .. } = self.said else {
             return Ok(Fate::Refused("the engine has not sent its tools"));
         };
@@ -306,7 +379,7 @@ impl Engine {
             return Ok(Fate::Refused("too many calls of the engine are out"));
         }
         let CallEngine { revision, tool, input } = asked;
-        let call = Down::Call { call: self.next, revision, tool, input };
+        let call = Down::Call { call: self.next, revision, tool, input, within: Within::left(due, now) };
         let fate = match frames::written(&call, self.most_bytes)? {
             Written::Fits(bytes) => Fate::Writes(bytes),
             Written::TooLarge => Fate::Refused("the call is too large for the link"),
@@ -340,11 +413,16 @@ impl Engine {
     }
 
     /// Writes the frame `bytes`, noting whether it closes once they are sent.
+    ///
+    /// A write is the connection's, not the call it may carry: one that is not sent ends the connection, so it states
+    /// no deadline, where in a turn that handles a call it would inherit the call's and end the link when it expired
+    /// (ADR-0041).
     fn write<S, I>(&self, turn: &mut Turn<'_, Self, S>, bytes: Vec<u8>, closes: bool) -> Result<(), Fault>
     where
         S: Allows<Asks<Writing, Write, Sent>, I>,
     {
-        turn.to(self.connection.protocol::<Writing, _>()).ask::<_, _, I>(&Write { bytes }, &Sent { closes })?;
+        let connection = self.connection.protocol::<Writing, _>();
+        turn.to(connection).within(Due::Never).ask::<_, _, I>(&Write { bytes }, &Sent { closes })?;
 
         Ok(())
     }

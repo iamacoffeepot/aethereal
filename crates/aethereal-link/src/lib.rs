@@ -21,7 +21,9 @@
 //! from the engine or a [`Down`] from the hub. A connection opens with [`Up::Hello`], which names the [`REVISION`] the
 //! engine speaks and brings its token, and then [`Up::Sheets`], every tool the engine holds, which it writes again
 //! whole after every change. Each set has a revision, and each [`Down::Call`] names the set the hub converted it
-//! with, so the engine refuses a call of a set it has changed since.
+//! with, so the engine refuses a call of a set it has changed since. A call carries the time it has left, [`Within`],
+//! before the deadline of the request it answers: `Engine` frees its slot when that time comes, and `Link` stops
+//! waiting for its tool then (ADR-0041).
 //!
 //! `Link` needs nothing of its host but `Tcp`, so it is bootstrapped for every host. `Engines` needs the host's
 //! [`Randomness`] too, which each native host's crate serves as it bootstraps it. Their settings, the sections `link`
@@ -60,11 +62,11 @@ mod tools;
 
 pub use engines::{
     Binding, Booting, CallEngine, DescribeEngine, Described, Engine, EngineConfig, EngineList, EngineListing, Engines,
-    EnginesSettings, ExitedEngine, Fetching, LinkedAs, ListEngines, MintToken, Minted, Minting, Origin, Patience,
-    Randomness, Runs, Sent, Shown, Spawn, SpawnEngine, Spawned, SpawnedConfig, TakeToken, TerminateEngine, Terminated,
-    TokenFor, Unfilled, Unlistened, Vouching,
+    EnginesSettings, ExitedEngine, Fetching, Lapsing, LinkedAs, ListEngines, MintToken, Minted, Minting, Origin,
+    Patience, Randomness, Runs, Sent, Shown, Spawn, SpawnEngine, Spawned, SpawnedConfig, TakeToken, TerminateEngine,
+    Terminated, TokenFor, Unfilled, Unlistened, Vouching,
 };
-pub use frames::{Down, PORT, REVISION, Refusal, Up};
+pub use frames::{Down, PORT, REVISION, Refusal, Up, Within};
 pub use link::{Calling, Connecting, Link, LinkConfig, LinkSettings, NoToken, Sending};
 pub use read_limit::ReadLimitTooLow;
 pub use token::Token;
