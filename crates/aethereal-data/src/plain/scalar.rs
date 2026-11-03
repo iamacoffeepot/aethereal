@@ -1,7 +1,10 @@
 //! `bool`, the integers, the floats, `char`, and the `NonZero` integers (ADR-0004).
 
 use crate::plain::{read_array, take_bytes};
-use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Float, Integer, Plain, Reader, Schema, Shape, Writer};
+use crate::{
+    Bare, Boundary, Decode, DecodeError, Element, Encode, EncodeError, Float, Integer, Plain, Reader, Schema, Shape,
+    Writer,
+};
 use alloc::vec::Vec;
 use core::num::{NonZeroI8, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroU8, NonZeroU16, NonZeroU32, NonZeroU64};
 
@@ -31,6 +34,8 @@ macro_rules! integer_codec {
         }
 
         impl Plain for $t {}
+
+        impl<B: Boundary> Element<B> for $t {}
     };
 }
 
@@ -65,6 +70,10 @@ impl<B: Boundary> Decode<B> for u8 {
 
 impl Plain for u8 {}
 
+/// A byte is an element at `Bare`, so a setting and a frame to another engine may hold a byte vector; between actors,
+/// bytes are a blob (ADR-0042).
+impl Element<Bare> for u8 {}
+
 integer!(u16, Integer::U16);
 integer!(u32, Integer::U32);
 integer!(u64, Integer::U64);
@@ -93,6 +102,8 @@ macro_rules! float {
         }
 
         impl Plain for $t {}
+
+        impl<B: Boundary> Element<B> for $t {}
     };
 }
 
@@ -123,6 +134,8 @@ impl<B: Boundary> Decode<B> for bool {
 
 impl Plain for bool {}
 
+impl<B: Boundary> Element<B> for bool {}
+
 impl Schema for char {
     const SHAPE: Shape = Shape::Integer(Integer::U32);
 }
@@ -143,6 +156,8 @@ impl<B: Boundary> Decode<B> for char {
 }
 
 impl Plain for char {}
+
+impl<B: Boundary> Element<B> for char {}
 
 macro_rules! nonzero {
     ($t:ty, $inner:ty, $kind:expr) => {
@@ -165,6 +180,8 @@ macro_rules! nonzero {
         }
 
         impl Plain for $t {}
+
+        impl<B: Boundary> Element<B> for $t {}
     };
 }
 

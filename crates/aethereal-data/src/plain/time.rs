@@ -1,6 +1,8 @@
 //! `Duration` as plain data (ADR-0004).
 
-use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Field, Integer, Plain, Reader, Schema, Shape, Writer};
+use crate::{
+    Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, Integer, Plain, Reader, Schema, Shape, Writer,
+};
 use core::time::Duration;
 
 /// The nanoseconds in one second; `nanos` at or above this is refused (ADR-0004).
@@ -37,6 +39,8 @@ impl<B: Boundary> Decode<B> for Duration {
 }
 
 impl Plain for Duration {}
+
+impl<B: Boundary> Element<B> for Duration {}
 
 #[cfg(test)]
 mod tests {

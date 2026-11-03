@@ -239,9 +239,13 @@ fn asset(path: &str) -> ReadFile {
     ReadFile { namespace: Namespace::Assets, path: checked(path) }
 }
 
-/// A request to write `bytes` as the file at `path` in `namespace`.
-fn write_file(namespace: Namespace, path: &str, bytes: &[u8]) -> WriteFile {
-    WriteFile { namespace, path: checked(path), bytes: bytes.to_vec() }
+/// A request to write `bytes` as the file at `path` in `namespace`, its bytes put in `harness`.
+fn write_file(harness: &mut Harness<Headless>, namespace: Namespace, path: &str, bytes: &[u8]) -> WriteFile {
+    let Ok(bytes) = harness.put(bytes.to_vec()) else {
+        panic!("the bytes fit in the blobs' budget");
+    };
+
+    WriteFile { namespace, path: checked(path), bytes }
 }
 
 #[test]
@@ -277,8 +281,12 @@ fn an_actor_writes_a_save_and_reads_it_back_through_the_file_capability() -> Res
     let mut harness = Harness::of(Headless::program().with_cycle::<(Tick,)>().root_with::<Files>(dir.roots(2)))?;
     let files = harness.root::<Files>();
 
-    let first = harness.ask(files, &write_file(Namespace::Save, "slots/game.sav", b"first"))?;
-    let other = harness.ask(files, &write_file(Namespace::Save, "other.sav", b"other"))?;
+    let (first, other) = (
+        write_file(&mut harness, Namespace::Save, "slots/game.sav", b"first"),
+        write_file(&mut harness, Namespace::Save, "other.sav", b"other"),
+    );
+    let first = harness.ask(files, &first)?;
+    let other = harness.ask(files, &other)?;
     let (first, other) = harness.answers((first, other))?;
     assert_eq!((first, other), (Answered::Yes(FileWritten::Written), Answered::Yes(FileWritten::Written)));
 
@@ -300,7 +308,8 @@ fn a_write_to_assets_is_read_only_in_the_turn_that_asks() -> Result<(), Unheard>
     let files = harness.root::<Files>();
     harness.host().engine_mut().record_turns();
 
-    let written = harness.ask(files, &write_file(Namespace::Assets, "a.txt", b"b"))?;
+    let write = write_file(&mut harness, Namespace::Assets, "a.txt", b"b");
+    let written = harness.ask(files, &write)?;
     assert_eq!(harness.answer(written)?, Answered::Yes(FileWritten::ReadOnly));
 
     let turns_of_files =

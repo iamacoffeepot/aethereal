@@ -183,7 +183,7 @@ impl Handles<Part<Reading>> for Engine {
         if matches!(self.said, Said::Refused) {
             return Ok(());
         }
-        let up = match frames::read::<Up>(&value.bytes, self.most_bytes) {
+        let up = match frames::read::<Up>(turn.read(&value.bytes), self.most_bytes) {
             Ok(up) => up,
             Err(why) => {
                 turn.log(Level::Warn, format_args!("a frame from an engine did not read: {why:?}"));
@@ -209,6 +209,7 @@ impl Handles<Part<Reading>> for Engine {
                 if let Deadline::Sleeping { sleep } = deadline {
                     turn.cancel(sleep);
                 }
+                let called = called.into_called(turn);
                 turn.answer(held, &called)?;
                 Ok(())
             }
@@ -324,7 +325,8 @@ impl Handles<CallEngine> for Engine {
     /// a frame.
     fn handle(&mut self, asked: CallEngine, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let held = turn.hold()?;
-        let fate = self.fate(asked, held.due(), turn.now())?;
+        let input = turn.read(&asked.input).to_vec();
+        let fate = self.fate(asked, input, held.due(), turn.now())?;
         let call = match fate {
             Fate::Writes(call) => call,
             Fate::Refused(why) => {
@@ -368,8 +370,9 @@ enum Fate {
 }
 
 impl Engine {
-    /// What becomes of `asked`, numbered as the next call, due as `due` says, at `now`.
-    fn fate(&self, asked: CallEngine, due: Due, now: Time) -> Result<Fate, Fault> {
+    /// What becomes of `asked`, whose input's bytes, read out of its blob, are `input`, numbered as the next call, due
+    /// as `due` says, at `now`.
+    fn fate(&self, asked: CallEngine, input: Vec<u8>, due: Due, now: Time) -> Result<Fate, Fault> {
         let Said::Linked { tools: Described::Tools { .. }, .. } = self.said else {
             return Ok(Fate::Refused("the engine has not sent its tools"));
         };
@@ -378,7 +381,7 @@ impl Engine {
         if is_full {
             return Ok(Fate::Refused("too many calls of the engine are out"));
         }
-        let CallEngine { revision, tool, input } = asked;
+        let CallEngine { revision, tool, .. } = asked;
         let call = Down::Call { call: self.next, revision, tool, input, within: Within::left(due, now) };
         let fate = match frames::written(&call, self.most_bytes)? {
             Written::Fits(bytes) => Fate::Writes(bytes),
@@ -412,7 +415,8 @@ impl Engine {
         Ok(())
     }
 
-    /// Writes the frame `bytes`, noting whether it closes once they are sent.
+    /// Writes the frame `bytes`, put as a blob, noting whether it closes once they are sent. A frame the engine has no
+    /// room to hold ends the connection, as a write not sent does: the engine closes, and its connection with it.
     ///
     /// A write is the connection's, not the call it may carry: one that is not sent ends the connection, so it states
     /// no deadline, where in a turn that handles a call it would inherit the call's and end the link when it expired
@@ -421,8 +425,13 @@ impl Engine {
     where
         S: Allows<Asks<Writing, Write, Sent>, I>,
     {
+        let Ok(frame) = turn.put(bytes) else {
+            turn.log(Level::Warn, "the hub had no room to hold a frame to an engine, and closes its connection");
+            turn.close();
+            return Ok(());
+        };
         let connection = self.connection.protocol::<Writing, _>();
-        turn.to(connection).within(Due::Never).ask::<_, _, I>(&Write { bytes }, &Sent { closes })?;
+        turn.to(connection).within(Due::Never).ask::<_, _, I>(&Write { parts: vec![frame] }, &Sent { closes })?;
 
         Ok(())
     }

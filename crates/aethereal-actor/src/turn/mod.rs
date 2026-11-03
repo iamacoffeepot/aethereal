@@ -653,12 +653,21 @@ impl Seat<'_> {
     /// Panics when neither holds it, which a pin rules out.
     #[cfg(feature = "std")]
     fn read(&self, blob: &Bytes) -> &[u8] {
-        let id = blob.id();
-        let Some(bytes) = self.asked.puts.read(id).or_else(|| self.table.blob(id)) else {
-            panic!("blob store: the blob {id:?} is pinned and not held");
-        };
+        self.blobs().read(blob)
+    }
 
-        bytes
+    /// What reads the blobs this turn reads: those put by this worker in this step, and the store.
+    #[cfg(feature = "std")]
+    fn blobs(&self) -> Blobs<'_> {
+        Blobs { puts: &self.asked.puts, table: self.table }
+    }
+
+    /// The resource `handle` names, this actor's own, and what reads the blobs this turn reads beside it.
+    #[cfg(feature = "std")]
+    fn open_reading<R: Resource>(&mut self, handle: &Handle<R>) -> Result<(&mut R, Blobs<'_>), Fault> {
+        let blobs = Blobs { puts: &self.asked.puts, table: self.table };
+
+        Ok((self.keeps.open(handle)?, blobs))
     }
 
     /// The content hash of the blob `blob` pins: the one the store kept, or one computed now and noted for the store
@@ -1268,6 +1277,32 @@ impl Seat<'_> {
         self.asked.claims.retain(|claim| !gone.contains(&claim.by.seat));
         self.asked.asks.retain(|(by, _)| !gone.contains(&by.seat));
         self.asked.seats.give_back(seat);
+    }
+}
+
+/// What reads the blobs a turn reads, and does nothing else (ADR-0014): lent by a turn beside a resource it opens, to
+/// hand the resource bytes it reads, as a connection writes the blobs it is asked to write to its socket.
+#[cfg(feature = "std")]
+pub struct Blobs<'t> {
+    puts: &'t Puts,
+    table: &'t dyn Table,
+}
+
+#[cfg(feature = "std")]
+impl<'t> Blobs<'t> {
+    /// The bytes of the blob `blob` pins: put by this worker in this step, or in the store.
+    ///
+    /// # Panics
+    ///
+    /// Panics when neither holds it, which a pin rules out.
+    #[must_use]
+    pub fn read(&self, blob: &Bytes) -> &'t [u8] {
+        let id = blob.id();
+        let Some(bytes) = self.puts.read(id).or_else(|| self.table.blob(id)) else {
+            panic!("blob store: the blob {id:?} is pinned and not held");
+        };
+
+        bytes
     }
 }
 
@@ -1898,6 +1933,18 @@ impl<Me, S> Turn<'_, Me, S> {
     /// [`KeepsNothing`](crate::KeepsNothing) in a guest's code.
     pub fn open<R: Resource>(&mut self, handle: &mut Handle<R>) -> Result<&mut R, Fault> {
         self.seat.open(handle)
+    }
+
+    /// The resource `handle` names, as [`Self::open`] answers it, and what reads the blobs this turn reads, lent
+    /// beside it: for a turn that hands the resource the bytes of blobs, as a connection writes them to its socket
+    /// with no copy (ADR-0014, ADR-0042).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    #[cfg(feature = "std")]
+    pub fn open_reading<R: Resource>(&mut self, handle: &mut Handle<R>) -> Result<(&mut R, Blobs<'_>), Fault> {
+        self.seat.open_reading(handle)
     }
 
     /// Gives up the resource `handle` names, and answers with what names it on its way to a new owner, to send in

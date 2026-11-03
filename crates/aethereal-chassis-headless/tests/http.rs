@@ -128,7 +128,7 @@ fn requests_sent_ahead_are_answered_in_order() -> Result<(), Unheard> {
     let client = client(port, ahead, 2);
 
     let first = harness.asked::<Request>()?;
-    assert_eq!(first.request.body, b"hello");
+    assert_eq!(harness.read(&first.request.body), Some(&b"hello"[..]));
     let answer = echoed(&first);
     harness.reply(first, &answer)?;
     let second = harness.asked::<Request>()?;

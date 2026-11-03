@@ -2,7 +2,8 @@
 
 use crate::plain::write_count;
 use crate::{
-    Boundary, Decode, DecodeError, Encode, EncodeError, Field, Float, Integer, Plain, Reader, Schema, Shape, Writer,
+    Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, Float, Integer, Plain, Reader, Schema, Shape,
+    Writer,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -230,6 +231,8 @@ impl<B: Boundary> Decode<B> for SchemaNodes {
 }
 
 impl Plain for SchemaNodes {}
+
+impl<B: Boundary> Element<B> for SchemaNodes {}
 
 /// Converts a position in the node list to its wire index.
 ///

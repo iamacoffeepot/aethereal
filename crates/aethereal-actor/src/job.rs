@@ -15,7 +15,8 @@ use crate::{
 #[cfg(feature = "std")]
 use crate::{Given, Resource, Services, pins};
 use aethereal_data::{
-    ActorId, Budget, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, Reader, Schema, Shape, Writer,
+    ActorId, Boundary, Budget, Decode, DecodeError, Element, Encode, EncodeError, Field, Kind, KindId, Reader, Schema,
+    Shape, Writer,
 };
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -308,6 +309,8 @@ impl Decode<Within> for JobId {
         Ok(Self(MailId { sender, count }))
     }
 }
+
+impl<B: Boundary> Element<B> for JobId {}
 
 /// Why a turn ran no job (ADR-0018).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

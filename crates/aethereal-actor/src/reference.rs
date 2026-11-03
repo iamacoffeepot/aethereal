@@ -5,7 +5,8 @@ use crate::{
     ToAny, ToType, Vantage,
 };
 use aethereal_data::{
-    ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindId, Reader, Schema, Shape, Writer,
+    ActorId, Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, Kind, KindId, Reader, Schema, Shape,
+    Writer,
 };
 use alloc::vec::Vec;
 use core::fmt;
@@ -110,6 +111,8 @@ where
         Ok(Self::new(Seated { id, seat }))
     }
 }
+
+impl<B: Boundary> Element<B> for ErasedActorRef {}
 
 /// A reference to an actor of type `T` the engine has established exists: the reference an actor holds, the
 /// [`ErasedActorRef`] being for the few that cannot name the type (ADR-0008).
@@ -226,6 +229,8 @@ where
         ErasedActorRef::decode(input).map(|reference| Self::new(reference.seated()))
     }
 }
+
+impl<B: Boundary, T> Element<B> for ActorRef<T> {}
 
 /// A reference to an actor whose type takes every kind of the protocol `P`, whatever that type is: what one list
 /// of listeners of many types holds (ADR-0016).
@@ -367,6 +372,8 @@ where
         ErasedActorRef::decode(input).map(|reference| Self::new(reference.seated()))
     }
 }
+
+impl<B: Boundary, P> Element<B> for ProtocolRef<P> {}
 
 /// A proven reference to an actor that takes mail of kind `K`, and the send a turn declares to reach it: what the
 /// send verbs take, so one verb sends through either reference (ADR-0016).

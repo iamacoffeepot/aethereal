@@ -5587,9 +5587,9 @@ mod tests {
             let mut harness = Harness::bare(engine)?;
             let echo = harness.root::<echo::Echo>();
 
-            let past = harness.ask(echo, &echo::Parcel { bytes: vec![7; 1024] })?;
+            let past = harness.ask(echo, &echo::Parcel { text: "7".repeat(1024) })?;
             let unread = harness.answer(past).map(pong_of)?;
-            let within = harness.ask(echo, &echo::Parcel { bytes: vec![7; 16] })?;
+            let within = harness.ask(echo, &echo::Parcel { text: "7".repeat(16) })?;
             let read = harness.answer(within).map(pong_of)?;
 
             assert_eq!(unread, Err(Unanswered::Unreadable), "{parts} parts, {hops} hops");

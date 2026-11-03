@@ -51,6 +51,29 @@ pub trait Encode<B: Boundary> {
     }
 }
 
+/// A type that may be an element of a sequence, a `Vec` or a `VecDeque`, at the boundary `B` (ADR-0042).
+///
+/// Every type is an element wherever it crosses but a byte: `u8` is an element at [`Bare`] and at the boundary of an
+/// actor's own state, and not between actors. So a byte vector may be in an actor's state, a setting, and a frame to
+/// another engine, and a kind that holds one has no codec for mail or a config, which hold `Bytes`, a blob, instead.
+/// The derives state it for every type they write, and a hand-written codec states it beside its `Encode`. It says
+/// nothing of how a type is written, and a fixed array, `[u8; N]`, crosses as its elements do.
+///
+/// ```
+/// use aethereal_data::{Bare, Encode, Writer};
+///
+/// let mut out = Writer::<Bare>::new(());
+/// assert_eq!(vec![7u8, 8].encode(&mut out), Ok(()));
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "a `Vec` or `VecDeque` of `{Self}` does not cross `{B}`",
+    label = "not an element of a sequence at `{B}`",
+    note = "bytes that cross between actors are a blob: hold `Bytes`, put with `turn.put` and read with `turn.read` \
+            (ADR-0042)",
+    note = "a type with a hand-written codec states `Element` beside its `Encode`"
+)]
+pub trait Element<B: Boundary> {}
+
 /// A value that can be read at the boundary `B` (ADR-0004).
 ///
 /// Implemented once per type, over every boundary that offers what the type needs.

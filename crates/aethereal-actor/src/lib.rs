@@ -110,6 +110,8 @@ pub use stream::{
 };
 pub use subscribers::Subscribers;
 pub use time::Time;
+#[cfg(feature = "std")]
+pub use turn::Blobs;
 pub use turn::{
     Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseStage, FalseWatch, Forged,
     Garbled, Hosted, Leaves, Lives, Logger, Mailing, Refused, Request, Stood, Toward, Trapped, Turn, Turning,

@@ -7,7 +7,7 @@ pub use settings::{LinkConfig, LinkSettings, NoToken};
 
 use crate::frames::{self, Written};
 use crate::read_limit;
-use crate::{Down, REVISION, Refusal, Up};
+use crate::{Down, Outcome, REVISION, Refusal, Up};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Due, Ended, Ending, Fault, Handles,
     Level, More, Number, Open, Part, Path, ProtocolRef, Streamed, Streams, Taken, ToAny, ToSender, ToType, Top, Turn,
@@ -257,7 +257,7 @@ impl Handles<Part<Reading>> for Link {
         if !self.line.is_read_by(number) {
             return Ok(());
         }
-        let down = match frames::read::<Down>(&value.bytes, self.config.most_bytes) {
+        let down = match frames::read::<Down>(turn.read(&value.bytes), self.config.most_bytes) {
             Ok(down) => down,
             Err(why) => {
                 turn.log(Level::Warn, format_args!("a frame from the hub did not read: {why:?}"));
@@ -274,6 +274,10 @@ impl Handles<Part<Reading>> for Link {
                 self.hang_up(turn)
             }
             Down::Call { call, revision, tool, input, within } => {
+                let Ok(input) = turn.put(input) else {
+                    let unheld = Called::Refused(String::from("the engine had no room to hold the input"));
+                    return self.answer(turn, call, unheld);
+                };
                 let due = within.due(turn.now());
                 self.call(turn, call, revision, due, &Call { tool, input })
             }
@@ -407,16 +411,18 @@ impl Link {
         Ok(())
     }
 
-    /// Writes what the call `call` came to, or a refusal in its place when it would not fit in a frame.
-    fn answer<S, I>(&self, turn: &mut Turn<'_, Self, S>, call: u64, called: Called) -> Result<(), Fault>
+    /// Writes what the call `call` came to, its output read into the frame, or a refusal in its place when it would not
+    /// fit in one.
+    fn answer<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, call: u64, called: Called) -> Result<(), Fault>
     where
         S: Allows<Asks<Writing, Write, Sending>, I>,
     {
+        let called = Outcome::of(called, turn);
         let written = frames::written(&Up::Called { call, called }, self.config.most_bytes)?;
         let bytes = match written {
             Written::Fits(bytes) => bytes,
             Written::TooLarge => {
-                let refused = Called::Refused(String::from("the tool's answer is too large for the link"));
+                let refused = Outcome::Refused(String::from("the tool's answer is too large for the link"));
                 to_bytes(&Up::Called { call, called: refused })?
             }
         };
@@ -425,7 +431,7 @@ impl Link {
     }
 
     /// Writes every tool it holds, when connected.
-    fn write_sheets<S, I>(&self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
+    fn write_sheets<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<Asks<Writing, Write, Sending>, I>,
     {
@@ -438,16 +444,23 @@ impl Link {
         self.write::<_, I>(turn, bytes)
     }
 
-    /// Writes the frame `bytes` to the open connection: with none open, nothing is written. Before the dial is
-    /// answered, the connection is written the whole set once it opens; after the link has ended, nothing is.
-    fn write<S, I>(&self, turn: &mut Turn<'_, Self, S>, bytes: Vec<u8>) -> Result<(), Fault>
+    /// Writes the frame `bytes`, put as a blob, to the open connection: with none open, nothing is written. Before the
+    /// dial is answered, the connection is written the whole set once it opens; after the link has ended, nothing is. A
+    /// frame the engine has no room to hold ends the link, as a write not sent does.
+    fn write<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, bytes: Vec<u8>) -> Result<(), Fault>
     where
         S: Allows<Asks<Writing, Write, Sending>, I>,
     {
         let Line::Open { connection, reader } = self.line else {
             return Ok(());
         };
-        turn.to(connection.protocol::<Writing, _>()).ask::<_, _, I>(&Write { bytes }, &Sending { reader })?;
+        let Ok(frame) = turn.put(bytes) else {
+            turn.log(Level::Warn, "the engine had no room to hold a frame to the hub, and the link ends");
+            self.end_link(turn);
+            return Ok(());
+        };
+        turn.to(connection.protocol::<Writing, _>())
+            .ask::<_, _, I>(&Write { parts: vec![frame] }, &Sending { reader })?;
 
         Ok(())
     }

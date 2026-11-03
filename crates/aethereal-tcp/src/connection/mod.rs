@@ -5,6 +5,8 @@
 
 mod accepted;
 mod dialed;
+#[cfg(test)]
+mod tests;
 
 pub use accepted::Accepted;
 pub use dialed::Dialed;
@@ -13,11 +15,12 @@ use crate::framing::Framed;
 use crate::ready::{Ready, Wait};
 use crate::{Framing, Interest, Readied, Socket};
 use aethereal_actor::{
-    Allows, Answer, Answered, Beginning, Carries, Ended, Enough, Fault, Given, Handle, Handles, Held, More, Open, Part,
-    Protocol, Serving, Stream, StreamKey, ToAny, ToSender, Turn, Unsent,
+    Allows, Answer, Answered, Beginning, Blobs, Bytes, Carries, Ended, Enough, Fault, Given, Handle, Handles, Held,
+    More, Open, Part, Protocol, Serving, Stream, StreamKey, ToAny, ToSender, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
-use std::io::{ErrorKind, Read as _, Write as _};
+use std::io::{self, ErrorKind, IoSlice, Read as _};
+use std::{iter, mem};
 
 /// The most bytes a connection reads from its socket in one call.
 const CHUNK: usize = 64 * 1024;
@@ -47,11 +50,11 @@ impl Stream for Reading {
 #[kind(name = "aether.tcp.read")]
 pub struct Read;
 
-/// One frame a connection read, cut by its framing.
-#[derive(Debug, Plain)]
+/// One frame a connection read, cut by its framing, in a buffer the connection kept (ADR-0042).
+#[derive(Debug, Bound)]
 #[kind(name = "aether.tcp.frame")]
 pub struct Frame {
-    pub bytes: Vec<u8>,
+    pub bytes: Bytes,
 }
 
 /// How a connection hung up: the answer that ends its stream.
@@ -66,15 +69,18 @@ pub enum HungUp {
     Reset,
     /// A frame went past its framing's limit.
     TooLarge,
+    /// The engine had no room to hold a frame read (ADR-0014).
+    NoRoom,
     /// The connection already has a reader.
     Busy,
 }
 
-/// Bytes to write to a connection's peer: under `LengthPrefixed`, one frame.
-#[derive(Debug, Plain)]
+/// Bytes to write to a connection's peer, its parts in order, written with one gathered write: under
+/// `LengthPrefixed`, one frame of them all (ADR-0042).
+#[derive(Debug, Bound)]
 #[kind(name = "aether.tcp.write")]
 pub struct Write {
-    pub bytes: Vec<u8>,
+    pub parts: Vec<Bytes>,
 }
 
 /// What became of a write.
@@ -132,8 +138,30 @@ enum Filled {
 /// Bytes waiting to be written, and the request they answer once all are.
 #[derive(Bound)]
 struct Pending {
-    bytes: Vec<u8>,
+    /// What the framing writes before the parts: under `LengthPrefixed`, their length.
+    prefix: Vec<u8>,
+    parts: Vec<Bytes>,
+    /// How many bytes the prefix and the parts hold together.
+    length: u64,
     held: Held<Wrote>,
+}
+
+impl Pending {
+    /// Its prefix and the bytes of each of its parts, in the order they are written.
+    fn pieces<'p>(&'p self, blobs: &'p Blobs<'p>) -> impl Iterator<Item = &'p [u8]> {
+        let parts = self.parts.iter().map(|part| blobs.read(part));
+
+        iter::once(&self.prefix[..]).chain(parts)
+    }
+}
+
+/// How a gathered write of one pending write stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Gathered {
+    /// Every byte was handed to the kernel.
+    Whole,
+    /// The socket would wait.
+    Blocked,
 }
 
 /// What a connection does, whichever place it stands in: its socket, what it has read and not framed, what it has to
@@ -239,15 +267,17 @@ impl Connection {
     where
         S: Allows<ToSender<Wrote>, I>,
     {
-        let bytes = self.framing.written(write.bytes);
-        let waiting: u64 = self.unsent.iter().map(|unsent| unsent.bytes.len() as u64).sum::<u64>() - self.written;
-        let fits = waiting + bytes.len() as u64 <= self.most_unsent_bytes;
+        let parts_length: usize = write.parts.iter().map(|part| turn.read(part).len()).sum();
+        let prefix = self.framing.prefix(parts_length);
+        let length = (prefix.len() + parts_length) as u64;
+        let waiting: u64 = self.unsent.iter().map(|unsent| unsent.length).sum::<u64>() - self.written;
+        let fits = waiting + length <= self.most_unsent_bytes;
         if !fits {
             turn.reply::<_, I>(&Wrote::Full)?;
             return Ok(());
         }
         let held = turn.hold::<Wrote, I>()?;
-        self.unsent.push(Pending { bytes, held });
+        self.unsent.push(Pending { prefix, parts: write.parts, length, held });
 
         self.send(turn)
     }
@@ -329,7 +359,10 @@ impl Connection {
                 }
                 match self.framing.frame(&self.read) {
                     Framed::Frame { skip, bytes } => {
-                        let frame: Vec<u8> = self.read.drain(..skip + bytes).skip(skip).collect();
+                        let cut = self.cut(turn, skip, bytes);
+                        let Ok(frame) = turn.put(cut) else {
+                            return self.hang_up(turn, HungUp::NoRoom);
+                        };
                         let Some(stream) = self.reading.get_mut(key) else {
                             return Ok(());
                         };
@@ -373,42 +406,41 @@ impl Connection {
         Ok(())
     }
 
-    /// Writes unsent bytes until the socket would wait, noting in `sent` each write whose bytes all went.
+    /// Writes unsent bytes until the socket would wait, each write's prefix and parts with gathered writes, noting in
+    /// `sent` each write whose bytes all went.
     fn write_unsent<A, S>(&mut self, turn: &mut Turn<'_, A, S>, sent: &mut Vec<Held<Wrote>>) -> Result<(), HungUp> {
-        let Ok(Socket(socket)) = turn.open(&mut self.socket) else {
+        let Ok((Socket(socket), blobs)) = turn.open_reading(&mut self.socket) else {
             return Err(HungUp::Reset);
         };
         while let Some(first) = self.unsent.first() {
-            let from = usize::try_from(self.written).unwrap_or(usize::MAX);
-            match socket.write(&first.bytes[from..]) {
-                Ok(0) => return Err(HungUp::Reset),
-                Ok(count) => self.written += count as u64,
-                Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(()),
-                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                Err(_) => return Err(HungUp::Reset),
+            let gathered = write_gathered(socket, first.pieces(&blobs), &mut self.written)?;
+            if gathered == Gathered::Blocked {
+                return Ok(());
             }
-            let is_whole = self.written == first.bytes.len() as u64;
-            if is_whole {
-                sent.push(self.unsent.remove(0).held);
-                self.written = 0;
-            }
+            sent.push(self.unsent.remove(0).held);
+            self.written = 0;
         }
 
         Ok(())
     }
 
-    /// Reads what its socket holds, up to what its framing keeps, and says how it stopped.
+    /// Reads what its socket holds into what it has read and not framed, up to what its framing keeps, and says how
+    /// it stopped. The bytes are read into that buffer itself, which the connection keeps from read to read.
     fn fill<A, S>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<Filled, HungUp> {
         let most = self.framing.most();
         let Ok(Socket(socket)) = turn.open(&mut self.socket) else {
             return Err(HungUp::Reset);
         };
-        let mut chunk = vec![0; CHUNK];
         while self.read.len() < most {
-            let room = (most - self.read.len()).min(CHUNK);
-            match socket.read(&mut chunk[..room]) {
+            let start = self.read.len();
+            let room = (most - start).min(CHUNK);
+            self.read.resize(start + room, 0);
+            let read = socket.read(&mut self.read[start..]);
+            let count = read.as_ref().map_or(0, |count| *count);
+            self.read.truncate(start + count);
+            match read {
                 Ok(0) => return Ok(Filled::Closed),
-                Ok(count) => self.read.extend_from_slice(&chunk[..count]),
+                Ok(_) => {}
                 Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(Filled::Blocked),
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(_) => return Err(HungUp::Reset),
@@ -416,6 +448,26 @@ impl Connection {
         }
 
         Ok(Filled::Full)
+    }
+
+    /// Cuts the frame at the front of what it has read, `bytes` long after `skip` bytes, into a buffer to put: the
+    /// read buffer itself when the frame is all of it and fills at least half of it, by the rule a kept buffer is
+    /// handed out by (ADR-0042), so a large frame is put where it was read; else a copy, in a buffer the turn hands
+    /// out.
+    fn cut<A, S>(&mut self, turn: &mut Turn<'_, A, S>, skip: usize, bytes: usize) -> Vec<u8> {
+        let end = skip + bytes;
+        let is_all = skip == 0 && end == self.read.len();
+        let fills = bytes.saturating_mul(2) >= self.read.capacity();
+        let hands_over = is_all && fills;
+        if hands_over {
+            let room = self.framing.most().min(CHUNK);
+            return mem::replace(&mut self.read, turn.buffer(room));
+        }
+        let mut frame = turn.buffer(bytes);
+        frame.extend_from_slice(&self.read[skip..end]);
+        self.read.drain(..end);
+
+        frame
     }
 
     /// Ends the reader's stream with `why`, answers every write not sent, stops its waits for the socket, and closes
@@ -441,4 +493,31 @@ impl Connection {
 
         Ok(())
     }
+}
+
+/// Writes `pieces`, from `written` bytes into them on, to `out` with gathered writes until every byte is handed to it
+/// or it would wait, counting in `written` what it takes, so a write the socket takes in part goes on from there,
+/// across pieces, when it is writable again.
+fn write_gathered<'p>(
+    out: &mut impl io::Write,
+    pieces: impl IntoIterator<Item = &'p [u8]>,
+    written: &mut u64,
+) -> Result<Gathered, HungUp> {
+    let mut slices: Vec<IoSlice<'_>> = pieces.into_iter().map(IoSlice::new).collect();
+    let mut left = &mut slices[..];
+    IoSlice::advance_slices(&mut left, usize::try_from(*written).unwrap_or(usize::MAX));
+    while !left.is_empty() {
+        match out.write_vectored(left) {
+            Ok(0) => return Err(HungUp::Reset),
+            Ok(count) => {
+                *written += count as u64;
+                IoSlice::advance_slices(&mut left, count);
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(Gathered::Blocked),
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(_) => return Err(HungUp::Reset),
+        }
+    }
+
+    Ok(Gathered::Whole)
 }

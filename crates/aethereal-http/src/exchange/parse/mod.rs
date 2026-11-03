@@ -1,6 +1,6 @@
 //! A request's head, parsed from the bytes an exchange has read, with every limit on it checked (ADR-0035).
 
-use crate::{Header, Limits, Method, Response, Status};
+use crate::{Header, Limits, Method, Status};
 use aethereal_data::Plain;
 
 /// The line ending HTTP writes.
@@ -52,17 +52,15 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    /// The response it is answered with.
-    pub fn response(self) -> Response {
-        let (status, text) = match self {
+    /// The status it is answered with, and the text of the answer's body.
+    pub const fn said(self) -> (Status, &'static str) {
+        match self {
             Self::Malformed => (Status::BadRequest, "the request does not parse"),
             Self::HeadTooLarge => (Status::RequestHeaderFieldsTooLarge, "the request's head is too large"),
             Self::BodyTooLarge => (Status::ContentTooLarge, "the request's body is too large"),
             Self::Unimplemented => (Status::NotImplemented, "the request's method or transfer coding is not served"),
             Self::Version => (Status::HttpVersionNotSupported, "the request's HTTP version is not served"),
-        };
-
-        Response::new(status, "text/plain; charset=utf-8", text.as_bytes().to_vec())
+        }
     }
 }
 

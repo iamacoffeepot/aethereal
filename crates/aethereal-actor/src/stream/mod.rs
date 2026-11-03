@@ -29,8 +29,8 @@ use core::marker::PhantomData;
 /// does not build.
 ///
 /// ```
-/// use aethereal_actor::Stream;
-/// use aethereal_data::Plain;
+/// use aethereal_actor::{Bytes, Stream};
+/// use aethereal_data::{Bound, Plain};
 ///
 /// #[derive(Plain)]
 /// #[kind(name = "aether.doc.read")]
@@ -38,10 +38,10 @@ use core::marker::PhantomData;
 ///     path: String,
 /// }
 ///
-/// #[derive(Plain)]
+/// #[derive(Bound)]
 /// #[kind(name = "aether.doc.chunk")]
 /// struct Chunk {
-///     bytes: Vec<u8>,
+///     bytes: Bytes,
 /// }
 ///
 /// #[derive(Plain)]

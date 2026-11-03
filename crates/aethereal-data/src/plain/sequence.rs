@@ -1,7 +1,10 @@
 //! `Vec<T>`, `VecDeque<T>`, and `[T; N]` as plain data (ADR-0004).
+//!
+//! A sequence crosses where its elements cross and are elements (ADR-0042): a byte vector crosses no boundary between
+//! actors. An array has no such rule, so `[u8; N]` crosses wherever a byte does.
 
 use crate::plain::{charge_count, read_count, write_count};
-use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
+use crate::{Bare, Boundary, Decode, DecodeError, Element, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
@@ -9,14 +12,14 @@ impl<T: Schema> Schema for Vec<T> {
     const SHAPE: Shape = T::SEQUENCE;
 }
 
-impl<B: Boundary, T: Encode<B>> Encode<B> for Vec<T> {
+impl<B: Boundary, T: Encode<B> + Element<B>> Encode<B> for Vec<T> {
     fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         write_count(out.bytes(), self.len())?;
         T::encode_each(self, out)
     }
 }
 
-impl<B: Boundary, T: Decode<B>> Decode<B> for Vec<T> {
+impl<B: Boundary, T: Decode<B> + Element<B>> Decode<B> for Vec<T> {
     fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let count = read_count(input.input())?;
         let length = charge_count::<T>(input.budget(), count)?;
@@ -24,13 +27,15 @@ impl<B: Boundary, T: Decode<B>> Decode<B> for Vec<T> {
     }
 }
 
-impl<T: Plain> Plain for Vec<T> {}
+impl<T: Plain + Element<Bare>> Plain for Vec<T> {}
+
+impl<B: Boundary, T> Element<B> for Vec<T> {}
 
 impl<T: Schema> Schema for VecDeque<T> {
     const SHAPE: Shape = T::SEQUENCE;
 }
 
-impl<B: Boundary, T: Encode<B>> Encode<B> for VecDeque<T> {
+impl<B: Boundary, T: Encode<B> + Element<B>> Encode<B> for VecDeque<T> {
     fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
         write_count(out.bytes(), self.len())?;
         let (front, back) = self.as_slices();
@@ -39,7 +44,7 @@ impl<B: Boundary, T: Encode<B>> Encode<B> for VecDeque<T> {
     }
 }
 
-impl<B: Boundary, T: Decode<B>> Decode<B> for VecDeque<T> {
+impl<B: Boundary, T: Decode<B> + Element<B>> Decode<B> for VecDeque<T> {
     fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
         let count = read_count(input.input())?;
         let length = charge_count::<T>(input.budget(), count)?;
@@ -47,7 +52,9 @@ impl<B: Boundary, T: Decode<B>> Decode<B> for VecDeque<T> {
     }
 }
 
-impl<T: Plain> Plain for VecDeque<T> {}
+impl<T: Plain + Element<Bare>> Plain for VecDeque<T> {}
+
+impl<B: Boundary, T> Element<B> for VecDeque<T> {}
 
 impl<T: Schema, const LENGTH: usize> Schema for [T; LENGTH] {
     const SHAPE: Shape = {
@@ -78,6 +85,8 @@ impl<B: Boundary, T: Decode<B>, const LENGTH: usize> Decode<B> for [T; LENGTH] {
 }
 
 impl<T: Plain, const LENGTH: usize> Plain for [T; LENGTH] {}
+
+impl<B: Boundary, T, const LENGTH: usize> Element<B> for [T; LENGTH] {}
 
 /// Converts the temporary decode buffer into its array (ADR-0004).
 ///

@@ -11,8 +11,8 @@ use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Budget, Json, Plain, Schema, SchemaNodes, from_bytes, json_schema, to_bytes, to_json};
 use aethereal_link::{
     Down, EngineAnswer, EngineCall, EngineId, EngineList, EngineListing, EngineSheets, EngineTools, Engines,
-    EnginesSettings, JsonSheet, Link, LinkSettings, ListEngines, MintToken, Minted, Origin, REVISION, Token, Up,
-    Within,
+    EnginesSettings, JsonSheet, Link, LinkSettings, ListEngines, MintToken, Minted, Origin, Outcome, REVISION, Token,
+    Up, Within,
 };
 use aethereal_substrate::harness::{Asked, Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
@@ -148,12 +148,15 @@ fn schema_of<T: Schema>() -> Json {
     json
 }
 
-/// The output `called` holds, read as `T`.
-fn output<T: Plain>(called: Answered<Called>) -> T {
+/// The output `called` holds, read out of its blob in `harness` as `T`.
+fn output<T: Plain>(harness: &mut Harness<Headless>, called: Answered<Called>) -> T {
     let Answered::Yes(Called::Output(bytes)) = called else {
         panic!("the tool answers an output: {called:?}");
     };
-    let Ok(output) = from_bytes(&bytes, &mut Budget::new(WALK_BYTES)) else {
+    let Some(bytes) = harness.read(&bytes) else {
+        panic!("the output's blob is held");
+    };
+    let Ok(output) = from_bytes(bytes, &mut Budget::new(WALK_BYTES)) else {
         panic!("the output reads as the tool's output kind");
     };
 
@@ -207,7 +210,7 @@ fn heard<T>(harness: &mut Harness<Headless>, peer: JoinHandle<T>) -> T {
 
 /// The next call the hub writes on `stream`, answered with `called`, the harness stepping the host until it is, and the
 /// stream.
-fn answered_call(harness: &mut Harness<Headless>, stream: TcpStream, called: Called) -> (Down, TcpStream) {
+fn answered_call(harness: &mut Harness<Headless>, stream: TcpStream, called: Outcome) -> (Down, TcpStream) {
     #[allow(clippy::disallowed_methods)] // The engine's side is a native thread of its own, outside the engine.
     let peer = thread::spawn(move || {
         let mut stream = stream;
@@ -254,7 +257,9 @@ fn ask<T: Plain>(
     tool: &str,
     input: &T,
 ) -> Result<Asked<Called>, Unheard> {
-    harness.ask(worker, &Call { tool: String::from(tool), input: bytes_of(input) })
+    let input = harness.put(bytes_of(input))?;
+
+    harness.ask(worker, &Call { tool: String::from(tool), input })
 }
 
 /// What the hub's tools `worker` answer a call of `tool` with `input`, needing nothing of an engine's side.
@@ -338,7 +343,8 @@ fn list_engines_shows_each_engine_by_its_id_name_and_count_of_tools() -> Result<
     let (mut harness, port, worker) = hub()?;
     let _stream = linked_engine(&mut harness, port, vec![sheet()]);
 
-    let listed: EngineList = output(called(&mut harness, worker, "list_engines", &ListEngines)?);
+    let listing = called(&mut harness, worker, "list_engines", &ListEngines)?;
+    let listed: EngineList = output(&mut harness, listing);
 
     assert_eq!(
         listed.engines,
@@ -355,7 +361,8 @@ fn describe_engine_writes_each_tools_input_and_output_as_json_schema() -> Result
     let (mut harness, port, worker) = hub()?;
     let _stream = linked_engine(&mut harness, port, vec![sheet()]);
 
-    let described: EngineSheets = output(called(&mut harness, worker, "describe_engine", &EngineId { engine: 0 })?);
+    let describing = called(&mut harness, worker, "describe_engine", &EngineId { engine: 0 })?;
+    let described: EngineSheets = output(&mut harness, describing);
 
     let say = JsonSheet {
         name: String::from("say"),
@@ -378,8 +385,9 @@ fn call_tool_sends_the_bytes_its_json_input_is_and_answers_the_engines_bytes_as_
     let said = Said { length: 5 };
 
     let calling = ask(&mut harness, worker, "call_tool", &call_say(json_of(&say)))?;
-    let (down, _stream) = answered_call(&mut harness, stream, Called::Output(bytes_of(&said)));
-    let answer: EngineAnswer = output(harness.answer(calling)?);
+    let (down, _stream) = answered_call(&mut harness, stream, Outcome::Output(bytes_of(&said)));
+    let answered = harness.answer(calling)?;
+    let answer: EngineAnswer = output(&mut harness, answered);
 
     let input = bytes_of(&say);
     assert_eq!(down, Down::Call { call: 0, revision: 3, tool: String::from("say"), input, within: Within::Unbounded });
@@ -403,8 +411,9 @@ fn input_not_of_the_tools_schema_is_refused_and_never_written() -> Result<(), Un
 
     let say = Say { text: String::from("hello") };
     let calling = ask(&mut harness, worker, "call_tool", &call_say(json_of(&say)))?;
-    let (down, _stream) = answered_call(&mut harness, stream, Called::Output(bytes_of(&Said { length: 5 })));
-    let _: EngineAnswer = output(harness.answer(calling)?);
+    let (down, _stream) = answered_call(&mut harness, stream, Outcome::Output(bytes_of(&Said { length: 5 })));
+    let answered = harness.answer(calling)?;
+    let _: EngineAnswer = output(&mut harness, answered);
 
     let input = bytes_of(&say);
     assert_eq!(down, Down::Call { call: 0, revision: 3, tool: String::from("say"), input, within: Within::Unbounded });
@@ -446,7 +455,7 @@ fn an_engines_refusal_passes_through_as_it_gave_it() -> Result<(), Unheard> {
     let stream = linked_engine(&mut harness, port, vec![sheet()]);
 
     let calling = ask(&mut harness, worker, "call_tool", &call_say(json_of(&Say { text: String::from("hello") })))?;
-    let _ = answered_call(&mut harness, stream, Called::Refused(String::from("the tools have changed")));
+    let _ = answered_call(&mut harness, stream, Outcome::Refused(String::from("the tools have changed")));
 
     assert_eq!(harness.answer(calling)?, Answered::Yes(Called::Refused(String::from("the tools have changed"))));
 
@@ -460,7 +469,7 @@ fn an_output_not_of_the_tools_schema_is_refused() -> Result<(), Unheard> {
     let stream = linked_engine(&mut harness, port, vec![sheet()]);
 
     let calling = ask(&mut harness, worker, "call_tool", &call_say(json_of(&Say { text: String::from("hello") })))?;
-    let _ = answered_call(&mut harness, stream, Called::Output(vec![0xFF]));
+    let _ = answered_call(&mut harness, stream, Outcome::Output(vec![0xFF]));
     let answer = harness.answer(calling)?;
 
     assert!(refuses(&answer, "output schema"), "{answer:?}");
@@ -488,7 +497,8 @@ fn mint_token_answers_the_arguments_that_start_an_engine_that_links() -> Result<
     // does not read, and a token the tool answers that `Engines` does not hold: the engine would never be listed.
     let (mut hub, _, worker) = hub()?;
 
-    let minted: Minted = output(called(&mut hub, worker, "mint_token", &MintToken)?);
+    let minting = called(&mut hub, worker, "mint_token", &MintToken)?;
+    let minted: Minted = output(&mut hub, minting);
     let mut engine = started(&minted.args)?;
 
     waiting::until(BUDGET, || {

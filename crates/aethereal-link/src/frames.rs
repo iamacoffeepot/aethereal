@@ -1,7 +1,7 @@
 //! What crosses the link: each frame one plain kind's bytes, in a `LengthPrefixed` frame (ADR-0038).
 
 use crate::Token;
-use aethereal_actor::{Due, Time};
+use aethereal_actor::{Due, Time, Turn};
 use aethereal_data::{Budget, DecodeError, EncodeError, Plain, from_bytes, to_bytes};
 use aethereal_tools::{Called, ToolSheet};
 use core::time::Duration;
@@ -23,7 +23,37 @@ pub enum Up {
     /// Every tool the engine holds, and the revision of the set: a count the engine raises with each change.
     Sheets { revision: u64, tools: Vec<ToolSheet> },
     /// What the hub's call `call` came to.
-    Called { call: u64, called: Called },
+    Called { call: u64, called: Outcome },
+}
+
+/// What a call came to, its output's bytes inline: as a frame carries a [`Called`], since a frame crosses to another
+/// engine, where a blob does not (ADR-0042), and as the hub's tools build one before its output is put.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.link.outcome")]
+pub enum Outcome {
+    /// The bytes of a value of the tool's output schema.
+    Output(Vec<u8>),
+    /// The tool could not do it, and says why, for the agent to read.
+    Refused(String),
+}
+
+impl Outcome {
+    /// `called`, its output read in `turn` and copied in, to write into a frame.
+    #[must_use]
+    pub fn of<A, S>(called: Called, turn: &Turn<'_, A, S>) -> Self {
+        match called {
+            Called::Output(bytes) => Self::Output(turn.read(&bytes).to_vec()),
+            Called::Refused(why) => Self::Refused(why),
+        }
+    }
+
+    /// This as a [`Called`], its output put in `turn`: refused when the engine has no room to hold it.
+    pub fn into_called<A, S>(self, turn: &mut Turn<'_, A, S>) -> Called {
+        match self {
+            Self::Output(bytes) => Called::output(turn, bytes),
+            Self::Refused(why) => Called::Refused(why),
+        }
+    }
 }
 
 /// A frame from a hub to an engine.

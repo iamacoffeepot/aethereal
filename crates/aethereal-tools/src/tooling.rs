@@ -1,6 +1,6 @@
 //! What crosses between a holder and a tool's worker (ADR-0037).
 
-use aethereal_actor::{Carries, Protocol, ProtocolRef};
+use aethereal_actor::{Bytes, Carries, Protocol, ProtocolRef, Turn};
 use aethereal_data::{Bound, Plain, SchemaNodes};
 
 /// What a tool's worker speaks: each [`Call`], asked of it and answered with [`Called`].
@@ -14,22 +14,32 @@ impl Carries<Call> for Tooling {
     type Answers = (Called,);
 }
 
-/// A call of `tool`, named as one worker may serve many, with `input` a value of the tool's input schema.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+/// A call of `tool`, named as one worker may serve many, with `input` a value of the tool's input schema, as its
+/// bytes in a blob (ADR-0042).
+#[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.tools.call")]
 pub struct Call {
     pub tool: String,
-    pub input: Vec<u8>,
+    pub input: Bytes,
 }
 
 /// What a call came to.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.tools.called")]
 pub enum Called {
-    /// A value of the tool's output schema.
-    Output(Vec<u8>),
+    /// A value of the tool's output schema, as its bytes in a blob (ADR-0042).
+    Output(Bytes),
     /// The tool could not do it, and says why, for the agent to read.
     Refused(String),
+}
+
+impl Called {
+    /// The output whose bytes, a value of the tool's output schema, are `bytes`, put in `turn`: refused, for the agent
+    /// to read, when the engine has no room to hold it (ADR-0014). A buffer the turn handed out is put without a copy.
+    pub fn output<A, S>(turn: &mut Turn<'_, A, S>, bytes: Vec<u8>) -> Self {
+        turn.put(bytes)
+            .map_or_else(|_| Self::Refused(String::from("the engine had no room to hold the output")), Self::Output)
+    }
 }
 
 /// What a tool answers that has nothing to tell but that it was done.

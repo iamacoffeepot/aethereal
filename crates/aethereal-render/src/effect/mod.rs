@@ -12,7 +12,9 @@ use crate::program::{
 };
 use crate::shape::{DepthFormat, Shape};
 use aethereal_actor::Bytes;
-use aethereal_data::{Bare, Bound, Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Writer};
+use aethereal_data::{
+    Bare, Bound, Boundary, Decode, DecodeError, Element, Encode, EncodeError, Plain, Reader, Schema, Writer,
+};
 use core::fmt::{self, Debug, Formatter};
 use core::marker::PhantomData;
 use naga::{ImageClass, ScalarKind};
@@ -218,6 +220,8 @@ impl<R, B: Boundary> Decode<B> for EffectId<R> {
 }
 
 impl<R> Plain for EffectId<R> where Self: Encode<Bare> + Decode<Bare> {}
+
+impl<R, B: Boundary> Element<B> for EffectId<R> {}
 
 /// The renderer's vertex stage of every effect: one triangle over the whole target, writing where each pixel is across
 /// it from its top left at location 0.

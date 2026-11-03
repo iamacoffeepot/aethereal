@@ -553,17 +553,21 @@ fn tools(harness: &mut Harness<Headless>) -> ProtocolRef<Tooling> {
 /// What the hub's tools answer a call of `tool` with `input`.
 fn called<T: Plain>(harness: &mut Harness<Headless>, tool: &str, input: &T) -> Result<Answered<Called>, Unheard> {
     let worker = tools(harness);
-    let asked = harness.ask(worker, &Call { tool: String::from(tool), input: bytes_of(input) })?;
+    let input = harness.put(bytes_of(input))?;
+    let asked = harness.ask(worker, &Call { tool: String::from(tool), input })?;
 
     harness.answer(asked)
 }
 
-/// The output `called` holds, read as `T`.
-fn output<T: Plain>(called: Answered<Called>) -> T {
+/// The output `called` holds, read out of its blob in `harness` as `T`.
+fn output<T: Plain>(harness: &mut Harness<Headless>, called: Answered<Called>) -> T {
     let Answered::Yes(Called::Output(bytes)) = called else {
         panic!("the tool answers an output: {called:?}");
     };
-    let Ok(output) = from_bytes(&bytes, &mut Budget::new(1 << 20)) else {
+    let Some(bytes) = harness.read(&bytes) else {
+        panic!("the output's blob is held");
+    };
+    let Ok(output) = from_bytes(bytes, &mut Budget::new(1 << 20)) else {
         panic!("the output reads as the tool's output kind");
     };
 
@@ -586,11 +590,9 @@ fn spawn_engine_answers_the_linked_engine_and_terminate_engine_answers_done_or_r
         panic!("the name conforms");
     };
 
-    let linked: SpawnedEngine = output(called(
-        &mut harness,
-        "spawn_engine",
-        &SpawnEngine { binary: spawnee(), args: args(Behaviour::Links, &dir) },
-    )?);
+    let linking =
+        called(&mut harness, "spawn_engine", &SpawnEngine { binary: spawnee(), args: args(Behaviour::Links, &dir) })?;
+    let linked: SpawnedEngine = output(&mut harness, linking);
     let not_stored =
         called(&mut harness, "spawn_engine", &SpawnEngine { binary: Binary::Named(missing), args: Vec::new() })?;
     let exited = called(
@@ -599,7 +601,8 @@ fn spawn_engine_answers_the_linked_engine_and_terminate_engine_answers_done_or_r
         &SpawnEngine { binary: spawnee(), args: args(Behaviour::ExitsEarly, &dir) },
     )?;
     let unknown = called(&mut harness, "terminate_engine", &TerminateEngine { engine: 7 })?;
-    let done: Done = output(called(&mut harness, "terminate_engine", &TerminateEngine { engine: linked.engine })?);
+    let terminating = called(&mut harness, "terminate_engine", &TerminateEngine { engine: linked.engine })?;
+    let done: Done = output(&mut harness, terminating);
 
     assert_eq!(linked, SpawnedEngine { engine: 0 });
     assert!(refuses(&not_stored, "no binary"), "{not_stored:?}");

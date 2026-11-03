@@ -67,17 +67,11 @@ impl Framing {
         }
     }
 
-    /// `bytes`, as the framing writes them: under `LengthPrefixed`, their length first.
-    pub(crate) fn written(self, bytes: Vec<u8>) -> Vec<u8> {
+    /// What the framing writes before `length` bytes: under `LengthPrefixed`, their length; under `Chunks`, nothing.
+    pub(crate) fn prefix(self, length: usize) -> Vec<u8> {
         match self {
-            Self::Chunks { .. } => bytes,
-            Self::LengthPrefixed { .. } => {
-                let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
-                let mut written = Vec::with_capacity(PREFIX + bytes.len());
-                written.extend_from_slice(&length.to_be_bytes());
-                written.extend_from_slice(&bytes);
-                written
-            }
+            Self::Chunks { .. } => Vec::new(),
+            Self::LengthPrefixed { .. } => u32::try_from(length).unwrap_or(u32::MAX).to_be_bytes().to_vec(),
         }
     }
 }
@@ -106,7 +100,7 @@ mod tests {
         assert_eq!(framed(framing, &[0, 0, 0, 3, b'a', b'b']), Err("more"));
         assert_eq!(framed(framing, &[0, 0, 0, 3, b'a', b'b', b'c', b'd']), Ok((4, 3)));
         assert_eq!(framed(framing, &[0, 0, 0, 9]), Err("too large"));
-        assert_eq!(framing.written(b"abc".to_vec()), [0, 0, 0, 3, b'a', b'b', b'c']);
+        assert_eq!(framing.prefix(3), [0, 0, 0, 3]);
     }
 
     #[test]

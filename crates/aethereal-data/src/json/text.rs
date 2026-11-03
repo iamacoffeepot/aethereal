@@ -2,7 +2,9 @@
 
 use super::{JsonError, JsonFault, reader};
 use crate::plain::write_text;
-use crate::{Boundary, Budget, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
+use crate::{
+    Boundary, Budget, Decode, DecodeError, Element, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer,
+};
 use alloc::string::String;
 
 /// A JSON value, carried as its text (ADR-0038).
@@ -66,6 +68,8 @@ impl<B: Boundary> Decode<B> for Json {
 }
 
 impl Plain for Json {}
+
+impl<B: Boundary> Element<B> for Json {}
 
 #[cfg(test)]
 mod tests {

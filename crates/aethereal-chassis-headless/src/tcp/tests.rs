@@ -219,7 +219,7 @@ impl Handles<Part<Reading>> for Streamer {
         let Some(taken) = self.reading.part(turn, part)? else {
             return Ok(());
         };
-        let heard = Heard { side: *taken.kept, bytes: taken.value.bytes };
+        let heard = Heard { side: *taken.kept, bytes: turn.read(&taken.value.bytes).to_vec() };
         self.heard.push(heard);
 
         Ok(())
@@ -266,7 +266,7 @@ fn frame(side: Side, bytes: &[u8]) -> Heard {
 fn a_frame_dialed_to_a_listener_is_accepted_read_and_echoed_back() -> Result<(), Unheard> {
     // Catches a host that serves its runners no dialer (every connect unavailable) or no poller (every connection
     // hung up), a listener that never accepts or a connection never read, a length prefix written or read wrong so the
-    // frame is cut or never whole, a write never answered once sent, and a part handed to the wrong stream. The program
+    // frame is cut or never whole, a write's parts framed apart or out of order, a write never answered once sent, and a part handed to the wrong stream. The program
     // runs no cycle, so a socket call that waited on `Tick` would never be made. It lists the capability once.
     let mut harness = Harness::of(Headless::program().root::<Tcp>().root::<Streamer>())?;
     let (tcp, streamer) = (harness.root::<Tcp>(), harness.root::<Streamer>());
@@ -283,14 +283,17 @@ fn a_frame_dialed_to_a_listener_is_accepted_read_and_echoed_back() -> Result<(),
     };
     harness.tell(streamer, &Follow::Reading(connection))?;
 
-    let wrote = harness.ask(connection.protocol::<Writing, _>(), &Write { bytes: b"ping".to_vec() })?;
+    // Two parts, written as one frame of them both.
+    let parts = vec![harness.put(b"pi".to_vec())?, harness.put(b"ng".to_vec())?];
+    let wrote = harness.ask(connection.protocol::<Writing, _>(), &Write { parts })?;
     assert_eq!(harness.answer(wrote)?, Answered::Yes(Wrote::Sent));
     assert_eq!(heard(&mut harness, streamer, 1)?, [frame(Side::Server, b"ping")]);
 
     let &[accepted] = harness.state(streamer)?.accepted.as_slice() else {
         panic!("the listener accepted the one dial");
     };
-    let echoed = harness.ask(accepted.protocol::<Writing, _>(), &Write { bytes: b"ping".to_vec() })?;
+    let parts = vec![harness.put(b"ping".to_vec())?];
+    let echoed = harness.ask(accepted.protocol::<Writing, _>(), &Write { parts })?;
     assert_eq!(harness.answer(echoed)?, Answered::Yes(Wrote::Sent));
     assert_eq!(heard(&mut harness, streamer, 2)?, [frame(Side::Server, b"ping"), frame(Side::Client, b"ping")]);
 

@@ -1,7 +1,7 @@
 //! A key's name (ADR-0008).
 
 use crate::plain::write_text;
-use crate::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
+use crate::{Boundary, Decode, DecodeError, Element, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
 use alloc::borrow::Cow;
 use alloc::string::String;
 use core::fmt;
@@ -115,6 +115,8 @@ impl<B: Boundary> Decode<B> for KeyName {
 }
 
 impl Plain for KeyName {}
+
+impl<B: Boundary> Element<B> for KeyName {}
 
 #[cfg(test)]
 mod tests {

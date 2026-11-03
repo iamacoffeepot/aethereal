@@ -7,10 +7,10 @@ mod reply;
 mod tests;
 
 use aethereal_data::{Budget, JsonTree, JsonValue, from_json, from_value, read_json};
-use aethereal_http::{Method, Request, Response, Status};
+use aethereal_http::{Method, Request, Status};
 use aethereal_tools::Table;
 use core::str;
-pub use reply::{output, refused};
+pub use reply::{Reply, output, output_room, refused, value};
 
 /// The revision spoken, the only one (ADR-0037).
 const VERSION: &str = "2026-07-28";
@@ -27,37 +27,37 @@ const HEADER_MISMATCH: i32 = -32020;
 /// Where a request goes.
 pub enum Routed {
     /// It is answered now.
-    Respond(Response),
+    Respond(Reply),
     /// It is a call of a tool held, with its input read: the worker answers it.
     Call { id: String, tool: String, input: Vec<u8> },
 }
 
-/// What `request` is, each row of ADR-0037's table in its order. `origins` are the origins allowed besides this
-/// machine's.
-pub fn route(request: &Request, origins: &[String], table: &Table) -> Routed {
+/// What `request`, whose body's bytes are `body`, is, each row of ADR-0037's table in its order. `origins` are the
+/// origins allowed besides this machine's.
+pub fn route(request: &Request, body: &[u8], origins: &[String], table: &Table) -> Routed {
     let is_allowed = request.header("origin").is_none_or(|origin| origin::is_allowed(origin, origins));
     if !is_allowed {
-        return Routed::Respond(Response::empty(Status::Forbidden));
+        return Routed::Respond(Reply::Empty(Status::Forbidden));
     }
     if request.path != "/mcp" {
-        return Routed::Respond(Response::empty(Status::NotFound));
+        return Routed::Respond(Reply::Empty(Status::NotFound));
     }
     if request.method != Method::Post {
-        return Routed::Respond(Response::empty(Status::MethodNotAllowed));
+        return Routed::Respond(Reply::Empty(Status::MethodNotAllowed));
     }
-    let Ok(text) = str::from_utf8(&request.body) else {
-        return Routed::Respond(Response::empty(Status::BadRequest));
+    let Ok(text) = str::from_utf8(body) else {
+        return Routed::Respond(Reply::Empty(Status::BadRequest));
     };
     let mut budget = Budget::new(READ_BYTES);
     let Ok(tree) = read_json(text, &mut budget) else {
-        return Routed::Respond(Response::empty(Status::BadRequest));
+        return Routed::Respond(Reply::Empty(Status::BadRequest));
     };
     let Some(message) = Message::of(&tree) else {
-        return Routed::Respond(Response::empty(Status::BadRequest));
+        return Routed::Respond(Reply::Empty(Status::BadRequest));
     };
     let Message { id, method, params } = message;
     let Id::Of(id) = id else {
-        return Routed::Respond(Response::empty(Status::Accepted));
+        return Routed::Respond(Reply::Empty(Status::Accepted));
     };
     let call = Rpc { request, tree: &tree, id, method, params };
 
@@ -161,12 +161,12 @@ impl<'call, 'json> Rpc<'call, 'json> {
     }
 
     /// The error of `code`, sent with `status`.
-    fn error(&self, status: Status, code: i32, message: &str) -> Response {
+    fn error(&self, status: Status, code: i32, message: &str) -> Reply {
         reply::error(status, &self.id, code, message)
     }
 
     /// Answers a request that its version, headers, or `_meta` refuse.
-    fn checked(&self) -> Result<(), Response> {
+    fn checked(&self) -> Result<(), Reply> {
         if self.method == "initialize" {
             let requested = self.text_param("protocolVersion").unwrap_or_default();
             return Err(reply::unsupported(&self.id, requested));
@@ -182,12 +182,12 @@ impl<'call, 'json> Rpc<'call, 'json> {
     }
 
     /// The error for a header that does not hold.
-    fn mismatch(&self, message: &str) -> Response {
+    fn mismatch(&self, message: &str) -> Reply {
         self.error(Status::BadRequest, HEADER_MISMATCH, message)
     }
 
     /// Refuses a header missing, or one that disagrees with the body.
-    fn headers_match(&self, version: &str) -> Result<(), Response> {
+    fn headers_match(&self, version: &str) -> Result<(), Reply> {
         let method = self.request.header("mcp-method");
         if method != Some(self.method) {
             return Err(self.mismatch("`Mcp-Method` does not match the body"));
@@ -213,7 +213,7 @@ impl<'call, 'json> Rpc<'call, 'json> {
     }
 
     /// Refuses `_meta` without what every request must carry.
-    fn meta_is_whole(&self) -> Result<(), Response> {
+    fn meta_is_whole(&self) -> Result<(), Reply> {
         let version = self.meta("io.modelcontextprotocol/protocolVersion");
         let capabilities = self.meta("io.modelcontextprotocol/clientCapabilities");
         let has_version = matches!(version, Some(JsonValue::String(_)));

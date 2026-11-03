@@ -22,23 +22,29 @@ const WITHIN: usize = 16;
 /// Each engine the tests run in: how many parts, and how many fused hops each part runs at most in a step.
 const ENGINES: [(usize, usize); 4] = [(1, 0), (1, 64), (4, 0), (4, 64)];
 
-/// Some bytes to be weighed, asked or told.
+/// Some text to be weighed, asked or told: text, as bytes cross between actors only as a blob (ADR-0042), and its
+/// weight is the mail's own.
 #[derive(Debug, PartialEq, Eq, Plain)]
 #[kind(name = "aether.test.unreadable.parcel")]
 struct Parcel {
-    bytes: Vec<u8>,
+    text: String,
 }
 
-/// What a parcel is answered with: as many bytes as it held.
+/// What a parcel is answered with: as much text as it held.
 #[derive(Debug, PartialEq, Eq, Plain)]
 #[kind(name = "aether.test.unreadable.receipt")]
 struct Receipt {
-    bytes: Vec<u8>,
+    text: String,
 }
 
-/// A parcel of `len` bytes.
+/// `len` bytes of text.
+fn text(len: usize) -> String {
+    "7".repeat(len)
+}
+
+/// A parcel of `len` bytes of text.
 fn parcel(len: usize) -> Parcel {
-    Parcel { bytes: vec![7; len] }
+    Parcel { text: text(len) }
 }
 
 /// A root that answers each parcel it is asked with a receipt of as many bytes, and counts each it is told.
@@ -81,7 +87,7 @@ impl Handles<Parcel> for Weigher {
     fn handle(&mut self, parcel: Parcel, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.asked += 1;
 
-        Ok(turn.reply(&Receipt { bytes: parcel.bytes })?)
+        Ok(turn.reply(&Receipt { text: parcel.text })?)
     }
 }
 
@@ -196,9 +202,7 @@ impl Handles<Answer<Receipt, Sent>> for Sender {
         _: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
         let heard = match answered {
-            Answered::Yes(receipt) => {
-                Heard::Receipt { len: u64::try_from(receipt.bytes.len()).unwrap_or(u64::MAX), at }
-            }
+            Answered::Yes(receipt) => Heard::Receipt { len: u64::try_from(receipt.text.len()).unwrap_or(u64::MAX), at },
             Answered::No(why) => Heard::No { why, at },
         };
         self.heard.push(heard);
@@ -234,7 +238,7 @@ fn a_request_past_the_read_limit_is_answered_unreadable_and_its_receiver_lives_o
         let read = harness.answer(within)?;
 
         assert_eq!(unread, Answered::No(Unanswered::Unreadable), "{engine:?}");
-        assert_eq!(read, Answered::Yes(Receipt { bytes: vec![7; WITHIN] }), "{engine:?}");
+        assert_eq!(read, Answered::Yes(Receipt { text: text(WITHIN) }), "{engine:?}");
         assert_eq!(harness.state(weigher)?.asked, 1, "{engine:?}: only the parcel that read reached the handler");
     }
 
@@ -271,10 +275,10 @@ fn an_answer_past_the_read_limit_reaches_its_asker_as_unreadable_with_its_contex
 
         harness.tell(sender, &Send { at: 1 })?;
         let first = harness.asked::<Parcel>()?;
-        harness.reply(first, &Receipt { bytes: vec![7; PAST] })?;
+        harness.reply(first, &Receipt { text: text(PAST) })?;
         harness.tell(sender, &Send { at: 2 })?;
         let second = harness.asked::<Parcel>()?;
-        harness.reply(second, &Receipt { bytes: vec![7; WITHIN] })?;
+        harness.reply(second, &Receipt { text: text(WITHIN) })?;
         harness.settle();
 
         let unread = Heard::No { why: Unanswered::Unreadable, at: 1 };

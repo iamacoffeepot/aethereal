@@ -2,7 +2,9 @@
 //! (ADR-0016).
 
 use crate::{Ended, ErasedActorRef, Handles, ProtocolRef, Reachable, Turn, Vantage};
-use aethereal_data::{ActorId, Boundary, Decode, DecodeError, Encode, EncodeError, Reader, Schema, Shape, Writer};
+use aethereal_data::{
+    ActorId, Boundary, Decode, DecodeError, Element, Encode, EncodeError, Reader, Schema, Shape, Writer,
+};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
@@ -121,6 +123,8 @@ where
         Ok(subscribers)
     }
 }
+
+impl<B: Boundary, P> Element<B> for Subscribers<P> {}
 
 /// The actors held, as one target of a turn's sends.
 impl<'r, Me, P> Reachable<Me> for &'r Subscribers<P> {

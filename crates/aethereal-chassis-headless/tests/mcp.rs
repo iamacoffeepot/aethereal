@@ -10,7 +10,8 @@ use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, from_json, 
 use aethereal_files::{Files, ReadTool, WriteTool};
 use aethereal_http::{Http, HttpSettings};
 use aethereal_link::{
-    Down, EngineList, EngineTools, Engines, EnginesSettings, ListEngines, MintToken, Minted, REVISION, Up, Within,
+    Down, EngineList, EngineTools, Engines, EnginesSettings, ListEngines, MintToken, Minted, Outcome, REVISION, Up,
+    Within,
 };
 use aethereal_mcp::{Mcp, McpSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
@@ -344,13 +345,17 @@ fn a_call_reaches_the_worker_as_bytes_and_its_output_comes_back_as_json() -> Res
     let call = harness.asked::<Call>()?;
     assert_eq!(call.request.tool, "say");
     let schema = SchemaNodes::of(&Say::SHAPE);
-    let Ok(input) = to_json(&schema, &call.request.input, &mut Budget::new(1024)) else {
+    let Some(input) = harness.read(&call.request.input) else {
+        panic!("the input's blob is held");
+    };
+    let Ok(input) = to_json(&schema, input, &mut Budget::new(1024)) else {
         panic!("the input is a value of its schema");
     };
     assert_eq!(input, "{\"text\":\"hello\"}");
     let Ok(output) = from_json(&SchemaNodes::of(&Said::SHAPE), "{\"length\":5}", &mut Budget::new(1024)) else {
         panic!("the output is a value of its schema");
     };
+    let output = harness.put(output)?;
     harness.reply(call, &Called::Output(output))?;
 
     let read = heard(&mut harness, client);
@@ -385,7 +390,8 @@ fn what_a_tool_could_not_do_is_a_result_the_agent_reads() -> Result<(), Unheard>
 
     let client_of = client(port, &Post::of(Rpc::CallSay));
     let call = harness.asked::<Call>()?;
-    harness.reply(call, &Called::Output(vec![1]))?;
+    let output = harness.put(vec![1])?;
+    harness.reply(call, &Called::Output(output))?;
     let read = heard(&mut harness, client_of);
     assert!(read.body.contains("no value of its schema"), "{read:?}");
     assert!(read.body.contains("\"isError\":true"), "{read:?}");
@@ -662,7 +668,8 @@ fn modest() -> HttpSettings {
 fn a_tool_answer_past_the_read_limit_refuses_that_call_and_mcp_serves_the_next() -> Result<(), Unheard> {
     // Catches #357: a tool's answer `Mcp` could not read failed its turn, which ended it, so one large answer took the
     // whole MCP front down until the program restarted. It reaches `Mcp` as no answer, `Unreadable`, which refuses
-    // that call, and `Mcp` serves the next.
+    // that call, and `Mcp` serves the next. An output is a blob, which no mail's limit weighs (ADR-0042), so the
+    // answer too large to read is a refusal's text.
     let past = modest().most_read_bytes() + 1;
     let (mut harness, mcp, port) = served_over(modest(), McpSettings::default())?;
     let worker = harness.protocol::<Tooling>();
@@ -671,7 +678,7 @@ fn a_tool_answer_past_the_read_limit_refuses_that_call_and_mcp_serves_the_next()
 
     let too_large = client(port, &Post::of(Rpc::CallSay));
     let call = harness.asked::<Call>()?;
-    harness.reply(call, &Called::Output(vec![0; past]))?;
+    harness.reply(call, &Called::Refused("7".repeat(past)))?;
     let refused = heard(&mut harness, too_large);
     let next = client(port, &Post::of(Rpc::CallShout));
     let call = harness.asked::<Call>()?;
@@ -747,9 +754,10 @@ macro_rules! listed {
             type Sends = (ToSender<Called>,);
 
             fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-                let say = from_bytes::<Say>(&call.input, &mut Budget::new(1024))?;
+                let say = from_bytes::<Say>(turn.read(&call.input), &mut Budget::new(1024))?;
                 let length = u32::try_from(say.text.len()).unwrap_or(u32::MAX);
-                turn.reply(&Called::Output(to_bytes(&Said { length })?))?;
+                let said = Called::output(turn, to_bytes(&Said { length })?);
+                turn.reply(&said)?;
 
                 Ok(())
             }
@@ -1215,7 +1223,7 @@ fn call_tool_of_a_tool_that_never_answers_is_answered_504_and_frees_the_engines_
             panic!("the output encodes");
         };
         if let Down::Call { call, .. } = down {
-            send_frame(&mut stream, &Up::Called { call, called: Called::Output(output) });
+            send_frame(&mut stream, &Up::Called { call, called: Outcome::Output(output) });
         }
 
         stream

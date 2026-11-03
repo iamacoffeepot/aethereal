@@ -130,7 +130,7 @@ impl Handles<Call> for StoreTools {
 
     /// Reads the call's input, or refuses it; holds the call, and asks the store.
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let order = match order(&call) {
+        let order = match order(&call.tool, turn.read(&call.input)) {
             Ok(order) => order,
             Err(refusal) => {
                 turn.reply(&refusal)?;
@@ -166,7 +166,7 @@ impl Handles<Answer<CheckedIn, Asking>> for StoreTools {
             return Ok(());
         };
         let called = match answered {
-            Answered::Yes(CheckedIn::Stored(stored)) => Called::Output(to_bytes(&stored)?),
+            Answered::Yes(CheckedIn::Stored(stored)) => Called::output(turn, to_bytes(&stored)?),
             Answered::Yes(CheckedIn::Missing) => refused("nothing is at that path"),
             Answered::Yes(CheckedIn::NotAFile) => refused("that is not a regular file"),
             Answered::Yes(CheckedIn::TooLarge) => refused("the file is larger than the store takes"),
@@ -193,7 +193,7 @@ impl Handles<Answer<Stored, Asking>> for StoreTools {
             return Ok(());
         };
         let called = match answered {
-            Answered::Yes(stored) => Called::Output(to_bytes(&stored)?),
+            Answered::Yes(stored) => Called::output(turn, to_bytes(&stored)?),
             Answered::No(_) => unanswered(),
         };
         turn.answer(held, &called)?;
@@ -215,7 +215,7 @@ impl Handles<Answer<Pinned, Asking>> for StoreTools {
             return Ok(());
         };
         let called = match answered {
-            Answered::Yes(Pinned::Done) => Called::Output(to_bytes(&Done {})?),
+            Answered::Yes(Pinned::Done) => Called::output(turn, to_bytes(&Done {})?),
             Answered::Yes(Pinned::NotStored) => refused("no binary of that hash is stored"),
             Answered::No(_) => unanswered(),
         };
@@ -235,17 +235,17 @@ fn unanswered() -> Called {
     refused("the store did not answer")
 }
 
-/// What `call` asks of the store, or its refusal: a tool these are not, or input that is not of the tool's, with the
-/// rule it breaks, such as a name's.
-fn order(call: &Call) -> Result<Order, Called> {
+/// What a call of `tool` with `input`, the bytes of its input, asks of the store, or its refusal: a tool these are
+/// not, or input that is not of the tool's, with the rule it breaks, such as a name's.
+fn order(tool: &str, input: &[u8]) -> Result<Order, Called> {
     let budget = &mut Budget::new(INPUT_BYTES);
-    let read = match call.tool.as_str() {
-        CHECK_IN => from_bytes(&call.input, budget).map(Order::CheckIn),
-        LIST_STORED => from_bytes::<ListStored>(&call.input, budget).map(|_| Order::List),
-        PIN => from_bytes(&call.input, budget).map(Order::Pin),
-        UNPIN => from_bytes(&call.input, budget).map(Order::Unpin),
+    let read = match tool {
+        CHECK_IN => from_bytes(input, budget).map(Order::CheckIn),
+        LIST_STORED => from_bytes::<ListStored>(input, budget).map(|_| Order::List),
+        PIN => from_bytes(input, budget).map(Order::Pin),
+        UNPIN => from_bytes(input, budget).map(Order::Unpin),
         other => return Err(refused(format!("there is no tool `{other}` here"))),
     };
 
-    read.map_err(|fault| refused(format!("the input of `{}`: {fault}", call.tool)))
+    read.map_err(|fault| refused(format!("the input of `{tool}`: {fault}")))
 }

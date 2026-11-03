@@ -1,19 +1,20 @@
 //! What an actor asks the file capability to write, and what it is answered (ADR-0039).
 
 use crate::Namespace;
-use aethereal_data::{FilePath, Plain};
+use aethereal_actor::Bytes;
+use aethereal_data::{Bound, FilePath, Plain};
 
 /// Write `bytes` as the whole file at `path` in `namespace`: asked of [`Files`](crate::Files), and answered a
-/// [`FileWritten`]. The bytes are inline, as a save is written once and not read again.
-#[derive(Debug, PartialEq, Eq, Plain)]
+/// [`FileWritten`].
+#[derive(Debug, PartialEq, Eq, Bound)]
 #[kind(name = "aether.files.write_file")]
 pub struct WriteFile {
     /// The namespace the file is in.
     pub namespace: Namespace,
     /// Where it is in the namespace.
     pub path: FilePath,
-    /// The whole file.
-    pub bytes: Vec<u8>,
+    /// The whole file, in a blob (ADR-0042).
+    pub bytes: Bytes,
 }
 
 /// What became of a [`WriteFile`]: written, or why not. Each host answers in it the same way.

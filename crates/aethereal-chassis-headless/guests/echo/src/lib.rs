@@ -23,12 +23,13 @@ pub struct Pong {
     pub n: u64,
 }
 
-/// Some bytes, which an echo answers with a pong of how many: past the engine's read limit, mail its receiver cannot
-/// read (ADR-0017).
+/// Some text, which an echo answers with a pong of how many bytes it holds: past the engine's read limit, mail its
+/// receiver cannot read (ADR-0017). It is text, not bytes, as bytes cross between actors only as a blob, which keeps
+/// mail small (ADR-0042).
 #[derive(Plain)]
 #[kind(name = "aether.guest.parcel")]
 pub struct Parcel {
-    pub bytes: Vec<u8>,
+    pub text: String,
 }
 
 /// One to count, which an echo counts and does not answer.
@@ -105,7 +106,7 @@ impl Handles<Parcel> for Echo {
 
     fn handle(&mut self, parcel: Parcel, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.answered += 1;
-        turn.reply(&Pong { n: u64::try_from(parcel.bytes.len()).unwrap_or(u64::MAX) })?;
+        turn.reply(&Pong { n: u64::try_from(parcel.text.len()).unwrap_or(u64::MAX) })?;
 
         Ok(())
     }

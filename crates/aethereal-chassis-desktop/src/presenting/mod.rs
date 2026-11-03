@@ -5,7 +5,7 @@
 mod tests;
 
 use aethereal_data::{
-    Boundary, Decode, DecodeError, Encode, EncodeError, Integer, Plain, Reader, Schema, Shape, Writer,
+    Boundary, Decode, DecodeError, Element, Encode, EncodeError, Integer, Plain, Reader, Schema, Shape, Writer,
 };
 use core::error::Error;
 use core::fmt;
@@ -161,3 +161,5 @@ impl<B: Boundary> Decode<B> for FrameRate {
 }
 
 impl Plain for FrameRate {}
+
+impl<B: Boundary> Element<B> for FrameRate {}

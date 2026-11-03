@@ -2,7 +2,9 @@
 
 use crate::Spares;
 use crate::{Above, Actors, Fault, MailId, Seated, Within};
-use aethereal_data::{Decode, DecodeError, Encode, EncodeError, Field, Plain, Reader, Schema, Shape, Writer};
+use aethereal_data::{
+    Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, Plain, Reader, Schema, Shape, Writer,
+};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::any::{self, Any};
@@ -111,6 +113,10 @@ impl<R: Resource> Decode<Actors> for Given<R> {
         Ok(Self::new(u64::decode(input)?))
     }
 }
+
+impl<B: Boundary, R: Resource> Element<B> for Handle<R> {}
+
+impl<B: Boundary, R: Resource> Element<B> for Given<R> {}
 
 /// The reason of a turn that used a handle or a given resource that names nothing of that type it holds, or that has
 /// arrived for it with the mail it handles (ADR-0010).

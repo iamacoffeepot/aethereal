@@ -2,7 +2,7 @@
 
 use super::VERSION;
 use aethereal_data::{Budget, SchemaNodes, to_json, write_json_string};
-use aethereal_http::{Response, Status};
+use aethereal_http::Status;
 use aethereal_tools::{HeldTool, Table};
 
 /// `-32022`: the revision asked for is not spoken.
@@ -21,23 +21,36 @@ const FRESHNESS: &str = "\"ttlMs\":0,\"cacheScope\":\"public\"";
 /// Room enough for the fixed text a result is framed in, past its id and its own fields.
 const FRAME_BYTES: usize = SERVER_INFO.len() + 128;
 
-/// A response of JSON-RPC text.
-fn json(status: Status, body: String) -> Response {
-    Response::new(status, "application/json", body.into_bytes())
+/// What a request is answered with, before its body is put as a blob by the actor that answers it (ADR-0042).
+#[derive(Debug)]
+pub enum Reply {
+    /// `status`, with no body.
+    Empty(Status),
+    /// JSON-RPC text, sent with `status`.
+    Json { status: Status, body: String },
 }
 
-/// The response to request `id` whose result, without its common fields, is `fields`.
-fn result(id: &str, fields: &str) -> Response {
+/// A reply of JSON-RPC text.
+const fn json(status: Status, body: String) -> Reply {
+    Reply::Json { status, body }
+}
+
+/// The reply to request `id` whose result, without its common fields, is `fields`.
+fn result(id: &str, fields: &str) -> Reply {
     let mut body = opened(id, fields.len());
     body.push_str(fields);
 
     closed(body)
 }
 
-/// A response to request `id` up to its result's own fields, with room for `fields` bytes of them, written straight
+/// A reply to request `id` up to its result's own fields, with room for `fields` bytes of them, written straight
 /// into it so that a large result is not copied again.
 fn opened(id: &str, fields: usize) -> String {
-    let mut body = String::with_capacity(fields + id.len() + FRAME_BYTES);
+    opened_in(String::with_capacity(fields + id.len() + FRAME_BYTES), id)
+}
+
+/// A reply to request `id` up to its result's own fields, written into `body`, which is empty.
+fn opened_in(mut body: String, id: &str) -> String {
     body.push_str("{\"jsonrpc\":\"2.0\",\"id\":");
     body.push_str(id);
     body.push_str(",\"result\":{\"resultType\":\"complete\",");
@@ -45,8 +58,8 @@ fn opened(id: &str, fields: usize) -> String {
     body
 }
 
-/// The response that is `body`, [`opened`] with its result's own fields written after, closed.
-fn closed(mut body: String) -> Response {
+/// The reply that is `body`, [`opened`] with its result's own fields written after, closed.
+fn closed(mut body: String) -> Reply {
     body.push(',');
     body.push_str(SERVER_INFO);
     body.push_str("}}");
@@ -63,7 +76,7 @@ fn quoted(text: &str) -> String {
 }
 
 /// The JSON-RPC error `code` to request `id`, sent with `status`.
-pub fn error(status: Status, id: &str, code: i32, message: &str) -> Response {
+pub fn error(status: Status, id: &str, code: i32, message: &str) -> Reply {
     let message = quoted(message);
     let body = format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":{code},\"message\":{message}}}}}");
 
@@ -71,7 +84,7 @@ pub fn error(status: Status, id: &str, code: i32, message: &str) -> Response {
 }
 
 /// The error for a revision not spoken, naming the one that is.
-pub fn unsupported(id: &str, requested: &str) -> Response {
+pub fn unsupported(id: &str, requested: &str) -> Reply {
     let requested = quoted(requested);
     let data = format!("{{\"supported\":[\"{VERSION}\"],\"requested\":{requested}}}");
     let body = format!(
@@ -83,12 +96,12 @@ pub fn unsupported(id: &str, requested: &str) -> Response {
 }
 
 /// The answer to `server/discover`.
-pub fn discover(id: &str) -> Response {
+pub fn discover(id: &str) -> Reply {
     result(id, &format!("\"supportedVersions\":[\"{VERSION}\"],\"capabilities\":{{\"tools\":{{}}}},{FRESHNESS}"))
 }
 
 /// The answer to `tools/list`.
-pub fn list(id: &str, table: &Table) -> Response {
+pub fn list(id: &str, table: &Table) -> Reply {
     let tools = table.tools().map(|(name, held)| listed(name, held)).collect::<Vec<_>>().join(",");
 
     result(id, &format!("\"tools\":[{tools}],{FRESHNESS}"))
@@ -103,23 +116,35 @@ fn listed(name: &str, held: &HeldTool) -> String {
 }
 
 /// The result of a tool that could not do it, which says why.
-pub fn refused(id: &str, why: &str) -> Response {
+pub fn refused(id: &str, why: &str) -> Reply {
     let text = quoted(why);
 
     result(id, &format!("\"content\":[{{\"type\":\"text\",\"text\":{text}}}],\"isError\":true"))
 }
 
-/// The result of a tool that answered `bytes`, a value of `schema` by its word.
-pub fn output(id: &str, schema: &SchemaNodes, bytes: &[u8]) -> Response {
-    let Ok(value) = to_json(schema, bytes, &mut Budget::new(OUTPUT_BYTES)) else {
-        return refused(id, "the tool's output is no value of its schema");
-    };
-    // The text is the value escaped once more: as long as it, and longer by an escape for each quote and backslash.
-    let mut body = opened(id, 2 * value.len() + FRAME_BYTES);
+/// The JSON of a tool's output, `bytes` a value of `schema` by its word, which the agent reads: refused, as the reply to
+/// request `id`, when it is no value of it. The tool's bytes are read where they lie (ADR-0042).
+pub fn value(id: &str, schema: &SchemaNodes, bytes: &[u8]) -> Result<String, Reply> {
+    to_json(schema, bytes, &mut Budget::new(OUTPUT_BYTES))
+        .map_err(|_| refused(id, "the tool's output is no value of its schema"))
+}
+
+/// The room the result to request `id` of a tool whose output's JSON is `value` takes: the text is the value escaped
+/// once more, as long as it and longer by an escape for each quote and backslash, beside the value itself.
+pub fn output_room(id: &str, value: &str) -> usize {
+    2 * value.len() + id.len() + 2 * FRAME_BYTES
+}
+
+/// The result to request `id` of a tool whose output's JSON is `value`, written into `buffer`, which has the room
+/// [`output_room`] says: one the actor that answers it keeps, so a large result is built in memory already in use.
+pub fn output(id: &str, value: &str, mut buffer: Vec<u8>) -> Reply {
+    buffer.clear();
+    // An empty buffer is always text.
+    let mut body = opened_in(String::from_utf8(buffer).unwrap_or_default(), id);
     body.push_str("\"content\":[{\"type\":\"text\",\"text\":");
-    write_json_string(&value, &mut body);
+    write_json_string(value, &mut body);
     body.push_str("}],\"structuredContent\":");
-    body.push_str(&value);
+    body.push_str(value);
     body.push_str(",\"isError\":false");
 
     closed(body)

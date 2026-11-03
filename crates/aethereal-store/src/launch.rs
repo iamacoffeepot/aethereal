@@ -1,7 +1,9 @@
 //! Launching a stored binary: a copy of it to run, its build held while the asker lives (ADR-0040).
 
 use crate::{StoreHash, StoreName};
-use aethereal_data::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
+use aethereal_data::{
+    Boundary, Decode, DecodeError, Element, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer,
+};
 use core::fmt;
 
 /// The refusal of text that names no binary, with the rule it breaks.
@@ -76,6 +78,8 @@ impl<B: Boundary> Decode<B> for Binary {
 }
 
 impl Plain for Binary {}
+
+impl<B: Boundary> Element<B> for Binary {}
 
 /// What became of a [`Launch`].
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
