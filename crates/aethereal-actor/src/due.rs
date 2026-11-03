@@ -14,13 +14,14 @@ use aethereal_data::Plain;
 pub enum Due {
     /// Never: it waits until it is answered, as every request did before deadlines.
     Never,
-    /// At this time on the engine's clock: the host's, which a turn reads as [`now`](crate::Turn::now).
-    At(Time),
+    /// Before this time on the engine's clock, the host's, which a turn reads as [`now`](crate::Turn::now): once the
+    /// clock reaches it, the request has expired.
+    Before(Time),
 }
 
-/// A deadline at a time.
+/// A deadline: due before a time.
 impl From<Time> for Due {
-    fn from(at: Time) -> Self {
-        Self::At(at)
+    fn from(before: Time) -> Self {
+        Self::Before(before)
     }
 }

@@ -54,7 +54,7 @@ impl Tying {
             (Tied::Answers(count), _) => count,
             (Tied::Unanswered(count), _) => count | UNANSWERED,
             (Tied::Asks(_), Due::Never) => ASKS,
-            (Tied::Asks(_), Due::At(at)) => ASKS | (at.min(LAST_DUE).nanos() + 1),
+            (Tied::Asks(_), Due::Before(at)) => ASKS | (at.min(LAST_DUE).nanos() + 1),
         };
 
         Self(bits)
@@ -82,7 +82,7 @@ impl Tying {
             return Due::Never;
         }
 
-        Due::At(Time::from_nanos(after - 1))
+        Due::Before(Time::from_nanos(after - 1))
     }
 }
 
@@ -97,7 +97,7 @@ mod tests {
         const COUNT: u64 = 9;
         let at = Time::from_nanos(5);
         let ties = [Tie::TELL, Tie::answers(4), Tie::unanswered(4), Tie::asks(COUNT)];
-        let dues = [Due::Never, Due::At(Time::ZERO), Due::At(at)];
+        let dues = [Due::Never, Due::Before(Time::ZERO), Due::Before(at)];
 
         for tie in ties {
             for due in dues {
@@ -112,7 +112,7 @@ mod tests {
                 assert_eq!((tying.tie(COUNT), tying.due()), (tie, kept), "{tie:?} {due:?}");
             }
         }
-        let far = Tying::of(Tie::asks(COUNT), Due::At(Time::from_nanos(u64::MAX)));
-        assert_eq!(far.due(), Due::At(LAST_DUE));
+        let far = Tying::of(Tie::asks(COUNT), Due::Before(Time::from_nanos(u64::MAX)));
+        assert_eq!(far.due(), Due::Before(LAST_DUE));
     }
 }

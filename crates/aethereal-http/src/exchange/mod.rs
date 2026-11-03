@@ -122,7 +122,7 @@ impl Actor for Exchange {
         let reader = reading.open(turn, config.connection.protocol(), Read, ())?;
         let phase = Phase::Idle { since: turn.now() };
         let sleeping = match due(&phase, &config.limits) {
-            Due::At(until) => Sleeping::On(turn.run(&Sleep { until }, &Deadline { phase: 0 })?),
+            Due::Before(until) => Sleeping::On(turn.run(&Sleep { until }, &Deadline { phase: 0 })?),
             Due::Never => Sleeping::Not,
         };
 
@@ -288,7 +288,7 @@ impl Exchange {
         }
         self.phases += 1;
         self.sleeping = match due(&self.phase, &self.limits) {
-            Due::At(until) => Sleeping::On(turn.run(&Sleep { until }, &Deadline { phase: self.phases })?),
+            Due::Before(until) => Sleeping::On(turn.run(&Sleep { until }, &Deadline { phase: self.phases })?),
             Due::Never => Sleeping::Not,
         };
 
@@ -419,7 +419,7 @@ fn due(phase: &Phase, limits: &Limits) -> Due {
         Phase::Answering { .. } | Phase::Closing => return Due::Never,
     };
 
-    Due::At(since + Duration::from_millis(u64::from(within)))
+    Due::Before(since + Duration::from_millis(u64::from(within)))
 }
 
 /// The response written for a request its handler did not answer: `status`, saying `why`.

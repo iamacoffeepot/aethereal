@@ -440,8 +440,8 @@ fn a_request_made_for_a_request_inherits_its_deadline_and_expires_with_it() -> R
         harness.advance(WITHIN);
         harness.settle();
 
-        assert_eq!(held, [Due::At(DUE)], "{engine:?}: the relay holds a request due when its asker said");
-        assert_eq!(mute_dues, [Due::At(DUE)], "{engine:?}: what it asks for it is due then too");
+        assert_eq!(held, [Due::Before(DUE)], "{engine:?}: the relay holds a request due when its asker said");
+        assert_eq!(mute_dues, [Due::Before(DUE)], "{engine:?}: what it asks for it is due then too");
         assert_eq!(asker_heard(&mut harness, asker)?, [EXPIRED], "{engine:?}");
         assert_eq!(harness.state(relay)?.heard, [EXPIRED], "{engine:?}: the relay's own ask expires with it");
     }
@@ -510,7 +510,7 @@ fn a_later_turn_asks_for_a_held_request_within_its_deadline() -> Result<(), Unhe
         harness.advance(WITHIN);
         harness.settle();
 
-        assert_eq!(mute_dues, [Due::At(DUE)], "{engine:?}");
+        assert_eq!(mute_dues, [Due::Before(DUE)], "{engine:?}");
         assert_eq!(harness.state(relay)?.heard, [EXPIRED], "{engine:?}");
         assert_eq!(asker_heard(&mut harness, asker)?, [EXPIRED], "{engine:?}");
     }

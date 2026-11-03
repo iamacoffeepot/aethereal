@@ -154,7 +154,7 @@ impl Waiting {
         }
         if let Asks::Waits(filed) = &mut self.asks {
             for asking in asks {
-                if let Due::At(at) = asking.due {
+                if let Due::Before(at) = asking.due {
                     expiring.push(Expiring::at(at, me, asking.count));
                 }
                 filed.push(asking);

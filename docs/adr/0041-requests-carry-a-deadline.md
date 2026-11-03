@@ -23,8 +23,8 @@ pub struct Asking { pub count: u64, pub answer: KindId, pub context: Written, pu
 pub enum Due {
     /// Never: it waits until it is answered, as every request did before this record.
     Never,
-    /// At this time on the engine's clock.
-    At(Time),
+    /// Before this time on the engine's clock: once the clock reaches it, the request has expired.
+    Before(Time),
 }
 
 pub enum Unanswered { Ended, Failed, Unreplied, Faulted, Expired }

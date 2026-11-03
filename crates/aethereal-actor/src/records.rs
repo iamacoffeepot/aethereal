@@ -1115,7 +1115,7 @@ fn seated_at(bytes: &[u8], at: usize) -> Option<Seated> {
 fn write_due(out: &mut [u8], at: usize, due: Due) {
     let (case, nanos) = match due {
         Due::Never => (0_u32, 0),
-        Due::At(time) => (1, time.nanos()),
+        Due::Before(time) => (1, time.nanos()),
     };
     out[at..at + 4].copy_from_slice(&case.to_le_bytes());
     out[at + 4..at + 12].copy_from_slice(&nanos.to_le_bytes());
@@ -1125,7 +1125,7 @@ fn write_due(out: &mut [u8], at: usize, due: Due) {
 fn due_at(bytes: &[u8], at: usize) -> Option<Due> {
     match u32_at(bytes, at)? {
         0 => Some(Due::Never),
-        1 => Some(Due::At(Time::from_nanos(u64_at(bytes, at + 4)?))),
+        1 => Some(Due::Before(Time::from_nanos(u64_at(bytes, at + 4)?))),
         _ => None,
     }
 }
