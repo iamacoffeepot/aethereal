@@ -18,6 +18,8 @@ const SERVER_INFO: &str = concat!(
 /// What a result that holds a list says of how long it keeps: not at all, as tools come and go, and the same for every
 /// caller.
 const FRESHNESS: &str = "\"ttlMs\":0,\"cacheScope\":\"public\"";
+/// Room enough for the fixed text a result is framed in, past its id and its own fields.
+const FRAME_BYTES: usize = SERVER_INFO.len() + 128;
 
 /// A response of JSON-RPC text.
 fn json(status: Status, body: String) -> Response {
@@ -26,9 +28,28 @@ fn json(status: Status, body: String) -> Response {
 
 /// The response to request `id` whose result, without its common fields, is `fields`.
 fn result(id: &str, fields: &str) -> Response {
-    let body = format!(
-        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"resultType\":\"complete\",{fields},{SERVER_INFO}}}}}"
-    );
+    let mut body = opened(id, fields.len());
+    body.push_str(fields);
+
+    closed(body)
+}
+
+/// A response to request `id` up to its result's own fields, with room for `fields` bytes of them, written straight
+/// into it so that a large result is not copied again.
+fn opened(id: &str, fields: usize) -> String {
+    let mut body = String::with_capacity(fields + id.len() + FRAME_BYTES);
+    body.push_str("{\"jsonrpc\":\"2.0\",\"id\":");
+    body.push_str(id);
+    body.push_str(",\"result\":{\"resultType\":\"complete\",");
+
+    body
+}
+
+/// The response that is `body`, [`opened`] with its result's own fields written after, closed.
+fn closed(mut body: String) -> Response {
+    body.push(',');
+    body.push_str(SERVER_INFO);
+    body.push_str("}}");
 
     json(Status::Ok, body)
 }
@@ -93,10 +114,13 @@ pub fn output(id: &str, schema: &SchemaNodes, bytes: &[u8]) -> Response {
     let Ok(value) = to_json(schema, bytes, &mut Budget::new(OUTPUT_BYTES)) else {
         return refused(id, "the tool's output is no value of its schema");
     };
-    let text = quoted(&value);
+    // The text is the value escaped once more: as long as it, and longer by an escape for each quote and backslash.
+    let mut body = opened(id, 2 * value.len() + FRAME_BYTES);
+    body.push_str("\"content\":[{\"type\":\"text\",\"text\":");
+    write_json_string(&value, &mut body);
+    body.push_str("}],\"structuredContent\":");
+    body.push_str(&value);
+    body.push_str(",\"isError\":false");
 
-    result(
-        id,
-        &format!("\"content\":[{{\"type\":\"text\",\"text\":{text}}}],\"structuredContent\":{value},\"isError\":false"),
-    )
+    closed(body)
 }
