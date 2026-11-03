@@ -1,6 +1,6 @@
 //! An actor's resources: values that are not data, each with exactly one owner (ADR-0010).
 
-use crate::spares::Spares;
+use crate::Spares;
 use crate::{Above, Actors, Fault, MailId, Seated, Within};
 use aethereal_data::{Decode, DecodeError, Encode, EncodeError, Field, Plain, Reader, Schema, Shape, Writer};
 use alloc::boxed::Box;
@@ -256,6 +256,21 @@ impl Keeping {
     /// keeping it would take the buffers it keeps past `most_bytes` (ADR-0042).
     pub fn keep_buffer(&mut self, buffer: Vec<u8>, most_bytes: usize) {
         self.all().spares.keep(buffer, most_bytes);
+    }
+
+    /// Lends out the largest buffer it keeps, to a job it runs that fills buffers: none when it keeps none (ADR-0042).
+    #[must_use]
+    pub fn lend(&mut self) -> Spares {
+        match &mut self.holding {
+            Holding::Holds(holdings) => holdings.spares.lend(),
+            Holding::Never => Spares::new(),
+        }
+    }
+
+    /// Keeps each of `lent`, the buffers a job the actor ran was lent and did not take, to hand out again, as
+    /// [`Self::keep_buffer`] keeps one (ADR-0042).
+    pub fn keep_buffers(&mut self, lent: Spares, most_bytes: usize) {
+        self.all().spares.keep_all(lent, most_bytes);
     }
 
     /// What it holds, when it has ever held anything.
@@ -594,6 +609,16 @@ impl Keeps<'_> {
         match self {
             Self::Here(keeping) => keeping.buffer(room),
             Self::Claimed => Vec::with_capacity(room),
+        }
+    }
+
+    /// The largest buffer the actor keeps, lent to a job it runs that fills buffers (ADR-0042). A guest's code keeps
+    /// none of the engine's, and lends none.
+    #[cfg(feature = "std")]
+    pub(crate) fn lend(&mut self) -> Spares {
+        match self {
+            Self::Here(keeping) => keeping.lend(),
+            Self::Claimed => Spares::new(),
         }
     }
 

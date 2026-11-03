@@ -80,7 +80,7 @@ pub use held::holders;
 pub use held::{Held, NotOwed, Owed, Owes};
 pub use instances::{Instances, Lent};
 pub use item::Item;
-pub use job::{Copied, Driven, Job, JobCode, JobId, Runner, Running, Submitted, Unrun};
+pub use job::{Copied, Driven, Fills, Job, JobCode, JobId, Runner, Running, Submitted, Unrun};
 #[cfg(feature = "std")]
 pub use job::{JobList, JobType, Lending, Outcome, Produced, lending};
 pub use mail::{Mail, MailId};
@@ -99,6 +99,7 @@ pub use seat::{SeatNumber, Seated, Seats};
 pub use services::{Service, Services};
 pub use sleep::{Never, Sleep, Slept, Timer, Until};
 pub use source::Source;
+pub use spares::Spares;
 pub use stage::{
     Cycle, Cycled, Cycling, Drained, End, Follows, InCycle, On, Own, Place, Present, Render, Stage, StandsAfter, Start,
     Stop, Tick, Unshared,
