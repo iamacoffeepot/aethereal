@@ -4,6 +4,8 @@
 
 #[cfg(test)]
 mod asked;
+#[cfg(feature = "tools")]
+mod capture;
 pub mod compute;
 pub mod dispatch;
 pub mod draw_list;
@@ -27,5 +29,7 @@ pub mod texture;
 pub mod timing;
 pub mod uniforms;
 
+#[cfg(feature = "tools")]
+pub use capture::{Capture, CaptureTool, Crop};
 pub use gpu::Gpu;
 pub use renderer::{Release, Renderer, RendererConfig, Rendering};

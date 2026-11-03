@@ -6,10 +6,17 @@ license.workspace = true
 publish.workspace = true
 description = "The renderer: the root that owns the GPU, and makes what is drawn for the actors that ask (ADR-0021)"
 
+[features]
+# The tools of this capability (ADR-0037, ADR-0043): types only, as a program lists what it serves and nothing is
+# spawned for it. `capture_frame` writes PNGs.
+tools = ["dep:aethereal-tools", "dep:png"]
+
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
+aethereal-tools = { path = "../aethereal-tools", optional = true }
 aethereal-window = { path = "../aethereal-window" }
+png = { version = "=0.18.1", optional = true }
 crossbeam-queue = { workspace = true }
 # The types the shader package's generated code is written in (ADR-0030): two structs of static strings.
 wesl-core = "=0.1.0"
