@@ -45,8 +45,9 @@ pub async fn open(canvases: &[ShownCanvas]) -> Result<Opened, JsError> {
         .await
         .map_err(|error| JsError::new(&format!("no WebGPU adapter: {error}")))?;
     let required_features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
+    let required_limits = Gpu::limits(&adapter.limits());
     let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor { required_features, ..Default::default() })
+        .request_device(&wgpu::DeviceDescriptor { required_features, required_limits, ..Default::default() })
         .await
         .map_err(|error| JsError::new(&format!("the adapter refused a device: {error}")))?;
 

@@ -56,13 +56,19 @@ pub enum StorageRefused {
     Size { bytes: u64, most: u64 },
 }
 
+/// The most bytes storage holds whatever the GPU binds: the last whole word a `u32` counts, as its writes and its zeros
+/// are placed.
+const MOST_ADDRESSED: u64 = 0xFFFF_FFFC;
+
 /// Checks storage of `size` bytes before it is made: that they are whole words, and as many as the GPU binds as one
-/// storage buffer, the `most`. Answers its size.
+/// storage buffer, `binds`, or as a `u32` addresses where the GPU binds more. The refusal names the lesser as its
+/// `most`. Answers its size.
 ///
 /// # Errors
 ///
 /// Why it would not be made as asked.
-pub fn check(size: u64, most: u64) -> Result<u32, StorageRefused> {
+pub fn check(size: u64, binds: u64) -> Result<u32, StorageRefused> {
+    let most = binds.min(MOST_ADDRESSED);
     let bound = size > 0 && size.is_multiple_of(4) && size <= most;
     let (true, Ok(sized)) = (bound, u32::try_from(size)) else {
         return Err(StorageRefused::Size { bytes: size, most });

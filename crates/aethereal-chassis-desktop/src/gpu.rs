@@ -225,12 +225,13 @@ pub fn standing(window: &Window) -> Surface {
 
 /// The adapter that draws to `surface`, on `instance`, and the GPU of a device opened on it, each waited for on this
 /// thread, which is the host's to do (ADR-0001 rule 4). The device has timestamps when the adapter offers them, so the
-/// renderer can time its frames (ADR-0023).
+/// renderer can time its frames (ADR-0023), and the adapter's own storage and buffer sizes ([`Gpu::limits`]).
 pub fn opened_on(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>) -> Result<(wgpu::Adapter, Gpu), Unopened> {
     let options = wgpu::RequestAdapterOptions { compatible_surface: Some(surface), ..Default::default() };
     let adapter = pollster::block_on(instance.request_adapter(&options)).map_err(Unopened::Adapter)?;
     let required_features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
-    let described = wgpu::DeviceDescriptor { required_features, ..Default::default() };
+    let required_limits = Gpu::limits(&adapter.limits());
+    let described = wgpu::DeviceDescriptor { required_features, required_limits, ..Default::default() };
     let (device, queue) = pollster::block_on(adapter.request_device(&described)).map_err(Unopened::Device)?;
 
     Ok((adapter, Gpu::new(device, queue)))

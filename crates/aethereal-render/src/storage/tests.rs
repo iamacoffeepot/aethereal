@@ -18,6 +18,17 @@ fn storage_is_whole_words_as_many_as_one_buffer_binds() {
 }
 
 #[test]
+fn storage_past_what_a_word_addresses_is_refused_naming_that_most() {
+    // Catches a device that binds more than 4 GiB, as one asking the adapter's own limits may: storage past what its
+    // `u32` offsets reach is refused, and the refusal names that most, never the device's larger one.
+    let most = u64::from(u32::MAX) - 3;
+    let binds = 8 << 30;
+
+    assert_eq!(check(most, binds), Ok(u32::MAX - 3));
+    assert_eq!(check(4 << 30, binds), Err(StorageRefused::Size { bytes: 4 << 30, most }));
+}
+
+#[test]
 fn a_write_lies_inside_the_storage_on_whole_words() {
     // Catches a write past the buffer, which WebGPU refuses on the queue, or one off a word.
     assert!(fits(64, 0, 64));
