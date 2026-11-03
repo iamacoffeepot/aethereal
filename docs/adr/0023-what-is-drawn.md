@@ -99,12 +99,14 @@ The placement's bind groups are made then, once, so a frame binds what is made a
 
 ```rust
 ReadBack { of: Readable }  -> Pixels::Read { width: u32, height: u32, format: TextureFormat, pixels: Bytes } | Pixels::Refused
-enum Readable { Frame, Texture(TextureId) }                      // storage is read back by `ReadStorage` (ADR-0026)
+enum Readable { Frame(WindowId), Texture(TextureId) }            // storage is read back by `ReadStorage` (ADR-0026)
 TimeFrame                  -> Timed::Took { passes: Vec<u64> } | Timed::Refused
 ```
 
-- `Readable::Frame` reads the next frame drawn onto the canvas, as its pass leaves it, and a texture is read as it is when the ask is handled. Pixels are answered row by row from the top, each row packed tight, as a blob (ADR-0014). The render root copies them into a buffer whose rows are padded to the 256 bytes WebGPU copies rows on, and cuts the padding off as it reads them.
-- A frame is answered in `Rgba8`, or `Rgba8Srgb` for a canvas that encodes its colours, red first: a canvas laid out blue first, as browsers often prefer, has each pixel's red and blue swapped. A canvas of any other format is refused (`Format`), and so is one the chassis did not open to be copied from (`Uncopied`). A frame larger than the store lets one worker put is refused (`Unstored`).
+*Amended by ADR-0043: `Readable::Frame` names its window, where it read the first window drawn.*
+
+- `Readable::Frame(window)` reads the next frame drawn onto that window's canvas, as its pass leaves it, and a texture is read as it is when the ask is handled. Pixels are answered row by row from the top, each row packed tight, as a blob (ADR-0014). The render root copies them into a buffer whose rows are padded to the 256 bytes WebGPU copies rows on, and cuts the padding off as it reads them.
+- A frame is answered in `Rgba8`, or `Rgba8Srgb` for a canvas that encodes its colours, red first: a canvas laid out blue first, as browsers often prefer, has each pixel's red and blue swapped. A canvas of any other format is refused (`Format`), and so is one the chassis did not open to be copied from (`Uncopied`). A frame larger than the store lets one worker put is refused (`Unstored`). An ask for a window the render root does not keep is refused at once (`Window`), and one held for a window that closes before it is drawn is refused as it closes; a window handed no frame in a cycle keeps its asks until it is drawn.
 - `TimeFrame` times the next frame drawn: the nanoseconds from the beginning of each of its passes to its end, in the order it runs them: each pass of each frame that ends on a texture, in the order the frames run, then each of the window's main frame (ADR-0025). The GPU writes a timestamp as each pass begins and ends, which WebGPU offers only on a device with the optional `timestamp-query` feature. The chassis asks for the feature when the adapter offers it. An ask on a device without it is refused at once (`Unsupported`), not when the engine is built, so a program that times nothing never needs it.
 - Every ask before one frame is answered from that frame's one copy and one set of timestamps.
 
