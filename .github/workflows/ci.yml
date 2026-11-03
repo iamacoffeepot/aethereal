@@ -63,7 +63,7 @@ jobs:
     needs: plan
     runs-on: ${{ needs.plan.outputs.runner }}
     steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2
+      - uses: runs-on/action@284bff869d4a825f778ac7c38e50f1e31ef198fd # v2
         if: needs.plan.outputs.runner != 'ubuntu-latest'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
@@ -75,7 +75,7 @@ jobs:
     needs: plan
     runs-on: ${{ needs.plan.outputs.runner }}
     steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2
+      - uses: runs-on/action@284bff869d4a825f778ac7c38e50f1e31ef198fd # v2
         if: needs.plan.outputs.runner != 'ubuntu-latest'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
@@ -96,7 +96,7 @@ jobs:
     needs: plan
     runs-on: ${{ needs.plan.outputs.runner }}
     steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2
+      - uses: runs-on/action@284bff869d4a825f778ac7c38e50f1e31ef198fd # v2
         if: needs.plan.outputs.runner != 'ubuntu-latest'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
