@@ -5,14 +5,14 @@
 mod tests;
 
 use crate::Headless;
-use aethereal_actor::Service;
+use aethereal_actor::{Service, Spares};
 use aethereal_data::{FilePath, Plain};
-use aethereal_files::{Files, FilesConfig, Namespace, Reading, Storage, Unread, Unwritten, Writing};
+use aethereal_files::{Files, FilesConfig, Namespace, Read, Reading, Storage, Unread, Unwritten, Writing};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
 use crossbeam_queue::SegQueue;
 use std::fs::{self, File};
 use std::future::{self, Future};
-use std::io::{self, ErrorKind, Write as _};
+use std::io::{self, ErrorKind, Read as _, Write as _};
 use std::mem;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -77,8 +77,8 @@ type Shelf<T> = Arc<Mutex<Delivery<T>>>;
 
 /// One piece of work asked of the threads, and where what it comes to goes.
 enum Asked {
-    /// Read the whole of `file`.
-    Read { file: PathBuf, delivery: Shelf<Result<Vec<u8>, Unread>> },
+    /// Read the whole of `file` into a buffer taken from `lent`.
+    Read { file: PathBuf, lent: Spares, delivery: Shelf<Read> },
     /// Write `bytes` as the whole of `file`, by way of `sibling`.
     Write { file: PathBuf, sibling: PathBuf, bytes: Vec<u8>, delivery: Shelf<Result<(), Unwritten>> },
 }
@@ -102,8 +102,8 @@ trait Outcome {
     const HANDED: Self;
 }
 
-impl Outcome for Result<Vec<u8>, Unread> {
-    const HANDED: Self = Err(Unread::Failed);
+impl Outcome for Read {
+    const HANDED: Self = Self { bytes: Err(Unread::Failed), lent: Spares::new() };
 }
 
 impl Outcome for Result<(), Unwritten> {
@@ -164,10 +164,10 @@ impl Directories {
 }
 
 impl Storage for Directories {
-    fn read<'a>(&'a self, namespace: Namespace, path: &'a FilePath) -> Reading<'a> {
+    fn read<'a>(&'a self, namespace: Namespace, path: &'a FilePath, lent: Spares) -> Reading<'a> {
         let file = self.root(namespace).join(path.as_str());
 
-        Box::pin(self.ask(|_, delivery| Asked::Read { file, delivery }))
+        Box::pin(self.ask(|_, delivery| Asked::Read { file, lent, delivery }))
     }
 
     fn write<'a>(&'a self, namespace: Namespace, path: &'a FilePath, bytes: Vec<u8>) -> Writing<'a> {
@@ -212,8 +212,9 @@ fn work(shared: &Shared) {
     loop {
         while let Some(asked) = shared.asked.pop() {
             match asked {
-                Asked::Read { file, delivery } => {
-                    deliver(&delivery, fs::read(&file).map_err(|error| unread(error.kind())));
+                Asked::Read { file, mut lent, delivery } => {
+                    let bytes = read_whole(&file, &mut lent).map_err(|error| unread(error.kind()));
+                    deliver(&delivery, Read { bytes, lent });
                 }
                 Asked::Write { file, sibling, bytes, delivery } => {
                     deliver(&delivery, write_whole(&file, &sibling, &bytes).map_err(|_| Unwritten::Failed));
@@ -241,6 +242,23 @@ fn sibling(file: &Path, number: usize) -> PathBuf {
     let name = file.file_name().map_or_else(Default::default, |name| name.to_string_lossy().into_owned());
 
     file.with_file_name(format!(".{name}.{}-{number}.saving", process::id()))
+}
+
+/// Reads the whole of `file` into a buffer taken from `lent` for its size, as `fs::read` reads one into a new buffer:
+/// the size is a hint, and a file that grows as it is read grows the buffer. A buffer taken for a read that failed is
+/// kept in `lent` again.
+fn read_whole(file: &Path, lent: &mut Spares) -> io::Result<Vec<u8>> {
+    let mut opened = File::open(file)?;
+    // A size the host cannot hold is no hint: the read fails as it runs out of room.
+    let size = opened.metadata().map_or(0, |metadata| usize::try_from(metadata.len()).unwrap_or(0));
+    let mut bytes = lent.take(size);
+    let read = opened.read_to_end(&mut bytes);
+    if let Err(error) = read {
+        lent.keep(bytes, usize::MAX);
+        return Err(error);
+    }
+
+    Ok(bytes)
 }
 
 /// Writes `bytes` as the whole of `file`: makes the directories it is in, writes `sibling` and syncs it, and renames it

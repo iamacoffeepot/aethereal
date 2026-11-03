@@ -26,7 +26,7 @@ use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, Bytes, Config, Maker, config_bytes};
 #[cfg(feature = "std")]
-use crate::{JobCode, JobType};
+use crate::{Fills, JobCode, JobType, Spares};
 use aethereal_data::{ActorId, ActorPath, Decode, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -751,19 +751,24 @@ impl Seat<'_> {
     }
 
     /// Runs `job`, keeping `context` until it is answered with a `J::Done` (ADR-0018): it takes the next count of what
-    /// this actor sends, as a piece of mail would, which with the actor is the job's id. In a guest's code, its host
-    /// reads the job from its records and files it as it is filed here (ADR-0015).
+    /// this actor sends, as a piece of mail would, which with the actor is the job's id. A job whose type fills buffers
+    /// is lent the largest buffer this actor keeps (ADR-0042). In a guest's code, its host reads the job from its
+    /// records and files it as it is filed here (ADR-0015).
     #[cfg(feature = "std")]
     fn run<J: Job, C: Encode<Within>>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun> {
         let (bytes, lent) = lending(job).map_err(Unrun::Unwritten)?;
         let context = Written::of(context).map_err(Unrun::Unwritten)?;
+        let buffers = match J::FILLS {
+            Fills::Buffers => self.keeps.lend(),
+            Fills::Nothing => Spares::new(),
+        };
         self.sent += 1;
         let count = self.sent;
         let id = JobId::new(MailId { sender: self.me.id, count });
         let answer = KindId::of::<J::Done>();
         let refers = lent.iter().map(Bytes::id).collect();
-        let submitted =
-            Submitted { by: self.me, count, code: JobCode::Native(JobType::of::<J>()), answer, bytes, refers };
+        let code = JobCode::Native(JobType::of::<J>());
+        let submitted = Submitted { by: self.me, count, code, answer, bytes, refers, buffers };
         self.asked.buffers.jobs.push(submitted);
         // A job is cancelled by its asker, and inherits no deadline (ADR-0041).
         self.asked.asks.push((self.me, Asking { count, answer, context, lent, due: Due::Never }));

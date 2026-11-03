@@ -21,7 +21,7 @@ mod write;
 
 pub use files::{Files, FilesConfig};
 pub use read::{FileRead, ReadFile};
-pub use storage::{Namespace, Reading, Storage, Unread, Unwritten, Writing};
+pub use storage::{Namespace, Read, Reading, Storage, Unread, Unwritten, Writing};
 #[cfg(feature = "tools")]
 pub use tool::{Calling, FileContents, ReadTool, ReadToolConfig, TextFile, WriteTool, WriteToolConfig};
 pub use write::{FileWritten, WriteFile};

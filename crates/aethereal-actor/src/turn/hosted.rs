@@ -5,8 +5,8 @@ use crate::records::Staging;
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Due, Effect, ErasedActorRef, Fault, Gift, Giver,
     Instances, JobCode, JobId, Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload,
-    Puts, Role, Runs, SeatNumber, Seated, Seats, Sending, Submitted, Table, Target, Tie, Unreadable, What, Written,
-    carry, take_claimed,
+    Puts, Role, Runs, SeatNumber, Seated, Seats, Sending, Spares, Submitted, Table, Target, Tie, Unreadable, What,
+    Written, carry, take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -481,7 +481,11 @@ impl<'a> Hosted<'a> {
             child.sent
         };
         let refers = lent.iter().map(crate::Bytes::id).collect();
-        self.seat.asked.buffers.jobs.push(Submitted { by, count, code: JobCode::Guest(kind), answer, bytes, refers });
+        // A guest's job is lent no buffer: its turn does not know whether the type the program runs it with fills
+        // buffers (ADR-0042).
+        let code = JobCode::Guest(kind);
+        let buffers = Spares::new();
+        self.seat.asked.buffers.jobs.push(Submitted { by, count, code, answer, bytes, refers, buffers });
         // A job is cancelled by its asker, and inherits no deadline (ADR-0041).
         self.seat.asked.asks.push((by, Asking { count, answer, context, lent, due: Due::Never }));
 

@@ -83,9 +83,19 @@ fn read(storage: &Directories, path: &str) -> Result<Vec<u8>, Unread> {
     read_in(storage, Namespace::Assets, path)
 }
 
-/// What `storage` read of the file at `path` in `namespace`.
+/// What `storage` read of the file at `path` in `namespace`, lent no buffer.
 fn read_in(storage: &Directories, namespace: Namespace, path: &str) -> Result<Vec<u8>, Unread> {
-    pollster::block_on(storage.read(namespace, &checked(path)))
+    pollster::block_on(storage.read(namespace, &checked(path), Spares::new())).bytes
+}
+
+/// A buffer of `capacity` bytes, lent, and where its bytes begin.
+fn lent(capacity: usize) -> (Spares, *const u8) {
+    let buffer = Vec::with_capacity(capacity);
+    let at = buffer.as_ptr();
+    let mut lent = Spares::new();
+    lent.keep(buffer, usize::MAX);
+
+    (lent, at)
 }
 
 /// What became of `storage` writing `bytes` as the file at `path` in `namespace`.
@@ -103,10 +113,36 @@ fn a_file_is_read_beneath_its_namespace_s_directory() {
     assert_eq!(read(&storage, "tiles/grass.png"), Ok(b"grass".to_vec()));
     assert_eq!(read(&storage, "a.txt"), Ok(b"a".to_vec()));
     let paths = vec![FilePath::new("a.txt"); 16];
-    let reads: Vec<Reading<'_>> = paths.iter().map(|path| storage.read(Namespace::Assets, path)).collect();
+    let reads: Vec<Reading<'_>> =
+        paths.iter().map(|path| storage.read(Namespace::Assets, path, Spares::new())).collect();
     for reading in reads {
-        assert_eq!(pollster::block_on(reading), Ok(b"a".to_vec()));
+        assert_eq!(pollster::block_on(reading).bytes, Ok(b"a".to_vec()));
     }
+}
+
+#[test]
+fn a_read_lands_in_a_lent_buffer_that_fits_and_gives_back_one_that_does_not() {
+    // Catches a read into a new buffer though one it was lent fits the file, and a lent buffer the read did not use
+    // dropped rather than given back, which the actor that lent it then never gets back.
+    let dir = Dir::new("lent", &[("big.bin", &[1; 3000]), ("small.bin", b"small")]);
+    let storage = Directories::new(&dir.roots(1));
+    let (fits, fits_at) = lent(4096);
+    let (too_big, too_big_at) = lent(4096);
+
+    let big = pollster::block_on(storage.read(Namespace::Assets, &checked("big.bin"), fits));
+    let small = pollster::block_on(storage.read(Namespace::Assets, &checked("small.bin"), too_big));
+
+    let Ok(big_bytes) = &big.bytes else {
+        panic!("the big file is read");
+    };
+    assert_eq!((big_bytes.as_ptr(), &big_bytes[..]), (fits_at, &[1; 3000][..]));
+    assert!(big.lent.is_empty(), "the buffer read into is not given back as well");
+    let Read { bytes, lent: mut given_back } = small;
+    assert_eq!(bytes, Ok(b"small".to_vec()));
+    // A new buffer may be allocated where a dropped one was, so whether one was given back is asked first.
+    assert!(!given_back.is_empty(), "the buffer not read into is given back");
+    let unused = given_back.take(4096);
+    assert_eq!(unused.as_ptr(), too_big_at);
 }
 
 #[test]

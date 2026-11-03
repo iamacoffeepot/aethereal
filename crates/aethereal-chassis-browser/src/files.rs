@@ -1,8 +1,9 @@
 //! The browser's storage: the program's assets fetched relative to the page, and its saves in the origin private file
 //! system (ADR-0032, ADR-0039).
 
+use aethereal_actor::Spares;
 use aethereal_data::{FilePath, Plain};
-use aethereal_files::{Namespace, Reading, Storage, Unread, Unwritten, Writing};
+use aethereal_files::{Namespace, Read, Reading, Storage, Unread, Unwritten, Writing};
 use js_sys::{Promise, Uint8Array};
 use std::future;
 use std::iter;
@@ -51,11 +52,15 @@ impl Fetching {
 }
 
 impl Storage for Fetching {
-    fn read<'a>(&'a self, namespace: Namespace, path: &'a FilePath) -> Reading<'a> {
-        match namespace {
-            Namespace::Assets => Box::pin(fetch(format!("{}/{path}", self.assets))),
-            Namespace::Save => Box::pin(read_saved(path)),
-        }
+    fn read<'a>(&'a self, namespace: Namespace, path: &'a FilePath, lent: Spares) -> Reading<'a> {
+        Box::pin(async move {
+            let array = match namespace {
+                Namespace::Assets => fetch(format!("{}/{path}", self.assets)).await,
+                Namespace::Save => read_saved(path).await,
+            };
+
+            filled(array, lent)
+        })
     }
 
     fn write<'a>(&'a self, namespace: Namespace, path: &'a FilePath, bytes: Vec<u8>) -> Writing<'a> {
@@ -66,9 +71,24 @@ impl Storage for Fetching {
     }
 }
 
+/// What a read that came to `array` comes to: its bytes copied into a buffer taken from `lent` for their size, which
+/// is one `lent` holds when it fits them, and what is left of `lent` (ADR-0042).
+fn filled(array: Result<Uint8Array, Unread>, mut lent: Spares) -> Read {
+    let bytes = array.and_then(|array| {
+        let size = usize::try_from(array.length()).map_err(|_| Unread::Failed)?;
+        let mut bytes = lent.take(size);
+        bytes.resize(size, 0);
+        array.copy_to(&mut bytes);
+
+        Ok(bytes)
+    });
+
+    Read { bytes, lent }
+}
+
 /// The bytes at `url`: missing when the server answers it is not found, and failed when the fetch cannot be made or
 /// the server answers anything else but success.
-async fn fetch(url: String) -> Result<Vec<u8>, Unread> {
+async fn fetch(url: String) -> Result<Uint8Array, Unread> {
     let window = web_sys::window().ok_or(Unread::Unavailable)?;
     let answered = JsFuture::from(window.fetch_with_str(&url)).await.map_err(|_| Unread::Failed)?;
     let response: Response = answered.dyn_into().map_err(|_| Unread::Failed)?;
@@ -82,7 +102,7 @@ async fn fetch(url: String) -> Result<Vec<u8>, Unread> {
     let body = response.array_buffer().map_err(|_| Unread::Failed)?;
     let buffer = JsFuture::from(body).await.map_err(|_| Unread::Failed)?;
 
-    Ok(Uint8Array::new(&buffer).to_vec())
+    Ok(Uint8Array::new(&buffer))
 }
 
 /// Why the origin private file system did not do what was asked, as the exception it rejected with names it.
@@ -149,13 +169,13 @@ async fn directory_of(path: &FilePath, make: bool) -> Result<(FileSystemDirector
 }
 
 /// The whole of the save at `path`.
-async fn read_saved(path: &FilePath) -> Result<Vec<u8>, Unread> {
+async fn read_saved(path: &FilePath) -> Result<Uint8Array, Unread> {
     let (directory, name) = directory_of(path, false).await?;
     let handle: FileSystemFileHandle = resolved(directory.get_file_handle(name)).await?;
     let file: File = resolved(handle.get_file()).await?;
     let buffer = JsFuture::from(file.array_buffer()).await.map_err(|_| Unread::Failed)?;
 
-    Ok(Uint8Array::new(&buffer).to_vec())
+    Ok(Uint8Array::new(&buffer))
 }
 
 /// Writes `bytes` as the whole of the save at `path`, making the directories it names. The writable stream writes

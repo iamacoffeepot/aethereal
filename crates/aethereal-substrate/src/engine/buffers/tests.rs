@@ -1,10 +1,10 @@
-//! The buffers of freed blobs, handed back to the actors that put them and handed out again by `turn.buffer`
-//! (ADR-0042).
+//! The buffers of freed blobs, handed back to the actors that put them and handed out again by `turn.buffer`, and
+//! the buffer a job that fills buffers is lent (ADR-0042).
 
 use super::super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, ChildOf, Ending, Handles, Job, Path, Runner, Running, Services, Tells, ToType, Top, Turn,
-    path,
+    Actor, Answer, Answered, ChildOf, Ending, Fills, Handles, Job, Path, Runner, Running, Services, Tells, ToType, Top,
+    Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeSet;
@@ -20,6 +20,14 @@ enum Order {
     Lend { room: u64, to: u64 },
     /// Runs a [`Fill`] of a buffer of this many bytes, keeps the blob it answers with, and goes on once it is answered.
     Fill(u64),
+    /// Runs a [`Draw`], a job that fills buffers, of a buffer with room for this many bytes, notes what it took, and
+    /// goes on once it is answered.
+    Draw(u64),
+    /// Runs a [`Peek`], a job that fills nothing, as `Draw` runs a draw.
+    Peek(u64),
+    /// Runs a [`Draw`] of a buffer with room for this many bytes and cancels it in the same turn, before it is handed
+    /// out.
+    DrawCancelled(u64),
     /// Lets go of every blob it keeps.
     LetGo,
 }
@@ -71,6 +79,46 @@ impl Job for Fill {
     }
 }
 
+/// A job that fills buffers: takes a buffer with room for `room` bytes and answers with what it took.
+#[derive(Plain)]
+#[kind(name = "aether.test.draw")]
+struct Draw {
+    room: u64,
+}
+
+/// A job that takes a buffer as a draw does, but whose type fills nothing.
+#[derive(Plain)]
+#[kind(name = "aether.test.peek")]
+struct Peek {
+    room: u64,
+}
+
+/// What a draw or a peek took: the capacity of its buffer.
+#[derive(Plain)]
+#[kind(name = "aether.test.drew")]
+struct Drew {
+    capacity: u64,
+}
+
+impl Job for Draw {
+    type Done = Drew;
+    const RUNNER: Runner = Runner::Compute;
+    const FILLS: Fills = Fills::Buffers;
+
+    async fn run(self, job: &mut Running) -> Result<Drew, Fault> {
+        Ok(Drew { capacity: count(job.buffer(size(self.room)).capacity()) })
+    }
+}
+
+impl Job for Peek {
+    type Done = Drew;
+    const RUNNER: Runner = Runner::Compute;
+
+    async fn run(self, job: &mut Running) -> Result<Drew, Fault> {
+        Ok(Drew { capacity: count(job.buffer(size(self.room)).capacity()) })
+    }
+}
+
 /// An actor that takes buffers, puts and lends blobs, runs fills, and lets go of what it keeps, as its plan says, and
 /// keeps what each buffer it took was like.
 #[derive(Bound)]
@@ -87,7 +135,7 @@ impl ChildOf for Builder {
 impl Actor for Builder {
     type Config = Plan;
     type Key = u64;
-    type Handles = (Plan, Lent, Answer<Filled, Plan>);
+    type Handles = (Plan, Lent, Answer<Filled, Plan>, Answer<Drew, Plan>);
     type BeginSends = (ToType<Self, Plan>,);
     type EndSends = ();
 
@@ -128,6 +176,18 @@ impl Handles<Plan> for Builder {
                     turn.run(&Fill { capacity }, &plan)?;
                     return Ok(());
                 }
+                Order::Draw(room) => {
+                    turn.run(&Draw { room }, &plan)?;
+                    return Ok(());
+                }
+                Order::Peek(room) => {
+                    turn.run(&Peek { room }, &plan)?;
+                    return Ok(());
+                }
+                Order::DrawCancelled(room) => {
+                    let job = turn.run(&Draw { room }, &plan)?;
+                    turn.cancel(job);
+                }
                 Order::LetGo => self.held.clear(),
             }
         }
@@ -157,6 +217,23 @@ impl Handles<Answer<Filled, Plan>> for Builder {
     ) -> Result<(), Fault> {
         if let Answered::Yes(Filled { blob }) = filled {
             self.held.push(blob);
+        }
+        turn.to(turn.me()).send(&plan)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Drew, Plan>> for Builder {
+    type Sends = (ToType<Self, Plan>,);
+
+    fn handle(
+        &mut self,
+        (drew, plan): (Answered<Drew>, Plan),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        if let Answered::Yes(Drew { capacity }) = drew {
+            self.took.push(empty(capacity));
         }
         turn.to(turn.me()).send(&plan)?;
 
@@ -297,4 +374,53 @@ fn a_buffer_goes_back_to_the_actor_that_put_it_and_not_to_the_last_to_hold_it() 
 
     assert_eq!(took(&engine, lender), [empty(4096)]);
     assert_eq!(took(&engine, borrower), [empty(3000)]);
+}
+
+#[test]
+fn a_job_that_fills_buffers_is_lent_its_actors_largest_kept_buffer() {
+    // Catches a job that fills buffers lent nothing, which then makes its own, and one lent the buffer that fits its
+    // room best rather than the largest, which takes from the actor the buffer its own next take would have had.
+    let mut engine = engine(|setup| setup);
+    let turns: &[&[Order]] =
+        &[&[Order::Put(4096), Order::Put(8192)], &[Order::LetGo], &[Order::Draw(4096)], &[Order::Take(4096)]];
+    let builder = build(&mut engine, 1, turns);
+    settle(&mut engine);
+
+    assert_eq!(took(&engine, builder), [empty(8192), empty(4096)]);
+}
+
+#[test]
+fn a_lent_buffer_more_than_twice_the_room_is_not_used_and_goes_back_with_the_answer() {
+    // Catches a job handed the buffer it was lent for a room it far exceeds, which the budget would charge in full
+    // once put, and a lent buffer the job did not take dropped with it rather than given back to its actor.
+    let mut engine = engine(|setup| setup);
+    let turns: &[&[Order]] = &[&[Order::Put(8192)], &[Order::LetGo], &[Order::Draw(100)], &[Order::Take(8000)]];
+    let builder = build(&mut engine, 1, turns);
+    settle(&mut engine);
+
+    assert_eq!(took(&engine, builder), [empty(100), empty(8192)]);
+}
+
+#[test]
+fn a_job_that_fills_nothing_is_lent_nothing() {
+    // Catches every job lent its actor's largest buffer, whatever its type, which takes the buffer from the actor for
+    // as long as the job runs.
+    let mut engine = engine(|setup| setup);
+    let turns: &[&[Order]] = &[&[Order::Put(8192)], &[Order::LetGo], &[Order::Peek(8000)], &[Order::Take(8000)]];
+    let builder = build(&mut engine, 1, turns);
+    settle(&mut engine);
+
+    assert_eq!(took(&engine, builder), [empty(8000), empty(8192)]);
+}
+
+#[test]
+fn a_job_cancelled_before_it_is_handed_out_gives_back_what_it_was_lent() {
+    // Catches the buffer lent a job dropped with the job when it is cancelled while it waits to be handed out.
+    let mut engine = engine(|setup| setup);
+    let turns: &[&[Order]] =
+        &[&[Order::Put(8192)], &[Order::LetGo], &[Order::DrawCancelled(8000)], &[Order::Take(8000)]];
+    let builder = build(&mut engine, 1, turns);
+    settle(&mut engine);
+
+    assert_eq!(took(&engine, builder), [empty(8192)]);
 }

@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod tests;
 
+use super::buffers;
 use super::gift::{self, Arrival};
 use super::lifecycle::lifecycle_id;
 use super::wake::Bell;
@@ -11,7 +12,7 @@ use super::{Engine, ROOTS, parity};
 use crate::{lives, log};
 use aethereal_actor::{
     BlobId, Copied, Due, Fault, JobCode, JobId, JobType, Kept, Lending, MailId, Mailed, Maker, Never, Outcome, Pinning,
-    Produced, Seated, Services, Sleep, Submitted, Tie, Time, Timer, Unanswered, lending,
+    Produced, Seated, Services, Sleep, Spares, Submitted, Tie, Time, Timer, Unanswered, lending,
 };
 use aethereal_data::{Kind, KindId, Plain};
 use crossbeam_queue::SegQueue;
@@ -37,12 +38,13 @@ pub trait Jobs: Send + Sync {
     fn stop(&self, id: JobId);
 }
 
-/// A job as the engine hands it to its host: its bytes, the blobs it refers to, the most of its bytes it may read, and
-/// where its outcome goes.
+/// A job as the engine hands it to its host: its bytes, the blobs it refers to and the buffers it fills, the most of its
+/// bytes it may read, and where its outcome goes.
 pub struct Taken {
     /// The job's bytes, written at `Actors`.
     pub bytes: Vec<u8>,
-    /// A copy of each blob it refers to, and where the changes to their pins go as it runs.
+    /// A copy of each blob it refers to, the buffers it is lent to fill, and where the changes to their pins go as it
+    /// runs.
     pub lent: Lending,
     /// The most bytes it may read, as mail may.
     pub limit: usize,
@@ -231,13 +233,13 @@ impl Engine {
         }
     }
 
-    /// Hands `job` to the host to run, with the code of its type and a copy of each blob it refers to, once for each
-    /// blob. Each is held: the context the job's actor keeps pins it, and the blobs a step put are taken in before its
-    /// jobs are handed out. A guest's job whose type the program does not let its guests run is answered with
-    /// [`NoRunner`], and never handed out (ADR-0015).
+    /// Hands `job` to the host to run, with the code of its type, a copy of each blob it refers to, once for each
+    /// blob, and the buffers it was lent (ADR-0042). Each blob is held: the context the job's actor keeps pins it, and
+    /// the blobs a step put are taken in before its jobs are handed out. A guest's job whose type the program does not
+    /// let its guests run is answered with [`NoRunner`], and never handed out (ADR-0015).
     fn hand_out(&self, job: Submitted) {
         let id = job.id();
-        let Submitted { by, count, code, answer, bytes, refers } = job;
+        let Submitted { by, count, code, answer, bytes, refers, buffers } = job;
         let feed = Arc::clone(&self.finished);
         let to = Finishing::Actor { by, count, answer, _in_flight: Arc::clone(&self.in_flight) };
         let finish = Finish { to, feed, bell: self.bell.clone() };
@@ -245,7 +247,7 @@ impl Engine {
             finish.done(Err(fault::<NoRunner>()));
             return;
         };
-        let lent = Lending::new(self.number.0, self.copied(refers), Arc::clone(&self.job_pins));
+        let lent = Lending::new(self.number.0, self.copied(refers), buffers, Arc::clone(&self.job_pins));
         if let Runner::Made(jobs) = &self.runner {
             jobs.start(id, of, Taken { bytes, lent, limit: self.read_limit, finish });
         }
@@ -260,15 +262,25 @@ impl Engine {
         }
     }
 
-    /// Stops the job `job` an actor cancelled: one still waiting is dropped, never handed out, and the host is asked
-    /// to stop one it was handed.
+    /// Stops the job `job` an actor cancelled: one still waiting is dropped, never handed out, and the buffers it was
+    /// lent go back to its actor (ADR-0042); the host is asked to stop one it was handed, whose buffers go with it. The
+    /// engine stops jobs as it takes in a step, with every part in it.
     pub(super) fn stop_job(&mut self, job: JobId) {
         let waiting = self.waiting_jobs.iter().position(|waiting| waiting.id() == job);
         match (waiting, &self.runner) {
-            (Some(at), _) => drop(self.waiting_jobs.remove(at)),
+            (Some(at), _) => self.drop_waiting(at),
             (None, Runner::Made(jobs)) => jobs.stop(job),
             (None, Runner::Unmade) => {}
         }
+    }
+
+    /// Drops the job waiting at `at`, never handed out, and gives the buffers it was lent back to its actor.
+    fn drop_waiting(&mut self, at: usize) {
+        let Some(Submitted { by, buffers, .. }) = self.waiting_jobs.remove(at) else {
+            return;
+        };
+
+        buffers::give_back(&mut self.actors, by, buffers, self.most_kept_bytes);
     }
 
     /// How many more jobs the host lets be in flight: as many as it lets be, less those its runners hold the finish of,
@@ -373,7 +385,7 @@ impl Engine {
             unreachable!("a sleep is a time, and refers to nothing");
         };
         let id = JobId::new(MailId { sender: lifecycle_id(), count: at.nanos() });
-        let lent = Lending::new(self.number.0, Vec::new(), Arc::clone(&self.job_pins));
+        let lent = Lending::new(self.number.0, Vec::new(), Spares::new(), Arc::clone(&self.job_pins));
         let finish = Finish { to: Finishing::Alarm(at), feed: Arc::clone(&self.finished), bell: self.bell.clone() };
         jobs.start(id, JobType::of::<Sleep>(), Taken { bytes, lent, limit: self.read_limit, finish });
 
@@ -391,17 +403,18 @@ impl Engine {
         self.log.fold_records(lost.into_iter().map(|(by, name)| log::dropped(by, name)), &[]);
     }
 
-    /// Puts each blob a job the actor `by` ran put, between steps, out of the budget for blobs, as made by `by`, so
-    /// each one's buffer goes back to it once the blob is freed (ADR-0042), and writes over each reference to one in its
-    /// result the blob's own; then keeps each resource it handed, under a ticket of the engine's, written over
-    /// the job's own where it lies in the result: the result's bytes, the pins on the blobs it refers to, and the
-    /// resources it carries (ADR-0018).
+    /// Gives the buffers a job the actor `by` ran was lent and did not take back to it, and puts each blob the job
+    /// put, between steps, out of the budget for blobs, as made by `by`, so each one's buffer goes back to it once the
+    /// blob is freed (ADR-0042), and writes over each reference to one in its result the blob's own; then keeps each
+    /// resource it handed, under a ticket of the engine's, written over the job's own where it lies in the result: the
+    /// result's bytes, the pins on the blobs it refers to, and the resources it carries (ADR-0018).
     ///
     /// # Errors
     ///
     /// A fault of [`NoRoom`] when a blob did not fit, and then none is kept, nor any resource.
     fn put_produced(&mut self, produced: Produced, by: Seated) -> Result<Answering, Fault> {
-        let Produced { bytes, held, put, handed } = produced;
+        let Produced { bytes, held, put, handed, unused } = produced;
+        buffers::give_back(&mut self.actors, by, unused, self.most_kept_bytes);
         let (mut bytes, held) = self.put_blobs(bytes, held, put, by)?;
         let mut kept = Vec::with_capacity(handed.len());
         for (at, resource) in handed {
