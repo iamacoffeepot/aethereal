@@ -6,8 +6,8 @@ mod write;
 
 use crate::{Handling, Limits, Method, Request, Response, Server, Status};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, JobId, Level, More,
-    Number, Open, Part, ProtocolRef, Sleep, Slept, Streamed, Streams, Taken, Time, ToAny, Turn, Unanswered,
+    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Due, Ending, Fault, Handles, JobId, Level,
+    More, Number, Open, Part, ProtocolRef, Sleep, Slept, Streamed, Streams, Taken, Time, ToAny, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Accepted, HungUp, Read, Reading, Shut, SocketAddress, Write, Writing, Wrote};
@@ -40,7 +40,8 @@ pub struct Sending {
 }
 
 /// What an exchange keeps for the sleep that times a phase: the number of the phase it was run for, so a sleep for a
-/// phase the exchange has left is passed over.
+/// phase the exchange has left is passed over. A request waiting on the handler is timed by its ask's deadline, not a
+/// sleep (ADR-0041).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.http.deadline")]
 pub struct Deadline {
@@ -50,19 +51,10 @@ pub struct Deadline {
 /// Whether an exchange's phase has a deadline it sleeps until.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
 enum Sleeping {
-    /// It has none: the exchange is closing.
+    /// It has none: a request waits on the handler, asked within its deadline, or the exchange is closing.
     Not,
     /// The [`Sleep`] it ran until the phase's deadline, not yet answered.
     On(JobId),
-}
-
-/// When an exchange's phase is late.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Due {
-    /// At this time.
-    At(Time),
-    /// Never: the exchange is closing.
-    Never,
 }
 
 /// Where an exchange is in its connection's requests.
@@ -74,9 +66,9 @@ enum Phase {
     Head { since: Time },
     /// A head is parsed, and its body is coming; the request's first byte came at `since`.
     Body { head: Head, body: Vec<u8>, since: Time },
-    /// The request is asked of the handler, and its answer is waited for since `since`. The connection then closes when it
-    /// `closes`, and a response to a `HEAD` is written with no body.
-    Answering { since: Time, closes: bool, head_only: bool },
+    /// The request is asked of the handler, within its deadline, and its answer is waited for. The connection then
+    /// closes when it `closes`, and a response to a `HEAD` is written with no body.
+    Answering { closes: bool, head_only: bool },
     /// A last response is written: the exchange closes once it is sent.
     Closing,
 }
@@ -130,7 +122,7 @@ impl Actor for Exchange {
         let reader = reading.open(turn, config.connection.protocol(), Read, ())?;
         let phase = Phase::Idle { since: turn.now() };
         let sleeping = match due(&phase, &config.limits) {
-            Due::At(until) => Sleeping::On(turn.run(&Sleep { until }, &Deadline { phase: 0 })?),
+            Due::Before(until) => Sleeping::On(turn.run(&Sleep { until }, &Deadline { phase: 0 })?),
             Due::Never => Sleeping::Not,
         };
 
@@ -213,14 +205,21 @@ impl Handles<Answer<Response, Asking>> for Exchange {
         (answered, Asking): (Answered<Response>, Asking),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let Phase::Answering { closes, head_only, .. } = self.phase else {
-            // Answered after its deadline, which the exchange already answered `504`.
-            turn.log(Level::Info, "an answer came after its request's deadline, and was passed over");
+        let Phase::Answering { closes, head_only } = self.phase else {
+            // No request waits on the handler: an answer after its request's deadline is dropped by the engine, so
+            // only one to a request the exchange no longer waits on comes here.
+            turn.log(Level::Info, "an answer came to no request waiting, and was passed over");
             return Ok(());
         };
         let response = match answered {
             Answered::Yes(response) => response,
             Answered::No(Unanswered::Ended) => unanswered(Status::ServiceUnavailable, "the handler has ended"),
+            // The request's deadline came first: the engine stopped waiting for the handler, and the connection closes
+            // once the client is told (ADR-0041).
+            Answered::No(Unanswered::Expired) => {
+                let timed_out = unanswered(Status::GatewayTimeout, "the handler did not respond in time");
+                return self.respond(turn, timed_out, true, head_only);
+            }
             Answered::No(why) => {
                 turn.log(Level::Warn, format!("the handler did not answer a request: {why:?}"));
                 unanswered(Status::InternalServerError, "the handler did not answer")
@@ -254,8 +253,8 @@ impl Handles<Shut> for Exchange {
 impl Handles<Answer<Slept, Deadline>> for Exchange {
     type Sends = (Asks<Writing, Write, Sending>,);
 
-    /// The phase it slept for is late, when it still stands: a request waiting on the handler is answered `504`, and
-    /// one that did not come, or came too slowly, is owed no response.
+    /// The phase it slept for is late, when it still stands: a request that did not come, or came too slowly, is owed
+    /// no response. A request waiting on the handler is timed by its ask's deadline, which runs no sleep (ADR-0041).
     fn handle(
         &mut self,
         (slept, deadline): (Answered<Slept>, Deadline),
@@ -271,33 +270,25 @@ impl Handles<Answer<Slept, Deadline>> for Exchange {
             return Ok(());
         }
         match self.phase {
-            Phase::Answering { head_only, .. } => {
-                let timed_out = Response::new(
-                    Status::GatewayTimeout,
-                    "text/plain; charset=utf-8",
-                    b"the handler did not respond in time".to_vec(),
-                );
-                self.respond(turn, timed_out, true, head_only)
-            }
             Phase::Idle { .. } | Phase::Head { .. } | Phase::Body { .. } => {
                 turn.close();
                 Ok(())
             }
-            Phase::Closing => Ok(()),
+            Phase::Answering { .. } | Phase::Closing => Ok(()),
         }
     }
 }
 
 impl Exchange {
     /// Sleeps until the deadline of the phase it has entered, in place of the last phase's sleep, which it cancels: a
-    /// closing exchange sleeps for none.
+    /// request waiting on the handler, timed by its ask's deadline, and a closing exchange sleep for none.
     fn time<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
         if let Sleeping::On(job) = self.sleeping {
             turn.cancel(job);
         }
         self.phases += 1;
         self.sleeping = match due(&self.phase, &self.limits) {
-            Due::At(until) => Sleeping::On(turn.run(&Sleep { until }, &Deadline { phase: self.phases })?),
+            Due::Before(until) => Sleeping::On(turn.run(&Sleep { until }, &Deadline { phase: self.phases })?),
             Due::Never => Sleeping::Not,
         };
 
@@ -353,20 +344,23 @@ impl Exchange {
         }
     }
 
-    /// Asks the handler the request whose body is whole, and waits for its answer.
+    /// Asks the handler the request whose body is whole, within `answer_within_millis` of now, and waits for its
+    /// answer: the engine answers it `Expired` if that time comes first, as it answers every request made for it
+    /// (ADR-0041).
     fn ask<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<Asks<Handling, Request, Asking>, I>,
     {
-        let answering = Phase::Answering { since: turn.now(), closes: true, head_only: false };
+        let answering = Phase::Answering { closes: true, head_only: false };
         let Phase::Body { head, body, .. } = mem::replace(&mut self.phase, answering) else {
             return Ok(());
         };
         let Head { method, path, query, headers, closes, .. } = head;
-        self.phase = Phase::Answering { since: turn.now(), closes, head_only: method == Method::Head };
+        self.phase = Phase::Answering { closes, head_only: method == Method::Head };
         self.time(turn)?;
         let request = Request { method, path, query, headers, body, peer: self.peer };
-        turn.to(self.handler).ask::<_, _, I>(&request, &Asking)?;
+        let due = turn.now() + Duration::from_millis(u64::from(self.limits.answer_within_millis));
+        turn.to(self.handler).within(due).ask::<_, _, I>(&request, &Asking)?;
 
         Ok(())
     }
@@ -415,16 +409,17 @@ impl Exchange {
     }
 }
 
-/// When `phase` is late under `limits`: a request's head and body share the deadline of its first byte.
+/// When `phase` is late under `limits`, as the exchange sleeps until it: a request's head and body share the deadline
+/// of its first byte. A request waiting on the handler is timed by its ask's deadline instead, and a closing exchange
+/// by none.
 fn due(phase: &Phase, limits: &Limits) -> Due {
     let (since, within) = match phase {
         Phase::Idle { since } => (*since, limits.idle_within_millis),
         Phase::Head { since } | Phase::Body { since, .. } => (*since, limits.request_within_millis),
-        Phase::Answering { since, .. } => (*since, limits.answer_within_millis),
-        Phase::Closing => return Due::Never,
+        Phase::Answering { .. } | Phase::Closing => return Due::Never,
     };
 
-    Due::At(since + Duration::from_millis(u64::from(within)))
+    Due::Before(since + Duration::from_millis(u64::from(within)))
 }
 
 /// The response written for a request its handler did not answer: `status`, saying `why`.

@@ -1,7 +1,7 @@
 //! Held requests: a request an actor answers in a later turn than the one that handled it, and what the engine keeps
 //! of the debt until it is answered (ADR-0017).
 
-use crate::{Fault, Seated, Within};
+use crate::{Due, Fault, Seated, Within};
 use aethereal_data::{
     ActorId, Decode, DecodeError, Encode, EncodeError, Field, KindId, Plain, Reader, Schema, Shape, Writer,
 };
@@ -17,9 +17,14 @@ use core::mem;
 /// It crosses [`Within`] and no other boundary, so it is kept in the actor's state or in what it keeps for a request
 /// of its own, and is never mail. One that is dropped without an answer is answered by the engine, once the step that
 /// dropped it is folded, that the request went unanswered.
+///
+/// It carries the request's deadline, [`due`](Self::due), for a holder that waits on something other than an ask of
+/// its own (ADR-0041).
 #[must_use = "a request held is answered, or the engine says it went unanswered"]
 pub struct Held<A> {
     owed: Owed,
+    /// When the request's asker stops waiting for its answer.
+    due: Due,
     of: PhantomData<fn() -> A>,
 }
 
@@ -61,9 +66,17 @@ impl Owes {
 }
 
 impl<A> Held<A> {
-    /// The debt `owed` names, held by one more value.
-    pub(crate) const fn new(owed: Owed) -> Self {
-        Self { owed, of: PhantomData }
+    /// The debt `owed` names, of a request due as `due` says, held by one more value.
+    pub(crate) const fn new(owed: Owed, due: Due) -> Self {
+        Self { owed, due, of: PhantomData }
+    }
+
+    /// When the request's asker stops waiting for its answer: for a holder that waits on something other than an ask of
+    /// its own, or asks for it from a later turn, `turn.to(target).within(held.due())` (ADR-0041). An ask made in the
+    /// turn that held it inherits it already.
+    #[must_use]
+    pub const fn due(&self) -> Due {
+        self.due
     }
 
     /// The debt it names.
@@ -92,7 +105,7 @@ impl<A> fmt::Debug for Held<A> {
     }
 }
 
-/// A held request is its debt in bytes.
+/// A held request is its debt in bytes, and the request's deadline.
 impl<A> Schema for Held<A> {
     const SHAPE: Shape = Shape::Struct {
         name: "Held",
@@ -102,6 +115,7 @@ impl<A> Schema for Held<A> {
             Field { name: "asker", shape: u64::SHAPE },
             Field { name: "asker_seat", shape: u64::SHAPE },
             Field { name: "request", shape: u64::SHAPE },
+            Field { name: "due", shape: Due::SHAPE },
         ],
     };
 }
@@ -116,6 +130,7 @@ impl<A> Encode<Within> for Held<A> {
         asker.id.bits().encode(out)?;
         asker.seat.number().encode(out)?;
         request.encode(out)?;
+        self.due.encode(out)?;
         holders::change(self.owed, 1);
 
         Ok(())
@@ -127,8 +142,9 @@ impl<A> Decode<Within> for Held<A> {
         let holder = seated(input)?;
         let asker = seated(input)?;
         let request = u64::decode(input)?;
+        let due = Due::decode(input)?;
 
-        Ok(Self::new(Owed { holder, asker, request }))
+        Ok(Self::new(Owed { holder, asker, request }, due))
     }
 }
 

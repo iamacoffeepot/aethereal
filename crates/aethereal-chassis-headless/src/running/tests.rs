@@ -427,3 +427,157 @@ fn a_program_with_no_cycle_is_woken_by_a_job_that_finishes_while_it_sleeps() {
     assert_eq!(naps.take(), [Nap::Slept]);
     assert!(took >= Duration::from_millis(20), "it slept for its time: {took:?}");
 }
+
+/// What a silent actor is asked, and what it would answer: nothing more.
+#[derive(Plain)]
+#[kind(name = "aether.test.hush")]
+struct Hush;
+
+/// The protocol a silent actor is asked through: a hush, answered with a hush.
+struct Hushes;
+
+impl aethereal_actor::Protocol for Hushes {
+    type Kinds = (Hush,);
+}
+
+impl aethereal_actor::Carries<Hush> for Hushes {
+    type Answers = (Hush,);
+}
+
+/// An actor that holds every hush it is asked, and never answers one.
+#[derive(Bound)]
+#[kind(name = "aether.test.silent")]
+struct Silent {
+    held: Vec<Held<Hush>>,
+}
+
+impl ChildOf for Silent {
+    type Parent = Waiter;
+}
+
+impl Actor for Silent {
+    type Config = Nothing;
+    type Key = ();
+    type Handles = (Hush,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: Nothing, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self { held: Vec::new() })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Hush> for Silent {
+    type Sends = (ToSender<Hush>,);
+
+    fn handle(&mut self, _: Hush, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.held.push(turn.hold()?);
+
+        Ok(())
+    }
+}
+
+/// What became of a waiter's request, as it tells the test: why it went unanswered, or that it was answered.
+#[derive(Debug, PartialEq, Eq)]
+enum Waited {
+    Answered,
+    No(aethereal_actor::Unanswered),
+}
+
+/// What a waiter is made from: what it tells the test through.
+#[derive(Bound)]
+#[kind(name = "aether.test.waiter_config")]
+struct WaiterConfig {
+    waited: Given<Controller<Waited>>,
+}
+
+/// An actor that asks a silent actor it stands up a hush on `Start`, within twenty milliseconds, and asks the program
+/// to stop once it hears what became of it: it needs no cycle.
+#[derive(Bound)]
+#[kind(name = "aether.test.waiter")]
+struct Waiter {
+    waited: Handle<Controller<Waited>>,
+    silent: aethereal_actor::ActorRef<Silent>,
+}
+
+impl ChildOf for Waiter {
+    type Parent = Top;
+}
+
+impl Actor for Waiter {
+    type Config = WaiterConfig;
+    type Key = ();
+    type Handles = (On<Start>, Answer<Hush, Nothing>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(config: WaiterConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        let waited = turn.take(config.waited)?;
+        let Ok(silent) = turn.spawn(&(), Nothing) else {
+            return Err(Fault::new(&Nothing)?);
+        };
+        turn.subscribe::<Start>();
+
+        Ok(Self { waited, silent })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<On<Start>> for Waiter {
+    type Sends = (aethereal_actor::Asks<Hushes, Hush, Nothing>,);
+
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let due = turn.now() + Duration::from_millis(20);
+        turn.to(self.silent.protocol()).within(due).ask(&Hush, &Nothing)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Hush, Nothing>> for Waiter {
+    type Sends = ();
+
+    fn handle(&mut self, (answered, _): (Answered<Hush>, Nothing), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let waited = match answered {
+            Answered::Yes(Hush) => Waited::Answered,
+            Answered::No(why) => Waited::No(why),
+        };
+        turn.open(&mut self.waited)?.push(waited);
+        turn.quit();
+
+        Ok(())
+    }
+}
+
+#[test]
+fn a_program_with_no_cycle_is_woken_by_a_deadline_that_comes_while_it_sleeps() {
+    // Catches a deadline the host sleeps through: with nothing to run and no cycle, a host the engine does not wake for
+    // its earliest deadline sleeps until something else comes in, so the waiter, whose request no one answers, is never
+    // told it expired.
+    let one = NonZeroUsize::MIN;
+    let runners: Arc<dyn Jobs> = Arc::new(crate::Runners::new(one, Arc::new(Services::none())));
+    let engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(runners).ready();
+    let mut headless = Headless::new(engine, one);
+    let (given, waited) = headless.engine_mut().controller();
+    let Ok(_) = headless.engine_mut().add_root::<Waiter>(&(), WaiterConfig { waited: given }) else {
+        panic!("the waiter begins");
+    };
+    // A host that is never woken never returns, so it runs on a thread of its own, and the test gives up on it.
+    let (ran, run) = mpsc::channel();
+    #[allow(clippy::disallowed_methods)] // The test runs the host's own loop on a real thread, to bound it.
+    thread::spawn(move || ran.send(timed(headless, Duration::from_secs(30), Duration::from_secs(30))));
+    let Ok((took, exit)) = run.recv_timeout(Duration::from_secs(10)) else {
+        panic!("the program was not woken when the deadline came");
+    };
+
+    assert_eq!(exit, Exit::Stopped);
+    assert_eq!(waited.take(), [Waited::No(aethereal_actor::Unanswered::Expired)]);
+    assert!(took >= Duration::from_millis(20), "it waited until the deadline: {took:?}");
+}

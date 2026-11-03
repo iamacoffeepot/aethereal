@@ -2,7 +2,8 @@
 
 use super::Seat;
 use crate::{
-    Actors, Allows, Askable, ErasedActorRef, Kinds, ProtocolRef, Proven, Reaches, SeatNumber, Seated, Table, Within,
+    Actors, Allows, Askable, Due, ErasedActorRef, Kinds, ProtocolRef, Proven, Reaches, SeatNumber, Seated, Table,
+    Within,
 };
 use aethereal_data::{ActorId, Encode, EncodeError, Kind, KindId, PathSegment};
 use core::marker::PhantomData;
@@ -15,9 +16,14 @@ use core::marker::PhantomData;
 /// What it sends to is `R`, whose markers the sends of `S` must list, as each verb says; `At` is where it found the
 /// target, and `Mode` says whether the actor lives on to be answered: [`Lives`] for a turn or a `begin`, and
 /// [`Leaves`] for an actor's closing turn, which asks nothing.
+///
+/// What it asks is due when the request the turn handles is, or `Never` when it handles none, unless
+/// [`within`](Self::within) states a deadline of its own (ADR-0041).
 pub struct Toward<'t, 'a, S, R, At, Mode> {
     seat: &'t mut Seat<'a>,
     at: At,
+    /// When what it asks is due: inherited from the turn's request, or stated.
+    due: Due,
     sends: PhantomData<fn() -> S>,
     through: PhantomData<fn() -> R>,
     mode: PhantomData<Mode>,
@@ -32,7 +38,9 @@ pub enum Leaves {}
 
 impl<'t, 'a, S, R, At, Mode> Toward<'t, 'a, S, R, At, Mode> {
     pub(super) fn new(seat: &'t mut Seat<'a>, at: At) -> Self {
-        Self { seat, at, sends: PhantomData, through: PhantomData, mode: PhantomData }
+        let due = seat.due;
+
+        Self { seat, at, due, sends: PhantomData, through: PhantomData, mode: PhantomData }
     }
 }
 
@@ -57,6 +65,20 @@ impl<S, R, Mode> Toward<'_, '_, S, R, Seated, Mode> {
 }
 
 impl<S, R> Toward<'_, '_, S, R, Seated, Lives> {
+    /// States when what it asks is due, in place of the deadline it would inherit: a [`Due`], or a
+    /// [`Time`](crate::Time) it is due at. At that time the engine answers the request
+    /// [`Unanswered::Expired`](crate::Unanswered::Expired), and an answer that comes later is dropped (ADR-0041).
+    ///
+    /// `turn.to(tiles).within(turn.now() + Duration::from_secs(5)).ask(&which, &looking)?` gives up on its own, and
+    /// `turn.to(tiles).within(held.due()).ask(&which, &looking)?`, in a later turn than the one that held a request,
+    /// asks for it by its deadline.
+    #[must_use]
+    pub fn within(mut self, due: impl Into<Due>) -> Self {
+        self.due = due.into();
+
+        self
+    }
+
     /// Asks `mail` of the actor, keeping `context` until the request is answered, when the asker is handed what
     /// became of it with the context, as [`Answer<A, C>`](crate::Answer) (ADR-0017, ADR-0022).
     ///
@@ -65,6 +87,9 @@ impl<S, R> Toward<'_, '_, S, R, Seated, Lives> {
     /// for a [`Path<L>`](crate::Path), where `L` does; and the actor handles that answer with `C`. A path that held no
     /// live actor of its type is asked as an actor that has gone: the request is answered
     /// [`Unanswered::Ended`](crate::Unanswered::Ended).
+    ///
+    /// It is due as this target says: what [`within`](Self::within) stated, or the deadline of the request the turn
+    /// handles, or `Never` (ADR-0041).
     pub fn ask<K, C, I>(&mut self, mail: &K, context: &C) -> Result<&mut Self, EncodeError>
     where
         R: Askable<K, C>,
@@ -72,7 +97,7 @@ impl<S, R> Toward<'_, '_, S, R, Seated, Lives> {
         C: Kind + Encode<Within>,
         S: Allows<R::Marker, I>,
     {
-        self.seat.request(self.at, mail, KindId::of::<R::Answer>(), context)?;
+        self.seat.request(self.at, mail, KindId::of::<R::Answer>(), context, self.due)?;
 
         Ok(self)
     }

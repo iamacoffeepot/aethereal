@@ -1,7 +1,7 @@
 //! The debts the engine keeps beside an actor, as values hold them and turns answer them (ADR-0017).
 
 use super::*;
-use aethereal_actor::{Held, MailId, SeatNumber, Unanswered, Written};
+use aethereal_actor::{Due, Held, MailId, SeatNumber, Unanswered, Written};
 use aethereal_data::{ActorId, to_bytes};
 
 /// The actor numbered `n`, in the seat of the same number.
@@ -44,11 +44,12 @@ fn written(held: &Held<Unanswered>) -> Written {
     written
 }
 
-/// [`OWED`] in bytes, as a held request writes it.
+/// [`OWED`] in bytes, of a request due never, as a held request writes it.
 fn written_owed() -> Written {
     let words = [1_u64, 1, 2, 2, 3].iter().flat_map(|word| to_bytes(word).unwrap_or_default());
+    let due = to_bytes(&Due::Never).unwrap_or_default();
 
-    Written::new(words.collect(), Vec::new())
+    Written::new(words.chain(due).collect(), Vec::new())
 }
 
 /// The changes noted since the last time, settled against `debts`: each debt let go of.

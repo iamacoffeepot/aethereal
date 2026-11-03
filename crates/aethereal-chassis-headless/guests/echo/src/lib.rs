@@ -1969,6 +1969,67 @@ pub struct Release {
     pub how: u64,
 }
 
+/// An actor that holds each ping it is asked and, in the turn that holds it, asks a steward it spawns as it begins the
+/// same ping, stating no deadline, so its ask inherits the ping's: it tells its parent what became of its own
+/// (ADR-0041).
+#[derive(Bound)]
+#[kind(name = "aether.guest.envoy")]
+pub struct Envoy {
+    steward: ActorRef<Steward>,
+    held: Vec<Held<Pong>>,
+}
+
+impl ChildOf for Envoy {
+    type Parent = Anywhere;
+}
+
+impl Actor for Envoy {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = (Ping, Answer<Pong, Which>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        let steward = turn.spawn(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
+
+        Ok(Self { steward, held: Vec::new() })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Ping> for Envoy {
+    type Sends = (ToSender<Pong>, Asks<Pings, Ping, Which>);
+
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.held.push(turn.hold()?);
+        turn.to(self.steward.protocol()).ask(&Ping { n: ping.n }, &Which { at: ping.n })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Pong, Which>> for Envoy {
+    type Sends = (ToAny<(Heard,), Heard>,);
+
+    fn handle(
+        &mut self,
+        (pong, which): (Answered<Pong>, Which),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let heard = match pong {
+            Answered::Yes(pong) => Heard::Pong { at: which.at, n: pong.n },
+            Answered::No(why) => Heard::No { at: which.at, why },
+        };
+        turn.to(parent()).send(&heard)?;
+
+        Ok(())
+    }
+}
+
 /// What a steward keeps for a request of its own: a ping it holds, and the ping's number.
 #[derive(Bound)]
 #[kind(name = "aether.guest.kept")]
@@ -2518,6 +2579,7 @@ aethereal_actor::guest!(
     Querent,
     Shelver,
     Steward,
+    Envoy,
     Stasher,
     Nester,
     Opener,

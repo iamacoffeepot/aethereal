@@ -24,12 +24,14 @@
 //! Every number is little-endian, and every address is one in the guest's
 //! 32-bit memory.
 
-use crate::{BlobId, Chain, Claim, Claimed, Fault, JobId, Level, MailId, Owed, Refused, SeatNumber, Seated, Why};
+use crate::{
+    BlobId, Chain, Claim, Claimed, Due, Fault, JobId, Level, MailId, Owed, Refused, SeatNumber, Seated, Time, Why,
+};
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
 use alloc::vec::Vec;
 
 /// The head of an item in the inbox: what it is, its source's id and seat, its chain's root, sender and count, its
-/// depth, and the length of the bytes after it, a context's included.
+/// depth, the length of the bytes after it, a context's included, and when the request it is or answers is due.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemHead {
     pub handed: Handed,
@@ -43,18 +45,29 @@ pub struct ItemHead {
 pub enum Handed {
     /// Mail of `kind`, its bytes after the head.
     Mail { kind: KindId },
-    /// Mail of `kind` that asks the receiver a request, the sender's count of it `request`: its bytes after the head
-    /// (ADR-0017).
-    Asks { kind: KindId, request: u64 },
-    /// The answer, of `kind`, to the receiver's request of the count `request`: its bytes after the head, and then the
-    /// last `context` of them the context the receiver kept for it (ADR-0017).
-    Answer { kind: KindId, request: u64, context: u32 },
-    /// What the engine says of the receiver's request of the count `request`, answered with a kind `answer` names,
-    /// which went unanswered: an [`Unanswered`](crate::Unanswered)'s bytes after the head, and then the last `context`
-    /// of them the context the receiver kept for it (ADR-0017).
-    Unanswered { answer: KindId, request: u64, context: u32 },
+    /// Mail of `kind` that asks the receiver a request, the sender's count of it `request`, due as `due` says: its
+    /// bytes after the head (ADR-0017, ADR-0041).
+    Asks { kind: KindId, request: u64, due: Due },
+    /// The answer, of `kind`, to the receiver's request of the count `request`, filed due as `due` says: its bytes
+    /// after the head, and then the last `context` of them the context the receiver kept for it (ADR-0017).
+    Answer { kind: KindId, request: u64, context: u32, due: Due },
+    /// What the engine says of the receiver's request of the count `request`, answered with a kind `answer` names and
+    /// filed due as `due` says, which went unanswered: an [`Unanswered`](crate::Unanswered)'s bytes after the head, and
+    /// then the last `context` of them the context the receiver kept for it (ADR-0017).
+    Unanswered { answer: KindId, request: u64, context: u32, due: Due },
     /// The watched actor ended so.
     Ended(Gone),
+}
+
+impl Handed {
+    /// When the request it is, or answers, is due: `Never` for an item that is neither (ADR-0041).
+    #[must_use]
+    pub const fn due(&self) -> Due {
+        match self {
+            Self::Asks { due, .. } | Self::Answer { due, .. } | Self::Unanswered { due, .. } => *due,
+            Self::Mail { .. } | Self::Ended(_) => Due::Never,
+        }
+    }
 }
 
 /// How a watched actor ended, as its ending is handed into the inbox.
@@ -70,12 +83,13 @@ pub enum Gone {
 
 impl ItemHead {
     /// How many bytes it is.
-    pub const BYTES: usize = 64;
+    pub const BYTES: usize = 80;
 
     /// It, as the inbox holds it.
     #[must_use]
     pub fn to_bytes(&self) -> [u8; Self::BYTES] {
         let mut out = [0; Self::BYTES];
+        write_due(&mut out, 64, self.handed.due());
         let handed: u32 = match self.handed {
             Handed::Mail { kind } => {
                 out[..8].copy_from_slice(&kind.plain_bytes());
@@ -87,18 +101,18 @@ impl ItemHead {
                 2
             }
             Handed::Ended(Gone::Earlier) => 3,
-            Handed::Asks { kind, request } => {
+            Handed::Asks { kind, request, .. } => {
                 out[..8].copy_from_slice(&kind.plain_bytes());
                 out[52..60].copy_from_slice(&request.to_le_bytes());
                 6
             }
-            Handed::Answer { kind, request, context } => {
+            Handed::Answer { kind, request, context, .. } => {
                 out[..8].copy_from_slice(&kind.plain_bytes());
                 out[52..60].copy_from_slice(&request.to_le_bytes());
                 out[60..64].copy_from_slice(&context.to_le_bytes());
                 4
             }
-            Handed::Unanswered { answer, request, context } => {
+            Handed::Unanswered { answer, request, context, .. } => {
                 out[..8].copy_from_slice(&answer.plain_bytes());
                 out[52..60].copy_from_slice(&request.to_le_bytes());
                 out[60..64].copy_from_slice(&context.to_le_bytes());
@@ -120,16 +134,15 @@ impl ItemHead {
     #[must_use]
     pub fn read(bytes: &[u8]) -> Option<Self> {
         let head = bytes.get(..Self::BYTES)?;
+        let (request, context, due) = (u64_at(head, 52), u32_at(head, 60), due_at(head, 64));
         let handed = match u32_at(head, 48)? {
             0 => Handed::Mail { kind: kind_at(head, 0)? },
             1 => Handed::Ended(Gone::Closed),
             2 => Handed::Ended(Gone::Failed { kind: kind_at(head, 0)? }),
             3 => Handed::Ended(Gone::Earlier),
-            4 => Handed::Answer { kind: kind_at(head, 0)?, request: u64_at(head, 52)?, context: u32_at(head, 60)? },
-            5 => {
-                Handed::Unanswered { answer: kind_at(head, 0)?, request: u64_at(head, 52)?, context: u32_at(head, 60)? }
-            }
-            6 => Handed::Asks { kind: kind_at(head, 0)?, request: u64_at(head, 52)? },
+            4 => Handed::Answer { kind: kind_at(head, 0)?, request: request?, context: context?, due: due? },
+            5 => Handed::Unanswered { answer: kind_at(head, 0)?, request: request?, context: context?, due: due? },
+            6 => Handed::Asks { kind: kind_at(head, 0)?, request: request?, due: due? },
             _ => return None,
         };
         let source = Seated { id: ActorId::new(u64_at(head, 8)?), seat: SeatNumber::new(u64_at(head, 16)?) };
@@ -372,15 +385,15 @@ pub enum Requesting {
     /// Nothing the guest says: its host tells whether it is a reply from what its handler declares.
     Not,
     /// It asks a request, to be answered with a kind `answer` names, the context the guest keeps for it where `context`
-    /// says.
-    Asks { answer: KindId, context: Span },
+    /// says, due as `due` says (ADR-0041).
+    Asks { answer: KindId, context: Span, due: Due },
     /// It answers the request of the count `request` its receiver asked, which the guest's actor held (ADR-0017).
     Answers { request: u64 },
 }
 
 impl SendRecord {
     /// How many bytes it is.
-    pub const BYTES: usize = 68;
+    pub const BYTES: usize = 80;
 
     /// It, as the out buffer holds it.
     #[must_use]
@@ -393,10 +406,11 @@ impl SendRecord {
         out[44..48].copy_from_slice(&self.bytes.len.to_le_bytes());
         let requesting: u32 = match self.request {
             Requesting::Not => 0,
-            Requesting::Asks { answer, context } => {
+            Requesting::Asks { answer, context, due } => {
                 out[52..60].copy_from_slice(&answer.plain_bytes());
                 out[60..64].copy_from_slice(&context.at.to_le_bytes());
                 out[64..68].copy_from_slice(&context.len.to_le_bytes());
+                write_due(&mut out, 68, due);
                 1
             }
             Requesting::Answers { request } => {
@@ -418,6 +432,7 @@ impl SendRecord {
             1 => Requesting::Asks {
                 answer: kind_at(bytes, 52)?,
                 context: Span { at: u32_at(bytes, 60)?, len: u32_at(bytes, 64)? },
+                due: due_at(bytes, 68)?,
             },
             2 => Requesting::Answers { request: u64_at(bytes, 52)? },
             _ => return None,
@@ -1093,6 +1108,26 @@ fn seated_bytes(seated: Seated) -> [u8; 16] {
 
 fn seated_at(bytes: &[u8], at: usize) -> Option<Seated> {
     Some(Seated { id: ActorId::new(u64_at(bytes, at)?), seat: SeatNumber::new(u64_at(bytes, at + 8)?) })
+}
+
+/// Writes `due` into `out` from `at`: its case, `0` for `Never` and `1` for a time, in four bytes, then the nanoseconds
+/// of its time in eight, none for `Never`.
+fn write_due(out: &mut [u8], at: usize, due: Due) {
+    let (case, nanos) = match due {
+        Due::Never => (0_u32, 0),
+        Due::Before(time) => (1, time.nanos()),
+    };
+    out[at..at + 4].copy_from_slice(&case.to_le_bytes());
+    out[at + 4..at + 12].copy_from_slice(&nanos.to_le_bytes());
+}
+
+/// The deadline `bytes` hold from `at`, as [`write_due`] writes it: nothing when they are too few, or name no case.
+fn due_at(bytes: &[u8], at: usize) -> Option<Due> {
+    match u32_at(bytes, at)? {
+        0 => Some(Due::Never),
+        1 => Some(Due::Before(Time::from_nanos(u64_at(bytes, at + 4)?))),
+        _ => None,
+    }
 }
 
 fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {

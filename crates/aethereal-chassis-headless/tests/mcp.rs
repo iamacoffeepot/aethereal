@@ -606,6 +606,31 @@ fn a_call_past_the_most_out_is_a_result_and_a_slot_comes_back() -> Result<(), Un
 }
 
 #[test]
+fn a_call_its_tool_never_answers_frees_its_slot_at_the_http_deadline() -> Result<(), Unheard> {
+    // Catches #355: `Mcp`'s ask to a tool that holds the call and never answers kept a slot of `most_calls` after the
+    // client was answered `504`, so with one slot every call after the first was refused. Its ask inherits the
+    // exchange's deadline, and expires with it.
+    let http = HttpSettings { answer_within_millis: 200, ..HttpSettings::default() };
+    let (mut harness, mcp, port) = served_over(http, McpSettings { most_calls: 1, ..McpSettings::default() })?;
+    let worker = harness.protocol::<Tooling>();
+    let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say")], worker })?;
+    assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
+
+    let first = client(port, &Post::of(Rpc::CallSay));
+    let _never_answered = harness.asked::<Call>()?;
+    let read = heard(&mut harness, first);
+    assert_eq!(read.status, 504, "{read:?}");
+
+    let again = client(port, &Post::of(Rpc::CallSay));
+    let call = harness.asked::<Call>()?;
+    harness.reply(call, &Called::Refused(String::from("again")))?;
+    let read = heard(&mut harness, again);
+    assert!(read.body.contains("again"), "the slot came back: {read:?}");
+
+    Ok(())
+}
+
+#[test]
 fn the_largest_request_http_takes_is_read_within_the_limit_it_asks_for() -> Result<(), Unheard> {
     // Catches `most_read_bytes` counting a head by its bytes alone, as a list charges each element whole: a head of the
     // most headers that fit would be mail `Mcp` cannot read, which ends it, however it is written.

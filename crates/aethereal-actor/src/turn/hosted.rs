@@ -3,9 +3,10 @@
 use super::{Closing, Owing, Seat, Stood, Turning, Why};
 use crate::records::Staging;
 use crate::{
-    Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Effect, ErasedActorRef, Fault, Gift, Giver, Instances,
-    JobCode, JobId, Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Role,
-    Runs, SeatNumber, Seated, Seats, Sending, Submitted, Table, Target, Tie, What, Written, carry, take_claimed,
+    Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Due, Effect, ErasedActorRef, Fault, Gift, Giver,
+    Instances, JobCode, JobId, Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload,
+    Puts, Role, Runs, SeatNumber, Seated, Seats, Sending, Submitted, Table, Target, Tie, What, Written, carry,
+    take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -64,9 +65,10 @@ enum Source {
 pub enum Request {
     /// Nothing the code says: whether it replies to the item handled is told from what its handler declares.
     Not,
-    /// It asks a request, to be answered with a kind `answer` names, keeping `context`, with the pins its host made
-    /// for it (ADR-0014).
-    Asks { answer: KindId, context: Written },
+    /// It asks a request, to be answered with a kind `answer` names, keeping `context`, with the pins its host made for
+    /// it (ADR-0014), and due as `due` says: what the guest's code stated, or the deadline its library inherited for it
+    /// from the request its turn handles, as a native turn's ask inherits (ADR-0041).
+    Asks { answer: KindId, context: Written, due: Due },
     /// It answers the request of the count `request` its receiver asked, which the actor held.
     Answers { request: u64 },
 }
@@ -154,11 +156,11 @@ impl<'a> Turning<'a> {
     /// instances of its part it was lent, for the host to take the instance its code runs in from.
     #[must_use]
     pub fn hosted(self, declared: &'static Declared, role: Role) -> (Hosted<'a>, &'a mut Instances) {
-        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie } = self;
+        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie, due } = self;
         let handler = declared.handlers().iter().find(|handler| handler.role() == role);
         let sends = handler.map_or(&[][..], |handler| handler.sends());
         let owing = Owing::Item(tie);
-        let seat = Seat { me, path, above, table, made, asked, keeps, sent, sent_before: sent, declared, owing };
+        let seat = Seat { me, path, above, table, made, asked, keeps, sent, sent_before: sent, declared, owing, due };
 
         (
             Hosted { seat, sends, source: Source::Item(source), chain, spawned: Vec::new(), sent: Sent::Nothing },
@@ -174,8 +176,9 @@ impl<'a> Closing<'a> {
     #[must_use]
     pub fn hosted(self, declared: &'static Declared) -> (Hosted<'a>, Why, &'a mut Instances) {
         let Self { me, path, above, table, asked, instances, keeps, sent, why } = self;
-        let owing = Owing::NOTHING;
-        let seat = Seat { me, path, above, table, made: &(), asked, keeps, sent, sent_before: sent, declared, owing };
+        let (owing, due) = (Owing::NOTHING, Due::Never);
+        let seat =
+            Seat { me, path, above, table, made: &(), asked, keeps, sent, sent_before: sent, declared, owing, due };
         let chain = Chain { root: MailId { sender: me.id, count: sent }, depth: 0 };
         let hosted = Hosted {
             seat,
@@ -216,6 +219,7 @@ impl<'a> Hosted<'a> {
             sent_before: 0,
             declared,
             owing: Owing::NOTHING,
+            due: Due::Never,
         };
         let chain = Chain { root: MailId { sender: me.id, count: 0 }, depth: 0 };
 
@@ -300,12 +304,12 @@ impl<'a> Hosted<'a> {
             child.sent
         };
         // A request is the mail that asks it, so it is counted as that mail is.
-        let tie = match request {
-            Request::Not => self.tie(by, to, kind)?,
-            Request::Asks { answer, context } => self.ask(by, count, answer, context)?,
-            Request::Answers { request } => self.answer(by, to, kind, request)?,
+        let (tie, due) = match request {
+            Request::Not => (self.tie(by, to, kind)?, Due::Never),
+            Request::Asks { answer, context, due } => (self.ask(by, count, answer, context, due)?, due),
+            Request::Answers { request } => (self.answer(by, to, kind, request)?, Due::Never),
         };
-        let mailed = Mailed { by, to, count, kind, bytes, tie };
+        let mailed = Mailed { by, to, count, kind, bytes, tie, due };
         let pieces = self.seat.asked.buffers.mailed.len();
         self.seat.asked.buffers.mailed.push(mailed);
         self.sent = match self.sent {
@@ -381,13 +385,13 @@ impl<'a> Hosted<'a> {
     }
 
     /// What the `count`th piece of mail `by` sends carries as the request it asks, to be answered with a kind `answer`
-    /// names, filed with `context` beside `by`: refused unless it is the actor's own turn that handles an item, its
-    /// `begin`, or the `begin` of a child the turn spawned, as only those ask, and the asker's type handles the answer
-    /// (ADR-0017). Kept out of line: most mail asks nothing, and inlined it keeps the send from being inlined where
-    /// each is read.
+    /// names by `due`, filed with `context` beside `by`: refused unless it is the actor's own turn that handles an
+    /// item, its `begin`, or the `begin` of a child the turn spawned, as only those ask, and the asker's type handles
+    /// the answer (ADR-0017). Kept out of line: most mail asks nothing, and inlined it keeps the send from being
+    /// inlined where each is read.
     #[cold]
     #[inline(never)]
-    fn ask(&mut self, by: Seated, count: u64, answer: KindId, context: Written) -> Result<Tie, FalseSend> {
+    fn ask(&mut self, by: Seated, count: u64, answer: KindId, context: Written, due: Due) -> Result<Tie, FalseSend> {
         let is_mine = by == self.seat.me;
         let declared = if is_mine {
             self.seat.declared
@@ -400,7 +404,7 @@ impl<'a> Hosted<'a> {
         if !asks {
             return Err(FalseSend);
         }
-        self.seat.asked.asks.push((by, Asking { count, answer, context, lent: Vec::new() }));
+        self.seat.asked.asks.push((by, Asking { count, answer, context, lent: Vec::new(), due }));
 
         Ok(Tie::asks(count))
     }
@@ -478,7 +482,8 @@ impl<'a> Hosted<'a> {
         };
         let refers = lent.iter().map(crate::BlobRef::id).collect();
         self.seat.asked.buffers.jobs.push(Submitted { by, count, code: JobCode::Guest(kind), answer, bytes, refers });
-        self.seat.asked.asks.push((by, Asking { count, answer, context, lent }));
+        // A job is cancelled by its asker, and inherits no deadline (ADR-0041).
+        self.seat.asked.asks.push((by, Asking { count, answer, context, lent, due: Due::Never }));
 
         Ok(())
     }

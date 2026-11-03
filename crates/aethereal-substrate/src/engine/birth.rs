@@ -2,6 +2,7 @@
 
 use super::ask::Waiting;
 use super::debts::Debts;
+use super::due::Expiring;
 use super::made::Made;
 use super::{Held, Holding, Seating, Sitting, part};
 use crate::BySeat;
@@ -105,12 +106,14 @@ pub(super) fn sit(
     actors.insert(me, Held { actor: Holding::Here(actor), keeping, waiting, debts: Debts::default() });
 }
 
-/// Each child in `stood`, stood up in one turn, with the requests its `begin` asked, taken out of `asked`.
-pub(super) fn waiting(stood: Vec<Stood>, asked: &mut Asked) -> Vec<(Stood, Waiting)> {
+/// Each child in `stood`, stood up in one turn, with the requests its `begin` asked, taken out of `asked`, each with a
+/// deadline added to `expiring` (ADR-0041).
+pub(super) fn waiting(stood: Vec<Stood>, asked: &mut Asked, expiring: &mut Vec<Expiring>) -> Vec<(Stood, Waiting)> {
     stood
         .into_iter()
         .map(|child| {
-            let waiting = Waiting::of_begin(asked.take_asks_by(child.seated()));
+            let me = child.seated();
+            let waiting = Waiting::of_begin(me, asked.take_asks_by(me), expiring);
             (child, waiting)
         })
         .collect()

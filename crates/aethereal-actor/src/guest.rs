@@ -28,8 +28,8 @@ use crate::records::{
 };
 use crate::section;
 use crate::{
-    Above, Actor, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, BlobRef, ChildOf, Children, Declared, Ended,
-    Fault, How, Item, Tie, Tied, Unanswered,
+    Above, Actor, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, BlobRef, ChildOf, Children, Declared, Due,
+    Ended, Fault, How, Item, Tie, Tied, Unanswered,
 };
 use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, PinSource, Preparing, Puts, Refused};
 use crate::{Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Time, Turning, Unfit, What, Written};
@@ -408,10 +408,11 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
             rest = after;
             // What became of a request is handed to its handler with the request as it was filed, which the turn
             // reads.
-            // What the item is to a request: one the turn may reply to, or hold (ADR-0017).
-            let tie = match handed {
-                Handed::Asks { request, .. } => Tie::asks(request),
-                _ => Tie::TELL,
+            // What the item is to a request: one the turn may reply to, or hold, and the deadline its asks inherit
+            // (ADR-0017, ADR-0041).
+            let (tie, due) = match handed {
+                Handed::Asks { request, due, .. } => (Tie::asks(request), due),
+                _ => (Tie::TELL, Due::Never),
             };
             let filed;
             let item = match read {
@@ -430,7 +431,7 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
             let Standing { path, above } = &*standing;
             let keeps = Keeps::Claimed;
             let turning =
-                Turning::new(*me, path, *above, &host, &host, asked, instances, keeps, sent, source, chain, tie);
+                Turning::new(*me, path, *above, &host, &host, asked, instances, keeps, sent, source, chain, tie, due);
             let result = runs.turn(item, turning);
             sent = asked.last_sent(*me).unwrap_or(sent);
             write_ends(out, asked, &mut counted);
@@ -478,12 +479,12 @@ fn read_item(items: &[u8], read_limit: usize) -> Option<(Inboxed<'_>, ItemHead, 
     let read = match handed {
         Handed::Mail { kind } | Handed::Asks { kind, .. } => Inboxed::Item(Item::Mail(mail(kind, bytes))),
         Handed::Ended(gone) => Inboxed::Item(Item::Ended(ended(gone, source, bytes))),
-        Handed::Answer { kind, request, context } => {
-            let (bytes, asking) = filed(bytes, request, kind, context)?;
+        Handed::Answer { kind, request, context, due } => {
+            let (bytes, asking) = filed(bytes, (request, kind, due), context)?;
             Inboxed::Answer { mail: mail(kind, bytes), asking }
         }
-        Handed::Unanswered { answer, request, context } => {
-            let (bytes, asking) = filed(bytes, request, answer, context)?;
+        Handed::Unanswered { answer, request, context, due } => {
+            let (bytes, asking) = filed(bytes, (request, answer, due), context)?;
             Inboxed::Unanswered { mail: mail(KindId::of::<Unanswered>(), bytes), asking }
         }
     };
@@ -491,15 +492,15 @@ fn read_item(items: &[u8], read_limit: usize) -> Option<(Inboxed<'_>, ItemHead, 
     Some((read, head, rest))
 }
 
-/// The bytes of what became of the request of the count `request`, answered with a kind `answer` names, and the
-/// request as its host filed it: the last `context` of `bytes` are its context, as [`records::carried`] reads it. Kept
-/// out of line, as most items are mail.
+/// The bytes of what became of the request of the count `request`, answered with a kind `answer` names and due as
+/// `due` says, and the request as its host filed it: the last `context` of `bytes` are its context, as
+/// [`records::carried`] reads it. Kept out of line, as most items are mail.
 #[cold]
 #[inline(never)]
-fn filed(bytes: &[u8], request: u64, answer: KindId, context: u32) -> Option<(&[u8], Asking)> {
+fn filed(bytes: &[u8], (request, answer, due): (u64, KindId, Due), context: u32) -> Option<(&[u8], Asking)> {
     let (bytes, context) = bytes.split_at_checked(bytes.len().checked_sub(context as usize)?)?;
 
-    Some((bytes, Asking { count: request, answer, context: carried_in(context)?, lent: Vec::new() }))
+    Some((bytes, Asking { count: request, answer, context: carried_in(context)?, lent: Vec::new(), due }))
 }
 
 /// The ending of `source`, which ended as `gone` says, a fault's bytes in `bytes`. Kept out of line: built in the
@@ -881,7 +882,12 @@ fn requesting(
     match mailed.tie.read() {
         Tied::Asks(request) => {
             let asking = asks.find(|lying| lying.by == mailed.by && lying.count == request);
-            asking.map_or(Requesting::Not, |lying| Requesting::Asks { answer: lying.answer, context: lying.context })
+            let due = mailed.due;
+            asking.map_or(Requesting::Not, |lying| Requesting::Asks {
+                answer: lying.answer,
+                context: lying.context,
+                due,
+            })
         }
         Tied::Answers(request) => {
             let is_held = answers.next_if(|owed| owed.asker == mailed.to && owed.request == request).is_some();

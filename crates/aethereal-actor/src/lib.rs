@@ -21,6 +21,7 @@ mod boundary;
 #[cfg(feature = "std")]
 mod controller;
 mod declared;
+mod due;
 mod effect;
 mod ended;
 mod fault;
@@ -66,6 +67,7 @@ pub use declared::{
     HandledList, Handler, Handles, Kinds, Listed, Marker, Others, Protocol, RepliesTo, RepliesWith, RepliesWithin,
     ReplyWithin, Role, Sending, Sends, Target, Tells, ToAny, ToSender, ToType,
 };
+pub use due::Due;
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
@@ -79,7 +81,7 @@ pub use instances::{Instances, Lent};
 pub use item::Item;
 pub use job::{Copied, Driven, Job, JobCode, JobId, Runner, Running, Submitted, Unrun};
 #[cfg(feature = "std")]
-pub use job::{JobList, JobType, Lending, Outcome, Produced};
+pub use job::{JobList, JobType, Lending, Outcome, Produced, lending};
 pub use mail::{Mail, MailId};
 pub use path::{
     Beneath, Child, HandlersNeedIn, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Parent, Path, PathTo, Placed, There,

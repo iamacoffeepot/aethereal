@@ -6,6 +6,7 @@ mod birth;
 mod bring;
 mod costs;
 mod debts;
+mod due;
 mod fold;
 mod fuse;
 mod gift;
@@ -38,7 +39,7 @@ use crate::table::{self, Actors};
 use crate::watch::{Notice, Watches};
 use crate::{
     ActorTable, Blobs, ByActor, BySeat, Clock, Context, Entry, Envelope, Folded, Lives, Log, Part, Routed, State,
-    lives, rounded,
+    Tying, lives, rounded,
 };
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
@@ -54,6 +55,7 @@ use birth::Births;
 use costs::{CostKey, Costs, ItemKind, toward};
 use crossbeam_queue::SegQueue;
 use debts::Debts;
+use due::{Alarm, Deadlines, Expiring};
 use fuse::{Fusing, Hand, Hop, Stepped};
 use gift::{Arrival, Gifts};
 pub use lifecycle::Lifecycle;
@@ -190,6 +192,10 @@ pub struct Engine {
     /// What every feed and every job handed out rings once what it brings is waiting, to wake the host (ADR-0010,
     /// ADR-0018).
     bell: wake::Bell,
+    /// The requests filed with a deadline, by when each is due (ADR-0041).
+    deadlines: Deadlines,
+    /// The wake the engine has asked of its host for the earliest of them (ADR-0041).
+    alarm: Alarm,
     /// Which engine of the process this is, in the id of each blob it holds. Last, so what the engine's actors held
     /// is let go of before the engine is forgotten.
     number: Number,
@@ -377,6 +383,9 @@ pub struct Lists {
     /// The changes to how many values hold each debt the part running's turns made, noted on the worker's thread as
     /// they ran, and settled once the part has run (ADR-0017).
     holders: Vec<holders::Change>,
+    /// The requests its turns, and the `begin`s of the children they stood up, filed with a deadline, which the engine
+    /// keeps by when each is due once the step's turns are taken in (ADR-0041).
+    expiring: Vec<Expiring>,
     /// The turns the worker ran, recorded for a harness (ADR-0036).
     #[cfg(any(test, feature = "harness"))]
     turned: Vec<outside::Turned>,
@@ -477,6 +486,8 @@ impl Engine {
             waiting_jobs: VecDeque::new(),
             job_pins: Arc::new(SegQueue::new()),
             bell: wake::Bell::new(),
+            deadlines: Deadlines::default(),
+            alarm: Alarm::Unset,
             number,
         }
     }
@@ -757,8 +768,9 @@ impl Engine {
         let mut keeping = Keeping::default();
         // The root begins in the part it is seated in, lent that part's instances.
         let made = begin(me, &path, &table, &mut asked, &mut self.instances[home], &mut keeping);
-        let stood = birth::waiting(asked.take_stood(), &mut asked);
-        let waiting = Waiting::of_begin(asked.take_asks_by(me));
+        let mut expiring = Vec::new();
+        let stood = birth::waiting(asked.take_stood(), &mut asked, &mut expiring);
+        let waiting = Waiting::of_begin(me, asked.take_asks_by(me), &mut expiring);
         let (mut buffers, _, arena, mut seats, mut puts) = asked.into_parts();
         self.arenas[parity][ROOTS] = arena;
         // A root is made between steps, when nothing reads the store, so what its `begin` put is taken in at once.
@@ -791,6 +803,8 @@ impl Engine {
         self.table.made_root(id);
         self.seat(me, path, Above::Chassis, root, keeping, waiting);
         self.fold_began(buffers, stood, context, parity, me);
+        self.deadlines.keep(&mut expiring);
+        self.arm();
 
         Ok(id)
     }
@@ -958,14 +972,17 @@ impl Engine {
         self.spare.touched = touched;
         self.hand_on(forward);
         self.start_waiting();
+        self.arm();
         self.advance();
     }
 
     /// Begins a step on `workers`: takes each part of the engine with something to run out of it, with the actors in
-    /// the part and what they react to, and shares the parts among the workers that are to run, by what their turns
-    /// are expected to cost (ADR-0011). A step for one worker takes nothing out: it is run whole, where its parts
-    /// lie, by [`Engine::run_whole`].
+    /// the part and what they react to, and shares the parts among the workers that are to run, by what their turns are
+    /// expected to cost (ADR-0011). A step for one worker takes nothing out: it is run whole, where its parts lie, by
+    /// [`Engine::run_whole`]. Every request whose deadline has come by `now` is answered `Expired` first, so its asker
+    /// handles that in the step (ADR-0041).
     pub fn plan(&mut self, workers: Workers, now: Time) -> Plan {
+        self.expire(now);
         self.step += 1;
         self.now = now;
         self.rest();
@@ -1072,6 +1089,7 @@ impl Engine {
         for job in lists.cancelled.drain(..) {
             self.stop_job(job);
         }
+        self.deadlines.keep(&mut lists.expiring);
         self.lists[slot] = lists;
     }
 
@@ -1196,6 +1214,7 @@ impl Engine {
 
         self.hand_on(forward);
         self.start_waiting();
+        self.arm();
         self.advance();
     }
 
@@ -1527,8 +1546,9 @@ impl Reading<'_> {
             // A hop to an actor that was cut off in the step would overtake what it carries, so it is carried
             // after that.
             if lists.fusing.carries(hop.to.id) {
-                let Hop { to, from, count, root, depth, kind, tie, .. } = hop;
-                let envelope = |bytes| Envelope { sender_seat: from.seat, root, depth, kind, bytes, tie };
+                let Hop { to, from, count, root, depth, kind, tie, due, .. } = hop;
+                let tying = Tying::of(tie, due);
+                let envelope = |bytes| Envelope { sender_seat: from.seat, root, depth, kind, bytes, tying };
                 room.streams.carry_hop(
                     to,
                     (from.id.bits(), count),
@@ -1689,6 +1709,7 @@ impl Reading<'_> {
                             source,
                             chain,
                             tie,
+                            handed.due(),
                         );
                         #[cfg(any(test, feature = "harness"))]
                         let noted = self.recording.note(&item, me, source, tie, chain.depth, self.read_limit);
@@ -1696,7 +1717,8 @@ impl Reading<'_> {
                         // Most turns are of plain mail, and ask and hold nothing.
                         let is_tied = !tie.is_tell() || asked.is_tied();
                         if is_tied {
-                            tied(me, (source, tie, context, stepped.sent), (waiting, debts), asked, &mut outcome);
+                            let filed = (&mut *waiting, &mut *debts, &mut lists.expiring);
+                            tied(me, (source, tie, context, stepped.sent), filed, asked, &mut outcome);
                         }
                         #[cfg(any(test, feature = "harness"))]
                         noted.finish(me, &seat.path, outside::Ran::Waiting, &outcome, &mut lists.turned);
@@ -1886,6 +1908,7 @@ impl Reading<'_> {
                     hop.from,
                     chain,
                     hop.tie,
+                    hop.due,
                 );
 
                 #[cfg(any(test, feature = "harness"))]
@@ -1894,7 +1917,8 @@ impl Reading<'_> {
                 let is_tied = !hop.tie.is_tell() || asked.is_tied();
                 if is_tied {
                     let chain = Context { root: hop.root, depth: hop.depth + 1 };
-                    tied(me, (hop.from, hop.tie, chain, sent_before), (waiting, debts), asked, &mut outcome);
+                    let filed = (&mut *waiting, &mut *debts, &mut lists.expiring);
+                    tied(me, (hop.from, hop.tie, chain, sent_before), filed, asked, &mut outcome);
                 }
                 #[cfg(any(test, feature = "harness"))]
                 noted.finish(me, &seat.path, outside::Ran::Hop, &outcome, &mut lists.turned);
@@ -1965,7 +1989,7 @@ impl Reading<'_> {
             };
             let burst = sends.count();
             if let Some(index) = first {
-                let Mailed { to, count, kind, bytes, tie, .. } = mailed[index];
+                let Mailed { to, count, kind, bytes, tie, due, .. } = mailed[index];
                 let hand = hand(to, *stepped, seating, lives, &lists.fusing);
                 lists.fusing.hops.count(hand);
                 let pieces = bytes.pieces();
@@ -1997,6 +2021,7 @@ impl Reading<'_> {
                         from: me,
                         count,
                         tie,
+                        due,
                         root: context.root,
                         depth: context.depth,
                         kind,
@@ -2082,14 +2107,14 @@ fn hand(to: Seated, stepped: Stepped, seating: &Seating, lives: &lives::Shard, f
 /// Settles what the turn of the actor `me` leaves of requests: it handled mail tied as `tie` from `source`, at
 /// `chain`, having sent `sent` pieces of mail before it, and ended as `outcome` says. What it held and answered is
 /// filed in `debts`, the request it handled is answered for it when it did not answer it, the context of the answer
-/// it handled is let go of from `waiting`, and what it asked is filed there (ADR-0017). Out of the loop of turns,
-/// which most turns leave nothing of requests to.
+/// it handled is let go of from `waiting`, and what it asked is filed there, each with a deadline added to `expiring`
+/// (ADR-0017, ADR-0041). Out of the loop of turns, which most turns leave nothing of requests to.
 #[cold]
 #[inline(never)]
 fn tied(
     me: Seated,
     (source, tie, chain, sent): (Seated, Tie, Context, u64),
-    (waiting, debts): (&mut Waiting, &mut Debts),
+    (waiting, debts, expiring): (&mut Waiting, &mut Debts, &mut Vec<Expiring>),
     asked: &mut Asked,
     outcome: &mut Result<(), Fault>,
 ) {
@@ -2098,7 +2123,7 @@ fn tied(
     } else if !tie.is_tell() {
         ask::owed(me, source, tie, outcome, sent, asked);
     }
-    waiting.settle(me, tie, asked, outcome);
+    waiting.settle(me, tie, asked, outcome, expiring);
 }
 
 /// Whether `mailed` is mail the actor `me` sent.
@@ -2182,7 +2207,7 @@ impl Lists {
 
         // Most turns stand up no child.
         if !stood.is_empty() {
-            self.routes.births.stand(birth::waiting(stood, asked));
+            self.routes.births.stand(birth::waiting(stood, asked, &mut self.expiring));
         }
         seen
     }
@@ -2213,7 +2238,7 @@ impl Lists {
         for handed in items {
             if let Handed::Mail { envelope, .. } = handed {
                 let context = Context { root: envelope.root, depth: envelope.depth + 1 };
-                self.ended_before(asked, to, handed.source(), envelope.tie, context);
+                self.ended_before(asked, to, handed.source(), handed.tie(), context);
             }
         }
     }

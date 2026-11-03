@@ -10,7 +10,7 @@ use aethereal_tcp::Tcp;
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A response as the client read it: its head's text and its body.
 #[derive(Debug)]
@@ -166,15 +166,19 @@ fn a_refused_request_reaches_no_handler_and_closes_once_its_response_is_sent() -
 
 #[test]
 fn a_handler_that_never_responds_is_timed_out() -> Result<(), Unheard> {
-    // Catches a handler that never responds left waiting without a `504`.
+    // Catches a handler that never responds left waiting without a `504`, and a `504` written before the request's
+    // deadline: the deadline is the exchange's ask of its handler's, and the engine answers it `Expired` then.
     let settings = HttpSettings { answer_within_millis: 200, ..HttpSettings::default() };
     let (mut harness, port) = served(settings)?;
+    #[allow(clippy::disallowed_methods)] // The test times the request against its deadline on real time.
+    let sent = Instant::now();
     let client = client(port, b"GET /silent HTTP/1.1\r\n\r\n", 1);
 
     let _silent = harness.asked::<Request>()?;
 
     let (timed_out, _) = heard(&mut harness, client);
     assert!(timed_out[0].head.starts_with("HTTP/1.1 504"), "{timed_out:?}");
+    assert!(sent.elapsed() >= Duration::from_millis(200), "it waited for its deadline: {:?}", sent.elapsed());
 
     Ok(())
 }

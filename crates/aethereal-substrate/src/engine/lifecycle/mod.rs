@@ -14,6 +14,8 @@ use super::{Engine, ROOTS, parity};
 use crate::id::root_id;
 use crate::lives;
 use crate::stages::{self, key};
+// A request's deadline, named apart from the lifecycle's own `Due`, which says when a cycle is.
+use aethereal_actor::Due as RequestDue;
 use aethereal_actor::{Cycle, Cycled, Cycling, Declared, MailId, Mailed, Refused, Seated, Start, Stop, Tie, Time};
 use aethereal_data::{ActorId, KindId, KindName, PathSegment};
 use core::time::Duration;
@@ -129,8 +131,8 @@ fn nanos(duration: Duration) -> u64 {
 /// their chains begin at.
 pub(super) const LIFECYCLE: KindName = KindName::new("aether.lifecycle");
 
-/// The id every stage's chain begins at.
-fn lifecycle_id() -> ActorId {
+/// The id every stage's chain begins at: the engine's own, which no actor has.
+pub(super) fn lifecycle_id() -> ActorId {
     root_id(&PathSegment::new(LIFECYCLE, &()))
 }
 
@@ -327,7 +329,15 @@ impl Engine {
                 }
                 At::Start | At::Cycle(_) => Tie::TELL,
             };
-            mailed.push(Mailed { by: subscriber, to: subscriber, count, kind, bytes, tie: tied });
+            mailed.push(Mailed {
+                by: subscriber,
+                to: subscriber,
+                count,
+                kind,
+                bytes,
+                tie: tied,
+                due: RequestDue::Never,
+            });
         }
         self.arenas[parity][ROOTS] = arena;
         self.fold_brought(mailed, Vec::new(), parity, |_| root);
