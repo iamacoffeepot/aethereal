@@ -20,7 +20,7 @@ use crate::{
     Declared, Due, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handles, Held, Instances, Keeping,
     Keeps, Kinds, Level, Line, MailId, Mailed, NotOwed, On, Owed, Owes, ParentOf, Parented, Payload, ProtocolRef, Puts,
     Reachable, Resource, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage, Table, Tie, Tied, Time, ToSender,
-    Unanswered, Watchable, What, Within, Written,
+    Unanswered, Untaken, Watchable, What, Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -283,6 +283,12 @@ impl Asked {
         let held = self.owes.iter().any(|owes| matches!(owes, Owes::Holds { owed: held, .. } if *held == owed));
 
         replied || held
+    }
+
+    /// Whether the mail `by`'s turn running was handed did not read, so its handler did not run (ADR-0017).
+    #[must_use]
+    pub fn was_unread(&self, by: Seated) -> bool {
+        self.buffers.effects.iter().any(|effect| effect.is_unread_by(by))
     }
 
     /// The count of the last piece of mail `by` sent in the turn running, or job it ran, which takes a count among
@@ -1348,6 +1354,22 @@ impl<'a> Turning<'a> {
     #[must_use]
     pub const fn tie(&self) -> Tie {
         self.tie
+    }
+
+    /// The turn of an item that was not handed to its handler, as `untaken` says why: one whose mail did not read
+    /// does not fail, and asks the engine to answer it `Unreadable` when it is a request and otherwise drop it, as the
+    /// actor's log records; one whose kept part did not read fails (ADR-0017). Out of line, as most items read.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn untaken(self, untaken: Untaken) -> Result<(), Fault> {
+        match untaken {
+            Untaken::Unread(reason) => {
+                self.asked.buffers.effects.push(Effect::new(self.me, What::Unread(reason)));
+
+                Ok(())
+            }
+            Untaken::Failed(fault) => Err(fault),
+        }
     }
 
     /// The turn of the handler of `A`, whose type declares `declared`, which may send `S`.

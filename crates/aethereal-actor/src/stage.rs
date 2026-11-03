@@ -1,6 +1,6 @@
 //! The stages of a program's lifecycle, which the engine runs and sends its actors (ADR-0020).
 
-use crate::{Actors, Arena, Fault, Handled, Item, Payload, Role};
+use crate::{Actors, Arena, Handled, Item, Payload, Role, Untaken};
 use aethereal_data::{Decode, Encode, EncodeError, Kind, KindId, Plain};
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -35,12 +35,12 @@ impl<K: Stage> Handled for On<K> {
     const ROLE: Role = Role::Stage(KindId::of::<K>());
     type Item<'a> = K;
 
-    fn take(item: Item<'_>) -> Result<K, Fault> {
+    fn take(item: Item<'_>) -> Result<K, Untaken> {
         let Item::Mail(mail) = item else {
             unreachable!("only the stage is handed to its handler");
         };
 
-        Ok(mail.contents()?)
+        mail.contents().map_err(Untaken::unread)
     }
 }
 

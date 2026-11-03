@@ -3,8 +3,8 @@
 use core::error::Error;
 use core::fmt;
 
-/// Why an end of the link did not start: a frame it would read could not be read, which would fail its turn and end
-/// it, so a peer could end it with one large frame.
+/// Why an end of the link did not start: a frame it would read could not be read, and would be dropped unread
+/// (ADR-0017), so what a peer sent within the end's own limits would be lost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadLimitTooLow {
     /// The section whose `most_bytes` asked for more.

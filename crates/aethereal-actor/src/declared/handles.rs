@@ -1,8 +1,8 @@
 //! What an actor handles: one handler for each thing it lists, and the engine's call to the right one (ADR-0013).
 
 use super::{Declared, DeclaredBy, Handler, Role, Sends};
-use crate::{Actor, Actors, Ended, Fault, Item, Mail, Turn, Turning};
-use aethereal_data::{Decode, Kind, KindId};
+use crate::{Actor, Actors, Ended, Fault, Item, Mail, Turn, Turning, Unreadable};
+use aethereal_data::{Decode, DecodeError, Kind, KindId};
 
 /// The actor handles `H`: a kind of mail, the ending of an actor it watches ([`Ended`]), or any mail of a kind it does
 /// not list ([`Others`]) (ADR-0013).
@@ -28,20 +28,47 @@ pub trait Handled: 'static {
     /// What its handler is handed.
     type Item<'a>;
 
-    /// What the handler is handed for `item`, which is of this role.
-    fn take(item: Item<'_>) -> Result<Self::Item<'_>, Fault>;
+    /// What the handler is handed for `item`, which is of this role: or why it is handed nothing.
+    fn take(item: Item<'_>) -> Result<Self::Item<'_>, Untaken>;
+}
+
+/// Why an item was not handed to its handler (ADR-0017).
+#[derive(Debug)]
+pub enum Untaken {
+    /// Its mail did not read as its kind, for this reason: its sender's fault, so the handler does not run and the
+    /// turn does not fail. The engine answers a request [`Unanswered::Unreadable`](crate::Unanswered::Unreadable), and
+    /// drops other mail, and the receiver's log records why.
+    Unread(Unreadable),
+    /// What the engine kept for it did not read, which its receiver wrote: the turn fails with this fault.
+    Failed(Fault),
+}
+
+impl Untaken {
+    /// An item whose mail did not read, as `error` says. Out of line, as most mail reads.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn unread(error: DecodeError) -> Self {
+        Self::Unread(error.into())
+    }
+
+    /// An item whose kept part did not read, as `error` says. Out of line, as what is kept reads.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn failed(error: DecodeError) -> Self {
+        Self::Failed(error.into())
+    }
 }
 
 impl<K: Kind + Decode<Actors> + 'static> Handled for K {
     const ROLE: Role = Role::Kind(KindId::of::<K>());
     type Item<'a> = K;
 
-    fn take(item: Item<'_>) -> Result<K, Fault> {
+    fn take(item: Item<'_>) -> Result<K, Untaken> {
         let Item::Mail(mail) = item else {
             unreachable!("only mail of its kind is handed to a kind's handler");
         };
 
-        Ok(mail.contents()?)
+        mail.contents().map_err(Untaken::unread)
     }
 }
 
@@ -49,7 +76,7 @@ impl Handled for Ended {
     const ROLE: Role = Role::Ended;
     type Item<'a> = Self;
 
-    fn take(item: Item<'_>) -> Result<Self, Fault> {
+    fn take(item: Item<'_>) -> Result<Self, Untaken> {
         let Item::Ended(ended) = item else {
             unreachable!("only an ending is handed to the handler of endings");
         };
@@ -62,7 +89,7 @@ impl Handled for Others {
     const ROLE: Role = Role::Others;
     type Item<'a> = Mail<'a>;
 
-    fn take(item: Item<'_>) -> Result<Mail<'_>, Fault> {
+    fn take(item: Item<'_>) -> Result<Mail<'_>, Untaken> {
         let Item::Mail(mail) = item else {
             unreachable!("only mail is handed to a fallback");
         };
@@ -106,6 +133,22 @@ fn takes(listed: Role, role: Role) -> bool {
     is_own || is_stage
 }
 
+/// Hands `item` to the handler of `A` for `H`, in a turn of an actor whose type declares `declared`: or, when it is not
+/// to be handed, ends the turn as why says (ADR-0017).
+#[allow(clippy::inline_always, reason = "once for every turn, in place of the call to the handler it wraps")]
+#[inline(always)]
+fn hand<A: Handles<H>, H: Handled>(
+    actor: &mut A,
+    item: Item<'_>,
+    turning: Turning<'_>,
+    declared: &'static Declared,
+) -> Result<(), Fault> {
+    match H::take(item) {
+        Ok(taken) => A::handle(actor, taken, &mut turning.declaring::<A, <A as Handles<H>>::Sends>(declared)),
+        Err(untaken) => turning.untaken(untaken),
+    }
+}
+
 /// Stops the engine: an actor of type `A` was handed an item it has no handler for.
 fn unhandled<A: Actor>(role: Role) -> ! {
     panic!("false declaration: {role:?} was sent to an actor of type {}, which does not take it", A::NAME);
@@ -126,16 +169,14 @@ macro_rules! tuples {
                 let role = role(&item);
                 $(
                     if takes($name::ROLE, role) {
-                        let mut turn = turning.declaring::<A, <A as Handles<$name>>::Sends>(declared);
-                        return <A as Handles<$name>>::handle(actor, $name::take(item)?, &mut turn);
+                        return hand::<A, $name>(actor, item, turning, declared);
                     }
                 )*
                 let is_mail = matches!(item, Item::Mail(_));
                 $(
                     let falls_back = $name::ROLE == Role::Others;
                     if is_mail && falls_back {
-                        let mut turn = turning.declaring::<A, <A as Handles<$name>>::Sends>(declared);
-                        return <A as Handles<$name>>::handle(actor, $name::take(item)?, &mut turn);
+                        return hand::<A, $name>(actor, item, turning, declared);
                     }
                 )*
 

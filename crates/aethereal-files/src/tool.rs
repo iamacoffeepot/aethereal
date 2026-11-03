@@ -9,8 +9,9 @@ use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_b
 use aethereal_tools::{Call, Called, Done, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 
-/// The most bytes of a file the tool answers with. Its answer is one piece of mail, and mail its reader cannot read
-/// ends it, so a program sets `read_limit` above this; past it, the tool refuses.
+/// The most bytes of a file the tool answers with. Its answer is one piece of mail, and one its asker cannot read
+/// reaches it as no answer, `Unreadable` (ADR-0017), so a program sets `read_limit` above this; past it, the tool
+/// refuses.
 const MOST_BYTES: usize = 256 * 1024;
 /// The most bytes reading an input may take. A path is short.
 const INPUT_BYTES: usize = 8 * 1024;

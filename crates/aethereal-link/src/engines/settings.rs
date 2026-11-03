@@ -63,8 +63,8 @@ impl Default for EnginesSettings {
 
 impl EnginesSettings {
     /// Refuses a hub whose frames of `most_bytes` could not be read under `read_limit`: a frame that could not be read
-    /// would fail an engine's turn and end it, so a peer could end it with one large frame. Each host's bootstrap
-    /// checks it.
+    /// would be dropped unread (ADR-0017), and what an engine said within the hub's own limits lost. Each host's
+    /// bootstrap checks it.
     pub fn check_read_limit(&self, read_limit: usize) -> Result<(), ReadLimitTooLow> {
         read_limit::check("engines", read_limit, self.most_bytes)
     }

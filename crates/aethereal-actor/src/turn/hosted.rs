@@ -5,8 +5,8 @@ use crate::records::Staging;
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Due, Effect, ErasedActorRef, Fault, Gift, Giver,
     Instances, JobCode, JobId, Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload,
-    Puts, Role, Runs, SeatNumber, Seated, Seats, Sending, Submitted, Table, Target, Tie, What, Written, carry,
-    take_claimed,
+    Puts, Role, Runs, SeatNumber, Seated, Seats, Sending, Submitted, Table, Target, Tie, Unreadable, What, Written,
+    carry, take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -751,6 +751,20 @@ impl<'a> Hosted<'a> {
     /// Closes this actor, as [`Turn::close`](crate::Turn::close) does.
     pub fn close(&mut self) {
         self.seat.ask(What::Close);
+    }
+
+    /// Asks the engine to answer the item this turn handles `Unreadable` when it is a request, and otherwise to drop
+    /// it, as the actor's log records with `reason`: the guest's library found its mail did not read, and ran no
+    /// handler, as a native turn's mail that does not read is (ADR-0017). Nothing when the turn handles no item, as a
+    /// `begin` and a closing turn do not.
+    pub fn unread(&mut self, reason: Unreadable) -> Option<()> {
+        let handles_item = matches!(self.source, Source::Item(_));
+        if !handles_item {
+            return None;
+        }
+        self.seat.ask(What::Unread(reason));
+
+        Some(())
     }
 
     /// Logs `text` at `level`, as `by`: the actor whose turn this is, or a child it spawned, in its `begin`. Nothing

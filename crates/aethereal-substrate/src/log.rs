@@ -1,7 +1,7 @@
 //! The view of what each actor logged most recently (ADR-0009, ADR-0011).
 
 use crate::{BySeat, Context, View};
-use aethereal_actor::{Arena, Effect, Fault, Level, Line, Payload, SeatNumber, Seated, What};
+use aethereal_actor::{Arena, Effect, Fault, Level, Line, Payload, SeatNumber, Seated, Unreadable, What};
 use aethereal_data::ActorId;
 use std::collections::VecDeque;
 
@@ -35,6 +35,9 @@ pub enum Entry {
     /// A job the actor ran returned this fault, or its host lost it to a panic, and the actor was told it went
     /// unanswered (ADR-0018).
     JobFaulted(Fault),
+    /// Mail the actor was handed did not read as its kind, for this reason, so no handler ran: it was dropped, or, a
+    /// request, answered `Unreadable` (ADR-0017).
+    Unread(Unreadable),
 }
 
 /// What the view keeps of a line or a fault before it is folded: a line's text is still where its turn wrote it.
@@ -51,6 +54,8 @@ pub enum Logged {
     Unbrought(&'static str),
     /// A job the actor ran returned this fault.
     JobFaulted(Fault),
+    /// Mail the actor was handed did not read, for this reason.
+    Unread(Unreadable),
 }
 
 impl View for Log {
@@ -90,6 +95,7 @@ impl View for Log {
             Logged::Dropped(name) => Entry::Dropped(name),
             Logged::Unbrought(name) => Entry::Unbrought(name),
             Logged::JobFaulted(fault) => Entry::JobFaulted(fault),
+            Logged::Unread(reason) => Entry::Unread(reason),
         };
         recent.push_back(entry);
     }
@@ -123,11 +129,13 @@ pub const fn job_faulted(by: Seated, fault: Fault) -> (u64, (ActorId, Logged)) {
     (by.seat.number(), (by.id, Logged::JobFaulted(fault)))
 }
 
-/// The key and record the view keeps of `effect`, a fault, or none for an effect it does not keep.
+/// The key and record the view keeps of `effect`, a fault or mail that did not read, or none for an effect it does not
+/// keep.
 fn fault(effect: &Effect) -> Option<(u64, (ActorId, Logged))> {
     let logged = match effect.what() {
         What::Failed(fault) => Logged::Failed(fault.clone()),
         What::EndFailed(fault) => Logged::EndFailed(fault.clone()),
+        What::Unread(reason) => Logged::Unread(*reason),
         _ => return None,
     };
     let by = effect.seated();

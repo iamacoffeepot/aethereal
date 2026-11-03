@@ -11,7 +11,7 @@
 //! watched, a [`ClaimRecord`] for each claim they made of a resource, a [`HoldRecord`] for each request they held,
 //! a [`StageRecord`] for each thing they asked of the program's lifecycle, a [`JobRecord`] for each job they ran,
 //! and a [`CancelRecord`] for each job they cancelled; and, for the call as a whole, a [`PinRecord`] for each blob whose
-//! pins it changed, a [`RefRecord`] for each reference in what it sent, and a [`HolderRecord`] for each debt whose holders it changed. A send's bytes, a line's text, a key and a moved
+//! pins it changed, a [`RefRecord`] for each reference in what it sent, a [`HolderRecord`] for each debt whose holders it changed, and an [`UnreadRecord`] for each turn whose mail did not read. A send's bytes, a line's text, a key and a moved
 //! child's state are not copied out: each record says where they lie in the
 //! guest's memory, and the host reads them there. Sends and lines say who made
 //! them, as watches do: the actor whose turn it was, or a child it spawned, in
@@ -25,7 +25,8 @@
 //! 32-bit memory.
 
 use crate::{
-    BlobId, Chain, Claim, Claimed, Due, Fault, JobId, Level, MailId, Owed, Refused, SeatNumber, Seated, Time, Why,
+    BlobId, Chain, Claim, Claimed, Due, Fault, JobId, Level, MailId, Owed, Refused, SeatNumber, Seated, Time,
+    Unreadable, Why,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
 use alloc::vec::Vec;
@@ -187,6 +188,10 @@ pub struct OutHead {
     /// Where the call's [`HolderRecord`]s begin, and how many there are.
     pub holders_at: u32,
     pub holders: u32,
+    /// Where the call's [`UnreadRecord`]s begin, and how many there are: kept for the call, so a turn whose mail read
+    /// writes nothing for it (ADR-0017).
+    pub unread_at: u32,
+    pub unread: u32,
 }
 
 /// Where some bytes lie in a guest's memory: their address, and how many there are.
@@ -198,7 +203,7 @@ pub struct Span {
 
 impl OutHead {
     /// How many bytes it is.
-    pub const BYTES: usize = 72;
+    pub const BYTES: usize = 80;
 
     /// Writes it over the first [`Self::BYTES`] of `out`, every byte of them: nothing when `out` is shorter. Written in
     /// place, and over nothing zeroed first, as a guest writes one each call and zeroing this many bytes is a call out
@@ -229,6 +234,8 @@ impl OutHead {
         out[60..64].copy_from_slice(&self.refs.to_le_bytes());
         out[64..68].copy_from_slice(&self.holders_at.to_le_bytes());
         out[68..72].copy_from_slice(&self.holders.to_le_bytes());
+        out[72..76].copy_from_slice(&self.unread_at.to_le_bytes());
+        out[76..80].copy_from_slice(&self.unread.to_le_bytes());
     }
 
     /// The head `bytes` begin with: nothing when they are too few, or do not read as one.
@@ -260,6 +267,8 @@ impl OutHead {
             refs: u32_at(head, 60)?,
             holders_at: u32_at(head, 64)?,
             holders: u32_at(head, 68)?,
+            unread_at: u32_at(head, 72)?,
+            unread: u32_at(head, 76)?,
         })
     }
 
@@ -757,6 +766,50 @@ impl HolderRecord {
         let by = i64::from_le_bytes(bytes.get(40..48)?.try_into().ok()?);
 
         Some(Self { owed, by })
+    }
+}
+
+/// A turn of a call whose mail did not read as its kind, by its place among the call's turns, and why: its guest's
+/// library ran no handler for it, and its host asks the engine to answer it `Unreadable` when it is a request, and
+/// otherwise to drop it, as a native turn's mail that does not read is (ADR-0017).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnreadRecord {
+    pub turn: u32,
+    pub reason: Unreadable,
+}
+
+impl UnreadRecord {
+    /// How many bytes it is.
+    pub const BYTES: usize = 24;
+
+    /// It, as the out buffer holds it.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::BYTES] {
+        let mut out = [0; Self::BYTES];
+        out[..4].copy_from_slice(&self.turn.to_le_bytes());
+        let reason: u32 = match self.reason {
+            Unreadable::Malformed => 0,
+            Unreadable::Limit { requested, remaining } => {
+                out[8..16].copy_from_slice(&requested.to_le_bytes());
+                out[16..24].copy_from_slice(&remaining.to_le_bytes());
+                1
+            }
+        };
+        out[4..8].copy_from_slice(&reason.to_le_bytes());
+
+        out
+    }
+
+    /// The record `bytes` begin with: nothing when they are too few, or do not read as one.
+    #[must_use]
+    pub fn read(bytes: &[u8]) -> Option<Self> {
+        let reason = match u32_at(bytes, 4)? {
+            0 => Unreadable::Malformed,
+            1 => Unreadable::Limit { requested: u64_at(bytes, 8)?, remaining: u64_at(bytes, 16)? },
+            _ => return None,
+        };
+
+        Some(Self { turn: u32_at(bytes, 0)?, reason })
     }
 }
 
