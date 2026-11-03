@@ -1,5 +1,6 @@
 //! An actor's resources: values that are not data, each with exactly one owner (ADR-0010).
 
+use crate::spares::Spares;
 use crate::{Above, Actors, Fault, MailId, Seated, Within};
 use aethereal_data::{Decode, DecodeError, Encode, EncodeError, Field, Plain, Reader, Schema, Shape, Writer};
 use alloc::boxed::Box;
@@ -176,8 +177,9 @@ const fn any_type(_: &Kept) -> bool {
     true
 }
 
-/// What an actor keeps, beside it in its seat: what it owns, and what has arrived for it with mail it has not handled
-/// yet (ADR-0010). Dropped with the actor, after its closing turn.
+/// What an actor keeps, beside it in its seat: what it owns, what has arrived for it with mail it has not handled
+/// yet (ADR-0010), and the buffers of the blobs it put, handed back to put in again (ADR-0042). Dropped with the
+/// actor, after its closing turn.
 ///
 /// Most actors keep nothing ever, and every actor's seat holds one, so one that has kept nothing holds no more than
 /// a pointer's width.
@@ -189,17 +191,19 @@ pub struct Keeping {
 /// Whether an actor has kept anything yet.
 #[derive(Default)]
 enum Holding {
-    /// It has never owned a resource, nor been given one.
+    /// It has never owned a resource, been given one, nor kept a buffer.
     #[default]
     Never,
     /// It has: what it holds now, behind a pointer, so an actor that never held anything holds no more than one.
     Holds(Box<Holdings>),
 }
 
-/// What an actor that has held a resource holds now.
+/// What an actor that has held a resource or kept a buffer holds now.
 #[derive(Default)]
 struct Holdings {
     held: Vec<Keep>,
+    /// The buffers it keeps to put blobs in again (ADR-0042).
+    spares: Spares,
 }
 
 /// One resource an actor keeps.
@@ -222,6 +226,11 @@ impl Keep {
 impl Keeping {
     /// What it holds, holding nothing yet when it never has.
     fn holdings(&mut self) -> &mut Vec<Keep> {
+        &mut self.all().held
+    }
+
+    /// Everything it keeps, keeping nothing yet when it never has.
+    fn all(&mut self) -> &mut Holdings {
         let has_never_held = matches!(self.holding, Holding::Never);
         if has_never_held {
             self.holding = Holding::Holds(Box::default());
@@ -230,7 +239,23 @@ impl Keeping {
             unreachable!("it holds once it has been given its holdings");
         };
 
-        &mut holdings.held
+        holdings
+    }
+
+    /// A buffer with room for at least `room` bytes: the smallest it keeps that is big enough and at most twice `room`,
+    /// emptied, else a new one (ADR-0042).
+    #[must_use]
+    pub fn buffer(&mut self, room: usize) -> Vec<u8> {
+        match &mut self.holding {
+            Holding::Holds(holdings) => holdings.spares.take(room),
+            Holding::Never => Vec::with_capacity(room),
+        }
+    }
+
+    /// Keeps `buffer`, the buffer of a blob the actor put that has been freed, to hand out again: dropped instead when
+    /// keeping it would take the buffers it keeps past `most_bytes` (ADR-0042).
+    pub fn keep_buffer(&mut self, buffer: Vec<u8>, most_bytes: usize) {
+        self.all().spares.keep(buffer, most_bytes);
     }
 
     /// What it holds, when it has ever held anything.
@@ -338,7 +363,7 @@ impl Keeping {
         }
     }
 
-    /// Whether it keeps nothing at all.
+    /// Whether it holds no resource, its own or arriving for it: the buffers it keeps are not counted.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         match &self.holding {
@@ -560,6 +585,15 @@ impl Keeps<'_> {
         match self {
             Self::Here(keeping) => keeping.open(handle),
             Self::Claimed => Err(Fault::bare::<KeepsNothing>()),
+        }
+    }
+
+    /// A buffer with room for at least `room` bytes: the smallest the actor keeps that is big enough and at most twice
+    /// `room`, else a new one (ADR-0042). A guest's code keeps none of the engine's, and makes its own.
+    pub(crate) fn buffer(&mut self, room: usize) -> Vec<u8> {
+        match self {
+            Self::Here(keeping) => keeping.buffer(room),
+            Self::Claimed => Vec::with_capacity(room),
         }
     }
 

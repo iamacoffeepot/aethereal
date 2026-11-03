@@ -24,7 +24,7 @@ use crate::{
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
-use crate::{Birth, BlobHash, Bytes, Config, config_bytes};
+use crate::{Birth, BlobHash, Bytes, Config, Maker, config_bytes};
 #[cfg(feature = "std")]
 use crate::{JobCode, JobType};
 use aethereal_data::{ActorId, ActorPath, Decode, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
@@ -540,7 +540,7 @@ struct Seat<'a> {
     /// The children the actor made before this turn's step, whose keys it may not use again.
     made: &'a dyn Children,
     asked: &'a mut Asked,
-    /// What the actor keeps, which its resource calls reach (ADR-0010).
+    /// What the actor keeps, which its resource calls and its buffers reach (ADR-0010, ADR-0042).
     keeps: Keeps<'a>,
     /// How many pieces of mail this actor has sent, this turn's included, and jobs it has run, which each take a
     /// count among what it sends (ADR-0018).
@@ -632,11 +632,18 @@ impl Seat<'_> {
         Logger { me: self.me, asked: self.asked }
     }
 
-    /// Puts `bytes` as a blob and answers with the first pin on it: refused when they would take this worker past
-    /// its share of the budget for blobs (ADR-0014).
+    /// Puts `bytes` as a blob made by this actor, whose buffer comes back to it once the blob is freed, and answers
+    /// with the first pin on it: refused when they would take this worker past its share of the budget for blobs
+    /// (ADR-0014, ADR-0042).
     #[cfg(feature = "std")]
     fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
-        self.asked.puts.pinned(bytes)
+        self.asked.puts.pinned(bytes, Maker::Actor(self.me))
+    }
+
+    /// A buffer with room for at least `room` bytes: the smallest this actor keeps that is big enough and at most twice
+    /// `room`, emptied, else a new one (ADR-0042).
+    fn buffer(&mut self, room: usize) -> Vec<u8> {
+        self.keeps.buffer(room)
     }
 
     /// The bytes of the blob `blob` pins: put by this worker in this step, or in the store.
@@ -1936,8 +1943,17 @@ impl<Me, S> Turn<'_, Me, S> {
         self.seat.logger()
     }
 
+    /// A buffer with room for at least `room` bytes, to fill and put: the smallest this actor keeps that is big
+    /// enough and at most twice `room`, emptied, else a new one. The buffer of each blob this actor puts comes back to it once the blob is
+    /// freed, so an actor that puts what it builds here allocates only when it keeps none big enough (ADR-0042).
+    #[must_use]
+    pub fn buffer(&mut self, room: usize) -> Vec<u8> {
+        self.seat.buffer(room)
+    }
+
     /// Puts `bytes` as a blob, which nobody changes from then on, and answers with the first reference to it
-    /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs.
+    /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs, which
+    /// counts the buffer's capacity: the buffer is kept whole, to come back to this actor (ADR-0042).
     #[cfg(feature = "std")]
     pub fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
         self.seat.put(bytes)
@@ -2348,8 +2364,17 @@ impl<Me, S> Beginning<'_, Me, S> {
         self.seat.logger()
     }
 
+    /// A buffer with room for at least `room` bytes, to fill and put: the smallest this actor keeps that is big
+    /// enough and at most twice `room`, emptied, else a new one. The buffer of each blob this actor puts comes back to it once the blob is
+    /// freed, so an actor that puts what it builds here allocates only when it keeps none big enough (ADR-0042).
+    #[must_use]
+    pub fn buffer(&mut self, room: usize) -> Vec<u8> {
+        self.seat.buffer(room)
+    }
+
     /// Puts `bytes` as a blob, which nobody changes from then on, and answers with the first reference to it
-    /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs.
+    /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs, which
+    /// counts the buffer's capacity: the buffer is kept whole, to come back to this actor (ADR-0042).
     #[cfg(feature = "std")]
     pub fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
         self.seat.put(bytes)
@@ -2655,8 +2680,17 @@ impl<Me, S> Ending<'_, Me, S> {
         self.seat.logger()
     }
 
+    /// A buffer with room for at least `room` bytes, to fill and put: the smallest this actor keeps that is big
+    /// enough and at most twice `room`, emptied, else a new one. The buffer of each blob this actor puts comes back to it once the blob is
+    /// freed, so an actor that puts what it builds here allocates only when it keeps none big enough (ADR-0042).
+    #[must_use]
+    pub fn buffer(&mut self, room: usize) -> Vec<u8> {
+        self.seat.buffer(room)
+    }
+
     /// Puts `bytes` as a blob, which nobody changes from then on, and answers with the first reference to it
-    /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs.
+    /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs, which
+    /// counts the buffer's capacity: the buffer is kept whole, to come back to this actor (ADR-0042).
     #[cfg(feature = "std")]
     pub fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
         self.seat.put(bytes)

@@ -160,6 +160,12 @@ impl Setup<()> {
         Self::of(self.engine.with_links(links))
     }
 
+    /// The engine, each of whose actors keeps at most `bytes` of the buffers of the blobs it put, freed, to put in
+    /// again: 16 MiB unless set (ADR-0042).
+    pub fn with_most_kept_bytes(self, bytes: usize) -> Self {
+        Self::of(self.engine.with_most_kept_bytes(bytes))
+    }
+
     /// The engine, its jobs run by `jobs`, which with none set answers every job that no runner runs it (ADR-0018).
     pub fn with_jobs(self, jobs: Arc<dyn Jobs>) -> Self {
         Self::of(self.engine.with_jobs(jobs))

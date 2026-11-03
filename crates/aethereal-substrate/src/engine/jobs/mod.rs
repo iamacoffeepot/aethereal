@@ -10,7 +10,7 @@ use super::wake::Bell;
 use super::{Engine, ROOTS, parity};
 use crate::{lives, log};
 use aethereal_actor::{
-    BlobId, Copied, Due, Fault, JobCode, JobId, JobType, Kept, Lending, MailId, Mailed, Never, Outcome, Pinning,
+    BlobId, Copied, Due, Fault, JobCode, JobId, JobType, Kept, Lending, MailId, Mailed, Maker, Never, Outcome, Pinning,
     Produced, Seated, Services, Sleep, Submitted, Tie, Time, Timer, Unanswered, lending,
 };
 use aethereal_data::{Kind, KindId, Plain};
@@ -329,7 +329,7 @@ impl Engine {
                 continue;
             };
             let sent = life.sent() + 1;
-            let written = match outcome.and_then(|produced| self.put_produced(produced)) {
+            let written = match outcome.and_then(|produced| self.put_produced(produced, by)) {
                 Ok(Answering { bytes, held, kept }) => {
                     let written = arena.write_holding_bytes(&bytes, held);
                     written.map(|bytes| (answer, bytes, Tie::answers(count), kept))
@@ -391,17 +391,18 @@ impl Engine {
         self.log.fold_records(lost.into_iter().map(|(by, name)| log::dropped(by, name)), &[]);
     }
 
-    /// Puts each blob a job put, between steps, out of the budget for blobs, and writes over each reference to one
-    /// in its result the blob's own; then keeps each resource it handed, under a ticket of the engine's, written over
+    /// Puts each blob a job the actor `by` ran put, between steps, out of the budget for blobs, as made by `by`, so
+    /// each one's buffer goes back to it once the blob is freed (ADR-0042), and writes over each reference to one in its
+    /// result the blob's own; then keeps each resource it handed, under a ticket of the engine's, written over
     /// the job's own where it lies in the result: the result's bytes, the pins on the blobs it refers to, and the
     /// resources it carries (ADR-0018).
     ///
     /// # Errors
     ///
     /// A fault of [`NoRoom`] when a blob did not fit, and then none is kept, nor any resource.
-    fn put_produced(&mut self, produced: Produced) -> Result<Answering, Fault> {
+    fn put_produced(&mut self, produced: Produced, by: Seated) -> Result<Answering, Fault> {
         let Produced { bytes, held, put, handed } = produced;
-        let (mut bytes, held) = self.put_blobs(bytes, held, put)?;
+        let (mut bytes, held) = self.put_blobs(bytes, held, put, by)?;
         let mut kept = Vec::with_capacity(handed.len());
         for (at, resource) in handed {
             let ticket = self.ticket();
@@ -416,8 +417,9 @@ impl Engine {
         Ok(Answering { bytes, held, kept })
     }
 
-    /// Puts each of `put`, the blobs a job put, out of the budget for blobs, and writes over each reference to one in
-    /// `bytes`, its result, the blob's own: the result's bytes, and the pins on the blobs it refers to.
+    /// Puts each of `put`, the blobs a job the actor `by` ran put, out of the budget for blobs, as made by `by`, and
+    /// writes over each reference to one in `bytes`, its result, the blob's own: the result's bytes, and the pins on
+    /// the blobs it refers to.
     ///
     /// # Errors
     ///
@@ -427,6 +429,7 @@ impl Engine {
         mut bytes: Vec<u8>,
         held: Vec<Pinning>,
         put: Vec<Vec<u8>>,
+        by: Seated,
     ) -> Result<(Vec<u8>, Vec<Pinning>), Fault> {
         // Most jobs put no blob.
         if put.is_empty() {
@@ -434,7 +437,7 @@ impl Engine {
         }
         let mut blobs = Vec::with_capacity(put.len());
         for blob in put {
-            blobs.push(self.put_blob(blob).map_err(|_| fault::<NoRoom>())?);
+            blobs.push(self.put_made(blob, Maker::Actor(by)).map_err(|_| fault::<NoRoom>())?);
         }
         let mut written = Vec::with_capacity(held.len());
         for (at, pin) in held {

@@ -1,12 +1,12 @@
 //! What the checks' tests ask with: a request whose WGSL is a blob, which a check never reads, as it is handed the
 //! text the blob holds apart.
 
-use aethereal_actor::{Bytes, Puts};
+use aethereal_actor::{Bytes, Maker, Puts};
 use core::ops::{Deref, DerefMut};
 
 /// A blob holding nothing, for a request whose check is handed its WGSL apart.
 pub fn blob() -> Bytes {
-    let Ok(blob) = Puts::new(0, 0, 0).pinned(Vec::new()) else {
+    let Ok(blob) = Puts::new(0, 0, 0).pinned(Vec::new(), Maker::Chassis) else {
         panic!("no bytes fit in no room");
     };
 

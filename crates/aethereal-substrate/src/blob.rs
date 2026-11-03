@@ -1,7 +1,7 @@
 //! The blobs the engine holds, and the pins that keep each one (ADR-0014).
 
 use aethereal_actor::pins::Change;
-use aethereal_actor::{BlobHash, BlobId, Puts};
+use aethereal_actor::{BlobHash, BlobId, Maker, Puts};
 use std::collections::HashMap;
 
 /// The blobs the engine holds, each with its pins, and the budget their bytes come out of (ADR-0014).
@@ -15,15 +15,17 @@ pub struct Blobs {
     held: HashMap<u64, Held>,
     /// The bytes the host lets all blobs hold.
     budget: usize,
-    /// The bytes the blobs held hold.
+    /// The bytes the blobs held hold: the capacity of each one's buffer, which is kept whole.
     in_use: usize,
     /// The blobs taken in, or whose pins changed, since the last sweep: the only ones a sweep can free.
     touched: Vec<u64>,
 }
 
-/// One blob, how many pins it has, and whether its hash is known.
+/// One blob, in the buffer it was put in, who put it, how many pins it has, and whether its hash is known.
 struct Held {
-    bytes: Box<[u8]>,
+    /// Its bytes, in the buffer they were put in, kept whole to go back to `maker` once the blob is freed (ADR-0042).
+    bytes: Vec<u8>,
+    maker: Maker,
     pins: i64,
     content: Content,
 }
@@ -100,9 +102,10 @@ impl Blobs {
     ///
     /// Panics when a blob comes in under an id one held has, which the writers' counts rule out.
     pub fn take_in(&mut self, puts: &mut Puts) {
-        for (id, bytes) in puts.take() {
-            self.in_use += bytes.len();
-            let was_held = self.held.insert(id.bits(), Held { bytes, pins: 0, content: Content::Unhashed }).is_some();
+        for (id, bytes, maker) in puts.take() {
+            self.in_use += bytes.capacity();
+            let held = Held { bytes, maker, pins: 0, content: Content::Unhashed };
+            let was_held = self.held.insert(id.bits(), held).is_some();
             assert!(!was_held, "blob store: a blob was put under the id {id:?}, which is already held");
             self.touched.push(id.bits());
         }
@@ -125,14 +128,15 @@ impl Blobs {
     }
 
     /// Frees every blob taken in or changed since the last sweep that has no pin left, once every change to the
-    /// pins of the step has been summed, and tells `freed` of each.
-    pub fn sweep(&mut self, mut freed: impl FnMut(BlobId)) {
+    /// pins of the step has been summed, and hands `freed` each one's id, its buffer, and who put it, for the buffer
+    /// to go back to its maker or be dropped (ADR-0042).
+    pub fn sweep(&mut self, mut freed: impl FnMut(BlobId, Vec<u8>, Maker)) {
         for bits in self.touched.drain(..) {
             let is_unpinned = self.held.get(&bits).is_some_and(|held| held.pins <= 0);
             if is_unpinned && let Some(held) = self.held.remove(&bits) {
                 debug_assert_eq!(held.pins, 0, "blob store: a blob lost more pins than it had");
-                self.in_use -= held.bytes.len();
-                freed(BlobId::new(self.engine, bits));
+                self.in_use -= held.bytes.capacity();
+                freed(BlobId::new(self.engine, bits), held.bytes, held.maker);
             }
         }
     }

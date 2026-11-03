@@ -1,5 +1,6 @@
 //! The engine's section of the configuration, which every host reads (ADR-0028, ADR-0029).
 
+use crate::engine::MOST_KEPT_BYTES;
 use crate::{Engine, Setup};
 use aethereal_data::Plain;
 use core::num::{NonZeroU32, NonZeroUsize};
@@ -27,6 +28,8 @@ pub struct EngineSettings {
     pub mail_bytes: u64,
     /// The most bytes the engine's blobs hold (ADR-0014).
     pub blob_bytes: u64,
+    /// The most bytes of buffers each actor keeps, freed from the blobs it put, to put in again (ADR-0042).
+    pub most_kept_bytes: u64,
     /// The fused hops each part runs in a step (ADR-0013): with none, every piece of mail is handled in a later step.
     #[flag]
     pub hops: u32,
@@ -40,6 +43,7 @@ impl Default for EngineSettings {
             read_limit: 1024,
             mail_bytes: 1 << 20,
             blob_bytes: 1 << 20,
+            most_kept_bytes: MOST_KEPT_BYTES as u64,
             hops: 0,
         }
     }
@@ -56,6 +60,7 @@ impl EngineSettings {
     pub(super) fn setup(&self) -> Setup<()> {
         let parts = NonZeroUsize::try_from(self.parts).unwrap_or(NonZeroUsize::MAX);
         Engine::new(parts, size(self.read_limit), size(self.mail_bytes), size(self.blob_bytes), size(self.hops))
+            .with_most_kept_bytes(size(self.most_kept_bytes))
     }
 }
 

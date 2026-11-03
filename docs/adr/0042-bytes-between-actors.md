@@ -42,15 +42,16 @@ pub struct Response { pub status: Status, pub headers: Vec<Header>, pub body: By
 
 ```rust
 impl Turn<'_> {
-    /// A buffer with room for at least `room` bytes: the smallest this actor keeps that is big enough, else a new one.
+    /// A buffer with room for at least `room` bytes: the smallest this actor keeps that is big enough and at most
+    /// twice `room`, else a new one.
     pub fn buffer(&mut self, room: usize) -> Vec<u8>;
     pub fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused>;   // as ADR-0014, under its new name
     pub fn read(&self, bytes: &Bytes) -> &[u8];                         // as ADR-0014
 }
 ```
 
-- **The engine keeps an actor's buffers beside it,** as it keeps its resources and the requests it holds. Only the worker running the actor's part reaches them, so nothing in them is locked or atomic.
-- **A put notes the actor that made it.** When the fold frees a blob, its buffer goes back to that actor, emptied, instead of to the allocator, and the actor's next `turn.buffer` can hand it out again. A buffer is allocated only when the actor keeps none big enough, and freed only when keeping it would take the actor past `most_kept_bytes`, or when the actor ends. This replaces ADR-0014's handing back to the worker.
+- **The engine keeps an actor's buffers beside it,** as it keeps its resources and the requests it holds. A turn takes from them on the worker running the actor's part, and the fold's sweep hands buffers back on the thread that steps the engine, while it holds every part; so only one thread reaches them at a time, and nothing in them is locked or atomic.
+- **A put notes the actor that made it.** When the fold frees a blob, its buffer goes back to that actor, emptied, instead of to the allocator, and the actor's next `turn.buffer` can hand it out again. A kept buffer is handed out only when it is at most twice the room asked, since the budget charges a buffer by its capacity and a small put should not take a large one. A buffer is allocated only when the actor keeps none that fits, and freed only when keeping it would take the actor past `most_kept_bytes`, or when the actor ends. This replaces ADR-0014's handing back to the worker.
 - **`most_kept_bytes`** is an engine setting, 16 MiB by default: what each actor may keep. An actor that puts nothing keeps nothing.
 - **A job's puts are made by the actor that ran the job,** so their buffers go back to it. A job that fills a buffer is handed one taken with `turn.buffer` in the turn that runs it: Files' `Load` reads into one.
 - **A guest puts by handing its bytes to its host** (ADR-0014, ADR-0015). The host copies them into a buffer it takes from the actor's, so a guest's buffers are reused as a native actor's are. A guest still reads by a copy into its own memory.
