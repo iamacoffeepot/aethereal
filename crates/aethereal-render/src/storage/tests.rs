@@ -18,14 +18,14 @@ fn storage_is_whole_words_as_many_as_one_buffer_binds() {
 }
 
 #[test]
-fn storage_past_what_a_word_addresses_is_refused_naming_that_most() {
-    // Catches a device that binds more than 4 GiB, as one asking the adapter's own limits may: storage past what its
-    // `u32` offsets reach is refused, and the refusal names that most, never the device's larger one.
-    let most = u64::from(u32::MAX) - 3;
-    let binds = 8 << 30;
+fn storage_past_four_gibibytes_is_made_as_the_gpu_binds_it() {
+    // Catches a size or an offset narrowed to a word: storage the GPU binds past 4 GiB is made at its whole size, and
+    // a write near its end, past what a word counts, fits.
+    let size = 6 << 30;
 
-    assert_eq!(check(most, binds), Ok(u32::MAX - 3));
-    assert_eq!(check(4 << 30, binds), Err(StorageRefused::Size { bytes: 4 << 30, most }));
+    assert_eq!(check(size, 8 << 30), Ok(size));
+    assert!(fits(size, size - 16, 16));
+    assert!(!fits(size, u64::MAX - 3, 16));
 }
 
 #[test]

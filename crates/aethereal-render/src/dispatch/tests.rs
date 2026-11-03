@@ -110,7 +110,7 @@ impl Finds for Kept {
         (id == CLOCK).then_some(16)
     }
 
-    fn storage(&self, id: StorageId) -> Option<u32> {
+    fn storage(&self, id: StorageId) -> Option<u64> {
         match id {
             FIELD | THEIRS => Some(16 + 32 * 100),
             PULL => Some(64),
@@ -342,7 +342,7 @@ fn a_dispatch_that_would_have_frames_read_each_other_round_is_refused() {
 }
 
 /// [`main`], running as many workgroups as the three words of `storage` from the byte `at` hold.
-fn indirect(storage: StorageId, at: u32) -> CreateDispatch {
+fn indirect(storage: StorageId, at: u64) -> CreateDispatch {
     changed(|dispatch| dispatch.size = Invocations::Indirect { storage, at })
 }
 
@@ -361,8 +361,8 @@ fn workgroups_read_from_storage_not_kept_or_past_its_bytes_or_off_a_word_are_ref
     assert_eq!(check(&indirect(PULL, 56), ME, &kept), Err(DispatchRefused::Arguments { at: 56, bytes: 64 }));
     assert_eq!(check(&indirect(PULL, 2), ME, &kept), Err(DispatchRefused::Arguments { at: 2, bytes: 64 }));
     assert_eq!(
-        check(&indirect(PULL, u32::MAX - 3), ME, &kept),
-        Err(DispatchRefused::Arguments { at: u32::MAX - 3, bytes: 64 })
+        check(&indirect(PULL, u64::MAX - 3), ME, &kept),
+        Err(DispatchRefused::Arguments { at: u64::MAX - 3, bytes: 64 })
     );
     assert_eq!(check(&indirect(StorageId { id: 9 }, 0), ME, &kept), Err(DispatchRefused::Storage));
 }

@@ -61,8 +61,8 @@ impl Array {
     /// How many elements the array holds in storage of `bytes`, which is at least what the binding reads: those that
     /// fit past its fixed part.
     #[must_use]
-    pub const fn elements(self, bytes: u32) -> u32 {
-        bytes.saturating_sub(self.fixed) / self.stride
+    pub const fn elements(self, bytes: u64) -> u64 {
+        bytes.saturating_sub(self.fixed as u64) / self.stride as u64
     }
 }
 

@@ -52,7 +52,7 @@ pub enum Invocations {
     Workgroups([u32; 3]),
     /// A grid of as many workgroups along each dimension as the three words of `storage` from the byte `at` hold at
     /// each frame, as compute or the storage's maker wrote them (ADR-0026).
-    Indirect { storage: StorageId, at: u32 },
+    Indirect { storage: StorageId, at: u64 },
 }
 
 impl Invocations {
@@ -70,7 +70,7 @@ impl Invocations {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Runs {
     Workgroups([u32; 3]),
-    Indirect { storage: StorageId, at: u32 },
+    Indirect { storage: StorageId, at: u64 },
 }
 
 /// A dispatch the renderer made, which only its maker may release.
@@ -113,7 +113,7 @@ pub enum DispatchRefused {
     /// No storage is kept under the id it reads its workgroups from.
     Storage,
     /// Its workgroups, three words from the byte `at`, lie off a word or past the storage's `bytes`.
-    Arguments { at: u32, bytes: u32 },
+    Arguments { at: u64, bytes: u64 },
     /// It writes storage another dispatch of its pass reads or writes, or reads storage one of its pass writes, as the
     /// dispatches of one pass run in no order; or it writes storage a dispatch of another frame writes, and no order of
     /// frames runs one before the other.
@@ -262,8 +262,11 @@ fn runs(
         .find_map(|bind| compute.arrays.iter().find(|array| array.group == bind.group && array.binding == bind.binding))
         .ok_or(DispatchRefused::Elements)?;
     let bytes = kept.storage(storage).ok_or(DispatchRefused::Elements)?;
+    // More workgroups than a word counts are more than any GPU dispatches, and are refused as the most it does.
+    let workgroups = array.elements(bytes).div_ceil(u64::from(compute.workgroup[0]));
+    let counted = u32::try_from(workgroups).unwrap_or(u32::MAX);
 
-    Ok(Runs::Workgroups([array.elements(bytes).div_ceil(compute.workgroup[0]), 1, 1]))
+    Ok(Runs::Workgroups([counted, 1, 1]))
 }
 
 /// Checks that `join`, using storage as `accessed` says, has no frames read each other round, with what is read already,

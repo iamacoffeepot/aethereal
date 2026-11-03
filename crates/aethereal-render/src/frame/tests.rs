@@ -71,7 +71,7 @@ impl Finds for Kept {
         (id == TINT).then_some(16)
     }
 
-    fn storage(&self, _: StorageId) -> Option<u32> {
+    fn storage(&self, _: StorageId) -> Option<u64> {
         None
     }
 

@@ -19,7 +19,7 @@ pub struct CreateStorage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.create_zeroed_storage")]
 pub struct CreateZeroedStorage {
-    pub bytes: u32,
+    pub bytes: u64,
 }
 
 /// Writes `bytes` over the bytes of `storage` from the byte `first`. Only its maker may write it, and nothing is
@@ -28,7 +28,7 @@ pub struct CreateZeroedStorage {
 #[kind(name = "aether.render.write_storage")]
 pub struct WriteStorage {
     pub storage: StorageId,
-    pub first: u32,
+    pub first: u64,
     pub bytes: Bytes,
 }
 
@@ -56,25 +56,19 @@ pub enum StorageRefused {
     Size { bytes: u64, most: u64 },
 }
 
-/// The most bytes storage holds whatever the GPU binds: the last whole word a `u32` counts, as its writes and its zeros
-/// are placed.
-const MOST_ADDRESSED: u64 = 0xFFFF_FFFC;
-
 /// Checks storage of `size` bytes before it is made: that they are whole words, and as many as the GPU binds as one
-/// storage buffer, `binds`, or as a `u32` addresses where the GPU binds more. The refusal names the lesser as its
-/// `most`. Answers its size.
+/// storage buffer, the `most`. Answers its size.
 ///
 /// # Errors
 ///
 /// Why it would not be made as asked.
-pub fn check(size: u64, binds: u64) -> Result<u32, StorageRefused> {
-    let most = binds.min(MOST_ADDRESSED);
+pub fn check(size: u64, most: u64) -> Result<u64, StorageRefused> {
     let bound = size > 0 && size.is_multiple_of(4) && size <= most;
-    let (true, Ok(sized)) = (bound, u32::try_from(size)) else {
+    if !bound {
         return Err(StorageRefused::Size { bytes: size, most });
-    };
+    }
 
-    Ok(sized)
+    Ok(size)
 }
 
 /// The bytes a draw reads its counts from, five words: its index count, instance count, first index, base vertex,
@@ -86,9 +80,8 @@ pub(crate) const DISPATCH_ARGUMENTS: u64 = 12;
 
 /// Whether `bytes` from the byte `first` lie inside storage of `size` bytes, on whole words, as the GPU writes a
 /// buffer and reads a draw's or a dispatch's arguments from one.
-pub(crate) fn fits(size: u32, first: u32, bytes: u64) -> bool {
-    let end = u64::from(first) + bytes;
-    let inside = end <= u64::from(size);
+pub(crate) fn fits(size: u64, first: u64, bytes: u64) -> bool {
+    let inside = first.checked_add(bytes).is_some_and(|end| end <= size);
     let aligned = first.is_multiple_of(4) && bytes.is_multiple_of(4);
 
     inside && aligned

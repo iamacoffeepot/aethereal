@@ -76,7 +76,7 @@ pub enum Drawn {
     /// As the five words of `storage` from the byte `at` hold at each frame, for a program that reads nothing per
     /// instance: its index count, instance count, first index, base vertex, and first instance, as compute or the
     /// storage's maker wrote them (ADR-0026).
-    Indirect { storage: StorageId, at: u32 },
+    Indirect { storage: StorageId, at: u64 },
 }
 
 impl Drawn {
@@ -163,7 +163,7 @@ pub enum PlacementRefused {
     /// No storage is kept under the id it reads its counts from.
     Storage,
     /// Its counts, five words from the byte `at`, lie off a word or past the storage's `bytes`.
-    Arguments { at: u32, bytes: u32 },
+    Arguments { at: u64, bytes: u64 },
     /// It joins no pass, and would draw nothing.
     Unjoined,
     /// Its join at `join`, counted from zero, was refused.
@@ -243,7 +243,7 @@ pub(crate) trait Finds {
     fn mesh(&self, id: MeshId) -> Option<&VertexLayout>;
     fn instances(&self, id: InstancesId) -> Option<&VertexLayout>;
     fn uniforms(&self, id: UniformsId) -> Option<u32>;
-    fn storage(&self, id: StorageId) -> Option<u32>;
+    fn storage(&self, id: StorageId) -> Option<u64>;
     fn has_texture(&self, id: TextureId) -> bool;
 }
 
@@ -373,7 +373,7 @@ pub(crate) fn check_bindings(bindings: &[Bind], listed: &[Binding], kept: &impl 
             }
             (Resource::Storage(storage), BindingKind::Storage { bytes, .. }) => {
                 let size = kept.storage(storage).ok_or(JoinRefused::Missing { group, binding })?;
-                size >= bytes
+                size >= u64::from(bytes)
             }
             (Resource::Texture(texture), BindingKind::Texture) => {
                 if !kept.has_texture(texture) {
