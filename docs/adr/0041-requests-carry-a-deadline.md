@@ -35,14 +35,14 @@ turn.to(target).within(due).ask(&kind, &context)?;               // a deadline s
 turn.to(target).ask(&kind, &context)?;                           // the deadline inherited, or `Never`
 ```
 
-- **At its deadline, the engine answers the asker `Answered::No(Unanswered::Expired)`** and forgets the request: its context, and the pins on what that refers to, go then (ADR-0014). An answer that comes later finds no request filed, and is dropped, as an answer to an ended asker is. A request is still answered exactly once.
+- **At its deadline, the engine answers the asker `Answered::No(Unanswered::Expired)`** and the request is no longer filed under its count: its context is handed to the asker's handler with `Expired`, and goes after that turn, as with every other reason (ADR-0014). An answer that comes later finds no request filed, and is dropped, as an answer to an ended asker is. A request is still answered exactly once. The notice comes from the asker to itself, first of a chain of its own, as a job's answer does: the engine keeps no receiver or chain beside a request, and expiry needs neither.
 - **An ask made in a turn that handles a request inherits that request's `Due`,** unless it states its own with `within`. So one deadline, set where a request enters the engine, bounds every request made on its behalf, at every hop, with no code in the hops. A turn that handles a request it held earlier states it, `within(held.due())`. An ask from a `begin`, or from a turn that handles mail that is not a request, is due `Never` unless it states one.
 - **Jobs carry no deadline.** A job is cancelled by its asker (ADR-0018: `turn.cancel`), and one run in a turn that handles a request does not inherit its `Due`.
 - **The engine wakes for the earliest deadline**, as it wakes for a `Sleep` (ADR-0010: `Engine::with_wake`), and expires what is due before the step's turns run. A request due `Never` costs nothing more than it did.
 - **A holder is not told that what it holds has expired.** Its own asks made for it inherited the same `Due`, so they expire at the same moment, and each comes back to it as `Answered::No`, which its handler already takes. It frees its slot there and answers what it holds, which the engine drops. Only a holder that waits on something other than an ask needs the deadline itself, through `Held::due`.
-- **A guest's ask record carries its `Due`,** and its host inherits for it, as the engine does for native code (ADR-0015).
+- **A guest's ask record carries its `Due`,** and the guest library inherits, as native code does: its inbox hands a guest each item's deadline, which `Held::due` needs too, and its host files the deadline the record carries (ADR-0015).
 
-**HTTP sets the deadline.** The exchange asks its handler `within` `answer_within_millis` of the request's arrival, and writes `504` when its ask is answered `Expired`. Its own `Sleep` for the answering phase goes; the deadlines of its other phases stay (ADR-0035).
+**HTTP sets the deadline.** The exchange asks its handler `within` `answer_within_millis` of when the request is whole, as its answering phase was measured before, and writes `504` when its ask is answered `Expired`. Its own `Sleep` for the answering phase goes; the deadlines of its other phases stay (ADR-0035).
 
 **Across the link, a call carries the time it has left.** Two engines' clocks are their own, so a deadline crosses as a span.
 
@@ -63,7 +63,8 @@ Down::Call { call: u64, revision: u64, tool: String, input: Vec<u8>, within: Wit
 - **An answer handler takes `Expired` in the arm it has for `Answered::No`.** ADR-0017 refused to cancel requests partly because every answer handler would take one case more. A handler already takes `No` and its reason, so `Expired` is one more reason, not one more case.
 - **This replaces ADR-0017's consequence that "a request that times out is its asker's to decide: the engine sets no deadline".** An asker still decides: `within` states its deadline, and an ask that states none and inherits none waits as before.
 - **A request that expires is not cancelled at its receiver.** The receiver is not told, and finishes or drops its work; what it answers is dropped. ADR-0017's reasons for not cancelling still hold.
-- The engine keeps the requests that have a deadline by when they are due, and checks the earliest each step.
+- The engine keeps the requests that have a deadline in a heap by when they are due, and checks the earliest each step. One answered early stays in the heap until its time comes and is passed over then, so a hub keeps an entry of a few dozen bytes for each request of the last `answer_within_millis`.
+- A request's deadline rides in the mail's tie word, which for a request only repeated the mail's own count, so an envelope does not grow; a deadline past some 292 years from the host's first moment is kept as that time.
 - An ask record of a guest grows by a deadline, and the guest library and every host read it.
 - `Within` is an enum, not an optional span, so an unbounded call says so.
 
