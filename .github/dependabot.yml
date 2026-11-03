@@ -1,10 +1,14 @@
 version: 2
 updates:
-  # Workflows pin each action to a commit; this keeps the pins current.
+  # Workflows pin each action to a commit; this keeps the pins current, in one pull request a month.
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      actions:
+        patterns:
+          - "*"
     commit-message:
       prefix: chore
       include: scope
