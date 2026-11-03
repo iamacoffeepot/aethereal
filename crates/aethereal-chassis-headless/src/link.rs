@@ -67,7 +67,7 @@ impl Bootstrap<Headless> for Engines {
         (): (),
         cx: &mut Bootstrapping<'_, Headless, Self>,
     ) -> Result<(), Unbuilt> {
-        settings.check_read_limit(cx.read_limit()).map_err(|why| Unbuilt::Failed(Box::new(why)))?;
+        settings.check(cx.read_limit(), cx.blob_bytes())?;
         let randomness = SystemRandomness::open().map_err(|why| Unbuilt::Failed(Box::new(why)))?;
         cx.serve(Service::<dyn Randomness>::of(Arc::new(randomness)));
 

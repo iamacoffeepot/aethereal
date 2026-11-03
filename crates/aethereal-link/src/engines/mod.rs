@@ -143,7 +143,7 @@ const ACCEPTING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// and it watches each engine and spawn, dropping one from its list when it ends.
 ///
 /// It stands up on a host that serves it randomness: each native host's crate bootstraps it, serving the system's,
-/// and checks its settings with [`EnginesSettings::check_read_limit`].
+/// and checks its settings with [`EnginesSettings::check`].
 #[derive(Bound)]
 #[kind(name = "aether.link.engines")]
 pub struct Engines {

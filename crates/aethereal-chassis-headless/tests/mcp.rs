@@ -1016,10 +1016,13 @@ fn call_tool(name: &'static str, arguments: &str) -> Post {
 fn read_tool_answers_a_file_over_mcp_and_says_what_it_could_not_read() -> Result<(), Unheard> {
     // Catches the tool's decode, hold, ask, and encode each going wrong, a path past the namespace taken, a read that
     // ends `Mcp` by answering more than it can read, and a blob answered as text it is not. `large` is past the
-    // tool's limit, which a tool that did not hold to it would answer whole.
+    // tool's limit, which a tool that did not hold to it would answer whole. `full` is at it, and catches an engine
+    // whose blobs cannot hold the reply under the program's own settings, which answered it `503` with no body.
+    let full = vec![b'a'; 256 * 1024];
     let large = vec![b'a'; 256 * 1024 + 1];
-    let assets =
-        Assets::new("read", &[("a.txt", b"hello \"there\"\n"), ("b.bin", &[0xFF, 0xFE]), ("large.txt", &large)]);
+    let files: [(&str, &[u8]); 4] =
+        [("a.txt", b"hello \"there\"\n"), ("b.bin", &[0xFF, 0xFE]), ("full.txt", &full), ("large.txt", &large)];
+    let assets = Assets::new("read", &files);
     let roots = FileRoots {
         assets: assets.0.display().to_string(),
         save: assets.0.join("save").display().to_string(),
@@ -1034,6 +1037,11 @@ fn read_tool_answers_a_file_over_mcp_and_says_what_it_could_not_read() -> Result
 
     let read = answered(&mut harness, port, &read_file("a.txt"));
     assert!(read.body.contains("\"structuredContent\":{\"text\":\"hello \\\"there\\\"\\n\"}"), "{read:?}");
+
+    let read = answered(&mut harness, port, &read_file("full.txt"));
+    let text = String::from_utf8(full).unwrap_or_default();
+    assert_eq!(read.status, 200, "the reply was held: {}", read.status);
+    assert!(read.body.contains(&format!("\"structuredContent\":{{\"text\":\"{text}\"}}")), "the file came back whole");
 
     let cases = [
         ("missing.txt", "no file is at that path"),

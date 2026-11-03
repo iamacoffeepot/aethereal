@@ -6,7 +6,7 @@ mod settings;
 pub use settings::{LinkConfig, LinkSettings, NoToken};
 
 use crate::frames::{self, Written};
-use crate::read_limit;
+use crate::limits;
 use crate::{Down, Outcome, REVISION, Refusal, Up};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Due, Ended, Ending, Fault, Handles,
@@ -113,8 +113,7 @@ impl<H: Host> Bootstrap<H> for Link {
     type Provides = ();
 
     async fn bootstrap(settings: LinkSettings, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
-        let checked = read_limit::check("link", cx.read_limit(), settings.most_bytes);
-        checked.map_err(|why| Unbuilt::Failed(Box::new(why)))?;
+        limits::check("link", cx.read_limit(), cx.blob_bytes(), settings.most_bytes)?;
         let config = settings.config().map_err(|why| Unbuilt::Failed(Box::new(why)))?;
 
         cx.begin(&(), config)

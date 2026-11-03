@@ -54,8 +54,8 @@
 
 mod engines;
 mod frames;
+mod limits;
 mod link;
-mod read_limit;
 mod token;
 #[cfg(feature = "tools")]
 mod tools;
@@ -67,8 +67,8 @@ pub use engines::{
     Terminated, TokenFor, Unfilled, Unlistened, Vouching,
 };
 pub use frames::{Down, Outcome, PORT, REVISION, Refusal, Up, Within};
+pub use limits::{BlobBytesTooLow, ReadLimitTooLow};
 pub use link::{Calling, Connecting, Link, LinkConfig, LinkSettings, NoToken, Sending};
-pub use read_limit::ReadLimitTooLow;
 pub use token::Token;
 #[cfg(feature = "tools")]
 pub use tools::{

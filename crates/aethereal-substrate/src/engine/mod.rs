@@ -561,6 +561,12 @@ impl Engine {
         self.read_limit
     }
 
+    /// The most bytes the engine's blobs hold (ADR-0014).
+    #[must_use]
+    pub const fn blob_bytes(&self) -> usize {
+        self.blobs.budget()
+    }
+
     /// Whether a step would run no turn: no actor has anything to react to, and none has a closing turn to run.
     #[must_use]
     pub fn is_idle(&self) -> bool {

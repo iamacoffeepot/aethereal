@@ -83,6 +83,12 @@ impl Blobs {
         .collect()
     }
 
+    /// The bytes of the budget, held or not.
+    #[must_use]
+    pub const fn budget(&self) -> usize {
+        self.budget
+    }
+
     /// The bytes the budget has left.
     #[must_use]
     pub const fn room(&self) -> usize {

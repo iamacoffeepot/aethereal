@@ -66,6 +66,13 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
         self.stage.engine.read_limit()
     }
 
+    /// The most bytes the engine's blobs hold, which hold every byte that crosses between actors: past it, a put is
+    /// refused (ADR-0014, ADR-0042).
+    #[must_use]
+    pub const fn blob_bytes(&self) -> usize {
+        self.stage.engine.blob_bytes()
+    }
+
     /// Begins the root under `key`, from `config`, after the roots begun before it.
     ///
     /// # Errors

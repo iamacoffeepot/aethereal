@@ -22,5 +22,5 @@ pub use exchange::{Asking, Deadline, Exchange, ExchangeConfig, Sending};
 pub use http::{Binding, Http, Serve, Served};
 pub use message::{Handling, Header, Method, Request, Response};
 pub use server::{Server, ServerConfig};
-pub use settings::{HttpSettings, Limits, ReadLimitTooLow};
+pub use settings::{BlobBytesTooLow, HttpSettings, Limits, ReadLimitTooLow};
 pub use status::Status;

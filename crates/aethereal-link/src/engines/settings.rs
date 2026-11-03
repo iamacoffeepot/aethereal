@@ -1,8 +1,9 @@
 //! The hub end's settings (ADR-0028, ADR-0038, ADR-0040).
 
-use crate::read_limit;
-use crate::{PORT, ReadLimitTooLow};
+use crate::PORT;
+use crate::limits;
 use aethereal_data::Plain;
+use aethereal_substrate::Unbuilt;
 
 /// The hub end's section, `engines`: the port engines dial, the host they dial it on, its tokens, its spawns, and its
 /// limits
@@ -62,10 +63,16 @@ impl Default for EnginesSettings {
 }
 
 impl EnginesSettings {
-    /// Refuses a hub whose frames of `most_bytes` could not be read under `read_limit`: a frame that could not be read
-    /// would be dropped unread (ADR-0017), and what an engine said within the hub's own limits lost. Each host's
-    /// bootstrap checks it.
-    pub fn check_read_limit(&self, read_limit: usize) -> Result<(), ReadLimitTooLow> {
-        read_limit::check("engines", read_limit, self.most_bytes)
+    /// Refuses a hub whose frames of `most_bytes` could not be read under `read_limit` or held under `blob_bytes`: a
+    /// frame that could not be read would be dropped unread (ADR-0017), and one that could not be held would hang up
+    /// its connection (ADR-0042), and what an engine said within the hub's own limits lost. Each host's bootstrap
+    /// checks it.
+    ///
+    /// # Errors
+    ///
+    /// [`Unbuilt::Failed`] with a [`ReadLimitTooLow`](crate::ReadLimitTooLow) or a
+    /// [`BlobBytesTooLow`](crate::BlobBytesTooLow).
+    pub fn check(&self, read_limit: usize, blob_bytes: usize) -> Result<(), Unbuilt> {
+        limits::check("engines", read_limit, blob_bytes, self.most_bytes)
     }
 }

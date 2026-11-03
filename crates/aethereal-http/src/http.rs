@@ -1,6 +1,6 @@
 //! The HTTP capability's root (ADR-0035).
 
-use crate::{Handling, HttpSettings, ReadLimitTooLow, Server, ServerConfig};
+use crate::{BlobBytesTooLow, Handling, HttpSettings, ReadLimitTooLow, Server, ServerConfig};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held,
     Path, ProtocolRef, ToSender, ToType, Top, Turn, path,
@@ -83,7 +83,8 @@ pub struct Http {
 
 /// It stands up on every host, and refuses to where a request it would take could not be read: the handler it was sent
 /// to would never be handed it, and the engine would answer it `Unreadable` (ADR-0017), so a request within the
-/// server's limits would go unserved.
+/// server's limits would go unserved; and where the engine's blobs could not hold a request's body, which is a blob,
+/// so that request would be answered `503` (ADR-0042).
 impl<H: Host> Bootstrap<H> for Http {
     const SECTION: &'static str = "http";
     type Settings = HttpSettings;
@@ -95,6 +96,11 @@ impl<H: Host> Bootstrap<H> for Http {
         let needed = settings.most_read_bytes();
         if read_limit < needed {
             return Err(Unbuilt::Failed(Box::new(ReadLimitTooLow { read_limit, needed })));
+        }
+        let blob_bytes = cx.blob_bytes();
+        let needed = settings.most_blob_bytes();
+        if blob_bytes < needed {
+            return Err(Unbuilt::Failed(Box::new(BlobBytesTooLow { blob_bytes, needed })));
         }
 
         cx.begin(&(), settings)
