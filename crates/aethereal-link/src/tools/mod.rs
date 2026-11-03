@@ -17,7 +17,7 @@ use aethereal_data::{
     Bound, Budget, Json, JsonError, Plain, Schema, SchemaNodes, from_bytes, from_json, json_schema, to_bytes, to_json,
 };
 use aethereal_process::ExitStatus;
-use aethereal_tools::{Call, Called, Done, Tool, ToolSheet, Tooling};
+use aethereal_tools::{Call, Called, Done, Output, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 
 /// The tool that lists engines.
@@ -57,8 +57,8 @@ enum Pending {
     Describing { held: Held<Called>, engine: u32 },
     /// `call_tool`: the engine is asked for its tools, to find `tool` and convert `input` by its input schema.
     Finding { held: Held<Called>, engine: u32, tool: String, input: Json },
-    /// `call_tool`: the engine is asked to call `tool`, whose output is of `output`.
-    Calling { held: Held<Called>, tool: String, output: SchemaNodes },
+    /// `call_tool`: the engine is asked to call `tool`, whose sheet says it answers with `output`.
+    Calling { held: Held<Called>, tool: String, output: Output },
     /// `mint_token`: `Engines` is asked for a token.
     Minting { held: Held<Called> },
     /// `spawn_engine`: `Engines` is asked to spawn an engine.
@@ -92,11 +92,12 @@ enum Order {
     Terminate(TerminateEngine),
 }
 
-/// A call of an engine's tool, ready to ask: the set it was converted with, the input's bytes, and the output schema.
+/// A call of an engine's tool, ready to ask: the set it was converted with, the input's bytes, and what its sheet says
+/// it answers with.
 struct Converted {
     revision: u64,
     input: Vec<u8>,
-    output: SchemaNodes,
+    output: Output,
 }
 
 /// The hub's tools for the agent (ADR-0038, ADR-0040), served by one worker: `list_engines` asks [`Engines`] for every
@@ -164,7 +165,7 @@ impl Tool for EngineTools {
                      stderr.",
                 ),
                 input: SchemaNodes::of(&ListEngines::SHAPE),
-                output: SchemaNodes::of(&EngineList::SHAPE),
+                output: Output::Value(SchemaNodes::of(&EngineList::SHAPE)),
             },
             ToolSheet {
                 name: String::from(DESCRIBE_ENGINE),
@@ -173,16 +174,17 @@ impl Tool for EngineTools {
                      Schema.",
                 ),
                 input: SchemaNodes::of(&EngineId::SHAPE),
-                output: SchemaNodes::of(&EngineSheets::SHAPE),
+                output: Output::Value(SchemaNodes::of(&EngineSheets::SHAPE)),
             },
             ToolSheet {
                 name: String::from(CALL_TOOL),
                 description: String::from(
-                    "Calls an engine's tool with input of its input schema, and answers its output. Describe the \
-                     engine again when a call is refused because its tools changed.",
+                    "Calls an engine's tool with input of its input schema, and answers its output, or the image and \
+                     text it answers when its output is `\"image\"`. Describe the engine again when a call is refused \
+                     because its tools changed.",
                 ),
                 input: SchemaNodes::of(&EngineCall::SHAPE),
-                output: SchemaNodes::of(&EngineAnswer::SHAPE),
+                output: Output::ValueOrImage(SchemaNodes::of(&EngineAnswer::SHAPE)),
             },
             ToolSheet {
                 name: String::from(MINT_TOKEN),
@@ -191,7 +193,7 @@ impl Tool for EngineTools {
                      The token links one engine once, and expires if it goes unused.",
                 ),
                 input: SchemaNodes::of(&MintToken::SHAPE),
-                output: SchemaNodes::of(&Minted::SHAPE),
+                output: Output::Value(SchemaNodes::of(&Minted::SHAPE)),
             },
             ToolSheet {
                 name: String::from(SPAWN_ENGINE),
@@ -203,7 +205,7 @@ impl Tool for EngineTools {
                      time, when it is stopped.",
                 ),
                 input: SchemaNodes::of(&SpawnEngine::SHAPE),
-                output: SchemaNodes::of(&SpawnedEngine::SHAPE),
+                output: Output::Value(SchemaNodes::of(&SpawnedEngine::SHAPE)),
             },
             ToolSheet {
                 name: String::from(TERMINATE_ENGINE),
@@ -212,7 +214,7 @@ impl Tool for EngineTools {
                      its link shut, so it ends. Refused if no engine of that id is linked.",
                 ),
                 input: SchemaNodes::of(&TerminateEngine::SHAPE),
-                output: SchemaNodes::of(&Done::SHAPE),
+                output: Output::Value(SchemaNodes::of(&Done::SHAPE)),
             },
         ]
     }
@@ -556,13 +558,26 @@ fn described(answered: Answered<Described>, engine: u32) -> Result<Outcome, Faul
     Ok(Outcome::Output(to_bytes(&EngineSheets { tools })?))
 }
 
-/// `sheet` as `describe_engine` shows it.
+/// `sheet` as `describe_engine` shows it: an output that is an image as `"image"`, and one that may be either as the
+/// schema of its value beside `"image"`.
 fn json_sheet(sheet: ToolSheet) -> Result<JsonSheet, JsonError> {
     let input = schema_json(&sheet.input)?;
-    let output = schema_json(&sheet.output)?;
+    let output = match &sheet.output {
+        Output::Value(schema) => schema_json(schema)?,
+        Output::Image => image_json()?,
+        Output::ValueOrImage(schema) => {
+            let budget = &mut Budget::new(WALK_BYTES);
+            Json::parse(format!("{{\"value\":{},\"or\":\"image\"}}", json_schema(schema, budget)?), budget)?
+        }
+    };
     let ToolSheet { name, description, .. } = sheet;
 
     Ok(JsonSheet { name, description, input, output })
+}
+
+/// What `describe_engine` shows of an output that is an image.
+fn image_json() -> Result<Json, JsonError> {
+    Json::parse(String::from("\"image\""), &mut Budget::new(WALK_BYTES))
 }
 
 /// `schema` written as JSON Schema.
@@ -585,20 +600,30 @@ fn converted(answered: Answered<Described>, engine: u32, tool: &str, input: &Jso
     Ok(Converted { revision, input, output: sheet.output })
 }
 
-/// What `call_tool` answers of the engine's answer to a call of `tool`, whose output is of `output`, read in `turn`.
+/// What `call_tool` answers of the engine's answer to a call of `tool`, whose sheet says it answers with `output`, read
+/// in `turn`: a value as JSON of its schema, and an image as it is (ADR-0043).
 fn output_of<S>(
     turn: &Turn<'_, EngineTools, S>,
     answered: Answered<Called>,
     tool: &str,
-    output: &SchemaNodes,
+    output: &Output,
 ) -> Result<Outcome, Fault> {
-    let bytes = match answered {
-        Answered::Yes(Called::Output(bytes)) => bytes,
-        Answered::Yes(Called::Refused(why)) => return Ok(Outcome::Refused(why)),
-        Answered::No(_) => return Ok(refused("the engine went before it answered")),
+    let (bytes, schema) = match (answered, output) {
+        (Answered::Yes(Called::Output(bytes)), Output::Value(schema) | Output::ValueOrImage(schema)) => (bytes, schema),
+        (Answered::Yes(Called::Image { png, text }), Output::Image | Output::ValueOrImage(_)) => {
+            return Ok(Outcome::Image { png: turn.read(&png).to_vec(), text });
+        }
+        (Answered::Yes(Called::Output(_)), Output::Image) => {
+            return Ok(refused(format!("`{tool}` answered a value, and its sheet says an image")));
+        }
+        (Answered::Yes(Called::Image { .. }), Output::Value(_)) => {
+            return Ok(refused(format!("`{tool}` answered an image, and its sheet says a value")));
+        }
+        (Answered::Yes(Called::Refused(why)), _) => return Ok(Outcome::Refused(why)),
+        (Answered::No(_), _) => return Ok(refused("the engine went before it answered")),
     };
     let budget = &mut Budget::new(WALK_BYTES);
-    let written = to_json(output, turn.read(&bytes), budget).and_then(|text| Json::parse(text, budget));
+    let written = to_json(schema, turn.read(&bytes), budget).and_then(|text| Json::parse(text, budget));
     let Ok(output) = written else {
         return Ok(refused(format!("the engine's output is not of `{tool}`'s output schema")));
     };

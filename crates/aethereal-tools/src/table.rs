@@ -1,6 +1,6 @@
 //! The tools a holder holds, and what it checks of each as it is offered (ADR-0037, ADR-0038).
 
-use crate::{Offered, ToolSheet, Tooling};
+use crate::{Offered, Output, ToolSheet, Tooling};
 use aethereal_actor::{ErasedActorRef, ProtocolRef};
 use aethereal_data::{Bound, Budget, SchemaNodes, is_object, json_schema};
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,11 +16,32 @@ pub struct HeldTool {
     pub worker: ProtocolRef<Tooling>,
     pub description: String,
     pub input: SchemaNodes,
-    pub output: SchemaNodes,
+    pub output: HeldOutput,
     /// `input` as JSON Schema, written when it was offered.
     pub input_schema: String,
-    /// `output` as JSON Schema, written when it was offered.
-    pub output_schema: String,
+}
+
+/// What a held tool answers with, as its sheet says, with what is listed of it (ADR-0043).
+#[derive(Bound)]
+pub enum HeldOutput {
+    /// A value of `schema`, which is listed as `json_schema`, written when it was offered.
+    Value { schema: SchemaNodes, json_schema: String },
+    /// An image, which has no schema to list.
+    Image,
+    /// A value of the schema or an image: no schema is listed, as an image has none.
+    ValueOrImage(SchemaNodes),
+}
+
+impl HeldOutput {
+    /// What the tool's sheet says it answers with.
+    #[must_use]
+    pub fn sheet(&self) -> Output {
+        match self {
+            Self::Value { schema, .. } => Output::Value(schema.clone()),
+            Self::Image => Output::Image,
+            Self::ValueOrImage(schema) => Output::ValueOrImage(schema.clone()),
+        }
+    }
 }
 
 /// The tools held, by name, in the order of their names.
@@ -114,11 +135,18 @@ fn is_well_named(name: &str) -> bool {
     is_sized && is_plain
 }
 
-/// The tool `sheet` offers: none when one of its schemas has no JSON Schema.
+/// The tool `sheet` offers: none when a schema it lists has no JSON Schema.
 fn written_tool(sheet: ToolSheet, worker: ProtocolRef<Tooling>) -> Option<(String, HeldTool)> {
     let input_schema = json_schema(&sheet.input, &mut Budget::new(SCHEMA_BYTES)).ok()?;
-    let output_schema = json_schema(&sheet.output, &mut Budget::new(SCHEMA_BYTES)).ok()?;
     let ToolSheet { name, description, input, output } = sheet;
+    let output = match output {
+        Output::Value(schema) => {
+            let json_schema = json_schema(&schema, &mut Budget::new(SCHEMA_BYTES)).ok()?;
+            HeldOutput::Value { schema, json_schema }
+        }
+        Output::Image => HeldOutput::Image,
+        Output::ValueOrImage(schema) => HeldOutput::ValueOrImage(schema),
+    };
 
-    Some((name, HeldTool { worker, description, input, output, input_schema, output_schema }))
+    Some((name, HeldTool { worker, description, input, output, input_schema }))
 }

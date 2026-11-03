@@ -16,7 +16,7 @@ use aethereal_link::{
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Lifecycle};
 use aethereal_tcp::Tcp;
-use aethereal_tools::{Call, Called, Offer, Offered, ToolSheet, Tooling, Withdraw};
+use aethereal_tools::{Call, Called, Offer, Offered, Output, ToolSheet, Tooling, Withdraw};
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::thread::{self, JoinHandle};
@@ -45,7 +45,7 @@ fn sheet(name: &str) -> ToolSheet {
         name: String::from(name),
         description: String::from("Says how long a text is"),
         input: SchemaNodes::of(&Say::SHAPE),
-        output: SchemaNodes::of(&Said::SHAPE),
+        output: Output::Value(SchemaNodes::of(&Said::SHAPE)),
     }
 }
 
@@ -66,6 +66,12 @@ fn outcome(harness: &mut Harness<Headless>, answered: Answered<Called>) -> Answe
                 panic!("the output's blob is held");
             };
             Answered::Yes(Outcome::Output(bytes.to_vec()))
+        }
+        Answered::Yes(Called::Image { png, text }) => {
+            let Some(png) = harness.read(&png) else {
+                panic!("the image's blob is held");
+            };
+            Answered::Yes(Outcome::Image { png: png.to_vec(), text })
         }
         Answered::Yes(Called::Refused(why)) => Answered::Yes(Outcome::Refused(why)),
         Answered::No(why) => Answered::No(why),

@@ -29,6 +29,8 @@ pub struct Call {
 pub enum Called {
     /// A value of the tool's output schema, as its bytes in a blob (ADR-0042).
     Output(Bytes),
+    /// A PNG, in a blob, and `text` for the agent to read beside it: what it cannot read off the pixels (ADR-0043).
+    Image { png: Bytes, text: String },
     /// The tool could not do it, and says why, for the agent to read.
     Refused(String),
 }
@@ -39,6 +41,15 @@ impl Called {
     pub fn output<A, S>(turn: &mut Turn<'_, A, S>, bytes: Vec<u8>) -> Self {
         turn.put(bytes)
             .map_or_else(|_| Self::Refused(String::from("the engine had no room to hold the output")), Self::Output)
+    }
+
+    /// The image whose PNG is `png`, put in `turn`, with `text` beside it: refused, for the agent to read, when the
+    /// engine has no room to hold it (ADR-0014).
+    pub fn image<A, S>(turn: &mut Turn<'_, A, S>, png: Vec<u8>, text: String) -> Self {
+        turn.put(png).map_or_else(
+            |_| Self::Refused(String::from("the engine had no room to hold the image")),
+            |png| Self::Image { png, text },
+        )
     }
 }
 
@@ -54,7 +65,19 @@ pub struct ToolSheet {
     pub name: String,
     pub description: String,
     pub input: SchemaNodes,
-    pub output: SchemaNodes,
+    pub output: Output,
+}
+
+/// What a tool answers with (ADR-0043).
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.tools.output")]
+pub enum Output {
+    /// A value of the schema: [`Called::Output`].
+    Value(SchemaNodes),
+    /// An image: [`Called::Image`].
+    Image,
+    /// Either: a value of the schema or an image, as the hub's `call_tool` answers what an engine's tool answered.
+    ValueOrImage(SchemaNodes),
 }
 
 /// Tools to hold, all or none, and the worker each call of them is asked of.
@@ -79,7 +102,7 @@ pub enum Offered {
     NotAnObject,
     /// A name is outside what MCP asks of one: 1 to 128 of ASCII letters, digits, `_`, `-`, and `.`.
     BadName,
-    /// A schema has no JSON Schema: it is too deep or too large, or a map's key is not a key shape.
+    /// A schema it lists has no JSON Schema: it is too deep or too large, or a map's key is not a key shape.
     Unwritable,
 }
 

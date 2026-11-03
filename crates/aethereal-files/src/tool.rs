@@ -8,7 +8,7 @@ use aethereal_actor::{
 use aethereal_data::{
     Bare, Bound, Budget, Encode, EncodeError, FilePath, Plain, Schema, SchemaNodes, Writer, from_bytes, to_bytes,
 };
-use aethereal_tools::{Call, Called, Done, Tool, ToolSheet, Tooling};
+use aethereal_tools::{Call, Called, Done, Output, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 
 /// The most bytes of a file the tool answers with: past it, the tool refuses. Its answer holds the text in a blob,
@@ -91,7 +91,7 @@ impl Tool for ReadTool {
             name: String::from("read_file"),
             description: format!("Reads a text file of the program's own, up to {MOST_BYTES} bytes."),
             input: SchemaNodes::of(&ReadFile::SHAPE),
-            output: SchemaNodes::of(&FileContents::SHAPE),
+            output: Output::Value(SchemaNodes::of(&FileContents::SHAPE)),
         }]
     }
 
@@ -218,7 +218,7 @@ impl Tool for WriteTool {
                  written: `Save`."
             ),
             input: SchemaNodes::of(&TextFile::SHAPE),
-            output: SchemaNodes::of(&Done::SHAPE),
+            output: Output::Value(SchemaNodes::of(&Done::SHAPE)),
         }]
     }
 

@@ -7,7 +7,7 @@ use aethereal_actor::{
     ProtocolRef, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
-use aethereal_tools::{Call, Called, Done, Tool, ToolSheet, Tooling};
+use aethereal_tools::{Call, Called, Done, Output, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 
 /// The tool that checks a binary in.
@@ -86,7 +86,7 @@ impl Tool for StoreTools {
                      they were not already stored. A name checked in again moves to the newer bytes.",
                 ),
                 input: SchemaNodes::of(&CheckIn::SHAPE),
-                output: SchemaNodes::of(&StoredBinary::SHAPE),
+                output: Output::Value(SchemaNodes::of(&StoredBinary::SHAPE)),
             },
             ToolSheet {
                 name: String::from(LIST_STORED),
@@ -95,13 +95,13 @@ impl Tool for StoreTools {
                      point at it, how many bytes it holds, whether it is pinned, and whether an engine holds it.",
                 ),
                 input: SchemaNodes::of(&ListStored::SHAPE),
-                output: SchemaNodes::of(&Stored::SHAPE),
+                output: Output::Value(SchemaNodes::of(&Stored::SHAPE)),
             },
             ToolSheet {
                 name: String::from(PIN),
                 description: String::from("Keeps the binary of a hash from being pruned, until it is unpinned."),
                 input: SchemaNodes::of(&Pin::SHAPE),
-                output: SchemaNodes::of(&Done::SHAPE),
+                output: Output::Value(SchemaNodes::of(&Done::SHAPE)),
             },
             ToolSheet {
                 name: String::from(UNPIN),
@@ -109,7 +109,7 @@ impl Tool for StoreTools {
                     "Clears the pin of the binary of a hash. Its names and the engines that hold it still keep it.",
                 ),
                 input: SchemaNodes::of(&Unpin::SHAPE),
-                output: SchemaNodes::of(&Done::SHAPE),
+                output: Output::Value(SchemaNodes::of(&Done::SHAPE)),
             },
         ]
     }

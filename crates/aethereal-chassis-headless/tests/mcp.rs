@@ -17,7 +17,9 @@ use aethereal_mcp::{Mcp, McpSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Lifecycle, Program};
 use aethereal_tcp::Tcp;
-use aethereal_tools::{Call, Called, Offer, Offered, Tool, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw};
+use aethereal_tools::{
+    Call, Called, Offer, Offered, Output, Tool, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw,
+};
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -91,7 +93,7 @@ fn sheet(name: &str) -> ToolSheet {
         name: String::from(name),
         description: String::from("Says how long a text is"),
         input: SchemaNodes::of(&Say::SHAPE),
-        output: SchemaNodes::of(&Said::SHAPE),
+        output: Output::Value(SchemaNodes::of(&Said::SHAPE)),
     }
 }
 
@@ -504,6 +506,42 @@ fn the_list_is_every_tool_by_name_with_its_schemas_and_stale_at_once() -> Result
     assert!(read.body.contains("\"outputSchema\":{\"type\":\"object\""), "{read:?}");
     assert!(read.body.contains("\"ttlMs\":0,\"cacheScope\":\"public\""), "{read:?}");
     assert!(read.body.contains("io.modelcontextprotocol/serverInfo"), "{read:?}");
+
+    Ok(())
+}
+
+#[test]
+fn an_image_is_answered_as_an_image_block_beside_its_text_and_lists_no_output_schema() -> Result<(), Unheard> {
+    // Catches an image written as text or as `structuredContent`, its bytes or text lost, its MIME type left off, an
+    // output schema listed for a tool that answers an image, and an image from a tool whose sheet says a value
+    // written as if it allowed one.
+    let (mut harness, mcp, port) = served(McpSettings::default())?;
+    let worker = harness.protocol::<Tooling>();
+    let shout = ToolSheet { output: Output::Image, ..sheet("shout") };
+    let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say"), shout], worker })?;
+    assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
+
+    let read = answered(&mut harness, port, &Post::of(Rpc::List));
+    assert_eq!(read.body.matches("\"outputSchema\"").count(), 1, "{read:?}");
+
+    let client_of = client(port, &Post::of(Rpc::CallShout));
+    let call = harness.asked::<Call>()?;
+    let png = harness.put(b"foobar".to_vec())?;
+    harness.reply(call, &Called::Image { png, text: String::from("6 \"bytes\"") })?;
+    let read = heard(&mut harness, client_of);
+    let image = "{\"type\":\"image\",\"data\":\"Zm9vYmFy\",\"mimeType\":\"image/png\"}";
+    assert!(read.body.contains(image), "{read:?}");
+    assert!(read.body.contains("{\"type\":\"text\",\"text\":\"6 \\\"bytes\\\"\"}"), "{read:?}");
+    assert!(!read.body.contains("structuredContent"), "{read:?}");
+    assert!(read.body.contains("\"isError\":false"), "{read:?}");
+
+    let client_of = client(port, &Post::of(Rpc::CallSay));
+    let call = harness.asked::<Call>()?;
+    let png = harness.put(b"foobar".to_vec())?;
+    harness.reply(call, &Called::Image { png, text: String::new() })?;
+    let read = heard(&mut harness, client_of);
+    assert!(read.body.contains("its sheet says a value"), "{read:?}");
+    assert!(read.body.contains("\"isError\":true"), "{read:?}");
 
     Ok(())
 }

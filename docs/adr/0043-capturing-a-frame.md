@@ -21,23 +21,26 @@ A file path is the other way to hand an image over: the agent opens it with a to
 
 ```rust
 pub enum Called {
-    Output(Bytes),        // a value of the tool's output schema
-    Image(Bytes),         // a PNG
+    Output(Bytes),                        // a value of the tool's output schema
+    Image { png: Bytes, text: String },   // a PNG, and what the agent reads beside it
     Refused(String),
 }
 
 pub struct ToolSheet { pub name: String, pub description: String, pub input: SchemaNodes, pub output: Output }
 
 pub enum Output {
-    Value(SchemaNodes),   // answered `Called::Output`
-    Image,                // answered `Called::Image`
+    Value(SchemaNodes),          // answered `Called::Output`
+    Image,                       // answered `Called::Image`
+    ValueOrImage(SchemaNodes),   // either: the hub's `call_tool`, which answers what an engine's tool answered
 }
 ```
 
 - **The tooling protocol names what it carries.** `Mcp` writes what a tool answers by its case, and never tells an image from a value by the identity of the output's kind.
-- **`Mcp` writes `Called::Image` as two blocks:** the image, its bytes in base64 with `mimeType` `image/png`, and a text block of what the tool's description says it writes there. It writes no `structuredContent`, and lists no `outputSchema` for a tool whose output is `Output::Image`. A `Called::Image` from a tool whose sheet says `Value`, or the reverse, is the result `isError` true, as an output that is no value of its schema is today.
-- **A tool's text says the sizes,** since `Called::Image` carries none: `capture_frame` writes the frame's size, the crop, and the size of the image sent, so the agent can map what it sees back to the frame's pixels for the next crop.
-- **The link carries it.** `Outcome` gains `Image(Vec<u8>)`, and `Sheets` carries the sheet's `Output`. An older side would misread both, so `REVISION` is `3` (ADR-0038). The hub's `call_tool` answers what the engine's tool answered, so an engine's image reaches the agent as an image, and `describe_engine` shows an image tool's output as `"image"`.
+- **`Mcp` writes `Called::Image` as two blocks:** the image, its bytes in base64 with `mimeType` `image/png`, and a text block of its `text`. It writes no `structuredContent`. A `Called::Image` from a tool whose sheet says `Value`, or a `Called::Output` from one whose sheet says `Image`, is the result `isError` true, as an output that is no value of its schema is today.
+- **`Mcp` lists an `outputSchema` only for `Value`.** MCP asks that `structuredContent` match a listed schema, and an image has none, so `Image` and `ValueOrImage` list none. A `ValueOrImage` tool's value is still written as text and `structuredContent`, which MCP allows with no schema listed.
+- **An image carries its own text,** which says what the agent cannot read off the pixels: `capture_frame` writes the frame's size, the crop, and the size of the image sent, so the agent can map what it sees back to the frame's pixels for the next crop.
+- **The link carries it.** `Outcome` gains `Image { png: Vec<u8>, text: String }`, and `Sheets` carries the sheet's `Output`. An older side would misread both, so `REVISION` is `3` (ADR-0038).
+- **The hub's `call_tool` is `ValueOrImage`.** It answers a value of `EngineAnswer`, as it does today, when the engine's tool answers a value, and the engine's image and text as they are when it answers an image, so an engine's image reaches the agent as an image. It checks the answer against the engine's sheet as it does a value. The agent calls it as before; only its listing loses an `outputSchema`, which said that `output` is any JSON. `describe_engine` shows an image tool's output as `"image"`.
 
 **`ReadBack` names the window.** `Readable::Frame` becomes `Frame(WindowId)`: the next frame drawn onto that window, as its pass leaves it. An ask for a window the renderer does not keep, one never opened or already closed, is refused at once (`ReadRefused::Window`), and one held for a window that closes before it is drawn is refused as it closes. A window the chassis hands no frame for in a cycle, as a minimised one may be, keeps its asks until it is drawn. ADR-0023 is amended in place.
 
@@ -60,7 +63,7 @@ capture_frame { window, crop, longest }
   ◀─ Pixels::Read { width, height, format, pixels }
   → Encode { pixels, width, height, crop, longest }   a compute job
   ◀─ Encoded { png, width, height }
-  → Called::Image(png), its text the sizes ─▶ Mcp ─▶ [image block, text block]
+  → Called::Image { png, text: the sizes } ─▶ Mcp ─▶ [image block, text block]
 ```
 
 - **It crops, then shrinks, then encodes,** in a compute job (ADR-0018: `Runner::Compute`), so no step waits on a large frame. The job reads the pixels blob and puts the PNG in a buffer it is lent (ADR-0042: `Fills::Buffers`).
@@ -76,7 +79,7 @@ capture_frame { window, crop, longest }
 - **What a look costs is the agent's choice.** A whole frame at `longest` 1024 is about a thousand tokens; a crop at full resolution costs what its pixels do. The tool's description says so.
 - **A capture takes a frame or more.** The renderer answers after the next frame is drawn and its copy mapped, and the job then encodes: tens of milliseconds for a large frame, on a compute thread.
 - **Nothing is saved to disk.** A frame the owner wants kept is a later tool's, and so are checks of a frame's pixels, comparing two frames, and reading back a texture.
-- **Every tool sheet changes shape,** as `output` becomes `Output`. Each existing tool writes `Output::Value(..)`.
+- **Every tool sheet changes shape,** as `output` becomes `Output`. Each existing tool writes `Output::Value(..)`, and `call_tool` `Output::ValueOrImage(..)`.
 - **The link's revision goes up,** so an engine and a hub must be built from the same revision to link, as at every change of `Up` or `Down`.
 - **A program that reads a frame back names its window.** The browser examples that read `Readable::Frame` read window `0`.
 - **The first check is by hand on the desktop chassis,** since only it draws to a window an agent can link to. The tests cover what needs no GPU: the crop, the shrink, `Mcp`'s image result, and the link's `Outcome`.
@@ -85,6 +88,8 @@ capture_frame { window, crop, longest }
 
 - **An image output kind that `Mcp` recognises** by its name or schema. No new case in `Called`, but `Mcp` would judge content by a kind's identity, and every proxy of the tooling protocol would have to know the kind.
 - **A path the PNG is written to, answered as text.** Costs the agent nothing until it looks, but it can look only where the hub writes on its machine, and it must make a second call to.
+- **A hub tool of its own for images,** beside `call_tool`. No third case of `Output`, but the agent would choose between two tools by what the engine's tool answers.
+- **The text written from the tool's description.** A description is fixed when the tool is offered, and the sizes are known only once the frame is read.
 - **The image only, no text block.** The agent could not tell a shrunk image from a small frame, nor which pixels of the frame a crop covered.
 - **One argument, a scale.** A scale says nothing of the result's size until the frame's size is known; `longest` bounds the cost however large the window is.
 - **Shrinking on the GPU**, in a pass before the copy. Less to copy, but a pipeline and texture of its own in the renderer, for a cost the compute job already keeps off every step.

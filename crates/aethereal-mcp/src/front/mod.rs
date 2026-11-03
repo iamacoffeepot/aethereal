@@ -10,7 +10,7 @@ use aethereal_data::{Budget, JsonTree, JsonValue, from_json, from_value, read_js
 use aethereal_http::{Method, Request, Status};
 use aethereal_tools::Table;
 use core::str;
-pub use reply::{Reply, output, output_room, refused, value};
+pub use reply::{Reply, image, image_room, output, output_room, refused, value};
 
 /// The revision spoken, the only one (ADR-0037).
 const VERSION: &str = "2026-07-28";

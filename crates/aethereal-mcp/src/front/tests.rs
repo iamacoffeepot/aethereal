@@ -17,6 +17,31 @@ fn base64_reads_every_padding_and_refuses_what_is_not_it() {
 }
 
 #[test]
+fn base64_writes_every_padding_and_reads_back_what_it_wrote() {
+    // Catches a digit taken from the wrong bits, padding left off or written in place of a digit, and a last group
+    // of one or two bytes written as three. The vectors are RFC 4648's.
+    let vectors = [
+        ("", ""),
+        ("f", "Zg=="),
+        ("fo", "Zm8="),
+        ("foo", "Zm9v"),
+        ("foob", "Zm9vYg=="),
+        ("fooba", "Zm9vYmE="),
+        ("foobar", "Zm9vYmFy"),
+    ];
+    for (bytes, text) in vectors {
+        let mut written = String::new();
+        base64::encode(bytes.as_bytes(), &mut written);
+        assert_eq!(written, text);
+        assert_eq!(written.len(), base64::encoded_len(bytes.len()));
+    }
+    let every: Vec<u8> = (0..=255).collect();
+    let mut written = String::new();
+    base64::encode(&every, &mut written);
+    assert_eq!(base64::decode(&written), Some(every));
+}
+
+#[test]
 fn a_name_in_the_base64_form_is_decoded_and_a_plain_one_is_not() {
     // Catches the sentinel taken as the name, and a plain name run through the decoder.
     assert_eq!(decoded_name("=?base64?Zm9v?="), Some(String::from("foo")));

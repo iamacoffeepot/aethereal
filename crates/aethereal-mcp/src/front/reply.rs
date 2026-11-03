@@ -1,9 +1,9 @@
 //! The JSON a request is answered with (ADR-0037).
 
-use super::VERSION;
+use super::{VERSION, base64};
 use aethereal_data::{Budget, SchemaNodes, to_json, write_json_string};
 use aethereal_http::Status;
-use aethereal_tools::{HeldTool, Table};
+use aethereal_tools::{HeldOutput, HeldTool, Table};
 
 /// `-32022`: the revision asked for is not spoken.
 const UNSUPPORTED_VERSION: i32 = -32022;
@@ -107,12 +107,16 @@ pub fn list(id: &str, table: &Table) -> Reply {
     result(id, &format!("\"tools\":[{tools}],{FRESHNESS}"))
 }
 
-/// A tool's entry in `tools/list`, from the JSON Schema written as it was offered.
+/// A tool's entry in `tools/list`, from the JSON Schema written as it was offered. Only a tool that answers a value
+/// lists an output schema, as `structuredContent` must match one listed and an image has none (ADR-0043).
 fn listed(name: &str, held: &HeldTool) -> String {
-    let (name, description) = (quoted(name), quoted(&held.description));
-    let (input, output) = (&held.input_schema, &held.output_schema);
+    let (name, description, input) = (quoted(name), quoted(&held.description), &held.input_schema);
+    let output = match &held.output {
+        HeldOutput::Value { json_schema, .. } => format!(",\"outputSchema\":{json_schema}"),
+        HeldOutput::Image | HeldOutput::ValueOrImage(_) => String::new(),
+    };
 
-    format!("{{\"name\":{name},\"description\":{description},\"inputSchema\":{input},\"outputSchema\":{output}}}")
+    format!("{{\"name\":{name},\"description\":{description},\"inputSchema\":{input}{output}}}")
 }
 
 /// The result of a tool that could not do it, which says why.
@@ -133,6 +137,27 @@ pub fn value(id: &str, schema: &SchemaNodes, bytes: &[u8]) -> Result<String, Rep
 /// once more, as long as it and longer by an escape for each quote and backslash, beside the value itself.
 pub fn output_room(id: &str, value: &str) -> usize {
     2 * value.len() + id.len() + 2 * FRAME_BYTES
+}
+
+/// The room the result to request `id` of a tool that answered an image of `png` bytes with `text` takes: the image in
+/// Base64, and the text escaped, longer by an escape for each quote and backslash.
+pub fn image_room(id: &str, png: usize, text: &str) -> usize {
+    base64::encoded_len(png) + 2 * text.len() + id.len() + 2 * FRAME_BYTES
+}
+
+/// The result to request `id` of a tool that answered the image `png` with `text`, written into `buffer`, which has
+/// the room [`image_room`] says: an image block, then a text block, and no `structuredContent` (ADR-0043).
+pub fn image(id: &str, png: &[u8], text: &str, mut buffer: Vec<u8>) -> Reply {
+    buffer.clear();
+    // An empty buffer is always text.
+    let mut body = opened_in(String::from_utf8(buffer).unwrap_or_default(), id);
+    body.push_str("\"content\":[{\"type\":\"image\",\"data\":\"");
+    base64::encode(png, &mut body);
+    body.push_str("\",\"mimeType\":\"image/png\"},{\"type\":\"text\",\"text\":");
+    write_json_string(text, &mut body);
+    body.push_str("}],\"isError\":false");
+
+    closed(body)
 }
 
 /// The result to request `id` of a tool whose output's JSON is `value`, written into `buffer`, which has the room

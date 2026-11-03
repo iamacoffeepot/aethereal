@@ -371,7 +371,7 @@ impl Link {
                 name: String::from(name),
                 description: held.description.clone(),
                 input: held.input.clone(),
-                output: held.output.clone(),
+                output: held.output.sheet(),
             })
             .collect();
 
