@@ -60,11 +60,12 @@ pub struct Renderer {
     owed: Owed,
 }
 
-/// The reads and timings the renderer owes: those of the next frame, and those copied and waiting on their buffer's
-/// map, each under the read the buffer is kept by: pixels, storage's bytes, and timings.
+/// The reads and timings the renderer owes: those of the next frame, each read under the window it reads, and those
+/// copied and waiting on their buffer's map, each under the read the buffer is kept by: pixels, storage's bytes, and
+/// timings.
 #[derive(Bound)]
 struct Owed {
-    frames: Vec<Held<Pixels>>,
+    frames: Vec<(WindowId, Held<Pixels>)>,
     timings: Vec<Held<Timed>>,
     reading: Vec<(u64, Held<Pixels>)>,
     storing: Vec<(u64, Held<StorageContents>)>,
@@ -589,9 +590,9 @@ impl Handles<On<Render>> for Renderer {
         // A window the chassis handed no frame for is not drawn this cycle, nor asked to be presented. A cycle it handed
         // none for at all is skipped: nothing is drawn, and the next frame drawn is the one read and timed.
         let frames = kept.ordered(handed);
-        let Some((_, first)) = frames.first() else {
+        if frames.is_empty() {
             return Ok(());
-        };
+        }
         let views: Vec<(WindowId, wgpu::TextureView)> = frames
             .iter()
             .map(|(window, frame)| (*window, frame.create_view(&wgpu::TextureViewDescriptor::default())))
@@ -604,21 +605,28 @@ impl Handles<On<Render>> for Renderer {
         let passes = kept.passes(&views);
         let stamps = (!self.owed.timings.is_empty()).then(|| Stamps::new(&device, passes));
         kept.run_all(&mut encoder, &views, stamps.as_ref());
-        let copied = (!self.owed.frames.is_empty()).then(|| copy_frame(&device, &mut encoder, first));
+        let copied: Vec<_> = frames
+            .iter()
+            .filter_map(|(window, frame)| {
+                let owed = owed_by(&mut self.owed.frames, *window);
+                let asked = !owed.is_empty();
+                asked.then(|| (copy_frame(&device, &mut encoder, frame), owed))
+            })
+            .collect();
         let timed = stamps.map(|stamps| stamps.resolve(&mut encoder, queue.get_timestamp_period()));
         queue.submit([encoder.finish()]);
 
         let mut mappings = Vec::new();
         let mut refused = Vec::new();
-        match copied {
-            Some(Ok(reading)) => {
-                let (read, mapping) = kept.reading(reading);
-                mappings.push(mapping);
-                let frames = mem::take(&mut self.owed.frames);
-                self.owed.reading.extend(frames.into_iter().map(|held| (read, held)));
+        for (copy, owed) in copied {
+            match copy {
+                Ok(reading) => {
+                    let (read, mapping) = kept.reading(reading);
+                    mappings.push(mapping);
+                    self.owed.reading.extend(owed.into_iter().map(|held| (read, held)));
+                }
+                Err(why) => refused.extend(owed.into_iter().map(|held| (held, why))),
             }
-            Some(Err(why)) => refused.extend(mem::take(&mut self.owed.frames).into_iter().map(|held| (held, why))),
-            None => {}
         }
         if let Some(reading) = timed {
             let (read, mapping) = kept.reading(reading);
@@ -648,15 +656,22 @@ impl Handles<ReadBack> for Renderer {
     type Sends = (ToSender<Pixels>,);
 
     fn handle(&mut self, read: ReadBack, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let Readable::Texture(texture) = read.of else {
-            // Read when the next frame is drawn.
-            let held = turn.hold()?;
-            self.owed.frames.push(held);
-            return Ok(());
-        };
         let gpu = turn.open(&mut self.gpu)?;
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let kept = turn.open(&mut self.kept)?;
+        let texture = match read.of {
+            Readable::Texture(texture) => texture,
+            Readable::Frame(window) if kept.windowed(window).is_none() => {
+                turn.reply(&Pixels::Refused(ReadRefused::Window))?;
+                return Ok(());
+            }
+            Readable::Frame(window) => {
+                // Read when the window's next frame is drawn.
+                let held = turn.hold()?;
+                self.owed.frames.push((window, held));
+                return Ok(());
+            }
+        };
         let Some((made, format)) = kept.textures.get(texture.id).map(|kept| (kept.made.clone(), kept.format)) else {
             turn.reply(&Pixels::Refused(ReadRefused::Texture))?;
             return Ok(());
@@ -809,6 +824,9 @@ impl Handles<Surfaced> for Renderer {
                     turn.log(Level::Warn, format_args!("window {window:?} was closed, and was not drawn to"));
                 }
                 log_held(turn, &held);
+                for read in owed_by(&mut self.owed.frames, window) {
+                    turn.answer(read, &Pixels::Refused(ReadRefused::Window))?;
+                }
             }
         }
 
@@ -816,8 +834,8 @@ impl Handles<Surfaced> for Renderer {
     }
 }
 
-/// What `read` owes of `owed`, taken from it.
-fn owed_by<A>(owed: &mut Vec<(u64, Held<A>)>, read: u64) -> Vec<Held<A>> {
+/// What `read`, a read or a window, owes of `owed`, taken from it.
+fn owed_by<K: Copy + PartialEq, A>(owed: &mut Vec<(K, Held<A>)>, read: K) -> Vec<Held<A>> {
     owed.extract_if(.., |(owing, _)| *owing == read).map(|(_, held)| held).collect()
 }
 
