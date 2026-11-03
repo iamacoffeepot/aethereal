@@ -14,6 +14,20 @@ pub struct Gpu {
 impl Resource for Gpu {}
 
 impl Gpu {
+    /// The limits a chassis asks of an adapter that offers `offered`: WebGPU's defaults, but for the two that size what
+    /// a program may make, a storage binding and a buffer, which are the adapter's own. A program written against one
+    /// device then needs no more than most devices have of anything else, and the renderer refuses what this device
+    /// cannot hold by the limits it was given, naming the limit. They are never more than the adapter offers, so asking
+    /// cannot fail where the defaults would not.
+    #[must_use]
+    pub fn limits(offered: &wgpu::Limits) -> wgpu::Limits {
+        wgpu::Limits {
+            max_storage_buffer_binding_size: offered.max_storage_buffer_binding_size,
+            max_buffer_size: offered.max_buffer_size,
+            ..wgpu::Limits::default()
+        }
+    }
+
     /// The GPU of `device` and `queue`.
     #[must_use]
     pub const fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
