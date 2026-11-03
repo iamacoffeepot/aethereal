@@ -5,7 +5,7 @@
 mod tests;
 
 use crate::mesh::{self, MeshRefused, VertexLayout};
-use aethereal_actor::BlobRef;
+use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
 
 /// Asks the renderer for instances: room for `capacity` records laid out as `layout` says, holding `records` to begin
@@ -15,7 +15,7 @@ use aethereal_data::{Bound, Plain};
 pub struct CreateInstances {
     pub layout: VertexLayout,
     pub capacity: u32,
-    pub records: BlobRef,
+    pub records: Bytes,
 }
 
 /// Writes `records` over the records of `instances` from the `first`: one that passes their end extends them, and an
@@ -26,7 +26,7 @@ pub struct CreateInstances {
 pub struct WriteInstances {
     pub instances: InstancesId,
     pub first: u32,
-    pub records: BlobRef,
+    pub records: Bytes,
 }
 
 /// Instances the renderer made, which any actor handed them may draw.

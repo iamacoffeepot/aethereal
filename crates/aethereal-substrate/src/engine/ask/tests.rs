@@ -6,7 +6,7 @@ use super::{Answering, Waiting, owed};
 use aethereal_actor::Time;
 use aethereal_actor::Written;
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asking, Asks, BlobRef, Carries, ChildOf, Due, Ending, Fault, Handles,
+    Actor, ActorRef, Answer, Answered, Anywhere, Asking, Asks, Bytes, Carries, ChildOf, Due, Ending, Fault, Handles,
     Held, Protocol, Tie, ToAny, ToSender, ToType, Top, Turn, Unanswered, child,
 };
 use aethereal_data::{Bound, EncodeError, Kind, Plain};
@@ -574,7 +574,7 @@ impl Handles<Answer<TileIs, Looking>> for Seeker {
 #[derive(Bound)]
 #[kind(name = "aether.test.kept")]
 struct Kept {
-    blob: BlobRef,
+    blob: Bytes,
 }
 
 /// An actor that asks a board it spawns as it begins, keeping a blob of three bytes it puts and refers to nowhere

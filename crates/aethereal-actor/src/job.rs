@@ -76,7 +76,7 @@ impl Running {
     /// reference a job holds was read out of its bytes or made by its puts, so a reference to any other, which no job
     /// can come to hold, reads as no bytes.
     #[must_use]
-    pub fn read(&self, blob: &crate::BlobRef) -> &[u8] {
+    pub fn read(&self, blob: &crate::Bytes) -> &[u8] {
         let id = blob.id();
         if let Some(index) = id.made_index() {
             let put = usize::try_from(index).ok().and_then(|index| self.put.get(index));
@@ -105,11 +105,11 @@ impl Running {
     /// and writes the blob's own reference over this one where it lies in the answer; a blob that does not fit
     /// answers the job [`Faulted`](crate::Unanswered::Faulted). So no reference a job made reaches an actor before its
     /// blob is in the store.
-    pub fn put(&mut self, bytes: Vec<u8>) -> crate::BlobRef {
+    pub fn put(&mut self, bytes: Vec<u8>) -> crate::Bytes {
         let index = u64::try_from(self.put.len()).unwrap_or(u64::MAX);
         self.put.push(bytes);
 
-        crate::BlobRef::pin(BlobId::made(self.engine, index))
+        crate::Bytes::pin(BlobId::made(self.engine, index))
     }
 
     /// Hands `value`, a resource the job made, and answers with it given, to hold in what the job answers with. The
@@ -493,7 +493,7 @@ impl Drop for Queued {
 ///
 /// Why it could not be written.
 #[cfg(feature = "std")]
-pub fn lending<K: Encode<Actors>>(value: &K) -> Result<(Vec<u8>, Vec<crate::BlobRef>), EncodeError> {
+pub fn lending<K: Encode<Actors>>(value: &K) -> Result<(Vec<u8>, Vec<crate::Bytes>), EncodeError> {
     let mut held = Vec::new();
     let mut out = Writer::<Actors>::appending(Vec::new(), ActorsWriter::new(&mut held));
     value.encode(&mut out)?;

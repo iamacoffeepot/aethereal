@@ -384,7 +384,7 @@ impl<'a> Pinned<'a> {
     }
 
     /// Shows `visit` each reference: where it begins in the bytes, and the pin on its blob.
-    pub fn each(self, mut visit: impl FnMut(u32, &crate::BlobRef)) {
+    pub fn each(self, mut visit: impl FnMut(u32, &crate::Bytes)) {
         match self.lies {
             Lies::Nothing => {}
             Lies::Lying { held, start } => {
@@ -402,9 +402,9 @@ impl<'a> Pinned<'a> {
 
     /// A copy of the pin on `blob` at `at` in the bytes, where a reference to it begins: none when no pin on it lies
     /// there.
-    pub(crate) fn pin(self, at: u32, blob: crate::BlobId) -> Option<crate::BlobRef> {
+    pub(crate) fn pin(self, at: u32, blob: crate::BlobId) -> Option<crate::Bytes> {
         let mut found = None;
-        let mut visit = |lies: u32, pin: &crate::BlobRef| {
+        let mut visit = |lies: u32, pin: &crate::Bytes| {
             let is_this = lies == at && pin.id() == blob;
             if is_this {
                 found = Some(pin.clone());
@@ -481,7 +481,7 @@ impl<'a> PinSource<'a> {
 
     /// A copy of the pin on `blob` held for the reference whose bytes begin at the address `at`: none when no pin on
     /// it lies there.
-    pub(crate) fn pin(&self, at: usize, blob: crate::BlobId) -> Option<crate::BlobRef> {
+    pub(crate) fn pin(&self, at: usize, blob: crate::BlobId) -> Option<crate::Bytes> {
         match &self.from {
             From::Nothing => None,
             From::Step { arenas, carried, carried_pins } => {
@@ -491,8 +491,8 @@ impl<'a> PinSource<'a> {
             From::Lying { bytes, held } => offset_in(bytes, at).and_then(|offset| found(held, offset, blob)),
             From::Copied { bytes, pinned } => offset_in(bytes, at).and_then(|offset| pinned.pin(offset, blob)),
             #[cfg(feature = "guest")]
-            From::Offered => Some(crate::BlobRef::pin(blob)),
-            From::Job(blobs) => blobs.iter().any(|copied| copied.id == blob).then(|| crate::BlobRef::pin(blob)),
+            From::Offered => Some(crate::Bytes::pin(blob)),
+            From::Job(blobs) => blobs.iter().any(|copied| copied.id == blob).then(|| crate::Bytes::pin(blob)),
         }
     }
 
@@ -530,7 +530,7 @@ fn offset_in(bytes: &[u8], at: usize) -> Option<u32> {
 /// A copy of the pin on `blob` among `held`, kept in the order of where they lie, at `offset`: none when none lies
 /// there.
 #[cfg(feature = "std")]
-fn found(held: &[crate::Pinning], offset: u32, blob: crate::BlobId) -> Option<crate::BlobRef> {
+fn found(held: &[crate::Pinning], offset: u32, blob: crate::BlobId) -> Option<crate::Bytes> {
     let first = held.partition_point(|(at, _)| *at < offset);
     let (at, pin) = held.get(first)?;
     let is_this = *at == offset && pin.id() == blob;
@@ -542,7 +542,7 @@ fn found(held: &[crate::Pinning], offset: u32, blob: crate::BlobId) -> Option<cr
 impl Arena {
     /// A copy of the pin on `blob` its mail holds for the reference whose bytes begin at the address `at`: none when
     /// they do not lie in it, or no pin on it lies there.
-    fn pin_at(&self, at: usize, blob: crate::BlobId) -> Option<crate::BlobRef> {
+    fn pin_at(&self, at: usize, blob: crate::BlobId) -> Option<crate::Bytes> {
         if let Some(offset) = offset_in(&self.pieces.slab, at) {
             return found(&self.held, offset, blob);
         }
@@ -763,12 +763,12 @@ mod tests {
         // Catches a spilled piece's pins not handed to its reader, so a reference in mail that ran past the slab is
         // refused, or pinned where it begins in the slab rather than in the piece; and not shown to a host, which would
         // offer a guest none of them.
-        use crate::{BlobId, BlobRef, Mail, MailId, SeatNumber, Seated, pins};
+        use crate::{BlobId, Bytes, Mail, MailId, SeatNumber, Seated, pins};
         use aethereal_data::{ActorId, KindId};
         use core::slice;
 
         pins::open(11, Vec::new());
-        let blob = BlobRef::pin(BlobId::new(11, 3));
+        let blob = Bytes::pin(BlobId::new(11, 3));
         let mut arena = Arena::new(3);
         put(&mut arena, &vec![1; ARENA_BYTES - 8]);
         let spilled = arena.write_mail(&blob);
@@ -782,7 +782,7 @@ mod tests {
             let mut shown = Vec::new();
             mail.pinned().each(|at, pin| shown.push((at, pin.id())));
             let is_spilled = matches!(payload, Payload::Spilled { .. });
-            (is_spilled, mail.contents::<BlobRef>().map(|read| read.id()), shown)
+            (is_spilled, mail.contents::<Bytes>().map(|read| read.id()), shown)
         });
         drop((blob, arena));
         let _ = pins::close();

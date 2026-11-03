@@ -17,7 +17,7 @@ A `Sleep` in each hop would free its slot, with a setting in each, and the next 
 
 ```rust
 // aethereal-actor
-pub struct Asking { pub count: u64, pub answer: KindId, pub context: Written, pub lent: Vec<BlobRef>, pub due: Due }
+pub struct Asking { pub count: u64, pub answer: KindId, pub context: Written, pub lent: Vec<Bytes>, pub due: Due }
 
 /// When a request stops being waited for.
 pub enum Due {

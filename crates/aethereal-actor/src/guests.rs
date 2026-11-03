@@ -44,7 +44,7 @@ pub trait Guests: Send + Sync {
     /// waiting on a call out of its own (ADR-0015).
     fn begin(
         &self,
-        #[cfg(feature = "std")] code: &crate::BlobRef,
+        #[cfg(feature = "std")] code: &crate::Bytes,
         made: &'static BlobType,
         config: &[u8],
         birth: Birth<'_>,
@@ -79,7 +79,7 @@ impl Guests for NoGuests {
 
     fn begin(
         &self,
-        #[cfg(feature = "std")] _: &crate::BlobRef,
+        #[cfg(feature = "std")] _: &crate::Bytes,
         _: &'static BlobType,
         _: &[u8],
         _: Birth<'_>,

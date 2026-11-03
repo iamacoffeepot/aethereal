@@ -1,7 +1,7 @@
 //! What an actor asks the file capability, and what it is answered (ADR-0032).
 
 use crate::Namespace;
-use aethereal_actor::BlobRef;
+use aethereal_actor::Bytes;
 use aethereal_data::{Bound, FilePath, Plain};
 
 /// Read the whole file at `path` in `namespace`: asked of [`Files`](crate::Files), and answered a [`FileRead`].
@@ -21,7 +21,7 @@ pub enum FileRead {
     /// The whole file, as a blob (ADR-0014).
     Read {
         /// The file's bytes.
-        bytes: BlobRef,
+        bytes: Bytes,
     },
     /// No file is at that path.
     Missing,

@@ -5,7 +5,7 @@ use super::super::*;
 use super::*;
 use crate::Entry;
 use aethereal_actor::{
-    Actor, Answer, Answered, BlobRef, ChildOf, Ending, Given, Handles, Job, JobType, Path, Resource, Runner, Running,
+    Actor, Answer, Answered, Bytes, ChildOf, Ending, Given, Handles, Job, JobType, Path, Resource, Runner, Running,
     Services, Tells, Time, Top, Turn, Unanswered, path,
 };
 use aethereal_data::{Bound, Plain};
@@ -114,9 +114,9 @@ impl Job for Ring {
 #[derive(Bound)]
 #[kind(name = "aether.test.measure")]
 struct Measure {
-    blob: BlobRef,
-    again: BlobRef,
-    other: BlobRef,
+    blob: Bytes,
+    again: Bytes,
+    other: Bytes,
 }
 
 impl Job for Measure {
@@ -124,7 +124,7 @@ impl Job for Measure {
     const RUNNER: Runner = Runner::Compute;
 
     async fn run(self, job: &mut Running) -> Result<Doubled, Fault> {
-        let sum = |blob: &BlobRef| job.read(blob).iter().map(|&byte| u64::from(byte)).sum::<u64>();
+        let sum = |blob: &Bytes| job.read(blob).iter().map(|&byte| u64::from(byte)).sum::<u64>();
 
         Ok(Doubled { n: sum(&self.blob) + sum(&self.again) + sum(&self.other) })
     }
@@ -134,7 +134,7 @@ impl Job for Measure {
 #[derive(Bound)]
 #[kind(name = "aether.test.hangs")]
 struct Hangs {
-    blob: BlobRef,
+    blob: Bytes,
 }
 
 impl Job for Hangs {
@@ -154,7 +154,7 @@ impl Job for Hangs {
 #[derive(Bound)]
 #[kind(name = "aether.test.shrink")]
 struct Shrink {
-    blob: BlobRef,
+    blob: Bytes,
     big: bool,
 }
 
@@ -162,9 +162,9 @@ struct Shrink {
 #[derive(Bound)]
 #[kind(name = "aether.test.shrunk")]
 struct Shrunk {
-    first: BlobRef,
-    kept: BlobRef,
-    second: BlobRef,
+    first: Bytes,
+    kept: Bytes,
+    second: Bytes,
 }
 
 impl Job for Shrink {

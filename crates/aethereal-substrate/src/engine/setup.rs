@@ -4,8 +4,7 @@ use super::bring::Feed;
 use super::jobs::Jobs;
 use super::{CodeRefused, Engine};
 use aethereal_actor::{
-    Actors, BlobRef, Controller, Cycle, Given, Guests, JobType, Links, Ordered, Refused, Requests, Resource, Root,
-    Source,
+    Actors, Bytes, Controller, Cycle, Given, Guests, JobType, Links, Ordered, Refused, Requests, Resource, Root, Source,
 };
 use aethereal_data::{Encode, Kind};
 use core::marker::PhantomData;
@@ -231,7 +230,7 @@ impl<S> Setup<S> {
     /// Why the root was refused, as `Engine::add_root_from` says.
     pub fn add_root_from<C: Root>(
         mut self,
-        code: &BlobRef,
+        code: &Bytes,
         key: &C::Key,
         config: &C::Config,
     ) -> Result<Setup<(C, S)>, Refused> {
@@ -248,7 +247,7 @@ impl<S> Setup<S> {
     /// Why the first root refused was, as `Engine::add_root_from` says; those before it were made.
     pub fn add_roots_from<C: Root>(
         mut self,
-        code: &BlobRef,
+        code: &Bytes,
         roots: impl IntoIterator<Item = (C::Key, C::Config)>,
     ) -> Result<Setup<(C, S)>, Refused> {
         for (key, config) in roots {
@@ -280,7 +279,7 @@ impl<S> Setup<S> {
     /// # Errors
     ///
     /// Why the code was refused, as `Engine::put_code` says.
-    pub fn put_code(&mut self, bytes: Vec<u8>) -> Result<BlobRef, CodeRefused> {
+    pub fn put_code(&mut self, bytes: Vec<u8>) -> Result<Bytes, CodeRefused> {
         self.engine.put_code(bytes)
     }
 
@@ -289,7 +288,7 @@ impl<S> Setup<S> {
     /// # Errors
     ///
     /// Why the blob was refused, as `Engine::put_blob` says.
-    pub fn put_blob(&mut self, bytes: Vec<u8>) -> Result<BlobRef, Refused> {
+    pub fn put_blob(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
         self.engine.put_blob(bytes)
     }
 

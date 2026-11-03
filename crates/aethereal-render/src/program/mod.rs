@@ -7,7 +7,7 @@ mod tests;
 use crate::effect::Read;
 use crate::mesh::{self, MeshRefused, VertexFormat, VertexLayout};
 use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
-use aethereal_actor::BlobRef;
+use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
 use naga::front::wgsl;
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
@@ -30,7 +30,7 @@ use naga::{
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.render.create_program")]
 pub struct CreateProgram {
-    pub wgsl: BlobRef,
+    pub wgsl: Bytes,
     pub vertex: String,
     pub fragment: String,
     pub layout: VertexLayout,

@@ -28,7 +28,7 @@ use crate::records::{
 };
 use crate::section;
 use crate::{
-    Above, Actor, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, BlobRef, ChildOf, Children, Declared, Due,
+    Above, Actor, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, Bytes, ChildOf, Children, Declared, Due,
     Ended, Fault, How, Item, Tie, Tied, Unanswered,
 };
 use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, PinSource, Preparing, Puts, Refused};
@@ -253,7 +253,7 @@ fn take_in<A: ChildOf>(bytes: &[u8], read_limit: usize) -> Option<(Box<dyn Runs>
 fn carried_in(bytes: &[u8]) -> Option<Written> {
     let (written, blobs) = records::carried(bytes)?;
 
-    Some(Written::new(written.to_vec(), blobs.into_iter().map(BlobRef::pin).collect()))
+    Some(Written::new(written.to_vec(), blobs.into_iter().map(Bytes::pin).collect()))
 }
 
 /// Writes `runs`, an actor of type `A` that stands where `standing` says, after `out`, as
@@ -266,7 +266,7 @@ fn take_out<A: Actor>(runs: &dyn Runs, standing: &Standing, out: &mut Vec<u8>) -
         actor.encode(writer)
     })
     .ok()?;
-    records::write_carried(out, written.bytes(), written.pins().iter().map(BlobRef::id));
+    records::write_carried(out, written.bytes(), written.pins().iter().map(Bytes::id));
 
     Some(())
 }
@@ -766,7 +766,7 @@ fn write_contexts(held: &mut Vec<u8>, asked: &Asked) -> Vec<Lying> {
     let mut lying = Vec::new();
     for (by, asking) in asked.asks() {
         let at = held.len();
-        records::write_carried(held, asking.context.bytes(), asking.context.pins().iter().map(BlobRef::id));
+        records::write_carried(held, asking.context.bytes(), asking.context.pins().iter().map(Bytes::id));
         lying.push((*by, asking.count, asking.answer, at, held.len() - at));
     }
     // Every address is taken once the buffer is written, as it moves when it grows.
@@ -1244,7 +1244,7 @@ impl Guests for Calling {
 
     fn begin(
         &self,
-        _: &BlobRef,
+        _: &Bytes,
         made: &'static BlobType,
         config: &[u8],
         birth: Birth<'_>,

@@ -19,7 +19,7 @@ use aethereal_render::program::{
     Access, Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId,
     Programmed,
 };
-use aethereal_render::readback::{Bytes, ReadStorage};
+use aethereal_render::readback::{ReadStorage, StorageContents};
 use aethereal_render::shape::Shape;
 use aethereal_render::storage::{CreateStorage, StorageId, Stored};
 use aethereal_render::timing::{TimeFrame, Timed};
@@ -206,7 +206,7 @@ impl Actor for Simulator {
         Answer<Stored, MadePrograms>,
         Answer<Placed, Placing>,
         Answer<Dispatched, Dispatching>,
-        Answer<Bytes, Nothing>,
+        Answer<StorageContents, Nothing>,
         Answer<Timed, Nothing>,
     );
     type BeginSends = ();
@@ -488,15 +488,15 @@ impl Handles<On<Tick>> for Simulator {
     }
 }
 
-impl Handles<Answer<Bytes, Nothing>> for Simulator {
+impl Handles<Answer<StorageContents, Nothing>> for Simulator {
     type Sends = ();
 
     fn handle(
         &mut self,
-        (answered, _): (Answered<Bytes>, Nothing),
+        (answered, _): (Answered<StorageContents>, Nothing),
         turn: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
-        let Answered::Yes(Bytes::Read { bytes }) = answered else {
+        let Answered::Yes(StorageContents::Read { bytes }) = answered else {
             say(format!("the field was not read: {answered:?}"));
             return Ok(());
         };

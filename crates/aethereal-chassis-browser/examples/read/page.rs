@@ -3,7 +3,7 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, BlobRef, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
+    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
     Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
@@ -17,7 +17,7 @@ use aethereal_render::program::{
     Access, Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId,
     Programmed,
 };
-use aethereal_render::readback::{Bytes, Pixels, ReadBack, ReadStorage, Readable};
+use aethereal_render::readback::{Pixels, ReadBack, ReadStorage, Readable, StorageContents};
 use aethereal_render::shape::Shape;
 use aethereal_render::storage::{CreateStorage, StorageId, Stored};
 use aethereal_render::texture::{CreateTexture, TextureFormat, TextureId, Textured};
@@ -205,7 +205,7 @@ impl Actor for Reader {
         Answer<Placed, Placing>,
         Answer<Textured, Splatted>,
         Answer<Pixels, Of>,
-        Answer<Bytes, Nothing>,
+        Answer<StorageContents, Nothing>,
         Answer<Timed, Nothing>,
     );
     type BeginSends = ();
@@ -243,7 +243,7 @@ fn corners() -> VertexLayout {
 /// A program of the WGSL the blob `wgsl` holds, drawn from `vertex` and `fragment` over the quad into `shape`, binding
 /// `bindings`, blending by `blend`.
 fn program(
-    wgsl: BlobRef,
+    wgsl: Bytes,
     (vertex, fragment): (&str, &str),
     shape: Shape,
     bindings: Vec<Binding>,
@@ -520,15 +520,15 @@ impl Handles<Answer<Pixels, Of>> for Reader {
     }
 }
 
-impl Handles<Answer<Bytes, Nothing>> for Reader {
+impl Handles<Answer<StorageContents, Nothing>> for Reader {
     type Sends = ();
 
     fn handle(
         &mut self,
-        (answered, _): (Answered<Bytes>, Nothing),
+        (answered, _): (Answered<StorageContents>, Nothing),
         turn: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
-        let Answered::Yes(Bytes::Read { bytes }) = answered else {
+        let Answered::Yes(StorageContents::Read { bytes }) = answered else {
             say(format!("the storage was not read: {answered:?}"));
             return Ok(());
         };

@@ -26,7 +26,7 @@ use crate::placement::{
 use crate::program::{
     self, Access, Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, PerInstance, ProgramId, Programmed,
 };
-use crate::readback::{self, Bytes, Copied, Order, Pixels, ReadBack, ReadRefused, ReadStorage, Readable};
+use crate::readback::{self, Copied, Order, Pixels, ReadBack, ReadRefused, ReadStorage, Readable, StorageContents};
 use crate::shape::{ColourFormat, DepthFormat, Shape};
 use crate::storage::{self, CreateStorage, CreateZeroedStorage, StorageId, Stored, WriteStorage};
 use crate::surface::{Front, Present, Surfaced, WindowFormat};
@@ -67,7 +67,7 @@ struct Owed {
     frames: Vec<Held<Pixels>>,
     timings: Vec<Held<Timed>>,
     reading: Vec<(u64, Held<Pixels>)>,
-    storing: Vec<(u64, Held<Bytes>)>,
+    storing: Vec<(u64, Held<StorageContents>)>,
     timing: Vec<(u64, Held<Timed>)>,
 }
 
@@ -135,7 +135,7 @@ impl Carries<ReadBack> for Renderer {
 }
 
 impl Carries<ReadStorage> for Renderer {
-    type Answers = (Bytes,);
+    type Answers = (StorageContents,);
 }
 
 impl Carries<TimeFrame> for Renderer {
@@ -270,7 +270,7 @@ impl Carries<ReadBack> for Rendering {
 }
 
 impl Carries<ReadStorage> for Rendering {
-    type Answers = (Bytes,);
+    type Answers = (StorageContents,);
 }
 
 impl Carries<TimeFrame> for Rendering {
@@ -675,7 +675,7 @@ impl Handles<ReadBack> for Renderer {
 }
 
 impl Handles<ReadStorage> for Renderer {
-    type Sends = (ToSender<Bytes>,);
+    type Sends = (ToSender<StorageContents>,);
 
     fn handle(&mut self, read: ReadStorage, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let gpu = turn.open(&mut self.gpu)?;
@@ -683,7 +683,7 @@ impl Handles<ReadStorage> for Renderer {
         let kept = turn.open(&mut self.kept)?;
         let Some((stored, size)) = kept.storage.get(read.storage.id).map(|kept| (kept.buffer.clone(), kept.size))
         else {
-            turn.reply(&Bytes::Refused(ReadRefused::Storage))?;
+            turn.reply(&StorageContents::Refused(ReadRefused::Storage))?;
             return Ok(());
         };
 
@@ -752,9 +752,9 @@ impl Handles<Mapped> for Renderer {
             Reading::Bytes { buffer } => {
                 let bytes = ready.then(|| mapped_bytes(&buffer, <[u8]>::to_vec)).flatten();
                 let answer = match bytes.map(|bytes| turn.put(bytes)) {
-                    Some(Ok(bytes)) => Bytes::Read { bytes },
-                    Some(Err(_)) => Bytes::Refused(ReadRefused::Unstored),
-                    None => Bytes::Refused(ReadRefused::Unmapped),
+                    Some(Ok(bytes)) => StorageContents::Read { bytes },
+                    Some(Err(_)) => StorageContents::Refused(ReadRefused::Unstored),
+                    None => StorageContents::Refused(ReadRefused::Unmapped),
                 };
                 for held in owed_by(&mut self.owed.storing, read) {
                     turn.answer(held, &answer)?;
