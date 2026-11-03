@@ -46,13 +46,13 @@ Their size is fixed when they are made, a write lies inside it or is refused and
 
 ```rust
 CreateStorage       { bytes: Bytes }                                    -> Made<StorageId> | Refused
-CreateZeroedStorage { bytes: u32 }                                        -> Made<StorageId> | Refused
-WriteStorage        { storage: StorageId, first: u32, bytes: Bytes }    // no answer
+CreateZeroedStorage { bytes: u64 }                                        -> Made<StorageId> | Refused
+WriteStorage        { storage: StorageId, first: u64, bytes: Bytes }    // no answer
 ```
 
 Storage a compute pass fills is made by its size, every byte zero, as WebGPU makes a buffer: its zeros would otherwise cross as a blob as large as the storage, held against the step's budget for blobs (ADR-0014), and many slots of a streamed world each want storage of tens of megabytes.
 
-- Its bytes are a whole number of words, and at most what the GPU binds as one storage buffer (`max_storage_buffer_binding_size`). Its size is fixed when it is made, a write lies inside it on whole words or is refused and logged, and only its maker writes or releases it.
+- Its bytes are a whole number of words, and at most what the GPU binds as one storage buffer (`max_storage_buffer_binding_size`), the adapter's own. Its size and the byte a write starts from are `u64`, since a GPU may bind more than a `u32` counts. Its size is fixed when it is made, a write lies inside it on whole words or is refused and logged, and only its maker writes or releases it.
 - A program binds it as `BindingKind::Storage { bytes }`: a storage buffer its shader only reads, `var<storage, read>`, which both stages see. A shader that writes it is refused: storage is written on the GPU only by compute (ADR-0026: `Access::Write`).
 - `bytes` is the least the program binds: what the shader reads of the buffer, with an array whose length is the buffer's (`array<T>`, the usual last member) counted as holding one element. That is the fixed part before the array, padded to its alignment, and one element, as WebGPU counts a binding's least size. Storage bound there is at least `bytes`, and the array then holds as many elements as fit in the rest, which the shader reads with `arrayLength`. A field of splats is made at its capacity and drawn for a count of instances, as the shader reads one splat per instance.
 - No more storage buffers are listed than a stage binds (`max_storage_buffers_per_shader_stage`), counted apart from uniform blocks.

@@ -120,7 +120,7 @@ impl Finds for Kept {
         (id == UNIFORMS).then_some(64)
     }
 
-    fn storage(&self, id: StorageId) -> Option<u32> {
+    fn storage(&self, id: StorageId) -> Option<u64> {
         [STORAGE, ARGUMENTS].contains(&id).then_some(256)
     }
 
@@ -379,7 +379,7 @@ fn a_join_reading_storage_a_frame_that_reads_it_writes_is_refused() {
 }
 
 /// [`place`] joining `frame`, drawn as the counts of [`ARGUMENTS`] from the byte `at` hold.
-fn indirect(frame: Frame, at: u32) -> Place {
+fn indirect(frame: Frame, at: u64) -> Place {
     let mut place = place();
     place.instances = Drawn::Indirect { storage: ARGUMENTS, at };
     place.joins[0].frame = frame;
@@ -418,7 +418,7 @@ fn counts_read_from_storage_not_kept_or_past_its_bytes_or_off_a_word_are_refused
     assert_eq!(check(&main(236), &kept), Ok(()));
     assert_eq!(check(&main(240), &kept), Err(PlacementRefused::Arguments { at: 240, bytes: 256 }));
     assert_eq!(check(&main(2), &kept), Err(PlacementRefused::Arguments { at: 2, bytes: 256 }));
-    assert_eq!(check(&main(u32::MAX - 3), &kept), Err(PlacementRefused::Arguments { at: u32::MAX - 3, bytes: 256 }));
+    assert_eq!(check(&main(u64::MAX - 3), &kept), Err(PlacementRefused::Arguments { at: u64::MAX - 3, bytes: 256 }));
     assert_eq!(check(&missing, &kept), Err(PlacementRefused::Storage));
 }
 

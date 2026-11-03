@@ -506,7 +506,7 @@ struct Uniforms {
 /// Storage on the GPU, and its size in bytes.
 struct Storage {
     buffer: wgpu::Buffer,
-    size: u32,
+    size: u64,
 }
 
 impl Actor for Renderer {
@@ -1106,10 +1106,10 @@ impl Handles<CreateZeroedStorage> for Renderer {
 
     fn handle(&mut self, create: CreateZeroedStorage, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         // WebGPU makes a buffer with every byte zero.
-        self.store(turn, u64::from(create.bytes), |gpu| {
+        self.store(turn, create.bytes, |gpu| {
             gpu.device().create_buffer(&wgpu::BufferDescriptor {
                 label: None,
-                size: u64::from(create.bytes),
+                size: create.bytes,
                 usage: STORAGE_USAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             })
@@ -1144,7 +1144,7 @@ impl Handles<WriteStorage> for Renderer {
             }
         };
 
-        turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, u64::from(write.first), &bytes);
+        turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, write.first, &bytes);
 
         Ok(())
     }
@@ -1446,7 +1446,7 @@ impl Kept {
             }
             Drawn::Indirect { storage, at } => {
                 let made = self.storage.get(storage.id).ok_or(PlacementRefused::Storage)?;
-                Drawing::Indirect { buffer: made.buffer.clone(), at: u64::from(at) }
+                Drawing::Indirect { buffer: made.buffer.clone(), at }
             }
         };
         let mut joins = Vec::with_capacity(place.joins.len());
@@ -1536,7 +1536,7 @@ impl Kept {
             Runs::Workgroups(workgroups) => Running::Workgroups(workgroups),
             Runs::Indirect { storage, at } => {
                 let made = self.storage.get(storage.id).ok_or(DispatchRefused::Storage)?;
-                Running::Indirect { buffer: made.buffer.clone(), at: u64::from(at) }
+                Running::Indirect { buffer: made.buffer.clone(), at }
             }
         };
 
@@ -2216,15 +2216,15 @@ fn copy_storage(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
     storage: &wgpu::Buffer,
-    size: u32,
+    size: u64,
 ) -> Reading {
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: u64::from(size),
+        size,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    encoder.copy_buffer_to_buffer(storage, 0, &buffer, 0, u64::from(size));
+    encoder.copy_buffer_to_buffer(storage, 0, &buffer, 0, size);
 
     Reading::Bytes { buffer }
 }
@@ -2374,7 +2374,7 @@ impl Finds for Kept {
         self.uniforms.get(id.id).map(|uniforms| uniforms.size)
     }
 
-    fn storage(&self, id: StorageId) -> Option<u32> {
+    fn storage(&self, id: StorageId) -> Option<u64> {
         self.storage.get(id.id).map(|storage| storage.size)
     }
 

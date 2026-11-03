@@ -99,12 +99,12 @@ ReadStorage { storage: StorageId }  -> Bytes::Read { bytes: Bytes } | Bytes::Ref
 enum Drawn {
     Count(u32),
     Records(InstancesId),
-    Indirect { storage: StorageId, at: u32 },   // five u32 words from the byte `at`
+    Indirect { storage: StorageId, at: u64 },   // five u32 words from the byte `at`
 }
 enum Invocations {
     PerElement(StorageId),
     Workgroups([u32; 3]),
-    Indirect { storage: StorageId, at: u32 },   // three u32 words from the byte `at`
+    Indirect { storage: StorageId, at: u64 },   // three u32 words from the byte `at`
 }
 ```
 
