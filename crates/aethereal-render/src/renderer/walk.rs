@@ -1,9 +1,12 @@
 //! A frame as the renderer walks it at each `Render`: its description, what each pass does, made, with the shape of
 //! each pass that draws and what it reads, and its targets made at the sizes their scales make of its end's.
 
+use super::groups::Groups;
 use super::read_layout;
 use crate::effect::Read;
-use crate::frame::{CreateFrame, DepthUse, Does, Frame, FrameId, Load, PassRefused, Size, Target, TargetSpec};
+use crate::frame::{
+    CreateFrame, DepthUse, Does, Ends, Frame, FrameId, Load, PassRefused, Scale, Size, Target, TargetSpec,
+};
 use crate::pass::PassName;
 use crate::placement::{Fits, Resource};
 use crate::shape::{ColourFormat, Samples, Shape};
@@ -77,7 +80,7 @@ pub(super) enum Step {
 pub(super) struct Effected {
     pub pipeline: wgpu::RenderPipeline,
     pub read: ReadGroup,
-    pub groups: Vec<wgpu::BindGroup>,
+    pub groups: Groups,
     pub into: Target,
     pub load: Load,
 }
@@ -246,6 +249,31 @@ impl Walk {
     /// The size its end was last drawn at.
     pub const fn size(&self) -> Size {
         self.size
+    }
+
+    /// The size it follows its window at, when it ends on a texture that follows `window`: none otherwise.
+    pub fn follows(&self, window: WindowId) -> Option<(Scale, Scale)> {
+        match self.create.ends {
+            Ends::Follows { window: followed, width, height, .. } if followed == window => Some((width, height)),
+            Ends::Follows { .. } | Ends::Window(_) | Ends::Texture { .. } => None,
+        }
+    }
+
+    /// Ends it on `view`, its texture made again at `size`, and fits its targets to it.
+    pub fn refit(&mut self, device: &wgpu::Device, size: Size, view: wgpu::TextureView) {
+        if let End::Texture { view: ended, .. } = &mut self.end {
+            *ended = view;
+        }
+        self.fit(device, size);
+    }
+
+    /// Binds `view` where its effects bound the texture `texture`, made again.
+    pub fn rebind(&mut self, device: &wgpu::Device, texture: u64, view: &wgpu::TextureView) {
+        for step in &mut self.steps {
+            if let Step::Effect { effect, .. } = step {
+                effect.groups.rebind(device, texture, view);
+            }
+        }
     }
 
     /// Makes its targets again when its end is drawn at another size, `size`, so each is the size its scale makes of

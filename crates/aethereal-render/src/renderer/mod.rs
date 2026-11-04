@@ -1,5 +1,6 @@
 //! The renderer: the root that owns the GPU, makes what actors ask it for, and draws each frame (ADR-0021).
 
+mod groups;
 // The tests draw on a device that draws nothing, which only a native build has.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
@@ -42,6 +43,7 @@ use aethereal_actor::{
 };
 use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_window::WindowId;
+use groups::{Binds, Entry, Groups};
 use std::collections::HashMap;
 use std::mem;
 use walk::{End, Making, ReadGroup, Step, Walk};
@@ -506,7 +508,7 @@ struct Joined {
     fits: Fits,
     program: u64,
     pipeline: wgpu::RenderPipeline,
-    groups: Vec<wgpu::BindGroup>,
+    groups: Groups,
     textures: Vec<u64>,
     storage: Vec<u64>,
 }
@@ -520,7 +522,7 @@ struct Dispatching {
     pass: PassName,
     compute: u64,
     pipeline: wgpu::ComputePipeline,
-    groups: Vec<wgpu::BindGroup>,
+    groups: Groups,
     running: Running,
     textures: Vec<u64>,
     storage: Vec<(u64, Access)>,
@@ -1684,43 +1686,39 @@ impl Kept {
         }
     }
 
-    /// A bind group for each of `layouts`, the first of the group `first`, binding what `bindings` names in it.
+    /// A bind group for each of `layouts`, the first of the group `first`, binding what `bindings` names in it, kept
+    /// with what each binds so a texture made again is bound again.
     fn bind_groups(
         &self,
         device: &wgpu::Device,
         layouts: &[wgpu::BindGroupLayout],
         bindings: &[Bind],
         first: u32,
-    ) -> Result<Vec<wgpu::BindGroup>, JoinRefused> {
-        let mut groups = Vec::with_capacity(layouts.len());
-        for (group, layout) in (first..).zip(layouts) {
-            let mut entries = Vec::new();
+    ) -> Result<Groups, JoinRefused> {
+        let mut entries = Vec::with_capacity(bindings.len());
+        for group in (first..).take(layouts.len()) {
             for bind in bindings.iter().filter(|bind| bind.group == group) {
                 let missing = JoinRefused::Missing { group, binding: bind.binding };
-                let resource = match bind.to {
+                let holds = match bind.to {
                     placement::Resource::Uniforms(uniforms) => {
-                        self.uniforms.get(uniforms.id).ok_or(missing)?.buffer.as_entire_binding()
+                        Binds::Buffer(self.uniforms.get(uniforms.id).ok_or(missing)?.buffer.clone())
                     }
                     placement::Resource::Storage(storage) => {
-                        self.storage.get(storage.id).ok_or(missing)?.buffer.as_entire_binding()
+                        Binds::Buffer(self.storage.get(storage.id).ok_or(missing)?.buffer.clone())
                     }
                     placement::Resource::Texture(texture) => {
-                        wgpu::BindingResource::TextureView(&self.textures.get(texture.id).ok_or(missing)?.view)
+                        let view = self.textures.get(texture.id).ok_or(missing)?.view.clone();
+                        Binds::Texture { texture: texture.id, view }
                     }
                     placement::Resource::Sampler(sampling) => {
-                        wgpu::BindingResource::Sampler(self.samplers.get(&sampling).ok_or(missing)?)
+                        Binds::Sampler(self.samplers.get(&sampling).ok_or(missing)?.clone())
                     }
                 };
-                entries.push(wgpu::BindGroupEntry { binding: bind.binding, resource });
+                entries.push(Entry { group, binding: bind.binding, holds });
             }
-            groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout,
-                entries: &entries,
-            }));
         }
 
-        Ok(groups)
+        Ok(Groups::new(device, layouts.to_vec(), first, entries))
     }
 
     /// Records the frame `walk`, joined as `frame`, on `encoder`, a frame that ends on a window drawing into that
@@ -1791,7 +1789,7 @@ impl Kept {
                 Step::Effect { effect, .. } => {
                     recording.set_pipeline(&effect.pipeline);
                     recording.set_bind_group(0, &effect.read.group, &[]);
-                    for (group, bound) in (1..).zip(&effect.groups) {
+                    for (group, bound) in effect.groups.each() {
                         recording.set_bind_group(group, bound, &[]);
                     }
                     recording.draw(0..3, 0..1);
@@ -1878,8 +1876,8 @@ impl Kept {
         Ok((spec.kind, scaled, texture.clone()))
     }
 
-    /// Fits the main frame of `window` to its window, drawn at `size` this `Render`: none is fitted when the renderer
-    /// does not draw to it.
+    /// Fits the main frame of `window` to its window, drawn at `size` this `Render`, and each frame that follows it:
+    /// none is fitted when the renderer does not draw to it.
     fn fit(&mut self, device: &wgpu::Device, window: WindowId, size: Size) {
         let Some(windowed) = self.windows.iter_mut().find(|windowed| windowed.window == window) else {
             return;
@@ -1889,6 +1887,7 @@ impl Kept {
             Main::Made(id) => self.frames.get_mut(id).unwrap_or(&mut windowed.own),
         };
         main.fit(device, size);
+        self.follow(device, window, size);
     }
 
     /// The frames `handed`, each beside its window, in the order of the windows the renderer draws to: a frame handed
@@ -1947,12 +1946,67 @@ impl Kept {
         self.frames.maker(id)
     }
 
+    /// The end of the frame `id`, made for `maker`: a texture of `size` and `format`, kept as an ordinary texture.
+    fn end_of(&mut self, device: &wgpu::Device, id: u64, size: Size, format: TextureFormat, maker: ActorId) -> End {
+        let texture = self.ids.next();
+        let (made, view) = end_texture(device, size, format);
+        let origin = Origin::Frame(id);
+        self.textures.keep(texture, maker, Texture { made, view: view.clone(), format, origin });
+
+        End::Texture { texture, view }
+    }
+
+    /// Fits each frame that follows `window` to it, drawn at `size` this `Render`: one whose size that makes is
+    /// another has its texture made again under its id, its targets made again, and the texture bound again wherever
+    /// it was bound (ADR-0049).
+    fn follow(&mut self, device: &wgpu::Device, window: WindowId, size: Size) {
+        let resized: Vec<(u64, Size)> = self
+            .frames
+            .iter()
+            .filter_map(|(id, walk)| {
+                let (width, height) = walk.follows(window)?;
+                let followed = size.divided(width, height);
+                (followed != walk.size()).then_some((id, followed))
+            })
+            .collect();
+        for (id, size) in resized {
+            let Some(walk) = self.frames.get_mut(id) else {
+                continue;
+            };
+            let Some(texture) = walk.texture() else {
+                continue;
+            };
+            let Some(kept) = self.textures.get_mut(texture) else {
+                continue;
+            };
+            let (made, view) = end_texture(device, size, kept.format);
+            kept.made = made;
+            kept.view = view.clone();
+            walk.refit(device, size, view.clone());
+            self.rebind(device, texture, &view);
+        }
+    }
+
+    /// Binds `view` wherever the texture `texture` was bound: by placements, dispatches, and effects.
+    fn rebind(&mut self, device: &wgpu::Device, texture: u64, view: &wgpu::TextureView) {
+        let joins = self.placements.values_mut().flat_map(|placement| &mut placement.joins);
+        for join in joins {
+            join.groups.rebind(device, texture, view);
+        }
+        for dispatch in self.dispatches.values_mut() {
+            dispatch.groups.rebind(device, texture, view);
+        }
+        for walk in self.frames.values_mut() {
+            walk.rebind(device, texture, view);
+        }
+    }
+
     /// Checks that `by` may make a frame that ends as `ends` says: only the owner of a window's main frame replaces
     /// it.
     fn may_make(&self, ends: Ends, by: ActorId) -> Result<(), FrameRefused> {
         match ends {
             Ends::Window(window) => frame::may_replace(self.owner(window), by),
-            Ends::Texture { .. } => Ok(()),
+            Ends::Texture { .. } | Ends::Follows { .. } => Ok(()),
         }
     }
 
@@ -1965,24 +2019,10 @@ impl Kept {
                 let format = self.windowed(window).ok_or(FrameRefused::Window)?.format;
                 (End::Window(window), format, Size::PIXEL)
             }
-            Ends::Texture { size: Size { width, height }, format } => {
-                let texture = self.ids.next();
-                let made = device.create_texture(&wgpu::TextureDescriptor {
-                    label: None,
-                    size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: format.wgpu(),
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::COPY_SRC,
-                    view_formats: &[],
-                });
-                let view = made.create_view(&wgpu::TextureViewDescriptor::default());
-                let origin = Origin::Frame(id);
-                self.textures.keep(texture, maker, Texture { made, view: view.clone(), format, origin });
-                (End::Texture { texture, view }, format.colour(), Size { width, height })
+            Ends::Texture { size, format } => (self.end_of(device, id, size, format, maker), format.colour(), size),
+            // Made at one pixel and fitted at the first `Render` that draws its window, as a main frame is.
+            Ends::Follows { format, .. } => {
+                (self.end_of(device, id, Size::PIXEL, format, maker), format.colour(), Size::PIXEL)
             }
         };
         let texture = match end {
@@ -2171,7 +2211,7 @@ impl Kept {
                 recording.set_pipeline(&dispatch.pipeline);
                 pipeline = dispatch.compute;
             }
-            for (group, bound) in (0..).zip(&dispatch.groups) {
+            for (group, bound) in dispatch.groups.each() {
                 recording.set_bind_group(group, bound, &[]);
             }
             match &dispatch.running {
@@ -2196,7 +2236,6 @@ impl Kept {
         if reads {
             recording.set_bind_group(0, &read.group, &[]);
         }
-        let first = u32::from(reads);
         let mut pipeline = 0;
         for (_, placement, join) in self.drawn((frame, pass), fits) {
             let count = match &placement.drawing {
@@ -2215,7 +2254,7 @@ impl Kept {
                 recording.set_pipeline(&join.pipeline);
                 pipeline = join.program;
             }
-            for (group, bound) in (first..).zip(&join.groups) {
+            for (group, bound) in join.groups.each() {
                 recording.set_bind_group(group, bound, &[]);
             }
             recording.set_vertex_buffer(0, placement.vertices.slice(..));
@@ -2671,6 +2710,25 @@ impl Holds for Kept {
 /// An effect pass of the renderer's own main frame, which has none.
 const fn effectless(_: Making<'_>) -> Result<walk::Effected, PassRefused> {
     Err(PassRefused::Effect)
+}
+
+/// A texture a frame ends on, `size` and of `format`, to draw into, bind, and copy from, and its view.
+fn end_texture(device: &wgpu::Device, size: Size, format: TextureFormat) -> (wgpu::Texture, wgpu::TextureView) {
+    let made = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: size.width, height: size.height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: format.wgpu(),
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = made.create_view(&wgpu::TextureViewDescriptor::default());
+
+    (made, view)
 }
 
 /// The textures `bindings` binds, by their ids.
