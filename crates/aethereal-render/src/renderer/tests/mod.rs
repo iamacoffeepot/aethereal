@@ -58,7 +58,7 @@ fn kept_for(device: &wgpu::Device, windows: &[WindowId]) -> Kept {
             let Ok(own) = Walk::new(device, CreateFrame::own(*window), ends, Size::PIXEL, effectless) else {
                 panic!("the renderer's own frame is made");
             };
-            Windowed { window: *window, format, own, main: super::Main::Own }
+            Windowed { window: *window, format, own, main: super::Main::Own, last: Last::Undrawn }
         })
         .collect();
 

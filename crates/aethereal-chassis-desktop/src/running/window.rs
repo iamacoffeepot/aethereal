@@ -26,11 +26,7 @@ impl Running {
         let native = &opened.native;
         let pushed = match event {
             WindowEvent::Resized(size) => {
-                opened.surface.resized(size.width, size.height);
-                native.request_redraw();
-                let surface = Surface { width: size.width, height: size.height, scale: native.scale_factor() };
-                opened.feed.push(Event::Resized(surface)).ok();
-                opened.moded();
+                opened.resized(size.width, size.height);
                 return;
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {

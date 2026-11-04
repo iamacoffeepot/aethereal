@@ -27,6 +27,9 @@ pub enum Readable {
     Frame(WindowId),
     /// A texture the renderer keeps, as it is when the ask is handled.
     Texture(TextureId),
+    /// The last frame drawn onto the window, as it was when its pass ended, read when the ask is handled: what a
+    /// held clock's window shows, as no frame is drawn until it is advanced (ADR-0045).
+    Last(WindowId),
 }
 
 /// What the renderer answers [`ReadBack`] with.
@@ -153,6 +156,8 @@ pub enum ReadRefused {
     Unmapped,
     /// The store refused the bytes, as they are more than this worker may put.
     Unstored,
+    /// No frame of the window is kept: none has been drawn onto it, or its surface cannot be copied from.
+    Undrawn,
     /// No frame is the window's main frame, or kept under the id: never made, released, or the window closed.
     Frame,
     /// The frame has no target at the place asked.

@@ -12,7 +12,7 @@ use aethereal_render::Gpu;
 use aethereal_render::mapping::{Mapped, Mapping};
 use aethereal_render::surface::{Fronting, Present, Surfaced, WindowSurface};
 use aethereal_substrate::Feed;
-use aethereal_window::{self as window, Event, Hosting, Logical, Mode, WindowFeed, WindowId};
+use aethereal_window::{self as window, Event, Hosting, Logical, Mode, Surface, WindowFeed, WindowId};
 use core::mem;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -67,6 +67,18 @@ impl Kept {
     /// top left.
     pub(crate) const fn new(native: Arc<Window>, feed: WindowFeed, surface: WindowSurface, mode: Mode) -> Self {
         Self { native, feed, surface, pointer: (0.0, 0.0), visible: Visible::Shown, mode }
+    }
+
+    /// Takes in that the window's inner size is now `width` by `height` of its pixels, as winit said with `Resized` or
+    /// answered a size the program asked for with: configures its surface to it as the next frame is drawn, asks for
+    /// that frame, and pushes the resize onto its feed, then the mode winit shows it in when that changed.
+    pub(crate) fn resized(&mut self, width: u32, height: u32) {
+        self.surface.resized(width, height);
+        self.native.request_redraw();
+        let surface = Surface { width, height, scale: self.native.scale_factor() };
+        // Refused only once the window root has gone, and nothing then hears of it.
+        let _ = self.feed.push(Event::Resized(surface));
+        self.moded();
     }
 
     /// Reads the mode winit shows the window in, and pushes it onto its feed as `Moded` when it differs from the mode

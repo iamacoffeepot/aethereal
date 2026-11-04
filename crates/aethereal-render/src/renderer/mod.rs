@@ -335,12 +335,54 @@ struct Kept {
 }
 
 /// A window the renderer draws to: the window, the format of its surface, the renderer's own main frame of it, `own`,
-/// and which frame is its main frame, `main`.
+/// which frame is its main frame, `main`, and the last frame drawn onto it, kept.
 struct Windowed {
     window: WindowId,
     format: ColourFormat,
     own: Walk,
     main: Main,
+    last: Last,
+}
+
+/// The last frame drawn onto a window, kept so it is read while no frame is drawn, as under a held clock (ADR-0045).
+/// One texture, made at the frame's size and format and copied into each `Render`, made again only when either
+/// changes.
+enum Last {
+    /// None is kept: the window has not been drawn onto, or its surface cannot be copied from.
+    Undrawn,
+    Kept(wgpu::Texture),
+}
+
+impl Last {
+    /// Copies `frame`, just drawn, into the texture kept, made again when it is not of the frame's size and format, on
+    /// `encoder`. A frame that cannot be copied from keeps nothing.
+    fn keep(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, frame: &wgpu::Texture) {
+        let copyable = frame.usage().contains(wgpu::TextureUsages::COPY_SRC);
+        if !copyable {
+            *self = Self::Undrawn;
+            return;
+        }
+        let fits = match self {
+            Self::Kept(kept) => kept.size() == frame.size() && kept.format() == frame.format(),
+            Self::Undrawn => false,
+        };
+        if !fits {
+            *self = Self::Kept(device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: frame.size(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: frame.format(),
+                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            }));
+        }
+        let Self::Kept(kept) = self else {
+            return;
+        };
+        encoder.copy_texture_to_texture(frame.as_image_copy(), kept.as_image_copy(), frame.size());
+    }
 }
 
 impl Windowed {
@@ -355,7 +397,7 @@ impl Windowed {
         let own = Walk::new(device, CreateFrame::own(window), (End::Window(window), format), Size::PIXEL, effectless)
             .map_err(|(pass, why)| FrameRefused::Pass { pass, why })?;
 
-        Ok(Self { window, format, own, main: Main::Own })
+        Ok(Self { window, format, own, main: Main::Own, last: Last::Undrawn })
     }
 }
 
@@ -621,6 +663,7 @@ impl Handles<On<Render>> for Renderer {
         let passes = kept.passes(&views);
         let stamps = (!self.owed.timings.is_empty()).then(|| Stamps::new(&device, passes));
         kept.run_all(&mut encoder, &views, stamps.as_ref());
+        kept.keep_last(&device, &mut encoder, &frames);
         let copied: Vec<_> = frames
             .iter()
             .filter_map(|(window, frame)| {
@@ -685,6 +728,27 @@ impl Handles<ReadBack> for Renderer {
                 // Read when the window's next frame is drawn.
                 let held = turn.hold()?;
                 self.owed.frames.push((window, held));
+                return Ok(());
+            }
+            Readable::Last(window) => {
+                let last = match kept.windowed(window).map(|windowed| &windowed.last) {
+                    None => Err(ReadRefused::Window),
+                    Some(Last::Undrawn) => Err(ReadRefused::Undrawn),
+                    Some(Last::Kept(last)) => Ok(last.clone()),
+                };
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                let reading = match last.and_then(|last| copy_frame(&device, &mut encoder, &last)) {
+                    Ok(reading) => reading,
+                    Err(why) => {
+                        turn.reply(&Pixels::Refused(why))?;
+                        return Ok(());
+                    }
+                };
+                queue.submit([encoder.finish()]);
+                let (read, mapping) = kept.reading(reading);
+                let held = turn.hold()?;
+                self.owed.reading.push((read, held));
+                turn.open(&mut self.mapping)?.push(mapping);
                 return Ok(());
             }
         };
@@ -1763,6 +1827,21 @@ impl Kept {
         match windowed.main {
             Main::Own => &windowed.own,
             Main::Made(id) => self.frames.get(id).unwrap_or(&windowed.own),
+        }
+    }
+
+    /// Keeps each frame of `frames`, just drawn onto its window, as the window's last, on `encoder`.
+    fn keep_last(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        frames: &[(WindowId, wgpu::Texture)],
+    ) {
+        for (window, frame) in frames {
+            let windowed = self.windows.iter_mut().find(|windowed| windowed.window == *window);
+            if let Some(windowed) = windowed {
+                windowed.last.keep(device, encoder, frame);
+            }
         }
     }
 
