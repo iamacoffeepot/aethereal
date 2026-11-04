@@ -20,6 +20,8 @@ pub mod pass;
 pub mod placement;
 pub mod program;
 pub mod readback;
+#[cfg(feature = "tools")]
+mod record;
 mod renderer;
 pub mod shaders;
 pub mod shape;
@@ -32,4 +34,6 @@ pub mod uniforms;
 #[cfg(feature = "tools")]
 pub use capture::{Capture, CaptureTool, Crop};
 pub use gpu::Gpu;
+#[cfg(feature = "tools")]
+pub use record::{Record, RecordTool, RecordToolConfig, Recorded};
 pub use renderer::{Release, Renderer, RendererConfig, Rendering};

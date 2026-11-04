@@ -1,8 +1,8 @@
 //! The renderer's tool, `capture_frame` (ADR-0037, ADR-0043): a window's next frame, cut and shrunk as the agent asks,
 //! answered as an image.
 
-mod encode;
-mod image;
+pub mod encode;
+pub mod image;
 #[cfg(test)]
 mod tests;
 
@@ -45,7 +45,8 @@ pub enum Crop {
 
 impl Crop {
     /// The region of a frame `width` by `height` this cuts.
-    const fn region(self, frame_width: u32, frame_height: u32) -> Region {
+    #[must_use]
+    pub const fn region(self, frame_width: u32, frame_height: u32) -> Region {
         match self {
             Self::Whole => Region::whole(frame_width, frame_height),
             Self::Region { x, y, width, height } => Region { x, y, width, height },
@@ -232,7 +233,7 @@ fn refused(why: &str) -> Called {
 }
 
 /// Whether a frame of `format` is as its window shows it, a byte a channel, which is what an image is written from.
-const fn is_shown(format: TextureFormat) -> bool {
+pub const fn is_shown(format: TextureFormat) -> bool {
     match format {
         TextureFormat::Rgba8 | TextureFormat::Rgba8Srgb => true,
         TextureFormat::R8 | TextureFormat::Rgba16Float => false,
@@ -240,7 +241,7 @@ const fn is_shown(format: TextureFormat) -> bool {
 }
 
 /// What the agent reads of why the renderer did not read the frame back.
-const fn unread(why: ReadRefused) -> &'static str {
+pub const fn unread(why: ReadRefused) -> &'static str {
     match why {
         ReadRefused::Window => "no window of that number is drawn to",
         ReadRefused::Format => "the window's surface is of a format no image is written from",

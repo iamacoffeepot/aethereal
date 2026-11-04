@@ -1,6 +1,8 @@
-//! The window example's ring, in an engine linked to a hub, handing it two tools: `capture_frame`, which shows the
-//! agent what the window draws (ADR-0043), and `actor_logs`, which reads what its actors logged (ADR-0044). It dials the hub once, as it starts, with the token the hub minted for it, and ends
-//! when its link ends, or when its window is closed or Escape is pressed (ADR-0040).
+//! The window example's ring, in an engine linked to a hub, handing it three tools: `capture_frame`, which shows the
+//! agent what the window draws (ADR-0043); `record_clip`, which holds the program's clock through its pacer and writes
+//! each frame of a clip into its saves (ADR-0045); and `actor_logs`, which reads what its actors logged (ADR-0044). It
+//! dials the hub once, as it starts, with the token the hub minted for it, and ends when its link ends, or when its
+//! window is closed or Escape is pressed (ADR-0040). Its saves are written under `--files-save`, `save` unless set.
 //!
 //! With a hub from the headless `link_hub` example running, ask its `mint_token` tool for a token, which answers the
 //! arguments to start this engine with, then run `cargo run --release -p aethereal-chassis-desktop --example
@@ -18,8 +20,10 @@ use aethereal_actor::{Render, Tick};
 use aethereal_chassis_desktop::{Desktop, WindowsSettings};
 use aethereal_chassis_headless::Exit;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
+use aethereal_files::Files;
 use aethereal_link::{Link, LinkSettings};
-use aethereal_render::{CaptureTool, Renderer};
+use aethereal_pace::Pacer;
+use aethereal_render::{CaptureTool, RecordTool, Renderer};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{LogsTool, Toolbox};
@@ -74,10 +78,12 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .with_engine(engine)
         .root::<Windows>()
         .root::<Renderer>()
+        .root::<Pacer>()
         .root::<Scene>()
+        .root::<Files>()
         .root::<Tcp>()
         .root_with::<Link>(link)
-        .root::<Toolbox<(CaptureTool, LogsTool), Link>>()
+        .root::<Toolbox<(CaptureTool, RecordTool, LogsTool), Link>>()
         .flags(|flags| {
             flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE)
         })

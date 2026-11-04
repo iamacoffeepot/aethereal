@@ -247,6 +247,10 @@ impl Running {
         if !running {
             return;
         }
+        // Taken before the clock is read: a program that starts held asked to be as its pacer began, before the first
+        // frame, and a cycle run on the chassis's clock first would put a delta no advance chose into its clock.
+        let now = Time::from_nanos(clock.nanos());
+        let _ = self.clockwork.take(self.headless.engine_mut(), now);
         if !self.clockwork.runs() {
             self.held(event_loop);
             return;
@@ -296,8 +300,9 @@ impl Running {
     }
 
     /// Runs the held cycle the pacer asked for, if any, as a frame: acquires the frame of each window shown at a size,
-    /// says the cycle is due, steps until no actor has anything to run, and presents what the renderer drew. With no
-    /// window shown it runs undrawn, so an advance never waits on a window coming back (ADR-0045).
+    /// says the cycle is due, steps until no actor has anything to run, presents what the renderer drew, and waits for
+    /// the GPU to finish it, so what the cycle read back is mapped before the loop next waits. With no window shown it
+    /// runs undrawn, so an advance never waits on a window coming back (ADR-0045).
     fn held(&mut self, event_loop: &ActiveEventLoop) {
         if !self.clockwork.is_owed() {
             return;
@@ -307,6 +312,7 @@ impl Running {
         self.step_until_idle(event_loop);
         if drawn {
             self.drawing.serve();
+            self.drawing.finish();
         }
     }
 
@@ -334,16 +340,11 @@ impl Running {
         }
     }
 
-    /// What the loop does next while the pacer holds the clock: asks for a frame for a held cycle the pacer asked for,
-    /// or runs it at once when no window is shown, and waits on the windows' events and the pacer's next push.
+    /// What the loop does next while the pacer holds the clock: runs a held cycle the pacer asked for at once, and
+    /// waits on the windows' events and the pacer's next push. It asks for no redraw: a compositor sends a covered
+    /// window none, as Wayland's do, so a held cycle that waited on one would wait until the window was uncovered.
     fn owed(&mut self, event_loop: &ActiveEventLoop) -> Next {
-        if self.drawing.draws() {
-            if self.clockwork.is_owed() {
-                self.drawing.ask_next();
-            }
-        } else {
-            self.held(event_loop);
-        }
+        self.held(event_loop);
 
         Next::Wait
     }
