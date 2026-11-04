@@ -248,7 +248,12 @@ pub const fn unread(why: ReadRefused) -> &'static str {
         ReadRefused::Uncopied => "the window's surface cannot be copied from",
         ReadRefused::Unmapped => "the GPU did not hand the frame back",
         ReadRefused::Unstored => "the frame is larger than the engine may hold",
-        ReadRefused::Texture | ReadRefused::Storage => "the renderer read back something other than a frame",
+        ReadRefused::Texture
+        | ReadRefused::Storage
+        | ReadRefused::Frame
+        | ReadRefused::Target
+        | ReadRefused::Multisampled
+        | ReadRefused::Outside => "the renderer read back something other than a frame",
     }
 }
 

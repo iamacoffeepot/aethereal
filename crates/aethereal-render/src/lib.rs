@@ -27,6 +27,8 @@ pub mod shaders;
 pub mod shape;
 pub mod storage;
 pub mod surface;
+#[cfg(feature = "tools")]
+mod target;
 pub mod texture;
 pub mod timing;
 pub mod uniforms;
@@ -37,3 +39,5 @@ pub use gpu::Gpu;
 #[cfg(feature = "tools")]
 pub use record::{Record, RecordTool, RecordToolConfig, Recorded};
 pub use renderer::{Release, Renderer, RendererConfig, Rendering};
+#[cfg(feature = "tools")]
+pub use target::{Pixel, ReadTarget, TargetRead, TargetTool, TargetToolConfig, Values};

@@ -12,7 +12,7 @@ use crate::draw_list::{DrawList, EntryRefused, ListRefused, Listing, Lists, Plac
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
 use crate::frame::{
     self, CreateFrame, DepthUse, Does, EffectReads, Ends, Frame, FrameId, FrameRefused, Framed, Holds, Load,
-    PassRefused, ShapeOf, Shaped, Size, Target,
+    PassRefused, ShapeOf, Shaped, Size, Target, TargetKind,
 };
 use crate::instances::{self, CreateInstances, Instanced, InstancesId, WriteInstances};
 use crate::made::{Ids, Made, Makers, Owned};
@@ -26,8 +26,11 @@ use crate::placement::{
 use crate::program::{
     self, Access, Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, PerInstance, ProgramId, Programmed,
 };
-use crate::readback::{self, Copied, Order, Pixels, ReadBack, ReadRefused, ReadStorage, Readable, StorageContents};
-use crate::shape::{ColourFormat, DepthFormat, Shape};
+use crate::readback::{
+    self, Copied, Order, Pixels, ReadBack, ReadFrameTarget, ReadRefused, ReadStorage, Readable, Region,
+    StorageContents, TargetPixels,
+};
+use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
 use crate::storage::{self, CreateStorage, CreateZeroedStorage, StorageId, Stored, WriteStorage};
 use crate::surface::{Front, Present, Surfaced, WindowFormat};
 use crate::texture::{self, CreateTexture, TextureFormat, TextureId, Textured};
@@ -68,6 +71,7 @@ struct Owed {
     frames: Vec<(WindowId, Held<Pixels>)>,
     timings: Vec<Held<Timed>>,
     reading: Vec<(u64, Held<Pixels>)>,
+    targets: Vec<(u64, Held<TargetPixels>)>,
     storing: Vec<(u64, Held<StorageContents>)>,
     timing: Vec<(u64, Held<Timed>)>,
 }
@@ -133,6 +137,10 @@ impl Carries<CreateFrame> for Renderer {
 
 impl Carries<ReadBack> for Renderer {
     type Answers = (Pixels,);
+}
+
+impl Carries<ReadFrameTarget> for Renderer {
+    type Answers = (TargetPixels,);
 }
 
 impl Carries<ReadStorage> for Renderer {
@@ -270,6 +278,10 @@ impl Carries<ReadBack> for Rendering {
     type Answers = (Pixels,);
 }
 
+impl Carries<ReadFrameTarget> for Rendering {
+    type Answers = (TargetPixels,);
+}
+
 impl Carries<ReadStorage> for Rendering {
     type Answers = (StorageContents,);
 }
@@ -385,6 +397,8 @@ enum Origin {
 enum Reading {
     /// Pixels, copied so, of `format`, their channels in `order`.
     Pixels { buffer: wgpu::Buffer, copied: Copied, format: TextureFormat, order: Order },
+    /// A region of a frame's target, laid out as `kind` holds it, lying `within` what was copied so.
+    Target { buffer: wgpu::Buffer, copied: Copied, within: Region, region: Region, kind: TargetKind },
     /// Storage's bytes, copied whole.
     Bytes { buffer: wgpu::Buffer },
     /// A pass's timestamps, each tick `period` nanoseconds.
@@ -533,6 +547,7 @@ impl Actor for Renderer {
         CreateFrame,
         Release,
         ReadBack,
+        ReadFrameTarget,
         ReadStorage,
         TimeFrame,
         Mapped,
@@ -566,6 +581,7 @@ impl Actor for Renderer {
             frames: Vec::new(),
             timings: Vec::new(),
             reading: Vec::new(),
+            targets: Vec::new(),
             storing: Vec::new(),
             timing: Vec::new(),
         };
@@ -689,6 +705,37 @@ impl Handles<ReadBack> for Renderer {
     }
 }
 
+/// Copies the region asked of the frame's target now, as the last `Render` left it, and answers it once the chassis has
+/// mapped the copy (ADR-0048).
+impl Handles<ReadFrameTarget> for Renderer {
+    type Sends = (ToSender<TargetPixels>,);
+
+    fn handle(&mut self, read: ReadFrameTarget, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let gpu = turn.open(&mut self.gpu)?;
+        let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
+        let kept = turn.open(&mut self.kept)?;
+        let ReadFrameTarget { frame, target, region } = read;
+        let refused = kept.copyable(frame, target, region);
+        let (kind, region, texture) = match refused {
+            Ok(copied) => copied,
+            Err(why) => {
+                turn.reply(&TargetPixels::Refused(why))?;
+                return Ok(());
+            }
+        };
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let reading = copy_region(&device, &mut encoder, &texture, region, kind);
+        queue.submit([encoder.finish()]);
+        let (read, mapping) = kept.reading(reading);
+        let held = turn.hold()?;
+        self.owed.targets.push((read, held));
+        turn.open(&mut self.mapping)?.push(mapping);
+
+        Ok(())
+    }
+}
+
 impl Handles<ReadStorage> for Renderer {
     type Sends = (ToSender<StorageContents>,);
 
@@ -761,6 +808,17 @@ impl Handles<Mapped> for Renderer {
                     None => Pixels::Refused(ReadRefused::Unmapped),
                 };
                 for held in owed_by(&mut self.owed.reading, read) {
+                    turn.answer(held, &answer)?;
+                }
+            }
+            Reading::Target { buffer, copied, within, region, kind } => {
+                let pixels = ready.then(|| mapped_bytes(&buffer, |bytes| copied.cut(bytes, within))).flatten();
+                let answer = match pixels.map(|pixels| turn.put(pixels)) {
+                    Some(Ok(pixels)) => TargetPixels::Read { region, kind, pixels },
+                    Some(Err(_)) => TargetPixels::Refused(ReadRefused::Unstored),
+                    None => TargetPixels::Refused(ReadRefused::Unmapped),
+                };
+                for held in owed_by(&mut self.owed.targets, read) {
                     turn.answer(held, &answer)?;
                 }
             }
@@ -1713,6 +1771,34 @@ impl Kept {
         self.windowed(window).map(|windowed| self.main_of(windowed))
     }
 
+    /// The frame `frame` names: a window's main frame, or one kept under its id. None when there is none.
+    fn walk(&self, frame: Frame) -> Option<&Walk> {
+        match frame {
+            Frame::Main(window) => self.main(window),
+            Frame::Texture(id) => self.frames.get(id.id),
+        }
+    }
+
+    /// What the copy of `region`, in the end's pixels, of the target at `target` of `frame` reads: the target's kind,
+    /// the region in its pixels, and its texture. Refused when there is no such frame or target, when the target holds
+    /// four samples of depth, and when none of the region is within the end.
+    fn copyable(
+        &self,
+        frame: Frame,
+        target: u32,
+        region: Region,
+    ) -> Result<(TargetKind, Region, wgpu::Texture), ReadRefused> {
+        let walk = self.walk(frame).ok_or(ReadRefused::Frame)?;
+        let (spec, texture) = walk.copied(target).ok_or(ReadRefused::Target)?;
+        let is_multisampled = spec.samples == Samples::Four && spec.kind == TargetKind::Depth;
+        if is_multisampled {
+            return Err(ReadRefused::Multisampled);
+        }
+        let scaled = region.scaled(walk.size(), spec.scale).ok_or(ReadRefused::Outside)?;
+
+        Ok((spec.kind, scaled, texture.clone()))
+    }
+
     /// Fits the main frame of `window` to its window, drawn at `size` this `Render`: none is fitted when the renderer
     /// does not draw to it.
     fn fit(&mut self, device: &wgpu::Device, window: WindowId, size: Size) {
@@ -2162,7 +2248,10 @@ impl Reading {
     /// The buffer the GPU copies into, which the chassis maps.
     const fn buffer(&self) -> &wgpu::Buffer {
         match self {
-            Self::Pixels { buffer, .. } | Self::Bytes { buffer } | Self::Stamps { buffer, .. } => buffer,
+            Self::Pixels { buffer, .. }
+            | Self::Target { buffer, .. }
+            | Self::Bytes { buffer }
+            | Self::Stamps { buffer, .. } => buffer,
         }
     }
 }
@@ -2209,6 +2298,48 @@ fn copy_texture(
     );
 
     Reading::Pixels { buffer, copied, format, order }
+}
+
+/// The copy of `region` of `texture`, a frame's target holding what `kind` says, into a buffer the chassis can map,
+/// recorded on `encoder`, with where the region lies in what was copied. WebGPU copies only the whole of a depth
+/// texture, so of depth the whole is copied, its depth alone, and the region cut from it once mapped; of any other,
+/// the region alone.
+fn copy_region(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+    region: Region,
+    kind: TargetKind,
+) -> Reading {
+    let (copy, within) = match kind {
+        TargetKind::Depth => {
+            let whole = Region { x: 0, y: 0, width: texture.width(), height: texture.height() };
+            (whole, region)
+        }
+        TargetKind::Float | TargetKind::Uint => (region, Region { x: 0, y: 0, ..region }),
+    };
+    let copied = Copied::new(copy.width, copy.height, readback::target_bytes(kind));
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: copied.bytes(),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let layout =
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(copied.row), rows_per_image: Some(copied.height) };
+    let aspect = match kind {
+        TargetKind::Depth => wgpu::TextureAspect::DepthOnly,
+        TargetKind::Float | TargetKind::Uint => wgpu::TextureAspect::All,
+    };
+    let origin = wgpu::Origin3d { x: copy.x, y: copy.y, z: 0 };
+    let size = wgpu::Extent3d { width: copy.width, height: copy.height, depth_or_array_layers: 1 };
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin, aspect },
+        wgpu::TexelCopyBufferInfo { buffer: &buffer, layout },
+        size,
+    );
+
+    Reading::Target { buffer, copied, within, region, kind }
 }
 
 /// The copy of `storage`, of `size` bytes, into a buffer the chassis can map, recorded on `encoder`.

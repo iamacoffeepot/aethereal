@@ -234,6 +234,20 @@ impl Walk {
         &self.targets[at as usize]
     }
 
+    /// The target at `at`, as asked of it from outside: how it was asked for, and what a copy reads, the one texture
+    /// or the samples resolved. None when it has no target at `at`.
+    pub fn copied(&self, at: u32) -> Option<(TargetSpec, &wgpu::Texture)> {
+        let spec = self.create.targets.get(at as usize)?;
+        let image = self.targets.get(at as usize)?;
+
+        Some((*spec, image.read().texture()))
+    }
+
+    /// The size its end was last drawn at.
+    pub const fn size(&self) -> Size {
+        self.size
+    }
+
     /// Makes its targets again when its end is drawn at another size, `size`, so each is the size its scale makes of
     /// it, both textures of one of four samples, and the bind groups its passes read them through.
     pub fn fit(&mut self, device: &wgpu::Device, size: Size) {
@@ -278,9 +292,9 @@ fn read_group(
     device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout, entries: &entries })
 }
 
-/// Each of `targets`, made at the size its scale makes of the end's, `end`, to draw into and read: one of floats of
-/// four samples as the four and the one they are resolved into, and one of depth of four as the four alone, as it is
-/// never read.
+/// Each of `targets`, made at the size its scale makes of the end's, `end`, to draw into, read, and copy from: one of
+/// floats of four samples as the four and the one they are resolved into, and one of depth of four as the four alone,
+/// as it is never read or copied (ADR-0048).
 fn made(device: &wgpu::Device, targets: &[TargetSpec], end: Size) -> Vec<Image> {
     targets
         .iter()
@@ -301,7 +315,9 @@ fn made(device: &wgpu::Device, targets: &[TargetSpec], end: Size) -> Vec<Image> 
                     })
                     .create_view(&wgpu::TextureViewDescriptor::default())
             };
-            let read = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+            let read = wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC;
             let drawn = wgpu::TextureUsages::RENDER_ATTACHMENT;
             let four = Samples::Four.count();
             match (target.colour(), target.samples) {

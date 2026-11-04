@@ -126,13 +126,23 @@ impl Drawing {
         for opened in &mut self.windows {
             opened.surface.present(&asked);
         }
-        for mapping in self.requests.take() {
+        self.map();
+    }
+
+    /// Starts mapping each buffer the renderer asked for since the last frame, or since this was last called, and
+    /// answers whether any was asked for.
+    pub(crate) fn map(&mut self) -> bool {
+        let requests = self.requests.take();
+        let asked = !requests.is_empty();
+        for mapping in requests {
             let mappings = self.mappings.clone();
             mapping.start(move |mapped| {
                 // Refused only once the renderer has gone, and nothing is then owed what it read.
                 let _ = mappings.push(mapped);
             });
         }
+
+        asked
     }
 
     /// Asks for the next frame of the first window drawn, which paces them all: one frame draws every window drawn,
