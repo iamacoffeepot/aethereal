@@ -171,9 +171,23 @@ where
     Ok(Offer { tools: T::sheets(), worker: T::worker(me) })
 }
 
+/// A tool is a list of itself.
+impl<T: Tool> ToolList for T {
+    fn sheets() -> Vec<ToolSheet> {
+        T::sheets()
+    }
+
+    fn stand_up<L: ToolList, R: Holder, S>(turn: &mut Beginning<'_, Toolbox<L, R>, S>) -> Result<Vec<Offer>, Fault>
+    where
+        <R as Handles<Withdraw>>::Sends: RepliesTo<Toolbox<L, R>>,
+    {
+        Ok(vec![stood_up::<T, L, R, S>(turn)?])
+    }
+}
+
 macro_rules! tools {
     ($( ($($name:ident)*) )*) => {$(
-        impl<$($name: Tool),*> ToolList for ($($name,)*) {
+        impl<$($name: ToolList),*> ToolList for ($($name,)*) {
             fn sheets() -> Vec<ToolSheet> {
                 let sheets: Vec<Vec<ToolSheet>> = vec![$($name::sheets()),*];
 
@@ -185,7 +199,9 @@ macro_rules! tools {
             where
                 <R as Handles<Withdraw>>::Sends: RepliesTo<Toolbox<L, R>>,
             {
-                Ok(vec![$(stood_up::<$name, L, R, S>(turn)?),*])
+                let offers: Vec<Vec<Offer>> = vec![$($name::stand_up(turn)?),*];
+
+                Ok(offers.into_iter().flatten().collect())
             }
         }
     )*};

@@ -12,7 +12,8 @@ pub trait Tool: Actor<Key = (), Config: Default> + ChildOf<Parent = Anywhere> {
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling>;
 }
 
-/// The tools of a [`Toolbox`]: a tuple of [`Tool`]s.
+/// The tools of a [`Toolbox`]: a [`Tool`], or a tuple of up to eight lists, so a list longer than eight is written as
+/// groups, `((A, B, C), (D, E))`, nested as deep as it needs.
 pub trait ToolList: Send + 'static {
     /// Every tool's sheets, in the order listed.
     fn sheets() -> Vec<ToolSheet>;
