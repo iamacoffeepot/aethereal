@@ -970,6 +970,30 @@ fn a_name_listed_twice_stops_the_program_as_it_starts() {
 }
 
 #[test]
+fn a_list_in_groups_stands_up_the_tools_of_each() -> Result<(), Unheard> {
+    // Catches a group's tools left unspawned or unoffered, which leaves a list past eight short with nothing said.
+    let mut harness = Harness::of(program().root::<Toolbox<((Say1,), ((Other,),)), Mcp>>())?;
+    let port = port_of(&mut harness)?;
+    for _ in 0..16 {
+        harness.step();
+    }
+
+    let read = answered(&mut harness, port, &Post::of(Rpc::List));
+    assert!(read.body.contains("\"name\":\"say\""), "{read:?}");
+    assert!(read.body.contains("\"name\":\"other\""), "{read:?}");
+
+    Ok(())
+}
+
+#[test]
+fn a_name_listed_in_two_groups_stops_the_program_as_it_starts() {
+    // Catches names compared within a group but not across groups.
+    let started = Harness::of(program().root::<Toolbox<((Say1,), (Say2,)), Mcp>>());
+
+    assert!(matches!(started, Err(Unheard::Program(_))));
+}
+
+#[test]
 fn a_tool_that_reaches_what_the_program_lacks_stops_it_as_it_starts() {
     // Catches a refused spawn passed over, which leaves a tool missing with nothing said.
     let started = Harness::of(program().root::<Toolbox<(Reaching,), Mcp>>());
