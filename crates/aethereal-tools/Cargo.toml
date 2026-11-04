@@ -11,5 +11,8 @@ aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data", features = ["json"] }
 aethereal-substrate = { path = "../aethereal-substrate" }
 
+[dev-dependencies]
+aethereal-substrate = { path = "../aethereal-substrate", features = ["harness"] }
+
 [lints]
 workspace = true

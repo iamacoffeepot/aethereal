@@ -4,8 +4,8 @@ use super::*;
 use crate::records::Staging;
 use crate::{
     Anywhere, Beginning, Carries, ChildOf, Claim, Claimed, Ended, Ending, Fault, Hosted, How, Item, Keeping, Kept,
-    Mail, MailId, NotHeld, On, Payload, Protocol, Resource, Role, Subscribers, Tick, ToAny, ToType, Unspawned, child,
-    parent,
+    Mail, MailId, NotHeld, On, Payload, Protocol, Resource, Role, Subscribers, Tick, ToAny, ToType, Top, Unspawned,
+    child, parent, path,
 };
 use aethereal_data::{Bound, Budget, Fnv, KeyName, Plain};
 use alloc::string::ToString;
@@ -629,6 +629,52 @@ fn a_reference_casts_to_a_protocol_only_when_its_type_lists_every_kind() {
     assert_eq!(cast, Some(converted.narrow()));
     assert_eq!(turn.cast::<(Poke, ToldToFail)>(held), None);
     assert_eq!(turn.cast::<(Poke,)>(ErasedActorRef::new(seated(8, 4))), None);
+}
+
+/// A root keyed by a number, as a typed path names one.
+#[derive(Plain)]
+#[kind(name = "aether.test.crown")]
+struct Crown;
+
+/// What a crown is made from: nothing.
+#[derive(Plain)]
+#[kind(name = "aether.test.crown_config")]
+struct CrownConfig;
+
+impl ChildOf for Crown {
+    type Parent = Top;
+}
+
+impl Actor for Crown {
+    type Config = CrownConfig;
+    type Key = u64;
+    type Handles = ();
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: CrownConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_typed_path_is_found_only_where_an_actor_of_its_type_stands() {
+    // Catches a lookup that proves whatever type stands at the path as the path's, and one that answers for a path
+    // nothing live stands at.
+    let crown = path::<Crown>(1);
+    let other = path::<Crown>(2);
+    let leaf = seated(7, 3);
+    let table = Listed(vec![(ME, crown.names().clone()), (leaf, other.names().clone())]);
+    let mut asked = Asked::new();
+    let turn = opened::<Crown, ()>(ME, crown.names(), Above::Chassis, &table, &mut asked, ME);
+
+    assert_eq!(turn.found(&crown), Some(ActorRef::new(ME)));
+    assert_eq!(turn.found(&other), None);
+    assert_eq!(turn.found(&path::<Crown>(3)), None);
 }
 
 #[test]

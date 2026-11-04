@@ -13,6 +13,7 @@ mod table;
 mod tool;
 mod toolbox;
 mod tooling;
+mod tuning;
 
 pub use holder::Holder;
 pub use logs::{ActorLog, LogEntry, LogLevel, LoggedEntry, LogsTool, LogsToolConfig, ReadLog};
@@ -20,3 +21,7 @@ pub use table::{HeldOutput, HeldTool, Table};
 pub use tool::{Tool, ToolList};
 pub use toolbox::{Offering, Toolbox, ToolboxConfig, Unlisted};
 pub use tooling::{Call, Called, Done, Offer, Offered, Output, ToolSheet, Tooling, Withdraw};
+pub use tuning::{
+    About, ActorTuning, ListTuning, Listed, Reading, Setting, TunableList, TuneFields, TuningList, TuningTool,
+    TuningToolConfig,
+};

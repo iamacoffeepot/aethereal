@@ -50,6 +50,8 @@ mod stage;
 mod stream;
 mod subscribers;
 mod time;
+#[cfg(feature = "std")]
+pub mod tuning;
 mod turn;
 mod written;
 
@@ -112,6 +114,8 @@ pub use stream::{
 };
 pub use subscribers::Subscribers;
 pub use time::Time;
+#[cfg(feature = "std")]
+pub use tuning::{ReadTuning, Tunable, Tune, Tuned, Tunes, Tuning};
 pub use turn::{
     Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseStage, FalseWatch, Forged,
     Garbled, Hosted, Leaves, Lives, Logger, Mailing, Refused, Request, Stood, Toward, Trapped, Turn, Turning,

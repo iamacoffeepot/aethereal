@@ -1,6 +1,7 @@
-//! The window example's ring, in an engine linked to a hub, handing it three tools: `capture_frame`, which shows the
-//! agent what the window draws (ADR-0043); `record_clip`, which holds the program's clock through its pacer and writes
-//! each frame of a clip into its saves (ADR-0045); and `actor_logs`, which reads what its actors logged (ADR-0044). It
+//! The window example's ring, in an engine linked to a hub, handing it its tools, among them: `capture_frame`, which
+//! shows the agent what the window draws (ADR-0043); `record_clip`, which holds the program's clock through its pacer
+//! and writes each frame of a clip into its saves (ADR-0045); `actor_logs`, which reads what its actors logged
+//! (ADR-0044); and `list_tuning` and `tune`, which read and set the ring's tuning while it turns (ADR-0050). It
 //! dials the hub once, as it starts, with the token the hub minted for it, and ends when its link ends, or when its
 //! window is closed or Escape is pressed (ADR-0040). Its saves are written under `--files-save`, `save` unless set.
 //!
@@ -26,7 +27,7 @@ use aethereal_pace::{PaceTool, Pacer};
 use aethereal_render::{CaptureTool, RecordTool, Renderer, TargetTool};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
-use aethereal_tools::{LogsTool, Toolbox};
+use aethereal_tools::{LogsTool, Toolbox, TuningTool};
 use aethereal_window::{InputTool, WindowTool, Windows};
 use core::error::Error;
 use core::num::{NonZeroU32, NonZeroUsize};
@@ -83,7 +84,10 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root::<Files>()
         .root::<Tcp>()
         .root_with::<Link>(link)
-        .root::<Toolbox<(CaptureTool, RecordTool, TargetTool, LogsTool, InputTool, WindowTool, PaceTool), Link>>()
+        .root::<Toolbox<
+            (CaptureTool, RecordTool, TargetTool, LogsTool, InputTool, WindowTool, PaceTool, TuningTool<(Scene,)>),
+            Link,
+        >>()
         .flags(|flags| {
             flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE)
         })

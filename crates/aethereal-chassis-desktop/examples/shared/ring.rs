@@ -1,12 +1,12 @@
 //! The scene of the window examples: a ring of triangles on the first window, turning, following the pointer, and
 //! turning the other way while a key is held, which prints what its window hears and times the frames it was handed.
 //! With `--views two` the window shows two views of the one ring side by side, the right one drawn with a look of its
-//! own, its triangles smaller: each
-//! view a frame that follows half the window, and the window's main frame laying them out (ADR-0049).
+//! own, its triangles smaller: each view a frame that follows half the window, and the window's main frame laying them
+//! out (ADR-0049). Its turn and its triangles' sizes are tuned while it runs (ADR-0050).
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Start, Tells, Tick,
-    Top, Turn, path,
+    Actor, ActorRef, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, ProtocolRef,
+    ReadTuning, Start, Tells, Tick, ToSender, Top, Tunable, Tune, Tuned, Tunes, Tuning, Turn, path, tuning,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
@@ -31,9 +31,6 @@ use core::f32::consts::TAU;
 /// The triangles in the ring.
 const RING: u8 = 48;
 
-/// How long one turn of the ring takes, in milliseconds.
-const TURN_MILLIS: u64 = 4_000;
-
 /// A program that places each corner of a triangle, drawn at the uniform scale about the uniform middle, at its
 /// instance's place, and shades it its instance's colour.
 const SHADE: &str = "
@@ -54,9 +51,6 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
     return between.colour;
 }
 ";
-
-/// The scale the right view draws the ring's triangles at, its own look of the one ring.
-const FAR: f32 = 0.6;
 
 /// An effect that lays two views side by side over the window, the left over its left half and the right over its
 /// right, with a thin line between them.
@@ -81,6 +75,25 @@ fn lay(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 pub struct Lay;
 
 impl Pass for Lay {}
+
+/// What the ring is tuned by while it turns (ADR-0050).
+#[derive(Plain, Debug, Clone, Copy, PartialEq)]
+#[kind(name = "aether.example.ring_tuning")]
+#[settings]
+pub struct RingTuning {
+    /// How long one turn of the ring takes, in milliseconds: from 100 to 600000.
+    turn_millis: u64,
+    /// The scale the triangles are drawn at in the window's one view, or the left of two: above 0, at most 4.
+    near: f32,
+    /// The scale the triangles are drawn at in the right of two views, with `--views two`: above 0, at most 4.
+    far: f32,
+}
+
+impl Default for RingTuning {
+    fn default() -> Self {
+        Self { turn_millis: 4_000, near: 1.0, far: 0.6 }
+    }
+}
 
 /// How long the scene runs: its section, `scene`.
 #[derive(Plain, Default)]
@@ -177,6 +190,8 @@ pub struct Scene {
     held: u32,
     /// How far the ring has turned, in milliseconds of turning.
     turned_millis: u64,
+    /// What the ring is tuned by.
+    tuning: RingTuning,
     /// The nanoseconds between each `Tick` and the last.
     intervals: Vec<u64>,
 }
@@ -274,6 +289,8 @@ impl Actor for Scene {
         On<Start>,
         On<Tick>,
         Event,
+        ReadTuning,
+        Tune,
         Answer<Shaped, Shaping>,
         Answer<Effected, Nothing>,
         Answer<Framed, Framing>,
@@ -303,6 +320,7 @@ impl Actor for Scene {
             middle_y: 0.0,
             held: 0,
             turned_millis: 0,
+            tuning: RingTuning::default(),
             intervals: Vec::new(),
         })
     }
@@ -317,10 +335,13 @@ fn bytes(values: impl IntoIterator<Item = u32>) -> Vec<u8> {
     values.into_iter().flat_map(u32::to_ne_bytes).collect()
 }
 
-/// The ring turned `turned_millis`: each triangle's record, a place of two floats and a colour of four bytes, about
-/// the middle, once round in [`TURN_MILLIS`].
-fn ring(turned_millis: u64) -> Vec<u8> {
-    let turned = f32::from(u16::try_from(turned_millis % TURN_MILLIS).unwrap_or(0)) / 4_000.0 * TAU;
+/// The ring turned `turned_millis` of a turn `turn_millis` long: each triangle's record, a place of two floats and a
+/// colour of four bytes, about the middle.
+fn ring(turned_millis: u64, turn_millis: u64) -> Vec<u8> {
+    // A turn is at most ten minutes of milliseconds, which an f64 holds exactly, and a fraction of a turn an f32 holds
+    // closely enough to draw.
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    let turned = ((turned_millis % turn_millis) as f64 / turn_millis as f64) as f32 * TAU;
     (0..RING)
         .flat_map(|at| {
             let angle = (f32::from(at) / f32::from(RING)).mul_add(TAU, turned);
@@ -611,7 +632,7 @@ impl Handles<Answer<Programmed, MadeMesh>> for Scene {
             turn.log(Level::Error, format_args!("the program was not made: {answered:?}"));
             return Ok(());
         };
-        let Ok(records) = turn.put(ring(0)) else {
+        let Ok(records) = turn.put(ring(0, self.tuning.turn_millis)) else {
             turn.log(Level::Error, "the instances were not asked for: their records were not put");
             return Ok(());
         };
@@ -634,7 +655,7 @@ impl Handles<Answer<Instanced, MadeProgram>> for Scene {
             turn.log(Level::Error, format_args!("the instances were not made: {answered:?}"));
             return Ok(());
         };
-        let Ok(bytes) = turn.put(self.look(1.0)) else {
+        let Ok(bytes) = turn.put(self.look(self.tuning.near)) else {
             turn.log(Level::Error, "the uniforms were not asked for: their bytes were not put");
             return Ok(());
         };
@@ -663,7 +684,7 @@ impl Handles<Answer<Uniformed, Looking>> for Scene {
                 (mesh, instances, joins, Looks::One(uniforms))
             }
             (Looking::First { mesh, program, instances }, Onto::Views { .. }) => {
-                let Ok(bytes) = turn.put(self.look(FAR)) else {
+                let Ok(bytes) = turn.put(self.look(self.tuning.far)) else {
                     turn.log(Level::Error, "the far view's look was not asked for: its bytes were not put");
                     return Ok(());
                 };
@@ -729,22 +750,23 @@ impl Handles<On<Tick>> for Scene {
         }
 
         let step_millis = tick.delta_nanos / 1_000_000;
+        let turn_millis = self.tuning.turn_millis;
         self.turned_millis = if self.held > 0 {
-            self.turned_millis.wrapping_add(TURN_MILLIS).saturating_sub(step_millis) % TURN_MILLIS
+            self.turned_millis.wrapping_add(turn_millis).saturating_sub(step_millis) % turn_millis
         } else {
-            self.turned_millis.wrapping_add(step_millis) % TURN_MILLIS
+            self.turned_millis.wrapping_add(step_millis) % turn_millis
         };
         let Ring::Drawing { instances, looks } = self.ring else {
             return Ok(());
         };
-        let Ok(records) = turn.put(ring(self.turned_millis)) else {
+        let Ok(records) = turn.put(ring(self.turned_millis, turn_millis)) else {
             turn.log(Level::Warn, "a frame was not written: its bytes were not put");
             return Ok(());
         };
         turn.to(path::<Renderer>(())).send(&WriteInstances { instances, first: 0, records })?;
         let written = match looks {
-            Looks::One(uniforms) => vec![(uniforms, 1.0)],
-            Looks::Two { near, far } => vec![(near, 1.0), (far, FAR)],
+            Looks::One(uniforms) => vec![(uniforms, self.tuning.near)],
+            Looks::Two { near, far } => vec![(near, self.tuning.near), (far, self.tuning.far)],
         };
         for (uniforms, scale) in written {
             let Ok(bytes) = turn.put(self.look(scale)) else {
@@ -755,5 +777,48 @@ impl Handles<On<Tick>> for Scene {
         }
 
         Ok(())
+    }
+}
+
+/// The ring is tuned by its turn and its triangles' sizes, each held to what it can draw.
+impl Tunable for Scene {
+    type Tuning = RingTuning;
+
+    fn tuning(&self) -> RingTuning {
+        self.tuning
+    }
+
+    fn tune(&mut self, tuning: RingTuning) -> Result<(), String> {
+        let turns = (100..=600_000).contains(&tuning.turn_millis);
+        let sized = |scale: f32| scale > 0.0 && scale <= 4.0;
+        let fits = sized(tuning.near) && sized(tuning.far);
+        match (turns, fits) {
+            (false, _) => Err(String::from("`turn_millis` is from 100 to 600000")),
+            (_, false) => Err(String::from("`near` and `far` are above 0 and at most 4")),
+            (true, true) => {
+                self.tuning = tuning;
+                Ok(())
+            }
+        }
+    }
+
+    fn tunes(me: ActorRef<Self>) -> ProtocolRef<Tunes> {
+        me.protocol()
+    }
+}
+
+impl Handles<ReadTuning> for Scene {
+    type Sends = (ToSender<Tuning>,);
+
+    fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        tuning::read(self, turn)
+    }
+}
+
+impl Handles<Tune> for Scene {
+    type Sends = (ToSender<Tuned>,);
+
+    fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        tuning::tune(self, &tune, turn)
     }
 }
