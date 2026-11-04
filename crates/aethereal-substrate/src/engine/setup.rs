@@ -166,6 +166,11 @@ impl Setup<()> {
         Self::of(self.engine.with_most_kept_bytes(bytes))
     }
 
+    /// The engine, whose log keeps at most `most` entries for each actor: 32 unless set (ADR-0044).
+    pub fn with_most_logged(self, most: usize) -> Self {
+        Self::of(self.engine.with_most_logged(most))
+    }
+
     /// The engine, its jobs run by `jobs`, which with none set answers every job that no runner runs it (ADR-0018).
     pub fn with_jobs(self, jobs: Arc<dyn Jobs>) -> Self {
         Self::of(self.engine.with_jobs(jobs))

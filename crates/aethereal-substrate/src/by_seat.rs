@@ -66,6 +66,16 @@ impl<V> BySeat<V> {
         value
     }
 
+    /// The actor kept in `seat`, when one is.
+    #[must_use]
+    pub fn id_in(&self, seat: SeatNumber) -> Option<ActorId> {
+        let place = seat.index() >> self.parts.get().trailing_zeros();
+        match self.seats.get(place) {
+            Some(Slot::Taken { id, .. }) => Some(*id),
+            _ => None,
+        }
+    }
+
     /// Keeps `value` for `actor`, dropping whatever was kept in its seat before.
     pub fn insert(&mut self, actor: Seated, value: V) {
         let place = self.place(actor);

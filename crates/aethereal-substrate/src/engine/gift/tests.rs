@@ -1,7 +1,7 @@
 //! Resources as a step's turns keep, give, and take them, and as the engine drops them (ADR-0010).
 
 use super::super::*;
-use crate::Entry;
+use aethereal_actor::Entry;
 use aethereal_actor::Time;
 use aethereal_actor::{Actor, ChildOf, Ending, Fault, Handle, Handles, Recursive, ToAny, ToType, Turn, child};
 use aethereal_data::{Bound, Kind, Plain};

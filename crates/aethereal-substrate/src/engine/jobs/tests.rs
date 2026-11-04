@@ -3,7 +3,7 @@
 
 use super::super::*;
 use super::*;
-use crate::Entry;
+use aethereal_actor::Entry;
 use aethereal_actor::{
     Actor, Answer, Answered, Bytes, ChildOf, Ending, Given, Handles, Job, JobType, Path, Resource, Runner, Running,
     Services, Tells, Time, Top, Turn, Unanswered, path,
