@@ -29,7 +29,11 @@ pub trait Tunable: Actor + Handles<ReadTuning> + Handles<Tune> {
     fn tuning(&self) -> Self::Tuning;
     /// Takes `tuning` in place of what it held, or refuses it, saying why: a value past what it can draw.
     fn tune(&mut self, tuning: Self::Tuning) -> Result<(), String>;
+    /// This actor as one tuned: `me.protocol()`, as a tool's `worker` is.
+    fn tunes(me: ActorRef<Self>) -> ProtocolRef<Tunes>;
 }
+
+pub struct Tunes;   // the protocol: ReadTuning answered with Tuning, Tune with Tuned
 
 #[kind(name = "aether.tuning.read_tuning")]
 pub struct ReadTuning;                                 // answered with Tuning
@@ -64,12 +68,12 @@ pub struct About { pub name: String, pub doc: String }
 
 #[kind(name = "aether.tuning.tune_fields")]
 pub struct TuneFields { pub actor: ActorPath, pub values: Json }   // the fields to set
-// answered with Tuned, or refused naming the field and why
+// answered with the ActorTuning as it then stands, or refused naming the field and why
 ```
 
-- **`L` is a tuple of tunable roots,** `TuningTool<(Painter, Renderer)>`, listed in the program's `Toolbox` as any tool is. It asks each at `path::<A>(())`, so a program that lists a root it does not have does not build, and the tool knows each `A::Tuning`'s schema and fields from its type.
+- **`L` is a tuple of tunable roots,** `TuningTool<(Painter, Renderer)>`, listed in the program's `Toolbox` as any tool is. It reaches each through `Turn::found(&path::<A>(()))`, which answers an `ActorRef<A>` only when an `A` stands live at that path, and asks it through `Tunes`, so a program that lists a root it does not have does not build, and the tool knows each `A::Tuning`'s schema and fields from its type. **`Turn::found` is new here**: a typed lookup of a path, beside `resolve` and `cast`, as a tool asks through one protocol whatever type it lists, and a generic list cannot name each type's `Sends` apart.
 - **`list_tuning` reads each root,** answering its values as JSON, the kind's JSON Schema (`json_schema`), and each field's doc comment, in the order `L` lists them.
-- **`tune` sets only the fields it is given.** It reads the actor's tuning, lays `values` over it field by field, as ADR-0028 lays a layer over the defaults, decodes the result with `A::Tuning`'s schema, and sends it whole as `Tune`. A field the kind does not have, or a value of the wrong shape, is refused with its path before anything is sent. An actor `L` does not list is refused, naming the actors it does.
+- **`tune` sets only the fields it is given.** It reads the actor's tuning, lays `values` over it field by field, each field it names replaced whole, as ADR-0028 lays a layer over the defaults, decodes the result with `A::Tuning`'s schema, and sends it whole as `Tune`. A field the kind does not have, or a value of the wrong shape, is refused with its path before anything is sent. An actor `L` does not list is refused, naming the actors it does. It answers the tuning as it then stands, as `list_tuning` answers it, and the actor's refusal as the actor words it.
 - **The tool is in `aethereal-tools`,** beside `LogsTool`.
 
 ## Consequences

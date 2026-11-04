@@ -18,9 +18,9 @@ use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
     Declared, Due, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handles, Held, Instances, Keeping,
-    Keeps, Kinds, Level, Line, Logged, MailId, Mailed, NotOwed, On, Owed, Owes, ParentOf, Parented, Payload,
-    ProtocolRef, Puts, Reachable, Resource, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage, Table, Tie, Tied,
-    Time, ToSender, Unanswered, Untaken, Watchable, What, Within, Written,
+    Keeps, Kinds, Level, Line, Logged, MailId, Mailed, NotOwed, On, Owed, Owes, ParentOf, Parented, Path, PathTo,
+    Payload, ProtocolRef, Puts, Reachable, Resource, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage, Table, Tie,
+    Tied, Time, ToSender, Unanswered, Untaken, Watchable, What, Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -613,6 +613,16 @@ impl Seat<'_> {
     /// A reference to the live actor `path` names.
     fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.table.resolve(path).map(ErasedActorRef::new)
+    }
+
+    /// The live actor `path` names, when its type is the one `kind` names: none when nothing live stands there, or an
+    /// actor of another type does.
+    fn found(&self, path: &ActorPath, kind: KindId) -> Option<Seated> {
+        let seated = self.table.resolve(path)?;
+        let declared = self.declared_at(seated.id).or_else(|| self.table.declared(seated.id));
+        let is_kind = declared.is_some_and(|declared| declared.id() == kind);
+
+        is_kind.then_some(seated)
     }
 
     /// What the actor `path` names has logged, live or ended (ADR-0044).
@@ -2032,6 +2042,14 @@ impl<Me, S> Turn<'_, Me, S> {
     #[must_use]
     pub fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.seat.resolve(path)
+    }
+
+    /// A reference to the live actor the typed path `path` names, as of the step's start, proven of its type: none
+    /// when nothing live stands there, or an actor of another type does. A tool reaches a root it lists by its type
+    /// so (ADR-0050).
+    #[must_use]
+    pub fn found<L: ChildOf + PathTo>(&self, path: &Path<L>) -> Option<ActorRef<L>> {
+        self.seat.found(path.names(), KindId::of::<L>()).map(ActorRef::new)
     }
 
     /// What the actor `path` names has logged, live or ended, as the log view stood when the step began (ADR-0044).
