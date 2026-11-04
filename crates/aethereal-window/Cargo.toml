@@ -6,10 +6,15 @@ license.workspace = true
 publish.workspace = true
 description = "The window capability: a root that holds what the host brings in from its windows, and an actor for each window that actors subscribe to (ADR-0024)"
 
+[features]
+# The tool of this capability (ADR-0037, ADR-0046): `send_input`, types only, as a program lists what it serves.
+tools = ["dep:aethereal-tools"]
+
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 aethereal-substrate = { path = "../aethereal-substrate" }
+aethereal-tools = { path = "../aethereal-tools", optional = true }
 
 [dev-dependencies]
 # The tests read the turns the engine recorded, which only this feature opens (ADR-0036).
