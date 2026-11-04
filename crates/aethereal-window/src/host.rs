@@ -4,7 +4,7 @@
 
 use crate::event::{Event, Mode, Surface};
 use crate::window::{WindowConfig, WindowId};
-use crate::windows::{Closing, Heard, Initial, Unclosed, Unopened, Unset, Windowing, WindowsConfig};
+use crate::windows::{Closing, Heard, Initial, Unclosed, Unopened, Unplaced, Unset, Windowing, WindowsConfig};
 use aethereal_actor::{Controller, Given, Requests, Source};
 use aethereal_substrate::{Closed, Feed};
 use core::iter;
@@ -32,12 +32,13 @@ impl Opening {
         Self { source, feed, control, requests, windows: Vec::new() }
     }
 
-    /// Opens a window whose `surface`, `mode`, and `focused` stand as given, under the next id, and answers with the
-    /// feed its events are pushed onto.
-    pub fn open(&mut self, surface: Surface, mode: Mode, focused: bool) -> WindowFeed {
+    /// Opens a window `title`d, whose `surface`, `mode`, and `focused` stand as given, under the next id, and answers
+    /// with the feed its events are pushed onto.
+    pub fn open(&mut self, title: &str, surface: Surface, mode: Mode, focused: bool) -> WindowFeed {
         // A host opens some windows, never more than a `u64` counts.
         let window = WindowId::nth(self.windows.len() as u64);
-        self.windows.push(Initial { window, config: WindowConfig { surface, mode, focused } });
+        let title = String::from(title);
+        self.windows.push(Initial { window, title, config: WindowConfig { surface, mode, focused } });
 
         WindowFeed { window, feed: self.feed.clone() }
     }
@@ -129,8 +130,46 @@ impl Hosting {
         self.feed.push(Heard::Unset { window, why })
     }
 
-    /// Answers each request the window root asked since the last take as a host that opens, closes, and sets the mode
-    /// of no window does, as a page does: [`Unopened::NoHost`], [`Unclosed::NoHost`], and [`Unset::NoHost`].
+    /// Pushes that the host asked its windowing system to resize `window`, as the root asked, its `surface` as it draws
+    /// it now.
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn resized(&self, window: WindowId, surface: Surface) -> Result<(), Closed> {
+        self.feed.push(Heard::Resized { window, surface })
+    }
+
+    /// Pushes that the host did not resize `window`, as the root asked, and why.
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn unresized(&self, window: WindowId, why: Unplaced) -> Result<(), Closed> {
+        self.feed.push(Heard::Unresized { window, why })
+    }
+
+    /// Pushes that the host moved `window`, as the root asked.
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn moved(&self, window: WindowId) -> Result<(), Closed> {
+        self.feed.push(Heard::Moved { window })
+    }
+
+    /// Pushes that the host did not move `window`, as the root asked, and why.
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn unmoved(&self, window: WindowId, why: Unplaced) -> Result<(), Closed> {
+        self.feed.push(Heard::Unmoved { window, why })
+    }
+
+    /// Answers each request the window root asked since the last take as a host that opens, closes, sets the mode of,
+    /// resizes, and moves no window does, as a page does: [`Unopened::NoHost`], [`Unclosed::NoHost`],
+    /// [`Unset::NoHost`], and [`Unplaced::NoHost`].
     ///
     /// # Errors
     ///
@@ -141,6 +180,8 @@ impl Hosting {
                 Windowing::Open { window, .. } => self.unopened(window, Unopened::NoHost)?,
                 Windowing::Close { window } => self.unclosed(window, Unclosed::NoHost)?,
                 Windowing::SetMode { window, .. } => self.unset(window, Unset::NoHost)?,
+                Windowing::Resize { window, .. } => self.unresized(window, Unplaced::NoHost)?,
+                Windowing::Move { window, .. } => self.unmoved(window, Unplaced::NoHost)?,
             }
         }
 

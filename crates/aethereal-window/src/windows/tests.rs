@@ -108,8 +108,8 @@ fn a_subscriber_hears_its_window_as_it_stood_then_what_its_host_pushed_that_says
     let small = Surface { width: 640, height: 480, scale: 1.0 };
     let large = Surface { width: 1280, height: 960, scale: 2.0 };
     let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
-    let first = opening.open(small, Mode::Windowed, true);
-    let second = opening.open(small, Mode::Maximized, false);
+    let first = opening.open("first", small, Mode::Windowed, true);
+    let second = opening.open("second", small, Mode::Maximized, false);
     let (mut config, _hosting) = opening.config();
     config.closing = Closing::ByProgram;
     let Ok(mut engine) = setup
@@ -165,6 +165,9 @@ enum Noted {
     Opened(Opened),
     Closed(Closed),
     ModeSet(ModeSet),
+    Listed(WindowList),
+    Resized(Resized),
+    Moved(Moved),
     Heard(Event),
     Other(KindId),
 }
@@ -180,6 +183,15 @@ impl Noted {
         }
         if let Some(set) = arrival.read()? {
             return Ok(Self::ModeSet(set));
+        }
+        if let Some(list) = arrival.read()? {
+            return Ok(Self::Listed(list));
+        }
+        if let Some(resized) = arrival.read()? {
+            return Ok(Self::Resized(resized));
+        }
+        if let Some(moved) = arrival.read()? {
+            return Ok(Self::Moved(moved));
         }
         let heard = arrival.read()?.map_or_else(|| Self::Other(arrival.kind()), Self::Heard);
 
@@ -211,7 +223,7 @@ fn windowed(
 ) -> Result<(Harness<Bench>, Hosting, Vec<WindowFeed>), Unheard> {
     let mut made = self::setup();
     let mut opening = Opening::new(made.source::<Heard>(), made.controller::<Windowing>());
-    let feeds = (0..setup).map(|_| opening.open(surface, Mode::Windowed, false)).collect();
+    let feeds = (0..setup).map(|_| opening.open("window", surface, Mode::Windowed, false)).collect();
     let (mut config, hosting) = opening.config();
     config.closing = closing;
     let harness = Harness::bare(made.add_root::<Windows>(&(), config)?.ready())?;
@@ -250,6 +262,8 @@ enum Took {
     Open(WindowId),
     Close(WindowId),
     SetMode(WindowId, Mode),
+    Resize(WindowId),
+    Move(WindowId),
 }
 
 /// What each request taken asks of its window.
@@ -260,6 +274,8 @@ fn windows_of(requests: &[Windowing]) -> Vec<Took> {
             Windowing::Open { window, .. } => Took::Open(*window),
             Windowing::Close { window } => Took::Close(*window),
             Windowing::SetMode { window, mode } => Took::SetMode(*window, *mode),
+            Windowing::Resize { window, .. } => Took::Resize(*window),
+            Windowing::Move { window, .. } => Took::Move(*window),
         })
         .collect()
 }
@@ -471,6 +487,91 @@ fn a_window_that_closes_refuses_the_modes_asked_of_it_as_not_open() -> Result<()
     assert_eq!(hosting.closed(window(0)), Ok(()));
 
     assert_eq!(settled(&mut harness)?, [refused(), Noted::Closed(Closed::Closed)]);
+
+    Ok(())
+}
+
+#[test]
+fn the_list_names_each_open_window_with_its_title_and_how_its_host_last_said_it_stands() -> Result<(), Unheard> {
+    // Catches a window still opening listed before it can be named, a window opened on request listed without the
+    // title it was asked with, and the surface, mode, or focus a window opened with listed in place of what its host
+    // has since pushed.
+    let small = Surface { width: 640, height: 480, scale: 1.0 };
+    let large = Surface { width: 1280, height: 960, scale: 2.0 };
+    let (mut harness, hosting, feeds) = windowed(2, small, Closing::ByButton)?;
+    ask(&mut harness, &open())?;
+    ask(&mut harness, &open())?;
+    settled(&mut harness)?;
+    let Some(feed) = feeds.first() else {
+        panic!("two windows were opened");
+    };
+    let pushed = [
+        feed.push(Event::FocusGained),
+        feed.push(Event::Resized(large)),
+        feed.push(Event::Moded(Mode::Maximized)),
+        hosting.opened(window(2), small, false).map(|_| ()),
+    ];
+    assert!(pushed.iter().all(Result::is_ok), "the window root holds its source");
+    settled(&mut harness)?;
+    ask(&mut harness, &ListWindows)?;
+
+    let listed = |nth, title: &str, surface, mode, focused| Listed {
+        window: window(nth),
+        title: String::from(title),
+        surface,
+        mode,
+        focused,
+    };
+    let expected = WindowList {
+        windows: vec![
+            listed(0, "window", large, Mode::Maximized, true),
+            listed(1, "window", small, Mode::Windowed, false),
+            listed(2, "asked", small, Mode::Windowed, false),
+        ],
+    };
+    assert_eq!(settled(&mut harness)?, [Noted::Listed(expected)]);
+
+    Ok(())
+}
+
+#[test]
+fn a_window_is_resized_or_moved_once_its_host_has_and_refused_unless_open_and_windowed() -> Result<(), Unheard> {
+    // Catches a resize or move answered before its host has said, or matched to the wrong request; one asked of a
+    // window not open, or maximized, whose mode sets its size, pushed to the host; and requests held for a window that
+    // closes left unanswered.
+    let small = Surface { width: 640, height: 480, scale: 1.0 };
+    let large = Surface { width: 1280, height: 960, scale: 1.0 };
+    let (mut harness, hosting, feeds) = windowed(2, small, Closing::ByButton)?;
+    let resize = ResizeWindow { window: window(0), size: Logical { width: 1280.0, height: 960.0 } };
+    let moving = MoveWindow { window: window(0), at: Place { x: 10.0, y: 20.0 } };
+    let Some(second) = feeds.get(1) else {
+        panic!("two windows were opened");
+    };
+    assert!(second.push(Event::Moded(Mode::Maximized)).is_ok());
+    settled(&mut harness)?;
+    ask(&mut harness, &resize)?;
+    ask(&mut harness, &moving)?;
+    ask(&mut harness, &ResizeWindow { window: window(9), ..resize })?;
+    ask(&mut harness, &MoveWindow { window: window(1), ..moving })?;
+
+    let expected =
+        [Noted::Resized(Resized::Refused(Unplaced::NotOpen)), Noted::Moved(Moved::Refused(Unplaced::NotWindowed))];
+    assert_eq!(settled(&mut harness)?, expected, "no request is answered before the host has said");
+    assert_eq!(windows_of(&hosting.take()), [Took::Resize(window(0)), Took::Move(window(0))]);
+
+    let pushed = [hosting.resized(window(0), large), hosting.unmoved(window(0), Unplaced::NoHost)];
+    assert!(pushed.iter().all(Result::is_ok), "the window root holds its source");
+    let expected =
+        [Noted::Resized(Resized::Resized { surface: large }), Noted::Moved(Moved::Refused(Unplaced::NoHost))];
+    assert_eq!(settled(&mut harness)?, expected);
+
+    ask(&mut harness, &resize)?;
+    ask(&mut harness, &moving)?;
+    settled(&mut harness)?;
+    assert!(hosting.closed(window(0)).is_ok());
+    let expected =
+        [Noted::Resized(Resized::Refused(Unplaced::NotOpen)), Noted::Moved(Moved::Refused(Unplaced::NotOpen))];
+    assert_eq!(settled(&mut harness)?, expected);
 
     Ok(())
 }

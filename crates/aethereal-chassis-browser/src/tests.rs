@@ -237,7 +237,7 @@ fn a_window_asked_to_open_close_or_show_in_a_mode_is_answered_no_host_within_the
     // to be shown fullscreen, answered as done, or refused as not open, though the page still shows it as it was.
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>();
     let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
-    let canvas = opening.open(Surface { width: 640, height: 480, scale: 1.0 }, Mode::Windowed, true);
+    let canvas = opening.open("canvas", Surface { width: 640, height: 480, scale: 1.0 }, Mode::Windowed, true);
     let (windows, hosting) = opening.config();
     let mut engine = setup.ready();
     let Ok(id) = engine.add_root::<Windows>(&(), windows) else {

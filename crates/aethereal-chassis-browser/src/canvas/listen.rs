@@ -60,9 +60,9 @@ impl Page {
 
     /// Opens `canvas` as the next window with `opening`, standing as the page has it now: its backing store as its
     /// surface, the page's device pixels to each CSS pixel as its scale, windowed, as a canvas laid out in a page is,
-    /// and focused when the page has the keyboard.
+    /// and focused when the page has the keyboard. Its title is the canvas's id.
     pub fn open(&self, canvas: &HtmlCanvasElement, opening: &mut Opening) -> Shown {
-        let feed = opening.open(surface(canvas, &self.window), Mode::Windowed, self.focused);
+        let feed = opening.open(&canvas.id(), surface(canvas, &self.window), Mode::Windowed, self.focused);
         let size = Rc::new(Cell::new((canvas.width(), canvas.height())));
 
         Shown { feed, size }

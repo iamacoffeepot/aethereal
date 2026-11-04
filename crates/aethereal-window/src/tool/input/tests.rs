@@ -55,7 +55,7 @@ impl Handles<Event> for Subscriber {
 fn opened() -> Result<Harness<Bench>, Unheard> {
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>();
     let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
-    let _feed = opening.open(SURFACE, Mode::Windowed, false);
+    let _feed = opening.open("window", SURFACE, Mode::Windowed, false);
     let (config, _hosting) = opening.config();
     let engine = setup
         .add_root::<Windows>(&(), config)?

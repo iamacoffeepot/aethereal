@@ -7,7 +7,10 @@ mod asked;
 #[cfg(test)]
 mod tests;
 
-pub use asked::{CloseWindow, Closed, Logical, ModeSet, OpenWindow, Opened, SetMode, Unclosed, Unopened, Unset};
+pub use asked::{
+    CloseWindow, Closed, ListWindows, Listed, Logical, ModeSet, MoveWindow, Moved, OpenWindow, Opened, Place,
+    ResizeWindow, Resized, SetMode, Unclosed, Unopened, Unplaced, Unset, WindowList,
+};
 
 use crate::event::{Event, Mode, Surface};
 use crate::window::{Window, WindowConfig, WindowId};
@@ -41,16 +44,26 @@ pub enum Heard {
     Set { window: WindowId, surface: Surface },
     /// The host did not show the window in the mode the root asked, for this reason.
     Unset { window: WindowId, why: Unset },
+    /// The host asked its windowing system for the size the root asked, the window's surface as it draws it now.
+    Resized { window: WindowId, surface: Surface },
+    /// The host did not resize the window as the root asked, for this reason.
+    Unresized { window: WindowId, why: Unplaced },
+    /// The host moved the window as the root asked.
+    Moved { window: WindowId },
+    /// The host did not move the window as the root asked, for this reason.
+    Unmoved { window: WindowId, why: Unplaced },
 }
 
 /// What the window root asks its host through its controller, in the order its turns asked: to open a window under
-/// the id the root gave it, `title`d, at `size` in the host's logical pixels, shown windowed; to close a window; or to
-/// show a window in a mode (ADR-0027).
+/// the id the root gave it, `title`d, at `size` in the host's logical pixels, shown windowed; to close a window; to
+/// show a window in a mode (ADR-0027); or to resize or move a window shown windowed (ADR-0047).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Windowing {
     Open { window: WindowId, title: String, size: Logical },
     Close { window: WindowId },
     SetMode { window: WindowId, mode: Mode },
+    Resize { window: WindowId, size: Logical },
+    Move { window: WindowId, at: Place },
 }
 
 /// What the close button of a window does.
@@ -65,10 +78,11 @@ pub enum Closing {
     ByProgram,
 }
 
-/// A window the host opened as the program was set up, and how it stood.
-#[derive(Debug, Clone, Copy, PartialEq, Plain)]
+/// A window the host opened as the program was set up, its title, and how it stood.
+#[derive(Debug, Clone, PartialEq, Plain)]
 pub struct Initial {
     pub(crate) window: WindowId,
+    pub(crate) title: String,
     pub(crate) config: WindowConfig,
 }
 
@@ -111,20 +125,25 @@ pub struct Windows {
 /// How a window stands, as the window root keeps it, with the requests it holds for it.
 #[derive(Bound)]
 enum Standing {
-    /// Asked of the host, which has not said whether it opened it: the request to open it, held.
-    Opening(Held<Opened>),
+    /// Asked of the host, which has not said whether it opened it: the request to open it, held, and the title asked.
+    Opening { held: Held<Opened>, title: String },
     /// Open, shown as this says.
     Open(Shown),
 }
 
-/// How an open window is shown, as the root last heard from its host: its surface and mode, kept so a request for the
-/// mode it has is answered at once; the requests to set its mode the host has not answered, held in the order it was
-/// asked them, as it answers them in that order; and whether it has been asked to close.
+/// How an open window is shown, as the root last heard from its host: its title; its surface and mode, kept so a
+/// request for the mode it has is answered at once; whether it has the keyboard; the requests to set its mode, resize
+/// it, and move it the host has not answered, each held in the order it was asked them, as it answers them in that
+/// order; and whether it has been asked to close.
 #[derive(Bound)]
 struct Shown {
+    title: String,
     surface: Surface,
     mode: Mode,
+    focused: bool,
     setting: VecDeque<Held<ModeSet>>,
+    resizing: VecDeque<Held<Resized>>,
+    moving: VecDeque<Held<Moved>>,
     close: Close,
 }
 
@@ -139,9 +158,18 @@ enum Close {
 }
 
 impl Shown {
-    /// A window standing as `config` says, asked nothing.
-    const fn new(config: WindowConfig) -> Self {
-        Self { surface: config.surface, mode: config.mode, setting: VecDeque::new(), close: Close::Unasked }
+    /// A window `title`d, standing as `config` says, asked nothing.
+    const fn new(title: String, config: WindowConfig) -> Self {
+        Self {
+            title,
+            surface: config.surface,
+            mode: config.mode,
+            focused: config.focused,
+            setting: VecDeque::new(),
+            resizing: VecDeque::new(),
+            moving: VecDeque::new(),
+            close: Close::Unasked,
+        }
     }
 
     /// Takes in how `event`, heard in the window, says it is shown.
@@ -149,8 +177,15 @@ impl Shown {
         match event {
             Event::Resized(surface) => self.surface = *surface,
             Event::Moded(mode) => self.mode = *mode,
+            Event::FocusGained => self.focused = true,
+            Event::FocusLost => self.focused = false,
             _ => {}
         }
+    }
+
+    /// The window as a list names it, as `window`.
+    fn listed(&self, window: WindowId) -> Listed {
+        Listed { window, title: self.title.clone(), surface: self.surface, mode: self.mode, focused: self.focused }
     }
 }
 
@@ -175,10 +210,22 @@ impl Carries<SetMode> for Windows {
     type Answers = (ModeSet,);
 }
 
+impl Carries<ListWindows> for Windows {
+    type Answers = (WindowList,);
+}
+
+impl Carries<ResizeWindow> for Windows {
+    type Answers = (Resized,);
+}
+
+impl Carries<MoveWindow> for Windows {
+    type Answers = (Moved,);
+}
+
 impl Actor for Windows {
     type Config = WindowsConfig;
     type Key = ();
-    type Handles = (Heard, OpenWindow, CloseWindow, SetMode);
+    type Handles = (Heard, OpenWindow, CloseWindow, SetMode, ListWindows, ResizeWindow, MoveWindow);
     type BeginSends = ();
     type EndSends = ();
 
@@ -190,12 +237,12 @@ impl Actor for Windows {
         // A host opens some windows, never more than a `u64` counts.
         let next = config.windows.len() as u64;
         let mut standing = BTreeMap::new();
-        for Initial { window, config } in config.windows {
+        for Initial { window, title, config } in config.windows {
             if let Err(refused) = turn.spawn::<Window>(&window, config) {
                 turn.log(Level::Error, format_args!("the actor of window {window:?} was refused: {refused}"));
                 return Err(Fault::new(&Unmade { window })?);
             }
-            standing.insert(window, Standing::Open(Shown::new(config)));
+            standing.insert(window, Standing::Open(Shown::new(title, config)));
         }
 
         Ok(Self { source, control, closing: config.closing, next, standing })
@@ -215,7 +262,7 @@ impl Handles<OpenWindow> for Windows {
         let held = turn.hold()?;
         let window = WindowId::nth(self.next);
         self.next += 1;
-        self.standing.insert(window, Standing::Opening(held));
+        self.standing.insert(window, Standing::Opening { held, title: open.title.clone() });
         // Pushed last, so a turn that fails before it asks the host for nothing (ADR-0019).
         turn.open(&mut self.control)?.push(Windowing::Open { window, title: open.title, size: open.size });
 
@@ -236,7 +283,7 @@ impl Handles<CloseWindow> for Windows {
                 turn.open(&mut self.control)?.push(Windowing::Close { window });
             }
             Some(Standing::Open(Shown { close: Close::Asked(waiting), .. })) => waiting.push(turn.hold()?),
-            Some(Standing::Opening(_)) | None => turn.reply(&Closed::Refused(Unclosed::NotOpen))?,
+            Some(Standing::Opening { .. }) | None => turn.reply(&Closed::Refused(Unclosed::NotOpen))?,
         }
 
         Ok(())
@@ -269,6 +316,68 @@ impl Handles<SetMode> for Windows {
     }
 }
 
+/// Answers every open window, as the root last heard from its host, with nothing asked of the host.
+impl Handles<ListWindows> for Windows {
+    type Sends = (ToSender<WindowList>,);
+
+    fn handle(&mut self, _: ListWindows, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let windows = self
+            .standing
+            .iter()
+            .filter_map(|(window, standing)| match standing {
+                Standing::Open(shown) => Some(shown.listed(*window)),
+                Standing::Opening { .. } => None,
+            })
+            .collect();
+        turn.reply(&WindowList { windows })?;
+
+        Ok(())
+    }
+}
+
+/// Holds the request, and asks the host to resize the window: answered once the host says whether it did. A window
+/// that is not open, as one still opening or closing, is refused, and so is one not shown windowed, whose size its mode
+/// sets (ADR-0047).
+impl Handles<ResizeWindow> for Windows {
+    type Sends = (ToSender<Resized>,);
+
+    fn handle(&mut self, resize: ResizeWindow, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let ResizeWindow { window, size } = resize;
+        let shown = match self.placeable(window) {
+            Ok(shown) => shown,
+            Err(why) => {
+                turn.reply(&Resized::Refused(why))?;
+                return Ok(());
+            }
+        };
+        shown.resizing.push_back(turn.hold()?);
+        turn.open(&mut self.control)?.push(Windowing::Resize { window, size });
+
+        Ok(())
+    }
+}
+
+/// Holds the request, and asks the host to move the window: answered once the host says whether it did. Refused as a
+/// resize is (ADR-0047).
+impl Handles<MoveWindow> for Windows {
+    type Sends = (ToSender<Moved>,);
+
+    fn handle(&mut self, moving: MoveWindow, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let MoveWindow { window, at } = moving;
+        let shown = match self.placeable(window) {
+            Ok(shown) => shown,
+            Err(why) => {
+                turn.reply(&Moved::Refused(why))?;
+                return Ok(());
+            }
+        };
+        shown.moving.push_back(turn.hold()?);
+        turn.open(&mut self.control)?.push(Windowing::Move { window, at });
+
+        Ok(())
+    }
+}
+
 /// What the source brought, from this actor to itself (ADR-0010): an event, sent on to the actor of the window it was
 /// heard in, or what the host did with a window, which answers what the root holds for it. What another actor sends
 /// is not the host's, and is not acted on; what was heard in a window with no actor reaches nothing.
@@ -293,25 +402,42 @@ impl Handles<Heard> for Windows {
             Heard::Unclosed { window, why } => self.unclosed(window, why, turn),
             Heard::Set { window, surface } => self.set(window, ModeSet::Set { surface }, turn),
             Heard::Unset { window, why } => self.set(window, ModeSet::Refused(why), turn),
+            Heard::Resized { window, surface } => self.resized(window, Resized::Resized { surface }, turn),
+            Heard::Unresized { window, why } => self.resized(window, Resized::Refused(why), turn),
+            Heard::Moved { window } => self.moved(window, Moved::Moved, turn),
+            Heard::Unmoved { window, why } => self.moved(window, Moved::Refused(why), turn),
         }
     }
 }
 
 impl Windows {
-    /// The request held to open `window`, taken, with the window: none when the window is not opening.
-    fn opening(&mut self, window: WindowId) -> Option<Held<Opened>> {
+    /// The request held to open `window`, taken, with the title it asked: none when the window is not opening.
+    fn opening(&mut self, window: WindowId) -> Option<(Held<Opened>, String)> {
         let Entry::Occupied(standing) = self.standing.entry(window) else {
             return None;
         };
-        let is_opening = matches!(standing.get(), Standing::Opening(_));
+        let is_opening = matches!(standing.get(), Standing::Opening { .. });
         if !is_opening {
             return None;
         }
-        let Standing::Opening(held) = standing.remove() else {
+        let Standing::Opening { held, title } = standing.remove() else {
             return None;
         };
 
-        Some(held)
+        Some((held, title))
+    }
+
+    /// How `window` is shown, when a request to resize or move it may be asked of the host: it is open, not asked to
+    /// close, and shown windowed.
+    fn placeable(&mut self, window: WindowId) -> Result<&mut Shown, Unplaced> {
+        let Some(Standing::Open(shown @ Shown { close: Close::Unasked, .. })) = self.standing.get_mut(&window) else {
+            return Err(Unplaced::NotOpen);
+        };
+        if shown.mode != Mode::Windowed {
+            return Err(Unplaced::NotWindowed);
+        }
+
+        Ok(shown)
     }
 
     /// Sends `event`, heard in `window`, to the window's actor, and closes the window on its close button when the
@@ -350,19 +476,19 @@ impl Windows {
         config: WindowConfig,
         turn: &mut Turn<'_, Self, Sends>,
     ) -> Result<(), Fault> {
-        let Some(held) = self.opening(window) else {
+        let Some((held, title)) = self.opening(window) else {
             turn.log(Level::Warn, format_args!("the host opened window {window:?}, which was not asked for"));
             return Ok(());
         };
         if let Err(refused) = turn.spawn::<Window>(&window, config) {
             turn.log(Level::Error, format_args!("the actor of window {window:?} was refused: {refused}"));
-            let closing = Shown { close: Close::Asked(Vec::new()), ..Shown::new(config) };
+            let closing = Shown { close: Close::Asked(Vec::new()), ..Shown::new(title, config) };
             self.standing.insert(window, Standing::Open(closing));
             turn.answer(held, &Opened::Refused(Unopened::Refused))?;
             turn.open(&mut self.control)?.push(Windowing::Close { window });
             return Ok(());
         }
-        self.standing.insert(window, Standing::Open(Shown::new(config)));
+        self.standing.insert(window, Standing::Open(Shown::new(title, config)));
         turn.answer(held, &Opened::Window { window, surface: config.surface })?;
 
         Ok(())
@@ -370,7 +496,7 @@ impl Windows {
 
     /// Answers the request held to open `window`, which the host did not open, with why.
     fn unopened(&mut self, window: WindowId, why: Unopened, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
-        let Some(held) = self.opening(window) else {
+        let Some((held, _)) = self.opening(window) else {
             turn.log(Level::Warn, format_args!("the host did not open window {window:?}, which was not asked for"));
             return Ok(());
         };
@@ -380,12 +506,12 @@ impl Windows {
     }
 
     /// Tells the actor of `window`, which the host closed, so it sends its subscribers `Closed` and ends, then answers
-    /// each request held to set its mode, which the host closed it before answering, as not open, and each held to
-    /// close it.
+    /// each request held to set its mode, resize it, or move it, which the host closed it before answering, as not
+    /// open, and each held to close it.
     fn closed(&mut self, window: WindowId, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
-        let Shown { setting, close, .. } = match self.standing.remove(&window) {
+        let Shown { setting, resizing, moving, close, .. } = match self.standing.remove(&window) {
             Some(Standing::Open(shown)) => shown,
-            Some(Standing::Opening(held)) => {
+            Some(Standing::Opening { held, .. }) => {
                 turn.log(Level::Warn, format_args!("the host closed window {window:?} before it said it opened"));
                 turn.answer(held, &Opened::Refused(Unopened::Failed(String::from("closed as it opened"))))?;
                 return Ok(());
@@ -398,6 +524,12 @@ impl Windows {
         turn.to(child::<Window>(window)).send(&Event::Closed)?;
         for held in setting {
             turn.answer(held, &ModeSet::Refused(Unset::NotOpen))?;
+        }
+        for held in resizing {
+            turn.answer(held, &Resized::Refused(Unplaced::NotOpen))?;
+        }
+        for held in moving {
+            turn.answer(held, &Moved::Refused(Unplaced::NotOpen))?;
         }
         if let Close::Asked(waiting) = close {
             for held in waiting {
@@ -436,6 +568,38 @@ impl Windows {
             return Ok(());
         };
         turn.answer(held, &set)?;
+
+        Ok(())
+    }
+
+    /// Answers the first request held to resize `window` with `resized`, what the host did with it: the host answers
+    /// them in the order it was asked.
+    fn resized(&mut self, window: WindowId, resized: Resized, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
+        let Some(Standing::Open(shown)) = self.standing.get_mut(&window) else {
+            turn.log(Level::Warn, format_args!("the host resized window {window:?}, which was not open"));
+            return Ok(());
+        };
+        let Some(held) = shown.resizing.pop_front() else {
+            turn.log(Level::Warn, format_args!("the host resized window {window:?}, which was not asked"));
+            return Ok(());
+        };
+        turn.answer(held, &resized)?;
+
+        Ok(())
+    }
+
+    /// Answers the first request held to move `window` with `moved`, what the host did with it: the host answers them
+    /// in the order it was asked.
+    fn moved(&mut self, window: WindowId, moved: Moved, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
+        let Some(Standing::Open(shown)) = self.standing.get_mut(&window) else {
+            turn.log(Level::Warn, format_args!("the host moved window {window:?}, which was not open"));
+            return Ok(());
+        };
+        let Some(held) = shown.moving.pop_front() else {
+            turn.log(Level::Warn, format_args!("the host moved window {window:?}, which was not asked"));
+            return Ok(());
+        };
+        turn.answer(held, &moved)?;
 
         Ok(())
     }

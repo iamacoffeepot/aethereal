@@ -100,3 +100,84 @@ pub enum Unset {
     /// person's click or key.
     NoHost,
 }
+
+/// Asks the window root for every open window, answered at once with a [`WindowList`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.windows.list_windows")]
+pub struct ListWindows;
+
+/// Every open window, in the order of their ids: one still opening is not listed, and one asked to close is until its
+/// host says it closed.
+#[derive(Debug, Clone, PartialEq, Plain)]
+#[kind(name = "aether.windows.window_list")]
+pub struct WindowList {
+    pub windows: Vec<Listed>,
+}
+
+/// An open window as the root last heard from its host: its id, which names it to every other request, its title, its
+/// surface, the mode it is shown in, and whether it has the keyboard.
+#[derive(Debug, Clone, PartialEq, Plain)]
+pub struct Listed {
+    pub window: WindowId,
+    pub title: String,
+    pub surface: Surface,
+    pub mode: Mode,
+    pub focused: bool,
+}
+
+/// Asks the window root to resize the window `window`, shown windowed, to `size` in the host's logical pixels:
+/// answered with [`Resized`] once the host has asked its windowing system, or would not.
+#[derive(Debug, Clone, Copy, PartialEq, Plain)]
+#[kind(name = "aether.windows.resize_window")]
+pub struct ResizeWindow {
+    pub window: WindowId,
+    pub size: Logical,
+}
+
+/// What became of a window asked to be resized.
+#[derive(Debug, Clone, Copy, PartialEq, Plain)]
+#[kind(name = "aether.windows.resized")]
+pub enum Resized {
+    /// The host asked for the size: this is its surface as the host draws it now. A windowing system that resizes
+    /// later answers the size before, and the window's subscribers hear `Resized` once it does, as for any resize.
+    Resized { surface: Surface },
+    /// It was not resized, for this reason.
+    Refused(Unplaced),
+}
+
+/// A place on the screen, in the host's logical pixels, from its top left.
+#[derive(Debug, Clone, Copy, PartialEq, Plain)]
+pub struct Place {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Asks the window root to move the window `window`, shown windowed, so its outer frame's top left is `at`: answered
+/// with [`Moved`] once the host has, or would not.
+#[derive(Debug, Clone, Copy, PartialEq, Plain)]
+#[kind(name = "aether.windows.move_window")]
+pub struct MoveWindow {
+    pub window: WindowId,
+    pub at: Place,
+}
+
+/// What became of a window asked to move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.windows.moved")]
+pub enum Moved {
+    /// The host moved it.
+    Moved,
+    /// It was not moved, for this reason.
+    Refused(Unplaced),
+}
+
+/// Why a window asked to be resized or moved was not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Unplaced {
+    /// The window is not open: it never was, it is still opening, it is closing, or it closed first.
+    NotOpen,
+    /// It is maximized or fullscreen, which sets its size and place: show it windowed first.
+    NotWindowed,
+    /// The host resizes or moves no window, as a page does not, or as Wayland lets no program move its own.
+    NoHost,
+}
