@@ -25,8 +25,10 @@ pollster = { workspace = true }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "dx12", "metal", "vulkan"] }
 winit = "0.30.13"
 
-# The `linked_window` example hands its hub the renderer's `capture_frame` (ADR-0043).
+# The `linked_window` example hands its hub the renderer's `capture_frame` (ADR-0043) and `record_clip`, which holds
+# the clock through the pacer (ADR-0045).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+aethereal-pace = { path = "../aethereal-pace" }
 aethereal-render = { path = "../aethereal-render", features = ["tools"] }
 aethereal-tools = { path = "../aethereal-tools" }
 

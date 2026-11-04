@@ -135,11 +135,6 @@ impl Drawing {
         }
     }
 
-    /// Whether any window is drawn: shown, at a size, and given a surface.
-    pub(crate) fn draws(&self) -> bool {
-        self.windows.iter().any(Kept::draws)
-    }
-
     /// Asks for the next frame of the first window drawn, which paces them all: one frame draws every window drawn,
     /// so asking each would draw a frame for each.
     pub(crate) fn ask_next(&self) {
@@ -147,6 +142,14 @@ impl Drawing {
         if let Some(opened) = pacing {
             opened.native.request_redraw();
         }
+    }
+
+    /// Waits for the GPU to finish what has been submitted, which calls back for each buffer it maps: a held frame
+    /// has no next frame to poll the device for it, so what it read back would wait until something else woke the
+    /// loop (ADR-0045).
+    pub(crate) fn finish(&self) {
+        // A device lost is the renderer's to hear of, as it next draws.
+        let _ = self.gpu.device().poll(wgpu::PollType::wait_indefinitely());
     }
 
     /// Polls the device without waiting, between steps: it calls back for each buffer the GPU has mapped by then, and

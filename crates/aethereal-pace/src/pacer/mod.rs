@@ -145,7 +145,7 @@ impl Actor for Pacer {
 /// Sets the clock as asked, and answers how it moved before. A clock set running while advances are held refuses
 /// them, as they would run against the host's own cycles. Setting the pace it has asks the host nothing.
 impl Handles<SetPace> for Pacer {
-    type Sends = (ToSender<PaceSet>, ToSender<Advanced>);
+    type Sends = (ToSender<PaceSet>,);
 
     fn handle(&mut self, set: SetPace, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let was = self.pace();
@@ -209,7 +209,7 @@ impl Handles<Advance> for Pacer {
 /// counts against the first advance held, answers that advance once it has none left, and asks the host for the next
 /// cycle, of that advance or the one after. What another actor sends is not the host's, and is not acted on.
 impl Handles<Paced> for Pacer {
-    type Sends = (ToSender<Advanced>,);
+    type Sends = ();
 
     fn handle(&mut self, paced: Paced, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let me = turn.me();
@@ -245,7 +245,7 @@ impl Handles<Paced> for Pacer {
 
 /// The program is stopping: every advance held is refused, and so is every one asked from now on.
 impl Handles<On<Stop>> for Pacer {
-    type Sends = (ToSender<Advanced>,);
+    type Sends = ();
 
     fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if let Clock::Held(advancing) = &mut self.clock {
