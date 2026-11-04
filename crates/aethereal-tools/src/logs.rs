@@ -7,8 +7,9 @@ use aethereal_actor::{
 use aethereal_data::{ActorPath, Bare, Budget, Encode, EncodeError, Plain, Schema, SchemaNodes, Writer, from_bytes};
 use core::fmt::Write as _;
 
-/// The most bytes of text one answer holds: past it, the answer stops early, and its `next` says where to go on.
-const MOST_TEXT_BYTES: usize = 256 * 1024;
+/// The most bytes one answer is written in, its entries' own fields with their text: past it, the answer stops early,
+/// and its `next` says where to go on. Text alone would leave many short entries unbounded.
+const MOST_ANSWER_BYTES: usize = 256 * 1024;
 /// The most bytes reading an input may take. A path and a filter are short.
 const INPUT_BYTES: usize = 8 * 1024;
 
@@ -198,7 +199,7 @@ impl Tool for LogsTool {
             description: format!(
                 "Reads what the actor at `actor` (its path) logged, live or ended: its entries numbered `since` and \
                  after, oldest first; lines at `level` and above and every fault, drop, or unread mail; those whose \
-                 text holds `contains` (\"\" for all); at most `most`, and {MOST_TEXT_BYTES} bytes of text. Ask \
+                 text holds `contains` (\"\" for all); at most `most`, in an answer of at most {MOST_ANSWER_BYTES} bytes. Ask \
                  again from `next` to go on; `skipped` counts entries that had left the log."
             ),
             input: SchemaNodes::of(&ReadLog::SHAPE),
@@ -267,24 +268,22 @@ const ANSWER_BYTES: usize = 4 + 8 + 8;
 const ENTRY_BYTES: usize = 8 + 4 + 4 + 4;
 
 /// What `read` keeps of `entries`, those numbered from its `since`, oldest first: at most `most` of them, and
-/// [`MOST_TEXT_BYTES`] of text.
+/// [`MOST_ANSWER_BYTES`] of answer.
 fn plan<'e>(entries: impl Iterator<Item = (u64, &'e Entry)>, read: &ReadLog) -> Plan {
     let most = usize::try_from(read.most).unwrap_or(usize::MAX);
     let mut scratch = String::new();
     let mut plan = Plan { count: 0, room: ANSWER_BYTES, ended: Ended::Last };
-    let mut text_bytes = 0;
     for (n, entry) in entries {
         let spoken = Spoken::of(entry, &mut scratch);
         if !spoken.is_kept(read) {
             continue;
         }
         let length = spoken.text().len();
-        let full = plan.count >= most || text_bytes + length > MOST_TEXT_BYTES;
+        let full = plan.count >= most || plan.room + ENTRY_BYTES + length > MOST_ANSWER_BYTES;
         if full {
             plan.ended = Ended::Short(n);
             break;
         }
-        text_bytes += length;
         plan.count += 1;
         plan.room += ENTRY_BYTES + length;
     }
@@ -418,5 +417,22 @@ mod tests {
         };
         assert_eq!(Ok(answered(&entries, 2, 6, &filtered)), to_bytes(&expected_filtered));
         assert_eq!(Ok(answered(&entries, 2, 6, &stopped)), to_bytes(&expected_stopped));
+    }
+
+    #[test]
+    fn an_answer_of_many_short_entries_stays_within_its_bytes() {
+        // Catches a bound on text alone, under which entries with little text make an answer of any size: its own
+        // fields count too, and `next` names the first entry left out.
+        let entries: Vec<Entry> =
+            (0..100_000).map(|_| Entry::Line { level: Level::Info, text: String::new() }).collect();
+        let read = read(0, LogLevel::Debug, "", u32::MAX);
+
+        let bytes = answered(&entries, 0, 100_000, &read);
+        let Ok(log) = from_bytes::<ActorLog>(&bytes, &mut Budget::new(bytes.len() * 8)) else {
+            panic!("the answer reads");
+        };
+
+        assert!(bytes.len() <= MOST_ANSWER_BYTES, "{} bytes", bytes.len());
+        assert_eq!(log.next, log.entries.len() as u64);
     }
 }
