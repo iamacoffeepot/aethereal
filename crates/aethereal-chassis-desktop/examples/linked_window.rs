@@ -27,7 +27,7 @@ use aethereal_render::{CaptureTool, RecordTool, Renderer};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{LogsTool, Toolbox};
-use aethereal_window::{InputTool, Windows};
+use aethereal_window::{InputTool, WindowTool, Windows};
 use core::error::Error;
 use core::num::{NonZeroU32, NonZeroUsize};
 use ring::Scene;
@@ -83,7 +83,7 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root::<Files>()
         .root::<Tcp>()
         .root_with::<Link>(link)
-        .root::<Toolbox<(CaptureTool, RecordTool, LogsTool, InputTool, PaceTool), Link>>()
+        .root::<Toolbox<(CaptureTool, RecordTool, LogsTool, InputTool, WindowTool, PaceTool), Link>>()
         .flags(|flags| {
             flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE)
         })

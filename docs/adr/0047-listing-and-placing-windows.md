@@ -1,6 +1,6 @@
 # ADR-0047: Listing and placing windows
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-03
 
 ## Context

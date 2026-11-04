@@ -137,7 +137,7 @@ impl<'a> Screen<'a> {
         mode: Mode,
     ) -> Result<WindowId, Unopened> {
         let native = native(self.event_loop, title, LogicalSize::new(f64::from(width), f64::from(height)), mode)?;
-        let feed = opening.open(standing(&native), mode, native.has_focus());
+        let feed = opening.open(title, standing(&native), mode, native.has_focus());
         let window = feed.window();
         self.windows.push(OnScreen { native, feed, mode });
 
