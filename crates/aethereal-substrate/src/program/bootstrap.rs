@@ -7,6 +7,7 @@ use aethereal_actor::{Actors, Bytes, Controller, Given, Requests, Resource, Root
 use aethereal_data::config::RootSettings;
 use aethereal_data::{Encode, Kind};
 use core::marker::PhantomData;
+use core::time::Duration;
 
 /// How a root bootstraps itself on the host `H` (ADR-0029).
 ///
@@ -71,6 +72,12 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
     #[must_use]
     pub const fn blob_bytes(&self) -> usize {
         self.stage.engine.blob_bytes()
+    }
+
+    /// The most one `Tick`'s delta may be, as the engine limits it (ADR-0020, ADR-0045).
+    #[must_use]
+    pub const fn delta_limit(&self) -> Duration {
+        self.stage.engine.delta_limit()
     }
 
     /// Begins the root under `key`, from `config`, after the roots begun before it.

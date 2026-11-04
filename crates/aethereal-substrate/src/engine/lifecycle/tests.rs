@@ -478,6 +478,33 @@ fn a_tick_s_delta_is_limited_and_its_stage_of_a_chassis_s_own_comes_first() {
 }
 
 #[test]
+fn a_held_cycle_carries_the_delta_chosen_and_the_clock_resumed_counts_from_then() {
+    // Catches a held delta measured from the host's time or limited, a time elapsed that skips a held cycle, a cycle
+    // said finished before its last stage has run, and a clock resumed that counts the time it was held.
+    let mut engine = cycling::<Full>(Duration::from_nanos(25));
+    engine.cycle(Time::ZERO);
+    for nanos in [10, 20, 30, 40, 50] {
+        step_at(&mut engine, nanos);
+    }
+    assert!(engine.has_cycled());
+
+    engine.cycle_by(Duration::from_micros(1));
+    assert!(!engine.has_cycled(), "a held cycle is due");
+    assert_eq!(step_at(&mut engine, 60), [Seen::Received]);
+    assert_eq!(step_at(&mut engine, 70), [Seen::Ticked(1000, 1000)], "chosen, so neither measured nor limited");
+    assert_eq!(step_at(&mut engine, 80), [got(0, Note::Pass(1))]);
+    assert_eq!(step_at(&mut engine, 90), [Seen::Rendered]);
+    assert!(!engine.has_cycled(), "its last stage is still to run");
+    assert_eq!(step_at(&mut engine, 100), [Seen::Presented]);
+    assert!(engine.has_cycled());
+
+    engine.resume(Time::from_nanos(5000));
+    engine.cycle(Time::from_nanos(5010));
+    assert_eq!(step_at(&mut engine, 5020), [Seen::Received]);
+    assert_eq!(step_at(&mut engine, 5030), [Seen::Ticked(10, 1010)], "counted from the resume, not the held cycle");
+}
+
+#[test]
 fn a_program_asked_to_stop_mid_cycle_finishes_the_cycle_first() {
     // Catches `Stop` sent in the middle of a cycle, so an actor stops between drawing and showing.
     let mut engine = cycling::<Full>(Duration::from_secs(1));

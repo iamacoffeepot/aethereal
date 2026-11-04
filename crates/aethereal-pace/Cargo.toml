@@ -1,0 +1,19 @@
+[package]
+name = "aethereal-pace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The program's clock: a root that holds it or lets it run, and advances a held one by deltas it is given (ADR-0045)"
+
+[dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-data = { path = "../aethereal-data" }
+aethereal-substrate = { path = "../aethereal-substrate" }
+
+[dev-dependencies]
+# The tests read the turns the engine recorded, which only this feature opens (ADR-0036).
+aethereal-substrate = { path = "../aethereal-substrate", features = ["harness"] }
+
+[lints]
+workspace = true

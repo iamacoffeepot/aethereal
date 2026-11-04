@@ -10,6 +10,7 @@ description = "The browser chassis: the engine on a page's one thread, cycled by
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 aethereal-files = { path = "../aethereal-files" }
+aethereal-pace = { path = "../aethereal-pace" }
 aethereal-render = { path = "../aethereal-render" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 aethereal-window = { path = "../aethereal-window" }

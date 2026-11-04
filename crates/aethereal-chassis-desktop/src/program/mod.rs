@@ -18,6 +18,7 @@ use crate::serving::Drawing;
 use aethereal_actor::Service;
 use aethereal_chassis_headless::Exit;
 use aethereal_data::Plain;
+use aethereal_pace::Clockwork;
 use aethereal_substrate::{Host, Serves, Settled};
 use aethereal_window::Hosting;
 
@@ -65,6 +66,12 @@ impl Host for Desktop {
 impl Serves<Hosting> for Desktop {
     fn serve(screen: &mut Screen<'_>, hosting: Hosting) {
         screen.serve_windowing(hosting);
+    }
+}
+
+impl Serves<Clockwork> for Desktop {
+    fn serve(screen: &mut Screen<'_>, clockwork: Clockwork) {
+        screen.serve_clockwork(clockwork);
     }
 }
 

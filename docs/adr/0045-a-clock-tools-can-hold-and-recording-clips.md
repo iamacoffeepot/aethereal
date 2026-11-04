@@ -82,7 +82,7 @@ pub struct PacerConfig { pub pace: Pace }       // how the clock starts: Real un
   - `Engine::cycle_by(delta)`: a cycle due now, whose `Tick` carries `delta` exactly, measured from no host time.
   - `Engine::resume(at)`: the next cycle the host says due counts its delta from `at`.
 
-  `Engine::has_cycled()` says whether the last cycle due has finished, read from what the engine already holds, as a stage's end is (`Engine::has_finished`).
+  `Engine::has_cycled()` says whether the last cycle due has finished, read from what the engine already holds, as a stage's end is (`Engine::has_finished`). `Engine::elapsed()` is the program's time the host reports in `Cycled`, and `Engine::delta_limit()` is the limit the pacer refuses past, read by its bootstrap.
 - **Every host implements the controller:**
   - The headless host's run loop skips its timer while held.
   - The desktop host's pacing gains the held case: no frame is asked for until a `Cycle` comes.
@@ -142,7 +142,7 @@ record_clip { window, frames, frames_per_second, crop, longest, name }
 - **Frames are kept as PNGs, not encoded as video.** An MP4 needs an encoder the engine does not have, and the folder is what any encoder reads. A clip of 3600 frames at 1280 × 800 is a few gigabytes, so the cap bounds it.
 - **Actors that animate from `turn.now()` are not held.** Moving them to `Tick` is the fix, and the guide's rule.
 - **`Pacer` is listed by each chassis that offers it.** The desktop, headless and browser chassis list it, and a toolbox lists `RecordTool` as it lists `CaptureTool`.
-- **The desktop's private `Pacing` is renamed `Presented`,** since `Pacing` is now the controller's message.
+- **The desktop's private `Pacing` keeps its name.** It is not exported, and nothing in the desktop names the controller's `Pacing`, so the two never meet.
 - **Later:**
   - a held clock for the headless harness's tests, which already step by count (`Budget::Steps`);
   - injecting input at a held cycle, so a scripted walk replays exactly;

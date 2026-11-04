@@ -80,6 +80,7 @@ pub use serving::{Drawing, Serving};
 pub use wasm_bindgen_futures;
 
 use aethereal_actor::Time;
+use aethereal_pace::Clockwork;
 use aethereal_substrate::{Clock, Engine};
 
 /// An engine run on the page's thread, timed by the clock `C`: the page's own, [`Performance`], in a browser, with
@@ -89,6 +90,9 @@ pub struct Browser<C> {
     clock: C,
     serving: Serving,
     hosted: Hosted,
+    /// The pacer's, which holds the program's clock or lets it run: one that asks nothing unless the program lists a
+    /// pacer (ADR-0045).
+    clockwork: Clockwork,
 }
 
 impl<C: Clock> Browser<C> {
@@ -98,7 +102,15 @@ impl<C: Clock> Browser<C> {
     pub fn new(mut engine: Engine, clock: C, serving: Serving, hosted: Hosted) -> Self {
         engine.start();
 
-        Self { engine, clock, serving, hosted }
+        Self { engine, clock, serving, hosted, clockwork: Clockwork::unlisted() }
+    }
+
+    /// The browser, its clock held and advanced as the pacer that asks through `clockwork` says (ADR-0045).
+    #[must_use]
+    pub fn with_clockwork(mut self, clockwork: Clockwork) -> Self {
+        self.clockwork = clockwork;
+
+        self
     }
 
     /// The engine, as of the last frame.
@@ -118,21 +130,50 @@ impl<C: Clock> Browser<C> {
     /// read back, its turns' copies submitted, for the page's promises to bring in once the GPU has mapped it
     /// (ADR-0019).
     ///
+    /// While the program's pacer holds its clock, a frame runs the one held cycle the pacer asked for, if any, in place
+    /// of a cycle at the frame's time, and no canvas's frame is handed to the renderer when none runs. A held cycle
+    /// that finished is said to the pacer within the frame, so it asks for the next by the frame after (ADR-0045).
+    ///
     /// # Panics
     ///
     /// Panics with a turn's panic, and when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn frame(&mut self, timestamp_millis: f64) {
-        self.serving.acquire();
-        self.engine.cycle(frame_time(timestamp_millis));
-        self.hosted.refuse();
-        self.engine.bring();
+        let at = frame_time(timestamp_millis);
+        // The page draws on and on, so a clock set running needs no frame asked for.
+        let _ = self.clockwork.take(&mut self.engine, at);
+        let runs = self.clockwork.runs();
+        let cycles = runs || self.clockwork.is_owed();
+        if cycles {
+            self.serving.acquire();
+        }
+        if runs {
+            self.engine.cycle(at);
+        } else {
+            self.clockwork.begin(&mut self.engine);
+        }
+        self.run_until_idle();
+        let _ = self.clockwork.settle(&self.engine);
+        self.run_until_idle();
+        self.serving.serve();
+    }
+
+    /// Brings in what was pushed and finished and steps, until no actor has anything to run, answering what the window
+    /// root asked between steps, and taking what the pacer asked.
+    fn run_until_idle(&mut self) {
+        self.between();
         while !self.engine.is_idle() {
             let now = Time::from_nanos(self.clock.nanos());
             self.engine.step(now, &self.clock);
-            self.hosted.refuse();
-            self.engine.bring();
+            self.between();
         }
-        self.serving.serve();
+    }
+
+    /// Between steps: answers what the window root asked, takes what the pacer asked, and brings in what was pushed.
+    fn between(&mut self) {
+        self.hosted.refuse();
+        let now = Time::from_nanos(self.clock.nanos());
+        let _ = self.clockwork.take(&mut self.engine, now);
+        self.engine.bring();
     }
 }
 

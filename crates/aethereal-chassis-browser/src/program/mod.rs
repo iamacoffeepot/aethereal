@@ -17,6 +17,7 @@ use crate::serving::{Drawing, Serving};
 use crate::{Browser, EventLoop, Hosted, Listening, Performance};
 use aethereal_actor::{Service, Services};
 use aethereal_data::Plain;
+use aethereal_pace::Clockwork;
 use aethereal_substrate::{Engine, Host, ProgramError, Serves, Settled, Unbuilt};
 use aethereal_window::Hosting;
 use core::pin::Pin;
@@ -42,6 +43,8 @@ pub struct Paging {
     listening: Vec<Listening>,
     /// The services the runner's jobs reach: none until a root serves one.
     services: Services,
+    /// The pacer's clockwork: one that asks nothing until a root serves the pacer's.
+    clockwork: Clockwork,
 }
 
 /// A canvas opened as a window, as the window root's bootstrap opened it.
@@ -59,6 +62,7 @@ impl Paging {
             hosted: Hosted::Nothing,
             listening: Vec::new(),
             services: Services::none(),
+            clockwork: Clockwork::unlisted(),
         }
     }
 
@@ -80,9 +84,10 @@ impl Paging {
     /// The program of `engine`, started, served as the roots asked, and listening as they did: the canvases are the
     /// page's, which its drawing draws to through their surfaces.
     fn start(self, engine: Engine) -> Started {
-        let Self { serving, hosted, listening, .. } = self;
+        let Self { serving, hosted, listening, clockwork, .. } = self;
+        let browser = Browser::new(engine, Performance, serving, hosted).with_clockwork(clockwork);
 
-        Started { browser: Browser::new(engine, Performance, serving, hosted), _listening: listening }
+        Started { browser, _listening: listening }
     }
 }
 
@@ -136,6 +141,12 @@ impl Host for Browser<Performance> {
 impl Serves<Hosting> for Browser<Performance> {
     fn serve(paging: &mut Paging, hosting: Hosting) {
         paging.hosted = Hosted::Windows(hosting);
+    }
+}
+
+impl Serves<Clockwork> for Browser<Performance> {
+    fn serve(paging: &mut Paging, clockwork: Clockwork) {
+        paging.clockwork = clockwork;
     }
 }
 

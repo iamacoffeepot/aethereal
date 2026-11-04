@@ -15,6 +15,7 @@ aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 aethereal-files = { path = "../aethereal-files" }
 aethereal-link = { path = "../aethereal-link" }
+aethereal-pace = { path = "../aethereal-pace" }
 aethereal-process = { path = "../aethereal-process" }
 aethereal-store = { path = "../aethereal-store" }
 aethereal-substrate = { path = "../aethereal-substrate" }
