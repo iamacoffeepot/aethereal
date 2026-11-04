@@ -32,7 +32,7 @@ agent ── call_tool { engine, tool: "actor_logs", input } ──> hub ══ 
 
 - **Each entry is numbered within its actor,** from 0, in the order the actor made them. A number never changes, so a reader that asks from a number learns how many entries left the view before it read them.
 - **An actor keeps its last `most_logged` entries,** a field of `EngineSettings` (32 by default), which replaces `RECENT`. As before, an entry outlives its actor until another takes the seat and logs.
-- **The view is also read by the actor's id,** which a path names whether or not the actor lives (ADR-0022: `Table::child` computes an id). A live actor's entries are read at its seat. An ended one's are found by looking through the seats for the id kept beside each seat's entries: a read costs a pass over the seats that have logged, and a fold costs nothing more, as reads are rare and logging is not. So the log of an actor that has ended, usually the one most wanted, is read by its path.
+- **The view is also read by the actor's id,** which a path names whether or not the actor lives (ADR-0022: `Table::child` computes an id). A live actor's entries are read at its seat. Each part of the view also keeps the seat each of its actors logged in, by the actor's id, written only as an actor first logs in a seat, when the seat's last actor leaves it; so an ended actor is found in one lookup a part, not by a pass over every seat, which cost 100 µs at 100,000 seats. So the log of an actor that has ended, usually the one most wanted, is read by its path.
 - `Engine::log` reads the view as before.
 
 ### A turn reads a log

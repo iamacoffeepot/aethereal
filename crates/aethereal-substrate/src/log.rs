@@ -1,6 +1,6 @@
 //! The view of what each actor logged most recently (ADR-0009, ADR-0011).
 
-use crate::{BySeat, Context, Folded, Part, View};
+use crate::{ByActor, BySeat, Context, Folded, Part, View};
 use aethereal_actor::{
     Arena, Effect, Entry, Fault, KeptLog, Level, Line, Payload, SeatNumber, Seated, Unreadable, What,
 };
@@ -20,16 +20,20 @@ pub const MOST_LOGGED: usize = 32;
 /// log worth keeping longer is copied out before then.
 pub struct Log;
 
-/// One part of the log: the entries of each actor whose seat falls in it, and how many each keeps.
+/// One part of the log: the entries of each actor whose seat falls in it, the seat each such actor logged in by its
+/// id, and how many each keeps.
 pub struct Logs {
     seats: BySeat<KeptLog>,
+    /// The seat each actor kept here logged in, by its id: written as an actor first logs in a seat, so a log is found
+    /// by id in one lookup a part, live or ended (ADR-0044).
+    ids: ByActor<SeatNumber>,
     /// The most entries an actor keeps: fixed as the engine is set up, before any fold.
     most: usize,
 }
 
 impl Part for Logs {
     fn empty(parts: NonZeroUsize) -> Self {
-        Self { seats: BySeat::empty(parts), most: MOST_LOGGED }
+        Self { seats: BySeat::empty(parts), ids: ByActor::default(), most: MOST_LOGGED }
     }
 }
 
@@ -47,12 +51,12 @@ impl Logs {
 }
 
 /// What the actor `id` has logged, live or ended, found in the seat it last logged in while no other actor has logged
-/// there since: read by id, for a log read by path, as the view keeps it under seats (ADR-0044).
+/// there since: read by id, for a log read by path, in one lookup a part (ADR-0044).
 pub fn find(log: &Folded<Log>, id: ActorId) -> Option<&KeptLog> {
-    log.shards().enumerate().find_map(|(part, logs)| {
-        let mut seated = logs.seats.seated(part);
+    log.shards().find_map(|logs| {
+        let seat = *logs.ids.get(&id.bits())?;
 
-        seated.find(|(seated, _)| seated.id == id).map(|(_, kept)| kept)
+        logs.seats.get(Seated { id, seat })
     })
 }
 
@@ -87,7 +91,16 @@ impl View for Log {
     /// it arrives, so a log kept full allocates nothing.
     fn fold(shard: &mut Logs, key: u64, (id, logged): (ActorId, Logged), written: &[Arena]) {
         let most = shard.most;
-        let kept = shard.seats.entry(Seated { id, seat: SeatNumber::new(key) }, KeptLog::default);
+        let seated = Seated { id, seat: SeatNumber::new(key) };
+        let is_first = shard.seats.get(seated).is_none();
+        if is_first {
+            // The seat's last actor, if any, leaves the index as this one takes its place in it.
+            if let Some(gone) = shard.seats.id_in(seated.seat) {
+                shard.ids.remove(&gone.bits());
+            }
+            shard.ids.insert(id.bits(), seated.seat);
+        }
+        let kept = shard.seats.entry(seated, KeptLog::default);
         kept.keep(most, |left| entry(logged, left, written));
     }
 }
