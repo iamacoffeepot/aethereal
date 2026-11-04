@@ -8,6 +8,7 @@ use crate::presenting::Unoffered;
 use crate::serving::Drawing;
 use aethereal_actor::Service;
 use aethereal_chassis_headless::Serving;
+use aethereal_pace::Clockwork;
 use aethereal_render::Gpu;
 use aethereal_substrate::Unbuilt;
 use aethereal_tcp::Readiness;
@@ -29,6 +30,8 @@ pub struct Screen<'a> {
     windows: Vec<OnScreen>,
     windowing: Served<Hosting>,
     drawing: Served<Box<Drawing>>,
+    /// The pacer's clockwork: one that asks nothing unless the program lists a pacer (ADR-0045).
+    clockwork: Clockwork,
     /// What the roots served for the host's runners: the file capability's storage (ADR-0029, ADR-0032).
     runners: Serving,
 }
@@ -112,6 +115,7 @@ impl<'a> Screen<'a> {
             windows,
             windowing: Served::Unserved,
             drawing: Served::Unserved,
+            clockwork: Clockwork::unlisted(),
             runners: Serving::new(),
         }
     }
@@ -160,6 +164,11 @@ impl<'a> Screen<'a> {
         self.drawing = Served::Served(Box::new(drawing));
     }
 
+    /// Keeps the pacer's clockwork, in place of any kept before.
+    pub(crate) fn serve_clockwork(&mut self, clockwork: Clockwork) {
+        self.clockwork = clockwork;
+    }
+
     /// The poller the host's runners will sleep in, as the service that tells a job when a socket is ready (ADR-0033).
     pub(crate) fn readiness(&self) -> Service<dyn Readiness> {
         self.runners.readiness()
@@ -170,15 +179,18 @@ impl<'a> Screen<'a> {
         self.runners.serve(service);
     }
 
-    /// What the roots served: the renderer's end, the window root's, and what the host's runners are made with.
+    /// What the roots served: the renderer's end, the window root's, what the host's runners are made with, and the
+    /// pacer's clockwork.
     ///
     /// # Errors
     ///
     /// The end no root served, by name: the desktop draws each window it opens through the renderer, and opens and
     /// closes them as the window root asks.
-    pub(crate) fn into_served(self) -> Result<(Box<Drawing>, Hosting, Serving), &'static str> {
+    pub(crate) fn into_served(self) -> Result<(Box<Drawing>, Hosting, Serving, Clockwork), &'static str> {
         match (self.drawing, self.windowing) {
-            (Served::Served(drawing), Served::Served(windowing)) => Ok((drawing, windowing, self.runners)),
+            (Served::Served(drawing), Served::Served(windowing)) => {
+                Ok((drawing, windowing, self.runners, self.clockwork))
+            }
             (Served::Unserved, _) => Err("the renderer's drawing"),
             (Served::Served(_), Served::Unserved) => Err("the window root's hosting"),
         }

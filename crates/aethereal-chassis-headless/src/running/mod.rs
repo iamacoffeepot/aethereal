@@ -66,6 +66,9 @@ impl Headless {
     /// while the program was busy is skipped, not queued: the next `Tick` covers the time. An engine whose cycle holds
     /// no stage has no cycle to wake for, and sleeps until something comes in.
     ///
+    /// While the program's pacer holds its clock, no cycle is due on the timer: each held cycle the pacer asks for is
+    /// said due once no actor has anything to run, and said finished to the pacer once it has (ADR-0045).
+    ///
     /// # Panics
     ///
     /// Panics with a turn's panic, and when a turn makes an actor under an id the table already holds (ADR-0008).
@@ -85,7 +88,10 @@ impl Headless {
                 (Lifecycle::Stopping, Stopping::By(by)) if now >= by => break Exit::OutOfTime,
                 (Lifecycle::Waiting | Lifecycle::Running | Lifecycle::Stopping, _) => {}
             }
-            if timer.fires(now) {
+            // The timer's grid goes on through a hold, so a clock set running needs nothing asked of it here.
+            let _ = self.clockwork.take(&mut self.engine, Time::from_nanos(now));
+            let runs = self.clockwork.runs();
+            if runs && timer.fires(now) {
                 self.engine.cycle(Time::from_nanos(now));
             }
             self.engine.bring();
@@ -93,10 +99,17 @@ impl Headless {
                 self.step();
                 continue;
             }
+            // A held cycle that has finished is said to the pacer, whose push wakes this thread; one asked for begins.
+            let _ = self.clockwork.settle(&self.engine);
+            if self.clockwork.is_owed() {
+                self.clockwork.begin(&mut self.engine);
+                continue;
+            }
             self.pool.park();
+            let waits_for_cycles = runs && self.engine.has_stages();
             let rest = match stopping {
                 Stopping::By(by) => Rest::Until(by),
-                Stopping::Not if self.engine.has_stages() => Rest::Until(timer.due()),
+                Stopping::Not if waits_for_cycles => Rest::Until(timer.due()),
                 Stopping::Not => Rest::Woken,
             };
             // A wake that came since the last bring has left this thread unparked, so the park returns at once, and so

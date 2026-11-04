@@ -135,6 +135,11 @@ impl Drawing {
         }
     }
 
+    /// Whether any window is drawn: shown, at a size, and given a surface.
+    pub(crate) fn draws(&self) -> bool {
+        self.windows.iter().any(Kept::draws)
+    }
+
     /// Asks for the next frame of the first window drawn, which paces them all: one frame draws every window drawn,
     /// so asking each would draw a frame for each.
     pub(crate) fn ask_next(&self) {

@@ -5,7 +5,9 @@ use aethereal_actor::{
     Actor, Answer, Answered, Beginning, ChildOf, Controller, Drained, Ending, Fault, Given, Handle, Handles, Held, On,
     Services, Sleep, Slept, Start, Stop, Tick, ToSender, Top, Turn,
 };
+use aethereal_actor::{Asks, Path, path};
 use aethereal_data::{Bound, Plain};
+use aethereal_pace::{Advance, Advanced, Pace, Pacer, PacerConfig};
 use aethereal_substrate::{Engine, Jobs};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, mpsc};
@@ -531,7 +533,7 @@ impl Actor for Waiter {
 }
 
 impl Handles<On<Start>> for Waiter {
-    type Sends = (aethereal_actor::Asks<Hushes, Hush, Nothing>,);
+    type Sends = (Asks<Hushes, Hush, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let due = turn.now() + Duration::from_millis(20);
@@ -580,4 +582,108 @@ fn a_program_with_no_cycle_is_woken_by_a_deadline_that_comes_while_it_sleeps() {
     assert_eq!(exit, Exit::Stopped);
     assert_eq!(waited.take(), [Waited::No(aethereal_actor::Unanswered::Expired)]);
     assert!(took >= Duration::from_millis(20), "it waited until the deadline: {took:?}");
+}
+
+/// What a stepper tells the test: a `Tick`'s delta, or what became of its advance.
+#[derive(Debug, PartialEq, Eq)]
+enum Stepped {
+    Ticked(u64),
+    Advanced(Advanced),
+}
+
+/// What a stepper is made from: what it tells the test through, as a metronome's.
+#[derive(Bound)]
+#[kind(name = "aether.test.stepper_config")]
+struct StepperConfig {
+    told: Given<Controller<Stepped>>,
+}
+
+/// An actor that asks the pacer, as it begins, to advance its held clock three cycles of `STEP`, tells the test each
+/// `Tick`'s delta and what became of the advance, and asks the program to stop once it is answered.
+#[derive(Bound)]
+#[kind(name = "aether.test.stepper")]
+struct Stepper {
+    told: Handle<Controller<Stepped>>,
+}
+
+/// Each held cycle's delta: far longer than the host's period, so a delta measured on the host's clock reads apart.
+const STEP: Duration = Duration::from_millis(200);
+
+impl ChildOf for Stepper {
+    type Parent = Top;
+}
+
+impl Actor for Stepper {
+    type Config = StepperConfig;
+    type Key = ();
+    type Handles = (On<Tick>, Answer<Advanced, Nothing>);
+    type BeginSends = (Asks<Path<Pacer>, Advance, Nothing>,);
+    type EndSends = ();
+
+    fn begin(config: StepperConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        let told = turn.take(config.told)?;
+        turn.subscribe::<Tick>();
+        let delta_nanos = nanos(STEP);
+        turn.to(path::<Pacer>(())).ask(&Advance { cycles: 3, delta_nanos }, &Nothing)?;
+
+        Ok(Self { told })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<On<Tick>> for Stepper {
+    type Sends = ();
+
+    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        turn.open(&mut self.told)?.push(Stepped::Ticked(tick.delta_nanos));
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Advanced, Nothing>> for Stepper {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, _): (Answered<Advanced>, Nothing),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        if let Answered::Yes(advanced) = answered {
+            turn.open(&mut self.told)?.push(Stepped::Advanced(advanced));
+        }
+        turn.quit();
+
+        Ok(())
+    }
+}
+
+#[test]
+fn a_held_clock_cycles_only_as_its_pacer_advances_it_each_tick_of_the_delta_asked() {
+    // Catches a host that cycles on its timer while the clock is held, one that never says a held cycle is due or
+    // never says it finished, so the advance is never answered, and a held `Tick` given the host's time between
+    // cycles in place of the delta asked.
+    let (headless, (told, clockwork)) = headless::<(Tick,), _>(|engine| {
+        let source = engine.source();
+        let controller = engine.controller();
+        let (config, clockwork) = PacerConfig::paired(source, controller, Pace::Held, Duration::from_millis(250));
+        let (given, told) = engine.controller();
+        let begun = engine
+            .add_root::<Pacer>(&(), config)
+            .and_then(|_| engine.add_root::<Stepper>(&(), StepperConfig { told: given }));
+        let Ok(_) = begun else {
+            panic!("the pacer and the stepper begin");
+        };
+
+        (told, clockwork)
+    });
+    let (_, exit) = timed(headless.with_clockwork(clockwork), Duration::from_millis(1), Duration::from_secs(30));
+
+    assert_eq!(exit, Exit::Stopped);
+    let step = nanos(STEP);
+    let advanced = Stepped::Advanced(Advanced::Advanced { elapsed_nanos: 3 * step });
+    assert_eq!(told.take(), [Stepped::Ticked(step), Stepped::Ticked(step), Stepped::Ticked(step), advanced]);
 }

@@ -11,6 +11,7 @@ use crate::gpu::Screen;
 use crate::serving::Drawing;
 use aethereal_actor::Time;
 use aethereal_chassis_headless::{Exit, Headless, Monotonic};
+use aethereal_pace::Clockwork;
 use aethereal_substrate::{Clock, Lifecycle, ProgramError, Settled};
 use aethereal_window::Hosting;
 use core::error::Error;
@@ -127,11 +128,14 @@ enum Stage {
     Ended(Result<Exit, Failed>),
 }
 
-/// A program running in its windows, and what paces its frames.
+/// A program running in its windows, and what paces its frames: the display or a timer while its clock runs, and the
+/// pacer's advances while the pacer holds it (ADR-0045).
 struct Running {
     headless: Headless,
     drawing: Box<Drawing>,
     windowing: Hosting,
+    clockwork: Clockwork,
+    clock: Monotonic,
     stopping: Stopping,
     pacing: Pacing,
 }
@@ -217,7 +221,7 @@ impl App {
     /// frame. Its frames are paced as the renderer's settings present them, a capped grid starting now.
     fn open(&self, event_loop: &ActiveEventLoop, settled: Settled<Desktop>) -> Result<Running, Failed> {
         let (mut engine, screen) = pollster::block_on(settled.bootstrap(Screen::new(event_loop)))?;
-        let (drawing, windowing, runners) = screen.into_served().map_err(Failed::Unserved)?;
+        let (drawing, windowing, runners, clockwork) = screen.into_served().map_err(Failed::Unserved)?;
         engine.set_jobs(Arc::new(runners.runners(self.workers)));
         engine.set_wake(Waker::from(Arc::new(Proxy(Mutex::new(self.proxy.clone())))));
         let mut headless = Headless::new(engine, self.workers);
@@ -225,7 +229,7 @@ impl App {
         let pacing = Pacing::new(drawing.presenting(), self.clock.nanos());
         drawing.ask_next();
 
-        Ok(Running { headless, drawing, windowing, stopping: Stopping::Not, pacing })
+        Ok(Running { headless, drawing, windowing, clockwork, clock: self.clock, stopping: Stopping::Not, pacing })
     }
 }
 
@@ -241,6 +245,10 @@ impl Running {
     fn frame(&mut self, event_loop: &ActiveEventLoop, clock: Monotonic) {
         let running = self.headless.engine().lifecycle() == Lifecycle::Running;
         if !running {
+            return;
+        }
+        if !self.clockwork.runs() {
+            self.held(event_loop);
             return;
         }
         let paced = self.pacing.draws(clock.nanos());
@@ -264,14 +272,42 @@ impl Running {
     /// windows' events. Each window asked for is opened or closed between steps, on `event_loop`, before the bring
     /// that brings in what the chassis said of it.
     fn step_until_idle(&mut self, event_loop: &ActiveEventLoop) {
-        self.windowing(event_loop);
-        self.headless.engine_mut().bring();
+        self.between(event_loop);
         while !self.headless.engine().is_idle() {
             self.headless.step();
-            self.windowing(event_loop);
-            self.headless.engine_mut().bring();
+            self.between(event_loop);
         }
         self.headless.park();
+        // A held cycle that has finished is said to the pacer, whose push wakes the loop to step its turn.
+        let _ = self.clockwork.settle(self.headless.engine());
+    }
+
+    /// Between steps: opens and closes what the window root asked for, takes what the pacer asked, and brings in what
+    /// was pushed and finished since.
+    fn between(&mut self, event_loop: &ActiveEventLoop) {
+        self.windowing(event_loop);
+        let now = Time::from_nanos(self.clock.nanos());
+        let resumed = self.clockwork.take(self.headless.engine_mut(), now);
+        let follows = self.pacing.follows();
+        if resumed && follows {
+            self.drawing.ask_next();
+        }
+        self.headless.engine_mut().bring();
+    }
+
+    /// Runs the held cycle the pacer asked for, if any, as a frame: acquires the frame of each window shown at a size,
+    /// says the cycle is due, steps until no actor has anything to run, and presents what the renderer drew. With no
+    /// window shown it runs undrawn, so an advance never waits on a window coming back (ADR-0045).
+    fn held(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.clockwork.is_owed() {
+            return;
+        }
+        let drawn = self.drawing.acquire();
+        self.clockwork.begin(self.headless.engine_mut());
+        self.step_until_idle(event_loop);
+        if drawn {
+            self.drawing.serve();
+        }
     }
 
     /// Between the loop's events, at `now`: polls the device, steps what the windows' events, the sources, and the
@@ -292,9 +328,24 @@ impl Running {
             }
             (Lifecycle::Stopping, Stopping::By(by)) if now >= by => Next::End(Exit::OutOfTime),
             (Lifecycle::Stopping, Stopping::By(by)) => Next::LookAt(by),
+            (Lifecycle::Running, _) if !self.clockwork.runs() => self.owed(event_loop),
             (Lifecycle::Running, _) => self.paced(now),
             (Lifecycle::Waiting, _) => Next::Wait,
         }
+    }
+
+    /// What the loop does next while the pacer holds the clock: asks for a frame for a held cycle the pacer asked for,
+    /// or runs it at once when no window is shown, and waits on the windows' events and the pacer's next push.
+    fn owed(&mut self, event_loop: &ActiveEventLoop) -> Next {
+        if self.drawing.draws() {
+            if self.clockwork.is_owed() {
+                self.drawing.ask_next();
+            }
+        } else {
+            self.held(event_loop);
+        }
+
+        Next::Wait
     }
 
     /// What the loop does next while the program runs, at `now`, as its frames are paced: waits on the frame asked

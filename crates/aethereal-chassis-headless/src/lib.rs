@@ -35,6 +35,7 @@ pub use jobs::{Poller, Runners};
 pub use link::{NoRandomness, SystemRandomness};
 
 use aethereal_actor::Time;
+use aethereal_pace::Clockwork;
 #[cfg(feature = "harness")]
 use aethereal_substrate::harness::{Budget, Steps};
 use aethereal_substrate::{Clock, Engine, Split, SplitCost, Workers};
@@ -59,6 +60,9 @@ pub struct Headless {
     /// What splitting a step among the workers costs, as rehearsed when the host was made: among two first, then
     /// three, and so on, as [`SplitCost::new`] reads it.
     split: Vec<u64>,
+    /// The pacer's, which holds the program's clock or lets it run: one that asks nothing unless the program lists a
+    /// pacer (ADR-0045).
+    clockwork: Clockwork,
 }
 
 impl Headless {
@@ -72,7 +76,15 @@ impl Headless {
         let mut pool = Pool::new(workers, &clock);
         let split = rehearsal::split_cost(&engine, &mut pool, clock);
 
-        Self { engine, pool, clock, split }
+        Self { engine, pool, clock, split, clockwork: Clockwork::unlisted() }
+    }
+
+    /// The host, its clock held and advanced as the pacer that asks through `clockwork` says (ADR-0045).
+    #[must_use]
+    pub fn with_clockwork(mut self, clockwork: Clockwork) -> Self {
+        self.clockwork = clockwork;
+
+        self
     }
 
     /// The engine, as of the last step.

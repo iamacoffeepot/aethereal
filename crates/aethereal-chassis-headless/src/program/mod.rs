@@ -6,6 +6,7 @@ mod tests;
 use crate::{Exit, Headless, Poller, Runners};
 use aethereal_actor::{Service, Services};
 use aethereal_data::Plain;
+use aethereal_pace::Clockwork;
 use aethereal_substrate::{Builds, Host, ProgramError, Serves, Settled};
 use aethereal_tcp::Readiness;
 use core::num::NonZeroUsize;
@@ -34,10 +35,12 @@ impl Default for RunningSettings {
 
 /// What a native host keeps as its program bootstraps, for the runners it makes once its roots have (ADR-0029): the
 /// services its roots serve its jobs, whatever they are (ADR-0034), and the poller the runners' thread for waiting
-/// sleeps in, which a root may serve its jobs before the runners are made (ADR-0033).
+/// sleeps in, which a root may serve its jobs before the runners are made (ADR-0033), and the pacer's clockwork, which
+/// asks nothing unless the program lists a pacer (ADR-0045).
 pub struct Serving {
     services: Services,
     poller: Arc<Poller>,
+    clockwork: Clockwork,
 }
 
 impl Serving {
@@ -48,7 +51,7 @@ impl Serving {
     /// Panics when the host cannot make its poller.
     #[must_use]
     pub fn new() -> Self {
-        Self { services: Services::none(), poller: Arc::new(Poller::new()) }
+        Self { services: Services::none(), poller: Arc::new(Poller::new()), clockwork: Clockwork::unlisted() }
     }
 
     /// The poller the runners will sleep in, as the service that tells a job when a socket is ready (ADR-0033).
@@ -60,6 +63,11 @@ impl Serving {
     /// Keeps `service`, which a root's bootstrap served.
     pub fn serve<S: ?Sized + Send + Sync + 'static>(&mut self, service: Service<S>) {
         self.services = service.added_to(mem::take(&mut self.services));
+    }
+
+    /// Keeps the pacer's clockwork, in place of any kept before.
+    pub fn serve_clockwork(&mut self, clockwork: Clockwork) {
+        self.clockwork = clockwork;
     }
 
     /// The runners on the cores an engine on `workers` workers leaves free, their jobs reaching the services served,
@@ -99,6 +107,12 @@ impl<S: ?Sized + Send + Sync + 'static> Serves<Service<S>> for Headless {
     }
 }
 
+impl Serves<Clockwork> for Headless {
+    fn serve(serving: &mut Serving, clockwork: Clockwork) {
+        serving.serve_clockwork(clockwork);
+    }
+}
+
 impl Builds for Headless {
     /// Bootstraps the program, blocking this thread on each root's bootstrap, then makes its runners with what its
     /// roots served, on the cores its workers leave free (ADR-0029): the host holding its engine on as many workers as
@@ -106,9 +120,11 @@ impl Builds for Headless {
     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
         let workers = settled.engine().worker_threads();
 
-        let (mut engine, serving) = pollster::block_on(settled.bootstrap(Serving::new()))?;
+        let (mut engine, mut serving) = pollster::block_on(settled.bootstrap(Serving::new()))?;
+        // Handed on as the runners are made: the runners take what the roots served their jobs, the host the clock.
+        let clockwork = mem::take(&mut serving.clockwork);
         engine.set_jobs(Arc::new(serving.runners(workers)));
 
-        Ok(Self::new(engine, workers))
+        Ok(Self::new(engine, workers).with_clockwork(clockwork))
     }
 }
