@@ -133,11 +133,21 @@ record_clip { window, frames, frames_per_second, crop, longest, name }
   - a write that failed, naming the frame;
   - a program with no `Pacer`, found when `SetPace` reaches no actor.
 
+### Capturing a held clock (amended, after ADR-0048)
+
+*Added once it showed that `capture_frame` waits forever under a held clock: it reads the next frame drawn, and a held clock draws none until it is advanced.*
+
+- **The renderer keeps each window's last frame:** one texture a window, of the frame's size and format, copied into from each frame drawn onto the window as its `Render` ends, and made again only when the size or the format changes. A surface that cannot be copied from keeps none.
+- **`Readable::Last(window)` reads it at once,** refused `Undrawn` when none is kept. What it shows is the last thing that ran and drew to the screen.
+- **`capture_frame` asks the pacer how the clock moves** (`ReadPace`, answered `PaceRead { pace }`), and reads `Last` under a held clock and the next frame while it runs, or when no pacer answers. So a held capture runs nothing and moves nothing, and matches what `read_target` reads.
+- **A redraw was tried and dropped:** a cycle of `Render` alone re-runs every pass, compute dispatches among them, so a capture would step a program's GPU state and change every frame after it. It would also wait forever on a window not drawn, and answer a capture made during an advance with a frame partway through it.
+
 ## Consequences
 
 - **A clip plays in exact real time however slowly its frames are drawn,** and two runs of a deterministic program are the same clip, frame for frame. Recording takes as long as drawing does: faster than real time for a light scene, and slower for a heavy one, with the clip the same either way.
 - **What a job brings in lands when it lands.** A held clock does not hold jobs. So a scene still loading textures, or one fed from outside, can differ between two recordings, by when each job finished against the held cycles.
 - **A held window draws nothing.** A held program that is resized or uncovered shows its last frame, or none, until it is advanced.
+- **Each window costs one frame of GPU memory and one frame-sized copy each frame,** for its last frame: about 8 MB and 20 µs at 1080p.
 - **On a display that presents `fifo`, each held cycle can still wait for the display as it is presented,** so a desktop may record no faster than the display's rate. Uncapped presenting records as fast as frames draw. On eve, two engines that started held, one covered by the other, each recorded 30 frames at once, and their clips matched byte for byte.
 - **Frames are kept as PNGs, not encoded as video.** An MP4 needs an encoder the engine does not have, and the folder is what any encoder reads. A clip of 3600 frames at 1280 × 800 is a few gigabytes, so the cap bounds it.
 - **Actors that animate from `turn.now()` are not held.** Moving them to `Tick` is the fix, and the guide's rule.

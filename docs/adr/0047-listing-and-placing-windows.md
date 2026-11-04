@@ -66,6 +66,7 @@ pub enum Unplaced {
 - **Each is held and asked of the chassis,** as `SetMode` is, through two more `Windowing` requests, `Resize` and `Move`, answered through two more `Heard` variants, `Resized` and `Moved`, in the order asked.
 - **A window not shown windowed is refused at once,** from the mode the root keeps, with nothing asked.
 - **`Resized` answers the surface as the chassis draws it now.** A windowing system that resizes later answers the size before; the window's subscribers hear `Resized` once it does, as for any resize.
+- **A size winit applies at once comes with no `Resized`,** as Wayland's does, and winit's own documentation says it may not. So the desktop takes it in as one: it configures the surface to it, and pushes the resize onto the window's feed, as it does for a `Resized`. *Amended after ADR-0045's capture of a held clock showed a resized window still drawn at its old size.*
 - **The desktop moves a window with `set_outer_position`,** and refuses `NoHost` where winit cannot place windows: on Wayland, every move. The browser refuses both.
 
 ### `WindowTool`

@@ -6,7 +6,7 @@ mod asked;
 #[cfg(test)]
 mod tests;
 
-pub use asked::{Advance, Advanced, Pace, PaceSet, SetPace, Unadvanced};
+pub use asked::{Advance, Advanced, Pace, PaceRead, PaceSet, ReadPace, SetPace, Unadvanced};
 
 use crate::host::Clockwork;
 use aethereal_actor::Requests;
@@ -113,10 +113,14 @@ impl Carries<Advance> for Pacer {
     type Answers = (Advanced,);
 }
 
+impl Carries<ReadPace> for Pacer {
+    type Answers = (PaceRead,);
+}
+
 impl Actor for Pacer {
     type Config = PacerConfig;
     type Key = ();
-    type Handles = (Paced, SetPace, Advance, On<Stop>);
+    type Handles = (Paced, SetPace, Advance, ReadPace, On<Stop>);
     type BeginSends = ();
     type EndSends = ();
 
@@ -200,6 +204,17 @@ impl Handles<Advance> for Pacer {
             // Pushed last, so a turn that fails before it asks the host for nothing (ADR-0019).
             turn.open(&mut self.control)?.push(Pacing::Cycle { delta_nanos });
         }
+
+        Ok(())
+    }
+}
+
+/// Answers how the clock moves.
+impl Handles<ReadPace> for Pacer {
+    type Sends = (ToSender<PaceRead>,);
+
+    fn handle(&mut self, _: ReadPace, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        turn.reply(&PaceRead { pace: self.pace() })?;
 
         Ok(())
     }

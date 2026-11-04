@@ -237,6 +237,7 @@ const fn unread(why: ReadRefused) -> &'static str {
         ReadRefused::Unstored => "the region is larger than the engine may hold",
         ReadRefused::Texture
         | ReadRefused::Storage
+        | ReadRefused::Undrawn
         | ReadRefused::Window
         | ReadRefused::Format
         | ReadRefused::Uncopied => "the renderer read back something other than a target",

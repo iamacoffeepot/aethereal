@@ -14,6 +14,7 @@ use aethereal_actor::{
     ProtocolRef, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes};
+use aethereal_pace::{Pace, PaceRead, Pacer, ReadPace};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_window::WindowId;
 use encode::{Encode, Encoded};
@@ -61,6 +62,13 @@ pub struct Reading {
     number: u64,
 }
 
+/// What the tool keeps for its ask of how the clock moves: which call it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.capture_pacing")]
+pub struct PaceReading {
+    number: u64,
+}
+
 /// What the tool keeps for the image a job makes: which call it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.capture_encoding")]
@@ -73,10 +81,11 @@ pub struct Encoding {
 #[kind(name = "aether.render.capture_tool_config")]
 pub struct CaptureToolConfig;
 
-/// A call waiting on its frame: to cut by `crop` and send at most `longest` across.
+/// A call waiting on its frame: of `window`, to cut by `crop` and send at most `longest` across.
 #[derive(Bound)]
 struct Asked {
     held: Held<Called>,
+    window: WindowId,
     crop: Crop,
     longest: u32,
 }
@@ -88,12 +97,14 @@ struct Made {
     text: String,
 }
 
-/// The tool `capture_frame`: asks the [`Renderer`] for the next frame drawn onto a window, then runs a job that cuts
-/// it, shrinks it in linear light, and writes it as a PNG, and answers the image with a line of its sizes.
+/// The tool `capture_frame`: asks the [`Pacer`] how the clock moves, then the [`Renderer`] for the next frame drawn
+/// onto a window, or under a held clock the last, which no cycle will follow until the clock is advanced (ADR-0045);
+/// then runs a job that cuts it, shrinks it in linear light, and writes it as a PNG, and answers the image with a line
+/// of its sizes.
 #[derive(Bound)]
 #[kind(name = "aether.render.capture_tool")]
 pub struct CaptureTool {
-    /// The calls waiting on their frame, each by its number.
+    /// The calls waiting on how the clock moves, or on their frame, each by its number.
     reading: BTreeMap<u64, Asked>,
     /// The calls waiting on their image, each by its number.
     encoding: BTreeMap<u64, Made>,
@@ -107,7 +118,7 @@ impl ChildOf for CaptureTool {
 impl Actor for CaptureTool {
     type Config = CaptureToolConfig;
     type Key = ();
-    type Handles = (Call, Answer<Pixels, Reading>, Answer<Encoded, Encoding>);
+    type Handles = (Call, Answer<PaceRead, PaceReading>, Answer<Pixels, Reading>, Answer<Encoded, Encoding>);
     type BeginSends = ();
     type EndSends = ();
 
@@ -126,7 +137,8 @@ impl Tool for CaptureTool {
             name: String::from("capture_frame"),
             description: String::from(
                 "Captures the next frame drawn onto a window, numbered from 0, as a PNG image, with a line giving the \
-                 frame's size, the crop, and the image's size. `longest` bounds the image's longer side: a larger \
+                 frame's size, the crop, and the image's size. Under a held clock it captures the last frame drawn, \
+                 as no frame is drawn until the clock is advanced. `longest` bounds the image's longer side: a larger \
                  image is shrunk to keep its shape, and a smaller one is never enlarged. An image costs about width \
                  × height / 750 tokens, so a whole frame at 1024 is about a thousand. `crop` cuts a region of the \
                  frame, in its pixels from the top left, before shrinking: crop to look closely at part of a frame.",
@@ -141,8 +153,9 @@ impl Tool for CaptureTool {
     }
 }
 
+/// Holds the call, and asks the pacer how the clock moves: a held clock's capture reads the last frame drawn.
 impl Handles<Call> for CaptureTool {
-    type Sends = (Asks<Path<Renderer>, ReadBack, Reading>, ToSender<Called>);
+    type Sends = (Asks<Path<Pacer>, ReadPace, PaceReading>, ToSender<Called>);
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Ok(capture) = from_bytes::<Capture>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
@@ -156,8 +169,32 @@ impl Handles<Call> for CaptureTool {
         let held = turn.hold()?;
         let number = self.next;
         self.next += 1;
-        turn.to(path::<Renderer>(())).ask(&ReadBack { of: Readable::Frame(capture.window) }, &Reading { number })?;
-        self.reading.insert(number, Asked { held, crop: capture.crop, longest: capture.longest });
+        turn.to(path::<Pacer>(())).ask(&ReadPace, &PaceReading { number })?;
+        let Capture { window, crop, longest } = capture;
+        self.reading.insert(number, Asked { held, window, crop, longest });
+
+        Ok(())
+    }
+}
+
+/// Asks the renderer for the frame to capture: the last drawn under a held clock, and the next while it runs, or when
+/// the pacer did not answer.
+impl Handles<Answer<PaceRead, PaceReading>> for CaptureTool {
+    type Sends = (Asks<Path<Renderer>, ReadBack, Reading>,);
+
+    fn handle(
+        &mut self,
+        (answered, PaceReading { number }): (Answered<PaceRead>, PaceReading),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let Some(asked) = self.reading.get(&number) else {
+            return Ok(());
+        };
+        let of = match answered {
+            Answered::Yes(PaceRead { pace: Pace::Held }) => Readable::Last(asked.window),
+            Answered::Yes(PaceRead { pace: Pace::Real }) | Answered::No(_) => Readable::Frame(asked.window),
+        };
+        turn.to(path::<Renderer>(())).ask(&ReadBack { of }, &Reading { number })?;
 
         Ok(())
     }
@@ -171,7 +208,7 @@ impl Handles<Answer<Pixels, Reading>> for CaptureTool {
         (answered, Reading { number }): (Answered<Pixels>, Reading),
         turn: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
-        let Some(Asked { held, crop, longest }) = self.reading.remove(&number) else {
+        let Some(Asked { held, crop, longest, .. }) = self.reading.remove(&number) else {
             return Ok(());
         };
         let (width, height, format, pixels) = match answered {
@@ -248,6 +285,7 @@ pub const fn unread(why: ReadRefused) -> &'static str {
         ReadRefused::Uncopied => "the window's surface cannot be copied from",
         ReadRefused::Unmapped => "the GPU did not hand the frame back",
         ReadRefused::Unstored => "the frame is larger than the engine may hold",
+        ReadRefused::Undrawn => "no frame has been drawn onto the window to show while the clock is held",
         ReadRefused::Texture
         | ReadRefused::Storage
         | ReadRefused::Frame

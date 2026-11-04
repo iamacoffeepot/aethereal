@@ -62,3 +62,15 @@ pub enum Unadvanced {
     /// The program is stopping: no cycle runs again.
     Stopping,
 }
+
+/// Asks the pacer how the clock moves, answered with [`PaceRead`] in the turn that asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.pace.read_pace")]
+pub struct ReadPace;
+
+/// How the clock moves: as it was set, a stopping program's as held, as no cycle of the host's own ends it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.pace.pace_read")]
+pub struct PaceRead {
+    pub pace: Pace,
+}
