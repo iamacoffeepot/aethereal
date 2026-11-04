@@ -377,6 +377,87 @@ fn a_frame_ending_in_floats_is_sampled_by_another_frame_s_effect_and_read_back_i
     assert_eq!((format, copied.pixel), (TextureFormat::Rgba16Float, 8));
 }
 
+/// The views of textures the effects of `walk` bind, in order.
+fn bound_views(walk: &Walk) -> Vec<wgpu::TextureView> {
+    walk.steps()
+        .filter_map(|(_, step)| match step {
+            Step::Effect { effect, .. } => Some(&effect.groups.entries),
+            Step::Draw { .. } | Step::Compute => None,
+        })
+        .flatten()
+        .filter_map(|entry| match &entry.holds {
+            Binds::Texture { view, .. } => Some(view.clone()),
+            Binds::Buffer(_) | Binds::Sampler(_) => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_view_follows_its_window_under_one_id_and_the_frame_that_lays_it_out_binds_it_again() {
+    // Catches a view left at the one pixel it was made at, or at its window's whole size, or made again at every
+    // `Render` though its window kept its size; and the main frame's effect left binding the texture the view was
+    // drawn into before its window was resized, which it would go on showing, stretched and stale.
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let mut kept = kept(&device);
+
+    let glow = effect_of(&device, &mut kept, (GLOW, "glow"), Vec::new(), Shape::flat(ColourFormat::Rgba8));
+    let glow = Does::Effect { program: glow, reads: Vec::new(), into: Target::End, bindings: Vec::new() };
+    let follows =
+        |window| Ends::Follows { window, width: Scale::Half, height: Scale::Full, format: TextureFormat::Rgba8 };
+    let view = CreateFrame {
+        ends: follows(window()),
+        targets: Vec::new(),
+        passes: vec![PassSpec { name: PassName::of::<Composite>(), does: glow }],
+    };
+    let elsewhere = CreateFrame { ends: follows(nth_window(3)), ..view.clone() };
+    assert_eq!(frame::check(&elsewhere, &kept), Err(FrameRefused::Window));
+    assert_eq!(frame::check(&view, &kept), Ok(()));
+    let framed = kept.frame(&device, view, MAKER);
+    let Ok(Framed::Texture { texture, .. }) = framed else {
+        panic!("the view is refused: {framed:?}");
+    };
+
+    let bindings = vec![
+        Binding { group: 1, binding: 0, kind: BindingKind::Texture },
+        Binding { group: 1, binding: 1, kind: BindingKind::Sampler },
+    ];
+    let lay = effect_of(&device, &mut kept, (DARKENED, "composite"), bindings, Shape::flat(ColourFormat::Bgra8));
+    let smooth = Sampling { filter: Filter::Linear, wrap: Wrap::Clamp };
+    let lay = Does::Effect {
+        program: lay,
+        reads: Vec::new(),
+        into: Target::End,
+        bindings: vec![
+            Bind { group: 1, binding: 0, to: Resource::Texture(texture) },
+            Bind { group: 1, binding: 1, to: Resource::Sampler(smooth) },
+        ],
+    };
+    let main_frame = CreateFrame {
+        ends: Ends::Window(window()),
+        targets: Vec::new(),
+        passes: vec![PassSpec { name: PassName::of::<Composite>(), does: lay }],
+    };
+    assert_eq!(frame::check(&main_frame, &kept), Ok(()));
+    let framed = kept.frame(&device, main_frame, MAKER);
+    assert!(matches!(framed, Ok(Framed::Made(_))), "the main frame is refused: {framed:?}");
+
+    let followed = |kept: &Kept| {
+        let Some(made) = kept.textures.get(texture.id) else {
+            panic!("the view's texture is kept under its id");
+        };
+        assert_eq!(bound_views(main(kept)), vec![made.view.clone()], "the main frame binds the view as it is now");
+        (made.made.width(), made.made.height())
+    };
+    drawn_at(&device, &queue, &mut kept, (9, 6));
+    assert_eq!(followed(&kept), (5, 6));
+    drawn_at(&device, &queue, &mut kept, (40, 3));
+    assert_eq!(followed(&kept), (20, 3));
+
+    let fitted = bound_views(main(&kept));
+    drawn_at(&device, &queue, &mut kept, (40, 3));
+    assert_eq!(bound_views(main(&kept)), fitted, "a view drawn again at its size keeps its texture");
+}
+
 /// An effect that reads a target of floats at the pixel it shades, as a downsample of one of another size would not.
 const LOADED: &str = "
 @group(0) @binding(0) var scene: texture_2d<f32>;

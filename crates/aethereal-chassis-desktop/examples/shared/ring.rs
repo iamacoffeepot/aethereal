@@ -1,5 +1,8 @@
 //! The scene of the window examples: a ring of triangles on the first window, turning, following the pointer, and
 //! turning the other way while a key is held, which prints what its window hears and times the frames it was handed.
+//! With `--views two` the window shows two views of the one ring side by side, the right one drawn with a look of its
+//! own, its triangles smaller: each
+//! view a frame that follows half the window, and the window's main frame laying them out (ADR-0049).
 
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Start, Tells, Tick,
@@ -7,15 +10,19 @@ use aethereal_actor::{
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
-use aethereal_render::frame::{Frame, ShapeOf, Shaped};
+use aethereal_render::effect::{CreateEffect, Effected};
+use aethereal_render::frame::{
+    CreateFrame, DepthUse, Does, Ends, Frame, FrameId, Framed, Load, PassSpec, Scale, ShapeOf, Shaped, Target,
+};
 use aethereal_render::instances::{CreateInstances, Instanced, InstancesId, WriteInstances};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
-use aethereal_render::pass::Main;
-use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
+use aethereal_render::pass::{Main, Pass, PassName};
+use aethereal_render::placement::{Bind, Drawn, Filter, Join, Place, Placed, Resource, Sampling, Wrap};
 use aethereal_render::program::{
     Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
 use aethereal_render::shape::Shape;
+use aethereal_render::texture::{TextureFormat, TextureId};
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_window::{self as window, Event, InitialWindows, Window, WindowId};
@@ -48,6 +55,33 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 }
 ";
 
+/// The scale the right view draws the ring's triangles at, its own look of the one ring.
+const FAR: f32 = 0.6;
+
+/// An effect that lays two views side by side over the window, the left over its left half and the right over its
+/// right, with a thin line between them.
+const LAY: &str = "
+@group(1) @binding(0) var left: texture_2d<f32>;
+@group(1) @binding(1) var right: texture_2d<f32>;
+@group(1) @binding(2) var smoothly: sampler;
+
+@fragment
+fn lay(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let at = vec2(fract(uv.x * 2.0), uv.y);
+    let near = textureSample(left, smoothly, at);
+    let far = textureSample(right, smoothly, at);
+    let line = abs(uv.x - 0.5) < 0.001;
+    return select(select(far, near, uv.x < 0.5), vec4(1.0), line);
+}
+";
+
+/// The pass the window's main frame lays the two views out in.
+#[derive(Plain)]
+#[kind(name = "aether.example.lay")]
+pub struct Lay;
+
+impl Pass for Lay {}
+
 /// How long the scene runs: its section, `scene`.
 #[derive(Plain, Default)]
 #[kind(name = "aether.example.show")]
@@ -57,6 +91,19 @@ pub struct Show {
     /// seconds, then the program quits.
     #[flag]
     runs: Runs,
+    /// How many views of the ring the window shows: `one`, or `two`, side by side, the right one's triangles smaller.
+    #[flag]
+    views: Views,
+}
+
+/// How many views of the ring the window shows.
+#[derive(Plain, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Views {
+    /// One, the window's own frame.
+    #[default]
+    One,
+    /// Two side by side, each a frame that follows half the window.
+    Two,
 }
 
 /// How long the scene runs.
@@ -91,7 +138,7 @@ impl<H: Host> Bootstrap<H> for Scene {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), Shows { window: windows.first(), runs: show.runs })
+        cx.begin(&(), Shows { window: windows.first(), runs: show.runs, views: show.views })
     }
 }
 
@@ -100,12 +147,13 @@ impl<H: Host> Bootstrap<H> for Scene {
 #[kind(name = "aether.example.nothing")]
 pub struct Nothing;
 
-/// The scene's config: the window it draws on, and how long it runs.
+/// The scene's config: the window it draws on, how long it runs, and how many views of the ring it shows.
 #[derive(Plain)]
 #[kind(name = "aether.example.shows")]
 pub struct Shows {
     window: WindowId,
     runs: Runs,
+    views: Views,
 }
 
 /// The scene: it asks the shape of its window's main pass, makes what it draws one ask after another, each answer
@@ -116,6 +164,8 @@ pub struct Shows {
 pub struct Scene {
     window: WindowId,
     runs: Runs,
+    views: Views,
+    onto: Onto,
     ring: Ring,
     /// The window's surface, in its pixels, as it was last heard.
     width: u32,
@@ -137,7 +187,23 @@ enum Ring {
     /// Its asks are under way, and nothing is placed.
     Making,
     /// The ring is placed: these are the instances and uniforms it writes.
-    Drawing { instances: InstancesId, uniforms: UniformsId },
+    Drawing { instances: InstancesId, looks: Looks },
+}
+
+/// What the ring is drawn onto.
+#[derive(Bound, Clone, Copy)]
+enum Onto {
+    /// The window's main frame, the renderer's own.
+    Window,
+    /// Two views, each a frame that follows half the window, which the window's main frame lays out.
+    Views { left: FrameId, right: FrameId },
+}
+
+/// The uniforms the ring is drawn with: one look, or one for each view.
+#[derive(Plain, Clone, Copy)]
+pub enum Looks {
+    One(UniformsId),
+    Two { near: UniformsId, far: UniformsId },
 }
 
 impl ChildOf for Scene {
@@ -167,13 +233,12 @@ pub struct MadeProgram {
     program: ProgramId,
 }
 
-/// What was made before the uniforms were asked for.
+/// What was made before each look was asked for: the first, then the far view's, beside the first.
 #[derive(Plain)]
-#[kind(name = "aether.example.made_instances")]
-pub struct MadeInstances {
-    mesh: MeshId,
-    program: ProgramId,
-    instances: InstancesId,
+#[kind(name = "aether.example.looking")]
+pub enum Looking {
+    First { mesh: MeshId, program: ProgramId, instances: InstancesId },
+    Far { mesh: MeshId, program: ProgramId, instances: InstancesId, near: UniformsId },
 }
 
 /// What the placement draws with, kept until it is placed.
@@ -181,7 +246,25 @@ pub struct MadeInstances {
 #[kind(name = "aether.example.made_all")]
 pub struct MadeAll {
     instances: InstancesId,
-    uniforms: UniformsId,
+    looks: Looks,
+}
+
+/// Which pass's shape was asked for: the window's main pass, or the views' main pass, which both views share.
+#[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
+#[kind(name = "aether.example.shaping")]
+pub enum Shaping {
+    Window,
+    Views,
+}
+
+/// Which frame was asked for, with what was made before it: the left view, after the effect that lays the views out;
+/// the right view, after the left; and the window's main frame, which lays both out.
+#[derive(Plain, Debug)]
+#[kind(name = "aether.example.framing")]
+pub enum Framing {
+    Left { lay: ProgramId },
+    Right { lay: ProgramId, left: FrameId, texture: TextureId },
+    Main { left: FrameId, right: FrameId },
 }
 
 impl Actor for Scene {
@@ -191,11 +274,13 @@ impl Actor for Scene {
         On<Start>,
         On<Tick>,
         Event,
-        Answer<Shaped, Nothing>,
+        Answer<Shaped, Shaping>,
+        Answer<Effected, Nothing>,
+        Answer<Framed, Framing>,
         Answer<Meshed, Learned>,
         Answer<Programmed, MadeMesh>,
         Answer<Instanced, MadeProgram>,
-        Answer<Uniformed, MadeInstances>,
+        Answer<Uniformed, Looking>,
         Answer<Placed, MadeAll>,
     );
     type BeginSends = (Tells<Path<Window>, window::Subscribe>,);
@@ -209,6 +294,8 @@ impl Actor for Scene {
         Ok(Self {
             window: shows.window,
             runs: shows.runs,
+            views: shows.views,
+            onto: Onto::Window,
             ring: Ring::Making,
             width: 1,
             height: 1,
@@ -244,9 +331,10 @@ fn ring(turned_millis: u64) -> Vec<u8> {
 }
 
 impl Scene {
-    /// The uniforms: the scale the triangles are drawn at, the ring's middle, and a float the program does not read.
-    fn look(&self) -> Vec<u8> {
-        bytes([1.0_f32.to_bits(), self.middle_x.to_bits(), self.middle_y.to_bits(), 0])
+    /// The uniforms: the scale the triangles are drawn at, `scale`, the ring's middle, and a float the program does
+    /// not read.
+    fn look(&self, scale: f32) -> Vec<u8> {
+        bytes([scale.to_bits(), self.middle_x.to_bits(), self.middle_y.to_bits(), 0])
     }
 
     /// Prints the time between the frames it was handed, in milliseconds.
@@ -276,10 +364,10 @@ impl Scene {
 }
 
 impl Handles<On<Start>> for Scene {
-    type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
+    type Sends = (Asks<Path<Renderer>, ShapeOf, Shaping>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(self.window)), &Nothing)?;
+        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(self.window)), &Shaping::Window)?;
 
         Ok(())
     }
@@ -294,6 +382,11 @@ impl Handles<Event> for Scene {
                 // A surface is some thousands of pixels across, which an f32 holds exactly.
                 #[allow(clippy::cast_precision_loss)]
                 let (width, height) = (self.width.max(1) as f32, self.height.max(1) as f32);
+                // Two views each follow the pointer across their own half.
+                let (x, width) = match self.views {
+                    Views::One => (x, width),
+                    Views::Two => (x % (width / 2.0), width / 2.0),
+                };
                 self.middle_x = (x / width).mul_add(2.0, -1.0);
                 self.middle_y = (y / height).mul_add(-2.0, 1.0);
             }
@@ -333,29 +426,135 @@ impl Handles<Event> for Scene {
     }
 }
 
-impl Handles<Answer<Shaped, Nothing>> for Scene {
-    type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
+impl Handles<Answer<Shaped, Shaping>> for Scene {
+    type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>, Asks<Path<Renderer>, CreateEffect, Nothing>);
 
     fn handle(
         &mut self,
-        (answered, _): (Answered<Shaped>, Nothing),
+        (answered, shaping): (Answered<Shaped>, Shaping),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Shaped::Shape(shape)) = answered else {
-            turn.log(Level::Error, format_args!("the window's main pass has no shape: {answered:?}"));
+            turn.log(Level::Error, format_args!("the pass the ring joins has no shape: {answered:?}"));
             return Ok(());
         };
-        let corners = [0.0_f32, 0.05, -0.04, -0.03, 0.04, -0.03].map(f32::to_bits);
-        let (Ok(vertices), Ok(indices)) = (turn.put(bytes(corners)), turn.put(bytes([0, 1, 2]))) else {
-            turn.log(Level::Error, "the triangle was not asked for: its bytes were not put");
+        // The window's shape is what the views are laid out in; the views' is what the ring is drawn in.
+        let lays = shaping == Shaping::Window && self.views == Views::Two;
+        if lays {
+            let Ok(wgsl) = turn.put(Vec::from(LAY)) else {
+                turn.log(Level::Error, "the effect was not asked for: its text was not put");
+                return Ok(());
+            };
+            let bindings = vec![
+                Binding { group: 1, binding: 0, kind: BindingKind::Texture },
+                Binding { group: 1, binding: 1, kind: BindingKind::Texture },
+                Binding { group: 1, binding: 2, kind: BindingKind::Sampler },
+            ];
+            let lay = CreateEffect {
+                wgsl,
+                fragment: String::from("lay"),
+                reads: Vec::new(),
+                bindings,
+                blend: Blend::Opaque,
+                shape: Shape::flat(shape.colour),
+            };
+            turn.to(path::<Renderer>(())).ask(&lay, &Nothing)?;
+            return Ok(());
+        }
+        let Some(triangle) = triangle(turn) else {
             return Ok(());
         };
-        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
-        let triangle = CreateMesh { layout: VertexLayout { stride: 8, attributes: vec![position] }, vertices, indices };
         turn.to(path::<Renderer>(())).ask(&triangle, &Learned { shape })?;
 
         Ok(())
     }
+}
+
+/// A view of the ring: a frame that follows half the window, drawing the ring onto its texture in its one pass,
+/// `Main`, from black.
+fn view(window: WindowId) -> CreateFrame {
+    let ring = Does::Draw { into: Target::End, depth: DepthUse::Off, load: Load::Clear, reads: Vec::new() };
+
+    CreateFrame {
+        ends: Ends::Follows { window, width: Scale::Half, height: Scale::Full, format: TextureFormat::Rgba8 },
+        targets: Vec::new(),
+        passes: vec![PassSpec { name: PassName::of::<Main>(), does: ring }],
+    }
+}
+
+impl Handles<Answer<Effected, Nothing>> for Scene {
+    type Sends = (Asks<Path<Renderer>, CreateFrame, Framing>,);
+
+    fn handle(
+        &mut self,
+        (answered, _): (Answered<Effected>, Nothing),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Effected::Made(lay)) = answered else {
+            turn.log(Level::Error, format_args!("the effect that lays the views out was not made: {answered:?}"));
+            return Ok(());
+        };
+        turn.to(path::<Renderer>(())).ask(&view(self.window), &Framing::Left { lay: lay.program() })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Framed, Framing>> for Scene {
+    type Sends = (Asks<Path<Renderer>, CreateFrame, Framing>, Asks<Path<Renderer>, ShapeOf, Shaping>);
+
+    fn handle(
+        &mut self,
+        (answered, framing): (Answered<Framed>, Framing),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        match (answered, framing) {
+            (Answered::Yes(Framed::Texture { frame, texture }), Framing::Left { lay }) => {
+                let right = Framing::Right { lay, left: frame, texture };
+                turn.to(path::<Renderer>(())).ask(&view(self.window), &right)?;
+            }
+            (Answered::Yes(Framed::Texture { frame, texture }), Framing::Right { lay, left, texture: shown }) => {
+                let smoothly = Sampling { filter: Filter::Linear, wrap: Wrap::Clamp };
+                let lay = Does::Effect {
+                    program: lay,
+                    reads: Vec::new(),
+                    into: Target::End,
+                    bindings: vec![
+                        Bind { group: 1, binding: 0, to: Resource::Texture(shown) },
+                        Bind { group: 1, binding: 1, to: Resource::Texture(texture) },
+                        Bind { group: 1, binding: 2, to: Resource::Sampler(smoothly) },
+                    ],
+                };
+                let main = CreateFrame {
+                    ends: Ends::Window(self.window),
+                    targets: Vec::new(),
+                    passes: vec![PassSpec { name: PassName::of::<Lay>(), does: lay }],
+                };
+                turn.to(path::<Renderer>(())).ask(&main, &Framing::Main { left, right: frame })?;
+            }
+            (Answered::Yes(Framed::Made(_)), Framing::Main { left, right }) => {
+                self.onto = Onto::Views { left, right };
+                turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Texture(left)), &Shaping::Views)?;
+            }
+            (answered, framing) => {
+                turn.log(Level::Error, format_args!("a frame was not made: {framing:?}: {answered:?}"));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// The triangle each of the ring's instances draws, its bytes put: none, logged, when they were not.
+fn triangle<S>(turn: &mut Turn<'_, Scene, S>) -> Option<CreateMesh> {
+    let corners = [0.0_f32, 0.05, -0.04, -0.03, 0.04, -0.03].map(f32::to_bits);
+    let (Ok(vertices), Ok(indices)) = (turn.put(bytes(corners)), turn.put(bytes([0, 1, 2]))) else {
+        turn.log(Level::Error, "the triangle was not asked for: its bytes were not put");
+        return None;
+    };
+    let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+
+    Some(CreateMesh { layout: VertexLayout { stride: 8, attributes: vec![position] }, vertices, indices })
 }
 
 /// How a record of the ring is laid out: a place, then a colour.
@@ -424,7 +623,7 @@ impl Handles<Answer<Programmed, MadeMesh>> for Scene {
 }
 
 impl Handles<Answer<Instanced, MadeProgram>> for Scene {
-    type Sends = (Asks<Path<Renderer>, CreateUniforms, MadeInstances>,);
+    type Sends = (Asks<Path<Renderer>, CreateUniforms, Looking>,);
 
     fn handle(
         &mut self,
@@ -435,39 +634,65 @@ impl Handles<Answer<Instanced, MadeProgram>> for Scene {
             turn.log(Level::Error, format_args!("the instances were not made: {answered:?}"));
             return Ok(());
         };
-        let Ok(bytes) = turn.put(self.look()) else {
+        let Ok(bytes) = turn.put(self.look(1.0)) else {
             turn.log(Level::Error, "the uniforms were not asked for: their bytes were not put");
             return Ok(());
         };
-        let made = MadeInstances { mesh: made.mesh, program: made.program, instances };
-        turn.to(path::<Renderer>(())).ask(&CreateUniforms { bytes }, &made)?;
+        let first = Looking::First { mesh: made.mesh, program: made.program, instances };
+        turn.to(path::<Renderer>(())).ask(&CreateUniforms { bytes }, &first)?;
 
         Ok(())
     }
 }
 
-impl Handles<Answer<Uniformed, MadeInstances>> for Scene {
-    type Sends = (Asks<Path<Renderer>, Place, MadeAll>,);
+impl Handles<Answer<Uniformed, Looking>> for Scene {
+    type Sends = (Asks<Path<Renderer>, Place, MadeAll>, Asks<Path<Renderer>, CreateUniforms, Looking>);
 
     fn handle(
         &mut self,
-        (answered, made): (Answered<Uniformed>, MadeInstances),
+        (answered, looking): (Answered<Uniformed>, Looking),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Uniformed::Made(uniforms)) = answered else {
-            turn.log(Level::Error, format_args!("the uniforms were not made: {answered:?}"));
+            turn.log(Level::Error, format_args!("a look was not made: {answered:?}"));
             return Ok(());
         };
-        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(uniforms) }];
-        let place = Place {
-            mesh: made.mesh,
-            instances: Drawn::Records(made.instances),
-            joins: vec![Join::to::<Main>(Frame::Main(self.window), made.program, bindings)],
+        let (mesh, instances, joins, looks) = match (looking, self.onto) {
+            (Looking::First { mesh, program, instances }, Onto::Window) => {
+                let joins = vec![join(Frame::Main(self.window), program, uniforms)];
+                (mesh, instances, joins, Looks::One(uniforms))
+            }
+            (Looking::First { mesh, program, instances }, Onto::Views { .. }) => {
+                let Ok(bytes) = turn.put(self.look(FAR)) else {
+                    turn.log(Level::Error, "the far view's look was not asked for: its bytes were not put");
+                    return Ok(());
+                };
+                let far = Looking::Far { mesh, program, instances, near: uniforms };
+                turn.to(path::<Renderer>(())).ask(&CreateUniforms { bytes }, &far)?;
+                return Ok(());
+            }
+            (Looking::Far { mesh, program, instances, near }, Onto::Views { left, right }) => {
+                let joins =
+                    vec![join(Frame::Texture(left), program, near), join(Frame::Texture(right), program, uniforms)];
+                (mesh, instances, joins, Looks::Two { near, far: uniforms })
+            }
+            (Looking::Far { .. }, Onto::Window) => {
+                turn.log(Level::Error, "the far view's look was made with no views to draw in");
+                return Ok(());
+            }
         };
-        turn.to(path::<Renderer>(())).ask(&place, &MadeAll { instances: made.instances, uniforms })?;
+        let place = Place { mesh, instances: Drawn::Records(instances), joins };
+        turn.to(path::<Renderer>(())).ask(&place, &MadeAll { instances, looks })?;
 
         Ok(())
     }
+}
+
+/// The ring's join of the pass `Main` of `frame`, drawn by `program` with the look `uniforms`.
+fn join(frame: Frame, program: ProgramId, uniforms: UniformsId) -> Join {
+    let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(uniforms) }];
+
+    Join::to::<Main>(frame, program, bindings)
 }
 
 impl Handles<Answer<Placed, MadeAll>> for Scene {
@@ -480,7 +705,7 @@ impl Handles<Answer<Placed, MadeAll>> for Scene {
     ) -> Result<(), Fault> {
         match answered {
             Answered::Yes(Placed::Made(_)) => {
-                self.ring = Ring::Drawing { instances: made.instances, uniforms: made.uniforms };
+                self.ring = Ring::Drawing { instances: made.instances, looks: made.looks };
             }
             Answered::Yes(Placed::Refused(why)) => {
                 turn.log(Level::Error, format_args!("the ring was not placed: {why:?}"));
@@ -509,18 +734,25 @@ impl Handles<On<Tick>> for Scene {
         } else {
             self.turned_millis.wrapping_add(step_millis) % TURN_MILLIS
         };
-        let Ring::Drawing { instances, uniforms } = self.ring else {
+        let Ring::Drawing { instances, looks } = self.ring else {
             return Ok(());
         };
-        let (Ok(records), Ok(bytes)) = (turn.put(ring(self.turned_millis)), turn.put(self.look())) else {
+        let Ok(records) = turn.put(ring(self.turned_millis)) else {
             turn.log(Level::Warn, "a frame was not written: its bytes were not put");
             return Ok(());
         };
-        turn.to(path::<Renderer>(())).send(&WriteInstances { instances, first: 0, records })?.send(&WriteUniforms {
-            uniforms,
-            first: 0,
-            bytes,
-        })?;
+        turn.to(path::<Renderer>(())).send(&WriteInstances { instances, first: 0, records })?;
+        let written = match looks {
+            Looks::One(uniforms) => vec![(uniforms, 1.0)],
+            Looks::Two { near, far } => vec![(near, 1.0), (far, FAR)],
+        };
+        for (uniforms, scale) in written {
+            let Ok(bytes) = turn.put(self.look(scale)) else {
+                turn.log(Level::Warn, "a look was not written: its bytes were not put");
+                return Ok(());
+            };
+            turn.to(path::<Renderer>(())).send(&WriteUniforms { uniforms, first: 0, bytes })?;
+        }
 
         Ok(())
     }

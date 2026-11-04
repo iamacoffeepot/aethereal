@@ -41,12 +41,15 @@ pub struct CreateFrame {
 }
 
 /// Where a frame ends: shown on a window, as its main frame, or drawn into a texture of a size and a format, which any
-/// actor handed its id binds or reads back.
+/// actor handed its id binds or reads back. A texture that follows a window is the window's size, each side divided by
+/// its scale, and is made again at each size the window is drawn at, under the same id: a view of a window, which its
+/// main frame lays out (ADR-0049).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.ends")]
 pub enum Ends {
     Window(WindowId),
     Texture { size: Size, format: TextureFormat },
+    Follows { window: WindowId, width: Scale, height: Scale, format: TextureFormat },
 }
 
 /// The size of a texture a frame ends on, in its pixels.
@@ -65,9 +68,13 @@ impl Size {
     /// of at least one pixel, as every end's is, keeps at least one.
     #[must_use]
     pub const fn scaled(self, scale: Scale) -> Self {
-        let by = scale.divisor();
+        self.divided(scale, scale)
+    }
 
-        Self { width: self.width.div_ceil(by), height: self.height.div_ceil(by) }
+    /// The size `width` and `height` make of it, each its side divided and rounded up, as [`Size::scaled`] makes it.
+    #[must_use]
+    pub const fn divided(self, width: Scale, height: Scale) -> Self {
+        Self { width: self.width.div_ceil(width.divisor()), height: self.height.div_ceil(height.divisor()) }
     }
 }
 
@@ -217,7 +224,7 @@ pub enum Framed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.frame_refused")]
 pub enum FrameRefused {
-    /// It ends on a window the renderer does not draw to.
+    /// It ends on, or follows, a window the renderer does not draw to.
     Window,
     /// The window's main frame is another actor's, `owner`, which alone may replace it.
     Owned { owner: ActorId },
@@ -354,6 +361,10 @@ pub(crate) fn check(create: &CreateFrame, kept: &impl Holds) -> Result<(), Frame
             if !fits {
                 return Err(FrameRefused::Size { width, height, most });
             }
+            format.colour()
+        }
+        Ends::Follows { window, format, .. } => {
+            kept.window(window).ok_or(FrameRefused::Window)?;
             format.colour()
         }
     };
