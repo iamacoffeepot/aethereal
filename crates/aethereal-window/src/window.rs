@@ -2,8 +2,11 @@
 //! that subscribed, and keeps how the window stands for a new one.
 
 use crate::event::{Event, Mode, Subscribe, Surface, Unsubscribe};
+use crate::perform::{Perform, Performed, unperformable};
 use crate::windows::Windows;
-use aethereal_actor::{Actor, Beginning, ChildOf, Ended, Ending, Fault, Handles, Level, Subscribers, ToAny, Turn};
+use aethereal_actor::{
+    Actor, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Level, Subscribers, ToAny, ToSender, Turn,
+};
 use aethereal_data::{Bound, Key, KeyName, Plain, TypedKey};
 use core::mem;
 
@@ -57,10 +60,15 @@ impl ChildOf for Window {
     type Parent = Windows;
 }
 
+/// What asking a window's actor at its typed path, `path::<Window>(window)`, gets.
+impl Carries<Perform> for Window {
+    type Answers = (Performed,);
+}
+
 impl Actor for Window {
     type Config = WindowConfig;
     type Key = WindowId;
-    type Handles = (Subscribe, Unsubscribe, Event, Ended);
+    type Handles = (Subscribe, Unsubscribe, Event, Perform, Ended);
     type BeginSends = ();
     type EndSends = ();
 
@@ -159,6 +167,27 @@ impl Handles<Event> for Window {
         if event == Event::Closed {
             turn.close();
         }
+
+        Ok(())
+    }
+}
+
+/// Sends every subscriber each input asked, in order, as the event of the same name, then answers: they are sent in
+/// the turn that answers, so each subscriber handles them before anything arriving after the answer (ADR-0046). It is
+/// asked by any actor, as an input says nothing of how the window stands, which only its host may. Inputs that cannot
+/// be performed are refused, and none is sent.
+impl Handles<Perform> for Window {
+    type Sends = (ToAny<(Event,), Event>, ToSender<Performed>);
+
+    fn handle(&mut self, perform: Perform, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        if let Some(why) = unperformable(&perform.inputs) {
+            turn.reply(&Performed::Refused(why))?;
+            return Ok(());
+        }
+        for input in perform.inputs {
+            turn.to(&self.listeners).send(&Event::from(input))?;
+        }
+        turn.reply(&Performed::Performed)?;
 
         Ok(())
     }

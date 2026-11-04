@@ -1,6 +1,6 @@
 # ADR-0046: Input a tool performs
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-03
 
 ## Context
@@ -54,6 +54,8 @@ pub enum Unperformed {
     NotOpen,
     /// Input `at`, counted from 0, has a position or a delta that is not finite, which no chassis sends.
     NotFinite { at: u32 },
+    /// Input `at` is a key whose `code` or `key` is longer than `most` bytes, 64.
+    NameTooLong { at: u32, most: u32 },
     /// More inputs than the most one request performs.
     TooMany { most: u32 },
 }
@@ -64,6 +66,7 @@ pub enum Unperformed {
 - **Its subscribers are sent the inputs in the turn that answers,** so each handles them before anything arriving after the answer, such as the `Tick` of a cycle the agent asks the pacer for once it has the answer (ADR-0011). Pressing a key, then advancing the held clock, gives the press to the cycle's first `Tick`.
 - **Performed input is sent whether or not the window has the keyboard,** and at any position, inside the surface or not. A chassis sends neither of those to a covered window. The agent drives windows that are covered, and a program that ignores keys while unfocused still does.
 - **At most 1024 inputs a request.** That is far more than a script's step needs, and it keeps one turn's sends bounded.
+- **A key's `code` and `key` are at most 64 bytes each,** far longer than any the W3C UI Events name, so one input is always read within an engine's default `read_limit`.
 
 ### `send_input`
 
@@ -73,11 +76,12 @@ pub struct SendInput { pub window: WindowId, pub inputs: Vec<Input> }
 // answered with `Performed`
 ```
 
-- **`InputTool`, in `aethereal-window` behind its `tools` feature,** asks `Perform` of the window's actor at `path::<Window>(window)` and answers what it answered. It answers `Answered::No` as `Unperformed::NotOpen`.
+- **`InputTool`, in `aethereal-window` behind its `tools` feature,** checks every input as the window's actor would, then asks the actor at `path::<Window>(window)` one `Perform` per input, in order. A turn reads a piece of mail within the engine's `read_limit`, 1024 bytes by default (ADR-0017: `Unanswered::Unreadable`), which a list of more than a few dozen inputs passes. The window's actor handles one sender's requests in the order sent, so the tool answers once the last input is performed, or with the first refusal, its `at` counted within the call.
+- **`Answered::No(Ended)` is answered `Unperformed::NotOpen`;** any other reason the engine gives is a refusal naming it.
 - **A click is three inputs, as a person's is:** `PointerMoved` to the point, then `PointerDown` and `PointerUp` there. A held key is a `KeyDown` in one call and its `KeyUp` in a later one, with the clock advanced between them.
 ### `set_pace` and `advance`
 
-- **`PaceTool`, in `aethereal-pace` behind a new `tools` feature,** offers two tools that take the pacer's own kinds and answer its answers: `set_pace` takes `SetPace` and answers `PaceSet`, and `advance` takes `Advance` and answers `Advanced`. It asks `path::<Pacer>(())`, and answers `Answered::No` as a refusal saying the program lists no pacer.
+- **`PaceTool`, in `aethereal-pace` behind a new `tools` feature,** offers two tools that take the pacer's own kinds and answer its answers: `set_pace` takes `SetPace` and answers `PaceSet`, and `advance` takes `Advance` and answers `Advanced`. It asks `path::<Pacer>(())`. A program that lists it with no pacer made before it does not build (ADR-0022: `NeedsIn`), so the pacer is always there; any reason the engine gives for no answer is a refusal naming it.
 - **It keeps no state.** A clock it held stays held until the agent sets it running, or `record_clip` sets it back to how it found it.
 - **The usual script:**
   1. `set_pace { pace: Held }`

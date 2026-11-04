@@ -5,11 +5,17 @@
 //! [`Paced`], that a held cycle has finished; every chassis keeps the same [`Clockwork`], which takes the root's
 //! requests between steps and says when a held cycle is due and when it has finished. Only the program's time is
 //! held: a step's time, which deadlines and every job's timer run on, is the host's own.
+//!
+//! The `tools` feature's `set_pace` and `advance` ask the pacer for an agent (ADR-0046).
 
 mod bootstrap;
 mod host;
 mod pacer;
+#[cfg(feature = "tools")]
+mod tool;
 
 pub use bootstrap::PaceSettings;
 pub use host::Clockwork;
 pub use pacer::{Advance, Advanced, Pace, PaceSet, Paced, Pacer, PacerConfig, Pacing, SetPace, Unadvanced};
+#[cfg(feature = "tools")]
+pub use tool::{Calling, PaceTool, PaceToolConfig};

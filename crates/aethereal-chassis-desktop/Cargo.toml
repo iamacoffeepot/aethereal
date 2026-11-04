@@ -26,11 +26,12 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "dx12"
 winit = "0.30.13"
 
 # The `linked_window` example hands its hub the renderer's `capture_frame` (ADR-0043) and `record_clip`, which holds
-# the clock through the pacer (ADR-0045).
+# the clock through the pacer (ADR-0045), and `send_input`, `set_pace`, and `advance` (ADR-0046).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-aethereal-pace = { path = "../aethereal-pace" }
+aethereal-pace = { path = "../aethereal-pace", features = ["tools"] }
 aethereal-render = { path = "../aethereal-render", features = ["tools"] }
 aethereal-tools = { path = "../aethereal-tools" }
+aethereal-window = { path = "../aethereal-window", features = ["tools"] }
 
 [lints]
 workspace = true
