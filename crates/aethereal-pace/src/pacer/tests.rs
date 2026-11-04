@@ -19,6 +19,7 @@ const LIMIT: u64 = 1000;
 enum Noted {
     Set(PaceSet),
     Advanced(Advanced),
+    Redrawn(Redrawn),
     Other(KindId),
 }
 
@@ -27,6 +28,9 @@ impl Noted {
     fn of(arrival: &Arrival) -> Result<Self, DecodeError> {
         if let Some(set) = arrival.read()? {
             return Ok(Self::Set(set));
+        }
+        if let Some(redrawn) = arrival.read()? {
+            return Ok(Self::Redrawn(redrawn));
         }
         let advanced = arrival.read()?.map_or_else(|| Self::Other(arrival.kind()), Self::Advanced);
 
@@ -171,6 +175,37 @@ fn a_clock_set_running_or_a_program_stopping_refuses_the_advances_held() -> Resu
     let noted = clocked(&mut harness, &mut clockwork, 4)?;
     assert_eq!(noted, [Noted::Advanced(Advanced::Refused(Unadvanced::Stopping))]);
     assert_eq!(harness.host().engine().lifecycle(), Lifecycle::Stopped);
+
+    Ok(())
+}
+
+#[test]
+fn a_redraw_runs_in_turn_with_the_advances_and_moves_no_time() -> Result<(), Unheard> {
+    // Catches a redraw run beside an advance's cycle, so two held cycles run as one, one answered out of the order
+    // asked, one that moves the program's time, and a running clock or a stopping program left holding one.
+    let (mut harness, mut clockwork) = paced(Pace::Real)?;
+    ask(&mut harness, &Redraw)?;
+    assert_eq!(clocked(&mut harness, &mut clockwork, 1)?, [Noted::Redrawn(Redrawn::Refused(Unadvanced::Running))]);
+
+    ask(&mut harness, &SetPace { pace: Pace::Held })?;
+    ask(&mut harness, &Advance { cycles: 2, delta_nanos: 10 })?;
+    ask(&mut harness, &Redraw)?;
+    ask(&mut harness, &Advance { cycles: 1, delta_nanos: 5 })?;
+    let noted = clocked(&mut harness, &mut clockwork, 8)?;
+    assert_eq!(
+        noted,
+        [
+            Noted::Set(PaceSet { was: Pace::Real }),
+            Noted::Advanced(Advanced::Advanced { elapsed_nanos: 20 }),
+            Noted::Redrawn(Redrawn::Redrawn),
+            Noted::Advanced(Advanced::Advanced { elapsed_nanos: 25 }),
+        ]
+    );
+
+    harness.host().engine().quit();
+    clocked(&mut harness, &mut clockwork, 2)?;
+    ask(&mut harness, &Redraw)?;
+    assert_eq!(clocked(&mut harness, &mut clockwork, 1)?, [Noted::Redrawn(Redrawn::Refused(Unadvanced::Stopping))]);
 
     Ok(())
 }

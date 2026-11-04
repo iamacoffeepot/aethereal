@@ -16,7 +16,9 @@ use crate::lives;
 use crate::stages::{self, key};
 // A request's deadline, named apart from the lifecycle's own `Due`, which says when a cycle is.
 use aethereal_actor::Due as RequestDue;
-use aethereal_actor::{Cycle, Cycled, Cycling, Declared, MailId, Mailed, Refused, Seated, Start, Stop, Tie, Time};
+use aethereal_actor::{
+    Cycle, Cycled, Cycling, Declared, MailId, Mailed, Refused, Seated, Stage, Start, Stop, Tie, Time,
+};
 use aethereal_data::{ActorId, KindId, KindName, PathSegment};
 use core::time::Duration;
 
@@ -66,6 +68,8 @@ enum Due {
     At(Time),
     /// One is, held: its `Tick`'s delta is this many nanoseconds exactly, measured from no host time (ADR-0045).
     By(u64),
+    /// A redraw is: the cycle from its stage at this place to its last, with no time passing.
+    Redraw(usize),
 }
 
 /// The stage whose chain the engine waits on, if any.
@@ -186,6 +190,20 @@ impl Engine {
         self.advance();
     }
 
+    /// Says a redraw is due, for the host: the cycle run from its stage `S` to its last, its earlier stages, `Tick`
+    /// among them, not run, and no time passing, so what is drawn is drawn again from the program as it stands. A
+    /// held clock's capture is drawn so (ADR-0045). A cycle without `S` runs nothing, and has cycled at once. It is
+    /// not queued, as no cycle is: the host says it once [`Self::has_cycled`] says the last has finished.
+    pub fn redraw_from<S: Stage>(&mut self) {
+        let kind = KindId::of::<S>();
+        let place = self.staging.cycle.iter().position(|cycling| cycling.kind.same(kind));
+        let Some(place) = place else {
+            return;
+        };
+        self.staging.due = Due::Redraw(place);
+        self.advance();
+    }
+
     /// Says the clock runs again from `at`, for the host: the next cycle it says is due counts its delta from `at`, so
     /// the time the clock was held adds nothing to the program's time (ADR-0045).
     pub const fn resume(&mut self, at: Time) {
@@ -293,19 +311,22 @@ impl Engine {
         }
     }
 
-    /// Sends the cycle's first stage, when one is due and the cycle holds any, and answers whether it did.
+    /// Sends the cycle's first stage, when one is due and the cycle holds any, or a redraw's, and answers whether it
+    /// did.
     fn begin_cycle(&mut self) -> bool {
-        let first = self.staging.cycle.first().copied();
-        let Some(first) = first else {
+        let (time, place) = match self.staging.due {
+            Due::Not => return false,
+            Due::At(at) => (self.cycled(at), 0),
+            Due::By(delta_nanos) => (self.held(delta_nanos), 0),
+            Due::Redraw(place) => (Cycled { delta_nanos: 0, elapsed_nanos: self.staging.elapsed_nanos }, place),
+        };
+        let stage = self.staging.cycle.get(place).copied();
+        let Some(stage) = stage else {
             return false;
         };
-        self.staging.time = match self.staging.due {
-            Due::Not => return false,
-            Due::At(at) => self.cycled(at),
-            Due::By(delta_nanos) => self.held(delta_nanos),
-        };
+        self.staging.time = time;
         self.staging.due = Due::Not;
-        self.send_stage(first, At::Cycle(0));
+        self.send_stage(stage, At::Cycle(place));
 
         true
     }

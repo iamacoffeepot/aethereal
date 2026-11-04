@@ -6,7 +6,7 @@ mod asked;
 #[cfg(test)]
 mod tests;
 
-pub use asked::{Advance, Advanced, Pace, PaceSet, SetPace, Unadvanced};
+pub use asked::{Advance, Advanced, Pace, PaceSet, Redraw, Redrawn, SetPace, Unadvanced};
 
 use crate::host::Clockwork;
 use aethereal_actor::Requests;
@@ -28,13 +28,15 @@ pub enum Paced {
 }
 
 /// What the pacer asks its host through its controller, in the order its turns asked: to hold the clock, so no cycle
-/// is due of the host's own accord; to let it run, counting the next cycle's delta from when the host takes this; or
-/// to run one held cycle whose `Tick` carries `delta_nanos` exactly.
+/// is due of the host's own accord; to let it run, counting the next cycle's delta from when the host takes this; to
+/// run one held cycle whose `Tick` carries `delta_nanos` exactly; or to redraw, running the cycle from its `Render`
+/// stage with no time passing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pacing {
     Hold,
     Run,
     Cycle { delta_nanos: u64 },
+    Redraw,
 }
 
 /// What the pacer is made from: the source its host feeds, the controller it asks its host through, how the clock
@@ -83,20 +85,39 @@ pub struct Pacer {
 enum Clock {
     /// With the host's time.
     Real,
-    /// Only when advanced: the advances held, in the order asked. The first one's cycle is the one the host was asked
-    /// to run, and the host is asked for the next once it has said that one finished.
-    Held(VecDeque<Advancing>),
+    /// Only when advanced: the advances and redraws held, in the order asked. The first one's cycle is the one the host
+    /// was asked to run, and the host is asked for the next once it has said that one finished.
+    Held(VecDeque<Asked>),
     /// The program is stopping: no cycle runs again, and every advance is refused.
     Stopping,
 }
 
-/// An advance held: the request, the cycles it has left to run, the one the host runs now among them, and the delta of
-/// each.
+/// What a held clock was asked, held: an advance, with the cycles it has left to run, the one the host runs now among
+/// them, and the delta of each; or a redraw.
 #[derive(Bound)]
-struct Advancing {
-    held: Held<Advanced>,
-    left: u32,
-    delta_nanos: u64,
+enum Asked {
+    Advance { held: Held<Advanced>, left: u32, delta_nanos: u64 },
+    Redraw(Held<Redrawn>),
+}
+
+impl Asked {
+    /// What the host is asked to run for it next.
+    const fn pacing(&self) -> Pacing {
+        match self {
+            Self::Advance { delta_nanos, .. } => Pacing::Cycle { delta_nanos: *delta_nanos },
+            Self::Redraw(_) => Pacing::Redraw,
+        }
+    }
+
+    /// Refuses it, for `why`.
+    fn refuse<S>(self, why: Unadvanced, turn: &mut Turn<'_, Pacer, S>) -> Result<(), Fault> {
+        match self {
+            Self::Advance { held, .. } => turn.answer(held, &Advanced::Refused(why))?,
+            Self::Redraw(held) => turn.answer(held, &Redrawn::Refused(why))?,
+        }
+
+        Ok(())
+    }
 }
 
 /// The pacer is a root, made by the chassis whose clock it holds.
@@ -113,10 +134,14 @@ impl Carries<Advance> for Pacer {
     type Answers = (Advanced,);
 }
 
+impl Carries<Redraw> for Pacer {
+    type Answers = (Redrawn,);
+}
+
 impl Actor for Pacer {
     type Config = PacerConfig;
     type Key = ();
-    type Handles = (Paced, SetPace, Advance, On<Stop>);
+    type Handles = (Paced, SetPace, Advance, Redraw, On<Stop>);
     type BeginSends = ();
     type EndSends = ();
 
@@ -154,9 +179,9 @@ impl Handles<SetPace> for Pacer {
                 self.clock = Clock::Held(VecDeque::new());
                 turn.open(&mut self.control)?.push(Pacing::Hold);
             }
-            (Clock::Held(advancing), Pace::Real) => {
-                for advance in advancing.drain(..) {
-                    turn.answer(advance.held, &Advanced::Refused(Unadvanced::Running))?;
+            (Clock::Held(asked), Pace::Real) => {
+                for asked in asked.drain(..) {
+                    asked.refuse(Unadvanced::Running, turn)?;
                 }
                 self.clock = Clock::Real;
                 turn.open(&mut self.control)?.push(Pacing::Run);
@@ -190,18 +215,28 @@ impl Handles<Advance> for Pacer {
             turn.reply(&Advanced::Refused(why))?;
             return Ok(());
         }
-        let Clock::Held(advancing) = &mut self.clock else {
-            return Ok(());
-        };
         let held = turn.hold()?;
-        let is_first = advancing.is_empty();
-        advancing.push_back(Advancing { held, left: cycles, delta_nanos });
-        if is_first {
-            // Pushed last, so a turn that fails before it asks the host for nothing (ADR-0019).
-            turn.open(&mut self.control)?.push(Pacing::Cycle { delta_nanos });
-        }
+        self.ask(Asked::Advance { held, left: cycles, delta_nanos }, turn)
+    }
+}
 
-        Ok(())
+/// Holds the redraw, and asks the host for it when nothing else is under way: answered once it has finished. A clock
+/// that runs, or a program stopping, refuses it at once.
+impl Handles<Redraw> for Pacer {
+    type Sends = (ToSender<Redrawn>,);
+
+    fn handle(&mut self, _: Redraw, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let refused = match &self.clock {
+            Clock::Real => Some(Unadvanced::Running),
+            Clock::Stopping => Some(Unadvanced::Stopping),
+            Clock::Held(_) => None,
+        };
+        if let Some(why) = refused {
+            turn.reply(&Redrawn::Refused(why))?;
+            return Ok(());
+        }
+        let held = turn.hold()?;
+        self.ask(Asked::Redraw(held), turn)
     }
 }
 
@@ -227,16 +262,23 @@ impl Handles<Paced> for Pacer {
             turn.log(Level::Warn, "the host ran a held cycle that no advance asked for");
             return Ok(());
         };
-        first.left -= 1;
-        if first.left == 0 {
-            let Some(done) = advancing.pop_front() else {
-                return Ok(());
-            };
-            turn.answer(done.held, &Advanced::Advanced { elapsed_nanos })?;
+        let is_done = match first {
+            Asked::Advance { left, .. } => {
+                *left -= 1;
+                *left == 0
+            }
+            Asked::Redraw(_) => true,
+        };
+        if is_done {
+            match advancing.pop_front() {
+                Some(Asked::Advance { held, .. }) => turn.answer(held, &Advanced::Advanced { elapsed_nanos })?,
+                Some(Asked::Redraw(held)) => turn.answer(held, &Redrawn::Redrawn)?,
+                None => {}
+            }
         }
         if let Some(next) = advancing.front() {
-            let delta_nanos = next.delta_nanos;
-            turn.open(&mut self.control)?.push(Pacing::Cycle { delta_nanos });
+            let pacing = next.pacing();
+            turn.open(&mut self.control)?.push(pacing);
         }
 
         Ok(())
@@ -248,9 +290,9 @@ impl Handles<On<Stop>> for Pacer {
     type Sends = ();
 
     fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        if let Clock::Held(advancing) = &mut self.clock {
-            for advance in advancing.drain(..) {
-                turn.answer(advance.held, &Advanced::Refused(Unadvanced::Stopping))?;
+        if let Clock::Held(asked) = &mut self.clock {
+            for asked in asked.drain(..) {
+                asked.refuse(Unadvanced::Stopping, turn)?;
             }
         }
         self.clock = Clock::Stopping;
@@ -260,6 +302,23 @@ impl Handles<On<Stop>> for Pacer {
 }
 
 impl Pacer {
+    /// Holds `asked` of a held clock, behind what was asked before it, and asks the host for its cycle when nothing
+    /// else is under way.
+    fn ask<S>(&mut self, asked: Asked, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
+        let Clock::Held(held) = &mut self.clock else {
+            return Ok(());
+        };
+        let pacing = asked.pacing();
+        let is_first = held.is_empty();
+        held.push_back(asked);
+        if is_first {
+            // Pushed last, so a turn that fails before it asks the host for nothing (ADR-0019).
+            turn.open(&mut self.control)?.push(pacing);
+        }
+
+        Ok(())
+    }
+
     /// How the clock moves: a stopping program's as it last did not matter, so it reads as held, which no cycle of
     /// the host's own ends.
     const fn pace(&self) -> Pace {

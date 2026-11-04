@@ -16,6 +16,8 @@ mod tool;
 
 pub use bootstrap::PaceSettings;
 pub use host::Clockwork;
-pub use pacer::{Advance, Advanced, Pace, PaceSet, Paced, Pacer, PacerConfig, Pacing, SetPace, Unadvanced};
+pub use pacer::{
+    Advance, Advanced, Pace, PaceSet, Paced, Pacer, PacerConfig, Pacing, Redraw, Redrawn, SetPace, Unadvanced,
+};
 #[cfg(feature = "tools")]
 pub use tool::{Calling, PaceTool, PaceToolConfig};

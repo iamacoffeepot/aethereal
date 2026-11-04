@@ -62,3 +62,20 @@ pub enum Unadvanced {
     /// The program is stopping: no cycle runs again.
     Stopping,
 }
+
+/// Asks the pacer to draw a held clock's program again, as it stands: the cycle run from its `Render` stage, with no
+/// `Tick` and no time passing, so a frame is drawn for what reads one, as a capture does. Answered with [`Redrawn`]
+/// once it has finished, in turn with the advances asked before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.pace.redraw")]
+pub struct Redraw;
+
+/// What became of a redraw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.pace.redrawn")]
+pub enum Redrawn {
+    /// It was drawn again, and has finished.
+    Redrawn,
+    /// It was not, for this reason: a running clock draws of its own accord, and a stopping program draws no more.
+    Refused(Unadvanced),
+}

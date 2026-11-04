@@ -505,6 +505,34 @@ fn a_held_cycle_carries_the_delta_chosen_and_the_clock_resumed_counts_from_then(
 }
 
 #[test]
+fn a_redraw_runs_the_cycle_from_its_stage_with_no_time_passing() {
+    // Catches a redraw that runs `Tick`, or the stages before the one it names, a redraw that moves the program's
+    // time, one said finished before its last stage has run, and one of a stage the cycle lacks that never finishes.
+    let mut engine = cycling::<Full>(Duration::from_secs(1));
+    engine.cycle_by(Duration::from_micros(1));
+    for nanos in [10, 20, 30, 40, 50] {
+        step_at(&mut engine, nanos);
+    }
+    assert!(engine.has_cycled());
+
+    engine.redraw_from::<Render>();
+    assert!(!engine.has_cycled(), "a redraw is due");
+    assert_eq!(step_at(&mut engine, 60), [Seen::Rendered]);
+    assert!(!engine.has_cycled(), "its last stage is still to run");
+    assert_eq!(step_at(&mut engine, 70), [Seen::Presented]);
+    assert!(engine.has_cycled());
+    assert_eq!(engine.elapsed(), Duration::from_micros(1));
+
+    let Some(parts) = NonZeroUsize::new(1) else {
+        panic!("one is not zero");
+    };
+    let mut drawless = Engine::new(parts, 1024, 0, 1 << 20, 0).with_cycle::<(Tick,)>().ready();
+    drawless.start();
+    drawless.redraw_from::<Render>();
+    assert!(drawless.has_cycled(), "a cycle without the stage has nothing to redraw");
+}
+
+#[test]
 fn a_program_asked_to_stop_mid_cycle_finishes_the_cycle_first() {
     // Catches `Stop` sent in the middle of a cycle, so an actor stops between drawing and showing.
     let mut engine = cycling::<Full>(Duration::from_secs(1));

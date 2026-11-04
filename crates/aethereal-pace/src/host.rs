@@ -2,7 +2,7 @@
 //! say a held cycle is due when one is asked for, and say through the pacer's source when it has finished (ADR-0045).
 
 use crate::pacer::{Paced, Pacing};
-use aethereal_actor::{Requests, Time};
+use aethereal_actor::{Render, Requests, Time};
 use aethereal_substrate::{Closed, Engine, Feed};
 use core::time::Duration;
 
@@ -32,13 +32,20 @@ enum Clocked {
     Held(Owed),
 }
 
+/// A held cycle the pacer asked for: one whose `Tick` carries this many nanoseconds, or a redraw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asking {
+    By(u64),
+    Redraw,
+}
+
 /// Where the held cycle the pacer asked for stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Owed {
     /// None is asked for.
     Nothing,
-    /// One is asked for, of this many nanoseconds, and the host has not said it is due.
-    Cycle(u64),
+    /// One is asked for, and the host has not said it is due.
+    Cycle(Asking),
     /// The host said it is due, and has not yet said it finished.
     Cycling,
 }
@@ -72,8 +79,11 @@ impl Clockwork {
                     engine.resume(now);
                     Clocked::Real
                 }
-                (Clocked::Held(_), Pacing::Cycle { delta_nanos }) => Clocked::Held(Owed::Cycle(delta_nanos)),
-                (clocked, Pacing::Hold | Pacing::Run | Pacing::Cycle { .. }) => clocked,
+                (Clocked::Held(_), Pacing::Cycle { delta_nanos }) => {
+                    Clocked::Held(Owed::Cycle(Asking::By(delta_nanos)))
+                }
+                (Clocked::Held(_), Pacing::Redraw) => Clocked::Held(Owed::Cycle(Asking::Redraw)),
+                (clocked, Pacing::Hold | Pacing::Run | Pacing::Cycle { .. } | Pacing::Redraw) => clocked,
             };
         }
 
@@ -92,13 +102,16 @@ impl Clockwork {
         matches!(self.clocked, Clocked::Held(Owed::Cycle(_)))
     }
 
-    /// Says the held cycle asked for is due, its `Tick` carrying the delta the pacer asked for exactly. Nothing when
-    /// none is asked for.
+    /// Says the held cycle asked for is due, its `Tick` carrying the delta the pacer asked for exactly, or the redraw
+    /// asked for, the cycle from its `Render` stage. Nothing when none is asked for.
     pub fn begin(&mut self, engine: &mut Engine) {
-        let Clocked::Held(Owed::Cycle(delta_nanos)) = self.clocked else {
+        let Clocked::Held(Owed::Cycle(asking)) = self.clocked else {
             return;
         };
-        engine.cycle_by(Duration::from_nanos(delta_nanos));
+        match asking {
+            Asking::By(delta_nanos) => engine.cycle_by(Duration::from_nanos(delta_nanos)),
+            Asking::Redraw => engine.redraw_from::<Render>(),
+        }
         self.clocked = Clocked::Held(Owed::Cycling);
     }
 

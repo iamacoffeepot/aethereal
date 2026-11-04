@@ -133,11 +133,20 @@ record_clip { window, frames, frames_per_second, crop, longest, name }
   - a write that failed, naming the frame;
   - a program with no `Pacer`, found when `SetPace` reaches no actor.
 
+### A redraw (amended, after ADR-0048)
+
+*Added once it showed that `capture_frame` waits forever under a held clock: it reads the next frame drawn, and a held clock draws none until it is advanced.*
+
+- **`Redraw`, asked of the pacer, draws a held program again with no time passing,** answered `Redrawn::{Redrawn, Refused(Unadvanced)}`. The pacer queues it with the advances, so only one held cycle is under way at a time, and asks its chassis `Pacing::Redraw`. A running clock refuses it, `Running`, as it draws of its own accord; a stopping program refuses it, `Stopping`.
+- **The chassis runs it as the cycle from its `Render` stage** (`Engine::redraw_from::<Render>`): `Render` and the stages after it, with no `Tick` before, and a delta of 0, so the program's time does not move. A cycle without `Render` runs nothing, and has cycled at once. The `Clockwork` says it is due and finished as it does a held cycle, and the desktop draws it as a held frame.
+- **`capture_frame` asks the pacer to redraw** as it asks the renderer for the next frame. Under a held clock, the redraw draws that frame; under a running one, the refusal is passed over and the next frame comes as before. A program that lists `CaptureTool` lists the pacer before it, or does not build.
+- On eve, three captures of a held program were byte-identical, and the two after an advance of 30 cycles were identical to each other and differed from the first three.
+
 ## Consequences
 
 - **A clip plays in exact real time however slowly its frames are drawn,** and two runs of a deterministic program are the same clip, frame for frame. Recording takes as long as drawing does: faster than real time for a light scene, and slower for a heavy one, with the clip the same either way.
 - **What a job brings in lands when it lands.** A held clock does not hold jobs. So a scene still loading textures, or one fed from outside, can differ between two recordings, by when each job finished against the held cycles.
-- **A held window draws nothing.** A held program that is resized or uncovered shows its last frame, or none, until it is advanced.
+- **A held window draws nothing of its own accord.** A held program that is resized or uncovered shows its last frame, or none, until it is advanced or redrawn.
 - **On a display that presents `fifo`, each held cycle can still wait for the display as it is presented,** so a desktop may record no faster than the display's rate. Uncapped presenting records as fast as frames draw. On eve, two engines that started held, one covered by the other, each recorded 30 frames at once, and their clips matched byte for byte.
 - **Frames are kept as PNGs, not encoded as video.** An MP4 needs an encoder the engine does not have, and the folder is what any encoder reads. A clip of 3600 frames at 1280 × 800 is a few gigabytes, so the cap bounds it.
 - **Actors that animate from `turn.now()` are not held.** Moving them to `Tick` is the fix, and the guide's rule.

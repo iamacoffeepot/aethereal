@@ -14,6 +14,7 @@ use aethereal_actor::{
     ProtocolRef, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes};
+use aethereal_pace::{Pacer, Redraw, Redrawn};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_window::WindowId;
 use encode::{Encode, Encoded};
@@ -61,6 +62,12 @@ pub struct Reading {
     number: u64,
 }
 
+/// What the tool keeps for the redraw it asks of the pacer: nothing, as only a held clock's redraw draws the frame it
+/// reads, and a running clock's refusal is no news.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.capture_redrawing")]
+pub struct Redrawing;
+
 /// What the tool keeps for the image a job makes: which call it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.capture_encoding")]
@@ -107,7 +114,7 @@ impl ChildOf for CaptureTool {
 impl Actor for CaptureTool {
     type Config = CaptureToolConfig;
     type Key = ();
-    type Handles = (Call, Answer<Pixels, Reading>, Answer<Encoded, Encoding>);
+    type Handles = (Call, Answer<Pixels, Reading>, Answer<Redrawn, Redrawing>, Answer<Encoded, Encoding>);
     type BeginSends = ();
     type EndSends = ();
 
@@ -126,7 +133,8 @@ impl Tool for CaptureTool {
             name: String::from("capture_frame"),
             description: String::from(
                 "Captures the next frame drawn onto a window, numbered from 0, as a PNG image, with a line giving the \
-                 frame's size, the crop, and the image's size. `longest` bounds the image's longer side: a larger \
+                 frame's size, the crop, and the image's size. Under a held clock the frame is drawn again for it, \
+                 with no time passing, so it shows the program where it was held. `longest` bounds the image's longer side: a larger \
                  image is shrunk to keep its shape, and a smaller one is never enlarged. An image costs about width \
                  × height / 750 tokens, so a whole frame at 1024 is about a thousand. `crop` cuts a region of the \
                  frame, in its pixels from the top left, before shrinking: crop to look closely at part of a frame.",
@@ -141,8 +149,11 @@ impl Tool for CaptureTool {
     }
 }
 
+/// Asks the renderer for the next frame drawn onto the window, and the pacer to redraw: a held clock draws no frame
+/// until it does, and draws the one it holds with no time passing (ADR-0045). A running clock refuses, and draws the
+/// next of its own accord.
 impl Handles<Call> for CaptureTool {
-    type Sends = (Asks<Path<Renderer>, ReadBack, Reading>, ToSender<Called>);
+    type Sends = (Asks<Path<Renderer>, ReadBack, Reading>, Asks<Path<Pacer>, Redraw, Redrawing>, ToSender<Called>);
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Ok(capture) = from_bytes::<Capture>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
@@ -157,8 +168,19 @@ impl Handles<Call> for CaptureTool {
         let number = self.next;
         self.next += 1;
         turn.to(path::<Renderer>(())).ask(&ReadBack { of: Readable::Frame(capture.window) }, &Reading { number })?;
+        turn.to(path::<Pacer>(())).ask(&Redraw, &Redrawing)?;
         self.reading.insert(number, Asked { held, crop: capture.crop, longest: capture.longest });
 
+        Ok(())
+    }
+}
+
+/// What became of the redraw: nothing to do, as the frame read back is what answers the call, and a clock that runs
+/// draws it anyway.
+impl Handles<Answer<Redrawn, Redrawing>> for CaptureTool {
+    type Sends = ();
+
+    fn handle(&mut self, _: (Answered<Redrawn>, Redrawing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
 }
