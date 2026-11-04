@@ -3,7 +3,8 @@
 use super::outside::{Handed, Turned};
 use super::*;
 use crate::watch::Notice;
-use crate::{ByActor, Entry, child_id, path_id};
+use crate::{ByActor, child_id, path_id};
+use aethereal_actor::Entry;
 use aethereal_actor::Time;
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Anywhere, Asks, Carries, ChildOf, Ended, Ending, Fault, Handles, How,
@@ -1398,6 +1399,7 @@ fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
         blobs: &engine.blobs,
         now: Time::ZERO,
         cycle: &[],
+        log: &engine.log,
     };
     assert_eq!(Table::resolve(&in_run, &child_path), Some(child));
     assert!(Table::is_live(&in_run, child.id));
@@ -1416,6 +1418,7 @@ fn run_sees_its_own_spawns_and_endings_and_no_other_turn_does() {
         blobs: &engine.blobs,
         now: Time::ZERO,
         cycle: &[],
+        log: &engine.log,
     };
     assert_eq!(Table::resolve(&outside, &child_path), None);
     assert!(!Table::is_live(&outside, child.id));
@@ -1437,8 +1440,15 @@ fn a_child_that_ended_in_a_run_is_not_found_by_its_later_turns() {
     run.end(child.id);
     let stood = ByActor::default();
     let node = KindId::of::<Node>();
-    let since =
-        |sees| Since { table: engine.table(), stood: &stood, sees, blobs: &engine.blobs, now: Time::ZERO, cycle: &[] };
+    let since = |sees| Since {
+        table: engine.table(),
+        stood: &stood,
+        sees,
+        blobs: &engine.blobs,
+        now: Time::ZERO,
+        cycle: &[],
+        log: &engine.log,
+    };
 
     assert_eq!(Table::reach_child(&since(Sees::Run(&run)), root, &segment, node), None);
     assert_eq!(Table::reach_child(&since(Sees::Step), root, &segment, node), Some(child));

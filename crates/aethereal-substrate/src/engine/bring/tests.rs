@@ -1,7 +1,8 @@
 //! What the chassis brings in through sources, as the engine hands it to their owners (ADR-0010).
 
 use super::super::*;
-use crate::{Closed, Entry, Feed};
+use crate::{Closed, Feed};
+use aethereal_actor::Entry;
 use aethereal_actor::Time;
 use aethereal_actor::{
     Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Recursive, Source, ToType, Top, Turn,

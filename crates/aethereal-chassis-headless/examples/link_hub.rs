@@ -1,7 +1,7 @@
 //! A hub on this machine: an MCP server whose tools list the engines linked to it, describe an engine's tools, call
 //! one, mint a token for an engine started by hand, spawn an engine from its store, and terminate one (ADR-0037,
 //! ADR-0038, ADR-0040), and check binaries into its store, list them, and pin them (ADR-0039). It lists `Processes`,
-//! which starts each engine it spawns. It runs no cycle: its sockets wake it as they are ready (ADR-0033).
+//! which starts each engine it spawns, and `actor_logs`, which reads what its own actors logged (ADR-0044). It runs no cycle: its sockets wake it as they are ready (ADR-0033).
 //!
 //! `Mcp` and `Engines` each suggest `--port` and `--most-calls`, and `Engines` and `Store` each suggest
 //! `--most-bytes`, so this program names them apart: `--mcp-port` and `--mcp-most-calls` for MCP, `--link-port`,
@@ -23,7 +23,7 @@ use aethereal_process::Processes;
 use aethereal_store::{Store, StoreSettings, StoreTools};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
-use aethereal_tools::Toolbox;
+use aethereal_tools::{LogsTool, Toolbox};
 
 fn main() {
     let http = HttpSettings::default();
@@ -38,7 +38,7 @@ fn main() {
         .root_with::<Engines>(engines)
         .root::<Store>()
         .root::<Processes>()
-        .root::<Toolbox<(EngineTools, StoreTools), Mcp>>()
+        .root::<Toolbox<(EngineTools, StoreTools, LogsTool), Mcp>>()
         .flags(|flags| {
             flags
                 .rename(McpSettings::PORT, "mcp-port")

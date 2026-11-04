@@ -18,9 +18,9 @@ use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
     Declared, Due, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handles, Held, Instances, Keeping,
-    Keeps, Kinds, Level, Line, MailId, Mailed, NotOwed, On, Owed, Owes, ParentOf, Parented, Payload, ProtocolRef, Puts,
-    Reachable, Resource, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage, Table, Tie, Tied, Time, ToSender,
-    Unanswered, Untaken, Watchable, What, Within, Written,
+    Keeps, Kinds, Level, Line, Logged, MailId, Mailed, NotOwed, On, Owed, Owes, ParentOf, Parented, Payload,
+    ProtocolRef, Puts, Reachable, Resource, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage, Table, Tie, Tied,
+    Time, ToSender, Unanswered, Untaken, Watchable, What, Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -613,6 +613,11 @@ impl Seat<'_> {
     /// A reference to the live actor `path` names.
     fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.table.resolve(path).map(ErasedActorRef::new)
+    }
+
+    /// What the actor `path` names has logged, live or ended (ADR-0044).
+    fn logged(&self, path: &ActorPath) -> Logged<'_> {
+        self.table.logged(path)
     }
 
     /// The reference, to the tuple of kinds `P`, when the declaration of its actor's type lists every kind of `P`:
@@ -2027,6 +2032,12 @@ impl<Me, S> Turn<'_, Me, S> {
     #[must_use]
     pub fn resolve(&self, path: &ActorPath) -> Option<ErasedActorRef> {
         self.seat.resolve(path)
+    }
+
+    /// What the actor `path` names has logged, live or ended, as the log view stood when the step began (ADR-0044).
+    #[must_use]
+    pub fn logged(&self, path: &ActorPath) -> Logged<'_> {
+        self.seat.logged(path)
     }
 
     /// The actor `reference` refers to, as a reference to the tuple of kinds `P`, when its type lists every kind of

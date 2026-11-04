@@ -1,5 +1,5 @@
-//! The window example's ring, in an engine linked to a hub, handing it one tool, `capture_frame`, which shows the agent
-//! what the window draws (ADR-0043). It dials the hub once, as it starts, with the token the hub minted for it, and ends
+//! The window example's ring, in an engine linked to a hub, handing it two tools: `capture_frame`, which shows the
+//! agent what the window draws (ADR-0043), and `actor_logs`, which reads what its actors logged (ADR-0044). It dials the hub once, as it starts, with the token the hub minted for it, and ends
 //! when its link ends, or when its window is closed or Escape is pressed (ADR-0040).
 //!
 //! With a hub from the headless `link_hub` example running, ask its `mint_token` tool for a token, which answers the
@@ -22,7 +22,7 @@ use aethereal_link::{Link, LinkSettings};
 use aethereal_render::{CaptureTool, Renderer};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
-use aethereal_tools::Toolbox;
+use aethereal_tools::{LogsTool, Toolbox};
 use aethereal_window::Windows;
 use core::error::Error;
 use core::num::{NonZeroU32, NonZeroUsize};
@@ -77,7 +77,7 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root::<Scene>()
         .root::<Tcp>()
         .root_with::<Link>(link)
-        .root::<Toolbox<(CaptureTool,), Link>>()
+        .root::<Toolbox<(CaptureTool, LogsTool), Link>>()
         .flags(|flags| {
             flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE)
         })

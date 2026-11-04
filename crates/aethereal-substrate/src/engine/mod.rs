@@ -39,16 +39,16 @@ use crate::stream::{self, Handed, Pieces, Streams};
 use crate::table::{self, Actors};
 use crate::watch::{Notice, Watches};
 use crate::{
-    ActorTable, Blobs, ByActor, BySeat, Clock, Context, Entry, Envelope, Folded, Lives, Log, Part, Routed, State,
-    Tying, lives, rounded,
+    ActorTable, Blobs, ByActor, BySeat, Clock, Context, Envelope, Folded, Lives, Log, Part, Routed, State, Tying,
+    lives, rounded,
 };
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, Buffers, Bytes, Carried, Chain, Closing, Code,
-    Cycling, Declared, Effect, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, JobId, JobType, Keeping,
-    Keeps, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Puts, Reads, Refused, Resource, Root,
-    Runs, SeatNumber, Seated, Seats, Sleep, Stood, Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why,
-    config_bytes, holders,
+    Cycling, Declared, Effect, Entry, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, JobId, JobType,
+    Keeping, Keeps, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Puts, Reads, Refused,
+    Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Stood, Submitted, Tie, Tied, Time, Turning, Unanswered,
+    Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -303,6 +303,8 @@ pub struct Reading<'a> {
     now: Time,
     /// The stages of the chassis's cycle (ADR-0020).
     cycle: &'a [Cycling],
+    /// The log as the step began, which turns read (ADR-0044).
+    log: &'a Folded<Log>,
 }
 
 /// What a step hands out and takes back, kept empty between steps for its room.
@@ -520,6 +522,13 @@ impl Engine {
         self
     }
 
+    /// The engine, whose log keeps at most `most` entries for each actor (ADR-0044): set before any root is made.
+    fn with_most_logged(mut self, most: usize) -> Self {
+        self.log.shards_mut().for_each(|logs| logs.keep_at_most(most));
+
+        self
+    }
+
     /// Gives each part instances that carry the engine's guests' code, the native types it keeps, and its read limit.
     fn carry(&mut self) {
         for instances in &mut self.instances {
@@ -539,7 +548,7 @@ impl Engine {
     /// ended, by the seat it sat in: the table no longer holds it (ADR-0008). Nothing for an actor that has logged
     /// nothing, or whose seat another actor has taken and logged in since.
     pub fn log(&self, actor: Seated) -> impl Iterator<Item = &Entry> {
-        self.log.shard(actor.seat.number()).get(actor).into_iter().flatten()
+        self.log.shard(actor.seat.number()).get(actor).into_iter().flat_map(KeptLog::entries)
     }
 
     /// The number of the last step run, from one. Zero before the first.
@@ -787,6 +796,7 @@ impl Engine {
             blobs: &self.blobs,
             now: self.now,
             cycle: self.staging.cycle(),
+            log: &self.log,
         };
         let mut keeping = Keeping::default();
         // The root begins in the part it is seated in, lent that part's instances.
@@ -932,6 +942,7 @@ impl Engine {
             slice: self.slice,
             now: self.now,
             cycle: self.staging.cycle(),
+            log: &self.log,
         };
         for (part, _) in &self.packing.parts {
             let room = Room {
@@ -1145,6 +1156,7 @@ impl Engine {
             slice: self.slice,
             now: self.now,
             cycle: self.staging.cycle(),
+            log: &self.log,
         }
     }
 
@@ -1695,6 +1707,7 @@ impl Reading<'_> {
                             blobs: self.blobs,
                             now: self.now,
                             cycle: self.cycle,
+                            log: self.log,
                         };
                         let (seats, puts, _, gifts) = asked.lent_gifts();
                         let holds = Holds { keeping: &mut *keeping, gifts };
@@ -1711,6 +1724,7 @@ impl Reading<'_> {
                             blobs: self.blobs,
                             now: self.now,
                             cycle: self.cycle,
+                            log: self.log,
                         };
                         asked.next_turn();
                         let source = handed.source();
@@ -1819,6 +1833,7 @@ impl Reading<'_> {
                 blobs: self.blobs,
                 now: self.now,
                 cycle: self.cycle,
+                log: self.log,
             };
             let closing = Closing::new(me, path, above, &table, asked, instances, keeps, sent, why);
             let mut ended = actor.end(closing);
@@ -1887,6 +1902,7 @@ impl Reading<'_> {
             blobs: self.blobs,
             now: self.now,
             cycle: self.cycle,
+            log: self.log,
         };
         if seat.prepares {
             let (seats, puts, arena, gifts) = asked.lent_gifts();
@@ -1908,6 +1924,7 @@ impl Reading<'_> {
                     blobs: self.blobs,
                     now: self.now,
                     cycle: self.cycle,
+                    log: self.log,
                 };
                 let bytes = lists.fusing.bytes(&hop);
                 let answering = waiting.answering(hop.tie);

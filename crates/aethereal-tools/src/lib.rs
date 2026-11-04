@@ -8,12 +8,14 @@
 //! The crate has no HTTP and no TCP, so a capability's `tools` feature brings in neither.
 
 mod holder;
+mod logs;
 mod table;
 mod tool;
 mod toolbox;
 mod tooling;
 
 pub use holder::Holder;
+pub use logs::{ActorLog, LogEntry, LogLevel, LoggedEntry, LogsTool, LogsToolConfig, ReadLog};
 pub use table::{HeldOutput, HeldTool, Table};
 pub use tool::{Tool, ToolList};
 pub use toolbox::{Offering, Toolbox, ToolboxConfig, Unlisted};

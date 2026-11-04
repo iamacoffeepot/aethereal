@@ -32,26 +32,27 @@ agent ── call_tool { engine, tool: "actor_logs", input } ──> hub ══ 
 
 - **Each entry is numbered within its actor,** from 0, in the order the actor made them. A number never changes, so a reader that asks from a number learns how many entries left the view before it read them.
 - **An actor keeps its last `most_logged` entries,** a field of `EngineSettings` (32 by default), which replaces `RECENT`. As before, an entry outlives its actor until another takes the seat and logs.
-- **The view is also read by the actor's id,** which a path names whether or not the actor lives (ADR-0022: `Table::child` computes an id). The view keeps, beside each seat's entries, the id they are by, and a map of ids to the seats they logged in, folded with the entries and keyed by the id, which one actor owns. So the log of an actor that has ended, usually the one most wanted, is read by its path.
+- **The view is also read by the actor's id,** which a path names whether or not the actor lives (ADR-0022: `Table::child` computes an id). A live actor's entries are read at its seat. An ended one's are found by looking through the seats for the id kept beside each seat's entries: a read costs a pass over the seats that have logged, and a fold costs nothing more, as reads are rare and logging is not. So the log of an actor that has ended, usually the one most wanted, is read by its path.
 - `Engine::log` reads the view as before.
 
 ### A turn reads a log
 
 ```rust
 impl Turn<'_, A, S> {
-    /// The entries `path` logged, as the view stood when the step began: those numbered `since` on, oldest first.
-    pub fn logged(&self, path: &ActorPath, since: u64) -> Logged<'_>;
+    /// What `path` logged, live or ended, as the view stood when the step began.
+    pub fn logged(&self, path: &ActorPath) -> Logged<'_>;
 }
 
+pub enum Logged<'a> { Nothing, Kept(&'a KeptLog) }   // `Nothing`: no entries the view holds
 impl<'a> Logged<'a> {
-    pub fn entries(&self) -> impl Iterator<Item = (u64, &'a Entry)>;   // numbered, oldest first
-    pub fn first(&self) -> u64;                                         // the oldest entry the view still holds
-    pub fn next(&self) -> u64;                                          // the number the actor's next entry takes
+    pub fn since(self, since: u64) -> impl Iterator<Item = (u64, &'a Entry)>;   // numbered, oldest first
+    pub fn first(self) -> u64;                                                  // the oldest entry the view holds
+    pub fn next(self) -> u64;                                                   // the number the next entry takes
 }
 ```
 
 - The engine lends it to turns as it lends the table: a read of the view, with no lock, made between folds (ADR-0011). A path whose actor has logged nothing, or whose entries another actor's seat has since replaced, reads as no entries.
-- A guest reaches it as a native actor does, through the boundary; nothing is copied until a turn asks.
+- It is a method of `Table` (ADR-0022), which the engine's `Since` answers. `Entry` moves to `aethereal-actor` beside it, with `KeptLog`, one actor's numbered entries. A guest's table reads every log as `Nothing` until a guest needs one, when the boundary gains a call for it.
 
 ### `actor_logs`
 
@@ -62,7 +63,7 @@ pub struct ActorLog {
     pub next: u64,                // the number to ask from next
     pub skipped: u64,             // entries asked from that had left the view
 }
-pub struct LogEntry { pub n: u64, pub step: u64, pub entry: LoggedEntry }
+pub struct LogEntry { pub n: u64, pub entry: LoggedEntry }
 pub enum LoggedEntry {
     Line { level: Level, text: String },
     Failed(String), EndFailed(String), Dropped(String), Unbrought(String), JobFaulted(String), Unread(String),
@@ -71,8 +72,7 @@ pub enum LoggedEntry {
 
 - **`LogsTool`, in `aethereal-tools`,** answers `actor_logs` from `turn.logged`. The view is the engine's own, and `aethereal-tools` is the tools crate built on the substrate (the substrate cannot depend on it), so the tool sits there beside `Toolbox`, listed by any program that wants it.
 - **`level` keeps lines at that level and above, and every entry that is not a line;** `contains` keeps entries whose text holds it, and every text holds `""`; `most` bounds the answer, and so does the link's `most_bytes`, past which it stops early. `next` is then the first entry it left out.
-- **A fault, drop, or unread mail is written as text,** as its `Display` spells it, so the agent reads why an actor ended without a schema for every fault.
-- **`step` is the step the entry was folded in,** which places entries of different actors in one order when the agent reads several.
+- **A fault, drop, or unread mail is written as text,** so the agent reads why an actor ended without a schema for every fault. A fault is named by its kind's id and size, as nothing in the engine names a kind by its id; a resource or a source's kind by its name.
 - The usual asks: `{ "actor": "aether.render", "since": 0, … }` for what an actor has said, then `{ "since": next }` to follow it.
 
 ### What changes for programs

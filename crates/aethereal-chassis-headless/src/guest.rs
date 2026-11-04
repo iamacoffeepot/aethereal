@@ -3200,7 +3200,7 @@ mod tests {
             engine.step(Time::ZERO, &clock);
         }
 
-        let failed = engine.log(echo).any(|entry| matches!(entry, aethereal_substrate::Entry::Failed(_)));
+        let failed = engine.log(echo).any(|entry| matches!(entry, aethereal_actor::Entry::Failed(_)));
         assert!(!failed, "the echo closed, and did not fail");
         assert_eq!(CLOSER_PONGS.load(Ordering::Relaxed), 1);
     }
@@ -3419,7 +3419,7 @@ mod tests {
         let said: Vec<&str> = engine
             .log(starter)
             .filter_map(|entry| match entry {
-                aethereal_substrate::Entry::Line { text, .. } => Some(text.as_str()),
+                aethereal_actor::Entry::Line { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
@@ -3467,7 +3467,7 @@ mod tests {
             panic!("the actor is seated");
         };
         let lines = engine.log(Seated { id, seat }).filter_map(|entry| match entry {
-            aethereal_substrate::Entry::Line { text, .. } => Some(text.clone()),
+            aethereal_actor::Entry::Line { text, .. } => Some(text.clone()),
             _ => None,
         });
 
@@ -3693,7 +3693,7 @@ mod tests {
         let faulted: Vec<KindId> = engine
             .log(Seated { id: foreman, seat })
             .filter_map(|entry| match entry {
-                aethereal_substrate::Entry::JobFaulted(fault) => Some(fault.kind()),
+                aethereal_actor::Entry::JobFaulted(fault) => Some(fault.kind()),
                 _ => None,
             })
             .collect();
@@ -3792,7 +3792,7 @@ mod tests {
             engine.step(Time::ZERO, &clock);
         }
 
-        let failed = engine.log(echo).any(|entry| matches!(entry, aethereal_substrate::Entry::Failed(_)));
+        let failed = engine.log(echo).any(|entry| matches!(entry, aethereal_actor::Entry::Failed(_)));
         assert!(!failed, "the echo ran on in its instance");
         assert_eq!(VOLLEYER_PONGS.load(Ordering::Relaxed), 4);
     }
@@ -3868,8 +3868,8 @@ mod tests {
         }
 
         let trapped = |actor| {
-            let is_trap = |entry: &aethereal_substrate::Entry| match entry {
-                aethereal_substrate::Entry::Failed(fault) => fault.kind() == KindId::of::<Trapped>(),
+            let is_trap = |entry: &aethereal_actor::Entry| match entry {
+                aethereal_actor::Entry::Failed(fault) => fault.kind() == KindId::of::<Trapped>(),
                 _ => false,
             };
             engine.log(actor).any(is_trap)
@@ -3901,8 +3901,8 @@ mod tests {
             engine.step(Time::ZERO, &clock);
         }
 
-        let is_trap = |entry: &aethereal_substrate::Entry| match entry {
-            aethereal_substrate::Entry::Failed(fault) => fault.kind() == KindId::of::<Trapped>(),
+        let is_trap = |entry: &aethereal_actor::Entry| match entry {
+            aethereal_actor::Entry::Failed(fault) => fault.kind() == KindId::of::<Trapped>(),
             _ => false,
         };
         let refused_trapped = matches!(&doomed, Err(Refused::Began(fault)) if fault.kind() == KindId::of::<Trapped>());
@@ -5131,8 +5131,8 @@ mod tests {
 
         let is_forged = |fault: &Fault| fault.kind() == KindId::of::<Forged>();
         let refused_forged = matches!(&forged, Err(Refused::Began(fault)) if is_forged(fault));
-        let ended_forged = |entry: &aethereal_substrate::Entry| match entry {
-            aethereal_substrate::Entry::Failed(fault) => is_forged(fault),
+        let ended_forged = |entry: &aethereal_actor::Entry| match entry {
+            aethereal_actor::Entry::Failed(fault) => is_forged(fault),
             _ => false,
         };
         assert!(refused_forged, "the hoarder is refused for forging");
@@ -5206,7 +5206,7 @@ mod tests {
         settle(&mut engine);
         let after = engine.blobs_held().0;
 
-        let failed = engine.log(spendthrift).any(|entry| matches!(entry, aethereal_substrate::Entry::Failed(_)));
+        let failed = engine.log(spendthrift).any(|entry| matches!(entry, aethereal_actor::Entry::Failed(_)));
         assert!(failed, "the spendthrift's false send failed it");
         assert_eq!(after, before, "the book its librarian kept is let go");
     }

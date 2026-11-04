@@ -2,7 +2,7 @@
 
 #[cfg(feature = "std")]
 use crate::blob::handed_index;
-use crate::{BlobHash, BlobId, Declared, SeatNumber, Seated, Time};
+use crate::{BlobHash, BlobId, Declared, Logged, SeatNumber, Seated, Time};
 use aethereal_data::{ActorId, ActorPath, Boundary, Element, EncodeError, KindId, PathSegment};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
@@ -62,6 +62,12 @@ pub trait Table {
     /// Whether the engine's lifecycle runs the stage of kind `stage`: `Start`, `Stop`, or a stage of its chassis's
     /// cycle (ADR-0020).
     fn runs_stage(&self, stage: KindId) -> bool;
+
+    /// What the actor `path` names has logged, live or ended, as the log view stood when the step began (ADR-0044).
+    /// A table that reads no log view, as a guest's does until a guest asks for one, reads every log as nothing.
+    fn logged(&self, _path: &ActorPath) -> Logged<'_> {
+        Logged::Nothing
+    }
 }
 
 /// The children an actor has made, live or ended, whose keys it may not use again (ADR-0008).

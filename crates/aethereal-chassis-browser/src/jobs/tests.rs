@@ -2,12 +2,12 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Handles, Job, Running, Seated, Services, Sleep, Slept, Time,
-    Top, Turn, Unanswered,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Entry, Handles, Job, Running, Seated, Services, Sleep, Slept,
+    Time, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::harness::Turned;
-use aethereal_substrate::{Clock, Engine, Entry, Waits};
+use aethereal_substrate::{Clock, Engine, Waits};
 use std::cell::RefCell;
 use std::mem;
 use std::num::NonZeroUsize;

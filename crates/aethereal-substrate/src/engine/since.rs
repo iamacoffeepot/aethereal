@@ -3,9 +3,11 @@
 
 use super::fuse::Run;
 use super::lifecycle::runs;
+use crate::id::path_id;
+use crate::log::find;
 use crate::table::reach;
-use crate::{ActorTable, Blobs, ByActor};
-use aethereal_actor::{BlobHash, BlobId, Cycling, Declared, SeatNumber, Seated, Table, Time};
+use crate::{ActorTable, Blobs, ByActor, Folded, Log};
+use aethereal_actor::{BlobHash, BlobId, Cycling, Declared, Logged, SeatNumber, Seated, Table, Time};
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 
 /// The table as one actor's turn reads it (ADR-0009, ADR-0013).
@@ -29,6 +31,8 @@ pub(super) struct Since<'a> {
     pub(super) now: Time,
     /// The stages of the chassis's cycle (ADR-0020).
     pub(super) cycle: &'a [Cycling],
+    /// The log as the step began (ADR-0044).
+    pub(super) log: &'a Folded<Log>,
 }
 
 /// What a turn sees over the table as the step began and the children stood up since (ADR-0013).
@@ -129,5 +133,14 @@ impl Table for Since<'_> {
 
     fn runs_stage(&self, stage: KindId) -> bool {
         runs(self.cycle, stage)
+    }
+
+    /// A live actor's log is read at its seat; an ended one's, by its id, in the seat it last logged in (ADR-0044).
+    fn logged(&self, path: &ActorPath) -> Logged<'_> {
+        let live = Table::resolve(self.table, path);
+        let kept = live
+            .map_or_else(|| find(self.log, path_id(path)), |seated| self.log.shard(seated.seat.number()).get(seated));
+
+        kept.map_or(Logged::Nothing, Logged::Kept)
     }
 }
