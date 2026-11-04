@@ -340,11 +340,17 @@ impl Running {
         }
     }
 
-    /// What the loop does next while the pacer holds the clock: runs a held cycle the pacer asked for at once, and
-    /// waits on the windows' events and the pacer's next push. It asks for no redraw: a compositor sends a covered
-    /// window none, as Wayland's do, so a held cycle that waited on one would wait until the window was uncovered.
+    /// What the loop does next while the pacer holds the clock: runs a held cycle the pacer asked for at once, maps
+    /// what the renderer read back outside a frame, as a target is read under a held clock (ADR-0048), and waits on
+    /// the windows' events and the pacer's next push. It asks for no redraw: a compositor sends a covered window none,
+    /// as Wayland's do, so a held cycle that waited on one would wait until the window was uncovered. No frame comes
+    /// to map a read in, so the loop waits for the GPU to map it, and what became of it wakes the loop.
     fn owed(&mut self, event_loop: &ActiveEventLoop) -> Next {
         self.held(event_loop);
+        let mapping = self.drawing.map();
+        if mapping {
+            self.drawing.finish();
+        }
 
         Next::Wait
     }

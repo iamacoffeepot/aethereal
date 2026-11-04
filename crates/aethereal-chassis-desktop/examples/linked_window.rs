@@ -23,7 +23,7 @@ use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_files::Files;
 use aethereal_link::{Link, LinkSettings};
 use aethereal_pace::{PaceTool, Pacer};
-use aethereal_render::{CaptureTool, RecordTool, Renderer};
+use aethereal_render::{CaptureTool, RecordTool, Renderer, TargetTool};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{LogsTool, Toolbox};
@@ -83,7 +83,7 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root::<Files>()
         .root::<Tcp>()
         .root_with::<Link>(link)
-        .root::<Toolbox<(CaptureTool, RecordTool, LogsTool, InputTool, WindowTool, PaceTool), Link>>()
+        .root::<Toolbox<(CaptureTool, RecordTool, TargetTool, LogsTool, InputTool, WindowTool, PaceTool), Link>>()
         .flags(|flags| {
             flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE)
         })
