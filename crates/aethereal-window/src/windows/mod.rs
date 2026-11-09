@@ -1,15 +1,15 @@
 //! The window root: the capability that holds the one source its host brings in what every window hears through, and
 //! the controller it asks the host for windows through; it makes each window's actor, sends each event on to the
-//! actor of the window it was heard in, and answers each actor that asked it to open or close a window, or to set the
-//! mode one is shown in, once its host has (ADR-0024, ADR-0027).
+//! actor of the window it was heard in, and answers each actor that asked it to open or close a window, to set the
+//! mode one is shown in, or to let its input method compose, once its host has (ADR-0024, ADR-0027, ADR-0051).
 
 mod asked;
 #[cfg(test)]
 mod tests;
 
 pub use asked::{
-    CloseWindow, Closed, ListWindows, Listed, Logical, ModeSet, MoveWindow, Moved, OpenWindow, Opened, Place,
-    ResizeWindow, Resized, SetMode, Unclosed, Unopened, Unplaced, Unset, WindowList,
+    AllowIme, CloseWindow, Closed, ImeAllowed, ListWindows, Listed, Logical, ModeSet, MoveWindow, Moved, OpenWindow,
+    Opened, Place, ResizeWindow, Resized, SetMode, Unclosed, Unopened, Unplaced, Unset, WindowList,
 };
 
 use crate::event::{Event, Mode, Surface};
@@ -52,11 +52,16 @@ pub enum Heard {
     Moved { window: WindowId },
     /// The host did not move the window as the root asked, for this reason.
     Unmoved { window: WindowId, why: Unplaced },
+    /// The host let the window's input method compose, or stopped it, as the root asked.
+    ImeAllowed { window: WindowId },
+    /// The host did not let the window's input method compose or stop it as the root asked, for this reason.
+    ImeUnallowed { window: WindowId, why: Unset },
 }
 
 /// What the window root asks its host through its controller, in the order its turns asked: to open a window under
 /// the id the root gave it, `title`d, at `size` in the host's logical pixels, shown windowed; to close a window; to
-/// show a window in a mode (ADR-0027); or to resize or move a window shown windowed (ADR-0047).
+/// show a window in a mode (ADR-0027); to resize or move a window shown windowed (ADR-0047); or to let a window's input
+/// method compose, or stop it (ADR-0051).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Windowing {
     Open { window: WindowId, title: String, size: Logical },
@@ -64,6 +69,7 @@ pub enum Windowing {
     SetMode { window: WindowId, mode: Mode },
     Resize { window: WindowId, size: Logical },
     Move { window: WindowId, at: Place },
+    AllowIme { window: WindowId, allowed: bool },
 }
 
 /// What the close button of a window does.
@@ -133,8 +139,8 @@ enum Standing {
 
 /// How an open window is shown, as the root last heard from its host: its title; its surface and mode, kept so a
 /// request for the mode it has is answered at once; whether it has the keyboard; the requests to set its mode, resize
-/// it, and move it the host has not answered, each held in the order it was asked them, as it answers them in that
-/// order; and whether it has been asked to close.
+/// it, move it, and allow or stop its input method the host has not answered, each held in the order it was asked
+/// them, as it answers them in that order; and whether it has been asked to close.
 #[derive(Bound)]
 struct Shown {
     title: String,
@@ -144,6 +150,7 @@ struct Shown {
     setting: VecDeque<Held<ModeSet>>,
     resizing: VecDeque<Held<Resized>>,
     moving: VecDeque<Held<Moved>>,
+    allowing: VecDeque<Held<ImeAllowed>>,
     close: Close,
 }
 
@@ -168,6 +175,7 @@ impl Shown {
             setting: VecDeque::new(),
             resizing: VecDeque::new(),
             moving: VecDeque::new(),
+            allowing: VecDeque::new(),
             close: Close::Unasked,
         }
     }
@@ -222,10 +230,14 @@ impl Carries<MoveWindow> for Windows {
     type Answers = (Moved,);
 }
 
+impl Carries<AllowIme> for Windows {
+    type Answers = (ImeAllowed,);
+}
+
 impl Actor for Windows {
     type Config = WindowsConfig;
     type Key = ();
-    type Handles = (Heard, OpenWindow, CloseWindow, SetMode, ListWindows, ResizeWindow, MoveWindow);
+    type Handles = (Heard, OpenWindow, CloseWindow, SetMode, ListWindows, ResizeWindow, MoveWindow, AllowIme);
     type BeginSends = ();
     type EndSends = ();
 
@@ -378,6 +390,25 @@ impl Handles<MoveWindow> for Windows {
     }
 }
 
+/// Holds the request, and asks the host to let the window's input method compose, or to stop it: answered once the host
+/// says whether it did. The host is asked each time, as the root keeps no record of whether it is allowed (ADR-0051). A
+/// window that is not open, as one still opening or closing, is refused.
+impl Handles<AllowIme> for Windows {
+    type Sends = (ToSender<ImeAllowed>,);
+
+    fn handle(&mut self, allow: AllowIme, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let AllowIme { window, allowed } = allow;
+        let Some(Standing::Open(shown @ Shown { close: Close::Unasked, .. })) = self.standing.get_mut(&window) else {
+            turn.reply(&ImeAllowed::Refused(Unset::NotOpen))?;
+            return Ok(());
+        };
+        shown.allowing.push_back(turn.hold()?);
+        turn.open(&mut self.control)?.push(Windowing::AllowIme { window, allowed });
+
+        Ok(())
+    }
+}
+
 /// What the source brought, from this actor to itself (ADR-0010): an event, sent on to the actor of the window it was
 /// heard in, or what the host did with a window, which answers what the root holds for it. What another actor sends
 /// is not the host's, and is not acted on; what was heard in a window with no actor reaches nothing.
@@ -406,6 +437,8 @@ impl Handles<Heard> for Windows {
             Heard::Unresized { window, why } => self.resized(window, Resized::Refused(why), turn),
             Heard::Moved { window } => self.moved(window, Moved::Moved, turn),
             Heard::Unmoved { window, why } => self.moved(window, Moved::Refused(why), turn),
+            Heard::ImeAllowed { window } => self.allowed(window, ImeAllowed::Allowed, turn),
+            Heard::ImeUnallowed { window, why } => self.allowed(window, ImeAllowed::Refused(why), turn),
         }
     }
 }
@@ -506,10 +539,10 @@ impl Windows {
     }
 
     /// Tells the actor of `window`, which the host closed, so it sends its subscribers `Closed` and ends, then answers
-    /// each request held to set its mode, resize it, or move it, which the host closed it before answering, as not
-    /// open, and each held to close it.
+    /// each request held to set its mode, resize it, move it, or allow or stop its input method, which the host closed
+    /// it before answering, as not open, and each held to close it.
     fn closed(&mut self, window: WindowId, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
-        let Shown { setting, resizing, moving, close, .. } = match self.standing.remove(&window) {
+        let Shown { setting, resizing, moving, allowing, close, .. } = match self.standing.remove(&window) {
             Some(Standing::Open(shown)) => shown,
             Some(Standing::Opening { held, .. }) => {
                 turn.log(Level::Warn, format_args!("the host closed window {window:?} before it said it opened"));
@@ -530,6 +563,9 @@ impl Windows {
         }
         for held in moving {
             turn.answer(held, &Moved::Refused(Unplaced::NotOpen))?;
+        }
+        for held in allowing {
+            turn.answer(held, &ImeAllowed::Refused(Unset::NotOpen))?;
         }
         if let Close::Asked(waiting) = close {
             for held in waiting {
@@ -600,6 +636,27 @@ impl Windows {
             return Ok(());
         };
         turn.answer(held, &moved)?;
+
+        Ok(())
+    }
+
+    /// Answers the first request held to allow or stop the input method of `window` with `allowed`, what the host did
+    /// with it: the host answers them in the order it was asked.
+    fn allowed(
+        &mut self,
+        window: WindowId,
+        allowed: ImeAllowed,
+        turn: &mut Turn<'_, Self, Sends>,
+    ) -> Result<(), Fault> {
+        let Some(Standing::Open(shown)) = self.standing.get_mut(&window) else {
+            turn.log(Level::Warn, format_args!("the host answered for window {window:?}'s IME, which was not open"));
+            return Ok(());
+        };
+        let Some(held) = shown.allowing.pop_front() else {
+            turn.log(Level::Warn, format_args!("the host answered for window {window:?}'s IME, which was not asked"));
+            return Ok(());
+        };
+        turn.answer(held, &allowed)?;
 
         Ok(())
     }

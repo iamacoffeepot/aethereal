@@ -1,7 +1,7 @@
-//! The canvas's tests: what the page's pointer and wheel events read as, in the canvas's pixels and its buttons, and
-//! how many pixels the canvas is drawn at.
+//! The canvas's tests: what the page's pointer and wheel events read as, in the canvas's pixels and its buttons, the
+//! text a key typed, and how many pixels the canvas is drawn at.
 
-use super::dom::{Canvas, Density, Measured, Pointing, button_of, css_pixels};
+use super::dom::{Canvas, Density, Measured, Pointing, button_of, css_pixels, typed};
 use aethereal_window::{Button, Event};
 
 /// Every device pixel of the screen.
@@ -105,4 +105,18 @@ fn a_canvas_laid_out_at_no_size_or_past_the_longest_side_is_drawn_at_a_size_the_
     assert_eq!(hidden.pixels(SCREEN, 2.0, 8192), (1, 1));
     assert_eq!(wide.pixels(SCREEN, 2.0, 8192), (8192, 100));
     assert_eq!(Measured::CssPixels { width: 40.0, height: 30.0 }.pixels(SCREEN, 0.0, 8192), (40, 30));
+}
+
+#[test]
+fn a_key_types_its_one_character_unless_named_composing_or_in_a_chord() {
+    // Catches a named key's word (`Enter`, `Dead`) sent as text; a character of several bytes, such as `é`, taken for
+    // a word by counting bytes; and a key pressed while the input method composes, or in a chord such as Ctrl+C, typing
+    // its character.
+    assert_eq!(typed("w", false, false), Some(String::from("w")));
+    assert_eq!(typed("é", false, false), Some(String::from("é")));
+    assert_eq!(typed(" ", false, false), Some(String::from(" ")));
+    assert_eq!(typed("Enter", false, false), None);
+    assert_eq!(typed("Dead", false, false), None);
+    assert_eq!(typed("w", true, false), None);
+    assert_eq!(typed("c", false, true), None);
 }

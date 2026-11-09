@@ -2,7 +2,7 @@
 //! pointer and the wheel over the canvas, the keys, its focus, and a resize, which push each event onto the window's
 //! feed and return.
 
-use super::dom::{Canvas, Density, Measured, Pointing};
+use super::dom::{Canvas, Density, Measured, Pointing, typed};
 use crate::Listening;
 use aethereal_window::{Event, Mode, Opening, Surface, WindowFeed, WindowId};
 use core::cell::Cell;
@@ -76,7 +76,8 @@ impl Page {
 /// The wheel over the canvas stops the page's default, so the page does not scroll while the wheel turns over it.
 ///
 /// The keys and the focus are the page's, heard on its window: each canvas listened to hears every key and each change
-/// of the page's focus, as the page has one keyboard.
+/// of the page's focus, as the page has one keyboard. A key that types a character pushes `KeyDown`, then `Text` of it,
+/// unless the page's input method composes or Ctrl or Meta is held (ADR-0051).
 ///
 /// **The canvas is drawn at the size the page lays it out at**, at `density`: whenever the page lays it out at
 /// another size, which it measures in device pixels where it can, the window is resized to it, and the chassis
@@ -124,8 +125,15 @@ pub fn listen(canvas: &HtmlCanvasElement, shown: &Shown, density: Density) -> Re
 
     let pressed = window.clone();
     listening.on(&page, "keydown", move |event| {
-        if let Some(key) = event.dyn_ref::<KeyboardEvent>() {
-            pressed.push(Event::KeyDown { code: key.code(), key: key.key(), repeat: key.repeat() }).ok();
+        let Some(key) = event.dyn_ref::<KeyboardEvent>() else {
+            return;
+        };
+        let name = key.key();
+        let chord = key.ctrl_key() || key.meta_key();
+        let text = typed(&name, key.is_composing(), chord);
+        pressed.push(Event::KeyDown { code: key.code(), key: name, repeat: key.repeat() }).ok();
+        if let Some(text) = text {
+            pressed.push(Event::Text { text }).ok();
         }
     })?;
     let released = window.clone();

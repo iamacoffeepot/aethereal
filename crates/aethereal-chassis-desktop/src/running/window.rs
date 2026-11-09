@@ -1,6 +1,7 @@
 //! What a window hears, as winit tells the loop: each pushed onto that window's feed in the window capability's
 //! vocabulary, for the engine's next bring, and what the chassis itself does with a resize, the mode read back as it
-//! resizes, the window shown or hidden, and the window destroyed (ADR-0024, ADR-0027).
+//! resizes, the window shown or hidden, the modifiers held, the input method's composition, and the window destroyed
+//! (ADR-0024, ADR-0027, ADR-0051).
 
 use super::Running;
 use crate::input;
@@ -16,6 +17,10 @@ impl Running {
     ///
     /// A resize is pushed, then the mode winit shows the window in, when it differs from the mode last pushed: a mode
     /// changed by the person at the window, through the platform's own control, resizes it as one the program set does.
+    ///
+    /// A pressed key is pushed as `KeyDown`, then as `Text` of what it typed, when it typed any while no chord is held
+    /// and no composition is open; an input method's commit is pushed as `Text`, and what it composes before that is not
+    /// pushed (ADR-0051).
     ///
     /// The close button is pushed as it is heard, and the window root closes the window or not, as its config says. A
     /// window the platform destroyed is closed, as one the root asked to close is.
@@ -51,9 +56,28 @@ impl Running {
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } => {
                 let (code, key) = (input::code(event.physical_key), input::key(&event.logical_key));
                 match event.state {
-                    ElementState::Pressed => Event::KeyDown { code, key, repeat: event.repeat },
+                    ElementState::Pressed => {
+                        opened.feed.push(Event::KeyDown { code, key, repeat: event.repeat }).ok();
+                        let Some(text) = input::typed(event.text.as_deref(), opened.modifiers, opened.composition)
+                        else {
+                            return;
+                        };
+                        Event::Text { text }
+                    }
                     ElementState::Released => Event::KeyUp { code, key },
                 }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                opened.modifiers = modifiers.state();
+                return;
+            }
+            WindowEvent::Ime(ime) => {
+                let (composition, committed) = input::composed(opened.composition, ime);
+                opened.composition = composition;
+                let Some(text) = committed else {
+                    return;
+                };
+                Event::Text { text }
             }
             WindowEvent::Focused(true) => Event::FocusGained,
             WindowEvent::Focused(false) => Event::FocusLost,

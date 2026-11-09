@@ -1,15 +1,17 @@
-//! The windows the window root asks for while the program runs, opened, closed, shown in a mode, resized, and moved
-//! between steps, inside one of winit's callbacks, where a native window is made (ADR-0027, ADR-0047).
+//! The windows the window root asks for while the program runs, opened, closed, shown in a mode, resized, moved, and
+//! their input methods allowed or stopped, between steps, inside one of winit's callbacks, where a native window is
+//! made (ADR-0027, ADR-0047, ADR-0051).
 
 use super::Running;
+use crate::input::Composition;
 use crate::{gpu, moding, sizing};
 use aethereal_window::{Logical, Mode, Place, Unplaced, Unset, WindowId, Windowing};
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event_loop::ActiveEventLoop;
 
 impl Running {
-    /// Takes what the window root asked since the last take, and opens, closes, sets the mode of, resizes, or moves each
-    /// window, in the order asked, on `event_loop`.
+    /// Takes what the window root asked since the last take, and opens, closes, sets the mode of, resizes, moves, or
+    /// allows or stops the input method of each window, in the order asked, on `event_loop`.
     pub(super) fn windowing(&mut self, event_loop: &ActiveEventLoop) {
         for request in self.windowing.take() {
             match request {
@@ -20,6 +22,7 @@ impl Running {
                 Windowing::SetMode { window, mode } => self.set_mode(window, mode),
                 Windowing::Resize { window, size } => self.resize(window, size),
                 Windowing::Move { window, at } => self.move_to(window, at),
+                Windowing::AllowIme { window, allowed } => self.allow_ime(window, allowed),
             }
         }
     }
@@ -81,6 +84,23 @@ impl Running {
         }
         opened.native.set_outer_position(LogicalPosition::new(at.x, at.y));
         let _ = self.windowing.moved(window);
+    }
+
+    /// Lets `window`'s input method compose, or stops it, as the window root asked, then tells the root so. A stop
+    /// drops a composition open, uncommitted, as winit's `Disabled` says, so the window takes its composition as closed
+    /// then, whether or not the platform says `Disabled`, and a key's text is not held back for good. A window not open
+    /// is refused as not open.
+    fn allow_ime(&mut self, window: WindowId, allowed: bool) {
+        let Some(opened) = self.drawing.window_mut(window) else {
+            // Refused only once the window root has gone, and no one is then owed an answer.
+            let _ = self.windowing.ime_unallowed(window, Unset::NotOpen);
+            return;
+        };
+        opened.native.set_ime_allowed(allowed);
+        if !allowed {
+            opened.composition = Composition::Closed;
+        }
+        let _ = self.windowing.ime_allowed(window);
     }
 
     /// Closes `window`, and asks the program to stop once its last window has closed, as `quit` does.

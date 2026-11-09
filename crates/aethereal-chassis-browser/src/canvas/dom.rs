@@ -1,6 +1,6 @@
-//! What the page's pointer and wheel events read as: where the pointer is in the canvas's pixels, which button the
-//! page numbered, and how far the wheel turned, in the canvas's pixels too; and how many pixels the canvas is drawn
-//! at, from the size the page lays it out at.
+//! What the page's pointer, wheel, and key events read as: where the pointer is in the canvas's pixels, which button
+//! the page numbered, how far the wheel turned, in the canvas's pixels too, and the text a key typed; and how many
+//! pixels the canvas is drawn at, from the size the page lays it out at.
 
 use aethereal_data::Plain;
 use aethereal_window::{Button, Event};
@@ -187,4 +187,19 @@ fn screen(device_pixel_ratio: f64) -> f64 {
     } else {
         1.0
     }
+}
+
+/// The text a `keydown` of `key`, as the page names it, typed: the key itself when it is one character, as a named
+/// key's is a word (`"Enter"`, `"ArrowLeft"`, `"Dead"`), and no control character. None while the page's input method
+/// composes, `composing`, as its commit is no keydown; or with Ctrl or Meta held, `chord`, as a chord types nothing
+/// (ADR-0051).
+pub fn typed(key: &str, composing: bool, chord: bool) -> Option<String> {
+    let one = key.chars().count() == 1;
+    let control = key.chars().any(char::is_control);
+    let types = one && !control && !composing && !chord;
+    if !types {
+        return None;
+    }
+
+    Some(String::from(key))
 }

@@ -1,10 +1,11 @@
 //! `send_input`'s tests: the inputs asked reach the window's subscribers in order, before the answer; inputs that
-//! cannot be performed are refused, and none of them is sent; and a window with no actor is answered as not open.
+//! cannot be performed are refused, and none of them is sent; a window with no actor is answered as not open; and text
+//! is performed as typed, unless no host would send it.
 
 use super::*;
 use crate::event::{Button, Event, Mode, Subscribe, Surface};
 use crate::host::Opening;
-use crate::perform::{MOST_INPUTS, MOST_NAME_BYTES};
+use crate::perform::{MOST_INPUTS, MOST_NAME_BYTES, MOST_TEXT_BYTES};
 use crate::windows::{Heard, Windowing, Windows};
 use aethereal_actor::{Tells, Top};
 use aethereal_data::{ActorPath, Kind, PathSegment};
@@ -130,6 +131,39 @@ fn inputs_reach_the_window_s_subscribers_in_order_unless_one_cannot_be_performed
     assert_eq!(send(&mut harness, 0, too_many)?, (refused, Vec::new()));
 
     assert_eq!(send(&mut harness, 7, vec![w_down()])?, (Performed::Refused(Unperformed::NotOpen), Vec::new()));
+
+    Ok(())
+}
+
+#[test]
+fn text_reaches_the_window_s_subscribers_unless_it_is_too_long_empty_or_holds_a_control_character()
+-> Result<(), Unheard> {
+    // Catches text performed as another event, or dropped; text at the most refused, or text past it, which an engine
+    // reads only when set to read more, passed on; and text that is empty or holds a control character, which no host
+    // sends as text, passed on, so a text field inserts the Enter or the Backspace a key already said; and the input a
+    // refusal names counted from the wrong place.
+    let mut harness = opened()?;
+    let _ = send(&mut harness, 0, Vec::new())?;
+
+    let most = "a".repeat(MOST_TEXT_BYTES as usize);
+    let typed = vec![w_down(), Input::Text { text: String::from("w日本") }, Input::Text { text: most.clone() }];
+    let (performed, heard) = send(&mut harness, 0, typed)?;
+    assert_eq!(performed, Performed::Performed);
+    let expected = [
+        Event::KeyDown { code: String::from("KeyW"), key: String::from("w"), repeat: false },
+        Event::Text { text: String::from("w日本") },
+        Event::Text { text: most },
+    ];
+    assert_eq!(heard, expected);
+
+    let long = Input::Text { text: "a".repeat(MOST_TEXT_BYTES as usize + 1) };
+    let refused = Performed::Refused(Unperformed::TextTooLong { at: 1, most: MOST_TEXT_BYTES });
+    assert_eq!(send(&mut harness, 0, vec![w_down(), long])?, (refused, Vec::new()));
+    for text in ["", "\r", "ab\u{8}"] {
+        let not_text = vec![w_down(), Input::Text { text: String::from(text) }];
+        let refused = Performed::Refused(Unperformed::NotText { at: 1 });
+        assert_eq!(send(&mut harness, 0, not_text)?, (refused, Vec::new()), "{text:?}");
+    }
 
     Ok(())
 }

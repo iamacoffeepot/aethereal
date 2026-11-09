@@ -310,6 +310,7 @@ impl Handles<Event> for Scene {
             Event::PointerDown { .. }
             | Event::PointerUp { .. }
             | Event::Wheel { .. }
+            | Event::Text { .. }
             | Event::Moded(_)
             | Event::FocusGained
             | Event::CloseRequested

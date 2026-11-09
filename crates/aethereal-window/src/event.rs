@@ -27,6 +27,10 @@ pub enum Event {
     KeyDown { code: String, key: String, repeat: bool },
     /// A key came up, named as when it went down.
     KeyUp { code: String, key: String },
+    /// Text typed while the window had the keyboard: the characters a key typed under the layout, its modifiers and
+    /// any dead key before it, or the string an input method committed. Sent after the `KeyDown` that typed it, and
+    /// again for each repeat. Never a control character, never empty (ADR-0051).
+    Text { text: String },
     /// The window's surface is now this size, or its screen this scale; or this is how it stands, sent as the actor
     /// subscribed.
     Resized(Surface),

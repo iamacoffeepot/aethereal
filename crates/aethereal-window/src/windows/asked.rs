@@ -1,5 +1,5 @@
-//! What an actor asks the window root, to open or close a window or set the mode it is shown in while the program
-//! runs, and how it is answered (ADR-0027).
+//! What an actor asks the window root, to open or close a window, set the mode it is shown in, resize or move it, or
+//! let its input method compose while the program runs, and how it is answered (ADR-0027, ADR-0047, ADR-0051).
 
 use crate::event::{Mode, Surface};
 use crate::window::WindowId;
@@ -91,13 +91,13 @@ pub enum ModeSet {
     Refused(Unset),
 }
 
-/// Why a window asked to be shown in a mode was not.
+/// Why a window asked to be shown in a mode, or to let its input method compose or stop it, was not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Unset {
-    /// The window is not open: it never was, it is still opening, it is closing, or it closed before its mode was set.
+    /// The window is not open: it never was, it is still opening, it is closing, or it closed before its host answered.
     NotOpen,
     /// The host sets no window's mode on request, as a page does not: a page enters fullscreen only while it handles a
-    /// person's click or key.
+    /// person's click or key. Nor has it an input method to allow, as a canvas has none.
     NoHost,
 }
 
@@ -184,4 +184,25 @@ pub enum Unplaced {
     /// edges: snapped to a side, or maximized one way only. It keeps that size until the person at it or the compositor
     /// lets it go.
     Tiled,
+}
+
+/// Asks the window root to let `window`'s input method compose, or to stop it: allow it while a text field there has
+/// focus, and stop it after, so the keys a program binds stay keys. Answered with [`ImeAllowed`] once the host has, or
+/// would not. Every window opens with its input method stopped, and the root keeps no record of it: the program that
+/// allows it is the one that stops it (ADR-0051).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.windows.allow_ime")]
+pub struct AllowIme {
+    pub window: WindowId,
+    pub allowed: bool,
+}
+
+/// What became of a window's input method asked to compose or to stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.windows.ime_allowed")]
+pub enum ImeAllowed {
+    /// The host allowed it or stopped it, as asked. One stopped while it composed drops what it composed, uncommitted.
+    Allowed,
+    /// It was not, for this reason.
+    Refused(Unset),
 }
