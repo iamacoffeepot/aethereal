@@ -11,10 +11,17 @@ description = "The renderer: the root that owns the GPU, and makes what is drawn
 # spawned for it. `capture_frame` writes PNGs; `record_clip` also holds the clock and writes them as files (ADR-0045).
 tools = ["dep:aethereal-tools", "dep:png", "dep:aethereal-pace", "dep:aethereal-files"]
 
+# Writes PNGs of glyphs' distance fields, and of text drawn from them, for eyes to judge (ADR-0052).
+[[example]]
+name = "font_msdf"
+required-features = ["tools"]
+
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 aethereal-files = { path = "../aethereal-files", optional = true }
+# The font module's outlines are in its vectors and boxes (ADR-0052).
+aethereal-math = { path = "../aethereal-math" }
 aethereal-pace = { path = "../aethereal-pace", optional = true }
 aethereal-tools = { path = "../aethereal-tools", optional = true }
 aethereal-window = { path = "../aethereal-window" }
