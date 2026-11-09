@@ -26,11 +26,13 @@ pub fn code(key: PhysicalKey) -> String {
 
 /// The W3C UI Events `key` of `key`, what it means under the layout: the text of a key that types it, the name of a
 /// named key's `NamedKey` variant, which winit names after the specification, but for `Super`, which the
-/// specification calls `Meta`, and `Dead` or `Unidentified` as a page names them.
+/// specification calls `Meta`, and `Space`, which types a space and so is named by it, `" "`, and `Dead` or
+/// `Unidentified` as a page names them.
 pub fn key(key: &Key) -> String {
     match key {
         Key::Character(text) => text.to_string(),
         Key::Named(NamedKey::Super) => String::from("Meta"),
+        Key::Named(NamedKey::Space) => String::from(" "),
         Key::Named(named) => format!("{named:?}"),
         Key::Dead(_) => String::from("Dead"),
         Key::Unidentified(_) => String::from("Unidentified"),
