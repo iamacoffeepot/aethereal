@@ -26,7 +26,8 @@ fn a_turn_in_pixels_is_kept_in_the_surfaces_pixels_and_negated() {
 #[test]
 fn keys_are_named_as_a_page_names_them() {
     // Catches the keys winit names apart from the specification sent under winit's names, which a program written
-    // against a page's would not match, and an unplaced key given a name of winit's own.
+    // against a page's would not match, a space named `Space` where a page gives the space it types, which leaves a
+    // text field reading keys unable to type one, and an unplaced key given a name of winit's own.
     assert_eq!(code(PhysicalKey::Code(KeyCode::KeyW)), "KeyW");
     assert_eq!(code(PhysicalKey::Code(KeyCode::ArrowLeft)), "ArrowLeft");
     assert_eq!(code(PhysicalKey::Code(KeyCode::SuperLeft)), "MetaLeft");
@@ -36,5 +37,6 @@ fn keys_are_named_as_a_page_names_them() {
     assert_eq!(key(&Key::Character(SmolStr::new("w"))), "w");
     assert_eq!(key(&Key::Named(NamedKey::Shift)), "Shift");
     assert_eq!(key(&Key::Named(NamedKey::Super)), "Meta");
+    assert_eq!(key(&Key::Named(NamedKey::Space)), " ");
     assert_eq!(key(&Key::Dead(Some('`'))), "Dead");
 }

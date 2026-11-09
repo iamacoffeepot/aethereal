@@ -49,6 +49,7 @@ dependencies = [
  "aethereal-actor",
  "aethereal-data",
  "aethereal-files",
+ "aethereal-pace",
  "aethereal-render",
  "aethereal-substrate",
  "aethereal-window",
@@ -69,6 +70,7 @@ dependencies = [
  "aethereal-data",
  "aethereal-files",
  "aethereal-link",
+ "aethereal-pace",
  "aethereal-process",
  "aethereal-render",
  "aethereal-store",
@@ -93,6 +95,7 @@ dependencies = [
  "aethereal-http",
  "aethereal-link",
  "aethereal-mcp",
+ "aethereal-pace",
  "aethereal-process",
  "aethereal-store",
  "aethereal-substrate",
@@ -185,6 +188,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aethereal-pace"
+version = "0.1.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
+ "aethereal-substrate",
+ "aethereal-tools",
+]
+
+[[package]]
 name = "aethereal-process"
 version = "0.1.0"
 dependencies = [
@@ -198,7 +211,9 @@ version = "0.1.0"
 dependencies = [
  "aethereal-actor",
  "aethereal-data",
+ "aethereal-files",
  "aethereal-math",
+ "aethereal-pace",
  "aethereal-tools",
  "aethereal-window",
  "crossbeam-queue",
@@ -255,6 +270,7 @@ dependencies = [
  "aethereal-actor",
  "aethereal-data",
  "aethereal-substrate",
+ "aethereal-tools",
 ]
 
 [[package]]
