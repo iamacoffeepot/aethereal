@@ -39,11 +39,15 @@ fn a_text_is_refused_outside_its_sizes_and_runs_and_with_no_font_and_made_at_the
 #[test]
 fn an_outline_is_refused_wider_than_its_fields_reach_at_the_text_s_size() {
     // Catches an outline measured against the base size the fields are generated at rather than the text's, which lets
-    // a small text's rim run off the end of its field, cut square.
+    // a small text's rim run off the end of its field, cut square; and one allowed the field's whole reach, whose
+    // smoothing then half covers every pixel past it, a box over each glyph's quad.
     let rimmed = |size, width| asked(size, white("a"), Wrap::None, Outline::Of { width, colour: Colour::BLACK });
-    // A field reaches 4 pixels at 48 to the em: 2 pixels at 24, and 8 at 96.
-    assert_eq!(check(&rimmed(24.0, 2.0), true), Ok(()));
-    assert_eq!(check(&rimmed(24.0, 2.1), true), Err(TextRefused::Outline));
-    assert_eq!(check(&rimmed(96.0, 8.0), true), Ok(()));
+    // A field reaches 4 pixels at 48 to the em, and a rim is smoothed half a pixel past its edge: 1.5 pixels at 24, 7.5
+    // at 96, and none at 4, where the field reaches only a third of a pixel.
+    assert_eq!(check(&rimmed(24.0, 1.5), true), Ok(()));
+    assert_eq!(check(&rimmed(24.0, 1.6), true), Err(TextRefused::Outline));
+    assert_eq!(check(&rimmed(96.0, 7.5), true), Ok(()));
     assert_eq!(check(&rimmed(96.0, -0.5), true), Err(TextRefused::Outline));
+    assert_eq!(check(&rimmed(4.0, 0.0), true), Ok(()));
+    assert_eq!(check(&rimmed(4.0, 0.1), true), Err(TextRefused::Outline));
 }

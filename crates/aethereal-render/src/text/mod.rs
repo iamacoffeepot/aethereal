@@ -181,7 +181,8 @@ pub enum TextMade {
 pub enum TextRefused {
     /// Its size is not from 1 to 1024 pixels.
     Size,
-    /// Its outline is wider than its glyphs' fields reach at its size, `size` × 4 / 48 pixels, or not a width at all.
+    /// Its outline is wider than [`widest_outline`] allows at its size, `size` × 4 / 48 − 0.5 pixels and never below
+    /// zero, or not a width at all.
     Outline,
     /// Its wrap width is not a width above zero.
     Wrap,
@@ -309,15 +310,20 @@ pub const SIZES: (f32, f32) = (1.0, 1024.0);
 /// The most bytes of text a text's runs may hold together: 64 KiB.
 pub const MOST_RUN_BYTES: u64 = 64 * 1024;
 
-/// The widest outline a text of `size` pixels to the em may have: as far as its glyphs' fields reach past their edges
-/// at that size, [`DEFAULT_PADDING`] pixels at [`BASE_PIXELS_PER_EM`].
+/// The widest outline a text of `size` pixels to the em may have: half a pixel short of how far its glyphs' fields
+/// reach past their edges at that size, [`DEFAULT_PADDING`] pixels at [`BASE_PIXELS_PER_EM`], and never below zero.
+/// The glyph program smooths a rim's outer edge over the half pixel either side of it, so a rim as wide as the reach
+/// would half cover every pixel where the field holds only its farthest distance, a box over the whole quad.
 #[must_use]
 pub fn widest_outline(size: f32) -> f32 {
     // The padding is a few pixels, which an f32 holds exactly.
     #[allow(clippy::cast_precision_loss)]
-    let reach = DEFAULT_PADDING as f32;
-    reach * size / BASE_PIXELS_PER_EM
+    let reach = DEFAULT_PADDING as f32 * size / BASE_PIXELS_PER_EM;
+    (reach - SMOOTHED_OUTSIDE).max(0.0)
 }
+
+/// How far outside a rim's outer edge the glyph program smooths it, in pixels.
+const SMOOTHED_OUTSIDE: f32 = 0.5;
 
 /// Checks a text before it is made: its size, its runs, its wrap width, its outline against its size, and that its
 /// font is kept, as `has_font` says.

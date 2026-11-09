@@ -15,11 +15,11 @@ use crate::renderer::tests::{MAKER, kept, window};
 use crate::renderer::{Reading, copy_frame, mapped_bytes};
 use crate::shape::{ColourFormat, Samples};
 use crate::text::generate::generate;
-use crate::text::{Clip, Colour, Font, Layer, TextJoin, TextPlacementRefused};
+use crate::text::{Clip, Colour, Font, Layer, TextJoin, TextPlacementRefused, widest_outline};
 use crate::texture::TextureFormat;
 use crate::{Gpu, frame};
 use aethereal_data::Plain;
-use aethereal_math::Vec2;
+use aethereal_math::{Rect2, Vec2};
 
 /// A pass that reads the target the pass before it drew.
 #[derive(Plain)]
@@ -30,13 +30,19 @@ impl Pass for Overlay {}
 
 /// A text of `text` in white, in the renderer's own proportional font at `size`, made by `maker` and kept in `kept`.
 fn made(kept: &mut Kept, maker: ActorId, text: &str, size: f32) -> TextId {
+    outlined(kept, maker, (text, size), Outline::None)
+}
+
+/// A text of `text` in white, in the renderer's own proportional font at `size`, outlined as `outline`, made by
+/// `maker` and kept in `kept`.
+fn outlined(kept: &mut Kept, maker: ActorId, (text, size): (&str, f32), outline: Outline) -> TextId {
     let create = CreateText {
         font: Font::Sans,
         size,
         runs: vec![Run::new(text, Colour::WHITE)],
         wrap: Wrap::None,
         align: Align::Left,
-        outline: Outline::None,
+        outline,
     };
     let Ok((made, _)) = kept.text.text(create) else {
         panic!("the text is made");
@@ -132,6 +138,49 @@ fn surface(device: &wgpu::Device, side: u32) -> wgpu::Texture {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     })
+}
+
+/// Draws the window's main frame of `kept` on `gpu` into a surface `side` by `side`, and answers its pixels, four
+/// bytes each, row by row from the top.
+fn drawn_pixels(kept: &mut Kept, gpu: Opened<'_>, side: u32) -> Vec<u8> {
+    let (device, queue) = gpu;
+    let frame = surface(device, side);
+    let mut encoder = drawn_into(kept, gpu, &frame);
+    let Ok(Reading::Pixels { buffer, copied, order, .. }) = copy_frame(device, &mut encoder, &frame) else {
+        panic!("the frame is copied");
+    };
+    queue.submit([encoder.finish()]);
+    buffer.map_async(wgpu::MapMode::Read, .., |mapped| mapped.expect("the copy maps"));
+    device.poll(wgpu::PollType::wait_indefinitely()).expect("the GPU finishes");
+    let Some(pixels) = mapped_bytes(&buffer, |bytes| copied.unpad(bytes, order)) else {
+        panic!("the copy is read");
+    };
+
+    pixels
+}
+
+/// The one glyph `text`, of `size` pixels to the em, shows, and its quad in the frame's pixels
+/// when the text's top left is at `at`: where the layout and the field say the glyph's box is, from the field's place
+/// at the base size.
+fn quad_of(kept: &Kept, text: TextId, size: f32, at: Vec2) -> (GlyphKey, Rect2) {
+    let Some(laid) = shown(kept, text).and_then(|keys| keys.first().copied()) else {
+        panic!("the text shows its glyph");
+    };
+    let Some(slot) = kept.text.atlas.slot(laid) else {
+        panic!("the glyph is in the atlas");
+    };
+    let Some(sans) = kept.text.faces.face(Font::Sans) else {
+        panic!("the renderer's own font is kept");
+    };
+    let ascender = f32::from(sans.font.line_metrics().ascender) * sans.font.pixels_per_unit(size);
+    let factor = size / font::msdf::BASE_PIXELS_PER_EM;
+    // A field's place and size are some tens of texels, which an f32 holds exactly.
+    #[allow(clippy::cast_precision_loss, clippy::suboptimal_flops)]
+    let min = Vec2::new(at.x + slot.field.left as f32 * factor, at.y + ascender - slot.field.top as f32 * factor);
+    #[allow(clippy::cast_precision_loss)]
+    let extent = Vec2::new(slot.field.width as f32, slot.field.height as f32) * factor;
+
+    (laid, Rect2 { min, max: min + extent })
 }
 
 #[test]
@@ -267,49 +316,21 @@ fn on_a_gpu_a_glyph_covers_the_pixels_inside_its_edge_where_it_is_placed_and_non
     eprintln!("ran adapter={adapter:?}");
     let gpu = (&device, &queue);
     let mut kept = kept(&device);
+    let at = Vec2::new(16.0, 8.0);
     let text = made(&mut kept, MAKER, "I", 40.0);
-    placed_text(&mut kept, &device, (MAKER, text, placement::Order::Loose), Vec2::new(16.0, 8.0));
+    placed_text(&mut kept, &device, (MAKER, text, placement::Order::Loose), at);
     generated(&mut kept, gpu);
 
     let side = 64;
-    let frame = surface(&device, side);
-    let mut encoder = drawn_into(&mut kept, gpu, &frame);
-    let Ok(Reading::Pixels { buffer, copied, order, .. }) = copy_frame(&device, &mut encoder, &frame) else {
-        panic!("the frame is copied");
-    };
-    queue.submit([encoder.finish()]);
-    buffer.map_async(wgpu::MapMode::Read, .., |mapped| mapped.expect("the copy maps"));
-    device.poll(wgpu::PollType::wait_indefinitely()).expect("the GPU finishes");
-    let Some(pixels) = mapped_bytes(&buffer, |bytes| copied.unpad(bytes, order)) else {
-        panic!("the copy is read");
-    };
-
-    // Where the layout and the field say the glyph's box is: its quad, from the field's place at the base size.
-    let Some(laid) = shown(&kept, text).and_then(|keys| keys.first().copied()) else {
-        panic!("the text shows its glyph");
-    };
-    let Some(slot) = kept.text.atlas.slot(laid) else {
-        panic!("the glyph is in the atlas");
-    };
-    let factor = 40.0 / font::msdf::BASE_PIXELS_PER_EM;
-    let ascender = {
-        let Some(sans) = kept.text.faces.face(Font::Sans) else {
-            panic!("the renderer's own font is kept");
-        };
-        f32::from(sans.font.line_metrics().ascender) * sans.font.pixels_per_unit(40.0)
-    };
-    // A glyph's place and size are some tens of pixels, inside the frame, which an f32 holds exactly.
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::suboptimal_flops
-    )]
+    let pixels = drawn_pixels(&mut kept, gpu, side);
+    let (_, bounds) = quad_of(&kept, text, 40.0, at);
+    // A glyph's place and size are some tens of pixels, inside the frame.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let quad = Region {
-        x: (16.0 + slot.field.left as f32 * factor).floor() as u32,
-        y: (8.0 + ascender - slot.field.top as f32 * factor).floor() as u32,
-        width: (slot.field.width as f32 * factor).ceil() as u32 + 1,
-        height: (slot.field.height as f32 * factor).ceil() as u32 + 1,
+        x: bounds.min.x.floor() as u32,
+        y: bounds.min.y.floor() as u32,
+        width: (bounds.max.x - bounds.min.x).ceil() as u32 + 1,
+        height: (bounds.max.y - bounds.min.y).ceil() as u32 + 1,
     };
     let inside =
         |x: u32, y: u32| (quad.x..quad.x + quad.width).contains(&x) && (quad.y..quad.y + quad.height).contains(&y);
@@ -327,4 +348,75 @@ fn on_a_gpu_a_glyph_covers_the_pixels_inside_its_edge_where_it_is_placed_and_non
     assert_eq!(padding, [0, 0], "the field's padding inside the quad is not drawn, on {adapter}");
     let edged = lit.iter().any(|(x, y)| red(*x, *y) < u8::MAX);
     assert!(edged, "the stem's edge is covered in part, not cut square, on {adapter}");
+}
+
+// A machine with no adapter, as CI's, skips it and says so.
+#[test]
+fn on_a_gpu_the_widest_outline_is_a_rim_around_the_glyph_and_its_quad_past_the_field_s_reach_is_not_drawn() {
+    // Catches an outline allowed as wide as the field reaches: where the field holds nothing nearer than its reach, the
+    // rim's half-pixel smoothing still covers half of every pixel, and each glyph draws a dark box over its whole quad.
+    let (device, queue, adapter) = match adapter_device() {
+        Ok(opened) => opened,
+        Err(why) => {
+            eprintln!("skipped: no GPU adapter to draw the outlined glyph on: {why}");
+            return;
+        }
+    };
+    eprintln!("ran adapter={adapter:?}");
+    let gpu = (&device, &queue);
+    let opened = Gpu::new(device.clone(), queue.clone());
+    let at = Vec2::new(16.0, 8.0);
+    let side = 192;
+
+    for size in [8.0, 12.0, 18.0, 48.0, 128.0] {
+        let mut kept = kept(&device);
+        let program = tinted(&opened, &mut kept);
+        let sand = [1.0, 0.85, 0.55, 1.0];
+        mesh(&opened, &mut kept, (MAKER, program, placement::Order::Loose), (-1.0, 1.0), sand);
+        let outline = Outline::Of { width: widest_outline(size), colour: Colour::BLACK };
+        let text = outlined(&mut kept, MAKER, ("o", size), outline);
+        placed_text(&mut kept, &device, (MAKER, text, placement::Order::Loose), at);
+        generated(&mut kept, gpu);
+
+        let pixels = drawn_pixels(&mut kept, gpu, side);
+        let (laid, quad) = quad_of(&kept, text, size, at);
+        let Some(field) =
+            kept.text.faces.face(Font::Sans).and_then(|sans| {
+                sans.font.msdf(laid.glyph, font::msdf::BASE_PIXELS_PER_EM, font::msdf::DEFAULT_PADDING)
+            })
+        else {
+            panic!("the glyph has a field");
+        };
+        let pixel = |x: u32, y: u32| {
+            let at = ((y * side + x) * 4) as usize;
+            [pixels[at], pixels[at + 1], pixels[at + 2]]
+        };
+        let background = pixel(0, 0);
+        let factor = size / font::msdf::BASE_PIXELS_PER_EM;
+        // A pixel's centre is some hundreds of pixels in, which an f32 holds exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let centre = |x: u32, y: u32| Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+        let in_quad = |at: Vec2| quad.contains_point(at);
+        // Where the field holds nothing nearer than its reach: well outside any rim it allows.
+        let beyond = |at: Vec2| {
+            let texel = (at - quad.min) * (1.0 / factor);
+            field.median(texel.x, texel.y) == 0.0
+        };
+        let probes: Vec<(u32, u32)> = (0..side)
+            .flat_map(|y| (0..side).map(move |x| (x, y)))
+            .filter(|&(x, y)| in_quad(centre(x, y)) && beyond(centre(x, y)))
+            .collect();
+        // The glyph is white and the background below it in every channel, so only the black rim darkens a pixel.
+        let rimmed = (0..side)
+            .flat_map(|y| (0..side).map(move |x| (x, y)))
+            .any(|(x, y)| pixel(x, y).into_iter().zip(background).all(|(drawn, under)| drawn < under));
+
+        assert!(!probes.is_empty(), "the {size} px o's quad has corners past its field's reach, on {adapter}");
+        let drawn: Vec<&(u32, u32)> = probes.iter().filter(|&&(x, y)| pixel(x, y) != background).collect();
+        assert!(
+            drawn.is_empty(),
+            "at {size} px, the quad {quad:?} past the field's reach is drawn: {drawn:?} on {adapter}"
+        );
+        assert!(rimmed, "at {size} px, a dark rim is drawn around the o, on {adapter}");
+    }
 }
