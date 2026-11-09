@@ -1,6 +1,6 @@
 # ADR-0052: Text the renderer lays out and draws
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-09
 
 ## Context
