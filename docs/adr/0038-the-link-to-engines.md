@@ -115,13 +115,16 @@ The engines' tools are not offered to `Mcp` one by one. The hub's tool list does
 ```rust
 // aethereal-link, behind its `tools` feature; a hub lists them in its toolbox
 list_engines {}                                          -> { engines: [{ engine: u32, name: String, tools: u32 }] }
-describe_engine { engine: u32 }                          -> { tools: [{ name, description, input: Json, output: Json }] }
+describe_engine { engine: u32, show: "Names" }           -> { tools: { Names: [{ name, description }] } }
+describe_engine { engine: u32, show: { Sheets: [String] } }
+                                                         -> { tools: { Sheets: [{ name, description, input: Json, output: Json }] } }
 call_tool { engine: u32, tool: String, input: Json }     -> { output: Json }
 ```
 
 - **An engine's id is a `u32`,** as `Engines` counts them, and an engine's key is that id. A 64-bit integer's JSON form is a string (ADR-0007), and an agent writes the `3` it was listed, not `"3"`. Once every id is given, `Engines` shuts each new connection.
 
 - **`describe_engine` writes each tool's input and output as JSON Schema**, as `tools/list` does for the hub's own (ADR-0037).
+- **`describe_engine` shows names first, and sheets only when asked.** `show` is required. `"Names"` lists every tool by its name and the first sentence of its description: up to and including the first `.` that whitespace or the end of the text follows, or the whole text when there is none. `{"Sheets": [...]}` answers the full sheets of the tools it names, in the order the engine lists them, and refuses a name the engine has no tool of, as `call_tool` does. An agent asks for names, then for the sheets of the tools it will call. The answer is one object whose `tools` is either form, so its output schema stays an object, as MCP asks of one. *Amended after ichor's agents spent 6–8k tokens per describe_engine call on 23 tools' schemas: `describe_engine` takes `show`, and answers schemas only for the tools named.*
 - **`call_tool` turns `input` into bytes of the tool's input schema** (`from_json`, ADR-0007), with the sheet the `Engine` keeps, and the output bytes back into JSON (`to_json`). Input that does not fit the schema is refused before anything is sent. So the engine receives only bytes its schema reads, and the hub needs no kind of the engine's.
 - **Tools come and go while an engine runs, and the agent sees them as data.** `call_tool` finds its tool in the latest set when it is called, so one offered a moment ago is called at once, and one withdrawn is refused as not found. The agent asks `describe_engine` again when a call is refused because the tools changed. The agent never passes a revision: the hub writes the one it converted with.
 - **`Json` is a new shape in `aethereal-data`:** a JSON value, carried as its text. Its JSON Schema is `{}`, any value. `from_json` checks the value is JSON and keeps its text, and `to_json` writes the text as it is. It is plain, and its bytes are a string's (ADR-0002). It is what lets one tool take or answer a value whose schema is known only when it runs.

@@ -5,18 +5,48 @@
 
 use aethereal_data::{Json, Plain};
 
-/// The engine a tool is asked of, by its id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-#[kind(name = "aether.link.engine_id")]
-pub struct EngineId {
+/// Which of an engine's tools `describe_engine` shows, and how much of each.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.link.describe_tools")]
+pub struct DescribeTools {
     pub engine: u32,
+    pub show: ToolsShown,
 }
 
-/// An engine's tools, as it last sent them, each written for the agent.
+/// What `describe_engine` shows of an engine's tools.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
-#[kind(name = "aether.link.engine_sheets")]
-pub struct EngineSheets {
-    pub tools: Vec<JsonSheet>,
+#[kind(name = "aether.link.tools_shown")]
+pub enum ToolsShown {
+    /// Every tool, by its name and the first sentence of its description.
+    Names,
+    /// The full sheets of the tools named, each of which the engine must have.
+    Sheets(Vec<String>),
+}
+
+/// An engine's tools, as it last sent them, written for the agent as `describe_engine` was asked to show them.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.link.engine_description")]
+pub struct EngineDescription {
+    pub tools: DescribedTools,
+}
+
+/// An engine's tools as `describe_engine` shows them: each by its name, or the sheets asked for in full.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.link.described_tools")]
+pub enum DescribedTools {
+    /// Every tool, by its name and the first sentence of its description.
+    Names(Vec<ToolSummary>),
+    /// The sheets asked for, in the order the engine lists them.
+    Sheets(Vec<JsonSheet>),
+}
+
+/// A tool as `describe_engine` lists it by name: its name and the first sentence of its description, without its
+/// schemas.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.link.tool_summary")]
+pub struct ToolSummary {
+    pub name: String,
+    pub description: String,
 }
 
 /// A tool's sheet with its input and output written as JSON Schema: a `ToolSheet`'s schemas have no JSON form of

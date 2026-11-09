@@ -72,5 +72,6 @@ pub use link::{Calling, Connecting, Link, LinkConfig, LinkSettings, NoToken, Sen
 pub use token::Token;
 #[cfg(feature = "tools")]
 pub use tools::{
-    Asking, EngineAnswer, EngineCall, EngineId, EngineSheets, EngineTools, EngineToolsConfig, JsonSheet, SpawnedEngine,
+    Asking, DescribeTools, DescribedTools, EngineAnswer, EngineCall, EngineDescription, EngineTools, EngineToolsConfig,
+    JsonSheet, SpawnedEngine, ToolSummary, ToolsShown,
 };

@@ -2,8 +2,13 @@
 //! itself, spawns an engine from the store, and terminates one (ADR-0038, ADR-0040).
 
 mod kinds;
+#[cfg(test)]
+mod tests;
 
-pub use kinds::{EngineAnswer, EngineCall, EngineId, EngineSheets, JsonSheet, SpawnedEngine};
+pub use kinds::{
+    DescribeTools, DescribedTools, EngineAnswer, EngineCall, EngineDescription, JsonSheet, SpawnedEngine, ToolSummary,
+    ToolsShown,
+};
 
 use crate::{
     CallEngine, DescribeEngine, Described, Engine, EngineList, Engines, ListEngines, MintToken, Minted, Outcome, Spawn,
@@ -53,8 +58,8 @@ pub struct EngineToolsConfig;
 enum Pending {
     /// `list_engines`: `Engines` is asked for its list.
     Listing { held: Held<Called> },
-    /// `describe_engine`: the engine is asked for its tools.
-    Describing { held: Held<Called>, engine: u32 },
+    /// `describe_engine`: the engine is asked for its tools, to show them as `show` says.
+    Describing { held: Held<Called>, engine: u32, show: ToolsShown },
     /// `call_tool`: the engine is asked for its tools, to find `tool` and convert `input` by its input schema.
     Finding { held: Held<Called>, engine: u32, tool: String, input: Json },
     /// `call_tool`: the engine is asked to call `tool`, whose sheet says it answers with `output`.
@@ -85,7 +90,7 @@ impl Pending {
 /// What a call asks for, read from its input.
 enum Order {
     List,
-    Describe { engine: u32 },
+    Describe(DescribeTools),
     Call(EngineCall),
     Mint,
     Spawn(SpawnEngine),
@@ -101,8 +106,9 @@ struct Converted {
 }
 
 /// The hub's tools for the agent (ADR-0038, ADR-0040), served by one worker: `list_engines` asks [`Engines`] for every
-/// engine linked, `describe_engine` asks an [`Engine`] for its tools and writes each one's input and output as JSON
-/// Schema, and `call_tool` converts its JSON input to bytes by the tool's input schema, asks the engine to call it,
+/// engine linked, `describe_engine` asks an [`Engine`] for its tools and lists each by its name and the first
+/// sentence of its description, or writes the sheets asked for with their input and output as JSON Schema, and
+/// `call_tool` converts its JSON input to bytes by the tool's input schema, asks the engine to call it,
 /// and converts the bytes it answers back to JSON by the tool's output schema. Input that is not of the schema is
 /// refused before anything is sent, so an engine receives only bytes its schema reads. `mint_token` asks `Engines`
 /// for a token, and answers it with the arguments to start an engine with, for an engine the agent starts itself.
@@ -170,11 +176,13 @@ impl Tool for EngineTools {
             ToolSheet {
                 name: String::from(DESCRIBE_ENGINE),
                 description: String::from(
-                    "Describes an engine's tools: each one's name, what it does, and its input and output as JSON \
-                     Schema.",
+                    "Describes an engine's tools. Ask with `\"show\": \"Names\"` first, for every tool's name and the \
+                     first sentence of what it does; then with `\"show\": {\"Sheets\": [...]}`, naming the tools you \
+                     will call, for each one's full description and its input and output as JSON Schema. A name the \
+                     engine has no tool of is refused.",
                 ),
-                input: SchemaNodes::of(&EngineId::SHAPE),
-                output: Output::Value(SchemaNodes::of(&EngineSheets::SHAPE)),
+                input: SchemaNodes::of(&DescribeTools::SHAPE),
+                output: Output::Value(SchemaNodes::of(&EngineDescription::SHAPE)),
             },
             ToolSheet {
                 name: String::from(CALL_TOOL),
@@ -252,9 +260,9 @@ impl Handles<Call> for EngineTools {
                 turn.to(path::<Engines>(())).ask(&ListEngines, &asking)?;
                 Pending::Listing { held }
             }
-            Order::Describe { engine } => {
+            Order::Describe(DescribeTools { engine, show }) => {
                 turn.to(path::<Engine>(u64::from(engine))).ask(&DescribeEngine, &asking)?;
-                Pending::Describing { held, engine }
+                Pending::Describing { held, engine, show }
             }
             Order::Call(EngineCall { engine, tool, input }) => {
                 turn.to(path::<Engine>(u64::from(engine))).ask(&DescribeEngine, &asking)?;
@@ -324,7 +332,7 @@ impl Handles<Answer<Described, Asking>> for EngineTools {
             return Ok(());
         };
         let (held, called) = match pending {
-            Pending::Describing { held, engine } => (held, described(answered, engine)?),
+            Pending::Describing { held, engine, show } => (held, described(answered, engine, &show)?),
             Pending::Finding { held, engine, tool, input } => match converted(answered, engine, &tool, &input) {
                 Ok(Converted { revision, input, output }) => {
                     let Ok(input) = turn.put(input) else {
@@ -494,7 +502,7 @@ fn order(tool: &str, input: &[u8]) -> Result<Order, Outcome> {
     let budget = &mut Budget::new(WALK_BYTES);
     let read = match tool {
         LIST_ENGINES => from_bytes::<ListEngines>(input, budget).map(|_| Order::List),
-        DESCRIBE_ENGINE => from_bytes::<EngineId>(input, budget).map(|EngineId { engine }| Order::Describe { engine }),
+        DESCRIBE_ENGINE => from_bytes(input, budget).map(Order::Describe),
         CALL_TOOL => from_bytes::<EngineCall>(input, budget).map(Order::Call),
         MINT_TOKEN => from_bytes::<MintToken>(input, budget).map(|_| Order::Mint),
         SPAWN_ENGINE => from_bytes(input, budget).map(Order::Spawn),
@@ -544,18 +552,51 @@ fn unread(answered: Answered<Described>, engine: u32) -> Result<(u64, Vec<ToolSh
     }
 }
 
-/// What `describe_engine` answers of the engine's tools.
-fn described(answered: Answered<Described>, engine: u32) -> Result<Outcome, Fault> {
+/// What `describe_engine` answers of the engine's tools, shown as `show` asks: every tool by its name and the first
+/// sentence of its description, or the sheets of the tools named, refused when the engine has no tool of a name.
+fn described(answered: Answered<Described>, engine: u32, show: &ToolsShown) -> Result<Outcome, Fault> {
     let tools = match unread(answered, engine) {
         Ok((_, tools)) => tools,
         Err(refusal) => return Ok(refusal),
     };
-    let described: Result<Vec<JsonSheet>, JsonError> = tools.into_iter().map(json_sheet).collect();
-    let Ok(tools) = described else {
-        return Ok(refused("a tool's schema has no JSON Schema"));
+    let shown = match show {
+        ToolsShown::Names => DescribedTools::Names(tools.into_iter().map(summary).collect()),
+        ToolsShown::Sheets(names) => match asked_sheets(tools, names, engine) {
+            Ok(sheets) => DescribedTools::Sheets(sheets),
+            Err(refusal) => return Ok(refusal),
+        },
     };
 
-    Ok(Outcome::Output(to_bytes(&EngineSheets { tools })?))
+    Ok(Outcome::Output(to_bytes(&EngineDescription { tools: shown })?))
+}
+
+/// `sheet` as `describe_engine` lists it by name: its name and the first sentence of its description.
+fn summary(sheet: ToolSheet) -> ToolSummary {
+    let description = String::from(first_sentence(&sheet.description));
+
+    ToolSummary { name: sheet.name, description }
+}
+
+/// The first sentence of `text`: up to and including its first `.` that whitespace or the end of the text follows,
+/// so the point of `0.5` ends nothing. Without one, the whole text.
+fn first_sentence(text: &str) -> &str {
+    text.match_indices('.')
+        .map(|(at, _)| text.split_at(at + 1))
+        .find(|(_, rest)| rest.chars().next().is_none_or(char::is_whitespace))
+        .map_or(text, |(sentence, _)| sentence)
+}
+
+/// The sheets of `tools` that `names` asks for, in the order `tools` lists them, each written for the agent; or the
+/// refusal of a name engine `engine` has no tool of, or of a schema with no JSON Schema.
+fn asked_sheets(tools: Vec<ToolSheet>, names: &[String], engine: u32) -> Result<Vec<JsonSheet>, Outcome> {
+    let unknown = names.iter().find(|name| !tools.iter().any(|sheet| sheet.name == **name));
+    if let Some(tool) = unknown {
+        return Err(refused(format!("engine {engine} has no tool `{tool}`")));
+    }
+    let written: Result<Vec<JsonSheet>, JsonError> =
+        tools.into_iter().filter(|sheet| names.contains(&sheet.name)).map(json_sheet).collect();
+
+    written.map_err(|_| refused("a tool's schema has no JSON Schema"))
 }
 
 /// `sheet` as `describe_engine` shows it: an output that is an image as `"image"`, and one that may be either as the

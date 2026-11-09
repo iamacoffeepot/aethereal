@@ -10,9 +10,9 @@ use aethereal_chassis_headless::native::{Invocation, Invoked, NativeLayers};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Budget, Json, Plain, Schema, SchemaNodes, from_bytes, json_schema, to_bytes, to_json};
 use aethereal_link::{
-    Down, EngineAnswer, EngineCall, EngineId, EngineList, EngineListing, EngineSheets, EngineTools, Engines,
-    EnginesSettings, JsonSheet, Link, LinkSettings, ListEngines, MintToken, Minted, Origin, Outcome, REVISION, Token,
-    Up, Within,
+    DescribeTools, DescribedTools, Down, EngineAnswer, EngineCall, EngineDescription, EngineList, EngineListing,
+    EngineTools, Engines, EnginesSettings, JsonSheet, Link, LinkSettings, ListEngines, MintToken, Minted, Origin,
+    Outcome, REVISION, Token, ToolSummary, ToolsShown, Up, Within,
 };
 use aethereal_substrate::harness::{Asked, Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
@@ -331,6 +331,23 @@ fn linked_engine(harness: &mut Harness<Headless>, port: u16, tools: Vec<ToolShee
     stream
 }
 
+/// The sheet of a second engine tool, `listen`, from `Said` to `Say`, whose description runs to two sentences.
+fn listen_sheet() -> ToolSheet {
+    ToolSheet {
+        name: String::from("listen"),
+        description: String::from("Listens for 0.5 seconds. Then answers what it heard."),
+        input: SchemaNodes::of(&Said::SHAPE),
+        output: Output::Value(SchemaNodes::of(&Say::SHAPE)),
+    }
+}
+
+/// The input of `describe_engine` that asks engine `engine` for the full sheets of the tools `names`.
+fn sheets_of(engine: u32, names: &[&str]) -> DescribeTools {
+    let names = names.iter().map(|name| String::from(*name)).collect();
+
+    DescribeTools { engine, show: ToolsShown::Sheets(names) }
+}
+
 /// The input of `call_tool` that calls `say` on engine 0 with `input`.
 fn call_say(input: Json) -> EngineCall {
     EngineCall { engine: 0, tool: String::from("say"), input }
@@ -355,14 +372,14 @@ fn list_engines_shows_each_engine_by_its_id_name_and_count_of_tools() -> Result<
 }
 
 #[test]
-fn describe_engine_writes_each_tools_input_and_output_as_json_schema() -> Result<(), Unheard> {
-    // Catches a schema written other than as JSON Schema, the input and output swapped, and a sheet's name or
-    // description lost.
+fn describe_engine_writes_each_sheet_asked_for_with_its_input_and_output_as_json_schema() -> Result<(), Unheard> {
+    // Catches a schema written other than as JSON Schema, the input and output swapped, a sheet's name or description
+    // lost or cut, a sheet asked for left out, and sheets answered in the order asked rather than the engine's.
     let (mut harness, port, worker) = hub()?;
-    let _stream = linked_engine(&mut harness, port, vec![sheet()]);
+    let _stream = linked_engine(&mut harness, port, vec![sheet(), listen_sheet()]);
 
-    let describing = called(&mut harness, worker, "describe_engine", &EngineId { engine: 0 })?;
-    let described: EngineSheets = output(&mut harness, describing);
+    let describing = called(&mut harness, worker, "describe_engine", &sheets_of(0, &["listen", "say"]))?;
+    let described: EngineDescription = output(&mut harness, describing);
 
     let say = JsonSheet {
         name: String::from("say"),
@@ -370,7 +387,31 @@ fn describe_engine_writes_each_tools_input_and_output_as_json_schema() -> Result
         input: schema_of::<Say>(),
         output: schema_of::<Said>(),
     };
-    assert_eq!(described.tools, vec![say]);
+    let listen = JsonSheet {
+        name: String::from("listen"),
+        description: String::from("Listens for 0.5 seconds. Then answers what it heard."),
+        input: schema_of::<Said>(),
+        output: schema_of::<Say>(),
+    };
+    assert_eq!(described.tools, DescribedTools::Sheets(vec![say, listen]));
+
+    Ok(())
+}
+
+#[test]
+fn describe_engine_lists_every_tool_by_its_name_and_first_sentence_alone() -> Result<(), Unheard> {
+    // Catches a tool left out of the names, a description not cut to its first sentence, and the sheets answered when
+    // only names were asked for, which is what the names are there to spare.
+    let (mut harness, port, worker) = hub()?;
+    let _stream = linked_engine(&mut harness, port, vec![sheet(), listen_sheet()]);
+
+    let names = DescribeTools { engine: 0, show: ToolsShown::Names };
+    let describing = called(&mut harness, worker, "describe_engine", &names)?;
+    let described: EngineDescription = output(&mut harness, describing);
+
+    let say = ToolSummary { name: String::from("say"), description: String::from("Says how long a text is") };
+    let listen = ToolSummary { name: String::from("listen"), description: String::from("Listens for 0.5 seconds.") };
+    assert_eq!(described.tools, DescribedTools::Names(vec![say, listen]));
 
     Ok(())
 }
@@ -424,7 +465,8 @@ fn input_not_of_the_tools_schema_is_refused_and_never_written() -> Result<(), Un
 #[test]
 fn an_unknown_engine_one_with_no_tools_yet_and_an_unknown_tool_are_each_refused_as_such() -> Result<(), Unheard> {
     // Catches an ask answered `No` taken for something else, an engine with no set yet taken for one with no tools,
-    // and a tool not found left unanswered or sent anyway: each refusal says which it is.
+    // and a tool not found left unanswered, sent anyway, or its sheet silently left out of a description: each
+    // refusal says which it is.
     let (mut harness, port, worker) = hub()?;
     let _stream = linked_engine(&mut harness, port, vec![sheet()]);
     let silent_hello = hello(&mut harness, "silent");
@@ -433,13 +475,17 @@ fn an_unknown_engine_one_with_no_tools_yet_and_an_unknown_tool_are_each_refused_
     waiting::until(BUDGET, || listed(&mut harness).is_ok_and(|list| holds(&list, 2, 1)));
     let say = json_of(&Say { text: String::from("hello") });
 
-    let gone = called(&mut harness, worker, "describe_engine", &EngineId { engine: 7 })?;
+    let gone = called(&mut harness, worker, "describe_engine", &DescribeTools { engine: 7, show: ToolsShown::Names })?;
     assert!(refuses(&gone, "no engine 7"), "{gone:?}");
     let gone = called(&mut harness, worker, "call_tool", &EngineCall { engine: 7, ..call_say(say.clone()) })?;
     assert!(refuses(&gone, "no engine 7"), "{gone:?}");
 
-    let not_yet = called(&mut harness, worker, "describe_engine", &EngineId { engine: 1 })?;
+    let not_yet =
+        called(&mut harness, worker, "describe_engine", &DescribeTools { engine: 1, show: ToolsShown::Names })?;
     assert!(refuses(&not_yet, "not sent its tools"), "{not_yet:?}");
+
+    let unknown = called(&mut harness, worker, "describe_engine", &sheets_of(0, &["say", "nothing"]))?;
+    assert!(refuses(&unknown, "no tool `nothing`"), "{unknown:?}");
 
     let nothing = EngineCall { tool: String::from("nothing"), ..call_say(say) };
     let unknown = called(&mut harness, worker, "call_tool", &nothing)?;
@@ -486,12 +532,15 @@ fn call_tool_answers_an_engines_image_as_it_is_and_describe_engine_shows_it_as_a
     let stream = linked_engine(&mut harness, port, vec![looks]);
     let say = json_of(&Say { text: String::from("hello") });
 
-    let describing = called(&mut harness, worker, "describe_engine", &EngineId { engine: 0 })?;
-    let described: EngineSheets = output(&mut harness, describing);
+    let describing = called(&mut harness, worker, "describe_engine", &sheets_of(0, &["say"]))?;
+    let described: EngineDescription = output(&mut harness, describing);
     let Ok(image) = Json::parse("\"image\"", &mut Budget::new(WALK_BYTES)) else {
         panic!("a string is JSON");
     };
-    let outputs: Vec<Json> = described.tools.into_iter().map(|sheet| sheet.output).collect();
+    let DescribedTools::Sheets(sheets) = described.tools else {
+        panic!("the sheets asked for are answered");
+    };
+    let outputs: Vec<Json> = sheets.into_iter().map(|sheet| sheet.output).collect();
     assert_eq!(outputs, vec![image]);
 
     let calling = ask(&mut harness, worker, "call_tool", &call_say(say))?;
