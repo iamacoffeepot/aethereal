@@ -13,6 +13,7 @@ use aethereal_render::frame::Frame;
 use aethereal_render::pass::Main;
 use aethereal_render::text::{
     Align, Clip, Colour, CreateText, Font, Layer, Outline, PlaceText, Run, TextJoin, TextMade, TextPlaced, Wrap,
+    widest_outline,
 };
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_window::{InitialWindows, WindowId};
@@ -101,7 +102,8 @@ fn lines() -> Vec<Line> {
         Run::new("Two runs: ", Colour::opaque(0.35, 0.65, 1.0)),
         Run::new("this part is another colour", Colour::opaque(1.0, 0.45, 0.1)),
     ];
-    let outline = Outline::Of { width: 2.0, colour: Colour::BLACK };
+    // The widest rim the size allows, in a colour that shows over the ring's black.
+    let outline = Outline::Of { width: widest_outline(32.0), colour: Colour::opaque(0.9, 0.45, 0.05) };
     let clip = Clip::To(Rect2 { min: Vec2::new(24.0, 300.0), max: Vec2::new(260.0, 330.0) });
 
     vec![
