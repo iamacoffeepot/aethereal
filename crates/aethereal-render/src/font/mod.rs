@@ -12,6 +12,7 @@ pub mod outline;
 pub mod shape;
 mod tables;
 
+use aethereal_data::Plain;
 use kerning::Kerning;
 use msdf::Msdf;
 use outline::Outline;
@@ -59,7 +60,8 @@ impl LineMetrics {
 }
 
 /// Why a font was not read. Each names what could not be read, so a refusal says which table was wrong.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.font_refused")]
 pub enum FontRefused {
     /// The bytes are not a TrueType font: they are a container this does not open, or not a font at all.
     Container(Container),
@@ -76,7 +78,8 @@ pub enum FontRefused {
 }
 
 /// What the bytes of a font that is not TrueType are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.font_container")]
 pub enum Container {
     /// A WOFF file: TrueType or CFF tables, each compressed.
     Woff,
@@ -89,7 +92,8 @@ pub enum Container {
 }
 
 /// A table of a TrueType font, as a refusal names it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.font_table")]
 pub enum Table {
     /// The table directory at the start of the file, which says where every table is.
     Directory,

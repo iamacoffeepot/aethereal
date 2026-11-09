@@ -29,6 +29,8 @@ winit = "0.30.13"
 # the clock through the pacer (ADR-0045), `send_input`, `set_pace`, and `advance` (ADR-0046), and the window tools
 # (ADR-0047).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# The `linked_window` example places its lines of text at points and clips one to a box (ADR-0052).
+aethereal-math = { path = "../aethereal-math" }
 aethereal-pace = { path = "../aethereal-pace", features = ["tools"] }
 aethereal-render = { path = "../aethereal-render", features = ["tools"] }
 aethereal-tools = { path = "../aethereal-tools" }

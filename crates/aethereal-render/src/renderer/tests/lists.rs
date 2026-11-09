@@ -9,7 +9,7 @@ use super::*;
 use crate::draw_list::DrawList;
 
 /// An actor other than [`MAKER`].
-const OTHER: ActorId = ActorId::new(2);
+pub(in crate::renderer) const OTHER: ActorId = ActorId::new(2);
 
 /// A program that draws a quad's corners in the colour its uniforms hold, laid over what is drawn by its alpha.
 const TINTED: &str = "
@@ -28,7 +28,7 @@ fn shade() -> @location(0) vec4<f32> {
 
 /// The program [`TINTED`], blending by alpha, testing depth and writing none, for the renderer's own main frame's
 /// pass [`Main`], kept in `kept`.
-fn tinted(gpu: &Gpu, kept: &mut Kept) -> ProgramId {
+pub(in crate::renderer) fn tinted(gpu: &Gpu, kept: &mut Kept) -> ProgramId {
     let create = CreateProgram {
         wgsl: blob(),
         vertex: String::from("place"),
@@ -50,7 +50,7 @@ fn tinted(gpu: &Gpu, kept: &mut Kept) -> ProgramId {
 /// A placement by `maker` of a quad from `left` to `right` across the window, top to bottom, tinted `tint` by
 /// `program`, joining the window's main frame's pass [`Main`] as `order` says, each made and kept in `kept`. Answers
 /// its id.
-fn placed(
+pub(in crate::renderer) fn placed(
     gpu: &Gpu,
     kept: &mut Kept,
     (maker, program, order): (ActorId, ProgramId, placement::Order),
@@ -101,12 +101,12 @@ fn whole(gpu: &Gpu, kept: &mut Kept, program: ProgramId, order: placement::Order
 }
 
 /// A list of `placements` in the window's main frame's pass [`Main`].
-fn main_list(placements: &[PlacementId]) -> DrawList {
+pub(in crate::renderer) fn main_list(placements: &[PlacementId]) -> DrawList {
     DrawList::of::<Main>(Frame::Main(window()), placements.to_vec())
 }
 
 /// The placements the window's main frame's pass [`Main`] draws, in order.
-fn drawn_in_main(kept: &Kept) -> Vec<u64> {
+pub(in crate::renderer) fn drawn_in_main(kept: &Kept) -> Vec<u64> {
     let Ok(fits) = kept.pass(Frame::Main(window()), PassName::of::<Main>()) else {
         panic!("the window's main frame has the pass");
     };
@@ -226,7 +226,7 @@ fn a_texture_frame_released_takes_its_lists_and_a_main_frame_replaced_keeps_them
 }
 
 /// A device on the machine's adapter, if it has one, with the adapter's name.
-fn adapter_device() -> Result<(wgpu::Device, wgpu::Queue, String), String> {
+pub(in crate::renderer) fn adapter_device() -> Result<(wgpu::Device, wgpu::Queue, String), String> {
     let mut described = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
     described.backends &= wgpu::Backends::PRIMARY;
     let instance = wgpu::Instance::new(described);

@@ -30,6 +30,7 @@ pub mod storage;
 pub mod surface;
 #[cfg(feature = "tools")]
 mod target;
+pub mod text;
 pub mod texture;
 pub mod timing;
 pub mod uniforms;
