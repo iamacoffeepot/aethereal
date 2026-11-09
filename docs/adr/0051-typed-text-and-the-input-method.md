@@ -1,6 +1,6 @@
 # ADR-0051: Typed text, and the input method a program allows
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-09
 
 ## Context
