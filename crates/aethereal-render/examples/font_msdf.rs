@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use std::{env, fs, io};
 
-const NOTO: &[u8] = include_bytes!("../fonts/NotoSans-Regular.ttf");
+const NOTO: &[u8] = include_bytes!("../fixtures/fonts/NotoSans-Regular.ttf");
 
 /// The glyphs whose fields are drawn as they are.
 const GLYPHS: &str = "gW@\u{e9}AO&";

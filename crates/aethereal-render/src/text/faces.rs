@@ -7,11 +7,11 @@ use crate::font::{self, FontRefused};
 use crate::made::Made;
 use std::sync::Arc;
 
-/// The renderer's own proportional font: Noto Sans Regular (SIL OFL), until faces are chosen (ADR-0052).
-pub const SANS: &[u8] = include_bytes!("../../fonts/NotoSans-Regular.ttf");
+/// The renderer's own proportional font: IBM Plex Sans Regular (SIL OFL), as the owner chose (ADR-0052).
+pub const SANS: &[u8] = include_bytes!("../../fonts/IBMPlexSans-Regular.ttf");
 
-/// The renderer's own monospace font: Noto Sans Mono Regular (SIL OFL), until faces are chosen (ADR-0052).
-pub const MONO: &[u8] = include_bytes!("../../fonts/NotoSansMono-Regular.ttf");
+/// The renderer's own monospace font: IBM Plex Mono Regular (SIL OFL), as the owner chose (ADR-0052).
+pub const MONO: &[u8] = include_bytes!("../../fonts/IBMPlexMono-Regular.ttf");
 
 /// Which font a glyph is of, as the atlas keys it: one of the renderer's own, or the one made under an id, which no
 /// other font is given again.
