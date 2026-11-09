@@ -56,6 +56,8 @@ mod program;
 mod running;
 #[cfg(not(target_arch = "wasm32"))]
 mod serving;
+#[cfg(not(target_arch = "wasm32"))]
+mod sizing;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use gpu::{Screen, Unopened};

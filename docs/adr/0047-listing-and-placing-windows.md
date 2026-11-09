@@ -60,6 +60,9 @@ pub enum Unplaced {
     NotWindowed,
     /// The chassis resizes or moves no window, as a page does not, or as Wayland lets no program move its own.
     NoHost,
+    /// The windowing system holds its size though it is windowed, as Wayland holds a window tiled against the screen's
+    /// edges: snapped to a side, or maximized one way only.
+    Tiled,
 }
 ```
 
@@ -67,6 +70,7 @@ pub enum Unplaced {
 - **A window not shown windowed is refused at once,** from the mode the root keeps, with nothing asked.
 - **`Resized` answers the surface as the chassis draws it now.** A windowing system that resizes later answers the size before; the window's subscribers hear `Resized` once it does, as for any resize.
 - **A size winit applies at once comes with no `Resized`,** as Wayland's does, and winit's own documentation says it may not. So the desktop takes it in as one: it configures the surface to it, and pushes the resize onto the window's feed, as it does for a `Resized`. *Amended after ADR-0045's capture of a held clock showed a resized window still drawn at its old size.*
+- **A resize winit leaves undone is refused `Tiled`.** On Wayland, winit ignores a size asked of a window whose last configure is maximized, fullscreen, or tiled, and answers the size it had. The root refuses the first two from its mode; a tiled window reads as windowed, so the desktop compares: a size answered unchanged from before the request, and not the size asked, was not applied, and is refused rather than answered as resized. *Amended after GNOME tiled an ichor window to the screen's full width, and every resize of it answered `Resized` at the size it kept.*
 - **The desktop moves a window with `set_outer_position`,** and refuses `NoHost` where winit cannot place windows: on Wayland, every move. The browser refuses both.
 
 ### `WindowTool`
