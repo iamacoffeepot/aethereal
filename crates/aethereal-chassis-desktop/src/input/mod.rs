@@ -1,13 +1,15 @@
 //! What winit's events read as in the window capability's vocabulary (ADR-0024): the keys by their W3C UI Events
-//! names, the pointer's buttons, and the wheel's turn in the window's surface pixels, signed as a page signs it.
+//! names, the pointer's buttons, the wheel's turn in the window's surface pixels, signed as a page signs it, and the
+//! text a key typed or an input method committed (ADR-0051).
 
 #[cfg(test)]
 mod tests;
 
 use aethereal_window::{Button, Event};
+use winit::event::Ime;
 use winit::event::MouseButton;
 use winit::event::MouseScrollDelta;
-use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 
 /// The logical pixels a line of the wheel's turn is taken as, for a host that counts the wheel in lines (ADR-0024).
 pub const LINE_LOGICAL_PIXELS: f64 = 40.0;
@@ -68,4 +70,52 @@ pub fn wheel((x, y): (f32, f32), delta: MouseScrollDelta, scale: f64) -> Event {
     let (delta_x, delta_y) = (-across as f32, -down as f32);
 
     Event::Wheel { x, y, delta_x, delta_y }
+}
+
+/// Whether a window's input method has a composition open, as winit last said: from a `Preedit` with text until a
+/// `Commit`, a `Preedit` with none, or `Disabled`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Composition {
+    /// None is open: a key's text is sent.
+    Closed,
+    /// One is open: a key's text is not sent, as what the input method composes is sent once it commits it, and a
+    /// character is never sent twice.
+    Open,
+}
+
+/// The text a pressed key typed, sent after its `KeyDown`: `text`, winit's text for the key, with its control
+/// characters removed, as Backspace, Enter, Tab, Escape, and Delete are only keys. None when that leaves nothing; when
+/// Ctrl or Super is held in `modifiers`, as a chord types nothing, which winit's text does not count, as it counts every
+/// modifier but Ctrl; and while `composition` is open.
+pub fn typed(text: Option<&str>, modifiers: ModifiersState, composition: Composition) -> Option<String> {
+    let chord = modifiers.control_key() || modifiers.super_key();
+    let composing = composition == Composition::Open;
+    if chord || composing {
+        return None;
+    }
+
+    printable(text?)
+}
+
+/// The composition `ime`, heard while `composition` stood, leaves, and the text it sends: a commit's, sent once, which
+/// closes the composition. A `Preedit` with text opens one, and one with none closes it, as `Disabled` does; the
+/// uncommitted text itself is not sent.
+pub fn composed(composition: Composition, ime: Ime) -> (Composition, Option<String>) {
+    match ime {
+        Ime::Enabled => (composition, None),
+        Ime::Preedit(text, _) if text.is_empty() => (Composition::Closed, None),
+        Ime::Preedit(..) => (Composition::Open, None),
+        Ime::Commit(text) => (Composition::Closed, printable(&text)),
+        Ime::Disabled => (Composition::Closed, None),
+    }
+}
+
+/// `text` with its control characters removed: none when that leaves nothing.
+fn printable(text: &str) -> Option<String> {
+    let kept = text.chars().filter(|character| !character.is_control()).collect::<String>();
+    if kept.is_empty() {
+        return None;
+    }
+
+    Some(kept)
 }

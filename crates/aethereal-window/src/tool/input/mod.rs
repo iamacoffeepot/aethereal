@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests;
 
-use crate::perform::{Input, Perform, Performed, Unperformed, unperformable};
+use crate::perform::{Input, MOST_INPUTS, Perform, Performed, Unperformed, unperformable};
 use crate::window::{Window, WindowId};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
@@ -13,8 +13,8 @@ use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_b
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 
-/// The most bytes reading an input may take: the most inputs, each with a key's names.
-const INPUT_BYTES: usize = 256 * 1024;
+/// The most bytes reading an input may take: the most inputs, each given room for a key's names or the most text.
+const INPUT_BYTES: usize = MOST_INPUTS as usize * 512;
 
 /// What the agent asks `send_input` for: `inputs` performed on `window`, in order.
 #[derive(Debug, Clone, PartialEq, Plain)]
@@ -88,14 +88,16 @@ impl Tool for InputTool {
             name: String::from("send_input"),
             description: String::from(
                 "Performs `inputs` on a window, in order, as a person at it would: pointer moves, button presses and \
-                 releases, wheel turns, and keys down and up. A position is in the window's surface pixels from its \
-                 top left; a key is named as the W3C UI Events name it, `code` its place (`KeyW`, `ShiftLeft`) and \
-                 `key` what it means (`w`, `Shift`). The program cannot tell them from a person's. A click is \
-                 PointerMoved, then PointerDown and PointerUp there. They are sent whether or not the window has the \
-                 keyboard. Every actor subscribed to the window has them before anything after the answer, so a key \
-                 pressed, then the clock advanced, is down for the advance's first Tick; release it with KeyUp in a \
-                 later call. At most 1024 inputs a call, and a key's names at most 64 bytes each; none is sent when \
-                 any is refused.",
+                 releases, wheel turns, keys down and up, and text typed. A position is in the window's surface pixels \
+                 from its top left; a key is named as the W3C UI Events name it, `code` its place (`KeyW`, \
+                 `ShiftLeft`) and `key` what it means (`w`, `Shift`). The program cannot tell them from a person's. A \
+                 click is PointerMoved, then PointerDown and PointerUp there. A performed KeyDown sends no Text with \
+                 it: a key that types, as a person's does, is KeyDown, then Text of what it typed (`w`), then KeyUp, \
+                 and a text field reads the Text. They are sent whether or not the window has the keyboard. Every \
+                 actor subscribed to the window has them before anything after the answer, so a key pressed, then the \
+                 clock advanced, is down for the advance's first Tick; release it with KeyUp in a later call. At most \
+                 1024 inputs a call; a key's names at most 64 bytes each; a Text at most 256 bytes, not empty, and \
+                 with no control character, as Enter, Backspace and Tab are keys. None is sent when any is refused.",
             ),
             input: SchemaNodes::of(&SendInput::SHAPE),
             output: Output::Value(SchemaNodes::of(&Performed::SHAPE)),
@@ -178,6 +180,8 @@ const fn counted(why: Unperformed, at: u32) -> Unperformed {
     match why {
         Unperformed::NotFinite { .. } => Unperformed::NotFinite { at },
         Unperformed::NameTooLong { most, .. } => Unperformed::NameTooLong { at, most },
+        Unperformed::TextTooLong { most, .. } => Unperformed::TextTooLong { at, most },
+        Unperformed::NotText { .. } => Unperformed::NotText { at },
         Unperformed::NotOpen | Unperformed::TooMany { .. } => why,
     }
 }

@@ -6,6 +6,7 @@
 
 use crate::Presenting;
 use crate::gpu::{self, Unopened};
+use crate::input::Composition;
 use crate::moding;
 use aethereal_actor::Requests;
 use aethereal_render::Gpu;
@@ -18,6 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use winit::dpi::LogicalSize;
 use winit::event_loop::ActiveEventLoop;
+use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId as NativeId};
 
 /// What the chassis keeps for the renderer and the windows: each window, in the order opened; winit's id for each
@@ -43,7 +45,8 @@ pub struct Drawing {
 
 /// A window the chassis opened: the native window, the feed of what it hears, its surface, where the pointer was last
 /// heard over it, in its surface pixels, its top left until it is heard, whether it is shown, and the mode it is shown
-/// in as last pushed onto its feed, the mode it opened in until another is.
+/// in as last pushed onto its feed, the mode it opened in until another is; the modifiers held in it as winit last said,
+/// none until it says; and whether its input method has a composition open (ADR-0051).
 pub struct Kept {
     pub(crate) native: Arc<Window>,
     pub(crate) feed: WindowFeed,
@@ -51,6 +54,8 @@ pub struct Kept {
     pub(crate) pointer: (f32, f32),
     pub(crate) visible: Visible,
     pub(crate) mode: Mode,
+    pub(crate) modifiers: ModifiersState,
+    pub(crate) composition: Composition,
 }
 
 /// Whether a window is shown, as winit last said.
@@ -64,9 +69,18 @@ pub enum Visible {
 
 impl Kept {
     /// The window `native`, fed through `feed`, drawn to through `surface`, opened in `mode`: shown, the pointer at its
-    /// top left.
+    /// top left, no modifier held, and no composition open, as its input method opens stopped.
     pub(crate) const fn new(native: Arc<Window>, feed: WindowFeed, surface: WindowSurface, mode: Mode) -> Self {
-        Self { native, feed, surface, pointer: (0.0, 0.0), visible: Visible::Shown, mode }
+        Self {
+            native,
+            feed,
+            surface,
+            pointer: (0.0, 0.0),
+            visible: Visible::Shown,
+            mode,
+            modifiers: ModifiersState::empty(),
+            composition: Composition::Closed,
+        }
     }
 
     /// Takes in that the window's inner size is now `width` by `height` of its pixels, as winit said with `Resized` or

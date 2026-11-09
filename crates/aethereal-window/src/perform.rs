@@ -13,6 +13,10 @@ pub const MOST_INPUTS: u32 = 1024;
 /// within an engine's default `read_limit`.
 pub const MOST_NAME_BYTES: u32 = 64;
 
+/// The most bytes a text performed is: far more than a person types between two reads, and few enough that one input is
+/// always read within an engine's default `read_limit` (ADR-0051).
+pub const MOST_TEXT_BYTES: u32 = 256;
+
 /// One thing a person does at a window: an [`Event`] that changes nothing about how the window stands, named and
 /// measured as the event of the same name is.
 #[derive(Debug, Clone, PartialEq, Plain)]
@@ -23,6 +27,7 @@ pub enum Input {
     Wheel { x: f32, y: f32, delta_x: f32, delta_y: f32 },
     KeyDown { code: String, key: String, repeat: bool },
     KeyUp { code: String, key: String },
+    Text { text: String },
 }
 
 impl Input {
@@ -35,7 +40,7 @@ impl Input {
             Self::Wheel { x, y, delta_x, delta_y } => {
                 x.is_finite() && y.is_finite() && delta_x.is_finite() && delta_y.is_finite()
             }
-            Self::KeyDown { .. } | Self::KeyUp { .. } => true,
+            Self::KeyDown { .. } | Self::KeyUp { .. } | Self::Text { .. } => true,
         }
     }
 
@@ -44,7 +49,38 @@ impl Input {
         let most = MOST_NAME_BYTES as usize;
         match self {
             Self::KeyDown { code, key, .. } | Self::KeyUp { code, key } => code.len() <= most && key.len() <= most,
-            Self::PointerMoved { .. } | Self::PointerDown { .. } | Self::PointerUp { .. } | Self::Wheel { .. } => true,
+            Self::PointerMoved { .. }
+            | Self::PointerDown { .. }
+            | Self::PointerUp { .. }
+            | Self::Wheel { .. }
+            | Self::Text { .. } => true,
+        }
+    }
+
+    /// Whether the text it carries is at most [`MOST_TEXT_BYTES`].
+    fn text_fits(&self) -> bool {
+        match self {
+            Self::Text { text } => text.len() <= MOST_TEXT_BYTES as usize,
+            Self::PointerMoved { .. }
+            | Self::PointerDown { .. }
+            | Self::PointerUp { .. }
+            | Self::Wheel { .. }
+            | Self::KeyDown { .. }
+            | Self::KeyUp { .. } => true,
+        }
+    }
+
+    /// Whether the text it carries could have been typed: it is not empty, and holds no control character, as no host
+    /// sends one as text.
+    fn is_typable(&self) -> bool {
+        match self {
+            Self::Text { text } => !text.is_empty() && !text.chars().any(char::is_control),
+            Self::PointerMoved { .. }
+            | Self::PointerDown { .. }
+            | Self::PointerUp { .. }
+            | Self::Wheel { .. }
+            | Self::KeyDown { .. }
+            | Self::KeyUp { .. } => true,
         }
     }
 }
@@ -58,6 +94,7 @@ impl From<Input> for Event {
             Input::Wheel { x, y, delta_x, delta_y } => Self::Wheel { x, y, delta_x, delta_y },
             Input::KeyDown { code, key, repeat } => Self::KeyDown { code, key, repeat },
             Input::KeyUp { code, key } => Self::KeyUp { code, key },
+            Input::Text { text } => Self::Text { text },
         }
     }
 }
@@ -89,6 +126,11 @@ pub enum Unperformed {
     NotFinite { at: u32 },
     /// Input `at`, counted from 0, is a key whose `code` or `key` is longer than `most` bytes.
     NameTooLong { at: u32, most: u32 },
+    /// Input `at`, counted from 0, is text longer than `most` bytes.
+    TextTooLong { at: u32, most: u32 },
+    /// Input `at`, counted from 0, is text that is empty or holds a control character, which no host sends as text:
+    /// Enter, Backspace, Tab, Escape, and Delete are keys.
+    NotText { at: u32 },
     /// More inputs than the most one request performs.
     TooMany { most: u32 },
 }
@@ -105,6 +147,12 @@ pub fn unperformable(inputs: &[Input]) -> Option<Unperformed> {
         }
         if !input.names_fit() {
             return Some(Unperformed::NameTooLong { at, most: MOST_NAME_BYTES });
+        }
+        if !input.text_fits() {
+            return Some(Unperformed::TextTooLong { at, most: MOST_TEXT_BYTES });
+        }
+        if !input.is_typable() {
+            return Some(Unperformed::NotText { at });
         }
     }
 

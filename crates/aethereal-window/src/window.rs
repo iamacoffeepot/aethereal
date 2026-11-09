@@ -102,6 +102,7 @@ impl Window {
             | Event::Wheel { .. }
             | Event::KeyDown { .. }
             | Event::KeyUp { .. }
+            | Event::Text { .. }
             | Event::CloseRequested
             | Event::Closed => true,
         }

@@ -168,6 +168,7 @@ enum Noted {
     Listed(WindowList),
     Resized(Resized),
     Moved(Moved),
+    ImeAllowed(ImeAllowed),
     Heard(Event),
     Other(KindId),
 }
@@ -192,6 +193,9 @@ impl Noted {
         }
         if let Some(moved) = arrival.read()? {
             return Ok(Self::Moved(moved));
+        }
+        if let Some(allowed) = arrival.read()? {
+            return Ok(Self::ImeAllowed(allowed));
         }
         let heard = arrival.read()?.map_or_else(|| Self::Other(arrival.kind()), Self::Heard);
 
@@ -264,6 +268,7 @@ enum Took {
     SetMode(WindowId, Mode),
     Resize(WindowId),
     Move(WindowId),
+    AllowIme(WindowId, bool),
 }
 
 /// What each request taken asks of its window.
@@ -276,6 +281,7 @@ fn windows_of(requests: &[Windowing]) -> Vec<Took> {
             Windowing::SetMode { window, mode } => Took::SetMode(*window, *mode),
             Windowing::Resize { window, .. } => Took::Resize(*window),
             Windowing::Move { window, .. } => Took::Move(*window),
+            Windowing::AllowIme { window, allowed } => Took::AllowIme(*window, *allowed),
         })
         .collect()
 }
@@ -572,6 +578,39 @@ fn a_window_is_resized_or_moved_once_its_host_has_and_refused_unless_open_and_wi
     let expected =
         [Noted::Resized(Resized::Refused(Unplaced::NotOpen)), Noted::Moved(Moved::Refused(Unplaced::NotOpen))];
     assert_eq!(settled(&mut harness)?, expected);
+
+    Ok(())
+}
+
+#[test]
+fn an_input_method_is_allowed_or_stopped_once_its_host_has_and_refused_for_a_window_not_open() -> Result<(), Unheard> {
+    // Catches a request to allow or stop a window's input method answered before its host has said, or matched to the
+    // wrong request; `allowed` lost on its way to the host, so a stop turns the input method on; one asked of a window
+    // not open pushed to the host; a host with no input method, as a page, leaving it unanswered; and requests held for
+    // a window that closes left unanswered.
+    let surface = Surface { width: 640, height: 480, scale: 1.0 };
+    let (mut harness, hosting, _feeds) = windowed(1, surface, Closing::ByButton)?;
+    let allow = AllowIme { window: window(0), allowed: true };
+    let refused = |why| Noted::ImeAllowed(ImeAllowed::Refused(why));
+    ask(&mut harness, &allow)?;
+    ask(&mut harness, &AllowIme { allowed: false, ..allow })?;
+    ask(&mut harness, &AllowIme { window: window(9), ..allow })?;
+
+    assert_eq!(settled(&mut harness)?, [refused(Unset::NotOpen)], "no request is answered before the host has said");
+    assert_eq!(windows_of(&hosting.take()), [Took::AllowIme(window(0), true), Took::AllowIme(window(0), false)]);
+    let pushed = [hosting.ime_allowed(window(0)), hosting.ime_unallowed(window(0), Unset::NotOpen)];
+    assert!(pushed.iter().all(Result::is_ok), "the window root holds its source");
+    assert_eq!(settled(&mut harness)?, [Noted::ImeAllowed(ImeAllowed::Allowed), refused(Unset::NotOpen)]);
+
+    ask(&mut harness, &allow)?;
+    assert_eq!(settled(&mut harness)?, []);
+    assert!(hosting.refuse().is_ok());
+    assert_eq!(settled(&mut harness)?, [refused(Unset::NoHost)]);
+
+    ask(&mut harness, &allow)?;
+    settled(&mut harness)?;
+    assert!(hosting.closed(window(0)).is_ok());
+    assert_eq!(settled(&mut harness)?, [refused(Unset::NotOpen)]);
 
     Ok(())
 }

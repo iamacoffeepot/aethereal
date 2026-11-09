@@ -529,6 +529,7 @@ impl Handles<Event> for Scene {
                 println!("key_up window={window} code={code} key={key:?}");
                 self.held = self.held.saturating_sub(1);
             }
+            Event::Text { text } => println!("text window={window} text={text:?}"),
             Event::Resized(surface) => {
                 let Surface { width, height, scale } = surface;
                 println!("resized window={window} width={width} height={height} scale={scale}");

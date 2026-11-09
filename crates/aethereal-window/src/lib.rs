@@ -8,7 +8,8 @@
 //!
 //! Once the program runs, an actor asks the root for a window, [`OpenWindow`], to close one, [`CloseWindow`], and to
 //! show one in a [`Mode`], [`SetMode`] (ADR-0027); for every open window, [`ListWindows`]; and to resize or move one,
-//! [`ResizeWindow`] and [`MoveWindow`] (ADR-0047). The root gives the window its id, asks its host through its controller, [`Windowing`], and answers
+//! [`ResizeWindow`] and [`MoveWindow`] (ADR-0047); and to let a window's input method compose, or stop it,
+//! [`AllowIme`], while a text field there has focus (ADR-0051). The root gives the window its id, asks its host through its controller, [`Windowing`], and answers
 //! once the host has said, through the root's one source, what it did; the chassis takes the requests and says so
 //! with the [`Hosting`] it kept.
 //!
@@ -25,12 +26,12 @@ mod windows;
 
 pub use event::{Button, Event, Mode, Subscribe, Surface, Unsubscribe};
 pub use host::{Hosting, InitialWindows, Opening, WindowFeed};
-pub use perform::{Input, MOST_INPUTS, MOST_NAME_BYTES, Perform, Performed, Unperformed};
+pub use perform::{Input, MOST_INPUTS, MOST_NAME_BYTES, MOST_TEXT_BYTES, Perform, Performed, Unperformed};
 #[cfg(feature = "tools")]
 pub use tool::{InputTool, InputToolConfig, SendInput, WindowTool, WindowToolConfig};
 pub use window::{Window, WindowConfig, WindowId};
 pub use windows::{
-    CloseWindow, Closed, Closing, Heard, Initial, ListWindows, Listed, Logical, ModeSet, MoveWindow, Moved, OpenWindow,
-    Opened, Place, ResizeWindow, Resized, SetMode, Unclosed, Unmade, Unopened, Unplaced, Unset, WindowList, Windowing,
-    Windows, WindowsConfig,
+    AllowIme, CloseWindow, Closed, Closing, Heard, ImeAllowed, Initial, ListWindows, Listed, Logical, ModeSet,
+    MoveWindow, Moved, OpenWindow, Opened, Place, ResizeWindow, Resized, SetMode, Unclosed, Unmade, Unopened, Unplaced,
+    Unset, WindowList, Windowing, Windows, WindowsConfig,
 };

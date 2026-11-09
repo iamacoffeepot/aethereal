@@ -1,6 +1,6 @@
 //! The host's side of the window capability: the windows a chassis opens as it sets the program up, each given its id
 //! here; the feed each one's events are pushed onto; and what the chassis keeps once the program runs, to take the
-//! window root's requests and say what it did with each (ADR-0024, ADR-0027).
+//! window root's requests and say what it did with each (ADR-0024, ADR-0027, ADR-0051).
 
 use crate::event::{Event, Mode, Surface};
 use crate::window::{WindowConfig, WindowId};
@@ -167,9 +167,27 @@ impl Hosting {
         self.feed.push(Heard::Unmoved { window, why })
     }
 
+    /// Pushes that the host let `window`'s input method compose, or stopped it, as the root asked.
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn ime_allowed(&self, window: WindowId) -> Result<(), Closed> {
+        self.feed.push(Heard::ImeAllowed { window })
+    }
+
+    /// Pushes that the host did not let `window`'s input method compose or stop it, as the root asked, and why.
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn ime_unallowed(&self, window: WindowId, why: Unset) -> Result<(), Closed> {
+        self.feed.push(Heard::ImeUnallowed { window, why })
+    }
+
     /// Answers each request the window root asked since the last take as a host that opens, closes, sets the mode of,
-    /// resizes, and moves no window does, as a page does: [`Unopened::NoHost`], [`Unclosed::NoHost`],
-    /// [`Unset::NoHost`], and [`Unplaced::NoHost`].
+    /// resizes, and moves no window, and has no input method, does, as a page does: [`Unopened::NoHost`],
+    /// [`Unclosed::NoHost`], [`Unset::NoHost`], and [`Unplaced::NoHost`].
     ///
     /// # Errors
     ///
@@ -182,6 +200,7 @@ impl Hosting {
                 Windowing::SetMode { window, .. } => self.unset(window, Unset::NoHost)?,
                 Windowing::Resize { window, .. } => self.unresized(window, Unplaced::NoHost)?,
                 Windowing::Move { window, .. } => self.unmoved(window, Unplaced::NoHost)?,
+                Windowing::AllowIme { window, .. } => self.ime_unallowed(window, Unset::NoHost)?,
             }
         }
 
