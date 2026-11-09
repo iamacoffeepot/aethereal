@@ -10,6 +10,7 @@ pub mod compute;
 pub mod dispatch;
 pub mod draw_list;
 pub mod effect;
+pub mod font;
 pub mod frame;
 mod gpu;
 pub mod instances;
