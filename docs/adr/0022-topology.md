@@ -131,7 +131,7 @@ turn.to(child::<(Unit, Squad)>((7, 2))).send(&order)?; // the Squad under 2 bene
   - every spawn names its child's type where its reference goes, or at the call.
   
   The change is mechanical, and a site that is missed does not build.
-- A turn's sends are a tuple of at most 12 markers (`Allows`), and `Asks` and `Tells` count toward it. A handler that would declare more is split, or the tuples grow, when one does.
+- A turn's sends are a tuple of at most 64 markers (`Allows`; 12 when this was written), and `Asks` and `Tells` count toward it. A handler that would declare more is split.
 - A type a guest reaches at a typed path must build in the guest: its name, its declaration of where it stands, and the protocol it is asked through. A root whose host state lives in resources (ADR-0010) builds there. Whether a root whose handlers' code cannot build in a guest is reachable from one is left until a guest needs one.
 - Sends to a child by name, `To::Child(KindName)` and `To::ChildInstanced`, are replaced by `child::<D>(keys)` (above), and removed with `To` (ADR-0013).
 - A send at a typed path costs the table's resolve of it, which hashes each of its segments, and a read of its actor's kind; a spawn's check is one pass over a declaration it already reads for stages; `turn.child` and `turn.parent` are one table read.
