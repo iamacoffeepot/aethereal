@@ -60,7 +60,7 @@ impl<T: Kind> Name<T> {
     const NAME: &'static KindName = &T::NAME;
 }
 
-/// Everything a handler may send: a tuple of up to 64 [`Marker`]s, `()` for nothing (ADR-0013).
+/// Everything a handler may send: a tuple of up to 24 [`Marker`]s, `()` for nothing (ADR-0013).
 pub trait Sends {
     /// The sends, as the engine reads them.
     const SENDINGS: &'static [Sending];
@@ -94,10 +94,6 @@ macro_rules! tuples {
             const SENDINGS: &'static [Sending] = &[$($name::SENDING),*];
         }
 
-        impl<$($name: Kind),*> Kinds for ($($name,)*) {
-            const KINDS: &'static [KindId] = &[$(KindId::of::<$name>()),*];
-        }
-
         tuples!(@allows [$($name)*] $($name $place)*);
     )*};
     (@allows $all:tt $($name:ident $place:literal)*) => {$(
@@ -108,7 +104,44 @@ macro_rules! tuples {
     };
 }
 
+/// A tuple of up to 64 kinds is [`Kinds`], as a protocol lists them: more than a handler's sends, which [`Allows`] checks
+/// place by place, at a cost that grows with the square of the tuple's length.
+macro_rules! kinds {
+    ($( [$($name:ident $place:literal)*] )*) => {$(
+        impl<$($name: Kind),*> Kinds for ($($name,)*) {
+            const KINDS: &'static [KindId] = &[$(KindId::of::<$name>()),*];
+        }
+    )*};
+}
+
 tuples! {
+    [A 0]
+    [A 0 B 1]
+    [A 0 B 1 C 2]
+    [A 0 B 1 C 2 D 3]
+    [A 0 B 1 C 2 D 3 E 4]
+    [A 0 B 1 C 2 D 3 E 4 F 5]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11 M 12]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11 M 12 N 13]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11 M 12 N 13 O 14]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11 M 12 N 13 O 14 P 15]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11 M 12 N 13 O 14 P 15 T17 16]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11 M 12 N 13 O 14 P 15 T17 16 T18 17]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11 M 12 N 13 O 14 P 15 T17 16 T18 17 T19 18]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11 M 12 N 13 O 14 P 15 T17 16 T18 17 T19 18 T20 19]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11 M 12 N 13 O 14 P 15 T17 16 T18 17 T19 18 T20 19 T21 20]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11 M 12 N 13 O 14 P 15 T17 16 T18 17 T19 18 T20 19 T21 20 T22 21]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11 M 12 N 13 O 14 P 15 T17 16 T18 17 T19 18 T20 19 T21 20 T22 21 T23 22]
+    [A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11 M 12 N 13 O 14 P 15 T17 16 T18 17 T19 18 T20 19 T21 20 T22 21 T23 22 T24 23]
+}
+
+kinds! {
     [A 0]
     [A 0 B 1]
     [A 0 B 1 C 2]
