@@ -142,6 +142,11 @@ impl Lists {
         self.kept.retain(|(listed, _), _| *listed != frame);
     }
 
+    /// Every entry of every list kept, in no order.
+    pub fn all(&self) -> impl Iterator<Item = &Entry> {
+        self.kept.values().flat_map(HashMap::values).flatten()
+    }
+
     /// Each actor's list for the pass `pass` of `frame`, in no order among actors.
     pub fn of(&self, frame: Frame, pass: PassName) -> impl Iterator<Item = &[Entry]> {
         self.kept.get(&(frame, pass)).into_iter().flat_map(HashMap::values).map(Vec::as_slice)

@@ -4,6 +4,7 @@ mod groups;
 // The tests draw on a device that draws nothing, which only a native build has.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+mod text;
 mod walk;
 
 use crate::Gpu;
@@ -11,6 +12,7 @@ use crate::compute::{self, Array, ComputeId, Computed, CreateCompute};
 use crate::dispatch::{self, Computes, CreateDispatch, DispatchId, DispatchRefused, Dispatched, Dispatches, Runs, Use};
 use crate::draw_list::{DrawList, EntryRefused, ListRefused, Listing, Lists, Placements};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
+use crate::font::FontRefused;
 use crate::frame::{
     self, CreateFrame, DepthUse, Does, EffectReads, Ends, Frame, FrameId, FrameRefused, Framed, Holds, Load,
     PassRefused, ShapeOf, Shaped, Size, Target, TargetKind,
@@ -34,18 +36,24 @@ use crate::readback::{
 use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
 use crate::storage::{self, CreateStorage, CreateZeroedStorage, StorageId, Stored, WriteStorage};
 use crate::surface::{Front, Present, Surfaced, WindowFormat};
+use crate::text::generate::{Generating, GlyphsGenerated};
+use crate::text::{
+    CreateFont, CreateText, FallbackFonts, FontId, FontMade, MoveText, PlaceText, TextId, TextMade, TextPlaced,
+    WriteText,
+};
 use crate::texture::{self, CreateTexture, TextureFormat, TextureId, Textured};
 use crate::timing::{self, TimeFrame, Timed, TimingRefused};
 use crate::uniforms::{self, CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_actor::{
-    Actor, Beginning, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle, Handles, Held, Level, On,
-    Protocol, Render, Resource, Source, ToSender, Top, Turn,
+    Actor, Answer, Beginning, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle, Handles, Held, Level,
+    On, Protocol, Render, Resource, Source, ToSender, Top, Turn,
 };
 use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_window::WindowId;
 use groups::{Binds, Entry, Groups};
 use std::collections::HashMap;
 use std::mem;
+use text::{Listable, PlacedText, TextJoined, Texts};
 use walk::{End, Making, ReadGroup, Step, Walk};
 
 /// The renderer, the one actor that touches the GPU. Actors ask it through [`Rendering`].
@@ -175,7 +183,8 @@ pub struct RendererConfig {
 /// What an actor asks the renderer: to make a mesh, a texture, a program, a compute program, an effect, instances,
 /// uniforms, storage, or a frame, to write instances, uniforms, or storage it made, to place what is drawn or dispatch
 /// what is computed, to list its placements in a pass in order, the shape of a pass it joins, to release what it made,
-/// to read back what it draws or storage, or to time what it draws.
+/// to read back what it draws or storage, to time what it draws, to read a font or name the fonts that fall back, or
+/// to make, write, place, or move a text (ADR-0052).
 pub struct Rendering;
 
 impl Protocol for Rendering {
@@ -201,6 +210,12 @@ impl Protocol for Rendering {
         ReadBack,
         ReadStorage,
         TimeFrame,
+        CreateFont,
+        FallbackFonts,
+        CreateText,
+        WriteText,
+        PlaceText,
+        MoveText,
     );
 }
 
@@ -292,7 +307,32 @@ impl Carries<TimeFrame> for Rendering {
     type Answers = (Timed,);
 }
 
+impl Carries<CreateFont> for Rendering {
+    type Answers = (FontMade,);
+}
+
+impl Carries<FallbackFonts> for Rendering {
+    type Answers = ();
+}
+
+impl Carries<CreateText> for Rendering {
+    type Answers = (TextMade,);
+}
+
+impl Carries<WriteText> for Rendering {
+    type Answers = ();
+}
+
+impl Carries<PlaceText> for Rendering {
+    type Answers = (TextPlaced,);
+}
+
+impl Carries<MoveText> for Rendering {
+    type Answers = ();
+}
+
 /// Releases what the renderer made before its maker ends. Only its maker may; what another asks is logged and left.
+/// A text released takes its placements with it, whoever made them (ADR-0052).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.release")]
 pub enum Release {
@@ -306,12 +346,14 @@ pub enum Release {
     Placement(PlacementId),
     Dispatch(DispatchId),
     Frame(FrameId),
+    Font(FontId),
+    Text(TextId),
 }
 
 /// What the renderer has made, and who made each, with the samplers its placements, dispatches, and effects share, the
 /// lists each actor drew its placements in a pass by, the frames that end on textures in the order they run, `order`,
-/// the longest side of a texture and the most workgroups along one dimension the GPU makes and dispatches, and each
-/// window it draws to, in the order its chassis opened them.
+/// the longest side of a texture and the most workgroups along one dimension the GPU makes and dispatches, each window
+/// it draws to, in the order its chassis opened them, and its fonts, texts, and texts placed, with their atlas.
 struct Kept {
     ids: Ids,
     makers: Makers,
@@ -334,6 +376,7 @@ struct Kept {
     longest: u32,
     most_workgroups: u32,
     windows: Vec<Windowed>,
+    text: Texts,
 }
 
 /// A window the renderer draws to: the window, the format of its surface, the renderer's own main frame of it, `own`,
@@ -597,6 +640,13 @@ impl Actor for Renderer {
         Mapped,
         Surfaced,
         Ended,
+        CreateFont,
+        FallbackFonts,
+        CreateText,
+        WriteText,
+        PlaceText,
+        MoveText,
+        Answer<GlyphsGenerated, Generating>,
     );
     type BeginSends = ();
     type EndSends = ();
@@ -617,7 +667,10 @@ impl Actor for Renderer {
             }
         }
         // Made before it is kept, as keeping it ends the borrow of the GPU opened.
-        let kept = Kept::new(opened.device(), windows);
+        let kept = match Kept::new(opened.device(), windows) {
+            Ok(kept) => kept,
+            Err(why) => return Err(Fault::new(&why)?),
+        };
         let kept = turn.keep(kept)?;
         turn.subscribe::<Render>();
 
@@ -660,6 +713,7 @@ impl Handles<On<Render>> for Renderer {
         for (window, frame) in &frames {
             kept.fit(&device, *window, Size { width: frame.width(), height: frame.height() });
         }
+        let wanted = kept.ready_texts((&device, &queue));
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let passes = kept.passes(&views);
@@ -707,6 +761,9 @@ impl Handles<On<Render>> for Renderer {
         let control = turn.open(&mut self.mapping)?;
         for mapping in mappings {
             control.push(mapping);
+        }
+        if let Some((job, generating)) = wanted {
+            turn.run(&job, &generating)?;
         }
 
         Ok(())
@@ -1440,6 +1497,8 @@ impl Handles<Release> for Renderer {
             Release::Storage(storage) => kept.storage.release(storage.id, by).map(drop),
             Release::Placement(placement) => kept.release_placement(placement.id, by),
             Release::Dispatch(dispatch) => kept.dispatches.release(dispatch.id, by).map(drop),
+            Release::Font(font) => kept.text.faces.made.release(font.id, by).map(drop),
+            Release::Text(text) => kept.text.release_text(text.id, by, &mut kept.lists),
             Release::Frame(frame) => {
                 let released = kept.frames.release(frame.id, by);
                 if let Owned::Mine(walk) = &released {
@@ -1488,9 +1547,16 @@ impl Handles<Ended> for Renderer {
 }
 
 impl Kept {
-    /// Nothing made yet, on `device`, for the windows `windows`, each drawn by the renderer's own main frame of it.
-    fn new(device: &wgpu::Device, windows: Vec<Windowed>) -> Self {
-        Self {
+    /// Nothing made yet, on `device`, for the windows `windows`, each drawn by the renderer's own main frame of it,
+    /// with the renderer's own fonts read and an empty atlas.
+    ///
+    /// # Errors
+    ///
+    /// Why one of the renderer's own fonts was not read, which a font compiled in never is.
+    fn new(device: &wgpu::Device, windows: Vec<Windowed>) -> Result<Self, FontRefused> {
+        let longest = device.limits().max_texture_dimension_2d;
+
+        Ok(Self {
             ids: Ids::default(),
             makers: Makers::default(),
             meshes: Made::default(),
@@ -1508,17 +1574,23 @@ impl Kept {
             frames: Made::default(),
             order: Vec::new(),
             held: Vec::new(),
-            longest: device.limits().max_texture_dimension_2d,
+            longest,
             most_workgroups: device.limits().max_compute_workgroups_per_dimension,
             windows,
-        }
+            text: Texts::new(device, longest)?,
+        })
     }
 
-    /// Releases the placement `placement`, when `by` made it, taking it out of `by`'s lists in this turn (ADR-0031).
+    /// Releases the placement `placement`, of a mesh or of a text, when `by` made it, taking it out of `by`'s lists in
+    /// this turn (ADR-0031).
     fn release_placement(&mut self, placement: u64, by: ActorId) -> Owned<()> {
         let released = self.placements.release(placement, by);
         if let Owned::Mine(made) = &released {
             self.lists.released(placement, by, made.listed());
+        }
+        let unknown = matches!(released, Owned::Unknown);
+        if unknown {
+            return self.text.release_placement(placement, by, &mut self.lists);
         }
 
         released.map(drop)
@@ -1537,6 +1609,7 @@ impl Kept {
         self.uniforms.release_all(maker);
         self.storage.release_all(maker);
         self.placements.release_all(maker);
+        self.text.ended(maker, &mut self.lists);
         self.lists.ended(maker);
         self.dispatches.release_all(maker);
         let frames: Vec<(u64, Option<u64>)> =
@@ -1785,7 +1858,9 @@ impl Kept {
                 ..Default::default()
             });
             match step {
-                Step::Draw { fits, read, .. } => self.draw(&mut recording, (frame, pass), fits, read),
+                Step::Draw { fits, read, depth, .. } => {
+                    self.draw(&mut recording, (frame, pass), (fits, *depth), read);
+                }
                 Step::Effect { effect, .. } => {
                     recording.set_pipeline(&effect.pipeline);
                     recording.set_bind_group(0, &effect.read.group, &[]);
@@ -1933,7 +2008,7 @@ impl Kept {
             return Err(ListRefused::Frame);
         }
 
-        self.lists.check(list, by, &mut self.placements)
+        self.lists.check(list, by, &mut Listable { meshes: &mut self.placements, texts: &mut self.text.placed })
     }
 
     /// Who owns the main frame of `window`: the maker of the frame that is it, none while it is the renderer's own or
@@ -2222,13 +2297,14 @@ impl Kept {
     }
 
     /// Records into `recording` every placement drawn in the pass `pass` of `frame`, whose programs are made against
-    /// `fits`, in the order [`drawn`](Self::drawn) answers, setting a pipeline only where the placement drawn before
-    /// used another program, with the targets the pass reads bound at group 0 through `read` when it reads any.
+    /// `fits`, which uses depth as `depth` says, in the order [`drawn`](Self::drawn) answers, setting a pipeline only
+    /// where the placement drawn before used another program, with the targets the pass reads bound at group 0 through
+    /// `read` when it reads any. A placed text is drawn with the glyph program's pipeline for the pass.
     fn draw(
         &self,
         recording: &mut wgpu::RenderPass<'_>,
         (frame, pass): (Frame, PassName),
-        fits: &Fits,
+        (fits, depth): (&Fits, DepthUse),
         read: &ReadGroup,
     ) {
         // The targets it reads are bound once, for every program that joins it, which lists nothing in group 0.
@@ -2237,7 +2313,16 @@ impl Kept {
             recording.set_bind_group(0, &read.group, &[]);
         }
         let mut pipeline = 0;
-        for (_, placement, join) in self.drawn((frame, pass), fits) {
+        for (_, drawable) in self.drawn((frame, pass), fits) {
+            let (placement, join) = match drawable {
+                Drawable::Mesh(placement, join) => (placement, join),
+                Drawable::Text(placed, join) => {
+                    self.text.draw(recording, (placed, join), depth);
+                    // The next mesh drawn sets its own pipeline, as no program's id is zero.
+                    pipeline = 0;
+                    continue;
+                }
+            };
             let count = match &placement.drawing {
                 Drawing::Count(count) => Count::Given(*count),
                 Drawing::Records { instances, length: Length::Live, .. } => {
@@ -2270,11 +2355,12 @@ impl Kept {
     }
 
     /// Each placement drawn in the pass `pass` of `frame`, whose programs are made against `fits`, under its id, with
-    /// its join of the pass, in the order it is drawn: those joined loose, each program's together, then each actor's
-    /// list back to back, in its order (ADR-0031). A join of another shape, or reading other targets, is not drawn,
-    /// and neither is one joined listed that no list holds.
-    fn drawn(&self, (frame, pass): (Frame, PassName), fits: &Fits) -> Vec<(u64, &Placement, &Joined)> {
-        let mut drawn: Vec<(u64, &Placement, &Joined)> = self
+    /// its join of the pass, in the order it is drawn: those of meshes joined loose, each program's together, then
+    /// those of texts joined loose, then each actor's list back to back, in its order, meshes and texts alike
+    /// (ADR-0031, ADR-0052). A join of another shape, or reading other targets, is not drawn, and neither is one
+    /// joined listed that no list holds.
+    fn drawn(&self, (frame, pass): (Frame, PassName), fits: &Fits) -> Vec<(u64, Drawable<'_>)> {
+        let mut meshes: Vec<(u64, &Placement, &Joined)> = self
             .placements
             .iter()
             .flat_map(|(id, placement)| placement.joins.iter().map(move |join| (id, placement, join)))
@@ -2284,17 +2370,32 @@ impl Kept {
                 draws && unlisted
             })
             .collect();
-        drawn.sort_unstable_by_key(|(_, _, join)| join.program);
+        meshes.sort_unstable_by_key(|(_, _, join)| join.program);
+        let texts = self.text.loose((frame, pass), fits).into_iter();
         let listed = self.lists.of(frame, pass).flatten().filter_map(|entry| {
             // Neither misses: a release takes its placement out of its maker's lists in the release's turn.
-            let placement = self.placements.get(entry.placement)?;
-            let join = placement.joins.get(entry.join)?;
-            join.draws_in(frame, pass, fits).then_some((entry.placement, placement, join))
+            if let Some(placement) = self.placements.get(entry.placement) {
+                let join = placement.joins.get(entry.join)?;
+                return join.draws_in(frame, pass, fits).then_some((entry.placement, Drawable::Mesh(placement, join)));
+            }
+            let placed = self.text.placed.get(entry.placement)?;
+            let join = placed.joins().get(entry.join)?;
+            join.draws_in(frame, pass, fits).then_some((entry.placement, Drawable::Text(placed, join)))
         });
-        drawn.extend(listed);
 
-        drawn
+        meshes
+            .into_iter()
+            .map(|(id, placement, join)| (id, Drawable::Mesh(placement, join)))
+            .chain(texts.map(|(id, placed, join)| (id, Drawable::Text(placed, join))))
+            .chain(listed)
+            .collect()
     }
+}
+
+/// One placement's join drawn in a pass: a mesh's, or a text's.
+enum Drawable<'a> {
+    Mesh(&'a Placement, &'a Joined),
+    Text(&'a PlacedText, &'a TextJoined),
 }
 
 /// How many instances a placement draws at a frame: a count known to the CPU, or as many as the five words of

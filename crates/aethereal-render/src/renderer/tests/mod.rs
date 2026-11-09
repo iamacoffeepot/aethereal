@@ -1,7 +1,7 @@
 //! What the renderer makes, made and drawn on a device that draws nothing but checks all it is handed, as WebGPU
 //! does.
 
-mod lists;
+pub(super) mod lists;
 
 use super::*;
 use crate::asked::blob;
@@ -13,7 +13,7 @@ use crate::shape::Samples;
 use aethereal_data::{Budget, from_bytes};
 
 /// The actor that makes everything here.
-const MAKER: ActorId = ActorId::new(1);
+pub(super) const MAKER: ActorId = ActorId::new(1);
 
 /// An effect that samples the target it reads, smoothly, by the place across it the renderer's vertex stage writes.
 const SMOOTHED: &str = "
@@ -43,7 +43,7 @@ fn nth_window(nth: u64) -> WindowId {
 }
 
 /// The window opened first.
-fn window() -> WindowId {
+pub(super) fn window() -> WindowId {
     nth_window(0)
 }
 
@@ -62,11 +62,15 @@ fn kept_for(device: &wgpu::Device, windows: &[WindowId]) -> Kept {
         })
         .collect();
 
-    Kept::new(device, windowed)
+    let Ok(kept) = Kept::new(device, windowed) else {
+        panic!("the renderer's own fonts are read");
+    };
+
+    kept
 }
 
 /// The renderer's kept state, on `device`, before anything is asked of it, drawing into a window of `Bgra8`.
-fn kept(device: &wgpu::Device) -> Kept {
+pub(super) fn kept(device: &wgpu::Device) -> Kept {
     kept_for(device, &[window()])
 }
 

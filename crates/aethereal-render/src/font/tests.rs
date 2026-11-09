@@ -6,7 +6,7 @@ use super::*;
 use aethereal_math::Vec2;
 
 /// Noto Sans Regular (SIL OFL), copied unchanged from Debian's `fonts-noto-core`.
-pub const NOTO: &[u8] = include_bytes!("../../fixtures/fonts/NotoSans-Regular.ttf");
+pub const NOTO: &[u8] = include_bytes!("../../fonts/NotoSans-Regular.ttf");
 
 /// The fixture font, read.
 pub fn noto() -> Font {

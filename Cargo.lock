@@ -70,6 +70,7 @@ dependencies = [
  "aethereal-data",
  "aethereal-files",
  "aethereal-link",
+ "aethereal-math",
  "aethereal-pace",
  "aethereal-process",
  "aethereal-render",
