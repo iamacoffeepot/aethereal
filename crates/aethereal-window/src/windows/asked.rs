@@ -180,4 +180,8 @@ pub enum Unplaced {
     NotWindowed,
     /// The host resizes or moves no window, as a page does not, or as Wayland lets no program move its own.
     NoHost,
+    /// The windowing system holds its size though it is windowed, as Wayland holds a window tiled against the screen's
+    /// edges: snapped to a side, or maximized one way only. It keeps that size until the person at it or the compositor
+    /// lets it go.
+    Tiled,
 }

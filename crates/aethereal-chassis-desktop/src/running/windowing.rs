@@ -2,7 +2,7 @@
 //! between steps, inside one of winit's callbacks, where a native window is made (ADR-0027, ADR-0047).
 
 use super::Running;
-use crate::{gpu, moding};
+use crate::{gpu, moding, sizing};
 use aethereal_window::{Logical, Mode, Place, Unplaced, Unset, WindowId, Windowing};
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event_loop::ActiveEventLoop;
@@ -41,16 +41,26 @@ impl Running {
     /// Asks winit to resize `window` to `size` in logical pixels, as the window root asked, then tells the root so, with
     /// its surface at the size winit applied, or as it has it now when the windowing system resizes it later. A size
     /// winit applies at once, as Wayland's is, comes with no `Resized`, so the chassis takes it in as one: the surface
-    /// is configured to it and the window's subscribers hear it. A window not open is refused as not open.
+    /// is configured to it and the window's subscribers hear it. A size winit answers unchanged and not as asked, as
+    /// Wayland's winit answers for a window the compositor holds tiled, was not applied, and is refused as tiled. A window
+    /// not open is refused as not open.
     fn resize(&mut self, window: WindowId, size: Logical) {
         let Some(opened) = self.drawing.window_mut(window) else {
             // Refused only once the window root has gone, and no one is then owed an answer.
             let _ = self.windowing.unresized(window, Unplaced::NotOpen);
             return;
         };
-        let applied = opened.native.request_inner_size(LogicalSize::new(size.width, size.height));
-        if let Some(size) = applied {
-            opened.resized(size.width, size.height);
+
+        let before = opened.native.inner_size();
+        let asked = LogicalSize::new(size.width, size.height);
+        let applied = opened.native.request_inner_size(asked);
+        if let Some(applied) = applied {
+            let wanted = sizing::physical(asked, opened.native.scale_factor());
+            if sizing::held(before, applied, wanted) {
+                let _ = self.windowing.unresized(window, Unplaced::Tiled);
+                return;
+            }
+            opened.resized(applied.width, applied.height);
         }
         let _ = self.windowing.resized(window, gpu::standing(&opened.native));
     }
