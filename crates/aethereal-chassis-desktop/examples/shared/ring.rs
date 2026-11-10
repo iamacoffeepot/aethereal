@@ -16,7 +16,7 @@ use aethereal_render::frame::{
 };
 use aethereal_render::instances::{CreateInstances, Instanced, InstancesId, WriteInstances};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
-use aethereal_render::pass::{Main, Pass, PassName};
+use aethereal_render::pass::{Main, Pass};
 use aethereal_render::placement::{Bind, Drawn, Filter, Join, Place, Placed, Resource, Sampling, Wrap};
 use aethereal_render::program::{
     Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
@@ -500,7 +500,7 @@ fn view(window: WindowId) -> CreateFrame {
     CreateFrame {
         ends: Ends::Follows { window, width: Scale::Half, height: Scale::Full, format: TextureFormat::Rgba8 },
         targets: Vec::new(),
-        passes: vec![PassSpec { name: PassName::of::<Main>(), does: ring }],
+        passes: vec![PassSpec::of::<Main>(ring)],
     }
 }
 
@@ -550,7 +550,7 @@ impl Handles<Answer<Framed, Framing>> for Scene {
                 let main = CreateFrame {
                     ends: Ends::Window(self.window),
                     targets: Vec::new(),
-                    passes: vec![PassSpec { name: PassName::of::<Lay>(), does: lay }],
+                    passes: vec![PassSpec::of::<Lay>(lay)],
                 };
                 turn.to(path::<Renderer>(())).ask(&main, &Framing::Main { left, right: frame })?;
             }

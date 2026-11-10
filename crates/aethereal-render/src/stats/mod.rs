@@ -140,14 +140,24 @@ pub enum GpuTimes {
     Unsupported,
 }
 
-/// One pass of a frame the GPU ran: the frame it is of, its name, as a frame's passes are named by a type (ADR-0025),
-/// and the nanoseconds from its beginning to its end.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+/// One pass of a frame the GPU ran: the frame it is of; its name, as a frame's passes are named by a type (ADR-0025);
+/// its label, the name of that type's kind, such as `aether.render.main`, for a person to read; and the nanoseconds
+/// from its beginning to its end.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.pass_time")]
 pub struct PassTime {
     pub frame: Frame,
     pub pass: PassName,
+    pub label: String,
     pub nanos: u64,
+}
+
+/// A pass a frame ran, before the GPU's time over it is mapped back: its frame, its name, and its label.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Ran {
+    pub frame: Frame,
+    pub pass: PassName,
+    pub label: String,
 }
 
 /// Asks the renderer which adapter it draws on: answered with [`GpuDescribed`].
@@ -184,8 +194,12 @@ impl GpuDescribed {
 /// Each pass's nanoseconds, `nanos`, in the order the passes ran, beside the pass it is of, `named`, in the same order:
 /// what [`GpuTimes::Took`] holds. A pass with no time, as when fewer were mapped back than were run, is left out, and
 /// so is a time with no pass.
-pub(crate) fn named(named: &[(Frame, PassName)], nanos: &[u64]) -> Vec<PassTime> {
-    named.iter().zip(nanos).map(|(&(frame, pass), &nanos)| PassTime { frame, pass, nanos }).collect()
+pub(crate) fn named(named: Vec<Ran>, nanos: &[u64]) -> Vec<PassTime> {
+    named
+        .into_iter()
+        .zip(nanos)
+        .map(|(Ran { frame, pass, label }, &nanos)| PassTime { frame, pass, label, nanos })
+        .collect()
 }
 
 /// What a frame's recording counts: nothing, while no one is sent [`FrameStats`], or each draw it records.
