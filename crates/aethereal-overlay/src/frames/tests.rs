@@ -70,6 +70,18 @@ fn cycles_older_than_the_window_are_let_go() {
     assert_eq!(figures.longest, steady);
 }
 
+/// The gutter's line beside the chart is `frame` and the median in milliseconds, flush right in the gutter as the GPU
+/// graph's top and the rows' values are, so a median written in the wrong unit, or out of line with the gutter's other
+/// values, is caught.
+#[test]
+fn the_gutter_says_the_chart_s_median() {
+    let figures = times([4_200_000, 4_200_000, 16_700_000]).figures();
+
+    let line: String = figures.gutter_runs().iter().map(|run| run.text.as_str()).collect();
+
+    assert_eq!(line, "frame         4.2 ms");
+}
+
 /// Figures are rounded to the tenth of a millisecond they show, so two that show the same compare equal and the text
 /// is not written again for nothing.
 #[test]

@@ -30,12 +30,13 @@ Called::Output ── schema ── Form, printed ──> scrollback
 ### The three stops
 
 - **Hidden:** nothing is drawn, and the overlay listens only for the backtick.
-- **The band:** a strip across the top of the window, as tall as its left column's three sections need, about a quarter of the window at 1080, in two columns.
+- **The band:** a strip across the top of the window, as tall as its left column's three sections need, about a quarter of the window at 1080, in two columns parted by a faint stone line, a logical pixel thick, at the lines between the band and the console's opacity, down the band's content from the frame chart's top to the rows' foot, centred between the gutter's text and the meters'. Two more such lines part the left column's three sections, the frame chart and its figures, the GPU's graph and its figures, and the rows, across the column from the frame chart's left to the gutter's end, each centred in the space between one section's figures and the next; no line parts a graph from its gutter, which is its label.
   - **Left, one 60-second axis, newest at the right, so a spike reads straight down:**
     - the frame chart: each cycle's `delta_nanos`, with the budget as a dashed line, and the median, p90, p99, and the most over the 60 seconds beneath it;
       - each column, a fixed span of time, is three opaque bars the column's width, each from the chart's foot, drawn back to front: its slowest cycle in sand, the tallest, at the back; its median in lichen; and its fastest in slate-teal, the shortest, in front;
       - each bar's colour is fixed by its layer, whatever the budget: over or under is read from the bars' height against the budget line, dashed bone at 70%, which carries the judging;
       - the vertical scale is logarithmic and relative to the budget: a quarter of the budget at the foot, 32 budgets at the top, so the budget stands 2/7 of the way up and every doubling is another 1/7, whatever the budget is; a faint stone line marks twice the budget;
+      - the gutter beside the chart, level with its top, says its median, as the GPU graph's gutter says its top: `frame`, and flush right `4.2 ms`; the line beneath it counts the warnings and errors since the console was last opened, `alerts` and flush right `! N` in rust and `× N` in brick, or `no alerts` in stone when there are none, so the line is never blank;
     - GPU time per frame, stacked by named pass, with the share of the frame the GPU was busy:
       - a graph two thirds the frame chart's height, its columns the frame chart's, the same span at the same place, each a stack of the frame's passes from the foot in the order their labels were first heard, each pass at its median over the column's frames, so the stack is a typical frame;
       - its scale is linear, as stacked times are summed, and ranged to what is drawn, as GPU profilers such as Tracy and PIX range theirs: nothing at the foot, and at the top the tallest stack in the 60 seconds rounded up to 1, 2, or 5 × 10ⁿ nanoseconds, no less than 10 microseconds so an idle GPU's noise is not drawn full height. The top moves only between those steps, which keeps it from flickering as the window slides. A pass that took any time stands at least a pixel tall, and a stack over the top is cut there. A budget-relative scale would leave a fast GPU's frame under a pixel at a high refresh rate: 0.08 ms against 4.17 ms at 240 Hz;
@@ -44,7 +45,12 @@ Called::Output ── schema ── Form, printed ──> scrollback
       - beneath it, one line: each pass's label, without the renderer's `aether.render.` prefix, and its median over the 60 seconds, each in its pass's colour, so the line is the legend; and `gpu busy`, the GPU's median frame over the frame chart's median cycle;
       - on a device without timestamps, the graph's place holds one stone line, `GPU timing not supported on this device`, and nothing else;
     - one line each for draws, triangles, bytes uploaded, and GPU memory, the sum of the renderer's kinds: each a thin row of stone bars over the same columns, each column the most of its frames, linear from nothing to the most shown, with its label and newest value in a gutter at the column's right, bytes in KiB, MiB, and GiB. The graphs above end at the gutter too, so every column stands under the frame chart's.
-  - **Right:** the memory meters, each a bar against its limit where it has one, and the GPU adapter, its backend, and its driver.
+  - **Right:** the memory meters, from the band's top, level with the frame chart's, a line after a line with no gap above or between them, down to at most the foot of the rows, clipped to the column so a narrow window cuts them rather than letting them run into the left column's gutter; the band's height is the left column's, and the right column may end above it:
+    - one line of Mono text each, in order: process, blobs, backlog, guests, GPU (see Memory); the label in stone, then the room of a bar 20 characters wide, then the value set flush right in bone at the band's right padding, `blobs  ███████░░░░░░░  412.0 MiB / 8.0 GiB`, so the values' digits line up and end at one edge;
+    - a bar only where the meter has a limit, blobs and backlog: a trough of faint stone, and a fill from its left, its share of the trough the bytes' share of their most, lichen under 75%, rust from 75%, brick from 90%; with no most, as when no actor holds bytes unsent, an empty trough and `none`. Process, guests, and GPU have no limit and no trough: the value alone, `unknown` in stone where the chassis reads no figure and `no guests` where none runs;
+    - the backlog's line names the actor holding the most just before its value, in stone, cut at its front with `…` to the room the column has left, and left out where too little is;
+    - the engine's figures are read at the figures' pace, four times a second, and the GPU meter from the newest frame's statistics; a text is written again only when what it shows changes;
+    - the column ends after the meters: the GPU adapter, its backend, and its driver do not change while the program runs, so the band does not keep them in view; `render_stats` answers them, called from the console or by an agent (see Frame statistics).
 - **The band and the console:** the console beneath the band, a third of the window: scrollback, the line being typed, and a grey completion ahead of the cursor. While the console is open the overlay holds key focus, and gives it up as the console closes.
 
 ### Commands are tools
@@ -88,7 +94,7 @@ Called::Output ── schema ── Form, printed ──> scrollback
 - **So each part of the view also keeps a ring of its most recent entries,** filled by the same fold that keeps each actor's: each entry with its actor's path and the step it was folded in. The parts stay folded apart, as no part writes to another's ring. The rings keep 2,000 entries between them, a setting beside `most_logged`. An ended actor's entries, and the fault that ended it, are in the ring with the rest.
 - **A turn reads the rings since a step,** merged by step, oldest first: within one step, turns ran at once, so the step is the only order between two actors' entries, and none is made up. The read answers the step to read on from, and how many entries had left the rings before it.
 - **The logs tool gains this read,** `read_recent`, which needs no actor. The overlay reads it once a second while the console is open, and an agent reads it to see what the whole engine said without knowing which actor to ask.
-- **A line shows its time, its level, its actor, and its text.** Errors and warnings are shown in the band as well, as a count since the console was last opened.
+- **A line shows its time, its level, its actor, and its text.** Errors and warnings are shown in the band as well, as a count since the console was last opened, in the gutter beside the frame chart.
 
 ### Key focus
 
@@ -118,18 +124,18 @@ KeyFocusLost { window }      // to the holder it replaced, the one that released
   - `FrameStats`, after each `Render`: the cycle's `elapsed_nanos`, so it lines up with `Tick`; the budget; draws, triangles, and bytes uploaded; GPU memory by what it holds, meshes, textures, targets, and the glyph atlas, as the renderer counts what it made, with what the driver reserved where wgpu reports it; how many meshes, textures, programs, placements, and texts are alive; and how full the glyph atlas is.
   - `GpuTimes`, as a frame's timestamps are mapped back: the same `elapsed_nanos`, and each pass's nanoseconds with its pass's name: the type id placements join it by, and its label, the name of its type's kind (`aether.render.main`), which a frame's passes may not repeat and which the band and `render_stats` show. Not sent on a device without timestamps, where the band leaves the GPU graph out and says so.
 - **The budget is the frame time the program aims at:** for `capped:N`, a second over N; for `fifo`, the refresh of the monitor the window is on, as winit reports it, read again as each frame is acquired, since Wayland names a window's monitor only once its first frame is shown, with no event as it does or as the window moves to another, and 60 Hz stands in until it is known; for `uncapped`, the monitor's refresh too, drawn as a reference rather than a limit. In the browser, the refresh is measured from the frames' own intervals.
-- **The adapter, its backend, and its driver** are answered once to `DescribeGpu`.
+- **The adapter, its backend, and its driver** are answered once to `DescribeGpu`, which `render_stats` asks as it begins and answers with each frame's statistics: its `adapter`, `name`, `backend`, `driver`, and `driver_info`.
 - **`render_stats` is a tool** that answers the latest `FrameStats` and `GpuTimes`, so an agent reads the same meters without a screenshot.
 
 ### Memory
 
-**The band shows one meter for each limit the engine can hit,** from `EngineStats`, which the substrate answers:
+**The band shows one meter for each limit the engine can hit,** from `EngineStats`, which the substrate answers, each a line of the band's right column (see The three stops):
 
-- **process:** the resident memory the operating system reports for the program; in the browser, what it exposes, or nothing;
-- **blobs:** the bytes the blob store holds, against its limit;
-- **backlog:** the most bytes any one actor has waiting unsent, against the limit;
-- **guests:** the memory of every guest, added up;
-- **GPU:** from `FrameStats`.
+- **process:** the resident memory the operating system reports for the program, `1.2 GiB`; in the browser, the script heap it exposes, `84.0 MiB heap`, or `unknown`; no bar;
+- **blobs:** the bytes the blob store holds, against its limit, `412.0 MiB / 8.0 GiB`, with a bar;
+- **backlog:** the most bytes any one actor has waiting unsent, against that actor's limit, with a bar, and the actor's path just before its value; `none` when no actor has said it holds any;
+- **guests:** the memory of every guest, added up, `no guests` when none runs; no bar;
+- **GPU:** the sum of the renderer's kinds in the newest `FrameStats`, the left column's GPU memory row's newest value; no bar.
 
 **Only the engine sees every actor, so it finds the largest itself.** `EngineStats` also answers the eight guests with the most memory and the eight actors with the most bytes unsent, each by path. The substrate keeps them as it folds, as it keeps the totals, so no turn walks the seats and no answer grows with the number of actors.
 

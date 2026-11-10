@@ -21,7 +21,9 @@
 //! engine's recent log beneath them as it comes; what it has called and not yet heard from shows at the prompt's right
 //! end. The band, the scrollback, and the prompt's strip are each a tint of slate of their own, parted by faint lines.
 //! The overlay offers two tools of its own, `mark` and `memory`, which an agent may call too. The band's right column
-//! is a piece of its own, with what it reads (ADR-0053).
+//! meters the engine's memory, one line each for the process, the blobs, the backlog, the guests, and the GPU, with a
+//! bar against its limit for the blobs and the backlog, lichen, then rust from 75% and brick from 90%, and the backlog's
+//! actor beside it. Faint lines part the band's two columns, and the left column's three sections (ADR-0053).
 
 mod binned;
 mod chart;
@@ -32,6 +34,7 @@ mod gpu;
 mod layout;
 mod lines;
 mod marks;
+mod meters;
 mod overlay;
 mod scrollbar;
 mod stop;

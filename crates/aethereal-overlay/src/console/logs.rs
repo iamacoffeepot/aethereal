@@ -4,6 +4,7 @@
 
 use super::scrollback::Piece;
 use crate::colour::{BRICK, RUST, STONE, Swatch};
+use crate::layout::GUTTER_CHARACTERS;
 use aethereal_actor::{ActorName, Entry, Level};
 use aethereal_data::Plain;
 
@@ -12,6 +13,9 @@ const LEVEL_WIDTH: usize = 5;
 
 /// How wide a step is printed, right aligned, so the levels after it line up.
 const STEP_WIDTH: usize = 8;
+
+/// What the gutter calls the count of warnings and errors, the counts written flush right in the rest of the gutter.
+const ALERTS_LABEL: &str = "alerts";
 
 /// One entry of the engine's recent log, as the console prints it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +82,8 @@ const fn name_of(level: Level) -> &'static str {
     }
 }
 
-/// The warnings and errors the engine logged since the console was last opened, shown at the band's right end.
+/// The warnings and errors the engine logged since the console was last opened, shown in the gutter beside the frame
+/// chart.
 #[derive(Plain, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Alerts {
     warnings: u64,
@@ -100,23 +105,28 @@ impl Alerts {
         *self = Self { warnings: 0, errors: 0 };
     }
 
-    /// The counts as the band shows them, each only when it is not zero: `! N` in rust for warnings and `× N` in
-    /// brick for errors, as IBM Plex Mono has no `⚠` or `✕`. A space when both are zero, as a text holds something.
+    /// The gutter's line of the counts: `alerts` in stone, then each count that is not zero flush right as the rows'
+    /// values are, `! N` in rust for warnings and `× N` in brick for errors, as IBM Plex Mono has no `⚠` or `✕`; and
+    /// `no alerts` in stone when both are zero, so the line is never blank.
     pub fn pieces(self) -> Vec<Piece> {
-        let mut pieces = Vec::new();
+        let mut counts = Vec::new();
         if self.warnings > 0 {
-            pieces.push(Piece::new(&format!("! {}", self.warnings), RUST));
+            counts.push(Piece::new(&format!("! {}", self.warnings), RUST));
         }
         let both = self.warnings > 0 && self.errors > 0;
         if both {
-            pieces.push(Piece::new("  ", STONE));
+            counts.push(Piece::new("  ", STONE));
         }
         if self.errors > 0 {
-            pieces.push(Piece::new(&format!("× {}", self.errors), BRICK));
+            counts.push(Piece::new(&format!("× {}", self.errors), BRICK));
         }
-        if pieces.is_empty() {
-            pieces.push(Piece::new(" ", STONE));
+        if counts.is_empty() {
+            return vec![Piece::new("no alerts", STONE)];
         }
+        let written: usize = counts.iter().map(|piece| piece.text.chars().count()).sum();
+        let pad = GUTTER_CHARACTERS.saturating_sub(ALERTS_LABEL.len() + written);
+        let mut pieces = vec![Piece::new(ALERTS_LABEL, STONE), Piece::new(&" ".repeat(pad), STONE)];
+        pieces.extend(counts);
 
         pieces
     }

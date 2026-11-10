@@ -1,4 +1,6 @@
-use super::{LINE_EMS, Layout};
+use super::{GUTTER_CHARACTERS, LINE_EMS, Layout};
+use crate::meters::{EngineMemory, LINE_CHARACTERS, Meter};
+use aethereal_math::{Rect2, Vec2};
 use aethereal_window::Surface;
 
 /// Down the band's left column, at 1080 and at an ultrawide 1373, the frame chart, its figures, the GPU's graph, its
@@ -28,16 +30,18 @@ fn the_band_stacks_its_sections_on_one_axis_and_the_console_sits_beneath_it() {
         ];
         let in_order = edges.iter().all(|(above, below)| above < below);
         assert!(in_order, "the sections of {band:?} overlap or spill out of it");
-        let across = |area: aethereal_math::Rect2| area.min.x == chart.min.x && area.max.x == chart.max.x;
+        let across = |area: Rect2| area.min.x == chart.min.x && area.max.x == chart.max.x;
         assert!(across(gpu) && across(rows), "{gpu:?} or {rows:?} is not across {chart:?}");
         assert!((gpu.height() - (chart.height() * 2.0 / 3.0).round()).abs() < 0.01, "{gpu:?} is not 2/3 of {chart:?}");
     }
 }
 
 /// Each row's bars stand inside its line of the rows, the first's at the top of the gutter's text and each line of
-/// that text beside its row, the GPU graph's top is written in the same gutter level with the graph's top, and the
-/// gutter's text ends inside the band's left column, so a row's label written beside the wrong row, a graph's top
-/// written away from its graph, or a gutter running into the right column, is caught.
+/// that text beside its row; the frame chart's median is written in the same gutter level with the chart's top, and
+/// the count of warnings and errors the line beneath it, both beside the chart; the GPU graph's top is written level
+/// with the graph's top; and the gutter's text ends inside the band's left column. So a row's label written beside
+/// the wrong row, a graph's line written away from its graph, a count of warnings that runs down over the frame
+/// figures' line, or a gutter running into the right column, is caught.
 #[test]
 fn the_gutter_s_lines_stand_beside_their_rows() {
     for scale in [1.0, 2.0] {
@@ -46,7 +50,12 @@ fn the_gutter_s_lines_stand_beside_their_rows() {
         let (rows, at, tall) = (layout.rows(), layout.lines_at(), layout.line_pixels_tall());
 
         assert_eq!(at.y, rows.min.y);
-        assert_eq!(layout.gpu_top_at(), aethereal_math::Vec2::new(at.x, layout.gpu_graph().min.y));
+        let chart = layout.chart();
+        assert_eq!(layout.frame_median_at(), Vec2::new(at.x, chart.min.y));
+        assert_eq!(layout.alerts_at(), Vec2::new(at.x, chart.min.y + tall));
+        let alerts_foot = layout.alerts_at().y + tall;
+        assert!(alerts_foot <= chart.max.y, "the count of warnings ending at {alerts_foot} is not beside {chart:?}");
+        assert_eq!(layout.gpu_top_at(), Vec2::new(at.x, layout.gpu_graph().min.y));
         for index in 0..4_u8 {
             let row = layout.row(index);
             let line_top = f32::from(index).mul_add(tall, at.y);
@@ -55,7 +64,7 @@ fn the_gutter_s_lines_stand_beside_their_rows() {
         }
         // A gutter of some tens of characters, which an f32 holds exactly.
         #[allow(clippy::cast_precision_loss)]
-        let gutter_end = (super::GUTTER_CHARACTERS as f32).mul_add(layout.advance(), at.x);
+        let gutter_end = (GUTTER_CHARACTERS as f32).mul_add(layout.advance(), at.x);
         assert!(at.x > rows.max.x && gutter_end <= 1920.0 * 0.6, "the gutter from {at:?} is out of the left column");
     }
 }
@@ -130,4 +139,117 @@ fn the_prompt_and_its_divider_sit_in_their_strip() {
         assert_eq!(running.y, prompt.y);
         assert!((ends - layout.console_inside().max.x).abs() < 0.01, "what is running ends at {ends}");
     }
+}
+
+/// At 1080, an ultrawide 1373, and a narrow 720, the band's right column stands right of the end of the left column's
+/// gutter and inside the band, its top level with the frame chart's, so no empty block stands above it; each meter's
+/// bar stands on its line after its label and inside the column, a meter's line of text fits across the column, every
+/// meter's line ends, its value last, at the band's right padding, and the five meters fit down the column. So a
+/// meter drawn over the gutter, a column that starts below the band's top, one that spills out of the band, values
+/// that end at different edges, or a value cut off at a narrow window, is caught.
+#[test]
+fn the_right_column_holds_the_meters_clear_of_the_left_column() {
+    for (width, height) in [(1920, 1080), (3440, 1373), (1280, 720)] {
+        let layout = Layout::of(Surface { width, height, scale: 1.0 });
+
+        let (right, band, tall) = (layout.right_column(), layout.band(), layout.line_pixels_tall());
+        let at = layout.meters_at();
+        let columns = layout.right_columns();
+        let lines = EngineMemory::Unread.runs(0, columns);
+
+        // A gutter of some tens of characters, which an f32 holds exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let gutter_end = (GUTTER_CHARACTERS as f32).mul_add(layout.advance(), layout.lines_at().x);
+        assert!(right.min.x > gutter_end, "{right:?} at {width}x{height} is over the gutter ending at {gutter_end}");
+        assert_eq!(right.min.y, layout.chart().min.y, "{right:?} at {width}x{height} starts below the band's top");
+        let in_band = right.max.x <= band.max.x && right.max.y <= band.max.y;
+        assert!(in_band, "{right:?} spills out of {band:?}");
+        assert_eq!(right.max.x, band.max.x - layout.pixels(10.0), "{right:?} does not end at the band's padding");
+        assert_eq!(at, right.min);
+        let text: String = lines.iter().map(|run| run.text.as_str()).collect();
+        for line in text.lines() {
+            // A line of some tens of characters, which an f32 holds exactly.
+            #[allow(clippy::cast_precision_loss)]
+            let ends = (line.chars().count() as f32).mul_add(layout.advance(), at.x);
+            let shared = (ends - right.max.x).abs() < 0.01;
+            assert!(shared, "{line:?} at {width}x{height} ends at {ends}, not at {right:?}'s right edge");
+        }
+        for index in Meter::ALL.map(Meter::index) {
+            let bar = layout.meter_bar(index);
+            let line_top = f32::from(index).mul_add(tall, at.y);
+            let across = bar.min.x > right.min.x && bar.max.x < right.max.x;
+            let beside = bar.min.y >= line_top && bar.max.y <= line_top + tall && bar.height() >= 1.0;
+            assert!(across && beside, "meter {index}'s bar at {bar:?} is off its line in {right:?}");
+        }
+        assert!(layout.right_columns() >= LINE_CHARACTERS, "a meter's line does not fit {right:?}");
+        let meters_foot = meters().mul_add(tall, at.y);
+        assert!(meters_foot <= right.max.y, "the meters end at {meters_foot}, below {right:?}");
+    }
+}
+
+/// At 1080, an ultrawide 1373, and a narrow 720, and on a screen of twice the pixels, the line between the band's
+/// columns runs the band's content from the frame chart's top to the rows' foot, centred between the gutter's text and
+/// the meters'; and the two lines between the left column's sections cross it from the frame chart's left to the
+/// gutter's end, each in the space between one section's figures and the next section's top, short of the line
+/// between the columns. None of them is drawn over a graph or a line of text, and each is a line thick. So a divider
+/// drawn through a section, one that crosses into the meters, one off centre in its space, or one that spills out of
+/// the band, is caught.
+#[test]
+fn the_band_s_dividers_part_its_columns_and_sections_clear_of_what_they_part() {
+    for (width, height, scale) in [(1920, 1080, 1.0), (3440, 1373, 1.0), (1280, 720, 1.0), (1920, 1080, 2.0)] {
+        let layout = Layout::of(Surface { width, height, scale });
+
+        let (band, chart, gpu, rows) = (layout.band(), layout.chart(), layout.gpu_graph(), layout.rows());
+        let (right, tall, thick) = (layout.right_column(), layout.line_pixels_tall(), layout.line_pixels(1.0));
+        let column = layout.column_divider();
+        let sections = layout.section_dividers();
+        // A gutter of some tens of characters, which an f32 holds exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let gutter_end = (GUTTER_CHARACTERS as f32).mul_add(layout.advance(), layout.lines_at().x);
+        let line_at = |at: Vec2, left: f32, right: f32, lines: f32| Rect2 {
+            min: Vec2::new(left, at.y),
+            max: Vec2::new(right, lines.mul_add(tall, at.y)),
+        };
+        let figures_left = chart.min.x;
+        let gutter_left = layout.lines_at().x;
+        let drawn = [
+            chart,
+            gpu,
+            rows,
+            line_at(layout.figures_at(), figures_left, gutter_end, 1.0),
+            line_at(layout.gpu_figures_at(), figures_left, gutter_end, 1.0),
+            line_at(layout.frame_median_at(), gutter_left, gutter_end, 2.0),
+            line_at(layout.gpu_top_at(), gutter_left, gutter_end, 1.0),
+            line_at(layout.lines_at(), gutter_left, gutter_end, 4.0),
+            line_at(layout.meters_at(), right.min.x, right.max.x, meters()),
+        ];
+
+        let spans_content = column.min.y == chart.min.y && column.max.y == rows.max.y;
+        let in_band = column.min.y >= band.min.y && column.max.y <= band.max.y;
+        assert!(spans_content && in_band, "{column:?} at {width}x{height} does not run {band:?}'s content");
+        let between = column.min.x > gutter_end && column.max.x < right.min.x;
+        let off_centre = ((column.min.x - gutter_end) - (right.min.x - column.max.x)).abs();
+        assert!(between && off_centre <= 1.0, "{column:?} at {width}x{height} is not centred after {gutter_end}");
+        let figures_foot = layout.figures_at().y + tall;
+        let gpu_figures_foot = layout.gpu_figures_at().y + tall;
+        for (section, (foot, top)) in
+            sections.into_iter().zip([(figures_foot, gpu.min.y), (gpu_figures_foot, rows.min.y)])
+        {
+            let in_gap = section.min.y > foot && section.max.y < top;
+            let to_gutter_end = (section.max.x - gutter_end).abs() <= 0.5;
+            let across = section.min.x == chart.min.x && to_gutter_end && section.max.x < column.min.x;
+            assert!(in_gap && across, "{section:?} at {width}x{height} is not between {foot} and {top}");
+        }
+        for divider in [column, sections[0], sections[1]] {
+            assert!(divider.width().min(divider.height()) == thick, "{divider:?} is not a line {thick} thick");
+            for area in drawn {
+                assert!(!divider.intersects(area), "{divider:?} at {width}x{height} is drawn over {area:?}");
+            }
+        }
+    }
+}
+
+/// How many meters the right column holds, a line of text each.
+fn meters() -> f32 {
+    u8::try_from(Meter::ALL.len()).map_or(f32::MAX, f32::from)
 }

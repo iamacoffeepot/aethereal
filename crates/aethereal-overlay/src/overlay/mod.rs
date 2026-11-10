@@ -18,6 +18,7 @@ use crate::frames::{Figures, FrameTimes};
 use crate::gpu::{GpuFigures, GpuTiming, GraphTop};
 use crate::lines::FrameLines;
 use crate::marks::Marks;
+use crate::meters::EngineMemory;
 use crate::stop::Stop;
 use crate::tools::{Marked, OverlayTools, OverlayToolsConfig};
 use aethereal_actor::{
@@ -107,6 +108,8 @@ pub struct Overlay {
     marks: Marks,
     /// The warnings and errors logged since the console was last opened.
     alerts: Alerts,
+    /// The engine's memory as the band's meters last read it, four times a second while it is shown.
+    memory: EngineMemory,
     /// The step the engine's recent log is next read from (ADR-0053: Logs in the console).
     logs_since: u64,
     /// The program's time from which the log is next read.
@@ -190,6 +193,7 @@ impl Actor for Overlay {
             console: Console::default(),
             marks: Marks::default(),
             alerts: Alerts::default(),
+            memory: EngineMemory::Unread,
             logs_since: 0,
             logs_due_nanos: 0,
         })

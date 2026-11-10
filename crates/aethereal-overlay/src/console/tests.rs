@@ -256,8 +256,9 @@ fn the_wheel_scrolls_three_rows_a_notch_and_carries_a_part_row() {
     assert_eq!(console.scrolled(), Scrolled { kept: 25, up: 0 });
 }
 
-/// Warnings and errors are counted, in rust and brick, and nothing else is; and clearing forgets them, so a count
-/// of the wrong level, or one the console's opening does not clear, is caught.
+/// Warnings and errors are counted, in rust and brick, flush right in the gutter's line after `alerts`, and nothing
+/// else is; and clearing forgets them, leaving `no alerts` rather than a blank line, so a count of the wrong level, one
+/// the console's opening does not clear, counts out of line with the gutter's values, or a blank line, is caught.
 #[test]
 fn warnings_and_errors_are_counted_until_cleared() {
     let mut alerts = Alerts::default();
@@ -269,8 +270,10 @@ fn warnings_and_errors_are_counted_until_cleared() {
     alerts.clear();
     let cleared = alerts.pieces();
 
-    assert_eq!(counted, vec![Piece::new("! 2", RUST), Piece::new("  ", STONE), Piece::new("× 1", BRICK)]);
-    assert_eq!(cleared, vec![Piece::new(" ", STONE)]);
+    let line: String = counted.iter().map(|piece| piece.text.as_str()).collect();
+    assert_eq!(line, "alerts      ! 2  × 1");
+    assert_eq!(counted[2..], [Piece::new("! 2", RUST), Piece::new("  ", STONE), Piece::new("× 1", BRICK)]);
+    assert_eq!(cleared, vec![Piece::new("no alerts", STONE)]);
 }
 
 /// A call is shown running from when it is asked until it settles, one by its tool's name and several by their count,

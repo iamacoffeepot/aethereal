@@ -1,0 +1,151 @@
+//! The meters' text (ADR-0053: Memory): one line a meter, as wide as the right column, its label in stone, the room of
+//! its bar, and its value set flush right in bone at the column's right edge, the band's right padding, so the
+//! digits line up in the mono face, bytes in KiB, MiB, and GiB as the `memory` tool shows them; a meter with a limit
+//! `412.0 MiB / 8.0 GiB`; a value that is no figure, `unknown`, `none`, `no guests`, in stone. The backlog's line names
+//! the actor holding the most just before its value, in stone, cut at its front to the room the right column has left,
+//! or left out where too little is.
+
+use super::{Backlog, EngineMemory, Held, MemoryFigures, Meter, ProcessMemory};
+use crate::colour::{BONE, STONE, Swatch};
+use crate::layout::{METER_BAR_CHARACTERS, METER_GAP_CHARACTERS, METER_LABEL_CHARACTERS};
+use crate::tools::bytes_shown;
+use aethereal_render::text::Run;
+
+/// How many characters a value is given, flush right: as wide as `1023.9 MiB / 1023.9 GiB`.
+pub const VALUE_CHARACTERS: usize = 23;
+
+/// The fewest characters a meter's line takes: its label, its bar, the gap, and its value.
+pub const LINE_CHARACTERS: usize =
+    METER_LABEL_CHARACTERS + METER_BAR_CHARACTERS + METER_GAP_CHARACTERS + VALUE_CHARACTERS;
+
+/// The space between the backlog's actor and its value.
+const ACTOR_GAP: &str = "  ";
+
+/// The fewest characters of an actor's path worth showing, its ellipsis among them.
+const FEWEST_ACTOR_CHARACTERS: usize = 8;
+
+/// The mark that stands for what is cut from a text.
+const ELLIPSIS: char = '…';
+
+impl Meter {
+    /// What the right column calls the meter.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Process => "process",
+            Self::Blobs => "blobs",
+            Self::Backlog => "backlog",
+            Self::Guests => "guests",
+            Self::Gpu => "gpu",
+        }
+    }
+}
+
+/// A meter's value as it is written, and its colour: bone for a figure, stone for what is none.
+struct Value {
+    text: String,
+    swatch: Swatch,
+}
+
+impl Value {
+    fn figure(text: String) -> Self {
+        Self { text, swatch: BONE }
+    }
+
+    fn none(text: &str) -> Self {
+        Self { text: String::from(text), swatch: STONE }
+    }
+
+    /// Bytes against their most: `412.0 MiB / 8.0 GiB`; the bytes alone against no most, and `none` for nothing
+    /// against nothing.
+    fn held(held: Held) -> Self {
+        let nothing = held.bytes == 0 && held.most == 0;
+        if nothing {
+            return Self::none("none");
+        }
+        if held.most == 0 {
+            return Self::figure(bytes_shown(held.bytes));
+        }
+
+        Self::figure(format!("{} / {}", bytes_shown(held.bytes), bytes_shown(held.most)))
+    }
+}
+
+impl EngineMemory {
+    /// The runs of the meters' text, a line a meter, with the GPU's memory `gpu_bytes`, on a right column `columns`
+    /// characters wide: each line as wide as the column, at least [`LINE_CHARACTERS`], its value ending at the
+    /// column's right edge.
+    pub fn runs(&self, gpu_bytes: u64, columns: usize) -> Vec<Run> {
+        let lead = LINE_CHARACTERS - VALUE_CHARACTERS;
+        let tail = columns.max(LINE_CHARACTERS) - lead;
+        let mut runs = Vec::with_capacity(Meter::ALL.len() * 3);
+        for meter in Meter::ALL {
+            let parted = if meter == Meter::Process {
+                ""
+            } else {
+                "\n"
+            };
+            let (value, actor) = self.value(meter, gpu_bytes);
+            let room = columns.saturating_sub(LINE_CHARACTERS + ACTOR_GAP.len());
+            let fits = room >= FEWEST_ACTOR_CHARACTERS;
+            let names = !actor.is_empty();
+            let shows_actor = fits && names;
+            let actor_part = if shows_actor {
+                format!("{}{ACTOR_GAP}", cut_front(actor, room))
+            } else {
+                String::new()
+            };
+            let pad = tail.saturating_sub(actor_part.chars().count() + value.text.chars().count());
+            let label = format!("{parted}{:<lead$}{}{actor_part}", meter.label(), " ".repeat(pad));
+            runs.push(Run::new(&label, STONE.opaque()));
+            runs.push(Run::new(&value.text, value.swatch.opaque()));
+        }
+
+        runs
+    }
+
+    /// The value of `meter`, and the actor its line names after it: none but the backlog's.
+    fn value(&self, meter: Meter, gpu_bytes: u64) -> (Value, &str) {
+        let Self::Read(figures) = self else {
+            let value = match meter {
+                Meter::Gpu => Value::figure(bytes_shown(gpu_bytes)),
+                Meter::Process | Meter::Blobs | Meter::Backlog | Meter::Guests => Value::none("unread"),
+            };
+            return (value, "");
+        };
+        let MemoryFigures { process, blobs, backlog, guest_bytes } = figures;
+        match meter {
+            Meter::Process => {
+                let value = match process {
+                    ProcessMemory::Resident { bytes } => Value::figure(bytes_shown(*bytes)),
+                    ProcessMemory::Heap { bytes } => Value::figure(format!("{} heap", bytes_shown(*bytes))),
+                    ProcessMemory::Unknown => Value::none("unknown"),
+                };
+                (value, "")
+            }
+            Meter::Blobs => (Value::held(*blobs), ""),
+            Meter::Backlog => match backlog {
+                Backlog::Empty => (Value::none("none"), ""),
+                Backlog::Held { unsent, actor } => (Value::held(*unsent), actor.as_str()),
+            },
+            Meter::Guests => {
+                let value = match guest_bytes {
+                    0 => Value::none("no guests"),
+                    bytes => Value::figure(bytes_shown(*bytes)),
+                };
+                (value, "")
+            }
+            Meter::Gpu => (Value::figure(bytes_shown(gpu_bytes)), ""),
+        }
+    }
+}
+
+/// `text` in at most `room` characters: whole when it fits, or its end after an ellipsis, as a path's end names it.
+pub fn cut_front(text: &str, room: usize) -> String {
+    let count = text.chars().count();
+    if count <= room {
+        return String::from(text);
+    }
+    let kept: String = text.chars().skip(count - room.saturating_sub(1)).collect();
+
+    format!("{ELLIPSIS}{kept}")
+}
