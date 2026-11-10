@@ -79,10 +79,13 @@ enum Configured {
     Stale,
 }
 
-/// The frame the chassis keeps for the cycle it is acquired for.
+/// The frame the chassis keeps for the cycle it is acquired for, or after it, until it presents it.
 enum Kept {
     /// A frame whose texture was handed to the render root, kept to present.
     Frame(wgpu::SurfaceTexture),
+    /// A frame the render root drew and asked to be presented, held until the chassis presents it, as when the
+    /// compositor has not yet asked for the window's next frame.
+    Drawn(wgpu::SurfaceTexture),
     /// None: none was acquired, or the one kept was presented or dropped.
     Nothing,
 }
@@ -138,7 +141,7 @@ impl WindowSurface {
 
     /// Acquires the frame for the next cycle, before it runs, and puts its texture in the render root's front: on the
     /// chassis's thread, where natively it waits until the display frees an image, which is what paces the cycles. A
-    /// frame kept and not presented is dropped first. The surface is configured first to the size last heard when it
+    /// frame kept and not presented, held drawn or not, is dropped first. The surface is configured first to the size last heard when it
     /// is not configured to it, or when the last frame no longer matched it.
     ///
     /// Nothing is handed for a window of no size, or when the surface gives no frame: when it timed out, the window
@@ -176,15 +179,46 @@ impl WindowSurface {
     /// failed before it asked, is dropped, and a texture it did not take is taken back from its front. What it asked
     /// for another window's frame is that window's. Answers whether a frame was presented.
     pub fn present(&mut self, asked: &[Present], before: impl FnOnce()) -> bool {
+        let Kept::Drawn(frame) = self.drawn_of(asked) else {
+            return false;
+        };
+        before();
+        self.queue.present(frame);
+
+        true
+    }
+
+    /// After the cycle, holds the frame kept when the render root asked, among `asked`, for this window's to be
+    /// presented, as [`present`](Self::present) would present it, for the chassis to present later with
+    /// [`present_held`](Self::present_held): a frame drawn ahead of the compositor's ask for it. A frame not asked for
+    /// is dropped, as there. Answers whether a frame is held.
+    pub fn hold(&mut self, asked: &[Present]) -> bool {
+        self.kept = self.drawn_of(asked);
+
+        matches!(self.kept, Kept::Drawn(_))
+    }
+
+    /// Presents the frame held, calling `before` just before it does, as [`present`](Self::present) does. Answers
+    /// whether one was held, and so presented.
+    pub fn present_held(&mut self, before: impl FnOnce()) -> bool {
+        let Kept::Drawn(frame) = self.release() else {
+            return false;
+        };
+        before();
+        self.queue.present(frame);
+
+        true
+    }
+
+    /// The frame kept, no longer kept, as drawn to present when the render root asked for it among `asked`, and
+    /// nothing otherwise: a frame it did not draw, or drew in a turn that failed before it asked, is dropped.
+    fn drawn_of(&mut self, asked: &[Present]) -> Kept {
         let asked = Present::asked_for(asked, self.drawn.window);
         let kept = self.release();
-        if asked && let Kept::Frame(frame) = kept {
-            before();
-            self.queue.present(frame);
-            return true;
+        match kept {
+            Kept::Frame(frame) if asked => Kept::Drawn(frame),
+            Kept::Frame(_) | Kept::Drawn(_) | Kept::Nothing => Kept::Nothing,
         }
-
-        false
     }
 
     /// Configures the surface to the size last heard.

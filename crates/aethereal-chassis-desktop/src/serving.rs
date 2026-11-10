@@ -8,7 +8,7 @@ use crate::Presenting;
 use crate::gpu::{self, Unopened};
 use crate::input::Composition;
 use crate::moding;
-use crate::redrawing::{self, Redraw};
+use crate::redrawing::{self, Asked, Drew, Redraw};
 use aethereal_actor::Requests;
 use aethereal_render::Gpu;
 use aethereal_render::mapping::{Mapped, Mapping};
@@ -113,7 +113,7 @@ impl Kept {
         }
     }
 
-    /// Whether it is drawn this frame: shown, at a size, and its redraw due.
+    /// Whether it is drawn this frame: shown, at a size, and no frame of it held.
     fn draws(&self) -> bool {
         redrawing::drawn(self.visible, self.sized(), self.redraw)
     }
@@ -132,25 +132,58 @@ impl Kept {
         size.width > 0 && size.height > 0
     }
 
-    /// After a cycle: presents the frame the renderer drew of it, when it asked among `asked`, as `presenting` says.
-    /// Just before a `fifo` present it tells winit, which then holds its next redraw until the compositor's frame
-    /// callback for this frame, and asks for that redraw, which comes once the compositor does: it is drawn no further
-    /// until then (ADR-0045).
+    /// After a cycle: presents the frame the renderer drew of it, when it asked among `asked`, as `presenting` says,
+    /// at once while its redraw is due, and otherwise holds it to present as the compositor asks for it. Just before a
+    /// `fifo` present it tells winit, which then holds its next redraw until the compositor's frame callback for this
+    /// frame, and asks for that redraw, which comes once the compositor does (ADR-0045). A window that held a frame
+    /// from before was not drawn, and keeps it.
     fn present(&mut self, asked: &[Present], presenting: Presenting) {
-        let native = &self.native;
-        let fifo = presenting == Presenting::Fifo;
-        let notify = || {
-            if fifo {
-                native.pre_present_notify();
-            }
-        };
-        let presented = self.surface.present(asked, notify);
-        if presented {
-            self.redraw = Redraw::presented(presenting);
+        let holding = self.redraw == Redraw::Drawn;
+        if holding {
+            return;
         }
-        let awaits = presented && fifo;
-        if awaits {
-            native.request_redraw();
+        match self.redraw.drew() {
+            Drew::Hold => {
+                let held = self.surface.hold(asked);
+                if held {
+                    self.redraw = self.redraw.held();
+                }
+            }
+            Drew::Present => {
+                let native = &self.native;
+                let fifo = presenting == Presenting::Fifo;
+                let notify = || {
+                    if fifo {
+                        native.pre_present_notify();
+                    }
+                };
+                let presented = self.surface.present(asked, notify);
+                if presented {
+                    self.redraw = Redraw::presented(presenting);
+                }
+                let awaits = presented && fifo;
+                if awaits {
+                    native.request_redraw();
+                }
+            }
+        }
+    }
+
+    /// Takes in that the compositor asked for its next frame, as winit's redraw of it says: presents the frame held,
+    /// telling winit first, as `present` does, and then awaits the next ask; or, holding none, is due.
+    fn redrawn(&mut self) {
+        match self.redraw.asked() {
+            Asked::PresentHeld => {
+                let native = &self.native;
+                let presented = self.surface.present_held(|| native.pre_present_notify());
+                if presented {
+                    self.redraw = Redraw::Awaiting;
+                    native.request_redraw();
+                } else {
+                    self.redraw = Redraw::Due;
+                }
+            }
+            Asked::Due => self.redraw = Redraw::Due,
         }
     }
 }
@@ -166,11 +199,11 @@ impl Drawing {
         self.windows.iter_mut().find(|opened| opened.feed.window() == window)
     }
 
-    /// Before the cycle: acquires the frame of each window drawn this frame, shown, at a size, and its redraw due, in
+    /// Before the cycle: acquires the frame of each window drawn this frame, shown, at a size, and holding no frame, in
     /// turn, each surface configured first to the size its window was last resized to, and hands the renderer each
-    /// frame's texture. Presented `fifo`, the renderer's default, a window is drawn as the compositor asks for its next
-    /// frame, which is what paces the frames, and its acquire may wait until the display frees an image, on the event
-    /// loop's thread. Presented `uncapped` or `capped`, none waits. Says the budget again first, when the first
+    /// frame's texture. Presented `fifo`, the renderer's default, a window's frame is drawn one ahead and presented as
+    /// the compositor asks for it, which is what paces the frames, and its acquire may wait until the display frees an
+    /// image, on the event loop's thread. Presented `uncapped` or `capped`, none waits. Says the budget again first, when the first
     /// window's display changed or became known (ADR-0053). Answers whether any window is drawn.
     pub(crate) fn acquire(&mut self) -> bool {
         self.rebudget();
@@ -185,8 +218,8 @@ impl Drawing {
         drawn
     }
 
-    /// After the cycle: presents each window's frame the renderer drew, once it asks, and starts mapping each buffer it
-    /// asked for since the last frame.
+    /// After the cycle: presents each window's frame the renderer drew, once it asks, or holds it while the window
+    /// awaits the compositor's ask for it, and starts mapping each buffer it asked for since the last frame.
     pub(crate) fn serve(&mut self) {
         let asked = self.presents.take();
         for opened in &mut self.windows {
@@ -195,17 +228,28 @@ impl Drawing {
         self.map();
     }
 
-    /// Takes in that the compositor asked for `window`'s next frame, as winit's redraw of it says: it is drawn and
-    /// presented next frame. A window not open is not drawn.
+    /// Takes in that the compositor asked for `window`'s next frame, as winit's redraw of it says: the frame held for
+    /// it is presented, or it is drawn and presented next frame. A window not open is not drawn.
     pub(crate) fn redrawn(&mut self, window: WindowId) {
         if let Some(opened) = self.window_mut(window) {
-            opened.redraw = Redraw::Due;
+            opened.redrawn();
         }
     }
 
-    /// Whether a window that shows awaits the compositor's ask for its next frame, which a held cycle waits on.
-    pub(crate) fn awaits(&self) -> bool {
-        self.windows.iter().filter(|opened| opened.shows()).any(|opened| opened.redraw == Redraw::Awaiting)
+    /// Whether a window that shows awaits the compositor's ask with no frame drawn ahead for it: one presented at once
+    /// this frame, whose next is drawn ahead in a frame that follows at once.
+    pub(crate) fn awaits_undrawn(&self) -> bool {
+        self.showing().any(|redraw| redraw == Redraw::Awaiting)
+    }
+
+    /// Whether a window that shows holds a frame drawn ahead of the compositor's ask, which a held cycle waits on.
+    pub(crate) fn holds(&self) -> bool {
+        self.showing().any(|redraw| redraw == Redraw::Drawn)
+    }
+
+    /// The redraw of each window that shows.
+    fn showing(&self) -> impl Iterator<Item = Redraw> + '_ {
+        self.windows.iter().filter(|opened| opened.shows()).map(|opened| opened.redraw)
     }
 
     /// Starts mapping each buffer the renderer asked for since the last frame, or since this was last called, and

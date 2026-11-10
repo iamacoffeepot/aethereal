@@ -256,23 +256,33 @@ impl App {
 }
 
 impl Running {
-    /// Takes in winit's redraw of `window`, as the compositor asked for its next frame: it is drawn as the loop next
-    /// settles, with every other window redrawn by then, in one frame.
+    /// Takes in winit's redraw of `window`, as the compositor asked for its next frame: the frame held for it is
+    /// presented now, and the next is drawn as the loop next settles, with every other window redrawn by then, in one
+    /// frame.
     fn redrawn(&mut self, window: aethereal_window::WindowId) {
         self.drawing.redrawn(window);
         self.redraws = Redraws::Come;
     }
 
-    /// Draws a frame, as the loop settles, when a window's redraw has come since it last did.
+    /// Draws a frame, as the loop settles, when a window's redraw has come since it last did; and, when frames follow
+    /// one another and a window presented at once now awaits the compositor with no frame held, one more at once, so
+    /// its next frame is drawn ahead and presented as soon as the compositor asks for it.
     fn draw_redrawn(&mut self, event_loop: &ActiveEventLoop, clock: Monotonic) {
         let come = mem::replace(&mut self.redraws, Redraws::Unheard) == Redraws::Come;
-        if come {
+        if !come {
+            return;
+        }
+        self.frame(event_loop, clock);
+        let undrawn = self.drawing.awaits_undrawn();
+        let follows = self.pacing.follows();
+        let ahead = undrawn && follows;
+        if ahead {
             self.frame(event_loop, clock);
         }
     }
 
     /// Draws a frame, when the program runs, its clock runs, the pacing draws one now, and a window is drawn: acquires
-    /// the frame of each window shown at a size whose redraw is due, in turn, each waiting for the display when
+    /// the frame of each window shown at a size holding no frame, in turn, each waiting for the display when
     /// `fifo`, says a cycle is due at the time they were acquired, steps until no actor has anything to run, presents
     /// what the renderer drew in each, and asks for the next frame when frames follow one another. A program asked to
     /// stop draws none, a held one runs its cycles as the pacer owes them, as the loop settles, a capped frame asked
@@ -336,7 +346,7 @@ impl Running {
     }
 
     /// Runs the held cycle the pacer asked for, if any, as a frame: acquires the frame of each window drawn, shown at a
-    /// size and its redraw due, says the cycle is due, steps until no actor has anything to run, presents what the
+    /// size and holding no frame, says the cycle is due, steps until no actor has anything to run, presents what the
     /// renderer drew, and waits for the GPU to finish it, so what the cycle read back is mapped before the loop next
     /// waits. With no window shown it runs undrawn, so an advance never waits on a window coming back (ADR-0045).
     fn held(&mut self, event_loop: &ActiveEventLoop) {
@@ -378,14 +388,14 @@ impl Running {
 
     /// What the loop does next while the pacer holds the clock: runs a held cycle the pacer asked for, maps what the
     /// renderer read back outside a frame, as a target is read under a held clock (ADR-0048), and waits on the
-    /// windows' events and the pacer's next push. A held cycle owed while a window that shows awaits the compositor's
-    /// ask for its next frame waits for it, so each cycle of a clip recorded at the display's rate is drawn; a covered
-    /// window is asked for none on Wayland, and its advances wait until it is uncovered, on the loop's events, never
-    /// on its thread. No frame comes to map a read in, so the loop waits for the GPU to map it, and what became of it
-    /// wakes the loop.
+    /// windows' events and the pacer's next push. A held cycle owed while a window that shows holds a frame drawn
+    /// ahead waits for the compositor to ask for it, so each cycle of a clip recorded at the display's rate is drawn;
+    /// a covered window is asked for none on Wayland, and its advances wait until it is uncovered, on the loop's
+    /// events, never on its thread. No frame comes to map a read in, so the loop waits for the GPU to map it, and what
+    /// became of it wakes the loop.
     fn owed(&mut self, event_loop: &ActiveEventLoop) -> Next {
-        let awaits = self.drawing.awaits();
-        if !awaits {
+        let holds = self.drawing.holds();
+        if !holds {
             self.held(event_loop);
         }
         let mapping = self.drawing.map();

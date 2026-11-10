@@ -4,14 +4,21 @@ use super::*;
 use crate::FrameRate;
 
 #[test]
-fn a_fifo_window_awaits_the_compositor_s_ask_and_is_drawn_no_further_until_it_comes() {
-    // Catches a `fifo` frame drawn and presented before the compositor asked, whose present waits on the event loop's
-    // thread until a covered window is uncovered, and a window hidden or of no size drawn.
+fn a_fifo_window_holds_the_frame_drawn_ahead_until_the_compositor_asks_and_is_drawn_no_further() {
+    // Catches a `fifo` frame presented before the compositor asked, whose present waits on the event loop's thread
+    // until a covered window is uncovered; a frame drawn only after the ask, which lands a display frame late; and a
+    // second frame drawn over the one held.
     let presented = Redraw::presented(Presenting::Fifo);
+    let held = presented.held();
 
     assert_eq!(presented, Redraw::Awaiting);
-    assert!(!drawn(Visible::Shown, true, presented), "not drawn until asked");
-    assert!(drawn(Visible::Shown, true, Redraw::Due));
+    assert_eq!(presented.drew(), Drew::Hold, "drawn ahead of the ask, and held");
+    assert!(drawn(Visible::Shown, true, presented), "drawn ahead");
+    assert_eq!(held, Redraw::Drawn);
+    assert!(!drawn(Visible::Shown, true, held), "one frame ahead at most");
+    assert_eq!(held.asked(), Asked::PresentHeld);
+    assert_eq!(presented.asked(), Asked::Due, "nothing held to present");
+    assert_eq!(Redraw::Due.drew(), Drew::Present);
     assert!(!drawn(Visible::Occluded, true, Redraw::Due));
     assert!(!drawn(Visible::Shown, false, Redraw::Due));
 }
