@@ -66,10 +66,11 @@ pub struct Finish {
 
 /// Whose a job is, whom its outcome answers.
 enum Finishing {
-    /// An actor's: the one that ran it, the count it took, and the kind of its result; with one of the engine's tokens
-    /// of a job in flight, so how many there are is how many jobs are in flight: one is let go of once its job is done,
-    /// or its `Finish` dropped.
-    Actor { by: Seated, count: u64, answer: KindId, _in_flight: Arc<()> },
+    /// An actor's: the one that ran it, the count it took, the kind of its result, and what each resource the actor
+    /// gave it is called, for its log to record each dropped when the job faults; with one of the engine's tokens of a
+    /// job in flight, so how many there are is how many jobs are in flight: one is let go of once its job is done, or
+    /// its `Finish` dropped.
+    Actor { by: Seated, count: u64, answer: KindId, given: Vec<&'static str>, _in_flight: Arc<()> },
     /// The engine's own: the `Sleep` it runs until its earliest deadline, at this time, to wake its host then
     /// (ADR-0041).
     Alarm(Time),
@@ -81,7 +82,7 @@ impl Finish {
     pub fn done(self, outcome: Outcome) {
         let Self { to, feed, bell } = self;
         let finished = match to {
-            Finishing::Actor { by, count, answer, .. } => Finished::Job { by, count, answer, outcome },
+            Finishing::Actor { by, count, answer, given, .. } => Finished::Job { by, count, answer, given, outcome },
             Finishing::Alarm(at) => Finished::Alarm { at, rang: outcome.is_ok() },
         };
         feed.push(finished);
@@ -91,19 +92,22 @@ impl Finish {
 
 /// A job that has run, as the engine's feed holds it until the next bring.
 pub(super) enum Finished {
-    /// An actor's job: the actor that ran it, the count it took, the kind of its result, and its outcome.
-    Job { by: Seated, count: u64, answer: KindId, outcome: Outcome },
+    /// An actor's job: the actor that ran it, the count it took, the kind of its result, what each resource it was
+    /// given is called, and its outcome.
+    Job { by: Seated, count: u64, answer: KindId, given: Vec<&'static str>, outcome: Outcome },
     /// The engine's wake for the deadline at `at`, which `rang` when its time came, and did not when the runner gave up
     /// on it (ADR-0041).
     Alarm { at: Time, rang: bool },
 }
 
 /// What a job made, as the engine answers its actor with it: the result's bytes, the pins on the blobs it refers to,
-/// and each resource it carries, under the engine's ticket (ADR-0018).
+/// each resource it carries, under the engine's ticket, and what each resource it was given and did not take is called
+/// (ADR-0018).
 struct Answering {
     bytes: Vec<u8>,
     held: Vec<Pinning>,
     kept: Vec<Kept>,
+    untaken: Vec<&'static str>,
 }
 
 /// Runs each job inline, as it is handed out between steps: for a host with one thread, and for tests. A job whose
@@ -234,20 +238,22 @@ impl Engine {
     }
 
     /// Hands `job` to the host to run, with the code of its type, a copy of each blob it refers to, once for each
-    /// blob, and the buffers it was lent (ADR-0042). Each blob is held: the context the job's actor keeps pins it, and
-    /// the blobs a step put are taken in before its jobs are handed out. A guest's job whose type the program does not
-    /// let its guests run is answered with [`NoRunner`], and never handed out (ADR-0015).
+    /// blob, the buffers it was lent (ADR-0042), and the resources its actor gave it (ADR-0018). Each blob is held: the
+    /// context the job's actor keeps pins it, and the blobs a step put are taken in before its jobs are handed out. A
+    /// guest's job whose type the program does not let its guests run is answered with [`NoRunner`], and never handed
+    /// out (ADR-0015).
     fn hand_out(&self, job: Submitted) {
         let id = job.id();
-        let Submitted { by, count, code, answer, bytes, refers, buffers } = job;
+        let Submitted { by, count, code, answer, bytes, refers, buffers, given } = job;
         let feed = Arc::clone(&self.finished);
-        let to = Finishing::Actor { by, count, answer, _in_flight: Arc::clone(&self.in_flight) };
+        let names = given.iter().map(Kept::name).collect();
+        let to = Finishing::Actor { by, count, answer, given: names, _in_flight: Arc::clone(&self.in_flight) };
         let finish = Finish { to, feed, bell: self.bell.clone() };
         let Some(of) = self.code_of(code) else {
             finish.done(Err(fault::<NoRunner>()));
             return;
         };
-        let lent = Lending::new(self.number.0, self.copied(refers), buffers, Arc::clone(&self.job_pins));
+        let lent = Lending::new(self.number.0, self.copied(refers), buffers, given, Arc::clone(&self.job_pins));
         if let Runner::Made(jobs) = &self.runner {
             jobs.start(id, of, Taken { bytes, lent, limit: self.read_limit, finish });
         }
@@ -262,9 +268,10 @@ impl Engine {
         }
     }
 
-    /// Stops the job `job` an actor cancelled: one still waiting is dropped, never handed out, and the buffers it was
-    /// lent go back to its actor (ADR-0042); the host is asked to stop one it was handed, whose buffers go with it. The
-    /// engine stops jobs as it takes in a step, with every part in it.
+    /// Stops the job `job` an actor cancelled: one still waiting is dropped, never handed out, the buffers it was lent
+    /// go back to its actor (ADR-0042), and each resource it was given is dropped, as its actor's log records
+    /// (ADR-0018); the host is asked to stop one it was handed, whose buffers and resources go with it. The engine stops
+    /// jobs as it takes in a step, with every part in it.
     pub(super) fn stop_job(&mut self, job: JobId) {
         let waiting = self.waiting_jobs.iter().position(|waiting| waiting.id() == job);
         match (waiting, &self.runner) {
@@ -274,13 +281,18 @@ impl Engine {
         }
     }
 
-    /// Drops the job waiting at `at`, never handed out, and gives the buffers it was lent back to its actor.
+    /// Drops the job waiting at `at`, never handed out, gives the buffers it was lent back to its actor, and drops each
+    /// resource it was given, as its actor's log records.
     fn drop_waiting(&mut self, at: usize) {
-        let Some(Submitted { by, buffers, .. }) = self.waiting_jobs.remove(at) else {
+        let Some(Submitted { by, buffers, given, .. }) = self.waiting_jobs.remove(at) else {
             return;
         };
 
         buffers::give_back(&mut self.actors, by, buffers, self.most_kept_bytes);
+        // Most jobs are given no resource.
+        if !given.is_empty() {
+            self.log.fold_records(given.iter().map(|kept| log::dropped(by, kept.name())), &[]);
+        }
     }
 
     /// How many more jobs the host lets be in flight: as many as it lets be, less those its runners hold the finish of,
@@ -314,8 +326,10 @@ impl Engine {
     /// handed with the context it kept (ADR-0018). A fault is written into the actor's log too. The outcome of a job
     /// whose actor has ended is dropped. A resource the job handed goes with its answer, which its actor takes in the
     /// handler of the answer, or it is dropped and recorded in its log, as a resource in any mail is (ADR-0010); the
-    /// resources of a job that faulted, or whose actor has ended, are dropped. What finishes while it brings waits for
-    /// the next, so a bring is bounded however fast the runners push.
+    /// resources of a job that faulted, or whose actor has ended, are dropped. A resource the actor gave the job and
+    /// the job did not take, and every one it was given when it faulted, is recorded in its log as dropped, as a
+    /// resource given in mail and not taken is. What finishes while it brings waits for the next, so a bring is bounded
+    /// however fast the runners push.
     pub(super) fn bring_jobs(&mut self) {
         let ready = self.finished.len();
         // Most brings find no job finished.
@@ -328,10 +342,11 @@ impl Engine {
         let mut mailed = Vec::new();
         let mut faults = Vec::new();
         let mut arrivals = Vec::new();
+        let mut dropped = Vec::new();
         let mut alarms = Vec::new();
         for finished in (0..ready).map_while(|_| feed.pop()) {
-            let (by, count, answer, outcome) = match finished {
-                Finished::Job { by, count, answer, outcome } => (by, count, answer, outcome),
+            let (by, count, answer, given, outcome) = match finished {
+                Finished::Job { by, count, answer, given, outcome } => (by, count, answer, given, outcome),
                 Finished::Alarm { at, rang } => {
                     alarms.push((at, rang));
                     continue;
@@ -342,11 +357,13 @@ impl Engine {
             };
             let sent = life.sent() + 1;
             let written = match outcome.and_then(|produced| self.put_produced(produced, by)) {
-                Ok(Answering { bytes, held, kept }) => {
+                Ok(Answering { bytes, held, kept, untaken }) => {
+                    dropped.extend(untaken.into_iter().map(|name| log::dropped(by, name)));
                     let written = arena.write_holding_bytes(&bytes, held);
                     written.map(|bytes| (answer, bytes, Tie::answers(count), kept))
                 }
                 Err(fault) => {
+                    dropped.extend(given.into_iter().map(|name| log::dropped(by, name)));
                     faults.push(log::job_faulted(by, fault));
                     let bytes = arena.write_mail(&Unanswered::Faulted);
                     bytes.map(|bytes| (KindId::of::<Unanswered>(), bytes, Tie::unanswered(count), Vec::new()))
@@ -361,6 +378,10 @@ impl Engine {
             mailed.push(Mailed { by, to: by, count: sent, kind, bytes, tie, due: Due::Never });
         }
         self.arenas[parity][ROOTS] = arena;
+        // Most jobs are given no resource.
+        if !dropped.is_empty() {
+            self.log.fold_records(dropped, &[]);
+        }
         // Most jobs hand no resource.
         if !arrivals.is_empty() {
             self.carry_handed(arrivals);
@@ -385,7 +406,7 @@ impl Engine {
             unreachable!("a sleep is a time, and refers to nothing");
         };
         let id = JobId::new(MailId { sender: lifecycle_id(), count: at.nanos() });
-        let lent = Lending::new(self.number.0, Vec::new(), Spares::new(), Arc::clone(&self.job_pins));
+        let lent = Lending::new(self.number.0, Vec::new(), Spares::new(), Vec::new(), Arc::clone(&self.job_pins));
         let finish = Finish { to: Finishing::Alarm(at), feed: Arc::clone(&self.finished), bell: self.bell.clone() };
         jobs.start(id, JobType::of::<Sleep>(), Taken { bytes, lent, limit: self.read_limit, finish });
 
@@ -407,13 +428,14 @@ impl Engine {
     /// put, between steps, out of the budget for blobs, as made by `by`, so each one's buffer goes back to it once the
     /// blob is freed (ADR-0042), and writes over each reference to one in its result the blob's own; then keeps each
     /// resource it handed, under a ticket of the engine's, written over the job's own where it lies in the result: the
-    /// result's bytes, the pins on the blobs it refers to, and the resources it carries (ADR-0018).
+    /// result's bytes, the pins on the blobs it refers to, the resources it carries, and what each resource the job
+    /// was given and did not take is called (ADR-0018).
     ///
     /// # Errors
     ///
     /// A fault of [`NoRoom`] when a blob did not fit, and then none is kept, nor any resource.
     fn put_produced(&mut self, produced: Produced, by: Seated) -> Result<Answering, Fault> {
-        let Produced { bytes, held, put, handed, unused } = produced;
+        let Produced { bytes, held, put, handed, untaken, unused } = produced;
         buffers::give_back(&mut self.actors, by, unused, self.most_kept_bytes);
         let (mut bytes, held) = self.put_blobs(bytes, held, put, by)?;
         let mut kept = Vec::with_capacity(handed.len());
@@ -427,7 +449,7 @@ impl Engine {
             kept.push(resource.ticketed(ticket));
         }
 
-        Ok(Answering { bytes, held, kept })
+        Ok(Answering { bytes, held, kept, untaken })
     }
 
     /// Puts each of `put`, the blobs a job the actor `by` ran put, out of the budget for blobs, as made by `by`, and

@@ -160,8 +160,16 @@ impl Kept {
     }
 
     /// Whether it is a resource of type `R`.
-    fn is<R: Resource>(&self) -> bool {
+    pub(crate) fn is<R: Resource>(&self) -> bool {
         self.value.is::<R>()
+    }
+
+    /// The value, when it is a resource of type `R`, and otherwise itself: what a job takes of what it was given
+    /// (ADR-0018).
+    pub(crate) fn into_value<R: Resource>(self) -> Result<R, Self> {
+        let Self { ticket, name, value } = self;
+
+        value.downcast::<R>().map(|value| *value).map_err(|value| Self { ticket, name, value })
     }
 
     /// What the resource is called.
@@ -558,6 +566,28 @@ pub fn carry(gifts: &mut [Gift], tickets: &[u64], by: Seated, to: Seated, mail: 
     }
 
     Ok(())
+}
+
+/// Takes out of `gifts` each resource `tickets` names, given by `by` and carried nowhere, to go with a job `by` runs,
+/// in the order the job holds them: refused, taking none, when one names no such gift, or one is named twice
+/// (ADR-0018).
+///
+/// # Errors
+///
+/// [`EncodeError::NotCarried`] when a ticket names no gift `by` gave and nothing carries, or names one already taken.
+#[cfg(feature = "std")]
+pub fn carry_to_job(gifts: &mut Vec<Gift>, tickets: &[u64], by: Seated) -> Result<Vec<Kept>, EncodeError> {
+    let giver = Giver::Actor(by);
+    let mut taken = Vec::with_capacity(tickets.len());
+    for &ticket in tickets {
+        let Some(kept) = take_loose(gifts, giver, ticket, any_type) else {
+            gifts.extend(taken.into_iter().map(|kept| Gift::loose(by, kept)));
+            return Err(EncodeError::NotCarried { name: "Given" });
+        };
+        taken.push(kept);
+    }
+
+    Ok(taken)
 }
 
 /// What an actor holds of resources, lent to code the engine cannot see while it computes the actor's turns ahead:

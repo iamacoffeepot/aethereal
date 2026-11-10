@@ -485,7 +485,8 @@ impl<'a> Hosted<'a> {
         // buffers (ADR-0042).
         let code = JobCode::Guest(kind);
         let buffers = Spares::new();
-        self.seat.asked.buffers.jobs.push(Submitted { by, count, code, answer, bytes, refers, buffers });
+        let given = Vec::new();
+        self.seat.asked.buffers.jobs.push(Submitted { by, count, code, answer, bytes, refers, buffers, given });
         // A job is cancelled by its asker, and inherits no deadline (ADR-0041).
         self.seat.asked.asks.push((by, Asking { count, answer, context, lent, due: Due::Never }));
 
