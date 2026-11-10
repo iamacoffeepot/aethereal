@@ -64,7 +64,7 @@ Called::Output ── schema ── Form, printed ──> scrollback
 - **A field that is not an `Option` must be given.** There are no defaults beyond `Option`: a default kept only in the console would make the console's tool differ from the agent's.
 - **A tool with no flags** takes its input as one JSON word: `present {"window":"main"}`. JSON is also the escape hatch for any field whose `Form` is JSON.
 - **`help <tool>`** prints the tool's description and each flag with its field's doc comment. **Tab** completes tool names, flag names, and a variant's name.
-- **The overlay's own commands are tools it offers:** `mark <text>`, which pins a mark at this moment on the band's axis and in the scrollback, and `memory`, which lists the largest guests and the longest backlogs. An agent may call them as well, so an agent's mark shows on the owner's screen.
+- **The overlay's own commands are tools it offers:** `mark <text>`, which pins a mark at this moment on the band's axis and in the scrollback, and `memory`, which prints `EngineStats`' largest guests and longest backlogs (see Memory). An agent may call them as well, so an agent's mark shows on the owner's screen.
 
 ### Answers are printed as they would be typed
 
@@ -75,7 +75,10 @@ Called::Output ── schema ── Form, printed ──> scrollback
 
 ### Logs in the console
 
-- **The logs tool gains a read across every actor:** the entries logged since a cursor, oldest first, each with its actor and level, and the cursor to read on from. The overlay reads it once a second while the console is open, and an agent can read it too.
+- **No reader names the actors.** Today a log is read by one actor's path (ADR-0044: `Turn::logged`), and the `Log` view keeps entries by actor, in parts of seats folded apart (ADR-0011: `BySeat`), with no list across actors. Walking every seat to find what was logged is the pass ADR-0044 avoided.
+- **So each part of the view also keeps a ring of its most recent entries,** filled by the same fold that keeps each actor's: each entry with its actor's path and the step it was folded in. The parts stay folded apart, as no part writes to another's ring. The rings keep 2,000 entries between them, a setting beside `most_logged`. An ended actor's entries, and the fault that ended it, are in the ring with the rest.
+- **A turn reads the rings since a step,** merged by step, oldest first: within one step, turns ran at once, so the step is the only order between two actors' entries, and none is made up. The read answers the step to read on from, and how many entries had left the rings before it.
+- **The logs tool gains this read,** `read_recent`, which needs no actor. The overlay reads it once a second while the console is open, and an agent reads it to see what the whole engine said without knowing which actor to ask.
 - **A line shows its time, its level, its actor, and its text.** Errors and warnings are shown in the band as well, as a count since the console was last opened.
 
 ### Key focus
@@ -117,6 +120,8 @@ KeyFocusLost { window }      // to the holder it replaced, the one that released
 - **guests:** the memory of every guest, added up;
 - **GPU:** from `FrameStats`.
 
+**Only the engine sees every actor, so it finds the largest itself.** `EngineStats` also answers the eight guests with the most memory and the eight actors with the most bytes unsent, each by path. The substrate keeps them as it folds, as it keeps the totals, so no turn walks the seats and no answer grows with the number of actors.
+
 ### Colours
 
 The overlay's colours are slate and earth. Healthy is one cool colour; only warm colours mean trouble.
@@ -145,7 +150,7 @@ The GPU's passes are told apart by lichen, a slate blue, and a muted violet, in 
 - **An engine with no hub holds tools,** so tools can be tested and called in a program that never links.
 - **Key focus serves any text field,** not only the console: a chat box takes it the same way.
 - **The renderer counts what it makes and draws each frame,** and spends nothing on it while no one subscribes.
-- **Changes to decided work:** ADR-0028 gains positional flags and comma lists; ADR-0037's `ToolSheet` gains `flags`; ADR-0038's `Link` stops holding tools and forwards `Tools`'s; ADR-0044's logs tool gains its read across actors; ADR-0024's key events are routed by key focus.
+- **Changes to decided work:** ADR-0028 gains positional flags and comma lists; ADR-0037's `ToolSheet` gains `flags`; ADR-0038's `Link` stops holding tools and forwards `Tools`'s; ADR-0044's `Log` view gains a ring in each part, and its logs tool `read_recent`; ADR-0024's key events are routed by key focus.
 - **Follow-on work this leaves open:**
   - a binary that calls a tool from a shell, with the same flags;
   - pipeline statistics (vertex and fragment invocations), on GPUs that have them;
@@ -162,4 +167,6 @@ The GPU's passes are told apart by lichen, a slate blue, and a muted violet, in 
 - **Key focus as a stack.** A release would hand keys back to the one before, but every holder would have to release in order; aether's single slot has served.
 - **A flag for the budget.** It would be wrong the moment the present mode or the monitor changed.
 - **A GPU chart only of the latest frame.** It says what is slow now, not when it got slow, and a spike is read against the frame chart above it.
+- **A read of every actor's log, by a pass over the seats.** It needs nothing new, but costs a pass over every seat on each read, which ADR-0044 measured at 100 µs for 100,000 seats.
+- **One ring for the whole engine.** One order for every entry, but every part's fold would write to it, and the parts are folded apart.
 - **The overlay inside the renderer's crate.** It reads the window and the tools too, which the renderer does not.
