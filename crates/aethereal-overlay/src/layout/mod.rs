@@ -1,11 +1,13 @@
 //! Where the overlay draws, worked out from the window's surface each time it is needed (ADR-0053: The three stops):
 //! the band across the top, in two columns. Its left column holds, top to bottom on one axis of time, the frame chart
-//! and its figures' line, the GPU's graph and its figures' line, and the four lines' rows, each graph ending at a
+//! and its figures' line, the GPU's graph and its figures' line, and the three lines' rows, each graph ending at a
 //! gutter on the column's right: beside the frame chart its latest median and, under it, the count of warnings and
-//! errors; beside the GPU's graph its top; and beside each row its label and latest value. Its right column holds,
-//! from the frame chart's top, the memory meters, a line of text each, their values ending at the band's right
-//! padding. A faint line parts the two columns, from the band's content's top to its foot, and two more part the left
-//! column's three sections, across its graphs and their gutter. Beneath the band is the console's panel, a third of the
+//! errors; beside the GPU's graph its top; and beside each row its label and latest value. Its right column holds the
+//! memory meters, a row each, the five sharing its height evenly from the frame chart's top to the left column's foot,
+//! laid out as the left column's rows are: each its graph or bar from the column's left to a gutter at its right, every
+//! graph between the same two edges, and in the gutter its label and its value, ending at the band's right padding. A
+//! faint line parts the two columns, from the band's content's top to its foot, and two more part the left column's
+//! three sections, across its graphs and their gutter. Beneath the band is the console's panel, a third of the
 //! window's height, cut into two strips told apart by their tints and a faint line between: the scrollback above, its
 //! scroll bar in the padding at its right edge, and the prompt's strip along the panel's foot, a line of text tall,
 //! with what is running at its right end. All of it is in the surface's pixels, from its top left, as the renderer
@@ -14,6 +16,7 @@
 #[cfg(test)]
 mod tests;
 
+use crate::meters::METERS;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_window::Surface;
 
@@ -23,18 +26,21 @@ const CHART_SHARE: f32 = 0.06;
 /// How tall the GPU's graph is, as a share of the frame chart's height.
 const GPU_SHARE: f32 = 2.0 / 3.0;
 
-/// How many rows the lines beneath the GPU's graph take: draws, triangles, bytes uploaded, and GPU memory.
-const ROWS: u8 = 4;
+/// How many rows the lines beneath the GPU's graph take: draws, triangles, and bytes uploaded.
+const ROWS: u8 = 3;
 
-/// How many characters wide the gutter at the right of the left column's graphs is: a row's label and its latest
-/// value, `triangles   12.3M`.
+/// How many characters wide the gutter at the right of each column's graphs is: a row's label and its latest value,
+/// `triangles   12.3M`, `process  412.0 MiB`.
 pub const GUTTER_CHARACTERS: usize = 20;
 
-/// How many characters a meter's label is given, its bar the next, and the space between its bar and its value: the
-/// value is set flush right in the characters after that.
-pub const METER_LABEL_CHARACTERS: usize = 8;
-pub const METER_BAR_CHARACTERS: usize = 20;
-pub const METER_GAP_CHARACTERS: usize = 2;
+/// How many characters of a gutter's line its label is given, its value the rest, flush right.
+pub const GUTTER_LABEL_CHARACTERS: usize = 10;
+
+/// How many characters' space stand between a meter's graph or bar and the right column's gutter.
+pub const METER_GAP_CHARACTERS: usize = 1;
+
+/// How far a meter's graph or bar stands in from its row's top and foot, in logical pixels, so the rows read apart.
+const METER_INSET_PIXELS: f32 = 6.0;
 
 /// The space between one section of the band's left column and the next, and between the graphs and the gutter, in
 /// logical pixels.
@@ -303,11 +309,11 @@ impl Layout {
         Vec2::new(self.gutter_left(), self.rows().min.y)
     }
 
-    /// The band's right column, which the memory meters' text is clipped to: from the frame chart's top, level with it,
-    /// down to the foot of the left column's rows, and ending at the band's right padding; its left as near the left
-    /// column's end, by its padding and the band's, as a whole number of characters across lets it stand, so a line of
-    /// the column's characters ends at the band's right padding. At least a character wide and a pixel tall, on a
-    /// window too small to hold it.
+    /// The band's right column, which the memory meters' rows share and their text is clipped to: from the frame
+    /// chart's top, level with it, down to the foot of the left column's rows, and ending at the band's right padding;
+    /// its left as near the left column's end, by its padding and the band's, as a whole number of characters across
+    /// lets it stand, so a line of the column's characters ends at the band's right padding. At least a character wide
+    /// and a pixel tall, on a window too small to hold it.
     pub fn right_column(self) -> Rect2 {
         let right = self.width - self.pixels(PADDING_PIXELS);
         let left = self.right_characters().mul_add(-self.advance(), right);
@@ -325,7 +331,9 @@ impl Layout {
         (room / self.advance()).floor().max(1.0)
     }
 
-    /// How many characters wide the right column is: as many of IBM Plex Mono's as fit across it, at least one.
+    /// How many characters wide the right column is: as many of IBM Plex Mono's as fit across it, at least one; the
+    /// tests fit a meter's row across it.
+    #[cfg(test)]
     #[must_use]
     pub fn right_columns(self) -> usize {
         // A count of characters across a window is some hundreds, which a usize holds.
@@ -335,25 +343,52 @@ impl Layout {
         columns
     }
 
-    /// Where the meters' labels and values are placed: the top left of the right column, one line of text a meter.
-    pub fn meters_at(self) -> Vec2 {
-        self.right_column().min
+    /// The row of the meter `index`, from the top: across the right column, a fifth of its height, the first's top the
+    /// column's top and the last's foot its foot, so the meters fill the column with no space above, between, or
+    /// below them.
+    pub fn meter_row(self, index: u8) -> Rect2 {
+        let column = self.right_column();
+        // The count of meters, five, which an f32 holds exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let pitch = column.height() / METERS as f32;
+        let top = f32::from(index).mul_add(pitch, column.min.y);
+        let foot = (f32::from(index) + 1.0).mul_add(pitch, column.min.y).min(column.max.y);
+
+        Rect2 { min: Vec2::new(column.min.x, top), max: Vec2::new(column.max.x, foot) }
     }
 
-    /// Where the bar of the meter `index`, from the top, stands: after its label's characters, [`METER_BAR_CHARACTERS`]
-    /// wide, on its line of the meters, inset from its top and foot as a row's bars are, and at least a pixel tall.
-    pub fn meter_bar(self, index: u8) -> Rect2 {
-        let at = self.meters_at();
-        let tall = self.line_pixels_tall();
-        let top = f32::from(index).mul_add(tall, at.y);
-        let inset = self.pixels(ROW_INSET_PIXELS).min((tall - 1.0) / 2.0).max(0.0);
-        // Counts of characters, some tens, which an f32 holds exactly.
+    /// The left of the right column's gutter, where the meters' lines are written: as many characters before the
+    /// column's right edge, the band's right padding, as the gutter is wide, so each line ends there.
+    fn meter_gutter_left(self) -> f32 {
+        // A count of characters is some tens, which an f32 holds exactly.
         #[allow(clippy::cast_precision_loss)]
-        let (label, bar) = (METER_LABEL_CHARACTERS as f32, METER_BAR_CHARACTERS as f32);
-        let left = label.mul_add(self.advance(), at.x).round();
-        let right = (label + bar).mul_add(self.advance(), at.x).round();
+        let characters = GUTTER_CHARACTERS as f32;
 
-        Rect2 { min: Vec2::new(left, top + inset), max: Vec2::new(right, top + tall - inset) }
+        characters.mul_add(-self.advance(), self.right_column().max.x)
+    }
+
+    /// Where the text of the meter `index` is placed: the top left of its one line, at the right column's gutter, the
+    /// line centred down its row.
+    pub fn meter_at(self, index: u8) -> Vec2 {
+        let row = self.meter_row(index);
+        let top = ((row.height() - self.line_pixels_tall()) / 2.0 + row.min.y).round();
+
+        Vec2::new(self.meter_gutter_left(), top)
+    }
+
+    /// The graph or bar of the meter `index`: from the right column's left to a character's space before its gutter,
+    /// the same for every meter, inset from its row's top and foot, and at least a pixel wide and tall.
+    pub fn meter_graph(self, index: u8) -> Rect2 {
+        let row = self.meter_row(index);
+        // A count of characters, one, which an f32 holds exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let gap = METER_GAP_CHARACTERS as f32;
+        let left = row.min.x.round();
+        let right = gap.mul_add(-self.advance(), self.meter_gutter_left()).round().max(left + 1.0);
+        let inset = self.pixels(METER_INSET_PIXELS).min((row.height() - 1.0) / 2.0).max(0.0);
+        let (top, foot) = ((row.min.y + inset).round(), (row.max.y - inset).round());
+
+        Rect2 { min: Vec2::new(left, top), max: Vec2::new(right, foot.max(top + 1.0)) }
     }
 
     /// The console's panel inside its padding, its foot the prompt's strip's padding, and left of its scroll bar by a

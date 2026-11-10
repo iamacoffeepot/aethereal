@@ -1,24 +1,32 @@
-//! The band's right column (ADR-0053: The three stops, Memory): one meter a line for each limit the engine can hit,
-//! process, blobs, backlog, guests, and GPU, read from the engine's figures four times a second and from the newest
-//! frame's statistics; a bar against its limit where a meter has one (`bars`), and each meter's label and value as
-//! text (`figures`).
+//! The band's right column (ADR-0053: The three stops, Memory): one meter a row for each limit the engine can hit,
+//! process, blobs, backlog, guests, and GPU, read from the engine's figures four times a second and from each frame's
+//! statistics, the five rows sharing the column's height; in each row, as the left column's rows are, a graph across
+//! the column to a gutter at its right, every row's graph between the same two edges (`rows`): a bar against its limit
+//! where the meter has one (`bars`), or else the meter's last minute (`history`); and in the gutter each meter's label
+//! and value as text (`figures`).
 
 mod bars;
 mod figures;
+mod history;
+mod rows;
 #[cfg(test)]
 mod tests;
 
-pub use bars::{MOST_BAR_RECORDS, bars};
-/// How many characters a meter's line takes, which the layout's tests fit across the right column.
+pub use bars::MOST_BAR_RECORDS;
+/// The fewest characters a meter's row takes, which the layout's tests fit across the right column.
 #[cfg(test)]
-pub use figures::LINE_CHARACTERS;
+pub use figures::ROW_CHARACTERS;
+pub use history::{HISTORIES, MOST_METER_COLUMNS, MeterHistories};
+pub use rows::rows;
 
-use crate::tools::named;
 use aethereal_actor::{Against, EngineStats, Figures, Process};
 use aethereal_data::Plain;
 
+/// How many meters the right column holds, a row each.
+pub const METERS: usize = 5;
+
 /// Which meter, in the order they stand from the top of the right column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Meter {
     /// The memory the program holds, as its chassis reads it.
     Process,
@@ -34,9 +42,9 @@ pub enum Meter {
 
 impl Meter {
     /// Every meter, in the order they stand from the top.
-    pub const ALL: [Self; 5] = [Self::Process, Self::Blobs, Self::Backlog, Self::Guests, Self::Gpu];
+    pub const ALL: [Self; METERS] = [Self::Process, Self::Blobs, Self::Backlog, Self::Guests, Self::Gpu];
 
-    /// Its line from the top of the right column.
+    /// Its row from the top of the right column.
     pub const fn index(self) -> u8 {
         self as u8
     }
@@ -66,21 +74,14 @@ pub enum ProcessMemory {
     Unknown,
 }
 
-/// The engine's backlog: no actor holds any bytes unsent, or the one holding the most, by name, and what it holds.
-#[derive(Plain, Debug, Clone, PartialEq, Eq)]
-pub enum Backlog {
-    /// No actor has said it holds bytes unsent.
-    Empty,
-    /// The actor holding the most bytes unsent, named by its path, and what it holds against its most.
-    Held { unsent: Held, actor: String },
-}
-
 /// The engine's memory as the meters show it.
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
 pub struct MemoryFigures {
     pub process: ProcessMemory,
     pub blobs: Held,
-    pub backlog: Backlog,
+    /// What the actor holding the most bytes unsent holds, against its most: nothing against nothing when no actor
+    /// holds any. Which actor it is, the `memory` tool names.
+    pub backlog: Held,
     pub guest_bytes: u64,
 }
 
@@ -111,12 +112,12 @@ impl MemoryFigures {
             Process::Heap { bytes } => ProcessMemory::Heap { bytes },
             Process::Unknown => ProcessMemory::Unknown,
         };
-        let held = |longest: &aethereal_actor::Backlog| Backlog::Held {
-            unsent: Held::from(longest.unsent),
-            actor: named(&longest.actor),
-        };
-        let backlog = figures.longest_backlogs.first().map_or(Backlog::Empty, held);
 
-        Self { process, blobs: Held::from(figures.blobs), backlog, guest_bytes: figures.guest_bytes }
+        Self {
+            process,
+            blobs: Held::from(figures.blobs),
+            backlog: Held::from(figures.backlog()),
+            guest_bytes: figures.guest_bytes,
+        }
     }
 }

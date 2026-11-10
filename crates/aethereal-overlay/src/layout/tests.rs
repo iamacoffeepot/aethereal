@@ -1,5 +1,5 @@
 use super::{GUTTER_CHARACTERS, LINE_EMS, Layout};
-use crate::meters::{EngineMemory, LINE_CHARACTERS, Meter};
+use crate::meters::{EngineMemory, Held, MemoryFigures, Meter, ProcessMemory, ROW_CHARACTERS};
 use aethereal_math::{Rect2, Vec2};
 use aethereal_window::Surface;
 
@@ -141,49 +141,81 @@ fn the_prompt_and_its_divider_sit_in_their_strip() {
     }
 }
 
-/// At 1080, an ultrawide 1373, and a narrow 720, the band's right column stands right of the end of the left column's
-/// gutter and inside the band, its top level with the frame chart's, so no empty block stands above it; each meter's
-/// bar stands on its line after its label and inside the column, a meter's line of text fits across the column, every
-/// meter's line ends, its value last, at the band's right padding, and the five meters fit down the column. So a
-/// meter drawn over the gutter, a column that starts below the band's top, one that spills out of the band, values
-/// that end at different edges, or a value cut off at a narrow window, is caught.
+/// At 1080, an ultrawide 1373, a narrow 720, and 1080 on a screen of twice the pixels, the band's right column stands
+/// right of the left column's gutter and inside the band, from the frame chart's top to the left column's foot, ending
+/// at the band's right padding; its five meters' rows share it at one pitch, the first's top its top and the last's
+/// foot its foot; and each row's line of text is centred down the row. So rows that leave an empty block at the
+/// column's foot, rows of uneven heights, or text that sits at a row's top, is caught.
 #[test]
-fn the_right_column_holds_the_meters_clear_of_the_left_column() {
-    for (width, height) in [(1920, 1080), (3440, 1373), (1280, 720)] {
-        let layout = Layout::of(Surface { width, height, scale: 1.0 });
+fn the_meters_rows_fill_the_right_column() {
+    for (width, height, scale) in SIZES {
+        let layout = Layout::of(Surface { width, height, scale });
 
         let (right, band, tall) = (layout.right_column(), layout.band(), layout.line_pixels_tall());
-        let at = layout.meters_at();
-        let columns = layout.right_columns();
-        let lines = EngineMemory::Unread.runs(0, columns);
-
         // A gutter of some tens of characters, which an f32 holds exactly.
         #[allow(clippy::cast_precision_loss)]
         let gutter_end = (GUTTER_CHARACTERS as f32).mul_add(layout.advance(), layout.lines_at().x);
-        assert!(right.min.x > gutter_end, "{right:?} at {width}x{height} is over the gutter ending at {gutter_end}");
-        assert_eq!(right.min.y, layout.chart().min.y, "{right:?} at {width}x{height} starts below the band's top");
+        let size = format!("{width}x{height} at {scale}");
+        assert!(right.min.x > gutter_end, "{right:?} at {size} is over the gutter ending at {gutter_end}");
+        let spans = right.min.y == layout.chart().min.y && right.max.y == layout.rows().max.y;
+        assert!(spans, "{right:?} at {size} does not run from the frame chart's top to the rows' foot");
         let in_band = right.max.x <= band.max.x && right.max.y <= band.max.y;
         assert!(in_band, "{right:?} spills out of {band:?}");
         assert_eq!(right.max.x, band.max.x - layout.pixels(10.0), "{right:?} does not end at the band's padding");
-        assert_eq!(at, right.min);
-        let text: String = lines.iter().map(|run| run.text.as_str()).collect();
-        for line in text.lines() {
+        assert!(layout.right_columns() >= ROW_CHARACTERS, "a meter's row does not fit {right:?} at {size}");
+        let pitch = right.height() / meters();
+        let first = layout.meter_row(0);
+        let last = layout.meter_row(Meter::Gpu.index());
+        let fills = (first.min.y - right.min.y).abs() < 0.01 && (last.max.y - right.max.y).abs() < 0.01;
+        assert!(fills, "the rows run from {first:?} to {last:?}, not over {right:?} at {size}");
+        for meter in Meter::ALL {
+            let index = meter.index();
+            let (row, at) = (layout.meter_row(index), layout.meter_at(index));
+            let top = f32::from(index).mul_add(pitch, right.min.y);
+            let even = (row.min.y - top).abs() < 0.01 && (row.height() - pitch).abs() < 0.01;
+            let across = row.min.x == right.min.x && row.max.x == right.max.x;
+            assert!(even && across, "{meter:?}'s row {row:?} at {size} is off its share of {right:?}");
+            let centred = ((at.y + tall / 2.0) - (row.min.y + row.height() / 2.0)).abs() <= 0.5;
+            assert!(centred, "{meter:?}'s text at {at:?} is not centred in {row:?}");
+        }
+    }
+}
+
+/// At 1080, an ultrawide 1373, a narrow 720, and 1080 on a screen of twice the pixels, every meter's graph or bar
+/// stands between the same two edges, the right column's left and a character's space before its gutter, inside its
+/// row and most of its height; and every meter's line of text starts at that gutter's left, its label at one edge, and
+/// ends at the band's right padding, whatever its value. So a graph that ends at its own row's value and leaves the
+/// graphs ragged, a label that wanders from row to row, a value that stops short of the band's padding, or a line
+/// written over its graph, is caught.
+#[test]
+fn the_meters_graphs_share_two_edges_and_their_gutter_lines_share_the_label_s_and_the_value_s() {
+    let memory = memory();
+    for (width, height, scale) in SIZES {
+        let layout = Layout::of(Surface { width, height, scale });
+
+        let (right, advance) = (layout.right_column(), layout.advance());
+        let size = format!("{width}x{height} at {scale}");
+        let first = layout.meter_graph(0);
+        let label_at = layout.meter_at(0).x;
+        assert!((first.min.x - right.min.x).abs() <= 0.5, "{first:?} at {size} does not start at {right:?}'s left");
+        let before_gutter = (first.max.x - (label_at - advance)).abs() <= 0.5;
+        assert!(before_gutter, "{first:?} at {size} does not end a character before the gutter at {label_at}");
+        for meter in Meter::ALL {
+            let index = meter.index();
+            let (row, graph, at) = (layout.meter_row(index), layout.meter_graph(index), layout.meter_at(index));
+            let same_edges = graph.min.x == first.min.x && graph.max.x == first.max.x;
+            assert!(same_edges, "{meter:?}'s graph {graph:?} at {size} is not between {first:?}'s edges");
+            let inside = graph.min.y > row.min.y && graph.max.y < row.max.y && graph.height() >= row.height() / 2.0;
+            assert!(inside, "{meter:?}'s graph {graph:?} at {size} is not the height of its row {row:?}");
+            assert_eq!(at.x, label_at, "{meter:?}'s label at {size} is not at the gutter's left");
+
+            let runs = memory.row_runs(meter, GPU_BYTES);
+            let line: String = runs.iter().map(|run| run.text.as_str()).collect();
             // A line of some tens of characters, which an f32 holds exactly.
             #[allow(clippy::cast_precision_loss)]
-            let ends = (line.chars().count() as f32).mul_add(layout.advance(), at.x);
-            let shared = (ends - right.max.x).abs() < 0.01;
-            assert!(shared, "{line:?} at {width}x{height} ends at {ends}, not at {right:?}'s right edge");
+            let ends = (line.chars().count() as f32).mul_add(advance, at.x);
+            assert!((ends - right.max.x).abs() < 0.01, "{line:?} at {size} ends at {ends}, not at {right:?}'s edge");
         }
-        for index in Meter::ALL.map(Meter::index) {
-            let bar = layout.meter_bar(index);
-            let line_top = f32::from(index).mul_add(tall, at.y);
-            let across = bar.min.x > right.min.x && bar.max.x < right.max.x;
-            let beside = bar.min.y >= line_top && bar.max.y <= line_top + tall && bar.height() >= 1.0;
-            assert!(across && beside, "meter {index}'s bar at {bar:?} is off its line in {right:?}");
-        }
-        assert!(layout.right_columns() >= LINE_CHARACTERS, "a meter's line does not fit {right:?}");
-        let meters_foot = meters().mul_add(tall, at.y);
-        assert!(meters_foot <= right.max.y, "the meters end at {meters_foot}, below {right:?}");
     }
 }
 
@@ -196,7 +228,7 @@ fn the_right_column_holds_the_meters_clear_of_the_left_column() {
 /// the band, is caught.
 #[test]
 fn the_band_s_dividers_part_its_columns_and_sections_clear_of_what_they_part() {
-    for (width, height, scale) in [(1920, 1080, 1.0), (3440, 1373, 1.0), (1280, 720, 1.0), (1920, 1080, 2.0)] {
+    for (width, height, scale) in SIZES {
         let layout = Layout::of(Surface { width, height, scale });
 
         let (band, chart, gpu, rows) = (layout.band(), layout.chart(), layout.gpu_graph(), layout.rows());
@@ -220,9 +252,19 @@ fn the_band_s_dividers_part_its_columns_and_sections_clear_of_what_they_part() {
             line_at(layout.gpu_figures_at(), figures_left, gutter_end, 1.0),
             line_at(layout.frame_median_at(), gutter_left, gutter_end, 2.0),
             line_at(layout.gpu_top_at(), gutter_left, gutter_end, 1.0),
-            line_at(layout.lines_at(), gutter_left, gutter_end, 4.0),
-            line_at(layout.meters_at(), right.min.x, right.max.x, meters()),
+            line_at(layout.lines_at(), gutter_left, gutter_end, 3.0),
         ];
+        let memory = memory();
+        let meters_drawn = Meter::ALL.into_iter().flat_map(|meter| {
+            let index = meter.index();
+            let line = memory.row_runs(meter, GPU_BYTES).iter().map(|run| run.text.chars().count()).sum::<usize>();
+            let at = layout.meter_at(index);
+            // A line of some tens of characters, which an f32 holds exactly.
+            #[allow(clippy::cast_precision_loss)]
+            let ends = (line as f32).mul_add(layout.advance(), at.x);
+            [line_at(at, at.x, ends, 1.0), layout.meter_graph(index)]
+        });
+        let drawn: Vec<Rect2> = drawn.into_iter().chain(meters_drawn).collect();
 
         let spans_content = column.min.y == chart.min.y && column.max.y == rows.max.y;
         let in_band = column.min.y >= band.min.y && column.max.y <= band.max.y;
@@ -242,14 +284,32 @@ fn the_band_s_dividers_part_its_columns_and_sections_clear_of_what_they_part() {
         }
         for divider in [column, sections[0], sections[1]] {
             assert!(divider.width().min(divider.height()) == thick, "{divider:?} is not a line {thick} thick");
-            for area in drawn {
-                assert!(!divider.intersects(area), "{divider:?} at {width}x{height} is drawn over {area:?}");
+            for area in &drawn {
+                assert!(!divider.intersects(*area), "{divider:?} at {width}x{height} is drawn over {area:?}");
             }
         }
     }
 }
 
-/// How many meters the right column holds, a line of text each.
+/// The windows the band is laid out on: 1080, an ultrawide 1373, a narrow 720, and 1080 on a screen of twice the
+/// pixels.
+const SIZES: [(u32, u32, f64); 4] = [(1920, 1080, 1.0), (3440, 1373, 1.0), (1280, 720, 1.0), (1920, 1080, 2.0)];
+
+/// The GPU's memory the meters show: 1.5 GiB.
+const GPU_BYTES: u64 = 3 << 29;
+
+/// How many meters the right column holds, a row each.
 fn meters() -> f32 {
     u8::try_from(Meter::ALL.len()).map_or(f32::MAX, f32::from)
+}
+
+/// The engine's memory as a running program reads it: the program resident, the blob store part full, a backlog, and
+/// no guests.
+fn memory() -> EngineMemory {
+    EngineMemory::Read(MemoryFigures {
+        process: ProcessMemory::Resident { bytes: 412 << 20 },
+        blobs: Held { bytes: 300 << 20, most: 8 << 30 },
+        backlog: Held { bytes: 12 << 10, most: 16 << 20 },
+        guest_bytes: 0,
+    })
 }
