@@ -1,7 +1,7 @@
 //! Where the overlay draws, worked out from the window's surface each time it is needed (ADR-0053: The three stops):
 //! the band across the top, in two columns. Its left column holds, top to bottom on one axis of time, the frame chart
 //! and its figures' line, the GPU's graph and its figures' line, and the four lines' rows, each graph ending at a
-//! gutter on the column's right where each row's label and latest value are written; the count of warnings and errors
+//! gutter on the column's right where the GPU graph's top and each row's label and latest value are written; the count of warnings and errors
 //! sits at the band's right end, on the frame figures' line. Beneath the band is the console's panel, a third of the
 //! window's height, cut into two strips told apart by their tints and a faint line between: the scrollback above, its
 //! scroll bar in the padding at its right edge, and the prompt's strip along the panel's foot, a line of text tall,
@@ -203,6 +203,11 @@ impl Layout {
         let tall = (chart.height() * GPU_SHARE).round().max(1.0);
 
         Rect2 { min: Vec2::new(chart.min.x, top), max: Vec2::new(chart.max.x, top + tall) }
+    }
+
+    /// Where the GPU graph's top is written: the gutter beside the graph, level with its top.
+    pub fn gpu_top_at(self) -> Vec2 {
+        Vec2::new(self.chart().max.x + self.pixels(SECTION_PIXELS), self.gpu_graph().min.y)
     }
 
     /// Where the GPU's figures are placed: the top left of their one line, a gap beneath the GPU's graph.

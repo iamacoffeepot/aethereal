@@ -1,7 +1,7 @@
 //! The GPU's time over each frame's passes (ADR-0053: The three stops), as the renderer's [`GpuTimes`] tell it a frame
 //! or more after the frame: kept over the frame chart's axis by the cycle each frame was drawn in, and cut into its
 //! columns, each a stack of its frames' passes, every pass at its median over the column's frames, so the stack is a
-//! typical frame of the column (`graph`); and the figures beneath the graph, each pass's median over the window and the
+//! typical frame of the column, drawn to a top ranged to the tallest stack (`graph`); and the figures beneath the graph, each pass's median over the window and the
 //! share of a frame the GPU was busy (`figures`). A pass is known by its label, and given a place in the stack and a
 //! colour in the order the labels are first heard (`labels`). On a device without timestamps there is nothing to keep.
 
@@ -12,7 +12,7 @@ mod labels;
 mod tests;
 
 pub use figures::{GpuFigures, unsupported};
-pub use graph::graph;
+pub use graph::{GraphTop, graph};
 
 use crate::binned::{Accrue, Binned, Spanned, Thinned, median};
 use aethereal_data::Plain;
@@ -61,6 +61,13 @@ impl GpuTiming {
 #[derive(Plain, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Stack {
     pub nanos: [u64; STACKED],
+}
+
+impl Stack {
+    /// The stack's height: its passes' nanoseconds together.
+    pub fn total_nanos(self) -> u64 {
+        self.nanos.iter().fold(0, |total, nanos| total.saturating_add(*nanos))
+    }
 }
 
 /// One frame's passes: stacked by label, and their total, which counts a pass left out of the stack too.

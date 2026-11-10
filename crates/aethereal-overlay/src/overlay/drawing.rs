@@ -188,7 +188,7 @@ impl Overlay {
         let slide = self.frames.slide(count);
         chart::records(&mut records, layout, self.stop, self.frames.columns(count), slide, self.budget);
         if let GpuTiming::Timed(times) = &mut self.gpu {
-            gpu::graph(&mut records, layout, slide, self.budget, times.columns(count));
+            self.gpu_top = gpu::graph(&mut records, layout, slide, self.budget, times.columns(count));
         }
         lines::rows(&mut records, layout, slide, &self.lines.columns(count));
         chart::marks(&mut records, layout, slide, self.marks.times());
@@ -281,6 +281,7 @@ impl Handles<On<Tick>> for Overlay {
         self.marks.keep_since(tick.elapsed_nanos);
         let stamped = self.marks.stamp(tick.elapsed_nanos);
         self.write_chart(turn)?;
+        self.write_text(TextRole::GpuTop, turn)?;
         if !stamped.is_empty() {
             // Nanoseconds of the program's time, which an f64 holds closely enough to show in tenths of a second.
             #[allow(clippy::cast_precision_loss)]

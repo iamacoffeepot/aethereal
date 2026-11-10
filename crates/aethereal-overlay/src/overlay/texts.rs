@@ -1,5 +1,5 @@
 //! The overlay's texts (ADR-0052, ADR-0053): the frame chart's figures and the count of warnings and errors on one
-//! line, the GPU's figures, the rows' labels and values in their gutter, and the console's scrollback, its prompt,
+//! line, the GPU's figures, the GPU graph's top and the rows' labels and values in their gutter, and the console's scrollback, its prompt,
 //! and what is running at the prompt's right end. Each is one text, made once and written again only when what it
 //! shows changes, so a console that nothing changes costs nothing a frame. The scrollback is one text of the rows in
 //! view, at a fixed place, clipped to the console's panel, and written again as the view scrolls or a row is printed.
@@ -25,6 +25,8 @@ pub enum TextRole {
     Alerts,
     /// The figures beneath the GPU's graph, or in its place that the device has no timestamps.
     GpuFigures,
+    /// The GPU graph's top, in the gutter beside it: nothing on a device without timestamps.
+    GpuTop,
     /// The rows' labels and their newest values, in the gutter beside them.
     Lines,
     /// The rows of the scrollback in view.
@@ -37,11 +39,19 @@ pub enum TextRole {
 
 impl TextRole {
     /// Every text, in the order the overlay lists them: the band's first, then the console's.
-    pub const ALL: [Self; 7] =
-        [Self::Figures, Self::Alerts, Self::GpuFigures, Self::Lines, Self::Scrollback, Self::Prompt, Self::Running];
+    pub const ALL: [Self; 8] = [
+        Self::Figures,
+        Self::Alerts,
+        Self::GpuFigures,
+        Self::GpuTop,
+        Self::Lines,
+        Self::Scrollback,
+        Self::Prompt,
+        Self::Running,
+    ];
 
     /// How many of [`Self::ALL`], from the first, are the band's.
-    pub const BAND: usize = 4;
+    pub const BAND: usize = 5;
 }
 
 /// What the overlay has made of one text.
@@ -61,6 +71,7 @@ pub struct Texts {
     figures: Text,
     alerts: Text,
     gpu_figures: Text,
+    gpu_top: Text,
     lines: Text,
     scrollback: Text,
     prompt: Text,
@@ -73,6 +84,7 @@ impl Default for Texts {
             figures: Text::Unasked,
             alerts: Text::Unasked,
             gpu_figures: Text::Unasked,
+            gpu_top: Text::Unasked,
             lines: Text::Unasked,
             scrollback: Text::Unasked,
             prompt: Text::Unasked,
@@ -88,6 +100,7 @@ impl Texts {
             TextRole::Figures => &self.figures,
             TextRole::Alerts => &self.alerts,
             TextRole::GpuFigures => &self.gpu_figures,
+            TextRole::GpuTop => &self.gpu_top,
             TextRole::Lines => &self.lines,
             TextRole::Scrollback => &self.scrollback,
             TextRole::Prompt => &self.prompt,
@@ -101,6 +114,7 @@ impl Texts {
             TextRole::Figures => &mut self.figures,
             TextRole::Alerts => &mut self.alerts,
             TextRole::GpuFigures => &mut self.gpu_figures,
+            TextRole::GpuTop => &mut self.gpu_top,
             TextRole::Lines => &mut self.lines,
             TextRole::Scrollback => &mut self.scrollback,
             TextRole::Prompt => &mut self.prompt,
@@ -150,6 +164,10 @@ impl Overlay {
                 GpuTiming::Timed(_) => self.gpu_figures.runs(),
                 GpuTiming::Unsupported => gpu::unsupported(),
             },
+            TextRole::GpuTop => match self.gpu {
+                GpuTiming::Timed(_) => self.gpu_top.runs(),
+                GpuTiming::Unsupported => runs_of(Vec::new()),
+            },
             TextRole::Lines => self.lines.runs(),
             TextRole::Prompt => runs_of(self.console.prompt()),
             TextRole::Running => runs_of(self.console.running()),
@@ -182,6 +200,7 @@ impl Overlay {
                 GpuTiming::Timed(_) => (layout.gpu_figures_at(), Clip::None),
                 GpuTiming::Unsupported => (Vec2::new(layout.gpu_figures_at().x, layout.gpu_graph().min.y), Clip::None),
             },
+            TextRole::GpuTop => (layout.gpu_top_at(), Clip::None),
             TextRole::Lines => (layout.lines_at(), Clip::None),
             TextRole::Scrollback => (layout.scrollback_at(), Clip::To(layout.console_inside())),
             TextRole::Prompt => (layout.prompt_at(), Clip::To(layout.console_inside())),

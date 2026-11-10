@@ -35,8 +35,9 @@ fn the_band_stacks_its_sections_on_one_axis_and_the_console_sits_beneath_it() {
 }
 
 /// Each row's bars stand inside its line of the rows, the first's at the top of the gutter's text and each line of
-/// that text beside its row, and the gutter's text ends inside the band's left column, so a row's label written
-/// beside the wrong row, or a gutter running into the right column, is caught.
+/// that text beside its row, the GPU graph's top is written in the same gutter level with the graph's top, and the
+/// gutter's text ends inside the band's left column, so a row's label written beside the wrong row, a graph's top
+/// written away from its graph, or a gutter running into the right column, is caught.
 #[test]
 fn the_gutter_s_lines_stand_beside_their_rows() {
     for scale in [1.0, 2.0] {
@@ -45,6 +46,7 @@ fn the_gutter_s_lines_stand_beside_their_rows() {
         let (rows, at, tall) = (layout.rows(), layout.lines_at(), layout.line_pixels_tall());
 
         assert_eq!(at.y, rows.min.y);
+        assert_eq!(layout.gpu_top_at(), aethereal_math::Vec2::new(at.x, layout.gpu_graph().min.y));
         for index in 0..4_u8 {
             let row = layout.row(index);
             let line_top = f32::from(index).mul_add(tall, at.y);

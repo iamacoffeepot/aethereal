@@ -15,7 +15,7 @@ pub use making::{
 
 use crate::console::{Alerts, Console};
 use crate::frames::{Figures, FrameTimes};
-use crate::gpu::{GpuFigures, GpuTiming};
+use crate::gpu::{GpuFigures, GpuTiming, GraphTop};
 use crate::lines::FrameLines;
 use crate::marks::Marks;
 use crate::stop::Stop;
@@ -91,6 +91,8 @@ pub struct Overlay {
     gpu: GpuTiming,
     /// The figures beneath the GPU's graph, as they were last worked out.
     gpu_figures: GpuFigures,
+    /// The top the GPU's graph was last drawn to, which the gutter beside it says.
+    gpu_top: GraphTop,
     /// Each frame's draws, triangles, bytes uploaded, and GPU memory, as its statistics tell them.
     lines: FrameLines,
     chart: Chart,
@@ -179,6 +181,7 @@ impl Actor for Overlay {
             budget: FrameBudget::UNTOLD,
             gpu: GpuTiming::default(),
             gpu_figures: GpuFigures::default(),
+            gpu_top: GraphTop::default(),
             lines: FrameLines::default(),
             chart: Chart::Unasked,
             texts: Texts::default(),
