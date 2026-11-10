@@ -86,6 +86,7 @@ impl Bootstrap<Desktop> for Renderer {
             present,
             fronting,
             surfacing,
+            budget,
         });
 
         Ok(())

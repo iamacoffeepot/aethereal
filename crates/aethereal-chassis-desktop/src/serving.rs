@@ -11,6 +11,7 @@ use crate::moding;
 use aethereal_actor::Requests;
 use aethereal_render::Gpu;
 use aethereal_render::mapping::{Mapped, Mapping};
+use aethereal_render::stats::FrameBudget;
 use aethereal_render::surface::{Fronting, Present, Surfaced, WindowSurface};
 use aethereal_substrate::Feed;
 use aethereal_window::{self as window, Event, Hosting, Logical, Mode, Surface, WindowFeed, WindowId};
@@ -27,8 +28,8 @@ use winit::window::{Window, WindowId as NativeId};
 /// renderer's controller for presenting each window's frame; its ends of the renderer's controller and source for the
 /// buffers it maps; and what it opens a window with while the program runs: the instance, the adapter, and the GPU
 /// the renderer draws with, whose device it polls, how each surface is presented, and its end of the renderer's front
-/// and of the source it tells the renderer of each window through (ADR-0027). The end the renderer's bootstrap gives
-/// the desktop (ADR-0029).
+/// and of the source it tells the renderer of each window through (ADR-0027), and the frame budget it last said to the
+/// renderer through its front (ADR-0053). The end the renderer's bootstrap gives the desktop (ADR-0029).
 pub struct Drawing {
     pub(crate) windows: Vec<Kept>,
     pub(crate) routes: HashMap<NativeId, WindowId>,
@@ -41,6 +42,7 @@ pub struct Drawing {
     pub(crate) present: Presenting,
     pub(crate) fronting: Fronting,
     pub(crate) surfacing: Feed<Surfaced>,
+    pub(crate) budget: FrameBudget,
 }
 
 /// A window the chassis opened: the native window, the feed of what it hears, its surface, where the pointer was last
@@ -132,8 +134,10 @@ impl Drawing {
     /// configured first to the size its window was last resized to, and hands the renderer each frame's texture.
     /// Presented `fifo`, the renderer's default, each waits until the display frees an image, on the event loop's
     /// thread, which is what paces the frames: a window on a slower display paces every window to its rate. Presented
-    /// `uncapped` or `capped`, none waits. Answers whether any window is drawn.
+    /// `uncapped` or `capped`, none waits. Says the budget again first, when the first window's display changed or
+    /// became known (ADR-0053). Answers whether any window is drawn.
     pub(crate) fn acquire(&mut self) -> bool {
+        self.rebudget();
         let mut drawn = false;
         for opened in &mut self.windows {
             if opened.draws() {

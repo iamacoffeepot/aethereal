@@ -25,12 +25,6 @@ impl Running {
     /// The close button is pushed as it is heard, and the window root closes the window or not, as its config says. A
     /// window the platform destroyed is closed, as one the root asked to close is.
     pub(super) fn heard(&mut self, window: WindowId, event: WindowEvent) {
-        // The window may be on another display now, whose refresh is the budget's (ADR-0053).
-        let displaced =
-            matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. });
-        if displaced {
-            self.drawing.rebudget();
-        }
         let Some(opened) = self.drawing.window_mut(window) else {
             return;
         };
