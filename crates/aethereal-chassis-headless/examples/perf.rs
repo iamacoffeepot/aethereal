@@ -2,7 +2,8 @@
 //!
 //! Run with `cargo run --release -p aethereal-chassis-headless --example perf [actors...] [idle=N] [shape=NAME]`.
 //! A root spawns the given number of busy actors (by default 64, 2,000, and 10,000 in turn); each sends itself a
-//! count and counts it down, so every busy actor handles one piece of mail and sends one in every step. `idle=N`
+//! count and counts it down, so every busy actor handles one piece of mail and sends one in every step; in the `log`
+//! shape each busy actor also logs one line of about 40 bytes on every turn, to cost the log view. `idle=N`
 //! also seats N actors that are never sent anything, and `shape=NAME` runs one shape of work only. Each line is the
 //! best of three runs: mails a second, nanoseconds a piece of mail, and a step's time split into planning, running,
 //! and applying.
@@ -13,7 +14,7 @@
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Recursive, ToType, Turn};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, ToType, Turn};
 use aethereal_chassis_headless::{Headless, Measured};
 use aethereal_data::Plain;
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
@@ -71,14 +72,17 @@ const PARTS: NonZeroU32 = NonZeroU32::new(16).expect("16 is not zero");
 /// How many counts each counter takes.
 const TURNS: u64 = 50;
 
+/// The shape whose turns each log a line.
+const LOG: u8 = 3;
+
 /// The shapes of work a turn does.
-const SHAPES: [(u8, &str); 3] = [(0, "trivial"), (1, "uneven"), (2, "tail")];
+const SHAPES: [(u8, &str); 4] = [(0, "trivial"), (1, "uneven"), (2, "tail"), (LOG, "log")];
 
 impl Counter {
     /// The units of work in this counter's turn with `left` counts to go.
     const fn units(&self, left: u64) -> u64 {
         match self.shape {
-            0 => 0,
+            0 | LOG => 0,
             1 => 25 + (self.number % 32) * 25,
             _ => {
                 let is_heavy = mix(self.number * 1_000 + left).is_multiple_of(20);
@@ -137,6 +141,9 @@ impl Handles<Count> for Counter {
     fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let worked = (0..self.units(left) * 10).fold(self.number, |sum, step| sum.wrapping_mul(31).wrapping_add(step));
         hint::black_box(worked);
+        if self.shape == LOG {
+            turn.log(Level::Info, format_args!("counter {:6} has {left:3} counts left to go", self.number));
+        }
         if left == 0 {
             turn.close();
         } else {
