@@ -1,13 +1,16 @@
 //! What the overlay draws as one placement (ADR-0023): a unit square, drawn once for each of its instances' records,
-//! each a box in the surface's pixels and its colour. The records are the panels, the frame chart's columns, its
-//! dashed budget line, the marks' ticks, the console's cursor, and its scroll bar, in that order, as one placement's
-//! records are drawn in their order; all of them are written again in one write at each `Tick` the overlay is shown,
-//! as the chart moves with time.
+//! each a box in the surface's pixels and its colour. The records are the panels and the lines between them, the frame
+//! chart's columns, each a candle or a bar (`column`), its dashed budget line, the marks' ticks, the console's cursor,
+//! and its scroll bar, in that order, as one placement's records are drawn in their order; all of them are written
+//! again in one write at each `Tick` the overlay is shown, as the chart moves with time.
 
+mod column;
 #[cfg(test)]
 mod tests;
 
-use crate::colour::{BRICK, LICHEN, OCHRE, PANEL_OPACITY, RUST, SLATE, STONE, Swatch};
+pub use column::ChartStyle;
+
+use crate::colour::{BRICK, LICHEN, OCHRE, PANEL_OPACITY, RUST, SLATE, SLATE_DARKER, SLATE_LIGHTER, STONE, Swatch};
 use crate::frames::{Column, Slide};
 use crate::layout::Layout;
 use crate::marks::MOST_MARKS;
@@ -17,6 +20,7 @@ use aethereal_math::{Rect2, Vec2};
 use aethereal_render::mesh::{Attribute, VertexFormat, VertexLayout};
 use aethereal_render::stats::FrameBudget;
 use aethereal_render::text::Colour;
+use column::{Placed, RECORDS_PER_COLUMN};
 
 /// The program that draws each record: the unit square's corner placed in the record's box, turned from the surface's
 /// pixels, from its top left, into clip space by the surface's size in the uniform, and shaded the record's colour.
@@ -44,9 +48,15 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 /// How many bytes a record takes: a box of four floats and a colour of four.
 pub const RECORD_BYTES: u32 = 32;
 
-/// The most records the instances have room for: the two panels, the most columns and the two sliding off the left
-/// edge, the most dashes, the most marks, the cursor, and the scroll bar's track and thumb.
-pub const MOST_RECORDS: u32 = 2 + MOST_COLUMNS + 2 + MOST_DASHES + MOST_MARKS + 1 + 2;
+/// The most records the instances have room for: the panels and the lines between them, the most columns and the two
+/// sliding off the left edge each in a candle's records, the most dashes, the most marks, the cursor, and the scroll
+/// bar's track and thumb.
+pub const MOST_RECORDS: u32 =
+    PANEL_RECORDS + (MOST_COLUMNS + 2) * RECORDS_PER_COLUMN + MOST_DASHES + MOST_MARKS + 1 + 2;
+
+/// How many records the panels take at most: the band's, the scrollback's, and the prompt's strip, and the lines
+/// between the band and the console and above the prompt's strip.
+const PANEL_RECORDS: u32 = 5;
 
 /// The most columns the chart is cut into, whatever the window's width.
 const MOST_COLUMNS: u32 = 3_000;
@@ -70,11 +80,15 @@ const REFERENCE_GAP_PIXELS: f32 = 6.0;
 /// How opaque a budget line that is a reference is drawn.
 const REFERENCE_OPACITY: f32 = 0.5;
 
-/// How thick the budget line is, in logical pixels.
+/// How thick the budget line, a candle's wick, and its median are, in logical pixels.
 const LINE_PIXELS: f32 = 1.0;
 
 /// How wide a mark's tick is, in logical pixels.
 const TICK_PIXELS: f32 = 2.0;
+
+/// How opaque the lines between the panels are drawn, in stone: faint, so they part the panels without drawing the
+/// eye.
+const DIVIDER_OPACITY: f32 = 0.28;
 
 /// How opaque the scroll bar's track is drawn, in stone.
 const TRACK_OPACITY: f32 = 0.2;
@@ -129,8 +143,8 @@ pub fn column_count(layout: Layout) -> u32 {
 }
 
 /// How many bytes the records of [`records`], [`marks`], [`cursor`], and [`scrollbar`] take on `layout` at most: the
-/// two panels, a column for each the chart is cut into and the two sliding off its left edge, the dashes of the budget
-/// line, the most marks, the cursor, and the scroll bar's track and thumb.
+/// panels and the lines between them, a candle's records for each column the chart is cut into and the two sliding off
+/// its left edge, the dashes of the budget line, the most marks, the cursor, and the scroll bar's track and thumb.
 #[must_use]
 pub fn records_bytes(layout: Layout) -> usize {
     // A reference's dashes are the closer, so the more.
@@ -140,15 +154,15 @@ pub fn records_bytes(layout: Layout) -> usize {
     // A count of dashes is at most some thousands, which a u32 holds; a negative width holds none.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let dashes = (dashes.max(0.0) as u32).min(MOST_DASHES);
-    let count = 2 + column_count(layout) + 2 + dashes + MOST_MARKS + 1 + 2;
+    let count = PANEL_RECORDS + (column_count(layout) + 2) * RECORDS_PER_COLUMN + dashes + MOST_MARKS + 1 + 2;
 
     count as usize * RECORD_BYTES as usize
 }
 
-/// Appends to `records` what the overlay draws at `stop` on `layout`: the band's panel, the console's beneath it when
-/// the stop shows it, each of `columns` from the chart's foot, shaded by its longest cycle against `budget`, and the
-/// dashed budget line, stone, drawn lighter when the budget is a reference. A record is appended as [`record_layout`]
-/// lays it out.
+/// Appends to `records` what the overlay draws at `stop` on `layout`: the band's panel; when the stop shows the
+/// console, its scrollback's panel a step lighter and the prompt's strip a step darker, with a faint stone line along
+/// the top of each; each of `columns` drawn in `style`, shaded against `budget`; and the dashed budget line, stone,
+/// drawn lighter when the budget is a reference. A record is appended as [`record_layout`] lays it out.
 ///
 /// The newest column's span is at the chart's right edge, and each older one a column's pitch further left, all moved
 /// left by the share of a pitch `slide` has come through the newest span, so the chart slides smoothly left as the
@@ -158,38 +172,39 @@ pub fn records(
     records: &mut Vec<u8>,
     layout: Layout,
     stop: Stop,
+    style: ChartStyle,
     columns: impl IntoIterator<Item = Column>,
     slide: Slide,
     budget: FrameBudget,
 ) {
     let budget_nanos = budget.nanos();
-    let panel = SLATE.at(PANEL_OPACITY);
-    push(records, layout.band(), panel);
+    push(records, layout.band(), SLATE.at(PANEL_OPACITY));
     if stop.console() {
-        push(records, layout.console(), panel);
+        let divider = STONE.at(DIVIDER_OPACITY);
+        push(records, layout.console_body(), SLATE_LIGHTER.at(PANEL_OPACITY));
+        push(records, layout.prompt_strip(), SLATE_DARKER.at(PANEL_OPACITY));
+        push(records, layout.band_divider(), divider);
+        push(records, layout.prompt_divider(), divider);
     }
 
     let chart = layout.chart();
-    let (column_pixels, pitch) = (layout.column_pixels(), layout.column_pitch());
+    let (width, pitch, line) = (layout.column_pixels(), layout.column_pitch(), layout.line_pixels(LINE_PIXELS));
     // Nanoseconds of a few seconds, which an f32 holds closely enough to draw.
     #[allow(clippy::cast_precision_loss)]
     let tallest_nanos = budget_nanos as f32 * BUDGETS_TALL;
     for column in columns {
         // Columns back from the newest, at most a few thousand, which an f32 holds exactly.
         #[allow(clippy::cast_precision_loss)]
-        let (back, longest) = (slide.newest.saturating_sub(column.span) as f32, column.longest_nanos as f32);
+        let back = slide.newest.saturating_sub(column.span) as f32;
         let left = (back + slide.through).mul_add(-pitch, chart.max.x);
-        let (from, to) = (left.max(chart.min.x), (left + column_pixels).min(chart.max.x));
-        let shows = from < to;
+        let shows = left.max(chart.min.x) < (left + width).min(chart.max.x);
         if !shows {
             continue;
         }
-        let tall = (longest / tallest_nanos).min(1.0) * chart.height();
-        let bar = Rect2 { min: Vec2::new(from, chart.max.y - tall.max(1.0)), max: Vec2::new(to, chart.max.y) };
-        push(records, bar, shade(column.longest_nanos, budget_nanos).opaque());
+        let placed = Placed { left, width, chart, tallest_nanos, budget_nanos, line };
+        column::column(records, style, placed, column.candle);
     }
 
-    let line = layout.line_pixels(LINE_PIXELS);
     let budget_y = (chart.max.y - chart.height() / BUDGETS_TALL).round();
     let (dash, gap, colour) = match budget {
         FrameBudget::Limit { .. } => (DASH_PIXELS, DASH_GAP_PIXELS, STONE.opaque()),
@@ -252,8 +267,8 @@ pub fn scrollbar(records: &mut Vec<u8>, bar: Bar) {
     push(records, thumb, colour);
 }
 
-/// The colour of a column whose longest cycle took `nanos` against `budget_nanos`: lichen within the budget, rust
-/// over it, and brick over twice it.
+/// The colour of a cycle that took `nanos` against `budget_nanos`: lichen within the budget, rust over it, and brick
+/// over twice it.
 fn shade(nanos: u64, budget_nanos: u64) -> Swatch {
     let over = nanos > budget_nanos;
     let twice = nanos > budget_nanos.saturating_mul(2);

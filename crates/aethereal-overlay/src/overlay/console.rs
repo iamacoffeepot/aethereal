@@ -14,17 +14,19 @@ use aethereal_data::Plain;
 use aethereal_render::Renderer;
 use aethereal_render::draw_list::DrawList;
 use aethereal_render::instances::WriteInstances;
-use aethereal_render::text::WriteText;
+use aethereal_render::text::{MoveText, WriteText};
 use aethereal_tools::{CallTool, Called, Offered, Output, Sheets, Tools};
 use aethereal_window::{KeyFocusGained, KeyFocusLost};
 
 /// The key that closes the console back to the band, by what it means.
 const CLOSE_KEY: &str = "Escape";
 
-/// A tool was called from the console's line: what it answers with, so its answer is printed in its forms.
+/// A tool was called from the console's line: its name, so the call stops showing as running once it is answered,
+/// and what it answers with, so its answer is printed in its forms.
 #[derive(Plain)]
 #[kind(name = "aether.overlay.calling")]
 pub struct Calling {
+    tool: String,
     output: Output,
 }
 
@@ -35,7 +37,8 @@ pub struct Offering;
 
 impl Overlay {
     /// Takes in a key pressed at the console's stop: Escape closes it; any other edits the line, steps its history,
-    /// scrolls, completes, or enters it, a command that names a tool asked of the engine's tools root.
+    /// scrolls, completes, or enters it, a command that names a tool asked of the engine's tools root and shown as
+    /// running until it is answered.
     pub(super) fn pressed(&mut self, key: &str, turn: &mut Turn<'_, Self, Heard>) -> Result<(), Fault> {
         if key == CLOSE_KEY {
             return self.close(turn);
@@ -45,7 +48,10 @@ impl Overlay {
         if let Command::Call { tool, revision, input, output } = command {
             match turn.put(input) {
                 Ok(input) => {
-                    turn.to(path::<Tools>(())).ask(&CallTool { tool, revision, input }, &Calling { output })?;
+                    let calling = Calling { tool: tool.clone(), output };
+                    turn.to(path::<Tools>(())).ask(&CallTool { tool, revision, input }, &calling)?;
+                    self.console.called(&calling.tool);
+                    self.write_and_move(TextRole::Running, turn)?;
                 }
                 Err(refused) => self.console.refused(&format!("the input was not put: {refused:?}"), view),
             }
@@ -68,15 +74,17 @@ impl Handles<Sheets> for Overlay {
 }
 
 /// A tool's answer to the console's line, printed: a value in the forms its flags read, an image as one line, and a
-/// refusal in brick.
+/// refusal in brick. The call stops showing as running, whichever came.
 impl Handles<Answer<Called, Calling>> for Overlay {
-    type Sends = (Tells<Path<Renderer>, WriteText>,);
+    type Sends = (Tells<Path<Renderer>, WriteText>, Tells<Path<Renderer>, MoveText>);
 
     fn handle(
         &mut self,
-        (answered, Calling { output }): (Answered<Called>, Calling),
+        (answered, Calling { tool, output }): (Answered<Called>, Calling),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
+        self.console.settled(&tool);
+        self.write_and_move(TextRole::Running, turn)?;
         let view = self.view();
         match answered {
             Answered::Yes(Called::Output(bytes)) => self.console.answered(&output, turn.read(&bytes), view),

@@ -113,7 +113,7 @@ impl Overlay {
             (false, true) => {
                 turn.to(path::<Window>(self.window)).send(&TakeKeyFocus)?;
                 self.alerts.clear();
-                self.write_alerts(turn)?;
+                self.write_and_move(TextRole::Alerts, turn)?;
                 self.write_console(turn)?;
             }
             (true, false) => {
@@ -162,9 +162,9 @@ impl Overlay {
         Ok(())
     }
 
-    /// Writes every record of the placement for the stop, the layout, the cycles kept, the marks, and the cursor and
-    /// scroll bar at the console's stop, in one write into a buffer the overlay keeps, and cuts the records to as many when there
-    /// are fewer than were last written. Nothing while the placement is not made.
+    /// Writes every record of the placement for the stop, the layout, the chart's style, the cycles kept, the marks,
+    /// and the cursor and scroll bar at the console's stop, in one write into a buffer the overlay keeps, and cuts the
+    /// records to as many when there are fewer than were last written. Nothing while the placement is not made.
     pub(super) fn write_chart<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<Tells<Path<Renderer>, WriteInstances>, I>,
@@ -175,8 +175,8 @@ impl Overlay {
         let layout = Layout::of(self.surface);
         let count = chart::column_count(layout);
         let mut records = turn.buffer(chart::records_bytes(layout));
-        let (columns, slide) = (self.frames.columns(count), self.frames.slide(count));
-        chart::records(&mut records, layout, self.stop, columns, slide, self.budget);
+        let slide = self.frames.slide(count);
+        chart::records(&mut records, layout, self.stop, self.style, self.frames.columns(count), slide, self.budget);
         chart::marks(&mut records, layout, slide, self.marks.times());
         if self.stop.console() {
             chart::cursor(&mut records, layout, self.console.cursor_column());
@@ -288,7 +288,7 @@ impl Handles<On<Tick>> for Overlay {
         if logs_due {
             self.logs_due_nanos = tick.elapsed_nanos.saturating_add(LOGS_EVERY_NANOS);
             self.read_logs(turn);
-            self.write_alerts(turn)?;
+            self.write_and_move(TextRole::Alerts, turn)?;
             self.write_console(turn)?;
         }
 

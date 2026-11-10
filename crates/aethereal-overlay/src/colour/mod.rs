@@ -8,8 +8,16 @@ mod tests;
 use aethereal_data::Plain;
 use aethereal_render::text::Colour;
 
-/// The panels, drawn at [`PANEL_OPACITY`] so the program shows behind them: `#15181b`.
+/// The band's panel, drawn at [`PANEL_OPACITY`] so the program shows behind it, and the median across a candle:
+/// `#15181b`.
 pub const SLATE: Swatch = Swatch::hex(0x15_18_1b);
+
+/// The console's scrollback, a step lighter than the band's slate, about five points of lightness, so the two panels
+/// read apart: `#20252a`.
+pub const SLATE_LIGHTER: Swatch = Swatch::hex(0x20_25_2a);
+
+/// The prompt's strip, a step darker than the band's slate, a well the line is typed into: `#111417`.
+pub const SLATE_DARKER: Swatch = Swatch::hex(0x11_14_17);
 
 /// Text: `#e4e0d6`.
 pub const BONE: Swatch = Swatch::hex(0xe4_e0_d6);

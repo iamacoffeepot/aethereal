@@ -42,3 +42,52 @@ fn the_scroll_bar_lies_in_the_panels_padding_beside_the_rows() {
         assert!(bar.max.y <= layout.prompt_at().y, "{bar:?} runs past the prompt");
     }
 }
+
+/// The band, the scrollback's strip, and the prompt's strip tile the overlay from the window's top to the console's
+/// foot, each the window's width, none overlapping the next and none left empty, at 1080 and on a screen of twice the
+/// pixels, so a strip drawn twice over at the panels' opacity, or a seam of the program showing through, is caught.
+#[test]
+fn the_strips_tile_the_panel() {
+    for scale in [1.0, 2.0] {
+        let layout = Layout::of(Surface { width: 1920, height: 1080, scale });
+
+        let strips = [layout.band(), layout.console_body(), layout.prompt_strip()];
+
+        assert_eq!(strips[0].min.y, 0.0);
+        assert_eq!(strips[2].max.y, layout.console().max.y);
+        for pair in strips.windows(2) {
+            assert_eq!(pair[0].max.y, pair[1].min.y, "{:?} and {:?} do not meet", pair[0], pair[1]);
+        }
+        for strip in strips {
+            let across = strip.min.x == 0.0 && strip.max.x == 1920.0;
+            assert!(across && strip.height() > 0.0, "{strip:?} does not cross the window");
+        }
+    }
+}
+
+/// The prompt's line sits inside its strip, and the scrollback's rows end above it; each divider is a line along the
+/// top of the strip it heads; and what is running ends at the right of the console's text on the prompt's line, so a
+/// prompt drawn over the scrollback's tint, a divider off its seam, or a running line past the scroll bar is caught.
+#[test]
+fn the_prompt_and_its_divider_sit_in_their_strip() {
+    for scale in [1.0, 2.0] {
+        let layout = Layout::of(Surface { width: 1920, height: 1080, scale });
+
+        let (strip, body, prompt) = (layout.prompt_strip(), layout.console_body(), layout.prompt_at());
+        let rows = u16::try_from(layout.scrollback_rows()).map_or(f32::MAX, f32::from);
+        let running = layout.running_at(10);
+
+        let line_foot = prompt.y + layout.line_pixels_tall();
+        let in_strip = prompt.y >= strip.min.y && line_foot <= strip.max.y;
+        assert!(in_strip, "the prompt at {prompt:?} is not inside {strip:?}");
+        let rows_foot = layout.line_pixels_tall().mul_add(rows, layout.scrollback_at().y);
+        assert!(rows_foot <= strip.min.y, "the rows end at {rows_foot}, past {strip:?}");
+        for (divider, heads) in [(layout.band_divider(), body), (layout.prompt_divider(), strip)] {
+            let on_seam = divider.min == heads.min && divider.max.x == heads.max.x;
+            assert!(on_seam && divider.height() == layout.line_pixels(1.0), "{divider:?} does not head {heads:?}");
+        }
+        let ends = layout.advance().mul_add(10.0, running.x);
+        assert_eq!(running.y, prompt.y);
+        assert!((ends - layout.console_inside().max.x).abs() < 0.01, "what is running ends at {ends}");
+    }
+}

@@ -1,5 +1,5 @@
 //! The overlay's texts (ADR-0052, ADR-0053): the chart's figures and the count of warnings and errors on the band's
-//! foot line, and the console's scrollback and prompt. Each is one text, made once and written again only when what it
+//! foot line, and the console's scrollback, its prompt, and what is running at the prompt's right end. Each is one text, made once and written again only when what it
 //! shows changes, so a console that nothing changes costs nothing a frame. The scrollback is one text of the rows in
 //! view, at a fixed place, clipped to the console's panel, and written again as the view scrolls or a row is printed.
 
@@ -25,11 +25,13 @@ pub enum TextRole {
     Scrollback,
     /// The prompt's line: the prompt, the line typed, and a completion ahead of it.
     Prompt,
+    /// The tools called from the line and not yet answered, at the prompt's right end.
+    Running,
 }
 
 impl TextRole {
-    /// Every text, in the order the overlay lists them.
-    pub const ALL: [Self; 4] = [Self::Figures, Self::Alerts, Self::Scrollback, Self::Prompt];
+    /// Every text, in the order the overlay lists them: the band's first, then the console's.
+    pub const ALL: [Self; 5] = [Self::Figures, Self::Alerts, Self::Scrollback, Self::Prompt, Self::Running];
 }
 
 /// What the overlay has made of one text.
@@ -50,11 +52,18 @@ pub struct Texts {
     alerts: Text,
     scrollback: Text,
     prompt: Text,
+    running: Text,
 }
 
 impl Default for Texts {
     fn default() -> Self {
-        Self { figures: Text::Unasked, alerts: Text::Unasked, scrollback: Text::Unasked, prompt: Text::Unasked }
+        Self {
+            figures: Text::Unasked,
+            alerts: Text::Unasked,
+            scrollback: Text::Unasked,
+            prompt: Text::Unasked,
+            running: Text::Unasked,
+        }
     }
 }
 
@@ -66,6 +75,7 @@ impl Texts {
             TextRole::Alerts => &self.alerts,
             TextRole::Scrollback => &self.scrollback,
             TextRole::Prompt => &self.prompt,
+            TextRole::Running => &self.running,
         }
     }
 
@@ -76,6 +86,7 @@ impl Texts {
             TextRole::Alerts => &mut self.alerts,
             TextRole::Scrollback => &mut self.scrollback,
             TextRole::Prompt => &mut self.prompt,
+            TextRole::Running => &mut self.running,
         }
     }
 
@@ -118,6 +129,7 @@ impl Overlay {
             TextRole::Figures => self.figures.runs(),
             TextRole::Alerts => runs_of(self.alerts.pieces()),
             TextRole::Prompt => runs_of(self.console.prompt()),
+            TextRole::Running => runs_of(self.console.running()),
             TextRole::Scrollback => {
                 let view = self.view();
                 let rows: Vec<_> = self.console.rows(view).collect();
@@ -134,17 +146,20 @@ impl Overlay {
         }
     }
 
-    /// Where the text of `role` is placed, and what of it is drawn: the console's texts clipped to its panel.
+    /// Where the text of `role` is placed, and what of it is drawn: the console's texts clipped to its panel. A text
+    /// that ends at a right edge is placed by how many characters it shows now.
     pub(super) fn place_of(&self, role: TextRole) -> (Vec2, Clip) {
         let layout = Layout::of(self.surface);
+        let characters = |pieces: Vec<Piece>| pieces.iter().map(|piece| piece.text.chars().count()).sum();
         match role {
             TextRole::Figures => (layout.figures_at(), Clip::None),
-            TextRole::Alerts => {
-                let characters = self.alerts.pieces().iter().map(|piece| piece.text.chars().count()).sum();
-                (layout.alerts_at(characters), Clip::None)
-            }
+            TextRole::Alerts => (layout.alerts_at(characters(self.alerts.pieces())), Clip::None),
             TextRole::Scrollback => (layout.scrollback_at(), Clip::To(layout.console_inside())),
             TextRole::Prompt => (layout.prompt_at(), Clip::To(layout.console_inside())),
+            TextRole::Running => {
+                let at = layout.running_at(characters(self.console.running()));
+                (at, Clip::To(layout.console_inside()))
+            }
         }
     }
 
@@ -195,19 +210,19 @@ impl Overlay {
         self.write_text(TextRole::Prompt, turn)
     }
 
-    /// Writes the count of warnings and errors again where it has changed, and moves it to end at the band's right
-    /// padding.
-    pub(super) fn write_alerts<S, I, J>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
+    /// Writes a text that ends at a right edge again where it has changed, and moves it to end there: the count of
+    /// warnings and errors at the band's right padding, or what is running at the prompt's right end.
+    pub(super) fn write_and_move<S, I, J>(&mut self, role: TextRole, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<Tells<Path<Renderer>, WriteText>, I> + Allows<Tells<Path<Renderer>, MoveText>, J>,
     {
-        let before = self.texts.of(TextRole::Alerts);
-        let unchanged = matches!(before, Text::Made { shown, .. } if *shown == self.runs(TextRole::Alerts));
+        let before = self.texts.of(role);
+        let unchanged = matches!(before, Text::Made { shown, .. } if *shown == self.runs(role));
         if unchanged {
             return Ok(());
         }
-        self.write_text(TextRole::Alerts, turn)?;
+        self.write_text(role, turn)?;
 
-        self.move_text(TextRole::Alerts, turn)
+        self.move_text(role, turn)
     }
 }
