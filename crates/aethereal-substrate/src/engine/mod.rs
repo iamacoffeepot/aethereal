@@ -2521,8 +2521,13 @@ fn keep_lines(buffers: &mut Buffers, me: Seated) {
     buffers.mailed.retain(|mailed| matches!(mailed.tie.read(), Tied::Unanswered(_)));
     buffers.effects.retain(|effect| is_reported_failure(effect, me));
     buffers.gifts.retain(|gift| gift.by == Giver::Actor(me));
-    // A turn that fails runs no job, and cancels none (ADR-0018).
-    buffers.jobs.clear();
+    // A turn that fails runs no job, and cancels none (ADR-0018): what it gave a job is dropped as what it gave mail is.
+    for job in buffers.jobs.drain(..) {
+        let is_mine = job.by == me;
+        if is_mine {
+            buffers.gifts.extend(job.given.into_iter().map(|kept| Gift::loose(me, kept)));
+        }
+    }
     buffers.cancelled.clear();
     for gift in &mut buffers.gifts {
         gift.on = Carried::Nowhere;

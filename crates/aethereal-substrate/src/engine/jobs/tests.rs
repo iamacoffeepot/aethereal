@@ -5,10 +5,11 @@ use super::super::*;
 use super::*;
 use aethereal_actor::Entry;
 use aethereal_actor::{
-    Actor, Answer, Answered, Bytes, ChildOf, Ending, Given, Handles, Job, JobType, Path, Resource, Runner, Running,
-    Services, Tells, Time, Top, Turn, Unanswered, path,
+    Actor, Answer, Answered, Bytes, ChildOf, Ending, Given, Handles, Job, JobType, NotHeld, Path, Resource, Runner,
+    Running, Services, Tells, Time, Top, Turn, Unanswered, path,
 };
 use aethereal_data::{Bound, Plain};
+use std::any;
 use std::future;
 use std::sync::Mutex;
 use std::task::Context as Polled;
@@ -24,6 +25,8 @@ enum Done {
     Put { first: Vec<u8>, second: Vec<u8>, kept: Vec<u8> },
     /// A light answered with lanterns of these lights.
     Lit(u64, u64),
+    /// A bump answered with counters of these counts.
+    Counted(Vec<u64>),
 }
 
 /// A job that doubles its number.
@@ -219,6 +222,64 @@ impl Job for Light {
     }
 }
 
+/// A resource an actor gives a job: a value that is not data, which the job changes.
+struct Counter {
+    count: u64,
+}
+
+impl Resource for Counter {}
+
+/// What a bump does with the counter it is given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum How {
+    /// Takes it, adds forty-one, and hands it back.
+    HandsBack,
+    /// Leaves it untaken.
+    Leaves,
+    /// Takes it, then faults.
+    Faults,
+    /// Takes it, hands it, then takes what it handed.
+    TakesAgain,
+}
+
+/// A job given a counter, which does with it what `how` says.
+#[derive(Bound)]
+#[kind(name = "aether.test.bump")]
+struct Bump {
+    counter: Given<Counter>,
+    how: How,
+}
+
+/// What a bump answers with: the counters it hands back.
+#[derive(Bound)]
+#[kind(name = "aether.test.bumped")]
+struct Bumped {
+    counters: Vec<Given<Counter>>,
+}
+
+impl Job for Bump {
+    type Done = Bumped;
+    const RUNNER: Runner = Runner::Compute;
+
+    async fn run(self, job: &mut Running) -> Result<Bumped, Fault> {
+        if self.how == How::Leaves {
+            return Ok(Bumped { counters: Vec::new() });
+        }
+        let mut counter = job.take(self.counter)?;
+        counter.count += 41;
+
+        match self.how {
+            How::HandsBack => Ok(Bumped { counters: vec![job.hand(counter)] }),
+            How::TakesAgain => {
+                let handed = job.hand(counter);
+                job.take(handed)?;
+                Ok(Bumped { counters: Vec::new() })
+            }
+            How::Faults | How::Leaves => Err(Fault::of_parts(KindId::of::<Self>(), Vec::new())),
+        }
+    }
+}
+
 /// A job no program lists: a native turn's job carries its own code.
 #[derive(Plain)]
 #[kind(name = "aether.test.unlinked")]
@@ -290,6 +351,10 @@ enum What {
     Unlinked,
     /// Runs a job, and fails its turn.
     FailTheTurn,
+    /// Gives a [`Bump`] a counter of one, which does with it what this says.
+    Bump(How),
+    /// Gives a [`Bump`] a counter of one, and cancels it in the same turn.
+    BumpAndCancel,
 }
 
 /// How a job a test holds comes to an end.
@@ -332,7 +397,14 @@ impl ChildOf for Worker {
 impl Actor for Worker {
     type Config = Which;
     type Key = ();
-    type Handles = (Go, Answer<Doubled, Which>, Answer<Rang, GiveUp>, Answer<Shrunk, Which>, Answer<Lit, Which>);
+    type Handles = (
+        Go,
+        Answer<Doubled, Which>,
+        Answer<Rang, GiveUp>,
+        Answer<Shrunk, Which>,
+        Answer<Lit, Which>,
+        Answer<Bumped, Which>,
+    );
     type BeginSends = ();
     type EndSends = ();
 
@@ -435,6 +507,18 @@ impl Handles<Go> for Worker {
                 turn.run(&Double { n: 0 }, &which)?;
                 return Err(Fault::of_parts(KindId::of::<Go>(), Vec::new()));
             }
+            What::Bump(how) => {
+                let counter = turn.keep(Counter { count: 1 })?;
+                let bump = Bump { counter: turn.give(counter)?, how };
+                turn.run(&bump, &which)?
+            }
+            What::BumpAndCancel => {
+                let counter = turn.keep(Counter { count: 1 })?;
+                let bump = Bump { counter: turn.give(counter)?, how: How::HandsBack };
+                let id = turn.run(&bump, &which)?;
+                turn.cancel(id);
+                id
+            }
         };
         self.ran.push((go.at, id.mail().count));
 
@@ -494,6 +578,27 @@ impl Handles<Answer<Lit, Which>> for Worker {
                 let (mut first, mut second) = (turn.take(first)?, turn.take(second)?);
 
                 Done::Lit(turn.open(&mut first)?.light, turn.open(&mut second)?.light)
+            }
+            Answered::No(why) => Done::No(why),
+        };
+        self.done.push((which.at, done));
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Bumped, Which>> for Worker {
+    type Sends = ();
+
+    fn handle(&mut self, (done, which): (Answered<Bumped>, Which), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let done = match done {
+            Answered::Yes(Bumped { counters }) => {
+                let mut counts = Vec::new();
+                for counter in counters {
+                    let mut counter = turn.take(counter)?;
+                    counts.push(turn.open(&mut counter)?.count);
+                }
+                Done::Counted(counts)
             }
             Answered::No(why) => Done::No(why),
         };
@@ -1144,4 +1249,78 @@ fn a_waiting_job_cancelled_or_of_an_actor_that_ended_is_never_handed_out() {
     }
 
     assert_eq!(handed, [(0, vec![2]), (0, Vec::new())], "the first is stopped, and the second never handed out");
+}
+
+/// The counts of the counters the worker took back from its bumps, and what each counter its log records dropped is
+/// called.
+fn counted(engine: &Engine, seated: Seated) -> (Vec<(u64, Done)>, Vec<&'static str>) {
+    let dropped = engine
+        .log(seated)
+        .filter_map(|entry| match entry {
+            Entry::Dropped(name) => Some(*name),
+            _ => None,
+        })
+        .collect();
+
+    (done(engine, seated), dropped)
+}
+
+#[test]
+fn a_job_takes_the_resource_its_actor_gave_it_and_hands_it_back_changed() {
+    // Catches a resource a turn gave a job left among the turn's gifts, so it is dropped at the end of the turn and the
+    // job's take finds nothing; one the job takes under another ticket, or not at all; and one handed back that is not
+    // the one taken, so the actor reads the count it gave and not the one the job made.
+    let (mut engine, seated) = engine(Arc::new(Inline::new(Arc::new(Services::none()))));
+    poke(&mut engine, 1, What::Bump(How::HandsBack));
+    engine.bring();
+    settle(&mut engine);
+
+    assert_eq!(counted(&engine, seated), (vec![doubled(0, 2), (1, Done::Counted(vec![42]))], Vec::new()));
+}
+
+#[test]
+fn a_resource_a_job_does_not_take_is_dropped_with_it_and_logged() {
+    // Catches a resource a job was given and did not take kept somewhere once the job is answered, or dropped with no
+    // record in its actor's log, as a resource given in mail and not taken is recorded.
+    let (mut engine, seated) = engine(Arc::new(Inline::new(Arc::new(Services::none()))));
+    poke(&mut engine, 1, What::Bump(How::Leaves));
+    engine.bring();
+    settle(&mut engine);
+
+    let dropped = vec![any::type_name::<Counter>()];
+    assert_eq!(counted(&engine, seated), (vec![doubled(0, 2), (1, Done::Counted(Vec::new()))], dropped));
+}
+
+#[test]
+fn a_cancelled_or_faulted_job_drops_the_resource_it_was_given_and_logs_it() {
+    // Catches the resource of a job cancelled as it waits handed out anyway, or dropped with no record; and the
+    // resource of a job that took it and then faulted carried to its actor with the fault, or dropped with no record.
+    let (mut engine, seated) = engine(Arc::new(Inline::new(Arc::new(Services::none()))));
+    poke(&mut engine, 1, What::BumpAndCancel);
+    poke(&mut engine, 2, What::Bump(How::Faults));
+    engine.bring();
+    settle(&mut engine);
+
+    let dropped = vec![any::type_name::<Counter>(); 2];
+    assert_eq!(counted(&engine, seated), (vec![doubled(0, 2), faulted(2)], dropped));
+}
+
+#[test]
+fn a_job_takes_a_resource_once_and_only_one_it_was_given() {
+    // Catches a take that finds a resource by its ticket alone, so a job takes what it handed itself, or takes again
+    // what it has already taken: the second take is refused, and the job is answered faulted with why.
+    let (mut engine, seated) = engine(Arc::new(Inline::new(Arc::new(Services::none()))));
+    poke(&mut engine, 1, What::Bump(How::TakesAgain));
+    engine.bring();
+    settle(&mut engine);
+
+    assert_eq!(counted(&engine, seated), (vec![doubled(0, 2), faulted(1)], vec![any::type_name::<Counter>()]));
+    let faulted: Vec<KindId> = engine
+        .log(seated)
+        .filter_map(|entry| match entry {
+            Entry::JobFaulted(fault) => Some(fault.kind()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(faulted, [KindId::of::<NotHeld>()]);
 }

@@ -13,7 +13,7 @@ pub use to::{Leaves, Lives, Toward, Vantage};
 use crate::Submitted;
 #[cfg(feature = "std")]
 #[cfg(feature = "std")]
-use crate::job::lending;
+use crate::job::{WrittenJob, lending_given};
 use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
@@ -26,7 +26,7 @@ use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, Bytes, Config, Maker, config_bytes};
 #[cfg(feature = "std")]
-use crate::{Fills, JobCode, JobType, Spares};
+use crate::{Fills, JobCode, JobType, Kept, Spares};
 use aethereal_data::{ActorId, ActorPath, Decode, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -776,13 +776,15 @@ impl Seat<'_> {
     }
 
     /// Runs `job`, keeping `context` until it is answered with a `J::Done` (ADR-0018): it takes the next count of what
-    /// this actor sends, as a piece of mail would, which with the actor is the job's id. A job whose type fills buffers
-    /// is lent the largest buffer this actor keeps (ADR-0042). In a guest's code, its host reads the job from its
-    /// records and files it as it is filed here (ADR-0015).
+    /// this actor sends, as a piece of mail would, which with the actor is the job's id. Each resource the job holds,
+    /// one this turn gave, goes with it, as a gift goes with mail. A job whose type fills buffers is lent the largest
+    /// buffer this actor keeps (ADR-0042). In a guest's code, its host reads the job from its records and files it as
+    /// it is filed here (ADR-0015).
     #[cfg(feature = "std")]
     fn run<J: Job, C: Encode<Within>>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun> {
-        let (bytes, lent) = lending(job).map_err(Unrun::Unwritten)?;
+        let WrittenJob { bytes, lent, carried } = lending_given(job).map_err(Unrun::Unwritten)?;
         let context = Written::of(context).map_err(Unrun::Unwritten)?;
+        let given = self.give_to_job(&carried).map_err(Unrun::Unwritten)?;
         let buffers = match J::FILLS {
             Fills::Buffers => self.keeps.lend(),
             Fills::Nothing => Spares::new(),
@@ -793,12 +795,27 @@ impl Seat<'_> {
         let answer = KindId::of::<J::Done>();
         let refers = lent.iter().map(Bytes::id).collect();
         let code = JobCode::Native(JobType::of::<J>());
-        let submitted = Submitted { by: self.me, count, code, answer, bytes, refers, buffers };
+        let submitted = Submitted { by: self.me, count, code, answer, bytes, refers, buffers, given };
         self.asked.buffers.jobs.push(submitted);
         // A job is cancelled by its asker, and inherits no deadline (ADR-0041).
         self.asked.asks.push((self.me, Asking { count, answer, context, lent, due: Due::Never }));
 
         Ok(id)
+    }
+
+    /// Takes out each resource `carried` names, which a job this turn runs holds, to go with the job: each must be one
+    /// this turn gave and nothing carries. A guest's job is given none: its host runs it from its kind alone, with no
+    /// resource beside its bytes (ADR-0015, ADR-0018).
+    #[cfg(feature = "std")]
+    fn give_to_job(&mut self, carried: &[u64]) -> Result<Vec<Kept>, EncodeError> {
+        // Most jobs are given no resource.
+        if carried.is_empty() {
+            return Ok(Vec::new());
+        }
+        match self.keeps {
+            Keeps::Here(_) => resource::carry_to_job(&mut self.asked.buffers.gifts, carried, self.me),
+            Keeps::Claimed => Err(EncodeError::NotCarried { name: "Given" }),
+        }
     }
 
     /// Cancels the job `job`, when this actor ran it (ADR-0018).
