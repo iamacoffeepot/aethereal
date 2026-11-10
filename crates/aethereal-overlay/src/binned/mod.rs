@@ -107,6 +107,11 @@ impl<A: Accrue> Binned<A> {
         self.open = Open::Filling { span, bin: A::first(sample) };
     }
 
+    /// The newest sample: none while none has been taken in.
+    pub fn newest(&self) -> Option<A::Sample> {
+        self.samples.back().map(|stamped| stamped.sample)
+    }
+
     /// The program's time of the newest sample: zero while none has been taken in.
     fn newest_nanos(&self) -> u64 {
         self.samples.back().map_or(0, |stamped| stamped.elapsed_nanos)

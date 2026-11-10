@@ -12,7 +12,7 @@ use crate::console::Logged;
 use crate::gpu::{self, GpuFigures, GpuTiming};
 use crate::layout::Layout;
 use crate::lines;
-use crate::meters::{self, EngineMemory};
+use crate::meters::{self, EngineMemory, Meter};
 use crate::scrollbar;
 use crate::stop::Stop;
 use aethereal_actor::{Allows, Asks, Fault, Handles, Level, On, Path, Tells, Tick, Turn, path};
@@ -88,7 +88,9 @@ impl Overlay {
         for role in TextRole::ALL {
             self.move_text(role, turn)?;
         }
-        self.write_text(TextRole::Meters, turn)?;
+        for meter in Meter::ALL {
+            self.write_text(TextRole::Meter(meter), turn)?;
+        }
         self.write_console(turn)?;
         if self.stop.draws() {
             self.write_chart(turn)?;
@@ -193,7 +195,8 @@ impl Overlay {
             self.gpu_top = gpu::graph(&mut records, layout, slide, self.budget, times.columns(count));
         }
         lines::rows(&mut records, layout, slide, &self.lines.columns(count));
-        meters::bars(&mut records, layout, &self.memory);
+        let frames = &self.frames;
+        meters::rows(&mut records, layout, &self.memory, &mut self.histories, |count| frames.slide(count));
         chart::marks(&mut records, layout, slide, self.marks.times());
         if self.stop.console() {
             chart::cursor(&mut records, layout, self.console.cursor_column());
@@ -272,9 +275,9 @@ impl Overlay {
 }
 
 /// Each cycle's time is kept, the marks told since the last stamped with it, the chart written again, the figures,
-/// the GPU's figures, and the engine's memory for the meters worked out again when they are due, and their texts and the rows' values written only when
-/// what they show changes, and the engine's log read when it is due. Heard only while the overlay is
-/// shown.
+/// the GPU's figures, and the engine's memory for the meters worked out again when they are due and the memory kept in
+/// the meters' histories, and their texts and the rows' values written only when what they show changes, and the
+/// engine's log read when it is due. Heard only while the overlay is shown.
 impl Handles<On<Tick>> for Overlay {
     type Sends =
         (Tells<Path<Renderer>, WriteInstances>, Tells<Path<Renderer>, WriteText>, Tells<Path<Renderer>, MoveText>);
@@ -309,7 +312,10 @@ impl Handles<On<Tick>> for Overlay {
             self.write_text(TextRole::GpuFigures, turn)?;
             self.write_text(TextRole::Lines, turn)?;
             self.memory = EngineMemory::of(&turn.engine_stats());
-            self.write_text(TextRole::Meters, turn)?;
+            self.histories.read(tick.elapsed_nanos, &self.memory);
+            for meter in Meter::ALL {
+                self.write_text(TextRole::Meter(meter), turn)?;
+            }
         }
 
         let logs_due = tick.elapsed_nanos >= self.logs_due_nanos;
@@ -325,13 +331,14 @@ impl Handles<On<Tick>> for Overlay {
 }
 
 /// The budget each frame's statistics bring, which the chart is drawn against from the next `Tick`, and the frame's
-/// values for the lines' rows. Heard only while the overlay is shown.
+/// values for the lines' rows and its GPU memory for the GPU meter. Heard only while the overlay is shown.
 impl Handles<FrameStats> for Overlay {
     type Sends = ();
 
     fn handle(&mut self, stats: FrameStats, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.budget = stats.budget;
         self.lines.push(&stats);
+        self.histories.framed(&stats);
 
         Ok(())
     }

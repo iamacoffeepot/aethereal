@@ -18,7 +18,7 @@ use crate::frames::{Figures, FrameTimes};
 use crate::gpu::{GpuFigures, GpuTiming, GraphTop};
 use crate::lines::FrameLines;
 use crate::marks::Marks;
-use crate::meters::EngineMemory;
+use crate::meters::{EngineMemory, MeterHistories};
 use crate::stop::Stop;
 use crate::tools::{Marked, OverlayTools, OverlayToolsConfig};
 use aethereal_actor::{
@@ -94,7 +94,7 @@ pub struct Overlay {
     gpu_figures: GpuFigures,
     /// The top the GPU's graph was last drawn to, which the gutter beside it says.
     gpu_top: GraphTop,
-    /// Each frame's draws, triangles, bytes uploaded, and GPU memory, as its statistics tell them.
+    /// Each frame's draws, triangles, and bytes uploaded, as its statistics tell them.
     lines: FrameLines,
     chart: Chart,
     /// The overlay's texts: the chart's figures, the band's count of warnings and errors, and the console's scrollback
@@ -110,6 +110,8 @@ pub struct Overlay {
     alerts: Alerts,
     /// The engine's memory as the band's meters last read it, four times a second while it is shown.
     memory: EngineMemory,
+    /// The last minute of the meters with no limit, process, guests, and GPU, which their rows graph.
+    histories: MeterHistories,
     /// The step the engine's recent log is next read from (ADR-0053: Logs in the console).
     logs_since: u64,
     /// The program's time from which the log is next read.
@@ -194,6 +196,7 @@ impl Actor for Overlay {
             marks: Marks::default(),
             alerts: Alerts::default(),
             memory: EngineMemory::Unread,
+            histories: MeterHistories::default(),
             logs_since: 0,
             logs_due_nanos: 0,
         })

@@ -7,23 +7,23 @@ use crate::layout::Layout;
 use aethereal_render::stats::{Alive, AtlasFill, FrameBudget, FrameDrawn, FrameStats, GpuMemory};
 use aethereal_window::Surface;
 
-/// The statistics of a frame of the cycle at `elapsed_nanos` that recorded `draws`, drew no triangles, uploaded
-/// nothing, and holds a byte, two, three, four, and five of each kind of GPU memory.
+/// The statistics of a frame of the cycle at `elapsed_nanos` that recorded `draws`, drew no triangles, and uploaded
+/// fifteen bytes.
 fn stats(elapsed_nanos: u64, draws: u32) -> FrameStats {
     FrameStats {
         elapsed_nanos,
         budget: FrameBudget::UNTOLD,
-        drawn: FrameDrawn { draws, triangles: 0, uploaded_bytes: 0 },
-        memory: GpuMemory { meshes_bytes: 1, textures_bytes: 2, targets_bytes: 3, buffers_bytes: 4, atlas_bytes: 5 },
+        drawn: FrameDrawn { draws, triangles: 0, uploaded_bytes: 15 },
+        memory: GpuMemory::default(),
         alive: Alive::default(),
         atlas: AtlasFill::default(),
     }
 }
 
 /// Each column of a row is the most of its frames, its bar against the most any column shown came to, from the row's
-/// foot; a line that is nothing in every column draws nothing; and GPU memory is every kind's bytes summed. So a column
-/// that averages its frames and hides a spike, a row scaled against something else than what it shows, an empty row
-/// drawn as a strip of one-pixel bars, or a memory line of one kind alone, is caught.
+/// foot; and a line that is nothing in every column draws nothing. So a column that averages its frames and hides a
+/// spike, a row scaled against something else than what it shows, or an empty row drawn as a strip of one-pixel bars,
+/// is caught.
 #[test]
 fn a_row_s_columns_are_the_most_of_their_frames_against_the_most_shown() {
     let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
@@ -38,9 +38,9 @@ fn a_row_s_columns_are_the_most_of_their_frames_against_the_most_shown() {
     rows(&mut records, layout, slide, &lines.columns(60));
 
     let drawn = read(&records);
-    let (draws_row, memory_row) = (layout.row(0), layout.row(3));
+    let (draws_row, uploaded_row) = (layout.row(0), layout.row(2));
     let heights: Vec<f32> = drawn.iter().map(|record| record.area[3]).collect();
-    let expected = [draws_row.height() / 2.0, draws_row.height(), memory_row.height(), memory_row.height()];
+    let expected = [draws_row.height() / 2.0, draws_row.height(), uploaded_row.height(), uploaded_row.height()];
     let near = heights.len() == expected.len() && heights.iter().zip(expected).all(|(a, b)| (a - b).abs() < 0.01);
     assert!(near, "{heights:?} are not {expected:?}");
     assert!(drawn.iter().all(|record| record.colour == STONE.at(0.6)));
@@ -50,7 +50,7 @@ fn a_row_s_columns_are_the_most_of_their_frames_against_the_most_shown() {
         drawn[0]
     );
     assert!(
-        (drawn[3].area[1] + drawn[3].area[3] - memory_row.max.y).abs() < 0.01,
+        (drawn[3].area[1] + drawn[3].area[3] - uploaded_row.max.y).abs() < 0.01,
         "{:?} is off the row's foot",
         drawn[3]
     );

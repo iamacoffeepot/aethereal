@@ -24,7 +24,6 @@ impl Line {
             Self::Draws => "draws",
             Self::Triangles => "triangles",
             Self::Uploaded => "uploaded",
-            Self::Memory => "gpu memory",
         }
     }
 
@@ -32,7 +31,7 @@ impl Line {
     fn written(self, value: u64) -> String {
         match self {
             Self::Draws | Self::Triangles => count(value),
-            Self::Uploaded | Self::Memory => bytes_shown(value),
+            Self::Uploaded => bytes_shown(value),
         }
     }
 }

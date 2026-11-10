@@ -1,5 +1,5 @@
-//! The four lines beneath the GPU's graph (ADR-0053: The three stops): draws, triangles, bytes uploaded, and GPU
-//! memory, from each frame's statistics, kept over the frame chart's axis by the cycle each frame was drawn in and cut
+//! The three lines beneath the GPU's graph (ADR-0053: The three stops): draws, triangles, and bytes uploaded, from each
+//! frame's statistics, kept over the frame chart's axis by the cycle each frame was drawn in and cut
 //! into its columns, each the most of its frames, so a spike in one frame is not averaged away; each drawn as a row of
 //! bars (`rows`), with its label and its latest value beside it in the gutter (`figures`).
 
@@ -8,14 +8,14 @@ mod rows;
 #[cfg(test)]
 mod tests;
 
-pub use rows::rows;
+pub use rows::{row, rows};
 
 use crate::binned::{Accrue, Binned, Spanned};
 use aethereal_data::Plain;
-use aethereal_render::stats::{FrameStats, GpuMemory};
+use aethereal_render::stats::FrameStats;
 
 /// How many lines there are, each a row and a column's record in it.
-pub const LINES: u32 = 4;
+pub const LINES: u32 = 3;
 
 /// [`LINES`], as the length of a frame's values.
 const COUNT: usize = LINES as usize;
@@ -29,13 +29,11 @@ pub enum Line {
     Triangles,
     /// The bytes written to the GPU since the frame before.
     Uploaded,
-    /// The GPU memory of everything the renderer made: each kind's bytes, summed.
-    Memory,
 }
 
 impl Line {
     /// Every line, in the order the rows stand from the top.
-    pub const ALL: [Self; COUNT] = [Self::Draws, Self::Triangles, Self::Uploaded, Self::Memory];
+    pub const ALL: [Self; COUNT] = [Self::Draws, Self::Triangles, Self::Uploaded];
 }
 
 /// Each line's value in one frame, or the most of them over a column's frames, in [`Line::ALL`]'s order.
@@ -47,13 +45,9 @@ pub struct Values {
 impl Values {
     /// The values `stats` tell of their frame.
     pub fn of(stats: &FrameStats) -> Self {
-        let GpuMemory { meshes_bytes, textures_bytes, targets_bytes, buffers_bytes, atlas_bytes } = stats.memory;
-        let memory = [meshes_bytes, textures_bytes, targets_bytes, buffers_bytes, atlas_bytes]
-            .into_iter()
-            .fold(0_u64, u64::saturating_add);
         let drawn = stats.drawn;
 
-        Self { values: [u64::from(drawn.draws), drawn.triangles, drawn.uploaded_bytes, memory] }
+        Self { values: [u64::from(drawn.draws), drawn.triangles, drawn.uploaded_bytes] }
     }
 
     /// The value of `line`.
