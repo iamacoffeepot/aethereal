@@ -208,7 +208,7 @@
 
 use super::{CreateFrame, DepthUse, Does, Ends, FrameRefused, Load, PassSpec, Scale, TargetKind, TargetSpec};
 use crate::effect::{EffectId, ReadKind, Reads};
-use crate::pass::{Pass, PassName};
+use crate::pass::Pass;
 use crate::placement::Bind;
 use crate::shape::Samples;
 use core::fmt::{self, Debug, Formatter};
@@ -708,9 +708,8 @@ impl FrameBuilder {
     pub fn finish<P: Pass>(mut self, _: P, last: impl Last) -> Result<CreateFrame, FrameRefused> {
         let does = last.does(&mut self.targets);
         self.add::<P>(does);
-        let names: Vec<PassName> = self.passes.iter().map(|pass| pass.name).collect();
-        for (name, at) in names.iter().zip(0..) {
-            let repeated = names[..at as usize].contains(name);
+        for (pass, at) in self.passes.iter().zip(0..) {
+            let repeated = self.passes[..at as usize].iter().any(|before| before.repeats(pass));
             if repeated {
                 return Err(FrameRefused::Repeated { pass: at });
             }
@@ -721,6 +720,6 @@ impl FrameBuilder {
 
     /// Adds the pass `P`, doing as `does` says.
     fn add<P: Pass>(&mut self, does: Does) {
-        self.passes.push(PassSpec { name: PassName::of::<P>(), does });
+        self.passes.push(PassSpec::of::<P>(does));
     }
 }

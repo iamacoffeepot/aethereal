@@ -261,19 +261,18 @@ fn a_placement_is_refused_a_pass_that_reads_targets_a_pass_twice_and_a_text_or_f
     // binds what it reads, would not draw; a pass joined twice; and a text, a frame, or a placement not drawable.
     let (device, _) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let mut kept = kept(&device);
-    let glow = PassSpec {
-        name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::Texture(0), depth: DepthUse::Off, load: Load::Clear, reads: Vec::new() },
-    };
-    let over = PassSpec {
-        name: PassName::of::<Overlay>(),
-        does: Does::Draw {
-            into: Target::End,
-            depth: DepthUse::Off,
-            load: Load::Clear,
-            reads: vec![Target::Texture(0)],
-        },
-    };
+    let glow = PassSpec::of::<Main>(Does::Draw {
+        into: Target::Texture(0),
+        depth: DepthUse::Off,
+        load: Load::Clear,
+        reads: Vec::new(),
+    });
+    let over = PassSpec::of::<Overlay>(Does::Draw {
+        into: Target::End,
+        depth: DepthUse::Off,
+        load: Load::Clear,
+        reads: vec![Target::Texture(0)],
+    });
     let create = CreateFrame {
         ends: Ends::Texture { size: Size { width: 4, height: 4 }, format: TextureFormat::Rgba8 },
         targets: vec![TargetSpec { kind: TargetKind::Float, scale: frame::Scale::Full, samples: Samples::One }],

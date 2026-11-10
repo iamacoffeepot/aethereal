@@ -5,7 +5,7 @@ use super::groups::Groups;
 use super::read_layout;
 use crate::effect::Read;
 use crate::frame::{
-    CreateFrame, DepthUse, Does, Ends, Frame, FrameId, Load, PassRefused, Scale, Size, Target, TargetSpec,
+    CreateFrame, DepthUse, Does, Ends, Frame, FrameId, Load, PassRefused, PassSpec, Scale, Size, Target, TargetSpec,
 };
 use crate::pass::PassName;
 use crate::placement::{Fits, Resource};
@@ -224,6 +224,11 @@ impl Walk {
     pub fn passes(&self) -> u32 {
         // A frame's passes are a handful, far below what a `u32` counts.
         u32::try_from(self.steps.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Each pass's spec, in the order it runs.
+    pub fn specs(&self) -> &[PassSpec] {
+        &self.create.passes
     }
 
     /// Each pass in the order it runs: its name, and what it does, made.
