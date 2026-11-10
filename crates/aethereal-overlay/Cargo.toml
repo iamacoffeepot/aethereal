@@ -1,0 +1,33 @@
+[package]
+name = "aethereal-overlay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The dev overlay: one root any program lists, which draws how the engine is doing over what the program drew (ADR-0053)"
+
+# It reads the window and the renderer, so no capability's crate can hold it (ADR-0053: Where it lives).
+[dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-data = { path = "../aethereal-data" }
+# Its panels and the chart are laid out in the math crate's boxes, as the renderer's texts are clipped in them.
+aethereal-math = { path = "../aethereal-math" }
+aethereal-render = { path = "../aethereal-render" }
+aethereal-substrate = { path = "../aethereal-substrate" }
+aethereal-window = { path = "../aethereal-window" }
+
+# The `overlay` example draws a backdrop with the overlay listed, in an engine linked to a hub that it hands
+# `capture_frame` (ADR-0043), `send_input` (ADR-0046), and the other tools `linked_window` hands it.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+aethereal-chassis-desktop = { path = "../aethereal-chassis-desktop" }
+aethereal-chassis-headless = { path = "../aethereal-chassis-headless" }
+aethereal-files = { path = "../aethereal-files" }
+aethereal-link = { path = "../aethereal-link" }
+aethereal-pace = { path = "../aethereal-pace", features = ["tools"] }
+aethereal-render = { path = "../aethereal-render", features = ["tools"] }
+aethereal-tcp = { path = "../aethereal-tcp" }
+aethereal-tools = { path = "../aethereal-tools" }
+aethereal-window = { path = "../aethereal-window", features = ["tools"] }
+
+[lints]
+workspace = true
