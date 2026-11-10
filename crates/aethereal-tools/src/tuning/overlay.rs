@@ -48,6 +48,48 @@ pub fn overlay(base: &str, fields: &str, budget: &mut Budget) -> Result<String, 
     Ok(out)
 }
 
+/// The names of the fields of `fields`, a JSON object.
+///
+/// # Errors
+///
+/// When it is not JSON, or not an object.
+pub fn named(fields: &str, budget: &mut Budget) -> Result<Vec<String>, Unlaid> {
+    let given = read_json(fields, budget).map_err(|why| Unlaid::Unread(why.to_string()))?;
+    let &JsonValue::Object(set) = given.root() else {
+        return Err(Unlaid::NotFields);
+    };
+
+    Ok(given.members(set).iter().map(|member| member.name.clone()).collect())
+}
+
+/// The JSON object `base` with only the fields `names` names, in `base`'s order: what a `tune` set, as it then
+/// stands. A name `base` has not is left out.
+///
+/// # Errors
+///
+/// When `base` is not JSON, or not an object.
+pub fn picked(base: &str, names: &[String], budget: &mut Budget) -> Result<String, Unlaid> {
+    let base = read_json(base, budget).map_err(|why| Unlaid::Unread(why.to_string()))?;
+    let &JsonValue::Object(had) = base.root() else {
+        return Err(Unlaid::NotFields);
+    };
+
+    let mut out = String::from("{");
+    let mut first = true;
+    for member in base.members(had) {
+        let was_set = names.contains(&member.name);
+        if was_set {
+            separate(&mut out, &mut first);
+            write_json_string(&member.name, &mut out);
+            out.push(':');
+            write(&base, &member.value, &mut out);
+        }
+    }
+    out.push('}');
+
+    Ok(out)
+}
+
 /// Writes a comma before each member but the first.
 fn separate(out: &mut String, first: &mut bool) {
     if !*first {

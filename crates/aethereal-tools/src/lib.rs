@@ -41,6 +41,6 @@ pub use toolbox::{Offering, Toolbox, ToolboxConfig, Unlisted};
 pub use tooling::{Call, Called, Done, Offer, Offered, Output, ToolFlag, ToolSheet, Tooling, Typed, Withdraw};
 pub use tools::{CallTool, Forwarding, ListTools, Sheets, Subscribe, Tools, ToolsSettings};
 pub use tuning::{
-    About, ActorTuning, ListTuning, Listed, Reading, Setting, TunableList, TuneFields, TuningList, TuningTool,
-    TuningToolConfig,
+    About, ActorTuning, FieldsSet, ListTuning, Listed, Reading, Setting, TunableList, TuneFields, TuningList,
+    TuningTool, TuningToolConfig,
 };
