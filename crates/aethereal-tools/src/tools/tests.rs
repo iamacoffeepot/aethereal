@@ -3,7 +3,7 @@
 //! changed since is refused.
 
 use super::*;
-use crate::{Output, Tool, ToolSheet, Toolbox, ToolboxConfig};
+use crate::{Output, Tool, ToolFlag, ToolSheet, Toolbox, ToolboxConfig, Typed};
 use aethereal_actor::{ActorRef, Anywhere, ProtocolRef};
 use aethereal_data::{Budget, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_substrate::Engine;
@@ -86,6 +86,7 @@ fn sheet(name: &str) -> ToolSheet {
         name: String::from(name),
         description: String::from("Says how long a text is"),
         input: SchemaNodes::of(&Say::SHAPE),
+        flags: Vec::new(),
         output: Output::Value(SchemaNodes::of(&Said::SHAPE)),
     }
 }
@@ -191,5 +192,22 @@ fn a_call_of_a_set_changed_since_is_refused_and_one_of_the_set_held_is_served() 
     harness.reply(call, &Called::Refused(String::from("served")))?;
     assert_eq!(harness.answer(current)?, Answered::Yes(Called::Refused(String::from("served"))));
 
+    Ok(())
+}
+
+#[test]
+fn an_offer_whose_flag_names_no_field_of_its_input_is_refused() -> Result<(), Unheard> {
+    // Catches a holder that takes a sheet whose command line has drifted from its input, so a line typed by its flags
+    // would be read into a field the input does not have.
+    let mut harness = held()?;
+    let (tools, worker) = (harness.root::<Tools>(), harness.protocol::<Tooling>());
+    let words = ToolFlag { field: String::from("words"), typed: Typed::Position, doc: String::from("The words.") };
+    let drifted = ToolSheet { flags: vec![words], ..sheet("say") };
+
+    let offering = harness.ask(tools, &Offer { tools: vec![drifted], worker })?;
+
+    assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::BadFlags));
+    let listed = harness.ask(tools, &ListTools)?;
+    assert_eq!(harness.answer(listed)?, Answered::Yes(Sheets { revision: 0, tools: Vec::new() }));
     Ok(())
 }

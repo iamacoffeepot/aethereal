@@ -137,6 +137,12 @@ pub enum FlagError {
         /// The field.
         field: JsonPath,
     },
+    /// A settings kind written by hand declares a field filled by position, which only a tool's input is (ADR-0053):
+    /// a program's sections come from several roots, and no order among them is one a person could type.
+    Positional {
+        /// The field.
+        field: JsonPath,
+    },
 }
 
 impl fmt::Display for FlagError {
@@ -147,6 +153,9 @@ impl fmt::Display for FlagError {
             }
             Self::NoSection { kind } => write!(f, "flags: no section read as {kind} is composed"),
             Self::NoFlag { field } => write!(f, "flags: {field} has no flag"),
+            Self::Positional { field } => {
+                write!(f, "flags: {field} is a setting, and a setting is not filled by position")
+            }
         }
     }
 }

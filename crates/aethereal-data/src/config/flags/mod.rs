@@ -123,8 +123,9 @@ impl<'parts> Flags<'parts> {
         self
     }
 
-    /// The table, refusing a change to a field of a settings kind no section is read as, a rename or a hide of a
-    /// field that has no flag, and two flags left of one name, naming both fields.
+    /// The table, refusing a field a settings kind declares filled by position, a change to a field of a settings
+    /// kind no section is read as, a rename or a hide of a field that has no flag, and two flags left of one name,
+    /// naming both fields.
     ///
     /// # Errors
     ///
@@ -139,12 +140,13 @@ impl<'parts> Flags<'parts> {
         let mut flags = Vec::new();
         for (section, fields) in self.parts.declared() {
             for declared in fields {
+                let path = FieldPath::new(section, Within::Section, declared.name);
                 let (long, short) = match declared.flag {
                     Suggested::NoFlag => continue,
                     Suggested::Long { long } => (long, None),
                     Suggested::LongAndShort { long, short } => (long, Some(short)),
+                    Suggested::Position => return Err(FlagError::Positional { field: path.path() }),
                 };
-                let path = FieldPath::new(section, Within::Section, declared.name);
                 let form = form_of(&path);
                 let long = String::from(long);
                 flags.push(Flag { long, short, path, doc: declared.doc, form });

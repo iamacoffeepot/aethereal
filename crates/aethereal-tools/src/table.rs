@@ -1,6 +1,6 @@
 //! The tools a holder holds, and what it checks of each as it is offered (ADR-0037, ADR-0038).
 
-use crate::{Offered, Output, ToolSheet, Tooling};
+use crate::{CommandLine, Offered, Output, ToolFlag, ToolSheet, Tooling};
 use aethereal_actor::{ErasedActorRef, ProtocolRef};
 use aethereal_data::{Bound, Budget, SchemaNodes, is_object, json_schema};
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,6 +16,8 @@ pub struct HeldTool {
     pub worker: ProtocolRef<Tooling>,
     pub description: String,
     pub input: SchemaNodes,
+    /// The flags its command line is typed with, checked against `input` when it was offered (ADR-0053).
+    pub flags: Vec<ToolFlag>,
     pub output: HeldOutput,
     /// `input` as JSON Schema, written when it was offered.
     pub input_schema: String,
@@ -77,6 +79,7 @@ impl Table {
                 name: name.clone(),
                 description: held.description.clone(),
                 input: held.input.clone(),
+                flags: held.flags.clone(),
                 output: held.output.sheet(),
             })
             .collect()
@@ -108,6 +111,10 @@ impl Table {
             }
             if !is_object(&sheet.input) {
                 return Offered::NotAnObject;
+            }
+            let fits = CommandLine::of(sheet).is_ok();
+            if !fits {
+                return Offered::BadFlags;
             }
         }
         let is_full = self.tools.len().saturating_add(sheets.len()) > room;
@@ -152,7 +159,7 @@ fn is_well_named(name: &str) -> bool {
 /// The tool `sheet` offers: none when a schema it lists has no JSON Schema.
 fn written_tool(sheet: ToolSheet, worker: ProtocolRef<Tooling>) -> Option<(String, HeldTool)> {
     let input_schema = json_schema(&sheet.input, &mut Budget::new(SCHEMA_BYTES)).ok()?;
-    let ToolSheet { name, description, input, output } = sheet;
+    let ToolSheet { name, description, input, flags, output } = sheet;
     let output = match output {
         Output::Value(schema) => {
             let json_schema = json_schema(&schema, &mut Budget::new(SCHEMA_BYTES)).ok()?;
@@ -162,5 +169,5 @@ fn written_tool(sheet: ToolSheet, worker: ProtocolRef<Tooling>) -> Option<(Strin
         Output::ValueOrImage(schema) => HeldOutput::ValueOrImage(schema),
     };
 
-    Some((name, HeldTool { worker, description, input, output, input_schema }))
+    Some((name, HeldTool { worker, description, input, flags, output, input_schema }))
 }

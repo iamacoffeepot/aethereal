@@ -27,9 +27,17 @@ pub const MOST_AROUND: u32 = 16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.read_target")]
 pub struct ReadTarget {
+    /// The window, by its number.
+    #[flag(position)]
     pub window: WindowId,
+    /// The target's place in the frame's targets: 0 for depth on the renderer's own frame.
+    #[flag(position)]
     pub target: u32,
+    /// The pixel, in the window's surface pixels from the top left: `{"x":0,"y":0}`.
+    #[flag(position)]
     pub at: Pixel,
+    /// How many pixels around it are read too: 0 to 16.
+    #[flag(short = 'a')]
     pub around: u32,
 }
 
@@ -105,21 +113,18 @@ impl Actor for TargetTool {
 
 impl Tool for TargetTool {
     fn sheets() -> Vec<ToolSheet> {
-        vec![ToolSheet {
-            name: String::from("read_target"),
-            description: String::from(
-                "Reads what a window's main frame drew into one of its targets at the pixel `at`, in the window's \
-                 surface pixels from the top left, and the pixels within `around` of it (0 to 16), as the last \
-                 frame drawn left it: no frame is waited for, so it reads under a held clock the frame a capture \
-                 just showed. `target` is the target's place in the frame's targets; a program on the renderer's \
-                 own frame keeps depth at 0. Depth is from 0 at the near plane to 1 at the far, 1 where nothing was \
-                 drawn; a program that draws ids into a whole-number target is read the same way. The region is \
-                 answered in the target's pixels, cut to it, row by row. Turning depth into a point in the world \
-                 needs the program's camera, and is the program's own tool's.",
-            ),
-            input: SchemaNodes::of(&ReadTarget::SHAPE),
-            output: Output::Value(SchemaNodes::of(&TargetRead::SHAPE)),
-        }]
+        vec![ToolSheet::of::<ReadTarget>(
+            "read_target",
+            "Reads what a window's main frame drew into one of its targets at the pixel `at`, in the window's \
+             surface pixels from the top left, and the pixels within `around` of it (0 to 16), as the last \
+             frame drawn left it: no frame is waited for, so it reads under a held clock the frame a capture \
+             just showed. `target` is the target's place in the frame's targets; a program on the renderer's \
+             own frame keeps depth at 0. Depth is from 0 at the near plane to 1 at the far, 1 where nothing was \
+             drawn; a program that draws ids into a whole-number target is read the same way. The region is \
+             answered in the target's pixels, cut to it, row by row. Turning depth into a point in the world \
+             needs the program's camera, and is the program's own tool's.",
+            Output::Value(SchemaNodes::of(&TargetRead::SHAPE)),
+        )]
     }
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {

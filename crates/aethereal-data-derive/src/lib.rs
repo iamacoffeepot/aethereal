@@ -17,7 +17,9 @@ mod plain;
 /// field's type. Every field must be `Plain`. `#[kind(name = "…")]` on the
 /// type also writes `Kind` (ADR-0006), and `#[settings]` on a struct
 /// writes `Settings`, a handle for each named field, and the flags
-/// `#[flag]` suggests (ADR-0028).
+/// `#[flag]` suggests (ADR-0028). `#[flag]` on a field of any other struct
+/// writes `Flagged`, the command line a tool's input is typed with, where
+/// `#[flag(position)]` also fills a field by the next bare word (ADR-0053).
 #[proc_macro_derive(Plain, attributes(plain, kind, settings, flag))]
 pub fn derive_plain(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

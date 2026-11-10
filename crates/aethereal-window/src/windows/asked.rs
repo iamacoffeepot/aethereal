@@ -75,7 +75,11 @@ pub enum Unclosed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.windows.set_mode")]
 pub struct SetMode {
+    /// The window, by its number.
+    #[flag(position)]
     pub window: WindowId,
+    /// How it is shown: `windowed`, `maximized`, or `fullscreen`.
+    #[flag(position)]
     pub mode: Mode,
 }
 
@@ -130,7 +134,11 @@ pub struct Listed {
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
 #[kind(name = "aether.windows.resize_window")]
 pub struct ResizeWindow {
+    /// The window, by its number.
+    #[flag(position)]
     pub window: WindowId,
+    /// Its new size, in logical pixels: `{"width":1280,"height":720}`.
+    #[flag(position)]
     pub size: Logical,
 }
 
@@ -157,7 +165,11 @@ pub struct Place {
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
 #[kind(name = "aether.windows.move_window")]
 pub struct MoveWindow {
+    /// The window, by its number.
+    #[flag(position)]
     pub window: WindowId,
+    /// Where its outer frame's top left goes, in logical pixels: `{"x":0,"y":0}`.
+    #[flag(position)]
     pub at: Place,
 }
 

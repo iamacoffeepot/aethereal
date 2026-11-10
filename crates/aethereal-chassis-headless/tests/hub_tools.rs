@@ -112,6 +112,7 @@ fn sheet() -> ToolSheet {
         name: String::from("say"),
         description: String::from("Says how long a text is"),
         input: SchemaNodes::of(&Say::SHAPE),
+        flags: Vec::new(),
         output: Output::Value(SchemaNodes::of(&Said::SHAPE)),
     }
 }
@@ -337,6 +338,7 @@ fn listen_sheet() -> ToolSheet {
         name: String::from("listen"),
         description: String::from("Listens for 0.5 seconds. Then answers what it heard."),
         input: SchemaNodes::of(&Said::SHAPE),
+        flags: Vec::new(),
         output: Output::Value(SchemaNodes::of(&Say::SHAPE)),
     }
 }

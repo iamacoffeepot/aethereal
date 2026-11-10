@@ -52,14 +52,17 @@ use crate::{Bare, Decode, Encode, Kind};
 /// }
 /// ```
 ///
-/// A flag is suggested only for a field of a settings kind.
+/// A setting is never filled by position: a program's sections come from several roots, and no order among them is
+/// one a person could type (ADR-0053).
 ///
 /// ```compile_fail
 /// use aethereal_data::Plain;
 ///
 /// #[derive(Plain, Default)]
-/// struct Loose {
-///     #[flag(long = "workers")]
+/// #[kind(name = "example.engine.settings")]
+/// #[settings]
+/// struct EngineSettings {
+///     #[flag(position)]
 ///     workers: u32,
 /// }
 /// ```
@@ -81,7 +84,7 @@ pub trait Sole: Settings {
     type Value;
 }
 
-/// One named field of a settings kind as it declares it (ADR-0028).
+/// One named field of a settings kind, or of a tool's input, as it declares it (ADR-0028, ADR-0053).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Declared {
     /// The field's name.
@@ -92,7 +95,8 @@ pub struct Declared {
     pub flag: Suggested,
 }
 
-/// The flag a settings kind suggests for a field, written `#[flag(long = "…", short = '…')]` beside it (ADR-0028).
+/// The flag a settings kind or a tool's input suggests for a field, written `#[flag(long = "…", short = '…')]` or
+/// `#[flag(position)]` beside it (ADR-0028, ADR-0053).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Suggested {
     /// No flag is suggested.
@@ -109,4 +113,7 @@ pub enum Suggested {
         /// The short flag's letter.
         short: char,
     },
+    /// No name: the field is filled by the next bare word, in declared order. Only a tool's input declares it; the
+    /// derive refuses it on a settings kind.
+    Position,
 }

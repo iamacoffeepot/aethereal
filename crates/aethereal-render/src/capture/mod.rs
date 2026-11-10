@@ -13,7 +13,7 @@ use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
     ProtocolRef, ToSender, Turn, path,
 };
-use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes};
+use aethereal_data::{Bound, Budget, Plain, from_bytes};
 use aethereal_pace::{Pace, PaceRead, Pacer, ReadPace};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_window::WindowId;
@@ -29,8 +29,14 @@ const INPUT_BYTES: usize = 1024;
 #[derive(Debug, Clone, Copy, Plain)]
 #[kind(name = "aether.render.capture")]
 pub struct Capture {
+    /// The window, by its number.
+    #[flag(position)]
     pub window: WindowId,
+    /// What of the frame is sent: `whole`.
+    #[flag(short = 'c')]
     pub crop: Crop,
+    /// The most pixels of the image's longer side.
+    #[flag(short = 'l')]
     pub longest: u32,
 }
 
@@ -133,19 +139,16 @@ impl Actor for CaptureTool {
 
 impl Tool for CaptureTool {
     fn sheets() -> Vec<ToolSheet> {
-        vec![ToolSheet {
-            name: String::from("capture_frame"),
-            description: String::from(
-                "Captures the next frame drawn onto a window, numbered from 0, as a PNG image, with a line giving the \
-                 frame's size, the crop, and the image's size. Under a held clock it captures the last frame drawn, \
-                 as no frame is drawn until the clock is advanced. `longest` bounds the image's longer side: a larger \
-                 image is shrunk to keep its shape, and a smaller one is never enlarged. An image costs about width \
-                 × height / 750 tokens, so a whole frame at 1024 is about a thousand. `crop` cuts a region of the \
-                 frame, in its pixels from the top left, before shrinking: crop to look closely at part of a frame.",
-            ),
-            input: SchemaNodes::of(&Capture::SHAPE),
-            output: Output::Image,
-        }]
+        vec![ToolSheet::of::<Capture>(
+            "capture_frame",
+            "Captures the next frame drawn onto a window, numbered from 0, as a PNG image, with a line giving the \
+             frame's size, the crop, and the image's size. Under a held clock it captures the last frame drawn, \
+             as no frame is drawn until the clock is advanced. `longest` bounds the image's longer side: a larger \
+             image is shrunk to keep its shape, and a smaller one is never enlarged. An image costs about width \
+             × height / 750 tokens, so a whole frame at 1024 is about a thousand. `crop` cuts a region of the \
+             frame, in its pixels from the top left, before shrinking: crop to look closely at part of a frame.",
+            Output::Image,
+        )]
     }
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {

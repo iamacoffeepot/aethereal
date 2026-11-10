@@ -9,8 +9,10 @@ use aethereal_data::{Bound, FilePath, Plain};
 #[kind(name = "aether.files.read_file")]
 pub struct ReadFile {
     /// The namespace the file is in.
+    #[flag(position)]
     pub namespace: Namespace,
     /// Where it is in the namespace.
+    #[flag(position)]
     pub path: FilePath,
 }
 

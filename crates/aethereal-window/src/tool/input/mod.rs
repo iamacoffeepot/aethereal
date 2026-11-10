@@ -20,7 +20,11 @@ const INPUT_BYTES: usize = MOST_INPUTS as usize * 512;
 #[derive(Debug, Clone, PartialEq, Plain)]
 #[kind(name = "aether.window.send_input")]
 pub struct SendInput {
+    /// The window, by its number.
+    #[flag(position)]
     pub window: WindowId,
+    /// What is performed, in order: `text:<text>`, or a JSON array of inputs.
+    #[flag(position)]
     pub inputs: Vec<Input>,
 }
 
@@ -84,24 +88,21 @@ impl Actor for InputTool {
 
 impl Tool for InputTool {
     fn sheets() -> Vec<ToolSheet> {
-        vec![ToolSheet {
-            name: String::from("send_input"),
-            description: String::from(
-                "Performs `inputs` on a window, in order, as a person at it would: pointer moves, button presses and \
-                 releases, wheel turns, keys down and up, and text typed. A position is in the window's surface pixels \
-                 from its top left; a key is named as the W3C UI Events name it, `code` its place (`KeyW`, \
-                 `ShiftLeft`) and `key` what it means (`w`, `Shift`). The program cannot tell them from a person's. A \
-                 click is PointerMoved, then PointerDown and PointerUp there. A performed KeyDown sends no Text with \
-                 it: a key that types, as a person's does, is KeyDown, then Text of what it typed (`w`), then KeyUp, \
-                 and a text field reads the Text. They are sent whether or not the window has the keyboard. Every \
-                 actor subscribed to the window has them before anything after the answer, so a key pressed, then the \
-                 clock advanced, is down for the advance's first Tick; release it with KeyUp in a later call. At most \
-                 1024 inputs a call; a key's names at most 64 bytes each; a Text at most 256 bytes, not empty, and \
-                 with no control character, as Enter, Backspace and Tab are keys. None is sent when any is refused.",
-            ),
-            input: SchemaNodes::of(&SendInput::SHAPE),
-            output: Output::Value(SchemaNodes::of(&Performed::SHAPE)),
-        }]
+        vec![ToolSheet::of::<SendInput>(
+            "send_input",
+            "Performs `inputs` on a window, in order, as a person at it would: pointer moves, button presses and \
+             releases, wheel turns, keys down and up, and text typed. A position is in the window's surface pixels \
+             from its top left; a key is named as the W3C UI Events name it, `code` its place (`KeyW`, \
+             `ShiftLeft`) and `key` what it means (`w`, `Shift`). The program cannot tell them from a person's. A \
+             click is PointerMoved, then PointerDown and PointerUp there. A performed KeyDown sends no Text with \
+             it: a key that types, as a person's does, is KeyDown, then Text of what it typed (`w`), then KeyUp, \
+             and a text field reads the Text. They are sent whether or not the window has the keyboard. Every \
+             actor subscribed to the window has them before anything after the answer, so a key pressed, then the \
+             clock advanced, is down for the advance's first Tick; release it with KeyUp in a later call. At most \
+             1024 inputs a call; a key's names at most 64 bytes each; a Text at most 256 bytes, not empty, and \
+             with no control character, as Enter, Backspace and Tab are keys. None is sent when any is refused.",
+            Output::Value(SchemaNodes::of(&Performed::SHAPE)),
+        )]
     }
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {

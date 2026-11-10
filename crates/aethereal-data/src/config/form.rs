@@ -1,15 +1,19 @@
 //! How a flag's value is read, picked by its field's schema type, each written once (ADR-0028).
 //!
-//! A form reads the text a person typed into the JSON value the field holds, so the command line and a page's query
-//! read values the same way. A form exists only where text is typed: what it sets is the typed value, in the
-//! document.
+//! A form reads the text a person typed into the JSON value the field holds, so the command line, a page's query, and
+//! a tool's command line at the dev overlay's console read values the same way (ADR-0053); and it writes a value back
+//! as the text it reads, so an answer prints as it would be typed. A form exists only where text is typed: what it
+//! sets is the typed value, in the document.
 
 use super::ConfigFault;
 use super::document::{Json, Leaf};
+use super::place::Place;
 use crate::json::layout::{At, Layout};
 use crate::json::reader;
-use crate::json::tree::Value;
-use crate::{Budget, Float, Integer, SchemaNode, VariantNode};
+use crate::json::tree::{Tree, Value};
+use crate::{Budget, Float, Integer, SchemaNode, SchemaNodes, VariantNode};
+use alloc::boxed::Box;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -36,6 +40,12 @@ pub enum Form {
     Number(NumberForm),
     /// The text itself: a string, or bytes in hexadecimal.
     Text,
+    /// Words of the element's form joined by commas, `capture_frame,record_clip`, the empty text an empty list, or a
+    /// JSON array: a sequence whose element a word reads (ADR-0053). An element's word holds no comma.
+    List {
+        /// How each element is written.
+        element: Box<Self>,
+    },
     /// JSON text: a structure, a sequence, a map, and anything no other form reads.
     Json,
 }
@@ -104,6 +114,31 @@ impl VariantForm {
         Some(form.read(value).map(|value| self.holding(value)))
     }
 
+    /// The words this variant is typed as, for a person: `screen`, or `at-most:<number>`.
+    fn word(&self) -> String {
+        let name = kebab(&self.name);
+        match &self.value {
+            VariantValue::Bare => name,
+            VariantValue::Positional(form) | VariantValue::Named { form, .. } => {
+                format!("{name}:{}", form.placeholder())
+            }
+        }
+    }
+
+    /// The text this variant reads as `held`, the value under its name in `tree`, or nothing when no word writes it.
+    fn write(&self, tree: &Tree<'_>, held: &Value<'_>) -> Option<String> {
+        let name = kebab(&self.name);
+        let text = match (&self.value, held) {
+            (VariantValue::Positional(form), value) => form.write(tree, value)?,
+            (VariantValue::Named { field, form }, Value::Object(span)) => {
+                form.write(tree, tree.member(*span, field)?)?
+            }
+            (VariantValue::Bare | VariantValue::Named { .. }, _) => return None,
+        };
+
+        Some(format!("{name}:{text}"))
+    }
+
     /// This variant holding `value` in its one field, as the document writes it.
     fn holding(&self, value: Json) -> Json {
         let held = match &self.value {
@@ -165,7 +200,119 @@ impl NumberForm {
     }
 }
 
+impl NumberForm {
+    /// The text this form reads as `value`: a number's own text, or the string a wide integer or a float's name is
+    /// written as.
+    fn write(value: &Value<'_>) -> Option<String> {
+        match value {
+            Value::Number(text) => Some(String::from(*text)),
+            Value::String(text) => Some(text.clone()),
+            Value::Null | Value::Boolean(_) | Value::Array(_) | Value::Object(_) => None,
+        }
+    }
+}
+
 impl Form {
+    /// The form a value of the node at `node` of `schema` is read in, followed through a struct of one positional
+    /// field and an option never written `null`, as a field of that type is: what the dev overlay's console reads a
+    /// tool's field in, and prints an answer's value in (ADR-0053).
+    #[must_use]
+    pub fn of_node(schema: &SchemaNodes, node: u32) -> Self {
+        match Place::node(schema, node) {
+            Place::Schema(at) => Self::of(at),
+            Place::Opaque | Place::Unknown => Self::Json,
+        }
+    }
+
+    /// The JSON text of the value `text` states for a field of this form.
+    ///
+    /// # Errors
+    ///
+    /// What was wrong with the text, as [`ConfigFault`] says: not a number, not a size, a word that names no
+    /// variant, or text that is not JSON where JSON is read.
+    pub fn json_of(&self, text: &str) -> Result<String, ConfigFault> {
+        self.read(text).map(|json| json.text())
+    }
+
+    /// The text this form reads as `value`, a value in `tree`: what an answer prints for it (ADR-0053). Nothing when
+    /// no word of this form writes it, as for JSON, an element whose word would hold a comma, or a variant of several
+    /// fields, which the caller writes otherwise.
+    #[must_use]
+    pub fn write(&self, tree: &Tree<'_>, value: &Value<'_>) -> Option<String> {
+        match (self, value) {
+            (Self::Size { .. }, Value::Array(span)) => {
+                let [width, height] = tree.elements(*span) else {
+                    return None;
+                };
+                Some(format!("{}x{}", NumberForm::write(width)?, NumberForm::write(height)?))
+            }
+            (Self::Variant { variants }, Value::String(name)) => {
+                let variant = variants.iter().find(|variant| variant.name == *name)?;
+                let bare = variant.value == VariantValue::Bare;
+                bare.then(|| kebab(name))
+            }
+            (Self::Variant { variants }, Value::Object(span)) => {
+                let [member] = tree.members(*span) else {
+                    return None;
+                };
+                let variant = variants.iter().find(|variant| variant.name == member.name)?;
+                variant.write(tree, &member.value)
+            }
+            (Self::Switch, Value::Boolean(true)) => Some(String::from("true")),
+            (Self::Switch, Value::Boolean(false)) => Some(String::from("false")),
+            (Self::Number(_), value) => NumberForm::write(value),
+            (Self::Text, Value::String(text)) => Some(text.clone()),
+            (Self::List { element }, Value::Array(span)) => {
+                let mut words = Vec::new();
+                for value in tree.elements(*span) {
+                    let word = element.write(tree, value)?;
+                    let typable = !word.is_empty() && !word.contains(',') && !word.starts_with('[');
+                    if !typable {
+                        return None;
+                    }
+                    words.push(word);
+                }
+                Some(words.join(","))
+            }
+            _ => None,
+        }
+    }
+
+    /// What text this form reads, for a person: `` `names` or `sheets:<a,b,…>` ``, or `a number`.
+    #[must_use]
+    pub fn expects(&self) -> String {
+        match self {
+            Self::Size { .. } => String::from("a size such as `1280x720`"),
+            Self::Variant { variants } => {
+                let words: Vec<String> = variants.iter().map(|variant| format!("`{}`", variant.word())).collect();
+                match words.split_last() {
+                    Some((last, [])) => last.clone(),
+                    Some((last, [first])) => format!("{first} or {last}"),
+                    Some((last, rest)) => format!("{}, or {last}", rest.join(", ")),
+                    None => String::from("a variant"),
+                }
+            }
+            Self::Switch => String::from("`true` or `false`"),
+            Self::Number(_) => String::from("a number"),
+            Self::Text => String::from("text"),
+            Self::List { element } => format!("{}, as a comma list, or a JSON array", element.expects()),
+            Self::Json => String::from("JSON"),
+        }
+    }
+
+    /// What stands for a value of this form in a variant's word: `<number>`.
+    const fn placeholder(&self) -> &'static str {
+        match self {
+            Self::Size { .. } => "<width>x<height>",
+            Self::Variant { .. } => "<variant>",
+            Self::Switch => "<true|false>",
+            Self::Number(_) => "<number>",
+            Self::Text => "<text>",
+            Self::List { .. } => "<a,b,…>",
+            Self::Json => "<json>",
+        }
+    }
+
     /// The form a field of the schema node at `at` is read in.
     pub(super) fn of(at: At<'_>) -> Self {
         let node = at.node();
@@ -216,13 +363,27 @@ impl Form {
                 };
                 Self::size(at, *first, *second)
             }
+            SchemaNode::Sequence(element) => Self::list(at, *element),
             SchemaNode::Integer(_)
             | SchemaNode::Float(_)
             | SchemaNode::Json
             | SchemaNode::Option(_)
-            | SchemaNode::Sequence(_)
             | SchemaNode::Map { .. } => Self::Json,
         }
+    }
+
+    /// A list when the node `element`, below `at` and settled as a field's is, is read as a word; JSON otherwise.
+    fn list(at: At<'_>, element: u32) -> Self {
+        let Place::Schema(element) = Place::child(at, element) else {
+            return Self::Json;
+        };
+        let element = Self::of(element);
+        let worded = !matches!(element, Self::Json | Self::List { .. });
+        if !worded {
+            return Self::Json;
+        }
+
+        Self::List { element: Box::new(element) }
     }
 
     /// A size when the nodes `first` and `second`, below `at`, are numbers; JSON otherwise.
@@ -258,6 +419,18 @@ impl Form {
             },
             Self::Number(number) => number.read(text),
             Self::Text => Ok(Json::Leaf(Leaf::String(String::from(text)))),
+            Self::List { element } => {
+                let array = text.starts_with('[');
+                if array {
+                    return Json::read(text);
+                }
+                let empty = text.is_empty();
+                if empty {
+                    return Ok(Json::Array(Vec::new()));
+                }
+                let elements: Result<Vec<Json>, ConfigFault> = text.split(',').map(|word| element.read(word)).collect();
+                elements.map(Json::Array)
+            }
             Self::Json => Json::read(text),
         }
     }
@@ -276,8 +449,10 @@ fn number_text(text: &str) -> Result<String, ConfigFault> {
     Ok(String::from(*number))
 }
 
-/// A variant's name in kebab case: `VeryHard` is `very-hard`, `HDR10` is `hdr10`, and `_` is `-`.
-pub(super) fn kebab(name: &str) -> String {
+/// A variant's name in kebab case, as a flag's value spells it: `VeryHard` is `very-hard`, `HDR10` is `hdr10`, and `_`
+/// is `-` (ADR-0028).
+#[must_use]
+pub fn kebab(name: &str) -> String {
     let characters: Vec<char> = name.chars().collect();
     let mut out = String::new();
     for (position, character) in characters.iter().enumerate() {
@@ -307,8 +482,16 @@ pub(super) fn kebab(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Plain;
     use crate::config::samples::{Density, Presentation};
     use crate::{Schema, SchemaNodes};
+
+    /// Which tools are shown: a variant of one list.
+    #[derive(Plain)]
+    enum Shown {
+        Names,
+        Sheets(Vec<String>),
+    }
 
     /// The form a field of type `T` is read in.
     fn form_of<T: Schema>() -> Form {
@@ -339,7 +522,26 @@ mod tests {
         assert_eq!(form_of::<bool>(), Form::Switch);
         assert_eq!(form_of::<u64>(), Form::Number(NumberForm::Wide));
         assert_eq!(form_of::<String>(), Form::Text);
-        assert_eq!(form_of::<Vec<u32>>(), Form::Json);
+        assert_eq!(form_of::<Vec<u32>>(), Form::List { element: Box::new(Form::Number(NumberForm::Narrow)) });
+        assert_eq!(form_of::<Vec<Vec<u32>>>(), Form::Json);
+        assert_eq!(form_of::<Vec<[u32; 3]>>(), Form::Json);
+    }
+
+    #[test]
+    fn a_list_is_its_words_joined_by_commas() {
+        // Catches a list whose words are read by the wrong form, an empty text read as one empty word, a JSON array
+        // refused, and a variant of one list that does not read `sheets:a,b`.
+        let list = form_of::<Vec<u32>>();
+        let shown = form_of::<Shown>();
+        let names = Json::Array(Vec::from([string("capture_frame"), string("record_clip")]));
+        let sheets = Json::Object(Vec::from([(String::from("Sheets"), names)]));
+
+        assert_eq!(list.read("1,2"), Ok(Json::Array(Vec::from([number("1"), number("2")]))));
+        assert_eq!(list.read(""), Ok(Json::Array(Vec::new())));
+        assert_eq!(list.read("[3]"), Ok(Json::Array(Vec::from([number("3")]))));
+        assert_eq!(list.read("1,two"), Err(ConfigFault::NotANumber));
+        assert_eq!(shown.read("sheets:capture_frame,record_clip"), Ok(sheets));
+        assert_eq!(shown.read("names"), Ok(string("Names")));
     }
 
     #[test]
@@ -372,7 +574,9 @@ mod tests {
         let density = form_of::<Density>();
         let names: Vec<&str> = match &density {
             Form::Variant { variants } => variants.iter().map(|variant| variant.name.as_str()).collect(),
-            Form::Size { .. } | Form::Switch | Form::Number(_) | Form::Text | Form::Json => Vec::new(),
+            Form::Size { .. } | Form::Switch | Form::Number(_) | Form::Text | Form::List { .. } | Form::Json => {
+                Vec::new()
+            }
         };
         let at_most = Json::Object(Vec::from([(String::from("AtMost"), number("2.5"))]));
         let pixels = Json::Object(Vec::from([(String::from("pixels"), number("3"))]));

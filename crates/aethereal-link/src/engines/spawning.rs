@@ -16,7 +16,11 @@ use core::mem;
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.spawn_engine")]
 pub struct SpawnEngine {
+    /// The stored binary: a name, or the 64-digit hash.
+    #[flag(position)]
     pub binary: Binary,
+    /// The arguments the engine is started with, before those that link it.
+    #[flag]
     pub args: Vec<String>,
 }
 
@@ -41,6 +45,8 @@ pub enum Spawn {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.terminate_engine")]
 pub struct TerminateEngine {
+    /// The engine to terminate, by its id.
+    #[flag(position)]
     pub engine: u32,
 }
 

@@ -45,10 +45,20 @@ impl LogLevel {
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.tools.read_log")]
 pub struct ReadLog {
+    /// The path of the actor whose log is read.
+    #[flag(position)]
     pub actor: ActorPath,
+    /// The number of the first entry to read: `0` for the oldest kept, the answer's `next` to go on.
+    #[flag]
     pub since: u64,
+    /// The least a line read must matter.
+    #[flag]
     pub level: LogLevel,
+    /// Text each entry read must hold: empty for every entry.
+    #[flag]
     pub contains: String,
+    /// The most entries read.
+    #[flag]
     pub most: u32,
 }
 
@@ -194,17 +204,15 @@ impl Actor for LogsTool {
 
 impl Tool for LogsTool {
     fn sheets() -> Vec<ToolSheet> {
-        vec![ToolSheet {
-            name: String::from("actor_logs"),
-            description: format!(
-                "Reads what the actor at `actor` (its path) logged, live or ended: its entries numbered `since` and \
-                 after, oldest first; lines at `level` and above and every fault, drop, or unread mail; those whose \
-                 text holds `contains` (\"\" for all); at most `most`, in an answer of at most {MOST_ANSWER_BYTES} bytes. Ask \
-                 again from `next` to go on; `skipped` counts entries that had left the log."
-            ),
-            input: SchemaNodes::of(&ReadLog::SHAPE),
-            output: Output::Value(SchemaNodes::of(&ActorLog::SHAPE)),
-        }]
+        let description = format!(
+            "Reads what the actor at `actor` (its path) logged, live or ended: its entries numbered `since` and \
+             after, oldest first; lines at `level` and above and every fault, drop, or unread mail; those whose \
+             text holds `contains` (\"\" for all); at most `most`, in an answer of at most {MOST_ANSWER_BYTES} bytes. Ask \
+             again from `next` to go on; `skipped` counts entries that had left the log."
+        );
+        let output = Output::Value(SchemaNodes::of(&ActorLog::SHAPE));
+
+        vec![ToolSheet::of::<ReadLog>("actor_logs", &description, output)]
     }
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {

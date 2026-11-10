@@ -17,6 +17,8 @@ pub enum Pace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.pace.set_pace")]
 pub struct SetPace {
+    /// How the clock moves from now: `real` or `held`.
+    #[flag(position)]
     pub pace: Pace,
 }
 
@@ -32,7 +34,11 @@ pub struct PaceSet {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.pace.advance")]
 pub struct Advance {
+    /// How many cycles to run.
+    #[flag(position)]
     pub cycles: u32,
+    /// The time each cycle's `Tick` carries, in nanoseconds.
+    #[flag(short = 'd')]
     pub delta_nanos: u64,
 }
 

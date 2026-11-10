@@ -40,11 +40,23 @@ const SECOND_NANOS: u64 = 1_000_000_000;
 #[derive(Debug, Clone, Plain)]
 #[kind(name = "aether.render.record")]
 pub struct Record {
+    /// The window, by its number.
+    #[flag(position)]
     pub window: WindowId,
+    /// How many frames to record.
+    #[flag(short = 'n')]
     pub frames: u32,
+    /// How many frames a second are recorded.
+    #[flag(long = "fps", short = 'r')]
     pub frames_per_second: u32,
+    /// What of each frame is recorded: `whole`.
+    #[flag(short = 'c')]
     pub crop: Crop,
+    /// The most pixels of each image's longer side.
+    #[flag(short = 'l')]
     pub longest: u32,
+    /// The clip's name: it is written under `clips/<name>/` in the program's saves.
+    #[flag(position)]
     pub name: FilePath,
 }
 
@@ -193,21 +205,18 @@ impl Actor for RecordTool {
 
 impl Tool for RecordTool {
     fn sheets() -> Vec<ToolSheet> {
-        vec![ToolSheet {
-            name: String::from("record_clip"),
-            description: String::from(
-                "Records `frames` frames drawn onto a window, numbered from 0, at `frames_per_second`, as PNGs written \
-                 into the program's saves at clips/<name>/00000.png on. It holds the program's clock and advances it \
-                 one cycle per frame, each by exactly 1/fps, so the clip plays in exact real time however slowly its \
-                 frames draw, and two runs of a deterministic program match frame for frame. The clock is left as it \
-                 was found. `crop` and `longest` cut and shrink each frame as capture_frame's do. At most 3600 \
-                 frames and 240 a second. It answers the folder, within the save directory the engine was given, \
-                 and each frame's size; make a video of it with, for example, `ffmpeg -framerate <fps> -i \
-                 %05d.png`. The program must list the pacer and the file capability.",
-            ),
-            input: SchemaNodes::of(&Record::SHAPE),
-            output: Output::Value(SchemaNodes::of(&Recorded::SHAPE)),
-        }]
+        vec![ToolSheet::of::<Record>(
+            "record_clip",
+            "Records `frames` frames drawn onto a window, numbered from 0, at `frames_per_second`, as PNGs written \
+             into the program's saves at clips/<name>/00000.png on. It holds the program's clock and advances it \
+             one cycle per frame, each by exactly 1/fps, so the clip plays in exact real time however slowly its \
+             frames draw, and two runs of a deterministic program match frame for frame. The clock is left as it \
+             was found. `crop` and `longest` cut and shrink each frame as capture_frame's do. At most 3600 \
+             frames and 240 a second. It answers the folder, within the save directory the engine was given, \
+             and each frame's size; make a video of it with, for example, `ffmpeg -framerate <fps> -i \
+             %05d.png`. The program must list the pacer and the file capability.",
+            Output::Value(SchemaNodes::of(&Recorded::SHAPE)),
+        )]
     }
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {

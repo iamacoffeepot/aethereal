@@ -9,8 +9,10 @@ use aethereal_data::Plain;
 #[kind(name = "aether.store.check_in")]
 pub struct CheckIn {
     /// Where the file is on the host's machine: relative to where the program runs, or absolute.
+    #[flag(position)]
     pub path: String,
     /// The name that points at it once it is in.
+    #[flag(position)]
     pub name: StoreName,
 }
 

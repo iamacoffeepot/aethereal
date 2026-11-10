@@ -65,27 +65,21 @@ impl Actor for PaceTool {
 impl Tool for PaceTool {
     fn sheets() -> Vec<ToolSheet> {
         vec![
-            ToolSheet {
-                name: String::from("set_pace"),
-                description: String::from(
-                    "Sets how the program's clock moves: `Held`, so no cycle runs but those `advance` asks for, or \
-                     `Real`, with the chassis's own time again. It answers how it moved before. A clock set running \
-                     refuses the advances it held. The program must list the pacer.",
-                ),
-                input: SchemaNodes::of(&SetPace::SHAPE),
-                output: Output::Value(SchemaNodes::of(&PaceSet::SHAPE)),
-            },
-            ToolSheet {
-                name: String::from("advance"),
-                description: String::from(
-                    "Runs `cycles` cycles of a held clock, one after another, each Tick carrying exactly \
-                     `delta_nanos`, and answers once the last has finished, with the program's elapsed time then. \
-                     Refused while the clock runs, for no cycles or no time, and for a delta past the most the \
-                     engine gives one Tick. Hold the clock with set_pace first.",
-                ),
-                input: SchemaNodes::of(&Advance::SHAPE),
-                output: Output::Value(SchemaNodes::of(&Advanced::SHAPE)),
-            },
+            ToolSheet::of::<SetPace>(
+                "set_pace",
+                "Sets how the program's clock moves: `Held`, so no cycle runs but those `advance` asks for, or \
+                 `Real`, with the chassis's own time again. It answers how it moved before. A clock set running \
+                 refuses the advances it held. The program must list the pacer.",
+                Output::Value(SchemaNodes::of(&PaceSet::SHAPE)),
+            ),
+            ToolSheet::of::<Advance>(
+                "advance",
+                "Runs `cycles` cycles of a held clock, one after another, each Tick carrying exactly \
+                 `delta_nanos`, and answers once the last has finished, with the program's elapsed time then. \
+                 Refused while the clock runs, for no cycles or no time, and for a delta past the most the \
+                 engine gives one Tick. Hold the clock with set_pace first.",
+                Output::Value(SchemaNodes::of(&Advanced::SHAPE)),
+            ),
         ]
     }
 
