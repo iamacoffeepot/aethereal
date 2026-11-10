@@ -67,17 +67,17 @@ impl Tool for PaceTool {
         vec![
             ToolSheet::of::<SetPace>(
                 "set_pace",
-                "Sets how the program's clock moves: `Held`, so no cycle runs but those `advance` asks for, or \
-                 `Real`, with the chassis's own time again. It answers how it moved before. A clock set running \
-                 refuses the advances it held. The program must list the pacer.",
+                "Sets how the program's clock moves, held or real. `Held` runs no cycle but those `advance` asks \
+                 for, and `Real` runs with the chassis's own time again. It answers how it moved before. A clock set \
+                 running refuses the advances it held. The program must list the pacer.",
                 Output::Value(SchemaNodes::of(&PaceSet::SHAPE)),
             ),
             ToolSheet::of::<Advance>(
                 "advance",
-                "Runs `cycles` cycles of a held clock, one after another, each Tick carrying exactly `delta_nanos` (a \
-                 sixtieth of a second, 16666666, when left out), and answers once the last has finished, with the \
-                 program's elapsed time then. Refused while the clock runs, for no cycles or no time, and for a delta \
-                 past the most the engine gives one Tick. Hold the clock with set_pace first.",
+                "Runs `cycles` cycles of a held clock, one after another. Each Tick carries exactly `delta_nanos` (a \
+                 sixtieth of a second, 16666666, when left out), and it answers once the last has finished, with the \
+                 program's elapsed time then. Refused while the clock runs, for no cycles or no time, and for a \
+                 delta past the most the engine gives one Tick. Hold the clock with set_pace first.",
                 Output::Value(SchemaNodes::of(&Advanced::SHAPE)),
             ),
         ]

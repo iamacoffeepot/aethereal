@@ -216,8 +216,8 @@ impl Tool for WriteTool {
         vec![ToolSheet::of::<TextFile>(
             "write_file",
             &format!(
-                "Writes a text file of the program's own, up to {MOST_WRITE_BYTES} bytes, whole, in a namespace that is \
-                 written: `Save`."
+                "Writes a text file of the program's own, whole. It holds up to {MOST_WRITE_BYTES} bytes, in a \
+                 namespace that is written: `Save`."
             ),
             Output::Value(SchemaNodes::of(&Done::SHAPE)),
         )]

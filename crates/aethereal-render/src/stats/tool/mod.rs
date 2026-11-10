@@ -155,18 +155,18 @@ impl Tool for StatsTool {
     fn sheets() -> Vec<ToolSheet> {
         vec![ToolSheet::of::<ReadRenderStats>(
             "render_stats",
-            "Reads the renderer's statistics of the next frame it draws, as the dev overlay's meters show them: the \
-             cycle's elapsed_nanos, which lines it up with Tick; the frame budget, a Limit the frames are paced to \
-             (capped:N, or fifo at the display's refresh) or a Reference they are drawn against (uncapped, at the \
-             display's refresh); the draws, triangles, and bytes written to the GPU since the frame before; the GPU \
-             memory of what the renderer made, by meshes, textures, render targets, buffers, and the glyph atlas; how \
-             many meshes, textures, programs, placements, and texts are alive; how full the glyph atlas is; and the \
-             adapter it draws on. Unless gpu_times is false, it also waits for the GPU's time over each pass of a \
-             frame drawn since the call, a frame or more later, each beside its frame, its pass's type id, and its \
-             label, the name of the pass's kind (aether.render.main); Unsupported on a device without timestamps. A \
-             cycle that drew nothing, as while no window is shown or the compositor asks for no window's frame, is \
-             answered with drawn Undrawn and gpu_times Undrawn. Nothing is answered while the clock is held and no \
-             cycle runs.",
+            "Reads the renderer's statistics of the next frame it draws. They are as the dev overlay's meters show \
+             them: the cycle's elapsed_nanos, which lines it up with Tick; the frame budget, a Limit the frames are \
+             paced to (capped:N, or fifo at the display's refresh) or a Reference they are drawn against (uncapped, \
+             at the display's refresh); the draws, triangles, and bytes written to the GPU since the frame before; \
+             the GPU memory of what the renderer made, by meshes, textures, render targets, buffers, and the glyph \
+             atlas; how many meshes, textures, programs, placements, and texts are alive; how full the glyph atlas \
+             is; and the adapter it draws on. Unless gpu_times is false, it also waits for the GPU's time over each \
+             pass of a frame drawn since the call, a frame or more later, each beside its frame, its pass's type id, \
+             and its label, the name of the pass's kind (aether.render.main); Unsupported on a device without \
+             timestamps. A cycle that drew nothing, as while no window is shown or the compositor asks for no \
+             window's frame, is answered with drawn Undrawn and gpu_times Undrawn. Nothing is answered while the \
+             clock is held and no cycle runs.",
             Output::Value(SchemaNodes::of(&RenderStats::SHAPE)),
         )]
     }

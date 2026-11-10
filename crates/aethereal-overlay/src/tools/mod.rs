@@ -117,15 +117,15 @@ impl Actor for OverlayTools {
 impl OverlayTools {
     /// What the worker offers: `mark` and `memory`.
     pub fn sheets() -> Vec<ToolSheet> {
-        let mark = "Pins a mark at this moment: an ochre tick on the dev overlay's frame chart at this time, sliding \
-                    left with the columns for sixty seconds, and an ochre line in its console's scrollback. Answers \
-                    once the overlay has been told.";
+        let mark = "Pins a mark at this moment on the dev overlay. The mark is an ochre tick on the overlay's frame \
+                    chart at this time, sliding left with the columns for sixty seconds, and an ochre line in its \
+                    console's scrollback. Answers once the overlay has been told.";
         let memory = format!(
-            "Prints the engine's memory against its limits, as the step began: `process`, the program's memory as its \
-             chassis reads it; `blobs`, the bytes the blob store holds against its most; `backlog`, the most bytes \
-             any one actor holds unsent against its most; `guests`, every guest's memory added up; and the guests \
-             with the most memory and the actors holding the most bytes unsent, each by path, the most first, at \
-             most `most` of each ({LARGEST} when left out, and never more)."
+            "Prints the engine's memory against its limits. It reads them as the step began: `process`, the \
+             program's memory as its chassis reads it; `blobs`, the bytes the blob store holds against its most; \
+             `backlog`, the most bytes any one actor holds unsent against its most; `guests`, every guest's memory \
+             added up; and the guests with the most memory and the actors holding the most bytes unsent, each by \
+             path, the most first, at most `most` of each ({LARGEST} when left out, and never more)."
         );
 
         vec![

@@ -74,23 +74,24 @@ impl Tool for WindowTool {
         vec![
             ToolSheet::json::<ListWindows>(
                 "list_windows",
-                "Lists every open window, in the order of their ids: each one's id, which names it to \
-                 capture_frame, record_clip, send_input, and the tools here; its title; its surface, in its \
-                 pixels, and the screen's scale; the mode it is shown in; and whether it has the keyboard. A \
-                 window still opening is not listed.",
+                "Lists every open window, in the order of their ids. Each is listed with its id, which names it to \
+                 capture_frame, record_clip, send_input, and the tools here; its title; its surface, in its pixels, \
+                 and the screen's scale; the mode it is shown in; and whether it has the keyboard. A window still \
+                 opening is not listed.",
                 Output::Value(SchemaNodes::of(&WindowList::SHAPE)),
             ),
             ToolSheet::of::<ResizeWindow>(
                 "resize_window",
-                "Resizes a window shown windowed to `size` in logical pixels, and answers its surface as it is \
-                 drawn now; a windowing system that resizes later answers the size before. Refused for a window \
-                 maximized or fullscreen: set it windowed first.",
+                "Resizes a window shown windowed to `size` in logical pixels. It answers its surface as it is drawn \
+                 now; a windowing system that resizes later answers the size before. Refused for a window maximized \
+                 or fullscreen: set it windowed first.",
                 Output::Value(SchemaNodes::of(&Resized::SHAPE)),
             ),
             ToolSheet::of::<MoveWindow>(
                 "move_window",
-                "Moves a window shown windowed so its frame's top left is `at`, in logical pixels from the \
-                 screen's top left. Refused on Wayland, whose compositor alone places windows, and in a browser.",
+                "Moves a window shown windowed to `at`. `at` is where its frame's top left goes, in logical pixels \
+                 from the screen's top left. Refused on Wayland, whose compositor alone places windows, and in a \
+                 browser.",
                 Output::Value(SchemaNodes::of(&Moved::SHAPE)),
             ),
             ToolSheet::of::<SetMode>(

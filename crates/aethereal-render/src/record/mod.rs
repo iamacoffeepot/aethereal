@@ -221,15 +221,14 @@ impl Tool for RecordTool {
     fn sheets() -> Vec<ToolSheet> {
         vec![ToolSheet::of::<Record>(
             "record_clip",
-            "Records `frames` frames drawn onto a window, numbered from 0, at `frames_per_second` (60 when left \
-             out), as PNGs written \
-             into the program's saves at clips/<name>/00000.png on. It holds the program's clock and advances it \
-             one cycle per frame, each by exactly 1/fps, so the clip plays in exact real time however slowly its \
-             frames draw, and two runs of a deterministic program match frame for frame. The clock is left as it \
-             was found. `crop` and `longest` cut and shrink each frame as capture_frame's do. At most 3600 \
-             frames and 240 a second. It answers the folder, within the save directory the engine was given, \
-             and each frame's size; make a video of it with, for example, `ffmpeg -framerate <fps> -i \
-             %05d.png`. The program must list the pacer and the file capability.",
+            "Records frames drawn onto a window as PNGs. It records `frames` frames of the window, numbered from 0, \
+             at `frames_per_second` (60 when left out), written into the program's saves at clips/<name>/00000.png \
+             on. It holds the program's clock and advances it one cycle per frame, each by exactly 1/fps, so the \
+             clip plays in exact real time however slowly its frames draw, and two runs of a deterministic program \
+             match frame for frame. The clock is left as it was found. `crop` and `longest` cut and shrink each \
+             frame as capture_frame's do. At most 3600 frames and 240 a second. It answers the folder, within the \
+             save directory the engine was given, and each frame's size; make a video of it with, for example, \
+             `ffmpeg -framerate <fps> -i %05d.png`. The program must list the pacer and the file capability.",
             Output::Value(SchemaNodes::of(&Recorded::SHAPE)),
         )]
     }
