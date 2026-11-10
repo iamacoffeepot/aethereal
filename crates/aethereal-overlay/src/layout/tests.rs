@@ -20,7 +20,7 @@ fn the_band_holds_the_chart_and_the_console_sits_beneath_it() {
     assert!(chart.height() > band.height() / 2.0, "{chart:?} takes too little of {band:?}");
 }
 
-/// The console's scroll bar lies inside its panel, right of the scrollback's text, and as tall as the rows in view, at
+/// The console's scroll bar lies inside its panel, right of the scrollback's text by a gap, and as tall as the rows in view, at
 /// 1080 and on a screen of twice the pixels, so a bar drawn over the text, outside the panel, or past the prompt is
 /// caught.
 #[test]
@@ -31,7 +31,8 @@ fn the_scroll_bar_lies_in_the_panels_padding_beside_the_rows() {
         let (bar, inside, console) = (layout.scrollbar(), layout.console_inside(), layout.console());
         let rows = u16::try_from(layout.scrollback_rows()).map_or(f32::MAX, f32::from);
 
-        let clear_of_text = inside.max.x <= bar.min.x;
+        // A gap of a few logical pixels at least, so the text does not run up against the bar.
+        let clear_of_text = bar.min.x - inside.max.x >= layout.pixels(8.0);
         let in_panel = bar.max.x <= console.max.x;
         assert!(clear_of_text && in_panel, "{bar:?} is not between {inside:?} and the right edge of {console:?}");
         assert!(bar.width() >= 1.0, "{bar:?} is too thin to see");
