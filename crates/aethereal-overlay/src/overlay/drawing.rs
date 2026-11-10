@@ -22,7 +22,8 @@ use aethereal_render::frame::{Frame, ShapeOf};
 use aethereal_render::instances::WriteInstances;
 use aethereal_render::pass::Main;
 use aethereal_render::stats::{
-    FrameStats, GpuTimes, SubscribeFrameStats, SubscribeGpuTimes, UnsubscribeFrameStats, UnsubscribeGpuTimes,
+    FrameDrawing, FrameStats, GpuTimes, SubscribeFrameStats, SubscribeGpuTimes, UnsubscribeFrameStats,
+    UnsubscribeGpuTimes,
 };
 use aethereal_render::text::{CreateText, MoveText, WriteText};
 use aethereal_render::uniforms::WriteUniforms;
@@ -280,7 +281,7 @@ impl Handles<On<Tick>> for Overlay {
         (Tells<Path<Renderer>, WriteInstances>, Tells<Path<Renderer>, WriteText>, Tells<Path<Renderer>, MoveText>);
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        self.frames.push(&tick);
+        self.frames.tick(&tick);
         self.marks.keep_since(tick.elapsed_nanos);
         let stamped = self.marks.stamp(tick.elapsed_nanos);
         self.write_chart(turn)?;
@@ -327,14 +328,18 @@ impl Handles<On<Tick>> for Overlay {
     }
 }
 
-/// The budget each frame's statistics bring, which the chart is drawn against from the next `Tick`, and the frame's
-/// values for the lines' rows and its GPU memory for the GPU meter. Heard only while the overlay is shown.
+/// The budget each frame's statistics bring, which the chart is drawn against from the next `Tick`; whether its cycle
+/// drew, which keeps it in the chart or leaves it out; the values of a frame drawn for the lines' rows; and its GPU
+/// memory for the GPU meter. Heard only while the overlay is shown.
 impl Handles<FrameStats> for Overlay {
     type Sends = ();
 
     fn handle(&mut self, stats: FrameStats, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.budget = stats.budget;
-        self.lines.push(&stats);
+        self.frames.framed(&stats);
+        if let FrameDrawing::Drawn(drawn) = stats.drawn {
+            self.lines.push(stats.elapsed_nanos, drawn);
+        }
         self.histories.framed(&stats);
 
         Ok(())

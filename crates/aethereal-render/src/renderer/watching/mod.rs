@@ -10,7 +10,7 @@ use super::walk::Walk;
 use super::{Instances, Kept, Last, Mesh, Origin, Renderer, Storage, Texture, Uniforms, Windowed};
 use crate::made::Weighs;
 use crate::stats::{
-    self, Alive, DescribeGpu, FrameBudget, FrameDrawn, FrameStats, GpuDescribed, GpuMemory, GpuTimes,
+    self, Alive, DescribeGpu, FrameBudget, FrameDrawing, FrameDrawn, FrameStats, GpuDescribed, GpuMemory, GpuTimes,
     SubscribeFrameStats, SubscribeGpuTimes, Tally, UnsubscribeFrameStats, UnsubscribeGpuTimes,
 };
 use aethereal_actor::{Ended, Fault, Handles, Level, ProtocolRef, Subscribers, ToAny, ToSender, Turn};
@@ -78,10 +78,10 @@ impl Watch {
 }
 
 impl Kept {
-    /// The statistics of the frame of the cycle at `elapsed_nanos`, aimed at `budget`, which drew `drawn`: the GPU
-    /// memory and the count of each thing it made, and how full the atlas is, copied from the totals it keeps as each
-    /// thing is made, made again, and released, walking nothing.
-    pub(super) fn frame_stats(&self, elapsed_nanos: u64, budget: FrameBudget, drawn: FrameDrawn) -> FrameStats {
+    /// The statistics of the frame of the cycle at `elapsed_nanos`, aimed at `budget`, which drew as `drawn` says: the
+    /// GPU memory and the count of each thing it made, and how full the atlas is, copied from the totals it keeps as
+    /// each thing is made, made again, and released, walking nothing.
+    pub(super) fn frame_stats(&self, elapsed_nanos: u64, budget: FrameBudget, drawn: FrameDrawing) -> FrameStats {
         let (atlas, atlas_bytes) = self.text.atlas();
         let mut memory = GpuMemory { atlas_bytes, ..self.windows_memory };
         for made in [

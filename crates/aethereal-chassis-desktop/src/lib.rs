@@ -27,7 +27,12 @@
 //! and the loop waits until each frame is due on a grid of the rate, skipping
 //! one missed as the headless host skips a cycle.
 //! A window hidden or of no size is handed no frame, and when none is shown
-//! the loop waits on their events until one is shown again. What a window
+//! the loop waits on their events until one is shown again. A `fifo` window
+//! is presented only once the compositor asks for its next frame, as winit
+//! hears its frame callback, its next frame drawn ahead and held until then:
+//! a present issued earlier can wait, on Wayland, until a covered window is
+//! uncovered, and every actor with it. While every window shown waits so, the
+//! program's cycles run on undrawn. What a window
 //! hears is pushed onto that window's feed as winit hears it, in the window's
 //! surface pixels, routed by winit's id for the window, and brought in as the
 //! engine next steps (ADR-0024).
@@ -54,6 +59,8 @@ mod moding;
 mod presenting;
 #[cfg(not(target_arch = "wasm32"))]
 mod program;
+#[cfg(not(target_arch = "wasm32"))]
+mod redrawing;
 #[cfg(not(target_arch = "wasm32"))]
 mod running;
 #[cfg(not(target_arch = "wasm32"))]

@@ -109,7 +109,7 @@ fn walked(kept: &Kept) -> (GpuMemory, stats::Alive) {
 
 /// The GPU memory and the counts alive `kept` tells a frame's subscribers of.
 fn totals(kept: &Kept) -> (GpuMemory, stats::Alive) {
-    let told = kept.frame_stats(0, stats::FrameBudget::UNTOLD, stats::FrameDrawn::default());
+    let told = kept.frame_stats(0, stats::FrameBudget::UNTOLD, FrameDrawing::Undrawn);
 
     (told.memory, told.alive)
 }

@@ -1,6 +1,7 @@
 use super::bin::{BIN_SAMPLES, Bin};
 use super::{Column, Figures, FrameTimes, Slide, WINDOW_NANOS};
 use aethereal_actor::Tick;
+use aethereal_render::stats::{Alive, AtlasFill, FrameBudget, FrameDrawing, FrameDrawn, FrameStats, GpuMemory};
 use core::iter;
 use std::collections::BTreeMap;
 
@@ -198,4 +199,35 @@ fn the_slide_is_how_far_through_its_span_the_newest_cycle_came() {
     let frames = times([6_250 * MILLI]);
 
     assert_eq!(frames.slide(60), Slide { newest: 6, through: 0.25, span_nanos: 1_000_000_000 });
+}
+
+/// The statistics of the frame of the cycle at `elapsed_nanos`, drawn as `drawn` says.
+fn framed(elapsed_nanos: u64, drawn: FrameDrawing) -> FrameStats {
+    FrameStats {
+        elapsed_nanos,
+        budget: FrameBudget::UNTOLD,
+        drawn,
+        memory: GpuMemory::default(),
+        alive: Alive::default(),
+        atlas: AtlasFill::default(),
+    }
+}
+
+/// A cycle that drew nothing is left out of the chart, and one whose statistics never came is kept, so a stretch the
+/// compositor asked for no frame of is a gap, never a spike of the stretch's length or a frame chart of undrawn cycles,
+/// and a frame is not lost when its statistics are.
+#[test]
+fn a_cycle_that_drew_nothing_is_left_out_and_one_whose_statistics_never_came_is_kept() {
+    let mut times = FrameTimes::default();
+    let drawn = FrameDrawing::Drawn(FrameDrawn::default());
+
+    times.tick(&Tick { delta_nanos: 16 * MILLI, elapsed_nanos: 16 * MILLI });
+    times.framed(&framed(16 * MILLI, drawn));
+    times.tick(&Tick { delta_nanos: 100 * MILLI, elapsed_nanos: 116 * MILLI });
+    times.framed(&framed(116 * MILLI, FrameDrawing::Undrawn));
+    times.tick(&Tick { delta_nanos: 17 * MILLI, elapsed_nanos: 133 * MILLI });
+    times.tick(&Tick { delta_nanos: 18 * MILLI, elapsed_nanos: 151 * MILLI });
+
+    let deltas: Vec<u64> = times.samples.iter().map(|sample| sample.delta_nanos).collect();
+    assert_eq!(deltas, [16 * MILLI, 17 * MILLI], "the newest still held");
 }
