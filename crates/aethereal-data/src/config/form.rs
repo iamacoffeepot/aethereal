@@ -33,6 +33,9 @@ pub enum Form {
     Variant {
         /// The variants a flag's value names, each of no fields or one, in declared order.
         variants: Vec<VariantForm>,
+        /// The variants of several fields, by their schema names in declared order: no word names one, so only JSON
+        /// sets it.
+        json_only: Vec<String>,
     },
     /// A `bool`: the flag alone turns it on and `--no-<name>` off, and text is `true` or `false`.
     Switch,
@@ -246,12 +249,12 @@ impl Form {
                 };
                 Some(format!("{}x{}", NumberForm::write(width)?, NumberForm::write(height)?))
             }
-            (Self::Variant { variants }, Value::String(name)) => {
+            (Self::Variant { variants, .. }, Value::String(name)) => {
                 let variant = variants.iter().find(|variant| variant.name == *name)?;
                 let bare = variant.value == VariantValue::Bare;
                 bare.then(|| kebab(name))
             }
-            (Self::Variant { variants }, Value::Object(span)) => {
+            (Self::Variant { variants, .. }, Value::Object(span)) => {
                 let [member] = tree.members(*span) else {
                     return None;
                 };
@@ -283,7 +286,7 @@ impl Form {
     pub fn expects(&self) -> String {
         match self {
             Self::Size { .. } => String::from("a size such as `1280x720`"),
-            Self::Variant { variants } => {
+            Self::Variant { variants, .. } => {
                 let words: Vec<String> = variants.iter().map(|variant| format!("`{}`", variant.word())).collect();
                 match words.split_last() {
                     Some((last, [])) => last.clone(),
@@ -324,14 +327,19 @@ impl Form {
         match node {
             SchemaNode::Boolean => Self::Switch,
             SchemaNode::String | SchemaNode::Bytes => Self::Text,
-            SchemaNode::Enum { variants, .. } => {
+            SchemaNode::Enum { variants: nodes, .. } => {
                 let variants: Vec<VariantForm> =
-                    variants.iter().filter_map(|variant| VariantForm::of(at, variant)).collect();
+                    nodes.iter().filter_map(|variant| VariantForm::of(at, variant)).collect();
                 let no_word = variants.is_empty();
                 if no_word {
                     return Self::Json;
                 }
-                Self::Variant { variants }
+                let json_only = nodes
+                    .iter()
+                    .filter(|node| !variants.iter().any(|variant| variant.name == node.name))
+                    .map(|node| node.name.clone())
+                    .collect();
+                Self::Variant { variants, json_only }
             }
             SchemaNode::Array { element, length } => {
                 let index = *element;
@@ -408,7 +416,7 @@ impl Form {
                 let height = height.read(second).map_err(|_| ConfigFault::NotASize)?;
                 Ok(Json::Array(Vec::from([width, height])))
             }
-            Self::Variant { variants } => {
+            Self::Variant { variants, .. } => {
                 let found = variants.iter().find_map(|variant| variant.read(text));
                 found.unwrap_or(Err(ConfigFault::NotAVariant))
             }
@@ -518,7 +526,10 @@ mod tests {
         assert_eq!(form_of::<[u8; 2]>(), Form::Text);
         assert_eq!(form_of::<[u32; 3]>(), Form::Json);
         let bare = |name: &str| VariantForm { name: String::from(name), value: VariantValue::Bare };
-        assert_eq!(form_of::<Presentation>(), Form::Variant { variants: Vec::from([bare("Fifo"), bare("VeryFast")]) });
+        assert_eq!(
+            form_of::<Presentation>(),
+            Form::Variant { variants: Vec::from([bare("Fifo"), bare("VeryFast")]), json_only: Vec::new() }
+        );
         assert_eq!(form_of::<bool>(), Form::Switch);
         assert_eq!(form_of::<u64>(), Form::Number(NumberForm::Wide));
         assert_eq!(form_of::<String>(), Form::Text);
@@ -570,12 +581,15 @@ mod tests {
     fn a_variant_of_one_field_is_its_name_a_colon_and_the_field() {
         // Catches a variant of one field left to JSON, its value written beside its name rather than under it, a named
         // field's value written without its name, a value read by the wrong form, and a variant of two fields offered
-        // as a word.
+        // as a word or not named as set only by JSON.
         let density = form_of::<Density>();
-        let names: Vec<&str> = match &density {
-            Form::Variant { variants } => variants.iter().map(|variant| variant.name.as_str()).collect(),
+        let (names, json_only): (Vec<&str>, Vec<&str>) = match &density {
+            Form::Variant { variants, json_only } => (
+                variants.iter().map(|variant| variant.name.as_str()).collect(),
+                json_only.iter().map(String::as_str).collect(),
+            ),
             Form::Size { .. } | Form::Switch | Form::Number(_) | Form::Text | Form::List { .. } | Form::Json => {
-                Vec::new()
+                (Vec::new(), Vec::new())
             }
         };
         let at_most = Json::Object(Vec::from([(String::from("AtMost"), number("2.5"))]));
@@ -583,6 +597,7 @@ mod tests {
         let at_least = Json::Object(Vec::from([(String::from("AtLeast"), pixels)]));
 
         assert_eq!(names, ["Screen", "AtMost", "AtLeast"]);
+        assert_eq!(json_only, ["Between"]);
         assert_eq!(density.read("screen"), Ok(string("Screen")));
         assert_eq!(density.read("at-most:2.5"), Ok(at_most));
         assert_eq!(density.read("at-least:3"), Ok(at_least));
