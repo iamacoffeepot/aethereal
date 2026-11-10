@@ -310,6 +310,9 @@ pub const fn unread(why: ReadRefused) -> &'static str {
         ReadRefused::Unmapped => "the GPU did not hand the frame back",
         ReadRefused::Unstored => "the frame is larger than the engine may hold",
         ReadRefused::Undrawn => "no frame has been drawn onto the window to show while the clock is held",
+        ReadRefused::Unshown => {
+            "the window was not drawn: it is not shown, or the compositor asks for no frame of it, as when it is covered"
+        }
         ReadRefused::Texture
         | ReadRefused::Storage
         | ReadRefused::Frame

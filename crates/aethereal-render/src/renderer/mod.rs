@@ -773,9 +773,13 @@ impl Handles<On<Render>> for Renderer {
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let kept = turn.open(&mut self.kept)?;
         // A window the chassis handed no frame for is not drawn this cycle, nor asked to be presented. A cycle it handed
-        // none for at all is skipped: nothing is drawn, and the next frame drawn is the one read and timed.
+        // none for at all is skipped: nothing is drawn, and the next frame drawn is the one read and timed. A frame owed
+        // this cycle is refused, as none is drawn: under a held clock no cycle follows to draw it in.
         let frames = kept.ordered(handed);
         if frames.is_empty() {
+            for (_, held) in mem::take(&mut self.owed.frames) {
+                turn.answer(held, &Pixels::Refused(ReadRefused::Unshown))?;
+            }
             return Ok(());
         }
         let views: Vec<(WindowId, wgpu::TextureView)> = frames
