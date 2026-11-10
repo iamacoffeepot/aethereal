@@ -2,6 +2,7 @@
 //! refused before any frame is drawn.
 
 use super::*;
+use aethereal_tools::{CommandLine, FlagsFault};
 
 #[test]
 fn the_deltas_of_a_clip_s_frames_sum_to_its_length_exactly() {
@@ -25,4 +26,17 @@ fn a_clip_of_no_frames_too_many_or_at_no_rate_is_refused_before_it_is_drawn() {
     assert_eq!(unrecordable(30, 241, 512), Some("`frames_per_second` is 1 to 240"));
     assert_eq!(unrecordable(30, 30, 0), Some("`longest` is at least 1"));
     assert_eq!(unrecordable(MOST_FRAMES, 240, 1), None);
+}
+
+#[test]
+fn every_sheet_s_flags_fit_its_input() {
+    // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the tool would be missing from a running engine,
+    // and nothing would answer when it is called.
+    let sheets = RecordTool::sheets();
+    let refused: Vec<(&str, FlagsFault)> = sheets
+        .iter()
+        .filter_map(|sheet| CommandLine::of(sheet).err().map(|fault| (sheet.name.as_str(), fault)))
+        .collect();
+
+    assert!(refused.is_empty(), "{refused:?}");
 }

@@ -2,6 +2,7 @@
 //! set, every other kept, each checked by the tuning's schema and then by the actor.
 
 use super::*;
+use crate::{CommandLine, FlagsFault};
 use aethereal_actor::{Top, tuning};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
@@ -198,4 +199,17 @@ fn a_tune_the_schema_or_the_actor_refuses_leaves_the_tuning_as_it_stood() -> Res
     assert_eq!(call(&mut harness, "list_tuning", &ListTuning)?, Ok(standing(&gain)));
 
     Ok(())
+}
+
+#[test]
+fn every_sheet_s_flags_fit_its_input() {
+    // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the tool would be missing from a running engine,
+    // and nothing would answer when it is called.
+    let sheets = Tuner::sheets();
+    let refused: Vec<(&str, FlagsFault)> = sheets
+        .iter()
+        .filter_map(|sheet| CommandLine::of(sheet).err().map(|fault| (sheet.name.as_str(), fault)))
+        .collect();
+
+    assert!(refused.is_empty(), "{refused:?}");
 }

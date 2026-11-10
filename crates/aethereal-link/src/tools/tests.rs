@@ -1,6 +1,7 @@
 //! Where `describe_engine` cuts a tool's description when it lists the tool by name.
 
-use super::first_sentence;
+use super::{EngineTools, first_sentence};
+use aethereal_tools::{CommandLine, FlagsFault, Tool};
 
 #[test]
 fn a_sentence_ends_at_a_point_that_whitespace_or_the_end_follows() {
@@ -16,4 +17,17 @@ fn a_text_with_no_sentence_end_is_kept_whole() {
     assert_eq!(first_sentence("Says how long a text is"), "Says how long a text is");
     assert_eq!(first_sentence("Reads `config.toml` and v1.2"), "Reads `config.toml` and v1.2");
     assert_eq!(first_sentence(""), "");
+}
+
+#[test]
+fn every_sheet_s_flags_fit_its_input() {
+    // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the tool would be missing from a running engine,
+    // and nothing would answer when it is called.
+    let sheets = EngineTools::sheets();
+    let refused: Vec<(&str, FlagsFault)> = sheets
+        .iter()
+        .filter_map(|sheet| CommandLine::of(sheet).err().map(|fault| (sheet.name.as_str(), fault)))
+        .collect();
+
+    assert!(refused.is_empty(), "{refused:?}");
 }

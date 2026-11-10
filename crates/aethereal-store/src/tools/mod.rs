@@ -1,6 +1,9 @@
 //! The store's tools: the agent checks a binary in, lists what the store holds, and pins an entry or clears its pin
 //! (ADR-0039).
 
+#[cfg(test)]
+mod tests;
+
 use crate::{CheckIn, CheckedIn, ListStored, Pin, Pinned, Store, Stored, StoredBinary, Unpin};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,

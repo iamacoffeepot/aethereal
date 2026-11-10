@@ -7,6 +7,7 @@ use aethereal_actor::Tick;
 use aethereal_data::Plain;
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
+use aethereal_tools::{CommandLine, FlagsFault};
 use core::time::Duration;
 use std::num::NonZeroUsize;
 
@@ -47,4 +48,17 @@ fn each_call_is_asked_of_the_pacer_as_named_and_answered_with_its_answer() -> Re
     assert!(call(&mut harness, "rewind", &SetPace { pace: Pace::Real })?.is_err());
 
     Ok(())
+}
+
+#[test]
+fn every_sheet_s_flags_fit_its_input() {
+    // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the tool would be missing from a running engine,
+    // and nothing would answer when it is called.
+    let sheets = PaceTool::sheets();
+    let refused: Vec<(&str, FlagsFault)> = sheets
+        .iter()
+        .filter_map(|sheet| CommandLine::of(sheet).err().map(|fault| (sheet.name.as_str(), fault)))
+        .collect();
+
+    assert!(refused.is_empty(), "{refused:?}");
 }

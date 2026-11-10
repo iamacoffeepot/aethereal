@@ -560,6 +560,7 @@ fn written<'e>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{CommandLine, FlagsFault};
     use aethereal_actor::{Named, Recorded, Unreadable};
     use aethereal_data::ActorId;
     use aethereal_data::to_bytes;
@@ -733,5 +734,18 @@ mod tests {
 
         assert!(bytes.len() <= MOST_ANSWER_BYTES, "{} bytes", bytes.len());
         assert_eq!(log.next, log.entries.len() as u64);
+    }
+
+    #[test]
+    fn every_sheet_s_flags_fit_its_input() {
+        // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the tool would be missing from a running
+        // engine, and nothing would answer when it is called.
+        let sheets = LogsTool::sheets();
+        let refused: Vec<(&str, FlagsFault)> = sheets
+            .iter()
+            .filter_map(|sheet| CommandLine::of(sheet).err().map(|fault| (sheet.name.as_str(), fault)))
+            .collect();
+
+        assert!(refused.is_empty(), "{refused:?}");
     }
 }

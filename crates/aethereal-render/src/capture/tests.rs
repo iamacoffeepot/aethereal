@@ -1,5 +1,6 @@
 use super::image::{Region, cut, png, sent_size, shrunk};
-use super::{Crop, said};
+use super::{CaptureTool, Crop, said};
+use aethereal_tools::{CommandLine, FlagsFault, Tool};
 use std::io::Cursor;
 
 /// One pixel of RGBA, opaque unless said.
@@ -96,4 +97,17 @@ fn the_line_beside_an_image_says_the_frames_size_the_crop_and_the_images_size() 
     assert_eq!(said(2048, 1280, Crop::Whole, 1024, 640), "frame 2048x1280, crop whole, image 1024x640");
     let corner = Crop::Region { x: 10, y: 20, width: 300, height: 200 };
     assert_eq!(said(2048, 1280, corner, 300, 200), "frame 2048x1280, crop 300x200 at 10,20, image 300x200");
+}
+
+#[test]
+fn every_sheet_s_flags_fit_its_input() {
+    // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the tool would be missing from a running engine,
+    // and nothing would answer when it is called.
+    let sheets = CaptureTool::sheets();
+    let refused: Vec<(&str, FlagsFault)> = sheets
+        .iter()
+        .filter_map(|sheet| CommandLine::of(sheet).err().map(|fault| (sheet.name.as_str(), fault)))
+        .collect();
+
+    assert!(refused.is_empty(), "{refused:?}");
 }

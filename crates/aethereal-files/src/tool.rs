@@ -286,8 +286,9 @@ impl Handles<Answer<FileWritten, Calling>> for WriteTool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileContents, written};
+    use super::{FileContents, ReadTool, WriteTool, written};
     use aethereal_data::to_bytes;
+    use aethereal_tools::{CommandLine, FlagsFault, Tool};
 
     #[test]
     fn a_file_is_written_as_the_contents_that_hold_it() {
@@ -296,5 +297,18 @@ mod tests {
         let text = "a file, with é in it";
 
         assert_eq!(written(text, Vec::new()), to_bytes(&FileContents { text: String::from(text) }));
+    }
+
+    #[test]
+    fn every_sheet_s_flags_fit_its_input() {
+        // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the tool would be missing from a running
+        // engine, and nothing would answer when it is called.
+        let sheets = [ReadTool::sheets(), WriteTool::sheets()].concat();
+        let refused: Vec<(&str, FlagsFault)> = sheets
+            .iter()
+            .filter_map(|sheet| CommandLine::of(sheet).err().map(|fault| (sheet.name.as_str(), fault)))
+            .collect();
+
+        assert!(refused.is_empty(), "{refused:?}");
     }
 }
