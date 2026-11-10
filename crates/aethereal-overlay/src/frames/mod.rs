@@ -3,8 +3,12 @@
 //!
 //! A column covers a fixed span of the program's time, the `n`th from `n` spans to `n + 1`, so once its span has
 //! passed what it holds never changes; the chart slides the columns left as the program's time passes, rather than
-//! cutting the cycles again from the newest, which would hop a spike from column to column.
+//! cutting the cycles again from the newest, which would hop a spike from column to column. Each column is the fastest,
+//! the median, and the slowest of its cycles, worked out once as its span passes (`bins`), the median from a bounded
+//! sample of them (`bin`).
 
+mod bin;
+mod bins;
 #[cfg(test)]
 mod tests;
 
@@ -12,8 +16,8 @@ use crate::colour::{BONE, STONE};
 use aethereal_actor::Tick;
 use aethereal_data::Plain;
 use aethereal_render::text::Run;
-use core::iter::{Peekable, Rev};
-use std::collections::{VecDeque, vec_deque};
+use bins::Bins;
+use std::collections::VecDeque;
 
 /// How far back the chart reaches: sixty seconds of the program's time.
 pub const WINDOW_NANOS: u64 = 60_000_000_000;
@@ -33,18 +37,29 @@ struct Sample {
 }
 
 /// The cycles' times over the last [`KEPT_NANOS`], oldest first: each `Tick` heard is pushed at the back, and those
-/// more than that older than it leave at the front.
-#[derive(Plain, Debug, Default, Clone, PartialEq, Eq)]
+/// more than that older than it leave at the front; and the chart's columns at the span it was last drawn at.
+#[derive(Plain, Debug, Clone, PartialEq, Eq)]
 pub struct FrameTimes {
     samples: VecDeque<Sample>,
+    bins: Bins,
+}
+
+impl Default for FrameTimes {
+    fn default() -> Self {
+        Self { samples: VecDeque::new(), bins: Bins::new(Self::span_nanos(1)) }
+    }
 }
 
 /// One column of the chart that a cycle fell in: which span of the program's time it covers, counted from its start,
-/// and the longest cycle in it, so a spike reads however many cycles a column holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// and the fastest, the median, and the slowest of its cycles, so a stretch of slow cycles reads in the median however
+/// many cycles a column holds, a spike among healthy ones in the slowest, and how even they are in the spread of the
+/// three.
+#[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Column {
     pub span: u64,
-    pub longest_nanos: u64,
+    pub fastest_nanos: u64,
+    pub median_nanos: u64,
+    pub slowest_nanos: u64,
 }
 
 /// Where the columns stand at the newest cycle: the span it fell in, drawn at the chart's right edge, and how far
@@ -55,34 +70,6 @@ pub struct Slide {
     pub newest: u64,
     pub through: f32,
     pub span_nanos: u64,
-}
-
-/// The columns some cycle fell in, from the newest back to the oldest the chart draws, each worked out as it is asked
-/// for: the cycles are kept oldest first, so each column's are next to each other, and one pass back from the newest
-/// finds them, with nothing gathered on the way.
-pub struct Columns<'times> {
-    samples: Peekable<Rev<vec_deque::Iter<'times, Sample>>>,
-    span_nanos: u64,
-    oldest: u64,
-}
-
-impl Iterator for Columns<'_> {
-    type Item = Column;
-
-    fn next(&mut self) -> Option<Column> {
-        let first = self.samples.next()?;
-        let span = first.elapsed_nanos / self.span_nanos;
-        // A cycle older than the oldest column is not drawn, and neither is any before it.
-        if span < self.oldest {
-            return None;
-        }
-        let mut longest_nanos = first.delta_nanos;
-        while let Some(sample) = self.samples.next_if(|sample| sample.elapsed_nanos / self.span_nanos == span) {
-            longest_nanos = longest_nanos.max(sample.delta_nanos);
-        }
-
-        Some(Column { span, longest_nanos })
-    }
 }
 
 /// The figures beneath the chart over the window, each in nanoseconds, rounded to a tenth of a millisecond as it is
@@ -99,6 +86,7 @@ impl FrameTimes {
     /// Takes in the cycle `tick` begins, and lets go of every cycle more than [`KEPT_NANOS`] older than it.
     pub fn push(&mut self, tick: &Tick) {
         self.samples.push_back(Sample { elapsed_nanos: tick.elapsed_nanos, delta_nanos: tick.delta_nanos });
+        self.bins.take(tick.elapsed_nanos, tick.delta_nanos);
         let newest = tick.elapsed_nanos;
         while let Some(oldest) = self.samples.front() {
             let kept = newest.saturating_sub(oldest.elapsed_nanos) < KEPT_NANOS;
@@ -120,14 +108,23 @@ impl FrameTimes {
         WINDOW_NANOS.div_ceil(u64::from(count.max(1)))
     }
 
-    /// The columns of a chart of `count`, each the span of the program's time it covers and the longest cycle in it:
-    /// only those some cycle fell in, from the newest, back to the one `count + 1` spans before it, as the chart's
-    /// width holds a little more than `count` columns and the oldest two slide off its left edge.
-    pub fn columns(&self, count: u32) -> Columns<'_> {
+    /// The columns of a chart of `count`, each the span of the program's time it covers and the fastest, the median,
+    /// and the slowest of its cycles: only those some cycle fell in, from the newest, back to the one `count + 1` spans before
+    /// it, as the chart's width holds a little more than `count` columns and the oldest two slide off its left edge. A
+    /// chart cut into another count than it was last is binned again from the cycles kept.
+    pub fn columns(&mut self, count: u32) -> impl Iterator<Item = Column> + '_ {
         let span_nanos = Self::span_nanos(count);
+        let recut = self.bins.span_nanos() != span_nanos;
+        if recut {
+            self.bins = Bins::new(span_nanos);
+            for sample in &self.samples {
+                self.bins.take(sample.elapsed_nanos, sample.delta_nanos);
+            }
+        }
         let oldest = (self.newest_nanos() / span_nanos).saturating_sub(u64::from(count) + 1);
+        self.bins.keep_from(oldest);
 
-        Columns { samples: self.samples.iter().rev().peekable(), span_nanos, oldest }
+        self.bins.newest_first()
     }
 
     /// Where the columns of a chart of `count` stand at the newest cycle.

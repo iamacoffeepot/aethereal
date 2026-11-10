@@ -7,6 +7,7 @@
 //! Tab ──> completion: a tool's name, a flag's name, or a variant's word
 //! PageUp, PageDown, the wheel ──> the scrollback's view, held between its oldest row and its newest
 //! the engine's recent log ──> a row each ──> the scrollback;  warnings and errors while closed ──> the band's count
+//! a tool called ──> running, at the prompt's right end ──> its answer, refusal, or no answer lets it go
 //! ```
 
 mod command;
@@ -14,6 +15,7 @@ mod completion;
 mod history;
 mod line;
 mod logs;
+mod running;
 mod scrollback;
 #[cfg(test)]
 mod tests;
@@ -29,6 +31,7 @@ use aethereal_tools::{Output, Sheets, print_image, print_value};
 use completion::Completion;
 use history::History;
 use line::Line;
+use running::Running;
 use scrollback::Scrollback;
 use wheel::Wheel;
 
@@ -104,7 +107,8 @@ enum Typing {
     AfterBacktick,
 }
 
-/// The console's state: the line, its history, the scrollback, and the engine's tools.
+/// The console's state: the line, its history, the scrollback, the engine's tools, and the calls of them not yet
+/// answered.
 #[derive(Plain, Debug, Clone)]
 pub struct Console {
     line: Line,
@@ -114,6 +118,7 @@ pub struct Console {
     sheets: Sheets,
     typing: Typing,
     wheel: Wheel,
+    running: Running,
 }
 
 impl Default for Console {
@@ -125,6 +130,7 @@ impl Default for Console {
             sheets: Sheets { revision: 0, tools: Vec::new() },
             typing: Typing::Typed,
             wheel: Wheel::default(),
+            running: Running::default(),
         }
     }
 }
@@ -305,6 +311,21 @@ impl Console {
         }
 
         pieces
+    }
+
+    /// Counts a call of `tool`, asked of the engine's tools root, as running until it is answered.
+    pub fn called(&mut self, tool: &str) {
+        self.running.called(tool);
+    }
+
+    /// Lets go of a call of `tool`: it was answered, refused, or will not be answered.
+    pub fn settled(&mut self, tool: &str) {
+        self.running.settled(tool);
+    }
+
+    /// What is running, in stone, shown at the prompt's right end: nothing while no call is under way.
+    pub fn running(&self) -> Vec<Piece> {
+        vec![Piece::new(&self.running.shown(), STONE)]
     }
 
     /// The column the cursor stands at, counted from the prompt's first character.

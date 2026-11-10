@@ -272,3 +272,28 @@ fn warnings_and_errors_are_counted_until_cleared() {
     assert_eq!(counted, vec![Piece::new("! 2", RUST), Piece::new("  ", STONE), Piece::new("× 1", BRICK)]);
     assert_eq!(cleared, vec![Piece::new(" ", STONE)]);
 }
+
+/// A call is shown running from when it is asked until it settles, one by its tool's name and several by their count,
+/// each settling letting go of one call only, so a running line that never clears, clears at the first of two calls
+/// of one tool, or counts a call twice, is caught.
+#[test]
+fn calls_run_until_each_settles() {
+    let mut console = Console::default();
+    let shown = |console: &Console| console.running().iter().map(|piece| piece.text.clone()).collect::<String>();
+
+    console.called("read_recent");
+    let one = shown(&console);
+    console.called("read_recent");
+    console.called("memory");
+    let three = shown(&console);
+    console.settled("read_recent");
+    console.settled("unknown");
+    let two = shown(&console);
+    console.settled("memory");
+    let last = shown(&console);
+    console.settled("read_recent");
+
+    assert_eq!((one.as_str(), three.as_str(), two.as_str()), ("running read_recent…", "running 3…", "running 2…"));
+    assert_eq!(last, "running read_recent…");
+    assert_eq!(shown(&console), "");
+}

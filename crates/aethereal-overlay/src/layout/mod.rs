@@ -1,9 +1,10 @@
 //! Where the overlay draws, worked out from the window's surface each time it is needed (ADR-0053: The three stops):
 //! the band across the top, a tenth of the window's height, in two columns; the chart's figures on one line at the
 //! foot of the left column, and the frame chart filling the column above them, with the count of warnings and errors
-//! at the right end of that line; and the console's panel beneath the band, a third of the window's height, its
-//! scrollback above the prompt's line and its scroll bar in the padding at its right edge. All of it is in the surface's pixels, from its top left, as the renderer
-//! places texts (ADR-0052).
+//! at the right end of that line; and the console's panel beneath the band, a third of the window's height, cut into
+//! two strips told apart by their tints and a faint line between: the scrollback above, its scroll bar in the padding
+//! at its right edge, and the prompt's strip along the panel's foot, a line of text tall, with what is running at its
+//! right end. All of it is in the surface's pixels, from its top left, as the renderer places texts (ADR-0052).
 
 #[cfg(test)]
 mod tests;
@@ -24,8 +25,16 @@ const LEFT_SHARE: f32 = 0.6;
 /// The space between the band's edges and what it holds, in logical pixels.
 const PADDING_PIXELS: f32 = 10.0;
 
-/// The space between the chart and its figures, in logical pixels.
+/// The space between the chart and its figures, and between the scrollback's last row and the prompt's strip, in
+/// logical pixels.
 const GAP_PIXELS: f32 = 4.0;
+
+/// The space above and below the prompt's line inside its strip, in logical pixels.
+const STRIP_PADDING_PIXELS: f32 = 6.0;
+
+/// How thick the lines between the band and the console, and between the scrollback and the prompt's strip, are, in
+/// logical pixels.
+const DIVIDER_PIXELS: f32 = 1.0;
 
 /// The size of the overlay's text, in logical pixels to the em: what reads on a window 1080 pixels tall.
 const TEXT_PIXELS: f32 = 14.0;
@@ -99,6 +108,39 @@ impl Layout {
         Rect2 { min: Vec2::new(0.0, top), max: Vec2::new(self.width, top + (self.height * CONSOLE_SHARE).round()) }
     }
 
+    /// The console's scrollback strip: the console's panel above the prompt's strip.
+    pub fn console_body(self) -> Rect2 {
+        let console = self.console();
+
+        Rect2 { min: console.min, max: Vec2::new(console.max.x, self.prompt_strip().min.y) }
+    }
+
+    /// The prompt's strip: the whole width of the console's panel, along its foot, a line of text tall and its
+    /// padding above and below. No taller than the panel.
+    pub fn prompt_strip(self) -> Rect2 {
+        let console = self.console();
+        let tall = self.pixels(STRIP_PADDING_PIXELS).mul_add(2.0, self.line_pixels_tall().ceil());
+        let top = (console.max.y - tall).max(console.min.y);
+
+        Rect2 { min: Vec2::new(console.min.x, top), max: console.max }
+    }
+
+    /// The line between the band and the console: along the top of the console's panel, inside it.
+    pub fn band_divider(self) -> Rect2 {
+        let console = self.console();
+        let bottom = (console.min.y + self.line_pixels(DIVIDER_PIXELS)).min(console.max.y);
+
+        Rect2 { min: console.min, max: Vec2::new(console.max.x, bottom) }
+    }
+
+    /// The line between the scrollback and the prompt's strip: along the top of the strip, inside it.
+    pub fn prompt_divider(self) -> Rect2 {
+        let strip = self.prompt_strip();
+        let bottom = (strip.min.y + self.line_pixels(DIVIDER_PIXELS)).min(strip.max.y);
+
+        Rect2 { min: strip.min, max: Vec2::new(strip.max.x, bottom) }
+    }
+
     /// The frame chart: the band's left column, inside its padding, from its top down to a gap above the figures. At
     /// least a pixel tall, on a window too short to hold it.
     pub fn chart(self) -> Rect2 {
@@ -118,12 +160,14 @@ impl Layout {
         Vec2::new(padding, self.band().max.y - padding - line)
     }
 
-    /// The console's panel inside its padding, and left of its scroll bar by a gap: what its texts are clipped to.
+    /// The console's panel inside its padding, its foot the prompt's strip's padding, and left of its scroll bar by a
+    /// gap: what its texts are clipped to.
     pub fn console_inside(self) -> Rect2 {
         let padding = self.pixels(PADDING_PIXELS);
         let console = self.console();
         let right = self.scrollbar_left() - self.pixels(SCROLLBAR_GAP_PIXELS);
-        let max = Vec2::new(right.max(padding), (console.max.y - padding).max(console.min.y + padding));
+        let bottom = console.max.y - self.pixels(STRIP_PADDING_PIXELS);
+        let max = Vec2::new(right.max(padding), bottom.max(console.min.y + padding));
 
         Rect2 { min: Vec2::new(padding, console.min.y + padding), max }
     }
@@ -140,11 +184,23 @@ impl Layout {
         columns
     }
 
-    /// Where the prompt's line is placed: the top left of the last line inside the console's panel.
+    /// Where the prompt's line is placed: the top left of the line inside the prompt's strip, below its padding.
     pub fn prompt_at(self) -> Vec2 {
         let inside = self.console_inside();
+        let top = self.prompt_strip().min.y + self.pixels(STRIP_PADDING_PIXELS);
 
-        Vec2::new(inside.min.x, (inside.max.y - self.line_pixels_tall().ceil()).max(inside.min.y))
+        Vec2::new(inside.min.x, top.max(inside.min.y))
+    }
+
+    /// Where the line of what is running, `characters` wide, is placed: on the prompt's line, ending at the right of
+    /// the console's text.
+    pub fn running_at(self, characters: usize) -> Vec2 {
+        let inside = self.console_inside();
+        // A count of characters is some tens, which an f32 holds exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let width = characters as f32 * self.advance();
+
+        Vec2::new((inside.max.x - width).max(inside.min.x), self.prompt_at().y)
     }
 
     /// Where the scrollback is placed: the top left inside the console's panel.
@@ -153,10 +209,10 @@ impl Layout {
     }
 
     /// How many rows of the scrollback are in view: as many lines as fit between the panel's top and a gap above the
-    /// prompt, at least one.
+    /// prompt's strip, at least one.
     #[must_use]
     pub fn scrollback_rows(self) -> usize {
-        let room = self.prompt_at().y - self.pixels(GAP_PIXELS) - self.scrollback_at().y;
+        let room = self.prompt_strip().min.y - self.pixels(GAP_PIXELS) - self.scrollback_at().y;
         let fit = (room / self.line_pixels_tall()).floor();
         // A count of lines down a window is some tens, which a usize holds; a negative room fits none.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

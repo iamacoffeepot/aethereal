@@ -1,5 +1,6 @@
 //! The overlay's colours (ADR-0053: Colours): slate and earth. Healthy is one cool colour, and only warm colours mean
-//! trouble. The table writes them in sRGB, and the renderer's colours are in linear light, so each is turned into
+//! trouble; the frame chart's three bars are told apart by colour alone, the same whatever the budget, as their height
+//! against the budget's line says over or under. The table writes them in sRGB, and the renderer's colours are in linear light, so each is turned into
 //! linear light as it is used.
 
 #[cfg(test)]
@@ -8,25 +9,39 @@ mod tests;
 use aethereal_data::Plain;
 use aethereal_render::text::Colour;
 
-/// The panels, drawn at [`PANEL_OPACITY`] so the program shows behind them: `#15181b`.
+/// The band's panel, drawn at [`PANEL_OPACITY`] so the program shows behind it: `#15181b`.
 pub const SLATE: Swatch = Swatch::hex(0x15_18_1b);
 
-/// Text: `#e4e0d6`.
+/// The console's scrollback, a step lighter than the band's slate, about five points of lightness, so the two panels
+/// read apart: `#20252a`.
+pub const SLATE_LIGHTER: Swatch = Swatch::hex(0x20_25_2a);
+
+/// The prompt's strip, a step darker than the band's slate, a well the line is typed into: `#111417`.
+pub const SLATE_DARKER: Swatch = Swatch::hex(0x11_14_17);
+
+/// Text, and the chart's dashed budget line: `#e4e0d6`.
 pub const BONE: Swatch = Swatch::hex(0xe4_e0_d6);
 
-/// Labels, the chart's budget line, a log line's step and actor, and an info line: `#8d918f`.
+/// Labels, the chart's faint line at twice the budget, a log line's step and actor, and an info line: `#8d918f`.
 pub const STONE: Swatch = Swatch::hex(0x8d_91_8f);
 
-/// Healthy lines and fills, a frame within its budget, and the command typed at the console: `#9dbfb0`.
+/// Healthy lines and fills, the chart's median bar, the middle of a column's three, and the command typed at the
+/// console: `#9dbfb0`.
 pub const LICHEN: Swatch = Swatch::hex(0x9d_bf_b0);
+
+/// The chart's slowest bar, the tallest of a column's three, at the back: `#6b5f4c`.
+pub const SAND: Swatch = Swatch::hex(0x6b_5f_4c);
+
+/// The chart's fastest bar, the shortest of a column's three, in front: `#3f5a57`.
+pub const SLATE_TEAL: Swatch = Swatch::hex(0x3f_5a_57);
 
 /// Marks, on the chart and in the scrollback: `#d9b86c`.
 pub const OCHRE: Swatch = Swatch::hex(0xd9_b8_6c);
 
-/// A frame over its budget, and a warning: `#d08a4c`.
+/// A warning, and the console's count of them: `#d08a4c`.
 pub const RUST: Swatch = Swatch::hex(0xd0_8a_4c);
 
-/// A frame over twice its budget, an error, and a refusal: `#cc5f52`.
+/// An error, the console's count of them, and a refusal: `#cc5f52`.
 pub const BRICK: Swatch = Swatch::hex(0xcc_5f_52);
 
 /// How opaque the panels are drawn: 85%, so the program shows behind them.
