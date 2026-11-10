@@ -1,5 +1,5 @@
-//! One column's cycles as they come, and what they come to (ADR-0053: The three stops): the slowest exactly, and the
-//! median from a sample of at most [`BIN_SAMPLES`] of them.
+//! One column's cycles as they come, and what they come to (ADR-0053: The three stops): the fastest and the slowest
+//! exactly, and the median from a sample of at most [`BIN_SAMPLES`] of them.
 //!
 //! At 60 Hz a column of a chart at 1080 holds about sixteen cycles, which the sample keeps whole. A program that is
 //! not held to its display's rate runs many more, so past [`BIN_SAMPLES`] the sample keeps every other cycle it holds
@@ -12,11 +12,12 @@ use aethereal_data::Plain;
 /// The most cycles a column keeps for its median.
 pub const BIN_SAMPLES: usize = 64;
 
-/// The cycles of one column so far: the span of the program's time it covers, the slowest of them, how many came, and
-/// every `stride`th of them kept, from the first.
+/// The cycles of one column so far: the span of the program's time it covers, the fastest and the slowest of them, how
+/// many came, and every `stride`th of them kept, from the first.
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
 pub struct Bin {
     span: u64,
+    fastest_nanos: u64,
     slowest_nanos: u64,
     seen: u64,
     stride: u64,
@@ -29,7 +30,7 @@ impl Bin {
         let mut kept = Vec::with_capacity(BIN_SAMPLES);
         kept.push(delta_nanos);
 
-        Self { span, slowest_nanos: delta_nanos, seen: 1, stride: 1, kept }
+        Self { span, fastest_nanos: delta_nanos, slowest_nanos: delta_nanos, seen: 1, stride: 1, kept }
     }
 
     /// The span of the program's time the column covers.
@@ -37,9 +38,11 @@ impl Bin {
         self.span
     }
 
-    /// Takes in a cycle `delta_nanos` long: into the slowest always, and into the sample when it is a `stride`th one.
+    /// Takes in a cycle `delta_nanos` long: into the fastest and the slowest always, and into the sample when it is a
+    /// `stride`th one.
     /// A sample that is full keeps every other cycle it holds first, and takes every other cycle from then.
     pub fn take(&mut self, delta_nanos: u64) {
+        self.fastest_nanos = self.fastest_nanos.min(delta_nanos);
         self.slowest_nanos = self.slowest_nanos.max(delta_nanos);
         let index = self.seen;
         self.seen += 1;
@@ -60,14 +63,15 @@ impl Bin {
         }
     }
 
-    /// The column the cycles so far come to: the slowest exactly, and the median by nearest rank among those kept.
+    /// The column the cycles so far come to: the fastest and the slowest exactly, and the median by nearest rank among
+    /// those kept.
     pub fn column(&self) -> Column {
         let mut sorted = self.kept.clone();
         sorted.sort_unstable();
         let at = sorted.len().div_ceil(2).saturating_sub(1);
         let median_nanos = sorted.get(at).copied().unwrap_or(self.slowest_nanos);
 
-        Column { span: self.span, median_nanos, slowest_nanos: self.slowest_nanos }
+        Column { span: self.span, fastest_nanos: self.fastest_nanos, median_nanos, slowest_nanos: self.slowest_nanos }
     }
 
     /// How many cycles the sample holds.

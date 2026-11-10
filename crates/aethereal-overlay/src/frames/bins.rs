@@ -1,5 +1,5 @@
 //! The chart's columns at one span, kept as the cycles come (ADR-0053: The three stops): each column whose span has
-//! passed as its median and slowest cycle, worked out once as it closed, and the newest, still open, as the cycles it
+//! passed as its fastest, median, and slowest cycles, worked out once as it closed, and the newest, still open, as the cycles it
 //! has so far. A chart cut into another count of columns, as the window is resized, is binned again from the cycles
 //! kept.
 

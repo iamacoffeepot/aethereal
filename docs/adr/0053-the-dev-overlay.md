@@ -33,8 +33,9 @@ Called::Output ── schema ── Form, printed ──> scrollback
 - **The band:** a strip across the top of the window, about a tenth of its height, in two columns.
   - **Left, one 60-second axis, newest at the right, so a spike reads straight down:**
     - the frame chart: each cycle's `delta_nanos`, with the budget as a dashed line, and the median, p90, p99, and the most over the 60 seconds beneath it;
-      - each column, a fixed span of time, is a bar to the median of its cycles, coloured by the median against the budget, with a 1 px line from the bar up to its slowest cycle when that is more than 15% above the median, coloured by the slowest;
-      - the vertical scale is logarithmic and relative to the budget: a quarter of the budget at the foot, 32 budgets at the top, so the budget stands 2/7 of the way up and every doubling is another 1/7, whatever the budget is; a faint line marks twice the budget, where brick begins;
+      - each column, a fixed span of time, is three opaque bars the column's width, each from the chart's foot, drawn back to front: its slowest cycle in sand, the tallest, at the back; its median in lichen; and its fastest in slate-teal, the shortest, in front;
+      - each bar's colour is fixed by its layer, whatever the budget: over or under is read from the bars' height against the budget line, dashed bone at 70%, which carries the judging;
+      - the vertical scale is logarithmic and relative to the budget: a quarter of the budget at the foot, 32 budgets at the top, so the budget stands 2/7 of the way up and every doubling is another 1/7, whatever the budget is; a faint stone line marks twice the budget;
     - GPU time per frame, stacked by named pass, with the share of the frame the GPU was busy;
     - one line each for draws, triangles, bytes uploaded, and GPU memory.
   - **Right:** the memory meters, each a bar against its limit where it has one, and the GPU adapter, its backend, and its driver.
@@ -140,12 +141,14 @@ The overlay's colours are slate and earth. Healthy is one cool colour; only warm
 | Name   | Colour    | For                                                                    |
 | ------ | --------- | ---------------------------------------------------------------------- |
 | slate  | `#15181b` | the panels, at 85% opacity, so the game shows behind them             |
-| bone   | `#e4e0d6` | text                                                                   |
+| bone   | `#e4e0d6` | text; the chart's budget line                                         |
 | stone  | `#8d918f` | labels, timestamps, info lines                                        |
-| lichen | `#9dbfb0` | the typed command, healthy lines and meters                           |
+| lichen | `#9dbfb0` | the typed command, healthy lines and meters; the chart's median bar   |
+| sand   | `#6b5f4c` | the chart's slowest bar                                                |
+| slate-teal | `#3f5a57` | the chart's fastest bar                                            |
 | ochre  | `#d9b86c` | marks                                                                  |
-| rust   | `#d08a4c` | warnings; a frame over budget; a meter past 75%                       |
-| brick  | `#cc5f52` | errors; a frame over twice the budget; a meter past 90%               |
+| rust   | `#d08a4c` | warnings; a meter past 75%                                             |
+| brick  | `#cc5f52` | errors; a meter past 90%                                               |
 
 The GPU's passes are told apart by lichen, a slate blue, and a muted violet, in pass order. Every text is `Font::Mono`, so figures line up.
 

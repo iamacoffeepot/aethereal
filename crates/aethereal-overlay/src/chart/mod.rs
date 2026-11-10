@@ -1,7 +1,7 @@
 //! What the overlay draws as one placement (ADR-0023): a unit square, drawn once for each of its instances' records,
 //! each a box in the surface's pixels and its colour. The records are the panels and the lines between them, the frame
-//! chart's faint line at twice the budget, its columns, each a bar to its median and a line to its slowest (`column`),
-//! on a scale logarithmic in a cycle's time and relative to the budget (`scale`), its dashed budget line, the marks'
+//! chart's faint line at twice the budget, its columns, each three bars to its slowest, median, and fastest cycles
+//! (`column`), on a scale logarithmic in a cycle's time and relative to the budget (`scale`), its dashed budget line, the marks'
 //! ticks, the console's cursor, and its scroll bar, in that order, as one placement's records are drawn in their order;
 //! all of them are written again in one write at each `Tick` the overlay is shown, as the chart moves with time.
 
@@ -10,7 +10,7 @@ mod scale;
 #[cfg(test)]
 mod tests;
 
-use crate::colour::{BRICK, LICHEN, OCHRE, PANEL_OPACITY, RUST, SLATE, SLATE_DARKER, SLATE_LIGHTER, STONE, Swatch};
+use crate::colour::{BONE, LICHEN, OCHRE, PANEL_OPACITY, SLATE, SLATE_DARKER, SLATE_LIGHTER, STONE};
 use crate::frames::{Column, Slide};
 use crate::layout::Layout;
 use crate::marks::MOST_MARKS;
@@ -74,17 +74,20 @@ const DASH_GAP_PIXELS: f32 = 4.0;
 const REFERENCE_DASH_PIXELS: f32 = 2.0;
 const REFERENCE_GAP_PIXELS: f32 = 6.0;
 
-/// How opaque a budget line that is a reference is drawn.
+/// How opaque the budget line is drawn, in bone: bright, as the bars' height against it is what says over or under.
+const BUDGET_OPACITY: f32 = 0.7;
+
+/// How much fainter than a limit a budget line that is a reference is drawn.
 const REFERENCE_OPACITY: f32 = 0.5;
 
-/// How thick the budget line, the line at twice it, and a column's line to its slowest are, in logical pixels.
+/// How thick the budget line and the line at twice it are, in logical pixels.
 const LINE_PIXELS: f32 = 1.0;
 
 /// How wide a mark's tick is, in logical pixels.
 const TICK_PIXELS: f32 = 2.0;
 
-/// How opaque the line at twice the budget is drawn, in stone: faint, a guide to where brick begins, as the figures
-/// beneath the chart carry the numbers.
+/// How opaque the line at twice the budget is drawn, in stone: faint, a guide to a doubling over the budget, as
+/// the figures beneath the chart carry the numbers.
 const TWICE_BUDGET_OPACITY: f32 = 0.15;
 
 /// How opaque the lines between the panels are drawn, in stone: faint, so they part the panels without drawing the
@@ -163,8 +166,8 @@ pub fn records_bytes(layout: Layout) -> usize {
 
 /// Appends to `records` what the overlay draws at `stop` on `layout`: the band's panel; when the stop shows the
 /// console, its scrollback's panel a step lighter and the prompt's strip a step darker, with a faint stone line along
-/// the top of each; a faint stone line at twice `budget`; each of `columns`, scaled and shaded against it; and the
-/// dashed budget line, stone, drawn lighter when the budget is a reference. A record is appended as [`record_layout`]
+/// the top of each; a faint stone line at twice `budget`; each of `columns`, scaled against it; and the dashed budget
+/// line, bone, drawn lighter when the budget is a reference. A record is appended as [`record_layout`]
 /// lays it out.
 ///
 /// The newest column's span is at the chart's right edge, and each older one a column's pitch further left, all moved
@@ -205,14 +208,16 @@ pub fn records(
         if !shows {
             continue;
         }
-        let placed = Placed { left, width, chart, budget_nanos, line };
+        let placed = Placed { left, width, chart, budget_nanos };
         column::column(records, placed, column);
     }
 
     let budget_y = height_of(budget_nanos);
     let (dash, gap, colour) = match budget {
-        FrameBudget::Limit { .. } => (DASH_PIXELS, DASH_GAP_PIXELS, STONE.opaque()),
-        FrameBudget::Reference { .. } => (REFERENCE_DASH_PIXELS, REFERENCE_GAP_PIXELS, STONE.at(REFERENCE_OPACITY)),
+        FrameBudget::Limit { .. } => (DASH_PIXELS, DASH_GAP_PIXELS, BONE.at(BUDGET_OPACITY)),
+        FrameBudget::Reference { .. } => {
+            (REFERENCE_DASH_PIXELS, REFERENCE_GAP_PIXELS, BONE.at(BUDGET_OPACITY * REFERENCE_OPACITY))
+        }
     };
     let (dash, gap) = (layout.line_pixels(dash), layout.line_pixels(gap));
     let mut left = chart.min.x;
@@ -269,18 +274,6 @@ pub fn scrollbar(records: &mut Vec<u8>, bar: Bar) {
     };
     push(records, track, STONE.at(TRACK_OPACITY));
     push(records, thumb, colour);
-}
-
-/// The colour of a cycle that took `nanos` against `budget_nanos`: lichen within the budget, rust over it, and brick
-/// over twice it.
-fn shade(nanos: u64, budget_nanos: u64) -> Swatch {
-    let over = nanos > budget_nanos;
-    let twice = nanos > budget_nanos.saturating_mul(2);
-    match (over, twice) {
-        (_, true) => BRICK,
-        (true, false) => RUST,
-        (false, false) => LICHEN,
-    }
 }
 
 /// Appends the record of `area` drawn in `colour`.
