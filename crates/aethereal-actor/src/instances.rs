@@ -1,7 +1,7 @@
 //! The instances a part's actors run their code in, which the engine carries with the part and never looks into
 //! (ADR-0015).
 
-use crate::{Declared, Guests, Links, NoGuests, Refused};
+use crate::{Declared, Guests, Links, NoGuests, Refused, Seated};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -49,6 +49,24 @@ enum Own {
     Made(&'static [&'static Declared]),
 }
 
+/// An instance a host loads into a part's [`Instances`]: whatever the host keeps there, which says what memory it
+/// holds for the engine's figures (ADR-0053).
+pub trait Loadable: Any + Send {
+    /// The memory it holds: [`Memory::Uncounted`] unless it is a guest's.
+    fn memory(&self) -> Memory {
+        Memory::Uncounted
+    }
+}
+
+/// What memory an instance holds, as its host counts it (ADR-0053).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Memory {
+    /// None the engine counts: it is not a guest's, or no actor runs in it.
+    Uncounted,
+    /// A guest's: the bytes of its memory, how many actors run in it, and the first of them, which names it.
+    Guest { bytes: u64, actors: u32, first: Seated },
+}
+
 /// One instance a host loaded: its type, the key the host gave it, and the instance.
 struct Loaded {
     host: TypeId,
@@ -78,7 +96,7 @@ impl<I> DerefMut for Lent<I> {
 
 /// Where a loaded instance is.
 enum Held {
-    Here(Box<dyn Any + Send>),
+    Here(Box<dyn Loadable>),
     /// Lent to a call into it that is under way, which gives it back when it returns.
     Lent,
 }
@@ -141,7 +159,7 @@ impl Instances {
     ///
     /// Panics while the instance is lent to a call into it, which nothing reaches it through until the call gives it
     /// back.
-    pub fn get_or_load<I: Any + Send>(&mut self, key: u64, load: impl FnOnce() -> I) -> &mut I {
+    pub fn get_or_load<I: Loadable>(&mut self, key: u64, load: impl FnOnce() -> I) -> &mut I {
         let host = TypeId::of::<I>();
         let found = self.loaded.iter().position(|loaded| loaded.is(host, key));
         let at = found.unwrap_or_else(|| {
@@ -151,6 +169,7 @@ impl Instances {
         let Held::Here(instance) = &mut self.loaded[at].instance else {
             panic!("an instance lent to a call into it is reached only once it is given back");
         };
+        let instance: &mut dyn Any = &mut **instance;
         let Some(instance) = instance.downcast_mut::<I>() else {
             panic!("an instance is kept under its own type");
         };
@@ -159,12 +178,13 @@ impl Instances {
     }
 
     /// The instance of type `I` kept under `key`: nothing when none is loaded, or it is lent to a call into it.
-    pub fn get<I: Any + Send>(&mut self, key: u64) -> Option<&mut I> {
+    pub fn get<I: Loadable>(&mut self, key: u64) -> Option<&mut I> {
         let host = TypeId::of::<I>();
         let loaded = self.loaded.iter_mut().find(|loaded| loaded.is(host, key))?;
         let Held::Here(instance) = &mut loaded.instance else {
             return None;
         };
+        let instance: &mut dyn Any = &mut **instance;
 
         instance.downcast_mut::<I>()
     }
@@ -181,7 +201,7 @@ impl Instances {
     /// # Panics
     ///
     /// Never: an instance is kept under its own type, so it is always read back as that type.
-    pub fn lend<I: Any + Send>(&mut self, key: u64, load: impl FnOnce() -> I) -> Result<Lent<I>, Refused> {
+    pub fn lend<I: Loadable>(&mut self, key: u64, load: impl FnOnce() -> I) -> Result<Lent<I>, Refused> {
         let host = TypeId::of::<I>();
         let found = self.loaded.iter().position(|loaded| loaded.is(host, key));
         let Some(at) = found else {
@@ -191,6 +211,7 @@ impl Instances {
         let Held::Here(instance) = mem::replace(&mut self.loaded[at].instance, Held::Lent) else {
             return Err(Refused::Waiting);
         };
+        let instance: Box<dyn Any> = instance;
         let Ok(instance) = instance.downcast::<I>() else {
             panic!("an instance is kept under its own type");
         };
@@ -200,7 +221,7 @@ impl Instances {
 
     /// Keeps `lent`, an instance of type `I`, under `key` again, once the call it was lent to with [`Self::lend`] has
     /// returned: where it was lent from, unless what the call was lent moved it.
-    pub fn put_back<I: Any + Send>(&mut self, key: u64, lent: Lent<I>) {
+    pub fn put_back<I: Loadable>(&mut self, key: u64, lent: Lent<I>) {
         let host = TypeId::of::<I>();
         let Lent { at, instance } = lent;
         let is_where = self.loaded.get(at).is_some_and(|loaded| loaded.is(host, key));
@@ -217,11 +238,23 @@ impl Instances {
 
     /// Drops the instance of type `I` kept under `key`, for a host whose last actor that ran in it has ended: the
     /// next actor of the part that wants it loads a new one. Nothing when there is none.
-    pub fn drop_instance<I: Any + Send>(&mut self, key: u64) {
+    pub fn drop_instance<I: Loadable>(&mut self, key: u64) {
         let host = TypeId::of::<I>();
         let found = self.loaded.iter().position(|loaded| loaded.is(host, key));
         if let Some(at) = found {
             self.loaded.swap_remove(at);
+        }
+    }
+}
+
+impl Instances {
+    /// Hands `each` what memory each instance kept here holds, in the order they were loaded: for the engine's
+    /// figures, between steps, when none is lent (ADR-0053).
+    pub fn measure(&self, mut each: impl FnMut(Memory)) {
+        for loaded in &self.loaded {
+            if let Held::Here(instance) = &loaded.instance {
+                each(instance.memory());
+            }
         }
     }
 }
@@ -245,6 +278,10 @@ mod tests {
 
     /// An instance of another host.
     struct Other(u32);
+
+    impl Loadable for Made {}
+
+    impl Loadable for Other {}
 
     #[test]
     fn an_instance_is_loaded_once_for_its_key_and_type() {

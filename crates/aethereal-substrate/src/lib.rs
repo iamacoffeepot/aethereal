@@ -27,8 +27,10 @@ mod log;
 mod mail;
 mod program;
 mod stages;
+mod stats;
 mod stream;
 mod table;
+mod unsent;
 mod view;
 mod watch;
 

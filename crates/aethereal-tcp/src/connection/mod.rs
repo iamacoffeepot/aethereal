@@ -176,6 +176,8 @@ pub struct Connection {
     /// How many bytes of the first unsent write are written.
     written: u64,
     most_unsent_bytes: u64,
+    /// The bytes it last told the engine it holds unsent, so it tells again only when they change (ADR-0053).
+    told_unsent: u64,
     reading: Serving<Reading>,
     reader: Reader,
     readable: Wait,
@@ -197,6 +199,7 @@ impl Connection {
             unsent: Vec::new(),
             written: 0,
             most_unsent_bytes: u64::from(config.most_unsent_bytes),
+            told_unsent: 0,
             reading: Serving::new(),
             reader: Reader::Waiting,
             readable: Wait::Not,
@@ -271,8 +274,7 @@ impl Connection {
         let parts_length: usize = write.parts.iter().map(|part| turn.read(part).len()).sum();
         let prefix = self.framing.prefix(parts_length);
         let length = (prefix.len() + parts_length) as u64;
-        let waiting: u64 = self.unsent.iter().map(|unsent| unsent.length).sum::<u64>() - self.written;
-        let fits = waiting + length <= self.most_unsent_bytes;
+        let fits = self.waiting() + length <= self.most_unsent_bytes;
         if !fits {
             turn.reply::<_, I>(&Wrote::Full)?;
             return Ok(());
@@ -313,14 +315,25 @@ impl Connection {
         self.hang_up(turn, HungUp::Shut)
     }
 
+    /// The bytes of its writes the socket has not taken yet.
+    fn waiting(&self) -> u64 {
+        self.unsent.iter().map(|unsent| unsent.length).sum::<u64>() - self.written
+    }
+
     /// Writes what it can of what is unsent, answering each write once all its bytes are handed to the kernel: those
     /// sent before the socket failed are answered `Sent` all the same. What the socket would not take waits for it to
-    /// be writable.
+    /// be writable. What it then holds unsent, it tells the engine when that has changed, for the engine's backlog
+    /// (ADR-0053).
     fn send<A: Handles<Answer<Readied, Interest>>, S>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<(), Fault> {
         let mut sent = Vec::new();
         let written = self.write_unsent(turn, &mut sent);
         for held in sent {
             turn.answer(held, &Wrote::Sent)?;
+        }
+        let waiting = self.waiting();
+        if waiting != self.told_unsent {
+            turn.holds_unsent(waiting, self.most_unsent_bytes);
+            self.told_unsent = waiting;
         }
         if let Err(why) = written {
             return self.hang_up(turn, why);

@@ -47,6 +47,7 @@ mod sleep;
 mod source;
 mod spares;
 mod stage;
+mod stats;
 mod stream;
 mod subscribers;
 mod time;
@@ -81,7 +82,7 @@ pub use guests::{Config, config_bytes};
 #[cfg(feature = "std")]
 pub use held::holders;
 pub use held::{Held, NotOwed, Owed, Owes};
-pub use instances::{Instances, Lent};
+pub use instances::{Instances, Lent, Loadable, Memory};
 pub use item::Item;
 pub use job::{Copied, Driven, Fills, Job, JobCode, JobId, Runner, Running, Submitted, Unrun};
 #[cfg(feature = "std")]
@@ -108,6 +109,7 @@ pub use stage::{
     Cycle, Cycled, Cycling, Drained, End, Follows, InCycle, On, Own, Place, Present, Render, Stage, StandsAfter, Start,
     Stop, Tick, Unshared,
 };
+pub use stats::{Against, Backlog, EngineStats, Figures, GuestMemory, LARGEST, Process};
 pub use stream::{
     Enough, More, Number, Open, Part, Serving, Stream, StreamKey, Streamed, Streaming, Streams, Taken, Unreachable,
     Unsent,

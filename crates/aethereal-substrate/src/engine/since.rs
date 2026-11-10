@@ -5,10 +5,11 @@ use super::fuse::Run;
 use super::lifecycle::runs;
 use crate::id::path_id;
 use crate::log::{find, recent};
+use crate::stats::Stats;
 use crate::table::reach;
 use crate::{ActorTable, Blobs, ByActor, Folded, Log};
 use aethereal_actor::{
-    ActorName, BlobHash, BlobId, Cycling, Declared, Logged, Recent, SeatNumber, Seated, Table, Time,
+    ActorName, BlobHash, BlobId, Cycling, Declared, EngineStats, Logged, Recent, SeatNumber, Seated, Table, Time,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 
@@ -35,6 +36,8 @@ pub(super) struct Since<'a> {
     pub(super) cycle: &'a [Cycling],
     /// The log as the step began (ADR-0044).
     pub(super) log: &'a Folded<Log>,
+    /// What the engine keeps for its figures, as the step began (ADR-0053).
+    pub(super) stats: &'a Stats,
 }
 
 /// What a turn sees over the table as the step began and the children stood up since (ADR-0013).
@@ -149,5 +152,12 @@ impl Table for Since<'_> {
     /// Every part's ring is read where it lies, each actor named by the table, live or ended recently (ADR-0053).
     fn recent(&self, since: u64) -> Recent<'_> {
         recent(self.log, since, |id| self.table.name(id).map_or(ActorName::Unnamed(id), ActorName::Path))
+    }
+
+    /// The figures are read where they lie, each actor named as the log names it (ADR-0053).
+    fn engine_stats(&self) -> EngineStats {
+        let name = |id| self.table.name(id).map_or(ActorName::Unnamed(id), ActorName::Path);
+
+        EngineStats::Read(self.stats.figures(self.blobs, name))
     }
 }

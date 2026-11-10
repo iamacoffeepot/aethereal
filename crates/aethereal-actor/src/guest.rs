@@ -993,10 +993,16 @@ fn write_claims(out: &mut Vec<u8>, asked: &Asked) {
             What::Subscribe(kind) => Staging::Subscribe(*kind),
             What::Unsubscribe(kind) => Staging::Unsubscribe(*kind),
             What::Quit => Staging::Quit,
+            What::Unsent { bytes, most } => Staging::Unsent { bytes: saturated(*bytes), most: saturated(*most) },
             _ => continue,
         };
         out.extend_from_slice(&StageRecord { by: effect.seated(), asked: staging }.to_bytes());
     }
+}
+
+/// `figure` in the four bytes a guest's stage record says it in: `u32::MAX` for one past them (ADR-0053).
+fn saturated(figure: u64) -> u32 {
+    u32::try_from(figure).unwrap_or(u32::MAX)
 }
 
 /// Writes after `out` a [`HoldRecord`] for each request the turns of `asked` held. Kept out of line, as most turns hold
@@ -1150,7 +1156,7 @@ fn write_ends(out: &mut Vec<u8>, asked: &Asked, (turn, unread): (u32, &mut Vec<U
             What::Spawn { .. } | What::SpawnInstanced { .. } => ends.spawns += 1,
             What::Watch { .. } => ends.watches += 1,
             What::Close => *closes = true,
-            What::Subscribe(_) | What::Unsubscribe(_) | What::Quit => ends.stages += 1,
+            What::Subscribe(_) | What::Unsubscribe(_) | What::Quit | What::Unsent { .. } => ends.stages += 1,
             What::Unread(reason) => unread.push(UnreadRecord { turn, reason: *reason }),
             _ => {}
         }

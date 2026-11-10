@@ -23,9 +23,10 @@ use aethereal_actor::records::{
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
     Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobType, Broke, Bytes, Children, Claimed, Declared, Due,
-    FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, Maker,
-    NotHeld, NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats,
-    Table, Tie, Tied, Turning, Unfit, Unspawned, Was, Why, Written, holders, take_loose_ticket,
+    FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, Loadable,
+    Maker, Memory as InstanceMemory, NotHeld, NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused, Request, Role,
+    Runs, SeatNumber, Seated, Seats, Table, Tie, Tied, Turning, Unfit, Unspawned, Was, Why, Written, holders,
+    take_loose_ticket,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, from_bytes, to_bytes};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -895,6 +896,19 @@ impl Code {
         let read_limit = instances.read_limit();
 
         instances.get_or_load(self.key, || Instance::load(self, read_limit))
+    }
+}
+
+/// A guest's memory is the instance's linear memory, which its actors share, named by the first of them (ADR-0053).
+impl Loadable for Instance {
+    fn memory(&self) -> InstanceMemory {
+        let Some(first) = self.actors.first() else {
+            return InstanceMemory::Uncounted;
+        };
+        let bytes = u64::try_from(self.memory.data_size(&self.store)).unwrap_or(u64::MAX);
+        let actors = u32::try_from(self.actors.len()).unwrap_or(u32::MAX);
+
+        InstanceMemory::Guest { bytes, actors, first: *first }
     }
 }
 
@@ -3203,6 +3217,28 @@ mod tests {
         let failed = engine.log(echo).any(|entry| matches!(entry, aethereal_actor::Entry::Failed(_)));
         assert!(!failed, "the echo closed, and did not fail");
         assert_eq!(CLOSER_PONGS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_guest_s_memory_is_counted_and_named_by_its_first_actor() {
+        // Catches an instance whose memory the engine never measures, or names by no actor, so the band's guest meter
+        // reads none while a guest runs (ADR-0053).
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(echo) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
+            panic!("the echo begins");
+        };
+        let Some(path) = engine.table().path(echo) else {
+            panic!("the echo stands at a path");
+        };
+
+        let figures = engine.engine_stats();
+
+        let named = figures.largest_guests.first().map(|guest| (guest.actor.clone(), guest.actors));
+        assert!(figures.guest_bytes > 0, "{figures:?}");
+        assert_eq!(named, Some((aethereal_actor::ActorName::Path(path), 1)));
     }
 
     /// Which callers have been answered, a bit for each, and how many answers there were.

@@ -17,10 +17,10 @@ use crate::job::lending;
 use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
-    Declared, Due, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handles, Held, Instances, Keeping,
-    Keeps, Kinds, Level, Line, Logged, MailId, Mailed, NotOwed, On, Owed, Owes, ParentOf, Parented, Path, PathTo,
-    Payload, ProtocolRef, Puts, Reachable, Recent, Resource, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage,
-    Table, Tie, Tied, Time, ToSender, Unanswered, Untaken, Watchable, What, Within, Written,
+    Declared, Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handles, Held,
+    Instances, Keeping, Keeps, Kinds, Level, Line, Logged, MailId, Mailed, NotOwed, On, Owed, Owes, ParentOf, Parented,
+    Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Recent, Resource, Runs, SeatNumber, Seated, Seats, Seen,
+    Sends, Stage, Table, Tie, Tied, Time, ToSender, Unanswered, Untaken, Watchable, What, Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -633,6 +633,11 @@ impl Seat<'_> {
     /// What every actor has logged most recently from the step `since` on (ADR-0053).
     fn recent(&self, since: u64) -> Recent<'_> {
         self.table.recent(since)
+    }
+
+    /// The engine's memory against its limits (ADR-0053).
+    fn engine_stats(&self) -> EngineStats {
+        self.table.engine_stats()
     }
 
     /// The reference, to the tuple of kinds `P`, when the declaration of its actor's type lists every kind of `P`:
@@ -1974,6 +1979,13 @@ impl<Me, S> Turn<'_, Me, S> {
         self.seat.ask(What::Quit);
     }
 
+    /// Tells the engine this actor holds `bytes` unsent, of the most it may hold, `most`, as a connection holds what
+    /// its socket has not taken yet: the engine names the actors holding the most, and the most any one holds is its
+    /// backlog (ADR-0053). What it said last stands until it says again or ends, and zero takes it off the list.
+    pub fn holds_unsent(&mut self, bytes: u64, most: u64) {
+        self.seat.ask(What::Unsent { bytes, most });
+    }
+
     /// Logs `text` at `level`. The line is kept when this turn fails.
     ///
     /// The text is written as `Display` shows it straight into the worker's arena, so a line built with
@@ -2070,6 +2082,15 @@ impl<Me, S> Turn<'_, Me, S> {
     #[must_use]
     pub fn recent(&self, since: u64) -> Recent<'_> {
         self.seat.recent(since)
+    }
+
+    /// The engine's memory against its limits, as it stood when the step began: the program's resident memory as its
+    /// chassis reads it, the blob store's bytes, every guest's memory added up, and the largest guests and the actors
+    /// holding the most bytes unsent, each named by its actor's path (ADR-0053). A guest reads
+    /// [`EngineStats::Unread`], as it reads no log.
+    #[must_use]
+    pub fn engine_stats(&self) -> EngineStats {
+        self.seat.engine_stats()
     }
 
     /// The actor `reference` refers to, as a reference to the tuple of kinds `P`, when its type lists every kind of

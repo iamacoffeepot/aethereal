@@ -1,5 +1,5 @@
 //! Tools (ADR-0037, ADR-0038, ADR-0053): workers that take bytes of a schema and answer bytes of another, and what a
-//! root that holds them checks of each.
+//! root that holds them checks of each; and the engine's own, which read its log and its memory.
 //!
 //! A tool is written in the crate it belongs to, as a [`Tool`], and speaks [`Tooling`]. A [`Holder`] takes each
 //! [`Offer`] of tools, and asks each call of the worker that offered it: `Mcp` in a hub, [`Tools`] in an engine. A
@@ -16,6 +16,7 @@
 mod command;
 mod holder;
 mod logs;
+mod stats;
 mod table;
 mod tool;
 mod toolbox;
@@ -29,6 +30,10 @@ pub use command::{
 pub use holder::Holder;
 pub use logs::{
     ActorLog, LogEntry, LogLevel, LoggedEntry, LogsTool, LogsToolConfig, ReadLog, ReadRecent, RecentEntry, RecentLog,
+};
+pub use stats::{
+    BacklogFigure, EngineFigures, EngineStatsTool, EngineStatsToolConfig, GuestFigure, Meter, ProcessMemory,
+    ReadEngineStats,
 };
 pub use table::{HeldOutput, HeldTool, Table};
 pub use tool::{Tool, ToolList};

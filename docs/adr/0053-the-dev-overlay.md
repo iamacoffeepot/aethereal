@@ -123,6 +123,13 @@ KeyFocusLost { window }      // to the holder it replaced, the one that released
 
 **Only the engine sees every actor, so it finds the largest itself.** `EngineStats` also answers the eight guests with the most memory and the eight actors with the most bytes unsent, each by path. The substrate keeps them as it folds, as it keeps the totals, so no turn walks the seats and no answer grows with the number of actors.
 
+**How each figure is read:**
+
+- **Process:** each chassis hands the engine its own way of asking, read when a turn reads the figures: `/proc/self/status` on Linux, `proc_pidinfo` on macOS, and in the browser `performance.memory.usedJSHeapSize` where it exists. Elsewhere the figure is a named unknown.
+- **Backlog:** what an actor holds unsent is its own state, which the engine cannot see, so the actor tells it with `Turn::holds_unsent(bytes, most)`. That is an effect, folded into a view of its own keyed by the actor's seat, and each part ranks its own actors as it folds. What an actor said last stands until it says again or ends. A TCP connection tells it whenever what its socket has not taken changes, against its `most_unsent_bytes`.
+- **Guests:** a guest's memory is that of an instance of a blob's code in one part, which every actor of the blob seated there shares. The instance is named by the first of those actors. Each part's instances are measured as the part is put back after it runs.
+- **The read:** a turn reads the figures with `Turn::engine_stats`, and a guest reads nothing, as it reads no log. The `engine_stats` tool answers them.
+
 ### Colours
 
 The overlay's colours are slate and earth. Healthy is one cool colour; only warm colours mean trouble.

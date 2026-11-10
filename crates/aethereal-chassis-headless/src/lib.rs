@@ -20,6 +20,7 @@ mod pool;
 mod processes;
 mod program;
 mod rehearsal;
+mod resident;
 mod running;
 mod store;
 mod tcp;
@@ -43,6 +44,7 @@ pub use pool::Measured;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
 pub use processes::ProcessGroups;
 pub use program::{RunningSettings, Serving};
+pub use resident::resident;
 pub use running::{Exit, Timer};
 pub use store::StoreDirectory;
 pub use tcp::Dialers;
@@ -69,9 +71,11 @@ impl Headless {
     /// `engine` run on at most `workers` workers, the calling thread among them.
     ///
     /// Every worker but the calling thread starts parked. What waking one costs, and what splitting a step among
-    /// them does, are measured here.
+    /// them does, are measured here. The engine's figures read the program's memory as the operating system reports
+    /// it (ADR-0053).
     #[must_use]
-    pub fn new(engine: Engine, workers: NonZeroUsize) -> Self {
+    pub fn new(mut engine: Engine, workers: NonZeroUsize) -> Self {
+        engine.set_process(resident);
         let clock = Monotonic::new();
         let mut pool = Pool::new(workers, &clock);
         let split = rehearsal::split_cost(&engine, &mut pool, clock);

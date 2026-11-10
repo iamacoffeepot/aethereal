@@ -56,6 +56,8 @@ mod jobs;
 #[cfg(target_arch = "wasm32")]
 mod listening;
 #[cfg(target_arch = "wasm32")]
+mod memory;
+#[cfg(target_arch = "wasm32")]
 mod program;
 // A native build compiles the frame loop alone, whose renderer's end holds what measures the refresh; only the
 // page's renderer bootstrap makes one.
