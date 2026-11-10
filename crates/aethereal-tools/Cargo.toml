@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Tools: workers that take a schema's bytes, offered to a root that holds them, with no HTTP (ADR-0037, ADR-0038)"
+description = "Tools: workers that take a schema's bytes, offered to a root that holds them, with no HTTP (ADR-0037, ADR-0038, ADR-0053)"
 
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }

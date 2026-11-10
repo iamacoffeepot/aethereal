@@ -99,7 +99,7 @@ KeyFocusLost { window }      // to the holder it replaced, the one that released
 
 ### Tools held in every engine
 
-**Holding tools moves out of `Link` into a root of its own, `Tools`, that every engine lists.** `Tools` is the engine's `Holder`: it takes each `Offer`, keeps the sheets, and asks each call of the worker that offered it. It answers `ListTools` with every sheet, and `CallTool { tool, input }` with what the worker answered. `Link`, where it runs, asks `Tools` for its sheets and hears each change, writes them to the hub as `Up::Sheets` as now, and asks `Tools` for each call the hub sends. An engine with no hub holds tools all the same, and the overlay is one more caller.
+**Holding tools moves out of `Link` into a root of its own, `Tools`, that every engine lists.** `Tools` is the engine's `Holder`: it takes each `Offer`, keeps the sheets, and asks each call of the worker that offered it. It answers `ListTools` with every sheet, and `CallTool { tool, revision, input }` with what the worker answered: `revision` is that of the `Sheets` the caller read the tool's input schema from, and `Tools` refuses a call of a revision it has changed since in the turn it looks the tool up, so a tool withdrawn and offered again under its name is never called with bytes written for its old schema. `Link`, where it runs, asks `Tools` for its sheets and hears each change, writes them to the hub as `Up::Sheets` as now, and asks `Tools` for each call the hub sends. An engine with no hub holds tools all the same, and the overlay is one more caller.
 
 ### Frame statistics
 
