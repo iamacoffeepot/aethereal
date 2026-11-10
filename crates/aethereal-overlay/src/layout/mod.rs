@@ -2,7 +2,7 @@
 //! the band across the top, a tenth of the window's height, in two columns; the chart's figures on one line at the
 //! foot of the left column, and the frame chart filling the column above them, with the count of warnings and errors
 //! at the right end of that line; and the console's panel beneath the band, a third of the window's height, its
-//! scrollback above the prompt's line. All of it is in the surface's pixels, from its top left, as the renderer
+//! scrollback above the prompt's line and its scroll bar in the padding at its right edge. All of it is in the surface's pixels, from its top left, as the renderer
 //! places texts (ADR-0052).
 
 #[cfg(test)]
@@ -40,6 +40,16 @@ const ADVANCE_EMS: f32 = 0.6;
 
 /// How wide the console's cursor is, in logical pixels.
 const CURSOR_PIXELS: f32 = 2.0;
+
+/// How wide the console's scroll bar is, in logical pixels, how far in from the panel's right edge, and the space
+/// between it and the console's text, so the bar never lies over the text or crowds it.
+const SCROLLBAR_PIXELS: f32 = 4.0;
+const SCROLLBAR_INSET_PIXELS: f32 = 3.0;
+const SCROLLBAR_GAP_PIXELS: f32 = 12.0;
+
+/// How far one notch of the wheel turns, in logical pixels: a line, as the window capability takes a host's that
+/// counts the wheel in lines (ADR-0024).
+const NOTCH_PIXELS: f32 = 40.0;
 
 /// How wide each of the chart's columns is drawn, in logical pixels, and the gap after it: at 1080, 226 columns of
 /// about a quarter of a second each.
@@ -108,12 +118,12 @@ impl Layout {
         Vec2::new(padding, self.band().max.y - padding - line)
     }
 
-    /// The console's panel inside its padding: what its texts are clipped to.
+    /// The console's panel inside its padding, and left of its scroll bar by a gap: what its texts are clipped to.
     pub fn console_inside(self) -> Rect2 {
         let padding = self.pixels(PADDING_PIXELS);
         let console = self.console();
-        let max =
-            Vec2::new((console.max.x - padding).max(padding), (console.max.y - padding).max(console.min.y + padding));
+        let right = self.scrollbar_left() - self.pixels(SCROLLBAR_GAP_PIXELS);
+        let max = Vec2::new(right.max(padding), (console.max.y - padding).max(console.min.y + padding));
 
         Rect2 { min: Vec2::new(padding, console.min.y + padding), max }
     }
@@ -155,6 +165,30 @@ impl Layout {
         rows
     }
 
+    /// The track of the console's scroll bar: a strip down the panel's right edge, inside its padding, beside the
+    /// scrollback's rows from the top of the first to the foot of the last.
+    pub fn scrollbar(self) -> Rect2 {
+        let right = self.console().max.x - self.pixels(SCROLLBAR_INSET_PIXELS);
+        let left = self.scrollbar_left();
+        let top = self.scrollback_at().y;
+        // A count of lines down a window is some tens, which an f32 holds exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let bottom = (self.scrollback_rows() as f32).mul_add(self.line_pixels_tall(), top);
+
+        Rect2 { min: Vec2::new(left, top), max: Vec2::new(right, bottom) }
+    }
+
+    /// The left edge of the console's scroll bar's track, in the surface's pixels.
+    fn scrollbar_left(self) -> f32 {
+        self.console().max.x - self.pixels(SCROLLBAR_INSET_PIXELS) - self.line_pixels(SCROLLBAR_PIXELS)
+    }
+
+    /// How far one notch of the wheel turns, in the surface's pixels, as its turns are counted.
+    #[must_use]
+    pub fn notch_pixels(self) -> f32 {
+        NOTCH_PIXELS * self.scale
+    }
+
     /// Where the count of warnings and errors `characters` wide is placed: on the figures' line, ending at the band's
     /// right padding.
     pub fn alerts_at(self, characters: usize) -> Vec2 {
@@ -184,7 +218,8 @@ impl Layout {
     }
 
     /// How tall one line of the overlay's text is, in the surface's pixels.
-    fn line_pixels_tall(self) -> f32 {
+    #[must_use]
+    pub fn line_pixels_tall(self) -> f32 {
         self.text_pixels() * LINE_EMS
     }
 

@@ -17,7 +17,7 @@
 //! its subscribers as though its host had heard it (ADR-0046). The `tools` feature's `send_input` asks it for an agent.
 //!
 //! An actor takes a window's key focus by asking its actor, [`TakeKeyFocus`], and gives it up, [`ReleaseKeyFocus`]:
-//! while it holds it, the window's keys and typed text are sent to it alone, and it is told as it gains and loses it,
+//! while it holds it, the window's keys, typed text, and wheel turns are sent to it alone, and it is told as it gains and loses it,
 //! [`KeyFocusGained`] and [`KeyFocusLost`] (ADR-0053). Both chassis push what they hear through the window root, so
 //! both are routed by it.
 

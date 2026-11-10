@@ -1,6 +1,6 @@
 //! The console's tests: the line edited and stepped through its history, a line turned into a call of a real tool,
 //! refusals printed in brick, tab completion of a tool, a flag, and a variant, the scrollback's bound, wrap, and view,
-//! and the band's count of warnings and errors.
+//! the wheel's rows, and the band's count of warnings and errors.
 
 use super::scrollback::{MOST_ROWS, Scrollback, wrapped};
 use super::*;
@@ -218,6 +218,42 @@ fn the_view_follows_page_up_and_page_down() {
     assert_eq!(kept.as_deref(), Some("6"));
     assert_eq!(oldest.as_deref(), Some("0"));
     assert_eq!(back.as_deref(), Some("16"));
+}
+
+/// A notch of the wheel up shows three rows older; a trackpad's turns of a quarter notch each add up to the same three
+/// rows; a turn past either end stops there, and what it overshot is not owed back, so a wrong sign, a turn rounded to
+/// nothing at each step, a view past the oldest or newest row, or a reversal that lags is caught.
+#[test]
+fn the_wheel_scrolls_three_rows_a_notch_and_carries_a_part_row() {
+    let mut console = Console::default();
+    for number in 0..25 {
+        console.scrollback.print(&format!("{number}"), BONE, 80);
+    }
+    let first_of = |console: &Console| console.rows(VIEW).next().map(Row::text);
+    let notch = 40.0;
+
+    console.wheeled(-notch, notch, VIEW);
+    let notched = first_of(&console);
+    console.wheeled(-notch / 4.0, notch, VIEW);
+    let part = first_of(&console);
+    for _ in 0..3 {
+        console.wheeled(-notch / 4.0, notch, VIEW);
+    }
+    let parts = first_of(&console);
+    console.wheeled(-notch * 10.5, notch, VIEW);
+    let oldest = first_of(&console);
+    console.wheeled(notch, notch, VIEW);
+    let reversed = first_of(&console);
+    console.wheeled(notch * 100.0, notch, VIEW);
+    let newest = first_of(&console);
+
+    assert_eq!(notched.as_deref(), Some("12"));
+    assert_eq!(part.as_deref(), Some("12"), "a quarter notch is short of a row");
+    assert_eq!(parts.as_deref(), Some("9"));
+    assert_eq!(oldest.as_deref(), Some("0"));
+    assert_eq!(reversed.as_deref(), Some("3"));
+    assert_eq!(newest.as_deref(), Some("15"));
+    assert_eq!(console.scrolled(), Scrolled { kept: 25, up: 0 });
 }
 
 /// Warnings and errors are counted, in rust and brick, and nothing else is; and clearing forgets them, so a count

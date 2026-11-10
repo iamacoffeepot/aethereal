@@ -102,6 +102,17 @@ impl Scrollback {
         self.set_up(self.up().saturating_sub(page));
     }
 
+    /// Scrolls the view of `shown` rows down by `down_rows`, up when negative, held between the oldest row and the
+    /// newest, and answers whether it was held: the view stopped at an end.
+    pub fn scroll(&mut self, down_rows: i64, shown: usize) -> bool {
+        let furthest = i64::try_from(self.rows.len().saturating_sub(shown)).unwrap_or(i64::MAX);
+        let wanted = i64::try_from(self.up()).unwrap_or(i64::MAX).saturating_sub(down_rows);
+        let up = wanted.clamp(0, furthest);
+        self.set_up(usize::try_from(up).unwrap_or(0));
+
+        up != wanted
+    }
+
     /// Scrolls the view to the newest row.
     pub const fn scroll_to_newest(&mut self) {
         self.up = 0;
@@ -117,7 +128,7 @@ impl Scrollback {
     }
 
     /// How many rows up from the newest the view stands.
-    const fn up(&self) -> usize {
+    pub const fn up(&self) -> usize {
         self.up as usize
     }
 

@@ -1,8 +1,8 @@
 //! What the overlay draws as one placement (ADR-0023): a unit square, drawn once for each of its instances' records,
 //! each a box in the surface's pixels and its colour. The records are the panels, the frame chart's columns, its
-//! dashed budget line, the marks' ticks, and the console's cursor, in that order, as one placement's records are drawn
-//! in their order; all of them are written again in one write at each `Tick` the overlay is shown, as the chart moves
-//! with time.
+//! dashed budget line, the marks' ticks, the console's cursor, and its scroll bar, in that order, as one placement's
+//! records are drawn in their order; all of them are written again in one write at each `Tick` the overlay is shown,
+//! as the chart moves with time.
 
 #[cfg(test)]
 mod tests;
@@ -11,6 +11,7 @@ use crate::colour::{BRICK, LICHEN, OCHRE, PANEL_OPACITY, RUST, SLATE, STONE, Swa
 use crate::frames::{Column, Slide};
 use crate::layout::Layout;
 use crate::marks::MOST_MARKS;
+use crate::scrollbar::{Bar, Standing};
 use crate::stop::Stop;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::mesh::{Attribute, VertexFormat, VertexLayout};
@@ -44,8 +45,8 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 pub const RECORD_BYTES: u32 = 32;
 
 /// The most records the instances have room for: the two panels, the most columns and the two sliding off the left
-/// edge, the most dashes, the most marks, and the cursor.
-pub const MOST_RECORDS: u32 = 2 + MOST_COLUMNS + 2 + MOST_DASHES + MOST_MARKS + 1;
+/// edge, the most dashes, the most marks, the cursor, and the scroll bar's track and thumb.
+pub const MOST_RECORDS: u32 = 2 + MOST_COLUMNS + 2 + MOST_DASHES + MOST_MARKS + 1 + 2;
 
 /// The most columns the chart is cut into, whatever the window's width.
 const MOST_COLUMNS: u32 = 3_000;
@@ -74,6 +75,12 @@ const LINE_PIXELS: f32 = 1.0;
 
 /// How wide a mark's tick is, in logical pixels.
 const TICK_PIXELS: f32 = 2.0;
+
+/// How opaque the scroll bar's track is drawn, in stone.
+const TRACK_OPACITY: f32 = 0.2;
+
+/// How opaque the scroll bar's thumb is drawn in stone, on the newest rows; scrolled up from them it is lichen.
+const THUMB_OPACITY: f32 = 0.6;
 
 /// How the square's corners are laid out: a place of two floats.
 #[must_use]
@@ -121,9 +128,9 @@ pub fn column_count(layout: Layout) -> u32 {
     count.min(MOST_COLUMNS)
 }
 
-/// How many bytes the records of [`records`], [`marks`], and [`cursor`] take on `layout` at most: the two panels, a
-/// column for each the chart is cut into and the two sliding off its left edge, the dashes of the budget line, the
-/// most marks, and the cursor.
+/// How many bytes the records of [`records`], [`marks`], [`cursor`], and [`scrollbar`] take on `layout` at most: the
+/// two panels, a column for each the chart is cut into and the two sliding off its left edge, the dashes of the budget
+/// line, the most marks, the cursor, and the scroll bar's track and thumb.
 #[must_use]
 pub fn records_bytes(layout: Layout) -> usize {
     // A reference's dashes are the closer, so the more.
@@ -133,7 +140,7 @@ pub fn records_bytes(layout: Layout) -> usize {
     // A count of dashes is at most some thousands, which a u32 holds; a negative width holds none.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let dashes = (dashes.max(0.0) as u32).min(MOST_DASHES);
-    let count = 2 + column_count(layout) + 2 + dashes + MOST_MARKS + 1;
+    let count = 2 + column_count(layout) + 2 + dashes + MOST_MARKS + 1 + 2;
 
     count as usize * RECORD_BYTES as usize
 }
@@ -229,6 +236,20 @@ pub fn marks(records: &mut Vec<u8>, layout: Layout, slide: Slide, times: impl In
 /// the prompt's row.
 pub fn cursor(records: &mut Vec<u8>, layout: Layout, column: usize) {
     push(records, layout.cursor(column), LICHEN.opaque());
+}
+
+/// Appends to `records` the console's scroll bar, unless it is hidden: its track in faint stone, and its thumb over it,
+/// stone on the newest rows and lichen scrolled up from them, as newer rows are below.
+pub fn scrollbar(records: &mut Vec<u8>, bar: Bar) {
+    let Bar::Shown { track, thumb, standing } = bar else {
+        return;
+    };
+    let colour = match standing {
+        Standing::Newest => STONE.at(THUMB_OPACITY),
+        Standing::Scrolled => LICHEN.opaque(),
+    };
+    push(records, track, STONE.at(TRACK_OPACITY));
+    push(records, thumb, colour);
 }
 
 /// The colour of a column whose longest cycle took `nanos` against `budget_nanos`: lichen within the budget, rust
