@@ -12,7 +12,7 @@ pub use rows::{row, rows};
 
 use crate::binned::{Accrue, Binned, Spanned};
 use aethereal_data::Plain;
-use aethereal_render::stats::FrameStats;
+use aethereal_render::stats::FrameDrawn;
 
 /// How many lines there are, each a row and a column's record in it.
 pub const LINES: u32 = 3;
@@ -43,10 +43,8 @@ pub struct Values {
 }
 
 impl Values {
-    /// The values `stats` tell of their frame.
-    pub fn of(stats: &FrameStats) -> Self {
-        let drawn = stats.drawn;
-
+    /// The values of a frame that drew `drawn`.
+    pub fn of(drawn: FrameDrawn) -> Self {
         Self { values: [u64::from(drawn.draws), drawn.triangles, drawn.uploaded_bytes] }
     }
 
@@ -85,10 +83,10 @@ pub struct FrameLines {
 }
 
 impl FrameLines {
-    /// Takes in the values of the frame `stats` tell of.
-    pub fn push(&mut self, stats: &FrameStats) {
-        self.latest = Values::of(stats);
-        self.binned.push(stats.elapsed_nanos, self.latest);
+    /// Takes in the values of the frame of the cycle at `elapsed_nanos`, which drew `drawn`.
+    pub fn push(&mut self, elapsed_nanos: u64, drawn: FrameDrawn) {
+        self.latest = Values::of(drawn);
+        self.binned.push(elapsed_nanos, self.latest);
     }
 
     /// The rows' columns for a chart of `count`, from the newest back, cut as the frame chart's are.

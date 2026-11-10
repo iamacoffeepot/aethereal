@@ -36,8 +36,8 @@ use crate::readback::{
 };
 use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
 use crate::stats::{
-    self, DescribeGpu, FrameStats, GpuDescribed, GpuMemory, GpuTimes, Ran, SubscribeFrameStats, SubscribeGpuTimes,
-    Tally, UnsubscribeFrameStats, UnsubscribeGpuTimes,
+    self, DescribeGpu, FrameDrawing, FrameStats, GpuDescribed, GpuMemory, GpuTimes, Ran, SubscribeFrameStats,
+    SubscribeGpuTimes, Tally, UnsubscribeFrameStats, UnsubscribeGpuTimes,
 };
 use crate::storage::{self, CreateStorage, CreateZeroedStorage, StorageId, Stored, WriteStorage};
 use crate::surface::{Front, Present, Surfaced, WindowFormat};
@@ -760,7 +760,8 @@ impl Actor for Renderer {
 }
 
 /// Draws each window handed a frame, and tells each subscriber of the frame's statistics, counted only while one
-/// subscribes, and of its passes' times, timed only while one subscribes (ADR-0053).
+/// subscribes, and of its passes' times, timed only while one subscribes (ADR-0053). A cycle that draws nothing tells
+/// the subscribers of its statistics so, and its passes have no time to tell.
 impl Handles<On<Render>> for Renderer {
     type Sends = (ToAny<(FrameStats,), FrameStats>,);
 
@@ -773,10 +774,15 @@ impl Handles<On<Render>> for Renderer {
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let kept = turn.open(&mut self.kept)?;
         // A window the chassis handed no frame for is not drawn this cycle, nor asked to be presented. A cycle it handed
-        // none for at all is skipped: nothing is drawn, and the next frame drawn is the one read and timed. A frame owed
-        // this cycle is refused, as none is drawn: under a held clock no cycle follows to draw it in.
+        // none for at all is skipped: nothing is drawn, the next frame drawn is the one read and timed, and the
+        // subscribers hear that this one drew nothing, so a read of the statistics is answered while no window is. A
+        // frame owed this cycle is refused, as none is drawn: under a held clock no cycle follows to draw it in.
         let frames = kept.ordered(handed);
         if frames.is_empty() {
+            if let Watch::Watched { subscribers, .. } = &self.watch {
+                let undrawn = kept.frame_stats(render.elapsed_nanos, budget, FrameDrawing::Undrawn);
+                turn.to(subscribers).send(&undrawn)?;
+            }
             for (_, held) in mem::take(&mut self.owed.frames) {
                 turn.answer(held, &Pixels::Refused(ReadRefused::Unshown))?;
             }
@@ -816,7 +822,7 @@ impl Handles<On<Render>> for Renderer {
         let timed = stamps.map(|stamps| stamps.resolve(&mut encoder, queue.get_timestamp_period(), named));
         queue.submit([encoder.finish()]);
         let stats = match tally {
-            Tally::On(drawn) => Some(kept.frame_stats(render.elapsed_nanos, budget, drawn)),
+            Tally::On(drawn) => Some(kept.frame_stats(render.elapsed_nanos, budget, FrameDrawing::Drawn(drawn))),
             Tally::Off => None,
         };
 

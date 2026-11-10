@@ -7,7 +7,7 @@ use crate::colour::{BRICK, LICHEN, RUST, STONE};
 use crate::frames::{Slide, span_nanos};
 use crate::layout::Layout;
 use aethereal_math::{Rect2, Vec2};
-use aethereal_render::stats::{Alive, AtlasFill, FrameBudget, FrameDrawn, FrameStats, GpuMemory};
+use aethereal_render::stats::{Alive, AtlasFill, FrameBudget, FrameDrawing, FrameDrawn, FrameStats, GpuMemory};
 use aethereal_window::Surface;
 
 /// A second of the program's time, in nanoseconds.
@@ -25,7 +25,7 @@ fn stats(elapsed_nanos: u64) -> FrameStats {
     FrameStats {
         elapsed_nanos,
         budget: FrameBudget::UNTOLD,
-        drawn: FrameDrawn { draws: 0, triangles: 0, uploaded_bytes: 0 },
+        drawn: FrameDrawing::Drawn(FrameDrawn { draws: 0, triangles: 0, uploaded_bytes: 0 }),
         memory: GpuMemory { meshes_bytes: 1, textures_bytes: 2, targets_bytes: 3, buffers_bytes: 4, atlas_bytes: 5 },
         alive: Alive::default(),
         atlas: AtlasFill::default(),
