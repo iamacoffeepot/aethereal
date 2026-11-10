@@ -7,7 +7,7 @@
 mod tests;
 
 use crate::colour::{BRICK, LICHEN, PANEL_OPACITY, RUST, SLATE, STONE, Swatch};
-use crate::frames::Column;
+use crate::frames::{Column, Slide};
 use crate::layout::Layout;
 use crate::stop::Stop;
 use aethereal_math::{Rect2, Vec2};
@@ -40,8 +40,9 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 /// How many bytes a record takes: a box of four floats and a colour of four.
 pub const RECORD_BYTES: u32 = 32;
 
-/// The most records the instances have room for: the two panels, the most columns, and the most dashes.
-pub const MOST_RECORDS: u32 = 2 + MOST_COLUMNS + MOST_DASHES;
+/// The most records the instances have room for: the two panels, the most columns and the two sliding off the left
+/// edge, and the most dashes.
+pub const MOST_RECORDS: u32 = 2 + MOST_COLUMNS + 2 + MOST_DASHES;
 
 /// The most columns the chart is cut into, whatever the window's width.
 const MOST_COLUMNS: u32 = 3_000;
@@ -98,7 +99,7 @@ pub fn surface(layout: Layout) -> Vec<u8> {
 /// How many columns the chart is cut into on `layout`: as many as fit its width, at most [`MOST_COLUMNS`].
 #[must_use]
 pub fn column_count(layout: Layout) -> u32 {
-    let fit = (layout.chart().width() / layout.column_pixels()).floor();
+    let fit = (layout.chart().width() / layout.column_pitch()).floor();
     // A count of columns is at most some thousands, which a u32 holds; a negative width fits none.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let count = fit.max(0.0) as u32;
@@ -106,10 +107,36 @@ pub fn column_count(layout: Layout) -> u32 {
     count.min(MOST_COLUMNS)
 }
 
+/// How many bytes the records of [`records`] take on `layout` at most: the two panels, a column for each the chart is
+/// cut into and the two sliding off its left edge, and the dashes of the budget line.
+#[must_use]
+pub fn records_bytes(layout: Layout) -> usize {
+    let dashes =
+        (layout.chart().width() / (layout.line_pixels(DASH_PIXELS) + layout.line_pixels(DASH_GAP_PIXELS))).ceil();
+    // A count of dashes is at most some thousands, which a u32 holds; a negative width holds none.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let dashes = (dashes.max(0.0) as u32).min(MOST_DASHES);
+    let count = 2 + column_count(layout) + 2 + dashes;
+
+    count as usize * RECORD_BYTES as usize
+}
+
 /// Appends to `records` what the overlay draws at `stop` on `layout`: the band's panel, the console's beneath it when
 /// the stop shows it, each of `columns` from the chart's foot, shaded by its longest cycle against `budget_nanos`, and
 /// the dashed budget line. A record is appended as [`record_layout`] lays it out.
-pub fn records(records: &mut Vec<u8>, layout: Layout, stop: Stop, columns: &[Column], budget_nanos: u64) {
+///
+/// The newest column's span is at the chart's right edge, and each older one a column's pitch further left, all moved
+/// left by the share of a pitch `slide` has come through the newest span, so the chart slides smoothly left as the
+/// program's time passes: the newest column grows out of the right edge, and the oldest is cut at the left edge as it
+/// slides off.
+pub fn records(
+    records: &mut Vec<u8>,
+    layout: Layout,
+    stop: Stop,
+    columns: impl IntoIterator<Item = Column>,
+    slide: Slide,
+    budget_nanos: u64,
+) {
     let panel = SLATE.at(PANEL_OPACITY);
     push(records, layout.band(), panel);
     if stop.console() {
@@ -117,18 +144,22 @@ pub fn records(records: &mut Vec<u8>, layout: Layout, stop: Stop, columns: &[Col
     }
 
     let chart = layout.chart();
-    let column_pixels = layout.column_pixels();
+    let (column_pixels, pitch) = (layout.column_pixels(), layout.column_pitch());
     // Nanoseconds of a few seconds, which an f32 holds closely enough to draw.
     #[allow(clippy::cast_precision_loss)]
     let tallest_nanos = budget_nanos as f32 * BUDGETS_TALL;
     for column in columns {
+        // Columns back from the newest, at most a few thousand, which an f32 holds exactly.
         #[allow(clippy::cast_precision_loss)]
-        let (at, longest) = (column.at as f32, column.longest_nanos as f32);
+        let (back, longest) = (slide.newest.saturating_sub(column.span) as f32, column.longest_nanos as f32);
+        let left = (back + slide.through).mul_add(-pitch, chart.max.x);
+        let (from, to) = (left.max(chart.min.x), (left + column_pixels).min(chart.max.x));
+        let shows = from < to;
+        if !shows {
+            continue;
+        }
         let tall = (longest / tallest_nanos).min(1.0) * chart.height();
-        let bar = Rect2 {
-            min: Vec2::new(at.mul_add(column_pixels, chart.min.x), chart.max.y - tall.max(1.0)),
-            max: Vec2::new((at + 1.0).mul_add(column_pixels, chart.min.x), chart.max.y),
-        };
+        let bar = Rect2 { min: Vec2::new(from, chart.max.y - tall.max(1.0)), max: Vec2::new(to, chart.max.y) };
         push(records, bar, shade(column.longest_nanos, budget_nanos).opaque());
     }
 

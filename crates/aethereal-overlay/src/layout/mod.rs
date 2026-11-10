@@ -33,8 +33,10 @@ const TEXT_PIXELS: f32 = 14.0;
 /// gap between lines, 1.3 em.
 const LINE_EMS: f32 = 1.3;
 
-/// How wide each of the chart's columns is drawn, in logical pixels.
-const COLUMN_PIXELS: f32 = 2.0;
+/// How wide each of the chart's columns is drawn, in logical pixels, and the gap after it: at 1080, 226 columns of
+/// about a quarter of a second each.
+const COLUMN_PIXELS: f32 = 4.0;
+const COLUMN_GAP_PIXELS: f32 = 1.0;
 
 /// The window's surface as the overlay lays itself out on it: its width and height in its pixels, and how many of
 /// them make one of the host's logical pixels.
@@ -108,6 +110,12 @@ impl Layout {
     #[must_use]
     pub fn column_pixels(self) -> f32 {
         self.pixels(COLUMN_PIXELS).max(1.0)
+    }
+
+    /// How far one column is from the next, in the surface's pixels: its width and the gap after it, at least one.
+    #[must_use]
+    pub fn column_pitch(self) -> f32 {
+        self.column_pixels() + self.pixels(COLUMN_GAP_PIXELS).max(1.0)
     }
 
     /// `logical` logical pixels, in the surface's, at least one: how thick a line is drawn.

@@ -1,6 +1,6 @@
 use super::{RECORD_BYTES, records};
 use crate::colour::{BRICK, LICHEN, PANEL_OPACITY, RUST, SLATE};
-use crate::frames::Column;
+use crate::frames::{Column, Slide};
 use crate::layout::Layout;
 use crate::stop::Stop;
 use aethereal_render::text::Colour;
@@ -37,15 +37,16 @@ fn columns_are_shaded_by_the_budget_and_held_to_the_chart() {
     let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
     let chart = layout.chart();
     let columns = [
-        Column { at: 0, longest_nanos: BUDGET },
-        Column { at: 1, longest_nanos: BUDGET + 1 },
-        Column { at: 2, longest_nanos: BUDGET * 40 },
+        Column { span: 2, longest_nanos: BUDGET },
+        Column { span: 1, longest_nanos: BUDGET + 1 },
+        Column { span: 0, longest_nanos: BUDGET * 40 },
     ];
+    let slide = Slide { newest: 2, through: 0.5 };
     let mut band = Vec::new();
     let mut console = Vec::new();
 
-    records(&mut band, layout, Stop::Band, &columns, BUDGET);
-    records(&mut console, layout, Stop::Console, &columns, BUDGET);
+    records(&mut band, layout, Stop::Band, columns, slide, BUDGET);
+    records(&mut console, layout, Stop::Console, columns, slide, BUDGET);
 
     let (band, console) = (read(&band), read(&console));
     assert_eq!(console.len(), band.len() + 1);
@@ -54,4 +55,38 @@ fn columns_are_shaded_by_the_budget_and_held_to_the_chart() {
     assert_eq!(shaded, vec![LICHEN.opaque(), RUST.opaque(), BRICK.opaque()]);
     let spike = band[3].area;
     assert_eq!((spike[1], spike[3]), (chart.min.y, chart.height()));
+}
+
+/// The box of each column drawn on `layout` from `columns` at `slide`, in order: the records after the band's panel,
+/// before the budget line's dashes.
+fn bars(layout: Layout, columns: &[Column], slide: Slide) -> Vec<[f32; 4]> {
+    let mut bytes = Vec::new();
+    records(&mut bytes, layout, Stop::Band, columns.iter().copied(), slide, BUDGET);
+
+    read(&bytes)[1..=columns.len()].iter().map(|record| record.area).collect()
+}
+
+/// Every column moves left by the share of a pitch the newest cycle came through its span, the newest growing out of
+/// the chart's right edge and the oldest cut at its left edge, so a chart that slides the wrong way, hops by whole
+/// columns, or spills past its box as it slides is caught.
+#[test]
+fn columns_slide_left_through_their_span() {
+    let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
+    let (chart, pitch) = (layout.chart(), layout.column_pitch());
+    let newest = u64::from(super::column_count(layout));
+    let columns = [newest, newest - 1, 0].map(|span| Column { span, longest_nanos: BUDGET });
+    assert_eq!(newest, 226, "1080 does not hold 226 columns of 4 pixels and a gap");
+
+    // At 1080 the chart is 1132 pixels wide, 226 columns of 5 and 2 over, so the column 226 back is cut at the left
+    // edge once it has come half way through its span.
+    let early = bars(layout, &columns, Slide { newest, through: 0.5 });
+    let late = bars(layout, &columns, Slide { newest, through: 0.75 });
+
+    let [newest_early, before_early, oldest_early] = [early[0], early[1], early[2]];
+    let [newest_late, before_late, oldest_late] = [late[0], late[1], late[2]];
+    assert_eq!((newest_early[0], newest_early[2]), (chart.max.x - pitch / 2.0, pitch / 2.0));
+    assert_eq!((newest_late[0], newest_late[2]), (pitch.mul_add(-0.75, chart.max.x), pitch * 0.75));
+    assert_eq!(before_early[0] - before_late[0], pitch / 4.0);
+    assert_eq!((oldest_early[0], oldest_late[0]), (chart.min.x, chart.min.x));
+    assert!(oldest_late[2] < oldest_early[2], "{oldest_late:?} does not slide off the left edge past {oldest_early:?}");
 }

@@ -7,13 +7,14 @@
 //! With a hub from the headless `link_hub` example running, ask its `mint_token` tool for a token, which answers the
 //! arguments to start this engine with, then run `cargo run --release -p aethereal-overlay --example overlay -- <those
 //! arguments> --name overlay`; or spawn it from the hub's store. A link's frames are at most 16 MiB here, so an image
-//! of a large frame fits one. `--size 1920x1080` sizes its window, and `--mode` shows it so as it opens; `--help`
-//! lists every flag it reads, each also read from its `OVERLAY_` variable.
+//! of a large frame fits one. `--size 1920x1080` sizes its window, `--mode` shows it so as it opens, and `--title`
+//! names it, by default `Aethereal overlay band (press backtick)`; `--help` lists every flag it reads, each also read
+//! from its `OVERLAY_` variable.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints how it ended.
 
 use aethereal_actor::{Render, Tick};
-use aethereal_chassis_desktop::{Desktop, WindowsSettings};
+use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_files::Files;
@@ -24,7 +25,7 @@ use aethereal_render::{CaptureTool, RecordTool, Renderer, TargetTool};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{LogsTool, Toolbox, Tools};
-use aethereal_window::{InputTool, WindowTool, Windows};
+use aethereal_window::{InputTool, Mode, WindowTool, Windows};
 use backdrop::Backdrop;
 use core::error::Error;
 use core::num::{NonZeroU32, NonZeroUsize};
@@ -36,6 +37,9 @@ mod backdrop;
 
 /// The most workers the program runs on.
 const MOST_WORKERS: NonZeroUsize = NonZeroUsize::new(4).expect("4 is not zero");
+
+/// The window's title unless `--title` names another: what tells it apart from the other windows on a desktop.
+const TITLE: &str = "Aethereal overlay band (press backtick)";
 
 /// The most bytes of a frame on the link: room for an image of a large frame.
 const MOST_LINK_BYTES: u32 = 16 << 20;
@@ -69,11 +73,12 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         mail_bytes: 1 << 24,
         ..Default::default()
     };
+    let window = WindowSettings { title: String::from(TITLE), size: [800, 600], mode: Mode::Windowed };
 
     Ok(Desktop::program()
         .with_cycle::<(Tick, Render)>()
         .with_engine(engine)
-        .root::<Windows>()
+        .root_with::<Windows>(WindowsSettings(vec![window]))
         .root::<Renderer>()
         .root::<Pacer>()
         .root::<Backdrop>()
@@ -84,7 +89,11 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root_with::<Link>(link)
         .root::<Toolbox<(CaptureTool, RecordTool, TargetTool, LogsTool, InputTool, WindowTool, PaceTool), Tools>>()
         .flags(|flags| {
-            flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE)
+            flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE).flag(
+                "title",
+                't',
+                WindowSettings::TITLE.in_element::<WindowsSettings>(0),
+            )
         })
         .launch("overlay")?)
 }

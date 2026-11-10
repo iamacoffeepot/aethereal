@@ -110,9 +110,10 @@ impl Overlay {
             return Ok(());
         };
         let layout = Layout::of(self.surface);
-        let columns = self.frames.columns(chart::column_count(layout));
-        let mut records = turn.buffer((columns.len() + 2) * RECORD_BYTES as usize);
-        chart::records(&mut records, layout, self.stop, &columns, BUDGET_NANOS);
+        let count = chart::column_count(layout);
+        let mut records = turn.buffer(chart::records_bytes(layout));
+        let (columns, slide) = (self.frames.columns(count), self.frames.slide(count));
+        chart::records(&mut records, layout, self.stop, columns, slide, BUDGET_NANOS);
         let count = u32::try_from(records.len() / RECORD_BYTES as usize).unwrap_or(u32::MAX);
         let Ok(records) = turn.put(records) else {
             turn.log(Level::Warn, "the overlay's chart was not written: its records were not put");
