@@ -160,12 +160,12 @@ impl Tool for CaptureTool {
     fn sheets() -> Vec<ToolSheet> {
         vec![ToolSheet::of::<Capture>(
             "capture_frame",
-            "Captures the next frame drawn onto a window, numbered from 0, as a PNG image, with a line giving the \
-             frame's size, the crop, and the image's size. Under a held clock it captures the last frame drawn, \
-             as no frame is drawn until the clock is advanced. `longest` bounds the image's longer side: a larger \
-             image is shrunk to keep its shape, and a smaller one is never enlarged; left out, the frame is sent \
-             at its own size. An image costs about width × height / 750 tokens, so a whole frame at 1024 is \
-             about a thousand. `crop` cuts a region of the frame, in its pixels from the top left, before \
+            "Captures the next frame drawn onto a window as a PNG image. The window is numbered from 0, and a line \
+             with the image gives the frame's size, the crop, and the image's size. Under a held clock it captures \
+             the last frame drawn, as no frame is drawn until the clock is advanced. `longest` bounds the image's \
+             longer side: a larger image is shrunk to keep its shape, and a smaller one is never enlarged; left out, \
+             the frame is sent at its own size. An image costs about width × height / 750 tokens, so a whole frame \
+             at 1024 is about a thousand. `crop` cuts a region of the frame, in its pixels from the top left, before \
              shrinking: crop to look closely at part of a frame. Left out, the whole frame is sent.",
             Output::Image,
         )]

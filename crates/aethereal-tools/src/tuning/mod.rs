@@ -241,19 +241,19 @@ impl<L: TunableList> Tool for TuningTool<L> {
             ToolSheet::json::<ListTuning>(
                 "list_tuning",
                 &format!(
-                    "Lists the tuning of each tunable root: the values it takes while the program runs, unlike the \
-                     settings it starts with. Each is answered with its actor's path, which names it to `tune`, its \
-                     values, their JSON Schema, and each field's doc comment, which says what the field does and \
-                     what it keeps to. The roots tuned here: {listed}."
+                    "Lists the tuning of each tunable root. Tuning is the values a root takes while the program \
+                     runs, unlike the settings it starts with. Each is answered with its actor's path, which names \
+                     it to `tune`, its values, their JSON Schema, and each field's doc comment, which says what the \
+                     field does and what it keeps to. The roots tuned here: {listed}."
                 ),
                 Output::Value(SchemaNodes::of(&TuningList::SHAPE)),
             ),
             ToolSheet::of::<TuneFields>(
                 "tune",
-                "Sets fields of one actor's tuning: `values` is an object of the fields to set, each replaced \
-                 whole by the value given and every other kept, checked against the tuning's schema before \
-                 anything is sent. The actor may refuse a value past what it can take, saying why. Answers its \
-                 tuning as it then stands, as `list_tuning` answers it. The next frame drawn is drawn with it.",
+                "Sets fields of one actor's tuning. `values` is an object of the fields to set, each replaced whole \
+                 by the value given and every other kept, checked against the tuning's schema before anything is \
+                 sent. The actor may refuse a value past what it can take, saying why. Answers its tuning as it then \
+                 stands, as `list_tuning` answers it. The next frame drawn is drawn with it.",
                 Output::Value(SchemaNodes::of(&ActorTuning::SHAPE)),
             ),
         ]

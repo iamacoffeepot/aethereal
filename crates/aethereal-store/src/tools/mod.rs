@@ -82,16 +82,17 @@ impl Tool for StoreTools {
         vec![
             ToolSheet::of::<CheckIn>(
                 CHECK_IN,
-                "Copies the file at a path on the hub's machine into the store, and points a name at it: 1 to \
-                 128 of ASCII letters, digits, `_`, `-`, and `.`, and not the 64 lowercase hexadecimal digits \
-                 that spell a hash. Answers the BLAKE3 hash of its bytes, how many bytes it holds, and whether \
-                 they were not already stored. A name checked in again moves to the newer bytes.",
+                "Copies a file on the hub's machine into the store and names it. The file is at a path on the hub's \
+                 machine, and the name pointed at it is 1 to 128 of ASCII letters, digits, `_`, `-`, and `.`, and \
+                 not the 64 lowercase hexadecimal digits that spell a hash. Answers the BLAKE3 hash of its bytes, \
+                 how many bytes it holds, and whether they were not already stored. A name checked in again moves to \
+                 the newer bytes.",
                 Output::Value(SchemaNodes::of(&StoredBinary::SHAPE)),
             ),
             ToolSheet::json::<ListStored>(
                 LIST_STORED,
-                "Lists every binary in the store, the last checked in first: each one's hash, the names that \
-                 point at it, how many bytes it holds, whether it is pinned, and whether an engine holds it.",
+                "Lists every binary in the store, the last checked in first. Each is listed with its hash, the names \
+                 that point at it, how many bytes it holds, whether it is pinned, and whether an engine holds it.",
                 Output::Value(SchemaNodes::of(&Stored::SHAPE)),
             ),
             ToolSheet::of::<Pin>(

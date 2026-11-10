@@ -161,12 +161,12 @@ impl Actor for EngineStatsTool {
 impl Tool for EngineStatsTool {
     fn sheets() -> Vec<ToolSheet> {
         let description = format!(
-            "Reads the engine's memory against its limits, as the step began: `process`, the program's memory as \
-             its chassis reads it (resident on a native host, the script heap a browser reports, or unknown); \
-             `blobs`, the bytes the blob store holds against its most; `backlog`, the most bytes any one actor \
-             holds unsent against its most; `guest_bytes`, every guest's memory added up; and the guests with the \
-             most memory and the actors holding the most bytes unsent, each by path, the most first, at most `most` \
-             of each ({LARGEST} when left out, and never more)."
+            "Reads the engine's memory against its limits. It reads them as the step began: `process`, the program's \
+             memory as its chassis reads it (resident on a native host, the script heap a browser reports, or \
+             unknown); `blobs`, the bytes the blob store holds against its most; `backlog`, the most bytes any one \
+             actor holds unsent against its most; `guest_bytes`, every guest's memory added up; and the guests with \
+             the most memory and the actors holding the most bytes unsent, each by path, the most first, at most \
+             `most` of each ({LARGEST} when left out, and never more)."
         );
 
         vec![ToolSheet::of::<ReadEngineStats>(

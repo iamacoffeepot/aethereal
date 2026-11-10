@@ -416,19 +416,21 @@ impl Actor for LogsTool {
 impl Tool for LogsTool {
     fn sheets() -> Vec<ToolSheet> {
         let read_log = format!(
-            "Reads what the actor at `actor` (its path) logged, live or ended: its entries numbered `since` and \
-             after (the oldest kept when left out), oldest first; lines at `level` and above (info when left out) \
-             and every fault, drop, or unread mail; those whose text holds `contains` (every entry when left out); \
-             at most `most` ({MOST_ENTRIES} when left out), in an answer of at most {MOST_ANSWER_BYTES} bytes. Ask \
-             again from `next` to go on; `skipped` counts entries that had left the log."
+            "Reads what one actor logged, live or ended. It reads the actor at `actor` (its path): its entries \
+             numbered `since` and after (the oldest kept when left out), oldest first; lines at `level` and above \
+             (info when left out) and every fault, drop, or unread mail; those whose text holds `contains` (every \
+             entry when left out); at most `most` ({MOST_ENTRIES} when left out), in an answer of at most \
+             {MOST_ANSWER_BYTES} bytes. Ask again from `next` to go on; `skipped` counts entries that had left the \
+             log."
         );
         let read_recent = format!(
-            "Reads what every actor logged, live or ended, with no path needed: entries from the step `since` on \
-             (all the engine keeps when left out), merged by step, oldest first, each with its actor's path, level, \
-             and step; lines at `level` and above (info when left out), a fault at Error, a drop or unread mail at \
-             Warn; those whose text holds `contains` (every entry when left out); at most `most` ({MOST_ENTRIES} \
-             when left out), in an answer of at most {MOST_ANSWER_BYTES} bytes. Ask again from `next` to go on; \
-             `left` counts entries that had left the log, and `cut` those of one step too many for an answer."
+            "Reads what every actor logged, live or ended, with no path needed. It reads entries from the step \
+             `since` on (all the engine keeps when left out), merged by step, oldest first, each with its actor's \
+             path, level, and step; lines at `level` and above (info when left out), a fault at Error, a drop or \
+             unread mail at Warn; those whose text holds `contains` (every entry when left out); at most `most` \
+             ({MOST_ENTRIES} when left out), in an answer of at most {MOST_ANSWER_BYTES} bytes. Ask again from \
+             `next` to go on; `left` counts entries that had left the log, and `cut` those of one step too many for \
+             an answer."
         );
 
         vec![
