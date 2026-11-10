@@ -1,7 +1,6 @@
 use super::bars::fill_swatch;
-use super::figures::ROW_CHARACTERS;
 use super::history::MOST_METER_COLUMNS;
-use super::{Backlog, EngineMemory, Held, MemoryFigures, Meter, MeterHistories, ProcessMemory, rows};
+use super::{EngineMemory, Held, MemoryFigures, Meter, MeterHistories, ProcessMemory, rows};
 use crate::chart::columns_across;
 use crate::chart::tests::{Record, read};
 use crate::colour::{BRICK, LICHEN, RUST, STONE};
@@ -14,15 +13,10 @@ use aethereal_window::Surface;
 /// A second of the program's time, in nanoseconds.
 const SECOND: u64 = 1_000_000_000;
 
-/// The engine's memory with the program resident at `process` bytes, the blob store holding `blobs`, a backlog of
-/// `backlog` held by `actor`, and `guest_bytes` of guests.
-fn read_with(process: ProcessMemory, blobs: Held, backlog: Held, actor: &str) -> EngineMemory {
-    EngineMemory::Read(MemoryFigures {
-        process,
-        blobs,
-        backlog: Backlog::Held { unsent: backlog, actor: String::from(actor) },
-        guest_bytes: 0,
-    })
+/// The engine's memory with the program at `process`, the blob store holding `blobs`, a backlog of `backlog`, and no
+/// guests.
+const fn read_with(process: ProcessMemory, blobs: Held, backlog: Held) -> EngineMemory {
+    EngineMemory::Read(MemoryFigures { process, blobs, backlog, guest_bytes: 0 })
 }
 
 /// The statistics of a frame of the cycle at `elapsed_nanos` that holds a byte, two, three, four, and five of each
@@ -63,8 +57,8 @@ fn a_fill_turns_rust_at_three_quarters_and_brick_at_nine_tenths() {
     assert_eq!([at(74), at(75), at(89), at(90), at(250)], [LICHEN, RUST, RUST, BRICK, BRICK]);
 }
 
-/// Each meter with a limit draws its trough in faint stone across its graph's room, between its label and what its
-/// row writes at its right, and its fill over it from the trough's left, as wide a share as the bytes are of their
+/// Each meter with a limit draws its trough in faint stone across its graph's room, left of its row's gutter, and its
+/// fill over it from the trough's left, as wide a share as the bytes are of their
 /// most and never past the trough; a meter with no most draws its trough alone; and the meters with no limit draw
 /// their troughs alone while they have read nothing. So a fill that runs out of its trough when an actor holds more than its most,
 /// one scaled against the wrong figure, a trough that keeps a fixed width rather than filling its row, or a fill drawn
@@ -73,19 +67,15 @@ fn a_fill_turns_rust_at_three_quarters_and_brick_at_nine_tenths() {
 fn a_bar_s_fill_is_its_share_of_the_trough_and_the_trough_fills_its_row() {
     let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
     let process = ProcessMemory::Unknown;
-    let memory = read_with(process, Held { bytes: 25, most: 100 }, Held { bytes: 300, most: 100 }, "aether.tcp");
-    let empty = read_with(process, Held { bytes: 0, most: 100 }, Held { bytes: 0, most: 0 }, "aether.tcp");
+    let memory = read_with(process, Held { bytes: 25, most: 100 }, Held { bytes: 300, most: 100 });
+    let empty = read_with(process, Held { bytes: 0, most: 100 }, Held { bytes: 0, most: 0 });
     let (mut records, mut empty_records) = (Vec::new(), Vec::new());
 
     rows(&mut records, layout, &memory, &mut MeterHistories::default(), slide_at(0));
     rows(&mut empty_records, layout, &empty, &mut MeterHistories::default(), slide_at(0));
 
     let drawn = read(&records);
-    let graph_of = |meter: Meter| {
-        let tail = memory.tail_characters(meter, 0, layout.right_columns());
-        layout.meter_graph(meter.index(), tail)
-    };
-    let (blobs, backlog) = (graph_of(Meter::Blobs), graph_of(Meter::Backlog));
+    let (blobs, backlog) = (layout.meter_graph(Meter::Blobs.index()), layout.meter_graph(Meter::Backlog.index()));
     assert_eq!(drawn.len(), 7, "{drawn:?} are not three troughs of history and two bars");
     assert_eq!(drawn[1].area, boxed(blobs));
     assert_eq!(drawn[1].colour, STONE.at(0.08));
@@ -98,44 +88,66 @@ fn a_bar_s_fill_is_its_share_of_the_trough_and_the_trough_fills_its_row() {
     assert_eq!(read(&empty_records).len(), 5, "an empty meter drew a fill");
 }
 
-/// Each meter's line is its label, then its tail, flush right at the right column's edge, every line as wide as the
-/// column, a value that is no figure in stone; the backlog's actor stands just before its value, cut at its front to at
-/// most 24 characters, and is left out where the column has too little room beside its bar; and a line's tail is what
-/// its graph ends before. So a value column that wanders from line to line or stops short of the column's edge, an
-/// actor's path that takes the bar's room, one cut so short it names nothing, or a graph laid out by another tail than
-/// its text writes, is caught.
+/// Each meter's line is the gutter's twenty characters, its label from the first and its value flush right at the
+/// last, a value that is no figure in stone; a meter with a limit writes the bytes it holds alone, as its bar shows
+/// the share, even at the widest bytes against the widest limit; and the process's label says `heap` where a browser
+/// reports the script heap. So a value column that wanders from line to line, a line that runs past the band's padding
+/// at a long value, or a heap shown as the program's resident memory, is caught.
 #[test]
-fn the_meters_values_line_up_and_the_backlog_s_actor_is_cut_beside_its_bar() {
-    let actor = "aether.tcp/connection:12345678901234567890";
-    let memory = read_with(
-        ProcessMemory::Unknown,
-        Held { bytes: 1024, most: 8 * 1024 * 1024 },
-        Held { bytes: 0, most: 1024 },
-        actor,
-    );
-    let wide_columns = ROW_CHARACTERS + 40;
+fn the_meters_lines_fill_the_gutter_and_a_limit_is_left_to_the_bar() {
+    let widest = Held { bytes: 1023 << 20, most: 1023 << 30 };
+    let memory = read_with(ProcessMemory::Unknown, widest, Held { bytes: 0, most: 0 });
+    let heap = read_with(ProcessMemory::Heap { bytes: 84 << 20 }, widest, widest);
 
-    let line = |meter: Meter, columns: usize| -> String {
-        memory.row_runs(meter, 2048, columns).iter().map(|run| run.text.as_str()).collect()
+    let line = |memory: &EngineMemory, meter: Meter| -> String {
+        memory.row_runs(meter, 2048).iter().map(|run| run.text.as_str()).collect()
     };
 
     for meter in Meter::ALL {
-        let written = line(meter, wide_columns);
-        let tail = memory.tail_characters(meter, 2048, wide_columns);
-        assert_eq!(written.chars().count(), wide_columns, "{written:?}");
-        let tail_text: String = written.chars().skip(wide_columns - tail).collect();
-        let label_then_space = written.chars().take(wide_columns - tail).collect::<String>();
-        assert!(label_then_space.split_whitespace().count() == 1, "{written:?} has more than its tail");
-        assert!(!tail_text.starts_with(' '), "{written:?}'s tail {tail_text:?} starts with a space");
+        for written in [line(&memory, meter), line(&heap, meter)] {
+            assert_eq!(written.chars().count(), 20, "{written:?} is not the gutter's width");
+        }
     }
-    assert_eq!(line(Meter::Process, wide_columns), format!("process{:>w$}", "unknown", w = wide_columns - 7));
-    assert!(line(Meter::Blobs, wide_columns).ends_with(" 1.0 KiB / 8.0 MiB"));
-    let backlog = line(Meter::Backlog, wide_columns);
-    assert!(backlog.ends_with(" …on:12345678901234567890  0 B / 1.0 KiB"), "{backlog}");
-    assert!(line(Meter::Guests, wide_columns).ends_with(" no guests"));
-    assert!(line(Meter::Gpu, wide_columns).ends_with(" 2.0 KiB"));
-    let narrow = line(Meter::Backlog, ROW_CHARACTERS);
-    assert!(!narrow.contains("aether") && !narrow.contains('…'), "{narrow}");
+    assert_eq!(line(&memory, Meter::Process), "process      unknown");
+    assert_eq!(memory.row_runs(Meter::Process, 0)[1].colour, STONE.opaque());
+    assert_eq!(line(&memory, Meter::Blobs), "blobs     1023.0 MiB");
+    assert_eq!(line(&memory, Meter::Backlog), "backlog         none");
+    assert_eq!(line(&memory, Meter::Guests), "guests     no guests");
+    assert_eq!(line(&memory, Meter::Gpu), "gpu          2.0 KiB");
+    assert_eq!(line(&heap, Meter::Process), "heap        84.0 MiB");
+}
+
+/// A meter's history carries a reading into a column no reading fell in, so at a width whose columns are a little
+/// longer than the figures' reads are apart, a steady reading that skips a column draws a steady line with no hole in
+/// it; and a pause in the readings longer than a second, as while the overlay is hidden, is left a gap. So a one-column
+/// hole in a steady line, or a stale reading drawn across a pause, is caught.
+#[test]
+fn a_column_no_reading_fell_in_carries_the_reading_before_it() {
+    let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
+    let pitch = layout.column_pitch();
+    let area = Rect2 { min: Vec2::new(1000.0, 100.0), max: Vec2::new(60.0_f32.mul_add(pitch, 1000.0), 140.0) };
+    let mut history = super::history::History::default();
+    // Seconds 0 to 9 read, 3 skipped, and none from 10 to 19; the graph's spans are a second each.
+    for second in (0..10).filter(|second| *second != 3) {
+        history.push(second * SECOND + SECOND / 2, 1024);
+    }
+    history.push(20 * SECOND + SECOND / 2, 1024);
+    let mut records = Vec::new();
+
+    history.graph(&mut records, layout, area, |_| Slide { newest: 20, through: 0.5, span_nanos: SECOND });
+
+    let lefts: Vec<f32> = read(&records)[1..].iter().map(|record| record.area[0]).collect();
+    let at = |span: u64| {
+        // Spans of a minute's columns, which an f32 holds exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let back = (20 - span) as f32;
+        (back + 0.5).mul_add(-pitch, area.max.x)
+    };
+    let drawn = |span: u64| lefts.iter().any(|left| (left - at(span)).abs() < 0.01);
+    assert!(drawn(3), "the skipped column at 3 is a hole in the steady line {lefts:?}");
+    let carried_through_the_pause = (12..20).any(drawn);
+    assert!(!carried_through_the_pause, "the reading was carried across the pause: {lefts:?}");
+    assert!(drawn(20) && drawn(9) && drawn(0), "{lefts:?} lost a column that was read");
 }
 
 /// A meter's history is its trough of faint stone the graph's size, and over it a stone bar a column, each the most of the readings in its span, against the most any column
@@ -148,9 +160,8 @@ fn a_meter_s_history_is_the_most_of_each_column_against_the_most_shown() {
     let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
     let pitch = layout.column_pitch();
     let area = Rect2 { min: Vec2::new(1000.0, 100.0), max: Vec2::new(60.0_f32.mul_add(pitch, 1000.0), 140.0) };
-    let resident = |bytes| {
-        read_with(ProcessMemory::Resident { bytes }, Held { bytes: 0, most: 0 }, Held { bytes: 0, most: 0 }, "")
-    };
+    let resident =
+        |bytes| read_with(ProcessMemory::Resident { bytes }, Held { bytes: 0, most: 0 }, Held { bytes: 0, most: 0 });
     let mut histories = MeterHistories::default();
     for (elapsed_nanos, bytes) in [(SECOND / 10, 100), (SECOND / 2, 300), (SECOND * 6 / 5, 150), (SECOND * 13 / 10, 50)]
     {
@@ -190,7 +201,7 @@ fn a_meter_s_history_survives_its_graph_being_cut_again() {
     let readings = (1_u64..=200).map(|step| (step * SECOND / 4, step % 37 * 1024 * 1024));
     for (elapsed_nanos, bytes) in readings {
         let memory =
-            read_with(ProcessMemory::Resident { bytes }, Held { bytes: 0, most: 0 }, Held { bytes: 0, most: 0 }, "");
+            read_with(ProcessMemory::Resident { bytes }, Held { bytes: 0, most: 0 }, Held { bytes: 0, most: 0 });
         histories.read(elapsed_nanos, &memory);
     }
     let memory = EngineMemory::Unread;
@@ -207,8 +218,7 @@ fn a_meter_s_history_survives_its_graph_being_cut_again() {
 
     assert!(!first.is_empty());
     assert_eq!(first, again, "the history drew otherwise after a resize and back");
-    let graph =
-        narrow.meter_graph(Meter::Process.index(), memory.tail_characters(Meter::Process, 0, narrow.right_columns()));
+    let graph = narrow.meter_graph(Meter::Process.index());
     let bar_in_graph = |record: &&Record| {
         let bar = record.colour == STONE.at(0.6);
         let within = record.area[1] >= graph.min.y && record.area[1] + record.area[3] <= graph.max.y + 0.01;

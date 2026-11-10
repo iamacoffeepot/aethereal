@@ -1,9 +1,9 @@
-//! What each meter's row draws between its label and its value (ADR-0053: The three stops, Memory): its graph or bar,
-//! from a character's space after its label to one before what its row writes at its right, which is as wide as the
-//! row's text says, so the graph fills the room the text leaves.
+//! What each meter's row draws left of its gutter (ADR-0053: The three stops, Memory): its graph or bar, from the right
+//! column's left to a character's space before the gutter, the same two edges for every row, so the graphs stand
+//! aligned with each other as the left column's do.
 
 use super::bars::bar;
-use super::{Backlog, EngineMemory, Held, Meter, MeterHistories};
+use super::{EngineMemory, Meter, MeterHistories};
 use crate::frames::Slide;
 use crate::layout::Layout;
 
@@ -17,22 +17,14 @@ pub fn rows(
     histories: &mut MeterHistories,
     slide_of: impl Fn(u32) -> Slide,
 ) {
-    let columns = layout.right_columns();
     for meter in Meter::ALL {
-        let tail = memory.tail_characters(meter, histories.gpu_shown(), columns);
-        let area = layout.meter_graph(meter.index(), tail);
+        let area = layout.meter_graph(meter.index());
         match (meter, memory) {
             (Meter::Process, _) => histories.process.graph(records, layout, area, &slide_of),
             (Meter::Guests, _) => histories.guests.graph(records, layout, area, &slide_of),
             (Meter::Gpu, _) => histories.gpu.graph(records, layout, area, &slide_of),
             (Meter::Blobs, EngineMemory::Read(figures)) => bar(records, area, figures.blobs),
-            (Meter::Backlog, EngineMemory::Read(figures)) => {
-                let held = match &figures.backlog {
-                    Backlog::Empty => Held { bytes: 0, most: 0 },
-                    Backlog::Held { unsent, .. } => *unsent,
-                };
-                bar(records, area, held);
-            }
+            (Meter::Backlog, EngineMemory::Read(figures)) => bar(records, area, figures.backlog),
             (Meter::Blobs | Meter::Backlog, EngineMemory::Unread) => {}
         }
     }

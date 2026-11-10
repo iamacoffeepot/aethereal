@@ -4,15 +4,12 @@
 
 use super::{FrameLines, Line};
 use crate::colour::{BONE, STONE};
-use crate::layout::GUTTER_CHARACTERS;
+use crate::layout::{GUTTER_CHARACTERS, GUTTER_LABEL_CHARACTERS};
 use crate::tools::bytes_shown;
 use aethereal_render::text::Run;
 
-/// How many characters a label is given, its value the rest of the gutter.
-const LABEL_CHARACTERS: usize = 10;
-
-/// How many characters a value is given, flush right.
-const VALUE_CHARACTERS: usize = GUTTER_CHARACTERS - LABEL_CHARACTERS;
+/// How many characters a value is given, flush right: the gutter's after its label's.
+const VALUE_CHARACTERS: usize = GUTTER_CHARACTERS - GUTTER_LABEL_CHARACTERS;
 
 /// The units a count is written in past ten thousand, each a thousand of the one before.
 const COUNT_UNITS: [&str; 3] = ["k", "M", "G"];
@@ -48,7 +45,7 @@ impl FrameLines {
                 "\n"
             };
             let written = line.written(latest.of_line(line));
-            runs.push(Run::new(&format!("{parted}{:<LABEL_CHARACTERS$}", line.label()), STONE.opaque()));
+            runs.push(Run::new(&format!("{parted}{:<GUTTER_LABEL_CHARACTERS$}", line.label()), STONE.opaque()));
             runs.push(Run::new(&format!("{written:>VALUE_CHARACTERS$}"), BONE.opaque()));
         }
 

@@ -231,10 +231,7 @@ impl Overlay {
                 GpuTiming::Unsupported => runs_of(Vec::new()),
             },
             TextRole::Lines => self.lines.runs(),
-            TextRole::Meter(meter) => {
-                let columns = Layout::of(self.surface).right_columns();
-                self.memory.row_runs(meter, self.histories.gpu_shown(), columns)
-            }
+            TextRole::Meter(meter) => self.memory.row_runs(meter, self.histories.gpu_shown()),
             TextRole::Prompt => runs_of(self.console.prompt()),
             TextRole::Running => runs_of(self.console.running()),
             TextRole::Scrollback => {

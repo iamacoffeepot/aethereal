@@ -22,8 +22,9 @@
 //! end. The band, the scrollback, and the prompt's strip are each a tint of slate of their own, parted by faint lines.
 //! The overlay offers two tools of its own, `mark` and `memory`, which an agent may call too. The band's right column
 //! meters the engine's memory, one line each for the process, the blobs, the backlog, the guests, and the GPU, with a
-//! bar against its limit for the blobs and the backlog, lichen, then rust from 75% and brick from 90%, and the backlog's
-//! actor beside it. Faint lines part the band's two columns, and the left column's three sections (ADR-0053).
+//! bar against its limit for the blobs and the backlog, lichen, then rust from 75% and brick from 90%, its graphs and
+//! its gutter of labels and values aligned as the left column's are. Faint lines part the band's two columns, and the
+//! left column's three sections (ADR-0053).
 
 mod binned;
 mod chart;

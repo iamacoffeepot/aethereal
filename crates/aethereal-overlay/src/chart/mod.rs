@@ -174,7 +174,7 @@ pub fn columns_across(layout: Layout, width: f32, most: u32) -> u32 {
 /// [`cursor`], and [`scrollbar`] take on `layout` at most: the panels and the lines between them, the line at twice the
 /// budget, a column's records down the left column for each column the chart is cut into and the two sliding off its
 /// left edge, the dashes of the two budget lines, for each meter with a history its trough and a bar for each column of
-/// the widest its graph can be and the two sliding off its left edge, the meters' bars, the most marks, the cursor, and the
+/// its graph and the two sliding off its left edge, the meters' bars, the most marks, the cursor, and the
 /// scroll bar's track and thumb.
 #[must_use]
 pub fn records_bytes(layout: Layout) -> usize {
@@ -189,7 +189,7 @@ pub fn records_bytes(layout: Layout) -> usize {
         + 1
         + (column_count(layout) + 2) * RECORDS_ACROSS
         + 2 * dashes
-        + HISTORIES * (columns_across(layout, layout.widest_meter_graph(), MOST_METER_COLUMNS) + 3)
+        + HISTORIES * (columns_across(layout, layout.meter_graph(0).width(), MOST_METER_COLUMNS) + 3)
         + MOST_BAR_RECORDS
         + MOST_MARKS
         + 1

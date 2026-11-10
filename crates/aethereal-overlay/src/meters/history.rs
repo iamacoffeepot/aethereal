@@ -2,12 +2,15 @@
 //! reading kept by the program's time it was read at and cut into columns over the same 60 seconds as the left
 //! column's, as many as the meter's graph holds, each the most of the readings in its span; drawn over a trough of
 //! faint stone, as the bars of the meters with a limit are, so a minute of nothing reads as a graph at nothing, and
-//! as the lines' rows are, a stone bar a column, linear from nothing to the most any column shown came to. Process and guests are read
-//! with the engine's figures, four times a second, and GPU from each frame's statistics: every kind's bytes, summed.
+//! as the lines' rows are, a stone bar a column, linear from nothing to the most any column shown came to. A column no
+//! reading fell in carries the reading before it, for up to [`CARRIED_NANOS`], as the figures' reads, four times a
+//! second, are about a column apart and now and then miss one: a steady meter draws a steady line, and a pause in the
+//! readings longer than that, as while the overlay is hidden, stays a gap. Process and guests are read with the
+//! engine's figures, four times a second, and GPU from each frame's statistics: every kind's bytes, summed.
 
 use super::bars::TROUGH_OPACITY;
 use super::{EngineMemory, MemoryFigures, ProcessMemory};
-use crate::binned::{Accrue, Binned};
+use crate::binned::{Accrue, Binned, Spanned};
 use crate::chart::{columns_across, push};
 use crate::colour::STONE;
 use crate::frames::Slide;
@@ -23,6 +26,9 @@ pub const HISTORIES: u32 = 3;
 /// The most columns a meter's graph is cut into, whatever the window's width: two thirds of the frame chart's most, as
 /// the right column is two thirds as wide as the left, and a graph narrower than the column.
 pub const MOST_METER_COLUMNS: u32 = 2_000;
+
+/// How long a reading stands for the columns after it that no reading fell in: about four of the figures' reads.
+const CARRIED_NANOS: u64 = 1_000_000_000;
 
 /// A column that is the most of the readings in its span.
 #[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,14 +65,17 @@ impl History {
         self.binned.push(elapsed_nanos, reading);
     }
 
-    /// Appends to `records` the graph `area` on `layout`: its trough, and over it its columns, cut into as many columns as fit across it, each placed at
-    /// the slide `slide_of` gives for that count, as the left column's are at its own.
+    /// Appends to `records` the graph `area` on `layout`: its trough, and over it its columns, cut into as many columns
+    /// as fit across it, each placed at the slide `slide_of` gives for that count, as the left column's are at its own,
+    /// a column no reading fell in carrying the reading before it ([`carried`]).
     pub fn graph(&mut self, records: &mut Vec<u8>, layout: Layout, area: Rect2, slide_of: impl Fn(u32) -> Slide) {
         let count = columns_across(layout, area.width(), MOST_METER_COLUMNS);
         self.binned.cut(count);
         push(records, area, STONE.at(TROUGH_OPACITY));
+        let slide = slide_of(count);
+        let columns = carried(self.binned.newest_first(), slide, count);
 
-        lines::row(records, layout, area, slide_of(count), &self.binned.newest_first());
+        lines::row(records, layout, area, slide, &columns.into_iter());
     }
 
     /// The newest reading: nothing while none has been taken in.
@@ -75,15 +84,34 @@ impl History {
     }
 }
 
-/// The histories of the meters with no limit, and the GPU's memory the meters' text shows.
+/// The columns of a graph cut into `count`, placed at `slide`, from its newest span back over the `count + 2` it draws,
+/// out of `columns`, newest first: each span's own column, or where no reading fell in it, the newest column before
+/// it, while that is no more than [`CARRIED_NANOS`] older; a span with neither is left out.
+fn carried(columns: impl Iterator<Item = Spanned<u64>>, slide: Slide, count: u32) -> Vec<Spanned<u64>> {
+    let carried_spans = (CARRIED_NANOS / slide.span_nanos.max(1)).max(1);
+    let oldest = slide.newest.saturating_sub(u64::from(count) + 1);
+    let mut read = columns.peekable();
+    let mut drawn = Vec::new();
+    for span in (oldest..=slide.newest).rev() {
+        while read.next_if(|column| column.span > span).is_some() {}
+        let Some(before) = read.peek() else {
+            break;
+        };
+        let near = span - before.span <= carried_spans;
+        if near {
+            drawn.push(Spanned { span, column: before.column });
+        }
+    }
+
+    drawn
+}
+
+/// The histories of the meters with no limit.
 #[derive(Plain, Debug, Default, Clone, PartialEq, Eq)]
 pub struct MeterHistories {
     pub process: History,
     pub guests: History,
     pub gpu: History,
-    /// The newest frame's GPU memory as the engine's figures were last read, which the GPU meter's text shows and its
-    /// row is laid out by until the next read, so its graph ends where its text begins.
-    gpu_shown: u64,
 }
 
 impl MeterHistories {
@@ -93,10 +121,8 @@ impl MeterHistories {
     }
 
     /// Takes in the engine's memory `memory`, read at the program's time `elapsed_nanos`: process where the chassis
-    /// reads a figure, and guests; and the GPU's newest memory for the text. Nothing of the engine's before its figures
-    /// are read.
+    /// reads a figure, and guests. Nothing before the engine's figures are read.
     pub fn read(&mut self, elapsed_nanos: u64, memory: &EngineMemory) {
-        self.gpu_shown = self.gpu.newest();
         let EngineMemory::Read(MemoryFigures { process, guest_bytes, .. }) = memory else {
             return;
         };
@@ -109,9 +135,9 @@ impl MeterHistories {
         self.guests.push(elapsed_nanos, *guest_bytes);
     }
 
-    /// The GPU's memory the meters' text shows.
-    pub const fn gpu_shown(&self) -> u64 {
-        self.gpu_shown
+    /// The GPU's memory the meters' text shows: the newest frame's.
+    pub fn gpu_shown(&self) -> u64 {
+        self.gpu.newest()
     }
 }
 

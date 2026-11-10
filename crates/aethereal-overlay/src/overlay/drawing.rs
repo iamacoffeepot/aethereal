@@ -80,16 +80,13 @@ impl Handles<Event> for Overlay {
 
 impl Overlay {
     /// Takes in the window's new surface: the first makes what the overlay draws, sized by it, and each lays out
-    /// again what is made, and writes again the right column's texts, which are cut to its width.
+    /// again what is made.
     fn resized(&mut self, surface: Surface, turn: &mut Turn<'_, Self, Heard>) -> Result<(), Fault> {
         self.surface = surface;
         self.make(turn)?;
         self.write_surface(turn)?;
         for role in TextRole::ALL {
             self.move_text(role, turn)?;
-        }
-        for meter in Meter::ALL {
-            self.write_text(TextRole::Meter(meter), turn)?;
         }
         self.write_console(turn)?;
         if self.stop.draws() {

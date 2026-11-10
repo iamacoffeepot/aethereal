@@ -1,5 +1,5 @@
 //! The bars of the meters that have a limit, blobs and backlog (ADR-0053: Memory, Colours): each a trough of faint
-//! stone across its row between the meter's label and its value, as tall as the other meters' graphs, and over it a
+//! stone across its row's graph, left of its gutter, as tall as the other meters' graphs, and over it a
 //! fill from its left, as wide a share of the trough as the bytes held are of their most, at least a pixel where they
 //! are not nothing: lichen while under 75% of the most, rust from 75%, and brick from 90%. With no most, as when no
 //! actor holds bytes unsent, the trough is drawn empty.
