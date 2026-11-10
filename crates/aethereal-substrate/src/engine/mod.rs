@@ -35,8 +35,10 @@ pub use setup::Setup;
 use crate::id::root_id;
 use crate::log;
 use crate::stages::Stages;
+use crate::stats::Stats;
 use crate::stream::{self, Handed, Pieces, Streams};
 use crate::table::{self, Actors};
+use crate::unsent::Unsent;
 use crate::watch::{Notice, Watches};
 use crate::{
     ActorTable, Blobs, ByActor, BySeat, Clock, Context, Envelope, Folded, Lives, Log, Part, Routed, State, Tying,
@@ -44,11 +46,11 @@ use crate::{
 };
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
-    Above, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, Buffers, Bytes, Carried, Chain, Closing, Code,
-    Cycling, Declared, Effect, Entry, Fault, Gift, Given, Giver, Guests, Holds, How, Instances, JobId, JobType,
-    Keeping, Keeps, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Puts, Reads, Refused,
-    Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Stood, Submitted, Tie, Tied, Time, Turning, Unanswered,
-    Unfit, What, Why, config_bytes, holders,
+    Above, ActorName, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, Buffers, Bytes, Carried, Chain, Closing,
+    Code, Cycling, Declared, Effect, Entry, Fault, Figures, Gift, Given, Giver, Guests, Holds, How, Instances, JobId,
+    JobType, Keeping, Keeps, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Process,
+    Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Stood, Submitted, Tie, Tied, Time,
+    Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -99,6 +101,9 @@ pub struct Engine {
     staging: Staging,
     /// What each actor logged most recently.
     log: Folded<Log>,
+    /// How the chassis reads the program's memory, each part's guests as last measured, and the bytes each actor
+    /// that sends holds unsent, as it last said (ADR-0053).
+    stats: Stats,
     /// How far each actor's life has gone: the mail it has sent, and whether it has ended.
     lives: Folded<Lives>,
     /// The seats of the actors the engine still runs, the live ones and the ended ones whose closing turn is still
@@ -305,6 +310,8 @@ pub struct Reading<'a> {
     cycle: &'a [Cycling],
     /// The log as the step began, which turns read (ADR-0044).
     log: &'a Folded<Log>,
+    /// What the engine keeps for its figures, as the step began (ADR-0053).
+    stats: &'a Stats,
 }
 
 /// What a step hands out and takes back, kept empty between steps for its room.
@@ -401,6 +408,7 @@ pub struct Lists {
 struct Routes {
     table: Routed<Actors>,
     log: Routed<Log>,
+    unsent: Routed<Unsent>,
     lives: Routed<Lives>,
     streams: Routed<Streams>,
     watches: Routed<Watches>,
@@ -450,6 +458,7 @@ impl Engine {
             stages: Folded::new(parts),
             staging: Staging::new(),
             log: Folded::new(parts),
+            stats: Stats::new(parts),
             lives: Folded::new(parts),
             seating: (0..parts.get()).map(|_| Seating { seated: BySeat::empty(parts) }).collect(),
             actors: (0..parts.get()).map(|_| BySeat::empty(parts)).collect(),
@@ -661,6 +670,20 @@ impl Engine {
         self.blobs.held()
     }
 
+    /// Reads the program's memory with `read` from now on, for its figures: the chassis's own way of asking the
+    /// operating system or the browser. Until it is set, the program's memory reads as unknown (ADR-0053).
+    pub fn set_process(&mut self, read: fn() -> Process) {
+        self.stats.set_process(read);
+    }
+
+    /// The engine's memory against its limits, as of the last step, read between steps as a turn reads it (ADR-0053).
+    #[must_use]
+    pub fn engine_stats(&self) -> Figures {
+        let name = |id| self.table.name(id).map_or(ActorName::Unnamed(id), ActorName::Path);
+
+        self.stats.figures(&self.blobs, name)
+    }
+
     /// Makes a root of type `A` under `key`, for the chassis, and answers with its id (ADR-0008). It builds only for
     /// a type that stands at the top (ADR-0022).
     ///
@@ -809,10 +832,12 @@ impl Engine {
             now: self.now,
             cycle: self.staging.cycle(),
             log: &self.log,
+            stats: &self.stats,
         };
         let mut keeping = Keeping::default();
         // The root begins in the part it is seated in, lent that part's instances.
         let made = begin(me, &path, &table, &mut asked, &mut self.instances[home], &mut keeping);
+        self.stats.measure(home, &self.instances[home]);
         let mut expiring = Vec::new();
         let stood = birth::waiting(asked.take_stood(), &mut asked, &mut expiring);
         let waiting = Waiting::of_begin(me, asked.take_asks_by(me), &mut expiring);
@@ -955,6 +980,7 @@ impl Engine {
             now: self.now,
             cycle: self.staging.cycle(),
             log: &self.log,
+            stats: &self.stats,
         };
         for (part, _) in &self.packing.parts {
             let room = Room {
@@ -984,6 +1010,9 @@ impl Engine {
     /// Panics when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn apply_whole(&mut self, whole: Whole) {
         let Whole { arena, puts, lists } = whole;
+        for (part, _) in &self.packing.parts {
+            self.stats.measure(*part, &self.instances[*part]);
+        }
         self.take_in(lists, arena, puts);
         self.sweep_blobs();
 
@@ -1006,6 +1035,7 @@ impl Engine {
             self.log.fold_records(lost.into_iter().map(|(by, name)| log::dropped(by, name)), written);
             self.table.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.table));
             self.log.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.log), written);
+            self.stats.unsent_mut().fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.unsent), written);
             self.lives.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.lives), written);
             self.streams.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.streams), written);
             self.watches.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.watches), written);
@@ -1172,6 +1202,7 @@ impl Engine {
             now: self.now,
             cycle: self.staging.cycle(),
             log: &self.log,
+            stats: &self.stats,
         }
     }
 
@@ -1315,6 +1346,7 @@ impl Engine {
         let rows = &mut self.lists[self.writing.clone()];
         self.table.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.table), &mut pile.table);
         self.log.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.log), &mut pile.log);
+        self.stats.unsent_mut().fill(part, rows.iter_mut().map(|lists| &mut lists.routes.unsent), &mut pile.unsent);
         self.lives.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.lives), &mut pile.lives);
         self.streams.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.streams), &mut pile.streams);
         self.watches.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.watches), &mut pile.watches);
@@ -1337,6 +1369,7 @@ impl Engine {
         let rows = &mut self.lists[self.writing.clone()];
         self.table.empty(part, &mut pile.table, rows.iter_mut().map(|lists| &mut lists.routes.table));
         self.log.empty(part, &mut pile.log, rows.iter_mut().map(|lists| &mut lists.routes.log));
+        self.stats.unsent_mut().empty(part, &mut pile.unsent, rows.iter_mut().map(|lists| &mut lists.routes.unsent));
         self.lives.empty(part, &mut pile.lives, rows.iter_mut().map(|lists| &mut lists.routes.lives));
         self.streams.empty(part, &mut pile.streams, rows.iter_mut().map(|lists| &mut lists.routes.streams));
         self.watches.empty(part, &mut pile.watches, rows.iter_mut().map(|lists| &mut lists.routes.watches));
@@ -1376,6 +1409,7 @@ impl Engine {
         self.lives.put(part, lives);
         self.seating[part] = seating;
         self.actors[part] = actors;
+        self.stats.measure(part, &instances);
         self.instances[part] = instances;
         self.seats[part] = seats;
     }
@@ -1386,6 +1420,7 @@ impl Engine {
         let written = &self.arenas[parity(self.step)];
         self.table.fold(effects, &context);
         self.log.fold(effects, &context, written);
+        self.stats.unsent_mut().fold(effects, &context, written);
         self.lives.fold(effects, &context, written);
 
         // A child is stood up after the children its `begin` stood up, so it is seated first, from the back.
@@ -1400,6 +1435,7 @@ impl Engine {
         let routes = Routes {
             table: self.table.routed(),
             log: self.log.routed(),
+            unsent: self.stats.unsent().routed(),
             lives: self.lives.routed(),
             streams: self.streams.routed(),
             watches: self.watches.routed(),
@@ -1723,6 +1759,7 @@ impl Reading<'_> {
                             now: self.now,
                             cycle: self.cycle,
                             log: self.log,
+                            stats: self.stats,
                         };
                         let (seats, puts, _, gifts) = asked.lent_gifts();
                         let holds = Holds { keeping: &mut *keeping, gifts };
@@ -1740,6 +1777,7 @@ impl Reading<'_> {
                             now: self.now,
                             cycle: self.cycle,
                             log: self.log,
+                            stats: self.stats,
                         };
                         asked.next_turn();
                         let source = handed.source();
@@ -1849,6 +1887,7 @@ impl Reading<'_> {
                 now: self.now,
                 cycle: self.cycle,
                 log: self.log,
+                stats: self.stats,
             };
             let closing = Closing::new(me, path, above, &table, asked, instances, keeps, sent, why);
             let mut ended = actor.end(closing);
@@ -1918,6 +1957,7 @@ impl Reading<'_> {
             now: self.now,
             cycle: self.cycle,
             log: self.log,
+            stats: self.stats,
         };
         if seat.prepares {
             let (seats, puts, arena, gifts) = asked.lent_gifts();
@@ -1940,6 +1980,7 @@ impl Reading<'_> {
                     now: self.now,
                     cycle: self.cycle,
                     log: self.log,
+                    stats: self.stats,
                 };
                 let bytes = lists.fusing.bytes(&hop);
                 let answering = waiting.answering(hop.tie);
@@ -2356,7 +2397,8 @@ impl Lists {
 impl Routes {
     /// How many records this row holds for part `part`, across the views.
     fn records(&self, part: usize) -> usize {
-        let views = self.table.records(part) + self.log.records(part) + self.lives.records(part);
+        let views =
+            self.table.records(part) + self.log.records(part) + self.unsent.records(part) + self.lives.records(part);
         let gives = self.births.records(part) + self.gifts.records(part);
 
         let lifecycle = self.watches.records(part) + self.stages.records(part);
@@ -2368,6 +2410,7 @@ impl Routes {
     fn route(&mut self, effect: &Effect, context: &Context) {
         self.table.route(effect, context);
         self.log.route(effect, context);
+        self.unsent.route(effect, context);
         self.lives.route(effect, context);
         self.watches.route(effect, context);
         self.stages.route(effect, context);

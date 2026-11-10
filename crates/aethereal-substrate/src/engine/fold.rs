@@ -7,6 +7,7 @@ use super::{Held, Seating, Sitting, item_kind};
 use crate::stages::Stages;
 use crate::stream::{self, Streams};
 use crate::table::Actors;
+use crate::unsent::Unsent;
 use crate::watch::{Notice, Watches};
 use crate::{BySeat, Column, Lives, Log, Part, lives};
 use aethereal_actor::{Arena, Seated};
@@ -23,6 +24,7 @@ pub(super) struct Pile {
     pub(super) part: usize,
     pub(super) table: Column<Actors>,
     pub(super) log: Column<Log>,
+    pub(super) unsent: Column<Unsent>,
     pub(super) lives: Column<Lives>,
     pub(super) streams: Column<Streams>,
     pub(super) watches: Column<Watches>,
@@ -54,6 +56,7 @@ impl Pile {
             part: 0,
             table: Column::empty(parts),
             log: Column::empty(parts),
+            unsent: Column::empty(parts),
             lives: Column::empty(parts),
             streams: Column::empty(parts),
             watches: Column::empty(parts),
@@ -94,6 +97,7 @@ impl Folding<'_> {
             }
             pile.table.fold(self.written);
             pile.log.fold(self.written);
+            pile.unsent.fold(self.written);
             pile.lives.fold(self.written);
             pile.streams.fold(self.written);
             pile.watches.fold(self.written);

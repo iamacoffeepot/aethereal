@@ -2,7 +2,7 @@
 
 #[cfg(feature = "std")]
 use crate::blob::handed_index;
-use crate::{BlobHash, BlobId, Declared, Logged, Recent, SeatNumber, Seated, Time};
+use crate::{BlobHash, BlobId, Declared, EngineStats, Logged, Recent, SeatNumber, Seated, Time};
 use aethereal_data::{ActorId, ActorPath, Boundary, Element, EncodeError, KindId, PathSegment};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
@@ -74,6 +74,12 @@ pub trait Table {
     /// `since`.
     fn recent(&self, since: u64) -> Recent<'_> {
         Recent::nothing(since)
+    }
+
+    /// The engine's memory against its limits, as it stood when the step began (ADR-0053). A table that reads no
+    /// engine, as a guest's does, reads [`EngineStats::Unread`].
+    fn engine_stats(&self) -> EngineStats {
+        EngineStats::Unread
     }
 }
 

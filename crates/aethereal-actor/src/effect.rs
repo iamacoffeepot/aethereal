@@ -82,6 +82,9 @@ pub enum What {
     /// The asking actor asks the program to stop: the engine lets a cycle under way finish, and runs the last stage
     /// (ADR-0020).
     Quit,
+    /// The asking actor holds `bytes` unsent, of the most it may hold, `most`: what it said last is the engine's
+    /// figure for it until it says again or ends (ADR-0053).
+    Unsent { bytes: u64, most: u64 },
     /// The mail the asking actor's turn was handed did not read as its kind, for this reason, and its handler did not
     /// run: the engine answers it [`Unanswered::Unreadable`](crate::Unanswered::Unreadable) when it asks a request, and
     /// otherwise drops it, as the actor's log records (ADR-0017). Written by the engine, or by a guest's host as its

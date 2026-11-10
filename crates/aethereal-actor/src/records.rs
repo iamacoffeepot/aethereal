@@ -871,7 +871,8 @@ impl WatchRecord {
 }
 
 /// What a turn asked of the program's lifecycle: by whom, the actor whose turn it was or a child it spawned, in its
-/// `begin`, and what (ADR-0020).
+/// `begin`, and what (ADR-0020); or what it told the engine it holds unsent, which rides in the same eight bytes
+/// (ADR-0053).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StageRecord {
     pub by: Seated,
@@ -887,6 +888,9 @@ pub enum Staging {
     Unsubscribe(KindId),
     /// For the program to stop.
     Quit,
+    /// To count it as holding `bytes` unsent, of the most it may hold, `most` (ADR-0053). A guest says each in four
+    /// bytes, so a figure of 4 GiB or more reads as `u32::MAX`.
+    Unsent { bytes: u32, most: u32 },
 }
 
 impl StageRecord {
@@ -900,6 +904,7 @@ impl StageRecord {
             Staging::Subscribe(kind) => (0_u32, kind.plain_bytes()),
             Staging::Unsubscribe(kind) => (1, kind.plain_bytes()),
             Staging::Quit => (2, [0; 8]),
+            Staging::Unsent { bytes, most } => (3, unsent_bytes(bytes, most)),
         };
         let mut out = [0; Self::BYTES];
         out[..16].copy_from_slice(&seated_bytes(self.by));
@@ -916,11 +921,21 @@ impl StageRecord {
             0 => Staging::Subscribe(kind_at(bytes, 20)?),
             1 => Staging::Unsubscribe(kind_at(bytes, 20)?),
             2 => Staging::Quit,
+            3 => Staging::Unsent { bytes: u32_at(bytes, 20)?, most: u32_at(bytes, 24)? },
             _ => return None,
         };
 
         Some(Self { by: seated_at(bytes, 0)?, asked })
     }
+}
+
+/// `bytes` and `most`, each in four bytes, in the eight a stage record holds after what it asks.
+fn unsent_bytes(bytes: u32, most: u32) -> [u8; 8] {
+    let mut out = [0; 8];
+    out[..4].copy_from_slice(&bytes.to_le_bytes());
+    out[4..].copy_from_slice(&most.to_le_bytes());
+
+    out
 }
 
 /// A job a turn ran, or the `begin` of a child it spawned, as its asks are recorded with the mail that asks them: by

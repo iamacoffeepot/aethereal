@@ -703,13 +703,14 @@ impl<'a> Hosted<'a> {
 
     /// Asks `asked` of the program's lifecycle, by `by`: the actor whose turn this is, or a child it spawned, in its
     /// `begin`, as [`Turn::subscribe`](crate::Turn::subscribe), [`Turn::unsubscribe`](crate::Turn::unsubscribe), and
-    /// [`Turn::quit`](crate::Turn::quit) do (ADR-0020).
+    /// [`Turn::quit`](crate::Turn::quit) do (ADR-0020); or tells the engine what the actor whose turn this is holds
+    /// unsent, as [`Turn::holds_unsent`](crate::Turn::holds_unsent) does (ADR-0053).
     ///
     /// # Errors
     ///
     /// [`FalseStage`] when what the asker's turn may do does not list a subscription to the stage, the turn spawned
-    /// no such child, or a stop is asked by a child's `begin` or the actor's own: what a guest's library would not
-    /// have built (ADR-0013).
+    /// no such child, a stop is asked by a child's `begin` or the actor's own, or a child tells what it holds unsent:
+    /// what a guest's library would not have built (ADR-0013).
     pub fn stage(&mut self, by: Seated, asked: Staging) -> Result<(), FalseStage> {
         let declared = if by == self.seat.me {
             self.seat.declared
@@ -720,10 +721,12 @@ impl<'a> Hosted<'a> {
             Staging::Subscribe(kind) => What::Subscribe(kind),
             Staging::Unsubscribe(kind) => What::Unsubscribe(kind),
             Staging::Quit => What::Quit,
+            Staging::Unsent { bytes, most } => What::Unsent { bytes: u64::from(bytes), most: u64::from(most) },
         };
         let is_allowed = match asked {
             Staging::Subscribe(kind) | Staging::Unsubscribe(kind) => declared.stages(kind),
             Staging::Quit => by == self.seat.me && self.may_close(),
+            Staging::Unsent { .. } => by == self.seat.me,
         };
         if !is_allowed {
             return Err(FalseStage);

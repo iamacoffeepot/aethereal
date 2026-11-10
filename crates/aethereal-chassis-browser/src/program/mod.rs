@@ -13,6 +13,7 @@ mod windows;
 pub use windows::WindowsSettings;
 
 use crate::canvas::Shown;
+use crate::memory;
 use crate::serving::{Drawing, Serving};
 use crate::{Browser, EventLoop, Hosted, Listening, Performance};
 use aethereal_actor::{Service, Services};
@@ -126,12 +127,13 @@ impl Host for Browser<Performance> {
     type Error = ProgramError;
 
     /// Bootstraps the program on the page, each root's bootstrap awaited before the next begins, makes its runner on
-    /// the page's event loop (ADR-0029), then starts it: its `Start` runs in the first frame the page calls
-    /// (ADR-0020).
+    /// the page's event loop (ADR-0029), has its figures read the page's memory as the browser reports it (ADR-0053),
+    /// then starts it: its `Start` runs in the first frame the page calls (ADR-0020).
     fn run(settled: Settled<Self>) -> Result<Starting, ProgramError> {
         Ok(Box::pin(async move {
             let (mut engine, paging) = settled.bootstrap(Paging::new()).await?;
             engine.set_jobs(Arc::new(paging.runner()));
+            engine.set_process(memory::heap);
 
             Ok(paging.start(engine))
         }))

@@ -56,6 +56,8 @@ mod jobs;
 #[cfg(target_arch = "wasm32")]
 mod listening;
 #[cfg(target_arch = "wasm32")]
+mod memory;
+#[cfg(target_arch = "wasm32")]
 mod program;
 mod serving;
 #[cfg(test)]

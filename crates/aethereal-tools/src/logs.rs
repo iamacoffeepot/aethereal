@@ -305,7 +305,7 @@ impl LogLevel {
 }
 
 /// How a read names an actor to the agent: its path, or its id in hex.
-fn spoken_name(actor: &ActorName) -> String {
+pub fn spoken_name(actor: &ActorName) -> String {
     match actor {
         ActorName::Path(path) => path.to_string(),
         ActorName::Unnamed(id) => format!("{:#018x}", id.bits()),
