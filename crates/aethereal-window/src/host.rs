@@ -38,7 +38,7 @@ impl Opening {
         // A host opens some windows, never more than a `u64` counts.
         let window = WindowId::nth(self.windows.len() as u64);
         let title = String::from(title);
-        self.windows.push(Initial { window, title, config: WindowConfig { surface, mode, focused } });
+        self.windows.push(Initial { title, config: WindowConfig { window, surface, mode, focused } });
 
         WindowFeed { window, feed: self.feed.clone() }
     }

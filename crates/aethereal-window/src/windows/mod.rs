@@ -84,10 +84,9 @@ pub enum Closing {
     ByProgram,
 }
 
-/// A window the host opened as the program was set up, its title, and how it stood.
+/// A window the host opened as the program was set up, its title, and how it stood, its id among it.
 #[derive(Debug, Clone, PartialEq, Plain)]
 pub struct Initial {
-    pub(crate) window: WindowId,
     pub(crate) title: String,
     pub(crate) config: WindowConfig,
 }
@@ -249,7 +248,8 @@ impl Actor for Windows {
         // A host opens some windows, never more than a `u64` counts.
         let next = config.windows.len() as u64;
         let mut standing = BTreeMap::new();
-        for Initial { window, title, config } in config.windows {
+        for Initial { title, config } in config.windows {
+            let window = config.window;
             if let Err(refused) = turn.spawn::<Window>(&window, config) {
                 turn.log(Level::Error, format_args!("the actor of window {window:?} was refused: {refused}"));
                 return Err(Fault::new(&Unmade { window })?);
@@ -426,7 +426,7 @@ impl Handles<Heard> for Windows {
         match heard {
             Heard::Event { window, event } => self.heard(window, &event, turn),
             Heard::Opened { window, surface, focused } => {
-                self.opened(window, WindowConfig { surface, mode: Mode::Windowed, focused }, turn)
+                self.opened(window, WindowConfig { window, surface, mode: Mode::Windowed, focused }, turn)
             }
             Heard::Unopened { window, why } => self.unopened(window, why, turn),
             Heard::Closed { window } => self.closed(window, turn),

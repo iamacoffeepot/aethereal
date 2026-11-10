@@ -83,19 +83,20 @@ Called::Output ── schema ── Form, printed ──> scrollback
 
 ### Key focus
 
-**The window root gains key focus, as aether's ADR-0248 §9 has it, without its scope:**
+**Each window's actor gains key focus, as aether's ADR-0248 §9 has it, without its scope:**
 
 ```rust
-TakeKeyFocus { window }      // no answer; the sender holds the window's slot
-ReleaseKeyFocus { window }   // no answer; empties the slot if the sender holds it
+TakeKeyFocus                 // to the window's actor, path::<Window>(window); no answer; the sender holds its slot
+ReleaseKeyFocus              // to the window's actor; no answer; empties the slot if the sender holds it
 KeyFocusGained { window }    // to the new holder
-KeyFocusLost { window }      // to the holder it replaced, the one that released, or every holder of a closed window
+KeyFocusLost { window }      // to the holder it replaced, the one that released, or the holder of a closed window
 ```
 
-- **Each window has one slot,** empty or held by one actor. While it is held, that window's key events, `Event::Text`, and the input method's events go only to the holder.
-- **The latest take wins,** and the holder it replaced hears `KeyFocusLost`. A release, or the holder's end, empties the slot; nothing is handed back.
-- **A key that is down keeps who heard its press,** and its release goes to them, so a character walking as the console opens stops.
-- **The take is refused as the program is built** for an actor that does not handle both notices.
+- **Each window has one slot,** empty or held by one actor. While it is held, that window's key events, `Event::Text`, and the input method's events go only to the holder, which hears them as one of the window's subscribers. Input performed by `send_input` is routed the same way.
+- **The slot is the window's actor's,** as it is what sends a window's events to its subscribers. A take and a release go to it, as `Perform` does, so they name no window; the notices name it by its `WindowId`. Both chassis push what they hear through the window root to that actor, so both are routed by the slot with no code of their own.
+- **The latest take wins,** and the holder it replaced hears `KeyFocusLost`. A release, the holder's end, or the window closing empties the slot; nothing is handed back.
+- **A key that is down keeps who heard its press,** and its repeats and its release go to them, so a character walking as the console opens stops. The window losing the keyboard forgets the keys down, as their releases never come.
+- **The take is refused as the program is built** for an actor that does not handle `KeyFocusGained`, as a sender's type is checked against the replies of what it sends, and the window replies with it. `KeyFocusLost` goes to the replaced holder, not as a reply, so a sender that does not handle it too is refused as the take is handled, and logged.
 
 ### Tools held in every engine
 
@@ -164,6 +165,7 @@ The GPU's passes are told apart by lichen, a slate blue, and a muted violet, in 
 - **A tree of words each tool writes beside its sheet, as Minecraft's Brigadier.** The most freedom, but a second description of each input to keep in step with it, where attributes on the fields cannot drift.
 - **Commands the overlay knows itself.** A second set beside the tools, which agents could not call.
 - **The overlay in front of the program's input,** the program subscribing to it rather than the window. Every program would be wired through the overlay.
+- **Key focus held by the window root,** the take naming its window. The root does not send a window's events to its subscribers, so it would hand each change to the window's actor, and a take sent to the root would bring no reply the sender's type is checked against.
 - **Key focus as a stack.** A release would hand keys back to the one before, but every holder would have to release in order; aether's single slot has served.
 - **A flag for the budget.** It would be wrong the moment the present mode or the monitor changed.
 - **A GPU chart only of the latest frame.** It says what is slow now, not when it got slow, and a spike is read against the frame chart above it.

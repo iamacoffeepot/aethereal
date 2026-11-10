@@ -1,14 +1,17 @@
 //! A window's actor: beneath the window root, keyed by the window's id, it sends what its window heard to the actors
-//! that subscribed, and keeps how the window stands for a new one.
+//! that subscribed, its keys and typed text only to the holder of its key focus while one holds it (ADR-0053), and
+//! keeps how the window stands for a new one.
 
 use crate::event::{Event, Mode, Subscribe, Surface, Unsubscribe};
+use crate::focus::{KeyFocus, KeyFocusGained, KeyFocusHolder, KeyFocusLost, ReleaseKeyFocus, Slot, TakeKeyFocus, Took};
 use crate::perform::{Perform, Performed, unperformable};
 use crate::windows::Windows;
 use aethereal_actor::{
-    Actor, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Level, Subscribers, ToAny, ToSender, Turn,
+    Actor, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Level, ProtocolRef, Subscribers, ToAny,
+    ToSender, Turn,
 };
 use aethereal_data::{Bound, Key, KeyName, Plain, TypedKey};
-use core::mem;
+use core::{mem, slice};
 
 /// A window, by the number the window capability gave it: the first opened as the program was set up `0`, the next
 /// `1`, and each asked for while it runs the next after those, in the order asked. No number is given twice. It is
@@ -34,21 +37,27 @@ impl TypedKey for WindowId {
     }
 }
 
-/// How a window stands as its actor is made: its surface, the mode it is shown in, and whether it has the keyboard.
+/// How a window stands as its actor is made: the window, its actor's key, which its key focus notices name; its
+/// surface; the mode it is shown in; and whether it has the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
 #[kind(name = "aether.window.config")]
 pub struct WindowConfig {
+    pub window: WindowId,
     pub surface: Surface,
     pub mode: Mode,
     pub focused: bool,
 }
 
-/// A window's actor: it sends each event its window heard to the actors subscribed to it, and sends a new subscriber
-/// the window's surface, mode, and focus as they stand before anything else.
+/// A window's actor: it sends each event its window heard to the actors subscribed to it, its keys and typed text only
+/// to the holder of its key focus while one holds it, and sends a new subscriber the window's surface, mode, and focus
+/// as they stand before anything else.
 #[derive(Bound)]
 #[kind(name = "aether.window")]
 pub struct Window {
+    /// The window, as its key focus notices name it.
+    id: WindowId,
     listeners: Subscribers<(Event,)>,
+    focus: KeyFocus,
     surface: Surface,
     mode: Mode,
     focused: bool,
@@ -68,14 +77,14 @@ impl Carries<Perform> for Window {
 impl Actor for Window {
     type Config = WindowConfig;
     type Key = WindowId;
-    type Handles = (Subscribe, Unsubscribe, Event, Perform, Ended);
+    type Handles = (Subscribe, Unsubscribe, Event, Perform, TakeKeyFocus, ReleaseKeyFocus, Ended);
     type BeginSends = ();
     type EndSends = ();
 
     fn begin(config: WindowConfig, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let WindowConfig { surface, mode, focused } = config;
+        let WindowConfig { window, surface, mode, focused } = config;
 
-        Ok(Self { listeners: Subscribers::new(), surface, mode, focused })
+        Ok(Self { id: window, listeners: Subscribers::new(), focus: KeyFocus::default(), surface, mode, focused })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -105,6 +114,19 @@ impl Window {
             | Event::Text { .. }
             | Event::CloseRequested
             | Event::Closed => true,
+        }
+    }
+
+    /// The subscribers `event` is sent to, as the key focus routes it: every one, or the holder alone, when it is
+    /// subscribed.
+    fn hearers(&mut self, event: &Event) -> &[ProtocolRef<(Event,)>] {
+        let slot = self.focus.route(event);
+        let listeners = self.listeners.references();
+        match slot {
+            Slot::Empty => listeners,
+            Slot::Held(holder) => {
+                listeners.iter().find(|listener| listener.erase() == holder.erase()).map_or(&[], slice::from_ref)
+            }
         }
     }
 
@@ -148,11 +170,11 @@ impl Handles<Unsubscribe> for Window {
     }
 }
 
-/// What the window root sent on from its host, sent to every subscriber when it says anything new. An event any other
-/// actor sends is not the host's, and is not sent on. Once the window has closed, `Closed` is the last its subscribers
-/// are sent, and the actor ends.
+/// What the window root sent on from its host, sent to the subscribers the key focus routes it to when it says
+/// anything new. An event any other actor sends is not the host's, and is not sent on. Once the window has closed, the
+/// holder of its key focus is sent `KeyFocusLost`, `Closed` is the last its subscribers are sent, and the actor ends.
 impl Handles<Event> for Window {
-    type Sends = (ToAny<(Event,), Event>,);
+    type Sends = (ToAny<(Event,), Event>, ToAny<KeyFocusHolder, KeyFocusLost>);
 
     fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let root = turn.parent();
@@ -161,11 +183,16 @@ impl Handles<Event> for Window {
             turn.log(Level::Warn, "an event another actor sent a window was not sent on: only its host's are");
             return Ok(());
         }
+        let is_closed = event == Event::Closed;
+        if is_closed && let Slot::Held(holder) = self.focus.slot() {
+            turn.to(holder).send(&KeyFocusLost { window: self.id })?;
+        }
         let is_new = self.heard(&event);
         if is_new {
-            turn.to(&self.listeners).send(&event)?;
+            let hearers = self.hearers(&event);
+            turn.to(hearers).send(&event)?;
         }
-        if event == Event::Closed {
+        if is_closed {
             turn.close();
         }
 
@@ -173,10 +200,10 @@ impl Handles<Event> for Window {
     }
 }
 
-/// Sends every subscriber each input asked, in order, as the event of the same name, then answers: they are sent in
-/// the turn that answers, so each subscriber handles them before anything arriving after the answer (ADR-0046). It is
-/// asked by any actor, as an input says nothing of how the window stands, which only its host may. Inputs that cannot
-/// be performed are refused, and none is sent.
+/// Sends each input asked, in order, as the event of the same name, to the subscribers the key focus routes it to, as
+/// it would one the host heard, then answers: they are sent in the turn that answers, so each subscriber handles them
+/// before anything arriving after the answer (ADR-0046). It is asked by any actor, as an input says nothing of how the
+/// window stands, which only its host may. Inputs that cannot be performed are refused, and none is sent.
 impl Handles<Perform> for Window {
     type Sends = (ToAny<(Event,), Event>, ToSender<Performed>);
 
@@ -186,7 +213,9 @@ impl Handles<Perform> for Window {
             return Ok(());
         }
         for input in perform.inputs {
-            turn.to(&self.listeners).send(&Event::from(input))?;
+            let event = Event::from(input);
+            let hearers = self.hearers(&event);
+            turn.to(hearers).send(&event)?;
         }
         turn.reply(&Performed::Performed)?;
 
@@ -194,11 +223,58 @@ impl Handles<Perform> for Window {
     }
 }
 
+/// Gives the sender the window's key focus, the latest take winning, and tells the holder it replaced, then the sender:
+/// nothing, when the sender holds it already. A sender that does not handle both notices is refused. The holder is
+/// watched, so its end empties the slot.
+impl Handles<TakeKeyFocus> for Window {
+    type Sends = (ToSender<KeyFocusGained>, ToAny<KeyFocusHolder, KeyFocusLost>);
+
+    fn handle(&mut self, _: TakeKeyFocus, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let sender = turn.sender();
+        let Some(taker) = turn.cast::<KeyFocusHolder>(sender) else {
+            turn.log(
+                Level::Warn,
+                "an actor that does not handle both key focus notices asked for a window's key focus",
+            );
+            return Ok(());
+        };
+        let window = self.id;
+        match self.focus.take(taker) {
+            Took::Kept => return Ok(()),
+            Took::Gained => {}
+            Took::Replaced(replaced) => {
+                turn.to(replaced).send(&KeyFocusLost { window })?;
+            }
+        }
+        turn.watch(taker);
+        turn.reply(&KeyFocusGained { window })?;
+
+        Ok(())
+    }
+}
+
+/// Empties the window's key focus slot when the sender holds it, and tells the sender: nothing is handed back, and from
+/// an actor that does not hold it, nothing changes.
+impl Handles<ReleaseKeyFocus> for Window {
+    type Sends = (ToSender<KeyFocusLost>,);
+
+    fn handle(&mut self, _: ReleaseKeyFocus, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let released = self.focus.release(turn.sender());
+        if released {
+            turn.reply(&KeyFocusLost { window: self.id })?;
+        }
+
+        Ok(())
+    }
+}
+
+/// A subscriber that ended leaves the list, and a key focus holder that ended empties the slot, told nothing.
 impl Handles<Ended> for Window {
     type Sends = ();
 
     fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.listeners.ended(&ended);
+        self.focus.release(ended.actor());
 
         Ok(())
     }
