@@ -45,7 +45,7 @@ fn a_bar_s_fill_is_its_share_of_the_trough_and_stays_inside_it() {
     let (blobs, backlog) = (layout.meter_bar(Meter::Blobs.index()), layout.meter_bar(Meter::Backlog.index()));
     assert_eq!(drawn.len(), 4);
     assert_eq!(drawn[0].area, [blobs.min.x, blobs.min.y, blobs.width(), blobs.height()]);
-    assert_eq!(drawn[0].colour, STONE.at(0.2));
+    assert_eq!(drawn[0].colour, STONE.at(0.08));
     assert!((drawn[1].area[2] - blobs.width() / 4.0).abs() < 0.01, "{:?} is not a quarter of {blobs:?}", drawn[1]);
     assert_eq!(drawn[1].colour, LICHEN.opaque());
     assert_eq!(drawn[3].area, [backlog.min.x, backlog.min.y, backlog.width(), backlog.height()]);
