@@ -111,5 +111,5 @@ fn the_slide_is_how_far_through_its_span_the_newest_cycle_came() {
     // seventh second.
     let frames = times([6_250 * MILLI]);
 
-    assert_eq!(frames.slide(60), Slide { newest: 6, through: 0.25 });
+    assert_eq!(frames.slide(60), Slide { newest: 6, through: 0.25, span_nanos: 1_000_000_000 });
 }

@@ -1,5 +1,5 @@
-use super::{RECORD_BYTES, records};
-use crate::colour::{BRICK, LICHEN, PANEL_OPACITY, RUST, SLATE, STONE};
+use super::{RECORD_BYTES, marks, records};
+use crate::colour::{BRICK, LICHEN, OCHRE, PANEL_OPACITY, RUST, SLATE, STONE};
 use crate::frames::{Column, Slide};
 use crate::layout::Layout;
 use crate::stop::Stop;
@@ -45,7 +45,7 @@ fn columns_are_shaded_by_the_budget_and_held_to_the_chart() {
         Column { span: 1, longest_nanos: BUDGET + 1 },
         Column { span: 0, longest_nanos: BUDGET * 40 },
     ];
-    let slide = Slide { newest: 2, through: 0.5 };
+    let slide = Slide { newest: 2, through: 0.5, span_nanos: 1_000_000_000 };
     let mut band = Vec::new();
     let mut console = Vec::new();
 
@@ -83,8 +83,8 @@ fn columns_slide_left_through_their_span() {
 
     // At 1080 the chart is 1132 pixels wide, 226 columns of 5 and 2 over, so the column 226 back is cut at the left
     // edge once it has come half way through its span.
-    let early = bars(layout, &columns, Slide { newest, through: 0.5 });
-    let late = bars(layout, &columns, Slide { newest, through: 0.75 });
+    let early = bars(layout, &columns, Slide { newest, through: 0.5, span_nanos: 1_000_000_000 });
+    let late = bars(layout, &columns, Slide { newest, through: 0.75, span_nanos: 1_000_000_000 });
 
     let [newest_early, before_early, oldest_early] = [early[0], early[1], early[2]];
     let [newest_late, before_late, oldest_late] = [late[0], late[1], late[2]];
@@ -101,7 +101,7 @@ fn columns_slide_left_through_their_span() {
 #[test]
 fn a_reference_budget_is_drawn_lighter_than_a_limit_at_the_same_height() {
     let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
-    let slide = Slide { newest: 0, through: 0.0 };
+    let slide = Slide { newest: 0, through: 0.0, span_nanos: 1_000_000_000 };
     let line = |budget| {
         let mut bytes = Vec::new();
         records(&mut bytes, layout, Stop::Band, [], slide, budget);
@@ -116,4 +116,26 @@ fn a_reference_budget_is_drawn_lighter_than_a_limit_at_the_same_height() {
     assert!(reference.iter().all(|dash| dash.colour == STONE.at(0.5)));
     assert_eq!(limit[0].area[1], reference[0].area[1]);
     assert!(reference[0].area[2] < limit[0].area[2], "a reference's dashes are shorter");
+}
+
+/// A mark's tick stands where its moment falls among the columns: a mark two and a half spans before the newest
+/// moment is two and a half pitches left of where the newest moment is drawn, the chart's right edge; and a mark older
+/// than the chart reaches is not drawn, so a tick that slides the wrong way, or at the wrong rate, is caught.
+#[test]
+fn a_mark_s_tick_stands_at_its_time() {
+    let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
+    let (chart, pitch) = (layout.chart(), layout.column_pitch());
+    let span_nanos = 1_000_000_000;
+    // The newest moment is 300.25 spans in; the mark is at 297.75.
+    let slide = Slide { newest: 300, through: 0.25, span_nanos };
+    let mark = 297 * span_nanos + span_nanos * 3 / 4;
+    let mut bytes = Vec::new();
+
+    marks(&mut bytes, layout, slide, [mark, 0]);
+
+    let ticks = read(&bytes);
+    assert_eq!(ticks.len(), 1, "a mark older than the chart is drawn");
+    assert_eq!(ticks[0].colour, OCHRE.opaque());
+    assert_eq!(ticks[0].area[0], pitch.mul_add(-2.5, chart.max.x));
+    assert_eq!((ticks[0].area[1], ticks[0].area[3]), (chart.min.y, chart.height()));
 }

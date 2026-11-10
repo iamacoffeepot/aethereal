@@ -1,14 +1,16 @@
 //! What the overlay draws as one placement (ADR-0023): a unit square, drawn once for each of its instances' records,
-//! each a box in the surface's pixels and its colour. The records are the panels, the frame chart's columns, and its
-//! dashed budget line, in that order, as one placement's records are drawn in their order; all of them are written
-//! again in one write at each `Tick` the overlay is shown, as the chart moves with time.
+//! each a box in the surface's pixels and its colour. The records are the panels, the frame chart's columns, its
+//! dashed budget line, the marks' ticks, and the console's cursor, in that order, as one placement's records are drawn
+//! in their order; all of them are written again in one write at each `Tick` the overlay is shown, as the chart moves
+//! with time.
 
 #[cfg(test)]
 mod tests;
 
-use crate::colour::{BRICK, LICHEN, PANEL_OPACITY, RUST, SLATE, STONE, Swatch};
+use crate::colour::{BRICK, LICHEN, OCHRE, PANEL_OPACITY, RUST, SLATE, STONE, Swatch};
 use crate::frames::{Column, Slide};
 use crate::layout::Layout;
+use crate::marks::MOST_MARKS;
 use crate::stop::Stop;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::mesh::{Attribute, VertexFormat, VertexLayout};
@@ -42,8 +44,8 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 pub const RECORD_BYTES: u32 = 32;
 
 /// The most records the instances have room for: the two panels, the most columns and the two sliding off the left
-/// edge, and the most dashes.
-pub const MOST_RECORDS: u32 = 2 + MOST_COLUMNS + 2 + MOST_DASHES;
+/// edge, the most dashes, the most marks, and the cursor.
+pub const MOST_RECORDS: u32 = 2 + MOST_COLUMNS + 2 + MOST_DASHES + MOST_MARKS + 1;
 
 /// The most columns the chart is cut into, whatever the window's width.
 const MOST_COLUMNS: u32 = 3_000;
@@ -69,6 +71,9 @@ const REFERENCE_OPACITY: f32 = 0.5;
 
 /// How thick the budget line is, in logical pixels.
 const LINE_PIXELS: f32 = 1.0;
+
+/// How wide a mark's tick is, in logical pixels.
+const TICK_PIXELS: f32 = 2.0;
 
 /// How the square's corners are laid out: a place of two floats.
 #[must_use]
@@ -116,8 +121,9 @@ pub fn column_count(layout: Layout) -> u32 {
     count.min(MOST_COLUMNS)
 }
 
-/// How many bytes the records of [`records`] take on `layout` at most: the two panels, a column for each the chart is
-/// cut into and the two sliding off its left edge, and the dashes of the budget line.
+/// How many bytes the records of [`records`], [`marks`], and [`cursor`] take on `layout` at most: the two panels, a
+/// column for each the chart is cut into and the two sliding off its left edge, the dashes of the budget line, the
+/// most marks, and the cursor.
 #[must_use]
 pub fn records_bytes(layout: Layout) -> usize {
     // A reference's dashes are the closer, so the more.
@@ -127,7 +133,7 @@ pub fn records_bytes(layout: Layout) -> usize {
     // A count of dashes is at most some thousands, which a u32 holds; a negative width holds none.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let dashes = (dashes.max(0.0) as u32).min(MOST_DASHES);
-    let count = 2 + column_count(layout) + 2 + dashes;
+    let count = 2 + column_count(layout) + 2 + dashes + MOST_MARKS + 1;
 
     count as usize * RECORD_BYTES as usize
 }
@@ -194,6 +200,35 @@ pub fn records(
         push(records, piece, colour);
         left = right + gap;
     }
+}
+
+/// Appends to `records` a tick for each mark of `times`, the program's time it was pinned at: an ochre line the
+/// chart's height, where that moment falls among the columns placed at `slide`, sliding left with them. A mark that
+/// falls outside the chart is not drawn.
+pub fn marks(records: &mut Vec<u8>, layout: Layout, slide: Slide, times: impl IntoIterator<Item = u64>) {
+    let chart = layout.chart();
+    let (pitch, width) = (layout.column_pitch(), layout.line_pixels(TICK_PIXELS));
+    let span_nanos = slide.span_nanos.max(1);
+    // Spans of the program's time, some thousands, and a share of one, which an f32 holds closely enough to draw.
+    #[allow(clippy::cast_precision_loss)]
+    let newest = slide.newest as f32 + slide.through;
+    for at_nanos in times {
+        #[allow(clippy::cast_precision_loss)]
+        let at = (at_nanos / span_nanos) as f32 + (at_nanos % span_nanos) as f32 / span_nanos as f32;
+        let left = (newest - at).mul_add(-pitch, chart.max.x);
+        let within = left >= chart.min.x && left + width <= chart.max.x;
+        if !within {
+            continue;
+        }
+        let tick = Rect2 { min: Vec2::new(left, chart.min.y), max: Vec2::new(left + width, chart.max.y) };
+        push(records, tick, OCHRE.opaque());
+    }
+}
+
+/// Appends to `records` the console's cursor, a lichen bar the height of a line, before the character `column` of
+/// the prompt's row.
+pub fn cursor(records: &mut Vec<u8>, layout: Layout, column: usize) {
+    push(records, layout.cursor(column), LICHEN.opaque());
 }
 
 /// The colour of a column whose longest cycle took `nanos` against `budget_nanos`: lichen within the budget, rust
