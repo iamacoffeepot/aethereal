@@ -24,11 +24,14 @@ pub struct Sheets {
 #[kind(name = "aether.tools.subscribe")]
 pub struct Subscribe;
 
-/// A call of the tool named `tool`, with `input` a value of its input schema, as its bytes in a blob (ADR-0042): the
-/// tools root asks it of the worker that offered the tool, and answers what the worker answered.
+/// A call of the tool named `tool`, with `input` a value of its input schema, as its bytes in a blob (ADR-0042), read
+/// from the [`Sheets`] of `revision`: the tools root refuses a call of a revision it has changed since, so a tool
+/// withdrawn and offered again under its name is never called with bytes written for the schema it had before, and
+/// otherwise asks it of the worker that offered the tool, and answers what the worker answered.
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.tools.call_tool")]
 pub struct CallTool {
     pub tool: String,
+    pub revision: u64,
     pub input: Bytes,
 }

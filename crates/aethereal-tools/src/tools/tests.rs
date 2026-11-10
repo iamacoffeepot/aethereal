@@ -1,5 +1,6 @@
 //! The tools root's tests: an engine with no link holds the tools its toolbox offers, lists them, and calls one for
-//! any actor that asks; a subscriber hears the set as it stands, and again after each change.
+//! any actor that asks; a subscriber hears the set as it stands, and again after each change; and a call of a set
+//! changed since is refused.
 
 use super::*;
 use crate::{Output, Tool, ToolSheet, Toolbox, ToolboxConfig};
@@ -110,11 +111,12 @@ fn offered() -> Result<Harness<Bench>, Unheard> {
     Ok(harness)
 }
 
-/// What calling `tool` of the tools root with `input` came to: what it answered, its output read out of its blob.
-fn call(harness: &mut Harness<Bench>, tool: &str, input: &Say) -> Result<Result<Said, String>, Unheard> {
+/// What calling `tool` of the tools root with `input`, read from the set of `revision`, came to: what it answered, its
+/// output read out of its blob.
+fn call(harness: &mut Harness<Bench>, tool: &str, revision: u64, input: &Say) -> Result<Result<Said, String>, Unheard> {
     let input = harness.put(to_bytes(input)?)?;
     let tools = harness.root::<Tools>();
-    let asked = harness.ask(tools, &CallTool { tool: String::from(tool), input })?;
+    let asked = harness.ask(tools, &CallTool { tool: String::from(tool), revision, input })?;
     let called = match harness.answer(asked)? {
         Answered::Yes(Called::Output(output)) => {
             let bytes = harness.read(&output).map(<[u8]>::to_vec).unwrap_or_default();
@@ -137,8 +139,8 @@ fn an_engine_with_no_link_lists_its_toolbox_s_tools_and_calls_one_for_any_actor(
     let listed = harness.ask(tools, &ListTools)?;
     assert_eq!(harness.answer(listed)?, Answered::Yes(Sheets { revision: 1, tools: vec![sheet("length")] }));
 
-    assert_eq!(call(&mut harness, "length", &Say { text: String::from("hello") })?, Ok(Said { length: 5 }));
-    let unknown = call(&mut harness, "nothing", &Say { text: String::from("hello") })?;
+    assert_eq!(call(&mut harness, "length", 1, &Say { text: String::from("hello") })?, Ok(Said { length: 5 }));
+    let unknown = call(&mut harness, "nothing", 1, &Say { text: String::from("hello") })?;
     assert_eq!(unknown, Err(String::from("the engine holds no tool named nothing")));
 
     Ok(())
@@ -161,6 +163,33 @@ fn a_subscriber_hears_the_set_as_it_stands_and_again_after_each_change() -> Resu
 
     harness.tell(tools, &Withdraw { tool: String::from("say"), worker })?;
     assert_eq!(harness.heard::<Sheets>()?, Sheets { revision: 2, tools: Vec::new() });
+
+    Ok(())
+}
+
+#[test]
+fn a_call_of_a_set_changed_since_is_refused_and_one_of_the_set_held_is_served() -> Result<(), Unheard> {
+    // Catches a revision checked anywhere but in the turn that looks the tool up, where a tool withdrawn and offered
+    // again under its name would be called with bytes written for the schema it had before.
+    let mut harness = held()?;
+    let (tools, worker) = (harness.root::<Tools>(), harness.protocol::<Tooling>());
+    let input = harness.put(to_bytes(&Say { text: String::from("hello") })?)?;
+
+    let offering = harness.ask(tools, &Offer { tools: vec![sheet("say")], worker })?;
+    assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
+    harness.tell(tools, &Withdraw { tool: String::from("say"), worker })?;
+    let offering = harness.ask(tools, &Offer { tools: vec![sheet("say")], worker })?;
+    assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
+
+    let stale = harness.ask(tools, &CallTool { tool: String::from("say"), revision: 1, input: input.clone() })?;
+    let changed = String::from("the engine's tools have changed since revision 1: read them again");
+    assert_eq!(harness.answer(stale)?, Answered::Yes(Called::Refused(changed)));
+
+    let current = harness.ask(tools, &CallTool { tool: String::from("say"), revision: 3, input })?;
+    let call = harness.asked::<Call>()?;
+    assert_eq!(call.request.tool, "say");
+    harness.reply(call, &Called::Refused(String::from("served")))?;
+    assert_eq!(harness.answer(current)?, Answered::Yes(Called::Refused(String::from("served"))));
 
     Ok(())
 }

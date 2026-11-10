@@ -71,7 +71,7 @@ pub struct LinkSettings {
 - **A call is asked of its worker**, `Asks<Tooling, Call, Calling>`, keyed by the call's number, and its answer is written back as `Called`. A worker that ends first is answered `No`, which `Link` writes as `Called::Refused`. A `Called` that would not fit in a frame is written as `Called::Refused` saying so, so an answer too large refuses the call and ends nothing.
 - **When the hub goes, `Link` dials again.** A dial refused or a connection hung up runs a `Sleep` for the next wait, doubling from the first to the longest, and the next connection writes `Hello` and `Sheets` as the first did. Its tools stay held through it, so nothing in the engine sees the hub go. A call in flight when the connection went is answered by its worker into nothing: its `Called` is dropped.
 - *Replaced by ADR-0040: `Link` dials once, and ends its program when its connection ends; it has no redial and no `redial_millis`.*
-- *Amended by ADR-0053: `Link` holds no tools. `Tools` takes each offer and keeps the table, its revision, and the setting `most_tools`; `Link` subscribes to it, writes each `Sheets` it is sent, with `Tools`'s revision, and asks it each call as `CallTool`, still checking the call's revision against the set it last heard and asking within the call's time (ADR-0041).*
+- *Amended by ADR-0053: `Link` holds no tools. `Tools` takes each offer and keeps the table, its revision, and the setting `most_tools`; `Link` subscribes to it, writes each `Sheets` it is sent, with `Tools`'s revision, and asks it each call as `CallTool`, with the call's revision, within the call's time (ADR-0041); `Tools` refuses a call of a revision it has changed since.*
 
 ### The hub's `Engines`
 

@@ -31,8 +31,8 @@ pub struct Forwarding {
 ///
 /// Any actor may ask it to [`ListTools`], answered with every sheet as [`Sheets`], or [`Subscribe`], to be sent the
 /// `Sheets` as they stand and again after each change. A [`CallTool`] is asked of the worker that offered the tool,
-/// due when the call is (ADR-0041), and answered with what the worker answered: a tool it does not hold is refused at
-/// once, and a worker that does not answer is refused saying why.
+/// due when the call is (ADR-0041), and answered with what the worker answered: a call of a revision it has changed
+/// since, or of a tool it does not hold, is refused at once, and a worker that does not answer is refused saying why.
 ///
 /// It needs no hub. Where one is wanted, `Link` subscribes to it, writes each set to the hub, and asks it for each
 /// call the hub sends (ADR-0038).
@@ -179,9 +179,16 @@ impl Handles<CallTool> for Tools {
     type Sends = (ToSender<Called>, Asks<Tooling, Call, Forwarding>);
 
     /// Asks the call of the worker that offered the tool, holding it until the worker answers: the ask is made in this
-    /// turn, so it is due when the call is (ADR-0041). A tool it does not hold is refused at once.
+    /// turn, so it is due when the call is (ADR-0041). A call of a revision it has changed since is refused at once, in
+    /// the turn that looks the tool up, so no tool offered since is called with bytes written for another schema; and a
+    /// tool it does not hold is refused at once.
     fn handle(&mut self, call: CallTool, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let CallTool { tool, input } = call;
+        let CallTool { tool, revision, input } = call;
+        if revision != self.revision {
+            let changed = format!("the engine's tools have changed since revision {revision}: read them again");
+            turn.reply(&Called::Refused(changed))?;
+            return Ok(());
+        }
         let Some(held) = self.table.tool(&tool) else {
             turn.reply(&Called::Refused(format!("the engine holds no tool named {tool}")))?;
             return Ok(());

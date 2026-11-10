@@ -51,16 +51,6 @@ enum Line {
     Ended,
 }
 
-impl Set {
-    /// Whether the set last heard is the set of `revision`.
-    const fn is_of(&self, revision: u64) -> bool {
-        match self {
-            Self::Unheard => false,
-            Self::Heard(sheets) => sheets.revision == revision,
-        }
-    }
-}
-
 impl Line {
     /// Whether the connection open is the one read through the stream `number`.
     fn is_read_by(&self, number: Number) -> bool {
@@ -74,7 +64,7 @@ impl Line {
 /// What the root has heard of the engine's tools.
 #[derive(Debug, Plain)]
 enum Set {
-    /// `Tools` has not yet sent the set: none is written, and every call is refused.
+    /// `Tools` has not yet sent the set: none is written, so the hub converts no call.
     Unheard,
     /// The set `Tools` last sent.
     Heard(Sheets),
@@ -86,10 +76,10 @@ const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// The engine's end of the link (ADR-0038, ADR-0040, ADR-0053). It holds no tools: it [`Subscribe`]s to the engine's
 /// [`Tools`], listed before it, as it begins. It dials its hub once, as it begins, writes [`Up::Hello`] with the token
 /// its hub minted and then [`Up::Sheets`], the set `Tools` last sent with `Tools`'s revision, and writes the whole set
-/// again each time `Tools` sends it another. Each [`Down::Call`] of the set it last wrote is asked of `Tools` as a
-/// [`CallTool`] within the time the call has left, from when its frame is read, and its answer written back as
-/// [`Up::Called`]: a call not answered by then is written back refused (ADR-0041). A tool's offer never waits on the
-/// hub.
+/// again each time `Tools` sends it another. Each [`Down::Call`] is asked of `Tools` as a [`CallTool`] of the call's
+/// revision, which `Tools` refuses when its tools have changed since, within the time the call has left, from when its
+/// frame is read, and its answer written back as [`Up::Called`]: a call not answered by then is written back refused
+/// (ADR-0041). A tool's offer never waits on the hub.
 ///
 /// No engine outlives its link: when the dial comes to nothing, the connection ends, a frame from the hub does not
 /// read, or the hub refuses the engine, the root asks its program to stop (`turn.quit`, ADR-0020). Its token is spent,
@@ -239,7 +229,7 @@ impl Handles<Part<Reading>> for Link {
                     return self.answer(turn, call, unheld);
                 };
                 let due = within.due(turn.now());
-                self.call(turn, call, revision, due, &CallTool { tool, input })
+                self.call(turn, call, due, &CallTool { tool, revision, input })
             }
         }
     }
@@ -309,28 +299,16 @@ impl Handles<Answer<Called, Calling>> for Link {
 }
 
 impl Link {
-    /// The hub's call `call` of `revision`: refused when it is not the set last heard, and asked of `Tools`
-    /// otherwise, due as `due` says, so a tool that never answers is refused at the time the hub stops waiting
-    /// (ADR-0041). `Tools` refuses a tool it does not hold.
-    fn call<S, IW, IC>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        call: u64,
-        revision: u64,
-        due: Due,
-        asked: &CallTool,
-    ) -> Result<(), Fault>
+    /// The hub's call `call`, asked of `Tools` due as `due` says, so a tool that never answers is refused at the time
+    /// the hub stops waiting (ADR-0041). `Tools` refuses a call of a set it has changed since, in the turn it looks the
+    /// tool up, and a tool it does not hold.
+    fn call<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, call: u64, due: Due, asked: &CallTool) -> Result<(), Fault>
     where
-        S: Allows<Asks<Writing, Write, Sending>, IW> + Allows<Asks<Path<Tools>, CallTool, Calling>, IC>,
+        S: Allows<Asks<Path<Tools>, CallTool, Calling>, I>,
     {
-        let is_current = self.set.is_of(revision);
-        if !is_current {
-            let changed = Called::Refused(String::from("the engine's tools have changed: describe it again"));
-            return self.answer::<_, IW>(turn, call, changed);
-        }
         let number = self.next;
         self.next += 1;
-        turn.to(path::<Tools>(())).within(due).ask::<_, _, IC>(asked, &Calling { number })?;
+        turn.to(path::<Tools>(())).within(due).ask::<_, _, I>(asked, &Calling { number })?;
         self.calls.insert(number, call);
 
         Ok(())
