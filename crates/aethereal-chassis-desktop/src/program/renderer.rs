@@ -2,6 +2,7 @@
 //! surface configured for it, and what the desktop serves the renderer each frame (ADR-0019, ADR-0021, ADR-0029).
 
 use crate::Presenting;
+use crate::budgeting;
 use crate::gpu::{self, OnScreen, Unopened};
 use crate::running::Desktop;
 use crate::serving::{Drawing, Kept};
@@ -51,9 +52,10 @@ impl Bootstrap<Desktop> for Renderer {
             let surface = instance.create_surface(Arc::clone(&window.native)).map_err(Unopened::Surface)?;
             surfaced.push((window.clone(), surface));
         }
-        let (_, first) = surfaced.first().ok_or(Unopened::NoWindow)?;
+        let (first_window, first) = surfaced.first().ok_or(Unopened::NoWindow)?;
+        let budget = budgeting::budget(present, budgeting::refresh_of(&first_window.native));
         let (adapter, gpu) = gpu::opened_on(&instance, first)?;
-        let (front, fronting) = Front::new();
+        let (front, fronting) = Front::new(budget);
         let mut windows = Vec::with_capacity(surfaced.len());
         for (OnScreen { native, feed, mode }, surface) in surfaced {
             let config = gpu::configured(&adapter, &surface, &native, present)?;

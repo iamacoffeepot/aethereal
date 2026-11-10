@@ -12,6 +12,7 @@ use crate::layout::Layout;
 use crate::stop::Stop;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::mesh::{Attribute, VertexFormat, VertexLayout};
+use aethereal_render::stats::FrameBudget;
 use aethereal_render::text::Colour;
 
 /// The program that draws each record: the unit square's corner placed in the record's box, turned from the surface's
@@ -54,9 +55,17 @@ const MOST_DASHES: u32 = 1_000;
 /// drawn to it.
 const BUDGETS_TALL: f32 = 3.0;
 
-/// How long each dash of the budget line is, and the gap after it, in logical pixels.
+/// How long each dash of a budget line that is a limit is, and the gap after it, in logical pixels.
 const DASH_PIXELS: f32 = 6.0;
 const DASH_GAP_PIXELS: f32 = 4.0;
+
+/// How long each dash of a budget line that is a reference is, and the gap after it, in logical pixels: a lighter
+/// dash, so a budget the frames are not held to does not read as one they are (ADR-0053).
+const REFERENCE_DASH_PIXELS: f32 = 2.0;
+const REFERENCE_GAP_PIXELS: f32 = 6.0;
+
+/// How opaque a budget line that is a reference is drawn.
+const REFERENCE_OPACITY: f32 = 0.5;
 
 /// How thick the budget line is, in logical pixels.
 const LINE_PIXELS: f32 = 1.0;
@@ -111,8 +120,10 @@ pub fn column_count(layout: Layout) -> u32 {
 /// cut into and the two sliding off its left edge, and the dashes of the budget line.
 #[must_use]
 pub fn records_bytes(layout: Layout) -> usize {
-    let dashes =
-        (layout.chart().width() / (layout.line_pixels(DASH_PIXELS) + layout.line_pixels(DASH_GAP_PIXELS))).ceil();
+    // A reference's dashes are the closer, so the more.
+    let pitch = layout.line_pixels(REFERENCE_DASH_PIXELS.min(DASH_PIXELS))
+        + layout.line_pixels(REFERENCE_GAP_PIXELS.min(DASH_GAP_PIXELS));
+    let dashes = (layout.chart().width() / pitch).ceil();
     // A count of dashes is at most some thousands, which a u32 holds; a negative width holds none.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let dashes = (dashes.max(0.0) as u32).min(MOST_DASHES);
@@ -122,8 +133,9 @@ pub fn records_bytes(layout: Layout) -> usize {
 }
 
 /// Appends to `records` what the overlay draws at `stop` on `layout`: the band's panel, the console's beneath it when
-/// the stop shows it, each of `columns` from the chart's foot, shaded by its longest cycle against `budget_nanos`, and
-/// the dashed budget line. A record is appended as [`record_layout`] lays it out.
+/// the stop shows it, each of `columns` from the chart's foot, shaded by its longest cycle against `budget`, and the
+/// dashed budget line, stone, drawn lighter when the budget is a reference. A record is appended as [`record_layout`]
+/// lays it out.
 ///
 /// The newest column's span is at the chart's right edge, and each older one a column's pitch further left, all moved
 /// left by the share of a pitch `slide` has come through the newest span, so the chart slides smoothly left as the
@@ -135,8 +147,9 @@ pub fn records(
     stop: Stop,
     columns: impl IntoIterator<Item = Column>,
     slide: Slide,
-    budget_nanos: u64,
+    budget: FrameBudget,
 ) {
+    let budget_nanos = budget.nanos();
     let panel = SLATE.at(PANEL_OPACITY);
     push(records, layout.band(), panel);
     if stop.console() {
@@ -165,7 +178,11 @@ pub fn records(
 
     let line = layout.line_pixels(LINE_PIXELS);
     let budget_y = (chart.max.y - chart.height() / BUDGETS_TALL).round();
-    let (dash, gap) = (layout.line_pixels(DASH_PIXELS), layout.line_pixels(DASH_GAP_PIXELS));
+    let (dash, gap, colour) = match budget {
+        FrameBudget::Limit { .. } => (DASH_PIXELS, DASH_GAP_PIXELS, STONE.opaque()),
+        FrameBudget::Reference { .. } => (REFERENCE_DASH_PIXELS, REFERENCE_GAP_PIXELS, STONE.at(REFERENCE_OPACITY)),
+    };
+    let (dash, gap) = (layout.line_pixels(dash), layout.line_pixels(gap));
     let mut left = chart.min.x;
     for _ in 0..MOST_DASHES {
         let ends = left >= chart.max.x;
@@ -174,7 +191,7 @@ pub fn records(
         }
         let right = (left + dash).min(chart.max.x);
         let piece = Rect2 { min: Vec2::new(left, budget_y), max: Vec2::new(right, budget_y + line) };
-        push(records, piece, STONE.opaque());
+        push(records, piece, colour);
         left = right + gap;
     }
 }

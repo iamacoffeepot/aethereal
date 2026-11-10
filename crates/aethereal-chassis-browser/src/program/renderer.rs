@@ -3,6 +3,7 @@
 
 use super::unopened;
 use crate::gpu::{self, Opened};
+use crate::refresh::Refresh;
 use crate::serving::Drawing;
 use crate::{Browser, Performance};
 use aethereal_render::{Renderer, RendererConfig};
@@ -26,7 +27,7 @@ impl Bootstrap<Browser<Performance>> for Renderer {
         _: (InitialWindows,),
         cx: &mut Bootstrapping<'_, Browser<Performance>, Self>,
     ) -> Result<(), Unbuilt> {
-        let Opened { gpu, front, surfaces } = gpu::open(cx.host().canvases()).await.map_err(unopened)?;
+        let Opened { gpu, front, fronting, surfaces } = gpu::open(cx.host().canvases()).await.map_err(unopened)?;
 
         let windows = surfaces.iter().map(|surfaced| surfaced.surface.drawn()).collect();
         let (presenting, presents) = cx.controller();
@@ -35,7 +36,7 @@ impl Bootstrap<Browser<Performance>> for Renderer {
         let (mapped, feed) = cx.source();
         let (surfaced, _) = cx.source();
         cx.begin(&(), RendererConfig { gpu, front, presenting, windows, mapping, mapped, surfaced })?;
-        cx.serve(Drawing { surfaces, presents, requests, feed });
+        cx.serve(Drawing { surfaces, presents, requests, feed, fronting, refresh: Refresh::new() });
 
         Ok(())
     }

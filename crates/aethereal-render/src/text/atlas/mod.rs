@@ -32,6 +32,12 @@ pub struct Field {
 }
 
 impl Field {
+    /// The texels it covers.
+    #[must_use]
+    pub fn texels(self) -> u64 {
+        u64::from(self.width) * u64::from(self.height)
+    }
+
     /// Whether it has no texels: a space's, which is never packed.
     #[must_use]
     pub const fn is_empty(self) -> bool {
@@ -61,8 +67,47 @@ pub struct Atlas {
     side: u32,
     most: u32,
     shelves: Shelves,
-    slots: HashMap<GlyphKey, Slot>,
+    slots: Slots,
     packings: u64,
+}
+
+/// Where each glyph lies, by its key, and the texels their fields cover, counted as each is put in and taken out, so
+/// how full the atlas is is read without a walk (ADR-0053).
+#[derive(Debug, Default)]
+struct Slots {
+    held: HashMap<GlyphKey, Slot>,
+    used_texels: u64,
+}
+
+impl Slots {
+    fn get(&self, key: &GlyphKey) -> Option<&Slot> {
+        self.held.get(key)
+    }
+
+    fn contains_key(&self, key: &GlyphKey) -> bool {
+        self.held.contains_key(key)
+    }
+
+    /// Puts `key` at `slot`, in place of where it lay, if anywhere.
+    fn insert(&mut self, key: GlyphKey, slot: Slot) {
+        self.used_texels = self.used_texels.saturating_add(slot.field.texels());
+        if let Some(was) = self.held.insert(key, slot) {
+            self.used_texels = self.used_texels.saturating_sub(was.field.texels());
+        }
+    }
+
+    fn remove(&mut self, key: &GlyphKey) {
+        if let Some(was) = self.held.remove(key) {
+            self.used_texels = self.used_texels.saturating_sub(was.field.texels());
+        }
+    }
+
+    /// Takes every glyph out, each beside where it lay.
+    fn drain(&mut self) -> Vec<(GlyphKey, Slot)> {
+        self.used_texels = 0;
+
+        self.held.drain().collect()
+    }
 }
 
 /// How the texture is changed before the glyphs just added are written into it.
@@ -100,13 +145,25 @@ impl Atlas {
     pub fn new(most: u32) -> Self {
         let side = FIRST_SIDE.min(most);
 
-        Self { side, most, shelves: Shelves::new(side), slots: HashMap::new(), packings: 0 }
+        Self { side, most, shelves: Shelves::new(side), slots: Slots::default(), packings: 0 }
     }
 
     /// Its side, in texels.
     #[must_use]
     pub const fn side(&self) -> u32 {
         self.side
+    }
+
+    /// The longest side it may grow to, in texels.
+    #[must_use]
+    pub const fn most(&self) -> u32 {
+        self.most
+    }
+
+    /// The texels its glyphs' fields cover, without the gaps between them, counted as each is put in and taken out.
+    #[must_use]
+    pub const fn used_texels(&self) -> u64 {
+        self.slots.used_texels
     }
 
     /// How many times it has been packed again: a text laid into it at another count is laid into it again.
@@ -185,7 +242,7 @@ impl Atlas {
         self.side = self.most;
         self.shelves = Shelves::new(self.side);
         self.packings += 1;
-        let mut held: Vec<(GlyphKey, Slot)> = self.slots.drain().collect();
+        let mut held = self.slots.drain();
         let when = |key: &GlyphKey| drawn.get(key).copied().unwrap_or(0);
         // The most lately drawn first, and among those drawn together, in the keys' order, so packing is the same each
         // time.

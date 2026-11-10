@@ -1,16 +1,20 @@
 use super::{RECORD_BYTES, records};
-use crate::colour::{BRICK, LICHEN, PANEL_OPACITY, RUST, SLATE};
+use crate::colour::{BRICK, LICHEN, PANEL_OPACITY, RUST, SLATE, STONE};
 use crate::frames::{Column, Slide};
 use crate::layout::Layout;
 use crate::stop::Stop;
+use aethereal_render::stats::FrameBudget;
 use aethereal_render::text::Colour;
 use aethereal_window::Surface;
 
 /// A budget of 16.7 milliseconds, in nanoseconds.
 const BUDGET: u64 = 16_700_000;
 
+/// That budget, as a limit the frames are held to.
+const LIMIT: FrameBudget = FrameBudget::Limit { nanos: BUDGET };
+
 /// One record read back: its box, left, top, width, and height, and its colour.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Record {
     area: [f32; 4],
     colour: Colour,
@@ -45,8 +49,8 @@ fn columns_are_shaded_by_the_budget_and_held_to_the_chart() {
     let mut band = Vec::new();
     let mut console = Vec::new();
 
-    records(&mut band, layout, Stop::Band, columns, slide, BUDGET);
-    records(&mut console, layout, Stop::Console, columns, slide, BUDGET);
+    records(&mut band, layout, Stop::Band, columns, slide, LIMIT);
+    records(&mut console, layout, Stop::Console, columns, slide, LIMIT);
 
     let (band, console) = (read(&band), read(&console));
     assert_eq!(console.len(), band.len() + 1);
@@ -61,7 +65,7 @@ fn columns_are_shaded_by_the_budget_and_held_to_the_chart() {
 /// before the budget line's dashes.
 fn bars(layout: Layout, columns: &[Column], slide: Slide) -> Vec<[f32; 4]> {
     let mut bytes = Vec::new();
-    records(&mut bytes, layout, Stop::Band, columns.iter().copied(), slide, BUDGET);
+    records(&mut bytes, layout, Stop::Band, columns.iter().copied(), slide, LIMIT);
 
     read(&bytes)[1..=columns.len()].iter().map(|record| record.area).collect()
 }
@@ -89,4 +93,27 @@ fn columns_slide_left_through_their_span() {
     assert_eq!(before_early[0] - before_late[0], pitch / 4.0);
     assert_eq!((oldest_early[0], oldest_late[0]), (chart.min.x, chart.min.x));
     assert!(oldest_late[2] < oldest_early[2], "{oldest_late:?} does not slide off the left edge past {oldest_early:?}");
+}
+
+/// A budget that is a reference is drawn in a lighter dash than a limit, stone at half its opacity and sparser, at the
+/// same height, so a budget the frames are not held to does not read as one they are; and its closer dashes fit in the
+/// room the records are given.
+#[test]
+fn a_reference_budget_is_drawn_lighter_than_a_limit_at_the_same_height() {
+    let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
+    let slide = Slide { newest: 0, through: 0.0 };
+    let line = |budget| {
+        let mut bytes = Vec::new();
+        records(&mut bytes, layout, Stop::Band, [], slide, budget);
+        assert!(bytes.len() <= super::records_bytes(layout), "{budget:?} overflows its room");
+        read(&bytes)[1..].to_vec()
+    };
+
+    let limit = line(LIMIT);
+    let reference = line(FrameBudget::Reference { nanos: BUDGET });
+
+    assert!(limit.iter().all(|dash| dash.colour == STONE.opaque()));
+    assert!(reference.iter().all(|dash| dash.colour == STONE.at(0.5)));
+    assert_eq!(limit[0].area[1], reference[0].area[1]);
+    assert!(reference[0].area[2] < limit[0].area[2], "a reference's dashes are shorter");
 }

@@ -2,7 +2,7 @@
 //! and console, and hidden again. The backdrop is one triangle over the whole window, so the overlay's panels show
 //! what is behind them. The engine hands the hub the tools the `linked_window` example hands it, among them
 //! `capture_frame`, which shows the agent what the window draws (ADR-0043), and `send_input`, which presses the
-//! backtick for it (ADR-0046).
+//! backtick for it (ADR-0046), and `render_stats`, which reads the renderer's frame statistics (ADR-0053).
 //!
 //! With a hub from the headless `link_hub` example running, ask its `mint_token` tool for a token, which answers the
 //! arguments to start this engine with, then run `cargo run --release -p aethereal-overlay --example overlay -- <those
@@ -21,7 +21,7 @@ use aethereal_files::Files;
 use aethereal_link::{Link, LinkSettings};
 use aethereal_overlay::Overlay;
 use aethereal_pace::{PaceTool, Pacer};
-use aethereal_render::{CaptureTool, RecordTool, Renderer, TargetTool};
+use aethereal_render::{CaptureTool, RecordTool, Renderer, StatsTool, TargetTool};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{LogsTool, Toolbox, Tools};
@@ -87,7 +87,10 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root::<Tcp>()
         .root::<Tools>()
         .root_with::<Link>(link)
-        .root::<Toolbox<(CaptureTool, RecordTool, TargetTool, LogsTool, InputTool, WindowTool, PaceTool), Tools>>()
+        .root::<Toolbox<
+            (CaptureTool, RecordTool, TargetTool, StatsTool, LogsTool, InputTool, WindowTool, PaceTool),
+            Tools,
+        >>()
         .flags(|flags| {
             flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE).flag(
                 "title",

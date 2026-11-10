@@ -121,7 +121,7 @@ fn drawn_into(kept: &mut Kept, gpu: Opened<'_>, frame: &wgpu::Texture) -> wgpu::
     assert!(kept.ready_texts(gpu).is_none(), "every glyph is in the atlas");
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let windows = [(window(), frame.create_view(&wgpu::TextureViewDescriptor::default()))];
-    kept.run_all(&mut encoder, &windows, None);
+    kept.run_all(&mut encoder, &windows, None, &mut Tally::Off);
 
     encoder
 }

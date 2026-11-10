@@ -2,6 +2,7 @@
 //! does.
 
 pub(super) mod lists;
+mod told;
 
 use super::*;
 use crate::asked::blob;
@@ -152,7 +153,7 @@ fn an_effect_binding_a_sampler_none_has_made_is_made_and_drawn() {
     assert!(matches!(framed, Ok(Framed::Texture { .. })), "the frame is refused: {framed:?}");
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    kept.run_all(&mut encoder, &surface(&device), None);
+    kept.run_all(&mut encoder, &surface(&device), None, &mut Tally::Off);
     queue.submit([encoder.finish()]);
 }
 
@@ -161,7 +162,7 @@ fn an_effect_binding_a_sampler_none_has_made_is_made_and_drawn() {
 fn drawn_at(device: &wgpu::Device, queue: &wgpu::Queue, kept: &mut Kept, (width, height): (u32, u32)) {
     kept.fit(device, window(), Size { width, height });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    kept.run_all(&mut encoder, &surface_of(device, width, height), None);
+    kept.run_all(&mut encoder, &surface_of(device, width, height), None, &mut Tally::Off);
     queue.submit([encoder.finish()]);
 }
 
@@ -269,7 +270,7 @@ fn a_frame_begun_by_an_effect_that_reads_nothing_is_made_and_drawn_from_black() 
     assert_eq!(loads, vec![Load::Clear]);
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    kept.run_all(&mut encoder, &surface(&device), None);
+    kept.run_all(&mut encoder, &surface(&device), None, &mut Tally::Off);
     queue.submit([encoder.finish()]);
 }
 
@@ -368,7 +369,7 @@ fn a_frame_ending_in_floats_is_sampled_by_another_frame_s_effect_and_read_back_i
     assert!(matches!(framed, Ok(Framed::Texture { .. })), "the frame is refused: {framed:?}");
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    kept.run_all(&mut encoder, &surface(&device), None);
+    kept.run_all(&mut encoder, &surface(&device), None, &mut Tally::Off);
     let Some(glowed) = kept.textures.get(texture.id) else {
         panic!("the texture the frame ends on is kept");
     };
@@ -585,7 +586,7 @@ fn a_frame_that_ends_on_one_window_is_that_windows_main_frame_alone_and_drawn_on
     let handed = [(second, view)];
     assert_eq!(kept.passes(&handed), 1, "only the second window's main frame runs");
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    kept.run_all(&mut encoder, &handed, None);
+    kept.run_all(&mut encoder, &handed, None, &mut Tally::Off);
     queue.submit([encoder.finish()]);
 }
 

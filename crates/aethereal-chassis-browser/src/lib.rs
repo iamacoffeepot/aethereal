@@ -57,6 +57,13 @@ mod jobs;
 mod listening;
 #[cfg(target_arch = "wasm32")]
 mod program;
+// A native build compiles the frame loop alone, whose renderer's end holds what measures the refresh; only the
+// page's renderer bootstrap makes one.
+#[cfg_attr(
+    not(any(target_arch = "wasm32", test)),
+    expect(dead_code, reason = "made only by the page's renderer bootstrap")
+)]
+mod refresh;
 mod serving;
 #[cfg(test)]
 mod tests;
@@ -120,7 +127,8 @@ impl<C: Clock> Browser<C> {
     }
 
     /// Runs one frame, for the page's `requestAnimationFrame`, whose callback is handed the frame's timestamp,
-    /// `timestamp_millis`, in milliseconds since the page opened. First it hands the renderer each canvas's frame,
+    /// `timestamp_millis`, in milliseconds since the page opened. First it measures the display's refresh from the
+    /// frames' intervals, for the renderer's frame budget (ADR-0053), then it hands the renderer each canvas's frame,
     /// its surface configured to the size its window was last resized to. Then it says a cycle is due at that time,
     /// so `Tick`'s delta is the time between the display's frames however long each frame's work took, and brings in
     /// what its sources were pushed and its jobs finished and steps, until no actor has anything to run (ADR-0010,
@@ -139,6 +147,7 @@ impl<C: Clock> Browser<C> {
     /// Panics with a turn's panic, and when a turn makes an actor under an id the table already holds (ADR-0008).
     pub fn frame(&mut self, timestamp_millis: f64) {
         let at = frame_time(timestamp_millis);
+        self.serving.measure(at);
         // The page draws on and on, so a clock set running needs no frame asked for.
         let _ = self.clockwork.take(&mut self.engine, at);
         let runs = self.clockwork.runs();

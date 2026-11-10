@@ -98,13 +98,20 @@ impl Stage for Tick {
     }
 }
 
-/// The stage in which actors draw what they hold, after `Tick`.
+/// The stage in which actors draw what they hold, after `Tick`: the time elapsed, as the cycle's `Tick` has it, so what
+/// is told of a frame drawn lines up with the cycle that drew it (ADR-0020, ADR-0053).
 #[derive(Plain, Default)]
 #[kind(name = "aether.lifecycle.render")]
-pub struct Render;
+pub struct Render {
+    pub elapsed_nanos: u64,
+}
 
 impl Stage for Render {
     type Place = Self;
+
+    fn made(time: Cycled) -> Self {
+        Self { elapsed_nanos: time.elapsed_nanos }
+    }
 }
 
 /// The stage in which what was drawn is shown, after `Render`.
