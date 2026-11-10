@@ -159,8 +159,8 @@ impl Tool for StatsTool {
              memory of what the renderer made, by meshes, textures, render targets, buffers, and the glyph atlas; how \
              many meshes, textures, programs, placements, and texts are alive; how full the glyph atlas is; and the \
              adapter it draws on. Unless gpu_times is false, it also waits for the GPU's time over each pass of a \
-             frame drawn since the call, a frame or more later, each beside its frame and its pass's name, a pass \
-             named by its type's id; Unsupported on a device without timestamps. Nothing is answered while the clock \
+             frame drawn since the call, a frame or more later, each beside its frame, its pass's type id, and its \
+             label, the name of the pass's kind (aether.render.main); Unsupported on a device without timestamps. Nothing is answered while the clock \
              is held and no frame is drawn.",
             Output::Value(SchemaNodes::of(&RenderStats::SHAPE)),
         )]

@@ -36,8 +36,8 @@ use crate::readback::{
 };
 use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
 use crate::stats::{
-    self, DescribeGpu, FrameStats, GpuDescribed, GpuMemory, GpuTimes, SubscribeFrameStats, SubscribeGpuTimes, Tally,
-    UnsubscribeFrameStats, UnsubscribeGpuTimes,
+    self, DescribeGpu, FrameStats, GpuDescribed, GpuMemory, GpuTimes, Ran, SubscribeFrameStats, SubscribeGpuTimes,
+    Tally, UnsubscribeFrameStats, UnsubscribeGpuTimes,
 };
 use crate::storage::{self, CreateStorage, CreateZeroedStorage, StorageId, Stored, WriteStorage};
 use crate::surface::{Front, Present, Surfaced, WindowFormat};
@@ -541,7 +541,7 @@ enum Reading {
 /// them each beside its frame and its pass's name, of the cycle at `elapsed_nanos` (ADR-0053).
 enum Named {
     Unnamed,
-    Named { elapsed_nanos: u64, passes: Vec<(Frame, PassName)> },
+    Named { elapsed_nanos: u64, passes: Vec<Ran> },
 }
 
 /// A program on the GPU: its pipeline, with what its stages read, what it binds, the layout of each group it binds in,
@@ -1047,7 +1047,7 @@ impl Handles<Mapped> for Renderer {
             Reading::Stamps { buffer, period, named } => {
                 let passes = ready.then(|| mapped_bytes(&buffer, |bytes| timing::passes(bytes, period))).flatten();
                 if let (Some(nanos), Named::Named { elapsed_nanos, passes: names }) = (&passes, named) {
-                    let times = GpuTimes::Took { elapsed_nanos, passes: stats::named(&names, nanos) };
+                    let times = GpuTimes::Took { elapsed_nanos, passes: stats::named(names, nanos) };
                     turn.to(&self.timed).send(&times)?;
                 }
                 let answer = passes.map_or(Timed::Refused(TimingRefused::Unmapped), |passes| Timed::Took { passes });
@@ -2312,8 +2312,12 @@ impl Kept {
 
     /// Each pass a `Render` that draws into `windows` runs, beside its frame, in the order it runs them, which is the
     /// order they write their timestamps in (ADR-0053).
-    fn pass_names(&self, windows: &[(WindowId, wgpu::TextureView)]) -> Vec<(Frame, PassName)> {
-        self.ran(windows).flat_map(|(frame, walk)| walk.steps().map(move |(pass, _)| (frame, pass))).collect()
+    fn pass_names(&self, windows: &[(WindowId, wgpu::TextureView)]) -> Vec<Ran> {
+        self.ran(windows)
+            .flat_map(|(frame, walk)| {
+                walk.specs().iter().map(move |spec| Ran { frame, pass: spec.name, label: spec.label.clone() })
+            })
+            .collect()
     }
 
     /// Records every frame on `encoder` in the order it runs them, a frame that ends on a window drawing into that

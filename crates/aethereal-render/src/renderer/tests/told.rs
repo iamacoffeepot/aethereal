@@ -7,10 +7,12 @@ use super::*;
 
 /// A frame onto a texture 4 by 4 of `Rgba8`, of one pass, [`Main`], drawing with no depth.
 fn onto_texture() -> CreateFrame {
-    let main = PassSpec {
-        name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::End, depth: DepthUse::Off, load: Load::Clear, reads: Vec::new() },
-    };
+    let main = PassSpec::of::<Main>(Does::Draw {
+        into: Target::End,
+        depth: DepthUse::Off,
+        load: Load::Clear,
+        reads: Vec::new(),
+    });
 
     CreateFrame {
         ends: Ends::Texture { size: Size { width: 4, height: 4 }, format: TextureFormat::Rgba8 },
@@ -36,11 +38,12 @@ fn passes_are_named_in_the_order_they_write_their_timestamps() {
     let names = kept.pass_names(&windows);
 
     let main = Frame::Main(window());
+    let ran = |frame, pass, label: &str| Ran { frame, pass, label: String::from(label) };
     let expected = [
-        (Frame::Texture(frame), PassName::of::<Main>()),
-        (main, PassName::of::<Main>()),
-        (main, PassName::of::<Rims>()),
-        (main, PassName::of::<Composite>()),
+        ran(Frame::Texture(frame), PassName::of::<Main>(), "aether.render.main"),
+        ran(main, PassName::of::<Main>(), "aether.render.main"),
+        ran(main, PassName::of::<Rims>(), "aether.test.rims"),
+        ran(main, PassName::of::<Composite>(), "aether.test.composite"),
     ];
     assert_eq!(names, expected);
     assert_eq!(names.len(), kept.passes(&windows) as usize);
@@ -114,10 +117,12 @@ fn totals(kept: &Kept) -> (GpuMemory, stats::Alive) {
 /// A frame that follows the window at half its width and its whole height, ending on a texture of `Rgba8`, drawing
 /// with a depth of its own.
 fn following() -> CreateFrame {
-    let main = PassSpec {
-        name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::End, depth: DepthUse::Write(0), load: Load::Clear, reads: Vec::new() },
-    };
+    let main = PassSpec::of::<Main>(Does::Draw {
+        into: Target::End,
+        depth: DepthUse::Write(0),
+        load: Load::Clear,
+        reads: Vec::new(),
+    });
 
     CreateFrame {
         ends: Ends::Follows { window: window(), width: Scale::Half, height: Scale::Full, format: TextureFormat::Rgba8 },

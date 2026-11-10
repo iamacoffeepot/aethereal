@@ -147,12 +147,29 @@ impl TargetSpec {
     }
 }
 
-/// One pass of a frame: its name, which placements join it by, and what it does.
+/// One pass of a frame: its name, which placements join it by; its label, the name of its type's kind, which its GPU
+/// time is told under (ADR-0053); and what it does.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.pass_spec")]
 pub struct PassSpec {
     pub name: PassName,
+    pub label: String,
     pub does: Does,
+}
+
+impl PassSpec {
+    /// The pass `P`, named and labelled by its type, doing as `does` says.
+    #[must_use]
+    pub fn of<P: Pass>(does: Does) -> Self {
+        Self { name: PassName::of::<P>(), label: String::from(P::NAME.as_str()), does }
+    }
+
+    /// Whether `other` has its name or its label: a placement could not tell them apart, nor a person their times.
+    pub(crate) fn repeats(&self, other: &Self) -> bool {
+        let named = self.name == other.name;
+        let labelled = self.label == other.label;
+        named || labelled
+    }
 }
 
 /// What a pass does.
@@ -232,7 +249,7 @@ pub enum FrameRefused {
     Size { width: u32, height: u32, most: u32 },
     /// It has no passes.
     Empty,
-    /// The pass at `pass`, counted from zero, has the name of an earlier pass.
+    /// The pass at `pass`, counted from zero, has the name or the label of an earlier pass.
     Repeated { pass: u32 },
     /// Its last pass does not write its end.
     Unended,
@@ -280,11 +297,13 @@ impl CreateFrame {
     /// pass was (ADR-0026).
     #[must_use]
     pub fn own(window: WindowId) -> Self {
-        let compute = PassSpec { name: PassName::of::<Compute>(), does: Does::Compute };
-        let main = PassSpec {
-            name: PassName::of::<Main>(),
-            does: Does::Draw { into: Target::End, depth: DepthUse::Write(0), load: Load::Clear, reads: Vec::new() },
-        };
+        let compute = PassSpec::of::<Compute>(Does::Compute);
+        let main = PassSpec::of::<Main>(Does::Draw {
+            into: Target::End,
+            depth: DepthUse::Write(0),
+            load: Load::Clear,
+            reads: Vec::new(),
+        });
 
         let depth = TargetSpec { kind: TargetKind::Depth, scale: Scale::Full, samples: Samples::One };
 
@@ -374,7 +393,7 @@ pub(crate) fn check(create: &CreateFrame, kept: &impl Holds) -> Result<(), Frame
 
     let mut written = Written { end: false, targets: vec![false; create.targets.len()] };
     for (pass, at) in create.passes.iter().zip(0..) {
-        let repeated = create.passes[..at as usize].iter().any(|before| before.name == pass.name);
+        let repeated = create.passes[..at as usize].iter().any(|before| before.repeats(pass));
         if repeated {
             return Err(FrameRefused::Repeated { pass: at });
         }
