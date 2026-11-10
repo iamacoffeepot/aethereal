@@ -103,27 +103,42 @@ fn tuned() -> Result<Harness<Bench>, Unheard> {
     Harness::bare(engine)
 }
 
-/// Calls `tool` with `input`, and answers what it answered: its value, or why it refused.
-fn call<K: Plain>(harness: &mut Harness<Bench>, tool: &str, input: &K) -> Result<Result<ActorTuning, String>, Unheard> {
+/// Calls `tool` with `input`, and answers what it answered, read as an `O`: its value, or why it refused.
+fn call<K: Plain, O: Plain>(harness: &mut Harness<Bench>, tool: &str, input: &K) -> Result<Result<O, String>, Unheard> {
     let input = harness.put(to_bytes(input)?)?;
     let worker = Tuner::worker(harness.root::<Tuner>());
     let asked = harness.ask(worker, &Call { tool: String::from(tool), input })?;
     let called = match harness.answer(asked)? {
         Answered::Yes(Called::Output(output)) => {
             let bytes = harness.read(&output).map(<[u8]>::to_vec).unwrap_or_default();
-            let read = from_bytes::<ActorTuning>(&bytes, &mut Budget::new(JSON_BYTES));
-            let listed = from_bytes::<TuningList>(&bytes, &mut Budget::new(JSON_BYTES));
-            match (read, listed) {
-                (Ok(about), _) => Ok(about),
-                (_, Ok(TuningList { mut actors })) if actors.len() == 1 => Ok(actors.remove(0)),
-                _ => Err(String::from("not an answer the tool gives")),
-            }
+            from_bytes::<O>(&bytes, &mut Budget::new(JSON_BYTES))
+                .map_err(|_| String::from("not an answer the tool gives"))
         }
         Answered::Yes(Called::Refused(why)) => Err(why),
         Answered::Yes(Called::Image { .. }) | Answered::No(_) => Err(String::from("not an answer the tool gives")),
     };
 
     Ok(called)
+}
+
+/// The dial's tuning as `list_tuning` answers it, the one root listed.
+fn listed(harness: &mut Harness<Bench>) -> Result<Result<ActorTuning, String>, Unheard> {
+    let list = call::<_, TuningList>(harness, "list_tuning", &ListTuning)?;
+    let one = list.and_then(|TuningList { mut actors }| match actors.len() {
+        1 => Ok(actors.remove(0)),
+        _ => Err(String::from("not one root listed")),
+    });
+
+    Ok(one)
+}
+
+/// What `tune` answers on the dial: `values`, JSON, the fields it set.
+fn set(values: &str) -> FieldsSet {
+    let Ok(values) = Json::parse(values, &mut Budget::new(INPUT_BYTES)) else {
+        panic!("the test's values are JSON");
+    };
+
+    FieldsSet { actor: path::<Dial>(()).names().clone(), values }
 }
 
 /// What `tune` is given to set `values`, JSON, on the dial.
@@ -163,20 +178,21 @@ fn a_listed_root_s_tuning_is_answered_as_json_with_its_schema_and_each_field_s_d
     // list answered before the root has answered.
     let mut harness = tuned()?;
     let gain = DialTuning { level: 3, name: String::from("gain"), marks: vec![0, 5, 10] };
-    assert_eq!(call(&mut harness, "list_tuning", &ListTuning)?, Ok(standing(&gain)));
+    assert_eq!(listed(&mut harness)?, Ok(standing(&gain)));
 
     Ok(())
 }
 
 #[test]
-fn tune_sets_only_the_fields_it_is_given_and_answers_the_tuning_as_it_then_stands() -> Result<(), Unheard> {
+fn tune_sets_only_the_fields_it_is_given_and_answers_only_those_as_they_then_stand() -> Result<(), Unheard> {
     // Catches the fields left out reset to their defaults or dropped, a field given not replacing what stood, a list
-    // given as a value written wrong as it is laid over, and the answer read before the tuning was taken.
+    // given as a value written wrong as it is laid over, the answer read before the tuning was taken, and the answer
+    // holding a field it did not set, or the fields in another order than the tuning's.
     let mut harness = tuned()?;
-    let set = call(&mut harness, "tune", &tune(r#"{"level": 7, "marks": [1, 2]}"#))?;
+    let answered = call::<_, FieldsSet>(&mut harness, "tune", &tune(r#"{"marks": [1, 2], "level": 7}"#))?;
+    assert_eq!(answered, Ok(set(r#"{"level":7,"marks":[1,2]}"#)));
     let tuned = DialTuning { level: 7, name: String::from("gain"), marks: vec![1, 2] };
-    assert_eq!(set, Ok(standing(&tuned)));
-    assert_eq!(call(&mut harness, "list_tuning", &ListTuning)?, Ok(standing(&tuned)));
+    assert_eq!(listed(&mut harness)?, Ok(standing(&tuned)));
 
     Ok(())
 }
@@ -186,17 +202,18 @@ fn a_tune_the_schema_or_the_actor_refuses_leaves_the_tuning_as_it_stood() -> Res
     // Catches a field the tuning has not, a value of the wrong shape, or a value the actor refuses being taken in
     // part, and a tune of an actor the tool does not list being sent anywhere.
     let mut harness = tuned()?;
-    let unknown = call(&mut harness, "tune", &tune(r#"{"volume": 2}"#))?;
+    let unknown = call::<_, FieldsSet>(&mut harness, "tune", &tune(r#"{"volume": 2}"#))?;
     assert!(unknown.is_err_and(|why| why.contains("volume")));
-    let shaped = call(&mut harness, "tune", &tune(r#"{"level": "high"}"#))?;
+    let shaped = call::<_, FieldsSet>(&mut harness, "tune", &tune(r#"{"level": "high"}"#))?;
     assert!(shaped.is_err_and(|why| why.contains("level")));
-    let past = call(&mut harness, "tune", &tune(r#"{"level": 11, "name": "loud"}"#))?;
+    let past = call::<_, FieldsSet>(&mut harness, "tune", &tune(r#"{"level": 11, "name": "loud"}"#))?;
     assert_eq!(past, Err(String::from("`level` is at most 10")));
     let elsewhere = TuneFields { actor: ActorPath::new("aether.test.knob"), ..tune("{}") };
-    assert!(call(&mut harness, "tune", &elsewhere)?.is_err_and(|why| why.contains("aether.test.dial")));
+    let refused = call::<_, FieldsSet>(&mut harness, "tune", &elsewhere)?;
+    assert!(refused.is_err_and(|why| why.contains("aether.test.dial")));
 
     let gain = DialTuning { level: 3, name: String::from("gain"), marks: vec![0, 5, 10] };
-    assert_eq!(call(&mut harness, "list_tuning", &ListTuning)?, Ok(standing(&gain)));
+    assert_eq!(listed(&mut harness)?, Ok(standing(&gain)));
 
     Ok(())
 }

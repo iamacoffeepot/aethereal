@@ -16,7 +16,7 @@ use aethereal_data::{
     KindName, Plain, Reader, Schema, SchemaNodes, Shape, Writer, from_bytes, from_json, json_schema, to_bytes, to_json,
 };
 use core::marker::PhantomData;
-use overlay::{Unlaid, overlay};
+use overlay::{Unlaid, named, overlay, picked};
 use std::collections::BTreeMap;
 
 /// The most bytes reading an input may take: an actor's path, and the fields to set.
@@ -45,6 +45,15 @@ pub struct ActorTuning {
     pub values: Json,
     pub schema: Json,
     pub fields: Vec<About>,
+}
+
+/// What a `tune` answers: the actor, and only the fields it set, as the actor's tuning then holds them, an object
+/// of them.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.tuning.fields_set")]
+pub struct FieldsSet {
+    pub actor: ActorPath,
+    pub values: Json,
 }
 
 /// A field of a tuning, and its doc comment.
@@ -137,12 +146,14 @@ pub enum Reading {
     Tuning { call: u64, at: u32, values: Json },
 }
 
-/// What the tool keeps for a tuning sent whole: the call it is for, and the root's place in the list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+/// What the tool keeps for a tuning sent whole: the call it is for, the root's place in the list, and the names of
+/// the fields the `tune` set, which it answers.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.tuning.setting")]
 pub struct Setting {
     call: u64,
     at: u32,
+    names: Vec<String>,
 }
 
 /// What the tool is made from: nothing, as its list is its type.
@@ -252,9 +263,10 @@ impl<L: TunableList> Tool for TuningTool<L> {
                 "tune",
                 "Sets fields of one actor's tuning. `values` is an object of the fields to set, each replaced whole \
                  by the value given and every other kept, checked against the tuning's schema before anything is \
-                 sent. The actor may refuse a value past what it can take, saying why. Answers its tuning as it then \
-                 stands, as `list_tuning` answers it. The next frame drawn is drawn with it.",
-                Output::Value(SchemaNodes::of(&ActorTuning::SHAPE)),
+                 sent. The actor may refuse a value past what it can take, saying why. Answers only the fields it \
+                 set, as the actor then holds them; `list_tuning` reads the whole tuning. The next frame drawn is \
+                 drawn with it.",
+                Output::Value(SchemaNodes::of(&FieldsSet::SHAPE)),
             ),
         ]
     }
@@ -331,26 +343,26 @@ impl<L: TunableList> Handles<Answer<Tuning, Reading>> for TuningTool<L> {
     ) -> Result<(), Fault> {
         match reading {
             Reading::Listing { call, at } => self.listing(call, at, answered, turn),
-            Reading::Tuning { call, at, values } => self.tuning(Setting { call, at }, answered, &values, turn),
+            Reading::Tuning { call, at, values } => self.tuning(call, at, answered, &values, turn),
         }
     }
 }
 
-/// A tuning sent whole was taken, or refused: the `tune` is answered with the tuning as it stands, or why.
+/// A tuning sent whole was taken, or refused: the `tune` is answered with the fields it set as they stand, or why.
 impl<L: TunableList> Handles<Answer<Tuned, Setting>> for TuningTool<L> {
     type Sends = Sends;
 
     fn handle(
         &mut self,
-        (answered, Setting { call, at }): (Answered<Tuned>, Setting),
+        (answered, Setting { call, at, names }): (Answered<Tuned>, Setting),
         turn: &mut Turn<'_, Self, Sends>,
     ) -> Result<(), Fault> {
         let Some(pending) = self.calls.pending.remove(&call) else {
             return Ok(());
         };
         let called = match answered {
-            Answered::Yes(Tuned::Tuned(tuning)) => match about::<L>(at, turn.read(&tuning.bytes)) {
-                Ok(about) => Called::output(turn, to_bytes(&about)?),
+            Answered::Yes(Tuned::Tuned(tuning)) => match set::<L>(at, turn.read(&tuning.bytes), &names) {
+                Ok(set) => Called::output(turn, to_bytes(&set)?),
                 Err(why) => Called::Refused(why),
             },
             Answered::Yes(Tuned::Refused(why)) => Called::Refused(why),
@@ -395,34 +407,35 @@ impl<L: TunableList> TuningTool<L> {
         Ok(())
     }
 
-    /// Lays `values` over the root at `at`'s tuning, as read, and sends it back whole: the `tune` is refused when what
-    /// it sets is not of the tuning's schema.
+    /// Lays `values` over the root at `at`'s tuning, as read, and sends it back whole: the `tune` `call` is refused
+    /// when what it sets is not of the tuning's schema.
     fn tuning(
         &mut self,
-        setting: Setting,
+        call: u64,
+        at: u32,
         answered: Answered<Tuning>,
         values: &Json,
         turn: &mut Turn<'_, Self, Sends>,
     ) -> Result<(), Fault> {
         let Answered::Yes(tuning) = answered else {
-            return self.refused(setting.call, format!("the actor did not answer: {answered:?}"), turn);
+            return self.refused(call, format!("the actor did not answer: {answered:?}"), turn);
         };
         let listed = L::listed();
-        let Some(listed) = listed.get(setting.at as usize) else {
+        let Some(listed) = listed.get(at as usize) else {
             return Ok(());
         };
         let laid = laid(&listed.schema, turn.read(&tuning.bytes), values);
-        let bytes = match laid {
-            Ok(bytes) => bytes,
-            Err(why) => return self.refused(setting.call, why, turn),
+        let (bytes, names) = match laid {
+            Ok(laid) => laid,
+            Err(why) => return self.refused(call, why, turn),
         };
-        let Some(tuned) = L::found(turn, setting.at as usize) else {
-            return self.refused(setting.call, format!("`{}` is not live", listed.actor), turn);
+        let Some(tuned) = L::found(turn, at as usize) else {
+            return self.refused(call, format!("`{}` is not live", listed.actor), turn);
         };
         let Ok(bytes) = turn.put(bytes) else {
-            return self.refused(setting.call, String::from("the engine had no room to hold the tuning"), turn);
+            return self.refused(call, String::from("the engine had no room to hold the tuning"), turn);
         };
-        turn.to(tuned).ask(&Tune { bytes }, &setting)?;
+        turn.to(tuned).ask(&Tune { bytes }, &Setting { call, at, names })?;
 
         Ok(())
     }
@@ -439,8 +452,9 @@ impl<L: TunableList> TuningTool<L> {
 }
 
 /// The bytes of the tuning of `schema` whose bytes are `bytes`, with each field `values` names set to the value
-/// given there: why not, for the agent to read, when `values` is not an object of fields of the tuning's schema.
-fn laid(schema: &SchemaNodes, bytes: &[u8], values: &Json) -> Result<Vec<u8>, String> {
+/// given there, and the names of those fields: why not, for the agent to read, when `values` is not an object of
+/// fields of the tuning's schema.
+fn laid(schema: &SchemaNodes, bytes: &[u8], values: &Json) -> Result<(Vec<u8>, Vec<String>), String> {
     let mut budget = Budget::new(JSON_BYTES);
     let standing = to_json(schema, bytes, &mut budget).map_err(|why| format!("the tuning was not read: {why}"))?;
     let laid = overlay(&standing, values.as_str(), &mut budget).map_err(|why| match why {
@@ -448,7 +462,28 @@ fn laid(schema: &SchemaNodes, bytes: &[u8], values: &Json) -> Result<Vec<u8>, St
         Unlaid::NotFields => String::from("`values` is an object of the fields to set"),
     })?;
 
-    from_json(schema, &laid, &mut budget).map_err(|why| format!("`values` is not of the tuning's schema: {why}"))
+    let bytes = from_json(schema, &laid, &mut budget)
+        .map_err(|why| format!("`values` is not of the tuning's schema: {why}"))?;
+    let names =
+        named(values.as_str(), &mut budget).map_err(|_| String::from("`values` is an object of the fields to set"))?;
+
+    Ok((bytes, names))
+}
+
+/// The fields `names` names of the tuning of the root at `at` of `L`, whose bytes are `bytes`, as the actor then
+/// holds them: why not, when it is not of the root's tuning.
+fn set<L: TunableList>(at: u32, bytes: &[u8], names: &[String]) -> Result<FieldsSet, String> {
+    let listed = L::listed();
+    let Some(listed) = listed.get(at as usize) else {
+        return Err(String::from("the tool lists no root there"));
+    };
+    let mut budget = Budget::new(JSON_BYTES);
+    let standing =
+        to_json(&listed.schema, bytes, &mut budget).map_err(|why| format!("the tuning was not read: {why}"))?;
+    let picked = picked(&standing, names, &mut budget).map_err(|_| String::from("the tuning was not an object"))?;
+    let values = Json::parse(picked, &mut budget).map_err(|why| format!("the tuning was not read: {why}"))?;
+
+    Ok(FieldsSet { actor: listed.actor.clone(), values })
 }
 
 /// The tuning of the root at `at` of `L`, whose bytes are `bytes`, as the agent reads it: why not, when it is not
