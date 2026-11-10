@@ -21,12 +21,13 @@ fn each_pass_s_time_is_told_beside_its_own_frame_and_name() {
     // Catches a pass's time paired with the pass before or after it, and a time told for a pass that did not run
     // when fewer times were mapped back than passes were named.
     let texture = Frame::Texture(FrameId { id: 7 });
-    let names = [(texture, PassName::of::<Compute>()), (texture, PassName::of::<Main>())];
+    let ran = |pass, label: &str| Ran { frame: texture, pass, label: String::from(label) };
+    let names = || vec![ran(PassName::of::<Compute>(), "compute"), ran(PassName::of::<Main>(), "main")];
 
-    let told = named(&names, &[30, 70]);
-    let short = named(&names, &[30]);
+    let told = named(names(), &[30, 70]);
+    let short = named(names(), &[30]);
 
-    let pass = |frame, pass, nanos| PassTime { frame, pass, nanos };
-    assert_eq!(told, [pass(texture, PassName::of::<Compute>(), 30), pass(texture, PassName::of::<Main>(), 70)]);
-    assert_eq!(short, [pass(texture, PassName::of::<Compute>(), 30)]);
+    let pass = |pass, label: &str, nanos| PassTime { frame: texture, pass, label: String::from(label), nanos };
+    assert_eq!(told, [pass(PassName::of::<Compute>(), "compute", 30), pass(PassName::of::<Main>(), "main", 70)]);
+    assert_eq!(short, [pass(PassName::of::<Compute>(), "compute", 30)]);
 }

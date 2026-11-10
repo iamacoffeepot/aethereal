@@ -129,19 +129,18 @@ fn an_effect_binding_a_sampler_none_has_made_is_made_and_drawn() {
     kept.programs.keep(program, MAKER, effect_pipeline(&device, &create, SMOOTHED));
 
     let smooth = Sampling { filter: Filter::Linear, wrap: Wrap::Clamp };
-    let glow = PassSpec {
-        name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::Texture(0), depth: DepthUse::Off, load: Load::Clear, reads: Vec::new() },
-    };
-    let composite = PassSpec {
-        name: PassName::of::<Composite>(),
-        does: Does::Effect {
-            program: ProgramId { id: program },
-            reads: vec![Target::Texture(0)],
-            into: Target::End,
-            bindings: vec![Bind { group: 1, binding: 0, to: Resource::Sampler(smooth) }],
-        },
-    };
+    let glow = PassSpec::of::<Main>(Does::Draw {
+        into: Target::Texture(0),
+        depth: DepthUse::Off,
+        load: Load::Clear,
+        reads: Vec::new(),
+    });
+    let composite = PassSpec::of::<Composite>(Does::Effect {
+        program: ProgramId { id: program },
+        reads: vec![Target::Texture(0)],
+        into: Target::End,
+        bindings: vec![Bind { group: 1, binding: 0, to: Resource::Sampler(smooth) }],
+    });
     let frame = CreateFrame {
         ends: Ends::Texture { size: Size { width: 4, height: 4 }, format: TextureFormat::Rgba8 },
         targets: vec![TargetSpec { kind: TargetKind::Float, scale: Scale::Full, samples: Samples::One }],
@@ -175,10 +174,12 @@ fn a_frame_that_ends_on_the_window_follows_its_surface_to_each_new_size() {
     let mut kept = kept(&device);
     drawn_at(&device, &queue, &mut kept, (8, 6));
 
-    let onto = PassSpec {
-        name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::End, depth: DepthUse::Write(0), load: Load::Clear, reads: Vec::new() },
-    };
+    let onto = PassSpec::of::<Main>(Does::Draw {
+        into: Target::End,
+        depth: DepthUse::Write(0),
+        load: Load::Clear,
+        reads: Vec::new(),
+    });
     let frame = CreateFrame {
         ends: Ends::Window(window()),
         targets: vec![TargetSpec { kind: TargetKind::Depth, scale: Scale::Full, samples: Samples::One }],
@@ -237,15 +238,12 @@ fn a_frame_begun_by_an_effect_that_reads_nothing_is_made_and_drawn_from_black() 
     });
     kept.uniforms.keep(horizon, MAKER, Uniforms { buffer, size: 16 });
 
-    let sky = PassSpec {
-        name: PassName::of::<Sky>(),
-        does: Does::Effect {
-            program: ProgramId { id: program },
-            reads: Vec::new(),
-            into: Target::End,
-            bindings: vec![Bind { group: 1, binding: 0, to: Resource::Uniforms(UniformsId { id: horizon }) }],
-        },
-    };
+    let sky = PassSpec::of::<Sky>(Does::Effect {
+        program: ProgramId { id: program },
+        reads: Vec::new(),
+        into: Target::End,
+        bindings: vec![Bind { group: 1, binding: 0, to: Resource::Uniforms(UniformsId { id: horizon }) }],
+    });
     let frame = CreateFrame {
         ends: Ends::Texture { size: Size { width: 4, height: 4 }, format: TextureFormat::Rgba8 },
         targets: Vec::new(),
@@ -319,7 +317,7 @@ fn effect_of(
 
 /// A frame onto a texture 4 by 4 of `format`, of the one effect pass `does`.
 fn onto(format: TextureFormat, does: Does) -> CreateFrame {
-    let pass = PassSpec { name: PassName::of::<Composite>(), does };
+    let pass = PassSpec::of::<Composite>(does);
 
     CreateFrame {
         ends: Ends::Texture { size: Size { width: 4, height: 4 }, format },
@@ -409,11 +407,8 @@ fn a_view_follows_its_window_under_one_id_and_the_frame_that_lays_it_out_binds_i
     let glow = Does::Effect { program: glow, reads: Vec::new(), into: Target::End, bindings: Vec::new() };
     let follows =
         |window| Ends::Follows { window, width: Scale::Half, height: Scale::Full, format: TextureFormat::Rgba8 };
-    let view = CreateFrame {
-        ends: follows(window()),
-        targets: Vec::new(),
-        passes: vec![PassSpec { name: PassName::of::<Composite>(), does: glow }],
-    };
+    let view =
+        CreateFrame { ends: follows(window()), targets: Vec::new(), passes: vec![PassSpec::of::<Composite>(glow)] };
     let elsewhere = CreateFrame { ends: follows(nth_window(3)), ..view.clone() };
     assert_eq!(frame::check(&elsewhere, &kept), Err(FrameRefused::Window));
     assert_eq!(frame::check(&view, &kept), Ok(()));
@@ -437,11 +432,8 @@ fn a_view_follows_its_window_under_one_id_and_the_frame_that_lays_it_out_binds_i
             Bind { group: 1, binding: 1, to: Resource::Sampler(smooth) },
         ],
     };
-    let main_frame = CreateFrame {
-        ends: Ends::Window(window()),
-        targets: Vec::new(),
-        passes: vec![PassSpec { name: PassName::of::<Composite>(), does: lay }],
-    };
+    let main_frame =
+        CreateFrame { ends: Ends::Window(window()), targets: Vec::new(), passes: vec![PassSpec::of::<Composite>(lay)] };
     assert_eq!(frame::check(&main_frame, &kept), Ok(()));
     let framed = kept.frame(&device, main_frame, MAKER);
     assert!(matches!(framed, Ok(Framed::Made(_))), "the main frame is refused: {framed:?}");
@@ -514,28 +506,24 @@ fn a_frame_of_half_and_quarter_size_targets_is_drawn_at_each_size_its_window_is_
     let downsample = reading(&mut kept, Shape::flat(ColourFormat::Rgba16Float));
     let composite = reading(&mut kept, Shape::flat(ColourFormat::Bgra8));
 
-    let scene = PassSpec {
-        name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::Texture(0), depth: DepthUse::Write(1), load: Load::Clear, reads: Vec::new() },
-    };
-    let downsampled = PassSpec {
-        name: PassName::of::<Downsample>(),
-        does: Does::Effect {
-            program: downsample,
-            reads: vec![Target::Texture(0)],
-            into: Target::Texture(2),
-            bindings: Vec::new(),
-        },
-    };
-    let composited = PassSpec {
-        name: PassName::of::<Composite>(),
-        does: Does::Effect {
-            program: composite,
-            reads: vec![Target::Texture(2)],
-            into: Target::End,
-            bindings: Vec::new(),
-        },
-    };
+    let scene = PassSpec::of::<Main>(Does::Draw {
+        into: Target::Texture(0),
+        depth: DepthUse::Write(1),
+        load: Load::Clear,
+        reads: Vec::new(),
+    });
+    let downsampled = PassSpec::of::<Downsample>(Does::Effect {
+        program: downsample,
+        reads: vec![Target::Texture(0)],
+        into: Target::Texture(2),
+        bindings: Vec::new(),
+    });
+    let composited = PassSpec::of::<Composite>(Does::Effect {
+        program: composite,
+        reads: vec![Target::Texture(2)],
+        into: Target::End,
+        bindings: Vec::new(),
+    });
     let frame = CreateFrame {
         ends: Ends::Window(window()),
         targets: vec![
@@ -568,10 +556,12 @@ fn a_frame_that_ends_on_one_window_is_that_windows_main_frame_alone_and_drawn_on
     let (first, second) = (nth_window(0), nth_window(1));
     let mut kept = kept_for(&device, &[first, second]);
 
-    let onto = PassSpec {
-        name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::End, depth: DepthUse::Off, load: Load::Clear, reads: Vec::new() },
-    };
+    let onto = PassSpec::of::<Main>(Does::Draw {
+        into: Target::End,
+        depth: DepthUse::Off,
+        load: Load::Clear,
+        reads: Vec::new(),
+    });
     let frame = CreateFrame { ends: Ends::Window(second), targets: Vec::new(), passes: vec![onto] };
     assert_eq!(frame::check(&frame, &kept), Ok(()));
     let framed = kept.frame(&device, frame, MAKER);
@@ -598,10 +588,12 @@ fn a_window_closed_drops_the_main_frame_made_for_it_and_takes_none_after() {
     let (device, _) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let (first, second) = (nth_window(0), nth_window(1));
     let mut kept = kept_for(&device, &[first, second]);
-    let onto = PassSpec {
-        name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::End, depth: DepthUse::Off, load: Load::Clear, reads: Vec::new() },
-    };
+    let onto = PassSpec::of::<Main>(Does::Draw {
+        into: Target::End,
+        depth: DepthUse::Off,
+        load: Load::Clear,
+        reads: Vec::new(),
+    });
     let frame = CreateFrame { ends: Ends::Window(first), targets: Vec::new(), passes: vec![onto] };
     let Ok(Framed::Made(made)) = kept.frame(&device, frame.clone(), MAKER) else {
         panic!("the frame is made");
@@ -697,18 +689,24 @@ fn rim_placed(gpu: &Gpu, kept: &mut Kept) -> u64 {
 /// of floats.
 fn rims_frame(lay: ProgramId, reads: Vec<Target>) -> CreateFrame {
     let sampled = |kind, samples| TargetSpec { kind, scale: Scale::Full, samples };
-    let floor = PassSpec {
-        name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::Texture(0), depth: DepthUse::Write(1), load: Load::Clear, reads: Vec::new() },
-    };
-    let rims = PassSpec {
-        name: PassName::of::<Rims>(),
-        does: Does::Draw { into: Target::Texture(2), depth: DepthUse::Write(3), load: Load::Clear, reads },
-    };
-    let laid = PassSpec {
-        name: PassName::of::<Composite>(),
-        does: Does::Effect { program: lay, reads: vec![Target::Texture(2)], into: Target::End, bindings: Vec::new() },
-    };
+    let floor = PassSpec::of::<Main>(Does::Draw {
+        into: Target::Texture(0),
+        depth: DepthUse::Write(1),
+        load: Load::Clear,
+        reads: Vec::new(),
+    });
+    let rims = PassSpec::of::<Rims>(Does::Draw {
+        into: Target::Texture(2),
+        depth: DepthUse::Write(3),
+        load: Load::Clear,
+        reads,
+    });
+    let laid = PassSpec::of::<Composite>(Does::Effect {
+        program: lay,
+        reads: vec![Target::Texture(2)],
+        into: Target::End,
+        bindings: Vec::new(),
+    });
 
     CreateFrame {
         ends: Ends::Window(window()),

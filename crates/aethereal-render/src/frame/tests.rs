@@ -164,33 +164,28 @@ fn frame() -> CreateFrame {
 fn the_builder_describes_each_pass_over_the_targets_it_returned() {
     // Catches a pass described over a target other than the one its handle names, a depth written where it is
     // tested, a load that keeps what was never drawn, and an effect reading its targets out of order.
-    let named = |pass: PassName, does: Does| PassSpec { name: pass, does };
     let expected = CreateFrame {
         ends: Ends::Window(window(0)),
         targets: vec![full(TargetKind::Uint), full(TargetKind::Depth), full(TargetKind::Float)],
         passes: vec![
-            named(
-                PassName::of::<Surfaces>(),
-                Does::Draw {
-                    into: Target::Texture(0),
-                    depth: DepthUse::Write(1),
-                    load: Load::Clear,
-                    reads: Vec::new(),
-                },
-            ),
-            named(
-                PassName::of::<Splats>(),
-                Does::Draw { into: Target::Texture(2), depth: DepthUse::Test(1), load: Load::Clear, reads: Vec::new() },
-            ),
-            named(
-                PassName::of::<Glaze>(),
-                Does::Effect {
-                    program: GLAZE,
-                    reads: vec![Target::Texture(2), Target::Texture(0)],
-                    into: Target::End,
-                    bindings: tinted(),
-                },
-            ),
+            PassSpec::of::<Surfaces>(Does::Draw {
+                into: Target::Texture(0),
+                depth: DepthUse::Write(1),
+                load: Load::Clear,
+                reads: Vec::new(),
+            }),
+            PassSpec::of::<Splats>(Does::Draw {
+                into: Target::Texture(2),
+                depth: DepthUse::Test(1),
+                load: Load::Clear,
+                reads: Vec::new(),
+            }),
+            PassSpec::of::<Glaze>(Does::Effect {
+                program: GLAZE,
+                reads: vec![Target::Texture(2), Target::Texture(0)],
+                into: Target::End,
+                bindings: tinted(),
+            }),
         ],
     };
 
@@ -266,11 +261,13 @@ const fn refused(pass: u32, why: PassRefused) -> Result<(), FrameRefused> {
 #[test]
 fn a_frame_on_no_window_without_passes_or_not_ending_on_its_end_is_refused() {
     // Catches a frame on a window nothing draws to, one that draws nothing, two passes a placement could not tell
-    // apart, and a frame whose end nothing writes, which shows what the window last held.
+    // apart, two whose GPU times a person could not, and a frame whose end nothing writes, which shows what the window
+    // last held.
     let kept = Kept::new();
     let elsewhere = changed(|frame| frame.ends = Ends::Window(window(1)));
     let empty = changed(|frame| frame.passes.clear());
     let repeated = changed(|frame| frame.passes[1].name = frame.passes[0].name);
+    let relabelled = changed(|frame| frame.passes[1].label = frame.passes[0].label.clone());
     let unended = changed(|frame| {
         frame.passes.pop();
     });
@@ -278,6 +275,7 @@ fn a_frame_on_no_window_without_passes_or_not_ending_on_its_end_is_refused() {
     assert_eq!(check(&elsewhere, &kept), Err(FrameRefused::Window));
     assert_eq!(check(&empty, &kept), Err(FrameRefused::Empty));
     assert_eq!(check(&repeated, &kept), Err(FrameRefused::Repeated { pass: 1 }));
+    assert_eq!(check(&relabelled, &kept), Err(FrameRefused::Repeated { pass: 1 }));
     assert_eq!(check(&unended, &kept), Err(FrameRefused::Unended));
 }
 
@@ -361,7 +359,7 @@ fn an_effect_reading_the_end_itself_or_other_kinds_than_it_was_made_for_is_refus
             into: Target::Texture(2),
             bindings: Vec::new(),
         };
-        frame.passes.push(PassSpec { name: PassName::of::<Blur>(), does: frame.passes[1].does.clone() });
+        frame.passes.push(PassSpec::of::<Blur>(frame.passes[1].does.clone()));
     });
 
     assert_eq!(check(&end, &kept), refused(2, PassRefused::End));
@@ -423,7 +421,7 @@ fn a_compute_pass_draws_into_nothing_and_never_ends_a_frame() {
     let Ok(built) = built.finish(Glaze, Effect::new(&glaze(), (splats, ids)).bound(tinted())) else {
         panic!("the frame's passes are of types of their own");
     };
-    let compute = PassSpec { name: PassName::of::<Simulate>(), does: Does::Compute };
+    let compute = PassSpec::of::<Simulate>(Does::Compute);
     let last = changed(|frame| frame.passes.push(compute.clone()));
     let kept_over_compute = changed(|frame| {
         frame.passes.insert(0, compute.clone());
@@ -571,7 +569,7 @@ fn a_pass_whose_depth_is_of_another_scale_than_its_colour_is_refused() {
     let onto_end_at_half = {
         let mut frame = reduced();
         let onto = Does::Draw { into: Target::End, depth: DepthUse::Test(1), load: Load::Clear, reads: Vec::new() };
-        frame.passes.push(PassSpec { name: PassName::of::<Sky>(), does: onto });
+        frame.passes.push(PassSpec::of::<Sky>(onto));
         frame
     };
 
@@ -653,15 +651,12 @@ fn a_pass_reading_a_depth_of_four_samples_is_refused() {
     // another kind of texture: by a draw, or by an effect.
     let kept = Kept::new();
     let drawn = rims_changed(|frame| {
-        let over = PassSpec {
-            name: PassName::of::<Splats>(),
-            does: Does::Draw {
-                into: Target::Texture(0),
-                depth: DepthUse::Off,
-                load: Load::Keep,
-                reads: vec![Target::Texture(3)],
-            },
-        };
+        let over = PassSpec::of::<Splats>(Does::Draw {
+            into: Target::Texture(0),
+            depth: DepthUse::Off,
+            load: Load::Keep,
+            reads: vec![Target::Texture(3)],
+        });
         frame.passes.insert(2, over);
     });
     let effect = rims_changed(|frame| {

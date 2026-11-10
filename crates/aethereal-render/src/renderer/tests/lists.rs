@@ -182,10 +182,12 @@ fn an_actor_that_ends_takes_its_lists_and_another_actors_list_draws_on() {
 
 /// A frame onto a texture 4 by 4 of `Rgba8`, of one pass, [`Main`], drawing with depth.
 fn onto_texture() -> CreateFrame {
-    let main = PassSpec {
-        name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::End, depth: DepthUse::Write(0), load: Load::Clear, reads: Vec::new() },
-    };
+    let main = PassSpec::of::<Main>(Does::Draw {
+        into: Target::End,
+        depth: DepthUse::Write(0),
+        load: Load::Clear,
+        reads: Vec::new(),
+    });
 
     CreateFrame {
         ends: Ends::Texture { size: Size { width: 4, height: 4 }, format: TextureFormat::Rgba8 },
@@ -215,10 +217,12 @@ fn a_texture_frame_released_takes_its_lists_and_a_main_frame_replaced_keeps_them
     assert_eq!(kept.lists.of(Frame::Texture(frame), PassName::of::<Main>()).count(), 0);
     assert_eq!(kept.listed(&texture_list, MAKER), Err(ListRefused::Frame));
 
-    let main = PassSpec {
-        name: PassName::of::<Main>(),
-        does: Does::Draw { into: Target::End, depth: DepthUse::Write(0), load: Load::Clear, reads: Vec::new() },
-    };
+    let main = PassSpec::of::<Main>(Does::Draw {
+        into: Target::End,
+        depth: DepthUse::Write(0),
+        load: Load::Clear,
+        reads: Vec::new(),
+    });
     let depth = TargetSpec { kind: TargetKind::Depth, scale: Scale::Full, samples: Samples::One };
     let replacing = CreateFrame { ends: Ends::Window(window()), targets: vec![depth], passes: vec![main] };
     assert!(matches!(kept.frame(gpu.device(), replacing, MAKER), Ok(Framed::Made(_))));
