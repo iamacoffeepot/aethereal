@@ -1,6 +1,6 @@
 //! Dispatches: one compute program, run in one compute pass of a frame, with what it binds, over a count of
 //! invocations, asked for by any actor and checked as it is made, as a placement is, so running it cannot fail
-//! (ADR-0026).
+//! (ADR-0026). One runs in each cycle that draws its frame until it is released, or once, answering when it has run.
 
 #[cfg(test)]
 mod tests;
@@ -14,12 +14,53 @@ use crate::storage::{self, DISPATCH_ARGUMENTS, StorageId};
 use aethereal_data::{ActorId, Plain};
 
 /// Asks the renderer to run the compute program `join` names in the compute pass it names, with what it binds, over
-/// `size`, at every `Render` until it is released. Answered with [`Dispatched`].
+/// `size`, in each cycle that draws its frame until it is released: a cycle that draws nothing runs no pass, and a
+/// window's main frame not drawn in a cycle runs none of its dispatches. Answered with [`Dispatched`].
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.create_dispatch")]
 pub struct CreateDispatch {
     pub join: Dispatch,
     pub size: Invocations,
+}
+
+/// Asks the renderer to run the compute program `join` names once, in the compute pass it names, with what it binds,
+/// over `size`, in the first cycle that draws its frame. It is checked when it is asked, as a [`CreateDispatch`] is,
+/// and refused at once as one is; while it waits it keeps what it binds and counts among its pass's dispatches. It has
+/// no id and nothing to release. Answered with [`DispatchRan`] once the commands of the cycle it ran in are submitted,
+/// so what is submitted after sees what it wrote.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.run_dispatch")]
+pub struct RunDispatch {
+    pub join: Dispatch,
+    pub size: Invocations,
+}
+
+impl RunDispatch {
+    /// The dispatch it asks for, checked and made as one that runs until released is.
+    pub(crate) fn dispatch(self) -> CreateDispatch {
+        CreateDispatch { join: self.join, size: self.size }
+    }
+}
+
+/// What the renderer answers [`RunDispatch`] with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.dispatch_ran")]
+pub enum DispatchRan {
+    /// It ran, in a cycle whose commands are submitted.
+    Ran,
+    /// It never ran, and never will: what it joined went before a cycle drew it.
+    Unrun(Unrun),
+    Refused(DispatchRefused),
+}
+
+/// Why a dispatch asked to run once never ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.unrun")]
+pub enum Unrun {
+    /// The window whose main frame it joined closed.
+    Closed,
+    /// The frame that ends on a texture it joined was released.
+    Released,
 }
 
 /// The compute pass a dispatch runs in: the pass `pass` of `frame`, running `compute`, binding what `bindings` names at
