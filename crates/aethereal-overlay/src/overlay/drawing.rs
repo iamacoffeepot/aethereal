@@ -126,7 +126,7 @@ impl Overlay {
             (false, true) => {
                 turn.to(path::<Window>(self.window)).send(&TakeKeyFocus)?;
                 self.alerts.clear();
-                self.write_and_move(TextRole::Alerts, turn)?;
+                self.write_text(TextRole::Alerts, turn)?;
                 self.write_console(turn)?;
             }
             (true, false) => {
@@ -306,6 +306,7 @@ impl Handles<On<Tick>> for Overlay {
                 GpuTiming::Unsupported => GpuFigures::default(),
             };
             self.write_text(TextRole::Figures, turn)?;
+            self.write_text(TextRole::FrameMedian, turn)?;
             self.write_text(TextRole::GpuFigures, turn)?;
             self.write_text(TextRole::Lines, turn)?;
             self.memory = EngineMemory::of(&turn.engine_stats());
@@ -316,7 +317,7 @@ impl Handles<On<Tick>> for Overlay {
         if logs_due {
             self.logs_due_nanos = tick.elapsed_nanos.saturating_add(LOGS_EVERY_NANOS);
             self.read_logs(turn);
-            self.write_and_move(TextRole::Alerts, turn)?;
+            self.write_text(TextRole::Alerts, turn)?;
             self.write_console(turn)?;
         }
 

@@ -1,8 +1,9 @@
-//! The meters' text (ADR-0053: Memory): one line a meter, its label in stone, the room of its bar, and its value set
-//! flush right in bone so the digits line up in the mono face, bytes in KiB, MiB, and GiB as the `memory` tool shows
-//! them; a meter with a limit `412.0 MiB / 8.0 GiB`; a value that is no figure, `unknown`, `none`, `no guests`, in
-//! stone. The backlog's line names the actor holding the most after its value, in stone, cut at its front to the room
-//! the right column has left, or left out where too little is.
+//! The meters' text (ADR-0053: Memory): one line a meter, as wide as the right column, its label in stone, the room of
+//! its bar, and its value set flush right in bone at the column's right edge, where the adapter's line is cut, so the
+//! digits line up in the mono face, bytes in KiB, MiB, and GiB as the `memory` tool shows them; a meter with a limit
+//! `412.0 MiB / 8.0 GiB`; a value that is no figure, `unknown`, `none`, `no guests`, in stone. The backlog's line names
+//! the actor holding the most just before its value, in stone, cut at its front to the room the right column has left,
+//! or left out where too little is.
 
 use super::{Backlog, EngineMemory, Held, MemoryFigures, Meter, ProcessMemory};
 use crate::colour::{BONE, STONE, Swatch};
@@ -13,11 +14,11 @@ use aethereal_render::text::Run;
 /// How many characters a value is given, flush right: as wide as `1023.9 MiB / 1023.9 GiB`.
 pub const VALUE_CHARACTERS: usize = 23;
 
-/// How many characters a meter's line takes before the backlog's actor: its label, its bar, the gap, and its value.
+/// The fewest characters a meter's line takes: its label, its bar, the gap, and its value.
 pub const LINE_CHARACTERS: usize =
     METER_LABEL_CHARACTERS + METER_BAR_CHARACTERS + METER_GAP_CHARACTERS + VALUE_CHARACTERS;
 
-/// The space between the backlog's value and its actor.
+/// The space between the backlog's actor and its value.
 const ACTOR_GAP: &str = "  ";
 
 /// The fewest characters of an actor's path worth showing, its ellipsis among them.
@@ -71,8 +72,11 @@ impl Value {
 
 impl EngineMemory {
     /// The runs of the meters' text, a line a meter, with the GPU's memory `gpu_bytes`, on a right column `columns`
-    /// characters wide.
+    /// characters wide: each line as wide as the column, at least [`LINE_CHARACTERS`], its value ending at the
+    /// column's right edge.
     pub fn runs(&self, gpu_bytes: u64, columns: usize) -> Vec<Run> {
+        let lead = LINE_CHARACTERS - VALUE_CHARACTERS;
+        let tail = columns.max(LINE_CHARACTERS) - lead;
         let mut runs = Vec::with_capacity(Meter::ALL.len() * 3);
         for meter in Meter::ALL {
             let parted = if meter == Meter::Process {
@@ -81,16 +85,19 @@ impl EngineMemory {
                 "\n"
             };
             let (value, actor) = self.value(meter, gpu_bytes);
-            let label = format!("{parted}{:<width$}", meter.label(), width = LINE_CHARACTERS - VALUE_CHARACTERS);
-            runs.push(Run::new(&label, STONE.opaque()));
-            runs.push(Run::new(&format!("{:>VALUE_CHARACTERS$}", value.text), value.swatch.opaque()));
             let room = columns.saturating_sub(LINE_CHARACTERS + ACTOR_GAP.len());
             let fits = room >= FEWEST_ACTOR_CHARACTERS;
             let names = !actor.is_empty();
             let shows_actor = fits && names;
-            if shows_actor {
-                runs.push(Run::new(&format!("{ACTOR_GAP}{}", cut_front(actor, room)), STONE.opaque()));
-            }
+            let actor_part = if shows_actor {
+                format!("{}{ACTOR_GAP}", cut_front(actor, room))
+            } else {
+                String::new()
+            };
+            let pad = tail.saturating_sub(actor_part.chars().count() + value.text.chars().count());
+            let label = format!("{parted}{:<lead$}{}{actor_part}", meter.label(), " ".repeat(pad));
+            runs.push(Run::new(&label, STONE.opaque()));
+            runs.push(Run::new(&value.text, value.swatch.opaque()));
         }
 
         runs

@@ -1,6 +1,6 @@
 //! The GPU adapter's line beneath the meters (ADR-0053: Frame statistics): the adapter the renderer draws on, asked
 //! once as the overlay begins and kept, in stone, `name · backend · driver driver_info`, cut at its end to the right
-//! column's width.
+//! column's width and set flush right in it, so it ends where the meters' values do.
 
 use super::figures::cut_back;
 use crate::colour::STONE;
@@ -20,8 +20,8 @@ pub enum Adapter {
 }
 
 impl Adapter {
-    /// The runs of the adapter's line on a right column `columns` characters wide: a space while it is asked, as a
-    /// text holds something.
+    /// The runs of the adapter's line on a right column `columns` characters wide, flush right in it: a space while it
+    /// is asked, as a text holds something.
     pub fn runs(&self, columns: usize) -> Vec<Run> {
         let line = match self {
             Self::Asked => String::from(" "),
@@ -29,7 +29,7 @@ impl Adapter {
             Self::Unanswered => cut_back("adapter unknown: the renderer did not say", columns),
         };
 
-        vec![Run::new(&line, STONE.opaque())]
+        vec![Run::new(&format!("{line:>columns$}"), STONE.opaque())]
     }
 }
 

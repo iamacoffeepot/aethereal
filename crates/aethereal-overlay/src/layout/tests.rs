@@ -1,5 +1,7 @@
 use super::{GUTTER_CHARACTERS, LINE_EMS, Layout, METERS};
-use crate::meters::LINE_CHARACTERS;
+use crate::colour::STONE;
+use crate::meters::{Adapter, EngineMemory, LINE_CHARACTERS};
+use aethereal_render::text::Run;
 use aethereal_window::Surface;
 
 /// Down the band's left column, at 1080 and at an ultrawide 1373, the frame chart, its figures, the GPU's graph, its
@@ -36,9 +38,11 @@ fn the_band_stacks_its_sections_on_one_axis_and_the_console_sits_beneath_it() {
 }
 
 /// Each row's bars stand inside its line of the rows, the first's at the top of the gutter's text and each line of
-/// that text beside its row, the GPU graph's top is written in the same gutter level with the graph's top, and the
-/// gutter's text ends inside the band's left column, so a row's label written beside the wrong row, a graph's top
-/// written away from its graph, or a gutter running into the right column, is caught.
+/// that text beside its row; the frame chart's median is written in the same gutter level with the chart's top, and
+/// the count of warnings and errors the line beneath it, both beside the chart; the GPU graph's top is written level
+/// with the graph's top; and the gutter's text ends inside the band's left column. So a row's label written beside
+/// the wrong row, a graph's line written away from its graph, a count of warnings that runs down over the frame
+/// figures' line, or a gutter running into the right column, is caught.
 #[test]
 fn the_gutter_s_lines_stand_beside_their_rows() {
     for scale in [1.0, 2.0] {
@@ -47,6 +51,11 @@ fn the_gutter_s_lines_stand_beside_their_rows() {
         let (rows, at, tall) = (layout.rows(), layout.lines_at(), layout.line_pixels_tall());
 
         assert_eq!(at.y, rows.min.y);
+        let chart = layout.chart();
+        assert_eq!(layout.frame_median_at(), aethereal_math::Vec2::new(at.x, chart.min.y));
+        assert_eq!(layout.alerts_at(), aethereal_math::Vec2::new(at.x, chart.min.y + tall));
+        let alerts_foot = layout.alerts_at().y + tall;
+        assert!(alerts_foot <= chart.max.y, "the count of warnings ending at {alerts_foot} is not beside {chart:?}");
         assert_eq!(layout.gpu_top_at(), aethereal_math::Vec2::new(at.x, layout.gpu_graph().min.y));
         for index in 0..4_u8 {
             let row = layout.row(index);
@@ -134,10 +143,12 @@ fn the_prompt_and_its_divider_sit_in_their_strip() {
 }
 
 /// At 1080, an ultrawide 1373, and a narrow 720, the band's right column stands right of the end of the left column's
-/// gutter, beneath the frame figures' line, at whose right end the count of warnings and errors is written, and inside
-/// the band; each meter's bar stands on its line after its label and inside the column, a meter's line of text fits
-/// across the column, and the adapter's line beneath the meters ends inside it. So a meter drawn over the gutter or the
-/// count of warnings, a column that spills out of the band, or a value cut off at a narrow window, is caught.
+/// gutter and inside the band, its top level with the frame chart's, so no empty block stands above it; each meter's
+/// bar stands on its line after its label and inside the column, a meter's line of text fits across the column, every
+/// meter's line ends, its value last, at the band's right padding, and the adapter's line beneath the meters, set
+/// flush right, ends at the same edge. So a meter drawn over the gutter, a column that starts below the band's top,
+/// one that spills out of the band, values and an adapter's line that end at different edges, or a value cut off at a
+/// narrow window, is caught.
 #[test]
 fn the_right_column_holds_the_meters_and_the_adapter_clear_of_the_left_column() {
     for (width, height) in [(1920, 1080), (3440, 1373), (1280, 720)] {
@@ -145,16 +156,28 @@ fn the_right_column_holds_the_meters_and_the_adapter_clear_of_the_left_column() 
 
         let (right, band, tall) = (layout.right_column(), layout.band(), layout.line_pixels_tall());
         let at = layout.meters_at();
+        let columns = layout.right_columns();
+        let mut lines = EngineMemory::Unread.runs(0, columns);
+        lines.push(Run::new("\n", STONE.opaque()));
+        lines.extend(Adapter::Unanswered.runs(columns));
 
         // A gutter of some tens of characters, which an f32 holds exactly.
         #[allow(clippy::cast_precision_loss)]
         let gutter_end = (GUTTER_CHARACTERS as f32).mul_add(layout.advance(), layout.lines_at().x);
-        let alerts_foot = layout.figures_at().y + tall;
         assert!(right.min.x > gutter_end, "{right:?} at {width}x{height} is over the gutter ending at {gutter_end}");
-        assert!(right.min.y >= alerts_foot, "{right:?} at {width}x{height} is over the count of warnings");
+        assert_eq!(right.min.y, layout.chart().min.y, "{right:?} at {width}x{height} starts below the band's top");
         let in_band = right.max.x <= band.max.x && right.max.y <= band.max.y;
         assert!(in_band, "{right:?} spills out of {band:?}");
+        assert_eq!(right.max.x, band.max.x - layout.pixels(10.0), "{right:?} does not end at the band's padding");
         assert_eq!(at, right.min);
+        let text: String = lines.iter().map(|run| run.text.as_str()).collect();
+        for line in text.lines() {
+            // A line of some tens of characters, which an f32 holds exactly.
+            #[allow(clippy::cast_precision_loss)]
+            let ends = (line.chars().count() as f32).mul_add(layout.advance(), at.x);
+            let shared = (ends - right.max.x).abs() < 0.01;
+            assert!(shared, "{line:?} at {width}x{height} ends at {ends}, not at {right:?}'s right edge");
+        }
         for index in 0..METERS {
             let bar = layout.meter_bar(index);
             let line_top = f32::from(index).mul_add(tall, at.y);

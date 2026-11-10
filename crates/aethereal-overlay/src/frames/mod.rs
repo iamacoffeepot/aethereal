@@ -13,6 +13,7 @@ mod bins;
 mod tests;
 
 use crate::colour::{BONE, STONE};
+use crate::layout::GUTTER_CHARACTERS;
 use aethereal_actor::Tick;
 use aethereal_data::Plain;
 use aethereal_render::text::Run;
@@ -28,6 +29,9 @@ pub const KEPT_NANOS: u64 = 3 * WINDOW_NANOS;
 
 /// What a figure is rounded to, as it is shown: a tenth of a millisecond.
 const SHOWN_NANOS: u64 = 100_000;
+
+/// What the gutter calls the frame chart, its median written flush right in the rest of the gutter.
+const GUTTER_LABEL: &str = "frame";
 
 /// One cycle's time: when its `Tick` came, in the program's time, and how long since the cycle before.
 #[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,5 +197,14 @@ impl Figures {
             figure(self.longest),
             label(" ms"),
         ]
+    }
+
+    /// The runs of the gutter's line beside the chart: its label in stone, and the median in bone, flush right as the
+    /// GPU graph's top and the rows' values are: `frame        16.7 ms`.
+    pub fn gutter_runs(self) -> Vec<Run> {
+        let width = GUTTER_CHARACTERS - GUTTER_LABEL.len();
+        let value = format!("{} ms", millis(self.median));
+
+        vec![Run::new(GUTTER_LABEL, STONE.opaque()), Run::new(&format!("{value:>width$}"), BONE.opaque())]
     }
 }

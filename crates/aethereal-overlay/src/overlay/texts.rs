@@ -1,5 +1,6 @@
-//! The overlay's texts (ADR-0052, ADR-0053): the frame chart's figures and the count of warnings and errors on one
-//! line, the GPU's figures, the GPU graph's top and the rows' labels and values in their gutter, the memory meters'
+//! The overlay's texts (ADR-0052, ADR-0053): the frame chart's figures, its latest median and the count of warnings
+//! and errors in the gutter beside it, the GPU's figures, the GPU graph's top and the rows' labels and values in their
+//! gutter, the memory meters'
 //! labels and values and the adapter's line in the band's right column, and the console's scrollback, its prompt,
 //! and what is running at the prompt's right end. Each is one text, made once and written again only when what it
 //! shows changes, so a console that nothing changes costs nothing a frame. The scrollback is one text of the rows in
@@ -23,7 +24,9 @@ use aethereal_render::text::{Clip, Layer, MoveText, Run, TextId, WriteText};
 pub enum TextRole {
     /// The figures beneath the chart.
     Figures,
-    /// The count of warnings and errors, at the band's right end.
+    /// The chart's latest median, in the gutter beside it.
+    FrameMedian,
+    /// The count of warnings and errors, in the gutter beside the chart beneath its median.
     Alerts,
     /// The figures beneath the GPU's graph, or in its place that the device has no timestamps.
     GpuFigures,
@@ -45,8 +48,9 @@ pub enum TextRole {
 
 impl TextRole {
     /// Every text, in the order the overlay lists them: the band's first, then the console's.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Figures,
+        Self::FrameMedian,
         Self::Alerts,
         Self::GpuFigures,
         Self::GpuTop,
@@ -59,7 +63,7 @@ impl TextRole {
     ];
 
     /// How many of [`Self::ALL`], from the first, are the band's.
-    pub const BAND: usize = 7;
+    pub const BAND: usize = 8;
 }
 
 /// What the overlay has made of one text.
@@ -77,6 +81,7 @@ pub enum Text {
 #[derive(Bound)]
 pub struct Texts {
     figures: Text,
+    frame_median: Text,
     alerts: Text,
     gpu_figures: Text,
     gpu_top: Text,
@@ -92,6 +97,7 @@ impl Default for Texts {
     fn default() -> Self {
         Self {
             figures: Text::Unasked,
+            frame_median: Text::Unasked,
             alerts: Text::Unasked,
             gpu_figures: Text::Unasked,
             gpu_top: Text::Unasked,
@@ -110,6 +116,7 @@ impl Texts {
     pub const fn of(&self, role: TextRole) -> &Text {
         match role {
             TextRole::Figures => &self.figures,
+            TextRole::FrameMedian => &self.frame_median,
             TextRole::Alerts => &self.alerts,
             TextRole::GpuFigures => &self.gpu_figures,
             TextRole::GpuTop => &self.gpu_top,
@@ -126,6 +133,7 @@ impl Texts {
     pub const fn of_mut(&mut self, role: TextRole) -> &mut Text {
         match role {
             TextRole::Figures => &mut self.figures,
+            TextRole::FrameMedian => &mut self.frame_median,
             TextRole::Alerts => &mut self.alerts,
             TextRole::GpuFigures => &mut self.gpu_figures,
             TextRole::GpuTop => &mut self.gpu_top,
@@ -175,6 +183,7 @@ impl Overlay {
     pub(super) fn runs(&self, role: TextRole) -> Vec<Run> {
         match role {
             TextRole::Figures => self.figures.runs(),
+            TextRole::FrameMedian => self.figures.gutter_runs(),
             TextRole::Alerts => runs_of(self.alerts.pieces()),
             TextRole::GpuFigures => match self.gpu {
                 GpuTiming::Timed(_) => self.gpu_figures.runs(),
@@ -217,7 +226,8 @@ impl Overlay {
         let characters = |pieces: Vec<Piece>| pieces.iter().map(|piece| piece.text.chars().count()).sum();
         match role {
             TextRole::Figures => (layout.figures_at(), Clip::None),
-            TextRole::Alerts => (layout.alerts_at(characters(self.alerts.pieces())), Clip::None),
+            TextRole::FrameMedian => (layout.frame_median_at(), Clip::None),
+            TextRole::Alerts => (layout.alerts_at(), Clip::None),
             TextRole::GpuFigures => match self.gpu {
                 GpuTiming::Timed(_) => (layout.gpu_figures_at(), Clip::None),
                 GpuTiming::Unsupported => (Vec2::new(layout.gpu_figures_at().x, layout.gpu_graph().min.y), Clip::None),
@@ -282,8 +292,9 @@ impl Overlay {
         self.write_text(TextRole::Prompt, turn)
     }
 
-    /// Writes a text that ends at a right edge again where it has changed, and moves it to end there: the count of
-    /// warnings and errors at the band's right padding, or what is running at the prompt's right end.
+    /// Writes a text that ends at a right edge again where it has changed, and moves it to end there: what is running
+    /// at the prompt's right end; or the GPU's figures, which move to the graph's place when the device has no
+    /// timestamps.
     pub(super) fn write_and_move<S, I, J>(&mut self, role: TextRole, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<Tells<Path<Renderer>, WriteText>, I> + Allows<Tells<Path<Renderer>, MoveText>, J>,

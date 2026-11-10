@@ -53,10 +53,11 @@ fn a_bar_s_fill_is_its_share_of_the_trough_and_stays_inside_it() {
     assert_eq!(read(&empty_records).len(), 2, "an empty meter drew a fill");
 }
 
-/// Each meter's line is its label, then its value flush right at the same column, a value that is no figure in stone;
-/// the backlog's actor follows it, cut at its front to the room left, and is left out where the column has too little;
-/// so a value column that wanders from line to line, an actor's path running past the right column, or one cut so
-/// short it names nothing, is caught.
+/// Each meter's line is its label, then its value flush right at the right column's edge, every line as wide as the
+/// column, a value that is no figure in stone; the backlog's actor stands just before its value, cut at its front to
+/// the room left, and is left out where the column has too little; so a value column that wanders from line to line or
+/// stops short of the column's edge, an actor's path running past the right column, or one cut so short it names
+/// nothing, is caught.
 #[test]
 fn the_meters_values_line_up_and_the_backlog_s_actor_is_cut_to_the_column() {
     let actor = "aether.tcp/connection:1234567890";
@@ -68,11 +69,10 @@ fn the_meters_values_line_up_and_the_backlog_s_actor_is_cut_to_the_column() {
     let text: String = wide.iter().map(|run| run.text.as_str()).collect();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 5);
-    assert!(lines.iter().all(|line| line.chars().count() >= LINE_CHARACTERS));
-    assert_eq!(lines[0].trim_end(), format!("process{:>w$}", "unknown", w = LINE_CHARACTERS - 7));
+    assert!(lines.iter().all(|line| line.chars().count() == LINE_CHARACTERS + 2 + 12), "{lines:?}");
+    assert_eq!(lines[0], format!("process{:>w$}", "unknown", w = LINE_CHARACTERS + 2 + 12 - 7));
     assert!(lines[1].ends_with("1.0 KiB / 8.0 MiB"), "{}", lines[1]);
-    assert!(lines[2].ends_with("0 B / 1.0 KiB  …:1234567890"), "{}", lines[2]);
-    assert_eq!(lines[2].chars().count(), LINE_CHARACTERS + 2 + 12);
+    assert!(lines[2].ends_with("…:1234567890  0 B / 1.0 KiB"), "{}", lines[2]);
     assert!(lines[3].ends_with("no guests") && lines[4].ends_with("2.0 KiB"), "{lines:?}");
     let narrow_text: String = narrow.iter().map(|run| run.text.as_str()).collect();
     assert!(!narrow_text.contains("aether") && !narrow_text.contains('…'), "{narrow_text}");
