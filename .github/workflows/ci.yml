@@ -67,7 +67,12 @@ jobs:
         if: needs.plan.outputs.runner != 'ubuntu-latest'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
+      # OpenH264 builds its assembly only where `nasm` is found (ADR-0045); the cache is keyed apart from the builds
+      # made without it, as its build script does not run again when `nasm` appears.
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+        with:
+          key: nasm
       - run: cargo xtask check clippy
 
   test:
@@ -79,7 +84,11 @@ jobs:
         if: needs.plan.outputs.runner != 'ubuntu-latest'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
+      # As in Clippy: OpenH264 with its assembly, in a cache of its own.
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+        with:
+          key: nasm
       - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
           tool: cargo-nextest@0.9.146
