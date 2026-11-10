@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 description = "The dev overlay: one root any program lists, which draws how the engine is doing over what the program drew (ADR-0053)"
 
-# It reads the window and the renderer, so no capability's crate can hold it (ADR-0053: Where it lives).
+# It reads the window, the renderer, and the tools, so no capability's crate can hold it (ADR-0053: Where it lives).
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
@@ -14,6 +14,9 @@ aethereal-data = { path = "../aethereal-data" }
 aethereal-math = { path = "../aethereal-math" }
 aethereal-render = { path = "../aethereal-render" }
 aethereal-substrate = { path = "../aethereal-substrate" }
+# The console's commands are the engine's tools: it reads their sheets, calls them through the tools root, and prints
+# their answers (ADR-0053: Commands are tools).
+aethereal-tools = { path = "../aethereal-tools" }
 aethereal-window = { path = "../aethereal-window" }
 
 # The `overlay` example draws a backdrop with the overlay listed, in an engine linked to a hub that it hands
@@ -26,7 +29,6 @@ aethereal-link = { path = "../aethereal-link" }
 aethereal-pace = { path = "../aethereal-pace", features = ["tools"] }
 aethereal-render = { path = "../aethereal-render", features = ["tools"] }
 aethereal-tcp = { path = "../aethereal-tcp" }
-aethereal-tools = { path = "../aethereal-tools" }
 aethereal-window = { path = "../aethereal-window", features = ["tools"] }
 
 [lints]

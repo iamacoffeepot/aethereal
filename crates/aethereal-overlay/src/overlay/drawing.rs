@@ -1,12 +1,15 @@
 //! How the overlay draws once it has made its pieces (ADR-0031, ADR-0052): what its window hears steps it and lays it
 //! out again, and each `Tick` while it is shown keeps the cycle's time, writes the placement's records again in one
-//! write, and writes the figures' text when what it shows changes. While it is shown it also hears each frame's
-//! statistics, for the budget the chart is drawn against (ADR-0053).
+//! write, writes the figures' text when what it shows changes, and reads the engine's recent log about once a second.
+//! While it is shown it also hears each frame's statistics, for the budget the chart is drawn against (ADR-0053).
 
-use super::making::{ChartAsked, ReadoutAsked};
-use super::{Chart, FIGURES_EVERY_NANOS, Overlay, Readout};
+use super::making::{ChartAsked, TextAsked};
+use super::texts::TextRole;
+use super::{Calling, Chart, FIGURES_EVERY_NANOS, LOGS_EVERY_NANOS, Overlay};
 use crate::chart::{self, RECORD_BYTES};
+use crate::console::Logged;
 use crate::layout::Layout;
+use crate::stop::Stop;
 use aethereal_actor::{Allows, Asks, Fault, Handles, Level, On, Path, Tells, Tick, Turn, path};
 use aethereal_render::Renderer;
 use aethereal_render::draw_list::DrawList;
@@ -14,34 +17,48 @@ use aethereal_render::frame::{Frame, ShapeOf};
 use aethereal_render::instances::WriteInstances;
 use aethereal_render::pass::Main;
 use aethereal_render::stats::{FrameStats, SubscribeFrameStats, UnsubscribeFrameStats};
-use aethereal_render::text::{Clip, CreateText, Layer, MoveText, WriteText};
+use aethereal_render::text::{CreateText, MoveText, WriteText};
 use aethereal_render::uniforms::WriteUniforms;
-use aethereal_window::{Event, Surface};
+use aethereal_tools::{CallTool, Tools};
+use aethereal_window::{Event, ReleaseKeyFocus, Surface, TakeKeyFocus, Window};
 
 /// The key that steps the overlay, by its place on the keyboard: the backtick, left of the 1 (ADR-0053).
 const STEP_KEY: &str = "Backquote";
 
 /// What the overlay sends as it hears its window: its list as it steps, its records as they change, the surface's
-/// size and the text's place as the window is resized, and the first asks for what it draws.
-type Heard = (
+/// size and its texts' places as the window is resized, the first asks for what it draws, the frame statistics it
+/// hears while shown, the window's key focus while the console is open, the console's texts as keys change them, and
+/// the tools the console's line calls.
+pub(super) type Heard = (
     Tells<Path<Renderer>, DrawList>,
     Tells<Path<Renderer>, WriteInstances>,
     Tells<Path<Renderer>, WriteUniforms>,
     Tells<Path<Renderer>, MoveText>,
     Asks<Path<Renderer>, ShapeOf, ChartAsked>,
-    Asks<Path<Renderer>, CreateText, ReadoutAsked>,
+    Asks<Path<Renderer>, CreateText, TextAsked>,
     Tells<Path<Renderer>, SubscribeFrameStats>,
     Tells<Path<Renderer>, UnsubscribeFrameStats>,
+    Tells<Path<Window>, TakeKeyFocus>,
+    Tells<Path<Window>, ReleaseKeyFocus>,
+    Tells<Path<Renderer>, WriteText>,
+    Asks<Path<Tools>, CallTool, Calling>,
 );
 
-/// A backtick steps the overlay, and a resize lays it out again; the overlay hears nothing else of its window.
+/// A backtick steps the overlay, a resize lays it out again, and at the console's stop the keys and typed text edit
+/// and enter its line; the overlay hears nothing else of its window.
 impl Handles<Event> for Overlay {
     type Sends = Heard;
 
     fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Heard>) -> Result<(), Fault> {
+        let console = self.stop.console();
         match event {
             Event::Resized(surface) => self.resized(surface, turn),
             Event::KeyDown { code, repeat: false, .. } if code == STEP_KEY => self.step(turn),
+            Event::KeyDown { key, .. } if console => self.pressed(&key, turn),
+            Event::Text { text } if console => {
+                self.console.typed(&text);
+                self.write_console(turn)
+            }
             _ => Ok(()),
         }
     }
@@ -54,7 +71,10 @@ impl Overlay {
         self.surface = surface;
         self.make(turn)?;
         self.write_surface(turn)?;
-        self.move_readout(turn)?;
+        for role in TextRole::ALL {
+            self.move_text(role, turn)?;
+        }
+        self.write_console(turn)?;
         if self.stop.draws() {
             self.write_chart(turn)?;
         }
@@ -63,19 +83,35 @@ impl Overlay {
     }
 
     /// Steps to the next stop: shown, it hears each `Tick` and each frame's statistics and draws its list, written for
-    /// the stop at once; hidden, it hears neither and draws an empty list.
+    /// the stop at once; hidden, it hears neither and draws an empty list. Opening the console takes the window's key
+    /// focus and clears the count of warnings and errors, which the console shows; closing it gives the focus up. The
+    /// text the backtick typed, which comes next, is dropped.
     fn step(&mut self, turn: &mut Turn<'_, Self, Heard>) -> Result<(), Fault> {
         let was = self.stop;
         self.stop = was.next();
+        self.console.stepped();
         match (was.draws(), self.stop.draws()) {
             (false, true) => {
                 turn.subscribe::<Tick>();
                 turn.to(path::<Renderer>(())).send(&SubscribeFrameStats)?;
                 self.figures_due_nanos = 0;
+                self.logs_due_nanos = 0;
             }
             (true, false) => {
                 turn.unsubscribe::<Tick>();
                 turn.to(path::<Renderer>(())).send(&UnsubscribeFrameStats)?;
+            }
+            (false, false) | (true, true) => {}
+        }
+        match (was.console(), self.stop.console()) {
+            (false, true) => {
+                turn.to(path::<Window>(self.window)).send(&TakeKeyFocus)?;
+                self.alerts.clear();
+                self.write_alerts(turn)?;
+                self.write_console(turn)?;
+            }
+            (true, false) => {
+                turn.to(path::<Window>(self.window)).send(&ReleaseKeyFocus)?;
             }
             (false, false) | (true, true) => {}
         }
@@ -86,9 +122,18 @@ impl Overlay {
         self.send_list(turn)
     }
 
+    /// Closes the console back to the band, giving up the window's key focus.
+    pub(super) fn close(&mut self, turn: &mut Turn<'_, Self, Heard>) -> Result<(), Fault> {
+        self.stop = Stop::Band;
+        turn.to(path::<Window>(self.window)).send(&ReleaseKeyFocus)?;
+        self.write_chart(turn)?;
+
+        self.send_list(turn)
+    }
+
     /// Sends the overlay's list for the window's main pass: what it has placed, the panels and chart first and the
-    /// figures over them, while it is shown; nothing while it is hidden. A list is drawn after the pass's loose
-    /// placements, so over what the program drew loose there (ADR-0031).
+    /// texts over them, the console's only at its stop, while it is shown; nothing while it is hidden. A list is drawn
+    /// after the pass's loose placements, so over what the program drew loose there (ADR-0031).
     pub(super) fn send_list<S, I>(&self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<Tells<Path<Renderer>, DrawList>, I>,
@@ -98,18 +143,22 @@ impl Overlay {
             if let Chart::Made { placement, .. } = self.chart {
                 placements.push(placement);
             }
-            if let Readout::Made { placement, .. } = self.readout {
-                placements.push(placement);
-            }
+            let console = self.stop.console();
+            let roles = if console {
+                &TextRole::ALL[..]
+            } else {
+                &TextRole::ALL[..2]
+            };
+            placements.extend(roles.iter().filter_map(|role| self.texts.placement(*role)));
         }
         turn.to(path::<Renderer>(())).send(&DrawList::of::<Main>(Frame::Main(self.window), placements))?;
 
         Ok(())
     }
 
-    /// Writes every record of the placement for the stop, the layout, and the cycles kept, in one write into a buffer
-    /// the overlay keeps, and cuts the records to as many when there are fewer than were last written. Nothing while
-    /// the placement is not made.
+    /// Writes every record of the placement for the stop, the layout, the cycles kept, the marks, and the cursor at
+    /// the console's stop, in one write into a buffer the overlay keeps, and cuts the records to as many when there
+    /// are fewer than were last written. Nothing while the placement is not made.
     pub(super) fn write_chart<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<Tells<Path<Renderer>, WriteInstances>, I>,
@@ -122,6 +171,10 @@ impl Overlay {
         let mut records = turn.buffer(chart::records_bytes(layout));
         let (columns, slide) = (self.frames.columns(count), self.frames.slide(count));
         chart::records(&mut records, layout, self.stop, columns, slide, self.budget);
+        chart::marks(&mut records, layout, slide, self.marks.times());
+        if self.stop.console() {
+            chart::cursor(&mut records, layout, self.console.cursor_column());
+        }
         let count = u32::try_from(records.len() / RECORD_BYTES as usize).unwrap_or(u32::MAX);
         let Ok(records) = turn.put(records) else {
             turn.log(Level::Warn, "the overlay's chart was not written: its records were not put");
@@ -163,50 +216,72 @@ impl Overlay {
         Ok(())
     }
 
-    /// Moves the figures' text to where the layout puts it. Nothing while it is not placed.
-    pub(super) fn move_readout<S, I>(&self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
-    where
-        S: Allows<Tells<Path<Renderer>, MoveText>, I>,
-    {
-        let Readout::Made { placement, .. } = self.readout else {
-            return Ok(());
-        };
-        let at = Layout::of(self.surface).figures_at();
-        turn.to(path::<Renderer>(())).send(&MoveText {
-            placement,
-            at,
-            layer: Layer::Over,
-            opacity: 1.0,
-            clip: Clip::None,
-        })?;
+    /// Reads what the engine logged since it was last read: each entry but a debug line printed into the
+    /// scrollback, and while the console is closed each warning and error counted for the band.
+    fn read_logs<S>(&mut self, turn: &Turn<'_, Self, S>) {
+        let recent = turn.recent(self.logs_since);
+        let (next, left) = (recent.next, recent.left);
+        let logged: Vec<Logged> = recent
+            .entries
+            .iter()
+            .map(|named| Logged::of(named.recorded.step(), &named.actor, named.recorded.entry()))
+            .collect();
+        self.logs_since = next;
 
-        Ok(())
+        let view = self.view();
+        let open = self.stop.console();
+        if left > 0 {
+            self.console.missed(left, view);
+        }
+        for logged in &logged {
+            if !open {
+                self.alerts.count(logged.level);
+            }
+            let debug = logged.level == Level::Debug;
+            if !debug {
+                self.console.logged(logged, view);
+            }
+        }
     }
 }
 
-/// Each cycle's time is kept, the chart written again, and the figures worked out again when they are due, their text
-/// written only when what it shows changes. Heard only while the overlay is shown.
+/// Each cycle's time is kept, the marks told since the last stamped with it, the chart written again, the figures worked out again when they are due, their text
+/// written only when what it shows changes, and the engine's log read when it is due. Heard only while the overlay is
+/// shown.
 impl Handles<On<Tick>> for Overlay {
-    type Sends = (Tells<Path<Renderer>, WriteInstances>, Tells<Path<Renderer>, WriteText>);
+    type Sends =
+        (Tells<Path<Renderer>, WriteInstances>, Tells<Path<Renderer>, WriteText>, Tells<Path<Renderer>, MoveText>);
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.frames.push(&tick);
+        self.marks.keep_since(tick.elapsed_nanos);
+        let stamped = self.marks.stamp(tick.elapsed_nanos);
         self.write_chart(turn)?;
+        if !stamped.is_empty() {
+            // Nanoseconds of the program's time, which an f64 holds closely enough to show in tenths of a second.
+            #[allow(clippy::cast_precision_loss)]
+            let at_seconds = tick.elapsed_nanos as f64 / 1e9;
+            let view = self.view();
+            for text in &stamped {
+                self.console.marked(text, at_seconds, view);
+            }
+            self.write_console(turn)?;
+        }
 
-        let due = tick.elapsed_nanos >= self.figures_due_nanos;
-        if !due {
-            return Ok(());
+        let figures_due = tick.elapsed_nanos >= self.figures_due_nanos;
+        if figures_due {
+            self.figures_due_nanos = tick.elapsed_nanos.saturating_add(FIGURES_EVERY_NANOS);
+            self.figures = self.frames.figures();
+            self.write_text(TextRole::Figures, turn)?;
         }
-        self.figures_due_nanos = tick.elapsed_nanos.saturating_add(FIGURES_EVERY_NANOS);
-        let figures = self.frames.figures();
-        let Readout::Made { text, shown, .. } = &mut self.readout else {
-            return Ok(());
-        };
-        if figures == *shown {
-            return Ok(());
+
+        let logs_due = tick.elapsed_nanos >= self.logs_due_nanos;
+        if logs_due {
+            self.logs_due_nanos = tick.elapsed_nanos.saturating_add(LOGS_EVERY_NANOS);
+            self.read_logs(turn);
+            self.write_alerts(turn)?;
+            self.write_console(turn)?;
         }
-        turn.to(path::<Renderer>(())).send(&WriteText { text: *text, runs: figures.runs() })?;
-        *shown = figures;
 
         Ok(())
     }

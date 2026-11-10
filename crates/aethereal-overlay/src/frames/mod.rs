@@ -48,11 +48,13 @@ pub struct Column {
 }
 
 /// Where the columns stand at the newest cycle: the span it fell in, drawn at the chart's right edge, and how far
-/// through that span it came, from zero to under one, the share of a column's width every column is moved left by.
+/// through that span it came, from zero to under one, the share of a column's width every column is moved left by;
+/// and how long a span is, so a moment between columns, a mark's, is placed among them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Slide {
     pub newest: u64,
     pub through: f32,
+    pub span_nanos: u64,
 }
 
 /// The columns some cycle fell in, from the newest back to the oldest the chart draws, each worked out as it is asked
@@ -136,7 +138,7 @@ impl FrameTimes {
         #[allow(clippy::cast_precision_loss)]
         let through = (newest_nanos % span_nanos) as f32 / span_nanos as f32;
 
-        Slide { newest: newest_nanos / span_nanos, through }
+        Slide { newest: newest_nanos / span_nanos, through, span_nanos }
     }
 
     /// The figures over the window, by nearest rank: zero for each while no cycle has been heard.

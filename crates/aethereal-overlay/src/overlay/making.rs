@@ -1,11 +1,11 @@
 //! How the overlay makes what it draws, once its window has said its size (ADR-0021, ADR-0023, ADR-0052): its one
 //! placement, one ask after another, each answer carrying what was made so far — the shape of the window's main pass,
 //! the unit square, the program, room for the records, the uniform of the surface's size, and the placement, joined
-//! to the pass listed — and beside it the text of the chart's figures, made and placed listed.
+//! to the pass listed — and beside it each of its texts, made and placed listed.
 
-use super::{Chart, Overlay, Readout};
+use super::texts::{Text, TextRole};
+use super::{Chart, Overlay};
 use crate::chart::{self, MOST_RECORDS, SHADE};
-use crate::frames::Figures;
 use crate::layout::Layout;
 use aethereal_actor::{Allows, Answer, Answered, Asks, Fault, Handles, Level, Path, Tells, Turn, path};
 use aethereal_data::Plain;
@@ -21,7 +21,8 @@ use aethereal_render::program::{
 };
 use aethereal_render::shape::Shape;
 use aethereal_render::text::{
-    Align, Clip, CreateText, Font, Layer, MoveText, Outline, PlaceText, TextId, TextJoin, TextMade, TextPlaced, Wrap,
+    Align, CreateText, Font, Layer, MoveText, Outline, PlaceText, TextId, TextJoin, TextMade, TextPlaced, Wrap,
+    WriteText,
 };
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use core::fmt::Debug;
@@ -70,42 +71,49 @@ pub struct ChartMade {
     uniforms: UniformsId,
 }
 
-/// The figures' text was asked for.
+/// One of the overlay's texts was asked for.
 #[derive(Plain)]
-#[kind(name = "aether.overlay.readout_asked")]
-pub struct ReadoutAsked;
+#[kind(name = "aether.overlay.text_asked")]
+pub struct TextAsked {
+    role: TextRole,
+}
 
-/// The figures' text was placed, with the text.
+/// One of the overlay's texts was placed, with the text.
 #[derive(Plain)]
-#[kind(name = "aether.overlay.readout_made")]
-pub struct ReadoutMade {
+#[kind(name = "aether.overlay.text_ready")]
+pub struct TextReady {
+    role: TextRole,
     text: TextId,
 }
 
 impl Overlay {
-    /// Asks for the first of what the overlay draws, its placement's pass's shape and the figures' text, unless they
-    /// were asked for already: once the window has said its size, which the text is sized by.
+    /// Asks for the first of what the overlay draws, its placement's pass's shape and each of its texts, unless they
+    /// were asked for already: once the window has said its size, which the texts are sized by.
     pub(super) fn make<S, I, J>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<Asks<Path<Renderer>, ShapeOf, ChartAsked>, I>
-            + Allows<Asks<Path<Renderer>, CreateText, ReadoutAsked>, J>,
+            + Allows<Asks<Path<Renderer>, CreateText, TextAsked>, J>,
     {
         if matches!(self.chart, Chart::Unasked) {
             let shape = ShapeOf::pass::<Main>(Frame::Main(self.window));
             turn.to(path::<Renderer>(())).ask(&shape, &ChartAsked)?;
             self.chart = Chart::Making;
         }
-        if matches!(self.readout, Readout::Unasked) {
+        for role in TextRole::ALL {
+            let unasked = matches!(self.texts.of(role), Text::Unasked);
+            if !unasked {
+                continue;
+            }
             let text = CreateText {
                 font: Font::Mono,
                 size: Layout::of(self.surface).text_pixels(),
-                runs: Figures::default().runs(),
+                runs: self.runs(role),
                 wrap: Wrap::None,
                 align: Align::Left,
                 outline: Outline::None,
             };
-            turn.to(path::<Renderer>(())).ask(&text, &ReadoutAsked)?;
-            self.readout = Readout::Making;
+            turn.to(path::<Renderer>(())).ask(&text, &TextAsked { role })?;
+            *self.texts.of_mut(role) = Text::Making;
         }
 
         Ok(())
@@ -267,48 +275,50 @@ impl Handles<Answer<Placed, ChartMade>> for Overlay {
     }
 }
 
-impl Handles<Answer<TextMade, ReadoutAsked>> for Overlay {
-    type Sends = (Asks<Path<Renderer>, PlaceText, ReadoutMade>,);
+impl Handles<Answer<TextMade, TextAsked>> for Overlay {
+    type Sends = (Asks<Path<Renderer>, PlaceText, TextReady>,);
 
     fn handle(
         &mut self,
-        (answered, _): (Answered<TextMade>, ReadoutAsked),
+        (answered, TextAsked { role }): (Answered<TextMade>, TextAsked),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         let Answered::Yes(TextMade::Made(text)) = answered else {
-            Self::unmade(turn, "figures' text", &answered);
+            Self::unmade(turn, &format!("{role:?} text"), &answered);
             return Ok(());
         };
+        let (at, clip) = self.place_of(role);
         let place = PlaceText {
             text,
-            at: Layout::of(self.surface).figures_at(),
+            at,
             layer: Layer::Over,
             opacity: 1.0,
-            clip: Clip::None,
+            clip,
             joins: vec![TextJoin::listed::<Main>(Frame::Main(self.window))],
         };
-        turn.to(path::<Renderer>(())).ask(&place, &ReadoutMade { text })?;
+        turn.to(path::<Renderer>(())).ask(&place, &TextReady { role, text })?;
 
         Ok(())
     }
 }
 
-/// The text is drawn from here. It is moved to where the layout puts it now, as the window may have been resized
-/// while it was placed, and when the overlay is shown its list is sent.
-impl Handles<Answer<TextPlaced, ReadoutMade>> for Overlay {
-    type Sends = (Tells<Path<Renderer>, MoveText>, Tells<Path<Renderer>, DrawList>);
+/// The text is drawn from here. It is written with what it shows now and moved to where the layout puts it now, as
+/// either may have changed while it was made, and when the overlay is shown its list is sent.
+impl Handles<Answer<TextPlaced, TextReady>> for Overlay {
+    type Sends = (Tells<Path<Renderer>, WriteText>, Tells<Path<Renderer>, MoveText>, Tells<Path<Renderer>, DrawList>);
 
     fn handle(
         &mut self,
-        (answered, made): (Answered<TextPlaced>, ReadoutMade),
+        (answered, TextReady { role, text }): (Answered<TextPlaced>, TextReady),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         let Answered::Yes(TextPlaced::Made(placement)) = answered else {
-            Self::unmade(turn, "figures' placement", &answered);
+            Self::unmade(turn, &format!("{role:?} text's placement"), &answered);
             return Ok(());
         };
-        self.readout = Readout::Made { text: made.text, placement, shown: Figures::default() };
-        self.move_readout(turn)?;
+        *self.texts.of_mut(role) = Text::Made { text, placement, shown: Vec::new() };
+        self.write_text(role, turn)?;
+        self.move_text(role, turn)?;
         if self.stop.draws() {
             self.send_list(turn)?;
         }

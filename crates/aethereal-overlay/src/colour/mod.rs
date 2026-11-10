@@ -5,6 +5,7 @@
 #[cfg(test)]
 mod tests;
 
+use aethereal_data::Plain;
 use aethereal_render::text::Colour;
 
 /// The panels, drawn at [`PANEL_OPACITY`] so the program shows behind them: `#15181b`.
@@ -13,23 +14,26 @@ pub const SLATE: Swatch = Swatch::hex(0x15_18_1b);
 /// Text: `#e4e0d6`.
 pub const BONE: Swatch = Swatch::hex(0xe4_e0_d6);
 
-/// Labels, and the chart's budget line: `#8d918f`.
+/// Labels, the chart's budget line, a log line's step and actor, and an info line: `#8d918f`.
 pub const STONE: Swatch = Swatch::hex(0x8d_91_8f);
 
-/// Healthy lines and fills: a frame within its budget. `#9dbfb0`.
+/// Healthy lines and fills, a frame within its budget, and the command typed at the console: `#9dbfb0`.
 pub const LICHEN: Swatch = Swatch::hex(0x9d_bf_b0);
 
-/// A frame over its budget: `#d08a4c`.
+/// Marks, on the chart and in the scrollback: `#d9b86c`.
+pub const OCHRE: Swatch = Swatch::hex(0xd9_b8_6c);
+
+/// A frame over its budget, and a warning: `#d08a4c`.
 pub const RUST: Swatch = Swatch::hex(0xd0_8a_4c);
 
-/// A frame over twice its budget: `#cc5f52`.
+/// A frame over twice its budget, an error, and a refusal: `#cc5f52`.
 pub const BRICK: Swatch = Swatch::hex(0xcc_5f_52);
 
 /// How opaque the panels are drawn: 85%, so the program shows behind them.
 pub const PANEL_OPACITY: f32 = 0.85;
 
 /// A colour as the ADR's table writes it: sRGB, eight bits a channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Swatch {
     red: u8,
     green: u8,
