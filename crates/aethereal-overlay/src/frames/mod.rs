@@ -3,15 +3,14 @@
 //!
 //! A column covers a fixed span of the program's time, the `n`th from `n` spans to `n + 1`, so once its span has
 //! passed what it holds never changes; the chart slides the columns left as the program's time passes, rather than
-//! cutting the cycles again from the newest, which would hop a spike from column to column. Each column is the candle
-//! its cycles come to, worked out once as its span passes (`bins`), from a bounded sample of them (`bin`).
+//! cutting the cycles again from the newest, which would hop a spike from column to column. Each column is the median
+//! and the slowest of its cycles, worked out once as its span passes (`bins`), the median from a bounded sample of
+//! them (`bin`).
 
 mod bin;
 mod bins;
 #[cfg(test)]
 mod tests;
-
-pub use bin::Candle;
 
 use crate::colour::{BONE, STONE};
 use aethereal_actor::Tick;
@@ -52,12 +51,13 @@ impl Default for FrameTimes {
 }
 
 /// One column of the chart that a cycle fell in: which span of the program's time it covers, counted from its start,
-/// and the candle its cycles come to, so a spike reads however many cycles a column holds, and so does a stretch of
-/// slow ones.
+/// and the median and the slowest of its cycles, so a stretch of slow cycles reads in the median however many cycles a
+/// column holds, and a spike among healthy ones in the slowest.
 #[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Column {
     pub span: u64,
-    pub candle: Candle,
+    pub median_nanos: u64,
+    pub slowest_nanos: u64,
 }
 
 /// Where the columns stand at the newest cycle: the span it fell in, drawn at the chart's right edge, and how far
@@ -106,10 +106,10 @@ impl FrameTimes {
         WINDOW_NANOS.div_ceil(u64::from(count.max(1)))
     }
 
-    /// The columns of a chart of `count`, each the span of the program's time it covers and the candle its cycles
-    /// come to: only those some cycle fell in, from the newest, back to the one `count + 1` spans before it, as the
-    /// chart's width holds a little more than `count` columns and the oldest two slide off its left edge. A chart cut
-    /// into another count than it was last is binned again from the cycles kept.
+    /// The columns of a chart of `count`, each the span of the program's time it covers and the median and the
+    /// slowest of its cycles: only those some cycle fell in, from the newest, back to the one `count + 1` spans before
+    /// it, as the chart's width holds a little more than `count` columns and the oldest two slide off its left edge. A
+    /// chart cut into another count than it was last is binned again from the cycles kept.
     pub fn columns(&mut self, count: u32) -> impl Iterator<Item = Column> + '_ {
         let span_nanos = Self::span_nanos(count);
         let recut = self.bins.span_nanos() != span_nanos;

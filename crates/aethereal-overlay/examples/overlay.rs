@@ -10,9 +10,8 @@
 //! arguments to start this engine with, then run `cargo run --release -p aethereal-overlay --example overlay -- <those
 //! arguments> --name overlay`; or spawn it from the hub's store. A link's frames are at most 16 MiB here, so an image
 //! of a large frame fits one. `--size 1920x1080` sizes its window, `--mode` shows it so as it opens, and `--title`
-//! names it, by default `Aethereal overlay band (press backtick)`; `--chart bars` draws the frame chart's columns as
-//! bars of their slowest cycle in place of candles; `--help` lists every flag it reads, each also read from its
-//! `OVERLAY_` variable.
+//! names it, by default `Aethereal overlay band (press backtick)`; `--help` lists every flag it reads, each also read
+//! from its `OVERLAY_` variable.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints how it ended.
 
@@ -22,7 +21,7 @@ use aethereal_chassis_headless::Exit;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_files::Files;
 use aethereal_link::{Link, LinkSettings};
-use aethereal_overlay::{Overlay, OverlaySettings};
+use aethereal_overlay::Overlay;
 use aethereal_pace::{PaceTool, Pacer};
 use aethereal_render::{CaptureTool, RecordTool, Renderer, StatsTool, TargetTool};
 use aethereal_substrate::{EngineSettings, Host};
@@ -95,11 +94,11 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
             Tools,
         >>()
         .flags(|flags| {
-            flags
-                .flag("size", 's', WindowsSettings::FIRST_SIZE)
-                .flag("mode", 'm', WindowsSettings::FIRST_MODE)
-                .flag("title", 't', WindowSettings::TITLE.in_element::<WindowsSettings>(0))
-                .flag("chart", 'c', OverlaySettings::CHART)
+            flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE).flag(
+                "title",
+                't',
+                WindowSettings::TITLE.in_element::<WindowsSettings>(0),
+            )
         })
         .launch("overlay")?)
 }

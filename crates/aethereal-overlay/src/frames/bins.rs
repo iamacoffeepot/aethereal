@@ -1,6 +1,7 @@
 //! The chart's columns at one span, kept as the cycles come (ADR-0053: The three stops): each column whose span has
-//! passed as the candle it came to, worked out once as it closed, and the newest, still open, as the cycles it has so
-//! far. A chart cut into another count of columns, as the window is resized, is binned again from the cycles kept.
+//! passed as its median and slowest cycle, worked out once as it closed, and the newest, still open, as the cycles it
+//! has so far. A chart cut into another count of columns, as the window is resized, is binned again from the cycles
+//! kept.
 
 use super::Column;
 use super::bin::Bin;
@@ -36,7 +37,7 @@ impl Bins {
     }
 
     /// Takes in a cycle `delta_nanos` long that ended `elapsed_nanos` into the program: into the open column when it
-    /// falls in its span, or else into a new one, the open column closed as the candle it came to.
+    /// falls in its span, or else into a new one, the open column closed as what it came to.
     pub fn take(&mut self, elapsed_nanos: u64, delta_nanos: u64) {
         let span = elapsed_nanos / self.span_nanos.max(1);
         if let Open::Filling(bin) = &mut self.open {
@@ -44,7 +45,7 @@ impl Bins {
                 bin.take(delta_nanos);
                 return;
             }
-            self.closed.push_back(Column { span: bin.span(), candle: bin.candle() });
+            self.closed.push_back(bin.column());
         }
         self.open = Open::Filling(Bin::first(span, delta_nanos));
     }
@@ -64,7 +65,7 @@ impl Bins {
     pub fn newest_first(&self) -> impl Iterator<Item = Column> + '_ {
         let open = match &self.open {
             Open::Nothing => None,
-            Open::Filling(bin) => Some(Column { span: bin.span(), candle: bin.candle() }),
+            Open::Filling(bin) => Some(bin.column()),
         };
 
         open.into_iter().chain(self.closed.iter().rev().copied())

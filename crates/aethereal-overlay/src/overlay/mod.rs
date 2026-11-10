@@ -13,7 +13,6 @@ pub use making::{
     ChartAsked, ChartInstanced, ChartMade, ChartMeshed, ChartProgrammed, ChartShaped, TextAsked, TextReady,
 };
 
-use crate::chart::ChartStyle;
 use crate::console::{Alerts, Console};
 use crate::frames::{Figures, FrameTimes};
 use crate::marks::Marks;
@@ -45,39 +44,27 @@ const FIGURES_EVERY_NANOS: u64 = 250_000_000;
 /// How often the engine's recent log is read while the overlay is shown: about once a second (ADR-0053).
 const LOGS_EVERY_NANOS: u64 = 1_000_000_000;
 
-/// The overlay draws on the first window the window root opened, its chart in the style its settings name.
+/// The overlay draws on the first window the window root opened.
 impl<H: Host> Bootstrap<H> for Overlay {
     const SECTION: &'static str = "overlay";
-    type Settings = OverlaySettings;
+    type Settings = ();
     type Needs = (InitialWindows,);
     type Provides = ();
 
     async fn bootstrap(
-        settings: OverlaySettings,
+        (): (),
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), OverlayConfig { window: windows.first(), chart: settings.chart })
+        cx.begin(&(), OverlayConfig { window: windows.first() })
     }
 }
 
-/// How the overlay is set up: its section, `overlay` (ADR-0028). It suggests no flag, as it is listed in programs
-/// with flags of their own; a program that wants one adds it.
-#[derive(Plain, Default)]
-#[kind(name = "aether.overlay.settings")]
-#[settings]
-pub struct OverlaySettings {
-    /// How the frame chart draws each column: `candles`, a wick from its fastest cycle to its slowest and a body over
-    /// its middle half; or `bars`, a bar to its slowest cycle.
-    pub chart: ChartStyle,
-}
-
-/// The overlay's config: the window it draws on, and how its chart draws each column.
+/// The overlay's config: the window it draws on.
 #[derive(Plain)]
 #[kind(name = "aether.overlay.config")]
 pub struct OverlayConfig {
     window: WindowId,
-    chart: ChartStyle,
 }
 
 /// The dev overlay: it steps through its stops at each backtick its window hears, and while it is shown keeps each
@@ -94,8 +81,6 @@ pub struct Overlay {
     /// and nothing is made or drawn before then.
     surface: Surface,
     frames: FrameTimes,
-    /// How the chart draws each column, as the overlay's settings said.
-    style: ChartStyle,
     /// The frame time the chart measures each cycle against, as the renderer's statistics last said: the program's own,
     /// which follows its present mode and the display its window is on (ADR-0053: Frame statistics). Until they first
     /// say, the fallback refresh, drawn as a reference.
@@ -182,7 +167,6 @@ impl Actor for Overlay {
             stop: Stop::Hidden,
             surface: Surface { width: 1, height: 1, scale: 1.0 },
             frames: FrameTimes::default(),
-            style: config.chart,
             budget: FrameBudget::UNTOLD,
             chart: Chart::Unasked,
             texts: Texts::default(),

@@ -8,8 +8,7 @@ mod tests;
 use aethereal_data::Plain;
 use aethereal_render::text::Colour;
 
-/// The band's panel, drawn at [`PANEL_OPACITY`] so the program shows behind it, and the median across a candle:
-/// `#15181b`.
+/// The band's panel, drawn at [`PANEL_OPACITY`] so the program shows behind it: `#15181b`.
 pub const SLATE: Swatch = Swatch::hex(0x15_18_1b);
 
 /// The console's scrollback, a step lighter than the band's slate, about five points of lightness, so the two panels

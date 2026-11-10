@@ -4,10 +4,11 @@
 //!
 //! It draws with the renderer's meshes and texts (ADR-0021, ADR-0052), in a draw list of its own in the window's main
 //! pass, which is drawn after every placement joined loose, so over what the program drew there (ADR-0031). The band's
-//! left column holds the frame chart: sixty seconds of each cycle's time, newest at the right, each column a candle of
-//! its cycles, or a bar of its slowest as [`ChartStyle`] says, against the budget the renderer's frame statistics bring
-//! as a dashed line, with the median, p90, p99, and the longest beneath it, and an ochre tick at each mark. The band's
-//! right end counts the warnings and errors logged since the console was last opened.
+//! left column holds the frame chart: sixty seconds of each cycle's time, newest at the right, each column a bar to the
+//! median of its cycles with a line to its slowest, on a scale logarithmic in a cycle's time from a quarter of the
+//! budget the renderer's frame statistics bring to thirty-two of it, the budget a dashed line, with the median, p90,
+//! p99, and the longest beneath it, and an ochre tick at each mark. The band's right end counts the warnings and errors
+//! logged since the console was last opened.
 //!
 //! The console holds the window's key focus while it is open, and with it the wheel, which scrolls its scrollback; a
 //! scroll bar at its right edge shows where the view stands. Its line calls the engine's tools, held by the tools
@@ -28,6 +29,5 @@ mod scrollbar;
 mod stop;
 mod tools;
 
-pub use chart::ChartStyle;
-pub use overlay::{Overlay, OverlayConfig, OverlaySettings};
+pub use overlay::{Overlay, OverlayConfig};
 pub use stop::Stop;

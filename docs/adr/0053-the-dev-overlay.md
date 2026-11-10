@@ -33,6 +33,8 @@ Called::Output ── schema ── Form, printed ──> scrollback
 - **The band:** a strip across the top of the window, about a tenth of its height, in two columns.
   - **Left, one 60-second axis, newest at the right, so a spike reads straight down:**
     - the frame chart: each cycle's `delta_nanos`, with the budget as a dashed line, and the median, p90, p99, and the most over the 60 seconds beneath it;
+      - each column, a fixed span of time, is a bar to the median of its cycles, coloured by the median against the budget, with a 1 px line from the bar up to its slowest cycle when that is more than 15% above the median, coloured by the slowest;
+      - the vertical scale is logarithmic and relative to the budget: a quarter of the budget at the foot, 32 budgets at the top, so the budget stands 2/7 of the way up and every doubling is another 1/7, whatever the budget is; a faint line marks twice the budget, where brick begins;
     - GPU time per frame, stacked by named pass, with the share of the frame the GPU was busy;
     - one line each for draws, triangles, bytes uploaded, and GPU memory.
   - **Right:** the memory meters, each a bar against its limit where it has one, and the GPU adapter, its backend, and its driver.

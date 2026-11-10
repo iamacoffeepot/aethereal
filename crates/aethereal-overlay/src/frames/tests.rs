@@ -1,4 +1,4 @@
-use super::bin::{BIN_SAMPLES, Bin, Candle};
+use super::bin::{BIN_SAMPLES, Bin};
 use super::{Column, Figures, FrameTimes, Slide, WINDOW_NANOS};
 use aethereal_actor::Tick;
 use core::iter;
@@ -24,22 +24,27 @@ fn extend(times: &mut FrameTimes, deltas: impl IntoIterator<Item = u64>) {
     }
 }
 
-/// The candle of each column of a chart of `count` whose span ended before the newest's, by its span.
-fn finished(times: &mut FrameTimes, count: u32) -> BTreeMap<u64, Candle> {
+/// Each column of a chart of `count` whose span ended before the newest's, by its span.
+fn finished(times: &mut FrameTimes, count: u32) -> BTreeMap<u64, Column> {
     let newest = times.slide(count).newest;
 
-    times.columns(count).filter(|column| column.span < newest).map(|column| (column.span, column.candle)).collect()
+    times.columns(count).filter(|column| column.span < newest).map(|column| (column.span, column)).collect()
 }
 
-/// The candle of a column of cycles each `delta_nanos` long, in order.
-fn candle(deltas: impl IntoIterator<Item = u64>) -> (Candle, usize) {
+/// The column of cycles each `delta_nanos` long, in order, and how many cycles its sample kept.
+fn column(deltas: impl IntoIterator<Item = u64>) -> (Column, usize) {
     let mut deltas = deltas.into_iter();
     let mut bin = Bin::first(0, deltas.next().unwrap_or_default());
     for delta_nanos in deltas {
         bin.take(delta_nanos);
     }
 
-    (bin.candle(), bin.kept())
+    (bin.column(), bin.kept())
+}
+
+/// A column of one cycle `nanos` long, of `span`.
+const fn flat(span: u64, nanos: u64) -> Column {
+    Column { span, median_nanos: nanos, slowest_nanos: nanos }
 }
 
 /// The figures are the nearest ranks of the cycles kept, so a percentile read off by one rank, or the median taken
@@ -77,20 +82,20 @@ fn figures_are_rounded_as_shown() {
 }
 
 /// Each cycle falls in the column of the span of the program's time it ended in, newest first, and a column keeps the
-/// fastest and the slowest of the cycles in it, so a column cut from the newest cycle rather than from the program's
+/// slowest of the cycles in it, so a column cut from the newest cycle rather than from the program's
 /// start, or a spike averaged away, is caught.
 #[test]
 fn columns_are_spans_of_the_programs_time_and_keep_the_slowest() {
     // Sixty columns of a second each. The cycles end 5, 6.2, 6.5, and 6.6 seconds in: the first in the sixth second's
-    // column; the other three in the seventh's, the slowest of them 1.2 seconds and the fastest 0.1.
+    // column; the other three in the seventh's, the slowest of them 1.2 seconds and the median 0.3.
     let mut frames = times([5_000 * MILLI, 1_200 * MILLI, 300 * MILLI, 100 * MILLI]);
 
     let columns: Vec<Column> = frames.columns(60).collect();
 
     let spans: Vec<u64> = columns.iter().map(|column| column.span).collect();
     assert_eq!(spans, vec![6, 5]);
-    assert_eq!((columns[0].candle.fastest, columns[0].candle.slowest), (100 * MILLI, 1_200 * MILLI));
-    assert_eq!(columns[1].candle, Candle::flat(5_000 * MILLI));
+    assert_eq!((columns[0].median_nanos, columns[0].slowest_nanos), (300 * MILLI, 1_200 * MILLI));
+    assert_eq!(columns[1], flat(5, 5_000 * MILLI));
 }
 
 /// A chart cut into another count of columns, as the window is resized, is binned again from the cycles kept: the same
@@ -110,42 +115,38 @@ fn a_chart_cut_again_bins_the_cycles_again() {
     assert!(again.len() > 2, "{again:?} are too few to tell");
 }
 
-/// A column's candle is its fastest and slowest cycle and the nearest ranks of its quartiles and median, and a column
-/// of one cycle is that cycle throughout, so a quartile read off by one rank, or a candle of one cycle that loses it,
-/// is caught.
+/// A column is the nearest rank of its cycles' median and its slowest cycle, and a column of one cycle is that cycle
+/// for both, so a median read off by one rank, taken as the mean, or a column of one cycle that loses it, is caught.
 #[test]
-fn a_candle_is_the_ranks_of_its_cycles() {
-    // Sixteen cycles of 1 to 16 milliseconds, as a column at 60 Hz holds, out of order.
-    let (sixteen, _) = candle((1..=16).rev().map(|millis| millis * MILLI));
-    let (one, _) = candle([7 * MILLI]);
+fn a_column_is_its_median_and_its_slowest() {
+    // Sixteen cycles of 1 to 16 milliseconds, as a column at 60 Hz holds, out of order, and a spike among them.
+    let (sixteen, _) = column((1..=16).rev().map(|millis| millis * MILLI).chain([90 * MILLI]));
+    let (one, _) = column([7 * MILLI]);
 
-    let expected =
-        Candle { fastest: MILLI, lower: 4 * MILLI, median: 8 * MILLI, upper: 12 * MILLI, slowest: 16 * MILLI };
-    assert_eq!(sixteen, expected);
-    assert_eq!(one, Candle::flat(7 * MILLI));
+    assert_eq!((sixteen.median_nanos, sixteen.slowest_nanos), (9 * MILLI, 90 * MILLI));
+    assert_eq!(one, flat(0, 7 * MILLI));
 }
 
-/// A column of more cycles than its sample holds keeps its fastest and slowest exactly, a spike among the cycles the
-/// sample passes over included, keeps no more than its sample's room, and its quartiles and median stay where the
-/// cycles' are, so a sample that grows without bound, drops the spike, or keeps only the column's first cycles is
-/// caught.
+/// A column of more cycles than its sample holds keeps its slowest exactly, a spike among the cycles the sample passes
+/// over included, keeps no more than its sample's room, and its median stays where the cycles' is, so a sample that
+/// grows without bound, drops the spike, or keeps only the column's first cycles is caught.
 #[test]
-fn a_column_past_its_sample_keeps_its_ends_exactly() {
-    // A thousand cycles of 1 to 1000 milliseconds, the last, which the sample passes over, a five-second spike, and
-    // the fourth, also passed over, half a millisecond.
-    let deltas = (1..=1_000_u64).map(|millis| match millis {
-        4 => MILLI / 2,
-        1_000 => 5_000 * MILLI,
-        _ => millis * MILLI,
+fn a_column_past_its_sample_keeps_its_slowest_exactly() {
+    // A thousand cycles of 1 to 1000 milliseconds, the last, which the sample passes over, a five-second spike.
+    let deltas = (1..=1_000_u64).map(|millis| {
+        if millis == 1_000 {
+            5_000 * MILLI
+        } else {
+            millis * MILLI
+        }
     });
 
-    let (candle, kept) = candle(deltas);
+    let (column, kept) = column(deltas);
 
     assert!(kept <= BIN_SAMPLES, "{kept} cycles kept");
-    assert_eq!((candle.fastest, candle.slowest), (MILLI / 2, 5_000 * MILLI));
-    let near = |nanos: u64, millis: u64| nanos.abs_diff(millis * MILLI) <= 20 * MILLI;
-    let quartiles = near(candle.lower, 250) && near(candle.median, 500) && near(candle.upper, 750);
-    assert!(quartiles, "{candle:?} is not near the cycles' quartiles");
+    assert_eq!(column.slowest_nanos, 5_000 * MILLI);
+    let near = column.median_nanos.abs_diff(500 * MILLI) <= 20 * MILLI;
+    assert!(near, "{column:?} is not near the cycles' median");
 }
 
 /// A column whose span has passed keeps its height as the program's time moves on by part of a span, across the start
@@ -163,7 +164,7 @@ fn a_finished_column_keeps_its_height_as_time_moves_on() {
     let after = finished(&mut frames, 60);
 
     assert_eq!(before.len(), 10, "{before:?} are not the ten seconds before the newest");
-    let kept: BTreeMap<u64, Candle> = after.into_iter().filter(|(span, _)| before.contains_key(span)).collect();
+    let kept: BTreeMap<u64, Column> = after.into_iter().filter(|(span, _)| before.contains_key(span)).collect();
     assert_eq!(kept, before);
 }
 

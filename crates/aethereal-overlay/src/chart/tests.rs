@@ -1,6 +1,7 @@
-use super::{ChartStyle, RECORD_BYTES, marks, records};
+use super::scale::height_fraction;
+use super::{RECORD_BYTES, marks, records};
 use crate::colour::{BRICK, LICHEN, OCHRE, PANEL_OPACITY, RUST, SLATE, STONE};
-use crate::frames::{Candle, Column, Slide};
+use crate::frames::{Column, Slide};
 use crate::layout::Layout;
 use crate::stop::Stop;
 use aethereal_render::stats::FrameBudget;
@@ -12,6 +13,9 @@ const BUDGET: u64 = 16_700_000;
 
 /// That budget, as a limit the frames are held to.
 const LIMIT: FrameBudget = FrameBudget::Limit { nanos: BUDGET };
+
+/// How many records come before the columns at the band's stop: the band's panel and the line at twice the budget.
+const BEFORE_COLUMNS: usize = 2;
 
 /// One record read back: its box, left, top, width, and height, and its colour.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,7 +39,27 @@ fn read(bytes: &[u8]) -> Vec<Record> {
 
 /// A column of one cycle `nanos` long, of `span`.
 const fn flat(span: u64, nanos: u64) -> Column {
-    Column { span, candle: Candle::flat(nanos) }
+    Column { span, median_nanos: nanos, slowest_nanos: nanos }
+}
+
+/// A quarter of the budget or less stands at the chart's foot and thirty-two budgets or more at its top, the budget
+/// two sevenths of the way up, and each doubling of a cycle's time a seventh higher, whatever the budget, so a scale
+/// that is linear, spills past the chart, or is pinned to one budget is caught.
+#[test]
+fn the_scale_doubles_by_sevenths_from_a_quarter_budget_to_thirty_two() {
+    let near = |a: f32, b: f32| (a - b).abs() < 1e-6;
+    for budget in [BUDGET, 4_166_667] {
+        assert_eq!(height_fraction(0, budget), 0.0);
+        assert_eq!(height_fraction(budget / 8, budget), 0.0);
+        assert!(near(height_fraction(budget / 4, budget), 0.0));
+        assert!(near(height_fraction(budget * 32, budget), 1.0));
+        assert_eq!(height_fraction(budget * 1_000, budget), 1.0);
+        assert!(near(height_fraction(budget, budget), 2.0 / 7.0));
+        for nanos in [budget / 3, budget, budget * 3 / 2, budget * 5] {
+            let step = height_fraction(nanos * 2, budget) - height_fraction(nanos, budget);
+            assert!(near(step, 1.0 / 7.0), "doubling {nanos} moves it {step}");
+        }
+    }
 }
 
 /// A bar within the budget is lichen, one over it rust, and one over twice it brick and drawn no taller than the
@@ -50,25 +74,25 @@ fn columns_are_shaded_by_the_budget_and_held_to_the_chart() {
     let mut band = Vec::new();
     let mut console = Vec::new();
 
-    records(&mut band, layout, Stop::Band, ChartStyle::Bars, columns, slide, LIMIT);
-    records(&mut console, layout, Stop::Console, ChartStyle::Bars, columns, slide, LIMIT);
+    records(&mut band, layout, Stop::Band, columns, slide, LIMIT);
+    records(&mut console, layout, Stop::Console, columns, slide, LIMIT);
 
     let (band, console) = (read(&band), read(&console));
     assert_eq!(console.len(), band.len() + 4);
     assert_eq!(band[0].colour, SLATE.at(PANEL_OPACITY));
-    let shaded: Vec<Colour> = band[1..4].iter().map(|record| record.colour).collect();
+    let shaded: Vec<Colour> = band[BEFORE_COLUMNS..BEFORE_COLUMNS + 3].iter().map(|record| record.colour).collect();
     assert_eq!(shaded, vec![LICHEN.opaque(), RUST.opaque(), BRICK.opaque()]);
-    let spike = band[3].area;
+    let spike = band[BEFORE_COLUMNS + 2].area;
     assert_eq!((spike[1], spike[3]), (chart.min.y, chart.height()));
 }
 
-/// The box of each column drawn on `layout` from `columns` at `slide`, in order: the records after the band's panel,
-/// before the budget line's dashes.
+/// The box of each column drawn on `layout` from `columns` at `slide`, in order: the records after the band's panel
+/// and the line at twice the budget, before the budget line's dashes.
 fn bars(layout: Layout, columns: &[Column], slide: Slide) -> Vec<[f32; 4]> {
     let mut bytes = Vec::new();
-    records(&mut bytes, layout, Stop::Band, ChartStyle::Bars, columns.iter().copied(), slide, LIMIT);
+    records(&mut bytes, layout, Stop::Band, columns.iter().copied(), slide, LIMIT);
 
-    read(&bytes)[1..=columns.len()].iter().map(|record| record.area).collect()
+    read(&bytes)[BEFORE_COLUMNS..BEFORE_COLUMNS + columns.len()].iter().map(|record| record.area).collect()
 }
 
 /// Every column moves left by the share of a pitch the newest cycle came through its span, the newest growing out of
@@ -105,9 +129,9 @@ fn a_reference_budget_is_drawn_lighter_than_a_limit_at_the_same_height() {
     let slide = Slide { newest: 0, through: 0.0, span_nanos: 1_000_000_000 };
     let line = |budget| {
         let mut bytes = Vec::new();
-        records(&mut bytes, layout, Stop::Band, ChartStyle::Candles, [], slide, budget);
+        records(&mut bytes, layout, Stop::Band, [], slide, budget);
         assert!(bytes.len() <= super::records_bytes(layout), "{budget:?} overflows its room");
-        read(&bytes)[1..].to_vec()
+        read(&bytes)[BEFORE_COLUMNS..].to_vec()
     };
 
     let limit = line(LIMIT);
@@ -141,69 +165,82 @@ fn a_mark_s_tick_stands_at_its_time() {
     assert_eq!((ticks[0].area[1], ticks[0].area[3]), (chart.min.y, chart.height()));
 }
 
-/// The records of one candle, drawn a column's pitch left of the chart's right edge on `layout`: its wick, its body,
-/// and its median, when it has one; the records between the band's panel and the budget line's stone dashes.
-fn candle_records(layout: Layout, candle: Candle) -> Vec<Record> {
+/// Everything drawn at the band's stop on `layout` with one column, a column's pitch left of the chart's right edge.
+fn drawn_with(layout: Layout, column: Column) -> Vec<Record> {
     let slide = Slide { newest: 6, through: 0.0, span_nanos: 1_000_000_000 };
     let mut bytes = Vec::new();
-    records(&mut bytes, layout, Stop::Band, ChartStyle::Candles, [Column { span: 5, candle }], slide, LIMIT);
-    let drawn = read(&bytes);
-    let count = drawn.iter().skip(1).take_while(|record| record.colour != STONE.opaque()).count();
+    records(&mut bytes, layout, Stop::Band, [Column { span: 5, ..column }], slide, LIMIT);
 
-    drawn[1..=count].to_vec()
+    read(&bytes)
 }
 
-/// A candle's wick is a line a pixel wide in its column, from its slowest cycle down to its fastest; its body the
-/// column's width from its 75th percentile down to its 25th; and its median a slate line across the body, so a wick
-/// off the column's middle, a body of the wrong quartiles, or a median drawn outside the body is caught.
+/// The records of one column: its bar, and its line when it has one; the records after the band's panel and the line
+/// at twice the budget, before the budget line's stone dashes.
+fn column_records(layout: Layout, column: Column) -> Vec<Record> {
+    let drawn = drawn_with(layout, column);
+    let count = drawn.iter().skip(BEFORE_COLUMNS).take_while(|record| record.colour != STONE.opaque()).count();
+
+    drawn[BEFORE_COLUMNS..BEFORE_COLUMNS + count].to_vec()
+}
+
+/// On the log scale a column's bar stands the column's width from the chart's foot to its median, and its line a
+/// pixel wide in the column's middle from the bar's top to its slowest; the faint line at twice the budget stands
+/// three sevenths up and the budget's dashes two, so a bar or a line drawn on a linear scale, off the column's middle,
+/// or from the wrong cycle, is caught.
 #[test]
-fn a_candle_stands_from_its_fastest_to_its_slowest() {
+fn a_column_stands_its_median_and_reaches_its_slowest_on_the_log_scale() {
     let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
     let (chart, width) = (layout.chart(), layout.column_pixels());
-    // The chart's top is three budgets, so a budget's share of it is a third.
-    let at = |budgets: f32| (budgets / 3.0).mul_add(-chart.height(), chart.max.y);
-    let budget = |share: f32| {
-        // A share of the budget, which a u64 of nanoseconds holds closely enough.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
-        let nanos = (BUDGET as f32 * share) as u64;
-        nanos
-    };
-    let candle = Candle {
-        fastest: budget(0.3),
-        lower: budget(0.6),
-        median: budget(0.7),
-        upper: budget(0.9),
-        slowest: budget(2.4),
-    };
-
-    let drawn = candle_records(layout, candle);
-
-    assert_eq!(drawn.len(), 3, "{drawn:?} are not a wick, a body, and a median");
-    let [wick, body, median] = [drawn[0].area, drawn[1].area, drawn[2].area];
-    let left = chart.max.x - layout.column_pitch();
+    let at = |sevenths: f32| (sevenths / 7.0).mul_add(-chart.height(), chart.max.y);
     let near = |a: f32, b: f32| (a - b).abs() <= 1.0;
-    assert_eq!((wick[0], wick[2]), (left + ((width - 1.0) / 2.0).floor(), 1.0));
-    assert!(near(wick[1], at(2.4)) && near(wick[1] + wick[3], at(0.3)), "{wick:?} is not fastest to slowest");
-    assert_eq!((body[0], body[2]), (left, width));
-    assert!(near(body[1], at(0.9)) && near(body[1] + body[3], at(0.6)), "{body:?} is not the quartiles");
-    let (median_foot, body_foot) = (median[1] + median[3], body[1] + body[3]);
-    let inside = median[1] >= body[1] && median_foot <= body_foot;
-    assert!(inside && near(median[1], at(0.7)), "{median:?} is not across {body:?} at the median");
-    assert_eq!((median[3], drawn[2].colour), (1.0, SLATE.opaque()));
+    // The median is the budget, two sevenths up; the slowest four budgets, four sevenths up.
+    let column = Column { span: 0, median_nanos: BUDGET, slowest_nanos: BUDGET * 4 };
+
+    let drawn = drawn_with(layout, column);
+    let ours = column_records(layout, column);
+
+    assert_eq!(ours.len(), 2, "{ours:?} are not a bar and a line");
+    let [bar, line] = [ours[0].area, ours[1].area];
+    let left = chart.max.x - layout.column_pitch();
+    assert_eq!((bar[0], bar[2]), (left, width));
+    assert!(near(bar[1], at(2.0)) && near(bar[1] + bar[3], chart.max.y), "{bar:?} is not the foot to the median");
+    assert_eq!((line[0], line[2]), (left + ((width - 1.0) / 2.0).floor(), 1.0));
+    assert!(near(line[1], at(4.0)) && near(line[1] + line[3], bar[1]), "{line:?} is not the bar's top to the slowest");
+    assert_eq!((ours[0].colour, ours[1].colour), (LICHEN.opaque(), BRICK.opaque()));
+    let twice = &drawn[1];
+    assert_eq!((twice.colour, twice.area[0], twice.area[2]), (STONE.at(0.15), chart.min.x, chart.width()));
+    assert!(near(twice.area[1], at(3.0)), "{twice:?} is not three sevenths up");
+    let dash = &drawn[BEFORE_COLUMNS + 2];
+    assert!(near(dash.area[1], at(2.0)), "{dash:?} is not two sevenths up");
 }
 
-/// A candle's body is shaded by its 75th percentile and its wick by its slowest cycle: one spike among healthy cycles
-/// is a rust wick over a lichen body, and a stretch of slow cycles a rust body, so a body shaded by the spike, which
-/// paints every column with one slow frame as slow, is caught.
+/// The line to the slowest cycle is drawn only when the slowest stands more than 15% above the median, so a column of
+/// even cycles stays a plain bar and one with a real spike does not, and a threshold off, or a line always drawn, is
+/// caught.
 #[test]
-fn a_spike_shades_the_wick_and_a_slow_stretch_the_body() {
+fn the_line_is_drawn_only_past_fifteen_percent_over_the_median() {
     let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
-    let healthy = BUDGET * 9 / 10;
-    let spike = Candle { slowest: BUDGET * 3 / 2, ..Candle::flat(healthy) };
-    let slow = Candle { upper: BUDGET * 3 / 2, slowest: BUDGET * 3 / 2, ..Candle::flat(healthy) };
+    let median_nanos = BUDGET / 2;
+    let column = |slowest_nanos| Column { span: 0, median_nanos, slowest_nanos };
 
-    let (spiked, slowed) = (candle_records(layout, spike), candle_records(layout, slow));
+    let even = column_records(layout, column(median_nanos));
+    let at_threshold = column_records(layout, column(median_nanos * 115 / 100));
+    let past = column_records(layout, column(median_nanos * 115 / 100 + 1));
 
-    assert_eq!((spiked[0].colour, spiked[1].colour), (RUST.opaque(), LICHEN.opaque()));
-    assert_eq!((slowed[0].colour, slowed[1].colour), (RUST.opaque(), RUST.opaque()));
+    assert_eq!((even.len(), at_threshold.len(), past.len()), (1, 1, 2));
+}
+
+/// A bar is shaded by its median and its line by its slowest cycle: one spike among healthy cycles is a rust line over
+/// a lichen bar, and a stretch of slow cycles a rust bar, so a bar shaded by the spike, which paints every column with
+/// one slow frame as slow, is caught.
+#[test]
+fn a_spike_shades_the_line_and_a_slow_stretch_the_bar() {
+    let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
+    let spike = Column { span: 0, median_nanos: BUDGET * 9 / 10, slowest_nanos: BUDGET * 3 / 2 };
+    let slow = Column { span: 0, median_nanos: BUDGET * 3 / 2, slowest_nanos: BUDGET * 8 / 5 };
+
+    let (spiked, slowed) = (column_records(layout, spike), column_records(layout, slow));
+
+    assert_eq!((spiked[0].colour, spiked[1].colour), (LICHEN.opaque(), RUST.opaque()));
+    assert_eq!((slowed.len(), slowed[0].colour), (1, RUST.opaque()));
 }

@@ -162,8 +162,8 @@ impl Overlay {
         Ok(())
     }
 
-    /// Writes every record of the placement for the stop, the layout, the chart's style, the cycles kept, the marks,
-    /// and the cursor and scroll bar at the console's stop, in one write into a buffer the overlay keeps, and cuts the
+    /// Writes every record of the placement for the stop, the layout, the cycles kept, the marks, and the cursor and
+    /// scroll bar at the console's stop, in one write into a buffer the overlay keeps, and cuts the
     /// records to as many when there are fewer than were last written. Nothing while the placement is not made.
     pub(super) fn write_chart<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
@@ -176,7 +176,7 @@ impl Overlay {
         let count = chart::column_count(layout);
         let mut records = turn.buffer(chart::records_bytes(layout));
         let slide = self.frames.slide(count);
-        chart::records(&mut records, layout, self.stop, self.style, self.frames.columns(count), slide, self.budget);
+        chart::records(&mut records, layout, self.stop, self.frames.columns(count), slide, self.budget);
         chart::marks(&mut records, layout, slide, self.marks.times());
         if self.stop.console() {
             chart::cursor(&mut records, layout, self.console.cursor_column());
