@@ -1,5 +1,5 @@
-//! The command line's tests: a line split as a shell splits it, read by a sheet's flags into the input, and an answer
-//! printed as it would be typed.
+//! The command line's tests: a line split as a shell splits it, read by a sheet's flags into the input, an answer
+//! printed as it would be typed, and help laid out in columns.
 
 use super::*;
 use crate::{ActorLog, LogEntry, LogLevel, LoggedEntry, LogsTool, Output, ReadLog, Tool, ToolSheet};
@@ -184,5 +184,150 @@ fn a_line_typed_by_a_real_tool_s_sheet_calls_it_and_its_answer_prints() -> Outco
     let shown =
         "entries:\n  n: 4\n  entry:\n    line:\n      level: warn\n      text: it went wrong\nnext: 5\nskipped: 0";
     assert_eq!(printed, shown);
+    Ok(())
+}
+
+/// What of a frame a clip keeps: a word, and a variant of several fields, which only JSON sets.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+enum Cut {
+    Whole,
+    Region { x: u32, y: u32 },
+}
+
+/// A clip's input: its second field filled by position is declared after a flag that must be given.
+#[derive(Debug, Plain)]
+#[kind(name = "aether.test.clip")]
+struct Clip {
+    /// The window, by its number.
+    #[flag(position)]
+    window: u32,
+    /// How many frames to record.
+    #[flag(short = 'n')]
+    frames: u32,
+    /// What of each frame is kept.
+    #[flag(short = 'c')]
+    cut: Option<Cut>,
+    /// How many frames a second are recorded.
+    #[flag(long = "fps", short = 'r')]
+    rate: Option<u32>,
+    /// The clip's name: it is written under `clips/<name>/` in the program's saves, beside every clip recorded before
+    /// it.
+    #[flag(position)]
+    name: String,
+}
+
+/// The sheet of `clip`, from `Clip` to an image.
+fn clip_sheet() -> ToolSheet {
+    ToolSheet::of::<Clip>("clip", "Records a clip of a window. Each frame is a PNG.", Output::Image)
+}
+
+/// The sheets of `describe`, `clip`, and the logs tool's `actor_logs`.
+fn three_sheets() -> Result<Vec<ToolSheet>, Box<dyn Error>> {
+    let logs = LogsTool::sheets().into_iter().find(|sheet| sheet.name == "actor_logs");
+    let logs = logs.ok_or("the logs tool offers `actor_logs`")?;
+
+    Ok(Vec::from([sheet(), clip_sheet(), logs]))
+}
+
+#[test]
+fn a_sentence_ends_at_a_point_that_whitespace_or_the_end_follows() {
+    // Catches a cut at a decimal point, a cut that drops its point, and a sentence end at a line break missed.
+    assert_eq!(first_sentence("Sets the gain to 0.5 by default. Then waits."), "Sets the gain to 0.5 by default.");
+    assert_eq!(first_sentence("Captures a frame.\nThe window is named."), "Captures a frame.");
+    assert_eq!(first_sentence("Captures a frame."), "Captures a frame.");
+}
+
+#[test]
+fn a_text_with_no_sentence_end_is_kept_whole() {
+    // Catches a description with no point, or only points inside words, cut short or emptied.
+    assert_eq!(first_sentence("Says how long a text is"), "Says how long a text is");
+    assert_eq!(first_sentence("Reads `config.toml` and v1.2"), "Reads `config.toml` and v1.2");
+    assert_eq!(first_sentence(""), "");
+}
+
+#[test]
+fn a_usage_lists_every_field_filled_by_position_first() -> Outcome {
+    // Catches a field filled by position left among the flags, a flag that may be left out listed before one that
+    // must be given, a long name typed where a short one exists, and a placeholder other than the form's words.
+    let sheet = clip_sheet();
+    let usage = CommandLine::of(&sheet)?.usage_parts();
+
+    assert_eq!(usage.name, "clip");
+    assert_eq!(usage.positionals, "<window> <name>");
+    assert_eq!(usage.flags, "-n N [-c whole] [-r N]");
+    assert_eq!(usage.line(), "clip <window> <name> -n N [-c whole] [-r N]");
+    Ok(())
+}
+
+#[test]
+fn a_doc_longer_than_the_width_wraps_under_its_column() -> Outcome {
+    // Catches a doc left on one line past the width, a wrapped line not indented under the doc column, a left column
+    // not padded to its widest, and a form only partly typable whose help does not say what cannot be typed.
+    let sheet = clip_sheet();
+
+    let help = CommandLine::of(&sheet)?.help(50);
+
+    let name_row = "<name>           The clip's name: it is written\n                 \
+                    under `clips/<name>/` in the\n                 \
+                    program's saves, beside every\n                 \
+                    clip recorded before it.";
+    assert!(help.contains(name_row), "{help}");
+    assert!(help.lines().all(|line| line.chars().count() <= 50), "{help}");
+    let flat = help.split_whitespace().collect::<Vec<&str>>().join(" ");
+    let partly = "Only `whole` can be typed; `Region` has several fields and is given as JSON";
+    assert!(flat.contains(partly), "{help}");
+    Ok(())
+}
+
+#[test]
+fn a_listing_of_three_sheets_aligns_its_columns() -> Outcome {
+    // Catches a column padded to its own cell rather than the widest, rows left in the order given rather than by
+    // name, and a summary that starts at a different character on each row.
+    let sheets = three_sheets()?;
+
+    let listing = help_listing(&sheets, 1000);
+
+    let lines: Vec<&str> = listing.lines().collect();
+    let names: Vec<&str> = lines.iter().filter_map(|line| line.split(' ').next()).collect();
+    assert_eq!(names, ["actor_logs", "clip", "describe"]);
+    let mut starts: Vec<[usize; 3]> = Vec::new();
+    for (line, name) in lines.iter().zip(&names) {
+        let Some(sheet) = sheets.iter().find(|sheet| sheet.name == *name) else {
+            return Err(format!("a row names no sheet: {line}").into());
+        };
+        let command = CommandLine::of(sheet)?;
+        let usage = command.usage_parts();
+        let at = |piece: &str| line.find(piece).ok_or_else(|| format!("`{piece}` is missing from `{line}`"));
+        starts.push([at(&usage.positionals)?, at(&usage.flags)?, at(command.summary())?]);
+    }
+    assert!(starts.iter().all(|start| *start == starts[0]), "{listing}");
+    Ok(())
+}
+
+#[test]
+fn a_narrow_listing_puts_each_summary_on_a_line_beneath() -> Outcome {
+    // Catches a summary kept beside its usage with no room for it, a summary line not indented, and one not cut at the
+    // width.
+    let sheets = three_sheets()?;
+
+    let listing = help_listing(&sheets, 60);
+
+    let lines: Vec<&str> = listing.lines().collect();
+    assert_eq!(lines.len(), 6, "{listing}");
+    for pair in lines.chunks(2) {
+        let [usage, beneath] = pair else {
+            return Err(format!("a row has no line beneath it: {listing}").into());
+        };
+        let name = usage.split(' ').next().unwrap_or_default();
+        let Some(sheet) = sheets.iter().find(|sheet| sheet.name == name) else {
+            return Err(format!("a row names no sheet: {usage}").into());
+        };
+        let summary = CommandLine::of(sheet)?.summary();
+        let kept = beneath.strip_prefix("    ").ok_or("a summary beneath is indented")?;
+        let shown = kept.strip_suffix('…').unwrap_or(kept);
+        assert!(summary.starts_with(shown), "{listing}");
+        assert!(beneath.chars().count() <= 60, "{listing}");
+        assert!(!usage.contains(summary), "{listing}");
+    }
     Ok(())
 }

@@ -6,6 +6,7 @@
 //! line ── split_words ──> words ── CommandLine::read, by the sheet's flags and each field's Form ──> JSON
 //!      ── the input's schema ──> bytes ──> Call
 //! Called::Output ── print_value, each value in its Form ──> text
+//! sheets ── help_listing, a row a tool in padded columns ──> `help`;  CommandLine::help ──> `help <tool>`
 //! ```
 //!
 //! [`CommandLine::of`] is also what a holder checks of each sheet offered, so a sheet whose flags do not fit its
@@ -14,6 +15,8 @@
 mod error;
 mod flags;
 mod help;
+mod layout;
+mod listing;
 mod print;
 mod read;
 #[cfg(test)]
@@ -22,5 +25,7 @@ mod words;
 
 pub use error::{CommandError, FlagsFault};
 pub use flags::CommandLine;
+pub use help::{Usage, first_sentence};
+pub use listing::help_listing;
 pub use print::{print_image, print_value};
 pub use words::split_words;

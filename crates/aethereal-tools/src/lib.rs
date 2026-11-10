@@ -23,7 +23,9 @@ mod tooling;
 mod tools;
 mod tuning;
 
-pub use command::{CommandError, CommandLine, FlagsFault, print_image, print_value, split_words};
+pub use command::{
+    CommandError, CommandLine, FlagsFault, Usage, first_sentence, help_listing, print_image, print_value, split_words,
+};
 pub use holder::Holder;
 pub use logs::{
     ActorLog, LogEntry, LogLevel, LoggedEntry, LogsTool, LogsToolConfig, ReadLog, ReadRecent, RecentEntry, RecentLog,

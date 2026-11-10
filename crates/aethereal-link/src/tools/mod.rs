@@ -22,7 +22,7 @@ use aethereal_data::{
     Bound, Budget, Json, JsonError, Plain, Schema, SchemaNodes, from_bytes, from_json, json_schema, to_bytes, to_json,
 };
 use aethereal_process::ExitStatus;
-use aethereal_tools::{Call, Called, Done, Output, Tool, ToolSheet, Tooling};
+use aethereal_tools::{Call, Called, Done, Output, Tool, ToolSheet, Tooling, first_sentence};
 use std::collections::BTreeMap;
 
 /// The tool that lists engines.
@@ -558,15 +558,6 @@ fn summary(sheet: ToolSheet) -> ToolSummary {
     let description = String::from(first_sentence(&sheet.description));
 
     ToolSummary { name: sheet.name, description }
-}
-
-/// The first sentence of `text`: up to and including its first `.` that whitespace or the end of the text follows,
-/// so the point of `0.5` ends nothing. Without one, the whole text.
-fn first_sentence(text: &str) -> &str {
-    text.match_indices('.')
-        .map(|(at, _)| text.split_at(at + 1))
-        .find(|(_, rest)| rest.chars().next().is_none_or(char::is_whitespace))
-        .map_or(text, |(sentence, _)| sentence)
 }
 
 /// The sheets of `tools` that `names` asks for, in the order `tools` lists them, each written for the agent; or the
