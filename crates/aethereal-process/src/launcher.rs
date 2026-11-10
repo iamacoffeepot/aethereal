@@ -29,11 +29,11 @@ pub struct Unwaited;
 /// A start, as its launcher does it: the program running, or why it is not.
 pub type Starting<'a> = Pin<Box<dyn Future<Output = Result<(), Unstarted>> + 'a>>;
 
-/// A wait, as its launcher does it: how the program exited, once it has, and the tail of its stderr.
+/// A wait, as its launcher does it: how the program exited, once it has, and the head and tail of its stderr.
 pub type Exiting<'a> = Pin<Box<dyn Future<Output = Result<Exited, Unwaited>> + 'a>>;
 
 /// The host's launcher (ADR-0040): it starts each program in a process group of its own, with no stdin and its stdout
-/// discarded, keeps the last bytes of its stderr, and signals its group. A host serves it into the services its
+/// discarded, keeps the head and the tail of its stderr, each bounded, and signals its group. A host serves it into the services its
 /// runners hand every job (ADR-0034); a host that serves none, as a browser, refuses every start.
 ///
 /// Each program is named by the number the root gave its process. Nothing it does blocks the thread that polls it: a
@@ -42,7 +42,7 @@ pub trait Launcher: Send + Sync {
     /// Starts `program`, a path on the host's machine, with `args`, as the program numbered `process`.
     fn start(&self, process: u64, program: String, args: Vec<String>) -> Starting<'_>;
 
-    /// Waits for the program numbered `process` to exit, and answers with how it did and the tail of its stderr. The
+    /// Waits for the program numbered `process` to exit, and answers with how it did and the head and tail of its stderr. The
     /// exit is told once: the launcher then forgets the program.
     fn wait(&self, process: u64) -> Exiting<'_>;
 

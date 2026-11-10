@@ -42,8 +42,8 @@ pub enum Origin {
     External,
 }
 
-/// An engine the hub spawned that has ended: the binary as its spawn named it, how its program exited, and the last
-/// bytes of its stderr.
+/// An engine the hub spawned that has ended: the binary as its spawn named it, how its program exited, and the head and
+/// tail of its stderr, each bounded (ADR-0040).
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.exited_engine")]
 pub struct ExitedEngine {

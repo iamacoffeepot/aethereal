@@ -8,7 +8,7 @@
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
 mod groups;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
-mod tail;
+mod head_and_tail;
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
 pub use groups::ProcessGroups;
@@ -36,7 +36,7 @@ impl Bootstrap<Headless> for Processes {
         cx: &mut Bootstrapping<'_, Headless, Self>,
     ) -> Result<(), Unbuilt> {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
-        cx.serve(Service::<dyn Launcher>::of(Arc::new(ProcessGroups::new(&settings))));
+        cx.serve(Service::<dyn Launcher>::of(Arc::new(ProcessGroups::default())));
         cx.begin(&(), settings.config())
     }
 }

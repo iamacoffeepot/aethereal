@@ -8,8 +8,8 @@ use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Plain};
 use aethereal_process::{ExitStatus, Exited, Exits, Process, Processes, ProcessesSettings, Start, Started, Stop};
-use aethereal_substrate::Host;
 use aethereal_substrate::harness::{Harness, Unheard};
+use aethereal_substrate::{EngineSettings, Host};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -20,7 +20,7 @@ use std::{env, fs, process, thread};
 enum Behaviour {
     /// Exits with code 3.
     ExitsThree,
-    /// Writes [`OLDER`] bytes of `a`, then [`NEWER`] bytes of `b`, to its stderr, and exits with code 0.
+    /// Writes [`FIRST`], then [`FLOOD`] lines, then [`LAST`], to its stderr, and exits with code 0.
     FloodsStderr,
     /// Runs until something ends it.
     Lingers,
@@ -28,10 +28,12 @@ enum Behaviour {
     IgnoresTerm,
 }
 
-/// How many bytes of `a` a program that floods its stderr writes first.
-const OLDER: usize = 8192;
-/// How many bytes of `b` it writes after them.
-const NEWER: usize = 512;
+/// The first line a program that floods its stderr writes.
+const FIRST: &str = "thread 'main' panicked at src/main.rs:1:1:";
+/// How many lines it writes after it.
+const FLOOD: usize = 1000;
+/// The last line it writes.
+const LAST: &str = "aborting";
 
 /// What a token among a program's arguments begins with.
 const BEHAVES: &str = "aethereal-behaves=";
@@ -73,9 +75,8 @@ fn program() {
     match behaviour {
         Behaviour::ExitsThree => process::exit(3),
         Behaviour::FloodsStderr => {
-            let mut flood = vec![b'a'; OLDER];
-            flood.extend(vec![b'b'; NEWER]);
-            let written = io::stderr().write_all(&flood);
+            let flood = "  a frame\n".repeat(FLOOD);
+            let written = io::stderr().write_all(format!("{FIRST}\n{flood}{LAST}\n").as_bytes());
             process::exit(i32::from(written.is_err()));
         }
         Behaviour::Lingers => linger(),
@@ -142,14 +143,17 @@ fn args(behaviour: Behaviour, extra: &[String]) -> Vec<String> {
     args
 }
 
-/// A program holding the process capability as `settings` say, built and started.
+/// A program holding the process capability as `settings` say, built and started, on an engine that reads an
+/// `Exited` whole: a program's stderr is kept to a few kilobytes, past the engine's default read limit.
 fn processes(settings: ProcessesSettings) -> Result<Harness<Headless>, Unheard> {
-    Harness::of(Headless::program().root_with::<Processes>(settings))
+    let engine = EngineSettings { read_limit: 64 * 1024, ..EngineSettings::default() };
+
+    Harness::of(Headless::program().with_engine(engine).root_with::<Processes>(settings))
 }
 
-/// The settings that give a program asked to stop `kill_after_millis`, keeping `most_stderr_bytes` of its stderr.
-const fn settings(kill_after_millis: u32, most_stderr_bytes: u32) -> ProcessesSettings {
-    ProcessesSettings { kill_after_millis, most_stderr_bytes }
+/// The settings that give a program asked to stop `kill_after_millis`.
+const fn settings(kill_after_millis: u32) -> ProcessesSettings {
+    ProcessesSettings { kill_after_millis }
 }
 
 /// What starting `program` with `args` comes to, its exit told to `starter`.
@@ -186,7 +190,7 @@ fn running(
 fn a_program_that_exits_three_is_told_as_code_three_and_its_process_ends() -> Result<(), Unheard> {
     // Catches an exit read as a signal or its code lost, `Exited` told to anyone but the starter, and a process that
     // stays once it has told the exit.
-    let mut harness = processes(settings(60_000, 4096))?;
+    let mut harness = processes(settings(60_000))?;
     let process = running(&mut harness, Behaviour::ExitsThree, &[])?;
 
     let exited = harness.heard::<Exited>()?;
@@ -199,18 +203,20 @@ fn a_program_that_exits_three_is_told_as_code_three_and_its_process_ends() -> Re
 }
 
 #[test]
-fn the_last_bytes_of_stderr_are_kept_and_older_ones_dropped() -> Result<(), Unheard> {
-    // Catches a tail that keeps the first bytes instead of the last, one that keeps more than the setting says or one
-    // byte off it, stderr not piped or not read to its end before the exit is told, and stdout taken for stderr.
-    let mut harness = processes(settings(60_000, 1024))?;
+fn the_head_and_tail_of_stderr_are_kept_and_the_middle_left_out() -> Result<(), Unheard> {
+    // Catches a launcher that keeps only the tail, so the first line is lost, stderr not piped or not read to its end
+    // before the exit is told, and stdout taken for stderr. How the middle is cut is the kept stderr's own tests'.
+    let mut harness = processes(settings(60_000))?;
     running(&mut harness, Behaviour::FloodsStderr, &[])?;
 
     let exited = harness.heard::<Exited>()?;
 
-    let mut expected = "a".repeat(1024 - NEWER);
-    expected.push_str(&"b".repeat(NEWER));
+    let lines: Vec<&str> = exited.stderr.lines().collect();
+    let left_out = lines.iter().any(|line| line.ends_with("left out …"));
     assert_eq!(exited.status, ExitStatus::Code(0));
-    assert_eq!(exited.stderr, expected);
+    assert_eq!(lines.first(), Some(&FIRST));
+    assert_eq!(lines.last(), Some(&LAST));
+    assert!(left_out, "a line says what was left out: {}", exited.stderr);
 
     Ok(())
 }
@@ -219,7 +225,7 @@ fn the_last_bytes_of_stderr_are_kept_and_older_ones_dropped() -> Result<(), Unhe
 fn stop_ends_a_program_with_sigterm() -> Result<(), Unheard> {
     // Catches a stop that kills at once (signal 9), one that sends nothing until its time has passed (the minute it is
     // given outlasts the harness's budget), and SIGTERM sent to anything but the program's group.
-    let mut harness = processes(settings(60_000, 4096))?;
+    let mut harness = processes(settings(60_000))?;
     let process = running(&mut harness, Behaviour::Lingers, &[])?;
 
     harness.tell(process, &Stop)?;
@@ -237,7 +243,7 @@ fn a_program_that_ignores_sigterm_is_killed_once_its_time_has_passed() -> Result
     let dir = Dir::new("ignores");
     let ready = dir.path("ready");
     let kill_after = Duration::from_millis(200);
-    let mut harness = processes(settings(200, 4096))?;
+    let mut harness = processes(settings(200))?;
     let process = running(&mut harness, Behaviour::IgnoresTerm, &[format!("{READY}{}", ready.display())])?;
     waiting::until(BUDGET, || Path::exists(&ready));
     assert!(ready.exists(), "the program ignores SIGTERM before it is stopped");
@@ -310,7 +316,7 @@ impl Handles<Leave> for Starter {
 fn a_starter_that_ends_stops_its_program() -> Result<(), Unheard> {
     // Catches a process that does not watch its starter, or watches it and does nothing when it ends, so the program
     // outlives the actor that wanted it: it lingers, and only a stop ends it within the harness's budget.
-    let mut harness = processes(settings(60_000, 4096))?;
+    let mut harness = processes(settings(60_000))?;
     harness.add_root::<Starter>(&(), StarterConfig)?;
     let starter = harness.root::<Starter>();
     let Started::Running { process } =
@@ -334,7 +340,7 @@ fn a_starter_that_ends_stops_its_program() -> Result<(), Unheard> {
 fn a_missing_program_is_refused() -> Result<(), Unheard> {
     // Catches a start answered running before the host has started anything, and a failed start never answered.
     let dir = Dir::new("missing");
-    let mut harness = processes(settings(60_000, 4096))?;
+    let mut harness = processes(settings(60_000))?;
     let outside = harness.protocol::<Exits>();
 
     let started = start(&mut harness, dir.path("no-such-program").display().to_string(), Vec::new(), outside)?;

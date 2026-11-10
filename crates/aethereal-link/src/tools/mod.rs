@@ -166,8 +166,9 @@ impl Tool for EngineTools {
                 LIST_ENGINES,
                 "Lists the engines linked to this hub: each one's id, name, count of tools, and origin, the \
                  binary and hash it was spawned from or `External` for one started by hand. Also lists the last \
-                 engines the hub spawned that have ended, each with its binary, exit status, and the end of its \
-                 stderr.",
+                 engines the hub spawned that have ended (at most `most_exited`, 16 unless set), each with its binary, \
+                 exit status, and its stderr: its first 2 KiB and its last 2 KiB, cut at lines, with a line saying how \
+                 many lines and bytes were left out between them, and every line past 300 characters cut with `…`.",
                 Output::Value(SchemaNodes::of(&EngineList::SHAPE)),
             ),
             ToolSheet::of::<DescribeTools>(
@@ -196,7 +197,7 @@ impl Tool for EngineTools {
                 "Spawns an engine from a binary checked into the store, named by a name or by its 64-digit hash, \
                  started with `args` (none when left out) and then the arguments that link it to this hub. Answers the \
                  engine's id once it has linked; refused if nothing is stored by that binary, the hub would not start \
-                 it, it exited before linking (with its exit status and the end of its stderr), or it did not link in \
+                 it, it exited before linking (with its exit status and the head and tail of its stderr, bounded), or it did not link in \
                  time, when it is stopped.",
                 Output::Value(SchemaNodes::of(&SpawnedEngine::SHAPE)),
             ),

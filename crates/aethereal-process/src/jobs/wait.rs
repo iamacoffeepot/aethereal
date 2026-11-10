@@ -21,7 +21,7 @@ pub struct Waiting;
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.process.waited")]
 pub enum Waited {
-    /// The program exited: how, and the tail of its stderr.
+    /// The program exited: how, and the head and tail of its stderr.
     Exited { status: ExitStatus, stderr: String },
     /// The host serves no launcher, or its launcher could not tell the exit.
     Lost,

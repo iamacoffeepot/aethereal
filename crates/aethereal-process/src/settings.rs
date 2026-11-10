@@ -3,8 +3,7 @@
 use crate::ProcessesConfig;
 use aethereal_data::Plain;
 
-/// The process capability's section, `processes`: how long a program asked to stop is given, and how much of its
-/// stderr is kept (ADR-0040).
+/// The process capability's section, `processes`: how long a program asked to stop is given (ADR-0040).
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
 #[kind(name = "aether.process.settings")]
 #[settings]
@@ -13,14 +12,11 @@ pub struct ProcessesSettings {
     /// sent SIGKILL.
     #[flag]
     pub kill_after_millis: u32,
-    /// The most bytes of a program's stderr its host keeps: the last it wrote.
-    #[flag]
-    pub most_stderr_bytes: u32,
 }
 
 impl Default for ProcessesSettings {
     fn default() -> Self {
-        Self { kill_after_millis: 2000, most_stderr_bytes: 4096 }
+        Self { kill_after_millis: 2000 }
     }
 }
 

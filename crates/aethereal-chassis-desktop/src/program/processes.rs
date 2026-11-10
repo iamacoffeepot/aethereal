@@ -27,7 +27,7 @@ impl Bootstrap<Desktop> for Processes {
         cx: &mut Bootstrapping<'_, Desktop, Self>,
     ) -> Result<(), Unbuilt> {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
-        cx.serve(Service::<dyn Launcher>::of(Arc::new(ProcessGroups::new(&settings))));
+        cx.serve(Service::<dyn Launcher>::of(Arc::new(ProcessGroups::default())));
         cx.begin(&(), settings.config())
     }
 }
