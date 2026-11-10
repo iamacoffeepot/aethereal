@@ -1,6 +1,6 @@
-//! Key focus's tests: while an actor holds a window's key focus, the window's keys and typed text reach it alone; a
-//! release, the holder's end, or a later take ends the hold, each holder told as it gains and loses it; and a key
-//! pressed before a take, or under a hold since released, comes up to whoever heard it go down.
+//! Key focus's tests: while an actor holds a window's key focus, the window's keys, typed text, and wheel turns reach it
+//! alone; a release, the holder's end, or a later take ends the hold, each holder told as it gains and loses it; and a
+//! key pressed before a take, or under a hold since released, comes up to whoever heard it go down.
 
 use super::*;
 use crate::event::{Mode, Subscribe, Surface};
@@ -243,6 +243,27 @@ fn a_holder_is_sent_its_windows_keys_and_text_and_another_subscriber_only_the_re
     harness.answer(performed)?;
 
     assert_eq!(heard, [sent(&[typed("b")]), vec![]], "input performed is routed as the host's is");
+
+    Ok(())
+}
+
+#[test]
+fn a_wheel_turn_goes_to_the_holder_while_the_slot_is_held_and_to_everyone_when_it_is_empty() -> Result<(), Unheard> {
+    // Catches a wheel turn sent to every subscriber while a console holds the key focus, so scrolling its scrollback
+    // also zooms the game beneath it; and one still kept from the game once the console has given the focus up.
+    let (mut harness, feed, _hosting) = at_a_window()?;
+    order(&mut harness, FIRST, Order::Take)?;
+    harness.settle_turns();
+    let turn = [Event::Wheel { x: 1.0, y: 2.0, delta_x: 0.0, delta_y: -40.0 }];
+    push(&feed, &turn);
+
+    assert_eq!(heard(&mut harness), [sent(&turn), vec![]]);
+
+    order(&mut harness, FIRST, Order::Release)?;
+    harness.settle_turns();
+    push(&feed, &turn);
+
+    assert_eq!(heard(&mut harness), [sent(&turn), sent(&turn)]);
 
     Ok(())
 }

@@ -1,8 +1,9 @@
-//! Key focus (ADR-0053): which of a window's subscribers its keys and typed text are sent to.
+//! Key focus (ADR-0053): which of a window's subscribers its keys, typed text, and wheel turns are sent to.
 //!
 //! Each window's actor keeps one slot, empty or held by one actor. While it is held, the window's `KeyDown`, `KeyUp`,
-//! and `Text`, the input method's commits among them (ADR-0051), are sent only to the holder, when it is subscribed;
-//! every other event is sent to every subscriber. A key that is down keeps whom its press was sent to, and its repeats
+//! `Text`, the input method's commits among them (ADR-0051), and `Wheel` are sent only to the holder, when it is
+//! subscribed, so a console that scrolls by the wheel does not zoom the game beneath it; every other event is sent to
+//! every subscriber. A key that is down keeps whom its press was sent to, and its repeats
 //! and its release are sent to them, so a character walking as a console takes the keys still hears its key come up.
 //!
 //! It is not the window's focus, which says whether the window has the keyboard at all (`FocusGained`, `FocusLost`).
@@ -107,7 +108,7 @@ use std::collections::BTreeMap;
 pub struct TakeKeyFocus;
 
 /// Asks a window's actor to empty its key focus slot, when the sender holds it: the sender is sent [`KeyFocusLost`],
-/// and the window's keys and typed text are sent to every subscriber again. Nothing is handed back to a holder the
+/// and the window's keys, typed text, and wheel turns are sent to every subscriber again. Nothing is handed back to a holder the
 /// sender replaced. From an actor that does not hold the slot, nothing changes and nothing is sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.window.release_key_focus")]
@@ -210,13 +211,13 @@ impl KeyFocus {
 
     /// Whom `event` is sent to, taking in what it says of the keys: a press is recorded under the slot as it stands,
     /// unless its key is down already, and is sent as its record says, as a repeat is; a release is sent as its press
-    /// was, and its record dropped; typed text is sent as the slot stands. The window losing the keyboard forgets every
+    /// was, and its record dropped; typed text and a wheel turn are sent as the slot stands. The window losing the keyboard forgets every
     /// key down, as their releases never come. Every other event is sent to every subscriber.
     pub fn route(&mut self, event: &Event) -> Slot {
         match event {
             Event::KeyDown { code, .. } => self.press(code),
             Event::KeyUp { code, .. } => self.down.remove(code).unwrap_or(self.slot),
-            Event::Text { .. } => self.slot,
+            Event::Text { .. } | Event::Wheel { .. } => self.slot,
             Event::FocusLost => {
                 self.down.clear();
                 Slot::Empty
@@ -224,7 +225,6 @@ impl KeyFocus {
             Event::PointerMoved { .. }
             | Event::PointerDown { .. }
             | Event::PointerUp { .. }
-            | Event::Wheel { .. }
             | Event::Resized(_)
             | Event::Moded(_)
             | Event::FocusGained

@@ -5,6 +5,7 @@
 //! ```text
 //! Text ──> line ── Enter ──> command: help, clear, or a tool's CallTool ──> Called ──> printed into the scrollback
 //! Tab ──> completion: a tool's name, a flag's name, or a variant's word
+//! PageUp, PageDown, the wheel ──> the scrollback's view, held between its oldest row and its newest
 //! the engine's recent log ──> a row each ──> the scrollback;  warnings and errors while closed ──> the band's count
 //! ```
 
@@ -16,6 +17,7 @@ mod logs;
 mod scrollback;
 #[cfg(test)]
 mod tests;
+mod wheel;
 
 pub use command::Command;
 pub use logs::{Alerts, Logged};
@@ -28,6 +30,7 @@ use completion::Completion;
 use history::History;
 use line::Line;
 use scrollback::Scrollback;
+use wheel::Wheel;
 
 /// What the line typed is shown after: the prompt, in lichen.
 const PROMPT: &str = "> ";
@@ -83,6 +86,14 @@ pub struct View {
     pub rows: usize,
 }
 
+/// Where the console's view of the scrollback stands: how many rows it keeps, and how many up from the newest the view
+/// stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scrolled {
+    pub kept: usize,
+    pub up: usize,
+}
+
 /// What the next text typed is taken as.
 #[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
 enum Typing {
@@ -102,6 +113,7 @@ pub struct Console {
     /// The engine's tools as the tools root last sent them: none, of revision zero, until it does.
     sheets: Sheets,
     typing: Typing,
+    wheel: Wheel,
 }
 
 impl Default for Console {
@@ -112,6 +124,7 @@ impl Default for Console {
             scrollback: Scrollback::default(),
             sheets: Sheets { revision: 0, tools: Vec::new() },
             typing: Typing::Typed,
+            wheel: Wheel::default(),
         }
     }
 }
@@ -169,6 +182,22 @@ impl Console {
         }
 
         Command::Blank
+    }
+
+    /// Takes in a turn of the wheel, `delta_pixels` down in the window's surface pixels, on a window whose notch is
+    /// `notch_pixels`: the view scrolls three rows a notch, down toward the newest, and up toward the oldest when
+    /// negative, held between them.
+    pub fn wheeled(&mut self, delta_pixels: f32, notch_pixels: f32, view: View) {
+        let rows = self.wheel.turned(delta_pixels, notch_pixels);
+        let stopped = self.scrollback.scroll(rows, view.rows);
+        if stopped {
+            self.wheel.stopped();
+        }
+    }
+
+    /// Where the view of the scrollback stands.
+    pub fn scrolled(&self) -> Scrolled {
+        Scrolled { kept: self.scrollback.len(), up: self.scrollback.up() }
     }
 
     /// Enters the line: it is kept in the history and echoed in lichen, the view goes to the newest row, and what its

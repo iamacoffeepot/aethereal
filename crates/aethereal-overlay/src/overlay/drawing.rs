@@ -9,6 +9,7 @@ use super::{Calling, Chart, FIGURES_EVERY_NANOS, LOGS_EVERY_NANOS, Overlay};
 use crate::chart::{self, RECORD_BYTES};
 use crate::console::Logged;
 use crate::layout::Layout;
+use crate::scrollbar;
 use crate::stop::Stop;
 use aethereal_actor::{Allows, Asks, Fault, Handles, Level, On, Path, Tells, Tick, Turn, path};
 use aethereal_render::Renderer;
@@ -45,7 +46,7 @@ pub(super) type Heard = (
 );
 
 /// A backtick steps the overlay, a resize lays it out again, and at the console's stop the keys and typed text edit
-/// and enter its line; the overlay hears nothing else of its window.
+/// and enter its line and the wheel scrolls its scrollback; the overlay hears nothing else of its window.
 impl Handles<Event> for Overlay {
     type Sends = Heard;
 
@@ -57,6 +58,11 @@ impl Handles<Event> for Overlay {
             Event::KeyDown { key, .. } if console => self.pressed(&key, turn),
             Event::Text { text } if console => {
                 self.console.typed(&text);
+                self.write_console(turn)
+            }
+            Event::Wheel { delta_y, .. } if console => {
+                let (notch_pixels, view) = (Layout::of(self.surface).notch_pixels(), self.view());
+                self.console.wheeled(delta_y, notch_pixels, view);
                 self.write_console(turn)
             }
             _ => Ok(()),
@@ -156,8 +162,8 @@ impl Overlay {
         Ok(())
     }
 
-    /// Writes every record of the placement for the stop, the layout, the cycles kept, the marks, and the cursor at
-    /// the console's stop, in one write into a buffer the overlay keeps, and cuts the records to as many when there
+    /// Writes every record of the placement for the stop, the layout, the cycles kept, the marks, and the cursor and
+    /// scroll bar at the console's stop, in one write into a buffer the overlay keeps, and cuts the records to as many when there
     /// are fewer than were last written. Nothing while the placement is not made.
     pub(super) fn write_chart<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
@@ -174,6 +180,9 @@ impl Overlay {
         chart::marks(&mut records, layout, slide, self.marks.times());
         if self.stop.console() {
             chart::cursor(&mut records, layout, self.console.cursor_column());
+            let (row_pixels, shown) = (layout.line_pixels_tall(), layout.scrollback_rows());
+            let bar = scrollbar::bar(layout.scrollbar(), row_pixels, shown, self.console.scrolled());
+            chart::scrollbar(&mut records, bar);
         }
         let count = u32::try_from(records.len() / RECORD_BYTES as usize).unwrap_or(u32::MAX);
         let Ok(records) = turn.put(records) else {

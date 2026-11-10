@@ -92,7 +92,8 @@ KeyFocusGained { window }    // to the new holder
 KeyFocusLost { window }      // to the holder it replaced, the one that released, or the holder of a closed window
 ```
 
-- **Each window has one slot,** empty or held by one actor. While it is held, that window's key events, `Event::Text`, and the input method's events go only to the holder, which hears them as one of the window's subscribers. Input performed by `send_input` is routed the same way.
+- **Each window has one slot,** empty or held by one actor. While it is held, that window's key events, `Event::Text`, the input method's events, and `Event::Wheel` go only to the holder, which hears them as one of the window's subscribers. Input performed by `send_input` is routed the same way.
+- **Wheel turns follow the keys.** While an actor holds the slot, the wheel turns go to it too, the same as keys and typed text: the open console scrolls its scrollback by the wheel, and a turn that also reached the game beneath would zoom it. When the console closes the slot empties, and the game hears the wheel again.
 - **The slot is the window's actor's,** as it is what sends a window's events to its subscribers. A take and a release go to it, as `Perform` does, so they name no window; the notices name it by its `WindowId`. Both chassis push what they hear through the window root to that actor, so both are routed by the slot with no code of their own.
 - **The latest take wins,** and the holder it replaced hears `KeyFocusLost`. A release, the holder's end, or the window closing empties the slot; nothing is handed back.
 - **A key that is down keeps who heard its press,** and its repeats and its release go to them, so a character walking as the console opens stops. The window losing the keyboard forgets the keys down, as their releases never come.

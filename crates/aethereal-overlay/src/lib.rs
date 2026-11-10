@@ -9,7 +9,8 @@
 //! ochre tick at each mark. The band's right end counts the warnings and errors logged since the console was last
 //! opened.
 //!
-//! The console holds the window's key focus while it is open. Its line calls the engine's tools, held by the tools
+//! The console holds the window's key focus while it is open, and with it the wheel, which scrolls its scrollback; a
+//! scroll bar at its right edge shows where the view stands. Its line calls the engine's tools, held by the tools
 //! root every engine lists (ADR-0053: Commands are tools), and prints their answers as they would be typed, with the
 //! engine's recent log beneath them as it comes. The overlay offers two tools of its own, `mark` and `memory`, which an
 //! agent may call too. The band's right column and the GPU's graphs under the chart are pieces of their own, each
@@ -22,6 +23,7 @@ mod frames;
 mod layout;
 mod marks;
 mod overlay;
+mod scrollbar;
 mod stop;
 mod tools;
 

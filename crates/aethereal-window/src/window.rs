@@ -1,5 +1,5 @@
 //! A window's actor: beneath the window root, keyed by the window's id, it sends what its window heard to the actors
-//! that subscribed, its keys and typed text only to the holder of its key focus while one holds it (ADR-0053), and
+//! that subscribed, its keys, typed text, and wheel turns only to the holder of its key focus while one holds it (ADR-0053), and
 //! keeps how the window stands for a new one.
 
 use crate::event::{Event, Mode, Subscribe, Surface, Unsubscribe};
@@ -48,8 +48,8 @@ pub struct WindowConfig {
     pub focused: bool,
 }
 
-/// A window's actor: it sends each event its window heard to the actors subscribed to it, its keys and typed text only
-/// to the holder of its key focus while one holds it, and sends a new subscriber the window's surface, mode, and focus
+/// A window's actor: it sends each event its window heard to the actors subscribed to it, its keys, typed text, and
+/// wheel turns only to the holder of its key focus while one holds it, and sends a new subscriber the window's surface, mode, and focus
 /// as they stand before anything else.
 #[derive(Bound)]
 #[kind(name = "aether.window")]
