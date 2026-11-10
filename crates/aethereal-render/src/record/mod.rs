@@ -6,7 +6,7 @@ mod tests;
 
 use crate::Renderer;
 use crate::capture::encode::{Encode, Encoded};
-use crate::capture::{Crop, image, is_shown, unread};
+use crate::capture::{Crop, crop_or_whole, image, is_shown, longest_or_frame, unread};
 use crate::readback::{Pixels, ReadBack, Readable};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
@@ -32,11 +32,15 @@ const MOST_FRAMES_PER_SECOND: u32 = 240;
 /// what the tool holds.
 const MOST_IN_FLIGHT: u32 = 4;
 
+/// The frames a second a clip that names none is recorded at.
+const FRAMES_PER_SECOND: u32 = 60;
+
 /// A second, in nanoseconds.
 const SECOND_NANOS: u64 = 1_000_000_000;
 
 /// What the agent asks `record_clip` for: `frames` frames drawn onto `window` at `frames_per_second`, each cut by
-/// `crop` and its longer side at most `longest` pixels, written into the program's saves under `clips/<name>/`.
+/// `crop` and its longer side at most `longest` pixels, written into the program's saves under `clips/<name>/`. The
+/// tool reads a field left out as its fallback, which the field's doc names.
 #[derive(Debug, Clone, Plain)]
 #[kind(name = "aether.render.record")]
 pub struct Record {
@@ -46,18 +50,28 @@ pub struct Record {
     /// How many frames to record.
     #[flag(short = 'n')]
     pub frames: u32,
-    /// How many frames a second are recorded.
+    /// How many frames a second are recorded: none for 60.
     #[flag(long = "fps", short = 'r')]
-    pub frames_per_second: u32,
-    /// What of each frame is recorded: `whole`.
+    pub frames_per_second: Option<u32>,
+    /// What of each frame is recorded: none for `whole`.
     #[flag(short = 'c')]
-    pub crop: Crop,
-    /// The most pixels of each image's longer side.
+    pub crop: Option<Crop>,
+    /// The most pixels of each image's longer side: none for the frame's own size.
     #[flag(short = 'l')]
-    pub longest: u32,
+    pub longest: Option<u32>,
     /// The clip's name: it is written under `clips/<name>/` in the program's saves.
     #[flag(position)]
     pub name: FilePath,
+}
+
+impl Record {
+    /// How many frames a second the clip is recorded at, 60 when it names none.
+    const fn rate(&self) -> u32 {
+        match self.frames_per_second {
+            Some(rate) => rate,
+            None => FRAMES_PER_SECOND,
+        }
+    }
 }
 
 /// What a clip recorded is: the folder its frames are in, within the program's saves, named `00000.png` on; how many
@@ -207,7 +221,8 @@ impl Tool for RecordTool {
     fn sheets() -> Vec<ToolSheet> {
         vec![ToolSheet::of::<Record>(
             "record_clip",
-            "Records `frames` frames drawn onto a window, numbered from 0, at `frames_per_second`, as PNGs written \
+            "Records `frames` frames drawn onto a window, numbered from 0, at `frames_per_second` (60 when left \
+             out), as PNGs written \
              into the program's saves at clips/<name>/00000.png on. It holds the program's clock and advances it \
              one cycle per frame, each by exactly 1/fps, so the clip plays in exact real time however slowly its \
              frames draw, and two runs of a deterministic program match frame for frame. The clock is left as it \
@@ -233,7 +248,7 @@ impl Handles<Call> for RecordTool {
             turn.reply(&refused("that is no clip to record"))?;
             return Ok(());
         };
-        if let Some(why) = unrecordable(asked.frames, asked.frames_per_second, asked.longest) {
+        if let Some(why) = unrecordable(asked.frames, asked.rate(), longest_or_frame(asked.longest)) {
             turn.reply(&refused(why))?;
             return Ok(());
         }
@@ -338,12 +353,13 @@ impl Handles<Answer<Pixels, Framing>> for RecordTool {
         if !is_shown(format) {
             return recording.fail(at(frame, "the frame is of a format no image is written from"), turn);
         }
-        let region = recording.asked.crop.region(width, height);
+        let region = crop_or_whole(recording.asked.crop).region(width, height);
         if !region.within(width, height) {
             let outside = format!("the crop is not within the frame, which is {width}x{height}");
             return recording.fail(at(frame, &outside), turn);
         }
-        let (sent_width, sent_height) = image::sent_size(region.width, region.height, recording.asked.longest);
+        let longest = longest_or_frame(recording.asked.longest);
+        let (sent_width, sent_height) = image::sent_size(region.width, region.height, longest);
         let Stage::Drawing { frames, .. } = &mut recording.stage else {
             return Ok(());
         };
@@ -450,7 +466,7 @@ impl Clip {
         frames.asked += 1;
         let read = ReadBack { of: Readable::Frame(self.asked.window) };
         turn.to(path::<Renderer>(())).ask(&read, &Framing { clip: self.number, frame })?;
-        let advance = Advance { cycles: 1, delta_nanos: delta_nanos(frame, self.asked.frames_per_second) };
+        let advance = Advance { cycles: 1, delta_nanos: Some(delta_nanos(frame, self.asked.rate())) };
         turn.to(path::<Pacer>(())).ask(&advance, &Stepping { clip: self.number })?;
 
         Ok(())
@@ -467,13 +483,8 @@ impl Clip {
         let Ok(folder) = FilePath::parse(format!("clips/{}", self.asked.name.as_str())) else {
             return self.fail(String::from("the clip's name makes no folder's path"), turn);
         };
-        let recorded = Recorded {
-            folder,
-            frames: self.asked.frames,
-            frames_per_second: self.asked.frames_per_second,
-            width,
-            height,
-        };
+        let recorded =
+            Recorded { folder, frames: self.asked.frames, frames_per_second: self.asked.rate(), width, height };
 
         self.restore(Answering::Recorded(recorded), turn)
     }

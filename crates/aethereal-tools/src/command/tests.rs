@@ -169,10 +169,10 @@ fn a_line_typed_by_a_real_tool_s_sheet_calls_it_and_its_answer_prints() -> Outco
 
     let expected = ReadLog {
         actor: ActorPath::new("aether.window:0"),
-        since: 4,
-        level: LogLevel::Warn,
-        contains: String::from("went wrong"),
-        most: 2,
+        since: Some(4),
+        level: Some(LogLevel::Warn),
+        contains: Some(String::from("went wrong")),
+        most: Some(2),
     };
     assert_eq!(from_bytes::<ReadLog>(&input, &mut budget)?, expected);
     let warned = LoggedEntry::Line { level: LogLevel::Warn, text: String::from("it went wrong") };

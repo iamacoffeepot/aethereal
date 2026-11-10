@@ -347,7 +347,7 @@ fn listen_sheet() -> ToolSheet {
 fn sheets_of(engine: u32, names: &[&str]) -> DescribeTools {
     let names = names.iter().map(|name| String::from(*name)).collect();
 
-    DescribeTools { engine, show: ToolsShown::Sheets(names) }
+    DescribeTools { engine, show: Some(ToolsShown::Sheets(names)) }
 }
 
 /// The input of `call_tool` that calls `say` on engine 0 with `input`.
@@ -407,7 +407,7 @@ fn describe_engine_lists_every_tool_by_its_name_and_first_sentence_alone() -> Re
     let (mut harness, port, worker) = hub()?;
     let _stream = linked_engine(&mut harness, port, vec![sheet(), listen_sheet()]);
 
-    let names = DescribeTools { engine: 0, show: ToolsShown::Names };
+    let names = DescribeTools { engine: 0, show: None };
     let describing = called(&mut harness, worker, "describe_engine", &names)?;
     let described: EngineDescription = output(&mut harness, describing);
 
@@ -477,13 +477,14 @@ fn an_unknown_engine_one_with_no_tools_yet_and_an_unknown_tool_are_each_refused_
     waiting::until(BUDGET, || listed(&mut harness).is_ok_and(|list| holds(&list, 2, 1)));
     let say = json_of(&Say { text: String::from("hello") });
 
-    let gone = called(&mut harness, worker, "describe_engine", &DescribeTools { engine: 7, show: ToolsShown::Names })?;
+    let gone =
+        called(&mut harness, worker, "describe_engine", &DescribeTools { engine: 7, show: Some(ToolsShown::Names) })?;
     assert!(refuses(&gone, "no engine 7"), "{gone:?}");
     let gone = called(&mut harness, worker, "call_tool", &EngineCall { engine: 7, ..call_say(say.clone()) })?;
     assert!(refuses(&gone, "no engine 7"), "{gone:?}");
 
     let not_yet =
-        called(&mut harness, worker, "describe_engine", &DescribeTools { engine: 1, show: ToolsShown::Names })?;
+        called(&mut harness, worker, "describe_engine", &DescribeTools { engine: 1, show: Some(ToolsShown::Names) })?;
     assert!(refuses(&not_yet, "not sent its tools"), "{not_yet:?}");
 
     let unknown = called(&mut harness, worker, "describe_engine", &sheets_of(0, &["say", "nothing"]))?;

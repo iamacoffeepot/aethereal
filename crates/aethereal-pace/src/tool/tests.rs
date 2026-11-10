@@ -42,7 +42,7 @@ fn each_call_is_asked_of_the_pacer_as_named_and_answered_with_its_answer() -> Re
     let mut harness = tooled()?;
     let set = call(&mut harness, "set_pace", &SetPace { pace: Pace::Held })?;
     assert_eq!(set, Ok(to_bytes(&PaceSet { was: Pace::Real })?));
-    let advanced = call(&mut harness, "advance", &Advance { cycles: 0, delta_nanos: 10 })?;
+    let advanced = call(&mut harness, "advance", &Advance { cycles: 0, delta_nanos: Some(10) })?;
     assert_eq!(advanced, Ok(to_bytes(&Advanced::Refused(Unadvanced::NoCycles))?));
     assert!(call(&mut harness, "rewind", &SetPace { pace: Pace::Real })?.is_err());
 

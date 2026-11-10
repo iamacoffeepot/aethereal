@@ -75,6 +75,8 @@ pub enum LoggedEntry {
 - **A fault, drop, or unread mail is written as text,** so the agent reads why an actor ended without a schema for every fault. A fault is named by its kind's id and size, as nothing in the engine names a kind by its id; a resource or a source's kind by its name.
 - The usual asks: `{ "actor": "aether.render", "since": 0, … }` for what an actor has said, then `{ "since": next }` to follow it.
 
+*Amended by ADR-0053: each part of the view also keeps a ring of its most recent entries across actors, `most_recent` of them between the parts (2,000 by default, a field of `EngineSettings`), each with its actor's id and the step it was folded in, and the table remembers as many ended actors' names, so an entry is named by its actor's path after the actor ends. `Turn::recent(since)` reads the rings merged by step, with the step to read on from and how many entries had left them, and `LogsTool` answers it as a second tool, `read_recent`, which needs no path.*
+
 ### What changes for programs
 
 - The `linked_window` example and the hub's own program list `LogsTool` in their toolboxes; a program that does not list it answers no `actor_logs`.

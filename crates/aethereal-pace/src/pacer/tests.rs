@@ -92,8 +92,8 @@ fn a_held_clock_runs_each_advance_s_cycles_in_turn_and_answers_once_the_last_has
     assert!(clocked(&mut harness, &mut clockwork, 1)?.is_empty());
     assert!(!clockwork.runs(), "the clock starts held");
 
-    ask(&mut harness, &Advance { cycles: 3, delta_nanos: 100 })?;
-    ask(&mut harness, &Advance { cycles: 2, delta_nanos: 7 })?;
+    ask(&mut harness, &Advance { cycles: 3, delta_nanos: Some(100) })?;
+    ask(&mut harness, &Advance { cycles: 2, delta_nanos: Some(7) })?;
     assert_eq!(
         clocked(&mut harness, &mut clockwork, 3)?,
         [],
@@ -118,15 +118,15 @@ fn an_advance_the_clock_cannot_run_is_refused() -> Result<(), Unheard> {
     // Catches a running clock frozen by an advance, an advance of no cycles or no time held forever, and a delta past
     // the engine's limit handed to actors written for less.
     let (mut harness, mut clockwork) = paced(Pace::Real)?;
-    ask(&mut harness, &Advance { cycles: 1, delta_nanos: 10 })?;
+    ask(&mut harness, &Advance { cycles: 1, delta_nanos: Some(10) })?;
     assert_eq!(clocked(&mut harness, &mut clockwork, 1)?, [Noted::Advanced(Advanced::Refused(Unadvanced::Running))]);
     assert!(clockwork.runs());
 
     ask(&mut harness, &SetPace { pace: Pace::Held })?;
-    ask(&mut harness, &Advance { cycles: 0, delta_nanos: 10 })?;
-    ask(&mut harness, &Advance { cycles: 1, delta_nanos: 0 })?;
-    ask(&mut harness, &Advance { cycles: 1, delta_nanos: LIMIT + 1 })?;
-    ask(&mut harness, &Advance { cycles: 1, delta_nanos: LIMIT })?;
+    ask(&mut harness, &Advance { cycles: 0, delta_nanos: Some(10) })?;
+    ask(&mut harness, &Advance { cycles: 1, delta_nanos: Some(0) })?;
+    ask(&mut harness, &Advance { cycles: 1, delta_nanos: Some(LIMIT + 1) })?;
+    ask(&mut harness, &Advance { cycles: 1, delta_nanos: Some(LIMIT) })?;
     let noted = clocked(&mut harness, &mut clockwork, 4)?;
     assert_eq!(
         noted,
@@ -147,8 +147,8 @@ fn a_clock_set_running_or_a_program_stopping_refuses_the_advances_held() -> Resu
     // Catches advances left held forever once no held cycle will run, a clock set running whose host still waits on a
     // held cycle, and one set to the pace it has answered as though it had another.
     let (mut harness, mut clockwork) = paced(Pace::Held)?;
-    ask(&mut harness, &Advance { cycles: 50, delta_nanos: 10 })?;
-    ask(&mut harness, &Advance { cycles: 1, delta_nanos: 10 })?;
+    ask(&mut harness, &Advance { cycles: 50, delta_nanos: Some(10) })?;
+    ask(&mut harness, &Advance { cycles: 1, delta_nanos: Some(10) })?;
     clocked(&mut harness, &mut clockwork, 2)?;
     ask(&mut harness, &SetPace { pace: Pace::Real })?;
     ask(&mut harness, &SetPace { pace: Pace::Real })?;
@@ -165,7 +165,7 @@ fn a_clock_set_running_or_a_program_stopping_refuses_the_advances_held() -> Resu
     assert!(clockwork.runs(), "the host's own cycles are due again");
 
     ask(&mut harness, &SetPace { pace: Pace::Held })?;
-    ask(&mut harness, &Advance { cycles: 50, delta_nanos: 10 })?;
+    ask(&mut harness, &Advance { cycles: 50, delta_nanos: Some(10) })?;
     clocked(&mut harness, &mut clockwork, 2)?;
     harness.host().engine().quit();
     let noted = clocked(&mut harness, &mut clockwork, 4)?;

@@ -172,10 +172,10 @@ impl Tool for EngineTools {
             ),
             ToolSheet::of::<DescribeTools>(
                 DESCRIBE_ENGINE,
-                "Describes an engine's tools. Ask with `\"show\": \"Names\"` first, for every tool's name and the \
-                 first sentence of what it does; then with `\"show\": {\"Sheets\": [...]}`, naming the tools you \
-                 will call, for each one's full description and its input and output as JSON Schema. A name the \
-                 engine has no tool of is refused.",
+                "Describes an engine's tools. Ask with `\"show\": \"Names\"` first, or leave `show` out, for every \
+                 tool's name and the first sentence of what it does; then with `\"show\": {\"Sheets\": [...]}`, naming \
+                 the tools you will call, for each one's full description and its input and output as JSON Schema. A \
+                 name the engine has no tool of is refused.",
                 Output::Value(SchemaNodes::of(&EngineDescription::SHAPE)),
             ),
             ToolSheet::of::<EngineCall>(
@@ -194,9 +194,9 @@ impl Tool for EngineTools {
             ToolSheet::of::<SpawnEngine>(
                 SPAWN_ENGINE,
                 "Spawns an engine from a binary checked into the store, named by a name or by its 64-digit hash, \
-                 started with `args` and then the arguments that link it to this hub. Answers the engine's id \
-                 once it has linked; refused if nothing is stored by that binary, the hub would not start it, it \
-                 exited before linking (with its exit status and the end of its stderr), or it did not link in \
+                 started with `args` (none when left out) and then the arguments that link it to this hub. Answers the \
+                 engine's id once it has linked; refused if nothing is stored by that binary, the hub would not start \
+                 it, it exited before linking (with its exit status and the end of its stderr), or it did not link in \
                  time, when it is stopped.",
                 Output::Value(SchemaNodes::of(&SpawnedEngine::SHAPE)),
             ),
@@ -244,6 +244,7 @@ impl Handles<Call> for EngineTools {
             }
             Order::Describe(DescribeTools { engine, show }) => {
                 turn.to(path::<Engine>(u64::from(engine))).ask(&DescribeEngine, &asking)?;
+                let show = show.unwrap_or(ToolsShown::Names);
                 Pending::Describing { held, engine, show }
             }
             Order::Call(EngineCall { engine, tool, input }) => {

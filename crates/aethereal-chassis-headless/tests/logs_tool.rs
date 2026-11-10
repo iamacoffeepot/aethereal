@@ -9,7 +9,8 @@ use aethereal_data::{ActorPath, Budget, Plain, from_bytes, to_bytes};
 use aethereal_substrate::Host;
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_tools::{
-    ActorLog, Call, Called, LogEntry, LogLevel, LoggedEntry, LogsTool, LogsToolConfig, ReadLog, Tool, Tooling,
+    ActorLog, Call, Called, LogEntry, LogLevel, LoggedEntry, LogsTool, LogsToolConfig, ReadLog, ReadRecent, RecentLog,
+    Tool, Tooling,
 };
 
 /// The most bytes reading an answer takes.
@@ -96,7 +97,7 @@ fn talker() -> ActorPath {
 
 /// A read of `actor` from `since`, at `level` and above, holding `contains`, at most `most`.
 fn read(actor: ActorPath, since: u64, level: LogLevel, contains: &str, most: u32) -> ReadLog {
-    ReadLog { actor, since, level, contains: String::from(contains), most }
+    ReadLog { actor, since: Some(since), level: Some(level), contains: Some(String::from(contains)), most: Some(most) }
 }
 
 /// Every entry of `actor` from `since`.
@@ -122,6 +123,45 @@ fn logged(harness: &mut Harness<Headless>, worker: ProtocolRef<Tooling>, read: &
     };
 
     Ok(log)
+}
+
+/// What the tool answers a read of every actor's entries from `since`, at `level` and above, with.
+fn recent(
+    harness: &mut Harness<Headless>,
+    worker: ProtocolRef<Tooling>,
+    since: u64,
+    level: LogLevel,
+) -> Result<RecentLog, Unheard> {
+    let read = ReadRecent { since: Some(since), level: Some(level), contains: None, most: Some(u32::MAX) };
+    let Ok(bytes) = to_bytes(&read) else {
+        panic!("the read encodes");
+    };
+    let input = harness.put(bytes)?;
+    let asked = harness.ask(worker, &Call { tool: String::from("read_recent"), input })?;
+    let Answered::Yes(Called::Output(output)) = harness.answer(asked)? else {
+        panic!("the tool answers an output");
+    };
+    let Some(bytes) = harness.read(&output) else {
+        panic!("the output's blob is held");
+    };
+    let Ok(log) = from_bytes(bytes, &mut Budget::new(WALK_BYTES)) else {
+        panic!("the output reads as a recent log");
+    };
+
+    Ok(log)
+}
+
+/// The talker's entries in `log`, each as its level and text, oldest first.
+fn talkers(log: &RecentLog) -> Vec<(LogLevel, LoggedEntry)> {
+    let talker = talker().to_string();
+    let by_talker = log.entries.iter().filter(|entry| entry.actor == talker);
+
+    by_talker.map(|entry| (entry.level, entry.entry.clone())).collect()
+}
+
+/// A line the talker said at `level`, as a recent read answers it.
+fn said(level: LogLevel, text: &str) -> (LogLevel, LoggedEntry) {
+    (level, LoggedEntry::Line { level, text: String::from(text) })
 }
 
 /// The talker told to say each of `lines`, and a step run, so its lines are in the log the next step reads.
@@ -207,6 +247,46 @@ fn an_actor_that_logged_nothing_reads_as_no_entries() -> Result<(), Unheard> {
     let log = logged(&mut harness, worker, &every(nowhere, 0))?;
 
     assert_eq!((log.entries.len(), log.next, log.skipped), (0, 0, 0));
+
+    Ok(())
+}
+
+#[test]
+fn every_actors_entries_are_read_by_path_without_one_and_read_on_from_next() -> Result<(), Unheard> {
+    // Catches a read that needs a path, entries named by no path, a level filter read as exact or not at all, and a
+    // `next` that reads an entry again or misses one.
+    let (mut harness, worker) = logs_tool()?;
+    say(&mut harness, &[(LogLevel::Debug, "frame 1"), (LogLevel::Warn, "frame 2 slow")])?;
+
+    let first = recent(&mut harness, worker, 0, LogLevel::Debug)?;
+    let warned = recent(&mut harness, worker, 0, LogLevel::Warn)?;
+    say(&mut harness, &[(LogLevel::Error, "lost the device")])?;
+    let rest = recent(&mut harness, worker, first.next, LogLevel::Debug)?;
+
+    let expected_first = [said(LogLevel::Debug, "frame 1"), said(LogLevel::Warn, "frame 2 slow")];
+    assert_eq!(talkers(&first), expected_first);
+    assert_eq!(talkers(&warned), [said(LogLevel::Warn, "frame 2 slow")]);
+    assert_eq!(talkers(&rest), [said(LogLevel::Error, "lost the device")]);
+    assert_eq!((rest.left, rest.cut), (0, 0));
+
+    Ok(())
+}
+
+#[test]
+fn an_ended_actors_fault_is_read_by_its_path_with_the_rest() -> Result<(), Unheard> {
+    // Catches entries dropped from the read as their actor ends, and an ended actor no longer named by its path.
+    let (mut harness, worker) = logs_tool()?;
+    say(&mut harness, &[(LogLevel::Info, "starting")])?;
+    let talker_ref = harness.root::<Talker>();
+    harness.tell(talker_ref, &GiveUp)?;
+    harness.step();
+
+    let log = recent(&mut harness, worker, 0, LogLevel::Debug)?;
+
+    let entries = talkers(&log);
+    let failed = matches!(entries.last(), Some((LogLevel::Error, LoggedEntry::Failed(_))));
+    assert_eq!(entries.get(..2), Some(&[said(LogLevel::Info, "starting"), said(LogLevel::Error, "giving up")][..]));
+    assert!(failed, "the fault that ended it is read last: {entries:?}");
 
     Ok(())
 }

@@ -74,10 +74,10 @@ impl Tool for PaceTool {
             ),
             ToolSheet::of::<Advance>(
                 "advance",
-                "Runs `cycles` cycles of a held clock, one after another, each Tick carrying exactly \
-                 `delta_nanos`, and answers once the last has finished, with the program's elapsed time then. \
-                 Refused while the clock runs, for no cycles or no time, and for a delta past the most the \
-                 engine gives one Tick. Hold the clock with set_pace first.",
+                "Runs `cycles` cycles of a held clock, one after another, each Tick carrying exactly `delta_nanos` (a \
+                 sixtieth of a second, 16666666, when left out), and answers once the last has finished, with the \
+                 program's elapsed time then. Refused while the clock runs, for no cycles or no time, and for a delta \
+                 past the most the engine gives one Tick. Hold the clock with set_pace first.",
                 Output::Value(SchemaNodes::of(&Advanced::SHAPE)),
             ),
         ]

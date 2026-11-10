@@ -86,7 +86,7 @@ pub use item::Item;
 pub use job::{Copied, Driven, Fills, Job, JobCode, JobId, Runner, Running, Submitted, Unrun};
 #[cfg(feature = "std")]
 pub use job::{JobList, JobType, Lending, Outcome, Produced, lending};
-pub use log::{Entry, KeptLog, Logged};
+pub use log::{ActorName, Entry, KeptLog, Logged, Named, Recent, RecentRing, Recorded};
 pub use mail::{Mail, MailId};
 pub use path::{
     Beneath, Child, HandlersNeedIn, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Parent, Path, PathTo, Placed, There,

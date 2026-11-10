@@ -251,7 +251,7 @@ fn hub(dir: &Dir, link_within_millis: u64) -> Result<(Harness<Headless>, u16, St
 /// What spawning `binary` with `args` comes to.
 fn spawn(harness: &mut Harness<Headless>, binary: Binary, args: Vec<String>) -> Result<Spawn, Unheard> {
     let engines = harness.root::<Engines>();
-    let asked = harness.ask(engines, &SpawnEngine { binary, args })?;
+    let asked = harness.ask(engines, &SpawnEngine { binary, args: Some(args) })?;
     let Answered::Yes(spawn) = harness.answer(asked)? else {
         panic!("`Engines` answers a spawn");
     };
@@ -590,15 +590,17 @@ fn spawn_engine_answers_the_linked_engine_and_terminate_engine_answers_done_or_r
         panic!("the name conforms");
     };
 
-    let linking =
-        called(&mut harness, "spawn_engine", &SpawnEngine { binary: spawnee(), args: args(Behaviour::Links, &dir) })?;
+    let linking = called(
+        &mut harness,
+        "spawn_engine",
+        &SpawnEngine { binary: spawnee(), args: Some(args(Behaviour::Links, &dir)) },
+    )?;
     let linked: SpawnedEngine = output(&mut harness, linking);
-    let not_stored =
-        called(&mut harness, "spawn_engine", &SpawnEngine { binary: Binary::Named(missing), args: Vec::new() })?;
+    let not_stored = called(&mut harness, "spawn_engine", &SpawnEngine { binary: Binary::Named(missing), args: None })?;
     let exited = called(
         &mut harness,
         "spawn_engine",
-        &SpawnEngine { binary: spawnee(), args: args(Behaviour::ExitsEarly, &dir) },
+        &SpawnEngine { binary: spawnee(), args: Some(args(Behaviour::ExitsEarly, &dir)) },
     )?;
     let unknown = called(&mut harness, "terminate_engine", &TerminateEngine { engine: 7 })?;
     let terminating = called(&mut harness, "terminate_engine", &TerminateEngine { engine: linked.engine })?;

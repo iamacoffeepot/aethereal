@@ -30,17 +30,21 @@ pub struct PaceSet {
 }
 
 /// Asks the pacer to run `cycles` cycles of a held clock, one after another, each with a `Tick` of exactly
-/// `delta_nanos`: answered with [`Advanced`] once the last has finished.
+/// `delta_nanos`, a sixtieth of a second when it names none: answered with [`Advanced`] once the last has finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.pace.advance")]
 pub struct Advance {
     /// How many cycles to run.
     #[flag(position)]
     pub cycles: u32,
-    /// The time each cycle's `Tick` carries, in nanoseconds.
+    /// The time each cycle's `Tick` carries, in nanoseconds: none for a sixtieth of a second.
     #[flag(short = 'd')]
-    pub delta_nanos: u64,
+    pub delta_nanos: Option<u64>,
 }
+
+/// The time each cycle of an advance that names none carries: a sixtieth of a second, in nanoseconds, a frame at the
+/// rate most displays draw.
+pub(super) const SIXTIETH_NANOS: u64 = 1_000_000_000 / 60;
 
 /// What became of an advance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]

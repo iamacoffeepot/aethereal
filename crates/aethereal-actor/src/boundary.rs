@@ -2,7 +2,7 @@
 
 #[cfg(feature = "std")]
 use crate::blob::handed_index;
-use crate::{BlobHash, BlobId, Declared, Logged, SeatNumber, Seated, Time};
+use crate::{BlobHash, BlobId, Declared, Logged, Recent, SeatNumber, Seated, Time};
 use aethereal_data::{ActorId, ActorPath, Boundary, Element, EncodeError, KindId, PathSegment};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
@@ -67,6 +67,13 @@ pub trait Table {
     /// A table that reads no log view, as a guest's does until a guest asks for one, reads every log as nothing.
     fn logged(&self, _path: &ActorPath) -> Logged<'_> {
         Logged::Nothing
+    }
+
+    /// What every actor, live or ended, has logged most recently from the step `since` on, as the log view stood when
+    /// the step began (ADR-0053). A table that reads no log view, as a guest's does, reads nothing, and goes on from
+    /// `since`.
+    fn recent(&self, since: u64) -> Recent<'_> {
+        Recent::nothing(since)
     }
 }
 

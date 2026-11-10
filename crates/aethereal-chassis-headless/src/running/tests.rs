@@ -624,7 +624,7 @@ impl Actor for Stepper {
         let told = turn.take(config.told)?;
         turn.subscribe::<Tick>();
         let delta_nanos = nanos(STEP);
-        turn.to(path::<Pacer>(())).ask(&Advance { cycles: 3, delta_nanos }, &Nothing)?;
+        turn.to(path::<Pacer>(())).ask(&Advance { cycles: 3, delta_nanos: Some(delta_nanos) }, &Nothing)?;
 
         Ok(Self { told })
     }

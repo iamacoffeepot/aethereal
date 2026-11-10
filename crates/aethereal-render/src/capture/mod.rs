@@ -25,19 +25,38 @@ use std::collections::BTreeMap;
 const INPUT_BYTES: usize = 1024;
 
 /// What the agent asks `capture_frame` for: the next frame drawn onto `window`, cut by `crop`, its longer side at most
-/// `longest` pixels.
+/// `longest` pixels. The tool reads a field left out as its fallback, which the field's doc names.
 #[derive(Debug, Clone, Copy, Plain)]
 #[kind(name = "aether.render.capture")]
 pub struct Capture {
     /// The window, by its number.
     #[flag(position)]
     pub window: WindowId,
-    /// What of the frame is sent: `whole`.
+    /// What of the frame is sent: none for `whole`.
     #[flag(short = 'c')]
-    pub crop: Crop,
-    /// The most pixels of the image's longer side.
+    pub crop: Option<Crop>,
+    /// The most pixels of the image's longer side: none for the frame's own size.
     #[flag(short = 'l')]
-    pub longest: u32,
+    pub longest: Option<u32>,
+}
+
+/// The crop of a capture or a clip that names `crop`: the whole frame when it names none.
+#[must_use]
+pub const fn crop_or_whole(crop: Option<Crop>) -> Crop {
+    match crop {
+        Some(crop) => crop,
+        None => Crop::Whole,
+    }
+}
+
+/// The most pixels of an image's longer side, of a capture or a clip that names `longest`: when it names none, no
+/// bound, so each image is sent at its frame's own size, as none is ever enlarged.
+#[must_use]
+pub const fn longest_or_frame(longest: Option<u32>) -> u32 {
+    match longest {
+        Some(longest) => longest,
+        None => u32::MAX,
+    }
 }
 
 /// What of a frame is sent.
@@ -144,9 +163,10 @@ impl Tool for CaptureTool {
             "Captures the next frame drawn onto a window, numbered from 0, as a PNG image, with a line giving the \
              frame's size, the crop, and the image's size. Under a held clock it captures the last frame drawn, \
              as no frame is drawn until the clock is advanced. `longest` bounds the image's longer side: a larger \
-             image is shrunk to keep its shape, and a smaller one is never enlarged. An image costs about width \
-             × height / 750 tokens, so a whole frame at 1024 is about a thousand. `crop` cuts a region of the \
-             frame, in its pixels from the top left, before shrinking: crop to look closely at part of a frame.",
+             image is shrunk to keep its shape, and a smaller one is never enlarged; left out, the frame is sent \
+             at its own size. An image costs about width × height / 750 tokens, so a whole frame at 1024 is \
+             about a thousand. `crop` cuts a region of the frame, in its pixels from the top left, before \
+             shrinking: crop to look closely at part of a frame. Left out, the whole frame is sent.",
             Output::Image,
         )]
     }
@@ -165,7 +185,8 @@ impl Handles<Call> for CaptureTool {
             turn.reply(&refused("that is no capture"))?;
             return Ok(());
         };
-        if capture.longest == 0 {
+        let longest = longest_or_frame(capture.longest);
+        if longest == 0 {
             turn.reply(&refused("`longest` is at least 1"))?;
             return Ok(());
         }
@@ -173,8 +194,8 @@ impl Handles<Call> for CaptureTool {
         let number = self.next;
         self.next += 1;
         turn.to(path::<Pacer>(())).ask(&ReadPace, &PaceReading { number })?;
-        let Capture { window, crop, longest } = capture;
-        self.reading.insert(number, Asked { held, window, crop, longest });
+        let crop = crop_or_whole(capture.crop);
+        self.reading.insert(number, Asked { held, window: capture.window, crop, longest });
 
         Ok(())
     }

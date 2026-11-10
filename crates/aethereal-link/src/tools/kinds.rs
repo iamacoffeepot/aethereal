@@ -13,9 +13,9 @@ pub struct DescribeTools {
     #[flag(position)]
     pub engine: u32,
     /// `names`, for every tool by its name and what it does; or `sheets:<tools>`, for the full sheets of
-    /// the tools named.
+    /// the tools named: none for `names`.
     #[flag(short = 's')]
-    pub show: ToolsShown,
+    pub show: Option<ToolsShown>,
 }
 
 /// What `describe_engine` shows of an engine's tools.

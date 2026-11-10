@@ -19,9 +19,9 @@ pub struct SpawnEngine {
     /// The stored binary: a name, or the 64-digit hash.
     #[flag(position)]
     pub binary: Binary,
-    /// The arguments the engine is started with, before those that link it.
+    /// The arguments the engine is started with, before those that link it: none for no arguments.
     #[flag]
-    pub args: Vec<String>,
+    pub args: Option<Vec<String>>,
 }
 
 /// What came of a [`SpawnEngine`].
@@ -211,7 +211,7 @@ impl Engines {
         port: u16,
     ) -> Result<(), Fault> {
         let SpawnEngine { binary, args } = spawn;
-        let args = args.into_iter().chain(self.link_args(token, port)).collect();
+        let args = args.into_iter().flatten().chain(self.link_args(token, port)).collect();
         let config =
             SpawnedConfig { binary: binary.clone(), args, link_within_millis: self.settings.link_within_millis };
         let number = self.next_spawn;
