@@ -107,8 +107,13 @@ impl<'schema> Place<'schema> {
         matches!(Layout::of_struct(fields), Layout::Named(_))
     }
 
+    /// The node at `index` of `schema`, settled, as a field of that type is reached.
+    pub(super) fn node(schema: &'schema SchemaNodes, index: u32) -> Self {
+        Self::child(At::root(schema), index)
+    }
+
     /// The node at `index` below `at`, settled; past the schema's depth the walk stops following it.
-    fn child(at: At<'schema>, index: u32) -> Self {
+    pub(super) fn child(at: At<'schema>, index: u32) -> Self {
         at.child(index).map_or(Self::Opaque, |child| Self::Schema(child).settled())
     }
 

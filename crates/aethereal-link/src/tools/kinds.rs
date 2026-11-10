@@ -9,8 +9,13 @@ use aethereal_data::{Json, Plain};
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.describe_tools")]
 pub struct DescribeTools {
+    /// The engine to describe, by its id.
+    #[flag(position)]
     pub engine: u32,
-    pub show: ToolsShown,
+    /// `names`, for every tool by its name and what it does; or `sheets:<tools>`, for the full sheets of
+    /// the tools named: none for `names`.
+    #[flag(short = 's')]
+    pub show: Option<ToolsShown>,
 }
 
 /// What `describe_engine` shows of an engine's tools.
@@ -64,8 +69,14 @@ pub struct JsonSheet {
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.engine_call")]
 pub struct EngineCall {
+    /// The engine, by its id.
+    #[flag(position)]
     pub engine: u32,
+    /// The tool to call.
+    #[flag(position)]
     pub tool: String,
+    /// The tool's input, as JSON of its input schema.
+    #[flag(position)]
     pub input: Json,
 }
 

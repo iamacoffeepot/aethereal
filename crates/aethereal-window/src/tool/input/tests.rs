@@ -11,6 +11,7 @@ use aethereal_actor::{Tells, Top};
 use aethereal_data::{ActorPath, Kind, PathSegment};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Steps, Unheard};
+use aethereal_tools::{CommandLine, FlagsFault};
 use std::num::NonZeroUsize;
 
 /// The surface the window is opened at.
@@ -166,4 +167,17 @@ fn text_reaches_the_window_s_subscribers_unless_it_is_too_long_empty_or_holds_a_
     }
 
     Ok(())
+}
+
+#[test]
+fn every_sheet_s_flags_fit_its_input() {
+    // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the tool would be missing from a running engine,
+    // and nothing would answer when it is called.
+    let sheets = InputTool::sheets();
+    let refused: Vec<(&str, FlagsFault)> = sheets
+        .iter()
+        .filter_map(|sheet| CommandLine::of(sheet).err().map(|fault| (sheet.name.as_str(), fault)))
+        .collect();
+
+    assert!(refused.is_empty(), "{refused:?}");
 }

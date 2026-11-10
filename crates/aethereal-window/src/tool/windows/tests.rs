@@ -8,6 +8,7 @@ use crate::window::WindowId;
 use crate::windows::{Heard, Listed, Logical, Place, Unplaced, Windowing};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
+use aethereal_tools::{CommandLine, FlagsFault};
 use std::num::NonZeroUsize;
 
 /// The surface the window is opened at.
@@ -61,4 +62,17 @@ fn each_call_is_asked_of_the_window_root_as_named_and_answered_with_its_answer()
     assert!(call(&mut harness, "close_window", &ListWindows)?.is_err());
 
     Ok(())
+}
+
+#[test]
+fn every_sheet_s_flags_fit_its_input() {
+    // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the tool would be missing from a running engine,
+    // and nothing would answer when it is called.
+    let sheets = WindowTool::sheets();
+    let refused: Vec<(&str, FlagsFault)> = sheets
+        .iter()
+        .filter_map(|sheet| CommandLine::of(sheet).err().map(|fault| (sheet.name.as_str(), fault)))
+        .collect();
+
+    assert!(refused.is_empty(), "{refused:?}");
 }

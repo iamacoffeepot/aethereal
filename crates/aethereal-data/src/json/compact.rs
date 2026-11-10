@@ -59,6 +59,14 @@ pub(super) fn write<'tree, 'json>(tree: &'tree Tree<'json>, value: &'tree Value<
     }
 }
 
+impl<'json> Tree<'json> {
+    /// Appends `value`, a part of this tree, as JSON text with no whitespace: what the dev overlay prints of a value
+    /// no word writes (ADR-0053).
+    pub fn write<'tree>(&'tree self, value: &'tree Value<'json>, out: &mut String) {
+        write(self, value, out);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

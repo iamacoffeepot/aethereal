@@ -16,8 +16,12 @@ use core::mem;
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.spawn_engine")]
 pub struct SpawnEngine {
+    /// The stored binary: a name, or the 64-digit hash.
+    #[flag(position)]
     pub binary: Binary,
-    pub args: Vec<String>,
+    /// The arguments the engine is started with, before those that link it: none for no arguments.
+    #[flag]
+    pub args: Option<Vec<String>>,
 }
 
 /// What came of a [`SpawnEngine`].
@@ -41,6 +45,8 @@ pub enum Spawn {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.terminate_engine")]
 pub struct TerminateEngine {
+    /// The engine to terminate, by its id.
+    #[flag(position)]
     pub engine: u32,
 }
 
@@ -205,7 +211,7 @@ impl Engines {
         port: u16,
     ) -> Result<(), Fault> {
         let SpawnEngine { binary, args } = spawn;
-        let args = args.into_iter().chain(self.link_args(token, port)).collect();
+        let args = args.into_iter().flatten().chain(self.link_args(token, port)).collect();
         let config =
             SpawnedConfig { binary: binary.clone(), args, link_within_millis: self.settings.link_within_millis };
         let number = self.next_spawn;

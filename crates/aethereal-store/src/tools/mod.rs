@@ -1,6 +1,9 @@
 //! The store's tools: the agent checks a binary in, lists what the store holds, and pins an entry or clears its pin
 //! (ADR-0039).
 
+#[cfg(test)]
+mod tests;
+
 use crate::{CheckIn, CheckedIn, ListStored, Pin, Pinned, Store, Stored, StoredBinary, Unpin};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
@@ -77,40 +80,30 @@ impl Actor for StoreTools {
 impl Tool for StoreTools {
     fn sheets() -> Vec<ToolSheet> {
         vec![
-            ToolSheet {
-                name: String::from(CHECK_IN),
-                description: String::from(
-                    "Copies the file at a path on the hub's machine into the store, and points a name at it: 1 to \
-                     128 of ASCII letters, digits, `_`, `-`, and `.`, and not the 64 lowercase hexadecimal digits \
-                     that spell a hash. Answers the BLAKE3 hash of its bytes, how many bytes it holds, and whether \
-                     they were not already stored. A name checked in again moves to the newer bytes.",
-                ),
-                input: SchemaNodes::of(&CheckIn::SHAPE),
-                output: Output::Value(SchemaNodes::of(&StoredBinary::SHAPE)),
-            },
-            ToolSheet {
-                name: String::from(LIST_STORED),
-                description: String::from(
-                    "Lists every binary in the store, the last checked in first: each one's hash, the names that \
-                     point at it, how many bytes it holds, whether it is pinned, and whether an engine holds it.",
-                ),
-                input: SchemaNodes::of(&ListStored::SHAPE),
-                output: Output::Value(SchemaNodes::of(&Stored::SHAPE)),
-            },
-            ToolSheet {
-                name: String::from(PIN),
-                description: String::from("Keeps the binary of a hash from being pruned, until it is unpinned."),
-                input: SchemaNodes::of(&Pin::SHAPE),
-                output: Output::Value(SchemaNodes::of(&Done::SHAPE)),
-            },
-            ToolSheet {
-                name: String::from(UNPIN),
-                description: String::from(
-                    "Clears the pin of the binary of a hash. Its names and the engines that hold it still keep it.",
-                ),
-                input: SchemaNodes::of(&Unpin::SHAPE),
-                output: Output::Value(SchemaNodes::of(&Done::SHAPE)),
-            },
+            ToolSheet::of::<CheckIn>(
+                CHECK_IN,
+                "Copies the file at a path on the hub's machine into the store, and points a name at it: 1 to \
+                 128 of ASCII letters, digits, `_`, `-`, and `.`, and not the 64 lowercase hexadecimal digits \
+                 that spell a hash. Answers the BLAKE3 hash of its bytes, how many bytes it holds, and whether \
+                 they were not already stored. A name checked in again moves to the newer bytes.",
+                Output::Value(SchemaNodes::of(&StoredBinary::SHAPE)),
+            ),
+            ToolSheet::json::<ListStored>(
+                LIST_STORED,
+                "Lists every binary in the store, the last checked in first: each one's hash, the names that \
+                 point at it, how many bytes it holds, whether it is pinned, and whether an engine holds it.",
+                Output::Value(SchemaNodes::of(&Stored::SHAPE)),
+            ),
+            ToolSheet::of::<Pin>(
+                PIN,
+                "Keeps the binary of a hash from being pruned, until it is unpinned.",
+                Output::Value(SchemaNodes::of(&Done::SHAPE)),
+            ),
+            ToolSheet::of::<Unpin>(
+                UNPIN,
+                "Clears the pin of the binary of a hash. Its names and the engines that hold it still keep it.",
+                Output::Value(SchemaNodes::of(&Done::SHAPE)),
+            ),
         ]
     }
 

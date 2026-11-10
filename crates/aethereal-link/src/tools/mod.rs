@@ -162,68 +162,50 @@ impl Actor for EngineTools {
 impl Tool for EngineTools {
     fn sheets() -> Vec<ToolSheet> {
         vec![
-            ToolSheet {
-                name: String::from(LIST_ENGINES),
-                description: String::from(
-                    "Lists the engines linked to this hub: each one's id, name, count of tools, and origin, the \
-                     binary and hash it was spawned from or `External` for one started by hand. Also lists the last \
-                     engines the hub spawned that have ended, each with its binary, exit status, and the end of its \
-                     stderr.",
-                ),
-                input: SchemaNodes::of(&ListEngines::SHAPE),
-                output: Output::Value(SchemaNodes::of(&EngineList::SHAPE)),
-            },
-            ToolSheet {
-                name: String::from(DESCRIBE_ENGINE),
-                description: String::from(
-                    "Describes an engine's tools. Ask with `\"show\": \"Names\"` first, for every tool's name and the \
-                     first sentence of what it does; then with `\"show\": {\"Sheets\": [...]}`, naming the tools you \
-                     will call, for each one's full description and its input and output as JSON Schema. A name the \
-                     engine has no tool of is refused.",
-                ),
-                input: SchemaNodes::of(&DescribeTools::SHAPE),
-                output: Output::Value(SchemaNodes::of(&EngineDescription::SHAPE)),
-            },
-            ToolSheet {
-                name: String::from(CALL_TOOL),
-                description: String::from(
-                    "Calls an engine's tool with input of its input schema, and answers its output, or the image and \
-                     text it answers when its output is `\"image\"`. Describe the engine again when a call is refused \
-                     because its tools changed.",
-                ),
-                input: SchemaNodes::of(&EngineCall::SHAPE),
-                output: Output::ValueOrImage(SchemaNodes::of(&EngineAnswer::SHAPE)),
-            },
-            ToolSheet {
-                name: String::from(MINT_TOKEN),
-                description: String::from(
-                    "Mints a token for an engine started outside the hub, and answers the arguments to start it with. \
-                     The token links one engine once, and expires if it goes unused.",
-                ),
-                input: SchemaNodes::of(&MintToken::SHAPE),
-                output: Output::Value(SchemaNodes::of(&Minted::SHAPE)),
-            },
-            ToolSheet {
-                name: String::from(SPAWN_ENGINE),
-                description: String::from(
-                    "Spawns an engine from a binary checked into the store, named by a name or by its 64-digit hash, \
-                     started with `args` and then the arguments that link it to this hub. Answers the engine's id \
-                     once it has linked; refused if nothing is stored by that binary, the hub would not start it, it \
-                     exited before linking (with its exit status and the end of its stderr), or it did not link in \
-                     time, when it is stopped.",
-                ),
-                input: SchemaNodes::of(&SpawnEngine::SHAPE),
-                output: Output::Value(SchemaNodes::of(&SpawnedEngine::SHAPE)),
-            },
-            ToolSheet {
-                name: String::from(TERMINATE_ENGINE),
-                description: String::from(
-                    "Terminates an engine: a spawned engine's process is stopped, and an engine started by hand has \
-                     its link shut, so it ends. Refused if no engine of that id is linked.",
-                ),
-                input: SchemaNodes::of(&TerminateEngine::SHAPE),
-                output: Output::Value(SchemaNodes::of(&Done::SHAPE)),
-            },
+            ToolSheet::json::<ListEngines>(
+                LIST_ENGINES,
+                "Lists the engines linked to this hub: each one's id, name, count of tools, and origin, the \
+                 binary and hash it was spawned from or `External` for one started by hand. Also lists the last \
+                 engines the hub spawned that have ended, each with its binary, exit status, and the end of its \
+                 stderr.",
+                Output::Value(SchemaNodes::of(&EngineList::SHAPE)),
+            ),
+            ToolSheet::of::<DescribeTools>(
+                DESCRIBE_ENGINE,
+                "Describes an engine's tools. Ask with `\"show\": \"Names\"` first, or leave `show` out, for every \
+                 tool's name and the first sentence of what it does; then with `\"show\": {\"Sheets\": [...]}`, naming \
+                 the tools you will call, for each one's full description and its input and output as JSON Schema. A \
+                 name the engine has no tool of is refused.",
+                Output::Value(SchemaNodes::of(&EngineDescription::SHAPE)),
+            ),
+            ToolSheet::of::<EngineCall>(
+                CALL_TOOL,
+                "Calls an engine's tool with input of its input schema, and answers its output, or the image and \
+                 text it answers when its output is `\"image\"`. Describe the engine again when a call is refused \
+                 because its tools changed.",
+                Output::ValueOrImage(SchemaNodes::of(&EngineAnswer::SHAPE)),
+            ),
+            ToolSheet::json::<MintToken>(
+                MINT_TOKEN,
+                "Mints a token for an engine started outside the hub, and answers the arguments to start it with. \
+                 The token links one engine once, and expires if it goes unused.",
+                Output::Value(SchemaNodes::of(&Minted::SHAPE)),
+            ),
+            ToolSheet::of::<SpawnEngine>(
+                SPAWN_ENGINE,
+                "Spawns an engine from a binary checked into the store, named by a name or by its 64-digit hash, \
+                 started with `args` (none when left out) and then the arguments that link it to this hub. Answers the \
+                 engine's id once it has linked; refused if nothing is stored by that binary, the hub would not start \
+                 it, it exited before linking (with its exit status and the end of its stderr), or it did not link in \
+                 time, when it is stopped.",
+                Output::Value(SchemaNodes::of(&SpawnedEngine::SHAPE)),
+            ),
+            ToolSheet::of::<TerminateEngine>(
+                TERMINATE_ENGINE,
+                "Terminates an engine: a spawned engine's process is stopped, and an engine started by hand has \
+                 its link shut, so it ends. Refused if no engine of that id is linked.",
+                Output::Value(SchemaNodes::of(&Done::SHAPE)),
+            ),
         ]
     }
 
@@ -262,6 +244,7 @@ impl Handles<Call> for EngineTools {
             }
             Order::Describe(DescribeTools { engine, show }) => {
                 turn.to(path::<Engine>(u64::from(engine))).ask(&DescribeEngine, &asking)?;
+                let show = show.unwrap_or(ToolsShown::Names);
                 Pending::Describing { held, engine, show }
             }
             Order::Call(EngineCall { engine, tool, input }) => {

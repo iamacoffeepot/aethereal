@@ -36,7 +36,7 @@ pub use json::escape::write as write_json_string;
 #[cfg(feature = "json")]
 pub use json::reader::read as read_json;
 #[cfg(feature = "json")]
-pub use json::tree::{Tree as JsonTree, Value as JsonValue};
+pub use json::tree::{Member as JsonMember, Tree as JsonTree, Value as JsonValue};
 #[cfg(feature = "json")]
 pub use json::{
     Json, JsonError, JsonFault, JsonForm, JsonPath, JsonStep, TextFault, from_json, from_value, is_object, json_schema,

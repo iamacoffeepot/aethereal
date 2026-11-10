@@ -97,7 +97,7 @@ fn talker() -> ActorPath {
 
 /// A read of `actor` from `since`, at `level` and above, holding `contains`, at most `most`.
 fn read(actor: ActorPath, since: u64, level: LogLevel, contains: &str, most: u32) -> ReadLog {
-    ReadLog { actor, since, level, contains: String::from(contains), most }
+    ReadLog { actor, since: Some(since), level: Some(level), contains: Some(String::from(contains)), most: Some(most) }
 }
 
 /// Every entry of `actor` from `since`.
@@ -132,7 +132,7 @@ fn recent(
     since: u64,
     level: LogLevel,
 ) -> Result<RecentLog, Unheard> {
-    let read = ReadRecent { since, level, contains: String::new(), most: u32::MAX };
+    let read = ReadRecent { since: Some(since), level: Some(level), contains: None, most: Some(u32::MAX) };
     let Ok(bytes) = to_bytes(&read) else {
         panic!("the read encodes");
     };

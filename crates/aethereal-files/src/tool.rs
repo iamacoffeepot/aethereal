@@ -36,10 +36,13 @@ pub struct FileContents {
 #[kind(name = "aether.files.text_file")]
 pub struct TextFile {
     /// The namespace the file is in, one that is written.
+    #[flag(position)]
     pub namespace: Namespace,
     /// Where it is in the namespace.
+    #[flag(position)]
     pub path: FilePath,
     /// The whole file.
+    #[flag(position)]
     pub text: String,
 }
 
@@ -87,12 +90,11 @@ impl Actor for ReadTool {
 
 impl Tool for ReadTool {
     fn sheets() -> Vec<ToolSheet> {
-        vec![ToolSheet {
-            name: String::from("read_file"),
-            description: format!("Reads a text file of the program's own, up to {MOST_BYTES} bytes."),
-            input: SchemaNodes::of(&ReadFile::SHAPE),
-            output: Output::Value(SchemaNodes::of(&FileContents::SHAPE)),
-        }]
+        vec![ToolSheet::of::<ReadFile>(
+            "read_file",
+            &format!("Reads a text file of the program's own, up to {MOST_BYTES} bytes."),
+            Output::Value(SchemaNodes::of(&FileContents::SHAPE)),
+        )]
     }
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
@@ -211,15 +213,14 @@ impl Actor for WriteTool {
 
 impl Tool for WriteTool {
     fn sheets() -> Vec<ToolSheet> {
-        vec![ToolSheet {
-            name: String::from("write_file"),
-            description: format!(
+        vec![ToolSheet::of::<TextFile>(
+            "write_file",
+            &format!(
                 "Writes a text file of the program's own, up to {MOST_WRITE_BYTES} bytes, whole, in a namespace that is \
                  written: `Save`."
             ),
-            input: SchemaNodes::of(&TextFile::SHAPE),
-            output: Output::Value(SchemaNodes::of(&Done::SHAPE)),
-        }]
+            Output::Value(SchemaNodes::of(&Done::SHAPE)),
+        )]
     }
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
@@ -285,8 +286,9 @@ impl Handles<Answer<FileWritten, Calling>> for WriteTool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileContents, written};
+    use super::{FileContents, ReadTool, WriteTool, written};
     use aethereal_data::to_bytes;
+    use aethereal_tools::{CommandLine, FlagsFault, Tool};
 
     #[test]
     fn a_file_is_written_as_the_contents_that_hold_it() {
@@ -295,5 +297,18 @@ mod tests {
         let text = "a file, with é in it";
 
         assert_eq!(written(text, Vec::new()), to_bytes(&FileContents { text: String::from(text) }));
+    }
+
+    #[test]
+    fn every_sheet_s_flags_fit_its_input() {
+        // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the tool would be missing from a running
+        // engine, and nothing would answer when it is called.
+        let sheets = [ReadTool::sheets(), WriteTool::sheets()].concat();
+        let refused: Vec<(&str, FlagsFault)> = sheets
+            .iter()
+            .filter_map(|sheet| CommandLine::of(sheet).err().map(|fault| (sheet.name.as_str(), fault)))
+            .collect();
+
+        assert!(refused.is_empty(), "{refused:?}");
     }
 }

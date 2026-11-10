@@ -4,12 +4,14 @@
 //! added (ADR-0029). Layers are overlays on one document, the first winning, merged field by field and decoded once
 //! with the composite's schema, and each section is then taken by the root that reads it. A field is named by the
 //! handle `#[settings]` emits beside it, and the flags a program's users type are a table built from what each kind
-//! suggests and what the program changes.
+//! suggests and what the program changes. A tool's input declares its flags the same way, [`Flagged`], and is read
+//! with the same forms (ADR-0053).
 //!
 //! The handles and the settings declarations are always here, as the derives write them; the composite, its
 //! overlays, and its flags read and write JSON, and are behind the `json` feature.
 
 pub(crate) mod field;
+mod flagged;
 mod settings;
 
 #[cfg(feature = "json")]
@@ -32,6 +34,7 @@ mod reader;
 mod samples;
 
 pub use field::Field;
+pub use flagged::Flagged;
 pub use settings::{Declared, Members, Settings, Sole, Suggested};
 
 #[cfg(feature = "json")]
@@ -39,7 +42,7 @@ pub use error::{ConfigError, ConfigFault, FlagError, FlagName, RepeatedSection};
 #[cfg(feature = "json")]
 pub use flags::{Flag, FlagTable, Flags, Named};
 #[cfg(feature = "json")]
-pub use form::{Form, NumberForm, VariantForm, VariantValue};
+pub use form::{Form, NumberForm, VariantForm, VariantValue, kebab};
 #[cfg(feature = "json")]
 pub use overlay::Overlay;
 #[cfg(feature = "json")]

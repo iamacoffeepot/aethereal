@@ -1,22 +1,34 @@
 //! `#[settings]` and `#[flag]`: a settings kind, with a handle for each named field and the flags it suggests
-//! (ADR-0028).
+//! (ADR-0028); or a tool's input, with the flags its command line is typed with (ADR-0053).
 
 use super::kind::Declaration;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{Attribute, Data, DeriveInput, Expr, ExprLit, Field, Fields, Lit, LitChar, LitStr, Meta, Path};
 
-/// Whether the derived type is a settings kind, read from its attributes.
+/// Whether the derived type is a settings kind or a tool's input, read from its attributes.
 pub enum Marked {
     /// `#[settings]` is written, by the attribute of this path.
     Settings(Path),
-    /// No `#[settings]` is written: the derive writes no `Settings` and no handles.
+    /// No `#[settings]` is written, and a field is marked `#[flag]`: the derive writes `Flagged`, for a tool's input
+    /// (ADR-0053).
+    Flagged,
+    /// Neither: the derive writes no `Settings`, no `Flagged`, and no handles.
     Plain,
+}
+
+/// Where a `#[flag]` is read: whether it may name a field filled by position.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Marking {
+    /// On a field of a settings kind: never by position.
+    Setting,
+    /// On a field of a tool's input: by position too.
+    ToolInput,
 }
 
 impl Marked {
     /// The mark `input` carries, refusing a `#[settings]` that is repeated, misplaced, holds anything, or marks a
-    /// type that is not a kind, and a `#[flag]` anywhere but on a named field of a settings kind.
+    /// type that is not a kind, and a `#[flag]` anywhere but on a named field of a struct.
     pub fn of(input: &DeriveInput, declaration: &Declaration) -> syn::Result<Self> {
         let mut marked = Self::Plain;
 
@@ -35,7 +47,25 @@ impl Marked {
 
         marked.refuse_misplaced(input, declaration)?;
 
-        Ok(marked)
+        let Self::Plain = marked else {
+            return Ok(marked);
+        };
+        let Data::Struct(data) = &input.data else {
+            return Ok(marked);
+        };
+        let flagged = data.fields.iter().flat_map(|field| &field.attrs).any(is_flag);
+        if !flagged {
+            return Ok(marked);
+        }
+        let has_parameters = !input.generics.params.is_empty();
+        if has_parameters {
+            return Err(syn::Error::new_spanned(
+                &input.generics,
+                "a struct whose fields are flags has no type parameters",
+            ));
+        }
+
+        Ok(Self::Flagged)
     }
 
     /// Refuses settings that are not a plain struct kind, and `#[settings]` or `#[flag]` where they do not belong.
@@ -50,12 +80,15 @@ impl Marked {
             }
         }
 
-        let Self::Settings(mark) = self else {
+        let positional = matches!(data.fields, Fields::Unnamed(_));
+        if positional {
             let flagged = data.fields.iter().flat_map(|field| &field.attrs).find(|attr| is_flag(attr));
             if let Some(attr) = flagged {
-                let message = "`flag` suggests a flag for a field of a `#[settings]` struct";
-                return Err(syn::Error::new_spanned(attr, message));
+                return Err(syn::Error::new_spanned(attr, "`flag` is written on a named field"));
             }
+        }
+
+        let Self::Settings(mark) = self else {
             return Ok(());
         };
 
@@ -68,21 +101,17 @@ impl Marked {
         if has_parameters {
             return Err(syn::Error::new_spanned(&input.generics, "a settings kind has no type parameters"));
         }
-        let positional = matches!(data.fields, Fields::Unnamed(_));
-        if positional {
-            let flagged = data.fields.iter().flat_map(|field| &field.attrs).find(|attr| is_flag(attr));
-            if let Some(attr) = flagged {
-                return Err(syn::Error::new_spanned(attr, "`flag` is written on a named field"));
-            }
-        }
 
         Ok(())
     }
 
-    /// `impl Settings` and the field handles for a settings kind; nothing otherwise.
+    /// `impl Settings` and the field handles for a settings kind, `impl Flagged` for a tool's input; nothing
+    /// otherwise.
     pub fn implementation(&self, input: &DeriveInput) -> syn::Result<TokenStream2> {
-        let Self::Settings(_) = self else {
-            return Ok(TokenStream2::new());
+        let marking = match self {
+            Self::Settings(_) => Marking::Setting,
+            Self::Flagged => Marking::ToolInput,
+            Self::Plain => return Ok(TokenStream2::new()),
         };
         let Data::Struct(data) = &input.data else {
             return Ok(TokenStream2::new());
@@ -102,7 +131,7 @@ impl Marked {
             let field_name = ident.to_string();
             let field_name = field_name.trim_start_matches("r#");
             let doc = doc_of(&field.attrs);
-            let flag = suggested(field, field_name)?;
+            let flag = suggested(field, field_name, marking)?;
             declared.push(quote! {
                 ::aethereal_data::config::Declared { name: #field_name, doc: #doc, flag: #flag }
             });
@@ -134,6 +163,15 @@ impl Marked {
             }
             Fields::Unnamed(_) | Fields::Unit => TokenStream2::new(),
         };
+
+        if marking == Marking::ToolInput {
+            return Ok(quote! {
+                #[automatically_derived]
+                impl ::aethereal_data::config::Flagged for #name {
+                    const FIELDS: &'static [::aethereal_data::config::Declared] = &[ #( #declared ),* ];
+                }
+            });
+        }
 
         Ok(quote! {
             #[automatically_derived]
@@ -228,9 +266,9 @@ fn doc_of(attrs: &[Attribute]) -> String {
     lines.join("\n").trim().to_owned()
 }
 
-/// The `Suggested` the field's `#[flag]` writes: its `long`, by default the field's name with `_` written `-`, and
-/// its `short` when it has one.
-fn suggested(field: &Field, field_name: &str) -> syn::Result<TokenStream2> {
+/// The `Suggested` the field's `#[flag]` writes: `position`, read only on a tool's input; or its `long`, by default
+/// the field's name with `_` written `-`, and its `short` when it has one.
+fn suggested(field: &Field, field_name: &str, marking: Marking) -> syn::Result<TokenStream2> {
     let mut flags = field.attrs.iter().filter(|attr| is_flag(attr));
     let Some(attr) = flags.next() else {
         return Ok(quote! { ::aethereal_data::config::Suggested::NoFlag });
@@ -241,11 +279,20 @@ fn suggested(field: &Field, field_name: &str) -> syn::Result<TokenStream2> {
 
     let mut long: Vec<LitStr> = Vec::new();
     let mut short: Vec<LitChar> = Vec::new();
+    let mut position = false;
     let bare = matches!(attr.meta, Meta::Path(_));
     if !bare {
         attr.parse_nested_meta(|meta| {
             let is_long = meta.path.is_ident("long");
             let is_short = meta.path.is_ident("short");
+            let is_position = meta.path.is_ident("position");
+            if is_position {
+                if position {
+                    return Err(meta.error("`position` is written once"));
+                }
+                position = true;
+                return Ok(());
+            }
             if is_long {
                 let already = !long.is_empty();
                 if already {
@@ -262,8 +309,22 @@ fn suggested(field: &Field, field_name: &str) -> syn::Result<TokenStream2> {
                 short.push(char_value(meta.value()?.parse()?)?);
                 return Ok(());
             }
-            Err(meta.error("`flag` holds `long = \"…\"` and `short = '…'`"))
+            Err(meta.error("`flag` holds `long = \"…\"` and `short = '…'`, or `position`"))
         })?;
+    }
+
+    if position {
+        let setting = marking == Marking::Setting;
+        if setting {
+            let message = "a setting is not filled by position: a program's sections come from several roots, and no \
+                           order among them is one a person could type";
+            return Err(syn::Error::new_spanned(attr, message));
+        }
+        let named = !long.is_empty() || !short.is_empty();
+        if named {
+            return Err(syn::Error::new_spanned(attr, "a flag filled by position has no `long` or `short` name"));
+        }
+        return Ok(quote! { ::aethereal_data::config::Suggested::Position });
     }
 
     let long = long.pop().map_or_else(|| field_name.replace('_', "-"), |literal| literal.value());

@@ -6,6 +6,7 @@ mod asked;
 #[cfg(test)]
 mod tests;
 
+use asked::SIXTIETH_NANOS;
 pub use asked::{Advance, Advanced, Pace, PaceRead, PaceSet, ReadPace, SetPace, Unadvanced};
 
 use crate::host::Clockwork;
@@ -180,6 +181,7 @@ impl Handles<Advance> for Pacer {
 
     fn handle(&mut self, advance: Advance, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Advance { cycles, delta_nanos } = advance;
+        let delta_nanos = delta_nanos.unwrap_or(SIXTIETH_NANOS);
         let refused = match &self.clock {
             Clock::Real => Some(Unadvanced::Running),
             Clock::Stopping => Some(Unadvanced::Stopping),

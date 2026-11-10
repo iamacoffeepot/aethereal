@@ -45,6 +45,7 @@ fn sheet(name: &str) -> ToolSheet {
         name: String::from(name),
         description: String::from("Says how long a text is"),
         input: SchemaNodes::of(&Say::SHAPE),
+        flags: Vec::new(),
         output: Output::Value(SchemaNodes::of(&Said::SHAPE)),
     }
 }

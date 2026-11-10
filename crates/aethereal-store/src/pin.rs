@@ -9,6 +9,7 @@ use aethereal_data::Plain;
 #[kind(name = "aether.store.pin")]
 pub struct Pin {
     /// The entry.
+    #[flag(position)]
     pub hash: StoreHash,
 }
 
@@ -18,6 +19,7 @@ pub struct Pin {
 #[kind(name = "aether.store.unpin")]
 pub struct Unpin {
     /// The entry.
+    #[flag(position)]
     pub hash: StoreHash,
 }
 

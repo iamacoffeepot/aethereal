@@ -16,6 +16,8 @@ use core::fmt::Write as _;
 const MOST_ANSWER_BYTES: usize = 256 * 1024;
 /// The most bytes reading an input may take. A path and a filter are short.
 const INPUT_BYTES: usize = 8 * 1024;
+/// The most entries a read answers when it names no `most`.
+const MOST_ENTRIES: u32 = 100;
 
 /// How much a logged line matters, as the agent names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
@@ -46,14 +48,53 @@ impl LogLevel {
 
 /// Asks for what the actor at `actor` logged, live or ended: its entries numbered `since` and after, its lines at
 /// `level` and above and every entry that is not a line, those whose text holds `contains`, at most `most` of them.
+/// The tool reads a field left out as its fallback, which the field's doc names.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.tools.read_log")]
 pub struct ReadLog {
+    /// The path of the actor whose log is read.
+    #[flag(position)]
     pub actor: ActorPath,
-    pub since: u64,
-    pub level: LogLevel,
-    pub contains: String,
-    pub most: u32,
+    /// The number of the first entry to read, the answer's `next` to go on: none for the oldest kept.
+    #[flag]
+    pub since: Option<u64>,
+    /// The least a line read must matter: none for `info`.
+    #[flag]
+    pub level: Option<LogLevel>,
+    /// Text each entry read must hold: none for every entry.
+    #[flag]
+    pub contains: Option<String>,
+    /// The most entries read: none for 100.
+    #[flag]
+    pub most: Option<u32>,
+}
+
+impl ReadLog {
+    /// What the read keeps, its fallbacks applied.
+    fn filter(&self) -> Filter<'_> {
+        Filter::of(self.level, self.contains.as_deref(), self.most)
+    }
+}
+
+/// What a read keeps, each field it left out read as its fallback: lines at `level` and above, and every entry that is
+/// not a line; those whose text holds `contains`; at most `most`.
+struct Filter<'r> {
+    level: LogLevel,
+    contains: &'r str,
+    most: usize,
+}
+
+impl<'r> Filter<'r> {
+    /// The filter of a read's `level`, `contains`, and `most`: `info`, every entry, and [`MOST_ENTRIES`] when left out.
+    fn of(level: Option<LogLevel>, contains: Option<&'r str>, most: Option<u32>) -> Self {
+        let most = most.unwrap_or(MOST_ENTRIES);
+
+        Self {
+            level: level.unwrap_or(LogLevel::Info),
+            contains: contains.unwrap_or(""),
+            most: usize::try_from(most).unwrap_or(usize::MAX),
+        }
+    }
 }
 
 /// What an actor logged, as the agent reads it.
@@ -130,14 +171,14 @@ impl<'e> Spoken<'e> {
         }
     }
 
-    /// Whether `read` keeps the entry: a line at its level or above, or any other entry, holding its text.
-    fn is_kept(&self, read: &ReadLog) -> bool {
+    /// Whether `filter` keeps the entry: a line at its level or above, or any other entry, holding its text.
+    fn is_kept(&self, filter: &Filter<'_>) -> bool {
         let at_level = match self {
-            Self::Line { level, .. } => level.rank() >= read.level.rank(),
+            Self::Line { level, .. } => level.rank() >= filter.level.rank(),
             Self::Other { .. } => true,
         };
 
-        at_level && self.text().contains(read.contains.as_str())
+        at_level && self.text().contains(filter.contains)
     }
 
     /// Writes the entry numbered `n` as the [`LogEntry`] it is (ADR-0002): its number, its variant's selector, and
@@ -171,13 +212,29 @@ const READ_RECENT: &str = "read_recent";
 
 /// Asks for what every actor logged, live or ended, from the step `since` on: its lines at `level` and above, a fault
 /// at `Error`, a drop or mail that did not read at `Warn`; those whose text holds `contains`; at most `most` of them.
+/// The tool reads a field left out as its fallback, which the field's doc names.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.tools.read_recent")]
 pub struct ReadRecent {
-    pub since: u64,
-    pub level: LogLevel,
-    pub contains: String,
-    pub most: u32,
+    /// The first step whose entries are read, the answer's `next` to go on: none for all the engine keeps.
+    #[flag]
+    pub since: Option<u64>,
+    /// The least an entry read must matter: none for `info`.
+    #[flag]
+    pub level: Option<LogLevel>,
+    /// Text each entry read must hold: none for every entry.
+    #[flag]
+    pub contains: Option<String>,
+    /// The most entries read: none for 100.
+    #[flag]
+    pub most: Option<u32>,
+}
+
+impl ReadRecent {
+    /// What the read keeps, its fallbacks applied.
+    fn filter(&self) -> Filter<'_> {
+        Filter::of(self.level, self.contains.as_deref(), self.most)
+    }
 }
 
 /// What every actor logged most recently, as the agent reads it (ADR-0053).
@@ -261,19 +318,20 @@ const RECENT_ANSWER_BYTES: usize = 4 + 8 + 8 + 8;
 /// step, its selector, a line's level, and its text's count.
 const RECENT_ENTRY_BYTES: usize = 4 + 4 + 8 + 4 + 4 + 4;
 
-/// The [`RecentLog`] `read` answers of `recent`: the entries it keeps, at most `most` and [`MOST_ANSWER_BYTES`] of
-/// answer. An answer that stops short ends at a whole step, which `next` then names, so no entry is read twice; when
-/// even the first step's do not fit, it holds what fits of them, reads on past that step, and counts the rest as `cut`.
-fn recent_answered(recent: Recent<'_>, read: &ReadRecent) -> RecentLog {
-    let most = usize::try_from(read.most).unwrap_or(usize::MAX);
+/// The [`RecentLog`] a read answers of `recent`: the entries `filter` keeps, at most its `most` and
+/// [`MOST_ANSWER_BYTES`] of answer. An answer that stops short ends at a whole step, which `next` then names, so no
+/// entry is read twice; when even the first step's do not fit, it holds what fits of them, reads on past that step, and
+/// counts the rest as `cut`.
+fn recent_answered(recent: Recent<'_>, filter: &Filter<'_>) -> RecentLog {
+    let most = filter.most;
     let Recent { entries, next, left } = recent;
     let mut kept = entries.into_iter().filter_map(|named| {
         let level = LogLevel::of_entry(named.recorded.entry());
-        if level.rank() < read.level.rank() {
+        if level.rank() < filter.level.rank() {
             return None;
         }
         let entry = LoggedEntry::of(named.recorded.entry());
-        let holds = entry.text().contains(read.contains.as_str());
+        let holds = entry.text().contains(filter.contains);
 
         holds.then(|| RecentEntry { actor: spoken_name(&named.actor), level, step: named.recorded.step(), entry })
     });
@@ -317,7 +375,7 @@ impl LogsTool {
                 return Ok(());
             }
         };
-        let answer = recent_answered(turn.recent(read.since), &read);
+        let answer = recent_answered(turn.recent(read.since.unwrap_or(0)), &read.filter());
         let called = Called::output(turn, to_bytes(&answer)?);
         turn.reply(&called)?;
 
@@ -357,31 +415,25 @@ impl Actor for LogsTool {
 
 impl Tool for LogsTool {
     fn sheets() -> Vec<ToolSheet> {
+        let read_log = format!(
+            "Reads what the actor at `actor` (its path) logged, live or ended: its entries numbered `since` and \
+             after (the oldest kept when left out), oldest first; lines at `level` and above (info when left out) \
+             and every fault, drop, or unread mail; those whose text holds `contains` (every entry when left out); \
+             at most `most` ({MOST_ENTRIES} when left out), in an answer of at most {MOST_ANSWER_BYTES} bytes. Ask \
+             again from `next` to go on; `skipped` counts entries that had left the log."
+        );
+        let read_recent = format!(
+            "Reads what every actor logged, live or ended, with no path needed: entries from the step `since` on \
+             (all the engine keeps when left out), merged by step, oldest first, each with its actor's path, level, \
+             and step; lines at `level` and above (info when left out), a fault at Error, a drop or unread mail at \
+             Warn; those whose text holds `contains` (every entry when left out); at most `most` ({MOST_ENTRIES} \
+             when left out), in an answer of at most {MOST_ANSWER_BYTES} bytes. Ask again from `next` to go on; \
+             `left` counts entries that had left the log, and `cut` those of one step too many for an answer."
+        );
+
         vec![
-            ToolSheet {
-                name: String::from("actor_logs"),
-                description: format!(
-                    "Reads what the actor at `actor` (its path) logged, live or ended: its entries numbered `since` and \
-                 after, oldest first; lines at `level` and above and every fault, drop, or unread mail; those whose \
-                 text holds `contains` (\"\" for all); at most `most`, in an answer of at most {MOST_ANSWER_BYTES} bytes. Ask \
-                 again from `next` to go on; `skipped` counts entries that had left the log."
-                ),
-                input: SchemaNodes::of(&ReadLog::SHAPE),
-                output: Output::Value(SchemaNodes::of(&ActorLog::SHAPE)),
-            },
-            ToolSheet {
-                name: String::from(READ_RECENT),
-                description: format!(
-                    "Reads what every actor logged, live or ended, with no path needed: entries from the step `since` on \
-                 (0 for all the engine keeps), merged by step, oldest first, each with its actor's path, level, and \
-                 step; lines at `level` and above, a fault at Error, a drop or unread mail at Warn; those whose text \
-                 holds `contains` (\"\" for all); at most `most`, in an answer of at most {MOST_ANSWER_BYTES} bytes. Ask \
-                 again from `next` to go on; `left` counts entries that had left the log, and `cut` those of one step \
-                 too many for an answer."
-                ),
-                input: SchemaNodes::of(&ReadRecent::SHAPE),
-                output: Output::Value(SchemaNodes::of(&RecentLog::SHAPE)),
-            },
+            ToolSheet::of::<ReadLog>("actor_logs", &read_log, Output::Value(SchemaNodes::of(&ActorLog::SHAPE))),
+            ToolSheet::of::<ReadRecent>(READ_RECENT, &read_recent, Output::Value(SchemaNodes::of(&RecentLog::SHAPE))),
         ]
     }
 
@@ -404,15 +456,17 @@ impl Handles<Call> for LogsTool {
                 return Ok(());
             }
         };
-        let planned = plan(turn.logged(&read.actor).since(read.since), &read);
+        let since = read.since.unwrap_or(0);
+        let filter = read.filter();
+        let planned = plan(turn.logged(&read.actor).since(since), &filter);
         let buffer = turn.buffer(planned.room);
         let logged = turn.logged(&read.actor);
-        let skipped = logged.first().saturating_sub(read.since);
+        let skipped = logged.first().saturating_sub(since);
         let next = match planned.ended {
-            Ended::Last => logged.next().max(read.since),
+            Ended::Last => logged.next().max(since),
             Ended::Short(n) => n,
         };
-        let written = written(logged.since(read.since), &read, &planned, &Tail { next, skipped }, buffer)?;
+        let written = written(logged.since(since), &filter, &planned, &Tail { next, skipped }, buffer)?;
         let called = Called::output(turn, written);
         turn.reply(&called)?;
 
@@ -448,15 +502,15 @@ const ANSWER_BYTES: usize = 4 + 8 + 8;
 /// count.
 const ENTRY_BYTES: usize = 8 + 4 + 4 + 4;
 
-/// What `read` keeps of `entries`, those numbered from its `since`, oldest first: at most `most` of them, and
+/// What `filter` keeps of `entries`, those numbered from a read's `since`, oldest first: at most its `most`, and
 /// [`MOST_ANSWER_BYTES`] of answer.
-fn plan<'e>(entries: impl Iterator<Item = (u64, &'e Entry)>, read: &ReadLog) -> Plan {
-    let most = usize::try_from(read.most).unwrap_or(usize::MAX);
+fn plan<'e>(entries: impl Iterator<Item = (u64, &'e Entry)>, filter: &Filter<'_>) -> Plan {
+    let most = filter.most;
     let mut scratch = String::new();
     let mut plan = Plan { count: 0, room: ANSWER_BYTES, ended: Ended::Last };
     for (n, entry) in entries {
         let spoken = Spoken::of(entry, &mut scratch);
-        if !spoken.is_kept(read) {
+        if !spoken.is_kept(filter) {
             continue;
         }
         let length = spoken.text().len();
@@ -472,11 +526,11 @@ fn plan<'e>(entries: impl Iterator<Item = (u64, &'e Entry)>, read: &ReadLog) -> 
     plan
 }
 
-/// The [`ActorLog`] `read` answers with, written into `buffer` with no value of it made (ADR-0002): the first
-/// `plan.count` entries of `entries` it keeps, then `tail`.
+/// The [`ActorLog`] a read answers with, written into `buffer` with no value of it made (ADR-0002): the first
+/// `plan.count` entries of `entries` `filter` keeps, then `tail`.
 fn written<'e>(
     entries: impl Iterator<Item = (u64, &'e Entry)>,
-    read: &ReadLog,
+    filter: &Filter<'_>,
     plan: &Plan,
     tail: &Tail,
     buffer: Vec<u8>,
@@ -491,7 +545,7 @@ fn written<'e>(
             break;
         }
         let spoken = Spoken::of(entry, &mut scratch);
-        if !spoken.is_kept(read) {
+        if !spoken.is_kept(filter) {
             continue;
         }
         spoken.write(n, &mut out)?;
@@ -506,25 +560,35 @@ fn written<'e>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{CommandLine, FlagsFault};
     use aethereal_actor::{Named, Recorded, Unreadable};
     use aethereal_data::ActorId;
     use aethereal_data::to_bytes;
+    use core::iter;
 
     /// A read of every entry from `since`, at `level` and above, holding `contains`, at most `most`.
     fn read(since: u64, level: LogLevel, contains: &str, most: u32) -> ReadLog {
-        ReadLog { actor: ActorPath::new("aether.test.logs"), since, level, contains: String::from(contains), most }
+        ReadLog {
+            actor: ActorPath::new("aether.test.logs"),
+            since: Some(since),
+            level: Some(level),
+            contains: Some(String::from(contains)),
+            most: Some(most),
+        }
     }
 
     /// The answer `read` writes of `entries`, numbered from `first`, the log's next entry numbered `next`.
     fn answered(entries: &[Entry], first: u64, next: u64, read: &ReadLog) -> Vec<u8> {
-        let numbered = || (first..).zip(entries).filter(|(n, _)| *n >= read.since);
-        let planned = plan(numbered(), read);
+        let since = read.since.unwrap_or(0);
+        let filter = read.filter();
+        let numbered = || (first..).zip(entries).filter(|(n, _)| *n >= since);
+        let planned = plan(numbered(), &filter);
         let next = match planned.ended {
-            Ended::Last => next.max(read.since),
+            Ended::Last => next.max(since),
             Ended::Short(n) => n,
         };
-        let tail = Tail { next, skipped: first.saturating_sub(read.since) };
-        let Ok(bytes) = written(numbered(), read, &planned, &tail, Vec::new()) else {
+        let tail = Tail { next, skipped: first.saturating_sub(since) };
+        let Ok(bytes) = written(numbered(), &filter, &planned, &tail, Vec::new()) else {
             panic!("the answer is written");
         };
 
@@ -588,7 +652,7 @@ mod tests {
             .into_iter()
             .map(|text| Entry::Line { level: Level::Info, text: String::from(text) })
             .collect();
-        let filtered = ReadLog { contains: String::from("a"), ..read(0, LogLevel::Debug, "", 1) };
+        let filtered = ReadLog { contains: Some(String::from("a")), ..read(0, LogLevel::Debug, "", 1) };
         let stopped = read(0, LogLevel::Debug, "", 2);
 
         let expected_filtered = ActorLog { entries: vec![line(2, LogLevel::Info, "a")], next: 6, skipped: 2 };
@@ -613,7 +677,7 @@ mod tests {
             .collect();
         let entries = recorded.iter().map(|recorded| Named { actor: ActorName::Unnamed(recorded.by()), recorded });
 
-        recent_answered(Recent { entries: entries.collect(), next: 9, left: 0 }, read)
+        recent_answered(Recent { entries: entries.collect(), next: 9, left: 0 }, &read.filter())
     }
 
     /// The steps and texts of `log`'s entries.
@@ -626,13 +690,33 @@ mod tests {
         // Catches an answer cut inside a step whose `next` then reads its first entries again, and one whose first
         // step alone is past `most` that never reads on past it.
         let lines = [(1, "a"), (2, "b"), (2, "c"), (3, "d")];
-        let most = |most| ReadRecent { since: 0, level: LogLevel::Debug, contains: String::new(), most };
+        let most = |most| ReadRecent { since: None, level: Some(LogLevel::Debug), contains: None, most: Some(most) };
 
         let whole = recent_of(&lines, &most(2));
         let past = recent_of(&lines[1..], &most(1));
 
         assert_eq!((steps_and_texts(&whole), whole.next, whole.cut), (vec![(1, "a")], 2, 0));
         assert_eq!((steps_and_texts(&past), past.next, past.cut), (vec![(2, "b")], 3, 1));
+    }
+
+    #[test]
+    fn a_read_that_names_nothing_keeps_info_and_above_up_to_its_most() {
+        // Catches a fallback that keeps debug lines, filters by an empty field, or answers every entry kept.
+        let debug = Entry::Line { level: Level::Debug, text: String::from("noise") };
+        let info = Entry::Line { level: Level::Info, text: String::from("said") };
+        let entries: Vec<Entry> = iter::once(debug).chain(iter::repeat_n(info, 150)).collect();
+        let read =
+            ReadLog { actor: ActorPath::new("aether.test.logs"), since: None, level: None, contains: None, most: None };
+
+        let bytes = answered(&entries, 0, 151, &read);
+        let Ok(log) = from_bytes::<ActorLog>(&bytes, &mut Budget::new(bytes.len() * 8)) else {
+            panic!("the answer reads");
+        };
+
+        assert_eq!(
+            (log.entries.first(), log.entries.len(), log.next),
+            (Some(&line(1, LogLevel::Info, "said")), 100, 101)
+        );
     }
 
     #[test]
@@ -650,5 +734,18 @@ mod tests {
 
         assert!(bytes.len() <= MOST_ANSWER_BYTES, "{} bytes", bytes.len());
         assert_eq!(log.next, log.entries.len() as u64);
+    }
+
+    #[test]
+    fn every_sheet_s_flags_fit_its_input() {
+        // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the tool would be missing from a running
+        // engine, and nothing would answer when it is called.
+        let sheets = LogsTool::sheets();
+        let refused: Vec<(&str, FlagsFault)> = sheets
+            .iter()
+            .filter_map(|sheet| CommandLine::of(sheet).err().map(|fault| (sheet.name.as_str(), fault)))
+            .collect();
+
+        assert!(refused.is_empty(), "{refused:?}");
     }
 }

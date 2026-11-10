@@ -1,6 +1,7 @@
 //! `read_target`'s own arithmetic: the region around a pixel, and the values a target's bytes hold.
 
 use super::*;
+use aethereal_tools::{CommandLine, FlagsFault};
 
 #[test]
 fn a_half_is_read_as_the_float_it_holds() {
@@ -41,4 +42,17 @@ fn a_target_s_bytes_are_read_as_its_kind_lays_them_out() {
     assert_eq!(values(TargetKind::Uint, &ids), Values::Uint(vec![7, 0x0102_0304]));
     let float = [0x3c00_u16, 0xc000, 0x3800, 0].iter().flat_map(|half| half.to_le_bytes()).collect::<Vec<u8>>();
     assert_eq!(values(TargetKind::Float, &float), Values::Float(vec![[1.0, -2.0, 0.5, 0.0]]));
+}
+
+#[test]
+fn every_sheet_s_flags_fit_its_input() {
+    // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the tool would be missing from a running engine,
+    // and nothing would answer when it is called.
+    let sheets = TargetTool::sheets();
+    let refused: Vec<(&str, FlagsFault)> = sheets
+        .iter()
+        .filter_map(|sheet| CommandLine::of(sheet).err().map(|fault| (sheet.name.as_str(), fault)))
+        .collect();
+
+    assert!(refused.is_empty(), "{refused:?}");
 }

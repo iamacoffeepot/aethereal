@@ -119,6 +119,46 @@ impl Json {
         Ok(json)
     }
 
+    /// The value as JSON text.
+    pub(super) fn text(&self) -> String {
+        let mut out = String::new();
+        self.write(&mut out);
+        out
+    }
+
+    /// Appends the value as JSON text.
+    ///
+    /// It recurses once per container, and a value is never deeper than a document, so the depth is capped.
+    fn write(&self, out: &mut String) {
+        match self {
+            Self::Leaf(leaf) => leaf.write(out),
+            Self::Array(elements) => {
+                out.push('[');
+                for (position, element) in elements.iter().enumerate() {
+                    let later = position > 0;
+                    if later {
+                        out.push(',');
+                    }
+                    element.write(out);
+                }
+                out.push(']');
+            }
+            Self::Object(members) => {
+                out.push('{');
+                for (position, (name, member)) in members.iter().enumerate() {
+                    let later = position > 0;
+                    if later {
+                        out.push(',');
+                    }
+                    escape::write(name, out);
+                    out.push(':');
+                    member.write(out);
+                }
+                out.push('}');
+            }
+        }
+    }
+
     /// How many containers nest in the value: none for a leaf.
     pub(super) fn depth(&self) -> usize {
         match self {
