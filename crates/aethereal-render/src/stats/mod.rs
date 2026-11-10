@@ -2,8 +2,9 @@
 //! over its passes, sent only while someone subscribes, so a program no one watches spends nothing on them; and the
 //! adapter it draws on, answered once.
 //!
-//! A subscriber of [`FrameStats`] is sent them after each `Render` that drew: its draws and triangles, counted as the
-//! frame was recorded, and the bytes written to the GPU since the last; and the GPU memory of what the renderer made,
+//! A subscriber of [`FrameStats`] is sent them after each `Render`: of one that drew, its draws and triangles, counted
+//! as the frame was recorded, and the bytes written to the GPU since the last; of one that drew nothing, as when no
+//! window is drawn, that it did not; and the GPU memory of what the renderer made,
 //! how many of each thing are alive, and how full the glyph atlas is, which the renderer keeps as running totals,
 //! subscribed to or not, changed where each thing is made, made again at another size, and released, so a frame
 //! copies them and walks nothing. A subscriber of [`GpuTimes`] is sent each frame's pass
@@ -45,18 +46,30 @@ pub struct SubscribeGpuTimes;
 #[kind(name = "aether.render.unsubscribe_gpu_times")]
 pub struct UnsubscribeGpuTimes;
 
-/// What the renderer tells its subscribers of a frame it drew: the cycle's `elapsed_nanos`, as its `Tick` and `Render`
-/// have it; the frame time the program aims at; what the frame drew and wrote; the GPU memory of what the renderer
-/// made; how many of each thing are alive; and how full the glyph atlas is.
+/// What the renderer tells its subscribers of a cycle's frame: the cycle's `elapsed_nanos`, as its `Tick` and `Render`
+/// have it; the frame time the program aims at; what the frame drew and wrote, or that it drew nothing; the GPU memory
+/// of what the renderer made; how many of each thing are alive; and how full the glyph atlas is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.frame_stats")]
 pub struct FrameStats {
     pub elapsed_nanos: u64,
     pub budget: FrameBudget,
-    pub drawn: FrameDrawn,
+    pub drawn: FrameDrawing,
     pub memory: GpuMemory,
     pub alive: Alive,
     pub atlas: AtlasFill,
+}
+
+/// Whether a cycle drew a frame, and what it drew.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.frame_drawing")]
+pub enum FrameDrawing {
+    /// It drew this.
+    Drawn(FrameDrawn),
+    /// It drew nothing, as no window was handed a frame: none shown, or none the compositor asked a frame of. Its
+    /// cycle is no frame's time, and a chart of frame times leaves it out; the bytes written since the last frame
+    /// drawn are counted into the next that is.
+    Undrawn,
 }
 
 /// What a frame drew and wrote: each draw it recorded, placements', texts', and effects'; the triangles of those whose

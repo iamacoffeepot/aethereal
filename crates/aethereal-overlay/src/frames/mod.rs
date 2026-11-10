@@ -6,6 +6,10 @@
 //! cutting the cycles again from the newest, which would hop a spike from column to column. Each column is the fastest,
 //! the median, and the slowest of its cycles, worked out once as its span passes (`bins`), the median from a bounded
 //! sample of them (`bin`).
+//!
+//! A cycle that drew nothing is no frame's time: the newest cycle is held from the chart until its frame's statistics
+//! say whether it drew, and left out when it did not, so a stretch of undrawn cycles, as while the compositor asks for
+//! no covered window's frame, is a gap in the chart, never a spike as it ends.
 
 mod bin;
 mod bins;
@@ -16,8 +20,10 @@ use crate::colour::{BONE, STONE};
 use crate::layout::GUTTER_CHARACTERS;
 use aethereal_actor::Tick;
 use aethereal_data::Plain;
+use aethereal_render::stats::{FrameDrawing, FrameStats};
 use aethereal_render::text::Run;
 use bins::Bins;
+use core::mem;
 use std::collections::VecDeque;
 
 /// How far back the chart reaches: sixty seconds of the program's time.
@@ -41,16 +47,27 @@ struct Sample {
 }
 
 /// The cycles' times over the last [`KEPT_NANOS`], oldest first: each `Tick` heard is pushed at the back, and those
-/// more than that older than it leave at the front; and the chart's columns at the span it was last drawn at.
+/// more than that older than it leave at the front; the chart's columns at the span it was last drawn at; and the
+/// newest cycle, while it waits on its frame's statistics.
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
 pub struct FrameTimes {
     samples: VecDeque<Sample>,
     bins: Bins,
+    newest: Newest,
+}
+
+/// The newest cycle's time, held from the chart until its frame's statistics say whether it drew.
+#[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
+enum Newest {
+    /// None is held: the last was pushed or left out.
+    Settled,
+    /// This cycle's, its frame's statistics not yet heard.
+    Held(Sample),
 }
 
 impl Default for FrameTimes {
     fn default() -> Self {
-        Self { samples: VecDeque::new(), bins: Bins::new(span_nanos(1)) }
+        Self { samples: VecDeque::new(), bins: Bins::new(span_nanos(1)), newest: Newest::Settled }
     }
 }
 
@@ -87,11 +104,41 @@ pub struct Figures {
 }
 
 impl FrameTimes {
-    /// Takes in the cycle `tick` begins, and lets go of every cycle more than [`KEPT_NANOS`] older than it.
+    /// Takes in the cycle `tick` begins, held until its frame's statistics are heard: the cycle held before it, whose
+    /// statistics never came, is pushed first.
+    pub fn tick(&mut self, tick: &Tick) {
+        let held = Sample { elapsed_nanos: tick.elapsed_nanos, delta_nanos: tick.delta_nanos };
+        if let Newest::Held(before) = mem::replace(&mut self.newest, Newest::Held(held)) {
+            self.push_sample(before);
+        }
+    }
+
+    /// Takes in what `stats` say of their cycle's frame: the cycle held is pushed when it drew, and left out when it
+    /// drew nothing. Statistics of another cycle than the one held leave it held.
+    pub fn framed(&mut self, stats: &FrameStats) {
+        let Newest::Held(held) = self.newest else {
+            return;
+        };
+        if held.elapsed_nanos != stats.elapsed_nanos {
+            return;
+        }
+        self.newest = Newest::Settled;
+        if let FrameDrawing::Drawn(_) = stats.drawn {
+            self.push_sample(held);
+        }
+    }
+
+    /// Takes in the cycle `tick` begins at once, as if its frame drew.
+    #[cfg(test)]
     pub fn push(&mut self, tick: &Tick) {
-        self.samples.push_back(Sample { elapsed_nanos: tick.elapsed_nanos, delta_nanos: tick.delta_nanos });
-        self.bins.take(tick.elapsed_nanos, tick.delta_nanos);
-        let newest = tick.elapsed_nanos;
+        self.push_sample(Sample { elapsed_nanos: tick.elapsed_nanos, delta_nanos: tick.delta_nanos });
+    }
+
+    /// Takes in the cycle of `sample`, and lets go of every cycle more than [`KEPT_NANOS`] older than it.
+    fn push_sample(&mut self, sample: Sample) {
+        self.samples.push_back(sample);
+        self.bins.take(sample.elapsed_nanos, sample.delta_nanos);
+        let newest = sample.elapsed_nanos;
         while let Some(oldest) = self.samples.front() {
             let kept = newest.saturating_sub(oldest.elapsed_nanos) < KEPT_NANOS;
             if kept {

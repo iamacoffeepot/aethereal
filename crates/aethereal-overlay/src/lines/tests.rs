@@ -4,20 +4,12 @@ use crate::chart::tests::read;
 use crate::colour::STONE;
 use crate::frames::Slide;
 use crate::layout::Layout;
-use aethereal_render::stats::{Alive, AtlasFill, FrameBudget, FrameDrawn, FrameStats, GpuMemory};
+use aethereal_render::stats::FrameDrawn;
 use aethereal_window::Surface;
 
-/// The statistics of a frame of the cycle at `elapsed_nanos` that recorded `draws`, drew no triangles, and uploaded
-/// fifteen bytes.
-fn stats(elapsed_nanos: u64, draws: u32) -> FrameStats {
-    FrameStats {
-        elapsed_nanos,
-        budget: FrameBudget::UNTOLD,
-        drawn: FrameDrawn { draws, triangles: 0, uploaded_bytes: 15 },
-        memory: GpuMemory::default(),
-        alive: Alive::default(),
-        atlas: AtlasFill::default(),
-    }
+/// What a frame that recorded `draws`, drew no triangles, and uploaded fifteen bytes drew.
+const fn frame(draws: u32) -> FrameDrawn {
+    FrameDrawn { draws, triangles: 0, uploaded_bytes: 15 }
 }
 
 /// Each column of a row is the most of its frames, its bar against the most any column shown came to, from the row's
@@ -30,7 +22,7 @@ fn a_row_s_columns_are_the_most_of_their_frames_against_the_most_shown() {
     let second = 1_000_000_000;
     let mut lines = FrameLines::default();
     for (elapsed_nanos, draws) in [(second / 10, 10), (second / 5, 30), (second * 11 / 10, 15)] {
-        lines.push(&stats(elapsed_nanos, draws));
+        lines.push(elapsed_nanos, frame(draws));
     }
     let slide = Slide { newest: 1, through: 0.5, span_nanos: second };
     let mut records = Vec::new();

@@ -8,7 +8,7 @@
 mod tests;
 
 use super::{
-    DescribeGpu, FrameStats, GpuDescribed, GpuTimes, PassTime, SubscribeFrameStats, SubscribeGpuTimes,
+    DescribeGpu, FrameDrawing, FrameStats, GpuDescribed, GpuTimes, PassTime, SubscribeFrameStats, SubscribeGpuTimes,
     UnsubscribeFrameStats, UnsubscribeGpuTimes,
 };
 use crate::Renderer;
@@ -53,6 +53,8 @@ pub enum PassTimes {
     Unsupported,
     /// The call asked for none.
     Unasked,
+    /// The frame read drew nothing, as no window was drawn: no pass ran for the GPU to time.
+    Undrawn,
 }
 
 /// What the tool keeps for its ask of the adapter: nothing, as it asks once.
@@ -66,8 +68,9 @@ pub struct Describing;
 pub struct StatsToolConfig;
 
 /// The tool `render_stats`: asks the [`Renderer`] for its adapter once, as it begins; at a call, subscribes to the
-/// renderer's frame statistics and pass times, and answers each call waiting with the first of each heard after it.
-/// Under a held clock no frame is drawn, and a call waits until the next is.
+/// renderer's frame statistics and pass times, and answers each call waiting with the first of each heard after it,
+/// a cycle that drew nothing answered at once, with no pass times. Under a held clock no cycle runs, and a call waits
+/// until the next does.
 #[derive(Bound)]
 #[kind(name = "aether.render.stats_tool")]
 pub struct StatsTool {
@@ -160,8 +163,10 @@ impl Tool for StatsTool {
              many meshes, textures, programs, placements, and texts are alive; how full the glyph atlas is; and the \
              adapter it draws on. Unless gpu_times is false, it also waits for the GPU's time over each pass of a \
              frame drawn since the call, a frame or more later, each beside its frame, its pass's type id, and its \
-             label, the name of the pass's kind (aether.render.main); Unsupported on a device without timestamps. Nothing is answered while the clock \
-             is held and no frame is drawn.",
+             label, the name of the pass's kind (aether.render.main); Unsupported on a device without timestamps. A \
+             cycle that drew nothing, as while no window is shown or the compositor asks for no window's frame, is \
+             answered with drawn Undrawn and gpu_times Undrawn. Nothing is answered while the clock is held and no \
+             cycle runs.",
             Output::Value(SchemaNodes::of(&RenderStats::SHAPE)),
         )]
     }
@@ -252,7 +257,7 @@ impl StatsTool {
         };
         let mut still = Vec::new();
         for waiting in calls.drain(..) {
-            let Some(gpu_times) = answered(waiting.times, times) else {
+            let Some(gpu_times) = answered(waiting.times, stats.drawn, times) else {
                 still.push(waiting);
                 continue;
             };
@@ -277,15 +282,17 @@ impl StatsTool {
     }
 }
 
-/// The pass times a call that `asked` for them or not is answered with, by what is heard of them: none yet, when it
-/// asked and they are not heard, and it waits on.
-fn answered(asked: bool, times: &TimesHeard) -> Option<PassTimes> {
-    match (asked, times) {
-        (false, _) => Some(PassTimes::Unasked),
-        (true, TimesHeard::Heard(GpuTimes::Took { elapsed_nanos, passes })) => {
+/// The pass times a call that `asked` for them or not is answered with, by what the frame read drew, `drawn`, and what
+/// is heard of them: none yet, when it asked, the frame drew, and they are not heard, and it waits on; and none to wait
+/// on when the frame drew nothing, as no pass ran.
+fn answered(asked: bool, drawn: FrameDrawing, times: &TimesHeard) -> Option<PassTimes> {
+    match (asked, drawn, times) {
+        (false, _, _) => Some(PassTimes::Unasked),
+        (true, _, TimesHeard::Heard(GpuTimes::Took { elapsed_nanos, passes })) => {
             Some(PassTimes::Took { elapsed_nanos: *elapsed_nanos, passes: passes.clone() })
         }
-        (true, TimesHeard::Heard(GpuTimes::Unsupported)) => Some(PassTimes::Unsupported),
-        (true, TimesHeard::Awaited) => None,
+        (true, _, TimesHeard::Heard(GpuTimes::Unsupported)) => Some(PassTimes::Unsupported),
+        (true, FrameDrawing::Undrawn, TimesHeard::Awaited) => Some(PassTimes::Undrawn),
+        (true, FrameDrawing::Drawn(_), TimesHeard::Awaited) => None,
     }
 }
