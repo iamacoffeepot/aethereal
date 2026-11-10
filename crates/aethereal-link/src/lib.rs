@@ -1,10 +1,11 @@
 //! The link to engines (ADR-0038, ADR-0040): an engine's tools, handed to its hub over TCP. The crate holds both ends
 //! of one protocol, and a program lists the end it is.
 //!
-//! In an engine, [`Link`] is a tools [`Holder`]: any actor may [`Offer`] it tools at its typed path,
-//! `path::<Link>(())`, as it would `Mcp` in a hub. It dials its hub once, as it begins, with the [`Token`] its hub
-//! minted for it, its required setting `--hub-token`, and ends its program when the link ends: no engine outlives its
-//! link.
+//! In an engine, the tools are held by [`Tools`], the [`Holder`] every engine lists, which any actor may [`Offer`]
+//! tools at its typed path, `path::<Tools>(())`, as it would `Mcp` in a hub (ADR-0053). [`Link`] subscribes to it,
+//! hands its hub each set it hears, and asks it for each call the hub sends. It dials its hub once, as it begins, with
+//! the [`Token`] its hub minted for it, its required setting `--hub-token`, and ends its program when the link ends:
+//! no engine outlives its link.
 //!
 //! In a hub, [`Engines`] listens for engines, mints the tokens they link with, and keeps an [`Engine`] beneath itself
 //! for each one linked, keyed by its id. A token is good for one `Hello`: an engine is listed only once `Engines` has
@@ -20,37 +21,39 @@
 //! Only tools cross the link: each frame is one plain kind's bytes in a `LengthPrefixed` frame of `Tcp`'s, an [`Up`]
 //! from the engine or a [`Down`] from the hub. A connection opens with [`Up::Hello`], which names the [`REVISION`] the
 //! engine speaks and brings its token, and then [`Up::Sheets`], every tool the engine holds, which it writes again
-//! whole after every change. Each set has a revision, and each [`Down::Call`] names the set the hub converted it
-//! with, so the engine refuses a call of a set it has changed since. A call carries the time it has left, [`Within`],
-//! before the deadline of the request it answers: `Engine` frees its slot when that time comes, and `Link` stops
-//! waiting for its tool then (ADR-0041).
+//! whole after every change. Each set has `Tools`'s revision, and each [`Down::Call`] names the set the hub converted
+//! it with, so the engine refuses a call of a set it has changed since. A call carries the time it has left,
+//! [`Within`], before the deadline of the request it answers: `Engine` frees its slot when that time comes, and `Link`
+//! stops waiting for `Tools` then (ADR-0041).
 //!
 //! `Link` needs nothing of its host but `Tcp`, so it is bootstrapped for every host. `Engines` needs the host's
 //! [`Randomness`] too, which each native host's crate serves as it bootstraps it. Their settings, the sections `link`
-//! and `engines`, are their configs. A toolbox in an engine is listed after `Link`, and `Link` after `Tcp`:
+//! and `engines`, are their configs. A toolbox in an engine is listed after `Tools`, and `Link` after `Tools` and
+//! `Tcp`:
 //!
 //! ```
 //! # use aethereal_actor::Ordered;
 //! # use aethereal_link::Link;
 //! # use aethereal_tcp::Tcp;
-//! # use aethereal_tools::Toolbox;
+//! # use aethereal_tools::{Toolbox, Tools};
 //! # fn ordered<R: Ordered<I>, I>() {}
-//! ordered::<(Toolbox<(), Link>, (Link, (Tcp, ()))), _>();
+//! ordered::<(Toolbox<(), Tools>, (Link, (Tools, (Tcp, ())))), _>();
 //! ```
 //!
-//! Before it, the program does not build:
+//! Before `Tools`, it does not build:
 //!
 //! ```compile_fail
 //! # use aethereal_actor::Ordered;
 //! # use aethereal_link::Link;
 //! # use aethereal_tcp::Tcp;
-//! # use aethereal_tools::Toolbox;
+//! # use aethereal_tools::Tools;
 //! # fn ordered<R: Ordered<I>, I>() {}
-//! ordered::<(Link, (Toolbox<(), Link>, (Tcp, ()))), _>();
+//! ordered::<(Tools, (Link, (Tcp, ()))), _>();
 //! ```
 //!
 //! [`Holder`]: aethereal_tools::Holder
 //! [`Offer`]: aethereal_tools::Offer
+//! [`Tools`]: aethereal_tools::Tools
 
 mod engines;
 mod frames;

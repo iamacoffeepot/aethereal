@@ -20,7 +20,7 @@ use aethereal_store::{Binary, CheckIn, CheckedIn, Store, StoreHash, StoreName, S
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Lifecycle, Program};
 use aethereal_tcp::Tcp;
-use aethereal_tools::{Call, Called, Done, Tooling};
+use aethereal_tools::{Call, Called, Done, Tooling, Tools};
 use std::io::{self, Read as _, Write as _};
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -113,14 +113,14 @@ fn engine() -> EngineSettings {
     EngineSettings { read_limit: MOST_BYTES, mail_bytes: 1 << 24, ..EngineSettings::default() }
 }
 
-/// A program of a `Link` alone, over `Tcp`.
-type LinkProgram = Program<Headless, (Link, (Tcp, ()))>;
+/// A program of a `Link` alone, over `Tools` and `Tcp`.
+type LinkProgram = Program<Headless, (Link, (Tools, (Tcp, ())))>;
 
 /// An engine of a `Link` alone, read from `args` as a person would type them after its name: `None` when they do not
 /// read.
 fn link_program(args: &[String]) -> Option<LinkProgram> {
     let link = LinkSettings { most_bytes: MOST_BYTES, ..LinkSettings::default() };
-    let program = Headless::program().with_engine(engine()).root::<Tcp>().root_with::<Link>(link);
+    let program = Headless::program().with_engine(engine()).root::<Tcp>().root::<Tools>().root_with::<Link>(link);
     let invocation =
         Invocation::new(iter::once("engine").chain(args.iter().map(String::as_str)), Vec::<(String, String)>::new());
     let Ok(Invoked::Run(program)) = program.read("engine", invocation) else {
