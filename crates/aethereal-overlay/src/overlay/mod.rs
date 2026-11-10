@@ -1,13 +1,15 @@
 //! The overlay's actor (ADR-0053): a root on the program's first window, subscribed to it for its size and its keys,
 //! and to the engine's tools root for the tools the console calls. It makes what it draws once the window has said
 //! its size, and draws it in its own draw list in the window's main pass while it is shown (ADR-0031). As it begins it
-//! spawns the worker of its own tools and offers them.
+//! spawns the worker of its own tools and offers them, and asks the renderer which adapter it draws on.
 
+mod adapter;
 mod console;
 mod drawing;
 mod making;
 mod texts;
 
+pub use adapter::AdapterAsked;
 pub use console::{Calling, Offering};
 pub use making::{
     ChartAsked, ChartInstanced, ChartMade, ChartMeshed, ChartProgrammed, ChartShaped, TextAsked, TextReady,
@@ -18,18 +20,20 @@ use crate::frames::{Figures, FrameTimes};
 use crate::gpu::{GpuFigures, GpuTiming, GraphTop};
 use crate::lines::FrameLines;
 use crate::marks::Marks;
+use crate::meters::{Adapter, EngineMemory};
 use crate::stop::Stop;
 use crate::tools::{Marked, OverlayTools, OverlayToolsConfig};
 use aethereal_actor::{
     Actor, Answer, Asks, Beginning, ChildOf, Ending, Fault, Level, On, Path, Tells, Tick, Top, path,
 };
 use aethereal_data::{Bound, Plain};
+use aethereal_render::Renderer;
 use aethereal_render::frame::Shaped;
 use aethereal_render::instances::{Instanced, InstancesId};
 use aethereal_render::mesh::Meshed;
 use aethereal_render::placement::{Placed, PlacementId};
 use aethereal_render::program::Programmed;
-use aethereal_render::stats::{FrameBudget, FrameStats, GpuTimes};
+use aethereal_render::stats::{DescribeGpu, FrameBudget, FrameStats, GpuDescribed, GpuTimes};
 use aethereal_render::text::{TextMade, TextPlaced};
 use aethereal_render::uniforms::{Uniformed, UniformsId};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
@@ -107,6 +111,10 @@ pub struct Overlay {
     marks: Marks,
     /// The warnings and errors logged since the console was last opened.
     alerts: Alerts,
+    /// The engine's memory as the band's meters last read it, four times a second while it is shown.
+    memory: EngineMemory,
+    /// The adapter the renderer draws on, asked as the overlay begins, which the line beneath the meters names.
+    adapter: Adapter,
     /// The step the engine's recent log is next read from (ADR-0053: Logs in the console).
     logs_since: u64,
     /// The program's time from which the log is next read.
@@ -151,18 +159,22 @@ impl Actor for Overlay {
         Answer<Called, Calling>,
         Answer<Offered, Offering>,
         Marked,
+        Answer<GpuDescribed, AdapterAsked>,
     );
     type BeginSends = (
         Tells<Path<Window>, window::Subscribe>,
         Tells<Path<Tools>, aethereal_tools::Subscribe>,
         Asks<Path<Tools>, Offer, Offering>,
+        Asks<Path<Renderer>, DescribeGpu, AdapterAsked>,
     );
     type EndSends = ();
 
-    /// Subscribes to its window and to the engine's tools, and spawns the worker of its own tools and offers them.
+    /// Subscribes to its window and to the engine's tools, spawns the worker of its own tools and offers them, and asks
+    /// the renderer which adapter it draws on.
     fn begin(config: OverlayConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.to(path::<Window>(config.window)).send(&window::Subscribe)?;
         turn.to(path::<Tools>(())).send(&aethereal_tools::Subscribe)?;
+        turn.to(path::<Renderer>(())).ask(&DescribeGpu, &AdapterAsked)?;
         match turn.spawn::<OverlayTools>(&(), OverlayToolsConfig) {
             Ok(worker) => {
                 let offer = Offer { tools: OverlayTools::sheets(), worker: OverlayTools::worker(worker) };
@@ -190,6 +202,8 @@ impl Actor for Overlay {
             console: Console::default(),
             marks: Marks::default(),
             alerts: Alerts::default(),
+            memory: EngineMemory::Unread,
+            adapter: Adapter::Asked,
             logs_since: 0,
             logs_due_nanos: 0,
         })

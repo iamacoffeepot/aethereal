@@ -1,5 +1,6 @@
 //! The overlay's texts (ADR-0052, ADR-0053): the frame chart's figures and the count of warnings and errors on one
-//! line, the GPU's figures, the GPU graph's top and the rows' labels and values in their gutter, and the console's scrollback, its prompt,
+//! line, the GPU's figures, the GPU graph's top and the rows' labels and values in their gutter, the memory meters'
+//! labels and values and the adapter's line in the band's right column, and the console's scrollback, its prompt,
 //! and what is running at the prompt's right end. Each is one text, made once and written again only when what it
 //! shows changes, so a console that nothing changes costs nothing a frame. The scrollback is one text of the rows in
 //! view, at a fixed place, clipped to the console's panel, and written again as the view scrolls or a row is printed.
@@ -9,6 +10,7 @@ use crate::colour::BONE;
 use crate::console::{Piece, View};
 use crate::gpu::{self, GpuTiming};
 use crate::layout::Layout;
+use crate::lines::Line;
 use aethereal_actor::{Allows, Fault, Path, Tells, Turn, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_math::Vec2;
@@ -29,6 +31,10 @@ pub enum TextRole {
     GpuTop,
     /// The rows' labels and their newest values, in the gutter beside them.
     Lines,
+    /// The memory meters' labels and values, in the band's right column.
+    Meters,
+    /// The GPU adapter's line, beneath the meters.
+    Adapter,
     /// The rows of the scrollback in view.
     Scrollback,
     /// The prompt's line: the prompt, the line typed, and a completion ahead of it.
@@ -39,19 +45,21 @@ pub enum TextRole {
 
 impl TextRole {
     /// Every text, in the order the overlay lists them: the band's first, then the console's.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Figures,
         Self::Alerts,
         Self::GpuFigures,
         Self::GpuTop,
         Self::Lines,
+        Self::Meters,
+        Self::Adapter,
         Self::Scrollback,
         Self::Prompt,
         Self::Running,
     ];
 
     /// How many of [`Self::ALL`], from the first, are the band's.
-    pub const BAND: usize = 5;
+    pub const BAND: usize = 7;
 }
 
 /// What the overlay has made of one text.
@@ -73,6 +81,8 @@ pub struct Texts {
     gpu_figures: Text,
     gpu_top: Text,
     lines: Text,
+    meters: Text,
+    adapter: Text,
     scrollback: Text,
     prompt: Text,
     running: Text,
@@ -86,6 +96,8 @@ impl Default for Texts {
             gpu_figures: Text::Unasked,
             gpu_top: Text::Unasked,
             lines: Text::Unasked,
+            meters: Text::Unasked,
+            adapter: Text::Unasked,
             scrollback: Text::Unasked,
             prompt: Text::Unasked,
             running: Text::Unasked,
@@ -102,6 +114,8 @@ impl Texts {
             TextRole::GpuFigures => &self.gpu_figures,
             TextRole::GpuTop => &self.gpu_top,
             TextRole::Lines => &self.lines,
+            TextRole::Meters => &self.meters,
+            TextRole::Adapter => &self.adapter,
             TextRole::Scrollback => &self.scrollback,
             TextRole::Prompt => &self.prompt,
             TextRole::Running => &self.running,
@@ -116,6 +130,8 @@ impl Texts {
             TextRole::GpuFigures => &mut self.gpu_figures,
             TextRole::GpuTop => &mut self.gpu_top,
             TextRole::Lines => &mut self.lines,
+            TextRole::Meters => &mut self.meters,
+            TextRole::Adapter => &mut self.adapter,
             TextRole::Scrollback => &mut self.scrollback,
             TextRole::Prompt => &mut self.prompt,
             TextRole::Running => &mut self.running,
@@ -169,6 +185,11 @@ impl Overlay {
                 GpuTiming::Unsupported => runs_of(Vec::new()),
             },
             TextRole::Lines => self.lines.runs(),
+            TextRole::Meters => {
+                let gpu_bytes = self.lines.latest().of_line(Line::Memory);
+                self.memory.runs(gpu_bytes, Layout::of(self.surface).right_columns())
+            }
+            TextRole::Adapter => self.adapter.runs(Layout::of(self.surface).right_columns()),
             TextRole::Prompt => runs_of(self.console.prompt()),
             TextRole::Running => runs_of(self.console.running()),
             TextRole::Scrollback => {
@@ -187,7 +208,8 @@ impl Overlay {
         }
     }
 
-    /// Where the text of `role` is placed, and what of it is drawn: the console's texts clipped to its panel. A text
+    /// Where the text of `role` is placed, and what of it is drawn: the console's texts clipped to its panel, and the
+    /// right column's to the column, so neither runs into the left column on a narrow window. A text
     /// that ends at a right edge is placed by how many characters it shows now, and the GPU's figures stand in the
     /// graph's place when the device has no timestamps, as there is no graph.
     pub(super) fn place_of(&self, role: TextRole) -> (Vec2, Clip) {
@@ -202,6 +224,8 @@ impl Overlay {
             },
             TextRole::GpuTop => (layout.gpu_top_at(), Clip::None),
             TextRole::Lines => (layout.lines_at(), Clip::None),
+            TextRole::Meters => (layout.meters_at(), Clip::To(layout.right_column())),
+            TextRole::Adapter => (layout.adapter_at(), Clip::To(layout.right_column())),
             TextRole::Scrollback => (layout.scrollback_at(), Clip::To(layout.console_inside())),
             TextRole::Prompt => (layout.prompt_at(), Clip::To(layout.console_inside())),
             TextRole::Running => {

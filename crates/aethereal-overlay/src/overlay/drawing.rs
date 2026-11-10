@@ -1,8 +1,8 @@
 //! How the overlay draws once it has made its pieces (ADR-0031, ADR-0052): what its window hears steps it and lays it
 //! out again, and each `Tick` while it is shown keeps the cycle's time, writes the placement's records again in one
 //! write, writes the figures' texts when what they show changes, and reads the engine's recent log about once a second.
-//! While it is shown it also hears each frame's statistics, for the budget the chart is drawn against and the lines'
-//! rows, and the GPU's time over each frame's passes, for its graph (ADR-0053).
+//! While it is shown it also hears each frame's statistics, for the budget the chart is drawn against, the lines'
+//! rows, and the GPU meter, and the GPU's time over each frame's passes, for its graph (ADR-0053).
 
 use super::making::{ChartAsked, TextAsked};
 use super::texts::TextRole;
@@ -12,6 +12,7 @@ use crate::console::Logged;
 use crate::gpu::{self, GpuFigures, GpuTiming};
 use crate::layout::Layout;
 use crate::lines;
+use crate::meters::{self, EngineMemory};
 use crate::scrollbar;
 use crate::stop::Stop;
 use aethereal_actor::{Allows, Asks, Fault, Handles, Level, On, Path, Tells, Tick, Turn, path};
@@ -79,7 +80,7 @@ impl Handles<Event> for Overlay {
 
 impl Overlay {
     /// Takes in the window's new surface: the first makes what the overlay draws, sized by it, and each lays out
-    /// again what is made.
+    /// again what is made, and writes again the right column's texts, which are cut to its width.
     fn resized(&mut self, surface: Surface, turn: &mut Turn<'_, Self, Heard>) -> Result<(), Fault> {
         self.surface = surface;
         self.make(turn)?;
@@ -87,6 +88,8 @@ impl Overlay {
         for role in TextRole::ALL {
             self.move_text(role, turn)?;
         }
+        self.write_text(TextRole::Meters, turn)?;
+        self.write_text(TextRole::Adapter, turn)?;
         self.write_console(turn)?;
         if self.stop.draws() {
             self.write_chart(turn)?;
@@ -191,6 +194,7 @@ impl Overlay {
             self.gpu_top = gpu::graph(&mut records, layout, slide, self.budget, times.columns(count));
         }
         lines::rows(&mut records, layout, slide, &self.lines.columns(count));
+        meters::bars(&mut records, layout, &self.memory);
         chart::marks(&mut records, layout, slide, self.marks.times());
         if self.stop.console() {
             chart::cursor(&mut records, layout, self.console.cursor_column());
@@ -268,8 +272,8 @@ impl Overlay {
     }
 }
 
-/// Each cycle's time is kept, the marks told since the last stamped with it, the chart written again, the figures
-/// and the GPU's figures worked out again when they are due, and their texts and the rows' values written only when
+/// Each cycle's time is kept, the marks told since the last stamped with it, the chart written again, the figures,
+/// the GPU's figures, and the engine's memory for the meters worked out again when they are due, and their texts and the rows' values written only when
 /// what they show changes, and the engine's log read when it is due. Heard only while the overlay is
 /// shown.
 impl Handles<On<Tick>> for Overlay {
@@ -304,6 +308,8 @@ impl Handles<On<Tick>> for Overlay {
             self.write_text(TextRole::Figures, turn)?;
             self.write_text(TextRole::GpuFigures, turn)?;
             self.write_text(TextRole::Lines, turn)?;
+            self.memory = EngineMemory::of(&turn.engine_stats());
+            self.write_text(TextRole::Meters, turn)?;
         }
 
         let logs_due = tick.elapsed_nanos >= self.logs_due_nanos;

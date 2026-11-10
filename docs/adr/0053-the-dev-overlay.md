@@ -44,7 +44,12 @@ Called::Output ── schema ── Form, printed ──> scrollback
       - beneath it, one line: each pass's label, without the renderer's `aether.render.` prefix, and its median over the 60 seconds, each in its pass's colour, so the line is the legend; and `gpu busy`, the GPU's median frame over the frame chart's median cycle;
       - on a device without timestamps, the graph's place holds one stone line, `GPU timing not supported on this device`, and nothing else;
     - one line each for draws, triangles, bytes uploaded, and GPU memory, the sum of the renderer's kinds: each a thin row of stone bars over the same columns, each column the most of its frames, linear from nothing to the most shown, with its label and newest value in a gutter at the column's right, bytes in KiB, MiB, and GiB. The graphs above end at the gutter too, so every column stands under the frame chart's.
-  - **Right:** the memory meters, each a bar against its limit where it has one, and the GPU adapter, its backend, and its driver.
+  - **Right:** the memory meters and the GPU adapter, from the GPU graph's top, beneath the frame figures' line and the count of warnings and errors at its right end, down to the foot of the rows, clipped to the column so a narrow window cuts them rather than letting them run into the left column's gutter:
+    - one line of Mono text each, in order: process, blobs, backlog, guests, GPU (see Memory); the label in stone, then the room of a bar 20 characters wide, then the value set flush right in bone, `blobs  ███████░░░░░░░  412.0 MiB / 8.0 GiB`, so the values' digits line up;
+    - a bar only where the meter has a limit, blobs and backlog: a trough of faint stone, and a fill from its left, its share of the trough the bytes' share of their most, lichen under 75%, rust from 75%, brick from 90%; with no most, as when no actor holds bytes unsent, an empty trough and `none`. Process, guests, and GPU have no limit and no trough: the value alone, `unknown` in stone where the chassis reads no figure and `no guests` where none runs;
+    - the backlog's line names the actor holding the most after its value, in stone, cut at its front with `…` to the room the column has left, and left out where too little is;
+    - the engine's figures are read at the figures' pace, four times a second, and the GPU meter from the newest frame's statistics; a text is written again only when what it shows changes;
+    - beneath the meters, one stone line: the adapter, its backend, and its driver, `AMD Radeon RX 6900 XT (RADV NAVI21) · vulkan · radv Mesa 25.2.8`, asked once as the overlay begins, blank until it is answered, and cut at its end with `…` to the column's width.
 - **The band and the console:** the console beneath the band, a third of the window: scrollback, the line being typed, and a grey completion ahead of the cursor. While the console is open the overlay holds key focus, and gives it up as the console closes.
 
 ### Commands are tools
@@ -123,13 +128,13 @@ KeyFocusLost { window }      // to the holder it replaced, the one that released
 
 ### Memory
 
-**The band shows one meter for each limit the engine can hit,** from `EngineStats`, which the substrate answers:
+**The band shows one meter for each limit the engine can hit,** from `EngineStats`, which the substrate answers, each a line of the band's right column (see The three stops):
 
-- **process:** the resident memory the operating system reports for the program; in the browser, what it exposes, or nothing;
-- **blobs:** the bytes the blob store holds, against its limit;
-- **backlog:** the most bytes any one actor has waiting unsent, against the limit;
-- **guests:** the memory of every guest, added up;
-- **GPU:** from `FrameStats`.
+- **process:** the resident memory the operating system reports for the program, `1.2 GiB`; in the browser, the script heap it exposes, `84.0 MiB heap`, or `unknown`; no bar;
+- **blobs:** the bytes the blob store holds, against its limit, `412.0 MiB / 8.0 GiB`, with a bar;
+- **backlog:** the most bytes any one actor has waiting unsent, against that actor's limit, with a bar, and the actor's path after it; `none` when no actor has said it holds any;
+- **guests:** the memory of every guest, added up, `no guests` when none runs; no bar;
+- **GPU:** the sum of the renderer's kinds in the newest `FrameStats`, the left column's GPU memory row's newest value; no bar.
 
 **Only the engine sees every actor, so it finds the largest itself.** `EngineStats` also answers the eight guests with the most memory and the eight actors with the most bytes unsent, each by path. The substrate keeps them as it folds, as it keeps the totals, so no turn walks the seats and no answer grows with the number of actors.
 

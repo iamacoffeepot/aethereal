@@ -206,8 +206,8 @@ impl MemoryShown {
     }
 }
 
-/// `actor` as a person names it: its path, or its id in hex.
-fn named(actor: &ActorName) -> String {
+/// `actor` as a person names it: its path, or its id in hex. The band's backlog meter names its actor so too.
+pub fn named(actor: &ActorName) -> String {
     match actor {
         ActorName::Path(path) => path.to_string(),
         ActorName::Unnamed(id) => format!("{:#018x}", id.bits()),

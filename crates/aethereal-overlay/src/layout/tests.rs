@@ -1,4 +1,5 @@
-use super::{LINE_EMS, Layout};
+use super::{GUTTER_CHARACTERS, LINE_EMS, Layout, METERS};
+use crate::meters::LINE_CHARACTERS;
 use aethereal_window::Surface;
 
 /// Down the band's left column, at 1080 and at an ultrawide 1373, the frame chart, its figures, the GPU's graph, its
@@ -55,7 +56,7 @@ fn the_gutter_s_lines_stand_beside_their_rows() {
         }
         // A gutter of some tens of characters, which an f32 holds exactly.
         #[allow(clippy::cast_precision_loss)]
-        let gutter_end = (super::GUTTER_CHARACTERS as f32).mul_add(layout.advance(), at.x);
+        let gutter_end = (GUTTER_CHARACTERS as f32).mul_add(layout.advance(), at.x);
         assert!(at.x > rows.max.x && gutter_end <= 1920.0 * 0.6, "the gutter from {at:?} is out of the left column");
     }
 }
@@ -129,5 +130,41 @@ fn the_prompt_and_its_divider_sit_in_their_strip() {
         let ends = layout.advance().mul_add(10.0, running.x);
         assert_eq!(running.y, prompt.y);
         assert!((ends - layout.console_inside().max.x).abs() < 0.01, "what is running ends at {ends}");
+    }
+}
+
+/// At 1080, an ultrawide 1373, and a narrow 720, the band's right column stands right of the end of the left column's
+/// gutter, beneath the frame figures' line, at whose right end the count of warnings and errors is written, and inside
+/// the band; each meter's bar stands on its line after its label and inside the column, a meter's line of text fits
+/// across the column, and the adapter's line beneath the meters ends inside it. So a meter drawn over the gutter or the
+/// count of warnings, a column that spills out of the band, or a value cut off at a narrow window, is caught.
+#[test]
+fn the_right_column_holds_the_meters_and_the_adapter_clear_of_the_left_column() {
+    for (width, height) in [(1920, 1080), (3440, 1373), (1280, 720)] {
+        let layout = Layout::of(Surface { width, height, scale: 1.0 });
+
+        let (right, band, tall) = (layout.right_column(), layout.band(), layout.line_pixels_tall());
+        let at = layout.meters_at();
+
+        // A gutter of some tens of characters, which an f32 holds exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let gutter_end = (GUTTER_CHARACTERS as f32).mul_add(layout.advance(), layout.lines_at().x);
+        let alerts_foot = layout.figures_at().y + tall;
+        assert!(right.min.x > gutter_end, "{right:?} at {width}x{height} is over the gutter ending at {gutter_end}");
+        assert!(right.min.y >= alerts_foot, "{right:?} at {width}x{height} is over the count of warnings");
+        let in_band = right.max.x <= band.max.x && right.max.y <= band.max.y;
+        assert!(in_band, "{right:?} spills out of {band:?}");
+        assert_eq!(at, right.min);
+        for index in 0..METERS {
+            let bar = layout.meter_bar(index);
+            let line_top = f32::from(index).mul_add(tall, at.y);
+            let across = bar.min.x > right.min.x && bar.max.x < right.max.x;
+            let beside = bar.min.y >= line_top && bar.max.y <= line_top + tall && bar.height() >= 1.0;
+            assert!(across && beside, "meter {index}'s bar at {bar:?} is off its line in {right:?}");
+        }
+        assert!(layout.right_columns() >= LINE_CHARACTERS, "a meter's line does not fit {right:?}");
+        let adapter = layout.adapter_at();
+        assert_eq!(adapter.y, f32::from(METERS).mul_add(tall, at.y));
+        assert!(adapter.y + tall <= right.max.y, "the adapter's line at {adapter:?} is below {right:?}");
     }
 }

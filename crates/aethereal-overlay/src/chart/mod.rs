@@ -2,7 +2,7 @@
 //! each a box in the surface's pixels and its colour. The records are the panels and the lines between them, the frame
 //! chart's faint line at twice the budget, its columns, each three bars to its slowest, median, and fastest cycles
 //! (`column`), on a scale logarithmic in a cycle's time and relative to the budget (`scale`), its dashed budget line,
-//! the GPU's graph (`gpu`), the lines' rows (`lines`), the marks' ticks, the console's cursor, and its scroll bar, in
+//! the GPU's graph (`gpu`), the lines' rows (`lines`), the memory meters' bars (`meters`), the marks' ticks, the console's cursor, and its scroll bar, in
 //! that order, as one placement's records are drawn in their order; all of them are written again in one write at
 //! each `Tick` the overlay is shown, as the chart moves with time.
 
@@ -17,6 +17,7 @@ use crate::gpu::MOST_PASSES;
 use crate::layout::Layout;
 use crate::lines::LINES;
 use crate::marks::MOST_MARKS;
+use crate::meters::MOST_BAR_RECORDS;
 use crate::scrollbar::{Bar, Standing};
 use crate::stop::Stop;
 use aethereal_math::{Rect2, Vec2};
@@ -54,10 +55,10 @@ pub const RECORD_BYTES: u32 = 32;
 
 /// The most records the instances have room for: the panels and the lines between them, the line at twice the budget,
 /// the most columns and the two sliding off the left edge each in a column's records of the frame chart, of the GPU's
-/// graph, and of the lines' rows, the most dashes of the two budget lines, the most marks, the cursor, and the scroll
-/// bar's track and thumb.
+/// graph, and of the lines' rows, the most dashes of the two budget lines, the meters' bars, the most marks, the
+/// cursor, and the scroll bar's track and thumb.
 pub const MOST_RECORDS: u32 =
-    PANEL_RECORDS + 1 + (MOST_COLUMNS + 2) * RECORDS_ACROSS + 2 * MOST_DASHES + MOST_MARKS + 1 + 2;
+    PANEL_RECORDS + 1 + (MOST_COLUMNS + 2) * RECORDS_ACROSS + 2 * MOST_DASHES + MOST_BAR_RECORDS + MOST_MARKS + 1 + 2;
 
 /// How many records one column takes down the band's left column at most: the frame chart's, a segment for each pass
 /// of the GPU's graph, and a bar in each line's row.
@@ -154,10 +155,10 @@ pub fn column_count(layout: Layout) -> u32 {
     count.min(MOST_COLUMNS)
 }
 
-/// How many bytes the records of [`records`], the GPU's graph, the lines' rows, [`marks`], [`cursor`], and
-/// [`scrollbar`] take on `layout` at most: the panels and the lines between them, the line at twice the budget, a
+/// How many bytes the records of [`records`], the GPU's graph, the lines' rows, the meters' bars, [`marks`], [`cursor`],
+/// and [`scrollbar`] take on `layout` at most: the panels and the lines between them, the line at twice the budget, a
 /// column's records down the left column for each column the chart is cut into and the two sliding off its left edge,
-/// the dashes of the two budget lines, the most marks, the cursor, and the scroll bar's track and thumb.
+/// the dashes of the two budget lines, the meters' bars, the most marks, the cursor, and the scroll bar's track and thumb.
 #[must_use]
 pub fn records_bytes(layout: Layout) -> usize {
     // A reference's dashes are the closer, so the more.
@@ -167,7 +168,14 @@ pub fn records_bytes(layout: Layout) -> usize {
     // A count of dashes is at most some thousands, which a u32 holds; a negative width holds none.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let dashes = (dashes.max(0.0) as u32).min(MOST_DASHES);
-    let count = PANEL_RECORDS + 1 + (column_count(layout) + 2) * RECORDS_ACROSS + 2 * dashes + MOST_MARKS + 1 + 2;
+    let count = PANEL_RECORDS
+        + 1
+        + (column_count(layout) + 2) * RECORDS_ACROSS
+        + 2 * dashes
+        + MOST_BAR_RECORDS
+        + MOST_MARKS
+        + 1
+        + 2;
 
     count as usize * RECORD_BYTES as usize
 }
