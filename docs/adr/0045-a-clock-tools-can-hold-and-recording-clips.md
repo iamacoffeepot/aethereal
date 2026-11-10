@@ -92,7 +92,7 @@ pub struct PacerConfig { pub pace: Pace }       // how the clock starts: Real un
 - **`Pacer` is listed by the chassis, as the window root is.** A program that lists no `Pacer` keeps the clock it has today, and no actor can hold it.
 - **One clock holds every window.** Windows are drawn in one cycle (ADR-0025), so a held clock holds them all, and one advance draws each window that is shown.
 
-**The tool `record_clip`, `RecordTool`, steps a held clock and writes each frame a window draws as a PNG.** It is the renderer's, in `aethereal-render` behind its `tools` feature, beside `capture_frame`, and reuses its `Encode` job. That feature then also depends on `aethereal-pace` and `aethereal-files`.
+**The tool `record_clip`, `RecordTool`, steps a held clock and encodes each frame a window draws into one MP4.** It is the renderer's, in `aethereal-render` behind its `tools` feature, beside `capture_frame`, and cuts and shrinks each frame as `capture_frame` does. That feature then also depends on `aethereal-pace`, `aethereal-files`, and, natively, `openh264` (below: *Clips as MP4s*). **This departs from this record as first written**, which wrote each frame as a PNG into a folder.
 
 ```rust
 #[kind(name = "aether.render.record")]
@@ -101,12 +101,12 @@ pub struct Record {
     pub frames: u32,                   // at most MOST_FRAMES, 3600
     pub frames_per_second: u32,        // 1 to 240
     pub crop: Crop,                    // as capture_frame's
-    pub longest: u32,                  // as capture_frame's
-    pub name: FilePath,                // the folder in Save, written as clips/<name>/00000.png, ..
+    pub longest: u32,                  // as capture_frame's; each side then rounded down to even
+    pub name: FilePath,                // written in Save as clips/<name>.mp4
 }
 
 #[kind(name = "aether.render.recorded")]
-pub struct Recorded { pub folder: FilePath, pub frames: u32, pub frames_per_second: u32, pub width: u32, pub height: u32 }
+pub struct Recorded { pub file: FilePath, pub frames: u32, pub frames_per_second: u32, pub width: u32, pub height: u32 }
 ```
 
 ```
@@ -116,23 +116,61 @@ record_clip { window, frames, frames_per_second, crop, longest, name }
     → ReadBack { of: Frame(window) } ─▶ Renderer
     → Advance { cycles: 1, delta_nanos: δᵢ } ─▶ Pacer           ◀─ Advanced
     ◀─ Pixels::Read
-    → Encode ─▶ a compute job                                   ◀─ Encoded { png }
-    → WriteFile { Save, clips/<name>/<i>.png, png } ─▶ Files     ◀─ FileWritten::Written
+    → EncodeFrame { encoder: give(e), i, .. } ─▶ a compute job   ◀─ FrameEncoded { encoder }   (e = take(..))
+  → FinishClip { encoder: give(e) } ─▶ a compute job            ◀─ ClipFinished { mp4 }
+  → WriteFile { Save, clips/<name>.mp4, mp4 } ─▶ Files           ◀─ FileWritten::Written
   → SetPace { was } ─▶ Pacer
   → Called::Output(Recorded)
 ```
 
 - **Each frame is the frame of exactly one cycle.** The readback is asked before the cycle that draws it. While held, nothing else is drawn, so the frame that answers it is that cycle's.
 - **The deltas sum to the clip's length exactly.** Frame `i`'s delta is `⌊(i+1)·10⁹ / fps⌋ − ⌊i·10⁹ / fps⌋` nanoseconds, so after `n` frames the program has moved `⌊n·10⁹ / fps⌋`, never drifting by a rounding a frame.
-- **Drawing runs one cycle at a time, and encoding and writing run beside it.** The next frame is asked for as soon as the last one's pixels arrive. At most four frames are being encoded or written at once, and drawing waits for one of them to finish past that, so a slow disk bounds what the tool holds.
+- **Drawing runs one cycle at a time, and encoding runs beside it.** The next frame is asked for as soon as the last one's pixels arrive. Frames are encoded one at a time, in the order read, as the clip has one encoder. At most four frames are read back and not yet encoded, and drawing waits for one of them to be encoded past that, so a slow encoder bounds what the tool holds.
 - **The clock is left as the tool found it.** `PaceSet` answers what the pace was. The tool sets it back once the clip is written, and also when it fails. A program held before the clip stays held, at the time the clip ended.
-- **The answer is a value, not an image.** It names the folder in `Save` and the clip's size and rate. The agent finds the folder under the save directory it gave the engine (ADR-0039: the host's `save` setting), and makes an MP4 from it with a tool of its own, such as `ffmpeg -framerate <fps> -i %05d.png`.
+- **The answer is a value, not an image.** It names the MP4 in `Save` and the clip's size and rate. The agent finds the file under the save directory it gave the engine (ADR-0039: the host's `save` setting), and plays it as it is.
 - **Every refusal is a result the agent reads:**
   - the pacer's and the renderer's;
   - a frame count or rate out of range;
-  - a crop off the frame;
-  - a write that failed, naming the frame;
+  - a crop off the frame, or one rounded to less than two pixels a side;
+  - a window that changes size during the clip;
+  - a frame the encoder refused, naming the frame;
+  - an MP4 past what the tool holds, or past the engine's budget for blobs;
+  - a write that failed;
+  - a browser's engine, which has no encoder;
   - a program with no `Pacer`, found when `SetPace` reaches no actor.
+
+### Clips as MP4s (amended, after ADR-0018 as amended)
+
+*Added once a job could be given a resource (ADR-0018: `Running::take`), so an encoder that keeps state from frame to frame can encode each frame on a compute thread.*
+
+**`record_clip` writes one H.264 MP4, `clips/<name>.mp4`, which the engine encodes.** **This departs from this record as first written**, which wrote a folder of PNGs and left the MP4 to the agent's own `ffmpeg`, and listed an MP4 written by the engine as later work. Two facts changed that: the machine that runs the engine has no `ffmpeg`, and the hub is the only surface agents have, so a folder the agent must encode itself is a clip it cannot play.
+
+```rust
+pub struct ClipEncoder { h264: H264, mp4: Mp4, next: u32 }      // a Resource
+impl ClipEncoder {
+    pub fn new(frames_per_second: u32, width: u32, height: u32) -> Result<Self, Unencodable>;
+    pub fn encode(&mut self, frame: u32, rgb: &[u8]) -> Result<(), Unencodable>;   // refuses any but `next`
+    pub fn finish(self) -> Result<Vec<u8>, Unencodable>;                           // the MP4, whole
+}
+
+#[kind(name = "aether.render.encode_frame")]
+pub struct EncodeFrame { pub encoder: Given<ClipEncoder>, pub frame: u32, pub pixels: Bytes, .. }  // -> FrameEncoded
+
+#[kind(name = "aether.render.frame_encoded")]
+pub enum FrameEncoded { Encoded { encoder: Given<ClipEncoder> }, Refused(Unencodable) }
+
+#[kind(name = "aether.render.finish_clip")]
+pub struct FinishClip { pub encoder: Given<ClipEncoder> }                         // -> ClipFinished { mp4: Bytes }
+```
+
+- **The encoder is a resource, passed job to job** (ADR-0018 as amended: a job is given a resource and hands it back). The tool makes it, at the first frame's size, and keeps it (`turn.keep`). Each frame's compute job is given it (`turn.give`), takes it (`Running::take`), cuts and shrinks the frame as `capture_frame` does, converts it to YUV 4:2:0, encodes it, and hands the encoder back in its answer (`Running::hand`), which the tool takes (`turn.take`). So only one frame is encoded at a time, the encoder's state never crosses two threads at once, and drawing still runs beside it.
+- **The encoder refuses a frame out of order.** It counts the frames it has encoded, and a frame numbered other than the next is refused, so a clip never plays out of order or repeats a frame.
+- **The MP4 is written in memory as the frames are encoded,** one H.264 track: each frame a sample in the `mdat`, its NAL units after their lengths; the sequence and picture parameter sets in the `avcC`; a constant rate, each sample lasting one unit at a timescale of `frames_per_second`; and the `moov` after the frames, once the last is in. A last compute job takes the encoder, finishes the file, and answers it as one blob, which `Files` writes whole (ADR-0039: `WriteFile`).
+- **The encoder is Cisco's OpenH264, compiled from source into the engine** by the `openh264` crate's `source` feature, under BSD-2-Clause, with no library installed beside the engine. Its assembly is built only where `nasm` is found; the C++ alone encodes where it is not, as on the machine that runs the engine. Without it a 1080p frame takes about 50 ms to convert and encode on that machine, so a minute at 60 frames a second encodes in about three minutes, beside its drawing. The MP4 writer is the renderer's own, about three hundred lines: the maintained crates that write one either read and write every box, with `serde` behind them, or bind a C muxer, for what is one track and a dozen boxes. A browser's engine has no encoder, as OpenH264 is not built for wasm32, and its `record_clip` refuses a clip before holding the clock.
+- **Each side of a frame is rounded down to even,** as YUV 4:2:0 stores one colour for each two by two pixels. A frame not shrunk loses its last column or row rather than being resampled for one pixel, so its text stays sharp. Every frame of a clip is one size: a window resized during the clip refuses it.
+- **A clip is encoded at constant bit rate, 10 Mb/s at 1080p and 60 frames a second, and at the same bits a pixel at any other size and rate,** with the quantizer kept at 36 or finer so a window's text and lines stay legible where much moves at once, and never skipping a frame. A frame a player may start at comes every two seconds. Colour is BT.601 at video range, as OpenH264 converts it, and the stream says so.
+- **The clip's bytes are bounded twice.** The encoder refuses a frame that would take the MP4 past 512 MiB, which it holds in memory. The finished file is put as one blob, so it must also fit the engine's budget for blobs (`blob_bytes`, 64 MiB unless set): a file past it answers the finishing job `Faulted`, and the tool refuses the clip saying so. A minute at 1080p is about 75 MB.
+- **A clip that fails drops its encoder.** One the tool holds is given to no mail and dropped as the turn ends; one a job holds comes back in an answer the clip no longer takes. The tool's log records each (ADR-0010).
 
 ### Capturing a held clock (amended, after ADR-0048)
 
@@ -150,14 +188,13 @@ record_clip { window, frames, frames_per_second, crop, longest, name }
 - **A held window draws nothing.** A held program that is resized or uncovered shows its last frame, or none, until it is advanced.
 - **Each window costs one frame of GPU memory and one frame-sized copy each frame,** for its last frame: about 8 MB and 20 µs at 1080p.
 - **On a display that presents `fifo`, each held cycle waits for the compositor to ask for the window's next frame,** so a desktop may record no faster than the display's rate. Uncapped presenting records as fast as frames draw. On eve, two engines that started held, one covered by the other, each recorded 30 frames at once, and their clips matched byte for byte. A window covered whole is asked for no frame, so its held cycles run undrawn, and a frame read in one is refused as unshown rather than waited on.
-- **Frames are kept as PNGs, not encoded as video.** An MP4 needs an encoder the engine does not have, and the folder is what any encoder reads. A clip of 3600 frames at 1280 × 800 is a few gigabytes, so the cap bounds it.
+- **Frames are encoded as H.264, in the engine, as they are drawn.** The engine links OpenH264, built from its C++ source: every native build compiles it, and the browser's does not. A clip is lossy, where the folder of PNGs was exact; a frame to compare pixel for pixel is still `capture_frame`'s. **This departs from this record as first written**, which kept frames as PNGs because the engine had no encoder (above: *Clips as MP4s*).
 - **Actors that animate from `turn.now()` are not held.** Moving them to `Tick` is the fix, and the guide's rule.
 - **`Pacer` is listed by each chassis that offers it.** The desktop, headless and browser chassis list it, and a toolbox lists `RecordTool` as it lists `CaptureTool`.
 - **The desktop's private `Pacing` keeps its name.** It is not exported, and nothing in the desktop names the controller's `Pacing`, so the two never meet.
 - **Later:**
   - a held clock for the headless harness's tests, which already step by count (`Budget::Steps`);
-  - injecting input at a held cycle, so a scripted walk replays exactly;
-  - an MP4 written by the engine.
+  - injecting input at a held cycle, so a scripted walk replays exactly.
 
 ## Alternatives considered
 
@@ -165,6 +202,8 @@ record_clip { window, frames, frames_per_second, crop, longest, name }
 - **Holding the step's time with the program's.** One clock, and `turn.now()` would follow `Tick`. But a held engine would never let a request expire, a hub call into it would hang, and every job's timer would need a time no thread waits on. The step's time measures waiting, and the program's time is what is shown, so they are two clocks.
 - **The clock in the substrate, with no actor.** The lifecycle is the engine's, but holding it is a capability one program has and another does not. So it is a capability in a crate of its own, as windows are (ADR-0024), and the substrate names none of it.
 - **An `Advance` that runs while the clock runs.** No `SetPace` would be needed, but cycles would mix chosen deltas with the host's, and an advance would race the host's own cycles.
+- **A folder of PNGs, made into a video by the agent's own encoder.** What this record first chose: exact frames, and no encoder in the engine. But the machine that runs the engine has no `ffmpeg`, and the hub is the only surface agents have, so the agent could not make the video it judges motion from.
+- **A system encoder, `ffmpeg` or a platform's, called by the engine.** It would add a dependency every machine that runs the engine must install, and differ from one platform to the next; OpenH264 compiled in is the same everywhere natively.
 - **Frames returned to the agent as images.** The agent judges motion from video, not from a sequence of images, and 60 images a second costs its tokens for nothing it can play.
 - **A delta of `1/fps` rounded once.** At 60 frames a second each delta is 16 666 666 ns, and a minute's clip would end 2.4 µs short. Small, but the clip is stated to be exact.
 - **Recording in the renderer, every frame it draws.** No tool steps the clock, but the frames are the host's rate again, which is what drifts today.

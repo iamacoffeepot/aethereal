@@ -8,8 +8,9 @@ description = "The renderer: the root that owns the GPU, and makes what is drawn
 
 [features]
 # The tools of this capability (ADR-0037, ADR-0043): types only, as a program lists what it serves and nothing is
-# spawned for it. `capture_frame` writes PNGs; `record_clip` also holds the clock and writes them as files (ADR-0045).
-tools = ["dep:aethereal-tools", "dep:png", "dep:aethereal-pace", "dep:aethereal-files"]
+# spawned for it. `capture_frame` writes PNGs; `record_clip` also holds the clock and writes an H.264 MP4 as a file
+# (ADR-0045), its encoder built natively and never for a browser.
+tools = ["dep:aethereal-tools", "dep:png", "dep:aethereal-pace", "dep:aethereal-files", "dep:openh264"]
 
 # Writes PNGs of glyphs' distance fields, and of text drawn from them, for eyes to judge (ADR-0052).
 [[example]]
@@ -32,6 +33,12 @@ wesl-core = "=0.1.0"
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"] }
 
+# `record_clip`'s H.264 encoder: Cisco's OpenH264 (BSD-2-Clause), with its Rust bindings (BSD-2-Clause), compiled from
+# source by the C++ compiler, so no library is installed beside the engine. Its assembly is built only when `nasm` is
+# found, and the C++ alone encodes where it is not (ADR-0045). A browser's engine has no encoder, and records no clip.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+openh264 = { version = "=0.9.9", default-features = false, features = ["source"], optional = true }
+
 # A browser's GPU is WebGPU, used on the page's one thread, so what it makes is never shared between threads: that is
 # what lets the GPU be a resource, which is `Send` (ADR-0010).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -52,6 +59,8 @@ wgpu = { version = "30.0.1", default-features = false, features = ["noop", "dx12
 wesl = "=0.6.0"
 aethereal-math = { path = "../aethereal-math", features = ["cases"] }
 pollster = { workspace = true }
+# Reads back the MP4s `record_clip` writes, as a player would, to check what they hold (MIT).
+mp4 = "=0.14.0"
 
 [lints]
 workspace = true
