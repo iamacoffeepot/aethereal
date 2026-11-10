@@ -10,7 +10,10 @@ mod watching;
 
 use crate::Gpu;
 use crate::compute::{self, Array, ComputeId, Computed, CreateCompute};
-use crate::dispatch::{self, Computes, CreateDispatch, DispatchId, DispatchRefused, Dispatched, Dispatches, Runs, Use};
+use crate::dispatch::{
+    self, Computes, CreateDispatch, DispatchId, DispatchRan, DispatchRefused, Dispatched, Dispatches, RunDispatch,
+    Runs, Unrun, Use,
+};
 use crate::draw_list::{DrawList, EntryRefused, ListRefused, Listing, Lists, Placements};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
 use crate::font::FontRefused;
@@ -83,9 +86,9 @@ pub struct Renderer {
     timed: Subscribers<(GpuTimes,)>,
 }
 
-/// The reads and timings the renderer owes: those of the next frame, each read under the window it reads, and those
-/// copied and waiting on their buffer's map, each under the read the buffer is kept by: pixels, storage's bytes, and
-/// timings.
+/// The reads, timings, and dispatches the renderer owes: those of the next frame, each read under the window it reads,
+/// those copied and waiting on their buffer's map, each under the read the buffer is kept by: pixels, storage's bytes,
+/// and timings, and each dispatch asked to run once that has not, under its id.
 #[derive(Bound)]
 struct Owed {
     frames: Vec<(WindowId, Held<Pixels>)>,
@@ -94,6 +97,7 @@ struct Owed {
     targets: Vec<(u64, Held<TargetPixels>)>,
     storing: Vec<(u64, Held<StorageContents>)>,
     timing: Vec<(u64, Held<Timed>)>,
+    dispatches: Vec<(u64, Held<DispatchRan>)>,
 }
 
 /// The renderer is a root, made by the chassis that opened the GPU (ADR-0021, ADR-0022).
@@ -121,6 +125,10 @@ impl Carries<CreateCompute> for Renderer {
 
 impl Carries<CreateDispatch> for Renderer {
     type Answers = (Dispatched,);
+}
+
+impl Carries<RunDispatch> for Renderer {
+    type Answers = (DispatchRan,);
 }
 
 impl Carries<CreateInstances> for Renderer {
@@ -196,10 +204,10 @@ pub struct RendererConfig {
 
 /// What an actor asks the renderer: to make a mesh, a texture, a program, a compute program, an effect, instances,
 /// uniforms, storage, or a frame, to write instances, uniforms, or storage it made, to place what is drawn or dispatch
-/// what is computed, to list its placements in a pass in order, the shape of a pass it joins, to release what it made,
-/// to read back what it draws or storage, to time what it draws, to read a font or name the fonts that fall back, to
-/// make, write, place, or move a text (ADR-0052), or to be sent each frame's statistics or the GPU's time over its
-/// passes, or told the adapter it draws on (ADR-0053).
+/// what is computed, until released or once, to list its placements in a pass in order, the shape of a pass it joins,
+/// to release what it made, to read back what it draws or storage, to time what it draws, to read a font or name the
+/// fonts that fall back, to make, write, place, or move a text (ADR-0052), or to be sent each frame's statistics or the
+/// GPU's time over its passes, or told the adapter it draws on (ADR-0053).
 pub struct Rendering;
 
 impl Protocol for Rendering {
@@ -217,6 +225,7 @@ impl Protocol for Rendering {
         WriteStorage,
         Place,
         CreateDispatch,
+        RunDispatch,
         DrawList,
         ShapeOf,
         CreateEffect,
@@ -257,6 +266,10 @@ impl Carries<CreateCompute> for Rendering {
 
 impl Carries<CreateDispatch> for Rendering {
     type Answers = (Dispatched,);
+}
+
+impl Carries<RunDispatch> for Rendering {
+    type Answers = (DispatchRan,);
 }
 
 impl Carries<CreateInstances> for Rendering {
@@ -408,6 +421,8 @@ struct Kept {
     storage: Weighed<Storage>,
     placements: Made<Placement>,
     dispatches: Made<Dispatching>,
+    /// The dispatches asked to run once that have not: each runs in the first cycle that draws its frame and goes.
+    once: Made<Dispatching>,
     lists: Lists,
     reads: HashMap<u64, Reading>,
     samplers: HashMap<Sampling, wgpu::Sampler>,
@@ -608,10 +623,11 @@ struct Joined {
     storage: Vec<u64>,
 }
 
-/// One dispatch run at each frame, holding all it runs with, so a frame builds nothing and releasing what it was made
-/// of frees it only once the dispatch goes (ADR-0026): the compute pass it joins, its compute program's id, which a
-/// pass runs dispatches together by, and its pipeline, the bind groups made for it, the workgroups it runs, and the
-/// textures and storage it binds or reads its workgroups from, by their ids, the storage with how it is used.
+/// One dispatch run in each cycle that draws its frame, or once, holding all it runs with, so a frame builds nothing
+/// and releasing what it was made of frees it only once the dispatch goes (ADR-0026): the compute pass it joins, its
+/// compute program's id, which a pass runs dispatches together by, and its pipeline, the bind groups made for it, the
+/// workgroups it runs, and the textures and storage it binds or reads its workgroups from, by their ids, the storage
+/// with how it is used.
 struct Dispatching {
     frame: Frame,
     pass: PassName,
@@ -680,6 +696,7 @@ impl Actor for Renderer {
         WriteStorage,
         Place,
         CreateDispatch,
+        RunDispatch,
         DrawList,
         ShapeOf,
         CreateEffect,
@@ -738,6 +755,7 @@ impl Actor for Renderer {
             targets: Vec::new(),
             storing: Vec::new(),
             timing: Vec::new(),
+            dispatches: Vec::new(),
         };
 
         Ok(Self {
@@ -761,7 +779,9 @@ impl Actor for Renderer {
 
 /// Draws each window handed a frame, and tells each subscriber of the frame's statistics, counted only while one
 /// subscribes, and of its passes' times, timed only while one subscribes (ADR-0053). A cycle that draws nothing tells
-/// the subscribers of its statistics so, and its passes have no time to tell.
+/// the subscribers of its statistics so, and its passes have no time to tell. A frame not drawn runs none of its
+/// dispatches (ADR-0026), and each dispatch asked to run once that ran is answered once the cycle's commands are
+/// submitted.
 impl Handles<On<Render>> for Renderer {
     type Sends = (ToAny<(FrameStats,), FrameStats>,);
 
@@ -809,7 +829,7 @@ impl Handles<On<Render>> for Renderer {
             Named::Unnamed
         };
         let mut tally = self.watch.tally();
-        kept.run_all(&mut encoder, &views, stamps.as_ref(), &mut tally);
+        let once = kept.run_all(&mut encoder, &views, stamps.as_ref(), &mut tally);
         kept.keep_last(&device, &mut encoder, &frames);
         let copied: Vec<_> = frames
             .iter()
@@ -821,6 +841,7 @@ impl Handles<On<Render>> for Renderer {
             .collect();
         let timed = stamps.map(|stamps| stamps.resolve(&mut encoder, queue.get_timestamp_period(), named));
         queue.submit([encoder.finish()]);
+        kept.ran_once(&once);
         let stats = match tally {
             Tally::On(drawn) => Some(kept.frame_stats(render.elapsed_nanos, budget, FrameDrawing::Drawn(drawn))),
             Tally::Off => None,
@@ -851,6 +872,9 @@ impl Handles<On<Render>> for Renderer {
         }
         for (held, why) in refused {
             turn.answer(held, &Pixels::Refused(why))?;
+        }
+        for held in once.into_iter().flat_map(|ran| owed_by(&mut self.owed.dispatches, ran)) {
+            turn.answer(held, &DispatchRan::Ran)?;
         }
         // Pushed last, so a turn that fails before it asks the chassis for nothing (ADR-0019).
         let control = turn.open(&mut self.mapping)?;
@@ -1110,6 +1134,7 @@ impl Handles<Surfaced> for Renderer {
                 for read in owed_by(&mut self.owed.frames, window) {
                     turn.answer(read, &Pixels::Refused(ReadRefused::Window))?;
                 }
+                self.answer_unjoined(turn)?;
             }
         }
 
@@ -1472,7 +1497,7 @@ impl Handles<CreateDispatch> for Renderer {
         let by = turn.sender().id();
         let device = turn.open(&mut self.gpu)?.device().clone();
         let kept = turn.open(&mut self.kept)?;
-        let made = dispatch::check(&create, by, &*kept).and_then(|runs| kept.dispatch(&device, &create, runs));
+        let made = kept.checked_dispatch(&device, &create, by);
         let made = match made {
             Ok(made) => made,
             Err(why) => {
@@ -1485,6 +1510,35 @@ impl Handles<CreateDispatch> for Renderer {
             kept.reorder();
         })?;
         turn.reply(&Dispatched::Made(DispatchId { id }))?;
+
+        Ok(())
+    }
+}
+
+/// A dispatch to run once, checked now as one that runs until released is, and kept, with its answer held, until the
+/// first cycle that draws its frame runs it, or its frame goes (ADR-0026).
+impl Handles<RunDispatch> for Renderer {
+    type Sends = (ToSender<DispatchRan>,);
+
+    fn handle(&mut self, run: RunDispatch, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let by = turn.sender().id();
+        let device = turn.open(&mut self.gpu)?.device().clone();
+        let kept = turn.open(&mut self.kept)?;
+        let create = run.dispatch();
+        let made = kept.checked_dispatch(&device, &create, by);
+        let made = match made {
+            Ok(made) => made,
+            Err(why) => {
+                turn.reply(&DispatchRan::Refused(why))?;
+                return Ok(());
+            }
+        };
+        let id = self.made(turn, |kept, id, maker| {
+            kept.once.keep(id, maker, made);
+            kept.reorder();
+        })?;
+        let held = turn.hold()?;
+        self.owed.dispatches.push((id, held));
 
         Ok(())
     }
@@ -1600,6 +1654,21 @@ impl Handles<Release> for Renderer {
             Owned::Unknown => turn.log(Level::Warn, format_args!("{release:?} was not released: no such thing")),
         }
 
+        self.answer_unjoined(turn)
+    }
+}
+
+impl Renderer {
+    /// Answers each dispatch asked to run once whose frame is gone for good as never run, why beside it, and takes it
+    /// out of what is kept.
+    fn answer_unjoined<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
+        let unjoined = turn.open(&mut self.kept)?.unjoined();
+        for (dispatch, why) in unjoined {
+            for held in owed_by(&mut self.owed.dispatches, dispatch) {
+                turn.answer(held, &DispatchRan::Unrun(why))?;
+            }
+        }
+
         Ok(())
     }
 }
@@ -1624,10 +1693,15 @@ impl Handles<Ended> for Renderer {
         let maker = ended.actor().id();
         let kept = turn.open(&mut self.kept)?;
         let watched = kept.makers.ended(maker);
-        if watched {
-            let held = kept.ended(maker);
-            log_held(turn, &held);
+        if !watched {
+            return Ok(());
         }
+        let held = kept.ended(maker);
+        log_held(turn, &held);
+        self.answer_unjoined(turn)?;
+        // What the ended actor asked to run once went with all it made, and no one is left to answer.
+        let kept = turn.open(&mut self.kept)?;
+        self.owed.dispatches.retain(|(dispatch, _)| kept.once.get(*dispatch).is_some());
 
         Ok(())
     }
@@ -1659,6 +1733,7 @@ impl Kept {
             storage: Weighed::default(),
             placements: Made::default(),
             dispatches: Made::default(),
+            once: Made::default(),
             lists: Lists::default(),
             reads: HashMap::new(),
             samplers: HashMap::new(),
@@ -1735,6 +1810,7 @@ impl Kept {
         self.text.ended(maker, &mut self.lists);
         self.lists.ended(maker);
         self.dispatches.release_all(maker);
+        self.once.release_all(maker);
         let frames: Vec<(u64, Option<u64>)> =
             self.frames.release_all(maker).into_iter().map(|(id, walk)| (id, walk.texture())).collect();
         self.unframed(frames);
@@ -1821,6 +1897,17 @@ impl Kept {
                 .chain(drawn.arguments().map(|storage| storage.id))
                 .collect(),
         })
+    }
+
+    /// The dispatch `create`, asked for by `by`, checked and made, with its bind groups made now: why it was refused
+    /// when its check refuses it (ADR-0026).
+    fn checked_dispatch(
+        &mut self,
+        device: &wgpu::Device,
+        create: &CreateDispatch,
+        by: ActorId,
+    ) -> Result<Dispatching, DispatchRefused> {
+        dispatch::check(create, by, &*self).and_then(|runs| self.dispatch(device, create, runs))
     }
 
     /// The dispatch `create` asks for, made of what its check found kept, running as `runs` says, with its bind groups
@@ -1920,7 +2007,8 @@ impl Kept {
     /// Records the frame `walk`, joined as `frame`, on `encoder`, a frame that ends on a window drawing into that
     /// window's frame among `windows`: each of its passes begun in order, and what it does recorded in it, each pass
     /// writing its timestamps to `stamps` from the pass `first` of the `Render`, when the frames are timed. A frame
-    /// that ends on a window with none among them is not recorded. Each draw is counted into `tally`.
+    /// that ends on a window with none among them is not recorded. Each draw is counted into `tally`. Answers the ids
+    /// of the dispatches asked to run once that it recorded.
     fn run(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1928,9 +2016,10 @@ impl Kept {
         windows: &[(WindowId, wgpu::TextureView)],
         (stamps, first): (Option<&Stamps>, u32),
         tally: &mut Tally,
-    ) {
+    ) -> Vec<u64> {
+        let mut once = Vec::new();
         let Some(end) = walk.end(windows) else {
-            return;
+            return once;
         };
         for (at, (pass, step)) in (first..).zip(walk.steps()) {
             let (into, load, depth) = match step {
@@ -1941,7 +2030,7 @@ impl Kept {
                         label: None,
                         timestamp_writes: stamps.map(|stamps| stamps.compute_writes(at)),
                     });
-                    self.compute(&mut recording, frame, pass);
+                    once.extend(self.compute(&mut recording, frame, pass));
                     continue;
                 }
             };
@@ -1997,6 +2086,8 @@ impl Kept {
                 Step::Compute => {}
             }
         }
+
+        once
     }
 
     /// Drops what the renderer draws to `window` with, which has closed: its own main frame of it, and the frame an
@@ -2201,7 +2292,7 @@ impl Kept {
         for join in joins {
             join.groups.rebind(device, texture, view);
         }
-        for dispatch in self.dispatches.values_mut() {
+        for dispatch in self.dispatches.values_mut().chain(self.once.values_mut()) {
             dispatch.groups.rebind(device, texture, view);
         }
         self.frames.change_each(|walk| walk.rebind(device, texture, view));
@@ -2274,8 +2365,7 @@ impl Kept {
         let reads = self.reads();
         self.order = frame::ordered(&frames, &reads);
         let writers: Vec<(u64, Frame, u64)> = self
-            .dispatches
-            .iter()
+            .dispatching()
             .flat_map(|(id, dispatch)| {
                 let written = dispatch.storage.iter().filter(|(_, access)| *access == Access::Write);
                 written.map(move |(storage, _)| (id, dispatch.frame, *storage))
@@ -2332,19 +2422,23 @@ impl Kept {
 
     /// Records every frame on `encoder` in the order it runs them, a frame that ends on a window drawing into that
     /// window's frame among `windows`, each pass writing its timestamps to `stamps` in the order they run when the
-    /// frames are timed, and each draw counted into `tally` (ADR-0025, ADR-0053).
+    /// frames are timed, and each draw counted into `tally` (ADR-0025, ADR-0053). Answers the ids of the dispatches
+    /// asked to run once that it recorded, which run once these commands are submitted.
     fn run_all(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         windows: &[(WindowId, wgpu::TextureView)],
         stamps: Option<&Stamps>,
         tally: &mut Tally,
-    ) {
+    ) -> Vec<u64> {
         let mut first = 0;
+        let mut once = Vec::new();
         for (frame, walk) in self.ran(windows) {
-            self.run(encoder, (frame, walk), windows, (stamps, first), tally);
+            once.extend(self.run(encoder, (frame, walk), windows, (stamps, first), tally));
             first += walk.passes();
         }
+
+        once
     }
 
     /// The effect pass the frame `create` does at `making`, made: the effect's pipeline and bind groups, made of what
@@ -2394,8 +2488,7 @@ impl Kept {
     /// Each dispatch that joins a window's main frame and is not run: one whose compute pass it has not, each as the
     /// dispatch, the window, and the pass it joined.
     fn unrun(&self) -> Vec<(u64, WindowId, PassName)> {
-        self.dispatches
-            .iter()
+        self.dispatching()
             .filter_map(|(id, dispatch)| {
                 let Frame::Main(window) = dispatch.frame else {
                     return None;
@@ -2407,22 +2500,22 @@ impl Kept {
     }
 
     /// Records into `recording` every dispatch that joins the compute pass `pass` of `frame`, each compute program's
-    /// together, setting each pipeline once. Nothing orders them among themselves: the check refuses two in one pass
-    /// that one writes what the other uses.
-    fn compute(&self, recording: &mut wgpu::ComputePass<'_>, frame: Frame, pass: PassName) {
-        let mut joined: Vec<&Dispatching> = self
-            .dispatches
-            .iter()
+    /// together, setting each pipeline once, those asked to run once among them. Nothing orders them among themselves:
+    /// the check refuses two in one pass that one writes what the other uses. Answers the ids of those asked to run
+    /// once that it recorded.
+    fn compute(&self, recording: &mut wgpu::ComputePass<'_>, frame: Frame, pass: PassName) -> Vec<u64> {
+        let mut joined: Vec<(u64, &Dispatching)> = self
+            .dispatching()
             .filter(|(id, dispatch)| {
                 let joins = dispatch.runs_in(frame, pass);
                 let held = self.held.contains(id);
                 joins && !held
             })
-            .map(|(_, dispatch)| dispatch)
             .collect();
-        joined.sort_unstable_by_key(|dispatch| dispatch.compute);
+        joined.sort_unstable_by_key(|(_, dispatch)| dispatch.compute);
+        let once = joined.iter().map(|(id, _)| *id).filter(|id| self.once.get(*id).is_some()).collect();
         let mut pipeline = 0;
-        for dispatch in joined {
+        for (_, dispatch) in joined {
             // Ids begin at one, so no compute program's is the zero it begins from.
             if pipeline != dispatch.compute {
                 recording.set_pipeline(&dispatch.pipeline);
@@ -2436,6 +2529,48 @@ impl Kept {
                 Running::Indirect { buffer, at } => recording.dispatch_workgroups_indirect(buffer, *at),
             }
         }
+
+        once
+    }
+
+    /// Every dispatch kept, each under its id, in no order: those that run until released and those asked to run once.
+    fn dispatching(&self) -> impl Iterator<Item = (u64, &Dispatching)> {
+        self.dispatches.iter().chain(self.once.iter())
+    }
+
+    /// Drops each dispatch of `once`, asked to run once, which ran in a cycle whose commands are submitted, and orders
+    /// the frames again without it.
+    fn ran_once(&mut self, once: &[u64]) {
+        for dispatch in once {
+            self.once.forget(*dispatch);
+        }
+        self.reorder();
+    }
+
+    /// Takes out each dispatch asked to run once whose frame is gone for good, and answers each beside why it never
+    /// ran: the window whose main frame it joined closed, or the frame that ends on a texture it joined was released.
+    /// A window's main frame replaced by one without its pass is not gone: the dispatch waits for a frame with it.
+    fn unjoined(&mut self) -> Vec<(u64, Unrun)> {
+        let unjoined: Vec<(u64, Unrun)> = self
+            .once
+            .iter()
+            .filter_map(|(id, dispatch)| {
+                let why = match dispatch.frame {
+                    Frame::Main(window) => self.windowed(window).is_none().then_some(Unrun::Closed),
+                    Frame::Texture(frame) => self.frames.get(frame.id).is_none().then_some(Unrun::Released),
+                };
+                why.map(|why| (id, why))
+            })
+            .collect();
+        if unjoined.is_empty() {
+            return unjoined;
+        }
+        for (dispatch, _) in &unjoined {
+            self.once.forget(*dispatch);
+        }
+        self.reorder();
+
+        unjoined
     }
 
     /// Records into `recording` every placement drawn in the pass `pass` of `frame`, whose programs are made against
@@ -2810,7 +2945,7 @@ impl Finds for Kept {
             .values()
             .flat_map(|placement| &placement.joins)
             .map(|join| (join.frame, join.textures.as_slice()));
-        let dispatched = self.dispatches.values().map(|dispatch| (dispatch.frame, dispatch.textures.as_slice()));
+        let dispatched = self.dispatching().map(|(_, dispatch)| (dispatch.frame, dispatch.textures.as_slice()));
         let bound = self
             .frames
             .iter()
@@ -2897,7 +3032,7 @@ impl Kept {
                 .iter()
                 .map(move |(pass, storage)| (*storage, Use { frame, pass: *pass, access: Access::Read }))
         });
-        let dispatched = self.dispatches.values().flat_map(|dispatch| {
+        let dispatched = self.dispatching().flat_map(|(_, dispatch)| {
             dispatch.storage.iter().map(|(storage, access)| {
                 (*storage, Use { frame: dispatch.frame, pass: dispatch.pass, access: *access })
             })

@@ -85,6 +85,11 @@ impl<T> Made<T> {
         }
     }
 
+    /// Drops what is kept under `id`, whoever made it: what the renderer itself is done with.
+    pub fn forget(&mut self, id: u64) {
+        self.kept.remove(&id);
+    }
+
     /// Releases everything `owner` made, and answers it, each under its id.
     pub fn release_all(&mut self, owner: ActorId) -> Vec<(u64, T)> {
         self.kept.extract_if(|_, (made_by, _)| *made_by == owner).map(|(id, (_, value))| (id, value)).collect()
