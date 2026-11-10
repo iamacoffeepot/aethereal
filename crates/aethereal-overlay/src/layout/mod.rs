@@ -1,7 +1,8 @@
 //! Where the overlay draws, worked out from the window's surface each time it is needed (ADR-0053: The three stops):
-//! the band across the top, a tenth of the window's height, in two columns; the frame chart at the top of the left
-//! column, with its figures beneath it; and the console's panel beneath the band, a third of the window's height. All
-//! of it is in the surface's pixels, from its top left, as the renderer places texts (ADR-0052).
+//! the band across the top, a tenth of the window's height, in two columns; the chart's figures on one line at the
+//! foot of the left column, and the frame chart filling the column above them; and the console's panel beneath the
+//! band, a third of the window's height. All of it is in the surface's pixels, from its top left, as the renderer
+//! places texts (ADR-0052).
 
 #[cfg(test)]
 mod tests;
@@ -19,10 +20,6 @@ const CONSOLE_SHARE: f32 = 1.0 / 3.0;
 /// meters' and the adapter's, takes the rest.
 const LEFT_SHARE: f32 = 0.6;
 
-/// The share of the band's height, inside its padding, the chart takes. The figures go beneath it, and the GPU's
-/// graphs beneath them.
-const CHART_SHARE: f32 = 0.45;
-
 /// The space between the band's edges and what it holds, in logical pixels.
 const PADDING_PIXELS: f32 = 10.0;
 
@@ -31,6 +28,10 @@ const GAP_PIXELS: f32 = 4.0;
 
 /// The size of the overlay's text, in logical pixels to the em: what reads on a window 1080 pixels tall.
 const TEXT_PIXELS: f32 = 14.0;
+
+/// How tall one line of the overlay's text is, in ems: IBM Plex Mono's line height, its ascender and descender with no
+/// gap between lines, 1.3 em.
+const LINE_EMS: f32 = 1.3;
 
 /// How wide each of the chart's columns is drawn, in logical pixels.
 const COLUMN_PIXELS: f32 = 2.0;
@@ -78,20 +79,23 @@ impl Layout {
         Rect2 { min: Vec2::new(0.0, top), max: Vec2::new(self.width, top + (self.height * CONSOLE_SHARE).round()) }
     }
 
-    /// The frame chart: the top of the band's left column, inside its padding.
+    /// The frame chart: the band's left column, inside its padding, from its top down to a gap above the figures. At
+    /// least a pixel tall, on a window too short to hold it.
     pub fn chart(self) -> Rect2 {
         let padding = self.pixels(PADDING_PIXELS);
         let right = ((self.width * LEFT_SHARE).round() - padding).max(padding);
-        let tall = (2.0_f32.mul_add(-padding, self.band().height()) * CHART_SHARE).round().max(1.0);
+        let bottom = (self.figures_at().y - self.pixels(GAP_PIXELS)).max(padding + 1.0);
 
-        Rect2 { min: Vec2::new(padding, padding), max: Vec2::new(right, padding + tall) }
+        Rect2 { min: Vec2::new(padding, padding), max: Vec2::new(right, bottom) }
     }
 
-    /// Where the chart's figures are placed: their top left, beneath the chart's.
+    /// Where the chart's figures are placed: the top left of their one line, which sits on the band's foot, inside its
+    /// padding.
     pub fn figures_at(self) -> Vec2 {
-        let chart = self.chart();
+        let padding = self.pixels(PADDING_PIXELS);
+        let line = (self.text_pixels() * LINE_EMS).ceil();
 
-        Vec2::new(chart.min.x, chart.max.y + self.pixels(GAP_PIXELS))
+        Vec2::new(padding, self.band().max.y - padding - line)
     }
 
     /// The size of the overlay's text, in the surface's pixels to the em.

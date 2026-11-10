@@ -23,7 +23,7 @@ use aethereal_pace::{PaceTool, Pacer};
 use aethereal_render::{CaptureTool, RecordTool, Renderer, TargetTool};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
-use aethereal_tools::{LogsTool, Toolbox};
+use aethereal_tools::{LogsTool, Toolbox, Tools};
 use aethereal_window::{InputTool, WindowTool, Windows};
 use backdrop::Backdrop;
 use core::error::Error;
@@ -55,7 +55,7 @@ fn main() -> ExitCode {
 }
 
 /// Launches the backdrop with the overlay listed, the link to the hub beside them, and a toolbox of the renderer's,
-/// the window's, the pacer's, and the logs' tools for the link, on as many workers as the machine has cores, at most
+/// the window's, the pacer's, and the logs' tools offered to the tools the link hands the hub, on as many workers as the machine has cores, at most
 /// four, with what its command line and environment set over that.
 fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
     let workers = NonZeroU32::try_from(
@@ -80,8 +80,9 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root::<Overlay>()
         .root::<Files>()
         .root::<Tcp>()
+        .root::<Tools>()
         .root_with::<Link>(link)
-        .root::<Toolbox<(CaptureTool, RecordTool, TargetTool, LogsTool, InputTool, WindowTool, PaceTool), Link>>()
+        .root::<Toolbox<(CaptureTool, RecordTool, TargetTool, LogsTool, InputTool, WindowTool, PaceTool), Tools>>()
         .flags(|flags| {
             flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE)
         })
