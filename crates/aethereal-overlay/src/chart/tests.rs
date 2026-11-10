@@ -14,8 +14,9 @@ const BUDGET: u64 = 16_700_000;
 /// That budget, as a limit the frames are held to.
 const LIMIT: FrameBudget = FrameBudget::Limit { nanos: BUDGET };
 
-/// How many records come before the columns at the band's stop: the band's panel and the line at twice the budget.
-const BEFORE_COLUMNS: usize = 2;
+/// How many records come before the columns at the band's stop: the band's panel, its three dividers, and the line at
+/// twice the budget.
+const BEFORE_COLUMNS: usize = 5;
 
 /// One record read back: its box, left, top, width, and height, and its colour.
 #[derive(Debug, Clone, PartialEq)]
@@ -204,7 +205,7 @@ fn a_column_stands_its_three_bars_back_to_front_on_the_log_scale() {
         assert_eq!((bar[0], bar[2]), (left, width));
         assert!(near(bar[1], at(sevenths)) && near(bar[1] + bar[3], chart.max.y), "{bar:?} is not {sevenths}/7 up");
     }
-    let twice = &drawn[1];
+    let twice = &drawn[BEFORE_COLUMNS - 1];
     assert_eq!((twice.colour, twice.area[0], twice.area[2]), (STONE.at(0.15), chart.min.x, chart.width()));
     assert!(near(twice.area[1], at(3.0)), "{twice:?} is not three sevenths up");
     let dash = &drawn[BEFORE_COLUMNS + 3];

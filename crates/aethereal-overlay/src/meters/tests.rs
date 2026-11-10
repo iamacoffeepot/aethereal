@@ -1,11 +1,9 @@
-use super::adapter::written;
 use super::bars::fill_swatch;
-use super::figures::{LINE_CHARACTERS, cut_back, cut_front};
+use super::figures::LINE_CHARACTERS;
 use super::{Backlog, EngineMemory, Held, MemoryFigures, Meter, ProcessMemory, bars};
 use crate::chart::tests::read;
 use crate::colour::{BRICK, LICHEN, RUST, STONE};
 use crate::layout::Layout;
-use aethereal_render::stats::GpuDescribed;
 use aethereal_window::Surface;
 
 /// The engine's memory with the blob store holding `blobs` and a backlog of `backlog` held by `actor`.
@@ -76,23 +74,4 @@ fn the_meters_values_line_up_and_the_backlog_s_actor_is_cut_to_the_column() {
     assert!(lines[3].ends_with("no guests") && lines[4].ends_with("2.0 KiB"), "{lines:?}");
     let narrow_text: String = narrow.iter().map(|run| run.text.as_str()).collect();
     assert!(!narrow_text.contains("aether") && !narrow_text.contains('…'), "{narrow_text}");
-}
-
-/// The adapter's line parts its name, backend, and driver by dots, leaving out a part the platform leaves empty, and
-/// is cut at its end to the column, so a line that runs past the right column or prints a stray dot for an empty
-/// driver is caught.
-#[test]
-fn the_adapter_s_line_leaves_out_empty_parts_and_is_cut_to_the_column() {
-    let described = GpuDescribed {
-        name: String::from("AMD Radeon RX 6900 XT (RADV NAVI21)"),
-        device_type: String::from("DiscreteGpu"),
-        backend: String::from("vulkan"),
-        driver: String::from("radv"),
-        driver_info: String::from("Mesa 25.2.8"),
-    };
-    let bare = GpuDescribed { driver: String::new(), driver_info: String::new(), ..described.clone() };
-
-    assert_eq!(written(&described), "AMD Radeon RX 6900 XT (RADV NAVI21) · vulkan · radv Mesa 25.2.8");
-    assert_eq!(written(&bare), "AMD Radeon RX 6900 XT (RADV NAVI21) · vulkan");
-    assert_eq!([cut_back("abcdef", 4), cut_front("abcdef", 4), cut_back("abc", 4)], ["abc…", "…def", "abc"]);
 }

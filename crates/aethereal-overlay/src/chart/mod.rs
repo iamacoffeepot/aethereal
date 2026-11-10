@@ -64,9 +64,10 @@ pub const MOST_RECORDS: u32 =
 /// of the GPU's graph, and a bar in each line's row.
 const RECORDS_ACROSS: u32 = RECORDS_PER_COLUMN + MOST_PASSES + LINES;
 
-/// How many records the panels take at most: the band's, the scrollback's, and the prompt's strip, and the lines
-/// between the band and the console and above the prompt's strip.
-const PANEL_RECORDS: u32 = 5;
+/// How many records the panels take at most: the band's, the scrollback's, and the prompt's strip; the lines between
+/// the band's two columns and between its left column's three sections; and the lines between the band and the
+/// console and above the prompt's strip.
+const PANEL_RECORDS: u32 = 8;
 
 /// The most columns the chart is cut into, whatever the window's width.
 const MOST_COLUMNS: u32 = 3_000;
@@ -180,9 +181,10 @@ pub fn records_bytes(layout: Layout) -> usize {
     count as usize * RECORD_BYTES as usize
 }
 
-/// Appends to `records` what the overlay draws at `stop` on `layout`: the band's panel; when the stop shows the
-/// console, its scrollback's panel a step lighter and the prompt's strip a step darker, with a faint stone line along
-/// the top of each; a faint stone line at twice `budget`; each of `columns`, scaled against it; and the dashed budget
+/// Appends to `records` what the overlay draws at `stop` on `layout`: the band's panel, with a faint stone line between
+/// its two columns and one between each of its left column's sections; when the stop shows the console, its
+/// scrollback's panel a step lighter and the prompt's strip a step darker, with a faint stone line along the top of
+/// each; a faint stone line at twice `budget`; each of `columns`, scaled against it; and the dashed budget
 /// line, bone, drawn lighter when the budget is a reference. A record is appended as [`record_layout`]
 /// lays it out.
 ///
@@ -199,9 +201,13 @@ pub fn records(
     budget: FrameBudget,
 ) {
     let budget_nanos = budget.nanos();
+    let divider = STONE.at(DIVIDER_OPACITY);
     push(records, layout.band(), SLATE.at(PANEL_OPACITY));
+    push(records, layout.column_divider(), divider);
+    for section in layout.section_dividers() {
+        push(records, section, divider);
+    }
     if stop.console() {
-        let divider = STONE.at(DIVIDER_OPACITY);
         push(records, layout.console_body(), SLATE_LIGHTER.at(PANEL_OPACITY));
         push(records, layout.prompt_strip(), SLATE_DARKER.at(PANEL_OPACITY));
         push(records, layout.band_divider(), divider);

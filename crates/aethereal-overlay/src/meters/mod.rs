@@ -1,15 +1,13 @@
 //! The band's right column (ADR-0053: The three stops, Memory): one meter a line for each limit the engine can hit,
 //! process, blobs, backlog, guests, and GPU, read from the engine's figures four times a second and from the newest
 //! frame's statistics; a bar against its limit where a meter has one (`bars`), and each meter's label and value as
-//! text (`figures`); and beneath them, the GPU adapter the renderer draws on, asked once (`adapter`).
+//! text (`figures`).
 
-mod adapter;
 mod bars;
 mod figures;
 #[cfg(test)]
 mod tests;
 
-pub use adapter::Adapter;
 pub use bars::{MOST_BAR_RECORDS, bars};
 /// How many characters a meter's line takes, which the layout's tests fit across the right column.
 #[cfg(test)]

@@ -4,7 +4,8 @@
 //! gutter on the column's right: beside the frame chart its latest median and, under it, the count of warnings and
 //! errors; beside the GPU's graph its top; and beside each row its label and latest value. Its right column holds,
 //! from the frame chart's top, the memory meters, a line of text each, their values ending at the band's right
-//! padding, and the GPU adapter's line beneath them. Beneath the band is the console's panel, a third of the
+//! padding. A faint line parts the two columns, from the band's content's top to its foot, and two more part the left
+//! column's three sections, across its graphs and their gutter. Beneath the band is the console's panel, a third of the
 //! window's height, cut into two strips told apart by their tints and a faint line between: the scrollback above, its
 //! scroll bar in the padding at its right edge, and the prompt's strip along the panel's foot, a line of text tall,
 //! with what is running at its right end. All of it is in the surface's pixels, from its top left, as the renderer
@@ -29,9 +30,6 @@ const ROWS: u8 = 4;
 /// value, `triangles   12.3M`.
 pub const GUTTER_CHARACTERS: usize = 20;
 
-/// How many meters the band's right column holds, one line of text each: process, blobs, backlog, guests, and GPU.
-pub const METERS: u8 = 5;
-
 /// How many characters a meter's label is given, its bar the next, and the space between its bar and its value: the
 /// value is set flush right in the characters after that.
 pub const METER_LABEL_CHARACTERS: usize = 8;
@@ -49,7 +47,7 @@ const ROW_INSET_PIXELS: f32 = 3.0;
 const CONSOLE_SHARE: f32 = 1.0 / 3.0;
 
 /// The share of the window's width the band's left column takes: the chart's column. The right column, the memory
-/// meters' and the adapter's, takes the rest.
+/// meters', takes the rest.
 const LEFT_SHARE: f32 = 0.6;
 
 /// The space between the band's edges and what it holds, in logical pixels.
@@ -62,8 +60,8 @@ const GAP_PIXELS: f32 = 4.0;
 /// The space above and below the prompt's line inside its strip, in logical pixels.
 const STRIP_PADDING_PIXELS: f32 = 6.0;
 
-/// How thick the lines between the band and the console, and between the scrollback and the prompt's strip, are, in
-/// logical pixels.
+/// How thick the lines between the band and the console, between the scrollback and the prompt's strip, between the
+/// band's two columns, and between the left column's sections are, in logical pixels.
 const DIVIDER_PIXELS: f32 = 1.0;
 
 /// The size of the overlay's text, in logical pixels to the em: what reads on a window 1080 pixels tall.
@@ -181,12 +179,44 @@ impl Layout {
     /// rows beneath it span the same pixels across, so a column of each stands under the frame chart's.
     pub fn chart(self) -> Rect2 {
         let padding = self.pixels(PADDING_PIXELS);
-        let column_right = (self.width * LEFT_SHARE).round() - padding;
-        let right = (column_right - self.gutter_pixels()).max(padding + 1.0);
+        let right = (self.gutter_right() - self.gutter_pixels()).max(padding + 1.0);
         let gutter_lines = (2.0 * self.line_pixels_tall()).ceil();
         let bottom = padding + (self.height * CHART_SHARE).round().max(gutter_lines);
 
         Rect2 { min: Vec2::new(padding, padding), max: Vec2::new(right, bottom) }
+    }
+
+    /// The right edge of the gutter right of the graphs, where its lines end: the left column's end, inside its
+    /// padding.
+    fn gutter_right(self) -> f32 {
+        (self.width * LEFT_SHARE).round() - self.pixels(PADDING_PIXELS)
+    }
+
+    /// The line between the band's two columns: from the frame chart's top to the rows' foot, the band's content,
+    /// centred in the space between the gutter's right edge and the right column's left, so it parts the graphs and
+    /// their gutter from the meters and touches neither.
+    pub fn column_divider(self) -> Rect2 {
+        let thick = self.line_pixels(DIVIDER_PIXELS);
+        let left = ((self.gutter_right() + self.right_column().min.x - thick) / 2.0).round();
+        let (top, bottom) = (self.chart().min.y, self.rows().max.y);
+
+        Rect2 { min: Vec2::new(left, top), max: Vec2::new(left + thick, bottom) }
+    }
+
+    /// The lines between the left column's three sections, the frame chart and its figures, the GPU's graph and its
+    /// figures, and the rows: across the column from the frame chart's left to the gutter's right edge, each centred
+    /// in the section's space between one section's figures and the next section's top.
+    pub fn section_dividers(self) -> [Rect2; 2] {
+        let thick = self.line_pixels(DIVIDER_PIXELS);
+        let (left, right) = (self.chart().min.x, self.gutter_right());
+        let between = |foot: f32, top: f32| {
+            let at = ((foot + top - thick) / 2.0).round();
+            Rect2 { min: Vec2::new(left, at), max: Vec2::new(right, at + thick) }
+        };
+        let figures_foot = self.figures_at().y + self.figures_line_pixels();
+        let gpu_figures_foot = self.gpu_figures_at().y + self.figures_line_pixels();
+
+        [between(figures_foot, self.gpu_graph().min.y), between(gpu_figures_foot, self.rows().min.y)]
     }
 
     /// How wide the gutter right of the graphs is, in the surface's pixels: a section's space and the gutter's
@@ -273,11 +303,11 @@ impl Layout {
         Vec2::new(self.gutter_left(), self.rows().min.y)
     }
 
-    /// The band's right column, which the memory meters' and the adapter's texts are clipped to: from the frame chart's
-    /// top, level with it, down to the foot of the left column's rows, and ending at the band's right padding; its left
-    /// as near the left column's end, by its padding and the band's, as a whole number of characters across lets it
-    /// stand, so a line of the column's characters ends at the band's right padding. At least a character wide and a
-    /// pixel tall, on a window too small to hold it.
+    /// The band's right column, which the memory meters' text is clipped to: from the frame chart's top, level with it,
+    /// down to the foot of the left column's rows, and ending at the band's right padding; its left as near the left
+    /// column's end, by its padding and the band's, as a whole number of characters across lets it stand, so a line of
+    /// the column's characters ends at the band's right padding. At least a character wide and a pixel tall, on a
+    /// window too small to hold it.
     pub fn right_column(self) -> Rect2 {
         let right = self.width - self.pixels(PADDING_PIXELS);
         let left = self.right_characters().mul_add(-self.advance(), right);
@@ -324,13 +354,6 @@ impl Layout {
         let right = (label + bar).mul_add(self.advance(), at.x).round();
 
         Rect2 { min: Vec2::new(left, top + inset), max: Vec2::new(right, top + tall - inset) }
-    }
-
-    /// Where the adapter's line is placed: the line beneath the last meter's, at the right column's left.
-    pub fn adapter_at(self) -> Vec2 {
-        let at = self.meters_at();
-
-        Vec2::new(at.x, f32::from(METERS).mul_add(self.line_pixels_tall(), at.y))
     }
 
     /// The console's panel inside its padding, its foot the prompt's strip's padding, and left of its scroll bar by a

@@ -23,7 +23,7 @@
 //! The overlay offers two tools of its own, `mark` and `memory`, which an agent may call too. The band's right column
 //! meters the engine's memory, one line each for the process, the blobs, the backlog, the guests, and the GPU, with a
 //! bar against its limit for the blobs and the backlog, lichen, then rust from 75% and brick from 90%, and the backlog's
-//! actor beside it; beneath them it names the GPU adapter, its backend, and its driver (ADR-0053).
+//! actor beside it. Faint lines part the band's two columns, and the left column's three sections (ADR-0053).
 
 mod binned;
 mod chart;

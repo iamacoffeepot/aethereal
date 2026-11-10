@@ -1,5 +1,5 @@
 //! The meters' text (ADR-0053: Memory): one line a meter, as wide as the right column, its label in stone, the room of
-//! its bar, and its value set flush right in bone at the column's right edge, where the adapter's line is cut, so the
+//! its bar, and its value set flush right in bone at the column's right edge, the band's right padding, so the
 //! digits line up in the mono face, bytes in KiB, MiB, and GiB as the `memory` tool shows them; a meter with a limit
 //! `412.0 MiB / 8.0 GiB`; a value that is no figure, `unknown`, `none`, `no guests`, in stone. The backlog's line names
 //! the actor holding the most just before its value, in stone, cut at its front to the room the right column has left,
@@ -148,15 +148,4 @@ pub fn cut_front(text: &str, room: usize) -> String {
     let kept: String = text.chars().skip(count - room.saturating_sub(1)).collect();
 
     format!("{ELLIPSIS}{kept}")
-}
-
-/// `text` in at most `room` characters: whole when it fits, or its start before an ellipsis.
-pub fn cut_back(text: &str, room: usize) -> String {
-    let count = text.chars().count();
-    if count <= room {
-        return String::from(text);
-    }
-    let kept: String = text.chars().take(room.saturating_sub(1)).collect();
-
-    format!("{kept}{ELLIPSIS}")
 }

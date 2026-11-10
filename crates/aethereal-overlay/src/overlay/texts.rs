@@ -1,7 +1,7 @@
 //! The overlay's texts (ADR-0052, ADR-0053): the frame chart's figures, its latest median and the count of warnings
 //! and errors in the gutter beside it, the GPU's figures, the GPU graph's top and the rows' labels and values in their
 //! gutter, the memory meters'
-//! labels and values and the adapter's line in the band's right column, and the console's scrollback, its prompt,
+//! labels and values in the band's right column, and the console's scrollback, its prompt,
 //! and what is running at the prompt's right end. Each is one text, made once and written again only when what it
 //! shows changes, so a console that nothing changes costs nothing a frame. The scrollback is one text of the rows in
 //! view, at a fixed place, clipped to the console's panel, and written again as the view scrolls or a row is printed.
@@ -36,8 +36,6 @@ pub enum TextRole {
     Lines,
     /// The memory meters' labels and values, in the band's right column.
     Meters,
-    /// The GPU adapter's line, beneath the meters.
-    Adapter,
     /// The rows of the scrollback in view.
     Scrollback,
     /// The prompt's line: the prompt, the line typed, and a completion ahead of it.
@@ -48,7 +46,7 @@ pub enum TextRole {
 
 impl TextRole {
     /// Every text, in the order the overlay lists them: the band's first, then the console's.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 10] = [
         Self::Figures,
         Self::FrameMedian,
         Self::Alerts,
@@ -56,14 +54,13 @@ impl TextRole {
         Self::GpuTop,
         Self::Lines,
         Self::Meters,
-        Self::Adapter,
         Self::Scrollback,
         Self::Prompt,
         Self::Running,
     ];
 
     /// How many of [`Self::ALL`], from the first, are the band's.
-    pub const BAND: usize = 8;
+    pub const BAND: usize = 7;
 }
 
 /// What the overlay has made of one text.
@@ -87,7 +84,6 @@ pub struct Texts {
     gpu_top: Text,
     lines: Text,
     meters: Text,
-    adapter: Text,
     scrollback: Text,
     prompt: Text,
     running: Text,
@@ -103,7 +99,6 @@ impl Default for Texts {
             gpu_top: Text::Unasked,
             lines: Text::Unasked,
             meters: Text::Unasked,
-            adapter: Text::Unasked,
             scrollback: Text::Unasked,
             prompt: Text::Unasked,
             running: Text::Unasked,
@@ -122,7 +117,6 @@ impl Texts {
             TextRole::GpuTop => &self.gpu_top,
             TextRole::Lines => &self.lines,
             TextRole::Meters => &self.meters,
-            TextRole::Adapter => &self.adapter,
             TextRole::Scrollback => &self.scrollback,
             TextRole::Prompt => &self.prompt,
             TextRole::Running => &self.running,
@@ -139,7 +133,6 @@ impl Texts {
             TextRole::GpuTop => &mut self.gpu_top,
             TextRole::Lines => &mut self.lines,
             TextRole::Meters => &mut self.meters,
-            TextRole::Adapter => &mut self.adapter,
             TextRole::Scrollback => &mut self.scrollback,
             TextRole::Prompt => &mut self.prompt,
             TextRole::Running => &mut self.running,
@@ -198,7 +191,6 @@ impl Overlay {
                 let gpu_bytes = self.lines.latest().of_line(Line::Memory);
                 self.memory.runs(gpu_bytes, Layout::of(self.surface).right_columns())
             }
-            TextRole::Adapter => self.adapter.runs(Layout::of(self.surface).right_columns()),
             TextRole::Prompt => runs_of(self.console.prompt()),
             TextRole::Running => runs_of(self.console.running()),
             TextRole::Scrollback => {
@@ -235,7 +227,6 @@ impl Overlay {
             TextRole::GpuTop => (layout.gpu_top_at(), Clip::None),
             TextRole::Lines => (layout.lines_at(), Clip::None),
             TextRole::Meters => (layout.meters_at(), Clip::To(layout.right_column())),
-            TextRole::Adapter => (layout.adapter_at(), Clip::To(layout.right_column())),
             TextRole::Scrollback => (layout.scrollback_at(), Clip::To(layout.console_inside())),
             TextRole::Prompt => (layout.prompt_at(), Clip::To(layout.console_inside())),
             TextRole::Running => {

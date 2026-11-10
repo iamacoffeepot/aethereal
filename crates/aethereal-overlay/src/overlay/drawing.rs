@@ -89,7 +89,6 @@ impl Overlay {
             self.move_text(role, turn)?;
         }
         self.write_text(TextRole::Meters, turn)?;
-        self.write_text(TextRole::Adapter, turn)?;
         self.write_console(turn)?;
         if self.stop.draws() {
             self.write_chart(turn)?;
