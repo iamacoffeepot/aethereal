@@ -166,9 +166,9 @@ impl Tool for EngineTools {
                 LIST_ENGINES,
                 "Lists the engines linked to this hub: each one's id, name, count of tools, and origin, the \
                  binary and hash it was spawned from or `External` for one started by hand. Also lists the last \
-                 engines the hub spawned that have ended (at most `most_exited`, 16 unless set), each with its binary, \
-                 exit status, and its stderr: its first 2 KiB and its last 2 KiB, cut at lines, with a line saying how \
-                 many lines and bytes were left out between them, and every line past 300 characters cut with `…`.",
+                 engines the hub spawned that have ended (at most `most_exited`, 8 unless set), each with its binary, \
+                 exit status, and its stderr: its first 1 KiB and its last 512 bytes, cut at lines, with a line saying how \
+                 many lines and bytes were left out between them, and every line past 200 characters cut with `…`.",
                 Output::Value(SchemaNodes::of(&EngineList::SHAPE)),
             ),
             ToolSheet::of::<DescribeTools>(

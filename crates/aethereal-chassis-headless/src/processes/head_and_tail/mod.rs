@@ -11,12 +11,12 @@ use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 /// The most bytes kept of the first a program writes to its stderr: where the first panic's `panicked at` line is.
-pub const HEAD_BYTES: usize = 2048;
+pub const HEAD_BYTES: usize = 1024;
 /// The most bytes kept of the last a program writes to its stderr: how it ended.
-pub const TAIL_BYTES: usize = 2048;
+pub const TAIL_BYTES: usize = 512;
 /// The most characters of one line kept: the rest of a longer line, such as a backtrace frame's generic type names, is
 /// left out, and the line ends in [`CUT`].
-pub const LONGEST_LINE_CHARACTERS: usize = 300;
+pub const LONGEST_LINE_CHARACTERS: usize = 200;
 /// What ends a line cut at [`LONGEST_LINE_CHARACTERS`].
 const CUT: &str = "…";
 

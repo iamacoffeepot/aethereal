@@ -57,7 +57,7 @@ impl Default for EnginesSettings {
             token_within_millis: 600_000,
             most_tokens: 64,
             link_within_millis: 30_000,
-            most_exited: 16,
+            most_exited: 8,
         }
     }
 }
