@@ -15,6 +15,8 @@ pub use making::{
 
 use crate::console::{Alerts, Console};
 use crate::frames::{Figures, FrameTimes};
+use crate::gpu::{GpuFigures, GpuTiming, GraphTop};
+use crate::lines::FrameLines;
 use crate::marks::Marks;
 use crate::stop::Stop;
 use crate::tools::{Marked, OverlayTools, OverlayToolsConfig};
@@ -27,7 +29,7 @@ use aethereal_render::instances::{Instanced, InstancesId};
 use aethereal_render::mesh::Meshed;
 use aethereal_render::placement::{Placed, PlacementId};
 use aethereal_render::program::Programmed;
-use aethereal_render::stats::{FrameBudget, FrameStats};
+use aethereal_render::stats::{FrameBudget, FrameStats, GpuTimes};
 use aethereal_render::text::{TextMade, TextPlaced};
 use aethereal_render::uniforms::{Uniformed, UniformsId};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
@@ -68,8 +70,8 @@ pub struct OverlayConfig {
 }
 
 /// The dev overlay: it steps through its stops at each backtick its window hears, and while it is shown keeps each
-/// cycle's time and draws the band over what the program drew, against the frame budget the renderer's statistics
-/// bring. At the console's stop it holds the window's key focus, and its line calls the engine's tools. While it is
+/// cycle's time, each frame's statistics, and the GPU's time over each frame's passes, and draws the band over what
+/// the program drew, against the frame budget the renderer's statistics bring. At the console's stop it holds the window's key focus, and its line calls the engine's tools. While it is
 /// hidden it draws nothing and hears no `Tick` and no statistics, only its window, its tools, and its marks, so the
 /// renderer counts nothing for it.
 #[derive(Bound)]
@@ -85,6 +87,14 @@ pub struct Overlay {
     /// which follows its present mode and the display its window is on (ADR-0053: Frame statistics). Until they first
     /// say, the fallback refresh, drawn as a reference.
     budget: FrameBudget,
+    /// The GPU's time over each frame's passes as the renderer tells it, or that the device has no timestamps.
+    gpu: GpuTiming,
+    /// The figures beneath the GPU's graph, as they were last worked out.
+    gpu_figures: GpuFigures,
+    /// The top the GPU's graph was last drawn to, which the gutter beside it says.
+    gpu_top: GraphTop,
+    /// Each frame's draws, triangles, bytes uploaded, and GPU memory, as its statistics tell them.
+    lines: FrameLines,
     chart: Chart,
     /// The overlay's texts: the chart's figures, the band's count of warnings and errors, and the console's scrollback
     /// and prompt.
@@ -126,6 +136,7 @@ impl Actor for Overlay {
         Event,
         On<Tick>,
         FrameStats,
+        GpuTimes,
         Answer<Shaped, ChartAsked>,
         Answer<Meshed, ChartShaped>,
         Answer<Programmed, ChartMeshed>,
@@ -168,6 +179,10 @@ impl Actor for Overlay {
             surface: Surface { width: 1, height: 1, scale: 1.0 },
             frames: FrameTimes::default(),
             budget: FrameBudget::UNTOLD,
+            gpu: GpuTiming::default(),
+            gpu_figures: GpuFigures::default(),
+            gpu_top: GraphTop::default(),
+            lines: FrameLines::default(),
             chart: Chart::Unasked,
             texts: Texts::default(),
             figures: Figures::default(),

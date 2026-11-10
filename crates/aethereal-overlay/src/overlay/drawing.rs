@@ -1,14 +1,17 @@
 //! How the overlay draws once it has made its pieces (ADR-0031, ADR-0052): what its window hears steps it and lays it
 //! out again, and each `Tick` while it is shown keeps the cycle's time, writes the placement's records again in one
-//! write, writes the figures' text when what it shows changes, and reads the engine's recent log about once a second.
-//! While it is shown it also hears each frame's statistics, for the budget the chart is drawn against (ADR-0053).
+//! write, writes the figures' texts when what they show changes, and reads the engine's recent log about once a second.
+//! While it is shown it also hears each frame's statistics, for the budget the chart is drawn against and the lines'
+//! rows, and the GPU's time over each frame's passes, for its graph (ADR-0053).
 
 use super::making::{ChartAsked, TextAsked};
 use super::texts::TextRole;
 use super::{Calling, Chart, FIGURES_EVERY_NANOS, LOGS_EVERY_NANOS, Overlay};
 use crate::chart::{self, RECORD_BYTES};
 use crate::console::Logged;
+use crate::gpu::{self, GpuFigures, GpuTiming};
 use crate::layout::Layout;
+use crate::lines;
 use crate::scrollbar;
 use crate::stop::Stop;
 use aethereal_actor::{Allows, Asks, Fault, Handles, Level, On, Path, Tells, Tick, Turn, path};
@@ -17,7 +20,9 @@ use aethereal_render::draw_list::DrawList;
 use aethereal_render::frame::{Frame, ShapeOf};
 use aethereal_render::instances::WriteInstances;
 use aethereal_render::pass::Main;
-use aethereal_render::stats::{FrameStats, SubscribeFrameStats, UnsubscribeFrameStats};
+use aethereal_render::stats::{
+    FrameStats, GpuTimes, SubscribeFrameStats, SubscribeGpuTimes, UnsubscribeFrameStats, UnsubscribeGpuTimes,
+};
 use aethereal_render::text::{CreateText, MoveText, WriteText};
 use aethereal_render::uniforms::WriteUniforms;
 use aethereal_tools::{CallTool, Tools};
@@ -27,8 +32,8 @@ use aethereal_window::{Event, ReleaseKeyFocus, Surface, TakeKeyFocus, Window};
 const STEP_KEY: &str = "Backquote";
 
 /// What the overlay sends as it hears its window: its list as it steps, its records as they change, the surface's
-/// size and its texts' places as the window is resized, the first asks for what it draws, the frame statistics it
-/// hears while shown, the window's key focus while the console is open, the console's texts as keys change them, and
+/// size and its texts' places as the window is resized, the first asks for what it draws, the frame statistics and
+/// the GPU's times it hears while shown, the window's key focus while the console is open, the console's texts as keys change them, and
 /// the tools the console's line calls.
 pub(super) type Heard = (
     Tells<Path<Renderer>, DrawList>,
@@ -39,6 +44,8 @@ pub(super) type Heard = (
     Asks<Path<Renderer>, CreateText, TextAsked>,
     Tells<Path<Renderer>, SubscribeFrameStats>,
     Tells<Path<Renderer>, UnsubscribeFrameStats>,
+    Tells<Path<Renderer>, SubscribeGpuTimes>,
+    Tells<Path<Renderer>, UnsubscribeGpuTimes>,
     Tells<Path<Window>, TakeKeyFocus>,
     Tells<Path<Window>, ReleaseKeyFocus>,
     Tells<Path<Renderer>, WriteText>,
@@ -88,7 +95,8 @@ impl Overlay {
         Ok(())
     }
 
-    /// Steps to the next stop: shown, it hears each `Tick` and each frame's statistics and draws its list, written for
+    /// Steps to the next stop: shown, it hears each `Tick`, each frame's statistics, and the GPU's times, and draws its
+    /// list, written for
     /// the stop at once; hidden, it hears neither and draws an empty list. Opening the console takes the window's key
     /// focus and clears the count of warnings and errors, which the console shows; closing it gives the focus up. The
     /// text the backtick typed, which comes next, is dropped.
@@ -100,12 +108,14 @@ impl Overlay {
             (false, true) => {
                 turn.subscribe::<Tick>();
                 turn.to(path::<Renderer>(())).send(&SubscribeFrameStats)?;
+                turn.to(path::<Renderer>(())).send(&SubscribeGpuTimes)?;
                 self.figures_due_nanos = 0;
                 self.logs_due_nanos = 0;
             }
             (true, false) => {
                 turn.unsubscribe::<Tick>();
                 turn.to(path::<Renderer>(())).send(&UnsubscribeFrameStats)?;
+                turn.to(path::<Renderer>(())).send(&UnsubscribeGpuTimes)?;
             }
             (false, false) | (true, true) => {}
         }
@@ -153,7 +163,7 @@ impl Overlay {
             let roles = if console {
                 &TextRole::ALL[..]
             } else {
-                &TextRole::ALL[..2]
+                &TextRole::ALL[..TextRole::BAND]
             };
             placements.extend(roles.iter().filter_map(|role| self.texts.placement(*role)));
         }
@@ -162,8 +172,8 @@ impl Overlay {
         Ok(())
     }
 
-    /// Writes every record of the placement for the stop, the layout, the cycles kept, the marks, and the cursor and
-    /// scroll bar at the console's stop, in one write into a buffer the overlay keeps, and cuts the
+    /// Writes every record of the placement for the stop, the layout, the cycles kept, the GPU's passes and the
+    /// lines' frames kept, the marks, and the cursor and scroll bar at the console's stop, in one write into a buffer the overlay keeps, and cuts the
     /// records to as many when there are fewer than were last written. Nothing while the placement is not made.
     pub(super) fn write_chart<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
@@ -177,6 +187,10 @@ impl Overlay {
         let mut records = turn.buffer(chart::records_bytes(layout));
         let slide = self.frames.slide(count);
         chart::records(&mut records, layout, self.stop, self.frames.columns(count), slide, self.budget);
+        if let GpuTiming::Timed(times) = &mut self.gpu {
+            self.gpu_top = gpu::graph(&mut records, layout, slide, self.budget, times.columns(count));
+        }
+        lines::rows(&mut records, layout, slide, &self.lines.columns(count));
         chart::marks(&mut records, layout, slide, self.marks.times());
         if self.stop.console() {
             chart::cursor(&mut records, layout, self.console.cursor_column());
@@ -254,8 +268,9 @@ impl Overlay {
     }
 }
 
-/// Each cycle's time is kept, the marks told since the last stamped with it, the chart written again, the figures worked out again when they are due, their text
-/// written only when what it shows changes, and the engine's log read when it is due. Heard only while the overlay is
+/// Each cycle's time is kept, the marks told since the last stamped with it, the chart written again, the figures
+/// and the GPU's figures worked out again when they are due, and their texts and the rows' values written only when
+/// what they show changes, and the engine's log read when it is due. Heard only while the overlay is
 /// shown.
 impl Handles<On<Tick>> for Overlay {
     type Sends =
@@ -266,6 +281,7 @@ impl Handles<On<Tick>> for Overlay {
         self.marks.keep_since(tick.elapsed_nanos);
         let stamped = self.marks.stamp(tick.elapsed_nanos);
         self.write_chart(turn)?;
+        self.write_text(TextRole::GpuTop, turn)?;
         if !stamped.is_empty() {
             // Nanoseconds of the program's time, which an f64 holds closely enough to show in tenths of a second.
             #[allow(clippy::cast_precision_loss)]
@@ -281,7 +297,13 @@ impl Handles<On<Tick>> for Overlay {
         if figures_due {
             self.figures_due_nanos = tick.elapsed_nanos.saturating_add(FIGURES_EVERY_NANOS);
             self.figures = self.frames.figures();
+            self.gpu_figures = match &self.gpu {
+                GpuTiming::Timed(times) => times.figures(self.figures.median_nanos()),
+                GpuTiming::Unsupported => GpuFigures::default(),
+            };
             self.write_text(TextRole::Figures, turn)?;
+            self.write_text(TextRole::GpuFigures, turn)?;
+            self.write_text(TextRole::Lines, turn)?;
         }
 
         let logs_due = tick.elapsed_nanos >= self.logs_due_nanos;
@@ -296,13 +318,30 @@ impl Handles<On<Tick>> for Overlay {
     }
 }
 
-/// The budget each frame's statistics bring, which the chart is drawn against from the next `Tick`. Heard only while
-/// the overlay is shown.
+/// The budget each frame's statistics bring, which the chart is drawn against from the next `Tick`, and the frame's
+/// values for the lines' rows. Heard only while the overlay is shown.
 impl Handles<FrameStats> for Overlay {
     type Sends = ();
 
     fn handle(&mut self, stats: FrameStats, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.budget = stats.budget;
+        self.lines.push(&stats);
+
+        Ok(())
+    }
+}
+
+/// The GPU's time over a frame's passes, kept for its graph from the next `Tick`; or that the device has none, which
+/// the graph's place says at once. Heard only while the overlay is shown.
+impl Handles<GpuTimes> for Overlay {
+    type Sends = (Tells<Path<Renderer>, WriteText>, Tells<Path<Renderer>, MoveText>);
+
+    fn handle(&mut self, told: GpuTimes, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let unsupported = matches!(told, GpuTimes::Unsupported);
+        self.gpu.heard(told);
+        if unsupported {
+            self.write_and_move(TextRole::GpuFigures, turn)?;
+        }
 
         Ok(())
     }

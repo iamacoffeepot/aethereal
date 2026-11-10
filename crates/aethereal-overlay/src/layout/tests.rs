@@ -1,23 +1,63 @@
 use super::{LINE_EMS, Layout};
 use aethereal_window::Surface;
 
-/// At 1080 the band is a tenth of the window, the console's panel starts where the band ends, the figures' line sits at
-/// the band's foot, and the chart fills most of the band's left column above it, so a panel that overlaps another, a
-/// chart that spills out of the band, or a chart squeezed into a strip of the band is caught.
+/// Down the band's left column, at 1080 and at an ultrawide 1373, the frame chart, its figures, the GPU's graph, its
+/// figures, and the rows stand in that order without overlapping, inside the band, the GPU's graph two thirds of the
+/// frame chart's height; the graph and the rows span the frame chart's pixels across, so their columns stand under
+/// its; and the console's panel starts where the band ends. So a section drawn over another, one that spills out of
+/// the band, or a graph whose columns do not line up with the frame chart's, is caught.
 #[test]
-fn the_band_holds_the_chart_and_the_console_sits_beneath_it() {
-    let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
+fn the_band_stacks_its_sections_on_one_axis_and_the_console_sits_beneath_it() {
+    for (width, height) in [(1920, 1080), (3440, 1373)] {
+        let layout = Layout::of(Surface { width, height, scale: 1.0 });
 
-    let (band, console, chart) = (layout.band(), layout.console(), layout.chart());
-    let figures = layout.figures_at();
+        let (band, console, chart) = (layout.band(), layout.console(), layout.chart());
+        let (gpu, rows) = (layout.gpu_graph(), layout.rows());
+        let line = layout.text_pixels() * LINE_EMS;
 
-    assert_eq!((band.height(), console.min.y, console.height()), (108.0, 108.0, 360.0));
-    let inside = band.min.y < chart.min.y && chart.max.x < 1920.0 * 0.6 && chart.max.y < figures.y;
-    assert!(inside, "{chart:?} is not inside the band's left column above {figures:?}");
-    let line_foot = layout.text_pixels().mul_add(LINE_EMS, figures.y);
-    let at_foot = line_foot < band.max.y && band.max.y - line_foot <= 12.0;
-    assert!(at_foot, "{figures:?} does not sit at the foot of {band:?}");
-    assert!(chart.height() > band.height() / 2.0, "{chart:?} takes too little of {band:?}");
+        assert_eq!(console.min.y, band.max.y);
+        let (figures, gpu_figures) = (layout.figures_at().y, layout.gpu_figures_at().y);
+        // Each edge down the column, top to bottom: each pair a section's foot and the next one's top.
+        let edges = [
+            (band.min.y, chart.min.y),
+            (chart.max.y, figures),
+            (figures + line, gpu.min.y),
+            (gpu.max.y, gpu_figures),
+            (gpu_figures + line, rows.min.y),
+            (rows.max.y, band.max.y),
+        ];
+        let in_order = edges.iter().all(|(above, below)| above < below);
+        assert!(in_order, "the sections of {band:?} overlap or spill out of it");
+        let across = |area: aethereal_math::Rect2| area.min.x == chart.min.x && area.max.x == chart.max.x;
+        assert!(across(gpu) && across(rows), "{gpu:?} or {rows:?} is not across {chart:?}");
+        assert!((gpu.height() - (chart.height() * 2.0 / 3.0).round()).abs() < 0.01, "{gpu:?} is not 2/3 of {chart:?}");
+    }
+}
+
+/// Each row's bars stand inside its line of the rows, the first's at the top of the gutter's text and each line of
+/// that text beside its row, the GPU graph's top is written in the same gutter level with the graph's top, and the
+/// gutter's text ends inside the band's left column, so a row's label written beside the wrong row, a graph's top
+/// written away from its graph, or a gutter running into the right column, is caught.
+#[test]
+fn the_gutter_s_lines_stand_beside_their_rows() {
+    for scale in [1.0, 2.0] {
+        let layout = Layout::of(Surface { width: 1920, height: 1080, scale });
+
+        let (rows, at, tall) = (layout.rows(), layout.lines_at(), layout.line_pixels_tall());
+
+        assert_eq!(at.y, rows.min.y);
+        assert_eq!(layout.gpu_top_at(), aethereal_math::Vec2::new(at.x, layout.gpu_graph().min.y));
+        for index in 0..4_u8 {
+            let row = layout.row(index);
+            let line_top = f32::from(index).mul_add(tall, at.y);
+            let beside = row.min.y >= line_top && row.max.y <= line_top + tall && row.height() >= 1.0;
+            assert!(beside, "row {index} at {row:?} is not beside its line at {line_top}");
+        }
+        // A gutter of some tens of characters, which an f32 holds exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let gutter_end = (super::GUTTER_CHARACTERS as f32).mul_add(layout.advance(), at.x);
+        assert!(at.x > rows.max.x && gutter_end <= 1920.0 * 0.6, "the gutter from {at:?} is out of the left column");
+    }
 }
 
 /// The console's scroll bar lies inside its panel, right of the scrollback's text by a gap, and as tall as the rows in view, at

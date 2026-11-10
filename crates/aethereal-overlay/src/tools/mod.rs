@@ -224,8 +224,9 @@ fn against(held: Against) -> String {
     format!("{} of {} ({percent}%)", bytes_shown(held.bytes), bytes_shown(held.most))
 }
 
-/// `bytes` in the largest power of 1,024 they reach, with one place: `412.3 MiB`; bytes below a KiB whole.
-fn bytes_shown(bytes: u64) -> String {
+/// `bytes` in the largest power of 1,024 they reach, with one place: `412.3 MiB`; bytes below a KiB whole. The
+/// band's GPU memory and upload rows show their values so too.
+pub fn bytes_shown(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["KiB", "MiB", "GiB", "TiB", "PiB"];
     if bytes < 1024 {
         return format!("{bytes} B");

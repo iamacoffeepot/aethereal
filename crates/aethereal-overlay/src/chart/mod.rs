@@ -1,18 +1,21 @@
 //! What the overlay draws as one placement (ADR-0023): a unit square, drawn once for each of its instances' records,
 //! each a box in the surface's pixels and its colour. The records are the panels and the lines between them, the frame
 //! chart's faint line at twice the budget, its columns, each three bars to its slowest, median, and fastest cycles
-//! (`column`), on a scale logarithmic in a cycle's time and relative to the budget (`scale`), its dashed budget line, the marks'
-//! ticks, the console's cursor, and its scroll bar, in that order, as one placement's records are drawn in their order;
-//! all of them are written again in one write at each `Tick` the overlay is shown, as the chart moves with time.
+//! (`column`), on a scale logarithmic in a cycle's time and relative to the budget (`scale`), its dashed budget line,
+//! the GPU's graph (`gpu`), the lines' rows (`lines`), the marks' ticks, the console's cursor, and its scroll bar, in
+//! that order, as one placement's records are drawn in their order; all of them are written again in one write at
+//! each `Tick` the overlay is shown, as the chart moves with time.
 
 mod column;
 mod scale;
 #[cfg(test)]
-mod tests;
+pub mod tests;
 
 use crate::colour::{BONE, LICHEN, OCHRE, PANEL_OPACITY, SLATE, SLATE_DARKER, SLATE_LIGHTER, STONE};
 use crate::frames::{Column, Slide};
+use crate::gpu::MOST_PASSES;
 use crate::layout::Layout;
+use crate::lines::LINES;
 use crate::marks::MOST_MARKS;
 use crate::scrollbar::{Bar, Standing};
 use crate::stop::Stop;
@@ -50,10 +53,15 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 pub const RECORD_BYTES: u32 = 32;
 
 /// The most records the instances have room for: the panels and the lines between them, the line at twice the budget,
-/// the most columns and the two sliding off the left edge each in a column's records, the most dashes, the most marks,
-/// the cursor, and the scroll bar's track and thumb.
+/// the most columns and the two sliding off the left edge each in a column's records of the frame chart, of the GPU's
+/// graph, and of the lines' rows, the most dashes of the two budget lines, the most marks, the cursor, and the scroll
+/// bar's track and thumb.
 pub const MOST_RECORDS: u32 =
-    PANEL_RECORDS + 1 + (MOST_COLUMNS + 2) * RECORDS_PER_COLUMN + MOST_DASHES + MOST_MARKS + 1 + 2;
+    PANEL_RECORDS + 1 + (MOST_COLUMNS + 2) * RECORDS_ACROSS + 2 * MOST_DASHES + MOST_MARKS + 1 + 2;
+
+/// How many records one column takes down the band's left column at most: the frame chart's, a segment for each pass
+/// of the GPU's graph, and a bar in each line's row.
+const RECORDS_ACROSS: u32 = RECORDS_PER_COLUMN + MOST_PASSES + LINES;
 
 /// How many records the panels take at most: the band's, the scrollback's, and the prompt's strip, and the lines
 /// between the band and the console and above the prompt's strip.
@@ -146,10 +154,10 @@ pub fn column_count(layout: Layout) -> u32 {
     count.min(MOST_COLUMNS)
 }
 
-/// How many bytes the records of [`records`], [`marks`], [`cursor`], and [`scrollbar`] take on `layout` at most: the
-/// panels and the lines between them, the line at twice the budget, a column's records for each column the chart is
-/// cut into and the two sliding off its left edge, the dashes of the budget line, the most marks, the cursor, and the
-/// scroll bar's track and thumb.
+/// How many bytes the records of [`records`], the GPU's graph, the lines' rows, [`marks`], [`cursor`], and
+/// [`scrollbar`] take on `layout` at most: the panels and the lines between them, the line at twice the budget, a
+/// column's records down the left column for each column the chart is cut into and the two sliding off its left edge,
+/// the dashes of the two budget lines, the most marks, the cursor, and the scroll bar's track and thumb.
 #[must_use]
 pub fn records_bytes(layout: Layout) -> usize {
     // A reference's dashes are the closer, so the more.
@@ -159,7 +167,7 @@ pub fn records_bytes(layout: Layout) -> usize {
     // A count of dashes is at most some thousands, which a u32 holds; a negative width holds none.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let dashes = (dashes.max(0.0) as u32).min(MOST_DASHES);
-    let count = PANEL_RECORDS + 1 + (column_count(layout) + 2) * RECORDS_PER_COLUMN + dashes + MOST_MARKS + 1 + 2;
+    let count = PANEL_RECORDS + 1 + (column_count(layout) + 2) * RECORDS_ACROSS + 2 * dashes + MOST_MARKS + 1 + 2;
 
     count as usize * RECORD_BYTES as usize
 }
@@ -193,17 +201,14 @@ pub fn records(
     }
 
     let chart = layout.chart();
-    let (width, pitch, line) = (layout.column_pixels(), layout.column_pitch(), layout.line_pixels(LINE_PIXELS));
+    let (width, line) = (layout.column_pixels(), layout.line_pixels(LINE_PIXELS));
     let height_of = |nanos: u64| height_fraction(nanos, budget_nanos).mul_add(-chart.height(), chart.max.y).round();
     let twice_y = height_of(budget_nanos.saturating_mul(2));
     let twice = Rect2 { min: Vec2::new(chart.min.x, twice_y), max: Vec2::new(chart.max.x, twice_y + line) };
     push(records, twice, STONE.at(TWICE_BUDGET_OPACITY));
 
     for column in columns {
-        // Columns back from the newest, at most a few thousand, which an f32 holds exactly.
-        #[allow(clippy::cast_precision_loss)]
-        let back = slide.newest.saturating_sub(column.span) as f32;
-        let left = (back + slide.through).mul_add(-pitch, chart.max.x);
+        let left = left_of(layout, slide, column.span);
         let shows = left.max(chart.min.x) < (left + width).min(chart.max.x);
         if !shows {
             continue;
@@ -212,7 +217,26 @@ pub fn records(
         column::column(records, placed, column);
     }
 
-    let budget_y = height_of(budget_nanos);
+    dashes(records, layout, height_of(budget_nanos), budget);
+}
+
+/// Where the left edge of the column of `span` is drawn at `slide`, before it is cut to the chart: the newest's span
+/// at the chart's right edge, each older one a column's pitch further left, all moved left by the share of a pitch
+/// `slide` has come through the newest span. The GPU's graph and the lines' rows place their columns here too, so
+/// each stands under the frame chart's column of the same span.
+pub fn left_of(layout: Layout, slide: Slide, span: u64) -> f32 {
+    // Columns back from the newest, at most a few thousand, which an f32 holds exactly.
+    #[allow(clippy::cast_precision_loss)]
+    let back = slide.newest.saturating_sub(span) as f32;
+
+    (back + slide.through).mul_add(-layout.column_pitch(), layout.chart().max.x)
+}
+
+/// Appends to `records` a budget line at `y` across the chart's pixels, dashed: bone at 70% for a limit, and a lighter,
+/// sparser dash at half that for a budget that is a reference.
+pub fn dashes(records: &mut Vec<u8>, layout: Layout, y: f32, budget: FrameBudget) {
+    let chart = layout.chart();
+    let line = layout.line_pixels(LINE_PIXELS);
     let (dash, gap, colour) = match budget {
         FrameBudget::Limit { .. } => (DASH_PIXELS, DASH_GAP_PIXELS, BONE.at(BUDGET_OPACITY)),
         FrameBudget::Reference { .. } => {
@@ -227,7 +251,7 @@ pub fn records(
             break;
         }
         let right = (left + dash).min(chart.max.x);
-        let piece = Rect2 { min: Vec2::new(left, budget_y), max: Vec2::new(right, budget_y + line) };
+        let piece = Rect2 { min: Vec2::new(left, y), max: Vec2::new(right, y + line) };
         push(records, piece, colour);
         left = right + gap;
     }
@@ -277,7 +301,7 @@ pub fn scrollbar(records: &mut Vec<u8>, bar: Bar) {
 }
 
 /// Appends the record of `area` drawn in `colour`.
-fn push(records: &mut Vec<u8>, area: Rect2, colour: Colour) {
+pub fn push(records: &mut Vec<u8>, area: Rect2, colour: Colour) {
     let [red, green, blue, alpha] = colour.channels();
     let values = [area.min.x, area.min.y, area.width(), area.height(), red, green, blue, alpha];
     records.extend(values.iter().flat_map(|value| value.to_ne_bytes()));

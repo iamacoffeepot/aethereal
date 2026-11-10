@@ -19,13 +19,13 @@ const BEFORE_COLUMNS: usize = 2;
 
 /// One record read back: its box, left, top, width, and height, and its colour.
 #[derive(Debug, Clone, PartialEq)]
-struct Record {
-    area: [f32; 4],
-    colour: Colour,
+pub struct Record {
+    pub area: [f32; 4],
+    pub colour: Colour,
 }
 
 /// The records `bytes` holds, in order.
-fn read(bytes: &[u8]) -> Vec<Record> {
+pub fn read(bytes: &[u8]) -> Vec<Record> {
     let float = |chunk: &[u8], at: usize| f32::from_ne_bytes([chunk[at], chunk[at + 1], chunk[at + 2], chunk[at + 3]]);
     bytes
         .chunks_exact(RECORD_BYTES as usize)
@@ -110,10 +110,10 @@ fn columns_slide_left_through_their_span() {
     let (chart, pitch) = (layout.chart(), layout.column_pitch());
     let newest = u64::from(super::column_count(layout));
     let columns = [newest, newest - 1, 0].map(|span| flat(span, BUDGET));
-    assert_eq!(newest, 226, "1080 does not hold 226 columns of 4 pixels and a gap");
+    assert_eq!(newest, 191, "1080 does not hold 191 columns of 4 pixels and a gap");
 
-    // At 1080 the chart is 1132 pixels wide, 226 columns of 5 and 2 over, so the column 226 back is cut at the left
-    // edge once it has come half way through its span.
+    // At 1080 the chart is 956 pixels wide, left of the rows' gutter, 191 columns of 5 and 1 over, so the column 191
+    // back is cut at the left edge once it has come half way through its span.
     let early = bars(layout, &columns, Slide { newest, through: 0.5, span_nanos: 1_000_000_000 });
     let late = bars(layout, &columns, Slide { newest, through: 0.75, span_nanos: 1_000_000_000 });
 

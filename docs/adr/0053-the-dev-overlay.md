@@ -30,14 +30,20 @@ Called::Output ── schema ── Form, printed ──> scrollback
 ### The three stops
 
 - **Hidden:** nothing is drawn, and the overlay listens only for the backtick.
-- **The band:** a strip across the top of the window, about a tenth of its height, in two columns.
+- **The band:** a strip across the top of the window, as tall as its left column's three sections need, about a quarter of the window at 1080, in two columns.
   - **Left, one 60-second axis, newest at the right, so a spike reads straight down:**
     - the frame chart: each cycle's `delta_nanos`, with the budget as a dashed line, and the median, p90, p99, and the most over the 60 seconds beneath it;
       - each column, a fixed span of time, is three opaque bars the column's width, each from the chart's foot, drawn back to front: its slowest cycle in sand, the tallest, at the back; its median in lichen; and its fastest in slate-teal, the shortest, in front;
       - each bar's colour is fixed by its layer, whatever the budget: over or under is read from the bars' height against the budget line, dashed bone at 70%, which carries the judging;
       - the vertical scale is logarithmic and relative to the budget: a quarter of the budget at the foot, 32 budgets at the top, so the budget stands 2/7 of the way up and every doubling is another 1/7, whatever the budget is; a faint stone line marks twice the budget;
-    - GPU time per frame, stacked by named pass, with the share of the frame the GPU was busy;
-    - one line each for draws, triangles, bytes uploaded, and GPU memory.
+    - GPU time per frame, stacked by named pass, with the share of the frame the GPU was busy:
+      - a graph two thirds the frame chart's height, its columns the frame chart's, the same span at the same place, each a stack of the frame's passes from the foot in the order their labels were first heard, each pass at its median over the column's frames, so the stack is a typical frame;
+      - its scale is linear, as stacked times are summed, and ranged to what is drawn, as GPU profilers such as Tracy and PIX range theirs: nothing at the foot, and at the top the tallest stack in the 60 seconds rounded up to 1, 2, or 5 × 10ⁿ nanoseconds, no less than 10 microseconds so an idle GPU's noise is not drawn full height. The top moves only between those steps, which keeps it from flickering as the window slides. A pass that took any time stands at least a pixel tall, and a stack over the top is cut there. A budget-relative scale would leave a fast GPU's frame under a pixel at a high refresh rate: 0.08 ms against 4.17 ms at 240 Hz;
+      - the budget is the frame chart's dashed bone line only where it falls at or under the top; over it, the graph has no budget line, as `gpu busy` already tells the frame's share;
+      - the gutter beside the graph says its top, as the rows' gutter says their values: `gpu`, and flush right `top 0.1 ms`;
+      - beneath it, one line: each pass's label, without the renderer's `aether.render.` prefix, and its median over the 60 seconds, each in its pass's colour, so the line is the legend; and `gpu busy`, the GPU's median frame over the frame chart's median cycle;
+      - on a device without timestamps, the graph's place holds one stone line, `GPU timing not supported on this device`, and nothing else;
+    - one line each for draws, triangles, bytes uploaded, and GPU memory, the sum of the renderer's kinds: each a thin row of stone bars over the same columns, each column the most of its frames, linear from nothing to the most shown, with its label and newest value in a gutter at the column's right, bytes in KiB, MiB, and GiB. The graphs above end at the gutter too, so every column stands under the frame chart's.
   - **Right:** the memory meters, each a bar against its limit where it has one, and the GPU adapter, its backend, and its driver.
 - **The band and the console:** the console beneath the band, a third of the window: scrollback, the line being typed, and a grey completion ahead of the cursor. While the console is open the overlay holds key focus, and gives it up as the console closes.
 
@@ -146,11 +152,14 @@ The overlay's colours are slate and earth. Healthy is one cool colour; only warm
 | lichen | `#9dbfb0` | the typed command, healthy lines and meters; the chart's median bar   |
 | sand   | `#6b5f4c` | the chart's slowest bar                                                |
 | slate-teal | `#3f5a57` | the chart's fastest bar                                            |
+| slate blue | `#6f8aa6` | the GPU graph's first pass in each three, and its figure          |
+| muted violet | `#8a7ca8` | the GPU graph's second pass in each three, and its figure       |
+| mauve  | `#a88aa0` | the GPU graph's third pass in each three, and its figure               |
 | ochre  | `#d9b86c` | marks                                                                  |
 | rust   | `#d08a4c` | warnings; a meter past 75%                                             |
 | brick  | `#cc5f52` | errors; a meter past 90%                                               |
 
-The GPU's passes are told apart by lichen, a slate blue, and a muted violet, in pass order. Every text is `Font::Mono`, so figures line up.
+The GPU's passes are told apart by slate blue, muted violet, and mauve, cycling in the order their labels were first heard; none is lichen, sand, or slate-teal, which keep their one meaning each in the frame chart. Every text is `Font::Mono`, so figures line up.
 
 ### Where it lives
 
