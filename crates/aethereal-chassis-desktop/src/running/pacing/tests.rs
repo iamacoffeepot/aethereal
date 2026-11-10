@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::FrameRate;
+use crate::redrawing::Silence;
 
 #[test]
 fn a_capped_frame_asked_between_the_points_of_its_grid_waits_for_the_next() {
@@ -36,4 +37,27 @@ fn uncapped_and_fifo_frames_are_each_drawn_and_follow_one_another() {
         assert_eq!(pacing.due(1), Due::Asked, "{presenting}");
         assert!(pacing.follows(), "{presenting}");
     }
+}
+
+#[test]
+fn windows_silent_past_a_few_frames_run_cycles_undrawn_on_the_budget_and_one_heard_stops_them() {
+    // Catches a covered window stopping the program's cycles for as long as it is covered, undrawn cycles begun while
+    // frames are merely late, a grid that drifts from the budget, and cycles run on once the compositor asks again.
+    let budget = 10;
+    let mut undrawn = Undrawn::Unplanned;
+    let silent = Silence::Since { nanos: 100 };
+
+    let late = undrawn.at(silent, budget, 120);
+    let first = undrawn.at(silent, budget, 160);
+    let between = undrawn.at(silent, budget, 165);
+    let second = undrawn.at(silent, budget, 171);
+    let heard = undrawn.at(Silence::Heard, budget, 172);
+    let afresh = undrawn.at(Silence::Since { nanos: 200 }, budget, 201);
+
+    assert_eq!(late, Undrawing::WaitUntil { nanos: 160 }, "silent for six frames from the last present");
+    assert_eq!(first, Undrawing::CycleNow { next_nanos: 170 });
+    assert_eq!(between, Undrawing::WaitUntil { nanos: 170 });
+    assert_eq!(second, Undrawing::CycleNow { next_nanos: 180 });
+    assert_eq!(heard, Undrawing::Heard);
+    assert_eq!(afresh, Undrawing::WaitUntil { nanos: 260 }, "a new silence plans from its own present");
 }

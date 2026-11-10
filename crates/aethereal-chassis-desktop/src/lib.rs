@@ -31,7 +31,8 @@
 //! is presented only once the compositor asks for its next frame, as winit
 //! hears its frame callback, its next frame drawn ahead and held until then:
 //! a present issued earlier can wait, on Wayland, until a covered window is
-//! uncovered, and every actor with it. What a window
+//! uncovered, and every actor with it. While every window shown waits so, the
+//! program's cycles run on undrawn. What a window
 //! hears is pushed onto that window's feed as winit hears it, in the window's
 //! surface pixels, routed by winit's id for the window, and brought in as the
 //! engine next steps (ADR-0024).

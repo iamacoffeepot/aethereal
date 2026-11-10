@@ -158,6 +158,9 @@ pub enum ReadRefused {
     Unstored,
     /// No frame of the window is kept: none has been drawn onto it, or its surface cannot be copied from.
     Undrawn,
+    /// The cycle the window's next frame was owed in drew no window: none was shown, or the compositor asked for
+    /// none of their frames, as for a covered window.
+    Unshown,
     /// No frame is the window's main frame, or kept under the id: never made, released, or the window closed.
     Frame,
     /// The frame has no target at the place asked.

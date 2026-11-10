@@ -241,6 +241,7 @@ const fn unread(why: ReadRefused) -> &'static str {
         ReadRefused::Texture
         | ReadRefused::Storage
         | ReadRefused::Undrawn
+        | ReadRefused::Unshown
         | ReadRefused::Window
         | ReadRefused::Format
         | ReadRefused::Uncopied => "the renderer read back something other than a target",
