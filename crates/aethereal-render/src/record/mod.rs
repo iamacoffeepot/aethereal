@@ -1,23 +1,27 @@
-//! The renderer's tool `record_clip` (ADR-0045): a window's frames, one held cycle each, written as PNGs into the
-//! program's saves, so a clip plays in exact real time however slowly its frames were drawn.
+//! The renderer's tool `record_clip` (ADR-0045): a window's frames, one held cycle each, encoded as H.264 into one MP4
+//! in the program's saves, so a clip plays in exact real time however slowly its frames were drawn.
 
+mod encode;
 #[cfg(test)]
 mod tests;
+mod video;
 
 use crate::Renderer;
-use crate::capture::encode::{Encode, Encoded};
-use crate::capture::{Crop, crop_or_whole, image, is_shown, longest_or_frame, unread};
+use crate::capture::image::{self, Region};
+use crate::capture::{Crop, crop_or_whole, is_shown, longest_or_frame, unread};
 use crate::readback::{Pixels, ReadBack, Readable};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handle, Handles, Held,
+    Path, ProtocolRef, ToSender, Turn, Unanswered, path,
 };
-use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
+use aethereal_data::{Bound, Budget, DecodeError, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_files::{FileWritten, Files, Namespace, WriteFile};
 use aethereal_pace::{Advance, Advanced, Pace, PaceSet, Pacer, SetPace, Unadvanced};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_window::WindowId;
 use core::mem;
+use encode::{ClipFinished, EncodeFrame, FinishClip, FrameEncoded};
+use video::{ClipEncoder, Unencodable, said};
 
 /// The most bytes reading an input may take: a window, counts, a crop, a size, and a name.
 const INPUT_BYTES: usize = 2048;
@@ -28,8 +32,8 @@ pub const MOST_FRAMES: u32 = 3600;
 /// The most frames a second a clip is recorded at.
 const MOST_FRAMES_PER_SECOND: u32 = 240;
 
-/// The most frames encoded or being written at once: drawing waits for one to finish past it, so a slow disk bounds
-/// what the tool holds.
+/// The most frames read back and not yet encoded: drawing waits for one to be encoded past it, so a slow encoder
+/// bounds the frames the tool holds.
 const MOST_IN_FLIGHT: u32 = 4;
 
 /// The frames a second a clip that names none is recorded at.
@@ -39,7 +43,7 @@ const FRAMES_PER_SECOND: u32 = 60;
 const SECOND_NANOS: u64 = 1_000_000_000;
 
 /// What the agent asks `record_clip` for: `frames` frames drawn onto `window` at `frames_per_second`, each cut by
-/// `crop` and its longer side at most `longest` pixels, written into the program's saves under `clips/<name>/`. The
+/// `crop` and its longer side at most `longest` pixels, encoded into the program's saves as `clips/<name>.mp4`. The
 /// tool reads a field left out as its fallback, which the field's doc names.
 #[derive(Debug, Clone, Plain)]
 #[kind(name = "aether.render.record")]
@@ -56,10 +60,11 @@ pub struct Record {
     /// What of each frame is recorded: none for `whole`.
     #[flag(short = 'c')]
     pub crop: Option<Crop>,
-    /// The most pixels of each image's longer side: none for the frame's own size.
+    /// The most pixels of each frame's longer side: none for the frame's own size. Each side is then rounded down to
+    /// even.
     #[flag(short = 'l')]
     pub longest: Option<u32>,
-    /// The clip's name: it is written under `clips/<name>/` in the program's saves.
+    /// The clip's name: it is written as `clips/<name>.mp4` in the program's saves.
     #[flag(position)]
     pub name: FilePath,
 }
@@ -74,12 +79,12 @@ impl Record {
     }
 }
 
-/// What a clip recorded is: the folder its frames are in, within the program's saves, named `00000.png` on; how many
-/// there are and at what rate; and the size of each, as its first was written.
+/// What a clip recorded is: its MP4 file, within the program's saves; how many frames it holds and at what rate; and
+/// the size of each, both sides even.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.recorded")]
 pub struct Recorded {
-    pub folder: FilePath,
+    pub file: FilePath,
     pub frames: u32,
     pub frames_per_second: u32,
     pub width: u32,
@@ -100,12 +105,19 @@ pub struct Stepping {
     clip: u64,
 }
 
-/// What the tool keeps for a frame read back, encoded, or written: which clip, and which frame of it.
+/// What the tool keeps for a frame read back or encoded: which clip, and which frame of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.record_frame")]
 pub struct Framing {
     clip: u64,
     frame: u32,
+}
+
+/// What the tool keeps for a clip's MP4 finished or written: which clip it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.record_filing")]
+pub struct Filing {
+    clip: u64,
 }
 
 /// What the tool is made from: nothing.
@@ -114,9 +126,10 @@ pub struct Framing {
 pub struct RecordToolConfig;
 
 /// The tool `record_clip`: holds the program's clock through its [`Pacer`], then for each frame asks the [`Renderer`]
-/// for the next frame drawn onto the window and advances the clock one cycle of the frame's delta, encodes what is
-/// read back as `capture_frame` does, and asks [`Files`] to write it. Once every frame is written, it sets the clock
-/// back as it found it and answers what it recorded. It records one clip at a time.
+/// for the next frame drawn onto the window and advances the clock one cycle of the frame's delta. Each frame read
+/// back is encoded by a compute job, given the clip's one [`ClipEncoder`] and handing it back, one frame at a time and
+/// in order, while the next frame draws. Once every frame is encoded, a last job finishes the MP4, and [`Files`]
+/// writes it. Then it sets the clock back as it found it and answers what it recorded. It records one clip at a time.
 #[derive(Bound)]
 #[kind(name = "aether.render.record_tool")]
 pub struct RecordTool {
@@ -129,7 +142,7 @@ pub struct RecordTool {
 #[derive(Bound)]
 enum Clipping {
     Idle,
-    Recording(Clip),
+    Recording(Box<Clip>),
 }
 
 /// A clip being recorded: the call it answers, what it asked, its number, and where it stands.
@@ -146,32 +159,74 @@ struct Clip {
 enum Stage {
     /// The pacer has been asked to hold the clock, and has not said it has.
     Holding,
-    /// The clock is held, and frames are drawn: `was` is how it moved before.
-    Drawing { was: Pace, frames: Frames },
+    /// The clock is held, and the clip is under way: `was` is how it moved before.
+    Held { was: Pace, step: Step },
     /// The pacer has been asked to set the clock back, and the call is answered with this once it has.
     Restoring(Answering),
 }
 
-/// How far a clip's frames have got: how many have been asked of the renderer, read back, and written; how many are
-/// encoded or being written; and the size of each, once the first has been read.
+/// How far a clip under a held clock has got.
+#[derive(Bound)]
+enum Step {
+    /// Its frames are drawn and encoded.
+    Drawing(Frames),
+    /// Every frame is encoded, and the job finishing its MP4 holds the encoder: the clip's frames are of this size.
+    Finishing(ClipSize),
+    /// Its MP4 is being written, and the call is answered with this once it is.
+    Writing(Recorded),
+}
+
+/// How far a clip's frames have got: how many have been asked of the renderer, read back, and encoded; the frames
+/// read back that wait for the encoder, in order; and the encoder.
 #[derive(Bound)]
 struct Frames {
     asked: u32,
     read: u32,
-    written: u32,
-    in_flight: u32,
-    size: FrameSize,
+    encoded: u32,
+    waiting: Vec<Waiting>,
+    encoder: Encoder,
 }
 
-/// The size a clip's frames are written at.
+/// A frame read back that waits for the encoder: its number, its pixels, RGBA rows `frame_width` wide, and the region
+/// of them it is cut to.
+#[derive(Bound)]
+struct Waiting {
+    frame: u32,
+    pixels: Bytes,
+    frame_width: u32,
+    region: Region,
+}
+
+/// A clip's encoder.
+#[derive(Bound)]
+enum Encoder {
+    /// No frame has been read yet: the encoder is made at the first frame's size.
+    Unmade,
+    /// Made for frames of `size`, which every frame of the clip must be.
+    Made { size: ClipSize, at: EncoderAt },
+}
+
+/// Where a clip's encoder is.
+#[derive(Bound)]
+enum EncoderAt {
+    /// The tool holds it, and no frame is being encoded.
+    Here(Handle<ClipEncoder>),
+    /// The job encoding a frame holds it.
+    Away,
+}
+
+/// The size a clip's frames are encoded at, each side even.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-enum FrameSize {
-    /// No frame has been read yet.
-    Unread,
-    Read {
-        width: u32,
-        height: u32,
-    },
+struct ClipSize {
+    width: u32,
+    height: u32,
+}
+
+/// What of a frame a clip's image is: the region cut from it, and the size that is encoded at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Cut {
+    region: Region,
+    size: ClipSize,
 }
 
 /// What a clip's call is answered with, once the clock is set back.
@@ -186,7 +241,7 @@ type Sends = (
     Asks<Path<Pacer>, SetPace, Pacing>,
     Asks<Path<Pacer>, Advance, Stepping>,
     Asks<Path<Renderer>, ReadBack, Framing>,
-    Asks<Path<Files>, WriteFile, Framing>,
+    Asks<Path<Files>, WriteFile, Filing>,
     ToSender<Called>,
 );
 
@@ -202,8 +257,9 @@ impl Actor for RecordTool {
         Answer<PaceSet, Pacing>,
         Answer<Advanced, Stepping>,
         Answer<Pixels, Framing>,
-        Answer<Encoded, Framing>,
-        Answer<FileWritten, Framing>,
+        Answer<FrameEncoded, Framing>,
+        Answer<ClipFinished, Filing>,
+        Answer<FileWritten, Filing>,
     );
     type BeginSends = ();
     type EndSends = ();
@@ -221,14 +277,16 @@ impl Tool for RecordTool {
     fn sheets() -> Vec<ToolSheet> {
         vec![ToolSheet::of::<Record>(
             "record_clip",
-            "Records frames drawn onto a window as PNGs. It records `frames` frames of the window, numbered from 0, \
-             at `frames_per_second` (60 when left out), written into the program's saves at clips/<name>/00000.png \
-             on. It holds the program's clock and advances it one cycle per frame, each by exactly 1/fps, so the \
-             clip plays in exact real time however slowly its frames draw, and two runs of a deterministic program \
-             match frame for frame. The clock is left as it was found. `crop` and `longest` cut and shrink each \
-             frame as capture_frame's do. At most 3600 frames and 240 a second. It answers the folder, within the \
-             save directory the engine was given, and each frame's size; make a video of it with, for example, \
-             `ffmpeg -framerate <fps> -i %05d.png`. The program must list the pacer and the file capability.",
+            "Records frames drawn onto a window as an MP4. It records `frames` frames of the window at \
+             `frames_per_second` (60 when left out), encoded as H.264 and written into the program's saves as \
+             clips/<name>.mp4. It holds the program's clock and advances it one cycle per frame, each by exactly \
+             1/fps, so the clip plays in exact real time however slowly its frames draw, and two runs of a \
+             deterministic program match frame for frame. The clock is left as it was found. `crop` and `longest` \
+             cut and shrink each frame as capture_frame's do; each side is then rounded down to even, as H.264 \
+             stores colour two by two pixels, so a frame not shrunk loses its last column or row. At most 3600 \
+             frames and 240 a second, and the file must fit the engine's budget for blobs. It answers the file, \
+             within the save directory the engine was given, and its frames, rate and size. The program must list \
+             the pacer and the file capability; a browser's engine has no encoder.",
             Output::Value(SchemaNodes::of(&Recorded::SHAPE)),
         )]
     }
@@ -251,6 +309,15 @@ impl Handles<Call> for RecordTool {
             turn.reply(&refused(why))?;
             return Ok(());
         }
+        if !video::ENCODES {
+            turn.reply(&Called::Refused(said(Unencodable::NoEncoder)))?;
+            return Ok(());
+        }
+        let is_named = clip_path(&asked.name).is_ok();
+        if !is_named {
+            turn.reply(&refused("the clip's name makes no file's path"))?;
+            return Ok(());
+        }
         if let Clipping::Recording(_) = self.clip {
             turn.reply(&refused("a clip is being recorded already: record one at a time"))?;
             return Ok(());
@@ -259,7 +326,7 @@ impl Handles<Call> for RecordTool {
         let number = self.next;
         self.next += 1;
         turn.to(path::<Pacer>(())).ask(&SetPace { pace: Pace::Held }, &Pacing { clip: number })?;
-        self.clip = Clipping::Recording(Clip { held, asked, number, stage: Stage::Holding });
+        self.clip = Clipping::Recording(Box::new(Clip { held, asked, number, stage: Stage::Holding }));
 
         Ok(())
     }
@@ -279,8 +346,8 @@ impl Handles<Answer<PaceSet, Pacing>> for RecordTool {
         };
         match (&recording.stage, answered) {
             (Stage::Holding, Answered::Yes(PaceSet { was })) => {
-                let frames = Frames { asked: 0, read: 0, written: 0, in_flight: 0, size: FrameSize::Unread };
-                recording.stage = Stage::Drawing { was, frames };
+                let frames = Frames { asked: 0, read: 0, encoded: 0, waiting: Vec::new(), encoder: Encoder::Unmade };
+                recording.stage = Stage::Held { was, step: Step::Drawing(frames) };
                 recording.draw_next(turn)?;
             }
             (Stage::Holding, Answered::No(_)) => {
@@ -293,16 +360,17 @@ impl Handles<Answer<PaceSet, Pacing>> for RecordTool {
                 let Clipping::Recording(done) = mem::replace(&mut self.clip, Clipping::Idle) else {
                     return Ok(());
                 };
-                let Stage::Restoring(ending) = done.stage else {
+                let Clip { held, stage, .. } = *done;
+                let Stage::Restoring(ending) = stage else {
                     return Ok(());
                 };
                 let called = match ending {
                     Answering::Recorded(recorded) => Called::output(turn, to_bytes(&recorded)?),
                     Answering::Refused(why) => Called::Refused(why),
                 };
-                turn.answer(done.held, &called)?;
+                turn.answer(held, &called)?;
             }
-            (Stage::Drawing { .. }, _) => {}
+            (Stage::Held { .. }, _) => {}
         }
 
         Ok(())
@@ -330,7 +398,8 @@ impl Handles<Answer<Advanced, Stepping>> for RecordTool {
     }
 }
 
-/// A frame was read back: it is checked and encoded, and the next frame drawn when there is room for it.
+/// A frame was read back: it is checked and waits for the encoder, made at the first frame's size; it is encoded once
+/// the encoder is free, and the next frame drawn when there is room for it.
 impl Handles<Answer<Pixels, Framing>> for RecordTool {
     type Sends = Sends;
 
@@ -357,55 +426,125 @@ impl Handles<Answer<Pixels, Framing>> for RecordTool {
             let outside = format!("the crop is not within the frame, which is {width}x{height}");
             return recording.fail(at(frame, &outside), turn);
         }
-        let longest = longest_or_frame(recording.asked.longest);
-        let (sent_width, sent_height) = image::sent_size(region.width, region.height, longest);
-        let Stage::Drawing { frames, .. } = &mut recording.stage else {
+        let cut = match clip_cut(region, longest_or_frame(recording.asked.longest)) {
+            Ok(cut) => cut,
+            Err(why) => return recording.fail(at(frame, why), turn),
+        };
+        let rate = recording.asked.rate();
+        let Stage::Held { step: Step::Drawing(frames), .. } = &mut recording.stage else {
             return Ok(());
         };
-        frames.read += 1;
-        frames.in_flight += 1;
-        if frames.size == FrameSize::Unread {
-            frames.size = FrameSize::Read { width: sent_width, height: sent_height };
+
+        match &frames.encoder {
+            Encoder::Unmade => {
+                let encoder = match ClipEncoder::new(rate, cut.size.width, cut.size.height) {
+                    Ok(encoder) => encoder,
+                    Err(why) => return recording.fail(at(frame, &said(why)), turn),
+                };
+                frames.encoder = Encoder::Made { size: cut.size, at: EncoderAt::Here(turn.keep(encoder)?) };
+            }
+            Encoder::Made { size, .. } if *size == cut.size => {}
+            Encoder::Made { size, .. } => {
+                let ClipSize { width, height } = *size;
+                let ClipSize { width: now_width, height: now_height } = cut.size;
+                let resized = format!(
+                    "the window changed size during the clip: its frames are {width}x{height}, and this one \
+                     {now_width}x{now_height}"
+                );
+                return recording.fail(at(frame, &resized), turn);
+            }
         }
-        let encode = Encode { pixels, frame_width: width, region, width: sent_width, height: sent_height };
-        turn.run(&encode, &Framing { clip, frame })?;
+
+        frames.read += 1;
+        frames.waiting.push(Waiting { frame, pixels, frame_width: width, region: cut.region });
+        frames.encode_next(turn, clip)?;
 
         recording.draw_next(turn)
     }
 }
 
-/// A frame was encoded: it is written into the clip's folder.
-impl Handles<Answer<Encoded, Framing>> for RecordTool {
+/// A frame was encoded, and the encoder handed back: the next frame waiting is encoded, the next drawn when there is
+/// room for it, and the clip's MP4 finished once the last is in.
+impl Handles<Answer<FrameEncoded, Framing>> for RecordTool {
     type Sends = Sends;
 
     fn handle(
         &mut self,
-        (answered, Framing { clip, frame }): (Answered<Encoded>, Framing),
+        (answered, Framing { clip, frame }): (Answered<FrameEncoded>, Framing),
         turn: &mut Turn<'_, Self, Sends>,
     ) -> Result<(), Fault> {
         let Some(recording) = self.recording(clip) else {
             return Ok(());
         };
-        let Answered::Yes(Encoded { png }) = answered else {
-            return recording.fail(at(frame, "the frame could not be written as a PNG"), turn);
+        let encoder = match answered {
+            Answered::Yes(FrameEncoded::Encoded { encoder }) => encoder,
+            Answered::Yes(FrameEncoded::Refused(why)) => return recording.fail(at(frame, &said(why)), turn),
+            Answered::No(why) => {
+                return recording.fail(at(frame, &format!("the frame was not encoded: {why:?}")), turn);
+            }
         };
-        let Ok(file) = frame_path(&recording.asked.name, frame) else {
-            return recording.fail(at(frame, "the clip's name makes no file's path"), turn);
+        // A clip that has failed takes no encoder back: it is dropped with the answer, and the tool's log says so.
+        let Stage::Held { step: Step::Drawing(frames), .. } = &mut recording.stage else {
+            return Ok(());
         };
-        let write = WriteFile { namespace: Namespace::Save, path: file, bytes: png };
-        turn.to(path::<Files>(())).ask(&write, &Framing { clip, frame })?;
+        let Encoder::Made { at, .. } = &mut frames.encoder else {
+            return Ok(());
+        };
+        *at = EncoderAt::Here(turn.take(encoder)?);
+        frames.encoded += 1;
+        let is_last = frames.encoded == recording.asked.frames;
+        if is_last {
+            return recording.finish(turn);
+        }
+        frames.encode_next(turn, clip)?;
+
+        recording.draw_next(turn)
+    }
+}
+
+/// The clip's MP4 is finished: it is written into the program's saves.
+impl Handles<Answer<ClipFinished, Filing>> for RecordTool {
+    type Sends = Sends;
+
+    fn handle(
+        &mut self,
+        (answered, Filing { clip }): (Answered<ClipFinished>, Filing),
+        turn: &mut Turn<'_, Self, Sends>,
+    ) -> Result<(), Fault> {
+        let Some(recording) = self.recording(clip) else {
+            return Ok(());
+        };
+        let mp4 = match answered {
+            Answered::Yes(ClipFinished::Finished { mp4 }) => mp4,
+            Answered::Yes(ClipFinished::Refused(why)) => return recording.fail(said(why), turn),
+            Answered::No(Unanswered::Faulted) => return recording.fail(String::from(UNPUT), turn),
+            Answered::No(why) => return recording.fail(format!("the clip's MP4 was not finished: {why:?}"), turn),
+        };
+        let Ok(file) = clip_path(&recording.asked.name) else {
+            return recording.fail(String::from("the clip's name makes no file's path"), turn);
+        };
+        let Stage::Held { step, .. } = &mut recording.stage else {
+            return Ok(());
+        };
+        let Step::Finishing(ClipSize { width, height }) = *step else {
+            return Ok(());
+        };
+        let (frames, frames_per_second) = (recording.asked.frames, recording.asked.rate());
+        *step = Step::Writing(Recorded { file: file.clone(), frames, frames_per_second, width, height });
+        let write = WriteFile { namespace: Namespace::Save, path: file, bytes: mp4 };
+        turn.to(path::<Files>(())).ask(&write, &Filing { clip })?;
 
         Ok(())
     }
 }
 
-/// A frame was written: the next frame is drawn when there is room for it, and the clock set back once the last is.
-impl Handles<Answer<FileWritten, Framing>> for RecordTool {
+/// The clip's MP4 is written: the clock is set back, and the call answered with the clip once it is.
+impl Handles<Answer<FileWritten, Filing>> for RecordTool {
     type Sends = Sends;
 
     fn handle(
         &mut self,
-        (answered, Framing { clip, frame }): (Answered<FileWritten>, Framing),
+        (answered, Filing { clip }): (Answered<FileWritten>, Filing),
         turn: &mut Turn<'_, Self, Sends>,
     ) -> Result<(), Fault> {
         let Some(recording) = self.recording(clip) else {
@@ -419,44 +558,69 @@ impl Handles<Answer<FileWritten, Framing>> for RecordTool {
             Answered::No(_) => Some("the program lists no file capability, or it did not answer"),
         };
         if let Some(why) = why {
-            return recording.fail(at(frame, why), turn);
+            return recording.fail(String::from(why), turn);
         }
-        let Stage::Drawing { frames, .. } = &mut recording.stage else {
+        let Stage::Held { step: Step::Writing(recorded), .. } = &recording.stage else {
             return Ok(());
         };
-        frames.in_flight -= 1;
-        frames.written += 1;
-        let is_last = frames.written == recording.asked.frames;
-        if is_last {
-            return recording.finish(turn);
-        }
+        let recorded = recorded.clone();
 
-        recording.draw_next(turn)
+        recording.restore(Answering::Recorded(recorded), turn)
     }
 }
+
+/// What the agent reads when the clip's MP4 could not be put as a blob.
+const UNPUT: &str = "the clip's MP4 could not be put as one blob: it is likely past the engine's budget for blobs \
+                     (`blob_bytes`); record fewer frames, a smaller `longest`, or give the engine a larger budget";
 
 impl RecordTool {
     /// The clip being recorded, when it is the clip numbered `clip`: an answer for any other is for one already
     /// answered, and nothing more is done with it.
     fn recording(&mut self, clip: u64) -> Option<&mut Clip> {
         match &mut self.clip {
-            Clipping::Recording(recording) if recording.number == clip => Some(recording),
+            Clipping::Recording(recording) if recording.number == clip => Some(recording.as_mut()),
             Clipping::Recording(_) | Clipping::Idle => None,
         }
     }
 }
 
+impl Frames {
+    /// Gives the encoder to a job encoding the first frame waiting, when the tool holds it and one waits: frames are
+    /// encoded one at a time, in the order they were read.
+    fn encode_next(&mut self, turn: &mut Turn<'_, RecordTool, Sends>, clip: u64) -> Result<(), Fault> {
+        let Encoder::Made { size, at } = &mut self.encoder else {
+            return Ok(());
+        };
+        let is_here = matches!(at, EncoderAt::Here(_));
+        let is_waiting = !self.waiting.is_empty();
+        let starts = is_here && is_waiting;
+        if !starts {
+            return Ok(());
+        }
+        let EncoderAt::Here(encoder) = mem::replace(at, EncoderAt::Away) else {
+            return Ok(());
+        };
+        let Waiting { frame, pixels, frame_width, region } = self.waiting.remove(0);
+        let encoder = turn.give(encoder)?;
+        let ClipSize { width, height } = *size;
+        let job = EncodeFrame { encoder, frame, pixels, frame_width, region, width, height };
+        turn.run(&job, &Framing { clip, frame })?;
+
+        Ok(())
+    }
+}
+
 impl Clip {
-    /// Asks for the next frame, when no frame is being drawn, one is left to draw, and fewer than the most are
-    /// encoded or being written: the renderer for the next frame drawn onto the window, then the pacer for one cycle
+    /// Asks for the next frame, when no frame is being drawn, one is left to draw, and fewer than the most are read
+    /// back and not yet encoded: the renderer for the next frame drawn onto the window, then the pacer for one cycle
     /// of its delta, which draws it.
     fn draw_next(&mut self, turn: &mut Turn<'_, RecordTool, Sends>) -> Result<(), Fault> {
-        let Stage::Drawing { frames, .. } = &mut self.stage else {
+        let Stage::Held { step: Step::Drawing(frames), .. } = &mut self.stage else {
             return Ok(());
         };
         let is_drawing = frames.read < frames.asked;
         let is_left = frames.asked < self.asked.frames;
-        let has_room = frames.in_flight < MOST_IN_FLIGHT;
+        let has_room = frames.read - frames.encoded < MOST_IN_FLIGHT;
         let draws = !is_drawing && is_left && has_room;
         if !draws {
             return Ok(());
@@ -471,21 +635,23 @@ impl Clip {
         Ok(())
     }
 
-    /// Every frame is written: the clock is set back, and the call answered with the clip once it is.
+    /// Every frame is encoded, and the tool holds the encoder: it is given to a job that finishes the clip's MP4.
     fn finish(&mut self, turn: &mut Turn<'_, RecordTool, Sends>) -> Result<(), Fault> {
-        let Stage::Drawing { frames, .. } = &self.stage else {
+        let Stage::Held { step, .. } = &mut self.stage else {
             return Ok(());
         };
-        let FrameSize::Read { width, height } = frames.size else {
+        let Step::Drawing(Frames { encoder: Encoder::Made { size, at }, .. }) = step else {
             return Ok(());
         };
-        let Ok(folder) = FilePath::parse(format!("clips/{}", self.asked.name.as_str())) else {
-            return self.fail(String::from("the clip's name makes no folder's path"), turn);
+        let size = *size;
+        let EncoderAt::Here(encoder) = mem::replace(at, EncoderAt::Away) else {
+            return Ok(());
         };
-        let recorded =
-            Recorded { folder, frames: self.asked.frames, frames_per_second: self.asked.rate(), width, height };
+        *step = Step::Finishing(size);
+        let finish = FinishClip { encoder: turn.give(encoder)? };
+        turn.run(&finish, &Filing { clip: self.number })?;
 
-        self.restore(Answering::Recorded(recorded), turn)
+        Ok(())
     }
 
     /// The clip cannot go on, for `why`: the clock is set back, and the call refused once it is.
@@ -493,17 +659,54 @@ impl Clip {
         self.restore(Answering::Refused(why), turn)
     }
 
-    /// Asks the pacer to set the clock back as the clip found it, the call to be answered with `ending` once it has.
-    /// A clip already setting it back keeps the ending it had.
+    /// Asks the pacer to set the clock back as the clip found it, the call to be answered with `ending` once it has,
+    /// and drops the encoder when the tool holds it. A clip already setting it back keeps the ending it had.
     fn restore(&mut self, ending: Answering, turn: &mut Turn<'_, RecordTool, Sends>) -> Result<(), Fault> {
-        let Stage::Drawing { was, .. } = self.stage else {
+        let Stage::Held { was, .. } = self.stage else {
             return Ok(());
         };
-        self.stage = Stage::Restoring(ending);
+        let left = mem::replace(&mut self.stage, Stage::Restoring(ending));
+        release(left, turn)?;
         turn.to(path::<Pacer>(())).ask(&SetPace { pace: was }, &Pacing { clip: self.number })?;
 
         Ok(())
     }
+}
+
+/// Drops the encoder `left`, a clip's stage it has left, holds, when the tool holds it: given and carried by no mail,
+/// it is dropped as the turn ends, and the tool's log records it (ADR-0010). One a job holds is dropped with the job's
+/// answer, which the clip no longer takes.
+fn release(left: Stage, turn: &mut Turn<'_, RecordTool, Sends>) -> Result<(), Fault> {
+    let Stage::Held { step: Step::Drawing(frames), .. } = left else {
+        return Ok(());
+    };
+    let Encoder::Made { at: EncoderAt::Here(encoder), .. } = frames.encoder else {
+        return Ok(());
+    };
+    let _dropped = turn.give(encoder)?;
+
+    Ok(())
+}
+
+/// What of a frame's `region` a clip's image is, its longer side at most `longest`: shrunk as `capture_frame`'s, then
+/// each side rounded down to even, as H.264 at 4:2:0 stores one colour for each two by two pixels. A region not shrunk
+/// loses its last column or row rather than being resampled for one pixel, so the frame stays sharp; a shrunk one is
+/// shrunk to the even size.
+fn clip_cut(region: Region, longest: u32) -> Result<Cut, &'static str> {
+    let (sent_width, sent_height) = image::sent_size(region.width, region.height, longest);
+    let size = ClipSize { width: sent_width & !1, height: sent_height & !1 };
+    let is_empty = size.width == 0 || size.height == 0;
+    if is_empty {
+        return Err("a clip's frame is at least 2x2 pixels: crop it larger, or shrink it less");
+    }
+    let is_shrunk = sent_width < region.width;
+    let region = if is_shrunk {
+        region
+    } else {
+        Region { width: size.width, height: size.height, ..region }
+    };
+
+    Ok(Cut { region, size })
 }
 
 /// Why a clip of `frames` frames at `frames_per_second`, each at most `longest` across, cannot be recorded, when it
@@ -515,8 +718,8 @@ const fn unrecordable(frames: u32, frames_per_second: u32, longest: u32) -> Opti
     if frames_per_second == 0 || frames_per_second > MOST_FRAMES_PER_SECOND {
         return Some("`frames_per_second` is 1 to 240");
     }
-    if longest == 0 {
-        return Some("`longest` is at least 1");
+    if longest < 2 {
+        return Some("`longest` is at least 2");
     }
 
     None
@@ -532,9 +735,9 @@ fn delta_nanos(frame: u32, frames_per_second: u32) -> u64 {
     ends - begins
 }
 
-/// Where frame `frame` of the clip `name` is written within the program's saves: `clips/<name>/00000.png` on.
-fn frame_path(name: &FilePath, frame: u32) -> Result<FilePath, aethereal_data::DecodeError> {
-    FilePath::parse(format!("clips/{}/{frame:05}.png", name.as_str()))
+/// Where the clip `name` is written within the program's saves: `clips/<name>.mp4`.
+fn clip_path(name: &FilePath) -> Result<FilePath, DecodeError> {
+    FilePath::parse(format!("clips/{}.mp4", name.as_str()))
 }
 
 /// What the agent reads of why frame `frame` went no further.
