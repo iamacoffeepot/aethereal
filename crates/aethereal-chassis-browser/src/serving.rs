@@ -73,7 +73,8 @@ impl Serving {
         };
         let asked = drawing.presents.take();
         for surfaced in &mut drawing.surfaces {
-            surfaced.surface.present(&asked);
+            // The page paces a canvas's frames, and nothing here waits on whether one was presented.
+            let _ = surfaced.surface.present(&asked, || {});
         }
         for mapping in drawing.requests.take() {
             let feed = drawing.feed.clone();

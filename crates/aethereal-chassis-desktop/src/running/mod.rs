@@ -129,7 +129,8 @@ enum Stage {
 }
 
 /// A program running in its windows, and what paces its frames: the display or a timer while its clock runs, and the
-/// pacer's advances while the pacer holds it (ADR-0045).
+/// pacer's advances while the pacer holds it (ADR-0045); and whether a window's redraw has come since the loop last
+/// settled.
 struct Running {
     headless: Headless,
     drawing: Box<Drawing>,
@@ -138,6 +139,17 @@ struct Running {
     clock: Monotonic,
     stopping: Stopping,
     pacing: Pacing,
+    redraws: Redraws,
+}
+
+/// Whether a window's redraw has come since the loop last settled: the redraws winit sends together, one for each
+/// window the compositor asked a frame of, are drawn as one frame as the loop next settles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Redraws {
+    /// None has come.
+    Unheard,
+    /// One has, and a frame is drawn as the loop settles.
+    Come,
 }
 
 /// Whether the program has been asked to stop, as the host keeps it.
@@ -177,7 +189,7 @@ impl ApplicationHandler<Woken> for App {
     }
 
     /// Routes what winit says of a window to the window capability's window it is, by winit's id for it (ADR-0024).
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, native: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, _: &ActiveEventLoop, native: WindowId, event: WindowEvent) {
         let Stage::Running(running) = &mut self.stage else {
             return;
         };
@@ -185,7 +197,7 @@ impl ApplicationHandler<Woken> for App {
             return;
         };
         match event {
-            WindowEvent::RedrawRequested => running.frame(event_loop, self.clock),
+            WindowEvent::RedrawRequested => running.redrawn(window),
             heard => running.heard(window, heard),
         }
     }
@@ -197,6 +209,7 @@ impl ApplicationHandler<Woken> for App {
         let Stage::Running(running) = &mut self.stage else {
             return;
         };
+        running.draw_redrawn(event_loop, self.clock);
         let now = self.clock.nanos();
         match running.settle(event_loop, now, self.stop_within) {
             Next::Wait => event_loop.set_control_flow(ControlFlow::Wait),
@@ -229,19 +242,43 @@ impl App {
         let pacing = Pacing::new(drawing.presenting(), self.clock.nanos());
         drawing.ask_next();
 
-        Ok(Running { headless, drawing, windowing, clockwork, clock: self.clock, stopping: Stopping::Not, pacing })
+        Ok(Running {
+            headless,
+            drawing,
+            windowing,
+            clockwork,
+            clock: self.clock,
+            stopping: Stopping::Not,
+            pacing,
+            redraws: Redraws::Unheard,
+        })
     }
 }
 
 impl Running {
-    /// Draws a frame, when the program runs, the pacing draws one now, and a window is shown at a size: acquires the
-    /// frame of each window shown at a size, in turn, each waiting for the display when `fifo`, says a cycle is due at
-    /// the time they were acquired, steps until no actor has anything to run, presents what the renderer drew in each,
-    /// and asks for the next frame when frames follow one another. A program asked to stop draws none, a capped frame
-    /// asked for before its grid's next point waits for it, a window hidden or of no size is handed no frame, and when
-    /// none is shown at a size none is drawn: the loop then waits on the windows' events, and the frame is asked for
-    /// again once one is shown at a size. The windows the window root asks for are opened and closed between its
-    /// steps, on `event_loop`.
+    /// Takes in winit's redraw of `window`, as the compositor asked for its next frame: it is drawn as the loop next
+    /// settles, with every other window redrawn by then, in one frame.
+    fn redrawn(&mut self, window: aethereal_window::WindowId) {
+        self.drawing.redrawn(window);
+        self.redraws = Redraws::Come;
+    }
+
+    /// Draws a frame, as the loop settles, when a window's redraw has come since it last did.
+    fn draw_redrawn(&mut self, event_loop: &ActiveEventLoop, clock: Monotonic) {
+        let come = mem::replace(&mut self.redraws, Redraws::Unheard) == Redraws::Come;
+        if come {
+            self.frame(event_loop, clock);
+        }
+    }
+
+    /// Draws a frame, when the program runs, its clock runs, the pacing draws one now, and a window is drawn: acquires
+    /// the frame of each window shown at a size whose redraw is due, in turn, each waiting for the display when
+    /// `fifo`, says a cycle is due at the time they were acquired, steps until no actor has anything to run, presents
+    /// what the renderer drew in each, and asks for the next frame when frames follow one another. A program asked to
+    /// stop draws none, a held one runs its cycles as the pacer owes them, as the loop settles, a capped frame asked
+    /// for before its grid's next point waits for it, a window hidden or of no size is handed no frame, and when none
+    /// is drawn no cycle runs: the loop then waits on the windows' events, and the frame is asked for again once one
+    /// is. The windows the window root asks for are opened and closed between its steps, on `event_loop`.
     fn frame(&mut self, event_loop: &ActiveEventLoop, clock: Monotonic) {
         let running = self.headless.engine().lifecycle() == Lifecycle::Running;
         if !running {
@@ -252,7 +289,6 @@ impl Running {
         let now = Time::from_nanos(clock.nanos());
         let _ = self.clockwork.take(self.headless.engine_mut(), now);
         if !self.clockwork.runs() {
-            self.held(event_loop);
             return;
         }
         let paced = self.pacing.draws(clock.nanos());
@@ -299,10 +335,10 @@ impl Running {
         self.headless.engine_mut().bring();
     }
 
-    /// Runs the held cycle the pacer asked for, if any, as a frame: acquires the frame of each window shown at a size,
-    /// says the cycle is due, steps until no actor has anything to run, presents what the renderer drew, and waits for
-    /// the GPU to finish it, so what the cycle read back is mapped before the loop next waits. With no window shown it
-    /// runs undrawn, so an advance never waits on a window coming back (ADR-0045).
+    /// Runs the held cycle the pacer asked for, if any, as a frame: acquires the frame of each window drawn, shown at a
+    /// size and its redraw due, says the cycle is due, steps until no actor has anything to run, presents what the
+    /// renderer drew, and waits for the GPU to finish it, so what the cycle read back is mapped before the loop next
+    /// waits. With no window shown it runs undrawn, so an advance never waits on a window coming back (ADR-0045).
     fn held(&mut self, event_loop: &ActiveEventLoop) {
         if !self.clockwork.is_owed() {
             return;
@@ -340,13 +376,18 @@ impl Running {
         }
     }
 
-    /// What the loop does next while the pacer holds the clock: runs a held cycle the pacer asked for at once, maps
-    /// what the renderer read back outside a frame, as a target is read under a held clock (ADR-0048), and waits on
-    /// the windows' events and the pacer's next push. It asks for no redraw: a compositor sends a covered window none,
-    /// as Wayland's do, so a held cycle that waited on one would wait until the window was uncovered. No frame comes
-    /// to map a read in, so the loop waits for the GPU to map it, and what became of it wakes the loop.
+    /// What the loop does next while the pacer holds the clock: runs a held cycle the pacer asked for, maps what the
+    /// renderer read back outside a frame, as a target is read under a held clock (ADR-0048), and waits on the
+    /// windows' events and the pacer's next push. A held cycle owed while a window that shows awaits the compositor's
+    /// ask for its next frame waits for it, so each cycle of a clip recorded at the display's rate is drawn; a covered
+    /// window is asked for none on Wayland, and its advances wait until it is uncovered, on the loop's events, never
+    /// on its thread. No frame comes to map a read in, so the loop waits for the GPU to map it, and what became of it
+    /// wakes the loop.
     fn owed(&mut self, event_loop: &ActiveEventLoop) -> Next {
-        self.held(event_loop);
+        let awaits = self.drawing.awaits();
+        if !awaits {
+            self.held(event_loop);
+        }
         let mapping = self.drawing.map();
         if mapping {
             self.drawing.finish();
