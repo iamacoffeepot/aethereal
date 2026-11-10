@@ -171,15 +171,20 @@ impl WindowSurface {
     }
 
     /// After the cycle, presents the frame kept when the render root asked, among `asked`, what it asked of the
-    /// cycle's frames, for this window's to be presented: a frame it did not draw, or drew in a turn that failed
-    /// before it asked, is dropped, and a texture it did not take is taken back from its front. What it asked for
-    /// another window's frame is that window's.
-    pub fn present(&mut self, asked: &[Present]) {
+    /// cycle's frames, for this window's to be presented, calling `before` just before it does, as winit asks of a
+    /// chassis that would hear when the compositor wants the next frame: a frame it did not draw, or drew in a turn that
+    /// failed before it asked, is dropped, and a texture it did not take is taken back from its front. What it asked
+    /// for another window's frame is that window's. Answers whether a frame was presented.
+    pub fn present(&mut self, asked: &[Present], before: impl FnOnce()) -> bool {
         let asked = Present::asked_for(asked, self.drawn.window);
         let kept = self.release();
         if asked && let Kept::Frame(frame) = kept {
+            before();
             self.queue.present(frame);
+            return true;
         }
+
+        false
     }
 
     /// Configures the surface to the size last heard.
