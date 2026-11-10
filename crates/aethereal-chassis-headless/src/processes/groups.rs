@@ -1,10 +1,8 @@
 //! The native host's launcher: each program in a process group of its own, started and waited on by a thread of its
-//! own, its stderr's tail read by another (ADR-0040).
+//! own, its stderr's head and tail kept by another (ADR-0040).
 
-use super::tail::Tail;
-use aethereal_process::{
-    ExitStatus, Exited, Exiting, Launcher, ProcessesSettings, Signal, Starting, Unstarted, Unwaited,
-};
+use super::head_and_tail::HeadAndTail;
+use aethereal_process::{ExitStatus, Exited, Exiting, Launcher, Signal, Starting, Unstarted, Unwaited};
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::future::{self, Future};
@@ -23,24 +21,24 @@ use std::time::Duration;
 const DRAIN_WITHIN: Duration = Duration::from_secs(1);
 
 /// The native host's launcher (ADR-0040): each program started by a thread of its own in a process group of its own,
-/// with no stdin and its stdout discarded, the thread then waiting for it to exit while another keeps the last bytes of
-/// its stderr. A start and a wait never block the thread that polls them, and are woken once done.
+/// with no stdin and its stdout discarded, the thread then waiting for it to exit while another keeps the head and the
+/// tail of its stderr, each bounded. A start and a wait never block the thread that polls them, and are woken once done.
 ///
 /// Dropping it kills the group of every program still running, so no program outlives the engine that started it;
 /// each program's threads end once it has exited.
+#[derive(Default)]
 pub struct ProcessGroups {
     shared: Arc<Shared>,
 }
 
 /// What the launcher and its programs' threads share.
+#[derive(Default)]
 struct Shared {
     /// Each program started whose exit has not been taken, by its number. A lock, as the jobs that start, wait on, and
     /// signal programs run on whichever runner's thread polls them, and each program's thread marks it reaped: a
     /// signal and a reaping each hold it, so a group is never signalled once its leader is reaped and its id is free to
     /// be taken.
     programs: Mutex<BTreeMap<u64, Program>>,
-    /// The most bytes of each program's stderr kept.
-    most_stderr_bytes: usize,
 }
 
 /// A program started, and its exit, which its thread delivers.
@@ -75,16 +73,6 @@ enum Delivery<T> {
 
 /// What came of a delivery never delivered, or polled again once handed.
 struct Lost;
-
-impl ProcessGroups {
-    /// The launcher keeping as much of each program's stderr as `settings` say.
-    #[must_use]
-    pub fn new(settings: &ProcessesSettings) -> Self {
-        let most_stderr_bytes = usize::try_from(settings.most_stderr_bytes).unwrap_or(usize::MAX);
-
-        Self { shared: Arc::new(Shared { programs: Mutex::new(BTreeMap::new()), most_stderr_bytes }) }
-    }
-}
 
 impl Launcher for ProcessGroups {
     fn start(&self, process: u64, program: String, args: Vec<String>) -> Starting<'_> {
@@ -176,7 +164,8 @@ fn command(program: String, args: Vec<String>) -> Command {
 }
 
 /// Starts the program numbered `process` with `command`, delivers whether it started, then waits for it to exit,
-/// reaping it with the programs locked, and delivers how it did with the tail of its stderr: a program's own thread.
+/// reaping it with the programs locked, and delivers how it did with the head and tail of its stderr: a program's own
+/// thread.
 fn keep(
     shared: &Shared,
     process: u64,
@@ -184,8 +173,8 @@ fn keep(
     started: &Mutex<Delivery<Result<(), Unstarted>>>,
     exit: &Mutex<Delivery<Result<Exited, Unwaited>>>,
 ) {
-    let tail = Arc::new(Tail::new(shared.most_stderr_bytes));
-    let running = command.spawn().map_err(|_| Unstarted).and_then(|child| read_stderr(child, &tail));
+    let stderr = Arc::new(HeadAndTail::default());
+    let running = command.spawn().map_err(|_| Unstarted).and_then(|child| read_stderr(child, &stderr));
     let mut child = match running {
         Ok(child) => child,
         Err(unstarted) => {
@@ -209,16 +198,16 @@ fn keep(
         reaped
     };
     let exited = reaped.map(status).map_err(|_| Unwaited);
-    deliver(exit, exited.map(|status| Exited { status, stderr: tail.text(DRAIN_WITHIN) }));
+    deliver(exit, exited.map(|status| Exited { status, stderr: stderr.text(DRAIN_WITHIN) }));
 }
 
-/// `child`, its stderr read into `tail` by a thread of its own: refused, the child killed and reaped, when the host
+/// `child`, its stderr read into `kept` by a thread of its own: refused, the child killed and reaped, when the host
 /// cannot make the thread, as a program whose stderr no one reads would stall on it.
-fn read_stderr(mut child: Child, tail: &Arc<Tail>) -> Result<Child, Unstarted> {
+fn read_stderr(mut child: Child, kept: &Arc<HeadAndTail>) -> Result<Child, Unstarted> {
     let Some(stderr) = child.stderr.take() else {
         return Ok(child);
     };
-    let reading = Arc::clone(tail);
+    let reading = Arc::clone(kept);
     #[allow(clippy::disallowed_methods)] // The native host owns the real threads (ADR-0001).
     let spawned =
         thread::Builder::new().name(format!("aethereal-stderr-{}", child.id())).spawn(move || reading.read(stderr));

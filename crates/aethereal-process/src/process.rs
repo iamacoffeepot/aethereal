@@ -19,8 +19,9 @@ pub enum ExitStatus {
     Signal(i32),
 }
 
-/// Told to the actor a program was started for, as its process ends: how it exited, and the last bytes of its stderr,
-/// as text, a character the bytes cut short replaced.
+/// Told to the actor a program was started for, as its process ends: how it exited, and its stderr as text, its head
+/// and its tail each bounded with a line saying what was left out between them, every over-long line cut, and a
+/// character the program's own bytes cut short replaced (ADR-0040).
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.process.exited")]
 pub struct Exited {

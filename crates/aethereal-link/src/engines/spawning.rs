@@ -34,7 +34,7 @@ pub enum Spawn {
     NotStored,
     /// The host would not start it.
     Refused,
-    /// It ended before it linked: how, and the last bytes of its stderr.
+    /// It ended before it linked: how, and the head and tail of its stderr.
     Exited { status: ExitStatus, stderr: String },
     /// It ran, and did not link within the hub's `link_within_millis`: its process was then stopped.
     Unlinked,
