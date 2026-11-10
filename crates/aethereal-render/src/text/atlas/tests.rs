@@ -69,13 +69,15 @@ fn glyphs_fit_with_a_gap_and_the_atlas_doubles_when_one_does_not_up_to_its_longe
 #[test]
 fn a_full_atlas_is_packed_again_keeping_the_glyphs_drawn_last_and_dropping_those_drawn_longest_ago() {
     // Catches a full atlas that drops the glyphs on screen now, or the newest rather than the stalest, and one that
-    // keeps a glyph where it lay while another is packed over it.
+    // keeps a glyph where it lay while another is packed over it; and the texels it counts as used left counting the
+    // glyphs it dropped, or the new glyphs it took back out before packing again (ADR-0053).
     let mut atlas = Atlas::new(100);
     // Four fields of 49 texels a side, a texel's gap each, fill the atlas.
     let quarter = field(49, 49);
     let filled =
         atlas.add(&[(key(1), quarter), (key(2), quarter), (key(3), quarter), (key(4), quarter)], &HashMap::new(), 0);
     assert!(filled.unfit.is_empty());
+    assert_eq!(atlas.used_texels(), 4 * 49 * 49);
     let drawn = HashMap::from([(key(1), 9), (key(2), 3), (key(3), 7), (key(4), 9)]);
 
     let added = atlas.add(&[(key(5), quarter), (key(6), quarter)], &drawn, 9);
@@ -88,6 +90,7 @@ fn a_full_atlas_is_packed_again_keeping_the_glyphs_drawn_last_and_dropping_those
     let held: Vec<bool> = (1..=6).map(|glyph| atlas.slot(key(glyph)).is_some()).collect();
     assert_eq!(held, [true, false, false, true, true, true], "the two drawn at 9 kept; 2 and 3, drawn before, dropped");
     assert_eq!(moves.len(), 2, "each glyph kept is copied to where it lies now");
+    assert_eq!(atlas.used_texels(), 4 * 49 * 49, "the four held now, and none of those dropped");
 
     let slots: Vec<(u32, u32, u32, u32)> = [1, 4, 5, 6]
         .iter()

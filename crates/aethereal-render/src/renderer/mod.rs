@@ -19,7 +19,7 @@ use crate::frame::{
     PassRefused, ShapeOf, Shaped, Size, Target, TargetKind,
 };
 use crate::instances::{self, CreateInstances, Instanced, InstancesId, WriteInstances};
-use crate::made::{Ids, Made, Makers, Owned};
+use crate::made::{Ids, Made, Makers, Owned, Weighed, Weighs, reweighed};
 use crate::mapping::{Mapped, Mapping};
 use crate::mesh::{self, Counted, CreateMesh, MeshId, Meshed, VertexLayout};
 use crate::pass::PassName;
@@ -36,7 +36,7 @@ use crate::readback::{
 };
 use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
 use crate::stats::{
-    self, DescribeGpu, FrameStats, GpuDescribed, GpuTimes, SubscribeFrameStats, SubscribeGpuTimes, Tally,
+    self, DescribeGpu, FrameStats, GpuDescribed, GpuMemory, GpuTimes, SubscribeFrameStats, SubscribeGpuTimes, Tally,
     UnsubscribeFrameStats, UnsubscribeGpuTimes,
 };
 use crate::storage::{self, CreateStorage, CreateZeroedStorage, StorageId, Stored, WriteStorage};
@@ -393,29 +393,34 @@ pub enum Release {
 /// What the renderer has made, and who made each, with the samplers its placements, dispatches, and effects share, the
 /// lists each actor drew its placements in a pass by, the frames that end on textures in the order they run, `order`,
 /// the longest side of a texture and the most workgroups along one dimension the GPU makes and dispatches, each window
-/// it draws to, in the order its chassis opened them, and its fonts, texts, and texts placed, with their atlas.
+/// it draws to, in the order its chassis opened them, with the GPU memory they hold, `windows_memory`, and its fonts,
+/// texts, and texts placed, with their atlas. What holds GPU memory is weighed as it is made, made again, and released
+/// (ADR-0053).
 struct Kept {
     ids: Ids,
     makers: Makers,
-    meshes: Made<Mesh>,
-    textures: Made<Texture>,
+    meshes: Weighed<Mesh>,
+    textures: Weighed<Texture>,
     programs: Made<Program>,
     computes: Made<Compute>,
-    instances: Made<Instances>,
-    uniforms: Made<Uniforms>,
-    storage: Made<Storage>,
+    instances: Weighed<Instances>,
+    uniforms: Weighed<Uniforms>,
+    storage: Weighed<Storage>,
     placements: Made<Placement>,
     dispatches: Made<Dispatching>,
     lists: Lists,
     reads: HashMap<u64, Reading>,
     samplers: HashMap<Sampling, wgpu::Sampler>,
-    frames: Made<Walk>,
+    frames: Weighed<Walk>,
     order: Vec<u64>,
     /// The dispatches not run: each writes a storage another writes in a frame it is in no order with.
     held: Vec<u64>,
     longest: u32,
     most_workgroups: u32,
     windows: Vec<Windowed>,
+    /// The GPU memory of each window's own main frame's targets and the copy of its last frame, counted as each window
+    /// is opened, fitted, drawn, and closed.
+    windows_memory: GpuMemory,
     text: Texts,
 }
 
@@ -1081,7 +1086,7 @@ impl Handles<Surfaced> for Renderer {
                     return Ok(());
                 }
                 match Windowed::new(&device, window, format) {
-                    Ok(windowed) => kept.windows.push(windowed),
+                    Ok(windowed) => kept.opened(windowed),
                     Err(why) => turn.log(Level::Error, format_args!("window {window:?} is not drawn to: {why:?}")),
                 }
             }
@@ -1276,7 +1281,7 @@ impl Handles<WriteInstances> for Renderer {
         let by = turn.sender().id();
         let records = turn.read(&write.records).to_vec();
         let kept = turn.open(&mut self.kept)?;
-        let written = kept.instances.owned(write.instances.id, by).map(|instances| {
+        let written = kept.instances.owned(write.instances.id, by, |instances| {
             let length = instances.held.write(write.first, records.len() as u64);
             if let Ok(length) = length {
                 instances.held.length = length;
@@ -1339,7 +1344,7 @@ impl Handles<WriteUniforms> for Renderer {
         let by = turn.sender().id();
         let bytes = turn.read(&write.bytes).to_vec();
         let kept = turn.open(&mut self.kept)?;
-        let written = kept.uniforms.owned(write.uniforms.id, by).map(|uniforms| {
+        let written = kept.uniforms.owned(write.uniforms.id, by, |uniforms| {
             let fits = uniforms::writes(uniforms.size, write.first, bytes.len() as u64);
             (fits, uniforms.buffer.clone())
         });
@@ -1399,7 +1404,7 @@ impl Handles<WriteStorage> for Renderer {
         let by = turn.sender().id();
         let bytes = turn.read(&write.bytes).to_vec();
         let kept = turn.open(&mut self.kept)?;
-        let written = kept.storage.owned(write.storage.id, by).map(|storage| {
+        let written = kept.storage.owned(write.storage.id, by, |storage| {
             let fits = storage::fits(storage.size, write.first, bytes.len() as u64);
             (fits, storage.buffer.clone())
         });
@@ -1576,32 +1581,7 @@ impl Handles<Release> for Renderer {
     fn handle(&mut self, release: Release, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let by = turn.sender().id();
         let kept = turn.open(&mut self.kept)?;
-        let released = match release {
-            Release::Mesh(mesh) => kept.meshes.release(mesh.id, by).map(drop),
-            Release::Texture(texture) => kept.textures.release(texture.id, by).map(drop),
-            Release::Program(program) => kept.programs.release(program.id, by).map(drop),
-            Release::Compute(compute) => kept.computes.release(compute.id, by).map(drop),
-            Release::Instances(instances) => {
-                let released = kept.instances.release(instances.id, by);
-                if let Owned::Mine(made) = &released {
-                    kept.last_drawn(instances.id, made.held.length);
-                }
-                released.map(drop)
-            }
-            Release::Uniforms(uniforms) => kept.uniforms.release(uniforms.id, by).map(drop),
-            Release::Storage(storage) => kept.storage.release(storage.id, by).map(drop),
-            Release::Placement(placement) => kept.release_placement(placement.id, by),
-            Release::Dispatch(dispatch) => kept.dispatches.release(dispatch.id, by).map(drop),
-            Release::Font(font) => kept.text.faces.made.release(font.id, by).map(drop),
-            Release::Text(text) => kept.text.release_text(text.id, by, &mut kept.lists),
-            Release::Frame(frame) => {
-                let released = kept.frames.release(frame.id, by);
-                if let Owned::Mine(walk) = &released {
-                    kept.unframed([(frame.id, walk.texture())]);
-                }
-                released.map(drop)
-            }
-        };
+        let released = kept.release(release, by);
         let held = kept.reorder_after_release();
         log_held(turn, &held);
         match released {
@@ -1652,30 +1632,66 @@ impl Kept {
     /// Why one of the renderer's own fonts was not read, which a font compiled in never is.
     fn new(device: &wgpu::Device, windows: Vec<Windowed>) -> Result<Self, FontRefused> {
         let longest = device.limits().max_texture_dimension_2d;
+        let mut windows_memory = GpuMemory::default();
+        for windowed in &windows {
+            windows_memory.add(windowed.memory());
+        }
 
         Ok(Self {
             ids: Ids::default(),
             makers: Makers::default(),
-            meshes: Made::default(),
-            textures: Made::default(),
+            meshes: Weighed::default(),
+            textures: Weighed::default(),
             programs: Made::default(),
             computes: Made::default(),
-            instances: Made::default(),
-            uniforms: Made::default(),
-            storage: Made::default(),
+            instances: Weighed::default(),
+            uniforms: Weighed::default(),
+            storage: Weighed::default(),
             placements: Made::default(),
             dispatches: Made::default(),
             lists: Lists::default(),
             reads: HashMap::new(),
             samplers: HashMap::new(),
-            frames: Made::default(),
+            frames: Weighed::default(),
             order: Vec::new(),
             held: Vec::new(),
             longest,
             most_workgroups: device.limits().max_compute_workgroups_per_dimension,
             windows,
+            windows_memory,
             text: Texts::new(device, longest)?,
         })
+    }
+
+    /// Releases what `release` names, when `by` made it, with what goes with it: a frame's texture and its lists, and
+    /// the records placements of released instances draw from then.
+    fn release(&mut self, release: Release, by: ActorId) -> Owned<()> {
+        match release {
+            Release::Mesh(mesh) => self.meshes.release(mesh.id, by).map(drop),
+            Release::Texture(texture) => self.textures.release(texture.id, by).map(drop),
+            Release::Program(program) => self.programs.release(program.id, by).map(drop),
+            Release::Compute(compute) => self.computes.release(compute.id, by).map(drop),
+            Release::Instances(instances) => {
+                let released = self.instances.release(instances.id, by);
+                if let Owned::Mine(made) = &released {
+                    self.last_drawn(instances.id, made.held.length);
+                }
+                released.map(drop)
+            }
+            Release::Uniforms(uniforms) => self.uniforms.release(uniforms.id, by).map(drop),
+            Release::Storage(storage) => self.storage.release(storage.id, by).map(drop),
+            Release::Placement(placement) => self.release_placement(placement.id, by),
+            Release::Dispatch(dispatch) => self.dispatches.release(dispatch.id, by).map(drop),
+            Release::Font(font) => self.text.faces.made.release(font.id, by).map(drop),
+            Release::Text(text) => self.text.release_text(text.id, by, &mut self.lists),
+            Release::Frame(frame) => {
+                let released = self.frames.release(frame.id, by);
+                if let Owned::Mine(walk) = &released {
+                    self.unframed([(frame.id, walk.texture())]);
+                }
+                released.map(drop)
+            }
+        }
     }
 
     /// Releases the placement `placement`, of a mesh or of a text, when `by` made it, taking it out of `by`'s lists in
@@ -1981,12 +1997,19 @@ impl Kept {
             return false;
         };
         let closed = self.windows.remove(at);
+        self.windows_memory.remove(closed.memory());
         if let Main::Made(id) = closed.main {
             self.frames.forget(id);
         }
         self.lists.unframed(Frame::Main(window));
 
         true
+    }
+
+    /// Draws to the window `windowed` from now, opened after those it draws to.
+    fn opened(&mut self, windowed: Windowed) {
+        self.windows_memory.add(windowed.memory());
+        self.windows.push(windowed);
     }
 
     /// The window `window`, as the renderer draws to it: none when it does not.
@@ -2012,7 +2035,7 @@ impl Kept {
         for (window, frame) in frames {
             let windowed = self.windows.iter_mut().find(|windowed| windowed.window == *window);
             if let Some(windowed) = windowed {
-                windowed.last.keep(device, encoder, frame);
+                reweighed(&mut self.windows_memory, windowed, |windowed| windowed.last.keep(device, encoder, frame));
             }
         }
     }
@@ -2056,11 +2079,13 @@ impl Kept {
         let Some(windowed) = self.windows.iter_mut().find(|windowed| windowed.window == window) else {
             return;
         };
-        let main = match windowed.main {
-            Main::Own => &mut windowed.own,
-            Main::Made(id) => self.frames.get_mut(id).unwrap_or(&mut windowed.own),
+        let made = match windowed.main {
+            Main::Own => None,
+            Main::Made(id) => self.frames.change(id, |walk| walk.fit(device, size)),
         };
-        main.fit(device, size);
+        if made.is_none() {
+            reweighed(&mut self.windows_memory, windowed, |windowed| windowed.own.fit(device, size));
+        }
         self.follow(device, window, size);
     }
 
@@ -2144,19 +2169,18 @@ impl Kept {
             })
             .collect();
         for (id, size) in resized {
-            let Some(walk) = self.frames.get_mut(id) else {
+            let Some(texture) = self.frames.get(id).and_then(Walk::texture) else {
                 continue;
             };
-            let Some(texture) = walk.texture() else {
+            let Some(format) = self.textures.get(texture).map(|kept| kept.format) else {
                 continue;
             };
-            let Some(kept) = self.textures.get_mut(texture) else {
-                continue;
-            };
-            let (made, view) = end_texture(device, size, kept.format);
-            kept.made = made;
-            kept.view = view.clone();
-            walk.refit(device, size, view.clone());
+            let (made, view) = end_texture(device, size, format);
+            self.textures.change(texture, |kept| {
+                kept.made = made;
+                kept.view = view.clone();
+            });
+            self.frames.change(id, |walk| walk.refit(device, size, view.clone()));
             self.rebind(device, texture, &view);
         }
     }
@@ -2170,9 +2194,7 @@ impl Kept {
         for dispatch in self.dispatches.values_mut() {
             dispatch.groups.rebind(device, texture, view);
         }
-        for walk in self.frames.values_mut() {
-            walk.rebind(device, texture, view);
-        }
+        self.frames.change_each(|walk| walk.rebind(device, texture, view));
     }
 
     /// Checks that `by` may make a frame that ends as `ends` says: only the owner of a window's main frame replaces

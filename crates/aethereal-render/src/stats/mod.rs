@@ -2,9 +2,11 @@
 //! over its passes, sent only while someone subscribes, so a program no one watches spends nothing on them; and the
 //! adapter it draws on, answered once.
 //!
-//! A subscriber of [`FrameStats`] is sent them after each `Render` that drew, counted as the frame was recorded: its
-//! draws and triangles, the bytes written to the GPU since the last, the GPU memory of what the renderer made, how many
-//! of each thing are alive, and how full the glyph atlas is. A subscriber of [`GpuTimes`] is sent each frame's pass
+//! A subscriber of [`FrameStats`] is sent them after each `Render` that drew: its draws and triangles, counted as the
+//! frame was recorded, and the bytes written to the GPU since the last; and the GPU memory of what the renderer made,
+//! how many of each thing are alive, and how full the glyph atlas is, which the renderer keeps as running totals,
+//! subscribed to or not, changed where each thing is made, made again at another size, and released, so a frame
+//! copies them and walks nothing. A subscriber of [`GpuTimes`] is sent each frame's pass
 //! times as the GPU's timestamps are mapped back, a frame or more later, each beside its pass's name; on a device
 //! without timestamps it is told so once, as it subscribes, and kept no further.
 
@@ -82,6 +84,26 @@ pub struct GpuMemory {
     pub targets_bytes: u64,
     pub buffers_bytes: u64,
     pub atlas_bytes: u64,
+}
+
+impl GpuMemory {
+    /// Counts `more` in, each kind into its own.
+    pub(crate) const fn add(&mut self, more: Self) {
+        self.meshes_bytes = self.meshes_bytes.saturating_add(more.meshes_bytes);
+        self.textures_bytes = self.textures_bytes.saturating_add(more.textures_bytes);
+        self.targets_bytes = self.targets_bytes.saturating_add(more.targets_bytes);
+        self.buffers_bytes = self.buffers_bytes.saturating_add(more.buffers_bytes);
+        self.atlas_bytes = self.atlas_bytes.saturating_add(more.atlas_bytes);
+    }
+
+    /// Counts `gone` out, each kind out of its own.
+    pub(crate) const fn remove(&mut self, gone: Self) {
+        self.meshes_bytes = self.meshes_bytes.saturating_sub(gone.meshes_bytes);
+        self.textures_bytes = self.textures_bytes.saturating_sub(gone.textures_bytes);
+        self.targets_bytes = self.targets_bytes.saturating_sub(gone.targets_bytes);
+        self.buffers_bytes = self.buffers_bytes.saturating_sub(gone.buffers_bytes);
+        self.atlas_bytes = self.atlas_bytes.saturating_sub(gone.atlas_bytes);
+    }
 }
 
 /// How many of each thing the renderer made are alive.

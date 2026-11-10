@@ -15,7 +15,7 @@ use aethereal_window::WindowId;
 
 /// A frame, checked and made: what it does, where it ends, what each pass does with what it was made with, the
 /// textures and the storage its effects bind, and its targets, each of the size its scale makes of its end's as it was
-/// last drawn, `size`.
+/// last drawn, `size`, with their bytes, counted as they are made (ADR-0053).
 pub(super) struct Walk {
     create: CreateFrame,
     end: End,
@@ -23,6 +23,7 @@ pub(super) struct Walk {
     binds: Vec<u64>,
     stored: Vec<(PassName, u64)>,
     targets: Vec<Image>,
+    targets_bytes: u64,
     size: Size,
 }
 
@@ -178,7 +179,9 @@ impl Walk {
             })
             .collect();
 
-        Ok(Self { create, end, steps, binds, stored, targets, size })
+        let targets_bytes = bytes_of(&targets);
+
+        Ok(Self { create, end, steps, binds, stored, targets, targets_bytes, size })
     }
 
     /// The texture it ends on, by its id: none for a frame that ends on a window.
@@ -257,9 +260,15 @@ impl Walk {
         Some((*spec, image.read().texture()))
     }
 
-    /// The bytes of its targets, each texture its passes draw into or read (ADR-0053).
-    pub fn targets_bytes(&self) -> u64 {
-        self.targets.iter().map(Image::bytes).sum()
+    /// The bytes of its targets, each texture its passes draw into or read, as they were last made (ADR-0053).
+    pub const fn targets_bytes(&self) -> u64 {
+        self.targets_bytes
+    }
+
+    /// The bytes of its targets, each counted again: what [`targets_bytes`](Self::targets_bytes) answers, were it kept.
+    #[cfg(test)]
+    pub fn targets_bytes_counted(&self) -> u64 {
+        bytes_of(&self.targets)
     }
 
     /// The size its end was last drawn at.
@@ -299,6 +308,7 @@ impl Walk {
             return;
         }
         self.targets = made(device, &self.create.targets, size);
+        self.targets_bytes = bytes_of(&self.targets);
         self.size = size;
         for step in &mut self.steps {
             let read = match step {
@@ -308,6 +318,11 @@ impl Walk {
             read.group = read_group(device, &read.layout, &read.reads, &self.targets);
         }
     }
+}
+
+/// The bytes of `targets`, each texture of each (ADR-0053).
+fn bytes_of(targets: &[Image]) -> u64 {
+    targets.iter().map(Image::bytes).sum()
 }
 
 /// The place of `target` among a frame's targets: none for its end.
