@@ -7,6 +7,8 @@ use openh264::encoder::{
     VuiConfig,
 };
 use openh264::formats::{RgbSliceU8, YUVBuffer};
+use std::num::NonZero;
+use std::thread::available_parallelism;
 
 /// Whether this engine encodes video: a native one does.
 pub const ENCODES: bool = true;
@@ -30,6 +32,19 @@ const FINEST_QP: u8 = 10;
 /// How many seconds apart frames a player may start at are.
 const KEYFRAME_SECONDS: u32 = 2;
 
+/// The most threads a frame is encoded on. `OpenH264` uses no more (its encoder's `MAX_THREADS_NUM`), and a timing of
+/// 120 1080p frames on one machine took 35 to 50% off each frame's encode at four threads against one, with or without
+/// its assembly, where two gained little on a scene of text. The encode is a job on the engine's compute pool, beside other work, and these are
+/// threads of the encoder's own, so a machine of fewer cores is given no more than it has.
+const MOST_THREADS: u16 = 4;
+
+/// The most bytes a slice of a frame holds. `OpenH264` encodes a frame on several threads only when it is cut into
+/// slices, a part of the frame for each thread, and its bindings cut a frame only by a most size of slice: each part
+/// is then one slice unless it passes this. It is far above what a frame takes at the clip's rate, so a frame is cut
+/// into as many slices as threads, and only an unusually heavy one into more. Each slice costs a little: about 1% more
+/// bytes at four, where a frame takes more than its rate.
+const MOST_SLICE_BYTES: u32 = 250_000;
+
 /// An encoder of frames of one size, and the YUV 4:2:0 picture each is converted into, and the bytes each is written
 /// to, both kept from frame to frame.
 pub struct H264 {
@@ -44,13 +59,16 @@ impl H264 {
     /// An encoder of frames `width` by `height`, both even, at `frames_per_second`: constant bit rate at the bits a
     /// pixel [`FULL_HD_BITS_PER_SECOND`] is at, and never skipping a frame, so each frame drawn is a frame of the clip;
     /// a frame a player may start at each [`KEYFRAME_SECONDS`]; colour as BT.601 at video range, as `OpenH264` converts
-    /// it, and said so in the stream, so a player reads it as it was written.
+    /// it, and said so in the stream, so a player reads it as it was written; each frame cut into slices of at most
+    /// [`MOST_SLICE_BYTES`], encoded on as many threads as the machine has cores, up to [`MOST_THREADS`].
     pub fn new(frames_per_second: u32, width: u32, height: u32) -> Result<Self, Unencodable> {
         let pixels_per_second = u64::from(width) * u64::from(height) * u64::from(frames_per_second);
         let bits_per_second =
             (FULL_HD_BITS_PER_SECOND * pixels_per_second / FULL_HD_PIXELS_PER_SECOND).max(LEAST_BITS_PER_SECOND);
         let bits_per_second = u32::try_from(bits_per_second).unwrap_or(u32::MAX);
         let rate = f32::from(u16::try_from(frames_per_second).unwrap_or(u16::MAX));
+        let cores = available_parallelism().map_or(1, NonZero::get);
+        let threads = u16::try_from(cores).unwrap_or(u16::MAX).min(MOST_THREADS);
         let config = EncoderConfig::new()
             .usage_type(UsageType::CameraVideoRealTime)
             .rate_control_mode(RateControlMode::Bitrate)
@@ -60,7 +78,8 @@ impl H264 {
             .qp(QpRange::new(FINEST_QP, COARSEST_QP))
             .intra_frame_period(IntraFramePeriod::from_num_frames(frames_per_second * KEYFRAME_SECONDS))
             .sps_pps_strategy(SpsPpsStrategy::ConstantId)
-            .num_threads(1)
+            .max_slice_len(MOST_SLICE_BYTES)
+            .num_threads(threads)
             .vui(VuiConfig::bt601());
         let encoder = Encoder::with_api_config(OpenH264API::from_source(), config).map_err(|_| Unencodable::Failed)?;
         let (width, height) = (width as usize, height as usize);
