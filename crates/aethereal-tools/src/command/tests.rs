@@ -254,7 +254,7 @@ fn a_usage_lists_every_field_filled_by_position_first() -> Outcome {
 
     assert_eq!(usage.name, "clip");
     assert_eq!(usage.positionals, "<window> <name>");
-    assert_eq!(usage.flags, "-n N [-c whole] [-r N]");
+    assert_eq!(usage.flags(), "-n N [-c whole] [-r N]");
     assert_eq!(usage.line(), "clip <window> <name> -n N [-c whole] [-r N]");
     Ok(())
 }
@@ -282,7 +282,7 @@ fn a_doc_longer_than_the_width_wraps_under_its_column() -> Outcome {
 #[test]
 fn a_listing_of_three_sheets_aligns_its_columns() -> Outcome {
     // Catches a column padded to its own cell rather than the widest, rows left in the order given rather than by
-    // name, and a summary that starts at a different character on each row.
+    // name, and arguments or a summary that start at a different character on each row.
     let sheets = three_sheets()?;
 
     let listing = help_listing(&sheets, 1000);
@@ -290,7 +290,7 @@ fn a_listing_of_three_sheets_aligns_its_columns() -> Outcome {
     let lines: Vec<&str> = listing.lines().collect();
     let names: Vec<&str> = lines.iter().filter_map(|line| line.split(' ').next()).collect();
     assert_eq!(names, ["actor_logs", "clip", "describe"]);
-    let mut starts: Vec<[usize; 3]> = Vec::new();
+    let mut starts: Vec<[usize; 2]> = Vec::new();
     for (line, name) in lines.iter().zip(&names) {
         let Some(sheet) = sheets.iter().find(|sheet| sheet.name == *name) else {
             return Err(format!("a row names no sheet: {line}").into());
@@ -298,9 +298,28 @@ fn a_listing_of_three_sheets_aligns_its_columns() -> Outcome {
         let command = CommandLine::of(sheet)?;
         let usage = command.usage_parts();
         let at = |piece: &str| line.find(piece).ok_or_else(|| format!("`{piece}` is missing from `{line}`"));
-        starts.push([at(&usage.positionals)?, at(&usage.flags)?, at(command.summary())?]);
+        starts.push([at(&usage.arguments())?, at(command.summary())?]);
     }
     assert!(starts.iter().all(|start| *start == starts[0]), "{listing}");
+    Ok(())
+}
+
+#[test]
+fn a_listing_shows_the_flags_that_must_be_given_and_marks_the_rest() -> Outcome {
+    // Catches a flag that may be left out shown in the listing, one with no mark that there are such flags, and a
+    // flag that must be given dropped with them.
+    let sheets = three_sheets()?;
+
+    let listing = help_listing(&sheets, 1000);
+
+    let row = |name: &str| listing.lines().find(|line| line.starts_with(&format!("{name} ")));
+    let clip = row("clip").ok_or("the listing has a row for `clip`")?;
+    assert!(clip.contains("<window> <name> -n N […]"), "{listing}");
+    let logs = row("actor_logs").ok_or("the listing has a row for `actor_logs`")?;
+    assert!(logs.contains("<actor> […]"), "{listing}");
+    for left_out in ["-c", "-r", "--since", "--level", "--contains", "--most"] {
+        assert!(!listing.contains(left_out), "`{left_out}` is listed: {listing}");
+    }
     Ok(())
 }
 

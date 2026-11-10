@@ -15,7 +15,11 @@ const MOST_SPELLED: usize = 24;
 /// word to a line.
 const LEAST_DOC: usize = 20;
 
-/// The three pieces of a tool's usage line, apart, so a listing of many tools can pad each to its column.
+/// What a listing of many tools writes in place of the flags that may be left out.
+const LEFT_OUT: &str = "[…]";
+
+/// The pieces of a tool's usage line, apart, so a listing of many tools can pad each to its column and leave out the
+/// flags that may be left out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Usage<'sheet> {
     /// The tool's name.
@@ -23,23 +27,50 @@ pub struct Usage<'sheet> {
     /// The fields filled by position, in declared order, `<window> <name>`; `<json>` for a tool that takes its input
     /// as one JSON word; empty for none.
     pub positionals: String,
-    /// The flags, those that must be given first, then those that may be left out in brackets, each in declared order
-    /// and by its short name where it has one, with its value's placeholder: `-n N [-r N] [-c whole]`; empty for none.
-    pub flags: String,
+    /// The flags that must be given, in declared order, each by its short name where it has one, with its value's
+    /// placeholder: `-n N`; empty for none.
+    pub required: String,
+    /// The flags that may be left out, each in brackets, in declared order, typed as the required ones are:
+    /// `[-r N] [-c whole]`; empty for none.
+    pub optional: String,
 }
 
 impl Usage<'_> {
     /// The usage line: its pieces parted by a space, an empty piece left out.
     #[must_use]
     pub fn line(&self) -> String {
-        let pieces = [self.name, self.positionals.as_str(), self.flags.as_str()];
+        joined(&[self.name, &self.positionals, &self.required, &self.optional])
+    }
 
-        pieces.into_iter().filter(|piece| !piece.is_empty()).collect::<Vec<&str>>().join(" ")
+    /// The flags, those that must be given first, then those that may be left out: `-n N [-r N] [-c whole]`; empty for
+    /// none.
+    #[must_use]
+    pub fn flags(&self) -> String {
+        joined(&[&self.required, &self.optional])
+    }
+
+    /// The arguments as a listing of many tools shows them: the fields filled by position, the flags that must be
+    /// given, and `[…]` for those that may be left out, where there are any: `<window> <name> -n N […]`.
+    #[must_use]
+    pub fn arguments(&self) -> String {
+        let left_out = if self.optional.is_empty() {
+            ""
+        } else {
+            LEFT_OUT
+        };
+
+        joined(&[&self.positionals, &self.required, left_out])
     }
 }
 
+/// `pieces` parted by a space, an empty piece left out.
+fn joined(pieces: &[&str]) -> String {
+    pieces.iter().filter(|piece| !piece.is_empty()).copied().collect::<Vec<&str>>().join(" ")
+}
+
 impl<'sheet> CommandLine<'sheet> {
-    /// The usage line's three pieces: the tool's name, the fields filled by position, and the flags.
+    /// The usage line's pieces: the tool's name, the fields filled by position, the flags that must be given, and
+    /// those that may be left out.
     #[must_use]
     pub fn usage_parts(&self) -> Usage<'sheet> {
         let positionals: Vec<String> = if self.typed_as_json() {
@@ -51,19 +82,17 @@ impl<'sheet> CommandLine<'sheet> {
                 .map(|entry| format!("<{}>", entry.flag.field))
                 .collect()
         };
-        let flags: Vec<String> = self
-            .ordered()
-            .filter(|entry| !entry.positional())
-            .map(|entry| {
-                let typed = typed(entry);
-                if entry.required {
-                    return typed;
-                }
-                format!("[{typed}]")
-            })
-            .collect();
+        let flags = self.entries.iter().filter(|entry| !entry.positional());
+        let required: Vec<String> = flags.clone().filter(|entry| entry.required).map(typed).collect();
+        let optional: Vec<String> =
+            flags.filter(|entry| !entry.required).map(|entry| format!("[{}]", typed(entry))).collect();
 
-        Usage { name: &self.sheet.name, positionals: positionals.join(" "), flags: flags.join(" ") }
+        Usage {
+            name: &self.sheet.name,
+            positionals: positionals.join(" "),
+            required: required.join(" "),
+            optional: optional.join(" "),
+        }
     }
 
     /// The first sentence of the tool's description, which a listing of tools shows beside its usage.
