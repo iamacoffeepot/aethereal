@@ -61,6 +61,15 @@ pub struct WindowSurface {
     kept: Kept,
 }
 
+/// A frame still kept is let go before the surface it was acquired from, whose fields drop after this: wgpu panics
+/// at a surface destroyed with a frame of it out, as when a panic unwinds out of the cycle between the frame's acquire
+/// and its present, and that second panic, in a destructor, aborts the program over the first.
+impl Drop for WindowSurface {
+    fn drop(&mut self) {
+        drop(self.release());
+    }
+}
+
 /// Whether the surface's frames fit it as it is configured.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Configured {
